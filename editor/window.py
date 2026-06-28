@@ -618,26 +618,10 @@ class MainWindow(QMainWindow):
             get_dispatcher().add_prefab(name.strip())
             self.project_panel.refresh()
 
-    # ── Slot assigned (BG layers) ─────────────────────────────────
+    # ── Slot assigned (obsolète — géré par le dropdown BackgroundAsset) ──
 
     def _on_slot_assigned(self, slot_index: int, path_str: str):
-        if not self.project or not self.project.active_scene: return
-        scene = self.project.active_scene
-        if slot_index >= len(scene.bg_layers): return
-        layer = scene.bg_layers[slot_index]
-        old_bg = layer.background_name
-        get_dispatcher().assign_bg_slot(slot_index, path_str)
-        new_bg = layer.background_name
-        if old_bg != new_bg:
-            def _refresh():
-                if self.project and self.project.active_scene:
-                    self._inspector.show_scene(self.project.active_scene, self.project)
-            self._history.record(SetBgLayerCmd(
-                layer, old_bg, new_bg, slot_index,
-                save_fn=lambda: self.project.save_scene(scene) if self.project else None,
-                refresh_fn=_refresh,
-            ))
-        self._inspector.show_scene(scene, self.project)
+        pass
 
     # ── Autres slots ──────────────────────────────────────────────
 

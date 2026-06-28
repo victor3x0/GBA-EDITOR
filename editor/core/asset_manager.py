@@ -422,13 +422,13 @@ class AssignPanel(QWidget):
 
     def refresh_from_project(self, project: Project):
         scene = project.active_scene
+        # BG slots — résolution depuis le BackgroundAsset de la scène
+        ba = project.get_background(scene.background_asset) if scene and scene.background_asset else None
         for i in range(min(4, len(self._slots))):
-            bg_name = scene.bg_layers[i].background_name if (scene and i < len(scene.bg_layers)) else ""
-            bg = project.get_background(bg_name) if bg_name else None
-            tileset = project.get_tileset(bg.tileset_name) if bg and bg.tileset_name else None
-            if tileset:
-                ap = project.asset_abs(tileset.asset)
-                if ap and ap.exists():
+            layer = next((L for L in (ba.layers if ba else []) if L.bg_slot == i), None)
+            if layer:
+                ap = project.background_images_dir / layer.image
+                if ap.exists():
                     self._slots[i].set_asset(str(ap))
                     continue
             self._slots[i].clear_asset()

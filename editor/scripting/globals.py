@@ -1,34 +1,27 @@
 """
-editor/scripting/globals.py — Collecte les variables globales de tous les scripts
-et génère globals.c + globals.h.
+editor/scripting/globals.py — Génère globals.c + globals.h depuis la liste
+des GlobalVar déclarées explicitement dans le projet.
 
-Une "variable globale" Lua = une variable écrite dans un script sans être
-déclarée `local`. Elle est partagée entre tous les acteurs de la scène.
-Ici on collecte depuis tous les LuaScript, on déduplique, et on émet
-deux fichiers C :
-
-  globals.h  →  extern int g_score;   (inclus par chaque actor_*.c)
-  globals.c  →  int g_score = 0;      (une seule définition, linkée une fois)
+Plus de détection automatique depuis les scripts : les variables globales
+sont une ressource explicite du projet (project.globals).
 """
 
 from __future__ import annotations
 from pathlib import Path
 
-from .parser import LuaScript
+
+_C_TYPES = {
+    "int":  "int",
+    "bool": "bool",
+    "u8":   "u8",
+    "u16":  "u16",
+    "s8":   "s8",
+    "s16":  "s16",
+}
 
 
-def collect_global_names(scripts: list[LuaScript]) -> list[str]:
-    """
-    Retourne la liste triée et dédupliquée de tous les noms globaux
-    écrits dans l'ensemble des scripts.
-    """
-    names: set[str] = set()
-    for s in scripts:
-        names.update(s.globals_w)
-    return sorted(names)
-
-
-def generate_globals_h(names: list[str]) -> str:
+def generate_globals_h(globals_) -> str:
+    """globals_ : list[GlobalVar] (duck-typed: .name, .type)"""
     lines = [
         "/* globals.h — variables globales partagées entre les scripts acteur */",
         "/* Généré par GBA Editor — ne pas éditer */",
@@ -37,16 +30,17 @@ def generate_globals_h(names: list[str]) -> str:
         "#define GLOBALS_H",
         "",
     ]
-    if names:
-        for name in names:
-            lines.append(f"extern int g_{name};")
+    if globals_:
+        for g in globals_:
+            c_type = _C_TYPES.get(g.type, "int")
+            lines.append(f"extern {c_type} g_{g.name};")
     else:
-        lines.append("/* aucune variable globale dans ce projet */")
+        lines.append("/* aucune variable globale déclarée dans ce projet */")
     lines += ["", "#endif /* GLOBALS_H */", ""]
     return "\n".join(lines)
 
 
-def generate_globals_c(names: list[str]) -> str:
+def generate_globals_c(globals_) -> str:
     lines = [
         "/* globals.c — définitions des variables globales partagées */",
         "/* Généré par GBA Editor — ne pas éditer */",
@@ -54,21 +48,21 @@ def generate_globals_c(names: list[str]) -> str:
         '#include "globals.h"',
         "",
     ]
-    if names:
-        for name in names:
-            lines.append(f"int g_{name} = 0;")
+    if globals_:
+        for g in globals_:
+            c_type = _C_TYPES.get(g.type, "int")
+            lines.append(f"{c_type} g_{g.name} = {int(g.default)};")
     else:
         lines.append("/* aucune variable globale */")
     lines.append("")
     return "\n".join(lines)
 
 
-def write_globals(src_dir: Path, scripts: list[LuaScript]) -> list[str]:
+def write_globals(src_dir: Path, globals_) -> list[str]:
     """
-    Collecte les globals, écrit globals.h et globals.c dans src_dir.
-    Retourne la liste des noms globaux (utile pour CodegenContext).
+    Écrit globals.h et globals.c dans src_dir depuis la liste de GlobalVar.
+    Retourne la liste des noms (utile pour CodegenContext).
     """
-    names = collect_global_names(scripts)
-    (src_dir / "globals.h").write_text(generate_globals_h(names), encoding="utf-8")
-    (src_dir / "globals.c").write_text(generate_globals_c(names), encoding="utf-8")
-    return names
+    (src_dir / "globals.h").write_text(generate_globals_h(globals_), encoding="utf-8")
+    (src_dir / "globals.c").write_text(generate_globals_c(globals_), encoding="utf-8")
+    return [g.name for g in globals_]

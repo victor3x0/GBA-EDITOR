@@ -192,36 +192,74 @@ class ProjectSettings:
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Tileset — alias rétrocompat, fusionné dans Background
+#  GlobalVar — variable globale déclarée explicitement
 # ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class GlobalVar:
+    """Variable globale déclarée explicitement dans le projet."""
+    name:    str  = "var"
+    type:    str  = "int"   # "int" | "bool"
+    default: int  = 0
+    desc:    str  = ""      # description optionnelle
+
+
+# ──────────────────────────────────────────────────────────────────
+#  BackgroundLayer / BackgroundAsset
+#  BackgroundImage = simple PNG dans assets/backgrounds/ (pas de JSON)
+#  BackgroundAsset = asset moteur dans project/backgrounds/{name}.json
+# ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class BackgroundLayer:
+    """Une couche d'un BackgroundAsset : image + slot GBA + vitesse de défilement."""
+    image:        str   = ""   # nom du fichier PNG dans assets/backgrounds/ (ex: "Sky.png")
+    bg_slot:      int   = 0    # slot hardware GBA (0-3)
+    scroll_speed: float = 1.0  # vitesse relative (1.0 = défilement normal)
+
+
+@dataclass
+class BackgroundAsset(Resource):
+    """
+    Asset background moteur — stocké dans project/backgrounds/{name}.json.
+    Regroupe 1-4 BackgroundLayers (parallax multi-couche possible).
+    """
+    name:   str  = "background"
+    layers: list = field(default_factory=list)   # list[BackgroundLayer]
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "layers": [
+                {"image": L.image, "bg_slot": L.bg_slot, "scroll_speed": L.scroll_speed}
+                for L in self.layers
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BackgroundAsset":
+        layers = [
+            BackgroundLayer(
+                image        = L.get("image", ""),
+                bg_slot      = L.get("bg_slot", i),
+                scroll_speed = L.get("scroll_speed", 1.0),
+            )
+            for i, L in enumerate(d.get("layers", []))
+        ]
+        return cls(name=d.get("name", "background"), layers=layers)
+
+
+# Stubs rétrocompat (importés par d'anciens modules)
+@dataclass
+class Background(Resource):
+    name: str = "background"
+    asset: Optional[str] = None
+    scroll_speed: float = 1.0
 
 @dataclass
 class Tileset(Resource):
-    """Alias rétrocompat : un Background EST son propre tileset."""
     name: str = "tileset"
     asset: Optional[str] = None
-
-
-# ──────────────────────────────────────────────────────────────────
-#  Background — PNG + config BG layer (sidecar dans assets/backgrounds/)
-# ──────────────────────────────────────────────────────────────────
-
-@dataclass
-class Background(Resource):
-    """
-    Sidecar d'un PNG background.
-    asset pointe vers le PNG (chemin relatif depuis project root).
-    Stocké dans assets/backgrounds/{name}.json
-    """
-    name: str = "background"
-    asset: Optional[str] = None        # chemin relatif depuis project root
-    tileset_name: Optional[str] = None # rétrocompat — ignoré si asset présent
-    scroll_speed: float = 1.0
-
-    @property
-    def resolved_asset(self) -> Optional[str]:
-        """Retourne asset en priorité, ou cherche via tileset_name pour rétrocompat."""
-        return self.asset or None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -668,6 +706,7 @@ def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
 
 # ──────────────────────────────────────────────────────────────────
 
+# Stub rétrocompat
 @dataclass
 class SceneLayer:
     bg: int = 0
@@ -682,12 +721,7 @@ class SceneLayer:
 @dataclass
 class Scene(Resource):
     name: str = "Scene"
-    bg_layers: list = field(default_factory=lambda: [
-        SceneLayer(bg=0, background_name="", scroll_speed=4.0),
-        SceneLayer(bg=1, background_name="", scroll_speed=2.0),
-        SceneLayer(bg=2, background_name="", scroll_speed=1.0),
-        SceneLayer(bg=3, background_name="", scroll_speed=0.5),
-    ])
+    background_asset: str = ""  # nom du BackgroundAsset (project/backgrounds/)
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
     cam_x: int = 0
     cam_y: int = 0
@@ -700,9 +734,6 @@ class Scene(Resource):
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
 
-    def active_layers(self) -> list:
-        return [L for L in self.bg_layers if L.background_name]
-
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
         if not self.collision_map:
@@ -711,10 +742,7 @@ class Scene(Resource):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "bg_layers": [
-                {"bg": L.bg, "background_name": L.background_name, "scroll_speed": L.scroll_speed}
-                for L in self.bg_layers
-            ],
+            "background_asset": self.background_asset,
             "actors": [a.to_dict() for a in self.actors],
             "cam_x": self.cam_x,
             "cam_y": self.cam_y,
@@ -732,17 +760,16 @@ class Scene(Resource):
         """
         legacy_actors : dict nom→Actor chargé depuis project/actors/ (anciens projets).
         Si présent, les entrées `instances[actor_name]` sont converties en Actor inline.
+        Migration : si le JSON a encore 'bg_layers' (ancien format), on en déduit background_asset.
         """
-        layers = [
-            SceneLayer(
-                bg              = L.get("bg", i),
-                background_name = L.get("background_name", ""),
-                scroll_speed    = L.get("scroll_speed", 1.0),
-            )
-            for i, L in enumerate(d.get("bg_layers", [{}, {}, {}, {}]))
-        ]
-        while len(layers) < 4:
-            layers.append(SceneLayer(bg=len(layers)))
+        # Migration ancien format : bg_layers → background_asset
+        background_asset = d.get("background_asset", "")
+        if not background_asset and "bg_layers" in d:
+            for L in d["bg_layers"]:
+                name = L.get("background_name", "")
+                if name:
+                    background_asset = name
+                    break
 
         # Nouveau format : acteurs inline
         if "actors" in d:
@@ -769,7 +796,7 @@ class Scene(Resource):
 
         scene = cls(
             name=d.get("name", "Scene"),
-            bg_layers=layers,
+            background_asset=background_asset,
             actors=actors,
             cam_x=d.get("cam_x", 0),
             cam_y=d.get("cam_y", 0),
@@ -799,15 +826,16 @@ class Project:
         self.root = root.resolve()
         self.settings = ProjectSettings(name=root.name)
 
-        self.backgrounds: ResourceManager[Background]  = ResourceManager(self.backgrounds_dir, Background)
-        # tilesets est un alias sur backgrounds (Tileset fusionné dans Background)
-        self.tilesets = self.backgrounds
-        self.sprites:     ResourceManager[SpriteAsset] = ResourceManager(self.sprites_dir, SpriteAsset)
+        self.backgrounds: ResourceManager[BackgroundAsset] = ResourceManager(self.backgrounds_dir, BackgroundAsset)
+        self.sprites:     ResourceManager[SpriteAsset]     = ResourceManager(self.sprites_dir, SpriteAsset)
         self.prefabs:     ResourceManager[Prefab]      = ResourceManager(self.prefab_dir, Prefab)
         self.scenes:      ResourceManager[Scene]       = ResourceManager(self.scenes_dir, Scene)
         self.sfx:         ResourceManager[Sfx]         = ResourceManager(self.sfx_dir, Sfx)
         self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
+
+        # Variables globales déclarées explicitement dans le projet
+        self.globals:     list[GlobalVar] = []
 
         # Scène active (index dans self.scenes)
         self._active_scene_idx: int = 0
@@ -838,10 +866,16 @@ class Project:
 
     @property
     def tilesets_dir(self) -> Path:
-        return self.assets_dir / "backgrounds"  # fusionné dans backgrounds
+        return self.assets_dir / "backgrounds"
 
     @property
     def backgrounds_dir(self) -> Path:
+        """Dossier des BackgroundAssets (JSON moteur)."""
+        return self.project_dir / "backgrounds"
+
+    @property
+    def background_images_dir(self) -> Path:
+        """Dossier des images brutes PNG background."""
         return self.assets_dir / "backgrounds"
 
     @property
@@ -973,26 +1007,23 @@ class Project:
             self.sprites.delete(sprite)
 
     def sync_background_png(self, png_path: Path):
-        """Crée un sidecar Background pour un PNG déposé dans assets/backgrounds/."""
+        """
+        Crée automatiquement un BackgroundAsset quand un PNG apparaît dans assets/backgrounds/.
+        Si un BackgroundAsset du même nom existe déjà, on ne le modifie pas.
+        """
         name = png_path.stem
-        existing = self.backgrounds.get(name)
-        if existing is None:
-            bg = Background(name=name, asset=self.asset_rel(png_path))
-            self.backgrounds.append(bg)
-        else:
-            if not existing.asset:
-                existing.asset = self.asset_rel(png_path)
-        sidecar = png_path.with_suffix(".json")
-        if not sidecar.exists():
-            self.backgrounds.save(self.backgrounds.get(name))
+        if self.backgrounds.get(name) is None:
+            ba = BackgroundAsset(
+                name=name,
+                layers=[BackgroundLayer(image=png_path.name, bg_slot=0, scroll_speed=1.0)],
+            )
+            self.backgrounds.append(ba)
+            self.backgrounds.save(ba)
 
     # ── Helpers de lookup ────────────────────────────────────────
 
-    def get_background(self, name: str) -> Optional[Background]:
+    def get_background(self, name: str) -> Optional[BackgroundAsset]:
         return self.backgrounds.get(name)
-
-    def get_tileset(self, name: str) -> Optional[Tileset]:
-        return self.tilesets.get(name)
 
     def get_sprite(self, name: str) -> Optional[SpriteAsset]:
         return self.sprites.get(name)
@@ -1028,6 +1059,10 @@ class Project:
             "start_scene": self.settings.start_scene,
             "author":      self.settings.author,
             "version":     self.settings.version,
+            "globals":     [
+                {"name": g.name, "type": g.type, "default": g.default, "desc": g.desc}
+                for g in self.globals
+            ],
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -1039,6 +1074,15 @@ class Project:
         self.settings.start_scene = d.get("start_scene", "")
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
+        self.globals = [
+            GlobalVar(
+                name    = g.get("name", "var"),
+                type    = g.get("type", "int"),
+                default = g.get("default", 0),
+                desc    = g.get("desc", ""),
+            )
+            for g in d.get("globals", [])
+        ]
 
     # ── I/O scenes (restaure aussi la scène active) ────────────────
 
@@ -1091,19 +1135,15 @@ class Project:
     # ResourceManager.rename() seul ne suffit pas : il faut aussi mettre à
     # jour tout ce qui référence l'ancien nom ailleurs dans le projet.
 
-    def rename_background(self, bg: Background, new_name: str):
+    def rename_background(self, bg: BackgroundAsset, new_name: str):
         new_name = new_name.strip()
         if not new_name or new_name == bg.name:
             return
         old_name = bg.name
         self.backgrounds.rename(bg, new_name)
         for scene in self.scenes:
-            changed = False
-            for layer in scene.bg_layers:
-                if layer.background_name == old_name:
-                    layer.background_name = new_name
-                    changed = True
-            if changed:
+            if scene.background_asset == old_name:
+                scene.background_asset = new_name
                 self.save_scene(scene)
 
     def rename_scene(self, scene: Scene, new_name: str):
@@ -1118,19 +1158,18 @@ class Project:
 
     # ── Raccourcis de sauvegarde par objet (delegue au ResourceManager) ──
 
-    def save_scene(self, scene: Scene):          self.scenes.save(scene)
-    def save_prefab(self, prefab: Prefab):       self.prefabs.save(prefab)
-    def save_sprite(self, sprite: SpriteAsset): self.sprites.save(sprite)
-    def save_tileset(self, tileset: Tileset):  self.tilesets.save(tileset)
-    def save_background(self, bg: Background): self.backgrounds.save(bg)
-    def save_sfx(self, sfx: Sfx):              self.sfx.save(sfx)
-    def save_music(self, music: Music):        self.music.save(music)
+    def save_scene(self, scene: Scene):                    self.scenes.save(scene)
+    def save_prefab(self, prefab: Prefab):                 self.prefabs.save(prefab)
+    def save_sprite(self, sprite: SpriteAsset):           self.sprites.save(sprite)
+    def save_background(self, bg: BackgroundAsset):       self.backgrounds.save(bg)
+    def save_sfx(self, sfx: Sfx):                         self.sfx.save(sfx)
+    def save_music(self, music: Music):                   self.music.save(music)
+    def save_tileset(self, tileset):                      pass  # stub rétrocompat
 
     # ── Sauvegarde / chargement global ────────────────────────────
 
     def save(self):
         self.save_settings()
-        self.tilesets.save_all()
         self.sprites.save_all()
         self.sfx.save_all()
         self.music.save_all()
@@ -1148,21 +1187,11 @@ class Project:
             if migrated != text:
                 f.write_text(migrated, encoding="utf-8")
 
-        # backgrounds : ajouter le champ asset si absent
-        for f in self.backgrounds_dir.glob("*.json"):
-            try:
-                d = json.loads(f.read_text(encoding="utf-8"))
-                if "asset" not in d:
-                    png = f.with_suffix(".png")
-                    if png.exists():
-                        d["asset"] = self.asset_rel(png)
-                        _atomic_write(f, json.dumps(d, indent=2, ensure_ascii=False))
-            except Exception:
-                pass
+        pass
 
     def load(self):
         # S'assurer que tous les sous-dossiers existent
-        for sub in ("project/scenes", "project/prefab",
+        for sub in ("project/scenes", "project/prefab", "project/backgrounds",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1171,7 +1200,6 @@ class Project:
 
         self._migrate_on_load()
         self.load_settings()
-        self.tilesets.load()
         self.sprites.load()
         self.sfx.load()
         self.music.load()

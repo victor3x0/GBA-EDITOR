@@ -1501,15 +1501,15 @@ class SceneEditor(QWidget):
 
         # Calculer la taille du canvas à partir des BG PNG réels
         max_w, max_h = GBA_W, GBA_H
-        for i in range(4):
-            bg_name = scene.bg_layers[i].background_name if scene else ""
-            bg = project.get_background(bg_name) if bg_name else None
-            ap = project.asset_abs(bg.asset) if bg and bg.asset else None
-            if ap and ap.exists():
-                px = QPixmap(str(ap))
-                if not px.isNull():
-                    max_w = max(max_w, px.width())
-                    max_h = max(max_h, px.height())
+        if scene and scene.background_asset:
+            ba = project.get_background(scene.background_asset)
+            for layer in (ba.layers if ba else []):
+                ap = project.background_images_dir / layer.image
+                if ap.exists():
+                    px = QPixmap(str(ap))
+                    if not px.isNull():
+                        max_w = max(max_w, px.width())
+                        max_h = max(max_h, px.height())
 
         # Clamper au maximum hardware GBA
         self._canvas_w = min(max_w, MAX_CANVAS_W)
@@ -1528,13 +1528,15 @@ class SceneEditor(QWidget):
         self._gba_scene.setup_camera(cam_x, cam_y)
 
         # BG layers (sans rescale — taille native)
+        shown = set()
+        if scene and scene.background_asset:
+            ba = project.get_background(scene.background_asset)
+            for layer in (ba.layers if ba else []):
+                ap = project.background_images_dir / layer.image
+                self._gba_scene.set_bg(layer.bg_slot, QPixmap(str(ap)) if ap.exists() else None)
+                shown.add(layer.bg_slot)
         for i in range(4):
-            bg_name = scene.bg_layers[i].background_name if scene else ""
-            bg = project.get_background(bg_name) if bg_name else None
-            ap = project.asset_abs(bg.asset) if bg and bg.asset else None
-            if ap and ap.exists():
-                self._gba_scene.set_bg(i, QPixmap(str(ap)))
-            else:
+            if i not in shown:
                 self._gba_scene.set_bg(i, None)
 
         self._reload_sprites()
@@ -1665,21 +1667,21 @@ class SceneEditor(QWidget):
         y = max(0, min(int(pos.y()), self._canvas_h))
         get_dispatcher().instantiate_prefab(prefab_name, x, y)
 
-    def refresh_bg(self, bg_index: int):
+    def refresh_bg(self, bg_index: int = 0):
+        """Recharge tous les BG depuis le BackgroundAsset actif de la scène."""
         if not self._project or not self._project.active_scene:
             return
         scene = self._project.active_scene
-        bg_name = (
-            scene.bg_layers[bg_index].background_name
-            if bg_index < len(scene.bg_layers)
-            else ""
-        )
-        bg = self._project.get_background(bg_name) if bg_name else None
-        ap = self._project.asset_abs(bg.asset) if bg and bg.asset else None
-        if ap and ap.exists():
-            self._gba_scene.set_bg(bg_index, QPixmap(str(ap)))
-        else:
-            self._gba_scene.set_bg(bg_index, None)
+        shown = set()
+        if scene.background_asset:
+            ba = self._project.get_background(scene.background_asset)
+            for layer in (ba.layers if ba else []):
+                ap = self._project.background_images_dir / layer.image
+                self._gba_scene.set_bg(layer.bg_slot, QPixmap(str(ap)) if ap.exists() else None)
+                shown.add(layer.bg_slot)
+        for i in range(4):
+            if i not in shown:
+                self._gba_scene.set_bg(i, None)
 
     def update_actor_position(self, actor: Actor):
         item = self._find_item(actor)

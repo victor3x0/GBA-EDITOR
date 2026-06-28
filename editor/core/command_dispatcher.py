@@ -26,7 +26,7 @@ from typing import Optional, TYPE_CHECKING
 import copy
 
 from core.events import EventEmitter
-from core.project import Actor, Scene, Prefab, Background, Tileset
+from core.project import Actor, Scene, Prefab, BackgroundAsset, BackgroundLayer
 from core.history import get_history, AddActorCmd, RemoveActorCmd
 from core.selection_bus import get_bus
 
@@ -151,41 +151,28 @@ class CommandDispatcher(EventEmitter):
         self._emit("status_message",f"Prefab créé : {name}")
         return prefab
 
-    # ── BG slots ──────────────────────────────────────────────────
+    # ── Background asset ──────────────────────────────────────────
 
-    def assign_bg_slot(self, slot: int, path_str: str):
-        """Assigne (ou vide) un slot BG de la scène active."""
-        if not self._project or not self._project.active_scene or slot > 3:
+    def assign_background_asset(self, name: str):
+        """Assigne (ou vide) le BackgroundAsset de la scène active."""
+        if not self._project or not self._project.active_scene:
             return
         scene = self._project.active_scene
-
-        if path_str:
-            ap = Path(path_str)
-            dst = self._project.import_asset(ap, "backgrounds")
-            bg_name = dst.stem
-
-            tileset = self._project.get_tileset(bg_name)
-            if not tileset:
-                tileset = Tileset(name=bg_name, asset=self._project.asset_rel(dst))
-                self._project.tilesets.append(tileset)
-                with self._watcher.suspended():
-                    self._project.save_tileset(tileset)
-
-            bg = self._project.get_background(bg_name)
-            if not bg:
-                bg = Background(name=bg_name, tileset_name=bg_name)
-                self._project.backgrounds.append(bg)
-                with self._watcher.suspended():
-                    self._project.save_background(bg)
-
-            scene.bg_layers[slot].background_name = bg_name
-            self._emit("status_message",f"BG{slot} : {bg_name}")
-        else:
-            scene.bg_layers[slot].background_name = ""
-
+        scene.background_asset = name
         self._save_scene()
-        self._emit("bg_slot_changed", slot)
+        self._emit("bg_slot_changed", 0)
         self._emit("actors_list_changed")
+
+    def import_background_png(self, path_str: str):
+        """Importe un PNG dans assets/backgrounds/ et crée le BackgroundAsset associé."""
+        if not self._project or not path_str:
+            return
+        ap = Path(path_str)
+        dst = self._project.import_asset(ap, "backgrounds")
+        with self._watcher.suspended():
+            self._project.sync_background_png(dst)
+        self._emit("status_message", f"Background importé : {dst.stem}")
+        self._emit("bg_slot_changed", 0)
 
     # ── Prefab avec propagation ───────────────────────────────────
 

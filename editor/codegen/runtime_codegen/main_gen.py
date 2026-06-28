@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.project import (
-    Project, Scene, SceneLayer, Background,
+    Project, Scene, BackgroundLayer,
     Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent,
 )
 from codegen.asset_pipeline import count_frames
@@ -61,12 +61,13 @@ def _actor_script(actor: Actor) -> Optional[str]:
     return comp.script if comp and comp.active else None
 
 
-def _bg_info(p: Project,
-             bg_pairs: list[tuple[SceneLayer, Background]]) -> list[dict]:
+def _bg_info(p: Project, bg_pairs: list[BackgroundLayer]) -> list[dict]:
     sbb_map = {0: 8, 1: 12, 2: 20, 3: 28}
     result  = []
-    for layer, bg in bg_pairs:
-        ap = p.asset_abs(bg.asset)
+    for layer in bg_pairs:
+        if not layer.image:
+            continue
+        ap = p.background_images_dir / layer.image
         try:
             from PIL import Image
             with Image.open(ap) as img:
@@ -76,9 +77,10 @@ def _bg_info(p: Project,
         tw = min(max(math.ceil(w / 8), 1), 64)
         th = min(max(math.ceil(h / 8), 1), 64)
         ms = (1 if tw > 32 else 0) | (2 if th > 32 else 0)
+        stem = ap.stem
         result.append({
-            "bg": layer.bg, "stem": ap.stem, "sym": _sym(ap.stem),
-            "tw": tw, "th": th, "sbb": sbb_map.get(layer.bg, 8),
+            "bg": layer.bg_slot, "stem": stem, "sym": _sym(stem),
+            "tw": tw, "th": th, "sbb": sbb_map.get(layer.bg_slot, 8),
             "map_size": ms, "speed": int(layer.scroll_speed * 256),
         })
     return result
@@ -174,7 +176,7 @@ def _section_cmap(scene: Scene) -> list[str]:
         "}",
         # resolve_actor_tiles — résolution Y→X
         "typedef void (*TileCollideCb)(Actor*,int,int);",
-        "static void resolve_actor_tiles(Actor*a, TileCollideCb cb){",
+        "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
         "    for(int i=0;i<a->box_count;i++){",
         "        CollisionBox*b=&a->boxes[i];",
         "        if(!b->solid) continue;",
@@ -219,23 +221,37 @@ def _section_cmap(scene: Scene) -> list[str]:
     return L
 
 
-def _section_spawn(pool_info: list[dict]) -> list[str]:
+def _section_spawn(pool_info: list[dict],
+                   actor_defined_events: dict[str, set[str]] | None = None) -> list[str]:
     if not pool_info:
         return []
+
+    def _def(sym, ev):
+        if actor_defined_events is None:
+            return True
+        return ev in actor_defined_events.get(sym, set())
+
     L = ["/* ── Spawn helpers (prefabs poolés) ────────────────────── */"]
     for pi in pool_info:
         s, start, size, pf = pi["sym"], pi["start"], pi["size"], pi["prefab"]
         pal = getattr(pf, "pal_bank", 0)
         boxes = [c for c in pf.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
+
+        # pool_init est toujours généré par le transpileur, extern inconditionnel
+        L.append(f"extern void {s}_pool_init(Actor* self);")
+        for ev, sig in [
+            ("on_start",           f"extern void {s}_on_start(Actor* self);"),
+            ("on_update",          f"extern void {s}_on_update(Actor* self);"),
+            ("on_late_update",     f"extern void {s}_on_late_update(Actor* self);"),
+            ("on_collide",         f"extern void {s}_on_collide(Actor* self, Actor* other, u8 my_box, u8 other_box);"),
+            ("on_collision_enter", f"extern void {s}_on_collision_enter(Actor* self, Actor* other, u8 my_box, u8 other_box);"),
+            ("on_collision_exit",  f"extern void {s}_on_collision_exit(Actor* self, Actor* other, u8 my_box, u8 other_box);"),
+            ("on_tile_collide",    f"extern void {s}_on_tile_collide(Actor* self, int normal_x, int normal_y);"),
+        ]:
+            if _def(s, ev):
+                L.append(sig)
+
         L += [
-            f"extern void {s}_pool_init(Actor* self);",
-            f"extern void {s}_on_start(Actor* self);",
-            f"extern void {s}_on_update(Actor* self);",
-            f"extern void {s}_on_late_update(Actor* self);",
-            f"extern void {s}_on_collide(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-            f"extern void {s}_on_collision_enter(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-            f"extern void {s}_on_collision_exit(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-            f"extern void {s}_on_tile_collide(Actor* self, int normal_x, int normal_y);",
             f"int spawn_{s}(int x, int y) {{",
             f"    for(int _i={start}; _i<{start+size}; _i++) {{",
             f"        if(!g_actors[_i].active) {{",
@@ -253,9 +269,10 @@ def _section_spawn(pool_info: list[dict]) -> list[str]:
                 f"            g_actors[_i].boxes[{bi}].w=(u8){cb.w};  g_actors[_i].boxes[{bi}].h=(u8){cb.h};",
                 f"            g_actors[_i].boxes[{bi}].solid={1 if cb.solid else 0}; g_actors[_i].boxes[{bi}].tag={tag_s};",
             ]
+        L.append(f"            {s}_pool_init(&g_actors[_i]);")
+        if _def(s, "on_start"):
+            L.append(f"            {s}_on_start(&g_actors[_i]);")
         L += [
-            f"            {s}_pool_init(&g_actors[_i]);",
-            f"            {s}_on_start(&g_actors[_i]);",
             f"            return _i;",
             f"        }}",
             f"    }}",
@@ -301,7 +318,7 @@ def _gen_tile_helpers() -> list[str]:
         "    return (int)g_active_cmap[ty*g_cmap_w+tx];",
         "}",
         "typedef void (*TileCollideCb)(Actor*,int,int);",
-        "static void resolve_actor_tiles(Actor*a, TileCollideCb cb){",
+        "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
         "    for(int i=0;i<a->box_count;i++){",
         "        CollisionBox*b=&a->boxes[i];",
         "        if(!b->solid) continue;",
@@ -357,6 +374,7 @@ def _gen_scene_init(
     dispcnt: int,
     has_sound: bool,
     sound_assets: dict | None,
+    actor_defined_events: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
@@ -440,10 +458,17 @@ def _gen_scene_init(
         for slot in range(p2["start"], p2["start"] + p2["size"]):
             L.append(f"    g_actors[{slot}].tag = TAG_{p2['sym'].upper()};")
             L.append(f"    g_actors[{slot}].active = 0;")
-    # on_start actors
+    # on_start actors (seulement si défini dans le script Lua)
+    def _def_init(s, ev):
+        if actor_defined_events is None:
+            return True
+        return ev in actor_defined_events.get(s, set())
+
     for j in sorted(lua_idx):
         actor, _ = scene_actors[j - actor_offset]
-        L.append(f"    {_sym(actor.name)}_on_start(&g_actors[{j}]);")
+        s = _sym(actor.name)
+        if _def_init(s, "on_start"):
+            L.append(f"    {s}_on_start(&g_actors[{j}]);")
     # on_start scene
     if getattr(scene, "script", ""):
         L.append(f"    {sym}_scene_on_start();")
@@ -463,10 +488,16 @@ def _gen_scene_tick(
     sprite_offsets: dict,
     sprite_nframes: dict,
     col_pairs: list,
+    actor_defined_events: dict[str, set[str]] | None = None,
 ) -> list[str]:
     """Génère void scene_tick_{sym}(void) { ... }"""
     sym = _sym(scene.name)
     L = [f"static void scene_tick_{sym}(void) {{"]
+
+    def _def(s, ev):
+        if actor_defined_events is None:
+            return True
+        return ev in actor_defined_events.get(s, set())
 
     # on_update scène
     if getattr(scene, "script", ""):
@@ -476,23 +507,28 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            L.append(f"    if(g_actors[{j}].active) {_sym(actor.name)}_on_update(&g_actors[{j}]);")
+            s = _sym(actor.name)
+            if _def(s, "on_update"):
+                L.append(f"    if(g_actors[{j}].active) {s}_on_update(&g_actors[{j}]);")
 
     # on_update prefabs poolés
     for p2 in pi:
-        L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
-        L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_update(&g_actors[_pi]);")
+        if _def(p2["sym"], "on_update"):
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_update(&g_actors[_pi]);")
 
-    # Tile resolution actors scène
+    # Tile resolution actors scène (seulement si on_tile_collide défini)
     for j in sorted(lua_idx):
         actor, _ = scene_actors[j - actor_offset]
-        cb = f"{_sym(actor.name)}_on_tile_collide"
-        L.append(f"    if(g_actors[{j}].active) resolve_actor_tiles(&g_actors[{j}],{cb});")
+        s = _sym(actor.name)
+        if _def(s, "on_tile_collide"):
+            L.append(f"    if(g_actors[{j}].active) resolve_actor_tiles(&g_actors[{j}],{s}_on_tile_collide);")
 
     # Tile resolution prefabs
     for p2 in pi:
-        L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
-        L.append(f"        if(g_actors[_pi].active) resolve_actor_tiles(&g_actors[_pi], {p2['sym']}_on_tile_collide);")
+        if _def(p2["sym"], "on_tile_collide"):
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            L.append(f"        if(g_actors[_pi].active) resolve_actor_tiles(&g_actors[_pi], {p2['sym']}_on_tile_collide);")
 
     # Pool→scene collisions
     col_scene = [
@@ -511,16 +547,23 @@ def _gen_scene_tick(
                 f"            if(!g_actors[_pi].active) continue;",
                 f"            int _sl=_pi-{start};",
             ]
+            has_col = (_def(s, "on_collision_enter") or _def(s, "on_collide")
+                       or _def(s, "on_collision_exit"))
             for ci, (sidx, sactor) in enumerate(col_scene):
+                if not has_col:
+                    continue
                 L += [
                     f"            {{ u8 _bx=0,_bo=0;",
                     f"              u8 _c=(g_actors[{sidx}].active&&actors_overlap_boxes(&g_actors[_pi],&g_actors[{sidx}],&_bx,&_bo))?1:0;",
                     f"              u8 _p=_pcol_{s}[_sl][{ci}];",
-                    f"              if(_c&&!_p) {s}_on_collision_enter(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);",
-                    f"              if(_c&&_p)  {s}_on_collide(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);",
-                    f"              if(!_c&&_p) {s}_on_collision_exit(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);",
-                    f"              _pcol_{s}[_sl][{ci}]=_c; }}",
                 ]
+                if _def(s, "on_collision_enter"):
+                    L.append(f"              if(_c&&!_p) {s}_on_collision_enter(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                if _def(s, "on_collide"):
+                    L.append(f"              if(_c&&_p)  {s}_on_collide(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                if _def(s, "on_collision_exit"):
+                    L.append(f"              if(!_c&&_p) {s}_on_collision_exit(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                L.append(f"              _pcol_{s}[_sl][{ci}]=_c; }}")
             L += [f"        }}", f"    }}"]
 
     # AABB collisions scène
@@ -536,22 +579,26 @@ def _gen_scene_tick(
                 f"actors_overlap_boxes(&g_actors[{i}],&g_actors[{j}],&_bx_i,&_bx_j))?1:0;",
                 f"        if(_cur&&!_col_prev[{pair_idx}]){{",
             ]
-            if i_lua: L.append(f"            {si}_on_collision_enter(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
-            if j_lua: L.append(f"            {sj}_on_collision_enter(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
+            if i_lua and _def(si, "on_collision_enter"): L.append(f"            {si}_on_collision_enter(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
+            if j_lua and _def(sj, "on_collision_enter"): L.append(f"            {sj}_on_collision_enter(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
             L.append(f"        }}")
             L.append(f"        if(_cur&&_col_prev[{pair_idx}]){{")
-            if i_lua: L.append(f"            {si}_on_collide(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
-            if j_lua: L.append(f"            {sj}_on_collide(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
+            if i_lua and _def(si, "on_collide"): L.append(f"            {si}_on_collide(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
+            if j_lua and _def(sj, "on_collide"): L.append(f"            {sj}_on_collide(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
             L.append(f"        }}")
             L.append(f"        if(!_cur&&_col_prev[{pair_idx}]){{")
-            if i_lua: L.append(f"            {si}_on_collision_exit(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
-            if j_lua: L.append(f"            {sj}_on_collision_exit(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
+            if i_lua and _def(si, "on_collision_exit"): L.append(f"            {si}_on_collision_exit(&g_actors[{i}],&g_actors[{j}],_bx_i,_bx_j);")
+            if j_lua and _def(sj, "on_collision_exit"): L.append(f"            {sj}_on_collision_exit(&g_actors[{j}],&g_actors[{i}],_bx_j,_bx_i);")
             L += [f"        }}", f"        _col_prev[{pair_idx}]=_cur; }}"]
 
     # Boutons
     if lua_idx:
         for btn, ev in _BTN_MAP:
-            actors_b = [(j, _sym(scene_actors[j - actor_offset][0].name)) for j in sorted(lua_idx)]
+            actors_b = [
+                (j, _sym(scene_actors[j - actor_offset][0].name))
+                for j in sorted(lua_idx)
+                if _def(_sym(scene_actors[j - actor_offset][0].name), ev)
+            ]
             if actors_b:
                 L.append(f"    if(_g_keys_pressed&{btn}){{")
                 for j, s in actors_b:
@@ -562,12 +609,15 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            L.append(f"    if(g_actors[{j}].active) {_sym(actor.name)}_on_late_update(&g_actors[{j}]);")
+            s = _sym(actor.name)
+            if _def(s, "on_late_update"):
+                L.append(f"    if(g_actors[{j}].active) {s}_on_late_update(&g_actors[{j}]);")
 
     # on_late_update prefabs
     for p2 in pi:
-        L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
-        L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_late_update(&g_actors[_pi]);")
+        if _def(p2["sym"], "on_late_update"):
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_late_update(&g_actors[_pi]);")
 
     # on_late_update scène
     if getattr(scene, "script", ""):
@@ -674,6 +724,7 @@ def generate_main(
     prefab_actor_sprites: list,
     prefabs,
     emit,
+    actor_defined_events: dict[str, set[str]] | None = None,
 ) -> bool:
     """Génère main.c multi-scène et le copie dans p.src_dir/."""
     prefab_actor_sprites = prefab_actor_sprites or []
@@ -742,7 +793,13 @@ def generate_main(
         if sprite and sprite.asset:
             _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
 
-    # Externs actors + scènes
+    # Externs actors + scènes (filtrés sur les events réellement implémentés)
+    def _def(sym, ev):
+        """True si l'event est défini dans le script Lua de cet actor."""
+        if actor_defined_events is None:
+            return True
+        return ev in actor_defined_events.get(sym, set())
+
     for d in all_scene_data:
         sc = d["scene"]
         sc_sym = _sym(sc.name)
@@ -752,16 +809,18 @@ def generate_main(
             if script_path:
                 abs_sp = p.asset_abs(script_path)
                 if abs_sp and abs_sp.suffix.lower() == ".lua":
-                    L += [
-                        f"extern void {s}_on_start(Actor*);",
-                        f"extern void {s}_on_update(Actor*);",
-                        f"extern void {s}_on_late_update(Actor*);",
-                        f"extern void {s}_on_tile_collide(Actor*,int,int);",
-                    ]
+                    for ev in ("on_start", "on_update", "on_late_update", "on_tile_collide",
+                               "on_collision_enter", "on_collide", "on_collision_exit"):
+                        if _def(s, ev):
+                            if ev == "on_tile_collide":
+                                L.append(f"extern void {s}_{ev}(Actor*,int,int);")
+                            elif ev in ("on_collision_enter", "on_collide", "on_collision_exit"):
+                                L.append(f"extern void {s}_{ev}(Actor*,Actor*,u8,u8);")
+                            else:
+                                L.append(f"extern void {s}_{ev}(Actor*);")
                     for btn, ev in _BTN_MAP:
-                        L.append(f"extern void {s}_{ev}(Actor*);")
-                    for ce in ("on_collision_enter", "on_collide", "on_collision_exit"):
-                        L.append(f"extern void {s}_{ce}(Actor*,Actor*,u8,u8);")
+                        if _def(s, ev):
+                            L.append(f"extern void {s}_{ev}(Actor*);")
         if getattr(sc, "script", ""):
             L += [
                 f"extern void {sc_sym}_scene_on_start(void);",
@@ -806,7 +865,7 @@ def generate_main(
     ]
 
     # Spawn helpers
-    L += _section_spawn(pi)
+    L += _section_spawn(pi, actor_defined_events=actor_defined_events)
 
     # ── scene_init_X() par scène ──────────────────────────────────
     for i, d in enumerate(all_scene_data):
@@ -837,6 +896,7 @@ def generate_main(
         L += _gen_scene_init(
             p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
             sprite_offsets, dispcnt, has_sound, sound_assets,
+            actor_defined_events=actor_defined_events,
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────
@@ -864,6 +924,7 @@ def generate_main(
         L += _gen_scene_tick(
             p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
             sprite_offsets, sprite_nframes, col_pairs_d,
+            actor_defined_events=actor_defined_events,
         )
 
     # ── Dispatch table ────────────────────────────────────────────

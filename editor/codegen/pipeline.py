@@ -30,7 +30,7 @@ from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
-from core.project import (Project, Scene, SceneLayer, Background, Actor, SpriteAsset,
+from core.project import (Project, Scene, BackgroundLayer, Actor, SpriteAsset,
                      SpriteComponent, CollisionBoxComponent, ScriptComponent)
 from core.validator import validate_project
 
@@ -109,12 +109,12 @@ class BuildWorker(EventEmitter, threading.Thread):
             all_actor_sprites_flat: list = []
 
             for scene in all_scenes:
-                # BG layers
-                bg_pairs: list[tuple[SceneLayer, Background]] = []
-                for layer in scene.active_layers():
-                    bg = p.get_background(layer.background_name)
-                    if bg and bg.asset:
-                        bg_pairs.append((layer, bg))
+                # BG layers depuis le BackgroundAsset de la scène
+                bg_pairs = []
+                if scene.background_asset:
+                    ba = p.get_background(scene.background_asset)
+                    if ba:
+                        bg_pairs = ba.layers[:]
 
                 # Actors
                 scene_actors: list[tuple[Actor, Optional[SpriteAsset]]] = []
@@ -175,25 +175,29 @@ class BuildWorker(EventEmitter, threading.Thread):
                     total_actors=sum(len(d["scene_actors"]) for d in all_scene_data),
                 )
 
-            # Pré-collecte de tous les globals (toutes scènes + prefabs)
-            precomputed_globals = None
+            # Collecte des events définis + écriture globals.h/c depuis project.globals
+            actor_defined_events: dict[str, set[str]] = {}
+            global_names: list[str] = []
             if ok:
-                precomputed_globals = self._precompute_globals(p, all_scene_data, scene_names)
+                global_names = self._write_project_globals(p, all_scene_data, actor_defined_events)
 
-            # Transpilation Lua → C pour chaque scène
+            # Transpilation Lua → C pour chaque scène (prefabs compilés une seule fois)
+            compiled_prefabs: set[str] = set()
             if ok:
                 for d in all_scene_data:
                     if not ok:
                         break
                     ok = self._step_transpile_scripts(
                         p, d["scene"], d["scene_actors"], scene_names=scene_names,
-                        precomputed_global_names=precomputed_globals,
+                        precomputed_global_names=global_names,
+                        compiled_prefabs=compiled_prefabs,
                     )
 
             if ok:
                 ok = self._step_gen_main(
                     p, all_scene_data, sound_assets,
                     prefab_actor_sprites=prefab_actor_sprites,
+                    actor_defined_events=actor_defined_events,
                 )
             if ok:
                 ok = self._step_make(p)
@@ -298,33 +302,44 @@ class BuildWorker(EventEmitter, threading.Thread):
         self._emit('log_line', '[gen] actor_types.h + actor_api.h')
         return True
 
-    # ── Pré-collecte des globals (toutes scènes réunies) ─────────────
+    # ── Globals projet + collecte des events définis ──────────────────
 
-    def _precompute_globals(self, p, all_scene_data, scene_names):
-        """Parse tous les scripts Lua du projet et génère globals.h/c une seule fois."""
+    def _write_project_globals(self, p, all_scene_data,
+                                actor_defined_events: dict | None = None) -> list[str]:
+        """
+        Génère globals.h/c depuis project.globals (source de vérité explicite).
+        Parse aussi les scripts pour collecter actor_defined_events (events implémentés).
+        """
         from scripting.parser import parse as _parse, LuaParseError
         from scripting.globals import write_globals as _write_globals
+        from codegen.build_utils import sym as _sym
 
-        all_asts = []
+        # Écriture globals.h/c depuis la liste déclarée dans le projet
+        names = _write_globals(p.src_dir, p.globals)
+        if names:
+            self._emit("log_line", f"[lua] globals: {', '.join('g_' + n for n in names)}")
+
+        # Parse léger pour collecter les events définis par chaque acteur/prefab
+        if actor_defined_events is None:
+            return names
+
+        def _collect_events(sym, sp):
+            if sp and sp.exists() and sp.suffix.lower() == ".lua":
+                try:
+                    ast = _parse(sp.read_text(encoding="utf-8"))
+                    actor_defined_events[sym] = {fn.name for fn in ast.functions}
+                except LuaParseError:
+                    pass
+
         for d in all_scene_data:
             scene = d["scene"]
             for actor, _ in d["scene_actors"]:
                 comp = actor.get_component("script")
                 if comp and comp.active and comp.script:
-                    sp = p.asset_abs(comp.script)
-                    if sp and sp.exists() and sp.suffix.lower() == ".lua":
-                        try:
-                            all_asts.append(_parse(sp.read_text(encoding="utf-8")))
-                        except LuaParseError:
-                            pass
+                    _collect_events(_sym(actor.name), p.asset_abs(comp.script))
             scene_script = getattr(scene, "script", "")
             if scene_script:
-                sp = p.asset_abs(scene_script)
-                if sp and sp.exists() and sp.suffix.lower() == ".lua":
-                    try:
-                        all_asts.append(_parse(sp.read_text(encoding="utf-8")))
-                    except LuaParseError:
-                        pass
+                _collect_events(_sym(scene.name) + "_scene", p.asset_abs(scene_script))
 
         for pf in self.project.prefabs:
             if getattr(pf, "max_instances", 0) <= 0:
@@ -332,35 +347,30 @@ class BuildWorker(EventEmitter, threading.Thread):
             from core.project import ScriptComponent
             sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
             if sc and sc.script:
-                sp = p.asset_abs(sc.script)
-                if sp and sp.exists() and sp.suffix.lower() == ".lua":
-                    try:
-                        all_asts.append(_parse(sp.read_text(encoding="utf-8")))
-                    except LuaParseError:
-                        pass
+                _collect_events(_sym(pf.name), p.asset_abs(sc.script))
 
-        names = _write_globals(p.src_dir, all_asts)
-        if names:
-            self._emit("log_line", f"[lua] globals: {', '.join('g_' + n for n in names)}")
         return names
 
     # ── Transpilation Lua → C ─────────────────────────────────────────
 
     def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None,
-                                 precomputed_global_names=None):
+                                 precomputed_global_names=None, compiled_prefabs=None):
         return transpile_all(
             p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
             precomputed_global_names=precomputed_global_names,
+            compiled_prefabs=compiled_prefabs,
         )
 
     # ── Génération de main.c ──────────────────────────────────────────
 
     def _step_gen_main(self, p, all_scene_data,
-                       sound_assets=None, prefab_actor_sprites=None):
+                       sound_assets=None, prefab_actor_sprites=None,
+                       actor_defined_events=None):
         return generate_main(
             p, all_scene_data, sound_assets,
             prefab_actor_sprites or [], self.project.prefabs, self._emit,
+            actor_defined_events=actor_defined_events,
         )
 
     # ── Étape 4 : make ────────────────────────────────────────────

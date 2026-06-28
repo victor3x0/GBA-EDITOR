@@ -1,0 +1,15 @@
+{
+  "name": "Background",
+  "layers": [
+    {
+      "image": "Background.png",
+      "bg_slot": 0,
+      "scroll_speed": 4.0
+    },
+    {
+      "image": "",
+      "bg_slot": 1,
+      "scroll_speed": 1.0
+    }
+  ]
+}

@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.project import (
-    Project, Scene, Actor, Background, Tileset, SpriteAsset,
+    Project, Scene, Actor, BackgroundAsset, SpriteAsset,
     COMPONENT_REGISTRY, component_type_name, MIME_SCRIPT,
 )
 from core.asset_manager import AssignSlot, BgLayerRow
@@ -1055,26 +1055,34 @@ class SceneInspector(QWidget):
             )
             return lbl
 
-        # ── Carte BG Layers ───────────────────────────────────────
+        # ── Carte Background Asset ────────────────────────────────
         bg_card, bg_inner = _card(C.ACCENT_BLU)
 
         bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
-        bg_hdr.addWidget(_card_title("BG LAYERS", C.ACCENT_BLU), 1)
+        bg_hdr.addWidget(_card_title("BACKGROUND", C.ACCENT_BLU), 1)
         self._btn_bg_add = W.btn_add("Ajouter un calque BG (max 4)")
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
         bg_hdr.addWidget(self._btn_bg_add)
         bg_inner.addLayout(bg_hdr)
 
-        self._bg_rows: list[BgLayerRow] = []
-        for i in range(4):
-            row = BgLayerRow(i)
-            row.asset_changed.connect(self._on_bg_slot)
-            row.speed_changed.connect(self._on_speed_changed)
-            row.bound_toggled.connect(self._on_bound_toggled)
-            row.layer_removed.connect(self._on_layer_removed)
-            row.setVisible(False)
-            bg_inner.addWidget(row)
-            self._bg_rows.append(row)
+        bg_row = QHBoxLayout(); bg_row.setSpacing(6)
+        lbl_bg = QLabel("Asset :")
+        lbl_bg.setFont(QFont(T.MONO, T.SM)); lbl_bg.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_bg.setFixedWidth(50)
+        self._combo_bg_asset = QComboBox()
+        self._combo_bg_asset.setFont(QFont(T.MONO, T.SM))
+        self._combo_bg_asset.setStyleSheet(QSS.combobox)
+        self._combo_bg_asset.currentIndexChanged.connect(self._on_bg_asset_changed)
+        bg_row.addWidget(lbl_bg)
+        bg_row.addWidget(self._combo_bg_asset, 1)
+        bg_inner.addLayout(bg_row)
+
+        # Rows dynamiques des BackgroundLayers
+        self._bg_layer_rows: list[BgLayerRow] = []
+        self._bg_layers_container = QVBoxLayout()
+        self._bg_layers_container.setContentsMargins(0, 2, 0, 0)
+        self._bg_layers_container.setSpacing(3)
+        bg_inner.addLayout(self._bg_layers_container)
 
         cl.addWidget(bg_card)
 
@@ -1162,69 +1170,149 @@ class SceneInspector(QWidget):
         self._combo_text_bg.setCurrentIndex(text_bg)
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
-        active_count = 0
-        text_bg = getattr(scene, "text_bg", -1)
-        for i, row in enumerate(self._bg_rows):
-            layer = scene.bg_layers[i] if i < len(scene.bg_layers) else None
-            if layer:
-                row.set_speed(layer.scroll_speed)
-            bg_name = layer.background_name if layer else ""
-            bg = project.get_background(bg_name) if bg_name else None
-            has_asset = False
-            if bg and bg.asset:
-                ap = project.asset_abs(bg.asset)
-                if ap and ap.exists():
-                    row.set_asset(str(ap))
-                    has_asset = True
-            if not has_asset:
-                row.clear_asset()
-            is_ui = (i == text_bg)
-            row.set_ui_layer(is_ui)
-            visible = has_asset or is_ui or i < active_count or i == 0
-            row.setVisible(visible)
-            if visible:
-                active_count = i + 1
-        collision_layer = getattr(scene, "collision_layer", 0)
-        for i, row in enumerate(self._bg_rows):
-            row.set_bound(i == collision_layer)
-        self._btn_bg_add.setEnabled(active_count < 4)
+        self._refresh_bg_asset_combo()
         self._blocking = False
+
+    _CREATE_SENTINEL = "__create__"
+
+    def _refresh_bg_asset_combo(self):
+        self._combo_bg_asset.blockSignals(True)
+        self._combo_bg_asset.clear()
+        self._combo_bg_asset.addItem("— aucun —", "")
+        if self._project:
+            for ba in self._project.backgrounds:
+                self._combo_bg_asset.addItem(ba.name, ba.name)
+        self._combo_bg_asset.insertSeparator(self._combo_bg_asset.count())
+        self._combo_bg_asset.addItem("+ Créer un background…", self._CREATE_SENTINEL)
+        current = getattr(self._scene, "background_asset", "") if self._scene else ""
+        idx = self._combo_bg_asset.findData(current)
+        self._combo_bg_asset.setCurrentIndex(max(0, idx))
+        self._combo_bg_asset.blockSignals(False)
+        self._rebuild_layer_rows()
+
+    def _on_bg_asset_changed(self):
+        if self._blocking or not self._scene: return
+        data = self._combo_bg_asset.currentData()
+        if data == self._CREATE_SENTINEL:
+            self._create_background_asset()
+            return
+        name = data or ""
+        self._scene.background_asset = name
+        self._rebuild_layer_rows()
+        self.changed.emit()
+
+    def _create_background_asset(self):
+        """Ouvre un dialogue de création de BackgroundAsset."""
+        if not self._project: return
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Nouveau background", "Nom du background :")
+        if not ok or not name.strip():
+            # Revenir à la sélection précédente
+            self._refresh_bg_asset_combo()
+            return
+        name = name.strip()
+        if self._project.get_background(name):
+            self._refresh_bg_asset_combo()
+            return
+        from core.project import BackgroundAsset
+        ba = BackgroundAsset(name=name, layers=[])
+        self._project.backgrounds.append(ba)
+        self._project.save_background(ba)
+        if self._scene:
+            self._scene.background_asset = name
+        self._refresh_bg_asset_combo()
+        self.changed.emit()
+
+    def _rebuild_layer_rows(self):
+        """Reconstruit les BgLayerRow depuis le BackgroundAsset sélectionné."""
+        for row in self._bg_layer_rows:
+            row.setParent(None)
+        self._bg_layer_rows.clear()
+
+        ba = None
+        if self._project and self._scene and self._scene.background_asset:
+            ba = self._project.get_background(self._scene.background_asset)
+
+        if not ba:
+            self._btn_bg_add.setEnabled(False)
+            return
+
+        for layer in ba.layers:
+            row = BgLayerRow(layer.bg_slot)
+            img_path = self._project.background_images_dir / layer.image if layer.image else None
+            if img_path and img_path.exists():
+                row.set_asset(str(img_path))
+            row.set_speed(layer.scroll_speed)
+            row.asset_changed.connect(lambda _, p, l=layer: self._on_layer_image(l, p))
+            row.speed_changed.connect(lambda _, v, l=layer: self._on_layer_speed(l, v))
+            row.layer_removed.connect(lambda _, l=layer: self._on_layer_remove(l))
+            row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
+            self._bg_layers_container.addWidget(row)
+            self._bg_layer_rows.append(row)
+
+        # Marquer le layer de collision
+        cl_idx = getattr(self._scene, "collision_layer", 0)
+        for row in self._bg_layer_rows:
+            row.set_bound(row.slot_index == cl_idx)
+
+        self._btn_bg_add.setEnabled(len(ba.layers) < 4)
+
+    def _on_layer_image(self, layer, path_str: str):
+        """Un PNG a été assigné (ou retiré) d'un layer."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        if path_str:
+            from pathlib import Path as _P
+            src = _P(path_str)
+            dst = self._project.import_asset(src, "backgrounds")
+            layer.image = dst.name
+        else:
+            layer.image = ""
+        self._project.save_background(ba)
+        self.changed.emit()
+
+    def _on_layer_speed(self, layer, value: float):
+        """La vitesse de défilement d'un layer a changé."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        layer.scroll_speed = value
+        self._project.save_background(ba)
+
+    def _on_layer_remove(self, layer):
+        """Retire un layer du BackgroundAsset."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        if layer in ba.layers:
+            ba.layers.remove(layer)
+            self._project.save_background(ba)
+        self._rebuild_layer_rows()
+        self.changed.emit()
+
+    def _add_bg_layer(self):
+        """Ajoute un nouveau layer vide au BackgroundAsset sélectionné."""
+        if not self._project or not self._scene or not self._scene.background_asset: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba or len(ba.layers) >= 4: return
+        from core.project import BackgroundLayer
+        used_slots = {L.bg_slot for L in ba.layers}
+        next_slot = next((i for i in range(4) if i not in used_slots), len(ba.layers))
+        ba.layers.append(BackgroundLayer(image="", bg_slot=next_slot, scroll_speed=1.0))
+        self._project.save_background(ba)
+        self._rebuild_layer_rows()
+        self.changed.emit()
 
     def _on_bound_toggled(self, idx: int):
         if self._blocking or not self._scene: return
         self._scene.collision_layer = idx
-        for i, row in enumerate(self._bg_rows):
-            row.set_bound(i == idx)
+        for row in self._bg_layer_rows:
+            row.set_bound(row.slot_index == idx)
         self.changed.emit()
 
-    def _on_layer_removed(self, idx: int):
-        if not self._scene: return
-        self._bg_rows[idx].setVisible(False)
-        self._bg_rows[idx].clear_asset()
-        from core.command_dispatcher import get_dispatcher
-        get_dispatcher().assign_bg_slot(idx, "")
-        self._btn_bg_add.setEnabled(True)
-        # Si ce layer était le layer de collision, réassigner au premier visible
-        if self._scene.collision_layer == idx:
-            for i, row in enumerate(self._bg_rows):
-                if row.isVisible():
-                    self._on_bound_toggled(i)
-                    break
-
-    def _add_bg_layer(self):
-        for row in self._bg_rows:
-            if not row.isVisible():
-                row.setVisible(True)
-                self._btn_bg_add.setEnabled(
-                    any(not r.isVisible() for r in self._bg_rows)
-                )
-                return
-
     def _refresh_scroll_speeds(self):
-        show_h = self._chk_scroll_h.isChecked()
-        show_v = self._chk_scroll_v.isChecked()
-        for row in self._bg_rows:
-            row.set_speed_visible(show_h or show_v)
+        pass  # vitesse gérée dans BackgroundAsset désormais
 
     def _on_scroll_changed(self):
         if self._blocking or not self._scene: return
@@ -1241,14 +1329,7 @@ class SceneInspector(QWidget):
 
     def _refresh_text_bg_warn(self):
         if not self._scene: return
-        text_bg = getattr(self._scene, "text_bg", -1)
-        conflict = any(
-            L.bg == text_bg and L.background_name
-            for L in self._scene.bg_layers
-        )
-        self._lbl_text_bg_warn.setText("⚠ conflit avec background" if conflict else "")
-        for i, row in enumerate(self._bg_rows):
-            row.set_ui_layer(i == text_bg)
+        self._lbl_text_bg_warn.setText("")
 
     # ── Script de scène — helpers ──────────────────────────────────
 
@@ -1321,20 +1402,6 @@ class SceneInspector(QWidget):
         self._scene.script = ""
         self._refresh_scene_script_label()
         self.changed.emit()
-
-    def _on_speed_changed(self, idx: int, value: float):
-        if self._blocking or not self._scene: return
-        if idx >= len(self._scene.bg_layers): return
-        layer = self._scene.bg_layers[idx]
-        old_val = layer.scroll_speed
-        get_history().push(SetFieldCmd(
-            layer, "scroll_speed", old_val, value,
-            f"BG{idx} vitesse",
-            persist_fn=self.changed.emit,
-        ))
-
-    def _on_bg_slot(self, slot_index: int, path_str: str):
-        self.slot_assigned.emit(slot_index, path_str)
 
     def set_script_open_fn(self, fn):
         self._script_open_fn = fn

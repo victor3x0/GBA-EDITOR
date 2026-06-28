@@ -30,6 +30,7 @@ def transpile_all(
     emit,
     scene_names: list[str] | None = None,
     precomputed_global_names: list[str] | None = None,
+    compiled_prefabs: set[str] | None = None,
 ) -> bool:
     """
     Compile tous les scripts Lua de la scène en C.
@@ -40,6 +41,14 @@ def transpile_all(
     music_names = [m.name for m in p.music] if hasattr(p, "music") else []
     all_syms    = [_sym(a.name) for a, _ in scene_actors]
     _scene_names = scene_names or []
+
+    # Globals résolus en avance (nécessaire pour le BuildContext du checker)
+    if precomputed_global_names is not None:
+        global_names = precomputed_global_names
+    else:
+        global_names = write_globals(p.src_dir, p.globals)
+        if global_names:
+            emit("log_line", f"[lua] globals: {', '.join('g_'+n for n in global_names)}")
 
     parsed_scripts = []
 
@@ -68,11 +77,12 @@ def transpile_all(
 
         anim_names = [st.name for st in sprite.states] if sprite and sprite.states else []
         ctx_check = BuildContext(
-            actor_name  = actor.name,
-            anim_names  = anim_names,
-            sfx_names   = sfx_names,
-            music_names = music_names,
-            scene_names = _scene_names,
+            actor_name   = actor.name,
+            anim_names   = anim_names,
+            sfx_names    = sfx_names,
+            music_names  = music_names,
+            scene_names  = _scene_names,
+            global_names = list(global_names) if global_names else None,
         )
         errors = lua_check(script, ctx_check)
         for err in errors:
@@ -97,17 +107,6 @@ def transpile_all(
                 emit("error_line", f"[scene script] parse: {e}")
                 return False
 
-    # Globals
-    if precomputed_global_names is not None:
-        global_names = precomputed_global_names
-    else:
-        all_lua = [s for _, _, s, _ in parsed_scripts]
-        if scene_script_ast:
-            all_lua.append(scene_script_ast)
-        global_names = write_globals(p.src_dir, all_lua)
-        if global_names:
-            emit("log_line", f"[lua] globals: {', '.join('g_'+n for n in global_names)}")
-
     # Génération C — actors de scène
     for actor, sprite, script, sp in parsed_scripts:
         s    = _sym(actor.name)
@@ -129,10 +128,15 @@ def transpile_all(
         out.write_text(c_code, encoding="utf-8")
         emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
 
-    # Génération C — prefabs poolés
+    # Génération C — prefabs poolés (compilés une seule fois grâce à compiled_prefabs)
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) <= 0:
             continue
+        pf_sym = _sym(pf.name)
+        if compiled_prefabs is not None:
+            if pf_sym in compiled_prefabs:
+                continue
+            compiled_prefabs.add(pf_sym)
         sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
         if not sc or not sc.script:
             continue
@@ -144,7 +148,6 @@ def transpile_all(
         except Exception as ex:
             emit("log_line", f"[warn] prefab {pf.name}: parse error: {ex}")
             continue
-        pf_sym  = _sym(pf.name)
         pf_spr  = next((c for c in pf.components if hasattr(c, "states")), None)
         pf_anim = [st.name for st in pf_spr.states] if pf_spr and hasattr(pf_spr, "states") else []
         ctx_pf  = CodegenContext(

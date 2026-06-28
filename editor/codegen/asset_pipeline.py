@@ -17,7 +17,7 @@ import struct
 from pathlib import Path
 from typing import Optional, Callable
 
-from core.project import Project, SceneLayer, Background, Actor, SpriteAsset
+from core.project import Project, BackgroundLayer, Actor, SpriteAsset
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ class GritBackground:
     def run(
         self,
         p: Project,
-        bg_pairs: list[tuple[SceneLayer, Background]],
+        bg_pairs: list[BackgroundLayer],
         scene_sym: str = "",
     ) -> bool:
         if not bg_pairs:
@@ -105,13 +105,17 @@ class GritBackground:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
         png_paths = []
-        for layer, bg in bg_pairs:
-            ap = p.asset_abs(bg.asset)
-            if not ap or not ap.exists():
-                self._emit("error_line", f"[grit BG] asset manquant : {bg.asset}")
+        for layer in bg_pairs:
+            if not layer.image:
+                continue
+            ap = p.background_images_dir / layer.image
+            if not ap.exists():
+                self._emit("error_line", f"[grit BG] image manquante : {layer.image}")
                 return False
             png_paths.append(ap)
-            self._emit("log_line", f"[grit BG] BG{layer.bg} <- {bg.name} ({ap.name})")
+            self._emit("log_line", f"[grit BG] BG{layer.bg_slot} <- {layer.image}")
+        if not png_paths:
+            return True
 
         # Symbole préfixé par scène pour éviter les conflits de symboles C
         ts_sym  = f"{scene_sym}_tileset" if scene_sym else "tileset"

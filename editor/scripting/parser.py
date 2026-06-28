@@ -356,9 +356,14 @@ class _Converter:
     def _collect_globals(self, stmts: list, local_names: set[str], out: set[str]):
         """Collecte les noms écrits (Assign) qui ne sont pas dans local_names,
         et les noms passés à global.set("name", ...) ."""
+        # Étendue locale : commence par les noms connus, puis accumule les déclarations
+        locals_here = set(local_names)
         for s in stmts:
-            if isinstance(s, StmtAssign) and isinstance(s.target, ExprName):
-                if s.target.name not in local_names:
+            if isinstance(s, StmtLocalAssign):
+                # Une déclaration locale ne génère pas de global et l'exclut des assigns suivants
+                locals_here.add(s.name)
+            elif isinstance(s, StmtAssign) and isinstance(s.target, ExprName):
+                if s.target.name not in locals_here:
                     out.add(s.target.name)
             elif isinstance(s, StmtCall):
                 # global.set("name", value) → déclarer "name" dans globals.h
@@ -372,12 +377,12 @@ class _Converter:
                         and isinstance(call.args[0], ExprString)):
                     out.add(call.args[0].value)
             elif isinstance(s, StmtIf):
-                self._collect_globals(s.then, local_names, out)
+                self._collect_globals(s.then, locals_here, out)
                 for _, b in s.elseifs:
-                    self._collect_globals(b, local_names, out)
-                self._collect_globals(s.else_, local_names, out)
+                    self._collect_globals(b, locals_here, out)
+                self._collect_globals(s.else_, locals_here, out)
             elif isinstance(s, (StmtWhile, StmtForNum)):
-                self._collect_globals(s.body, local_names, out)
+                self._collect_globals(s.body, locals_here, out)
 
 
 # ─── Point d'entrée public ────────────────────────────────────────

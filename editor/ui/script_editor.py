@@ -30,12 +30,14 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QPlainTextEdit, QFrame,
     QScrollArea, QSizePolicy, QToolButton, QTreeWidget, QTreeWidgetItem,
     QTreeWidgetItemIterator, QInputDialog, QMessageBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QAbstractItemView,
+    QMenu,
 )
 from PyQt6.QtGui import (
     QFont, QColor, QSyntaxHighlighter, QTextCharFormat,
     QTextCursor, QKeySequence, QShortcut,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRegularExpression, QFileSystemWatcher
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRegularExpression, QFileSystemWatcher, QPoint
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from scripting.api import KNOWN_EVENTS, KNOWN_SCENE_EVENTS
@@ -56,6 +58,7 @@ _C_BEHAVIOR = "#b48aff"   # violet   — behavior module
 _C_API      = "#c48b3c"   # orange   — API
 _C_REF      = "#7ecfff"   # bleu     — références
 _C_SUB      = "#444444"   # sous-label
+_C_GLOBAL   = "#e5c07b"   # jaune    — globals
 
 
 # ─── Syntaxe Lua ──────────────────────────────────────────────────────
@@ -372,6 +375,214 @@ class _EntryButton(QPushButton):
         self.setToolTip(tooltip_html)
 
 
+# ─── Panneau globals ──────────────────────────────────────────────────
+
+_TBL_SS = f"""
+QTableWidget {{
+    background:#181818; color:#cccccc;
+    border:none; gridline-color:#2a2a2a;
+    font-family:{T.CODE}; font-size:{T.MD}px;
+    selection-background-color:#264f78; selection-color:#ffffff;
+}}
+QHeaderView::section {{
+    background:#1a1a1a; color:#555555;
+    border:none; border-bottom:1px solid #2a2a2a;
+    font-family:{T.MONO}; font-size:{T.XS}px;
+    padding:2px 4px;
+}}
+QTableWidget::item {{ padding:1px 4px; }}
+QComboBox {{
+    background:#181818; color:#cccccc;
+    border:1px solid #2a2a2a;
+    font-family:{T.CODE}; font-size:{T.MD}px;
+}}
+QComboBox QAbstractItemView {{
+    background:#1e1e1e; color:#cccccc;
+    selection-background-color:#264f78;
+}}
+"""
+
+
+class GlobalsPanel(QWidget):
+    """
+    Tableau de variables globales déclarées dans le projet.
+    Double-clic sur une ligne → insère global.get("name") au curseur.
+    Clic droit → menu get/set.
+    """
+    snippet_requested = pyqtSignal(str)
+    globals_changed   = pyqtSignal()   # pour notifier le projet de sauvegarder
+
+    _COLS = ["nom", "type", "défaut"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._project = None
+        self._updating = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # Header avec bouton +
+        hdr = QFrame()
+        hdr.setFixedHeight(26)
+        hdr.setStyleSheet(
+            f"background:#1a1a1a;border-top:1px solid #2a2a2a;"
+            f"border-bottom:1px solid #2a2a2a;"
+        )
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(6, 0, 4, 0)
+        lbl = QLabel("▾  GLOBALS")
+        lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        lbl.setStyleSheet(f"color:{_C_GLOBAL};background:transparent;border:none;")
+        hl.addWidget(lbl)
+        hl.addStretch()
+        add_btn = QPushButton("+")
+        add_btn.setFixedSize(20, 20)
+        add_btn.setStyleSheet(
+            f"QPushButton{{color:{_C_GLOBAL};background:#222;border:1px solid #333;"
+            f"font-weight:bold;font-size:14px;padding:0;}}"
+            f"QPushButton:hover{{background:#2a2a2a;}}"
+        )
+        add_btn.setToolTip("Ajouter une variable globale")
+        add_btn.clicked.connect(self._add_var)
+        hl.addWidget(add_btn)
+        root.addWidget(hdr)
+
+        # Table (3 colonnes : nom / type / défaut)
+        self._tbl = QTableWidget(0, 3)
+        self._tbl.setStyleSheet(_TBL_SS)
+        self._tbl.setHorizontalHeaderLabels(self._COLS)
+        self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self._tbl.setColumnWidth(1, 46)
+        self._tbl.setColumnWidth(2, 46)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
+                                   | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self._tbl.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tbl.customContextMenuRequested.connect(self._ctx_menu)
+        self._tbl.itemChanged.connect(self._on_item_changed)
+        self._tbl.cellDoubleClicked.connect(self._on_double_click)
+        self._tbl.setMinimumHeight(80)
+        self._tbl.setMaximumHeight(240)
+        root.addWidget(self._tbl)
+
+    def set_project(self, project):
+        self._project = project
+        self._reload()
+
+    def _reload(self):
+        self._updating = True
+        self._tbl.setRowCount(0)
+        if not self._project:
+            self._updating = False
+            return
+        for g in self._project.globals:
+            self._append_row(g.name, g.type, str(g.default))
+        self._updating = False
+
+    def _append_row(self, name="var", typ="int", default="0"):
+        from PyQt6.QtWidgets import QComboBox
+        row = self._tbl.rowCount()
+        self._tbl.insertRow(row)
+        self._tbl.setRowHeight(row, 20)
+
+        name_item = QTableWidgetItem(name)
+        name_item.setForeground(QColor(_C_GLOBAL))
+        self._tbl.setItem(row, 0, name_item)
+
+        combo = QComboBox()
+        combo.addItems(["int", "bool", "u8", "u16", "s8", "s16"])
+        combo.setCurrentText(typ)
+        combo.setStyleSheet(_TBL_SS)
+        combo.currentTextChanged.connect(lambda _, r=row: self._sync_to_project())
+        self._tbl.setCellWidget(row, 1, combo)
+
+        default_item = QTableWidgetItem(str(default))
+        default_item.setForeground(QColor("#b5cea8"))
+        self._tbl.setItem(row, 2, default_item)
+
+    def _add_var(self):
+        if not self._project:
+            return
+        from core.project import GlobalVar
+        name, ok = QInputDialog.getText(self, "Nouvelle variable", "Nom :")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if any(g.name == name for g in self._project.globals):
+            QMessageBox.warning(self, "Doublon", f"La variable '{name}' existe déjà.")
+            return
+        self._project.globals.append(GlobalVar(name=name))
+        self._project.save_settings()
+        self._updating = True
+        self._append_row(name)
+        self._updating = False
+        self.globals_changed.emit()
+
+    def _on_item_changed(self, item):
+        if self._updating:
+            return
+        self._sync_to_project()
+
+    def _sync_to_project(self):
+        if not self._project or self._updating:
+            return
+        from core.project import GlobalVar
+        globs = []
+        for row in range(self._tbl.rowCount()):
+            name_item = self._tbl.item(row, 0)
+            combo     = self._tbl.cellWidget(row, 1)
+            def_item  = self._tbl.item(row, 2)
+            if name_item is None:
+                continue
+            name    = name_item.text().strip()
+            typ     = combo.currentText() if combo else "int"
+            default = int(def_item.text() or "0") if def_item else 0
+            if name:
+                globs.append(GlobalVar(name=name, type=typ, default=default))
+        self._project.globals = globs
+        self._project.save_settings()
+        self.globals_changed.emit()
+
+    def _on_double_click(self, row, col):
+        name_item = self._tbl.item(row, 0)
+        if name_item:
+            self.snippet_requested.emit(f'global.get("{name_item.text()}")')
+
+    def _ctx_menu(self, pos: QPoint):
+        row = self._tbl.rowAt(pos.y())
+        if row < 0:
+            return
+        name_item = self._tbl.item(row, 0)
+        if not name_item:
+            return
+        name = name_item.text()
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu{{background:#1e1e1e;color:#cccccc;border:1px solid #333;}}"
+            f"QMenu::item:selected{{background:#264f78;}}"
+        )
+        a_get = menu.addAction(f'global.get("{name}")')
+        a_set = menu.addAction(f'global.set("{name}", ...)')
+        menu.addSeparator()
+        a_del = menu.addAction("Supprimer")
+        action = menu.exec(self._tbl.viewport().mapToGlobal(pos))
+        if action == a_get:
+            self.snippet_requested.emit(f'global.get("{name}")')
+        elif action == a_set:
+            self.snippet_requested.emit(f'global.set("{name}", )')
+        elif action == a_del:
+            self._delete_row(row)
+
+    def _delete_row(self, row):
+        self._tbl.removeRow(row)
+        self._sync_to_project()
+
+
 # ─── Panneau sidebar principal ────────────────────────────────────────
 
 class SidebarPanel(QWidget):
@@ -448,7 +659,7 @@ class SidebarPanel(QWidget):
     # ── Références (dynamique, depuis le projet) ─────────────────────
 
     def set_project(self, project):
-        """Recharge la section RÉFÉRENCES depuis le projet ouvert."""
+        """Recharge les sections dynamiques (RÉFÉRENCES) depuis le projet."""
         self._sec_refs.clear_body()
         if not project:
             return
@@ -601,9 +812,10 @@ class SidebarPanel(QWidget):
 # ─── Panneau arbre de fichiers ────────────────────────────────────────
 
 class FileTreePanel(QWidget):
-    """Panneau droit collapsible affichant project/scripts/ en arbre."""
+    """Panneau droit collapsible affichant project/scripts/ en arbre + globals."""
 
-    file_requested = pyqtSignal(str)   # absolute path of .lua file
+    file_requested    = pyqtSignal(str)   # absolute path of .lua file
+    snippet_requested = pyqtSignal(str)   # snippet à insérer dans l'éditeur
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -670,9 +882,18 @@ class FileTreePanel(QWidget):
         )
         self._tree.itemActivated.connect(self._on_item_activated)
         tree_l.addWidget(self._tree, 1)
+
+        # ── GlobalsPanel sous la liste des scripts ─────────────────
+        self._globals_panel = GlobalsPanel()
+        self._globals_panel.snippet_requested.connect(self.snippet_requested)
+        tree_l.addWidget(self._globals_panel)
+
         layout.addWidget(self._tree_panel)
 
         self._tree_panel.setVisible(False)
+
+    def set_project(self, project):
+        self._globals_panel.set_project(project)
 
     def show_panel(self):
         self._expanded = True
@@ -857,6 +1078,7 @@ class ScriptEditorScreen(QWidget):
         # FileTreePanel — colonne droite
         self._file_tree = FileTreePanel()
         self._file_tree.file_requested.connect(lambda p: self.open_script(Path(p)))
+        self._file_tree.snippet_requested.connect(self._editor_insert_snippet)
 
         body = QWidget()
         body_l = QHBoxLayout(body)
@@ -893,8 +1115,9 @@ class ScriptEditorScreen(QWidget):
             self._file_watcher.addPath(str(path))
 
     def set_project(self, project):
-        """Connecte le projet pour peupler la section RÉFÉRENCES."""
+        """Connecte le projet pour peupler les sections dynamiques."""
         self._sidebar.set_project(project)
+        self._file_tree.set_project(project)
         if project:
             scripts_dir = getattr(project, "scripts_dir", None) or \
                           project.root / "project" / "scripts"

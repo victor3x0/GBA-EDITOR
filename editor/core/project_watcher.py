@@ -92,6 +92,7 @@ class ProjectWatcher(QObject):
         project_dirs = [
             project_path / "project" / "scenes",
             project_path / "project" / "prefab",
+            project_path / "project" / "backgrounds",
         ]
 
         for d in asset_dirs + project_dirs:

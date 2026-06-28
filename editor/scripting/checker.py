@@ -46,6 +46,7 @@ class BuildContext:
     sfx_names:    list[str]  = None    # noms de Sfx dans le projet
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
+    global_names: list[str]  = None    # noms de GlobalVar déclarées dans le projet
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
 
@@ -125,6 +126,9 @@ class Checker:
             if key == "scene.switch":
                 self._check_scene_switch(e.args)
                 return
+            if key in ("global.set", "global.get"):
+                self._check_global_name(key, e.args)
+                return
             api = RUNTIME_API.get(key)
             if api is None:
                 # Pas une erreur : peut être une fonction helper définie par l'user
@@ -186,6 +190,17 @@ class Checker:
             self.errors.append(CheckError(
                 "warning",
                 f"{call_key}('{name}') : music '{name}' introuvable dans le projet.",
+            ))
+
+    def _check_global_name(self, call_key: str, args: list):
+        if not args or not isinstance(args[0], ExprString):
+            return
+        name = args[0].value
+        if self.ctx.global_names is not None and name not in self.ctx.global_names:
+            self.errors.append(CheckError(
+                "warning",
+                f"{call_key}('{name}') : variable globale '{name}' non déclarée dans le projet. "
+                f"Ajoutez-la dans le panneau Globals de l'éditeur.",
             ))
 
     def _check_scene_switch(self, args: list):

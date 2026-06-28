@@ -1,27 +1,6 @@
 {
   "name": "PONG",
-  "bg_layers": [
-    {
-      "bg": 0,
-      "background_name": "Background",
-      "scroll_speed": 4.0
-    },
-    {
-      "bg": 1,
-      "background_name": "",
-      "scroll_speed": 2.0
-    },
-    {
-      "bg": 2,
-      "background_name": "",
-      "scroll_speed": 1.0
-    },
-    {
-      "bg": 3,
-      "background_name": "",
-      "scroll_speed": 0.5
-    }
-  ],
+  "background_asset": "Background",
   "actors": [
     {
       "name": "PADDLE_PLAYER",

@@ -73,6 +73,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     # ── Validateurs built-in ─────────────────────────────────────────
     _check_scene(ctx)
     _check_actors(ctx)
+    _check_backgrounds(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -146,3 +147,25 @@ def _check_script(ctx, actor, comp):
     sp = proj.asset_abs(comp.script)
     if not sp or not sp.exists():
         ctx.error(actor, f"Script introuvable : {comp.script}")
+
+
+def _check_backgrounds(ctx: ValidationContext):
+    proj = ctx.project
+    if not ctx.scene:
+        return
+
+    ba_name = getattr(ctx.scene, "background_asset", "")
+    if not ba_name:
+        return
+
+    ba = proj.get_background(ba_name)
+    if not ba:
+        ctx.warn(None, f"Background asset '{ba_name}' introuvable — la scène compilera sans background.")
+        return
+
+    for layer in ba.layers:
+        if not layer.image:
+            continue
+        ap = proj.background_images_dir / layer.image
+        if not ap.exists():
+            ctx.warn(None, f"Background '{ba_name}' : image introuvable ({layer.image}) — layer ignoré.")
