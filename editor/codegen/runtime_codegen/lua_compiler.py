@@ -1,5 +1,5 @@
 """
-runtime_codegen/lua_compiler.py — Transpilation Lua → C pour acteurs, prefabs et scènes.
+runtime_codegen/lua_compiler.py — Transpilation Lua -> C pour acteurs, prefabs et scènes.
 
 Entrées  : Project, Scene, liste (Actor, SpriteAsset)
 Sorties  : fichiers actor_*.c et scene.c écrits dans p.src_dir/
@@ -29,6 +29,7 @@ def transpile_all(
     prefabs,
     emit,
     scene_names: list[str] | None = None,
+    precomputed_global_names: list[str] | None = None,
 ) -> bool:
     """
     Compile tous les scripts Lua de la scène en C.
@@ -97,14 +98,15 @@ def transpile_all(
                 return False
 
     # Globals
-    all_lua = [s for _, _, s, _ in parsed_scripts]
-    if scene_script_ast:
-        all_lua.append(scene_script_ast)
-    global_names = write_globals(p.src_dir, all_lua)
-    if global_names:
-        emit("log_line", f"[lua] globals: {', '.join('g_'+n for n in global_names)}")
+    if precomputed_global_names is not None:
+        global_names = precomputed_global_names
     else:
-        write_globals(p.src_dir, [])
+        all_lua = [s for _, _, s, _ in parsed_scripts]
+        if scene_script_ast:
+            all_lua.append(scene_script_ast)
+        global_names = write_globals(p.src_dir, all_lua)
+        if global_names:
+            emit("log_line", f"[lua] globals: {', '.join('g_'+n for n in global_names)}")
 
     # Génération C — actors de scène
     for actor, sprite, script, sp in parsed_scripts:
@@ -125,7 +127,7 @@ def transpile_all(
             '#include "runtime.h"', '#include "actor_api.h"')
         out = p.src_dir / f"actor_{s}.c"
         out.write_text(c_code, encoding="utf-8")
-        emit("log_line", f"[lua→c] {sp.name} → {out.name}")
+        emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
 
     # Génération C — prefabs poolés
     for pf in prefabs:
@@ -161,7 +163,7 @@ def transpile_all(
             '#include "runtime.h"', '#include "actor_api.h"')
         out_pf = p.src_dir / f"actor_{pf_sym}.c"
         out_pf.write_text(pf_c, encoding="utf-8")
-        emit("log_line", f"[lua→c] prefab {pf.name} → {out_pf.name}")
+        emit("log_line", f"[lua->c] prefab {pf.name} -> {out_pf.name}")
 
     # Génération C — script de scène
     if scene_script_ast and scene_script_file:
@@ -179,8 +181,9 @@ def transpile_all(
         )
         c_code = lua_generate(scene_script_ast, ctx_sc).replace(
             '#include "runtime.h"', '#include "actor_api.h"')
-        out = p.src_dir / "scene.c"
+        out_name = f"{scene_s}_scene.c"
+        out = p.src_dir / out_name
         out.write_text(c_code, encoding="utf-8")
-        emit("log_line", f"[lua→c] {scene_script_file.name} → scene.c")
+        emit("log_line", f"[lua->c] {scene_script_file.name} -> {out_name}")
 
     return True

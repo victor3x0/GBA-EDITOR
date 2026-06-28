@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.project import (
-    Project, Scene, SceneLayer, Background, Tileset,
+    Project, Scene, SceneLayer, Background,
     Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent,
 )
 from codegen.asset_pipeline import count_frames
@@ -62,11 +62,11 @@ def _actor_script(actor: Actor) -> Optional[str]:
 
 
 def _bg_info(p: Project,
-             bg_pairs: list[tuple[SceneLayer, Background, Tileset]]) -> list[dict]:
+             bg_pairs: list[tuple[SceneLayer, Background]]) -> list[dict]:
     sbb_map = {0: 8, 1: 12, 2: 20, 3: 28}
     result  = []
-    for layer, bg, tileset in bg_pairs:
-        ap = p.asset_abs(tileset.asset)
+    for layer, bg in bg_pairs:
+        ap = p.asset_abs(bg.asset)
         try:
             from PIL import Image
             with Image.open(ap) as img:
@@ -363,6 +363,7 @@ def _gen_scene_init(
     L = [f"static void scene_init_{sym}(void) {{"]
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
+    L.append("    bg_maps_clear();")
     # Cmap dispatch
     if scene.collision_map and any(v != 0 for row in scene.collision_map for v in row):
         L.append(f"    g_active_cmap = g_cmap_{sym};")
@@ -371,8 +372,9 @@ def _gen_scene_init(
     else:
         L.append("    g_active_cmap = NULL; g_cmap_w = 0; g_cmap_h = 0;")
     # BG layers
+    ts_sym = f"{sym}_tileset"  # préfixe grit : ex. PONG_tileset
     if bgi:
-        L.append("    copy16(TILE_RAM(0), tilesetTiles, tilesetTilesLen);")
+        L.append(f"    copy16(TILE_RAM(0), {ts_sym}Tiles, {ts_sym}TilesLen);")
         for bi in bgi:
             ms = bi["map_size"]
             gcols = 64 if (ms & 1) else 32
@@ -403,7 +405,7 @@ def _gen_scene_init(
                 L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
     # Palettes BG
     if bgi:
-        L.append("    copy16(PAL_BG_RAM, tilesetPal, tilesetPalLen);")
+        L.append(f"    copy16(PAL_BG_RAM, {ts_sym}Pal, {ts_sym}PalLen);")
     # TTE
     text_bg = getattr(scene, "text_bg", -1)
     if text_bg in {0, 1, 2, 3}:
@@ -719,8 +721,10 @@ def generate_main(
             seen_incs.add(line)
             L.append(line)
 
+    _add_inc('#define GBA_ENGINE_IMPL')
+    _add_inc('#include "gba_engine.h"')
     _add_inc('#include "actor_api.h"')
-    _add_inc('#include "actor_globals.h"')
+    _add_inc('#include "globals.h"')
     if has_sound and soundbank_h.exists():
         _add_inc('#include <maxmod.h>')
         _add_inc(f'#include "{soundbank_h.name}"')
@@ -730,8 +734,6 @@ def generate_main(
         bgi_d = _bg_info(p, d["bg_pairs"])
         if bgi_d:
             _add_inc(f'#include "{_sym(d["scene"].name)}_tileset.h"')
-            for bi in bgi_d:
-                _add_inc(f'#include "{bi["stem"]}.h"')
         for _, sprite in d["scene_actors"]:
             if sprite and sprite.asset:
                 _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')

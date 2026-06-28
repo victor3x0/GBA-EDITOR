@@ -966,8 +966,7 @@ class BackgroundInspector(QWidget):
         self._blocking = True
         self._name.setText(bg.name)
         self._speed.setValue(int(bg.scroll_speed * 100))
-        tileset = project.get_tileset(bg.tileset_name) if bg.tileset_name else None
-        ap = project.asset_abs(tileset.asset) if tileset else None
+        ap = project.asset_abs(bg.asset) if bg.asset else None
         self._asset_lbl.setText(ap.name if ap else "Aucun")
         self._blocking = False
 
@@ -980,15 +979,6 @@ class BackgroundInspector(QWidget):
         self._project.rename_background(self._bg, self._name.text())
         self._name.setText(self._bg.name); self.changed.emit()
 
-    def _ensure_tileset(self) -> Tileset:
-        tileset = self._project.get_tileset(self._bg.tileset_name) if self._bg.tileset_name else None
-        if not tileset:
-            tileset = Tileset(name=f"{self._bg.name}_tileset")
-            self._project.tilesets.append(tileset)
-            self._bg.tileset_name = tileset.name
-            self._project.save_background(self._bg)
-        return tileset
-
     def _pick_asset(self):
         if not self._project or not self._bg: return
         path, _ = QFileDialog.getOpenFileName(
@@ -997,9 +987,8 @@ class BackgroundInspector(QWidget):
         )
         if path:
             dst = self._project.import_asset(Path(path), "backgrounds")
-            tileset = self._ensure_tileset()
-            tileset.asset = self._project.asset_rel(dst)
-            self._project.save_tileset(tileset)
+            self._bg.asset = self._project.asset_rel(dst)
+            self._project.save_background(self._bg)
             self._asset_lbl.setText(dst.name)
             self.changed.emit()
 
@@ -1181,10 +1170,9 @@ class SceneInspector(QWidget):
                 row.set_speed(layer.scroll_speed)
             bg_name = layer.background_name if layer else ""
             bg = project.get_background(bg_name) if bg_name else None
-            tileset = project.get_tileset(bg.tileset_name) if bg and bg.tileset_name else None
             has_asset = False
-            if tileset:
-                ap = project.asset_abs(tileset.asset)
+            if bg and bg.asset:
+                ap = project.asset_abs(bg.asset)
                 if ap and ap.exists():
                     row.set_asset(str(ap))
                     has_asset = True

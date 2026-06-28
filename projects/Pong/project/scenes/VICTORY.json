@@ -28,7 +28,7 @@
   "cam_follow": "",
   "scroll_h": false,
   "scroll_v": false,
-  "script": "project/scripts/scenes/VICTORY.lua",
+  "script": "assets/scripts/scenes/VICTORY.lua",
   "text_bg": 0,
   "collision_layer": 0,
   "collision_map": [

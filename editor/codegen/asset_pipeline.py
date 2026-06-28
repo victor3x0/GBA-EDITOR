@@ -3,9 +3,9 @@ editor/asset_pipeline.py — Conversion des assets bruts en fichiers C/headers.
 
 Trois étapes indépendantes, chacune appelable séparément :
 
-    GritBackground(emit, run_cmd).run(p, bg_pairs)   → tileset.h/.c
-    GritSprites(emit, run_cmd).run(p, sprites)        → sprite_X.h/.c
-    MmutilAudio(emit, run_cmd, toolchain).run(p, assets) → soundbank.h/.bin
+    GritBackground(emit, run_cmd).run(p, bg_pairs)   -> tileset.h/.c
+    GritSprites(emit, run_cmd).run(p, sprites)        -> sprite_X.h/.c
+    MmutilAudio(emit, run_cmd, toolchain).run(p, assets) -> soundbank.h/.bin
 
 `emit(event, data)` et `run_cmd(cmd, prefix, cwd)` sont injectés depuis
 BuildWorker pour que le pipeline reste découplé de l'UI.
@@ -17,7 +17,7 @@ import struct
 from pathlib import Path
 from typing import Optional, Callable
 
-from core.project import Project, SceneLayer, Background, Tileset, Actor, SpriteAsset
+from core.project import Project, SceneLayer, Background, Actor, SpriteAsset
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ def pad_sprite_png(
             rgba.save(out)
             return out
         emit("log_line",
-             f"[pad] {src.name} {w}×{h} → {target_w}×{target_h} "
+             f"[pad] {src.name} {w}×{h} -> {target_w}×{target_h} "
              f"(frame {frame_w}×{frame_h})")
         padded = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
         padded.paste(rgba, (0, 0))
@@ -86,7 +86,7 @@ def pad_sprite_png(
 # ── GritBackground ─────────────────────────────────────────────────────────────
 
 class GritBackground:
-    """Convertit les tilesets BG via grit → tileset.h/.c."""
+    """Convertit les tilesets BG via grit -> tileset.h/.c."""
 
     def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable):
         self._grit    = grit_path
@@ -96,7 +96,7 @@ class GritBackground:
     def run(
         self,
         p: Project,
-        bg_pairs: list[tuple[SceneLayer, Background, Tileset]],
+        bg_pairs: list[tuple[SceneLayer, Background]],
         scene_sym: str = "",
     ) -> bool:
         if not bg_pairs:
@@ -105,10 +105,10 @@ class GritBackground:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
         png_paths = []
-        for layer, bg, tileset in bg_pairs:
-            ap = p.asset_abs(tileset.asset)
+        for layer, bg in bg_pairs:
+            ap = p.asset_abs(bg.asset)
             if not ap or not ap.exists():
-                self._emit("error_line", f"[grit BG] asset manquant : {tileset.asset}")
+                self._emit("error_line", f"[grit BG] asset manquant : {bg.asset}")
                 return False
             png_paths.append(ap)
             self._emit("log_line", f"[grit BG] BG{layer.bg} <- {bg.name} ({ap.name})")
@@ -138,7 +138,7 @@ def _sym(s: str) -> str:
 
 
 class GritSprites:
-    """Convertit les sprites OBJ (acteurs + prefabs) via grit → sprite_X.h/.c."""
+    """Convertit les sprites OBJ (acteurs + prefabs) via grit -> sprite_X.h/.c."""
 
     def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable):
         self._grit    = grit_path

@@ -1,21 +1,26 @@
 """
 GBA Editor — gestion de projet
 
-  - project.json       : settings globaux (nom, scène de démarrage)
-  - project/scenes/    : une scène par fichier JSON
-                         Chaque scène contient ses acteurs en inline (pas de
-                         fichier séparé) : un Actor = un objet dans la liste
-                         `actors` du JSON de scène.
-  - project/prefab/    : Prefab (modèle/template) par fichier JSON.
-                         JAMAIS compilé. Permet d'instancier rapidement un
-                         Actor dans une scène (copie ponctuelle des Components,
-                         aucun lien vivant ensuite).
-  - project/sprites/   : SpriteAsset (spritesheet + anims) par fichier JSON
-  - project/tilesets/  : Tileset (PNG de BG brut, partageable)
-  - project/backgrounds/: Background (4 bg layers + scroll)
-  - project/scripts/   : scripts C
-  - assets/            : PNGs, sons… espace libre utilisateur
-  - build/             : 100 % jetable
+Structure de projet :
+
+  assets/              ← géré par l'utilisateur
+    sprites/           ← PNG + JSON sidecar (auto-créé au dépôt)
+    backgrounds/       ← PNG + JSON sidecar
+    sounds/            ← WAV, MOD
+    sfx/               ← effets sonores
+    music/             ← musiques
+    fonts/             ← polices
+    scripts/           ← Lua (pas de sidecar)
+      actors/
+      scenes/
+      behaviors/
+
+  project/             ← géré exclusivement par l'éditeur
+    scenes/            ← une scène par JSON (actors inline)
+    prefab/            ← templates d'actors (jamais compilés directement)
+
+  project.json         ← settings globaux (nom, scène de démarrage, auteur)
+  build/               ← 100 % jetable (regénéré à chaque build)
 """
 
 import json
@@ -187,32 +192,36 @@ class ProjectSettings:
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Tileset — PNG de BG brut, partageable entre plusieurs Background
+#  Tileset — alias rétrocompat, fusionné dans Background
 # ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class Tileset(Resource):
-    """
-    Référence à un PNG de tileset dans assets/.
-    Stocké dans project/tilesets/{name}.json
-    """
+    """Alias rétrocompat : un Background EST son propre tileset."""
     name: str = "tileset"
-    asset: Optional[str] = None   # chemin relatif depuis project root
+    asset: Optional[str] = None
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Background — config d'un BG layer (utilise un Tileset)
+#  Background — PNG + config BG layer (sidecar dans assets/backgrounds/)
 # ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class Background(Resource):
     """
-    Config d'un BG : référence un Tileset + son scroll_speed.
-    Stocké dans project/backgrounds/{name}.json
+    Sidecar d'un PNG background.
+    asset pointe vers le PNG (chemin relatif depuis project root).
+    Stocké dans assets/backgrounds/{name}.json
     """
     name: str = "background"
-    tileset_name: Optional[str] = None
+    asset: Optional[str] = None        # chemin relatif depuis project root
+    tileset_name: Optional[str] = None # rétrocompat — ignoré si asset présent
     scroll_speed: float = 1.0
+
+    @property
+    def resolved_asset(self) -> Optional[str]:
+        """Retourne asset en priorité, ou cherche via tileset_name pour rétrocompat."""
+        return self.asset or None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -790,8 +799,9 @@ class Project:
         self.root = root.resolve()
         self.settings = ProjectSettings(name=root.name)
 
-        self.tilesets:    ResourceManager[Tileset]     = ResourceManager(self.tilesets_dir, Tileset)
         self.backgrounds: ResourceManager[Background]  = ResourceManager(self.backgrounds_dir, Background)
+        # tilesets est un alias sur backgrounds (Tileset fusionné dans Background)
+        self.tilesets = self.backgrounds
         self.sprites:     ResourceManager[SpriteAsset] = ResourceManager(self.sprites_dir, SpriteAsset)
         self.prefabs:     ResourceManager[Prefab]      = ResourceManager(self.prefab_dir, Prefab)
         self.scenes:      ResourceManager[Scene]       = ResourceManager(self.scenes_dir, Scene)
@@ -824,31 +834,31 @@ class Project:
 
     @property
     def sprites_dir(self) -> Path:
-        return self.project_dir / "sprites"
+        return self.assets_dir / "sprites"
 
     @property
     def tilesets_dir(self) -> Path:
-        return self.project_dir / "tilesets"
+        return self.assets_dir / "backgrounds"  # fusionné dans backgrounds
 
     @property
     def backgrounds_dir(self) -> Path:
-        return self.project_dir / "backgrounds"
+        return self.assets_dir / "backgrounds"
 
     @property
     def sfx_dir(self) -> Path:
-        return self.project_dir / "sfx"
+        return self.assets_dir / "sfx"
 
     @property
     def music_dir(self) -> Path:
-        return self.project_dir / "music"
+        return self.assets_dir / "music"
 
     @property
     def fonts_dir(self) -> Path:
-        return self.project_dir / "fonts"
+        return self.assets_dir / "fonts"
 
     @property
     def scripts_dir(self) -> Path:
-        return self.project_dir / "scripts"
+        return self.assets_dir / "scripts"
 
     @property
     def scripts_actors_dir(self) -> Path:
@@ -930,6 +940,51 @@ class Project:
         if src.resolve() != dst.resolve():
             shutil.copy2(src, dst)
         return dst
+
+    def sync_sprite_png(self, png_path: Path) -> "SpriteAsset":
+        """
+        Appelé quand un PNG apparaît dans assets/sprites/.
+        Crée le sidecar JSON à côté si absent, l'ajoute à self.sprites si nécessaire.
+        Retourne le SpriteAsset correspondant.
+        """
+        name = png_path.stem
+        sprite = self.sprites.get(name)
+        if sprite is None:
+            sprite = SpriteAsset(
+                name=name,
+                asset=self.asset_rel(png_path),
+                frame_w=8,
+                frame_h=8,
+            )
+            self.sprites.append(sprite)
+        sidecar = png_path.with_suffix(".json")
+        if not sidecar.exists():
+            self.sprites.save(sprite)
+        return sprite
+
+    def remove_sprite_png(self, png_path: Path):
+        """
+        Appelé quand un PNG disparaît de assets/sprites/.
+        Supprime le sidecar JSON et retire le sprite de la liste.
+        """
+        name = png_path.stem
+        sprite = self.sprites.get(name)
+        if sprite:
+            self.sprites.delete(sprite)
+
+    def sync_background_png(self, png_path: Path):
+        """Crée un sidecar Background pour un PNG déposé dans assets/backgrounds/."""
+        name = png_path.stem
+        existing = self.backgrounds.get(name)
+        if existing is None:
+            bg = Background(name=name, asset=self.asset_rel(png_path))
+            self.backgrounds.append(bg)
+        else:
+            if not existing.asset:
+                existing.asset = self.asset_rel(png_path)
+        sidecar = png_path.with_suffix(".json")
+        if not sidecar.exists():
+            self.backgrounds.save(self.backgrounds.get(name))
 
     # ── Helpers de lookup ────────────────────────────────────────
 
@@ -1084,15 +1139,37 @@ class Project:
         self.prefabs.save_all()
         self.scenes.save_all()
 
+    def _migrate_on_load(self):
+        """Migrations automatiques à l'ouverture d'un projet ancien."""
+        # script paths : project/scripts/ → assets/scripts/ (scènes + prefabs)
+        for f in list(self.scenes_dir.glob("*.json")) + list(self.prefab_dir.glob("*.json")):
+            text = f.read_text(encoding="utf-8")
+            migrated = text.replace("project/scripts/", "assets/scripts/")
+            if migrated != text:
+                f.write_text(migrated, encoding="utf-8")
+
+        # backgrounds : ajouter le champ asset si absent
+        for f in self.backgrounds_dir.glob("*.json"):
+            try:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                if "asset" not in d:
+                    png = f.with_suffix(".png")
+                    if png.exists():
+                        d["asset"] = self.asset_rel(png)
+                        _atomic_write(f, json.dumps(d, indent=2, ensure_ascii=False))
+            except Exception:
+                pass
+
     def load(self):
-        # S'assurer que tous les sous-dossiers existent (rétrocompat projets anciens)
-        for sub in ("project/scenes", "project/prefab", "project/sprites",
-                    "project/tilesets", "project/backgrounds",
-                    "project/scripts", "project/scripts/actors", "project/scripts/behaviors",
-                    "project/sfx", "project/music", "project/fonts",
-                    "assets/backgrounds", "assets/sprites"):
+        # S'assurer que tous les sous-dossiers existent
+        for sub in ("project/scenes", "project/prefab",
+                    "assets/sprites", "assets/backgrounds",
+                    "assets/scripts", "assets/scripts/actors",
+                    "assets/scripts/scenes", "assets/scripts/behaviors",
+                    "assets/sfx", "assets/music", "assets/fonts"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
+        self._migrate_on_load()
         self.load_settings()
         self.tilesets.load()
         self.sprites.load()
@@ -1110,20 +1187,18 @@ class Project:
         """Crée un nouveau projet vide avec la structure de dossiers."""
         root.mkdir(parents=True, exist_ok=True)
         for sub in (
-            "assets/backgrounds",
             "assets/sprites",
-            "assets/music",
+            "assets/backgrounds",
+            "assets/sounds",
             "assets/sfx",
+            "assets/music",
             "assets/fonts",
+            "assets/scripts",
+            "assets/scripts/actors",
+            "assets/scripts/scenes",
+            "assets/scripts/behaviors",
             "project/scenes",
             "project/prefab",
-            "project/sprites",
-            "project/tilesets",
-            "project/backgrounds",
-            "project/sfx",
-            "project/music",
-            "project/fonts",
-            "project/scripts",
         ):
             (root / sub).mkdir(parents=True, exist_ok=True)
 

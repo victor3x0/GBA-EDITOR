@@ -28,8 +28,8 @@
   "cam_follow": "",
   "scroll_h": false,
   "scroll_v": false,
-  "script": "project/scripts/scenes/INTRO.lua",
-  "text_bg": 0,
+  "script": "assets/scripts/scenes/INTRO.lua",
+  "text_bg": 1,
   "collision_layer": 0,
   "collision_map": [
     [

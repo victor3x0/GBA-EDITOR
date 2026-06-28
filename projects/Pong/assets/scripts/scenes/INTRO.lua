@@ -1,13 +1,10 @@
 function on_start()
-    display.print(7, 5, "VICTOIRE !")
-    display.print(5, 9, "Appuyez sur START")
+    display.print(10, 8, "PONG")
+    display.print(6, 11, "PRESS START")
 end
 
 function on_update()
     if input.pressed("start") then
         scene.switch("PONG")
     end
-end
-
-function on_late_update()
 end

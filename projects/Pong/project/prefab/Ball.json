@@ -27,7 +27,7 @@
       "component_type": "script",
       "id": "script",
       "active": true,
-      "script": "project/scripts/actors/Ball.lua",
+      "script": "assets/scripts/actors/Ball.lua",
       "exports_values": {}
     }
   ],

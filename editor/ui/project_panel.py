@@ -691,12 +691,14 @@ class ProjectPanel(QWidget):
         # Trees
         self._tree_scenes    = _SceneTree(self)
         self._tree_prefabs   = _AssetTree(self, T_PREFAB)
-        self._tree_scripts_b = _AssetTree(self, T_SCRIPT)
+        self._tree_scripts_a = _AssetTree(self, T_SCRIPT)  # actors
+        self._tree_scripts_s = _AssetTree(self, T_SCRIPT)  # scenes
+        self._tree_scripts_b = _AssetTree(self, T_SCRIPT)  # behaviors
 
         self._sec_scenes.set_widget(self._tree_scenes)
         self._sec_prefabs.set_widget(self._tree_prefabs)
 
-        # Body SCRIPTS : deux sous-sections
+        # Body SCRIPTS : trois sous-sections actors / scenes / behaviors
         scripts_body = QWidget()
         scripts_body.setStyleSheet(f"background:{_BG};")
         sb_layout = QVBoxLayout(scripts_body)
@@ -711,6 +713,11 @@ class ProjectPanel(QWidget):
             lbl.setFixedHeight(18)
             return lbl
 
+        sb_layout.addWidget(_sub_label("ACTORS"))
+        sb_layout.addWidget(self._tree_scripts_a)
+        sb_layout.addWidget(_sub_label("SCENES"))
+        sb_layout.addWidget(self._tree_scripts_s)
+        sb_layout.addWidget(_sub_label("BEHAVIORS"))
         sb_layout.addWidget(self._tree_scripts_b)
         self._sec_scripts.set_widget(scripts_body)
 
@@ -752,6 +759,8 @@ class ProjectPanel(QWidget):
         self._tree_prefabs.populate_dir(prefab_dir, self._project)
 
     def _refresh_scripts(self):
+        self._tree_scripts_a.populate_dir(self._project.scripts_actors_dir, self._project)
+        self._tree_scripts_s.populate_dir(self._project.scripts_scenes_dir, self._project)
         self._tree_scripts_b.populate_dir(self._project.scripts_behaviors_dir, self._project)
 
     # ── Sélection bus ─────────────────────────────────────────────

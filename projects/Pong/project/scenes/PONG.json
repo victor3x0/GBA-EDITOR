@@ -54,7 +54,7 @@
           "component_type": "script",
           "id": "script",
           "active": true,
-          "script": "project/scripts/actors/PaddlePlayer.lua",
+          "script": "assets/scripts/actors/PaddlePlayer.lua",
           "exports_values": {}
         }
       ],
@@ -97,7 +97,7 @@
           "component_type": "script",
           "id": "script",
           "active": true,
-          "script": "project/scripts/actors/PaddleAuto.lua",
+          "script": "assets/scripts/actors/PaddleAuto.lua",
           "exports_values": {}
         }
       ],
@@ -115,7 +115,7 @@
   "cam_follow": "",
   "scroll_h": false,
   "scroll_v": false,
-  "script": "project/scripts/scenes/PONG.lua",
+  "script": "assets/scripts/scenes/PONG.lua",
   "text_bg": 1,
   "collision_layer": 0,
   "collision_map": [

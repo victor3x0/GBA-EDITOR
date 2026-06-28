@@ -6,6 +6,9 @@
 #include <gba_video.h>
 #include <gba_sprites.h>
 #include <gba_dma.h>
+#include <gba_systemcalls.h>
+#include <gba_interrupt.h>
+#include <gba_input.h>
 #include "tonc_tte.h"
 
 /* ── Accès mémoire GBA ──────────────────────────────────────────── */
@@ -65,6 +68,14 @@ void draw_clear(int col, int row, int len) {
 }
 
 #endif /* GBA_ENGINE_IMPL */
+
+/* ── Clear toutes les BG screenblocks ───────────────────────────── */
+static void bg_maps_clear(void) {
+    for (int sbb = 0; sbb < 32; sbb++) {
+        vu16 *m = MAP_RAM(sbb);
+        for (int j = 0; j < 1024; j++) m[j] = 0;
+    }
+}
 
 /* ── Shadow OAM ──────────────────────────────────────────────────── */
 static OBJATTR shadow_oam[128];

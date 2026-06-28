@@ -8,14 +8,8 @@
       "name": "Idle",
       "frames": [
         {
-          "cells": [
-            {
-              "cx": 0,
-              "cy": 0,
-              "tx": 0,
-              "ty": 0
-            }
-          ]
+          "col": 0,
+          "row": 0
         }
       ],
       "speed": 8,
@@ -25,14 +19,8 @@
       "name": "Moving",
       "frames": [
         {
-          "cells": [
-            {
-              "cx": 0,
-              "cy": 0,
-              "tx": 0,
-              "ty": 0
-            }
-          ]
+          "col": 0,
+          "row": 0
         }
       ],
       "speed": 8,

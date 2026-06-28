@@ -30,7 +30,7 @@ from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
-from core.project import (Project, Scene, SceneLayer, Background, Tileset, Actor, SpriteAsset,
+from core.project import (Project, Scene, SceneLayer, Background, Actor, SpriteAsset,
                      SpriteComponent, CollisionBoxComponent, ScriptComponent)
 from core.validator import validate_project
 
@@ -110,12 +110,11 @@ class BuildWorker(EventEmitter, threading.Thread):
 
             for scene in all_scenes:
                 # BG layers
-                bg_pairs: list[tuple[SceneLayer, Background, Tileset]] = []
+                bg_pairs: list[tuple[SceneLayer, Background]] = []
                 for layer in scene.active_layers():
                     bg = p.get_background(layer.background_name)
-                    tileset = p.get_tileset(bg.tileset_name) if bg else None
-                    if bg and tileset and tileset.asset:
-                        bg_pairs.append((layer, bg, tileset))
+                    if bg and bg.asset:
+                        bg_pairs.append((layer, bg))
 
                 # Actors
                 scene_actors: list[tuple[Actor, Optional[SpriteAsset]]] = []
@@ -176,6 +175,11 @@ class BuildWorker(EventEmitter, threading.Thread):
                     total_actors=sum(len(d["scene_actors"]) for d in all_scene_data),
                 )
 
+            # Pré-collecte de tous les globals (toutes scènes + prefabs)
+            precomputed_globals = None
+            if ok:
+                precomputed_globals = self._precompute_globals(p, all_scene_data, scene_names)
+
             # Transpilation Lua → C pour chaque scène
             if ok:
                 for d in all_scene_data:
@@ -183,6 +187,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                         break
                     ok = self._step_transpile_scripts(
                         p, d["scene"], d["scene_actors"], scene_names=scene_names,
+                        precomputed_global_names=precomputed_globals,
                     )
 
             if ok:
@@ -293,12 +298,60 @@ class BuildWorker(EventEmitter, threading.Thread):
         self._emit('log_line', '[gen] actor_types.h + actor_api.h')
         return True
 
+    # ── Pré-collecte des globals (toutes scènes réunies) ─────────────
+
+    def _precompute_globals(self, p, all_scene_data, scene_names):
+        """Parse tous les scripts Lua du projet et génère globals.h/c une seule fois."""
+        from scripting.parser import parse as _parse, LuaParseError
+        from scripting.globals import write_globals as _write_globals
+
+        all_asts = []
+        for d in all_scene_data:
+            scene = d["scene"]
+            for actor, _ in d["scene_actors"]:
+                comp = actor.get_component("script")
+                if comp and comp.active and comp.script:
+                    sp = p.asset_abs(comp.script)
+                    if sp and sp.exists() and sp.suffix.lower() == ".lua":
+                        try:
+                            all_asts.append(_parse(sp.read_text(encoding="utf-8")))
+                        except LuaParseError:
+                            pass
+            scene_script = getattr(scene, "script", "")
+            if scene_script:
+                sp = p.asset_abs(scene_script)
+                if sp and sp.exists() and sp.suffix.lower() == ".lua":
+                    try:
+                        all_asts.append(_parse(sp.read_text(encoding="utf-8")))
+                    except LuaParseError:
+                        pass
+
+        for pf in self.project.prefabs:
+            if getattr(pf, "max_instances", 0) <= 0:
+                continue
+            from core.project import ScriptComponent
+            sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
+            if sc and sc.script:
+                sp = p.asset_abs(sc.script)
+                if sp and sp.exists() and sp.suffix.lower() == ".lua":
+                    try:
+                        all_asts.append(_parse(sp.read_text(encoding="utf-8")))
+                    except LuaParseError:
+                        pass
+
+        names = _write_globals(p.src_dir, all_asts)
+        if names:
+            self._emit("log_line", f"[lua] globals: {', '.join('g_' + n for n in names)}")
+        return names
+
     # ── Transpilation Lua → C ─────────────────────────────────────────
 
-    def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None):
+    def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None,
+                                 precomputed_global_names=None):
         return transpile_all(
             p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
+            precomputed_global_names=precomputed_global_names,
         )
 
     # ── Génération de main.c ──────────────────────────────────────────

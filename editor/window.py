@@ -532,9 +532,7 @@ class MainWindow(QMainWindow):
         self.project = Project.create(path, name)
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
-        self._watcher.lua_changed.connect(self._on_lua_changed)
-        self._watcher.scene_changed.connect(self._on_scene_file_changed)
-        self._watcher.asset_changed.connect(self._on_asset_changed)
+        self._connect_watcher()
         add_recent(path, name)
         self._home_screen.refresh()
         self._enter_editor()
@@ -545,9 +543,7 @@ class MainWindow(QMainWindow):
         self.project = Project.open(path)
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
-        self._watcher.lua_changed.connect(self._on_lua_changed)
-        self._watcher.scene_changed.connect(self._on_scene_file_changed)
-        self._watcher.asset_changed.connect(self._on_asset_changed)
+        self._connect_watcher()
         add_recent(path, self.project.settings.name)
         self._home_screen.refresh()
         self._enter_editor()
@@ -712,8 +708,50 @@ class MainWindow(QMainWindow):
 
     # ── Réactivité fichiers externes ─────────────────────────────
 
+    def _connect_watcher(self):
+        """Connecte tous les signaux du ProjectWatcher aux handlers."""
+        w = self._watcher
+        w.asset_appeared.connect(self._on_asset_appeared)
+        w.asset_removed.connect(self._on_asset_removed)
+        w.asset_modified.connect(self._on_asset_modified)
+        w.lua_changed.connect(self._on_lua_changed)
+        w.scene_changed.connect(self._on_scene_file_changed)
+
+    def _on_asset_appeared(self, path: str):
+        """Nouveau fichier brut détecté dans assets/ — créer le sidecar si nécessaire."""
+        if not self.project:
+            return
+        p = Path(path)
+        if p.suffix.lower() in (".png", ".bmp"):
+            parent = p.parent.name
+            if parent == "sprites":
+                self.project.sync_sprite_png(p)
+                self._refresh_ui()
+                self._status.showMessage(f"Sprite importé : {p.name}", 3000)
+            elif parent == "backgrounds":
+                self.project.sync_background_png(p)
+                self._refresh_ui()
+                self._status.showMessage(f"Background importé : {p.name}", 3000)
+
+    def _on_asset_removed(self, path: str):
+        """Fichier brut supprimé de assets/ — retirer le sidecar et mettre à jour l'UI."""
+        if not self.project:
+            return
+        p = Path(path)
+        if p.suffix.lower() in (".png", ".bmp"):
+            parent = p.parent.name
+            if parent == "sprites":
+                self.project.remove_sprite_png(p)
+                self._refresh_ui()
+                self._status.showMessage(f"Sprite retiré : {p.name}", 3000)
+
+    def _on_asset_modified(self, path: str):
+        """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""
+        self._inspector.actor_inspector._refresh_sprite_preview()
+        self._status.showMessage(f"Asset modifié : {Path(path).name}", 2000)
+
     def _on_lua_changed(self, path: str):
-        """Un .lua a changé (éditeur externe) — mettre à jour l'inspector si c'est le script de l'actor courant."""
+        """Un .lua a changé (éditeur externe)."""
         self._inspector.actor_inspector.notify_lua_changed(path)
         self._status.showMessage(f"Script modifié : {Path(path).name}", 2000)
 
@@ -726,16 +764,10 @@ class MainWindow(QMainWindow):
             return
         scene_file = self.project.scenes._path(active.name)
         if Path(path) == scene_file:
-            # Recharger seulement la scène modifiée, pas tout le projet
             self.project.scenes.load_one(active.name)
             self.scene_editor.load_project(self.project)
             self._inspector.show_scene(self.project.active_scene, self.project)
             self._status.showMessage(f"Scène rechargée : {active.name}", 2000)
-
-    def _on_asset_changed(self, path: str):
-        """Un asset PNG a changé — rafraîchir la preview sprite dans l'inspector."""
-        self._inspector.actor_inspector._refresh_sprite_preview()
-        self._status.showMessage(f"Asset modifié : {Path(path).name}", 2000)
 
     def _open_toolchain_dialog(self):
         dlg = ToolchainDialog(self.toolchain, self)

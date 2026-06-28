@@ -1504,10 +1504,7 @@ class SceneEditor(QWidget):
         for i in range(4):
             bg_name = scene.bg_layers[i].background_name if scene else ""
             bg = project.get_background(bg_name) if bg_name else None
-            tileset = (
-                project.get_tileset(bg.tileset_name) if bg and bg.tileset_name else None
-            )
-            ap = project.asset_abs(tileset.asset) if tileset else None
+            ap = project.asset_abs(bg.asset) if bg and bg.asset else None
             if ap and ap.exists():
                 px = QPixmap(str(ap))
                 if not px.isNull():
@@ -1534,10 +1531,7 @@ class SceneEditor(QWidget):
         for i in range(4):
             bg_name = scene.bg_layers[i].background_name if scene else ""
             bg = project.get_background(bg_name) if bg_name else None
-            tileset = (
-                project.get_tileset(bg.tileset_name) if bg and bg.tileset_name else None
-            )
-            ap = project.asset_abs(tileset.asset) if tileset else None
+            ap = project.asset_abs(bg.asset) if bg and bg.asset else None
             if ap and ap.exists():
                 self._gba_scene.set_bg(i, QPixmap(str(ap)))
             else:
@@ -1681,12 +1675,7 @@ class SceneEditor(QWidget):
             else ""
         )
         bg = self._project.get_background(bg_name) if bg_name else None
-        tileset = (
-            self._project.get_tileset(bg.tileset_name)
-            if bg and bg.tileset_name
-            else None
-        )
-        ap = self._project.asset_abs(tileset.asset) if tileset else None
+        ap = self._project.asset_abs(bg.asset) if bg and bg.asset else None
         if ap and ap.exists():
             self._gba_scene.set_bg(bg_index, QPixmap(str(ap)))
         else:

@@ -77,9 +77,11 @@ def generate_actor_api(
     max_actors: int | None = None,  # taille réelle du tableau g_actors
 ) -> None:
     """Écrit actor_api_static.h (copie) et actor_api.h (généré)."""
+    for static_h in ("actor_api_static.h", "gba_engine.h", "gba_font.h", "runtime.h"):
+        src_h = RUNTIME_DIR / "include" / static_h
+        if src_h.exists():
+            shutil.copy2(src_h, p.src_dir / static_h)
     _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
-    if _api_static.exists():
-        shutil.copy2(_api_static, p.src_dir / "actor_api_static.h")
 
     prefab_slots = sum(pf.max_instances for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
     total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)
