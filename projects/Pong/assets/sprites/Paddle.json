@@ -1,0 +1,49 @@
+{
+  "name": "Paddle",
+  "asset": "assets/sprites/Paddle.png",
+  "frame_w": 8,
+  "frame_h": 32,
+  "states": [
+    {
+      "name": "Idle",
+      "frames": [
+        {
+          "cells": [
+            {
+              "cx": 0,
+              "cy": 0,
+              "tx": 0,
+              "ty": 0
+            },
+            {
+              "cx": 0,
+              "cy": 1,
+              "tx": 0,
+              "ty": 1
+            },
+            {
+              "cx": 0,
+              "cy": 2,
+              "tx": 0,
+              "ty": 2
+            },
+            {
+              "cx": 0,
+              "cy": 3,
+              "tx": 0,
+              "ty": 3
+            }
+          ]
+        }
+      ],
+      "speed": 8,
+      "loop": true
+    }
+  ],
+  "collision": {
+    "x": 0,
+    "y": 0,
+    "w": 16,
+    "h": 16
+  }
+}

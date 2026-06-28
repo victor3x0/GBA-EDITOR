@@ -1,0 +1,48 @@
+{
+  "name": "Ball",
+  "asset": "assets/sprites/Ball.png",
+  "frame_w": 8,
+  "frame_h": 8,
+  "states": [
+    {
+      "name": "Idle",
+      "frames": [
+        {
+          "cells": [
+            {
+              "cx": 0,
+              "cy": 0,
+              "tx": 0,
+              "ty": 0
+            }
+          ]
+        }
+      ],
+      "speed": 8,
+      "loop": true
+    },
+    {
+      "name": "Moving",
+      "frames": [
+        {
+          "cells": [
+            {
+              "cx": 0,
+              "cy": 0,
+              "tx": 0,
+              "ty": 0
+            }
+          ]
+        }
+      ],
+      "speed": 8,
+      "loop": true
+    }
+  ],
+  "collision": {
+    "x": 0,
+    "y": 0,
+    "w": 16,
+    "h": 16
+  }
+}

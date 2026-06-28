@@ -1,0 +1,36 @@
+{
+  "name": "Ball",
+  "components": [
+    {
+      "component_type": "sprite",
+      "id": "Ball",
+      "active": true,
+      "sprite_name": "Ball",
+      "initial_state": "Idle"
+    },
+    {
+      "component_type": "collision_box",
+      "id": "Bounding Box",
+      "active": true,
+      "solid": true,
+      "tag": "body",
+      "x": 0,
+      "y": 0,
+      "w": 8,
+      "h": 8,
+      "on_collision_enter": "onCollisionEnter",
+      "on_collision_exit": "onCollisionExit",
+      "on_trigger_enter": "onTriggerEnter",
+      "on_trigger_exit": "onTriggerExit"
+    },
+    {
+      "component_type": "script",
+      "id": "script",
+      "active": true,
+      "script": "project/scripts/actors/Ball.lua",
+      "exports_values": {}
+    }
+  ],
+  "pal_bank": 1,
+  "max_instances": 1
+}
