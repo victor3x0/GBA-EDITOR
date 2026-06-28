@@ -587,16 +587,9 @@ class ActorInspector(QWidget):
         px = QPixmap(str(asset_path))
         if px.isNull():
             return
-        from PyQt6.QtGui import QPainter
-        cropped = QPixmap(sprite.frame_w, sprite.frame_h)
-        cropped.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(cropped)
-        for tc in frame.cells:
-            from PyQt6.QtCore import QRect
-            src = QRect(tc.tx * 8, tc.ty * 8, 8, 8)
-            dst = QRect(tc.cx * 8, tc.cy * 8, 8, 8)
-            painter.drawPixmap(dst, px, src)
-        painter.end()
+        x = frame.col * sprite.frame_w
+        y = frame.row * sprite.frame_h
+        cropped = px.copy(x, y, sprite.frame_w, sprite.frame_h)
         scaled = cropped.scaled(
             44, 44,
             Qt.AspectRatioMode.KeepAspectRatio,

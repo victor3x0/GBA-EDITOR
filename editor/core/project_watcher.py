@@ -57,6 +57,7 @@ class ProjectWatcher(QObject):
 
         dirs_to_watch = [
             project_path / "project" / "scenes",
+            project_path / "project" / "sprites",
             project_path / "project" / "scripts",
             project_path / "assets",
             project_path / "assets" / "sprites",
@@ -117,11 +118,11 @@ class ProjectWatcher(QObject):
     def _index_files(self, project_path: Path):
         """Ajoute tous les fichiers pertinents à la surveillance."""
         patterns = [
-            ("project/scripts",  "*.lua"),
-            ("project/scenes",   "*.json"),
-            ("assets/sprites",   "*.png"),
-            ("assets/sprites",   "*.json"),
-            ("assets",           "*.png"),
+            ("project/scripts", "*.lua"),
+            ("project/scenes",  "*.json"),
+            ("project/sprites", "*.json"),
+            ("assets",          "*.png"),
+            ("assets/sprites",  "*.png"),
         ]
         for subdir, glob in patterns:
             d = project_path / subdir
@@ -158,20 +159,12 @@ class ProjectWatcher(QObject):
         d = Path(dir_str)
         if not d.exists():
             return
-
-        present = {str(f) for f in d.iterdir() if f.suffix in (".lua", ".json", ".png")}
-        watched = set(self._watcher.files())
-
-        # Nouveaux fichiers → indexer + émettre
-        for path_str in present - watched:
-            self._watcher.addPath(path_str)
-            self._emit(path_str)
-
-        # Fichiers disparus → émettre asset_changed pour déclencher le sync
-        for path_str in watched - present:
-            if Path(path_str).parent == d:
-                self._watcher.removePath(path_str)
-                self.asset_changed.emit(path_str)
+        # Re-indexer les nouveaux fichiers dans ce dossier
+        for f in d.iterdir():
+            if f.suffix in (".lua", ".json", ".png") and str(f) not in self._watcher.files():
+                self._watcher.addPath(str(f))
+                # Émettre immédiatement pour les nouveaux fichiers
+                self._emit(str(f))
 
     def _emit(self, path_str: str):
         path = Path(path_str)

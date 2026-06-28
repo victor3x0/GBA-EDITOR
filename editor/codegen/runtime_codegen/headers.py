@@ -23,9 +23,8 @@ def generate_actor_types(
 ) -> None:
     """Écrit actor_types_static.h (copie) et actor_types.h (généré)."""
     _types_static = RUNTIME_DIR / "include" / "actor_types_static.h"
-    if not _types_static.exists():
-        raise FileNotFoundError(f"[headers] actor_types_static.h manquant : {_types_static}")
-    shutil.copy2(_types_static, p.src_dir / "actor_types_static.h")
+    if _types_static.exists():
+        shutil.copy2(_types_static, p.src_dir / "actor_types_static.h")
 
     h = [
         "/* actor_types.h — struct Actor partagée entre main.c et les scripts */",
@@ -79,9 +78,8 @@ def generate_actor_api(
 ) -> None:
     """Écrit actor_api_static.h (copie) et actor_api.h (généré)."""
     _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
-    if not _api_static.exists():
-        raise FileNotFoundError(f"[headers] actor_api_static.h manquant : {_api_static}")
-    shutil.copy2(_api_static, p.src_dir / "actor_api_static.h")
+    if _api_static.exists():
+        shutil.copy2(_api_static, p.src_dir / "actor_api_static.h")
 
     prefab_slots = sum(pf.max_instances for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
     total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)

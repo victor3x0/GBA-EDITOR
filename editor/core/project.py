@@ -220,47 +220,16 @@ class Background(Resource):
 # ──────────────────────────────────────────────────────────────────
 
 @dataclass
-class TileCell:
-    """Une tile placée sur le canvas d'une frame.
-    cx/cy = position dans le canvas (unités de 8px).
-    tx/ty = position dans le spritesheet (unités de 8px).
-    """
-    cx: int = 0   # canvas col
-    cy: int = 0   # canvas row
-    tx: int = 0   # tile col dans le spritesheet
-    ty: int = 0   # tile row dans le spritesheet
-
-    def to_dict(self) -> dict:
-        return {"cx": self.cx, "cy": self.cy, "tx": self.tx, "ty": self.ty}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "TileCell":
-        return cls(cx=d.get("cx", 0), cy=d.get("cy", 0),
-                   tx=d.get("tx", 0), ty=d.get("ty", 0))
-
-
-@dataclass
 class AnimFrame:
-    """Une frame = arrangement de tiles 8×8 sur le canvas frame_w×frame_h."""
-    cells: list[TileCell] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        return {"cells": [c.to_dict() for c in self.cells]}
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "AnimFrame":
-        # Rétrocompat : ancien format {col, row}
-        if "col" in d:
-            col, row = d.get("col", 0), d.get("row", 0)
-            return cls(cells=[TileCell(cx=0, cy=0, tx=col, ty=row)])
-        return cls(cells=[TileCell.from_dict(c) for c in d.get("cells", [])])
+    col: int = 0
+    row: int = 0
 
 
 @dataclass
 class AnimState:
     name: str = "Idle"
-    frames: list[AnimFrame] = field(default_factory=lambda: [AnimFrame()])
-    speed: int = 8
+    frames: list[AnimFrame] = field(default_factory=lambda: [AnimFrame(0, 0)])
+    speed: int = 8        # ticks GBA (60fps) entre deux frames
     loop: bool = True
 
 
@@ -333,7 +302,7 @@ class SpriteAsset(Resource):
             "states": [
                 {
                     "name":   s.name,
-                    "frames": [f.to_dict() for f in s.frames],
+                    "frames": [{"col": f.col, "row": f.row} for f in s.frames],
                     "speed":  s.speed,
                     "loop":   s.loop,
                 }
@@ -347,28 +316,11 @@ class SpriteAsset(Resource):
 
     @classmethod
     def from_dict(cls, d: dict) -> "SpriteAsset":
-        fw = d.get("frame_w", 16)
-        fh = d.get("frame_h", 16)
-        tw = max(1, fw // 8)
-        th = max(1, fh // 8)
-
-        def _parse_frame(f: dict) -> AnimFrame:
-            if "col" in f:
-                # Rétrocompat : col/row en unités frame → remplir toute la grille
-                base_tx = f.get("col", 0) * tw
-                base_ty = f.get("row", 0) * th
-                cells = [
-                    TileCell(cx=cx, cy=cy, tx=base_tx + cx, ty=base_ty + cy)
-                    for cy in range(th)
-                    for cx in range(tw)
-                ]
-                return AnimFrame(cells=cells)
-            return AnimFrame.from_dict(f)
-
         states = [
             AnimState(
                 name   = s.get("name", "Idle"),
-                frames = [_parse_frame(f) for f in s.get("frames", [{}])],
+                frames = [AnimFrame(f.get("col", 0), f.get("row", 0))
+                          for f in s.get("frames", [{"col": 0, "row": 0}])],
                 speed  = s.get("speed", 8),
                 loop   = s.get("loop", True),
             )
@@ -872,7 +824,7 @@ class Project:
 
     @property
     def sprites_dir(self) -> Path:
-        return self.assets_dir / "sprites"
+        return self.project_dir / "sprites"
 
     @property
     def tilesets_dir(self) -> Path:
@@ -1133,7 +1085,8 @@ class Project:
         self.scenes.save_all()
 
     def load(self):
-        for sub in ("project/scenes", "project/prefab",
+        # S'assurer que tous les sous-dossiers existent (rétrocompat projets anciens)
+        for sub in ("project/scenes", "project/prefab", "project/sprites",
                     "project/tilesets", "project/backgrounds",
                     "project/scripts", "project/scripts/actors", "project/scripts/behaviors",
                     "project/sfx", "project/music", "project/fonts",
@@ -1143,36 +1096,12 @@ class Project:
         self.load_settings()
         self.tilesets.load()
         self.sprites.load()
-        self._sync_sprite_pngs()   # auto-crée les JSONs manquants
         self.sfx.load()
         self.music.load()
         self.fonts.load()
         self.backgrounds.load()
         self.prefabs.load()
         self._load_scenes_with_migration()
-
-    def _sync_sprite_pngs(self):
-        """Synchronise assets/sprites/ ↔ liste sprites en mémoire + JSONs sidecar."""
-        sprites_dir = self.assets_dir / "sprites"
-        if not sprites_dir.exists():
-            return
-
-        # Ajoute les PNGs sans SpriteAsset
-        existing_names = {sp.name for sp in self.sprites}
-        for png in sorted(sprites_dir.glob("*.png")):
-            if png.stem not in existing_names:
-                sp = SpriteAsset(name=png.stem, asset=self.asset_rel(png))
-                self.sprites.append(sp)
-                self.sprites.save(sp)
-
-        # Supprime les SpriteAssets dont le PNG a disparu
-        present_pngs = {p.stem for p in sprites_dir.glob("*.png")}
-        orphans = [sp for sp in list(self.sprites) if sp.name not in present_pngs]
-        for sp in orphans:
-            self.sprites.remove(sp)
-            json_path = self.sprites_dir / f"{sp.name}.json"
-            if json_path.exists():
-                json_path.unlink()
 
     # ── Création / ouverture ──────────────────────────────────────
 

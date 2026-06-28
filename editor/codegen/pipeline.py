@@ -28,7 +28,7 @@ from codegen.asset_pipeline import (
 )
 from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
-from codegen.runtime_codegen.lua_compiler import transpile_all_scenes
+from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
 from core.project import (Project, Scene, SceneLayer, Background, Tileset, Actor, SpriteAsset,
                      SpriteComponent, CollisionBoxComponent, ScriptComponent)
@@ -176,11 +176,14 @@ class BuildWorker(EventEmitter, threading.Thread):
                     total_actors=sum(len(d["scene_actors"]) for d in all_scene_data),
                 )
 
-            # Transpilation Lua → C — toutes les scènes en une passe
+            # Transpilation Lua → C pour chaque scène
             if ok:
-                ok = self._step_transpile_scripts(
-                    p, all_scene_data, scene_names=scene_names,
-                )
+                for d in all_scene_data:
+                    if not ok:
+                        break
+                    ok = self._step_transpile_scripts(
+                        p, d["scene"], d["scene_actors"], scene_names=scene_names,
+                    )
 
             if ok:
                 ok = self._step_gen_main(
@@ -292,9 +295,9 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     # ── Transpilation Lua → C ─────────────────────────────────────────
 
-    def _step_transpile_scripts(self, p, all_scene_data, scene_names=None):
-        return transpile_all_scenes(
-            p, all_scene_data, self.project.prefabs, self._emit,
+    def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None):
+        return transpile_all(
+            p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
         )
 

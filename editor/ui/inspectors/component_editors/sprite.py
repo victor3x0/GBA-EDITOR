@@ -39,8 +39,7 @@ class SpriteEditor(BaseComponentEditor):
             cb_h.clear()
             for v in _VALID_SIZES.get(w_val, [8]):
                 cb_h.addItem(str(v))
-            valid = _VALID_SIZES.get(w_val, [8])
-            target = str(keep_h) if keep_h in valid else str(valid[0])
+            target = str(keep_h) if keep_h in _VALID_SIZES.get(w_val, []) else str(_VALID_SIZES[w_val][0])
             cb_h.setCurrentText(target)
             cb_h.blockSignals(False)
 
@@ -111,22 +110,26 @@ class SpriteEditor(BaseComponentEditor):
 
     # ── Helpers ──────────────────────────────────────────────────────
 
-    def _get_sprite(self, comp):
-        proj = self.insp._project
-        return proj.get_sprite(comp.sprite_name) if comp.sprite_name else None
+    def _ensure_sprite(self, comp):
+        from core.project import SpriteAsset
+        proj   = self.insp._project
+        sprite = proj.get_sprite(comp.sprite_name) if comp.sprite_name else None
+        if not sprite:
+            sprite = SpriteAsset(name=f"{self.insp._actor.name}_{comp.id}")
+            proj.sprites.append(sprite)
+            comp.sprite_name = sprite.name
+        return sprite
 
     def _set_sprite_field(self, comp, field, value):
         if self.insp._blocking or not self.insp._actor: return
-        sprite = self._get_sprite(comp)
-        if not sprite: return
+        sprite = self._ensure_sprite(comp)
         setattr(sprite, field, value)
         self.insp._project.save_sprite(sprite)
         self.insp._save_component_change(comp)
 
     def _set_anim_speed(self, comp, value: int):
         if self.insp._blocking or not self.insp._actor: return
-        sprite = self._get_sprite(comp)
-        if not sprite: return
+        sprite = self._ensure_sprite(comp)
         for state in sprite.states:
             state.speed = value
         self.insp._project.save_sprite(sprite)

@@ -36,7 +36,6 @@ from ui.build_panel import BuildPanel, ToolchainBar, ToolchainDialog
 from ui.inspectors import DynamicInspector
 from ui.sound_panel import SoundMixerScreen
 from ui.script_editor import ScriptEditorScreen
-from ui.sprite_editor import SpriteEditorScreen
 from ui.home_screen import HomeScreen, add_recent
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
@@ -244,10 +243,8 @@ class MainWindow(QMainWindow):
 
         # Index 1+ — Écrans éditeur
         self._build_scene_manager_screen()
-        for title in ("Tileset Manager", "Background Editor"):
+        for title in ("Tileset Manager", "Background Editor", "Sprite Editor"):
             self._screen_stack.addWidget(self._make_placeholder_screen(title))
-        self._sprite_editor = SpriteEditorScreen()
-        self._screen_stack.addWidget(self._sprite_editor)
         self._sound_mixer = SoundMixerScreen()
         self._screen_stack.addWidget(self._sound_mixer)
         self._script_editor = ScriptEditorScreen()
@@ -582,7 +579,6 @@ class MainWindow(QMainWindow):
         self.build_panel.btn_build.setEnabled(can_build)
         self.project_panel.load_project(self.project)
         self._sound_mixer.load_project(self.project)
-        self._sprite_editor.load_project(self.project)
         self._inspector.set_project(self.project)
         self._script_editor.set_project(self.project)
         if self.project.active_scene:
@@ -739,11 +735,7 @@ class MainWindow(QMainWindow):
     def _on_asset_changed(self, path: str):
         """Un asset PNG a changé — rafraîchir la preview sprite dans l'inspector."""
         self._inspector.actor_inspector._refresh_sprite_preview()
-        p = Path(path)
-        if p.suffix.lower() in (".png", ".bmp") and "sprites" in p.parts and self.project:
-            self.project._sync_sprite_pngs()
-            self._sprite_editor.load_project(self.project)
-        self._status.showMessage(f"Asset modifié : {p.name}", 2000)
+        self._status.showMessage(f"Asset modifié : {Path(path).name}", 2000)
 
     def _open_toolchain_dialog(self):
         dlg = ToolchainDialog(self.toolchain, self)

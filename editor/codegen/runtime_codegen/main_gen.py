@@ -361,10 +361,6 @@ def _gen_scene_init(
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
     L = [f"static void scene_init_{sym}(void) {{"]
-    L.append("    REG_DISPCNT = 0;")
-    L.append("    *((vu16*)0x04000008)=0; *((vu16*)0x0400000A)=0;")
-    L.append("    *((vu16*)0x0400000C)=0; *((vu16*)0x0400000E)=0;")
-    L.append("    { vu16*_tm=(vu16*)(0x06000000+31*0x800); for(int _i=0;_i<32*32;_i++) _tm[_i]=0; }")
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
     # Cmap dispatch
@@ -376,7 +372,7 @@ def _gen_scene_init(
         L.append("    g_active_cmap = NULL; g_cmap_w = 0; g_cmap_h = 0;")
     # BG layers
     if bgi:
-        L.append(f"    copy16(TILE_RAM(0), {sym}_tilesetTiles, {sym}_tilesetTilesLen);")
+        L.append("    copy16(TILE_RAM(0), tilesetTiles, tilesetTilesLen);")
         for bi in bgi:
             ms = bi["map_size"]
             gcols = 64 if (ms & 1) else 32
@@ -387,8 +383,9 @@ def _gen_scene_init(
             val = (pri & 3) | (sbb & 0x1F) << 8 | ms << 14
             L.append(f"    *((vu16*)(0x04000008+{bg}*2))=0x{val:04X};")
     # Sprites VRAM
+    all_sprites = scene_actors + (p._prefab_sprites_cache if hasattr(p, "_prefab_sprites_cache") else [])
     done_vram: set[str] = set()
-    for _, sprite in scene_actors:
+    for _, sprite in all_sprites:
         if not sprite or not sprite.asset or sprite.name in done_vram:
             continue
         done_vram.add(sprite.name)
@@ -406,7 +403,7 @@ def _gen_scene_init(
                 L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
     # Palettes BG
     if bgi:
-        L.append(f"    copy16(PAL_BG_RAM, {sym}_tilesetPal, {sym}_tilesetPalLen);")
+        L.append("    copy16(PAL_BG_RAM, tilesetPal, tilesetPalLen);")
     # TTE
     text_bg = getattr(scene, "text_bg", -1)
     if text_bg in {0, 1, 2, 3}:
@@ -722,16 +719,8 @@ def generate_main(
             seen_incs.add(line)
             L.append(line)
 
-    L += [
-        "/* main.c — généré par GBA Editor */",
-        "#define GBA_ENGINE_IMPL",
-        '#include <gba_interrupt.h>',
-        '#include <gba_systemcalls.h>',
-        '#include <gba_input.h>',
-        '#include "gba_engine.h"',
-    ]
     _add_inc('#include "actor_api.h"')
-    _add_inc('#include "globals.h"')
+    _add_inc('#include "actor_globals.h"')
     if has_sound and soundbank_h.exists():
         _add_inc('#include <maxmod.h>')
         _add_inc(f'#include "{soundbank_h.name}"')
@@ -741,6 +730,8 @@ def generate_main(
         bgi_d = _bg_info(p, d["bg_pairs"])
         if bgi_d:
             _add_inc(f'#include "{_sym(d["scene"].name)}_tileset.h"')
+            for bi in bgi_d:
+                _add_inc(f'#include "{bi["stem"]}.h"')
         for _, sprite in d["scene_actors"]:
             if sprite and sprite.asset:
                 _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
