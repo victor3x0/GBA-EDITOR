@@ -35,7 +35,7 @@ gba-editor/
 │   ├── icon.ico / icon.png
 │   └── linux/                       ← AppImage (job CI en pause)
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
-└── projects/                        ← projets utilisateur
+└── Project Demo/                    ← modèles de projet téléchargeables (voir README)
     └── Pong/                        ← projet démo
         ├── project.json
         ├── assets/

@@ -3,7 +3,7 @@ __pycache__/
 *.py[cod]
 
 # GBA Editor — artefacts de build uniquement (générés à chaque build)
-projects/*/build/
+Project Demo/*/build/
 
 # Config toolchain locale — chemins devkitPro/mGBA spécifiques à la machine
 editor/core/toolchain.json
