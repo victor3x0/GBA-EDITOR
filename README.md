@@ -2,6 +2,10 @@
 
 Un éditeur visuel pour créer des jeux Game Boy Advance : scènes, sprites, collisions et un langage de scripts intégré (Lua, transpilé en C) depuis une seule interface. Basé sur Python/PyQt6, s'appuie sur la toolchain officielle **devkitPro** pour compiler de vraies ROMs `.gba` jouables sur émulateur ou hardware.
 
+| Scene Manager | Sprite Editor | Script Editor |
+|:---:|:---:|:---:|
+| ![Scene Manager](docs/screenshots/SceneEditor.png) | ![Sprite Editor](docs/screenshots/SpriteEditor.png) | ![Script Editor](docs/screenshots/ScriptEditor.png) |
+
 ---
 
 ## Installation
