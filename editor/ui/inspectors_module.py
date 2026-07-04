@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.project import (
-    Project, Scene, Actor, BackgroundAsset, SpriteAsset,
+    Project, Scene, Actor, Background, BackgroundAsset, SpriteAsset,
     COMPONENT_REGISTRY, component_type_name, MIME_SCRIPT,
 )
 from core.asset_manager import AssignSlot, BgLayerRow
