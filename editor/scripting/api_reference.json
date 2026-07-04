@@ -1,0 +1,421 @@
+{
+  "categories": [
+    {
+      "name": "Mouvement",
+      "entries": [
+        {
+          "label": "self:move(dx, dy)",
+          "snippet": "self:move(dx, dy)",
+          "description": "Déplace l'actor de (dx, dy) pixels ce frame. À appeler dans on_update.",
+          "params": [
+            { "name": "dx", "type": "number", "description": "Déplacement horizontal en pixels (négatif = gauche)" },
+            { "name": "dy", "type": "number", "description": "Déplacement vertical en pixels (négatif = haut)" }
+          ],
+          "doc_anchor": "self-move"
+        },
+        {
+          "label": "self:set_pos(x, y)",
+          "snippet": "self:set_pos(x, y)",
+          "description": "Téléporte l'actor à la position monde (x, y) instantanément.",
+          "params": [
+            { "name": "x", "type": "number", "description": "Position X monde en pixels" },
+            { "name": "y", "type": "number", "description": "Position Y monde en pixels" }
+          ],
+          "doc_anchor": "self-set_pos"
+        },
+        {
+          "label": "self:set_velocity(vx, vy)",
+          "snippet": "self:set_velocity(vx, vy)",
+          "description": "Définit la vélocité. Appliquée chaque frame par apply_velocity.",
+          "params": [
+            { "name": "vx", "type": "number", "description": "Vélocité horizontale en pixels/frame" },
+            { "name": "vy", "type": "number", "description": "Vélocité verticale en pixels/frame" }
+          ],
+          "doc_anchor": "self-set_velocity"
+        },
+        {
+          "label": "self:apply_velocity()",
+          "snippet": "self:apply_velocity()",
+          "description": "Applique vx/vy accumulés à la position. À appeler en fin de on_update.",
+          "params": [],
+          "doc_anchor": "self-apply_velocity"
+        }
+      ]
+    },
+    {
+      "name": "Position & Vélocité",
+      "entries": [
+        {
+          "label": "self:get_x()",
+          "snippet": "self:get_x()",
+          "description": "Retourne la position X monde de l'actor.",
+          "params": [],
+          "returns": "number — position X en pixels",
+          "doc_anchor": "self-get_x"
+        },
+        {
+          "label": "self:get_y()",
+          "snippet": "self:get_y()",
+          "description": "Retourne la position Y monde de l'actor.",
+          "params": [],
+          "returns": "number — position Y en pixels",
+          "doc_anchor": "self-get_y"
+        },
+        {
+          "label": "self:get_vx()",
+          "snippet": "self:get_vx()",
+          "description": "Retourne la vélocité X courante de l'actor.",
+          "params": [],
+          "returns": "number — vélocité X en pixels/frame",
+          "doc_anchor": "self-get_vx"
+        },
+        {
+          "label": "self:get_vy()",
+          "snippet": "self:get_vy()",
+          "description": "Retourne la vélocité Y courante de l'actor.",
+          "params": [],
+          "returns": "number — vélocité Y en pixels/frame",
+          "doc_anchor": "self-get_vy"
+        }
+      ]
+    },
+    {
+      "name": "Animation",
+      "entries": [
+        {
+          "label": "self:play_anim(\"name\")",
+          "snippet": "self:play_anim(\"Idle\")",
+          "description": "Démarre l'animation nommée définie dans le SpriteAsset. Sans effet si déjà active.",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom de l'état d'animation (ex: \"Idle\", \"Run\", \"Jump\")" }
+          ],
+          "doc_anchor": "self-play_anim"
+        },
+        {
+          "label": "self:set_frame(n)",
+          "snippet": "self:set_frame(0)",
+          "description": "Force la frame courante du sprite (0 = première frame).",
+          "params": [
+            { "name": "n", "type": "number", "description": "Index de frame (0-based)" }
+          ],
+          "doc_anchor": "self-set_frame"
+        },
+        {
+          "label": "self:get_tag()",
+          "snippet": "self:get_tag()",
+          "description": "Retourne le TAG_* de cet actor. Typiquement utilisé dans on_collide sur 'other' pour identifier ce qu'on a touché.",
+          "params": [],
+          "returns": "number — TAG_* de l'actor",
+          "doc_anchor": "self-get_tag"
+        },
+        {
+          "label": "self:set_pal(bank)",
+          "snippet": "self:set_pal(1)",
+          "description": "Change la palette bank OAM à la volée (0-15). Utile pour un flash de dégâts ou un effet d'invincibilité.",
+          "params": [
+            { "name": "bank", "type": "number", "description": "Index de palette (0-15)" }
+          ],
+          "doc_anchor": "self-set_pal"
+        },
+        {
+          "label": "self:set_visible(v)",
+          "snippet": "self:set_visible(true)",
+          "description": "Affiche ou cache le sprite sans désactiver l'actor.",
+          "params": [
+            { "name": "v", "type": "bool", "description": "true = visible, false = caché" }
+          ],
+          "doc_anchor": "self-set_visible"
+        }
+      ]
+    },
+    {
+      "name": "Input",
+      "entries": [
+        {
+          "label": "input.held(\"btn\")",
+          "snippet": "input.held(\"a\")",
+          "description": "Vrai si le bouton est maintenu appuyé ce frame.",
+          "params": [
+            { "name": "btn", "type": "string", "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\"" }
+          ],
+          "returns": "bool",
+          "doc_anchor": "input-held"
+        },
+        {
+          "label": "input.pressed(\"btn\")",
+          "snippet": "input.pressed(\"a\")",
+          "description": "Vrai uniquement le premier frame où le bouton est appuyé (front montant).",
+          "params": [
+            { "name": "btn", "type": "string", "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\"" }
+          ],
+          "returns": "bool",
+          "doc_anchor": "input-pressed"
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "entries": [
+        {
+          "label": "self:play_sfx()",
+          "snippet": "self:play_sfx()",
+          "description": "Joue le Sfx configuré dans le component SoundFX de cet actor (voir l'inspector).",
+          "params": [],
+          "doc_anchor": "self-play_sfx"
+        },
+        {
+          "label": "sfx.play(\"name\")",
+          "snippet": "sfx.play(\"name\")",
+          "description": "Joue un effet sonore one-shot (défini dans project/sfx/).",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom du Sfx (sans extension)" }
+          ],
+          "doc_anchor": "sfx-play"
+        },
+        {
+          "label": "music.play(\"name\")",
+          "snippet": "music.play(\"name\")",
+          "description": "Démarre une piste musicale en boucle.",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom de la Music (sans extension)" }
+          ],
+          "doc_anchor": "music-play"
+        },
+        {
+          "label": "music.stop()",
+          "snippet": "music.stop()",
+          "description": "Arrête la musique en cours.",
+          "params": [],
+          "doc_anchor": "music-stop"
+        }
+      ]
+    },
+    {
+      "name": "Caméra",
+      "entries": [
+        {
+          "label": "camera.set(x, y)",
+          "snippet": "camera.set(x, y)",
+          "description": "Place la caméra exactement à (x, y) sans interpolation.",
+          "params": [
+            { "name": "x", "type": "number", "description": "Position X caméra en pixels" },
+            { "name": "y", "type": "number", "description": "Position Y caméra en pixels" }
+          ],
+          "doc_anchor": "camera-set"
+        },
+        {
+          "label": "camera.follow(x, y, mx, my)",
+          "snippet": "camera.follow(self:get_x(), self:get_y(), 40, 20)",
+          "description": "Suit le point (x, y) avec une zone morte. Typiquement appelé dans on_late_update.",
+          "params": [
+            { "name": "x",        "type": "number", "description": "Point cible X" },
+            { "name": "y",        "type": "number", "description": "Point cible Y" },
+            { "name": "margin_x", "type": "number", "description": "Marge horizontale avant de bouger (pixels)" },
+            { "name": "margin_y", "type": "number", "description": "Marge verticale avant de bouger (pixels)" }
+          ],
+          "doc_anchor": "camera-follow"
+        },
+        {
+          "label": "camera.get_x()",
+          "snippet": "camera.get_x()",
+          "description": "Retourne la position X courante de la caméra.",
+          "params": [],
+          "returns": "number — position X caméra",
+          "doc_anchor": "camera-get_x"
+        },
+        {
+          "label": "camera.get_y()",
+          "snippet": "camera.get_y()",
+          "description": "Retourne la position Y courante de la caméra.",
+          "params": [],
+          "returns": "number — position Y caméra",
+          "doc_anchor": "camera-get_y"
+        }
+      ]
+    },
+    {
+      "name": "Affichage HUD",
+      "entries": [
+        {
+          "label": "display.print(col, row, fmt, ...)",
+          "snippet": "display.print(1, 1, \"Score: %d\", score)",
+          "description": "Affiche du texte formaté style printf à (col, row) en tiles (1 tile = 8px).",
+          "params": [
+            { "name": "col", "type": "number", "description": "Colonne en tiles (0-29)" },
+            { "name": "row", "type": "number", "description": "Ligne en tiles (0-19)" },
+            { "name": "fmt", "type": "string", "description": "Format printf (ex: \"Score: %d\")" },
+            { "name": "...", "type": "any",    "description": "Arguments du format (optionnels)" }
+          ],
+          "doc_anchor": "display-print"
+        },
+        {
+          "label": "display.clear(col, row, len)",
+          "snippet": "display.clear(0, 0, 30)",
+          "description": "Efface len tiles à partir de (col, row) sur le calque HUD.",
+          "params": [
+            { "name": "col", "type": "number", "description": "Colonne de départ en tiles" },
+            { "name": "row", "type": "number", "description": "Ligne en tiles" },
+            { "name": "len", "type": "number", "description": "Nombre de tiles à effacer" }
+          ],
+          "doc_anchor": "display-clear"
+        }
+      ]
+    },
+    {
+      "name": "Communication",
+      "entries": [
+        {
+          "label": "get_actor(\"name\")",
+          "snippet": "get_actor(\"Player\")",
+          "description": "Retourne une référence à l'actor nommé dans la scène active.",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom exact de l'actor dans la scène" }
+          ],
+          "returns": "actor — référence actor, ou nil si absent",
+          "doc_anchor": "get_actor"
+        }
+      ]
+    },
+    {
+      "name": "Spawn",
+      "entries": [
+        {
+          "label": "actor.spawn(\"prefab\", x, y)",
+          "snippet": "actor.spawn(\"Bullet\", self:get_x(), self:get_y())",
+          "description": "Instancie un prefab poolé à (x, y). Le prefab doit avoir max_instances > 0 dans l'éditeur. Retourne l'index du slot ou -1 si le pool est épuisé.",
+          "params": [
+            { "name": "prefab", "type": "string", "description": "Nom exact du Prefab (tel que créé dans l'éditeur)" },
+            { "name": "x",      "type": "number", "description": "Position X monde en pixels" },
+            { "name": "y",      "type": "number", "description": "Position Y monde en pixels" }
+          ],
+          "returns": "number — index slot dans g_actors[], ou -1 si pool plein",
+          "doc_anchor": "actor-spawn"
+        }
+      ]
+    },
+    {
+      "name": "Variables globales",
+      "entries": [
+        {
+          "label": "global.get(\"name\")",
+          "snippet": "global.get(\"score\")",
+          "description": "Lit une variable globale entière partagée entre tous les scripts.",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom de la variable globale" }
+          ],
+          "returns": "number — valeur entière courante",
+          "doc_anchor": "global-get"
+        },
+        {
+          "label": "global.set(\"name\", value)",
+          "snippet": "global.set(\"score\", 0)",
+          "description": "Écrit une variable globale entière partagée entre tous les scripts.",
+          "params": [
+            { "name": "name",  "type": "string", "description": "Nom de la variable globale" },
+            { "name": "value", "type": "number", "description": "Valeur entière à stocker" }
+          ],
+          "doc_anchor": "global-set"
+        }
+      ]
+    },
+    {
+      "name": "Constants",
+      "entries": [
+        {
+          "label": "const.get(\"name\")",
+          "snippet": "const.get(\"max_lives\")",
+          "description": "Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
+          "params": [
+            { "name": "name", "type": "string", "description": "Nom de la constante" }
+          ],
+          "returns": "number — valeur fixe",
+          "doc_anchor": "const-get"
+        }
+      ]
+    },
+    {
+      "name": "Maths",
+      "entries": [
+        {
+          "label": "math.abs(x)",
+          "snippet": "math.abs(x)",
+          "description": "Valeur absolue entière.",
+          "params": [{ "name": "x", "type": "number", "description": "Valeur entière" }],
+          "returns": "number — |x|",
+          "doc_anchor": "math-abs"
+        },
+        {
+          "label": "math.clamp(x, lo, hi)",
+          "snippet": "math.clamp(x, 0, 255)",
+          "description": "Bloque x entre lo et hi inclus.",
+          "params": [
+            { "name": "x",  "type": "number", "description": "Valeur à borner" },
+            { "name": "lo", "type": "number", "description": "Borne inférieure" },
+            { "name": "hi", "type": "number", "description": "Borne supérieure" }
+          ],
+          "returns": "number — valeur bornée",
+          "doc_anchor": "math-clamp"
+        },
+        {
+          "label": "math.sign(x)",
+          "snippet": "math.sign(x)",
+          "description": "Signe de x. Retourne -1, 0, ou 1. Pratique pour normaliser une direction.",
+          "params": [{ "name": "x", "type": "number", "description": "Valeur entière" }],
+          "returns": "number — -1, 0 ou 1",
+          "doc_anchor": "math-sign"
+        },
+        {
+          "label": "math.min(a, b)",
+          "snippet": "math.min(a, b)",
+          "description": "Retourne le plus petit des deux entiers.",
+          "params": [
+            { "name": "a", "type": "number", "description": "Premier entier" },
+            { "name": "b", "type": "number", "description": "Second entier" }
+          ],
+          "returns": "number — min(a, b)",
+          "doc_anchor": "math-min"
+        },
+        {
+          "label": "math.max(a, b)",
+          "snippet": "math.max(a, b)",
+          "description": "Retourne le plus grand des deux entiers.",
+          "params": [
+            { "name": "a", "type": "number", "description": "Premier entier" },
+            { "name": "b", "type": "number", "description": "Second entier" }
+          ],
+          "returns": "number — max(a, b)",
+          "doc_anchor": "math-max"
+        }
+      ]
+    },
+    {
+      "name": "Scène",
+      "entries": [
+        {
+          "label": "scene.frame()",
+          "snippet": "scene.frame()",
+          "description": "Compteur de frames global depuis le lancement de la scène (60 fps = 60 frames/s). Pratique pour des timers ou des effets périodiques sans variable locale.",
+          "params": [],
+          "returns": "number — nombre de frames écoulées",
+          "doc_anchor": "scene-frame"
+        }
+      ]
+    },
+    {
+      "name": "Tile",
+      "entries": [
+        {
+          "label": "tile.get(x, y)",
+          "snippet": "tile.get(self:get_x(), self:get_y())",
+          "description": "Lit la valeur brute de la tile à la position monde (x, y) en pixels. 0 = vide. Utile pour des triggers non-solides (pièces, zones de spawn, poison…).",
+          "params": [
+            { "name": "x", "type": "number", "description": "Position X monde en pixels" },
+            { "name": "y", "type": "number", "description": "Position Y monde en pixels" }
+          ],
+          "returns": "number — valeur de la tile (0 = vide)",
+          "doc_anchor": "tile-get"
+        }
+      ]
+    }
+  ]
+}

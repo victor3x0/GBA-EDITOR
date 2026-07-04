@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GBA Editor
+Comment=Éditeur de jeux Game Boy Advance
+Exec=GBA Editor
+Icon=icon
+Categories=Development;Game;
+Terminal=false

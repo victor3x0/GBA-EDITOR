@@ -1,0 +1,43 @@
+"""
+editor/scripting/constants.py — Génère constants.h depuis la liste des
+Constant déclarées explicitement dans le projet (project.constants).
+
+Contrairement aux globals (variables modifiables, extern g_<nom> + globals.c),
+une constante est figée à la compilation : elle vit entièrement dans le
+header sous forme de `static const <type> CONST_<NOM> = <valeur>;`, sans
+fichier .c ni symbole externe à définir.
+"""
+
+from __future__ import annotations
+from pathlib import Path
+
+from .globals import _C_TYPES
+
+
+def generate_constants_h(constants_) -> str:
+    """constants_ : list[Constant] (duck-typed: .name, .type, .value)"""
+    lines = [
+        "/* constants.h — constantes déclarées explicitement dans le projet */",
+        "/* Généré par GBA Editor — ne pas éditer */",
+        "",
+        "#ifndef CONSTANTS_H",
+        "#define CONSTANTS_H",
+        "",
+    ]
+    if constants_:
+        for c in constants_:
+            c_type = _C_TYPES.get(c.type, "int")
+            lines.append(f"static const {c_type} CONST_{c.name.upper()} = {int(c.value)};")
+    else:
+        lines.append("/* aucune constante déclarée dans ce projet */")
+    lines += ["", "#endif /* CONSTANTS_H */", ""]
+    return "\n".join(lines)
+
+
+def write_constants(src_dir: Path, constants_) -> list[str]:
+    """
+    Écrit constants.h dans src_dir depuis la liste de Constant.
+    Retourne la liste des noms (utile pour CodegenContext).
+    """
+    (src_dir / "constants.h").write_text(generate_constants_h(constants_), encoding="utf-8")
+    return [c.name for c in constants_]

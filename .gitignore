@@ -1,0 +1,14 @@
+# Python cache — généré automatiquement, jamais besoin de commiter
+__pycache__/
+*.py[cod]
+
+# GBA Editor — artefacts de build uniquement (générés à chaque build)
+projects/*/build/
+
+# Config toolchain locale — chemins devkitPro/mGBA spécifiques à la machine
+editor/core/toolchain.json
+
+# Packaging — sorties générées par PyInstaller (voir packaging/), quel que
+# soit le dossier depuis lequel la commande est lancée (racine ou packaging/)
+build/
+dist/

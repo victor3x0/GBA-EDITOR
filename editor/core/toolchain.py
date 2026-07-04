@@ -1,0 +1,216 @@
+"""
+GBA Editor — détection et configuration de la toolchain
+Gère devkitPro (grit + make + devkitARM) et mgba.
+Les chemins sont persistés dans un fichier JSON à côté de l'éditeur.
+"""
+
+import json
+import os
+import shutil
+from pathlib import Path
+
+# Fichier de config persistant
+CONFIG_FILE = Path(__file__).parent / "toolchain.json"
+
+# Pages de téléchargement officielles (réutilisées par l'écran d'accueil
+# et la doc — pas de lien direct vers un binaire précis pour éviter les
+# URLs qui périment à chaque nouvelle version).
+DEVKITPRO_URL = "https://devkitpro.org/wiki/Getting_Started"
+MGBA_URL      = "https://mgba.io/downloads.html"
+
+# Emplacements Windows typiques
+_WIN_DEFAULTS = [
+    Path("C:/devkitPro"),
+    Path("D:/devkitPro"),
+    Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "devkitPro",
+]
+_MGBA_WIN_DEFAULTS = [
+    Path("C:/Program Files/mGBA"),
+    Path("C:/Program Files (x86)/mGBA"),
+    Path(os.environ.get("LOCALAPPDATA", "")) / "mGBA",
+]
+
+# Emplacements Linux/macOS typiques
+_UNIX_DEFAULTS = [
+    Path("/opt/devkitpro"),
+    Path.home() / "devkitpro",
+    Path("/usr/local/devkitpro"),
+]
+
+
+class Toolchain:
+    """
+    Détecte et stocke les chemins vers devkitPro et mgba.
+    Utilise shutil.which() en priorité, puis les emplacements connus,
+    puis le fichier de config sauvegardé par l'utilisateur.
+    """
+
+    def __init__(self):
+        self._config: dict = self._load_config()
+
+    # ── Chargement / sauvegarde config ────────────────────────────
+
+    def _load_config(self) -> dict:
+        if CONFIG_FILE.exists():
+            try:
+                return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def save(self):
+        CONFIG_FILE.write_text(
+            json.dumps(self._config, indent=2),
+            encoding="utf-8"
+        )
+
+    # ── Accesseurs / setters ───────────────────────────────────────
+
+    @property
+    def devkitpro_path(self) -> Path | None:
+        if p := self._config.get("devkitpro"):
+            return Path(p)
+        return None
+
+    @devkitpro_path.setter
+    def devkitpro_path(self, path: Path):
+        self._config["devkitpro"] = str(path)
+        self.save()
+
+    @property
+    def mgba_path(self) -> Path | None:
+        if p := self._config.get("mgba"):
+            return Path(p)
+        return None
+
+    @mgba_path.setter
+    def mgba_path(self, path: Path):
+        self._config["mgba"] = str(path)
+        self.save()
+
+    # ── Résolution des exécutables ────────────────────────────────
+
+    def resolve_grit(self) -> Path | None:
+        """Retourne le chemin absolu de grit, ou None."""
+        # 1. PATH système
+        if p := shutil.which("grit"):
+            return Path(p)
+        # 2. Config utilisateur
+        if dkp := self.devkitpro_path:
+            for candidate in [
+                dkp / "tools" / "bin" / "grit.exe",
+                dkp / "tools" / "bin" / "grit",
+                dkp / "msys2" / "usr" / "bin" / "grit.exe",
+            ]:
+                if candidate.exists():
+                    return candidate
+        # 3. Emplacements connus
+        for base in _WIN_DEFAULTS + _UNIX_DEFAULTS:
+            for sub in ["tools/bin/grit.exe", "tools/bin/grit"]:
+                c = base / sub
+                if c.exists():
+                    return c
+        return None
+
+    def resolve_make(self) -> Path | None:
+        """Retourne le chemin absolu de make, ou None."""
+        if p := shutil.which("make"):
+            return Path(p)
+        if dkp := self.devkitpro_path:
+            for candidate in [
+                dkp / "msys2" / "usr" / "bin" / "make.exe",
+                dkp / "msys2" / "mingw64" / "bin" / "make.exe",
+            ]:
+                if candidate.exists():
+                    return candidate
+        for base in _WIN_DEFAULTS:
+            for sub in ["msys2/usr/bin/make.exe"]:
+                c = base / sub
+                if c.exists():
+                    return c
+        return None
+
+    def resolve_arm_gcc(self) -> Path | None:
+        """Retourne le chemin de arm-none-eabi-gcc, ou None."""
+        # 1. PATH système
+        if p := shutil.which("arm-none-eabi-gcc"):
+            return Path(p)
+
+        # 2. Bases à scanner : config utilisateur + emplacements connus
+        bases = []
+        if dkp := self.devkitpro_path:
+            bases.append(Path(dkp))          # Path() normalise \ et /
+        bases += [Path(b) for b in _WIN_DEFAULTS + _UNIX_DEFAULTS]
+
+        for base in bases:
+            for exe in ("arm-none-eabi-gcc.exe", "arm-none-eabi-gcc"):
+                candidate = base / "devkitARM" / "bin" / exe
+                if candidate.exists():
+                    return candidate
+
+        return None
+
+    def resolve_mgba(self) -> Path | None:
+        """Retourne le chemin de mgba, ou None."""
+        for name in ("mgba", "mgba-qt", "mGBA"):
+            if p := shutil.which(name):
+                return Path(p)
+        # Config utilisateur (chemin choisi manuellement dans l'éditeur)
+        if p := self.mgba_path:
+            if p.exists():
+                return p
+        # Emplacements connus Windows
+        for base in _MGBA_WIN_DEFAULTS:
+            for exe in ["mGBA.exe", "mgba.exe", "mgba-qt.exe"]:
+                c = base / exe
+                if c.exists():
+                    return c
+        return None
+
+    def resolve_mmutil(self) -> Path | None:
+        """mmutil — convertit WAV/MOD en soundbank maxmod."""
+        if p := shutil.which("mmutil"):
+            return Path(p)
+        if dkp := self.devkitpro_path:
+            for c in [dkp / "tools" / "bin" / "mmutil.exe",
+                      dkp / "tools" / "bin" / "mmutil"]:
+                if c.exists(): return c
+        for base in _WIN_DEFAULTS + _UNIX_DEFAULTS:
+            for sub in ["tools/bin/mmutil.exe", "tools/bin/mmutil"]:
+                c = base / sub
+                if c.exists(): return c
+        return None
+
+    def resolve_bin2s(self) -> Path | None:
+        """bin2s — convertit un binaire en .s assembleur linkable."""
+        if p := shutil.which("bin2s"):
+            return Path(p)
+        if dkp := self.devkitpro_path:
+            for c in [dkp / "tools" / "bin" / "bin2s.exe",
+                      dkp / "tools" / "bin" / "bin2s"]:
+                if c.exists(): return c
+        for base in _WIN_DEFAULTS + _UNIX_DEFAULTS:
+            for sub in ["tools/bin/bin2s.exe", "tools/bin/bin2s"]:
+                c = base / sub
+                if c.exists(): return c
+        return None
+
+    # ── Status global ─────────────────────────────────────────────
+
+    def check(self) -> dict[str, Path | None]:
+        """Retourne un dict {outil: path|None} pour tous les outils."""
+        return {
+            "grit":         self.resolve_grit(),
+            "make":         self.resolve_make(),
+            "arm-none-eabi-gcc": self.resolve_arm_gcc(),
+            "mgba":         self.resolve_mgba(),
+        }
+
+    @property
+    def devkitpro_ok(self) -> bool:
+        s = self.check()
+        return all(s[k] for k in ("grit", "make", "arm-none-eabi-gcc"))
+
+    @property
+    def mgba_ok(self) -> bool:
+        return self.resolve_mgba() is not None

@@ -1,0 +1,47 @@
+{
+  "name": "Ball",
+  "components": [
+    {
+      "component_type": "sprite",
+      "id": "Ball",
+      "active": true,
+      "sprite_name": "Ball",
+      "initial_state": "Idle",
+      "auto_dir": true,
+      "scale_x": 1.0,
+      "scale_y": 1.0,
+      "rotation": 0
+    },
+    {
+      "component_type": "collision_box",
+      "id": "Bounding Box",
+      "active": true,
+      "solid": true,
+      "tag": "body",
+      "x": 0,
+      "y": 0,
+      "w": 8,
+      "h": 8,
+      "on_collision_enter": "onCollisionEnter",
+      "on_collision_exit": "onCollisionExit",
+      "on_trigger_enter": "onTriggerEnter",
+      "on_trigger_exit": "onTriggerExit"
+    },
+    {
+      "component_type": "script",
+      "id": "script",
+      "active": true,
+      "script": "assets/scripts/actors/Ball.lua",
+      "exports_values": {}
+    },
+    {
+      "component_type": "sound_fx",
+      "id": "sound_fx",
+      "active": true,
+      "sfx_name": "GoalTaken",
+      "trigger": "manual"
+    }
+  ],
+  "pal_bank": 1,
+  "max_instances": 1
+}

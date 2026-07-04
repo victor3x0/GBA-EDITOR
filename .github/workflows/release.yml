@@ -1,0 +1,132 @@
+name: Release builds
+
+# Se déclenche quand tu publies une Release sur GitHub (tag + release notes
+# via l'UI ou `gh release create`) : build l'exe Windows onefile (PyInstaller,
+# pas d'installeur) et l'attache directement à cette même release.
+# `workflow_dispatch` permet aussi de lancer un build de test sans publier
+# de release (l'artefact reste alors seulement dans l'onglet Actions).
+#
+# Le job Linux (AppImage) est mis en pause (if: false) le temps de tester la
+# build sur une vraie distro — tout le travail (packaging/linux/) reste en
+# place, prêt à réactiver : repasser `if: false` en `if: true` sur
+# build-linux-appimage et le remettre dans les `needs` + le
+# download-artifact de `publish`.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          if [ -z "$TAG" ]; then TAG="0.0.0-dev"; fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dépendances Python
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build PyInstaller (onefile)
+        run: pyinstaller packaging/gba_editor.spec --noconfirm
+
+      - name: Nommer l'exe avec la version
+        shell: pwsh
+        run: |
+          $version = "${{ needs.version.outputs.version }}"
+          Copy-Item "dist\GBA Editor.exe" "dist\GBAEditor-$version-windows.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/GBAEditor-*-windows.exe
+
+  build-linux-appimage:
+    if: false   # en pause — repasser à true une fois testé sur une vraie distro Linux
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dépendances système (Qt6 headless)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 libopengl0 libxkbcommon0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
+            libxcb-xinerama0 libnss3 libxdamage1 libfontconfig1
+
+      - name: Installer les dépendances Python
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build PyInstaller (onefile)
+        run: pyinstaller packaging/gba_editor.spec --noconfirm
+
+      - name: Récupérer appimagetool
+        run: |
+          curl -L -o appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Assembler l'AppDir
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp "dist/GBA Editor" AppDir/usr/bin/
+          cp packaging/linux/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun AppDir/usr/bin/"GBA Editor"
+          cp packaging/linux/gba-editor.desktop AppDir/gba-editor.desktop
+          cp packaging/icon.png AppDir/icon.png
+
+      - name: Construire l'AppImage
+        run: |
+          # --appimage-extract-and-run évite la dépendance à libfuse2, absente
+          # par défaut des runners GitHub-hosted récents.
+          VERSION="${{ needs.version.outputs.version }}"
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir "GBAEditor-${VERSION}-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: "*.AppImage"
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: artifacts
+
+      - name: Attacher l'exe Windows à la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber --repo "${{ github.repository }}"

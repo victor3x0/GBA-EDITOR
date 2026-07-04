@@ -1,0 +1,52 @@
+{
+  "name": "Ball",
+  "asset": "assets/sprites/Ball.png",
+  "frame_w": 8,
+  "frame_h": 8,
+  "states": [
+    {
+      "name": "Idle",
+      "speed": 8,
+      "loop": true,
+      "directions": [
+        {
+          "dir": 0,
+          "frames": [
+            {
+              "tiles": [
+                {
+                  "src_col": 0,
+                  "src_row": 0,
+                  "dst_col": 0,
+                  "dst_row": 0
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Moving",
+      "speed": 8,
+      "loop": true,
+      "directions": [
+        {
+          "dir": 0,
+          "frames": [
+            {
+              "tiles": [
+                {
+                  "src_col": 0,
+                  "src_row": 0,
+                  "dst_col": 0,
+                  "dst_row": 0
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

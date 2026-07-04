@@ -1,0 +1,5 @@
+#!/bin/sh
+# Point d'entrée AppImage — lance l'exe onefile produit par PyInstaller
+# (packaging/gba_editor.spec), copié dans AppDir/usr/bin/ par le workflow CI.
+HERE="$(dirname "$(readlink -f "${0}")")"
+exec "$HERE/usr/bin/GBA Editor" "$@"
