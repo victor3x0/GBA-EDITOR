@@ -18,8 +18,8 @@ if _EDITOR_DIR not in sys.path:
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
-from ui.theme import GLOBAL_QSS
-from ui.project_picker import HomeScreen, PROJECTS_DIR
+from ui.common.theme import GLOBAL_QSS
+from ui.home.project_picker import HomeScreen, PROJECTS_DIR
 
 
 def dark_palette() -> QPalette:

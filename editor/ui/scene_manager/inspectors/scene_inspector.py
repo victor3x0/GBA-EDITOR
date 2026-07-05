@@ -1,0 +1,475 @@
+"""SceneInspector — background layers, paramètres d'affichage, script de scène."""
+from __future__ import annotations
+from typing import Optional
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
+    QCheckBox, QScrollArea,
+)
+from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, pyqtSignal
+
+from core.project import Project, Scene
+from core.asset_manager import BgLayerRow
+from core.history import get_history, SetFieldCmd, AddListItemCmd, RemoveListItemCmd
+from core.command_dispatcher import get_dispatcher
+from ui.common.theme import C, T, QSS
+from ui.common.widgets import W
+
+
+# ──────────────────────────────────────────────────────────────────
+#  SceneInspector
+# ──────────────────────────────────────────────────────────────────
+class SceneInspector(QWidget):
+    changed = pyqtSignal()
+    slot_assigned = pyqtSignal(int, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scene: Optional[Scene] = None
+        self._project: Optional[Project] = None
+        self._blocking = False
+        self.setStyleSheet(f"background:{C.BG_PANEL};")
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"background:{C.BG_PANEL}; border:none;")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        scroll.setWidget(inner)
+
+        self._empty = QLabel("Selectionne une scene")
+        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._empty)
+
+        self._content = QWidget()
+        cl = QVBoxLayout(self._content)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(6)
+
+        def _card(accent: str) -> tuple:
+            """Retourne (card QFrame, inner_layout QVBoxLayout)."""
+            f = QFrame()
+            f.setStyleSheet(
+                f"QFrame#sc_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
+                f"border-left:3px solid {accent};border-radius:4px;}}"
+                f"QFrame#sc_card QFrame{{background:transparent;border:none;}}"
+                f"QFrame#sc_card QLabel{{background:transparent;border:none;}}"
+            )
+            f.setObjectName("sc_card")
+            inner = QVBoxLayout(f)
+            inner.setContentsMargins(8, 6, 8, 8)
+            inner.setSpacing(6)
+            return f, inner
+
+        def _card_title(text: str, accent: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            lbl.setStyleSheet(
+                f"color:{accent};letter-spacing:1px;"
+                f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
+            )
+            return lbl
+
+        # ── Carte Background Asset ────────────────────────────────
+        bg_card, bg_inner = _card(C.ACCENT_BLU)
+
+        bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
+        bg_hdr.addWidget(_card_title("BACKGROUND", C.ACCENT_BLU), 1)
+        self._btn_bg_add = W.btn_add("Ajouter un calque BG (max 4)")
+        self._btn_bg_add.clicked.connect(self._add_bg_layer)
+        bg_hdr.addWidget(self._btn_bg_add)
+        bg_inner.addLayout(bg_hdr)
+
+        bg_row = QHBoxLayout(); bg_row.setSpacing(6)
+        lbl_bg = QLabel("Asset :")
+        lbl_bg.setFont(QFont(T.MONO, T.SM)); lbl_bg.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_bg.setFixedWidth(50)
+        self._combo_bg_asset = QComboBox()
+        self._combo_bg_asset.setFont(QFont(T.MONO, T.SM))
+        self._combo_bg_asset.setStyleSheet(QSS.combobox)
+        self._combo_bg_asset.currentIndexChanged.connect(self._on_bg_asset_changed)
+        bg_row.addWidget(lbl_bg)
+        bg_row.addWidget(self._combo_bg_asset, 1)
+        bg_inner.addLayout(bg_row)
+
+        # Rows dynamiques des BackgroundLayers
+        self._bg_layer_rows: list[BgLayerRow] = []
+        self._bg_layers_container = QVBoxLayout()
+        self._bg_layers_container.setContentsMargins(0, 2, 0, 0)
+        self._bg_layers_container.setSpacing(3)
+        bg_inner.addLayout(self._bg_layers_container)
+
+        cl.addWidget(bg_card)
+
+        # ── Carte Paramètres ──────────────────────────────────────
+        param_card, param_inner = _card(C.TEXT_DIM)
+        param_inner.addWidget(_card_title("PARAMÈTRES", C.TEXT_NORM))
+
+        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
+        lbl_ui = QLabel("Layer UI :")
+        lbl_ui.setFont(QFont(T.MONO, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_ui.setFixedWidth(70)
+        self._combo_text_bg = QComboBox()
+        self._combo_text_bg.setFont(QFont(T.MONO, T.SM))
+        self._combo_text_bg.setStyleSheet(QSS.combobox)
+        for i in range(4):
+            self._combo_text_bg.addItem(f"BG{i}" + (" (défaut)" if i == 1 else ""), i)
+        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
+        self._combo_text_bg.setToolTip(
+            "<b>Calque réservé au texte HUD (TTE)</b><br><br>"
+            "Le texte affiché en jeu (score, dialogue…) occupe un calque BG entier.<br>"
+            "Choisir un BG qui n'est pas utilisé par un décor.<br><br>"
+            "<b>Conflit ⚠</b> : si ce BG est déjà assigné à un background,<br>"
+            "les deux se superposent et le résultat est indéfini."
+        )
+        self._lbl_text_bg_warn = QLabel("")
+        self._lbl_text_bg_warn.setFont(QFont(T.MONO, T.XS))
+        self._lbl_text_bg_warn.setStyleSheet(f"color:{C.ACCENT_YLW};")
+        ui_row.addWidget(lbl_ui)
+        ui_row.addWidget(self._combo_text_bg)
+        ui_row.addWidget(self._lbl_text_bg_warn, 1)
+        param_inner.addLayout(ui_row)
+
+        scroll_row = QHBoxLayout(); scroll_row.setSpacing(6)
+        lbl_scroll = QLabel("Scrolling :")
+        lbl_scroll.setFont(QFont(T.MONO, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_scroll.setFixedWidth(70)
+        self._chk_scroll_h = QCheckBox("Horizontal")
+        self._chk_scroll_v = QCheckBox("Vertical")
+        for chk in (self._chk_scroll_h, self._chk_scroll_v):
+            chk.setFont(QFont(T.MONO, T.SM))
+            chk.setStyleSheet(QSS.checkbox)
+            scroll_row.addWidget(chk)
+        scroll_row.insertWidget(0, lbl_scroll)
+        scroll_row.addStretch()
+        self._chk_scroll_h.toggled.connect(self._on_scroll_changed)
+        self._chk_scroll_v.toggled.connect(self._on_scroll_changed)
+        param_inner.addLayout(scroll_row)
+
+        cl.addWidget(param_card)
+
+        # ── Carte Script ──────────────────────────────────────────
+        sc_card, sc_inner = _card(C.ACCENT_ORG)
+        sc_inner.addWidget(_card_title("SCRIPT", C.ACCENT_ORG))
+
+        from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
+        self._scene_script_slot = ScriptSlot(
+            add_label    = "Ajouter un script de scène",
+            accent_color = C.ACCENT_ORG,
+            hint         = "on_start · on_update · on_late_update",
+        )
+        self._scene_script_slot.set_callbacks(
+            on_add   = self._scene_script_new,
+            on_open  = self._scene_script_open,
+            on_clear = self._scene_script_clear,
+        )
+        sc_inner.addWidget(self._scene_script_slot)
+
+        cl.addWidget(sc_card)
+
+        cl.addStretch()
+        layout.addWidget(self._content)
+        layout.addStretch()
+        self._content.setVisible(False)
+
+    def load(self, scene: Scene, project: Project):
+        self._scene = scene; self._project = project
+        if not scene:
+            self._content.setVisible(False); self._empty.setVisible(True); return
+        self._empty.setVisible(False); self._content.setVisible(True)
+        self._blocking = True
+        self._chk_scroll_h.setChecked(scene.scroll_h)
+        self._chk_scroll_v.setChecked(scene.scroll_v)
+        self._refresh_scroll_speeds()
+        text_bg = getattr(scene, "text_bg", 3)
+        self._combo_text_bg.setCurrentIndex(text_bg)
+        self._refresh_text_bg_warn()
+        self._refresh_scene_script_label()
+        self._refresh_bg_asset_combo()
+        self._blocking = False
+
+    _CREATE_SENTINEL = "__create__"
+
+    def _refresh_bg_asset_combo(self):
+        self._combo_bg_asset.blockSignals(True)
+        self._combo_bg_asset.clear()
+        self._combo_bg_asset.addItem("— aucun —", "")
+        if self._project:
+            for ba in self._project.backgrounds:
+                self._combo_bg_asset.addItem(ba.name, ba.name)
+        self._combo_bg_asset.insertSeparator(self._combo_bg_asset.count())
+        self._combo_bg_asset.addItem("+ Créer un background…", self._CREATE_SENTINEL)
+        current = getattr(self._scene, "background_asset", "") if self._scene else ""
+        idx = self._combo_bg_asset.findData(current)
+        self._combo_bg_asset.setCurrentIndex(max(0, idx))
+        self._combo_bg_asset.blockSignals(False)
+        self._rebuild_layer_rows()
+
+    def _on_bg_asset_changed(self):
+        if self._blocking or not self._scene: return
+        data = self._combo_bg_asset.currentData()
+        if data == self._CREATE_SENTINEL:
+            self._create_background_asset()
+            return
+        name = data or ""
+        self._set_scene_field("background_asset", name, extra_persist=self._rebuild_layer_rows)
+        self.changed.emit()
+
+    def _create_background_asset(self):
+        """Ouvre un dialogue de création de BackgroundAsset."""
+        if not self._project: return
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Nouveau background", "Nom du background :")
+        if not ok or not name.strip():
+            # Revenir à la sélection précédente
+            self._refresh_bg_asset_combo()
+            return
+        name = name.strip()
+        if self._project.get_background(name):
+            self._refresh_bg_asset_combo()
+            return
+        from core.project import BackgroundAsset
+        ba = BackgroundAsset(name=name, layers=[])
+        self._project.backgrounds.append(ba)
+        self._project.save_background(ba)
+        if self._scene:
+            self._scene.background_asset = name
+            self._persist()
+        self._refresh_bg_asset_combo()
+        self.changed.emit()
+
+    def _rebuild_layer_rows(self):
+        """Reconstruit les BgLayerRow depuis le BackgroundAsset sélectionné."""
+        for row in self._bg_layer_rows:
+            # hide() avant setParent(None) : un widget visible détaché de son
+            # parent redevient une fenêtre top-level à part entière (c'est le
+            # popup flottant "GBA Editor" observé au Ctrl+S) ; deleteLater()
+            # pour le détruire proprement plutôt que le laisser orphelin.
+            row.hide()
+            row.setParent(None)
+            row.deleteLater()
+        self._bg_layer_rows.clear()
+
+        ba = None
+        if self._project and self._scene and self._scene.background_asset:
+            ba = self._project.get_background(self._scene.background_asset)
+
+        if not ba:
+            self._btn_bg_add.setEnabled(False)
+            return
+
+        for layer in ba.layers:
+            row = BgLayerRow(layer.bg_slot)
+            img_path = self._project.background_images_dir / layer.image if layer.image else None
+            if img_path and img_path.exists():
+                row.set_asset(str(img_path))
+            row.set_speed(layer.scroll_speed)
+            row.asset_changed.connect(lambda _, p, l=layer: self._on_layer_image(l, p))
+            row.speed_changed.connect(lambda _, v, l=layer: self._on_layer_speed(l, v))
+            row.layer_removed.connect(lambda _, l=layer: self._on_layer_remove(l))
+            row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
+            self._bg_layers_container.addWidget(row)
+            self._bg_layer_rows.append(row)
+
+        self._refresh_bound_rows()
+        self._btn_bg_add.setEnabled(len(ba.layers) < 4)
+
+    def _on_layer_image(self, layer, path_str: str):
+        """Un PNG a été assigné (ou retiré) d'un layer."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        old = layer.image
+        if path_str:
+            from pathlib import Path as _P
+            dst = self._project.import_asset(_P(path_str), "backgrounds")
+            new = dst.name
+        else:
+            new = ""
+        if old == new:
+            return
+        get_history().push(SetFieldCmd(
+            layer, "image", old, new,
+            label=f"{ba.name}[{layer.bg_slot}].image",
+            persist_fn=lambda: self._project.save_background(ba),
+        ))
+        self.changed.emit()
+
+    def _on_layer_speed(self, layer, value: float):
+        """La vitesse de défilement d'un layer a changé."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        old = layer.scroll_speed
+        if old == value:
+            return
+        get_history().push(SetFieldCmd(
+            layer, "scroll_speed", old, value,
+            label=f"{ba.name}[{layer.bg_slot}].scroll_speed",
+            persist_fn=lambda: self._project.save_background(ba),
+        ))
+
+    def _on_layer_remove(self, layer):
+        """Retire un layer du BackgroundAsset."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba or layer not in ba.layers: return
+
+        def _refresh():
+            self._project.save_background(ba)
+            self._rebuild_layer_rows()
+
+        get_history().push(RemoveListItemCmd(
+            ba.layers, layer, persist_fn=_refresh,
+            label=f"Retirer layer BG{layer.bg_slot}",
+        ))
+        self.changed.emit()
+
+    def _add_bg_layer(self):
+        """Ajoute un nouveau layer vide au BackgroundAsset sélectionné."""
+        if not self._project or not self._scene or not self._scene.background_asset: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba or len(ba.layers) >= 4: return
+        from core.project import BackgroundLayer
+        used_slots = {L.bg_slot for L in ba.layers}
+        next_slot = next((i for i in range(4) if i not in used_slots), len(ba.layers))
+        new_layer = BackgroundLayer(image="", bg_slot=next_slot, scroll_speed=1.0)
+
+        def _refresh():
+            self._project.save_background(ba)
+            self._rebuild_layer_rows()
+
+        get_history().push(AddListItemCmd(
+            ba.layers, new_layer, persist_fn=_refresh,
+            label=f"Ajouter layer BG{next_slot}",
+        ))
+        self.changed.emit()
+
+    def _on_bound_toggled(self, idx: int):
+        if self._blocking or not self._scene: return
+        self._set_scene_field("collision_layer", idx, extra_persist=self._refresh_bound_rows)
+        self.changed.emit()
+
+    def _refresh_bound_rows(self):
+        cl_idx = getattr(self._scene, "collision_layer", 0)
+        for row in self._bg_layer_rows:
+            row.set_bound(row.slot_index == cl_idx)
+
+    def _refresh_scroll_speeds(self):
+        pass  # vitesse gérée dans BackgroundAsset désormais
+
+    def _on_scroll_changed(self):
+        if self._blocking or not self._scene: return
+        self._set_scene_field("scroll_h", self._chk_scroll_h.isChecked())
+        self._set_scene_field("scroll_v", self._chk_scroll_v.isChecked())
+        self.changed.emit()
+
+    def _on_text_bg_changed(self):
+        if self._blocking or not self._scene: return
+        self._set_scene_field(
+            "text_bg", self._combo_text_bg.currentData(),
+            extra_persist=self._refresh_text_bg_warn,
+        )
+        self.changed.emit()
+
+    def _refresh_text_bg_warn(self):
+        if not self._scene: return
+        self._lbl_text_bg_warn.setText("")
+
+    def _persist(self):
+        if self._project and self._scene:
+            get_dispatcher().save_scene()
+
+    def _set_scene_field(self, field: str, value, extra_persist=None):
+        """Pousse un SetFieldCmd undoable sur un champ scalaire de la scène
+        (no-op si la valeur est inchangée)."""
+        if self._blocking or not self._scene: return
+        old = getattr(self._scene, field, None)
+        if old == value:
+            return
+
+        def _do_persist():
+            self._persist()
+            if extra_persist:
+                extra_persist()
+
+        get_history().push(SetFieldCmd(
+            self._scene, field, old, value,
+            label=f"{self._scene.name}.{field}",
+            persist_fn=_do_persist,
+        ))
+
+    # ── Script de scène — helpers ──────────────────────────────────
+
+    def _refresh_scene_script_label(self):
+        sc = getattr(self._scene, "script", "") or ""
+        sp = self._project.asset_abs(sc) if sc and self._project else None
+        if sp and sp.exists():
+            self._scene_script_slot.set_script(sp.name)
+        else:
+            self._scene_script_slot.clear_script()
+
+    def _scene_script_new(self):
+        """Ouvre le picker : liste des scripts de scène + bouton Nouveau."""
+        if not self._scene or not self._project: return
+        from ui.common.widgets import ScriptPickerPopup
+
+        # Collecter les scripts de scène existants
+        scenes_dir = self._project.scripts_scenes_dir
+        scripts: list[tuple[str, str]] = []
+        if scenes_dir.exists():
+            for f in sorted(scenes_dir.glob("*.lua")):
+                rel = str(f.relative_to(self._project.root)).replace("\\", "/")
+                scripts.append((f.name, rel))
+
+        popup = ScriptPickerPopup(scripts, C.ACCENT_ORG, parent=self)
+        popup.picked.connect(self._scene_script_assign)
+        popup.new_requested.connect(self._scene_script_create_new)
+        popup.show_below(self._scene_script_slot)
+
+    def _scene_script_assign(self, rel: str):
+        """Assigne un script existant à la scène."""
+        self._set_scene_field("script", rel, extra_persist=self._refresh_scene_script_label)
+        self.changed.emit()
+
+    def _scene_script_create_new(self):
+        """Dialogue de création d'un nouveau script de scène."""
+        if not self._scene or not self._project: return
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Nouveau script de scène", "Nom (sans .lua) :")
+        if not ok or not name.strip(): return
+        from scripting.script_templates import ScriptTemplateContext, generate_script_template
+        d = self._project.scripts_scenes_dir
+        d.mkdir(parents=True, exist_ok=True)
+        sp = d / f"{name.strip()}.lua"
+        if not sp.exists():
+            ctx = ScriptTemplateContext(kind="scene", name=name.strip(), scene_name=self._scene.name)
+            sp.write_text(generate_script_template(ctx), encoding="utf-8")
+        rel = str(sp.relative_to(self._project.root)).replace("\\", "/")
+        self._set_scene_field("script", rel, extra_persist=self._refresh_scene_script_label)
+        self.changed.emit()
+        if hasattr(self, "_script_open_fn") and self._script_open_fn:
+            self._script_open_fn(str(sp))
+
+    def _scene_script_open(self):
+        if not self._scene or not self._project: return
+        sc = getattr(self._scene, "script", "") or ""
+        sp = self._project.asset_abs(sc) if sc else None
+        if sp and sp.exists() and hasattr(self, "_script_open_fn") and self._script_open_fn:
+            self._script_open_fn(str(sp))
+
+    def _scene_script_clear(self):
+        self._set_scene_field("script", "", extra_persist=self._refresh_scene_script_label)
+        self.changed.emit()
+
+    def set_script_open_fn(self, fn):
+        self._script_open_fn = fn

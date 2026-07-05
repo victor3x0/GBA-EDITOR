@@ -12,22 +12,52 @@ gba-editor/
 │   ├── main.py                      ← point d'entrée
 │   ├── window.py                    ← MainWindow + onglets
 │   ├── core/
-│   │   ├── project.py               ← modèle de données (project.json)
+│   │   ├── project.py               ← modèle de données (project.json + project/**)
 │   │   ├── project_watcher.py       ← détection live des assets
 │   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions.
+│   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
 │   │   ├── toolchain.py             ← détection devkitPro/mGBA (PATH, config, emplacements connus)
 │   │   └── ...
 │   ├── codegen/
 │   │   ├── pipeline.py              ← orchestration build
 │   │   ├── asset_pipeline.py        ← grit (sprites + BG)
 │   │   └── runtime_codegen/         ← génération main.c, scènes, acteurs
-│   ├── scripting/                   ← compilation Lua → C
+│   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
+│   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C
+│   │   ├── api.py                   ← RUNTIME_API : catalogue unique de l'API Lua ↔ C
+│   │   └── script_templates.py      ← contenu initial d'un nouveau script (scène/actor/vide)
 │   ├── plugins/                     ← plugins chargés dynamiquement (spec_from_file_location)
-│   └── ui/
-│       ├── sprite_editor.py         ← éditeur de sprites (tile-based)
-│       ├── build_panel.py
-│       ├── inspectors_module.py
-│       └── ...
+│   └── ui/                          ← rangé par écran, pas par type de widget
+│       ├── common/                  ← transverse à tous les écrans
+│       │   ├── theme.py             ← C (couleurs) / T (typographie) — jamais de valeurs en dur
+│       │   ├── icons.py, widgets.py, collapsible.py, reorderable_bar.py, build_panel.py
+│       ├── home/
+│       │   └── project_picker.py    ← écran d'accueil (HomeScreen)
+│       ├── scene_manager/
+│       │   ├── assets_finder_panel.py
+│       │   └── inspectors/            ← un fichier par classe d'inspecteur
+│       │       ├── actor_inspector.py, scene_inspector.py, camera_inspector.py
+│       │       ├── uses_inspectors.py     ← Prefab/Script/Variable Uses (groupés, structure proche)
+│       │       ├── dynamic_inspector.py   ← routeur, instancie tous les autres
+│       │       └── component_editors/     ← un fichier par type de Component
+│       ├── sprite_editor/             ← un fichier par sous-zone de l'écran
+│       │   ├── sprite_finder_panel.py     ← panneau gauche (sprites + anims)
+│       │   ├── frame_canvas.py            ← timeline + canvas de composition tuile par tuile
+│       │   ├── spritesheet_viewer.py      ← tile picker sur le PNG source
+│       │   ├── direction_widget.py        ← sélecteur 3×3 de directions
+│       │   ├── sprite_center_panel.py     ← assemble playback+canvas+tiles+timeline
+│       │   ├── sprite_right_panel.py      ← propriétés/collision/anim settings
+│       │   └── sprite_editor_screen.py    ← écran complet (assemble les 3 colonnes)
+│       ├── sound_mixer/
+│       │   └── sound_panel.py
+│       └── script_editor/             ← un fichier par sous-zone de l'écran
+│           ├── colors.py                  ← proxys couleur partagés par tout l'écran
+│           ├── lua_editor.py               ← coloration syntaxique + widget d'édition
+│           ├── sidebar_widgets.py          ← briques section/sous-section/bouton
+│           ├── var_table_panel.py          ← table GLOBALS/CONSTANTS de la sidebar
+│           ├── sidebar_panel.py            ← sections EVENTS/API/RÉFÉRENCES
+│           ├── script_finder_panel.py      ← arbre de fichiers scripts
+│           └── script_editor.py            ← écran complet (assemble sidebar+éditeur+finder)
 ├── runtime/
 │   └── Makefile                     ← copié dans build/ au moment du build
 ├── packaging/                       ← packaging PyInstaller + CI (voir section dédiée)
@@ -37,16 +67,17 @@ gba-editor/
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
     └── Pong/                        ← projet démo
-        ├── project.json
-        ├── assets/
+        ├── project.json             ← config racine uniquement (nom, scène de démarrage, auteur, version)
+        ├── assets/                  ← dépend d'une ressource externe (image, son...)
         │   ├── sprites/             ← PNG + JSON sidecar (SpriteAsset)
         │   ├── backgrounds/         ← PNG bruts (BackgroundImage)
         │   └── scripts/             ← scripts Lua source (acteurs + scènes)
-        ├── project/
+        ├── project/                 ← données éditeur pures, aucune dépendance externe
         │   ├── scenes/              ← définition des scènes (.json)
         │   ├── backgrounds/         ← BackgroundAsset (.json) — assemblages de layers
-        │   └── prefab/              ← préfabs d'acteurs (.json)
-        └── build/                   ← 100% généré, gitignored
+        │   ├── prefab/              ← préfabs d'acteurs (.json)
+        │   └── variables.json       ← globals + constants du projet
+        └── build/                   ← 100% généré, gitignored — compile assets/ ET project/
 ```
 
 ---
@@ -86,20 +117,40 @@ Ces concepts n'ont pas d'équivalent direct dans grit ou le hardware GBA.
 | `SpriteComponent` | Lien vers un `SpriteAsset`, état initial, vitesse d'animation... | `self:play_anim("state")` `self:set_frame(n)` `self:set_visible(bool)` `self:set_flip_h(bool)` `self:set_pal(n)` |
 | `CollisionBoxComponent` | AABB de collision. `solid=true` → résolution physique ; `solid=false` → trigger | callbacks : `onCollisionEnter(id)` `onCollisionExit(id)` `onTriggerEnter(id)` `onTriggerExit(id)` |
 | `SoundFxComponent` | Déclenche un effet sonore lié à l'acteur | `sfx.play("name")` |
-| `ScriptComponent` | Attache un script Lua à l'acteur | `on_start()` `on_update()` `on_late_update()` |
+| `ScriptComponent` | Attache un script Lua à l'acteur — **un seul actif par actor** (le compilateur n'en lit de toute façon qu'un seul) | `on_start()` `on_update()` `on_late_update()` |
 | `PathComponent` | Chemin de déplacement (waypoints) | — (en cours) |
 
 ### Règles clés
 
+- **`assets/` vs `project/`** — la distinction qui structure tout le projet : `assets/` contient ce qui dépend d'une ressource externe à l'éditeur (une image PNG, un son) ; `project/` contient les données propres à l'éditeur, sans dépendance externe (scènes, prefabs, variables...). Les deux sont traités par l'éditeur et compilés dans `build/` — la différence est l'origine de la donnée, pas son traitement.
 - `assets/` → la source de vérité des assets bruts ; le JSON sidecar est auto-géré par l'éditeur
 - `assets/backgrounds/` → PNG bruts (`BackgroundImage`) ; `project/backgrounds/` → assemblages de layers (`BackgroundAsset`)
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
 - `build/grit_out/` et `build/src/` → effacés et regénérés à chaque build ; `build/obj/` est conservé pour la compilation incrémentale
-- `project.json` → config racine uniquement (nom, scène de démarrage, auteur, globals) ; toutes les données vivent dans `project/**/*.json`
+- `project.json` → config racine uniquement (nom, scène de démarrage, auteur, version) ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
 - Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `Scene.background_asset`) — jamais par chemin absolu
 - Les scripts Lua sont **transpilés vers C** au build, pas interprétés à l'exécution
-- Les `GlobalVar` sont des variables C partagées entre tous les scripts d'une scène (`globals.h` / `globals.c` générés)
+- Les `GlobalVar` sont des variables C partagées entre tous les scripts du jeu (`globals.h` / `globals.c` générés une fois par build, pas par scène)
 - Chaque scène génère une paire C `scene_init_X` / `scene_tick_X` dispatchée via une vtable statique dans `main.c`
+
+---
+
+## API Lua ↔ C
+
+Le script Lua n'est jamais traduit directement en texte C : il passe par un AST Python intermédiaire, lui-même validé et traduit via un catalogue déclaratif unique.
+
+```
+texte Lua → parser.py → AST Python → checker.py (validation) → codegen.py → texte C
+                                            ↑                        ↑
+                                            └──── scripting/api.py ──┘
+                                              (RUNTIME_API : catalogue unique)
+```
+
+- **`parser.py`** — modélise la grammaire Lua en dataclasses Python (`StmtIf`, `ExprInvoke` pour `self:method()`, etc.). Spécifique à Lua : remplacer le langage de script demanderait de réécrire ce fichier (et une partie du pattern-matching de `checker.py`/`codegen.py` sur ces formes syntaxiques), mais pas le reste de la chaîne.
+- **`api.py`** (`RUNTIME_API`) — source de vérité unique pour toute fonction Lua exposée au runtime : nom Lua, fonction C cible, types de paramètres, domaine de résolution des chaînes (`DOMAIN_ANIM`, `DOMAIN_SFX`, `DOMAIN_SCENE`...). Utilisé à la fois par `checker.py` (valider un appel connu) et `codegen.py` (générer l'appel C générique via `_emit_api_call`).
+- **`checker.py`** — parcourt l'AST et valide les appels contre `RUNTIME_API` (fonction connue, bon nombre d'arguments — y compris les fonctions variadiques comme `display.print`, nom de ressource existant). Ne bloque le build que sur les erreurs (`CheckError.level == "error"`) ; les avertissements (ex. valeur littérale hors plage pour un `global.set` typé) sont journalisés sans empêcher la compilation. Appliqué uniformément aux scripts actor, scène et prefab via `lua_compiler.py::_compile_script` — un prefab avec une erreur bloque désormais le build comme un actor, plutôt que d'être silencieusement sauté. Les behaviors (`require("behaviors/x")`, inlinés par `codegen.py::_emit_inlined_behaviors`) passent par le même checker avec `check_event_names=False` (leurs fonctions top-level sont des noms de méthode arbitraires, pas des handlers d'événement) ; fichier manquant ou erreur de parse y remontent comme avertissement plutôt que de casser silencieusement ou de lever une exception Python brute.
+- **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`global.get`/`set` → accès direct à la variable C, `self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation.
+- **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une seule entrée dans `RUNTIME_API` suffit. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 
 ---
 

@@ -7,8 +7,8 @@ from PyQt6.QtWidgets import (
 )
 
 from . import BaseComponentEditor, register
-from ui.widgets import W, ScriptSlot
-from ui.theme import C, T, QSS
+from ui.common.widgets import W, ScriptSlot
+from ui.common.theme import C, T, QSS
 
 
 @register("script")
@@ -172,7 +172,7 @@ class ScriptEditor(BaseComponentEditor):
         actors_dir.mkdir(parents=True, exist_ok=True)
         sp = actors_dir / f"{name.strip()}.lua"
         if not sp.exists():
-            sp.write_text(self._generate_template(name.strip()), encoding="utf-8")
+            sp.write_text(self._build_template(name.strip()), encoding="utf-8")
         comp.script = proj.asset_rel(sp)
         slot.set_script(sp.name)
         self.insp._save_component_change(None)
@@ -187,11 +187,14 @@ class ScriptEditor(BaseComponentEditor):
         slot.clear_script()
         self.insp._save_component_change(None)
 
-    def _generate_template(self, script_name: str) -> str:
+    def _build_template(self, script_name: str) -> str:
+        """Résout le contexte de l'actor (composants présents) puis délègue
+        la génération du texte à scripting.script_templates (partagée avec
+        les autres points de création de script)."""
         from core.project import (CollisionBoxComponent, SpriteComponent,
                              SoundFxComponent, component_type_name)
-        insp  = self.insp
-        actor = insp._actor
+        from scripting.script_templates import ScriptTemplateContext, generate_script_template
+        actor = self.insp._actor
         comps = actor.components if actor else []
 
         has_sprite = any(isinstance(c, SpriteComponent)  for c in comps)
@@ -204,41 +207,16 @@ class ScriptEditor(BaseComponentEditor):
             base = component_type_name(c); tag = getattr(c, "tag", None)
             comp_labels.append(f"{base}({tag})" if tag and tag != "body" else base)
 
-        lines = [
-            f"-- Actor script : {script_name}",
-            f"-- Actor       : {actor.name if actor else '?'}",
-            f"-- Components  : {', '.join(comp_labels) or 'aucun'}",
-            "",
-            "-- Déclare ici les variables configurables depuis l'éditeur :",
-            "-- exports = {",
-            "--     speed  = { type = \"int\",  default = 5,       label = \"Speed\", min = 0, max = 20 },",
-            "--     name   = { type = \"string\", default = \"Hero\", label = \"Name\" },",
-            "--     active = { type = \"bool\",   default = true,    label = \"Active\" },",
-            "-- }",
-            "",
-            "function on_start()",
-        ]
-        if has_sprite: lines += ["    -- self:play_anim('Idle')"]
-        lines += ["end", "", "function on_update()"]
-        if has_sprite: lines += ["    -- self:play_anim('Run')"]
-        if has_sfx:    lines += ["    -- self:play_sfx()"]
-        lines += ["end", ""]
-
-        for c in solids:
-            enter = getattr(c, "on_collision_enter", "onCollisionEnter")
-            exit_ = getattr(c, "on_collision_exit",  "onCollisionExit")
-            note  = f"  -- tag='{c.tag}'" if c.tag != "body" else ""
-            lines += [f"function {enter}(other_id){note}",
-                      "    -- local other = actors[other_id]", "end",
-                      f"function {exit_}(other_id)", "end", ""]
-        for c in triggers:
-            enter = getattr(c, "on_trigger_enter", "onTriggerEnter")
-            exit_ = getattr(c, "on_trigger_exit",  "onTriggerExit")
-            note  = f"  -- tag='{c.tag}'" if c.tag != "body" else ""
-            lines += [f"function {enter}(other_id){note}",
-                      "    -- local other = actors[other_id]", "end",
-                      f"function {exit_}(other_id)", "end", ""]
-
-        if not (has_sprite or solids or triggers or has_sfx):
-            lines += ["-- Ajoute des components dans l'inspector pour débloquer l'API.", ""]
-        return "\n".join(lines)
+        ctx = ScriptTemplateContext(
+            kind="actor",
+            name=script_name,
+            actor_name=actor.name if actor else "?",
+            component_labels=comp_labels,
+            has_sprite=has_sprite,
+            has_sfx=has_sfx,
+            solid_tags=[(c.tag, getattr(c, "on_collision_enter", "onCollisionEnter"),
+                         getattr(c, "on_collision_exit", "onCollisionExit")) for c in solids],
+            trigger_tags=[(c.tag, getattr(c, "on_trigger_enter", "onTriggerEnter"),
+                           getattr(c, "on_trigger_exit", "onTriggerExit")) for c in triggers],
+        )
+        return generate_script_template(ctx)

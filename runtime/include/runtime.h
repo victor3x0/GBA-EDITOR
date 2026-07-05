@@ -108,13 +108,6 @@ void music_stop (void);
 int  global_get(int id);
 void global_set(int id, int value);
 
-/* ─── API Communication inter-actors ─────────────────────── */
-/* send() appelle directement la fonction handler de la cible.  */
-/* Le transpileur résout target_name → appel C à la compilation */
-/* (pas de lookup runtime). broadcast() itère g_actors[].       */
-void actor_send     (Actor* target, int event_id, int value);
-void actor_broadcast(int event_id, int value);
-
 /* ─── Utilitaires ─────────────────────────────────────────── */
 int  aabb_overlap(const Actor* a, const Actor* b);
 int  math_abs(int x);

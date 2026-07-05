@@ -1,6 +1,5 @@
 """BuildPanel, ToolchainBar, ToolchainDialog."""
 
-import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -11,10 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor
 from PyQt6.QtCore import pyqtSignal
 
-from ui.theme import T
-
-# toolchain est dans editor/, un niveau au-dessus
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from ui.common.theme import C, T
 from core.toolchain import Toolchain
 
 
@@ -27,12 +23,12 @@ class BuildPanel(QWidget):
 
         header = QFrame()
         header.setFixedHeight(28)
-        header.setStyleSheet("background:#1e1e1e; border-bottom:1px solid #2a2a2a;")
+        header.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(8, 0, 8, 0)
         lbl = QLabel("BUILD / DEBUG")
         lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        lbl.setStyleSheet("color:#aaa;")
+        lbl.setStyleSheet(f"color:{C.TEXT_NORM};")
         hl.addWidget(lbl)
         hl.addStretch()
         btn_clear = QPushButton("Effacer")
@@ -64,8 +60,8 @@ class BuildPanel(QWidget):
         self.console.setTextCursor(cursor)
         self.console.ensureCursorVisible()
 
-    def log_error(self, t): self.log(t, "#ff6b6b")
-    def log_info(self, t):  self.log(t, "#6bcfff")
+    def log_error(self, t): self.log(t, C.ACCENT_RED)
+    def log_info(self, t):  self.log(t, C.ACCENT_BLU)
 
     def set_building(self, b):
         self.btn_build.setEnabled(not b)
@@ -79,14 +75,14 @@ class ToolchainBar(QFrame):
         super().__init__(parent)
         self.toolchain = toolchain
         self.setFixedHeight(28)
-        self.setStyleSheet("background:#1a1f1a; border-bottom:1px solid #2a2a2a;")
+        self.setStyleSheet(f"background:#1a1f1a; border-bottom:1px solid {C.BORDER};")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(12)
         font = QFont(T.MONO, T.SM)
 
         lbl = QLabel("Toolchain :")
-        lbl.setFont(font); lbl.setStyleSheet("color:#555;")
+        lbl.setFont(font); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         layout.addWidget(lbl)
 
         self._dkp  = QLabel(); self._dkp.setFont(font)
@@ -98,7 +94,7 @@ class ToolchainBar(QFrame):
         btn = QPushButton("⚙ Configurer")
         btn.setFixedHeight(20); btn.setFont(font)
         btn.setStyleSheet(
-            "background:#2a2a2a; color:#aaa; border:1px solid #444;"
+            f"background:{C.BORDER}; color:{C.TEXT_NORM}; border:1px solid {C.TEXT_MUTED};"
             "border-radius:3px; padding:0 6px;"
         )
         btn.clicked.connect(self.configure_requested)
@@ -108,10 +104,10 @@ class ToolchainBar(QFrame):
     def refresh(self):
         ok = self.toolchain.devkitpro_ok
         self._dkp.setText("devkitPro ✓" if ok else "devkitPro ✗")
-        self._dkp.setStyleSheet("color:#4caf78;" if ok else "color:#ff6b6b;")
+        self._dkp.setStyleSheet(f"color:{C.ACCENT_GRN};" if ok else f"color:{C.ACCENT_RED};")
         ok2 = self.toolchain.mgba_ok
         self._mgba.setText("mgba ✓" if ok2 else "mgba ✗")
-        self._mgba.setStyleSheet("color:#4caf78;" if ok2 else "color:#ff6b6b;")
+        self._mgba.setStyleSheet(f"color:{C.ACCENT_GRN};" if ok2 else f"color:{C.ACCENT_RED};")
 
 
 class ToolchainDialog(QDialog):
@@ -126,7 +122,7 @@ class ToolchainDialog(QDialog):
         grp = QGroupBox("devkitPro")
         grp.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
         grp.setStyleSheet(
-            "QGroupBox{color:#ccc;border:1px solid #333;border-radius:4px;"
+            f"QGroupBox{{color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};border-radius:4px;"
             "margin-top:6px;padding:8px;}"
             "QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;}"
         )
@@ -135,7 +131,8 @@ class ToolchainDialog(QDialog):
         self._dkp_edit = QLineEdit(str(toolchain.devkitpro_path or ""))
         self._dkp_edit.setFont(QFont(T.MONO, T.MD))
         self._dkp_edit.setStyleSheet(
-            "background:#222;color:#ccc;border:1px solid #333;border-radius:3px;padding:3px;"
+            f"background:{C.BG_INPUT};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};"
+            "border-radius:3px;padding:3px;"
         )
         btn = QPushButton("Parcourir…"); btn.setFixedWidth(90)
         btn.clicked.connect(self._browse_dkp)

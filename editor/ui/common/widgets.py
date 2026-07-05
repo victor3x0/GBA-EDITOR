@@ -2,7 +2,7 @@
 ui/widgets.py — Bibliothèque de widgets réutilisables pour les éditeurs de components.
 
 Usage dans un éditeur de component (ou plugin) :
-    from ui.widgets import W
+    from ui.common.widgets import W
 
     W.row("Frame", fw_widget, layout)
     W.pair("Offset", "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, layout)
@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QPoint, pyqtSignal
 
-from ui.theme import C, T
+from ui.common.theme import C, T
 
 
 # ── Constantes de style ───────────────────────────────────────────────
@@ -325,7 +325,7 @@ class _W:
                        min_v: float = -9999.0, max_v: float = 9999.0,
                        step: float = 0.1, decimals: int = 2) -> QDoubleSpinBox:
         """QDoubleSpinBox précâblé, même style que spinbox."""
-        from ui.theme import QSS as _QSS
+        from ui.common.theme import QSS as _QSS
         sp = QDoubleSpinBox()
         sp.setRange(min_v, max_v)
         sp.setSingleStep(step)
@@ -337,7 +337,7 @@ class _W:
 
     def combobox(self, items: list[str], current: str = "") -> QComboBox:
         """QComboBox précâblé avec les items donnés."""
-        from ui.theme import QSS as _QSS
+        from ui.common.theme import QSS as _QSS
         cb = QComboBox()
         cb.addItems(items)
         if current in items:
@@ -353,7 +353,7 @@ class _W:
         QSpinBox précâblé, visuellement identique à ceux du Transform.
         Applique explicitement QSS.spinbox pour ne pas dépendre de la cascade parent.
         """
-        from ui.theme import QSS as _QSS
+        from ui.common.theme import QSS as _QSS
         sp = QSpinBox()
         sp.setRange(min_v, max_v); sp.setSingleStep(step)
         sp.setValue(value)
@@ -828,7 +828,7 @@ class AssetHeaderBar(QWidget):
     @classmethod
     def _palette(cls) -> dict[str, tuple[str, str, str]]:
         if not cls._PALETTE:
-            from ui import icons
+            from ui.common import icons
             cls._PALETTE = {
                 "actor":  _kind_colors(icons.COLOR_ACTOR),
                 "prefab": _kind_colors(icons.COLOR_PREFAB),

@@ -29,9 +29,10 @@ from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
-    anim_constant, sfx_constant, music_constant, key_constant, tag_constant,
+    anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     SCREEN_CONSTANTS,
 )
+from .checker import check as _lua_check, BuildContext as _BuildContext
 
 
 # ─── Contexte de génération ───────────────────────────────────────
@@ -70,6 +71,7 @@ class CodeGen:
         self._indent = 0
         self._required_behaviors: dict[str, str] = {}  # alias Lua → sym C
         self._pool_locals: dict[str, tuple[int, any]] = {}  # name → (data_index, init_value)
+        self.warnings: list[str] = []  # diagnostics non bloquants (ex: behavior manquant/invalide)
 
     # ── API publique ──────────────────────────────────────────────
 
@@ -109,7 +111,7 @@ class CodeGen:
 
     def _emit_inlined_behaviors(self, script: LuaScript):
         """Parse et transpile les behaviors requis en fonctions C statiques inline."""
-        from .parser import parse as lua_parse
+        from .parser import parse as lua_parse, LuaParseError
         if not self._required_behaviors or not self.ctx.scripts_dir:
             return
         self._w("/* ── Behaviors inlinés ── */")
@@ -117,10 +119,33 @@ class CodeGen:
             stem = sym[len("beh_"):]          # "paddle_ai"
             beh_path = self.ctx.scripts_dir / "behaviors" / f"{stem}.lua"
             if not beh_path.exists():
-                self._w(f"/* behavior '{stem}' introuvable : {beh_path} */")
+                msg = f"behavior '{stem}' introuvable : {beh_path}"
+                self._w(f"/* {msg} */")
+                self.warnings.append(msg)
                 continue
-            beh_src  = beh_path.read_text(encoding="utf-8")
-            beh_ast  = lua_parse(beh_src)
+            beh_src = beh_path.read_text(encoding="utf-8")
+            try:
+                beh_ast = lua_parse(beh_src)
+            except LuaParseError as ex:
+                msg = f"behavior '{stem}' : erreur de parse Lua : {ex}"
+                self._w(f"/* {msg} */")
+                self.warnings.append(msg)
+                continue
+            # Validation basique (mêmes vérifs que les scripts actor/scène/prefab,
+            # avec le contexte de l'actor qui inline ce behavior — pas de vérif de
+            # plage sur les globals ici, cf. ARCHITECTURE.md pour les limites connues).
+            check_ctx = _BuildContext(
+                actor_name   = self.ctx.actor_name,
+                anim_names   = self.ctx.anim_names,
+                sfx_names    = self.ctx.sfx_names,
+                music_names  = self.ctx.music_names,
+                scene_names  = self.ctx.scene_names,
+                global_names = list(self.ctx.global_names) if self.ctx.global_names else None,
+                const_names  = list(self.ctx.const_names) if self.ctx.const_names else None,
+                sfx_component_name = self.ctx.sfx_component_name,
+            )
+            for err in _lua_check(beh_ast, check_ctx, check_event_names=False):
+                self.warnings.append(f"behavior '{stem}': {err.message}")
             # Émettre chaque fonction du module comme helper C statique préfixé
             for fn in beh_ast.functions:
                 # Ignore le nom de module (M.update → beh_paddle_ai_update)
@@ -400,13 +425,9 @@ class CodeGen:
             return f"/* invoke sur expression complexe ignoré */"
         receiver = e.obj.name          # "self", "other", "paddle", ...
         key = f"self:{e.method}"       # les méthodes sont toujours indexées sous "self:"
-        # destroy : appelle on_destroy puis désactive
-        if e.method == "destroy":
-            sym = self.ctx.actor_sym
-            return f"{sym}_on_destroy({receiver}); actor_destroy_internal({receiver})"
-        # play_sfx : résolu au build depuis le SoundFxComponent de cet actor
-        if e.method == "play_sfx":
-            return self._emit_play_sfx()
+        custom = _INVOKE_CUSTOM.get(key)
+        if custom:
+            return custom(self, e.args, receiver)
         api = RUNTIME_API.get(key)
         if api is None:
             args = ", ".join(self._expr(a) for a in e.args)
@@ -426,23 +447,12 @@ class CodeGen:
             args = ", ".join(self._expr(a) for a in e.args)
             return f"{func}({args})"
 
-        # Cas spéciaux résolus directement par le codegen
-        if key == "get_actor":
-            return self._emit_get_actor(e.args)
-        if key == "global.get":
-            return self._emit_global_get(e.args)
-        if key == "global.set":
-            return self._emit_global_set(e.args)
-        if key == "const.get":
-            return self._emit_const_get(e.args)
-        if key == "actor.spawn":
-            return self._emit_actor_spawn(e.args)
-        if key == "scene.switch":
-            return self._emit_scene_switch(e.args)
-        if key == "sfx.play":
-            return self._emit_sfx_play(e.args)
-        if key == "music.play":
-            return self._emit_music_play(e.args)
+        # Cas spéciaux résolus directement par le codegen (table de dispatch,
+        # cf. _CALL_CUSTOM en bas de fichier — pas d'appel de fonction C simple,
+        # ou arguments C synthétisés depuis le contexte de build).
+        custom = _CALL_CUSTOM.get(key) if key else None
+        if custom:
+            return custom(self, e.args)
 
         api = RUNTIME_API.get(key) if key else None
         if api is None:
@@ -493,17 +503,23 @@ class CodeGen:
             case d if d == DOMAIN_MUSIC:  return music_constant(name)
             case d if d == DOMAIN_KEY:    return key_constant(name)
             case d if d == DOMAIN_TAG:    return tag_constant(name)
+            case d if d == DOMAIN_SCENE:  return scene_constant(name)
             case _:                        return f'"{name}"'
 
     # ── Cas spéciaux ──────────────────────────────────────────────
 
-    def _emit_play_sfx(self) -> str:
+    def _emit_play_sfx(self, args: list, receiver: str) -> str:
         """self:play_sfx() → sfx_play(SFX_X, volume) où X/volume viennent du SoundFxComponent."""
         if not self.ctx.sfx_component_name:
             return "(void)0 /* self:play_sfx() : aucun SoundFX configuré sur cet actor */"
         name   = self.ctx.sfx_component_name
         volume = self.ctx.sfx_volumes.get(name, 255)
         return f"sfx_play({sfx_constant(name)}, {volume})"
+
+    def _emit_destroy(self, args: list, receiver: str) -> str:
+        """self:destroy() → appelle on_destroy() puis désactive l'actor."""
+        sym = self.ctx.actor_sym
+        return f"{sym}_on_destroy({receiver}); actor_destroy_internal({receiver})"
 
     def _emit_sfx_play(self, args: list) -> str:
         """sfx.play("Name") → sfx_play(SFX_NAME, volume) — volume lu depuis la ressource Sfx."""
@@ -524,50 +540,17 @@ class CodeGen:
     def _emit_get_actor(self, args: list) -> str:
         """
         get_actor("PADDLE_AUTO")  →  &g_actors[TAG_PADDLE_AUTO]
-        Résolu à la compilation, zéro overhead runtime.
+        Résolu à la compilation, zéro overhead runtime. Le nom doit être
+        sanitisé avec la même fonction que celle qui définit les macros
+        TAG_* (headers.py::generate_actor_types, via codegen.build_utils.sym) —
+        sinon un nom d'actor avec un caractère hors [A-Za-z0-9_] (ex: un tiret)
+        référence une macro qui n'existe pas.
         """
+        from codegen.build_utils import sym as c_sym
         if not args or not isinstance(args[0], ExprString):
             return "/* get_actor() : argument invalide */"
-        sym = args[0].value.replace(" ", "_")
+        sym = c_sym(args[0].value)
         return f"&g_actors[TAG_{sym.upper()}]"
-
-    def _emit_send(self, args: list) -> str:
-        """
-        send("Enemy", "on_take_damage", 1)
-        →  Enemy_on_take_damage(&g_actors[TAG_ENEMY], 1)
-        (appel direct — résolu à la compilation, zéro overhead runtime)
-        """
-        if len(args) < 2:
-            return "/* send() : arguments manquants */"
-        target = args[0].value if isinstance(args[0], ExprString) else self._expr(args[0])
-        event  = args[1].value if isinstance(args[1], ExprString) else self._expr(args[1])
-        value  = self._expr(args[2]) if len(args) > 2 else "0"
-        target_sym = target.replace(" ", "_")
-        return f"{target_sym}_{event}(&g_actors[TAG_{target_sym.upper()}], {value})"
-
-    def _emit_broadcast(self, args: list) -> str:
-        """
-        broadcast("on_receive", 42)
-        → do { if(g_actors[i].active) SYM_on_receive(&g_actors[i], 0, 42); ... } while(0)
-        Expansion statique à la compilation, zéro overhead runtime.
-        """
-        if len(args) < 2:
-            return "/* broadcast() : arguments manquants */"
-        event = args[0].value if isinstance(args[0], ExprString) else self._expr(args[0])
-        value = self._expr(args[1]) if len(args) > 1 else "0"
-        calls = []
-        for i, sym in enumerate(self.ctx.all_actor_syms):
-            calls.append(f"if(g_actors[{i}].active) {sym}_{event}(&g_actors[{i}], 0, {value})")
-        inner = "; ".join(calls)
-        return f"do {{ {inner}; }} while(0)"
-
-    def _emit_scene_switch(self, args: list) -> str:
-        """scene.switch("VICTORY") → scene_switch(SCENE_IDX_VICTORY)"""
-        if not args or not isinstance(args[0], ExprString):
-            return "/* scene.switch : nom de scène non littéral */"
-        name = args[0].value
-        sym  = "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
-        return f"scene_switch(SCENE_IDX_{sym.upper()})"
 
     def _emit_actor_spawn(self, args: list) -> str:
         """actor.spawn("PrefabName", x, y) → spawn_PrefabName(x, y)"""
@@ -630,7 +613,34 @@ class CodeGen:
         self._lines.append("    " * self._indent + line)
 
 
+# ─── Tables de dispatch — fonctions Lua qui ne se traduisent pas par un
+# simple appel de fonction C (expression brute, args synthétisés depuis le
+# contexte de build, émission multi-instructions...). Chaque clé existe
+# aussi dans RUNTIME_API (scripting/api.py) pour la validation/doc — cette
+# table ne gère que la traduction C, à un seul endroit plutôt qu'éparpillée
+# en if/elif dans _invoke/_call.
+
+_INVOKE_CUSTOM: dict = {
+    "self:destroy":  CodeGen._emit_destroy,
+    "self:play_sfx": CodeGen._emit_play_sfx,
+}
+
+_CALL_CUSTOM: dict = {
+    "get_actor":   CodeGen._emit_get_actor,
+    "global.get":  CodeGen._emit_global_get,
+    "global.set":  CodeGen._emit_global_set,
+    "const.get":   CodeGen._emit_const_get,
+    "actor.spawn": CodeGen._emit_actor_spawn,
+    "sfx.play":    CodeGen._emit_sfx_play,
+    "music.play":  CodeGen._emit_music_play,
+}
+
+
 # ─── Point d'entrée public ────────────────────────────────────────
 
-def generate(script: LuaScript, ctx: CodegenContext) -> str:
-    return CodeGen(ctx).generate(script)
+def generate(script: LuaScript, ctx: CodegenContext) -> tuple[str, list[str]]:
+    """Retourne (code C, warnings) — warnings couvre les behaviors requis
+    manquants/invalides, non bloquants mais à faire remonter à l'utilisateur."""
+    gen = CodeGen(ctx)
+    code = gen.generate(script)
+    return code, gen.warnings

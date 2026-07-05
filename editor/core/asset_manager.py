@@ -13,8 +13,8 @@ from PyQt6.QtWidgets import (
     QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
 )
 from PyQt6.QtGui import QPixmap, QFont
-from ui.theme import C, T, QSS
-from ui.widgets import W
+from ui.common.theme import C, T, QSS
+from ui.common.widgets import W
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.project import Project

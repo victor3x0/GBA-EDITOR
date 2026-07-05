@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import QCheckBox, QLineEdit, QHBoxLayout, QWidget
 from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
-from ui.widgets import W
-from ui.theme import C
+from ui.common.widgets import W
+from ui.common.theme import C
 
 _TOOLTIPS = {
     "collision.solid":              ("self.collision.solid",

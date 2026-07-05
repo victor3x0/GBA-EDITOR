@@ -31,6 +31,29 @@ def _sfx_component_info(owner) -> tuple[Optional[str], bool]:
     return comp.sfx_name, comp.trigger == "on_spawn"
 
 
+def _compile_script(sp: Path, ctx_check: "BuildContext", emit, label: str):
+    """
+    Parse + valide un script Lua (actor, scène ou prefab — même traitement
+    pour les trois, contrairement à avant où seuls les actors étaient
+    validés). Retourne (ast, ok) : ast est None si le parse échoue ; ok est
+    False sur erreur bloquante (parse ou check), quel que soit le type de
+    script — un prefab avec une faute de syntaxe bloque désormais le build
+    au lieu d'être silencieusement sauté.
+    """
+    try:
+        script = lua_parse(sp.read_text(encoding="utf-8"))
+    except LuaParseError as e:
+        emit("error_line", f"[error] {label} — parse: {e}")
+        return None, False
+    errors = lua_check(script, ctx_check)
+    for err in errors:
+        prefix = "[error]" if err.level == "error" else "[warn] "
+        emit("log_line", f"{prefix} {label}: {err.message}")
+    if any(e.level == "error" for e in errors):
+        return script, False
+    return script, True
+
+
 def transpile_all(
     p: Project,
     scene: Scene,
@@ -53,6 +76,7 @@ def transpile_all(
     music_info  = ({m.name: (getattr(m, "loop", True), getattr(m, "volume", 255)) for m in p.music}
                    if hasattr(p, "music") else {})
     all_syms    = [_sym(a.name) for a, _ in scene_actors]
+    _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
 
     # Globals résolus en avance (nécessaire pour le BuildContext du checker)
@@ -89,13 +113,6 @@ def transpile_all(
         if sp.suffix.lower() != ".lua":
             continue
 
-        source = sp.read_text(encoding="utf-8")
-        try:
-            script = lua_parse(source)
-        except LuaParseError as e:
-            emit("error_line", f"[error] {sp.name} — parse: {e}")
-            return False
-
         anim_names = [st.name for st in sprite.states] if sprite and sprite.states else []
         sfx_comp_name, _ = _sfx_component_info(actor)
         ctx_check = BuildContext(
@@ -104,15 +121,14 @@ def transpile_all(
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
+            actor_names  = _actor_names,
             global_names = list(global_names) if global_names else None,
+            global_types = {g.name: g.type for g in p.globals},
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = sfx_comp_name,
         )
-        errors = lua_check(script, ctx_check)
-        for err in errors:
-            prefix = "[error]" if err.level == "error" else "[warn] "
-            emit("log_line", f"{prefix} {sp.name}: {err.message}")
-        if any(e.level == "error" for e in errors):
+        script, ok = _compile_script(sp, ctx_check, emit, sp.name)
+        if not ok:
             return False
 
         parsed_scripts.append((actor, sprite, script, sp))
@@ -124,12 +140,20 @@ def transpile_all(
     if scene_script_path:
         sp = p.asset_abs(scene_script_path)
         if sp and sp.exists() and sp.suffix.lower() == ".lua":
-            try:
-                scene_script_ast  = lua_parse(sp.read_text(encoding="utf-8"))
-                scene_script_file = sp
-            except LuaParseError as e:
-                emit("error_line", f"[scene script] parse: {e}")
+            ctx_check = BuildContext(
+                actor_name   = scene.name,
+                sfx_names    = sfx_names,
+                music_names  = music_names,
+                scene_names  = _scene_names,
+                actor_names  = _actor_names,
+                global_names = list(global_names) if global_names else None,
+                global_types = {g.name: g.type for g in p.globals},
+                const_names  = list(const_names) if const_names else None,
+            )
+            scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)
+            if not ok:
                 return False
+            scene_script_file = sp
 
     # Génération C — actors de scène
     for actor, sprite, script, sp in parsed_scripts:
@@ -152,8 +176,10 @@ def transpile_all(
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
         )
-        c_code = lua_generate(script, ctx).replace(
-            '#include "runtime.h"', '#include "actor_api.h"')
+        c_code, gen_warnings = lua_generate(script, ctx)
+        c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
+        for w in gen_warnings:
+            emit("log_line", f"[warn] {sp.name}: {w}")
         out = p.src_dir / f"actor_{s}.c"
         out.write_text(c_code, encoding="utf-8")
         emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
@@ -173,14 +199,24 @@ def transpile_all(
         sp_path = p.asset_abs(sc.script)
         if not sp_path or not sp_path.exists() or sp_path.suffix.lower() != ".lua":
             continue
-        try:
-            pf_ast = lua_parse(sp_path.read_text(encoding="utf-8"))
-        except Exception as ex:
-            emit("log_line", f"[warn] prefab {pf.name}: parse error: {ex}")
-            continue
         pf_spr  = next((c for c in pf.components if hasattr(c, "states")), None)
         pf_anim = [st.name for st in pf_spr.states] if pf_spr and hasattr(pf_spr, "states") else []
         pf_sfx_comp_name, pf_sfx_autoplay = _sfx_component_info(pf)
+        ctx_check = BuildContext(
+            actor_name   = pf.name,
+            anim_names   = pf_anim,
+            sfx_names    = sfx_names,
+            music_names  = music_names,
+            scene_names  = _scene_names,
+            actor_names  = _actor_names,
+            global_names = list(global_names) if global_names else None,
+            global_types = {g.name: g.type for g in p.globals},
+            const_names  = list(const_names) if const_names else None,
+            sfx_component_name = pf_sfx_comp_name,
+        )
+        pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
+        if not ok:
+            return False
         ctx_pf  = CodegenContext(
             actor_name    = pf.name,
             actor_sym     = pf_sym,
@@ -198,8 +234,10 @@ def transpile_all(
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
         )
-        pf_c = lua_generate(pf_ast, ctx_pf).replace(
-            '#include "runtime.h"', '#include "actor_api.h"')
+        pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
+        pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
+        for w in pf_warnings:
+            emit("log_line", f"[warn] prefab {pf.name}: {w}")
         out_pf = p.src_dir / f"actor_{pf_sym}.c"
         out_pf.write_text(pf_c, encoding="utf-8")
         emit("log_line", f"[lua->c] prefab {pf.name} -> {out_pf.name}")
@@ -221,8 +259,10 @@ def transpile_all(
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
         )
-        c_code = lua_generate(scene_script_ast, ctx_sc).replace(
-            '#include "runtime.h"', '#include "actor_api.h"')
+        c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
+        c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
+        for w in sc_warnings:
+            emit("log_line", f"[warn] {scene_script_file.name}: {w}")
         out_name = f"{scene_s}_scene.c"
         out = p.src_dir / out_name
         out.write_text(c_code, encoding="utf-8")

@@ -2,10 +2,10 @@
 Component Editor Registry — système de plugins pour l'inspector.
 
 Usage (éditeur interne) :
-    from ui.inspectors.component_editors import register, get_editor
+    from ui.scene_manager.inspectors.component_editors import register, get_editor
 
 Usage (plugin externe) :
-    from ui.inspectors.component_editors import register, BaseComponentEditor
+    from ui.scene_manager.inspectors.component_editors import register, BaseComponentEditor
     from core.project import COMPONENT_REGISTRY
     import dataclasses
 

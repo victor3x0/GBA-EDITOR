@@ -5,9 +5,9 @@ from PyQt6.QtWidgets import QComboBox
 from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
-from ui.widgets import W, ScriptSlot, ScriptPickerPopup
-from ui.theme import C, T
-from ui.icons import COLOR_SPRITE
+from ui.common.widgets import W, ScriptSlot, ScriptPickerPopup
+from ui.common.theme import C, T
+from ui.common.icons import COLOR_SPRITE
 from core.command_dispatcher import get_dispatcher
 
 
