@@ -286,13 +286,7 @@ class BackgroundAsset(Resource):
         return cls(name=d.get("name", "background"), layers=layers)
 
 
-# Stubs rétrocompat (importés par d'anciens modules)
-@dataclass
-class Background(Resource):
-    name: str = "background"
-    asset: Optional[str] = None
-    scroll_speed: float = 1.0
-
+# Stub rétrocompat (importé par d'anciens modules)
 @dataclass
 class Tileset(Resource):
     name: str = "tileset"
@@ -990,6 +984,11 @@ class Project:
         return self.project_dir / "prefab"
 
     @property
+    def variables_file(self) -> Path:
+        """Globals + constants du projet — project/variables.json (pas de dépendance externe)."""
+        return self.project_dir / "variables.json"
+
+    @property
     def sprites_dir(self) -> Path:
         return self.assets_dir / "sprites"
 
@@ -1238,14 +1237,6 @@ class Project:
             "start_scene": self.settings.start_scene,
             "author":      self.settings.author,
             "version":     self.settings.version,
-            "globals":     [
-                {"name": g.name, "type": g.type, "default": g.default, "desc": g.desc}
-                for g in self.globals
-            ],
-            "constants":   [
-                {"name": c.name, "type": c.type, "value": c.value, "desc": c.desc}
-                for c in self.constants
-            ],
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -1257,6 +1248,31 @@ class Project:
         self.settings.start_scene = d.get("start_scene", "")
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
+
+    # ── I/O variables (globals + constants) ─────────────────────────
+    # Assets côté éditeur sans dépendance externe -> project/variables.json,
+    # pas project.json (config racine uniquement, cf. ARCHITECTURE.md).
+
+    def save_variables(self):
+        data = {
+            "globals": [
+                {"name": g.name, "type": g.type, "default": g.default, "desc": g.desc}
+                for g in self.globals
+            ],
+            "constants": [
+                {"name": c.name, "type": c.type, "value": c.value, "desc": c.desc}
+                for c in self.constants
+            ],
+        }
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.variables_file, json.dumps(data, indent=2, ensure_ascii=False))
+
+    def load_variables(self):
+        self.globals = []
+        self.constants = []
+        if not self.variables_file.exists():
+            return
+        d = json.loads(self.variables_file.read_text(encoding="utf-8"))
         self.globals = [
             GlobalVar(
                 name    = g.get("name", "var"),
@@ -1348,6 +1364,38 @@ class Project:
             self.settings.start_scene = new_name
             self.save_settings()
 
+    # ── CRUD variables (globals / constants) ────────────────────────
+    # Unicité vérifiée PAR TYPE uniquement : un global et une constante
+    # peuvent partager un nom (préfixes C distincts : g_<nom> / CONST_<NOM>).
+
+    def _variable_list(self, kind: str) -> list:
+        """kind: "global" | "const" """
+        return self.constants if kind == "const" else self.globals
+
+    def variable_name_taken(self, kind: str, name: str, *, exclude=None) -> bool:
+        return any(e is not exclude and e.name == name for e in self._variable_list(kind))
+
+    def add_variable(self, kind: str, name: str):
+        """Ajoute un global ou une constante. Retourne None si le nom est vide ou déjà pris (par type)."""
+        name = name.strip()
+        if not name or self.variable_name_taken(kind, name):
+            return None
+        entry = Constant(name=name) if kind == "const" else GlobalVar(name=name)
+        self._variable_list(kind).append(entry)
+        self.save_variables()
+        return entry
+
+    def rename_variable(self, kind: str, entry, new_name: str) -> bool:
+        """Renomme en place. Retourne False (no-op) si le nom est vide/inchangé/déjà pris."""
+        new_name = new_name.strip()
+        if not new_name or new_name == entry.name:
+            return False
+        if self.variable_name_taken(kind, new_name, exclude=entry):
+            return False
+        entry.name = new_name
+        self.save_variables()
+        return True
+
     # ── Raccourcis de sauvegarde par objet (delegue au ResourceManager) ──
 
     def save_scene(self, scene: Scene):                    self.scenes.save(scene)
@@ -1362,6 +1410,7 @@ class Project:
 
     def save(self):
         self.save_settings()
+        self.save_variables()
         self.sprites.save_all()
         self.sfx.save_all()
         self.music.save_all()
@@ -1392,6 +1441,7 @@ class Project:
 
         self._migrate_on_load()
         self.load_settings()
+        self.load_variables()
         self.sprites.load()
         self.sfx.load()
         self.music.load()

@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QDrag
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 
-from ui.theme import T
+from ui.common.theme import T
 
 
 class CollapsibleSection(QWidget):

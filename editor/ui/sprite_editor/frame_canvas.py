@@ -1,0 +1,911 @@
+"""
+ui/sprite_editor/frame_canvas.py — timeline de frames + canvas de composition
+peint tuile par tuile (édition de la frame courante d'une AnimState/StateDirection).
+"""
+from __future__ import annotations
+from pathlib import Path
+from typing import Any, Optional
+
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButton,
+    QFrame, QSizePolicy, QScrollArea, QMenu, QApplication,
+)
+from PyQt6.QtGui import (
+    QFont, QColor, QPixmap, QImage, QDrag, QPainter, QPen,
+    QKeySequence, QShortcut,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
+
+from ui.common.theme import C, T
+from ui.common.icons import get as _ico
+from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
+from core.history import get_history, PaintFrameCmd
+from core.sprite_compose import compose_frame_image
+
+_CTX_MENU_QSS = (
+    f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
+    f"border:1px solid {C.BORDER_MID};font-family:monospace;"
+    f"font-size:{T.MD}px;padding:2px;}}"
+    f"QMenu::item{{padding:4px 20px 4px 12px;border-radius:2px;}}"
+    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
+)
+
+# ── Frame timeline ─────────────────────────────────────────────────────────────
+
+_THUMB_IMG  = 52   # px image dans la vignette
+_THUMB_W    = 64   # largeur totale vignette
+_THUMB_H    = 74   # image + label index
+_TIMELINE_H = 106  # hauteur fixe de la zone timeline
+
+
+def _pil_to_pixmap(img, size: int) -> QPixmap:
+    if img.width <= 0 or img.height <= 0:
+        pm = QPixmap(size, size)
+        pm.fill(QColor(C.BG_PANEL))
+        return pm
+    img = img.resize((size, size), __import__("PIL").Image.NEAREST)
+    data = bytes(img.tobytes("raw", "RGBA"))
+    qi = QImage(data, size, size, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(qi)
+
+
+def _make_frame_pixmap(abs_path: Optional[Path], frame: AnimFrame,
+                       fw: int, fh: int, size: int = _THUMB_IMG) -> QPixmap:
+    img = compose_frame_image(abs_path, frame, fw, fh)
+    return _pil_to_pixmap(img, size)
+
+
+def _clone_frame(frame: AnimFrame) -> AnimFrame:
+    return AnimFrame(tiles=[
+        TilePlacement(t.src_col, t.src_row, t.dst_col, t.dst_row, t.flip_h, t.flip_v)
+        for t in frame.tiles
+    ])
+
+
+class _FrameThumb(QFrame):
+    """Vignette d'un frame, draggable via QDrag."""
+
+    MIME = "application/x-frame-index"
+
+    clicked        = pyqtSignal(int)  # index
+    context_asked  = pyqtSignal(int, object)  # index, QPoint global
+
+    def __init__(self, index: int, frame: AnimFrame,
+                 pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self._index    = index
+        self._frame    = frame
+        self._selected = False
+        self._press_pos: Optional[QPoint] = None
+
+        self.setFixedSize(_THUMB_W, _THUMB_H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAcceptDrops(False)
+
+        self._pix_lbl = QLabel(self)
+        self._pix_lbl.setPixmap(pixmap)
+        self._pix_lbl.setGeometry((_THUMB_W - _THUMB_IMG) // 2, 4, _THUMB_IMG, _THUMB_IMG)
+        self._pix_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._idx_lbl = QLabel(str(index + 1), self)
+        self._idx_lbl.setFont(QFont(T.MONO, T.XS))
+        self._idx_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._idx_lbl.setGeometry(0, _THUMB_IMG + 8, _THUMB_W, 14)
+        self._idx_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._refresh_style()
+
+    def set_selected(self, sel: bool):
+        if self._selected != sel:
+            self._selected = sel
+            self._refresh_style()
+
+    def update_index(self, index: int):
+        self._index = index
+        self._idx_lbl.setText(str(index + 1))
+
+    def update_pixmap(self, pixmap: QPixmap):
+        self._pix_lbl.setPixmap(pixmap)
+
+    def _refresh_style(self):
+        if self._selected:
+            self.setStyleSheet(
+                f"QFrame{{background:{C.BG_SEL};border:2px solid {C.ACCENT_GRN};"
+                f"border-radius:4px;}}"
+            )
+            self._idx_lbl.setStyleSheet(
+                f"color:{C.ACCENT_GRN};background:transparent;")
+        else:
+            self.setStyleSheet(
+                f"QFrame{{background:{C.BG_INPUT};border:1px solid {C.BORDER};"
+                f"border-radius:4px;}}"
+            )
+            self._idx_lbl.setStyleSheet(
+                f"color:{C.TEXT_DIM};background:transparent;")
+
+    # ── Events ────────────────────────────────────────────────────────
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = e.pos()
+        elif e.button() == Qt.MouseButton.RightButton:
+            self.context_asked.emit(self._index, e.globalPosition().toPoint())
+
+    def mouseMoveEvent(self, e):
+        if not (e.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if self._press_pos is None:
+            return
+        if (e.pos() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+            return
+        # Démarrer le drag
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(self.MIME, str(self._index).encode())
+        drag.setMimeData(mime)
+        # Ghost semi-transparent
+        ghost = self.grab()
+        painter = QPainter(ghost)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.fillRect(ghost.rect(), QColor(0, 0, 0, 160))
+        painter.end()
+        drag.setPixmap(ghost)
+        drag.setHotSpot(self._press_pos)
+        self._press_pos = None
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
+            self.clicked.emit(self._index)
+            self._press_pos = None
+
+
+class _FrameTimeline(QWidget):
+    """
+    Bande horizontale de frames avec :
+    - clic → sélection
+    - drag-drop → réordonnancement
+    - clic droit → copy / clone / delete
+    - bouton + → ajouter une frame
+    """
+
+    frame_selected = pyqtSignal(int)    # index sélectionné
+    frames_changed = pyqtSignal()       # frames modifiées (save)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(_TIMELINE_H)
+        self.setStyleSheet(
+            f"background:{C.BG_PANEL};"
+            f"border-top:1px solid {C.BORDER_DARK};"
+        )
+        # Focus requis pour que Ctrl+D / Suppr n'agissent que quand la
+        # timeline est active (ex: pas pendant l'édition d'un nom ailleurs).
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        self._sprite:    Optional[SpriteAsset]    = None
+        self._state:     Optional[AnimState]       = None
+        self._sd:        Optional[StateDirection]  = None
+        self._abs_path:  Optional[Path]            = None
+        self._selected:  int                       = 0
+        self._thumbs:    list[_FrameThumb]         = []
+        self._drop_before: Optional[int]           = None   # indicateur pendant drag
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Label section
+        hdr = QLabel("  FRAMES")
+        hdr.setFont(QFont(T.MONO, T.XS))
+        hdr.setFixedHeight(18)
+        hdr.setStyleSheet(
+            f"color:{C.TEXT_DIM};background:{C.BG_RAISED};"
+            f"border-bottom:1px solid {C.BORDER_DARK};"
+        )
+        outer.addWidget(hdr)
+
+        # Zone de scroll horizontale
+        self._scroll = QScrollArea()
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setStyleSheet(
+            "QScrollArea{border:none;background:transparent;}"
+            "QScrollBar:horizontal{height:6px;}"
+        )
+
+        self._content = QWidget()
+        self._content.setAcceptDrops(True)
+        self._content.dragEnterEvent  = self._drag_enter
+        self._content.dragMoveEvent   = self._drag_move
+        self._content.dragLeaveEvent  = self._drag_leave
+        self._content.dropEvent       = self._drop
+        self._content.paintEvent      = self._paint_drop_indicator
+
+        self._layout = QHBoxLayout(self._content)
+        self._layout.setContentsMargins(8, 0, 8, 0)
+        self._layout.setSpacing(6)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        # Bouton +
+        self._add_btn = QToolButton()
+        self._add_btn.setText("+")
+        self._add_btn.setFixedSize(36, _THUMB_H)
+        self._add_btn.setStyleSheet(
+            f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
+            f"border:1px dashed {C.BORDER};border-radius:4px;"
+            f"font-size:{T.LG}px;}}"
+            f"QToolButton:hover{{color:{C.ACCENT_GRN};border-color:{C.ACCENT_GRN};}}"
+        )
+        self._add_btn.setToolTip("Ajouter une frame")
+        self._add_btn.clicked.connect(self._on_add)
+
+        self._scroll.setWidget(self._content)
+        outer.addWidget(self._scroll, 1)
+
+        # Raccourcis : n'agissent que quand la timeline (ou un enfant) a le focus.
+        dup = QShortcut(QKeySequence("Ctrl+D"), self)
+        dup.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        dup.activated.connect(lambda: self._copy_frame(self._selected))
+        delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
+        delete.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        delete.activated.connect(lambda: self._delete_frame(self._selected))
+
+    # ── API publique ───────────────────────────────────────────────────
+
+    def load(self, sprite: SpriteAsset, state: AnimState,
+             sd: StateDirection, abs_path: Optional[Path]):
+        self._sprite   = sprite
+        self._state    = state
+        self._sd       = sd
+        self._abs_path = abs_path
+        self._selected = 0
+        self._rebuild()
+
+    def clear(self):
+        self._sprite = self._state = self._sd = None
+        self._rebuild()
+
+    # ── Construction ──────────────────────────────────────────────────
+
+    def _rebuild(self):
+        # Supprimer les anciens thumbs
+        for t in self._thumbs:
+            self._layout.removeWidget(t)
+            t.deleteLater()
+        self._thumbs.clear()
+
+        # Retirer le stretch (dernier) et le bouton + pour les réinsérer
+        while self._layout.count():
+            item = self._layout.itemAt(self._layout.count() - 1)
+            if item.widget() is self._add_btn or item.spacerItem():
+                self._layout.takeAt(self._layout.count() - 1)
+            else:
+                break
+        # hide() avant setParent(None) : même détaché puis rattaché dans la
+        # foulée (voir plus bas), un bouton visible reparenté à rien devient
+        # furtivement une fenêtre top-level ("micro popup" au changement de
+        # sprite sélectionné).
+        self._add_btn.hide()
+        self._add_btn.setParent(None)
+
+        if self._sd:
+            fw = self._sprite.frame_w if self._sprite else 16
+            fh = self._sprite.frame_h if self._sprite else 16
+            for i, frame in enumerate(self._sd.frames):
+                pm  = _make_frame_pixmap(self._abs_path, frame, fw, fh)
+                t   = _FrameThumb(i, frame, pm)
+                t.set_selected(i == self._selected)
+                t.clicked.connect(self._on_thumb_clicked)
+                t.context_asked.connect(self._on_context_menu)
+                self._layout.addWidget(t)
+                self._thumbs.append(t)
+
+        self._layout.addWidget(self._add_btn)
+        self._add_btn.show()
+        self._layout.addStretch()
+
+        # Hauteur fixe = viewport, largeur = nombre de frames
+        n = len(self._thumbs)
+        content_w = n * (_THUMB_W + 6) + 16 + 6 + 42   # thumbs + marges + btn +
+        vp_h = _TIMELINE_H - 20   # hauteur header (18) + séparateur (2)
+        self._content.setFixedSize(max(content_w, self._scroll.width()), vp_h)
+
+    def _select(self, index: int):
+        if self._sd and 0 <= index < len(self._sd.frames):
+            for i, t in enumerate(self._thumbs):
+                t.set_selected(i == index)
+            self._selected = index
+            self.frame_selected.emit(index)
+
+    def refresh_thumb(self, index: int, pixmap: QPixmap):
+        """Met à jour l'image d'une vignette sans changer la sélection (après peinture)."""
+        if 0 <= index < len(self._thumbs):
+            self._thumbs[index].update_pixmap(pixmap)
+
+    # ── Slots ─────────────────────────────────────────────────────────
+
+    def _on_thumb_clicked(self, index: int):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self._select(index)
+
+    def _on_add(self):
+        if not self._sd:
+            return
+        # Copie de la frame sélectionnée (ou frame vide)
+        if self._sd.frames:
+            src = self._sd.frames[self._selected]
+            self._sd.frames.append(_clone_frame(src))
+        else:
+            self._sd.frames.append(AnimFrame())
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(len(self._sd.frames) - 1)
+
+    def _on_context_menu(self, index: int, pos: QPoint):
+        if not self._sd:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(_CTX_MENU_QSS)
+        copy_a  = menu.addAction("Copier              Ctrl+D")
+        clone_a = menu.addAction("Cloner")
+        clear_a = menu.addAction("Vider la frame")
+        menu.addSeparator()
+        del_a   = menu.addAction("Supprimer           Suppr")
+        del_a.setEnabled(len(self._sd.frames) > 1)
+
+        act = menu.exec(pos)
+        if act == copy_a:
+            self._copy_frame(index)
+        elif act == clone_a:
+            self._clone_frame_to_end(index)
+        elif act == clear_a:
+            self._clear_frame(index)
+        elif act == del_a:
+            self._delete_frame(index)
+
+    # ── Actions frame (partagées menu contextuel + raccourcis clavier) ──
+
+    def _copy_frame(self, index: int):
+        if not self._sd or not self._sd.frames:
+            return
+        src = self._sd.frames[index]
+        self._sd.frames.insert(index + 1, _clone_frame(src))
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(index + 1)
+
+    def _clone_frame_to_end(self, index: int):
+        if not self._sd or not self._sd.frames:
+            return
+        src = self._sd.frames[index]
+        self._sd.frames.append(_clone_frame(src))
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(len(self._sd.frames) - 1)
+
+    def _clear_frame(self, index: int):
+        if not self._sd or not self._sd.frames:
+            return
+        self._sd.frames[index].tiles.clear()
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(index)
+
+    def _delete_frame(self, index: int):
+        if not self._sd or len(self._sd.frames) <= 1:
+            return
+        self._sd.frames.pop(index)
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(min(index, len(self._sd.frames) - 1))
+
+    # ── Drag-drop reorder ─────────────────────────────────────────────
+
+    def _drag_enter(self, e):
+        if e.mimeData().hasFormat(_FrameThumb.MIME):
+            e.acceptProposedAction()
+
+    def _drag_move(self, e):
+        if not e.mimeData().hasFormat(_FrameThumb.MIME):
+            return
+        self._drop_before = self._drop_index(e.position().toPoint().x())
+        self._content.update()
+        e.acceptProposedAction()
+
+    def _drag_leave(self, e):
+        self._drop_before = None
+        self._content.update()
+
+    def _drop(self, e):
+        if not e.mimeData().hasFormat(_FrameThumb.MIME) or not self._sd:
+            return
+        src_idx  = int(e.mimeData().data(_FrameThumb.MIME).data())
+        dst_idx  = self._drop_index(e.position().toPoint().x())
+        self._drop_before = None
+        self._content.update()
+
+        if src_idx == dst_idx or src_idx + 1 == dst_idx:
+            return
+        frame = self._sd.frames.pop(src_idx)
+        insert_at = dst_idx if dst_idx <= src_idx else dst_idx - 1
+        self._sd.frames.insert(insert_at, frame)
+        self.frames_changed.emit()
+        self._rebuild()
+        self._select(insert_at)
+        e.acceptProposedAction()
+
+    def _drop_index(self, x: int) -> int:
+        """Retourne l'index d'insertion (0..n) correspondant à la position x."""
+        for i, t in enumerate(self._thumbs):
+            mid = t.x() + t.width() // 2
+            if x < mid:
+                return i
+        return len(self._thumbs)
+
+    def _paint_drop_indicator(self, e):
+        """Ligne verte indiquant l'emplacement de dépôt."""
+        from PyQt6.QtGui import QPainter, QPen
+        QWidget.paintEvent(self._content, e)
+        if self._drop_before is None or not self._thumbs:
+            return
+        painter = QPainter(self._content)
+        pen = QPen(QColor(C.ACCENT_GRN), 2)
+        painter.setPen(pen)
+        n = len(self._thumbs)
+        if self._drop_before < n:
+            t = self._thumbs[self._drop_before]
+            x = t.x() - 3
+        else:
+            t = self._thumbs[-1]
+            x = t.x() + t.width() + 3
+        y1 = t.y()
+        y2 = t.y() + t.height()
+        painter.drawLine(x, y1, x, y2)
+        painter.end()
+
+
+# ── Canvas de frame (composition peinte tuile par tuile) ───────────────────────
+
+class _FrameCanvas(QWidget):
+    """
+    Zone de composition — grille de tuiles 8×8.
+    Clic gauche = peindre (brosse active) ou sélectionner/ramasser des
+    tuiles déjà posées (aucune brosse active) ; clic droit = effacer +
+    reset sélection picker. Molette = zoom, molette centrale glissée = pan.
+    Shift+X / Shift+Y = flip horizontal/vertical de la brosse active.
+    """
+
+    frame_painted      = pyqtSignal()
+    selection_reset    = pyqtSignal()   # demande reset de la sélection dans le picker
+    hover_changed       = pyqtSignal(object)  # (col, row) survolé, ou None
+    brush_picked_up     = pyqtSignal(int)     # nb de tuiles ramassées depuis le canvas
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._sprite:     Optional[SpriteAsset] = None
+        self._abs_path:   Optional[Path]        = None
+        self._src_pixmap: Optional[QPixmap]     = None
+        self._frame:      Optional[AnimFrame]   = None
+        self._tile_w = self._tile_h = 1
+        self._show_grid  = True
+        # (rel_c, rel_r, src_col, src_row, flip_h, flip_v)
+        self._brush: list[tuple[int, int, int, int, bool, bool]] = []
+        self._hover: Optional[tuple[int, int]]       = None
+        self._persist_fn = None
+        # Zoom/pan manuel
+        self._zoom: int = 0          # 0 = auto-fit, >0 = manuel
+        self._pan_x: int = 0
+        self._pan_y: int = 0
+        self._mid_drag: Optional[tuple] = None   # (start_pos, start_pan_x, start_pan_y)
+        # Sélection de tuiles déjà posées (active seulement sans brosse)
+        self._select_start: Optional[tuple[int, int]] = None
+        self._select_end:   Optional[tuple[int, int]] = None
+        self.setMinimumHeight(80)
+        self.setMouseTracking(True)
+        self.setStyleSheet(f"background:{C.BG_DEEP};")
+        # Focus au clic — les raccourcis Shift+X/Y sont portés par
+        # SpriteCenterPanel (WidgetWithChildrenShortcut) pour marcher aussi
+        # bien après un clic dans le tile picker qu'après un clic ici.
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+
+    # ── API ──────────────────────────────────────────────────────────
+
+    def load_frame(self, sprite: Optional[SpriteAsset], abs_path: Optional[Path],
+                   frame: Optional[AnimFrame]):
+        self._sprite   = sprite
+        self._abs_path = abs_path
+        self._frame    = frame
+        self._tile_w   = sprite.tile_w if sprite else 1
+        self._tile_h   = sprite.tile_h if sprite else 1
+        self._src_pixmap = QPixmap(str(abs_path)) if abs_path and abs_path.exists() else None
+        self._zoom = 0; self._pan_x = self._pan_y = 0
+        self.update()
+
+    def set_brush(self, tiles: list[tuple[int, int]]):
+        if not tiles:
+            self._brush = []
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        else:
+            min_c = min(c for c, r in tiles)
+            min_r = min(r for c, r in tiles)
+            self._brush = [(c - min_c, r - min_r, c, r, False, False) for c, r in tiles]
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        self.update()
+
+    def flip_brush_x(self):
+        """Miroir horizontal de la brosse active — réarrange les tuiles
+        ET retourne le contenu de chaque tuile (flip_h)."""
+        if not self._brush:
+            return
+        max_c = max(rel_c for rel_c, rel_r, sc, sr, fh, fv in self._brush)
+        self._brush = [(max_c - rel_c, rel_r, sc, sr, not fh, fv)
+                       for rel_c, rel_r, sc, sr, fh, fv in self._brush]
+        self.update()
+
+    def flip_brush_y(self):
+        """Miroir vertical de la brosse active — réarrange les tuiles
+        ET retourne le contenu de chaque tuile (flip_v)."""
+        if not self._brush:
+            return
+        max_r = max(rel_r for rel_c, rel_r, sc, sr, fh, fv in self._brush)
+        self._brush = [(rel_c, max_r - rel_r, sc, sr, fh, not fv)
+                       for rel_c, rel_r, sc, sr, fh, fv in self._brush]
+        self.update()
+
+    def set_persist_fn(self, fn):
+        self._persist_fn = fn
+
+    def set_grid(self, on: bool):
+        self._show_grid = on
+        self.update()
+
+    # ── Géométrie ────────────────────────────────────────────────────
+
+    def _auto_zoom(self) -> int:
+        w, h = self.width(), self.height()
+        pw, ph = max(self._tile_w * 8, 1), max(self._tile_h * 8, 1)
+        return max(1, min(w // pw, h // ph))
+
+    # ── Zoom (molette ou boutons du header) ─────────────────────────
+
+    def _adjust_zoom(self, delta: int):
+        cur = self._zoom if self._zoom > 0 else self._auto_zoom()
+        self._zoom = max(1, min(24, cur + delta))
+        if self._zoom == self._auto_zoom():
+            self._zoom = 0; self._pan_x = self._pan_y = 0
+        self.update()
+
+    def zoom_in(self):
+        self._adjust_zoom(1)
+
+    def zoom_out(self):
+        self._adjust_zoom(-1)
+
+    def zoom_fit(self):
+        self._zoom = 0
+        self._pan_x = self._pan_y = 0
+        self.update()
+
+    def _geometry(self):
+        zoom = self._zoom if self._zoom > 0 else self._auto_zoom()
+        pw, ph = self._tile_w * 8, self._tile_h * 8
+        dw, dh = pw * zoom, ph * zoom
+        ox = (self.width()  - dw) // 2 + self._pan_x
+        oy = (self.height() - dh) // 2 + self._pan_y
+        return zoom, ox, oy, dw, dh
+
+    def _cell_at(self, pos) -> Optional[tuple[int, int]]:
+        zoom, ox, oy, dw, dh = self._geometry()
+        x, y = pos.x() - ox, pos.y() - oy
+        if x < 0 or y < 0 or x >= dw or y >= dh:
+            return None
+        return int(x // (8 * zoom)), int(y // (8 * zoom))
+
+    # ── Événements souris ─────────────────────────────────────────────
+
+    def mousePressEvent(self, e):
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        if e.button() == Qt.MouseButton.MiddleButton:
+            self._mid_drag = (e.pos(), self._pan_x, self._pan_y)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if not self._frame or not self._sprite:
+            return
+        cell = self._cell_at(e.position())
+        if cell is None:
+            return
+        if e.button() == Qt.MouseButton.LeftButton:
+            if self._brush:
+                self._do_paint(*cell)
+            else:
+                # Pas de brosse active : démarrer une sélection rectangulaire
+                # des tuiles déjà posées, pour les ramasser (cf mouseReleaseEvent).
+                self._select_start = self._select_end = cell
+                self.update()
+        elif e.button() == Qt.MouseButton.RightButton:
+            self._do_erase(*cell)
+            self.selection_reset.emit()
+
+    def mouseMoveEvent(self, e):
+        if self._mid_drag and e.buttons() & Qt.MouseButton.MiddleButton:
+            sp, spx, spy = self._mid_drag
+            self._pan_x = spx + int(e.pos().x() - sp.x())
+            self._pan_y = spy + int(e.pos().y() - sp.y())
+            self.update(); return
+        cell = self._cell_at(e.position())
+        if cell != self._hover:
+            self._hover = cell
+            self.update()
+            self.hover_changed.emit(cell)
+        if e.buttons() & Qt.MouseButton.LeftButton and cell:
+            if self._brush:
+                self._do_paint(*cell)
+            elif self._select_start is not None:
+                self._select_end = cell
+                self.update()
+        elif e.buttons() & Qt.MouseButton.RightButton and cell:
+            self._do_erase(*cell)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.MiddleButton:
+            self._mid_drag = None
+            self.setCursor(Qt.CursorShape.CrossCursor if self._brush
+                           else Qt.CursorShape.ArrowCursor)
+        elif e.button() == Qt.MouseButton.LeftButton and self._select_start is not None:
+            self._finish_canvas_selection()
+
+    def leaveEvent(self, e):
+        self._hover = None
+        self.update()
+        self.hover_changed.emit(None)
+
+    def wheelEvent(self, e):
+        delta = e.angleDelta().y()
+        self._adjust_zoom(1 if delta > 0 else -1)
+        e.accept()
+
+    # ── Peinture / effacement ─────────────────────────────────────────
+
+    def _snapshot(self) -> list:
+        return [TilePlacement(t.src_col, t.src_row, t.dst_col, t.dst_row, t.flip_h, t.flip_v)
+                for t in self._frame.tiles]
+
+    def _do_paint(self, col: int, row: int):
+        if not self._frame or not self._brush:
+            return
+        old = self._snapshot()
+        changed = False
+        for rel_c, rel_r, sc, sr, fh, fv in self._brush:
+            dc, dr = col + rel_c, row + rel_r
+            if not (0 <= dc < self._tile_w and 0 <= dr < self._tile_h):
+                continue
+            self._frame.tiles = [t for t in self._frame.tiles
+                                 if not (t.dst_col == dc and t.dst_row == dr)]
+            self._frame.tiles.append(TilePlacement(sc, sr, dc, dr, fh, fv))
+            changed = True
+        if changed:
+            self.update()
+            self.frame_painted.emit()
+            get_history().record(PaintFrameCmd(
+                self._frame, old, self._snapshot(), self._persist_fn))
+
+    def _do_erase(self, col: int, row: int):
+        if not self._frame:
+            return
+        old = self._snapshot()
+        self._frame.tiles = [t for t in self._frame.tiles
+                             if not (t.dst_col == col and t.dst_row == row)]
+        if len(self._frame.tiles) != len(old):
+            self.update()
+            self.frame_painted.emit()
+            get_history().record(PaintFrameCmd(
+                self._frame, old, self._snapshot(), self._persist_fn))
+
+    def _finish_canvas_selection(self):
+        """
+        Fin de la sélection rectangulaire (aucune brosse active) : ramasse
+        les tuiles déjà posées sous le rectangle — les retire du canvas et
+        les charge comme brosse, prêtes à être reposées ailleurs sans
+        repasser par le tile picker.
+        """
+        c0, r0 = self._select_start
+        c1, r1 = self._select_end
+        self._select_start = self._select_end = None
+        if not self._frame:
+            self.update()
+            return
+        cmin, cmax = min(c0, c1), max(c0, c1)
+        rmin, rmax = min(r0, r1), max(r0, r1)
+        picked = [t for t in self._frame.tiles
+                  if cmin <= t.dst_col <= cmax and rmin <= t.dst_row <= rmax]
+        if not picked:
+            self.update()
+            return
+        old = self._snapshot()
+        picked_pos = {(t.dst_col, t.dst_row) for t in picked}
+        self._frame.tiles = [t for t in self._frame.tiles
+                             if (t.dst_col, t.dst_row) not in picked_pos]
+        self.frame_painted.emit()
+        get_history().record(PaintFrameCmd(
+            self._frame, old, self._snapshot(), self._persist_fn))
+
+        self._brush = [(t.dst_col - cmin, t.dst_row - rmin, t.src_col, t.src_row,
+                        t.flip_h, t.flip_v) for t in picked]
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.brush_picked_up.emit(len(self._brush))
+        self.update()
+
+    # ── Rendu ─────────────────────────────────────────────────────────
+
+    def paintEvent(self, e):
+        painter = QPainter(self)
+
+        if not self._frame or not self._sprite:
+            painter.setPen(QColor(C.TEXT_MUTED))
+            painter.setFont(QFont(T.MONO, T.MD))
+            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Sélectionnez une frame")
+            painter.end()
+            return
+
+        zoom, ox, oy, dw, dh = self._geometry()
+        tile_px = 8 * zoom
+
+        # Damier transparence
+        cs = max(4, zoom * 2)
+        for cy in range(0, dh, cs):
+            for cx in range(0, dw, cs):
+                c = QColor("#1e1e1e") if (cx // cs + cy // cs) % 2 == 0 else QColor("#2a2a2a")
+                painter.fillRect(ox + cx, oy + cy,
+                                 min(cs, dw - cx), min(cs, dh - cy), c)
+
+        # Image composée
+        img = compose_frame_image(self._abs_path, self._frame,
+                                   self._tile_w * 8, self._tile_h * 8)
+        if img.width > 0 and img.height > 0:
+            data = bytes(img.tobytes("raw", "RGBA"))
+            qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
+            painter.drawPixmap(QRect(ox, oy, dw, dh), QPixmap.fromImage(qi))
+
+        # Grille 8×8
+        if self._show_grid:
+            painter.setPen(QPen(QColor(255, 255, 255, 35), 1))
+            x = ox
+            while x <= ox + dw:
+                painter.drawLine(x, oy, x, oy + dh); x += tile_px
+            y = oy
+            while y <= oy + dh:
+                painter.drawLine(ox, y, ox + dw, y); y += tile_px
+
+        # Ghost preview de la brosse
+        if self._hover and self._brush and self._src_pixmap:
+            hc, hr = self._hover
+            painter.setOpacity(0.55)
+            for rel_c, rel_r, sc, sr, fh, fv in self._brush:
+                dc, dr = hc + rel_c, hr + rel_r
+                if not (0 <= dc < self._tile_w and 0 <= dr < self._tile_h):
+                    continue
+                dest = QRect(ox + dc * tile_px, oy + dr * tile_px, tile_px, tile_px)
+                src = QRect(sc * 8, sr * 8, 8, 8)
+                if fh or fv:
+                    painter.save()
+                    cx, cy = dest.center().x(), dest.center().y()
+                    painter.translate(cx, cy)
+                    painter.scale(-1 if fh else 1, -1 if fv else 1)
+                    painter.translate(-cx, -cy)
+                    painter.drawPixmap(dest, self._src_pixmap, src)
+                    painter.restore()
+                else:
+                    painter.drawPixmap(dest, self._src_pixmap, src)
+            painter.setOpacity(1.0)
+            painter.setPen(QPen(QColor(C.ACCENT_GRN), 2))
+            painter.drawRect(QRect(ox + hc * tile_px, oy + hr * tile_px, tile_px, tile_px))
+        elif self._hover:
+            painter.setPen(QPen(QColor(C.TEXT_DIM), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(QRect(ox + self._hover[0] * tile_px,
+                                   oy + self._hover[1] * tile_px, tile_px, tile_px))
+
+        # Sélection en cours (ramassage de tuiles déjà posées, sans brosse)
+        if self._select_start is not None and self._select_end is not None:
+            c0, r0 = self._select_start
+            c1, r1 = self._select_end
+            cmin, cmax = min(c0, c1), max(c0, c1)
+            rmin, rmax = min(r0, r1), max(r0, r1)
+            rect = QRect(ox + cmin * tile_px, oy + rmin * tile_px,
+                         (cmax - cmin + 1) * tile_px, (rmax - rmin + 1) * tile_px)
+            fill_color = QColor(C.ACCENT_BLU)
+            fill_color.setAlpha(64)
+            painter.fillRect(rect, fill_color)
+            painter.setPen(QPen(QColor(C.ACCENT_BLU), 2))
+            painter.drawRect(rect)
+
+        # Indicateur de zoom manuel
+        if self._zoom > 0:
+            painter.setPen(QColor(C.TEXT_DIM))
+            painter.setFont(QFont(T.MONO, T.XS))
+            painter.drawText(6, self.height() - 6, f"{self._zoom}×")
+
+        painter.end()
+
+
+class _FrameCanvasPanel(QWidget):
+    """
+    Enrobe _FrameCanvas avec un header (zoom −/+, Fit, coordonnées survolées) —
+    même pattern que _SpritesheetViewer pour la zone tiles juste en dessous.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"background:{C.BG_DEEP};")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        hdr_w = QWidget()
+        hdr_w.setFixedHeight(22)
+        hdr_w.setStyleSheet(
+            f"background:{C.BG_RAISED};border-bottom:1px solid {C.BORDER_DARK};")
+        hdr_lay = QHBoxLayout(hdr_w)
+        hdr_lay.setContentsMargins(8, 0, 4, 0)
+        hdr_lay.setSpacing(4)
+
+        lbl_canvas = QLabel("CANVAS")
+        lbl_canvas.setFont(QFont(T.MONO, T.XS))
+        lbl_canvas.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
+        hdr_lay.addWidget(lbl_canvas)
+
+        hdr_lay.addStretch()
+
+        self._coord_lbl = QLabel("")
+        self._coord_lbl.setFont(QFont(T.MONO, T.XS))
+        self._coord_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
+        hdr_lay.addWidget(self._coord_lbl)
+
+        hdr_lay.addSpacing(12)
+
+        _BTN = (
+            f"QToolButton{{color:{C.TEXT_DIM};background:transparent;"
+            f"border:none;font-size:{T.MD}px;padding:0 4px;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};}}"
+        )
+        btn_flip_x = QToolButton()
+        btn_flip_x.setIcon(_ico("mirror_h", C.TEXT_DIM, C.ACCENT_GRN))
+        btn_flip_x.setIconSize(QSize(14, 14))
+        btn_flip_x.setStyleSheet(_BTN)
+        btn_flip_x.setToolTip("Flip horizontal de la brosse active (Shift+X)")
+        btn_flip_y = QToolButton()
+        btn_flip_y.setIcon(_ico("mirror_v", C.TEXT_DIM, C.ACCENT_GRN))
+        btn_flip_y.setIconSize(QSize(14, 14))
+        btn_flip_y.setStyleSheet(_BTN)
+        btn_flip_y.setToolTip("Flip vertical de la brosse active (Shift+Y)")
+        hdr_lay.addWidget(btn_flip_x)
+        hdr_lay.addWidget(btn_flip_y)
+
+        hdr_lay.addSpacing(12)
+
+        btn_fit = QToolButton(); btn_fit.setText("Fit"); btn_fit.setStyleSheet(_BTN)
+        btn_fit.setToolTip("Réinitialiser le zoom (ajustement automatique)")
+        btn_zm = QToolButton(); btn_zm.setText("−"); btn_zm.setStyleSheet(_BTN)
+        btn_zp = QToolButton(); btn_zp.setText("+"); btn_zp.setStyleSheet(_BTN)
+        hdr_lay.addWidget(btn_fit)
+        hdr_lay.addWidget(btn_zm)
+        hdr_lay.addWidget(btn_zp)
+
+        root.addWidget(hdr_w)
+
+        self.canvas = _FrameCanvas()
+        self.canvas.hover_changed.connect(self._on_hover_changed)
+        root.addWidget(self.canvas, 1)
+
+        btn_flip_x.clicked.connect(self.canvas.flip_brush_x)
+        btn_flip_y.clicked.connect(self.canvas.flip_brush_y)
+        btn_fit.clicked.connect(self.canvas.zoom_fit)
+        btn_zm.clicked.connect(self.canvas.zoom_out)
+        btn_zp.clicked.connect(self.canvas.zoom_in)
+
+    def _on_hover_changed(self, cell):
+        self._coord_lbl.setText(f"tuile {cell[0]},{cell[1]}" if cell else "")
+

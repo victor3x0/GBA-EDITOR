@@ -1,8 +1,8 @@
 """
-ui/theme.py — Source unique du thème GBA Editor.
+ui/common/theme.py — Source unique du thème GBA Editor.
 
 Usage :
-    from ui.theme import C, T, QSS, GLOBAL_QSS
+    from ui.common.theme import C, T, QSS, GLOBAL_QSS
 
 Couleurs via C :
     C.ACCENT_GRN   C.BG_INPUT   C.TEXT_DIM ...

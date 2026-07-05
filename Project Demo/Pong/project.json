@@ -2,38 +2,5 @@
   "name": "Pong",
   "start_scene": "PONG",
   "author": "",
-  "version": "0.1",
-  "globals": [
-    {
-      "name": "score_player",
-      "type": "int",
-      "default": 0,
-      "desc": "Score du joueur"
-    },
-    {
-      "name": "score_auto",
-      "type": "int",
-      "default": 0,
-      "desc": "Score de l'IA"
-    },
-    {
-      "name": "ball_y",
-      "type": "int",
-      "default": 76,
-      "desc": "Position Y de la balle (suivi IA)"
-    },
-    {
-      "name": "winner",
-      "type": "int",
-      "default": 0,
-      "desc": "0 = joueur, 1 = IA"
-    },
-    {
-      "name": "point_side",
-      "type": "int",
-      "default": -1,
-      "desc": "-1 = rien ce frame, 0 = point joueur, 1 = point IA (posé par Ball, consommé par la scène PONG)"
-    }
-  ],
-  "constants": []
+  "version": "0.1"
 }

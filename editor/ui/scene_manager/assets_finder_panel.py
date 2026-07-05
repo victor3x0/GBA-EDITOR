@@ -1,7 +1,6 @@
 """Panneau gauche — arbre projet style GB Studio."""
 
 import os
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -14,23 +13,22 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor, QDrag, QAction
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray
 
-from ui.theme import T
-from ui.widgets import W, FinderSection
+from ui.common.theme import T
+from ui.common.widgets import W, FinderSection
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 from core.project import (
-    Project, Actor, Prefab, Scene, GlobalVar, Constant,
+    Project, Actor, Prefab, Scene,
     MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
 )
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
-from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd
-from ui.icons import (
+from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd, DeleteFileCmd
+from ui.common.icons import (
     get as _ico, COLOR_ACTOR, COLOR_PREFAB, COLOR_SCRIPT, COLOR_FOLDER,
     COLOR_SCENE, COLOR_GLOBAL, COLOR_CONST,
 )
 
-PROJECTS_DIR = Path(__file__).parent.parent.parent / "projects"
+PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
 
 # ── Rôles QTreeWidgetItem ─────────────────────────────────────────
 _ROLE_TYPE = Qt.ItemDataRole.UserRole
@@ -551,14 +549,18 @@ class _AssetTree(_Tree):
             new_path = path.parent / f"{new_text}{path.suffix}"
         if new_path == path:
             return
-        path.rename(new_path)
-        icon_key = "script_lua" if new_path.suffix == ".lua" else "script_file"
-        self.blockSignals(True)
-        item.setIcon(0, _ico(icon_key, COLOR_SCRIPT))
-        item.setText(0, new_path.name)
-        item.setData(0, _ROLE_OBJ, new_path)
-        item.setData(0, _ROLE_PATH, new_path)
-        self.blockSignals(False)
+
+        def _refresh():
+            current = new_path if new_path.exists() else path
+            self.blockSignals(True)
+            icon_key = "script_lua" if current.suffix == ".lua" else "script_file"
+            item.setIcon(0, _ico(icon_key, COLOR_SCRIPT))
+            item.setText(0, current.name)
+            item.setData(0, _ROLE_OBJ, current)
+            item.setData(0, _ROLE_PATH, current)
+            self.blockSignals(False)
+
+        get_history().push(RenameFileCmd(path, new_path, _refresh))
 
     def _delete_prefab(self, prefab: Prefab):
         if QMessageBox.question(
@@ -574,12 +576,11 @@ class _AssetTree(_Tree):
 
     def _delete_script(self, path: Path):
         if QMessageBox.question(
-            self, "Supprimer", f"Supprimer '{path.name}' ?",
+            self, "Supprimer", f"Supprimer '{path.name}' ?\n(Ctrl+Z pour annuler)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
-        path.unlink(missing_ok=True)
-        self._panel.refresh()
+        get_history().push(DeleteFileCmd(path, lambda: self._panel.refresh()))
 
     def _new_subfolder(self, parent_item, parent_dir: Path):
         name, ok = QInputDialog.getText(self, "Nouveau dossier", "Nom :")
@@ -685,19 +686,12 @@ class _ValuesTable(QWidget):
 
     def _commit_rename(self, item: QTreeWidgetItem, entry):
         new_name = item.text(0).strip()
-        if not new_name or new_name == entry.name:
+        if not self._project or not self._project.rename_variable(self._kind, entry, new_name):
+            if new_name and new_name != entry.name:
+                QMessageBox.warning(self, "Nom déjà utilisé", f"« {new_name} » existe déjà.")
             self._tree.blockSignals(True)
             item.setText(0, entry.name)
             self._tree.blockSignals(False)
-            return
-        if any(e is not entry and e.name == new_name for e in self._entries()):
-            QMessageBox.warning(self, "Nom déjà utilisé", f"« {new_name} » existe déjà.")
-            self._tree.blockSignals(True)
-            item.setText(0, entry.name)
-            self._tree.blockSignals(False)
-            return
-        entry.name = new_name
-        self._persist()
 
     def _commit_value(self, item: QTreeWidgetItem, entry):
         try:
@@ -712,7 +706,7 @@ class _ValuesTable(QWidget):
 
     def _persist(self):
         if self._project:
-            self._project.save_settings()
+            self._project.save_variables()
 
     def _ctx_menu(self, pos: QPoint):
         item = self._tree.itemAt(pos)
@@ -747,14 +741,9 @@ class _ValuesTable(QWidget):
         name = name.strip() if ok else ""
         if not name:
             return
-        if any(e.name == name for e in self._entries()):
+        if self._project.add_variable(self._kind, name) is None:
             QMessageBox.warning(self, "Nom déjà utilisé", f"« {name} » existe déjà.")
             return
-        if self._kind == "const":
-            self._project.constants.append(Constant(name=name))
-        else:
-            self._project.globals.append(GlobalVar(name=name))
-        self._persist()
         self.reload()
 
 
@@ -980,17 +969,16 @@ class AssetsFinderPanel(QWidget):
         name, ok = QInputDialog.getText(
             self, "Nouveau script actor", "Nom (sans .lua) :")
         if ok and name.strip():
+            from scripting.script_templates import ScriptTemplateContext, generate_script_template
             d = self._project.scripts_actors_dir
             d.mkdir(parents=True, exist_ok=True)
             sp = d / f"{name.strip()}.lua"
             if not sp.exists():
-                sp.write_text(
-                    f"-- Actor script : {name.strip()}\n"
-                    f"-- Attache ce script via ScriptComponent dans l'inspector.\n\n"
-                    f"function onSpawn()\nend\n\n"
-                    f"function onUpdate()\nend\n",
-                    encoding="utf-8"
-                )
+                # Pas d'actor précis à ce stade (créé depuis l'Assets finder,
+                # pas depuis l'inspector d'un actor) — contexte de composants vide,
+                # même template "actor" que component_editors/script.py sinon.
+                ctx = ScriptTemplateContext(kind="actor", name=name.strip())
+                sp.write_text(generate_script_template(ctx), encoding="utf-8")
             self._refresh_scripts()
             self.script_opened.emit(str(sp))
             if os.name == "nt":
@@ -1002,18 +990,13 @@ class AssetsFinderPanel(QWidget):
         name, ok = QInputDialog.getText(
             self, "Nouveau script behavior", "Nom (sans .lua) :")
         if ok and name.strip():
+            from scripting.script_templates import ScriptTemplateContext, generate_script_template
             d = self._project.scripts_behaviors_dir
             d.mkdir(parents=True, exist_ok=True)
             sp = d / f"{name.strip()}.lua"
             if not sp.exists():
-                sp.write_text(
-                    f"-- Behavior : {name.strip()}\n"
-                    f"-- Module réutilisable. Usage : local M = require('behaviors/{name.strip()}')\n\n"
-                    f"local M = {{}}\n\n"
-                    f"function M.update(actor)\nend\n\n"
-                    f"return M\n",
-                    encoding="utf-8"
-                )
+                ctx = ScriptTemplateContext(kind="behavior", name=name.strip())
+                sp.write_text(generate_script_template(ctx), encoding="utf-8")
             self._refresh_scripts()
             self.script_opened.emit(str(sp))
             if os.name == "nt":

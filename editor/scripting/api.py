@@ -222,6 +222,12 @@ RUNTIME_API: dict[str, ApiFunc] = {
         ret="void",
         doc='Instancie un prefab poolé à (x, y). Ex: actor.spawn("Bullet", self:get_x(), self:get_y()).',
     ),
+    "get_actor": ApiFunc(
+        lua_name="get_actor", c_func="_get_actor",   # résolu par codegen
+        params=[Param("name", PARAM_STR)],
+        ret="actor",
+        doc='Référence directe vers un actor de la scène par son nom. Résolu à la compilation, zéro overhead runtime. Ex: get_actor("PADDLE_AUTO"):get_x().',
+    ),
 
     # ── Input ──────────────────────────────────────────────────────
     "input.held": ApiFunc(
@@ -255,9 +261,8 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
 
     # ── Scènes ─────────────────────────────────────────────────────
-    # Résolu par le codegen comme cas spécial (string → SCENE_IDX_*).
     "scene.switch": ApiFunc(
-        lua_name="scene.switch", c_func="_scene_switch",   # résolu par codegen
+        lua_name="scene.switch", c_func="scene_switch",
         params=[Param("name", PARAM_STR, DOMAIN_SCENE)],
         doc="Passe à une autre scène au début de la prochaine frame.",
     ),
@@ -595,6 +600,11 @@ def key_constant(key_name: str) -> str:
 def tag_constant(actor_name: str) -> str:
     """'enemy' → 'TAG_ENEMY'"""
     return f"TAG_{_c_ident(actor_name)}"
+
+
+def scene_constant(scene_name: str) -> str:
+    """'Victory' → 'SCENE_IDX_VICTORY'"""
+    return f"SCENE_IDX_{_c_ident(scene_name)}"
 
 
 # ─── Événements de scène ───────────────────────────────────────────

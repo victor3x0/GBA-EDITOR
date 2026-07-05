@@ -11,7 +11,6 @@ ui/project_picker.py — HomeScreen : écran d'accueil affiché au lancement.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -23,10 +22,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
-from ui.theme import C, T, QSS
-
-# toolchain est dans editor/, un niveau au-dessus
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from ui.common.theme import C, T, QSS
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
 
 PROJECTS_DIR  = Path.home() / "GBAProjects"
@@ -392,7 +388,7 @@ class HomeScreen(QDialog):
         self._empty_lbl.setVisible(not self._recent)
 
     def _open_toolchain_dialog(self):
-        from ui.build_panel import ToolchainDialog
+        from ui.common.build_panel import ToolchainDialog
         dlg = ToolchainDialog(self._toolchain, self)
         dlg.exec()
         self._toolchain_status.refresh()

@@ -46,8 +46,8 @@ from core.project import (
     Project,
 )
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
-from ui.theme import T
-from ui.sprite_editor_screen import _compose_frame_image
+from ui.common.theme import T
+from core.sprite_compose import compose_frame_image
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -91,7 +91,7 @@ _PLACEHOLDER_SIZE = 16
 
 def _make_placeholder_pixmap() -> QPixmap:
     """Pixmap 16×16 pour les actors/prefabs sans sprite."""
-    from ui.icons import get as _ico
+    from ui.common.icons import get as _ico
 
     px = QPixmap(_PLACEHOLDER_SIZE, _PLACEHOLDER_SIZE)
     px.fill(Qt.GlobalColor.transparent)
@@ -315,7 +315,7 @@ class CameraItem(QGraphicsItem):
         self.setToolTip("Caméra GBA — 240×160 px\nGlisser pour déplacer la vue")
 
         # Icône qtawesome — deux états (normal / sélectionné)
-        from ui.icons import get as _ico
+        from ui.common.icons import get as _ico
 
         sz = QSize(_CAM_ICO_SIZE, _CAM_ICO_SIZE)
         self._px_normal = _ico("camera", "#666666").pixmap(sz)
@@ -437,8 +437,8 @@ class FloatingToolbar(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        from ui.icons import COLOR_ACTIVE, COLOR_DEFAULT
-        from ui.icons import get as _ico
+        from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
+        from ui.common.icons import get as _ico
 
         self._dragging = False
         self._drag_offset = QPoint()
@@ -559,8 +559,8 @@ class FloatingToolbar(QFrame):
             QMenu::item:checked  { color: #4caf78; }
         """)
 
-        from ui.icons import COLOR_DEFAULT
-        from ui.icons import get as _ico
+        from ui.common.icons import COLOR_DEFAULT
+        from ui.common.icons import get as _ico
 
         for mode_id, icon_key, label, tip in self._COLLISION_MODES:
             act = QAction(label, self)
@@ -579,8 +579,8 @@ class FloatingToolbar(QFrame):
 
     def _select_collision_mode(self, mode: str):
         self._current_collision = mode
-        from ui.icons import COLOR_ACTIVE, COLOR_DEFAULT
-        from ui.icons import get as _ico
+        from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
+        from ui.common.icons import get as _ico
 
         self._btn_collision.setIcon(
             _ico(self._COLLISION_ICON_KEYS[mode], COLOR_DEFAULT, COLOR_ACTIVE)
@@ -1663,7 +1663,7 @@ class SceneEditor(QWidget):
             if sprite and ap and ap.exists():
                 preview_frame = _preview_frame_for_sprite(sprite, sprite_comp)
                 if preview_frame is not None:
-                    img = _compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
+                    img = compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
                     if img.width > 0 and img.height > 0:
                         data = bytes(img.tobytes("raw", "RGBA"))
                         qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)

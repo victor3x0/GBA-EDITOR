@@ -16,6 +16,7 @@ Règles :
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -203,34 +204,6 @@ class DeleteResourceCmd(Command):
             self._refresh()
 
 
-class SetBgLayerCmd(Command):
-    """
-    Assignation ou effacement d'un background sur un calque BG de scène.
-    execute/undo manipulent uniquement background_name + sauvegarde.
-    La création du tileset/background est déjà faite par le dispatcher
-    avant le push — record() est utilisé pour ne pas ré-exécuter.
-    """
-
-    def __init__(self, layer: Any, old_bg: str, new_bg: str,
-                 slot: int, save_fn, refresh_fn=None):
-        self._layer = layer
-        self._old = old_bg
-        self._new = new_bg
-        self.label = f"BG{slot} ← {new_bg or 'vide'}"
-        self._save = save_fn       # callable() → save_scene
-        self._refresh = refresh_fn # callable() → recharger UI
-
-    def execute(self):
-        self._layer.background_name = self._new
-        self._save()
-        if self._refresh: self._refresh()
-
-    def undo(self):
-        self._layer.background_name = self._old
-        self._save()
-        if self._refresh: self._refresh()
-
-
 class CollisionPaintCmd(Command):
     """
     Stroke de peinture collision (pinceau ou slope). Un stroke = press → release.
@@ -322,6 +295,87 @@ class RemoveListItemCmd(Command):
         self._container.insert(idx, self._item)
         if self._persist:
             self._persist()
+
+
+class AddListItemCmd(Command):
+    """
+    Ajout d'un élément à une liste arbitraire (ex: BackgroundLayer d'un
+    BackgroundAsset). Symétrique de RemoveListItemCmd — construire l'item
+    AVANT de le pousser (contrairement à AddComponentCmd, pas besoin de le
+    retirer manuellement pour laisser execute() faire son travail).
+    """
+
+    def __init__(self, container: list, item: Any, persist_fn=None, label: str = "Ajouter"):
+        self._container = container
+        self._item = item
+        self.label = label
+        self._persist = persist_fn
+
+    def execute(self):
+        if self._item not in self._container:
+            self._container.append(self._item)
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        if self._item in self._container:
+            self._container.remove(self._item)
+        if self._persist:
+            self._persist()
+
+
+class RenameFileCmd(Command):
+    """
+    Renommage d'un fichier arbitraire sur disque (scripts assets/ — pas un
+    Resource géré par ResourceManager, donc pas de rename() disponible).
+    execute/undo renomment réellement le fichier dans les deux sens.
+    """
+
+    def __init__(self, old_path: Path, new_path: Path, refresh_fn=None):
+        self._old = old_path
+        self._new = new_path
+        self.label = f"Renommer {old_path.name} → {new_path.name}"
+        self._refresh = refresh_fn
+
+    def execute(self):
+        if self._old.exists():
+            self._old.rename(self._new)
+        if self._refresh:
+            self._refresh()
+
+    def undo(self):
+        if self._new.exists():
+            self._new.rename(self._old)
+        if self._refresh:
+            self._refresh()
+
+
+class DeleteFileCmd(Command):
+    """
+    Suppression d'un fichier arbitraire sur disque (scripts assets/). Le
+    contenu est gardé en mémoire le temps de la commande pour permettre un
+    undo réel (contrairement à DeleteResourceCmd, il n'y a pas de
+    soft_delete/restore disponible pour un fichier hors ResourceManager).
+    """
+
+    def __init__(self, path: Path, refresh_fn=None):
+        self._path = path
+        self._bytes: Optional[bytes] = None
+        self.label = f"Supprimer {path.name}"
+        self._refresh = refresh_fn
+
+    def execute(self):
+        if self._path.exists():
+            self._bytes = self._path.read_bytes()
+            self._path.unlink()
+        if self._refresh:
+            self._refresh()
+
+    def undo(self):
+        if self._bytes is not None:
+            self._path.write_bytes(self._bytes)
+        if self._refresh:
+            self._refresh()
 
 
 # ── Historique ────────────────────────────────────────────────────

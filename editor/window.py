@@ -15,13 +15,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
 
-from ui.theme import T
+from ui.common.theme import C, T
 
 from codegen import BuildWorker
 from core.scene_editor import SceneEditor
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
-from core.history import get_history, SetBgLayerCmd
+from core.history import get_history
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.project import (
@@ -32,13 +32,13 @@ from core.project import (
 
 # ── Sous-composants UI ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
-from ui.assets_finder_panel import AssetsFinderPanel
-from ui.build_panel import BuildPanel, ToolchainBar, ToolchainDialog
-from ui.inspectors import DynamicInspector
-from ui.sound_panel import SoundMixerScreen
-from ui.script_editor import ScriptEditorScreen
-from ui.project_picker import HomeScreen, push_recent
-from ui.sprite_editor_screen import SpriteEditorScreen
+from ui.scene_manager.assets_finder_panel import AssetsFinderPanel
+from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog
+from ui.scene_manager.inspectors import DynamicInspector
+from ui.sound_mixer.sound_panel import SoundMixerScreen
+from ui.script_editor.script_editor import ScriptEditorScreen
+from ui.home.project_picker import HomeScreen, push_recent
+from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
 
@@ -51,14 +51,14 @@ class GbaStatusBar(QWidget):
     Barre fixe en bas de la fenêtre affichant les compteurs GBA en temps réel.
     Inspiré de GB Studio : les limites hardware sont visibles, pas cachées.
     """
-    _STYLE_OK   = "color:#4caf78;"
-    _STYLE_WARN = "color:#f0a030;"
-    _STYLE_CRIT = "color:#e05050;"
+    _STYLE_OK   = f"color:{C.ACCENT_GRN};"
+    _STYLE_WARN = f"color:{C.ACCENT_YLW};"
+    _STYLE_CRIT = f"color:{C.ACCENT_RED};"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(24)
-        self.setStyleSheet("background:#0e0e0e; border-top:1px solid #2a2a2a;")
+        self.setStyleSheet(f"background:{C.BG_DEEP}; border-top:1px solid {C.BORDER};")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
@@ -94,11 +94,11 @@ class GbaStatusBar(QWidget):
             if i > 0:
                 sep = QFrame()
                 sep.setFrameShape(QFrame.Shape.VLine)
-                sep.setStyleSheet("color:#2a2a2a; margin:4px 12px;")
+                sep.setStyleSheet(f"color:{C.BORDER}; margin:4px 12px;")
                 layout.addWidget(sep)
             lbl_name = QLabel(f"{name}  ")
             lbl_name.setFont(QFont(T.MONO, T.XS))
-            lbl_name.setStyleSheet("color:#444;")
+            lbl_name.setStyleSheet(f"color:{C.TEXT_MUTED};")
             layout.addWidget(lbl_name)
             lbl_val = QLabel(default)
             lbl_val.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
@@ -112,7 +112,7 @@ class GbaStatusBar(QWidget):
 
         gba_info = QLabel("GBA  240×160  ARM7TDMI 16MHz  256KB WRAM")
         gba_info.setFont(QFont(T.MONO, T.XS))
-        gba_info.setStyleSheet("color:#333;")
+        gba_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         gba_info.setToolTip(
             "Game Boy Advance — spécifications hardware\n"
             "CPU  : ARM7TDMI @ 16.78 MHz\n"
@@ -181,6 +181,16 @@ class MainWindow(QMainWindow):
     SCREENS = [
         "Scene Manager", "Tileset Manager", "Background Editor",
         "Sprite Editor", "Sound Mixer", "Script Editor",
+    ]
+
+    # Routage assets/<dossier>/*.ext → (méthode sync, méthode remove, label,
+    # accord féminin) — une seule table pour _on_asset_appeared/_removed,
+    # qui n'était avant dupliquée qu'avec "sync_"/"remove_" échangés.
+    _ASSET_ROUTES = [
+        ("sprites",     (".png", ".bmp"), "sync_sprite_png",     "remove_sprite_png",     "Sprite",     False),
+        ("backgrounds", (".png", ".bmp"), "sync_background_png", "remove_background_png", "Background", False),
+        ("sfx",         SFX_FILE_EXTS,    "sync_sfx_file",       "remove_sfx_file",       "SFX",        False),
+        ("music",       MUSIC_FILE_EXTS,  "sync_music_file",     "remove_music_file",     "Music",      True),
     ]
 
     def __init__(self, project_path: Path = None):
@@ -260,7 +270,7 @@ class MainWindow(QMainWindow):
     def _make_placeholder_screen(self, title: str) -> QWidget:
         w = QWidget(); w.setStyleSheet("background:#181818;")
         lbl = QLabel(f"{title}\n\n(bientôt disponible)")
-        lbl.setFont(QFont(T.MONO, T.XL)); lbl.setStyleSheet("color:#444;")
+        lbl.setFont(QFont(T.MONO, T.XL)); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         from PyQt6.QtWidgets import QVBoxLayout as _VL
         l = _VL(w); l.addWidget(lbl)
@@ -268,10 +278,10 @@ class MainWindow(QMainWindow):
 
     def _build_scene_manager_screen(self):
         _splitter_style = (
-            "QSplitter::handle{background:#2a2a2a;}"
+            f"QSplitter::handle{{background:{C.BORDER};}}"
             "QSplitter::handle:horizontal{width:3px;}"
             "QSplitter::handle:vertical{height:3px;}"
-            "QSplitter::handle:hover{background:#4a8a5a;}"
+            f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
         )
 
         screen = QWidget()
@@ -380,12 +390,12 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
         mb.setMinimumHeight(32)
         mb.setStyleSheet(
-            f"QMenuBar{{background:#1a1a1a;color:#ccc;font-family:{T.MONO};font-size:{T.MD}px;padding:4px 4px;}}"
+            f"QMenuBar{{background:{C.BG_PANEL};color:{C.TEXT_NORM};font-family:{T.MONO};font-size:{T.MD}px;padding:4px 4px;}}"
             "QMenuBar::item{padding:4px 10px;border-radius:3px;}"
-            "QMenuBar::item:selected{background:#2a2a2a;}"
-            f"QMenu{{background:#1e1e1e;color:#ccc;border:1px solid #333;font-family:{T.MONO};font-size:{T.MD}px;}}"
+            f"QMenuBar::item:selected{{background:{C.BG_HOVER};}}"
+            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};font-family:{T.MONO};font-size:{T.MD}px;}}"
             "QMenu::item{padding:5px 20px 5px 12px;}"
-            "QMenu::item:selected{background:#2a3a2a;}"
+            f"QMenu::item:selected{{background:{C.BG_SEL};}}"
         )
         m_file = mb.addMenu("File")
         a_new  = QAction("Nouveau projet", self); a_new.setShortcut("Ctrl+N")
@@ -418,17 +428,17 @@ class MainWindow(QMainWindow):
         tb.setMovable(False)
         tb.setMinimumHeight(48)
         tb.setStyleSheet(
-            f"QToolBar{{background:#1e1e1e;border-bottom:1px solid #2a2a2a;spacing:4px;padding:4px 12px;}}"
-            f"QToolButton{{color:#ccc;border:none;padding:4px 12px;font-family:{T.MONO};font-size:{T.MD}px;}}"
-            f"QToolButton:hover{{background:#2a2a2a;border-radius:4px;}}"
+            f"QToolBar{{background:{C.BG_RAISED};border-bottom:1px solid {C.BORDER};spacing:4px;padding:4px 12px;}}"
+            f"QToolButton{{color:{C.TEXT_NORM};border:none;padding:4px 12px;font-family:{T.MONO};font-size:{T.MD}px;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-radius:4px;}}"
         )
         self.addToolBar(tb)
         self._tb_project_lbl = QPushButton("GBA Editor")
         self._tb_project_lbl.setFont(QFont(T.MONO, T.XL, QFont.Weight.Bold))
         self._tb_project_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         self._tb_project_lbl.setStyleSheet(
-            "QPushButton{color:#555;background:none;border:none;padding:0 12px;}"
-            "QPushButton:hover{color:#888;}"
+            f"QPushButton{{color:{C.TEXT_MUTED};background:none;border:none;padding:0 12px;}}"
+            f"QPushButton:hover{{color:{C.TEXT_DIM};}}"
         )
         self._tb_project_lbl.clicked.connect(self._go_home)
         tb.addWidget(self._tb_project_lbl)
@@ -440,7 +450,7 @@ class MainWindow(QMainWindow):
             "QToolButton{background:#2a5c34;color:#c8ffc8;border:none;"
             "border-radius:4px;padding:6px 16px;}"
             "QToolButton:hover{background:#3a7a44;}"
-            "QToolButton:disabled{background:#1a3a24;color:#666;}"
+            f"QToolButton:disabled{{background:#1a3a24;color:{C.TEXT_DIM};}}"
         )
         self._tb_build_btn.setEnabled(False)
         self._tb_build_btn.clicked.connect(self._run_build)
@@ -449,10 +459,10 @@ class MainWindow(QMainWindow):
 
         # Boutons Undo / Redo
         _undo_redo_style = (
-            f"QToolButton{{color:#777;border:none;padding:4px 10px;"
+            f"QToolButton{{color:{C.TEXT_DIM};border:none;padding:4px 10px;"
             f"font-family:{T.MONO};font-size:{T.MD}px;border-radius:4px;}}"
-            "QToolButton:hover:enabled{background:#2a2a2a;color:#ccc;}"
-            "QToolButton:disabled{color:#333;}"
+            f"QToolButton:hover:enabled{{background:{C.BG_HOVER};color:{C.TEXT_NORM};}}"
+            f"QToolButton:disabled{{color:{C.TEXT_MUTED};}}"
         )
         self._btn_undo = QToolButton()
         self._btn_undo.setText("↩ Undo")
@@ -471,7 +481,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._btn_redo)
         tb.addSeparator()
 
-        from ui.reorderable_bar import ReorderableButtonBar
+        from ui.common.reorderable_bar import ReorderableButtonBar
         self._nav_bar = ReorderableButtonBar(self.SCREENS)
         self._nav_bar.screen_requested.connect(self._show_screen)
         tb.addWidget(self._nav_bar)
@@ -719,56 +729,39 @@ class MainWindow(QMainWindow):
         w.lua_changed.connect(self._on_lua_changed)
         w.scene_changed.connect(self._on_scene_file_changed)
 
+    def _match_asset_route(self, p: Path):
+        """Trouve la route (sync/remove/label) pour un fichier assets/<dossier>/*.ext."""
+        suffix, parent = p.suffix.lower(), p.parent.name
+        for folder, exts, sync_name, remove_name, label, feminine in self._ASSET_ROUTES:
+            if parent == folder and suffix in exts:
+                return sync_name, remove_name, label, feminine
+        return None
+
     def _on_asset_appeared(self, path: str):
         """Nouveau fichier brut détecté dans assets/ — créer le sidecar si nécessaire."""
         if not self.project:
             return
         p = Path(path)
-        suffix = p.suffix.lower()
-        parent = p.parent.name
-        if suffix in (".png", ".bmp"):
-            if parent == "sprites":
-                self.project.sync_sprite_png(p)
-                self._refresh_ui()
-                self._status.showMessage(f"Sprite importé : {p.name}", 3000)
-            elif parent == "backgrounds":
-                self.project.sync_background_png(p)
-                self._refresh_ui()
-                self._status.showMessage(f"Background importé : {p.name}", 3000)
-        elif parent == "sfx" and suffix in SFX_FILE_EXTS:
-            self.project.sync_sfx_file(p)
-            self._refresh_ui()
-            self._status.showMessage(f"SFX importé : {p.name}", 3000)
-        elif parent == "music" and suffix in MUSIC_FILE_EXTS:
-            self.project.sync_music_file(p)
-            self._refresh_ui()
-            self._status.showMessage(f"Music importée : {p.name}", 3000)
+        route = self._match_asset_route(p)
+        if not route:
+            return
+        sync_name, _, label, feminine = route
+        getattr(self.project, sync_name)(p)
+        self._refresh_ui()
+        self._status.showMessage(f"{label} importé{'e' if feminine else ''} : {p.name}", 3000)
 
     def _on_asset_removed(self, path: str):
         """Fichier brut supprimé de assets/ — suppression différée du JSON, UI mise à jour."""
         if not self.project:
             return
         p = Path(path)
-        suffix = p.suffix.lower()
-        parent = p.parent.name
-
-        if suffix in (".png", ".bmp"):
-            if parent == "sprites":
-                self.project.remove_sprite_png(p)
-                self._refresh_ui()
-                self._status.showMessage(f"Sprite retiré : {p.name}", 3000)
-            elif parent == "backgrounds":
-                self.project.remove_background_png(p)
-                self._refresh_ui()
-                self._status.showMessage(f"Background retiré : {p.name}", 3000)
-        elif parent == "sfx" and suffix in SFX_FILE_EXTS:
-            self.project.remove_sfx_file(p)
-            self._refresh_ui()
-            self._status.showMessage(f"SFX retiré : {p.name}", 3000)
-        elif parent == "music" and suffix in MUSIC_FILE_EXTS:
-            self.project.remove_music_file(p)
-            self._refresh_ui()
-            self._status.showMessage(f"Music retirée : {p.name}", 3000)
+        route = self._match_asset_route(p)
+        if not route:
+            return
+        _, remove_name, label, feminine = route
+        getattr(self.project, remove_name)(p)
+        self._refresh_ui()
+        self._status.showMessage(f"{label} retiré{'e' if feminine else ''} : {p.name}", 3000)
 
     def _on_asset_modified(self, path: str):
         """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""

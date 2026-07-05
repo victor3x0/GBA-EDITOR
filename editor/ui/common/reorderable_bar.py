@@ -11,25 +11,25 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QToolButton, QButtonGroup, QFr
 from PyQt6.QtCore import Qt, QSettings, QPoint, pyqtSignal, QEvent
 from PyQt6.QtGui import QFont
 
-from ui.theme import T
+from ui.common.theme import C, T
 
 _SETTINGS_ORG = "GBAEditor"
 _SETTINGS_APP = "Layout"
 _SETTINGS_KEY = "screen_button_order"
 
 _BTN_NORMAL = (
-    "QToolButton{color:#aaa;border:none;padding:6px 14px;border-radius:4px;}"
-    "QToolButton:hover{background:#2a2a2a;color:#eee;}"
-    "QToolButton:checked{background:#2a3a2a;color:#4caf78;}"
+    f"QToolButton{{color:{C.TEXT_NORM};border:none;padding:6px 14px;border-radius:4px;}}"
+    f"QToolButton:hover{{background:{C.BG_HOVER};color:{C.TEXT_HI};}}"
+    f"QToolButton:checked{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
 )
 # Bouton source pendant le drag : grisé, sert de placeholder visuel
 _BTN_GHOST_SRC = (
-    "QToolButton{color:#2e2e2e;border:1px dashed #2e2e2e;"
+    f"QToolButton{{color:{C.BORDER};border:1px dashed {C.BORDER};"
     "padding:6px 14px;border-radius:4px;background:transparent;}"
 )
 # Bouton fantôme flottant
 _BTN_GHOST = (
-    "QToolButton{color:#ddd;border:1px solid #4caf78;"
+    f"QToolButton{{color:#ddd;border:1px solid {C.ACCENT_GRN};"
     "padding:6px 14px;border-radius:4px;background:#1e2e1e;}"
 )
 
@@ -81,7 +81,7 @@ class ReorderableButtonBar(QWidget):
         # ── Indicateur de drop (trait vertical vert) ──────────────────
         self._indicator = QFrame(self)
         self._indicator.setFixedWidth(2)
-        self._indicator.setStyleSheet("background:#4caf78;border-radius:1px;")
+        self._indicator.setStyleSheet(f"background:{C.ACCENT_GRN};border-radius:1px;")
         self._indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._indicator.hide()
 

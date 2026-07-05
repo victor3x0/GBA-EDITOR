@@ -6,7 +6,7 @@ Décommentez pour l'activer.
 # import dataclasses
 # from PyQt6.QtWidgets import QSpinBox, QCheckBox
 # from core.project import COMPONENT_REGISTRY
-# from ui.inspectors.component_editors import register, BaseComponentEditor
+# from ui.scene_manager.inspectors.component_editors import register, BaseComponentEditor
 #
 #
 # @dataclasses.dataclass
