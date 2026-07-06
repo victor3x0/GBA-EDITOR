@@ -86,13 +86,6 @@
           "active": true,
           "script": "assets/scripts/actors/PaddleAuto.lua",
           "exports_values": {}
-        },
-        {
-          "component_type": "sound_fx",
-          "id": "sound_fx",
-          "active": true,
-          "sfx_name": "GAMEOVER",
-          "trigger": "manual"
         }
       ],
       "x": 208,
