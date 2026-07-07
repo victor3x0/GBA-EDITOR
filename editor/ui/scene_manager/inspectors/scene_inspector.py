@@ -3,18 +3,82 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
-    QCheckBox, QScrollArea,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QComboBox,
+    QCheckBox, QScrollArea, QPushButton,
 )
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
 from core.project import Project, Scene
 from core.asset_manager import BgLayerRow
 from core.history import get_history, SetFieldCmd, AddListItemCmd, RemoveListItemCmd
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.widgets import W, ScriptPickerPopup
+from ui.common.palette_swatch import bank_icon as _bank_icon
+
+
+# ──────────────────────────────────────────────────────────────────
+#  _PaletteSlotGrid — 16 slots (2 barres horizontales de 8) d'un pool
+# ──────────────────────────────────────────────────────────────────
+class _PaletteSlotGrid(QWidget):
+    """
+    Grille compacte 2 lignes x 8 colonnes (2 barres horizontales) — chaque
+    slot est une icône carrée cliquable (même rendu que le finder du Palette
+    Editor), noire quand vide. Clic = popup de choix parmi le catalogue
+    projet ; clic droit = vider.
+    """
+
+    slot_picked = pyqtSignal(int, str)   # index (0-15), nom (ou "" pour vider)
+
+    _COLS = 8   # 2 barres horizontales de 8 (row = i//8, col = i%8)
+    _ICON_SIZE = 28
+
+    def __init__(self, accent: str, parent=None):
+        super().__init__(parent)
+        self._accent = accent
+        self._layout = QGridLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(4)
+        self._buttons: list[QPushButton] = []
+
+    def load(self, banks: list, active_names: list):
+        for b in self._buttons:
+            self._layout.removeWidget(b)
+            b.deleteLater()
+        self._buttons.clear()
+
+        for i in range(16):
+            name = active_names[i] if i < len(active_names) else ""
+            bank = next((b for b in banks if b.name == name), None) if name else None
+            btn = QPushButton()
+            btn.setFixedSize(self._ICON_SIZE + 10, self._ICON_SIZE + 10)
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            if bank:
+                btn.setIcon(_bank_icon(bank, size=self._ICON_SIZE))
+                btn.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
+                btn.setToolTip(f"Slot {i} — {bank.name}")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};border-radius:4px;}}"
+                    f"QPushButton:hover{{border-color:{self._accent};}}"
+                )
+            else:
+                btn.setToolTip(f"Slot {i} — vide")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:#000000;border:1px solid {C.BORDER_MID};border-radius:4px;}}"
+                    f"QPushButton:hover{{border-color:{self._accent};}}"
+                )
+            btn.clicked.connect(lambda _c, i=i, btn=btn, banks=banks: self._open_picker(i, btn, banks))
+            btn.customContextMenuRequested.connect(lambda _pos, i=i: self.slot_picked.emit(i, ""))
+            row, col = divmod(i, self._COLS)
+            self._layout.addWidget(btn, row, col)
+            self._buttons.append(btn)
+
+    def _open_picker(self, i: int, anchor_btn: QPushButton, banks: list):
+        entries = [(b.name, b.name, _bank_icon(b)) for b in banks]
+        popup = ScriptPickerPopup(entries, self._accent, parent=self, new_label=None)
+        popup.picked.connect(lambda name, i=i: self.slot_picked.emit(i, name))
+        popup.show_below(anchor_btn)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -157,6 +221,28 @@ class SceneInspector(QWidget):
 
         cl.addWidget(param_card)
 
+        # ── Carte Palettes actives ─────────────────────────────────
+        # Le catalogue de palettes (Palette Editor) est illimité au niveau
+        # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
+        # "actives" pour cette scène. Actor.pal_bank référence un slot de
+        # cette sélection (0-15), pas directement le catalogue.
+        pal_card, pal_inner = _card(C.ACCENT_GRN)
+        pal_inner.addWidget(_card_title("PALETTES ACTIVES", C.ACCENT_GRN))
+
+        self._pal_grids: dict[str, _PaletteSlotGrid] = {}
+        for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
+                                    ("bg", C.ACCENT_BLU, "BACKGROUND")):
+            sub_lbl = QLabel(title)
+            sub_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+            sub_lbl.setStyleSheet(f"color:{color}; letter-spacing:1px; margin-top:4px;")
+            pal_inner.addWidget(sub_lbl)
+            grid = _PaletteSlotGrid(color)
+            grid.slot_picked.connect(lambda i, name, pool=pool: self._on_palette_picked(pool, i, name))
+            pal_inner.addWidget(grid)
+            self._pal_grids[pool] = grid
+
+        cl.addWidget(pal_card)
+
         # ── Carte Script ──────────────────────────────────────────
         sc_card, sc_inner = _card(C.ACCENT_ORG)
         sc_inner.addWidget(_card_title("SCRIPT", C.ACCENT_ORG))
@@ -195,6 +281,7 @@ class SceneInspector(QWidget):
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
         self._refresh_bg_asset_combo()
+        self._rebuild_palette_slots()
         self._blocking = False
 
     _CREATE_SENTINEL = "__create__"
@@ -352,6 +439,44 @@ class SceneInspector(QWidget):
             ba.layers, new_layer, persist_fn=_refresh,
             label=f"Ajouter layer BG{next_slot}",
         ))
+        self.changed.emit()
+
+    # ── Palettes actives ────────────────────────────────────────────
+
+    _DEFAULT_PALETTE_NAME = "DMG (GB Default)"
+
+    def _rebuild_palette_slots(self):
+        if not self._scene or not self._project:
+            for pool in ("obj", "bg"):
+                self._pal_grids[pool].load([], [])
+            return
+
+        for pool in ("obj", "bg"):
+            manager = self._project.obj_palettes if pool == "obj" else self._project.bg_palettes
+            attr = "active_obj_palettes" if pool == "obj" else "active_bg_palettes"
+            active = getattr(self._scene, attr)
+
+            # Scène neuve sans aucune sélection -> défaut DMG au slot 0,
+            # plutôt qu'un pool entièrement noir/vide.
+            if not active and manager.get(self._DEFAULT_PALETTE_NAME):
+                active.append(self._DEFAULT_PALETTE_NAME)
+                self._persist()
+
+            banks = list(manager)
+            self._pal_grids[pool].load(banks, active)
+
+    def _on_palette_picked(self, pool: str, slot_idx: int, name: str):
+        if self._blocking or not self._scene:
+            return
+        lst = self._scene.active_obj_palettes if pool == "obj" else self._scene.active_bg_palettes
+        while len(lst) <= slot_idx:
+            lst.append("")
+        if lst[slot_idx] == name:
+            return
+        lst[slot_idx] = name
+        self._persist()
+        self._rebuild_palette_slots()
+        self.changed.emit()
         self.changed.emit()
 
     def _on_bound_toggled(self, idx: int):

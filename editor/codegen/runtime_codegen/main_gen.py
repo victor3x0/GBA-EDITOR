@@ -14,6 +14,7 @@ from typing import Optional
 from core.project import (
     Project, Scene, BackgroundLayer,
     Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, AnimState,
+    resolve_pal_bank,
 )
 from codegen.asset_pipeline import count_frames, sprite_unique_frames, _frame_key
 from codegen.build_utils import sym as _sym
@@ -234,7 +235,7 @@ def _section_spawn(pool_info: list[dict],
     L = ["/* ── Spawn helpers (prefabs poolés) ────────────────────── */"]
     for pi in pool_info:
         s, start, size, pf = pi["sym"], pi["start"], pi["size"], pi["prefab"]
-        pal = getattr(pf, "pal_bank", 0)
+        pal = resolve_pal_bank(getattr(pf, "pal_bank", 0))
         boxes = [c for c in pf.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
 
         # pool_init est toujours généré par le transpileur, extern inconditionnel
@@ -543,6 +544,21 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
     return result
 
 
+def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
+    """256 valeurs BGR555 (16 banques x 16 couleurs) pour PAL_OBJ_RAM de cette
+    scène, résolues depuis scene.active_obj_palettes — zéro pour tout slot
+    non assigné ou dont la palette référencée n'existe plus dans le
+    catalogue projet."""
+    words = [0] * 256
+    for i, name in enumerate(getattr(scene, "active_obj_palettes", [])[:16]):
+        bank = p.get_obj_palette(name) if name else None
+        if not bank or not bank.colors:
+            continue
+        for j, c in enumerate(bank.colors[:16]):
+            words[i * 16 + j] = c
+    return words
+
+
 def _gen_scene_init(
     p: Project,
     scene: Scene,
@@ -593,15 +609,13 @@ def _gen_scene_init(
         bt = sprite_offsets.get(sprite.name, 0)
         ss = f"sprite_{_sym(sprite.name)}"
         L.append(f"    copy16(OBJ_VRAM+{bt}*16, {ss}Tiles, {ss}TilesLen);")
-    # Palettes OBJ
-    done_pal: set[int] = set()
-    for actor, sprite in scene_actors:
-        if sprite and sprite.asset:
-            pal = getattr(actor, "pal_bank", 0)
-            if pal not in done_pal:
-                done_pal.add(pal)
-                ss = f"sprite_{_sym(sprite.name)}"
-                L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
+    # Palettes OBJ — depuis le tableau canonique de la scène
+    # (g_pal_obj_{sym}, résolu depuis scene.active_obj_palettes), pas depuis
+    # le Pal d'un sprite en particulier : correct même si aucun sprite
+    # n'utilise un slot donné, et cohérent quel que soit l'ordre des actors.
+    for i, pal_name in enumerate(getattr(scene, "active_obj_palettes", [])[:16]):
+        if pal_name and p.get_obj_palette(pal_name):
+            L.append(f"    copy16(PAL_OBJ_RAM+{i}*16, g_pal_obj_{sym}+{i}*16, 32);")
     # Palettes BG
     if bgi:
         L.append(f"    copy16(PAL_BG_RAM, {ts_sym}Pal, {ts_sym}PalLen);")
@@ -625,7 +639,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].flip_v  = {1 if getattr(_get_sprite_comp(actor),'flip_v',False) else 0};",
             f"    g_actors[{idx}].dir_x   = {getattr(actor,'dir_x',0)};",
             f"    g_actors[{idx}].dir_y   = {getattr(actor,'dir_y',0)};",
-            f"    g_actors[{idx}].pal_bank= {getattr(actor,'pal_bank',0)};",
+            f"    g_actors[{idx}].pal_bank= {resolve_pal_bank(getattr(actor,'pal_bank',0))};",
             f"    g_actors[{idx}].auto_dir= {1 if getattr(_get_sprite_comp(actor),'auto_dir',True) else 0};",
             f"    g_actors[{idx}].anim_state=0;",
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
@@ -1118,6 +1132,19 @@ def generate_main(
                 "",
             ]
 
+    # ── Palettes OBJ actives par scène (16 banques x 16 couleurs, résolues
+    #    depuis Scene.active_obj_palettes -> project.obj_palettes) ─────────
+    for d in all_scene_data:
+        sc = d["scene"]
+        sym = _sym(sc.name)
+        words = _scene_obj_palette_words(p, sc)
+        L += [
+            f"static const unsigned short g_pal_obj_{sym}[256] __attribute__((aligned(4))) = {{",
+            "    " + ", ".join(f"0x{v:04X}" for v in words),
+            "};",
+            "",
+        ]
+
     # ── Globals ───────────────────────────────────────────────────
     L += [
         f"Actor g_actors[{n_actors}];",
@@ -1222,29 +1249,15 @@ def generate_main(
             loop = "MM_PLAY_LOOP" if getattr(music_item, "loop", True) else "MM_PLAY_ONCE"
             L.append(f"    mmStart(MOD_{_sym(music_item.name).upper()}, {loop});")
 
-    # Sprites VRAM (une seule fois au démarrage — toutes scènes)
+    # Sprites VRAM (une seule fois au démarrage — toutes scènes). Les
+    # palettes OBJ ne sont PLUS copiées ici : chaque scene_init_X() charge
+    # déjà la sienne (g_pal_obj_{sym}) au bon moment, y compris pour la
+    # scène de départ (appelée juste après, cf. boucle principale ci-dessous).
     if sprite_offsets:
         L.append("    /* Tiles sprites → OBJ VRAM (toutes scènes) */")
         for name, base in sprite_offsets.items():
             ss = f"sprite_{_sym(name)}"
             L.append(f"    copy16(OBJ_VRAM+{base}*16, {ss}Tiles, {ss}TilesLen);")
-        L.append("    /* Palettes OBJ */")
-        done_pal: set[int] = set()
-        for d in all_scene_data:
-            for actor, sprite in d["scene_actors"]:
-                if sprite and sprite.asset:
-                    pal = getattr(actor, "pal_bank", 0)
-                    if pal not in done_pal:
-                        done_pal.add(pal)
-                        ss = f"sprite_{_sym(sprite.name)}"
-                        L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
-        for pf, sprite in prefab_actor_sprites:
-            if sprite and sprite.asset:
-                pal = getattr(pf, "pal_bank", 0)
-                if pal not in done_pal:
-                    done_pal.add(pal)
-                    ss = f"sprite_{_sym(sprite.name)}"
-                    L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
 
     L += [
         f"    g_next_scene = {start_idx};   /* {start_scene} */",

@@ -45,7 +45,7 @@
       "y": 63,
       "flip_h": false,
       "flip_v": false,
-      "priority": 0,
+      "priority": 3,
       "pal_bank": 0,
       "visible": true
     },
@@ -103,7 +103,7 @@
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
-  "text_bg": 1,
+  "text_bg": 0,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -746,5 +746,11 @@
       1,
       1
     ]
+  ],
+  "active_obj_palettes": [
+    "DMG (GB Default)"
+  ],
+  "active_bg_palettes": [
+    "DMG (GB Default)"
   ]
 }

@@ -44,10 +44,6 @@ _TOOLTIPS = {
                           "Ordre d'affichage sur les BG layers.\n"
                           "0 = devant tous les backgrounds,  3 = derrière tous.\n"
                           "GBA : OAM attribute 2, bits 10–11."),
-    "actor.pal_bank":    ("self.pal_bank  (lecture seule)",
-                          "Banque de palette couleurs (0–15).\n"
-                          "Chaque banque contient 16 couleurs 15-bit.\n"
-                          "GBA : OAM attribute 2, bits 12–15 (mode 16c)."),
     "actor.visible":     ("self:set_visible(true/false)",
                           "Masque l'actor sans le désactiver.\n"
                           "Le slot OAM reste réservé mais avec bit OBJ_DISABLE."),
@@ -341,24 +337,13 @@ class ActorInspector(QWidget):
         dir_row.addStretch()
         tl.addLayout(dir_row)
 
-        # ── Priority + Palette sur une même ligne ─────────────────
+        # ── Priority ─────────────────────────────────────────────
+        # (la palette OBJ se règle désormais dans l'éditeur du SpriteComponent,
+        # cf. component_editors/sprite.py — palette_picker_slot)
         self._tpriority = _W.spinbox(0, min_v=0, max_v=3)
         self._tpriority.valueChanged.connect(lambda v: self._set("priority", v))
         _tip(self._tpriority, "actor.priority")
-        self._tpal = _W.spinbox(0, min_v=0, max_v=15)
-        self._tpal.valueChanged.connect(lambda v: self._set("pal_bank", v))
-        _tip(self._tpal, "actor.pal_bank")
-
-        pp_container = QWidget(); pp_container.setStyleSheet("background:transparent;")
-        pp_row = QHBoxLayout(pp_container); pp_row.setSpacing(8); pp_row.setContentsMargins(0, 2, 0, 2)
-        _lbl_sty = f"color:{C.TEXT_DIM}; font-family:{T.MONO}; font-size:{T.MD}px; background:transparent; border:none;"
-        pri_lbl = QLabel("Priority"); pri_lbl.setFont(QFont(T.MONO, T.MD))
-        pri_lbl.setStyleSheet(_lbl_sty); pri_lbl.setFixedWidth(58)
-        pal_lbl = QLabel("Palette");  pal_lbl.setFont(QFont(T.MONO, T.MD))
-        pal_lbl.setStyleSheet(_lbl_sty); pal_lbl.setFixedWidth(52)
-        pp_row.addWidget(pri_lbl); pp_row.addWidget(self._tpriority, 1)
-        pp_row.addWidget(pal_lbl); pp_row.addWidget(self._tpal, 1)
-        tl.addWidget(pp_container)
+        _W.row("Priority", self._tpriority, tl, label_width=58)
 
         # ── Visible ───────────────────────────────────────────────
         self._tvisible = QCheckBox("Visible"); self._tvisible.setStyleSheet(QSS.checkbox)
@@ -556,7 +541,7 @@ class ActorInspector(QWidget):
         self._transform_group.setVisible(True)
         self._tx.setValue(actor.x); self._ty.setValue(actor.y)
         self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
-        self._tpriority.setValue(actor.priority); self._tpal.setValue(actor.pal_bank)
+        self._tpriority.setValue(actor.priority)
         self._tvisible.setChecked(actor.visible)
         self._blocking = False
         self._refresh_component_list()

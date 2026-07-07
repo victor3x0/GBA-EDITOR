@@ -21,6 +21,7 @@ from ui.common.icons import get as _ico
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
+from core.color_utils import tint_image_with_bank
 
 _CTX_MENU_QSS = (
     f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
@@ -490,6 +491,10 @@ class _FrameCanvas(QWidget):
         self._frame:      Optional[AnimFrame]   = None
         self._tile_w = self._tile_h = 1
         self._show_grid  = True
+        # Teinte de preview (aperçu uniquement — cf _PaletteStrip dans
+        # sprite_center_panel.py) : liste de couleurs BGR555 clair->sombre,
+        # ou None pour afficher les pixels sources tels quels.
+        self._tint_bank: Optional[list[int]] = None
         # (rel_c, rel_r, src_col, src_row, flip_h, flip_v)
         self._brush: list[tuple[int, int, int, int, bool, bool]] = []
         self._hover: Optional[tuple[int, int]]       = None
@@ -559,6 +564,12 @@ class _FrameCanvas(QWidget):
 
     def set_grid(self, on: bool):
         self._show_grid = on
+        self.update()
+
+    def set_tint(self, bank_colors: Optional[list[int]]):
+        """Teinte de preview appliquée à l'image composée (pas à la brosse
+        fantôme, ni aux pixels sources) — None = couleurs sources telles quelles."""
+        self._tint_bank = bank_colors
         self.update()
 
     # ── Géométrie ────────────────────────────────────────────────────
@@ -764,6 +775,8 @@ class _FrameCanvas(QWidget):
         # Image composée
         img = compose_frame_image(self._abs_path, self._frame,
                                    self._tile_w * 8, self._tile_h * 8)
+        if self._tint_bank:
+            img = tint_image_with_bank(img, self._tint_bank)
         if img.width > 0 and img.height > 0:
             data = bytes(img.tobytes("raw", "RGBA"))
             qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
@@ -830,10 +843,119 @@ class _FrameCanvas(QWidget):
         painter.end()
 
 
+class _CanvasFloatingToolbar(QFrame):
+    """
+    Barre d'outils flottante et déplaçable superposée au canvas — même
+    modèle que FloatingToolbar/CanvasContainer du Scene Manager
+    (core/scene_editor.py), en horizontal : playback (|◀ ▶ ▶|), grille,
+    palettes de preview, flip brosse (X/Y), zoom (Fit/−/+).
+    """
+
+    def __init__(self, canvas: "_FrameCanvas", parent=None):
+        super().__init__(parent)
+        self._canvas = canvas
+        self._dragging = False
+        self._drag_offset = QPoint()
+
+        self.setStyleSheet(
+            "_CanvasFloatingToolbar{background:#1c1c1c;border:1px solid #333;border-radius:8px;}"
+            "QToolButton{border:none;background:transparent;border-radius:4px;}"
+            "QToolButton:hover{background:#2a2a2a;}"
+            "QToolButton:checked{background:#253525;border:1px solid #3a6a3a;}"
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 6, 6, 6)
+        layout.setSpacing(4)
+
+        handle = QLabel("⋮⋮")
+        handle.setStyleSheet("color:#3a3a3a;font-size:14px;letter-spacing:-2px;")
+        handle.setFixedWidth(16)
+        layout.addWidget(handle)
+
+        def _sep():
+            s = QFrame()
+            s.setFrameShape(QFrame.Shape.VLine)
+            s.setStyleSheet("color:#2a2a2a;margin:2px 6px;")
+            layout.addWidget(s)
+
+        def _icon_btn(icon_key: str, tip: str, checkable: bool = False) -> QToolButton:
+            b = QToolButton()
+            b.setIcon(_ico(icon_key, C.TEXT_DIM, C.ACCENT_GRN))
+            b.setIconSize(QSize(22, 22))
+            b.setFixedSize(36, 36)
+            b.setCheckable(checkable)
+            b.setToolTip(tip)
+            layout.addWidget(b)
+            return b
+
+        self.btn_prev = _icon_btn("playback_prev", "Première frame")
+        self.btn_play = _icon_btn("playback_play", "Lecture", checkable=True)
+        self.btn_next = _icon_btn("playback_next", "Dernière frame")
+        _sep()
+        self.btn_grid = _icon_btn("playback_grid", "Afficher grille", checkable=True)
+        self.btn_palette = _icon_btn("tool_palette", "Afficher les palettes de preview", checkable=True)
+        _sep()
+        self.btn_flip_x = _icon_btn("mirror_h", "Flip horizontal de la brosse active (Shift+X)")
+        self.btn_flip_y = _icon_btn("mirror_v", "Flip vertical de la brosse active (Shift+Y)")
+        _sep()
+
+        _TXT_BTN = (
+            f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
+            f"font-size:{T.LG}px;padding:0 8px;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};background:#2a2a2a;}}"
+        )
+        self.btn_fit = QToolButton(); self.btn_fit.setText("Fit")
+        self.btn_zm  = QToolButton(); self.btn_zm.setText("−")
+        self.btn_zp  = QToolButton(); self.btn_zp.setText("+")
+        for b in (self.btn_fit, self.btn_zm, self.btn_zp):
+            b.setStyleSheet(_TXT_BTN)
+            b.setFixedHeight(36)
+            b.setToolTip("Réinitialiser le zoom (ajustement automatique)" if b is self.btn_fit else "")
+            layout.addWidget(b)
+
+        # Grille + flip/zoom pilotent directement le canvas (pas d'état
+        # externe à coordonner) ; play/palette restent exposés pour être
+        # câblés par SpriteCenterPanel (timer d'animation, visibilité de
+        # la colonne de palettes).
+        self.btn_grid.setChecked(True)
+        self.btn_grid.toggled.connect(self._canvas.set_grid)
+        self.btn_palette.setChecked(True)
+        self.btn_flip_x.clicked.connect(self._canvas.flip_brush_x)
+        self.btn_flip_y.clicked.connect(self._canvas.flip_brush_y)
+        self.btn_fit.clicked.connect(self._canvas.zoom_fit)
+        self.btn_zm.clicked.connect(self._canvas.zoom_out)
+        self.btn_zp.clicked.connect(self._canvas.zoom_in)
+
+        self.adjustSize()
+
+    # ── Drag (identique à FloatingToolbar, core/scene_editor.py) ───────
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_offset = e.pos()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._dragging and self.parent():
+            new_pos = self.mapToParent(e.pos()) - self._drag_offset
+            p = self.parent()
+            x = max(0, min(new_pos.x(), p.width() - self.width()))
+            y = max(0, min(new_pos.y(), p.height() - self.height()))
+            self.move(x, y)
+
+    def mouseReleaseEvent(self, e):
+        self._dragging = False
+        super().mouseReleaseEvent(e)
+
+
 class _FrameCanvasPanel(QWidget):
     """
-    Enrobe _FrameCanvas avec un header (zoom −/+, Fit, coordonnées survolées) —
-    même pattern que _SpritesheetViewer pour la zone tiles juste en dessous.
+    Enrobe _FrameCanvas avec une barre d'outils flottante
+    (_CanvasFloatingToolbar) et des textes flottants (tag CANVAS, stats
+    Tiles/Unique, coordonnées survolées) superposés au canvas — même modèle
+    que CanvasContainer/FloatingToolbar du Scene Manager.
     """
 
     def __init__(self, parent=None):
@@ -844,68 +966,55 @@ class _FrameCanvasPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        hdr_w = QWidget()
-        hdr_w.setFixedHeight(22)
-        hdr_w.setStyleSheet(
-            f"background:{C.BG_RAISED};border-bottom:1px solid {C.BORDER_DARK};")
-        hdr_lay = QHBoxLayout(hdr_w)
-        hdr_lay.setContentsMargins(8, 0, 4, 0)
-        hdr_lay.setSpacing(4)
-
-        lbl_canvas = QLabel("CANVAS")
-        lbl_canvas.setFont(QFont(T.MONO, T.XS))
-        lbl_canvas.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
-        hdr_lay.addWidget(lbl_canvas)
-
-        hdr_lay.addStretch()
-
-        self._coord_lbl = QLabel("")
-        self._coord_lbl.setFont(QFont(T.MONO, T.XS))
-        self._coord_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
-        hdr_lay.addWidget(self._coord_lbl)
-
-        hdr_lay.addSpacing(12)
-
-        _BTN = (
-            f"QToolButton{{color:{C.TEXT_DIM};background:transparent;"
-            f"border:none;font-size:{T.MD}px;padding:0 4px;}}"
-            f"QToolButton:hover{{color:{C.TEXT_HI};}}"
-        )
-        btn_flip_x = QToolButton()
-        btn_flip_x.setIcon(_ico("mirror_h", C.TEXT_DIM, C.ACCENT_GRN))
-        btn_flip_x.setIconSize(QSize(14, 14))
-        btn_flip_x.setStyleSheet(_BTN)
-        btn_flip_x.setToolTip("Flip horizontal de la brosse active (Shift+X)")
-        btn_flip_y = QToolButton()
-        btn_flip_y.setIcon(_ico("mirror_v", C.TEXT_DIM, C.ACCENT_GRN))
-        btn_flip_y.setIconSize(QSize(14, 14))
-        btn_flip_y.setStyleSheet(_BTN)
-        btn_flip_y.setToolTip("Flip vertical de la brosse active (Shift+Y)")
-        hdr_lay.addWidget(btn_flip_x)
-        hdr_lay.addWidget(btn_flip_y)
-
-        hdr_lay.addSpacing(12)
-
-        btn_fit = QToolButton(); btn_fit.setText("Fit"); btn_fit.setStyleSheet(_BTN)
-        btn_fit.setToolTip("Réinitialiser le zoom (ajustement automatique)")
-        btn_zm = QToolButton(); btn_zm.setText("−"); btn_zm.setStyleSheet(_BTN)
-        btn_zp = QToolButton(); btn_zp.setText("+"); btn_zp.setStyleSheet(_BTN)
-        hdr_lay.addWidget(btn_fit)
-        hdr_lay.addWidget(btn_zm)
-        hdr_lay.addWidget(btn_zp)
-
-        root.addWidget(hdr_w)
-
         self.canvas = _FrameCanvas()
         self.canvas.hover_changed.connect(self._on_hover_changed)
         root.addWidget(self.canvas, 1)
 
-        btn_flip_x.clicked.connect(self.canvas.flip_brush_x)
-        btn_flip_y.clicked.connect(self.canvas.flip_brush_y)
-        btn_fit.clicked.connect(self.canvas.zoom_fit)
-        btn_zm.clicked.connect(self.canvas.zoom_out)
-        btn_zp.clicked.connect(self.canvas.zoom_in)
+        self.toolbar = _CanvasFloatingToolbar(self.canvas, self)
+        self.toolbar.move(10, 10)
+        self.toolbar.raise_()
+
+        _FLOAT_STY = f"color:{C.TEXT_MUTED};background:transparent;"
+        self._tag_lbl = QLabel("CANVAS", self)
+        self._tag_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        self._tag_lbl.setStyleSheet(_FLOAT_STY + "letter-spacing:1px;")
+        self._tag_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._tag_lbl.adjustSize()
+
+        self._info_lbl = QLabel("", self)
+        self._info_lbl.setFont(QFont(T.MONO, T.XS))
+        self._info_lbl.setStyleSheet(_FLOAT_STY)
+        self._info_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._coord_lbl = QLabel("", self)
+        self._coord_lbl.setFont(QFont(T.MONO, T.XS))
+        self._coord_lbl.setStyleSheet(_FLOAT_STY)
+        self._coord_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        self._reposition_overlays()
+
+    def set_info(self, tiles: int, unique: int):
+        self._info_lbl.setText(f"Tiles={tiles}  Unique={unique}")
+        self._info_lbl.adjustSize()
+        self._reposition_overlays()
 
     def _on_hover_changed(self, cell):
         self._coord_lbl.setText(f"tuile {cell[0]},{cell[1]}" if cell else "")
+        self._coord_lbl.adjustSize()
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
+        self._tag_lbl.move(10, self.height() - self._tag_lbl.height() - 8)
+        self._coord_lbl.move(self.width() - self._coord_lbl.width() - 10,
+                             self.height() - self._coord_lbl.height() - 8)
+        self._info_lbl.move(self.width() - self._info_lbl.width() - 10, 8)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        tb = self.toolbar
+        x = max(0, min(tb.x(), self.width() - tb.width()))
+        y = max(0, min(tb.y(), self.height() - tb.height()))
+        tb.move(x, y)
+        tb.raise_()
+        self._reposition_overlays()
 

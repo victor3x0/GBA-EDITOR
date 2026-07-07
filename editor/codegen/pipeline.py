@@ -24,7 +24,7 @@ from core.events import EventEmitter
 from core.toolchain import Toolchain
 from codegen.asset_pipeline import (
     GritBackground, GritSprites, MmutilAudio,
-    resolve_sound_assets, count_frames, png_size,
+    resolve_sound_assets, count_frames, png_size, resolve_obj_palette_bank,
 )
 from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
@@ -162,13 +162,26 @@ class BuildWorker(EventEmitter, threading.Thread):
                     ok = ok and self._step_grit_bg(p, d["bg_pairs"],
                                                    scene_sym=_sym_fn(d["scene"].name))
 
-            # grit Sprites : union de toutes scènes + prefabs (dédupliqués par nom)
+            # grit Sprites : union de toutes scènes + prefabs (dédupliqués par
+            # nom — 1er rencontré gagne). La banque de palette est résolue via
+            # la scène propriétaire de l'actor ; pour un prefab poolé (pas de
+            # scène propriétaire unique), on résout via la 1ère scène du
+            # projet — la cohérence entre scènes est vérifiée séparément par
+            # le validateur (avertissement, pas un blocage), cf. ROADMAP.md v0.2.
             seen_sprites: set[str] = set()
             unique_sprites: list = []
-            for _, sprite in all_actor_sprites_flat + prefab_actor_sprites:
+            for d in all_scene_data:
+                for actor, sprite in d["scene_actors"]:
+                    if sprite and sprite.asset and sprite.name not in seen_sprites:
+                        seen_sprites.add(sprite.name)
+                        bank = resolve_obj_palette_bank(p, actor, d["scene"])
+                        unique_sprites.append((actor, sprite, bank))
+            anchor_scene = all_scenes[0] if all_scenes else None
+            for pf, sprite in prefab_actor_sprites:
                 if sprite and sprite.asset and sprite.name not in seen_sprites:
                     seen_sprites.add(sprite.name)
-                    unique_sprites.append((None, sprite))
+                    bank = resolve_obj_palette_bank(p, pf, anchor_scene)
+                    unique_sprites.append((pf, sprite, bank))
             if ok and unique_sprites:
                 ok = ok and self._step_grit_actors(p, unique_sprites)
 

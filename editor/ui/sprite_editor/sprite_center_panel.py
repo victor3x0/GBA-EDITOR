@@ -4,88 +4,89 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QToolButton, QSplitter,
+    QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QToolButton, QSplitter,
 )
-from PyQt6.QtGui import QFont, QKeySequence, QShortcut
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 
 from ui.common.theme import C, T
-from ui.common.icons import get as _ico
 from core.project import Project, SpriteAsset, AnimState, StateDirection
 from core.command_dispatcher import get_dispatcher
 from .frame_canvas import _FrameCanvasPanel, _FrameTimeline, _make_frame_pixmap
 from .spritesheet_viewer import _SpritesheetViewer
 
 # ── Zone centre — Preview ──────────────────────────────────────────────────────
+# La barre playback (|◀ ▶ ▶| grille/palette) et le header (flip/fit/zoom,
+# tag CANVAS, stats) sont flottants, superposés au canvas — voir
+# _CanvasFloatingToolbar / _FrameCanvasPanel dans frame_canvas.py.
 
-class _PlaybackBar(QWidget):
-    """Barre de contrôle playback (|◀ ▶ ▶| ⊞ ◉)."""
+
+class _PaletteStrip(QWidget):
+    """
+    Grille 2 colonnes de swatches cliquables (banques OBJ) — change la
+    teinte de preview du canvas (aperçu d'animation uniquement, ne modifie
+    ni les pixels du PNG source ni la palette réellement assignée au sprite).
+    """
+
+    bank_picked = pyqtSignal(int)   # index dans la liste passée à load_banks()
+    _COLS = 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(44)
-        self.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER_DARK};")
+        self.setFixedWidth(52)
+        self.setStyleSheet(f"background:{C.BG_PANEL}; border-right:1px solid {C.BORDER_DARK};")
+        self._layout = QGridLayout(self)
+        self._layout.setContentsMargins(4, 6, 4, 6)
+        self._layout.setSpacing(3)
+        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._buttons: list[QToolButton] = []
+        self._active = 0
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 12, 4)
-        layout.setSpacing(2)
+    def load_banks(self, banks: list):
+        for b in self._buttons:
+            self._layout.removeWidget(b)
+            b.deleteLater()
+        self._buttons.clear()
 
-        _BTN = (
-            f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
-            f"border:1px solid {C.BORDER};border-radius:3px;"
-            f"font-size:{T.LG}px;padding:4px 8px;min-width:28px;}}"
-            f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
-            f"QToolButton:checked{{color:{C.ACCENT_GRN};border-color:{C.ACCENT_GRN};}}"
-        )
-
-        from ui.common.icons import get as _ico
-
-        specs = [
-            ("playback_prev",     "Première frame"),
-            ("playback_play",     "Lecture"),
-            ("playback_next",     "Dernière frame"),
-            (None, None),
-            ("playback_grid",     "Afficher grille"),
-            # Placeholder en attendant la gestion des palettes de couleurs —
-            # désactivé pour ne pas laisser croire qu'il fait quelque chose.
-            ("tool_palette",      "Couleur de peinture (bientôt disponible)"),
-        ]
-
-        self.btn_play: Optional[QToolButton] = None
-        self.btn_grid: Optional[QToolButton] = None
-
-        for icon_key, tip in specs:
-            if icon_key is None:
-                sep = QFrame()
-                sep.setFrameShape(QFrame.Shape.VLine)
-                sep.setStyleSheet(f"color:{C.BORDER}; margin:6px 4px;")
-                layout.addWidget(sep)
-                continue
+        for i, bank in enumerate(banks):
             btn = QToolButton()
-            btn.setIcon(_ico(icon_key, C.TEXT_DIM, C.ACCENT_GRN))
-            btn.setIconSize(QSize(18, 18))
-            btn.setStyleSheet(_BTN)
-            btn.setCheckable(icon_key in ("playback_play", "playback_grid"))
-            if icon_key == "tool_palette":
+            btn.setFixedSize(20, 20)
+            btn.setCheckable(True)
+            if bank.colors:
+                from core.color_utils import bgr555_to_rgb888
+                mid_r, mid_g, mid_b = bgr555_to_rgb888(bank.colors[len(bank.colors) // 2])
+                btn.setStyleSheet(
+                    f"QToolButton{{background:rgb({mid_r},{mid_g},{mid_b});"
+                    f"border:1px solid {C.BORDER_MID};border-radius:3px;}}"
+                    f"QToolButton:checked{{border:2px solid {C.ACCENT_GRN};}}"
+                )
+                btn.setToolTip(bank.name)
+                btn.clicked.connect(lambda _checked, i=i: self._pick(i))
+            else:
                 btn.setEnabled(False)
-            if tip:
-                btn.setToolTip(tip)
-            layout.addWidget(btn)
-            if icon_key == "playback_play":
-                self.btn_play = btn
-            elif icon_key == "playback_grid":
-                btn.setChecked(True)
-                self.btn_grid = btn
+                btn.setStyleSheet(
+                    f"QToolButton{{background:{C.BG_INPUT};"
+                    f"border:1px dashed {C.BORDER_MID};border-radius:3px;}}"
+                )
+                btn.setToolTip("Palette vide")
+            row, col = divmod(i, self._COLS)
+            self._layout.addWidget(btn, row, col)
+            self._buttons.append(btn)
 
-        layout.addStretch()
+    def select_default(self, index: int = 0):
+        """Sélectionne une banque par défaut sans émettre bank_picked (état initial)."""
+        self._select(index)
 
-        self._info = QLabel("")
-        self._info.setFont(QFont(T.MONO, T.XS))
-        self._info.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
-        layout.addWidget(self._info)
+    def _pick(self, i: int):
+        self._select(i)
+        self.bank_picked.emit(i)
 
-    def set_info(self, tiles: int, unique: int):
-        self._info.setText(f"Tiles={tiles}  Unique={unique}")
+    def _select(self, i: int):
+        self._active = i
+        for j, b in enumerate(self._buttons):
+            b.setChecked(j == i)
+
+
 class SpriteCenterPanel(QWidget):
     """Zone centre : playback · canvas · tile picker · timeline."""
 
@@ -106,9 +107,6 @@ class SpriteCenterPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._playback = _PlaybackBar()
-        root.addWidget(self._playback)
-
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
         splitter.setStyleSheet(
@@ -124,10 +122,20 @@ class SpriteCenterPanel(QWidget):
         self._canvas.selection_reset.connect(self._on_selection_reset)
         self._canvas.brush_picked_up.connect(self._on_brush_picked_up)
 
+        self._palette_strip = _PaletteStrip()
+        self._palette_strip.bank_picked.connect(self._on_palette_picked)
+
+        canvas_row = QWidget()
+        canvas_row_l = QHBoxLayout(canvas_row)
+        canvas_row_l.setContentsMargins(0, 0, 0, 0)
+        canvas_row_l.setSpacing(0)
+        canvas_row_l.addWidget(self._palette_strip)
+        canvas_row_l.addWidget(self._canvas_panel, 1)
+
         self._tiles = _SpritesheetViewer()
         self._tiles.selection_changed.connect(self._on_tile_selection_changed)
 
-        splitter.addWidget(self._canvas_panel)
+        splitter.addWidget(canvas_row)
         splitter.addWidget(self._tiles)
         splitter.setSizes([320, 200])
 
@@ -138,10 +146,9 @@ class SpriteCenterPanel(QWidget):
         self._timeline.frames_changed.connect(self._on_frames_changed)
         root.addWidget(self._timeline)
 
-        if self._playback.btn_grid:
-            self._playback.btn_grid.toggled.connect(self._canvas.set_grid)
-        if self._playback.btn_play:
-            self._playback.btn_play.toggled.connect(self._on_play_toggled)
+        toolbar = self._canvas_panel.toolbar
+        toolbar.btn_play.toggled.connect(self._on_play_toggled)
+        toolbar.btn_palette.toggled.connect(self._palette_strip.setVisible)
 
         # Shift+X/Y : portés ici (pas sur _FrameCanvas seul) pour marcher
         # aussi bien après un clic dans le canvas que dans le tile picker —
@@ -159,9 +166,8 @@ class SpriteCenterPanel(QWidget):
         self._sprite  = sprite
         self._project = project
         self._anim_timer.stop()
-        if self._playback.btn_play:
-            self._playback.btn_play.setChecked(False)
-        self._playback.set_info(
+        self._canvas_panel.toolbar.btn_play.setChecked(False)
+        self._canvas_panel.set_info(
             tiles=sprite.tiles_per_frame * sum(
                 len(sd.frames)
                 for s in sprite.states
@@ -172,6 +178,25 @@ class SpriteCenterPanel(QWidget):
         )
         self._tiles.load(self._abs_path())
 
+        # Teinte de preview : toujours réinitialisée à "DMG (GB Default)"
+        # (verte) pour un sprite fraîchement sélectionné — recherché par nom,
+        # pas par index 0 : le catalogue est chargé par ordre alphabétique de
+        # fichier (ResourceManager), pas par ordre de création.
+        obj_banks = list(project.obj_palettes) if project else []
+        self._palette_strip.load_banks(obj_banks)
+        default_bank = (project.get_obj_palette("DMG (GB Default)") if project else None) \
+            or (obj_banks[0] if obj_banks else None)
+        default_idx = obj_banks.index(default_bank) if default_bank in obj_banks else 0
+        self._palette_strip.select_default(default_idx)
+        self._canvas.set_tint(default_bank.colors if default_bank else None)
+
+    def _on_palette_picked(self, index: int):
+        if not self._project:
+            return
+        banks = list(self._project.obj_palettes)
+        if 0 <= index < len(banks):
+            self._canvas.set_tint(banks[index].colors)
+
     def load_direction(self, state: AnimState, sd: StateDirection):
         if not self._sprite or not self._project:
             return
@@ -179,8 +204,7 @@ class SpriteCenterPanel(QWidget):
         self._sd = sd
         self._sel_frame = 0
         self._anim_timer.stop()
-        if self._playback.btn_play:
-            self._playback.btn_play.setChecked(False)
+        self._canvas_panel.toolbar.btn_play.setChecked(False)
         self._timeline.load(self._sprite, state, sd, self._abs_path())
         self._refresh_canvas()
 

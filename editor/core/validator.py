@@ -74,6 +74,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_scene(ctx)
     _check_actors(ctx)
     _check_backgrounds(ctx)
+    _check_pal_bank_scene_consistency(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -169,3 +170,67 @@ def _check_backgrounds(ctx: ValidationContext):
         ap = proj.background_images_dir / layer.image
         if not ap.exists():
             ctx.warn(None, f"Background '{ba_name}' : image introuvable ({layer.image}) — layer ignoré.")
+
+
+def _check_pal_bank_scene_consistency(ctx: ValidationContext):
+    """La quantification des tuiles OBJ (asset_pipeline.py) et les pools de
+    prefabs partagent une résolution globale par nom de sprite/prefab (1er
+    rencontré gagne, cf. ROADMAP.md v0.2 — pas de variante par scène). Si
+    deux scènes résolvent des palettes différentes pour le même sprite ou le
+    même prefab poolé, un avertissement signale les scènes qui vont rendre
+    avec les mauvaises couleurs plutôt que d'échouer silencieusement."""
+    from core.project import AUTO_PAL_BANK
+
+    p = ctx.project
+    scenes = list(p.scenes)
+    if len(scenes) < 2:
+        return  # pas de conflit possible avec une seule scène
+
+    def _resolve(entity, scene):
+        pal_bank = getattr(entity, "pal_bank", 0)
+        if pal_bank == AUTO_PAL_BANK:
+            return None
+        active = getattr(scene, "active_obj_palettes", [])
+        if not (0 <= pal_bank < len(active)):
+            return None
+        return active[pal_bank] or None
+
+    # Sprites référencés par des actors, potentiellement dans plusieurs scènes
+    sprite_resolutions: dict[str, dict[str, str]] = {}
+    for scene in scenes:
+        for actor in scene.actors:
+            if not actor.active:
+                continue
+            comp = actor.get_component("sprite")
+            if not comp or not comp.active or not comp.sprite_name:
+                continue
+            pal_name = _resolve(actor, scene)
+            if pal_name is not None:
+                sprite_resolutions.setdefault(comp.sprite_name, {})[scene.name] = pal_name
+
+    for sprite_name, by_scene in sprite_resolutions.items():
+        if len(set(by_scene.values())) > 1:
+            detail = ", ".join(f"{sn}→{pn}" for sn, pn in by_scene.items())
+            ctx.warn(None,
+                f"Sprite '{sprite_name}' résout vers des palettes différentes selon "
+                f"la scène ({detail}) — une seule sera utilisée pour les tuiles au "
+                f"build (1ère scène rencontrée), les autres scènes afficheront "
+                f"potentiellement les mauvaises couleurs.")
+
+    # Prefabs poolés — pas de scène propriétaire unique (spawn_X() appelable
+    # depuis n'importe quel script Lua, non analysé statiquement).
+    for pf in p.prefabs:
+        if getattr(pf, "max_instances", 0) <= 0:
+            continue
+        by_scene = {}
+        for scene in scenes:
+            pal_name = _resolve(pf, scene)
+            if pal_name is not None:
+                by_scene[scene.name] = pal_name
+        if len(set(by_scene.values())) > 1:
+            detail = ", ".join(f"{sn}→{pn}" for sn, pn in by_scene.items())
+            ctx.warn(None,
+                f"Prefab '{pf.name}' (poolé) résout vers des palettes différentes "
+                f"selon la scène ({detail}) — un prefab poolé est global (spawn_X() "
+                f"utilisable depuis n'importe quelle scène), une seule couleur sera "
+                f"correcte partout.")

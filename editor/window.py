@@ -28,6 +28,7 @@ from core.project import (
     Project, Scene, Actor, Prefab,
     MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
     SFX_FILE_EXTS, MUSIC_FILE_EXTS,
+    resolve_pal_bank,
 )
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -39,6 +40,7 @@ from ui.sound_mixer.sound_panel import SoundMixerScreen
 from ui.script_editor.script_editor import ScriptEditorScreen
 from ui.home.project_picker import HomeScreen, push_recent
 from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
+from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
 
@@ -144,7 +146,7 @@ class GbaStatusBar(QWidget):
                 tiles += tw * th
 
         # Palettes uniques
-        pal_set = {a.pal_bank for a in visible_actors if a.get_component("sprite")}
+        pal_set = {resolve_pal_bank(a.pal_bank) for a in visible_actors if a.get_component("sprite")}
 
         # Estimation sprites par scanline (approx : actors visibles / hauteur en tiles)
         scanline_est = max(oam_count, sum(
@@ -180,7 +182,7 @@ class GbaStatusBar(QWidget):
 class MainWindow(QMainWindow):
     SCREENS = [
         "Scene Manager", "Tileset Manager", "Background Editor",
-        "Sprite Editor", "Sound Mixer", "Script Editor",
+        "Sprite Editor", "Palette Editor", "Sound Mixer", "Script Editor",
     ]
 
     # Routage assets/<dossier>/*.ext → (méthode sync, méthode remove, label,
@@ -249,6 +251,8 @@ class MainWindow(QMainWindow):
             self._screen_stack.addWidget(self._make_placeholder_screen(title))
         self._sprite_editor = SpriteEditorScreen()
         self._screen_stack.addWidget(self._sprite_editor)
+        self._palette_editor = PaletteEditorScreen()
+        self._screen_stack.addWidget(self._palette_editor)
         self._sound_mixer = SoundMixerScreen()
         self._screen_stack.addWidget(self._sound_mixer)
         self._script_editor = ScriptEditorScreen()
@@ -576,6 +580,7 @@ class MainWindow(QMainWindow):
         self.assets_finder_panel.load_project(self.project)
         self._sound_mixer.load_project(self.project)
         self._sprite_editor.load_project(self.project)
+        self._palette_editor.load_project(self.project)
         self._inspector.set_project(self.project)
         self._script_editor.set_project(self.project)
         if self.project.active_scene:

@@ -24,8 +24,8 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QComboBox, QScrollArea, QApplication, QTreeWidget, QTreeWidgetItem,
     QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy,
 )
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
 
 from ui.common.theme import C, T
 
@@ -413,6 +413,10 @@ class ScriptSlot(QWidget):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(4)
 
+        self._icon_lbl = QLabel("")
+        self._icon_lbl.setFixedSize(16, 16)
+        self._icon_lbl.setVisible(False)
+
         self._lbl = QLabel("")
         self._lbl.setFont(QFont(T.MONO, T.SM))
         self._lbl.setStyleSheet(f"color:{accent_color}; background:transparent; border:none;")
@@ -427,6 +431,7 @@ class ScriptSlot(QWidget):
         self._btn_clear.setFont(QFont(T.MONO, T.XL))
         self._btn_clear.setStyleSheet(BTN_DANGER)
 
+        hl.addWidget(self._icon_lbl)
         hl.addWidget(self._lbl, 1)
         hl.addWidget(self._btn_edit)
         hl.addWidget(self._btn_clear)
@@ -458,13 +463,19 @@ class ScriptSlot(QWidget):
         self._on_open  = on_open
         self._on_clear = on_clear
 
-    def set_script(self, name: str):
+    def set_script(self, name: str, icon: QIcon | None = None):
         self._lbl.setText(name)
+        if icon is not None:
+            self._icon_lbl.setPixmap(icon.pixmap(16, 16))
+            self._icon_lbl.setVisible(True)
+        else:
+            self._icon_lbl.setVisible(False)
         self._btn_add.setVisible(False)
         self._active_w.setVisible(True)
 
     def clear_script(self):
         self._lbl.setText("")
+        self._icon_lbl.setVisible(False)
         self._btn_add.setVisible(True)
         self._active_w.setVisible(False)
 
@@ -492,17 +503,21 @@ class ScriptPickerPopup(QFrame):
     picked        = pyqtSignal(str)   # chemin relatif au projet
     new_requested = pyqtSignal()
 
-    def __init__(self, scripts: list[tuple[str, str]], accent: str, parent=None,
+    def __init__(self, scripts: list[tuple], accent: str, parent=None,
                  new_label: str | None = "＋  Nouveau script"):
         """
-        scripts   : liste de (nom_affichage, valeur)
+        scripts   : liste de (nom_affichage, valeur) ou (nom_affichage, valeur, QIcon)
+                    — le 3e élément (icône par ligne) est optionnel, pour les
+                    pickers qui ont une identité visuelle (palettes, sprites...).
         accent    : couleur d'accentuation (hex)
         new_label : texte du bouton de création en bas du popup ; None pour
                     l'omettre (ex: picker qui ne propose que des éléments déjà
                     existants, sans création à la volée).
         """
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self._scripts = scripts          # [(display, rel_path), ...]
+        # Normalise en (display, valeur, icone|None) — accepte les anciens
+        # appels à 2-tuples sans modification.
+        self._scripts = [(e[0], e[1], e[2] if len(e) > 2 else None) for e in scripts]
         self._accent  = accent
 
         self.setFixedWidth(260)
@@ -574,7 +589,7 @@ class ScriptPickerPopup(QFrame):
             if item.widget():
                 item.widget().deleteLater()
 
-        matches = [(d, r) for d, r in self._scripts if query in d.lower()]
+        matches = [(d, r, i) for d, r, i in self._scripts if query in d.lower()]
 
         if not matches:
             lbl = QLabel("Aucun résultat")
@@ -583,11 +598,14 @@ class ScriptPickerPopup(QFrame):
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._list_layout.addWidget(lbl)
         else:
-            for display, rel in matches:
+            for display, rel, icon in matches:
                 btn = QPushButton(display)
                 btn.setFont(QFont(T.MONO, T.SM))
                 btn.setFixedHeight(26)
                 btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                if icon is not None:
+                    btn.setIcon(icon)
+                    btn.setIconSize(QSize(16, 16))
                 btn.setStyleSheet(
                     f"QPushButton{{background:transparent;color:{C.TEXT_NORM};"
                     f"border:none;border-radius:3px;text-align:left;padding:0 6px;}}"

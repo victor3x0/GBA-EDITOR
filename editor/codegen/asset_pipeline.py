@@ -238,6 +238,73 @@ def _sym(s: str) -> str:
     return ("_" + r) if r and r[0].isdigit() else r
 
 
+_ARRAY_RE = r'(\w+{suffix})\[(\d+)\][^=]*=\s*\{{([^}}]*)\}}'
+
+
+def remap_sprite_to_bank(c_path: Path, bank_colors: list[int], emit: Callable) -> bool:
+    """Réécrit en place le .c généré par grit pour un sprite 4bpp : les index
+    de tuiles (nibbles) sont remappés vers l'ordre canonique de `bank_colors`,
+    et la palette locale est remplacée par `bank_colors` telle quelle. Permet
+    à plusieurs sprites assignés à la même banque de partager des index de
+    palette identiques (condition nécessaire pour être copiés une seule fois
+    dans PAL_OBJ_RAM par main_gen.py)."""
+    import re
+
+    text = c_path.read_text()
+    tiles_m = re.search(_ARRAY_RE.format(suffix="Tiles"), text)
+    pal_m   = re.search(_ARRAY_RE.format(suffix="Pal"), text)
+    if not tiles_m or not pal_m:
+        emit("error_line", f"[palette] format grit inattendu dans {c_path.name}")
+        return False
+
+    tiles_vals = [int(x, 16) for x in tiles_m.group(3).split(",") if x.strip()]
+    pal_vals   = [int(x, 16) for x in pal_m.group(3).split(",") if x.strip()]
+
+    remap: dict[int, int] = {}
+    for local_idx, color in enumerate(pal_vals):
+        remap[local_idx] = next(
+            (canon_idx for canon_idx, bc in enumerate(bank_colors) if bc == color),
+            local_idx,  # slot de padding grit (couleur inutilisée) — jamais référencé par Tiles
+        )
+
+    new_tiles = []
+    for word in tiles_vals:
+        new_word = 0
+        for i in range(8):
+            nibble = (word >> (4 * i)) & 0xF
+            new_word |= (remap.get(nibble, nibble) & 0xF) << (4 * i)
+        new_tiles.append(new_word)
+
+    new_tiles_str = ",".join(f"0x{v:08X}" for v in new_tiles) + ","
+    new_pal_str   = ",".join(f"0x{c:04X}" for c in (bank_colors + [0] * 16)[:16]) + ","
+
+    text = text[:tiles_m.start(3)] + new_tiles_str + text[tiles_m.end(3):]
+    pal_m2 = re.search(_ARRAY_RE.format(suffix="Pal"), text)
+    text = text[:pal_m2.start(3)] + new_pal_str + text[pal_m2.end(3):]
+
+    c_path.write_text(text)
+    return True
+
+
+def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
+    """Résout la PaletteBank OBJ ciblée par `entity.pal_bank` (Actor ou
+    Prefab) via les palettes actives de `scene` — pal_bank est un slot
+    (0-15) dans scene.active_obj_palettes, pas une référence directe au
+    catalogue projet (illimité). None si non résolvable (AUTO_PAL_BANK,
+    scène sans sélection à ce slot, ou palette supprimée du catalogue) —
+    dans ce cas le sprite garde son comportement legacy (palette grit
+    propre, non forcée)."""
+    from core.project import AUTO_PAL_BANK
+    pal_bank = getattr(entity, "pal_bank", 0)
+    if scene is None or pal_bank == AUTO_PAL_BANK:
+        return None
+    active = getattr(scene, "active_obj_palettes", [])
+    if not (0 <= pal_bank < len(active)):
+        return None
+    name = active[pal_bank]
+    return p.get_obj_palette(name) if name else None
+
+
 class GritSprites:
     """Convertit les sprites OBJ (acteurs + prefabs) via grit -> sprite_X.h/.c."""
 
@@ -249,11 +316,13 @@ class GritSprites:
     def run(
         self,
         p: Project,
-        sprites: list[tuple[any, Optional[SpriteAsset]]],
+        sprites: list[tuple[any, Optional[SpriteAsset], Optional["PaletteBank"]]],
     ) -> bool:
         """
-        sprites : liste de (actor_ou_prefab, SpriteAsset).
-        Un même SpriteAsset n'est converti qu'une fois (dédupliqué par nom).
+        sprites : liste de (actor_ou_prefab, SpriteAsset, PaletteBank résolue
+        ou None). Un même SpriteAsset n'est converti qu'une fois (dédupliqué
+        par nom — la résolution de banque, y compris le choix de la scène
+        propriétaire en cas de doublon, est faite par l'appelant).
         """
         if not sprites:
             return True
@@ -261,7 +330,7 @@ class GritSprites:
             self._emit("error_line", "[grit Actor] introuvable"); return False
 
         done: set[str] = set()
-        for _, sprite in sprites:
+        for actor_or_pf, sprite, bank in sprites:
             if not sprite or not sprite.asset or sprite.name in done:
                 continue
             done.add(sprite.name)
@@ -274,6 +343,16 @@ class GritSprites:
             grit_src = build_sprite_sheet(ap, sprite, p.grit_out_dir, self._emit)
             if grit_src is None:
                 return False
+
+            pal_bank = getattr(actor_or_pf, "pal_bank", 0)
+            if bank and bank.colors:
+                from PIL import Image
+                from core.color_utils import quantize_image_to_bank
+                img = Image.open(grit_src).convert("RGBA")
+                quantize_image_to_bank(img, bank.colors).save(grit_src)
+                self._emit("log_line",
+                           f"[palette] {sprite.name} -> banque {pal_bank} "
+                           f"({bank.name or 'sans nom'}, {len(bank.colors)} couleurs)")
 
             out_base = str(p.grit_out_dir / f"sprite_{_sym(sprite.name)}")
             self._emit("log_line",
@@ -288,6 +367,10 @@ class GritSprites:
             ]
             if not self._run_cmd(cmd, f"[grit:{sprite.name}]", cwd=p.grit_out_dir):
                 return False
+
+            if bank and bank.colors:
+                if not remap_sprite_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
+                    return False
         return True
 
 

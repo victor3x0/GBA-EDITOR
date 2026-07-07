@@ -213,6 +213,36 @@ class ProjectSettings:
     start_scene: str = ""
     author: str = ""
     version: str = "0.1"
+    # Réservoir auto-import (cf. ROADMAP.md v0.2) — réglage projet, pas éditeur.
+    palette_auto_import_enabled: bool = True
+
+
+# ──────────────────────────────────────────────────────────────────
+#  PaletteBank — une banque de 16 couleurs (pool OBJ, GBA hardware)
+# ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class PaletteBank(Resource):
+    """Une palette nommée de 16 couleurs, catalogue illimité au niveau projet
+    (project/palettes/obj/ ou bg/, un fichier par palette — cf. ResourceManager).
+    Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes /
+    active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui occupe
+    les banques hardware au build."""
+    name: str = ""
+    colors: list[int] = field(default_factory=list)  # valeurs BGR555 GBA
+
+
+# Sentinel Actor.pal_bank / Prefab.pal_bank : "Automatique" — bank résolue par
+# le réservoir auto-import au lieu d'un choix explicite. Le réservoir lui-même
+# (détection des couleurs non palettisées par grit) n'est pas encore implémenté
+# -> resolve_pal_bank() retombe provisoirement sur la banque 0 au build.
+AUTO_PAL_BANK = -1
+
+
+def resolve_pal_bank(value: int) -> int:
+    """Résout un pal_bank d'Actor/Prefab (potentiellement AUTO_PAL_BANK) vers
+    un index de banque hardware valide (0-15) pour le codegen."""
+    return 0 if value == AUTO_PAL_BANK else value
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -853,6 +883,12 @@ class Scene(Resource):
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
+    # Palettes actives de cette scène — noms référençant project.obj_palettes/
+    # bg_palettes (catalogue illimité). Ordre = index de banque hardware
+    # (slot 0 = 1er élément). Actor/Prefab.pal_bank indexe dans CETTE liste,
+    # pas directement le catalogue projet.
+    active_obj_palettes: list = field(default_factory=list)  # list[str]
+    active_bg_palettes:  list = field(default_factory=list)  # list[str]
 
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
@@ -873,6 +909,8 @@ class Scene(Resource):
             "text_bg": self.text_bg,
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
+            "active_obj_palettes": self.active_obj_palettes,
+            "active_bg_palettes": self.active_bg_palettes,
         }
 
     @classmethod
@@ -927,6 +965,8 @@ class Scene(Resource):
             text_bg=d.get("text_bg", 1),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),
+            active_obj_palettes=d.get("active_obj_palettes", []),
+            active_bg_palettes=d.get("active_bg_palettes", []),
         )
         scene.ensure_collision_map()
         return scene
@@ -953,6 +993,8 @@ class Project:
         self.sfx:         ResourceManager[Sfx]         = ResourceManager(self.sfx_dir, Sfx)
         self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
+        self.obj_palettes: ResourceManager[PaletteBank] = ResourceManager(self.obj_palettes_dir, PaletteBank)
+        self.bg_palettes:  ResourceManager[PaletteBank] = ResourceManager(self.bg_palettes_dir, PaletteBank)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -987,6 +1029,19 @@ class Project:
     def variables_file(self) -> Path:
         """Globals + constants du projet — project/variables.json (pas de dépendance externe)."""
         return self.project_dir / "variables.json"
+
+    @property
+    def legacy_palettes_file(self) -> Path:
+        """Ancien catalogue monolithique (pré-migration) — project/palettes.json."""
+        return self.project_dir / "palettes.json"
+
+    @property
+    def obj_palettes_dir(self) -> Path:
+        return self.project_dir / "palettes" / "obj"
+
+    @property
+    def bg_palettes_dir(self) -> Path:
+        return self.project_dir / "palettes" / "bg"
 
     @property
     def sprites_dir(self) -> Path:
@@ -1209,6 +1264,12 @@ class Project:
     def get_prefab(self, name: str) -> Optional[Prefab]:
         return self.prefabs.get(name)
 
+    def get_obj_palette(self, name: str) -> Optional[PaletteBank]:
+        return self.obj_palettes.get(name)
+
+    def get_bg_palette(self, name: str) -> Optional[PaletteBank]:
+        return self.bg_palettes.get(name)
+
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:
         """Crée un Actor inline depuis un Prefab (copie des Components, aucun lien vivant)."""
@@ -1237,6 +1298,7 @@ class Project:
             "start_scene": self.settings.start_scene,
             "author":      self.settings.author,
             "version":     self.settings.version,
+            "palette_auto_import_enabled": self.settings.palette_auto_import_enabled,
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -1248,6 +1310,7 @@ class Project:
         self.settings.start_scene = d.get("start_scene", "")
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
+        self.settings.palette_auto_import_enabled = d.get("palette_auto_import_enabled", True)
 
     # ── I/O variables (globals + constants) ─────────────────────────
     # Assets côté éditeur sans dépendance externe -> project/variables.json,
@@ -1291,6 +1354,38 @@ class Project:
             )
             for c in d.get("constants", [])
         ]
+
+    # ── I/O palettes (catalogue illimité, un fichier par palette) ───────
+
+    def _seed_or_migrate_palettes(self):
+        """Appelé après obj_palettes.load()/bg_palettes.load(). Si le projet a
+        encore l'ancien catalogue monolithique (project/palettes.json, format
+        pré-catalogue-illimité) et que les nouveaux dossiers sont vides, migre
+        chaque entrée en fichier individuel. Sinon, si le catalogue est
+        toujours vide (projet neuf), le seed avec les presets par défaut."""
+        if not self.obj_palettes.items and not self.bg_palettes.items and self.legacy_palettes_file.exists():
+            d = json.loads(self.legacy_palettes_file.read_text(encoding="utf-8"))
+            for key, manager in (("obj_banks", self.obj_palettes), ("bg_banks", self.bg_palettes)):
+                for b in d.get(key, []):
+                    name = b.get("name", "")
+                    if not name or manager.get(name):
+                        continue
+                    manager.append(PaletteBank(name=name, colors=list(b.get("colors", []))))
+            self.obj_palettes.save_all()
+            self.bg_palettes.save_all()
+            self.legacy_palettes_file.rename(
+                self.legacy_palettes_file.parent / (self.legacy_palettes_file.name + ".migrated"))
+            return
+
+        if not self.obj_palettes.items and not self.bg_palettes.items:
+            from core.palette_presets import generate_default_banks
+            obj_defaults, bg_defaults = generate_default_banks()
+            for bank in obj_defaults:
+                self.obj_palettes.append(bank)
+            for bank in bg_defaults:
+                self.bg_palettes.append(bank)
+            self.obj_palettes.save_all()
+            self.bg_palettes.save_all()
 
     # ── I/O scenes (restaure aussi la scène active) ────────────────
 
@@ -1433,6 +1528,7 @@ class Project:
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab", "project/backgrounds",
+                    "project/palettes/obj", "project/palettes/bg",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1442,6 +1538,9 @@ class Project:
         self._migrate_on_load()
         self.load_settings()
         self.load_variables()
+        self.obj_palettes.load()
+        self.bg_palettes.load()
+        self._seed_or_migrate_palettes()
         self.sprites.load()
         self.sfx.load()
         self.music.load()

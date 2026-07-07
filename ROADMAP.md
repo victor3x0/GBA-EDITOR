@@ -30,15 +30,28 @@ sprites assignés au même bank.
 - **Import** : depuis un PNG (bande de couleurs) ou un export standard Aseprite
   (PNG/`.gpl`) — pas de parsing du format `.aseprite` natif (trop de travail pour la
   valeur ajoutée, fragile aux évolutions du format).
-- **Réservoir auto-import** : N banks par pool réservées à l'import automatique (grit
-  récupère les couleurs des PNG non explicitement palettisés). Défaut N=3 (48 couleurs
-  auto par pool).
-  - Quand le réservoir est plein : **pas d'éviction** — la nouvelle couleur est mappée
-    vers la couleur auto existante la plus proche. Aucun asset déjà construit ne change
-    de rendu (contrairement à un override silencieux, qui aurait pu casser des assets
-    sans rapport).
-  - **Réglages projet** (pas éditeur) : le toggle marche/arrêt de l'auto-import ET le
-    nombre de banks réservées sont tous les deux des réglages par projet.
+- **Catalogue de palettes illimité au niveau projet** (2026-07-08, révision du plan
+  initial "16 banks fixes") — sur le modèle GB Studio : autant de palettes nommées que
+  voulu par pool (OBJ/BG), stockées comme n'importe quelle autre Resource
+  (`project/palettes/obj/*.json`, `bg/*.json`, un fichier par palette). Chaque `Scene`
+  choisit jusqu'à 16 palettes actives par pool (`Scene.active_obj_palettes` /
+  `active_bg_palettes`, ordre = index de banque hardware) — c'est cette sélection, pas
+  le catalogue, qui occupe réellement les 16 banques au build. `Actor`/`Prefab.pal_bank`
+  reste un `int` mais indexe désormais un **slot de la sélection de la scène**, pas
+  directement le catalogue projet.
+  - `Prefab.pal_bank` reste scene-relatif comme `Actor.pal_bank` (même forme de champ),
+    bien qu'un prefab poolé n'ait pas de scène propriétaire unique (spawn_X() appelable
+    depuis n'importe quel script Lua, non analysé statiquement) — un validateur
+    (avertissement, pas un blocage) signale les cas où deux scènes résolvent des
+    palettes différentes pour le même prefab ou le même sprite.
+  - **Coupe assumée** : la quantification/remap des tuiles d'un `SpriteAsset` (slice 1)
+    reste dédupliquée une fois par nom de sprite pour tout le projet — si le même
+    sprite est utilisé dans deux scènes dont la sélection de palette diffère au slot
+    concerné, un seul jeu de couleurs "gagne" (1ère scène rencontrée) et le validateur
+    avertit. Générer une variante de tuiles par scène est un chantier pipeline à part,
+    pas fait à ce stade.
+  - Pas de banks réservées (voir "Mis de côté" ci-dessous pour l'ancien plan de
+    réservoir auto-import).
 - **`SpriteAsset` et `BackgroundLayer`** ont chacun leur propre champ palette
   configurable (nouveau — contrairement à `Actor`/`Prefab` qui ont déjà `pal_bank`).
 - **Deux cascades de surcharge séparées, sans influence croisée** :
@@ -54,12 +67,43 @@ sprites assignés au même bank.
 - Remplacement des `pal_bank: int` bruts par un vrai picker référençant les palettes
   nommées de l'écran, avec swatches visuels.
 
+### Mis de côté (2026-07-07)
+
+- **Réservoir auto-import** — le plan initial (N banks par pool réservées à l'import
+  automatique, grit récupère les couleurs des PNG non explicitement palettisés, mapping
+  vers la couleur auto la plus proche sans éviction quand le réservoir est plein) a été
+  **abandonné temporairement** avant implémentation, sur deux problèmes de conception
+  identifiés en revue :
+  - *Dégradation silencieuse* : à N=3 (48 couleurs/pool), le réservoir sature vite ;
+    au-delà, les couleurs dérivent vers l'approximation la plus proche sans aucun
+    avertissement — confusion probable ("pourquoi mon sprite a changé de couleur en
+    ajoutant un autre sprite ?").
+  - *Non-déterminisme* : quelle couleur atterrit dans quelle bank dépend de l'ordre de
+    traitement des sprites au build, qui n'est pas garanti stable — même projet, même
+    assets, rendu potentiellement différent selon des détails d'implémentation du
+    pipeline plutôt que des choix explicites.
+  - **État actuel** : les 16 banks par pool sont toutes directement utilisables/éditables
+    (pas de réservation). `ProjectSettings.palette_auto_import_enabled` reste comme champ
+    projet pour une reprise future, mais rien dans l'UI ne s'y réfère actuellement — ni
+    banks réservées, ni option "Automatique" dans le picker.
+  - À rouvrir avec une conception plus solide : débordement *visible* au build (warning
+    explicite plutôt que silencieux) + ordre de traitement déterministe (tri par nom,
+    pas ordre d'itération).
+
 ### Ouvert
 
-- `Scene` doit probablement recevoir un nouveau champ palette dédié pour porter les
-  overrides par `BackgroundLayer` — à ajouter au même endroit que le champ `render_mode`
-  (voir v0.3).
-- Calcul de "couleur la plus proche" (distance colorimétrique — RGB15 GBA ?) non précisé.
+- ~~`Scene` doit probablement recevoir un nouveau champ palette dédié~~ — fait
+  (`active_obj_palettes`/`active_bg_palettes`, 2026-07-08), mais uniquement pour la
+  sélection des palettes actives OBJ ; l'override par `BackgroundLayer` individuel
+  (cascade Scène décrite plus haut) reste à faire, probablement au même endroit que le
+  champ `render_mode` (voir v0.3). Le pool BG suit le même modèle de données que OBJ
+  (catalogue illimité) mais son branchement dans le pipeline (`GritBackground`) n'est
+  toujours pas câblé — seul OBJ l'est réellement au build.
+- Calcul de "couleur la plus proche" (distance colorimétrique — RGB15 GBA ?) non précisé
+  (utilisé par `quantize_image_to_bank`, slice 1 — distance euclidienne simple pour
+  l'instant, pas de justification perceptuelle particulière).
+- Variante de tuiles par scène (lever la "coupe assumée" ci-dessus) — chantier pipeline
+  à part si le conflit multi-scènes s'avère gênant en pratique.
 
 ---
 
