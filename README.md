@@ -35,9 +35,11 @@ Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'édi
 ![Scene Manager](docs/screenshots/SceneEditor.png) 
 
 - **Éditeur de sprites** : créez les animations de vos personnages à partir d'une spritesheet.
+
 ![Sprite Editor](docs/screenshots/SpriteEditor.png)
 
 - **Scripting Lua** : écrivez votre gameplay en Lua, le code est automatiquement converti en C lors de la compilation.
+
 ![Script Editor](docs/screenshots/ScriptEditor.png)
 
 - **Son** : effets sonores et musique (maxmod), gérés depuis l'éditeur.

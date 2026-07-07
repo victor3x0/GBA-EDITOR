@@ -324,6 +324,8 @@ class CameraItem(QGraphicsItem):
         # Zone de vision — enfant non-interactif
         pen = QPen(QColor("#ffdd44"))
         pen.setWidth(0)
+        pen.setCosmetic(True)  # sans ça, seule l'épaisseur du trait ignore le zoom —
+                                # le motif de tirets s'étire quand même avec la vue
         pen.setStyle(Qt.PenStyle.DashLine)
         self._view = QGraphicsRectItem(0, 0, GBA_W, GBA_H, self)
         self._view.setPen(pen)
@@ -347,6 +349,10 @@ class CameraItem(QGraphicsItem):
         return path
 
     def paint(self, painter: QPainter, option, widget=None):
+        # Icône UI (pas du pixel art de jeu) : lissée localement, sans affecter
+        # le rendu nearest-neighbor des sprites/backgrounds ailleurs sur le canvas.
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         px = self._px_selected if self.isSelected() else self._px_normal
         painter.drawPixmap(0, 0, px)
 
@@ -1259,6 +1265,10 @@ class CollisionOverlay(QGraphicsItem):
                     self._draw_tile(cp, col, row, self._map[row][col], alpha_mul=1.0)
             cp.end()
 
+        # Le cache est construit lissé à sa résolution native ; sans ce hint,
+        # le blit vers l'écran repasse en nearest-neighbor dès que la vue est
+        # zoomée et le crénelage réapparaît.
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.drawPixmap(0, 0, self._cache)
 
         # Preview slope au-dessus du cache (pas mis en cache — éphémère)
