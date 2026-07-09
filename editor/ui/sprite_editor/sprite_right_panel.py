@@ -23,8 +23,9 @@ class SpriteRightPanel(QWidget):
     Panneau droit : header (nom éditable) + paramètres sprite + widget directionnel.
     """
 
-    sprite_changed  = pyqtSignal()
-    direction_added = pyqtSignal(object, object)  # AnimState, StateDirection nouvellement ajoutée
+    sprite_changed   = pyqtSignal()
+    direction_added  = pyqtSignal(object, object)  # AnimState, StateDirection nouvellement ajoutée
+    palette_extracted = pyqtSignal(str)            # nom de la PaletteBank créée/mise à jour
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,6 +70,7 @@ class SpriteRightPanel(QWidget):
 
         self._build_params()
         self._build_direction()
+        self._build_palette()
 
         self._content_layout.addStretch()
         scroll.setWidget(content)
@@ -107,6 +109,18 @@ class SpriteRightPanel(QWidget):
         self._dir_widget = DirectionWidget()
         self._dir_widget.directions_changed.connect(self._on_directions_changed)
         lay.addWidget(self._dir_widget)
+
+    def _build_palette(self):
+        lay = self._content_layout
+        W.separator(lay)
+        W.section("PALETTE", lay)
+        self._btn_extract = W.btn_accent("⟐  Extraire du PNG")
+        self._btn_extract.setToolTip(
+            "Crée une palette « pal_<nom> » depuis les couleurs du PNG "
+            "(index 0 = transparence, puis du plus sombre au plus lumineux)."
+        )
+        self._btn_extract.clicked.connect(self._on_extract_palette)
+        lay.addWidget(self._btn_extract)
 
     # ── API publique ──────────────────────────────────────────────
 
@@ -157,6 +171,29 @@ class SpriteRightPanel(QWidget):
             self.sprite_changed.emit()
 
     # ── Slots ─────────────────────────────────────────────────────
+
+    def _on_extract_palette(self):
+        if not self._sprite or not self._project or not self._sprite.asset:
+            return
+        ap = self._project.root / self._sprite.asset
+        if not ap.exists():
+            return
+        from core.color_utils import extract_palette_from_image
+        from core.project import PaletteBank
+        colors = extract_palette_from_image(ap)
+        name = f"pal_{self._sprite.name}"
+        existing = self._project.palettes.get(name)
+        if existing:
+            # Ré-extraction d'une palette déjà générée : on écrase ses couleurs
+            # (action explicite "extraire", régénération attendue).
+            existing.colors = colors
+            bank = existing
+        else:
+            bank = PaletteBank(name=name, colors=colors)
+        # Passe par le dispatcher : persistance (watcher suspendu) + événement
+        # "palettes_changed" pour que le Palette Finder se rafraîchisse.
+        get_dispatcher().save_palette(bank)
+        self.palette_extracted.emit(name)
 
     def _on_name_changed(self, new_name: str):
         if self._blocking or not self._sprite or not self._project:

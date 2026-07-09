@@ -215,6 +215,11 @@ class ProjectSettings:
     version: str = "0.1"
     # Réservoir auto-import (cf. ROADMAP.md v0.2) — réglage projet, pas éditeur.
     palette_auto_import_enabled: bool = True
+    # Couleur de backdrop par défaut (BGR555) — PAL_BG_RAM[0], affichée quand
+    # rien d'opaque n'est dessiné nulle part. Scene.backdrop_color peut la
+    # surcharger par scène. Pas d'écran dédié pour l'instant (même traitement
+    # que palette_auto_import_enabled) — édition JSON manuelle en attendant.
+    backdrop_color: int = 0
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -223,13 +228,28 @@ class ProjectSettings:
 
 @dataclass
 class PaletteBank(Resource):
-    """Une palette nommée de 16 couleurs, catalogue illimité au niveau projet
-    (project/palettes/obj/ ou bg/, un fichier par palette — cf. ResourceManager).
-    Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes /
-    active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui occupe
-    les banques hardware au build."""
+    """Une palette nommée de 16 couleurs, catalogue illimité et unifié au
+    niveau projet (project/palettes/*.json, un fichier par palette — cf.
+    ResourceManager) — partagé entre OBJ et BG, une même palette peut servir
+    aux deux. Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes
+    / active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui
+    occupe les banques hardware (physiquement séparées OBJ/BG) au build."""
     name: str = ""
     colors: list[int] = field(default_factory=list)  # valeurs BGR555 GBA
+
+    def __post_init__(self):
+        """Force l'index 0 vers RESERVED_SLOT_COLOR — point d'application
+        unique, déclenché à la fois par une construction directe (presets,
+        "Ajouter palette" côté UI) et par le chargement depuis disque
+        (Resource.from_dict construit via cls(**kwargs)). Pas besoin de pas
+        de migration séparé : les anciens fichiers JSON gardent leur ancienne
+        valeur d'index 0 tant qu'ils ne sont pas re-sauvegardés, mais cette
+        valeur est de toute façon écrasée à chaque chargement — sans
+        incidence puisqu'elle n'est jamais affichée pour une tuile (index de
+        palette 0 = toujours transparent au niveau hardware, OBJ comme BG)."""
+        if self.colors:
+            from core.color_utils import RESERVED_SLOT_COLOR
+            self.colors[0] = RESERVED_SLOT_COLOR
 
 
 # Sentinel Actor.pal_bank / Prefab.pal_bank : "Automatique" — bank résolue par
@@ -283,6 +303,14 @@ class BackgroundLayer:
     image:        str   = ""   # nom du fichier PNG dans assets/backgrounds/ (ex: "Sky.png")
     bg_slot:      int   = 0    # slot hardware GBA (0-3)
     scroll_speed: float = 1.0  # vitesse relative (1.0 = défilement normal)
+    pal_bank:     int   = 0    # slot (0-15) dans scene.active_bg_palettes — même
+                               # mécanisme que Actor.pal_bank/Prefab.pal_bank, mais
+                               # BG plutôt qu'OBJ ; chaque layer choisit sa propre
+                               # banque, indépendamment des autres layers du même
+                               # BackgroundAsset.
+    match_mode:   str   = "nearest"  # "nearest" | "nearest_luminance" | "direct_index"
+                               # — algorithme de quantification de ce layer
+                               # (cf. core/color_utils.py).
 
 
 @dataclass
@@ -298,7 +326,11 @@ class BackgroundAsset(Resource):
         return {
             "name": self.name,
             "layers": [
-                {"image": L.image, "bg_slot": L.bg_slot, "scroll_speed": L.scroll_speed}
+                {
+                    "image": L.image, "bg_slot": L.bg_slot,
+                    "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
+                    "match_mode": L.match_mode,
+                }
                 for L in self.layers
             ],
         }
@@ -310,6 +342,8 @@ class BackgroundAsset(Resource):
                 image        = L.get("image", ""),
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
+                pal_bank     = L.get("pal_bank", 0),
+                match_mode   = L.get("match_mode", "nearest"),
             )
             for i, L in enumerate(d.get("layers", []))
         ]
@@ -737,6 +771,9 @@ class Prefab(Resource, ComponentOwnerMixin):
     name: str = "Prefab"
     components: list = field(default_factory=list)
     pal_bank: int = 0
+    # Algorithme de quantification des sprites de ce prefab — "nearest" |
+    # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
+    match_mode: str = "nearest"
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
 
     def to_dict(self) -> dict:
@@ -744,6 +781,7 @@ class Prefab(Resource, ComponentOwnerMixin):
             "name":          self.name,
             "components":    _components_to_list(self.components),
             "pal_bank":      self.pal_bank,
+            "match_mode":    self.match_mode,
             "max_instances": self.max_instances,
         }
 
@@ -753,6 +791,7 @@ class Prefab(Resource, ComponentOwnerMixin):
             name          = d.get("name", "Prefab"),
             components    = _components_from_list(d.get("components", [])),
             pal_bank      = d.get("pal_bank", 0),
+            match_mode    = d.get("match_mode", "nearest"),
             max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
         )
 
@@ -779,6 +818,9 @@ class Actor(ComponentOwnerMixin):
     flip_v: bool = False
     priority: int = 0
     pal_bank: int = 0
+    # Algorithme de quantification du sprite de cet actor — "nearest" |
+    # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
+    match_mode: str = "nearest"
     visible: bool = True
 
     def to_dict(self) -> dict:
@@ -793,6 +835,7 @@ class Actor(ComponentOwnerMixin):
             "flip_v":      self.flip_v,
             "priority":    self.priority,
             "pal_bank":    self.pal_bank,
+            "match_mode":  self.match_mode,
             "visible":     self.visible,
         }
 
@@ -809,6 +852,7 @@ class Actor(ComponentOwnerMixin):
             flip_v      = d.get("flip_v", False),
             priority    = d.get("priority", 0),
             pal_bank    = d.get("pal_bank", 0),
+            match_mode  = d.get("match_mode", "nearest"),
             visible     = d.get("visible", True),
         )
 
@@ -889,6 +933,9 @@ class Scene(Resource):
     # pas directement le catalogue projet.
     active_obj_palettes: list = field(default_factory=list)  # list[str]
     active_bg_palettes:  list = field(default_factory=list)  # list[str]
+    # Override de ProjectSettings.backdrop_color pour cette scène (BGR555) ;
+    # None = hérite du défaut projet.
+    backdrop_color: Optional[int] = None
 
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
@@ -911,6 +958,7 @@ class Scene(Resource):
             "collision_map": self.collision_map,
             "active_obj_palettes": self.active_obj_palettes,
             "active_bg_palettes": self.active_bg_palettes,
+            "backdrop_color": self.backdrop_color,
         }
 
     @classmethod
@@ -967,6 +1015,7 @@ class Scene(Resource):
             collision_map=d.get("collision_map", []),
             active_obj_palettes=d.get("active_obj_palettes", []),
             active_bg_palettes=d.get("active_bg_palettes", []),
+            backdrop_color=d.get("backdrop_color"),
         )
         scene.ensure_collision_map()
         return scene
@@ -993,8 +1042,7 @@ class Project:
         self.sfx:         ResourceManager[Sfx]         = ResourceManager(self.sfx_dir, Sfx)
         self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
-        self.obj_palettes: ResourceManager[PaletteBank] = ResourceManager(self.obj_palettes_dir, PaletteBank)
-        self.bg_palettes:  ResourceManager[PaletteBank] = ResourceManager(self.bg_palettes_dir, PaletteBank)
+        self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -1036,11 +1084,18 @@ class Project:
         return self.project_dir / "palettes.json"
 
     @property
-    def obj_palettes_dir(self) -> Path:
+    def palettes_dir(self) -> Path:
+        """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
+        return self.project_dir / "palettes"
+
+    @property
+    def legacy_obj_palettes_dir(self) -> Path:
+        """Ancien pool OBJ séparé (pré-fusion) — project/palettes/obj/."""
         return self.project_dir / "palettes" / "obj"
 
     @property
-    def bg_palettes_dir(self) -> Path:
+    def legacy_bg_palettes_dir(self) -> Path:
+        """Ancien pool BG séparé (pré-fusion) — project/palettes/bg/."""
         return self.project_dir / "palettes" / "bg"
 
     @property
@@ -1264,11 +1319,8 @@ class Project:
     def get_prefab(self, name: str) -> Optional[Prefab]:
         return self.prefabs.get(name)
 
-    def get_obj_palette(self, name: str) -> Optional[PaletteBank]:
-        return self.obj_palettes.get(name)
-
-    def get_bg_palette(self, name: str) -> Optional[PaletteBank]:
-        return self.bg_palettes.get(name)
+    def get_palette(self, name: str) -> Optional[PaletteBank]:
+        return self.palettes.get(name)
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:
@@ -1299,6 +1351,7 @@ class Project:
             "author":      self.settings.author,
             "version":     self.settings.version,
             "palette_auto_import_enabled": self.settings.palette_auto_import_enabled,
+            "backdrop_color": self.settings.backdrop_color,
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -1311,6 +1364,7 @@ class Project:
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
         self.settings.palette_auto_import_enabled = d.get("palette_auto_import_enabled", True)
+        self.settings.backdrop_color = d.get("backdrop_color", 0)
 
     # ── I/O variables (globals + constants) ─────────────────────────
     # Assets côté éditeur sans dépendance externe -> project/variables.json,
@@ -1358,34 +1412,67 @@ class Project:
     # ── I/O palettes (catalogue illimité, un fichier par palette) ───────
 
     def _seed_or_migrate_palettes(self):
-        """Appelé après obj_palettes.load()/bg_palettes.load(). Si le projet a
-        encore l'ancien catalogue monolithique (project/palettes.json, format
-        pré-catalogue-illimité) et que les nouveaux dossiers sont vides, migre
-        chaque entrée en fichier individuel. Sinon, si le catalogue est
-        toujours vide (projet neuf), le seed avec les presets par défaut."""
-        if not self.obj_palettes.items and not self.bg_palettes.items and self.legacy_palettes_file.exists():
+        """Appelé après self.palettes.load(). Priorité :
+        (1) ancien catalogue monolithique project/palettes.json (pré-catalogue-
+            illimité, deux pools 16+16 dans un seul fichier) ;
+        (2) anciens pools séparés project/palettes/obj/ + bg/ (catalogue
+            illimité mais encore scindé OBJ/BG, une session avant la fusion) ;
+        (3) projet neuf sans aucune trace de ce qui précède -> seed avec les
+            presets par défaut.
+        Aux étapes (1)/(2), les collisions de nom entre OBJ et BG sont
+        résolues : couleurs identiques -> dédupliquées (une seule entrée
+        gardée) ; couleurs différentes -> le doublon BG est suffixé " (BG)"."""
+        if self.palettes.items:
+            return
+
+        def _merge(name: str, colors: list, is_bg: bool):
+            if not name:
+                return
+            existing = self.palettes.get(name)
+            if existing is None:
+                self.palettes.append(PaletteBank(name=name, colors=colors))
+                return
+            if existing.colors == colors:
+                return  # doublon identique entre pools -> rien à faire
+            final_name = f"{name} (BG)" if is_bg else name
+            if self.palettes.get(final_name) is None:
+                self.palettes.append(PaletteBank(name=final_name, colors=colors))
+
+        if self.legacy_palettes_file.exists():
             d = json.loads(self.legacy_palettes_file.read_text(encoding="utf-8"))
-            for key, manager in (("obj_banks", self.obj_palettes), ("bg_banks", self.bg_palettes)):
-                for b in d.get(key, []):
-                    name = b.get("name", "")
-                    if not name or manager.get(name):
-                        continue
-                    manager.append(PaletteBank(name=name, colors=list(b.get("colors", []))))
-            self.obj_palettes.save_all()
-            self.bg_palettes.save_all()
+            for b in d.get("obj_banks", []):
+                _merge(b.get("name", ""), list(b.get("colors", [])), is_bg=False)
+            for b in d.get("bg_banks", []):
+                _merge(b.get("name", ""), list(b.get("colors", [])), is_bg=True)
+            self.palettes.save_all()
             self.legacy_palettes_file.rename(
                 self.legacy_palettes_file.parent / (self.legacy_palettes_file.name + ".migrated"))
             return
 
-        if not self.obj_palettes.items and not self.bg_palettes.items:
-            from core.palette_presets import generate_default_banks
-            obj_defaults, bg_defaults = generate_default_banks()
-            for bank in obj_defaults:
-                self.obj_palettes.append(bank)
-            for bank in bg_defaults:
-                self.bg_palettes.append(bank)
-            self.obj_palettes.save_all()
-            self.bg_palettes.save_all()
+        legacy_obj_files = sorted(self.legacy_obj_palettes_dir.glob("*.json")) \
+            if self.legacy_obj_palettes_dir.exists() else []
+        legacy_bg_files = sorted(self.legacy_bg_palettes_dir.glob("*.json")) \
+            if self.legacy_bg_palettes_dir.exists() else []
+        if legacy_obj_files or legacy_bg_files:
+            for f in legacy_obj_files:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                _merge(d.get("name", ""), list(d.get("colors", [])), is_bg=False)
+            for f in legacy_bg_files:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                _merge(d.get("name", ""), list(d.get("colors", [])), is_bg=True)
+            self.palettes.save_all()
+            if self.legacy_obj_palettes_dir.exists():
+                self.legacy_obj_palettes_dir.rename(
+                    self.legacy_obj_palettes_dir.parent / "obj.migrated")
+            if self.legacy_bg_palettes_dir.exists():
+                self.legacy_bg_palettes_dir.rename(
+                    self.legacy_bg_palettes_dir.parent / "bg.migrated")
+            return
+
+        from core.palette_presets import generate_default_banks
+        for bank in generate_default_banks():
+            self.palettes.append(bank)
+        self.palettes.save_all()
 
     # ── I/O scenes (restaure aussi la scène active) ────────────────
 
@@ -1528,7 +1615,7 @@ class Project:
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab", "project/backgrounds",
-                    "project/palettes/obj", "project/palettes/bg",
+                    "project/palettes",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1538,8 +1625,7 @@ class Project:
         self._migrate_on_load()
         self.load_settings()
         self.load_variables()
-        self.obj_palettes.load()
-        self.bg_palettes.load()
+        self.palettes.load()
         self._seed_or_migrate_palettes()
         self.sprites.load()
         self.sfx.load()

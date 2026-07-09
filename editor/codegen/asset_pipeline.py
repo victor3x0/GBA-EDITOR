@@ -3,7 +3,7 @@ editor/asset_pipeline.py — Conversion des assets bruts en fichiers C/headers.
 
 Trois étapes indépendantes, chacune appelable séparément :
 
-    GritBackground(emit, run_cmd).run(p, bg_pairs)   -> tileset.h/.c
+    GritBackground(emit, run_cmd).run(p, layers)      -> {asset}_bg{slot}.h/.c
     GritSprites(emit, run_cmd).run(p, sprites)        -> sprite_X.h/.c
     MmutilAudio(emit, run_cmd, toolchain).run(p, assets) -> soundbank.h/.bin
 
@@ -12,6 +12,7 @@ BuildWorker pour que le pipeline reste découplé de l'UI.
 """
 from __future__ import annotations
 
+import math
 import shutil
 import struct
 import subprocess
@@ -79,8 +80,51 @@ def pad_sprite_png(
 
 # ── GritBackground ─────────────────────────────────────────────────────────────
 
+def bg_layer_sym(asset_name: str, bg_slot: int) -> str:
+    """Symbole C stable pour les Tiles/Map/Pal d'un layer — basé sur l'asset
+    et le slot GBA, pas sur le nom d'image (peut contenir des caractères
+    invalides) ni sur la scène (un BackgroundAsset peut être partagé par
+    plusieurs scènes, comme un Prefab — cf. resolve_palette_bank côté
+    pipeline.py)."""
+    return _sym(f"{asset_name}_bg{bg_slot}")
+
+
+def bg_map_geometry(w: int, h: int) -> tuple[int, int, int]:
+    """tw/th (dimensions en tuiles) + ms (bits map_size grit/BGxCNT, 0-3)
+    depuis les dimensions pixel d'une image de layer BG. Partagé entre
+    main_gen._bg_info (codegen) et pipeline.py (garde-fou budget VRAM)."""
+    tw = min(max(math.ceil(w / 8), 1), 64)
+    th = min(max(math.ceil(h / 8), 1), 64)
+    ms = (1 if tw > 32 else 0) | (2 if th > 32 else 0)
+    return tw, th, ms
+
+
+def bg_map_sbb_count(ms: int) -> int:
+    """Nombre de SBB (2 Ko chacun) qu'une map de cette taille occupe."""
+    return {0: 1, 1: 2, 2: 2, 3: 4}[ms]
+
+
+def quantize_asset(path: Path, bank_colors: list[int], mode: str) -> "Image.Image":
+    """Dispatch vers la fonction de quantification appropriée selon
+    match_mode ("nearest" | "nearest_luminance" | "direct_index") — partagé
+    entre GritBackground et GritSprites. `path` doit être en mode 'P' natif
+    pour "direct_index" (sinon `direct_index_to_bank` lève ValueError) ;
+    n'importe quel mode pour les deux autres (converti en RGBA)."""
+    from core.color_utils import (
+        quantize_image_to_bank, quantize_image_luminance_preserving, direct_index_to_bank,
+    )
+    if mode == "direct_index":
+        return direct_index_to_bank(path, bank_colors)
+    from PIL import Image
+    img = Image.open(path).convert("RGBA")
+    if mode == "nearest_luminance":
+        return quantize_image_luminance_preserving(img, bank_colors)
+    return quantize_image_to_bank(img, bank_colors)
+
+
 class GritBackground:
-    """Convertit les tilesets BG via grit -> tileset.h/.c."""
+    """Convertit les tilesets BG via grit -> {asset}_bg{slot}.h/.c, un appel
+    grit indépendant par layer (comme GritSprites, un appel par sprite)."""
 
     def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable):
         self._grit    = grit_path
@@ -90,42 +134,67 @@ class GritBackground:
     def run(
         self,
         p: Project,
-        bg_pairs: list[BackgroundLayer],
-        scene_sym: str = "",
+        layers: list[tuple["BackgroundAsset", BackgroundLayer, Optional["PaletteBank"]]],
     ) -> bool:
-        if not bg_pairs:
+        """
+        layers : liste dédupliquée globalement par (asset.name, layer.bg_slot)
+        — construite par pipeline.py, comme unique_sprites pour les acteurs.
+        Chaque layer choisit sa PROPRE banque (BackgroundLayer.pal_bank, slot
+        de scene.active_bg_palettes) — plus de banque unique partagée par
+        scène. Si une banque est résolue (colors non vide) : quantification +
+        `-mp{layer.pal_bank}` pour forcer le champ SE_PALBANK de la map vers
+        cette banque hardware, + remap_tiles_to_bank pour l'ordre canonique.
+        Sans banque résolue : comportement legacy (grit choisit sa propre
+        palette, jamais copiée en VRAM — même limitation déjà acceptée côté
+        OBJ, cf. g_pal_obj_{scene}/g_pal_bg_{scene}).
+        """
+        if not layers:
             return True
         if not self._grit:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
-        png_paths = []
-        for layer in bg_pairs:
+        for asset, layer, bank in layers:
             if not layer.image:
                 continue
             ap = p.background_images_dir / layer.image
             if not ap.exists():
                 self._emit("error_line", f"[grit BG] image manquante : {layer.image}")
                 return False
-            png_paths.append(ap)
-            self._emit("log_line", f"[grit BG] BG{layer.bg_slot} <- {layer.image}")
-        if not png_paths:
-            return True
 
-        # Symbole préfixé par scène pour éviter les conflits de symboles C
-        ts_sym  = f"{scene_sym}_tileset" if scene_sym else "tileset"
-        out_base = str(p.grit_out_dir / ts_sym)
-        cmd = (
-            [str(self._grit)]
-            + [str(pp) for pp in png_paths]
-            + ["-gt", "-gB4", "-gS", "-mRtf", "-mLf",
-               "-p", "-pS", "-ftc", "-fa",
-               "-S", ts_sym, "-o", out_base]
-        )
-        ok = self._run_cmd(cmd, "[grit BG]", cwd=p.grit_out_dir)
-        if ok:
-            for f in sorted(p.grit_out_dir.glob(f"{ts_sym}*.h")):
-                self._emit("log_line", f"[grit BG] -> {f.name}")
-        return ok
+            quantize = bool(bank and bank.colors)
+            sym = bg_layer_sym(asset.name, layer.bg_slot)
+            tmp = p.grit_out_dir / f"{sym}.png"
+            mode = getattr(layer, "match_mode", "nearest")
+            if quantize:
+                try:
+                    quantize_asset(ap, bank.colors, mode).save(tmp)
+                except ValueError as e:
+                    self._emit("error_line", f"[grit BG] {e}")
+                    return False
+                self._emit("log_line",
+                           f"[palette] BG '{asset.name}' BG{layer.bg_slot} -> banque "
+                           f"{layer.pal_bank} ({bank.name or 'sans nom'}, "
+                           f"{len(bank.colors)} couleurs, mode {mode})")
+            else:
+                shutil.copy2(ap, tmp)
+            self._emit("log_line", f"[grit BG] {asset.name} BG{layer.bg_slot} <- {layer.image}")
+
+            out_base = str(p.grit_out_dir / sym)
+            cmd = [
+                str(self._grit), str(tmp),
+                "-gt", "-gB4", "-mRtf", "-mLf",
+                "-p", "-pn16", "-ftc",
+                "-o", out_base, "-s", sym,
+            ]
+            if quantize:
+                cmd.append(f"-mp{layer.pal_bank}")
+            if not self._run_cmd(cmd, "[grit BG]", cwd=p.grit_out_dir):
+                return False
+
+            if quantize:
+                if not remap_tiles_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
+                    return False
+        return True
 
 
 # ── Sprite sheet reconstruction ────────────────────────────────────────────────
@@ -231,6 +300,133 @@ def build_sprite_sheet(
         return None
 
 
+# ── Sprite sheet reconstruction — variante mode 'P' (indexation directe) ───────
+#
+# Miroir exact de pad_sprite_png/_compose_frame/build_sprite_sheet ci-dessus,
+# mais préserve les index de palette d'origine au lieu de convertir en RGBA —
+# nécessaire pour match_mode="direct_index" (direct_index_to_bank a besoin
+# du PNG intermédiaire encore en mode 'P', avec la palette source intacte).
+# Le chemin RGBA existant n'est jamais touché par ces fonctions.
+
+def _paste_indexed(dst, src, pos: tuple[int, int]):
+    """Colle `src` (mode 'P') sur `dst` (mode 'P') à `pos`, en sautant les
+    pixels d'index 0 de `src` (transparent par convention) pour ne jamais
+    écraser le contenu déjà posé sur `dst` — miroir du paste(mask=piece) RGBA,
+    qu'on ne peut pas faire directement en mode 'P' (pas un masque valide)."""
+    dst_px = dst.load()
+    src_px = src.load()
+    ox, oy = pos
+    sw, sh = src.size
+    for y in range(sh):
+        for x in range(sw):
+            idx = src_px[x, y]
+            if idx != 0:
+                dst_px[ox + x, oy + y] = idx
+
+
+def pad_sprite_png_indexed(
+    src: Path,
+    frame_w: int,
+    frame_h: int,
+    out_dir: Path,
+    emit: Callable,
+) -> Optional[Path]:
+    """Équivalent indexé de `pad_sprite_png` — pas de conversion RGBA, la
+    palette et les index d'origine sont préservés."""
+    try:
+        from PIL import Image
+        img = Image.open(src)
+        if img.mode != "P":
+            emit("error_line", f"[pad] {src.name} n'est pas un PNG indexé (mode {img.mode!r})")
+            return None
+        w, h = img.size
+        target_w = ((w + frame_w - 1) // frame_w) * frame_w
+        target_h = ((h + frame_h - 1) // frame_h) * frame_h
+        out = out_dir / f"_padidx_{src.name}"
+        if w == target_w and h == target_h:
+            img.save(out)
+            return out
+        emit("log_line",
+             f"[pad] {src.name} {w}×{h} -> {target_w}×{target_h} "
+             f"(frame {frame_w}×{frame_h}, indexé)")
+        padded = Image.new("P", (target_w, target_h), 0)
+        padded.putpalette(img.getpalette())
+        _paste_indexed(padded, img, (0, 0))
+        padded.save(out)
+        return out
+    except Exception as e:
+        emit("error_line", f"[pad] erreur padding indexé {src.name} : {e}")
+        return None
+
+
+def _compose_frame_indexed(src_img, frame: "AnimFrame", fw: int, fh: int):
+    """Équivalent indexé de `_compose_frame` — même logique tuile par tuile,
+    mais crop/flip/collage en mode 'P' (réarrangement d'index, pas de calcul
+    de couleur)."""
+    from PIL import Image
+    out = Image.new("P", (fw, fh), 0)
+    out.putpalette(src_img.getpalette())
+    sw, sh = src_img.size
+    for t in frame.tiles:
+        sx, sy = t.src_col * 8, t.src_row * 8
+        if sx < 0 or sy < 0 or sx + 8 > sw or sy + 8 > sh:
+            continue
+        piece = src_img.crop((sx, sy, sx + 8, sy + 8))
+        if t.flip_h:
+            piece = piece.transpose(Image.FLIP_LEFT_RIGHT)
+        if t.flip_v:
+            piece = piece.transpose(Image.FLIP_TOP_BOTTOM)
+        dx, dy = t.dst_col * 8, t.dst_row * 8
+        _paste_indexed(out, piece, (dx, dy))
+    return out
+
+
+def build_sprite_sheet_indexed(
+    src: Path,
+    sprite: SpriteAsset,
+    out_dir: Path,
+    emit: Callable,
+) -> Optional[Path]:
+    """Équivalent indexé de `build_sprite_sheet`, utilisé uniquement pour
+    match_mode="direct_index" — préserve le mode 'P' et la palette d'origine
+    à travers toute la recomposition multi-frame."""
+    try:
+        from PIL import Image
+        fw, fh = sprite.frame_w, sprite.frame_h
+        src_img = Image.open(src)
+        if src_img.mode != "P":
+            emit("error_line", f"[sheet] {src.name} n'est pas un PNG indexé (mode {src_img.mode!r})")
+            return None
+
+        _, ordered = sprite_unique_frames(sprite)
+        if not ordered:
+            return pad_sprite_png_indexed(src, fw, fh, out_dir, emit)
+
+        all_frames: list = []
+        for f, flip_h, flip_v in ordered:
+            tile = _compose_frame_indexed(src_img, f, fw, fh)
+            if flip_h:
+                tile = tile.transpose(Image.FLIP_LEFT_RIGHT)
+            if flip_v:
+                tile = tile.transpose(Image.FLIP_TOP_BOTTOM)
+            all_frames.append(tile)
+
+        sheet = Image.new("P", (fw * len(all_frames), fh), 0)
+        sheet.putpalette(src_img.getpalette())
+        for i, tile in enumerate(all_frames):
+            _paste_indexed(sheet, tile, (i * fw, 0))
+
+        out = out_dir / f"_sheetidx_{src.stem}.png"
+        sheet.save(out)
+        emit("log_line",
+             f"[sheet] {src.name} -> {len(all_frames)} frames "
+             f"({fw}x{fh}px, indexé) -> {out.name}")
+        return out
+    except Exception as e:
+        emit("error_line", f"[sheet] erreur reconstruction indexée {src.name} : {e}")
+        return None
+
+
 # ── GritSprites ────────────────────────────────────────────────────────────────
 
 def _sym(s: str) -> str:
@@ -241,13 +437,15 @@ def _sym(s: str) -> str:
 _ARRAY_RE = r'(\w+{suffix})\[(\d+)\][^=]*=\s*\{{([^}}]*)\}}'
 
 
-def remap_sprite_to_bank(c_path: Path, bank_colors: list[int], emit: Callable) -> bool:
-    """Réécrit en place le .c généré par grit pour un sprite 4bpp : les index
-    de tuiles (nibbles) sont remappés vers l'ordre canonique de `bank_colors`,
-    et la palette locale est remplacée par `bank_colors` telle quelle. Permet
-    à plusieurs sprites assignés à la même banque de partager des index de
-    palette identiques (condition nécessaire pour être copiés une seule fois
-    dans PAL_OBJ_RAM par main_gen.py)."""
+def remap_tiles_to_bank(c_path: Path, bank_colors: list[int], emit: Callable) -> bool:
+    """Réécrit en place un .c généré par grit en 4bpp (sprite OU tileset BG,
+    format de tableau identique) : les index de tuiles (nibbles) sont
+    remappés vers l'ordre canonique de `bank_colors`, et la palette locale
+    est remplacée par `bank_colors` telle quelle. Permet à plusieurs assets
+    assignés à la même banque de partager des index de palette identiques
+    (condition nécessaire pour être copiés une seule fois dans PAL_OBJ_RAM/
+    PAL_BG_RAM par main_gen.py). Ne touche jamais un éventuel tableau de map
+    (suffixe différent de Tiles/Pal)."""
     import re
 
     text = c_path.read_text()
@@ -286,9 +484,20 @@ def remap_sprite_to_bank(c_path: Path, bank_colors: list[int], emit: Callable) -
     return True
 
 
+def resolve_palette_bank(p: Project, active_names: list, slot: int):
+    """Résout la PaletteBank référencée par `active_names[slot]` dans le
+    catalogue unifié du projet (project.palettes, partagé OBJ/BG). None si
+    le slot est hors limites, vide, ou si la palette a été supprimée du
+    catalogue depuis — l'appelant garde alors son comportement legacy."""
+    if not (0 <= slot < len(active_names)):
+        return None
+    name = active_names[slot]
+    return p.get_palette(name) if name else None
+
+
 def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
     """Résout la PaletteBank OBJ ciblée par `entity.pal_bank` (Actor ou
-    Prefab) via les palettes actives de `scene` — pal_bank est un slot
+    Prefab) via les palettes OBJ actives de `scene` — pal_bank est un slot
     (0-15) dans scene.active_obj_palettes, pas une référence directe au
     catalogue projet (illimité). None si non résolvable (AUTO_PAL_BANK,
     scène sans sélection à ce slot, ou palette supprimée du catalogue) —
@@ -298,11 +507,7 @@ def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
     pal_bank = getattr(entity, "pal_bank", 0)
     if scene is None or pal_bank == AUTO_PAL_BANK:
         return None
-    active = getattr(scene, "active_obj_palettes", [])
-    if not (0 <= pal_bank < len(active)):
-        return None
-    name = active[pal_bank]
-    return p.get_obj_palette(name) if name else None
+    return resolve_palette_bank(p, getattr(scene, "active_obj_palettes", []), pal_bank)
 
 
 class GritSprites:
@@ -340,19 +545,26 @@ class GritSprites:
                 self._emit("error_line", f"[grit Actor] asset manquant : {sprite.asset}")
                 return False
 
-            grit_src = build_sprite_sheet(ap, sprite, p.grit_out_dir, self._emit)
+            pal_bank = getattr(actor_or_pf, "pal_bank", 0)
+            mode = getattr(actor_or_pf, "match_mode", "nearest")
+            quantize = bool(bank and bank.colors)
+
+            if quantize and mode == "direct_index":
+                grit_src = build_sprite_sheet_indexed(ap, sprite, p.grit_out_dir, self._emit)
+            else:
+                grit_src = build_sprite_sheet(ap, sprite, p.grit_out_dir, self._emit)
             if grit_src is None:
                 return False
 
-            pal_bank = getattr(actor_or_pf, "pal_bank", 0)
-            if bank and bank.colors:
-                from PIL import Image
-                from core.color_utils import quantize_image_to_bank
-                img = Image.open(grit_src).convert("RGBA")
-                quantize_image_to_bank(img, bank.colors).save(grit_src)
+            if quantize:
+                try:
+                    quantize_asset(grit_src, bank.colors, mode).save(grit_src)
+                except ValueError as e:
+                    self._emit("error_line", f"[grit Actor] {e}")
+                    return False
                 self._emit("log_line",
                            f"[palette] {sprite.name} -> banque {pal_bank} "
-                           f"({bank.name or 'sans nom'}, {len(bank.colors)} couleurs)")
+                           f"({bank.name or 'sans nom'}, {len(bank.colors)} couleurs, mode {mode})")
 
             out_base = str(p.grit_out_dir / f"sprite_{_sym(sprite.name)}")
             self._emit("log_line",
@@ -369,7 +581,7 @@ class GritSprites:
                 return False
 
             if bank and bank.colors:
-                if not remap_sprite_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
+                if not remap_tiles_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
                     return False
         return True
 

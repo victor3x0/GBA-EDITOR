@@ -22,15 +22,15 @@
                 },
                 {
                   "src_col": 0,
-                  "src_row": 1,
-                  "dst_col": 0,
-                  "dst_row": 2
-                },
-                {
-                  "src_col": 0,
                   "src_row": 2,
                   "dst_col": 0,
                   "dst_row": 3
+                },
+                {
+                  "src_col": 0,
+                  "src_row": 1,
+                  "dst_col": 0,
+                  "dst_row": 2
                 },
                 {
                   "src_col": 0,

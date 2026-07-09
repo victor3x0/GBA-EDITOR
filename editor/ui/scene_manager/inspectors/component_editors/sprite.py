@@ -1,6 +1,9 @@
 """Éditeur du SpriteComponent."""
 from __future__ import annotations
 
+from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtCore import Qt
+
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot, ScriptPickerPopup
 from ui.common.pickers import sprite_picker_slot, palette_picker_slot
@@ -49,7 +52,7 @@ class SpriteEditor(BaseComponentEditor):
         actor = self.insp._actor
         scene = self.insp._scene
         active_names = scene.active_obj_palettes if scene else []
-        active_banks = [b for n in active_names if (b := proj.get_obj_palette(n))]
+        active_banks = [b for n in active_names if (b := proj.get_palette(n))]
         current_pal_name = (
             active_names[actor.pal_bank]
             if actor and 0 <= actor.pal_bank < len(active_names) else None
@@ -73,6 +76,59 @@ class SpriteEditor(BaseComponentEditor):
                 "l'inspecteur de scène (carte \"Palettes actives\")."
             )
         W.row("Palette", pal_slot, layout)
+
+        # ── Algorithme de quantification (match_mode, champ Actor) —
+        #    bouton pleine largeur, sans label : cycle les modes au clic,
+        #    le tooltip explique le mode COURANT uniquement. ────────────
+        _MATCH_MODES = [
+            ("nearest", "Nearest neighbors",
+             "<b style='color:#7ecfff'>Nearest neighbors</b><br><br>"
+             "Chaque pixel prend la couleur de banque la plus proche "
+             "(distance RGB). Rapide, mais plusieurs couleurs d'origine "
+             "peuvent fusionner sur un même slot s'il manque de place."),
+            ("nearest_luminance", "Nearest luminance",
+             "<b style='color:#7ecfff'>Nearest luminance</b><br><br>"
+             "Préserve l'information : si le PNG a ≤15 couleurs distinctes, "
+             "chacune obtient un slot différent (aucune fusion). "
+             "Assignation par tri de luminance croissante."),
+            ("direct_index", "Indexation directe",
+             "<b style='color:#7ecfff'>Indexation directe</b><br><br>"
+             "Le PNG doit être indexé (mode 'P'). Ses index se calent "
+             "directement sur ceux de la banque, sans recherche de "
+             "correspondance (index 0 = transparence)."),
+        ]
+        _MODE_BTN_QSS = (
+            f"QPushButton{{color:{C.TEXT_HI};background:{C.BG_RAISED};"
+            f"border:1px solid {C.BORDER_MID};border-radius:4px;"
+            f"font-family:{T.MONO};font-size:{T.SM}px;font-weight:bold;"
+            f"padding:6px 10px;}}"
+            f"QPushButton:hover{{background:{C.BG_HOVER};"
+            f"border-color:{C.ACCENT_GRN};color:{C.ACCENT_GRN};}}"
+            f"QPushButton:pressed{{background:{C.BG_SEL};}}"
+        )
+        mode_btn = QPushButton()
+        mode_btn.setStyleSheet(_MODE_BTN_QSS)
+        mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        def _apply_mode_display(value: str):
+            entry = next((e for e in _MATCH_MODES if e[0] == value), _MATCH_MODES[0])
+            # Glyphe de cycle ↻ : signale qu'un clic fait défiler les modes
+            # (et non un champ éditable ou un menu déroulant).
+            mode_btn.setText(f"↻  {entry[1]}")
+            mode_btn.setToolTip(entry[2])
+
+        def _cycle_match_mode():
+            if self.insp._blocking or not self.insp._actor:
+                return
+            cur = getattr(self.insp._actor, "match_mode", "nearest")
+            idx = next((i for i, e in enumerate(_MATCH_MODES) if e[0] == cur), 0)
+            nxt = _MATCH_MODES[(idx + 1) % len(_MATCH_MODES)][0]
+            _apply_mode_display(nxt)                 # UI immédiate (valeur connue)
+            self.insp._set("match_mode", nxt)        # modèle + historique
+
+        _apply_mode_display(getattr(actor, "match_mode", "nearest"))
+        mode_btn.clicked.connect(_cycle_match_mode)
+        layout.addWidget(mode_btn)
 
         # ── État initial : même bouton+popup filtrable que "Sprite" ──
         state_slot = ScriptSlot(

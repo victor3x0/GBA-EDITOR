@@ -13,6 +13,7 @@ Flux :
 
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,9 @@ from core.events import EventEmitter
 from core.toolchain import Toolchain
 from codegen.asset_pipeline import (
     GritBackground, GritSprites, MmutilAudio,
-    resolve_sound_assets, count_frames, png_size, resolve_obj_palette_bank,
+    resolve_sound_assets, count_frames, png_size,
+    resolve_obj_palette_bank, resolve_palette_bank,
+    bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
 )
 from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
@@ -119,10 +122,11 @@ class BuildWorker(EventEmitter, threading.Thread):
             for scene in all_scenes:
                 # BG layers depuis le BackgroundAsset de la scène
                 bg_pairs = []
+                bg_asset = None
                 if scene.background_asset:
-                    ba = p.get_background(scene.background_asset)
-                    if ba:
-                        bg_pairs = ba.layers[:]
+                    bg_asset = p.get_background(scene.background_asset)
+                    if bg_asset:
+                        bg_pairs = bg_asset.layers[:]
 
                 # Actors
                 scene_actors: list[tuple[Actor, Optional[SpriteAsset]]] = []
@@ -137,6 +141,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 all_scene_data.append({
                     "scene": scene,
                     "bg_pairs": bg_pairs,
+                    "bg_asset": bg_asset,
                     "scene_actors": scene_actors,
                 })
                 all_bg_pairs_flat += bg_pairs
@@ -156,11 +161,31 @@ class BuildWorker(EventEmitter, threading.Thread):
 
             ok = True
 
-            # grit BG : un tileset par scène (symboles préfixés {scene_sym}_tileset)
+            # grit BG : un layer par appel, dédupliqué globalement par
+            # (BackgroundAsset.name, bg_slot) — un BackgroundAsset peut être
+            # partagé par plusieurs scènes, comme un SpriteAsset (même
+            # principe que unique_sprites ci-dessous : 1ère scène rencontrée
+            # résout la banque, la cohérence est vérifiée par le validateur,
+            # avertissement pas blocage). Chaque layer choisit SA PROPRE
+            # banque (BackgroundLayer.pal_bank), plus de banque unique
+            # partagée pour toute la scène.
+            seen_bg_layers: set[tuple[str, int]] = set()
+            unique_bg_layers: list = []
             for d in all_scene_data:
-                if ok and d["bg_pairs"]:
-                    ok = ok and self._step_grit_bg(p, d["bg_pairs"],
-                                                   scene_sym=_sym_fn(d["scene"].name))
+                ba = d["bg_asset"]
+                if not ba:
+                    continue
+                for layer in d["bg_pairs"]:
+                    key = (ba.name, layer.bg_slot)
+                    if key in seen_bg_layers:
+                        continue
+                    seen_bg_layers.add(key)
+                    bank = resolve_palette_bank(p, d["scene"].active_bg_palettes, layer.pal_bank)
+                    unique_bg_layers.append((ba, layer, bank))
+            if ok and unique_bg_layers:
+                ok = ok and self._step_grit_bg(p, unique_bg_layers)
+            if ok and unique_bg_layers:
+                ok = ok and self._check_bg_tile_budget(p, unique_bg_layers)
 
             # grit Sprites : union de toutes scènes + prefabs (dédupliqués par
             # nom — 1er rencontré gagne). La banque de palette est résolue via
@@ -292,10 +317,47 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     # ── Étape 1 : grit BG ─────────────────────────────────────────
 
-    def _step_grit_bg(self, p, bg_pairs, scene_sym: str = ""):
+    def _step_grit_bg(self, p, layers):
         return GritBackground(
             self.toolchain.resolve_grit(), self._emit, self._run_cmd
-        ).run(p, bg_pairs, scene_sym=scene_sym)
+        ).run(p, layers)
+
+    def _check_bg_tile_budget(self, p, layers) -> bool:
+        """Garde-fou VRAM : chaque layer a son propre CBB (16 Ko / 512 tuiles
+        4bpp), partagé avec sa propre map (les derniers N SBB du CBB, N selon
+        map_size). Un layer dont les tuiles générées débordent sur l'espace
+        réservé à sa map écraserait silencieusement cette map en VRAM au
+        runtime — on bloque le build plutôt que de laisser cette corruption
+        passer inaperçue (contrairement au conflit de palette OBJ/BG entre
+        scènes, qui n'est qu'un avertissement — ici c'est de la mémoire
+        écrasée, pas juste une mauvaise couleur)."""
+        ok = True
+        for asset, layer, _bank in layers:
+            if not layer.image:
+                continue
+            w, h = png_size(p.background_images_dir / layer.image)
+            _, _, ms = bg_map_geometry(w, h)
+            map_sbb_count = bg_map_sbb_count(ms)
+            tile_budget = (8 - map_sbb_count) * 64
+            sym = bg_layer_sym(asset.name, layer.bg_slot)
+            header = p.grit_out_dir / f"{sym}.h"
+            m = re.search(rf"{sym}TilesLen\s+(\d+)", header.read_text()) if header.exists() else None
+            if not m:
+                self._emit("error_line", f"[grit BG] {sym}.h introuvable/illisible — build annulé")
+                ok = False
+                continue
+            tiles_used = int(m.group(1)) // 32
+            if tiles_used > tile_budget:
+                self._emit(
+                    "error_line",
+                    f"[grit BG] '{asset.name}' BG{layer.bg_slot} : {tiles_used} tuiles "
+                    f"générées, budget CBB{layer.bg_slot} disponible {tile_budget} tuiles "
+                    f"(après réservation de {map_sbb_count} SBB pour sa propre map) — "
+                    f"réduire le nombre de tuiles uniques de ce layer (moins de "
+                    f"couleurs/motifs) ou sa taille de map."
+                )
+                ok = False
+        return ok
 
     # ── Étape 2 : grit Actors ─────────────────────────────────────
 

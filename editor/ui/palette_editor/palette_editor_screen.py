@@ -1,15 +1,16 @@
-"""Palette Editor screen — catalogue illimité de palettes nommées (OBJ + BG).
+"""Palette Editor screen — catalogue illimité et unifié de palettes nommées.
 
-Le catalogue projet n'a plus de limite (contrairement aux 16 banques
-hardware) — c'est la scène qui choisit jusqu'à 16 palettes actives par pool
-parmi ce catalogue (voir Scene Inspector, carte "Palettes actives").
+Plus de distinction OBJ/BG dans le catalogue (2026-07-08) — une palette est
+juste 16 couleurs, réutilisable pour les deux pools. C'est la scène qui
+choisit jusqu'à 16 palettes actives par pool parmi ce catalogue (voir Scene
+Inspector, carte "Palettes actives").
 """
 from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSplitter,
     QTreeWidget, QTreeWidgetItem, QAbstractItemView, QSlider, QSpinBox,
-    QInputDialog, QMessageBox,
+    QInputDialog, QMessageBox, QMenu,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
@@ -23,8 +24,6 @@ from core.palette_presets import hsb_ramp_bgr555
 from core.history import get_history, DeleteResourceCmd
 from ui.common.palette_swatch import bank_icon as _bank_icon
 
-POOL_LABELS = {"bg": "BACKGROUND", "obj": "OBJ"}
-
 SPLITTER_STYLE = (
     f"QSplitter::handle{{background:{C.BORDER};}}"
     "QSplitter::handle:horizontal{width:3px;}"
@@ -36,11 +35,11 @@ SPLITTER_STYLE = (
 #  PaletteFinderPanel
 # ──────────────────────────────────────────────────────────────────
 class PaletteFinderPanel(QWidget):
-    """Panneau gauche : deux sections BACKGROUND / OBJ, catalogue illimité
-    (ajout/suppression/renommage), même modèle que SoundFinderPanel."""
+    """Panneau gauche : liste unique du catalogue projet (ajout/suppression/
+    renommage), même modèle que SoundFinderPanel — partagé OBJ/BG."""
 
-    bank_selected = pyqtSignal(str, str)   # pool ("bg"/"obj"), nom
-    bank_deleted  = pyqtSignal(str)        # pool
+    bank_selected = pyqtSignal(str)   # nom
+    bank_deleted  = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,30 +63,24 @@ class PaletteFinderPanel(QWidget):
         fl.addWidget(finder_lbl)
         root.addWidget(finder_hdr)
 
-        self._trees: dict[str, QTreeWidget] = {}
-        for pool, color in (("bg", C.ACCENT_BLU), ("obj", C.ACCENT_ORG)):
-            root.addWidget(self._make_section(pool, POOL_LABELS[pool], color))
-            tree = QTreeWidget()
-            tree.setHeaderHidden(True)
-            tree.setFont(QFont(T.MONO, T.MD))
-            tree.setIconSize(QSize(16, 16))
-            tree.setStyleSheet(
-                f"QTreeWidget{{background:#161616;color:{C.TEXT_NORM};border:none;}}"
-                "QTreeWidget::item:selected{background:#1a2a3a;}"
-                "QTreeWidget::item:hover{background:#202020;}"
-            )
-            tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-            tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            tree.currentItemChanged.connect(
-                lambda cur, prev, pool=pool: self._on_selected(pool, cur))
-            tree.itemChanged.connect(
-                lambda item, col, pool=pool: self._on_item_text_changed(pool, item, col))
-            tree.customContextMenuRequested.connect(
-                lambda pos, pool=pool: self._on_ctx_menu(pool, pos))
-            root.addWidget(tree, 1)
-            self._trees[pool] = tree
+        root.addWidget(self._make_section("PALETTES", C.ACCENT_GRN))
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setFont(QFont(T.MONO, T.MD))
+        self._tree.setIconSize(QSize(16, 16))
+        self._tree.setStyleSheet(
+            f"QTreeWidget{{background:#161616;color:{C.TEXT_NORM};border:none;}}"
+            "QTreeWidget::item:selected{background:#1a2a3a;}"
+            "QTreeWidget::item:hover{background:#202020;}"
+        )
+        self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
+        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tree.currentItemChanged.connect(self._on_selected)
+        self._tree.itemChanged.connect(self._on_item_text_changed)
+        self._tree.customContextMenuRequested.connect(self._on_ctx_menu)
+        root.addWidget(self._tree, 1)
 
-    def _make_section(self, pool: str, title: str, color: str) -> QFrame:
+    def _make_section(self, title: str, color: str) -> QFrame:
         f = QFrame()
         f.setFixedHeight(28)
         f.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
@@ -99,12 +92,12 @@ class PaletteFinderPanel(QWidget):
         lbl.setStyleSheet(f"color:{color};")
         hl.addWidget(lbl, 1)
 
-        btn_add = W.btn_add(f"Ajouter une palette {title}")
-        btn_add.clicked.connect(lambda: self._add(pool))
+        btn_add = W.btn_add("Ajouter une palette")
+        btn_add.clicked.connect(self._add)
         hl.addWidget(btn_add)
 
         btn_del = W.btn_danger("Supprimer la palette sélectionnée")
-        btn_del.clicked.connect(lambda: self._del(pool))
+        btn_del.clicked.connect(self._del)
         hl.addWidget(btn_del)
 
         return f
@@ -116,100 +109,90 @@ class PaletteFinderPanel(QWidget):
         self.refresh()
 
     def refresh(self):
-        for pool in ("bg", "obj"):
-            self._refresh_pool(pool)
-
-    def _manager(self, pool: str):
-        return self._project.obj_palettes if pool == "obj" else self._project.bg_palettes
-
-    def _refresh_pool(self, pool: str):
         if not self._project:
             return
-        tree = self._trees[pool]
-        tree.blockSignals(True)
-        tree.clear()
-        for bank in self._manager(pool):
+        self._tree.blockSignals(True)
+        self._tree.clear()
+        for bank in self._project.palettes:
             item = QTreeWidgetItem([bank.name])
             item.setIcon(0, _bank_icon(bank))
-            item.setData(0, Qt.ItemDataRole.UserRole, (pool, bank.name))
+            item.setData(0, Qt.ItemDataRole.UserRole, bank.name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-            tree.addTopLevelItem(item)
-        tree.blockSignals(False)
+            self._tree.addTopLevelItem(item)
+        self._tree.blockSignals(False)
+
+    def select_bank(self, name: str):
+        """Sélectionne la banque `name` dans l'arbre si elle existe (émet
+        bank_selected via currentItemChanged)."""
+        for i in range(self._tree.topLevelItemCount()):
+            it = self._tree.topLevelItem(i)
+            if it.data(0, Qt.ItemDataRole.UserRole) == name:
+                self._tree.setCurrentItem(it)
+                return
 
     # ── Sélection ─────────────────────────────────────────────────
 
-    def _on_selected(self, pool: str, current: Optional[QTreeWidgetItem]):
+    def _on_selected(self, current: Optional[QTreeWidgetItem], _prev):
         if not current:
             return
-        self._trees["obj" if pool == "bg" else "bg"].clearSelection()
-        _, name = current.data(0, Qt.ItemDataRole.UserRole)
-        self.bank_selected.emit(pool, name)
+        self.bank_selected.emit(current.data(0, Qt.ItemDataRole.UserRole))
 
     # ── Renommage en place ────────────────────────────────────────
 
-    def _on_item_text_changed(self, pool: str, item: QTreeWidgetItem, _col: int):
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
+    def _on_item_text_changed(self, item: QTreeWidgetItem, _col: int):
+        old_name = item.data(0, Qt.ItemDataRole.UserRole)
+        if not old_name:
             return
-        _, old_name = data
-        manager = self._manager(pool)
-        bank = manager.get(old_name)
-        tree = self._trees[pool]
+        bank = self._project.palettes.get(old_name)
         if not bank:
             return
         new_name = item.text(0).strip()
-        if not new_name or new_name == old_name or manager.get(new_name):
-            tree.blockSignals(True)
+        if not new_name or new_name == old_name or self._project.palettes.get(new_name):
+            self._tree.blockSignals(True)
             item.setText(0, old_name)
-            tree.blockSignals(False)
+            self._tree.blockSignals(False)
             return
-        manager.rename(bank, new_name)
-        item.setData(0, Qt.ItemDataRole.UserRole, (pool, new_name))
-        self.bank_selected.emit(pool, new_name)
+        self._project.palettes.rename(bank, new_name)
+        item.setData(0, Qt.ItemDataRole.UserRole, new_name)
+        self.bank_selected.emit(new_name)
 
     # ── Menu contextuel ──────────────────────────────────────────────
 
-    def _on_ctx_menu(self, pool: str, pos):
-        from PyQt6.QtWidgets import QMenu
-        tree = self._trees[pool]
-        item = tree.itemAt(pos)
+    def _on_ctx_menu(self, pos):
+        item = self._tree.itemAt(pos)
         if not item:
             return
-        tree.setCurrentItem(item)
+        self._tree.setCurrentItem(item)
         menu = QMenu(self)
         delete_a = menu.addAction("Supprimer")
-        if menu.exec(tree.viewport().mapToGlobal(pos)) == delete_a:
-            self._del(pool)
+        if menu.exec(self._tree.viewport().mapToGlobal(pos)) == delete_a:
+            self._del()
 
     # ── Ajout / suppression ───────────────────────────────────────
 
-    def _add(self, pool: str):
+    def _add(self):
         if not self._project:
             return
-        name, ok = QInputDialog.getText(self, f"Nouvelle palette {POOL_LABELS[pool]}", "Nom :")
+        name, ok = QInputDialog.getText(self, "Nouvelle palette", "Nom :")
         if not (ok and name.strip()):
             return
         name = name.strip()
-        manager = self._manager(pool)
-        if manager.get(name):
+        if self._project.palettes.get(name):
             return
         bank = PaletteBank(name=name, colors=hsb_ramp_bgr555(0, 0))
-        manager.append(bank)
-        manager.save(bank)
-        self._refresh_pool(pool)
-        tree = self._trees[pool]
-        last = tree.topLevelItem(tree.topLevelItemCount() - 1)
+        self._project.palettes.append(bank)
+        self._project.palettes.save(bank)
+        self.refresh()
+        last = self._tree.topLevelItem(self._tree.topLevelItemCount() - 1)
         if last:
-            tree.setCurrentItem(last)
+            self._tree.setCurrentItem(last)
 
-    def _del(self, pool: str):
-        tree = self._trees[pool]
-        item = tree.currentItem()
+    def _del(self):
+        item = self._tree.currentItem()
         if not item:
             return
-        _, name = item.data(0, Qt.ItemDataRole.UserRole)
-        manager = self._manager(pool)
-        bank = manager.get(name)
+        name = item.data(0, Qt.ItemDataRole.UserRole)
+        bank = self._project.palettes.get(name)
         if not bank:
             return
         if QMessageBox.question(
@@ -220,22 +203,21 @@ class PaletteFinderPanel(QWidget):
             return
 
         def _refresh():
-            self._refresh_pool(pool)
-            self.bank_deleted.emit(pool)
+            self.refresh()
+            self.bank_deleted.emit()
 
-        get_history().push(DeleteResourceCmd(manager, bank, _refresh))
+        get_history().push(DeleteResourceCmd(self._project.palettes, bank, _refresh))
 
 
 # ──────────────────────────────────────────────────────────────────
 #  PaletteEditorScreen
 # ──────────────────────────────────────────────────────────────────
 class PaletteEditorScreen(QWidget):
-    """Écran complet Palette Editor : finder (BG/OBJ) + édition RGB de la banque active."""
+    """Écran complet Palette Editor : finder unifié + édition RGB de la banque active."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project: Optional[Project] = None
-        self._pool: Optional[str] = None
         self._bank_name: Optional[str] = None
         self._active_color: Optional[int] = None
         self._blocking = False
@@ -335,20 +317,28 @@ class PaletteEditorScreen(QWidget):
     def load_project(self, project: Project):
         self._project = project
         self._finder.load_project(project)
-        self._pool = None
         self._bank_name = None
         self._show_empty()
+
+    def refresh(self):
+        """Reconstruit le finder depuis project.palettes — abonné à
+        l'événement dispatcher "palettes_changed" (ex. palette extraite depuis
+        le Sprite Editor). Re-sélectionne la banque en cours d'édition si elle
+        existe toujours."""
+        if not self._project:
+            return
+        self._finder.refresh()
+        if self._bank_name and self._project.palettes.get(self._bank_name):
+            self._finder.select_bank(self._bank_name)
 
     # ── Sélection banque ─────────────────────────────────────────
 
     def _current_bank(self) -> Optional[PaletteBank]:
-        if not self._project or self._pool is None or self._bank_name is None:
+        if not self._project or self._bank_name is None:
             return None
-        manager = self._project.obj_palettes if self._pool == "obj" else self._project.bg_palettes
-        return manager.get(self._bank_name)
+        return self._project.palettes.get(self._bank_name)
 
-    def _on_bank_selected(self, pool: str, name: str):
-        self._pool = pool
+    def _on_bank_selected(self, name: str):
         self._bank_name = name
         bank = self._current_bank()
         if bank is None:
@@ -359,14 +349,14 @@ class PaletteEditorScreen(QWidget):
         self._title.setText(bank.name)
         self._title.setVisible(True)
 
-        self._active_color = bank.colors[0] if bank.colors else None
+        self._active_color = bank.colors[1] if len(bank.colors) > 1 else None
         self._render_swatches(bank, selectable=True)
         self._editor.setVisible(bool(bank.colors))
         if self._active_color is not None:
             self._load_channels(self._active_color)
 
-    def _on_bank_deleted(self, pool: str):
-        if self._pool == pool and (self._bank_name is None or not self._current_bank()):
+    def _on_bank_deleted(self):
+        if self._bank_name is None or not self._current_bank():
             self._show_empty()
 
     def _show_empty(self):
@@ -390,21 +380,24 @@ class PaletteEditorScreen(QWidget):
 
     def _render_swatches(self, bank: PaletteBank, selectable: bool):
         self._clear_swatches()
-        for c in bank.colors:
+        for i, c in enumerate(bank.colors):
             btn = QPushButton()
             btn.setFixedSize(32, 40)
             r, g, b = bgr555_to_rgb888(c)
-            selected = selectable and c == self._active_color
+            swatch_selectable = selectable and i != 0
+            selected = swatch_selectable and c == self._active_color
             border = C.ACCENT_GRN if selected else C.BORDER_MID
             width = 3 if selected else 1
             btn.setStyleSheet(
                 f"QPushButton{{background:rgb({r},{g},{b});"
                 f"border:{width}px solid {border};border-radius:2px;}}"
             )
-            if selectable:
+            if swatch_selectable:
                 btn.clicked.connect(lambda _checked, c=c: self._select_color(c))
             else:
                 btn.setEnabled(False)
+            if i == 0:
+                btn.setToolTip("Réservé — toujours transparent (hardware GBA)")
             self._swatch_row.addWidget(btn)
             self._swatch_btns.append(btn)
         self._swatch_row.addStretch(1)
@@ -449,13 +442,16 @@ class PaletteEditorScreen(QWidget):
         r, g, b = {"r": (v, g, b), "g": (r, v, b), "b": (r, g, v)}[ch]
         new_value = components_to_bgr555(r, g, b)
 
-        idx = bank.colors.index(self._active_color)
+        # index(..., 1) : ne jamais confondre avec le slot réservé même si
+        # sa valeur (RESERVED_SLOT_COLOR) coïncide avec une couleur choisie
+        # ailleurs dans la banque (ex. un utilisateur qui choisit du noir pur).
+        idx = bank.colors.index(self._active_color, 1)
         bank.colors[idx] = new_value
-        bank.colors.sort(key=lambda c: sum(bgr555_components(c)), reverse=True)
+        # L'index 0 (réservé) ne participe jamais au tri par luminosité.
+        bank.colors[1:] = sorted(bank.colors[1:], key=lambda c: sum(bgr555_components(c)), reverse=True)
         self._active_color = new_value
 
-        manager = self._project.obj_palettes if self._pool == "obj" else self._project.bg_palettes
-        manager.save(bank)
+        self._project.palettes.save(bank)
         self._update_preview(new_value)
         self._render_swatches(bank, selectable=True)
         self._finder.refresh()

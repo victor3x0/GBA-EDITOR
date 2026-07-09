@@ -354,14 +354,25 @@ class SceneInspector(QWidget):
             self._btn_bg_add.setEnabled(False)
             return
 
+        active_names = self._scene.active_bg_palettes
+        active_banks = [b for n in active_names if (b := self._project.get_palette(n))]
+
         for layer in ba.layers:
             row = BgLayerRow(layer.bg_slot)
             img_path = self._project.background_images_dir / layer.image if layer.image else None
             if img_path and img_path.exists():
                 row.set_asset(str(img_path))
             row.set_speed(layer.scroll_speed)
+            current_pal_name = (
+                active_names[layer.pal_bank]
+                if 0 <= layer.pal_bank < len(active_names) else None
+            )
+            row.set_pal_banks(active_banks, current_pal_name)
+            row.set_match_mode(getattr(layer, "match_mode", "nearest"))
             row.asset_changed.connect(lambda _, p, l=layer: self._on_layer_image(l, p))
             row.speed_changed.connect(lambda _, v, l=layer: self._on_layer_speed(l, v))
+            row.pal_bank_changed.connect(lambda _, n, l=layer: self._on_layer_pal_bank(l, n))
+            row.match_mode_changed.connect(lambda _, m, l=layer: self._on_layer_match_mode(l, m))
             row.layer_removed.connect(lambda _, l=layer: self._on_layer_remove(l))
             row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
             self._bg_layers_container.addWidget(row)
@@ -405,6 +416,44 @@ class SceneInspector(QWidget):
             persist_fn=lambda: self._project.save_background(ba),
         ))
 
+    def _on_layer_pal_bank(self, layer, pal_name: str):
+        """La banque de palette d'un layer a changé — pal_bank est un index
+        dans scene.active_bg_palettes (même mécanisme qu'Actor.pal_bank),
+        pas une référence directe au catalogue."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        active_names = self._scene.active_bg_palettes
+        try:
+            idx = active_names.index(pal_name)
+        except ValueError:
+            return
+        old = layer.pal_bank
+        if old == idx:
+            return
+        get_history().push(SetFieldCmd(
+            layer, "pal_bank", old, idx,
+            label=f"{ba.name}[{layer.bg_slot}].pal_bank",
+            persist_fn=lambda: self._project.save_background(ba),
+        ))
+        self._rebuild_layer_rows()
+        self.changed.emit()
+
+    def _on_layer_match_mode(self, layer, mode: str):
+        """L'algorithme de quantification d'un layer a changé."""
+        if not self._project or not self._scene: return
+        ba = self._project.get_background(self._scene.background_asset)
+        if not ba: return
+        old = getattr(layer, "match_mode", "nearest")
+        if old == mode:
+            return
+        get_history().push(SetFieldCmd(
+            layer, "match_mode", old, mode,
+            label=f"{ba.name}[{layer.bg_slot}].match_mode",
+            persist_fn=lambda: self._project.save_background(ba),
+        ))
+        self.changed.emit()
+
     def _on_layer_remove(self, layer):
         """Retire un layer du BackgroundAsset."""
         if not self._project or not self._scene: return
@@ -443,7 +492,8 @@ class SceneInspector(QWidget):
 
     # ── Palettes actives ────────────────────────────────────────────
 
-    _DEFAULT_PALETTE_NAME = "DMG (GB Default)"
+    _DEFAULT_PALETTE_NAME    = "DMG (GB Default)"        # OBJ : 3 nuances (index 0 transparent)
+    _DEFAULT_BG_PALETTE_NAME = "DMG (GB Default) (BG)"   # BG  : 4 nuances
 
     def _rebuild_palette_slots(self):
         if not self._scene or not self._project:
@@ -451,18 +501,24 @@ class SceneInspector(QWidget):
                 self._pal_grids[pool].load([], [])
             return
 
+        # Catalogue unifié — les deux barres (OBJ/BG) piochent dans le même
+        # project.palettes, seule la sélection ACTIVE reste séparée par pool
+        # (contrainte hardware : PAL_OBJ_RAM et PAL_BG_RAM sont distincts).
+        banks = list(self._project.palettes)
         for pool in ("obj", "bg"):
-            manager = self._project.obj_palettes if pool == "obj" else self._project.bg_palettes
             attr = "active_obj_palettes" if pool == "obj" else "active_bg_palettes"
             active = getattr(self._scene, attr)
 
-            # Scène neuve sans aucune sélection -> défaut DMG au slot 0,
-            # plutôt qu'un pool entièrement noir/vide.
-            if not active and manager.get(self._DEFAULT_PALETTE_NAME):
-                active.append(self._DEFAULT_PALETTE_NAME)
+            # Scène neuve sans aucune sélection -> défaut DMG au slot 0
+            # (variante BG pour le pool BG), plutôt qu'un pool entièrement
+            # noir/vide. Repli sur la variante OBJ si la BG n'existe pas.
+            default_name = self._DEFAULT_BG_PALETTE_NAME if pool == "bg" else self._DEFAULT_PALETTE_NAME
+            if not active and not self._project.get_palette(default_name):
+                default_name = self._DEFAULT_PALETTE_NAME
+            if not active and self._project.get_palette(default_name):
+                active.append(default_name)
                 self._persist()
 
-            banks = list(manager)
             self._pal_grids[pool].load(banks, active)
 
     def _on_palette_picked(self, pool: str, slot_idx: int, name: str):
@@ -476,6 +532,11 @@ class SceneInspector(QWidget):
         lst[slot_idx] = name
         self._persist()
         self._rebuild_palette_slots()
+        if pool == "bg":
+            # Les BgLayerRow affichent l'icône de la banque résolue via
+            # layer.pal_bank -> active_bg_palettes[idx] — à reconstruire si
+            # cette sélection change ailleurs que depuis la rangée elle-même.
+            self._rebuild_layer_rows()
         self.changed.emit()
         self.changed.emit()
 

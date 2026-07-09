@@ -3,11 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QLabel, QToolButton, QSplitter,
-)
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from PyQt6.QtGui import QKeySequence, QShortcut
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer
 
 from ui.common.theme import C, T
 from core.project import Project, SpriteAsset, AnimState, StateDirection
@@ -21,72 +19,6 @@ from .spritesheet_viewer import _SpritesheetViewer
 # _CanvasFloatingToolbar / _FrameCanvasPanel dans frame_canvas.py.
 
 
-class _PaletteStrip(QWidget):
-    """
-    Grille 2 colonnes de swatches cliquables (banques OBJ) — change la
-    teinte de preview du canvas (aperçu d'animation uniquement, ne modifie
-    ni les pixels du PNG source ni la palette réellement assignée au sprite).
-    """
-
-    bank_picked = pyqtSignal(int)   # index dans la liste passée à load_banks()
-    _COLS = 2
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedWidth(52)
-        self.setStyleSheet(f"background:{C.BG_PANEL}; border-right:1px solid {C.BORDER_DARK};")
-        self._layout = QGridLayout(self)
-        self._layout.setContentsMargins(4, 6, 4, 6)
-        self._layout.setSpacing(3)
-        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self._buttons: list[QToolButton] = []
-        self._active = 0
-
-    def load_banks(self, banks: list):
-        for b in self._buttons:
-            self._layout.removeWidget(b)
-            b.deleteLater()
-        self._buttons.clear()
-
-        for i, bank in enumerate(banks):
-            btn = QToolButton()
-            btn.setFixedSize(20, 20)
-            btn.setCheckable(True)
-            if bank.colors:
-                from core.color_utils import bgr555_to_rgb888
-                mid_r, mid_g, mid_b = bgr555_to_rgb888(bank.colors[len(bank.colors) // 2])
-                btn.setStyleSheet(
-                    f"QToolButton{{background:rgb({mid_r},{mid_g},{mid_b});"
-                    f"border:1px solid {C.BORDER_MID};border-radius:3px;}}"
-                    f"QToolButton:checked{{border:2px solid {C.ACCENT_GRN};}}"
-                )
-                btn.setToolTip(bank.name)
-                btn.clicked.connect(lambda _checked, i=i: self._pick(i))
-            else:
-                btn.setEnabled(False)
-                btn.setStyleSheet(
-                    f"QToolButton{{background:{C.BG_INPUT};"
-                    f"border:1px dashed {C.BORDER_MID};border-radius:3px;}}"
-                )
-                btn.setToolTip("Palette vide")
-            row, col = divmod(i, self._COLS)
-            self._layout.addWidget(btn, row, col)
-            self._buttons.append(btn)
-
-    def select_default(self, index: int = 0):
-        """Sélectionne une banque par défaut sans émettre bank_picked (état initial)."""
-        self._select(index)
-
-    def _pick(self, i: int):
-        self._select(i)
-        self.bank_picked.emit(i)
-
-    def _select(self, i: int):
-        self._active = i
-        for j, b in enumerate(self._buttons):
-            b.setChecked(j == i)
-
-
 class SpriteCenterPanel(QWidget):
     """Zone centre : playback · canvas · tile picker · timeline."""
 
@@ -98,6 +30,7 @@ class SpriteCenterPanel(QWidget):
         self._state:     Optional[AnimState]      = None
         self._sd:        Optional[StateDirection] = None
         self._sel_frame: int = 0
+        self._preview_banks: list = []   # banques proposées dans le dropdown palette
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._on_play_tick)
         self._build()
@@ -122,20 +55,10 @@ class SpriteCenterPanel(QWidget):
         self._canvas.selection_reset.connect(self._on_selection_reset)
         self._canvas.brush_picked_up.connect(self._on_brush_picked_up)
 
-        self._palette_strip = _PaletteStrip()
-        self._palette_strip.bank_picked.connect(self._on_palette_picked)
-
-        canvas_row = QWidget()
-        canvas_row_l = QHBoxLayout(canvas_row)
-        canvas_row_l.setContentsMargins(0, 0, 0, 0)
-        canvas_row_l.setSpacing(0)
-        canvas_row_l.addWidget(self._palette_strip)
-        canvas_row_l.addWidget(self._canvas_panel, 1)
-
         self._tiles = _SpritesheetViewer()
         self._tiles.selection_changed.connect(self._on_tile_selection_changed)
 
-        splitter.addWidget(canvas_row)
+        splitter.addWidget(self._canvas_panel)
         splitter.addWidget(self._tiles)
         splitter.setSizes([320, 200])
 
@@ -148,7 +71,7 @@ class SpriteCenterPanel(QWidget):
 
         toolbar = self._canvas_panel.toolbar
         toolbar.btn_play.toggled.connect(self._on_play_toggled)
-        toolbar.btn_palette.toggled.connect(self._palette_strip.setVisible)
+        toolbar.btn_palette.clicked.connect(self._open_preview_palette_picker)
 
         # Shift+X/Y : portés ici (pas sur _FrameCanvas seul) pour marcher
         # aussi bien après un clic dans le canvas que dans le tile picker —
@@ -178,24 +101,58 @@ class SpriteCenterPanel(QWidget):
         )
         self._tiles.load(self._abs_path())
 
-        # Teinte de preview : toujours réinitialisée à "DMG (GB Default)"
-        # (verte) pour un sprite fraîchement sélectionné — recherché par nom,
+        # Palette de preview : toujours réinitialisée à "DMG (GB Default)"
+        # (verte) pour un sprite fraîchement sélectionné — recherchée par nom,
         # pas par index 0 : le catalogue est chargé par ordre alphabétique de
         # fichier (ResourceManager), pas par ordre de création.
-        obj_banks = list(project.obj_palettes) if project else []
-        self._palette_strip.load_banks(obj_banks)
-        default_bank = (project.get_obj_palette("DMG (GB Default)") if project else None) \
-            or (obj_banks[0] if obj_banks else None)
-        default_idx = obj_banks.index(default_bank) if default_bank in obj_banks else 0
-        self._palette_strip.select_default(default_idx)
-        self._canvas.set_tint(default_bank.colors if default_bank else None)
+        self._preview_banks = list(project.palettes) if project else []
+        default_bank = (project.get_palette("DMG (GB Default)") if project else None) \
+            or (self._preview_banks[0] if self._preview_banks else None)
+        self._set_preview_palette(default_bank)
 
-    def _on_palette_picked(self, index: int):
+    # ── Palette de preview (dropdown depuis la barre d'outils) ─────────
+
+    def _set_preview_palette(self, bank):
+        """Applique une banque à la preview du canvas et reflète son icône
+        sur le bouton palette de la barre d'outils (ou l'icône générique si
+        aucune banque)."""
+        self._canvas.set_tint(bank.colors if bank else None)
+        btn = self._canvas_panel.toolbar.btn_palette
+        if bank:
+            from ui.common.palette_swatch import bank_icon
+            btn.setIcon(bank_icon(bank, 22))
+            btn.setToolTip(f"Palette de preview : {bank.name}")
+        else:
+            from ui.common.icons import get as _ico
+            btn.setIcon(_ico("tool_palette", C.TEXT_DIM, C.ACCENT_GRN))
+            btn.setToolTip("Palette de preview")
+
+    def _open_preview_palette_picker(self):
+        if not self._preview_banks:
+            return
+        from ui.common.widgets import ScriptPickerPopup
+        from ui.common.palette_swatch import bank_icon
+        entries = [(b.name, b.name, bank_icon(b)) for b in self._preview_banks]
+        popup = ScriptPickerPopup(entries, C.ACCENT_GRN, parent=self, new_label=None)
+        popup.picked.connect(self._on_preview_palette_picked)
+        popup.show_below(self._canvas_panel.toolbar.btn_palette)
+
+    def _on_preview_palette_picked(self, name: str):
+        bank = self._project.get_palette(name) if self._project else None
+        if bank:
+            self._set_preview_palette(bank)
+
+    def on_palette_extracted(self, name: str):
+        """Une palette vient d'être extraite du PNG (bouton du panneau droit)
+        — la sélectionner pour la preview et basculer en mode indexé pour
+        montrer immédiatement le rendu quantifié."""
         if not self._project:
             return
-        banks = list(self._project.obj_palettes)
-        if 0 <= index < len(banks):
-            self._canvas.set_tint(banks[index].colors)
+        self._preview_banks = list(self._project.palettes)
+        self._canvas_panel.toolbar._set_preview_indexed(True)
+        bank = self._project.get_palette(name)
+        if bank:
+            self._set_preview_palette(bank)
 
     def load_direction(self, state: AnimState, sd: StateDirection):
         if not self._sprite or not self._project:

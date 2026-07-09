@@ -18,6 +18,7 @@ Usage :
     "bg_slot_changed"  (int slot)  — rafraîchir un BG slot précis
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts
+    "palettes_changed"             — rafraîchir le catalogue de palettes
 """
 from __future__ import annotations
 from pathlib import Path
@@ -164,6 +165,21 @@ class CommandDispatcher(EventEmitter):
         with self._watcher.suspended():
             self._project.save_sprite(sprite)
         self._emit("scene_sprites_changed")
+
+    # ── Palette ───────────────────────────────────────────────────
+
+    def save_palette(self, bank) -> None:
+        """Persiste une PaletteBank (l'ajoute au catalogue si nouvelle) et
+        notifie les écrans affichant le catalogue — ex. une palette extraite
+        depuis le Sprite Editor doit apparaître dans le Palette Finder sans
+        recharger le projet."""
+        if not self._project:
+            return
+        if self._project.palettes.get(bank.name) is None:
+            self._project.palettes.append(bank)
+        with self._watcher.suspended():
+            self._project.palettes.save(bank)
+        self._emit("palettes_changed")
 
     # ── Background asset ──────────────────────────────────────────
 

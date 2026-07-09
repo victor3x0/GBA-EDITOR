@@ -2,5 +2,7 @@
   "name": "Pong",
   "start_scene": "PONG",
   "author": "",
-  "version": "0.1"
+  "version": "0.1",
+  "palette_auto_import_enabled": true,
+  "backdrop_color": 0
 }

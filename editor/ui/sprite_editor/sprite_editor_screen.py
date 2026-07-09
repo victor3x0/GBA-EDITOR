@@ -56,6 +56,7 @@ class SpriteEditorScreen(QWidget):
         self._left.direction_selected.connect(self._on_direction_selected)
         self._right.sprite_changed.connect(self._left.refresh_anim_tree)
         self._right.direction_added.connect(self._left.select_direction)
+        self._right.palette_extracted.connect(self._center.on_palette_extracted)
 
     def load_project(self, project: Project):
         self._project = project

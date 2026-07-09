@@ -37,7 +37,17 @@ def palette_picker_slot(
     def _open_picker():
         entries = [(bank.name, bank.name, bank_icon(bank)) for bank in banks]
         popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
-        popup.picked.connect(on_picked)
+
+        def _picked(name: str):
+            # Met à jour l'affichage du slot AVANT de notifier l'appelant —
+            # sinon le label/icône restent figés sur l'ancienne palette (le
+            # callback ne fait que muter le modèle, pas rafraîchir le widget).
+            b = next((x for x in banks if x.name == name), None)
+            if b:
+                slot.set_script(b.name, icon=bank_icon(b))
+            on_picked(name)
+
+        popup.picked.connect(_picked)
         popup.show_below(slot)
 
     slot.set_callbacks(on_add=_open_picker, on_open=_open_picker, on_clear=on_cleared)
@@ -65,7 +75,12 @@ def sprite_picker_slot(
     def _open_picker():
         entries = [(n, n) for n in sorted(sprite_names)]
         popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
-        popup.picked.connect(on_picked)
+
+        def _picked(name: str):
+            slot.set_script(name)   # rafraîchit le label avant de notifier
+            on_picked(name)
+
+        popup.picked.connect(_picked)
         popup.show_below(slot)
 
     slot.set_callbacks(on_add=_open_picker, on_open=_open_picker, on_clear=on_cleared)

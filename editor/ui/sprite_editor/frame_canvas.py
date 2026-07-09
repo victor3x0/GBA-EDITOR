@@ -21,7 +21,7 @@ from ui.common.icons import get as _ico
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
-from core.color_utils import tint_image_with_bank
+from core.color_utils import quantize_image_to_bank
 
 _CTX_MENU_QSS = (
     f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
@@ -491,10 +491,13 @@ class _FrameCanvas(QWidget):
         self._frame:      Optional[AnimFrame]   = None
         self._tile_w = self._tile_h = 1
         self._show_grid  = True
-        # Teinte de preview (aperçu uniquement — cf _PaletteStrip dans
-        # sprite_center_panel.py) : liste de couleurs BGR555 clair->sombre,
-        # ou None pour afficher les pixels sources tels quels.
+        # Teinte de preview (aperçu uniquement — banque choisie via le
+        # dropdown palette de la barre d'outils, cf SpriteCenterPanel) :
+        # liste de couleurs BGR555, ou None pour les pixels sources.
         self._tint_bank: Optional[list[int]] = None
+        # Mode de preview : True = "indexé" (quantifié sur la banque, rendu
+        # WYSIWYG in-game), False = "original" (couleurs natives du PNG).
+        self._preview_indexed: bool = True
         # (rel_c, rel_r, src_col, src_row, flip_h, flip_v)
         self._brush: list[tuple[int, int, int, int, bool, bool]] = []
         self._hover: Optional[tuple[int, int]]       = None
@@ -519,13 +522,20 @@ class _FrameCanvas(QWidget):
 
     def load_frame(self, sprite: Optional[SpriteAsset], abs_path: Optional[Path],
                    frame: Optional[AnimFrame]):
+        prev_sprite = self._sprite
+        prev_dims   = (self._tile_w, self._tile_h)
         self._sprite   = sprite
         self._abs_path = abs_path
         self._frame    = frame
         self._tile_w   = sprite.tile_w if sprite else 1
         self._tile_h   = sprite.tile_h if sprite else 1
         self._src_pixmap = QPixmap(str(abs_path)) if abs_path and abs_path.exists() else None
-        self._zoom = 0; self._pan_x = self._pan_y = 0
+        # Ne réinitialiser le zoom/pan que si le sprite change (dimensions
+        # potentiellement différentes) — sinon la navigation de frames ET la
+        # lecture d'animation (load_frame appelé à chaque tick) remettraient
+        # un zoom manuel à "fit" à chaque frame.
+        if sprite is not prev_sprite or (self._tile_w, self._tile_h) != prev_dims:
+            self._zoom = 0; self._pan_x = self._pan_y = 0
         self.update()
 
     def set_brush(self, tiles: list[tuple[int, int]]):
@@ -567,9 +577,16 @@ class _FrameCanvas(QWidget):
         self.update()
 
     def set_tint(self, bank_colors: Optional[list[int]]):
-        """Teinte de preview appliquée à l'image composée (pas à la brosse
-        fantôme, ni aux pixels sources) — None = couleurs sources telles quelles."""
+        """Banque de preview appliquée à l'image composée via la vraie
+        quantification (nearest, comme au build) — pas à la brosse fantôme,
+        ni aux pixels sources. None = couleurs sources telles quelles."""
         self._tint_bank = bank_colors
+        self.update()
+
+    def set_preview_indexed(self, indexed: bool):
+        """True = preview quantifiée sur la banque (rendu in-game),
+        False = couleurs natives du PNG."""
+        self._preview_indexed = indexed
         self.update()
 
     # ── Géométrie ────────────────────────────────────────────────────
@@ -775,8 +792,8 @@ class _FrameCanvas(QWidget):
         # Image composée
         img = compose_frame_image(self._abs_path, self._frame,
                                    self._tile_w * 8, self._tile_h * 8)
-        if self._tint_bank:
-            img = tint_image_with_bank(img, self._tint_bank)
+        if self._preview_indexed and self._tint_bank:
+            img = quantize_image_to_bank(img, self._tint_bank)
         if img.width > 0 and img.height > 0:
             data = bytes(img.tobytes("raw", "RGBA"))
             qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
@@ -894,7 +911,32 @@ class _CanvasFloatingToolbar(QFrame):
         self.btn_next = _icon_btn("playback_next", "Dernière frame")
         _sep()
         self.btn_grid = _icon_btn("playback_grid", "Afficher grille", checkable=True)
-        self.btn_palette = _icon_btn("tool_palette", "Afficher les palettes de preview", checkable=True)
+        _sep()
+        # Mode de preview : couleurs natives du PNG vs quantifiées sur la
+        # banque (rendu WYSIWYG in-game) — paire mutuellement exclusive.
+        _MODE_BTN = (
+            f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
+            f"font-size:{T.SM}px;padding:0 8px;font-weight:bold;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};background:#2a2a2a;}}"
+            f"QToolButton:checked{{color:{C.ACCENT_GRN};background:#253525;"
+            f"border:1px solid #3a6a3a;border-radius:4px;}}"
+        )
+        self.btn_original = QToolButton(); self.btn_original.setText("PNG")
+        self.btn_original.setToolTip("Preview : couleurs natives du PNG")
+        self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexé")
+        self.btn_indexed.setToolTip("Preview : couleurs indexées sur la palette choisie (rendu in-game)")
+        for b in (self.btn_original, self.btn_indexed):
+            b.setStyleSheet(_MODE_BTN)
+            b.setCheckable(True)
+            b.setFixedHeight(36)
+            layout.addWidget(b)
+        # Sélecteur de palette de preview — juste après "Indexé", actif
+        # seulement en mode indexé. L'icône reflète la palette active (mise à
+        # jour par SpriteCenterPanel) ; le clic ouvre un dropdown de palettes.
+        self.btn_palette = _icon_btn("tool_palette", "Palette de preview")
+        self.btn_indexed.setChecked(True)
+        self.btn_original.clicked.connect(lambda: self._set_preview_indexed(False))
+        self.btn_indexed.clicked.connect(lambda: self._set_preview_indexed(True))
         _sep()
         self.btn_flip_x = _icon_btn("mirror_h", "Flip horizontal de la brosse active (Shift+X)")
         self.btn_flip_y = _icon_btn("mirror_v", "Flip vertical de la brosse active (Shift+Y)")
@@ -915,19 +957,27 @@ class _CanvasFloatingToolbar(QFrame):
             layout.addWidget(b)
 
         # Grille + flip/zoom pilotent directement le canvas (pas d'état
-        # externe à coordonner) ; play/palette restent exposés pour être
-        # câblés par SpriteCenterPanel (timer d'animation, visibilité de
-        # la colonne de palettes).
+        # externe à coordonner) ; play + palette restent exposés pour être
+        # câblés par SpriteCenterPanel (timer d'animation, dropdown palette).
         self.btn_grid.setChecked(True)
         self.btn_grid.toggled.connect(self._canvas.set_grid)
-        self.btn_palette.setChecked(True)
         self.btn_flip_x.clicked.connect(self._canvas.flip_brush_x)
         self.btn_flip_y.clicked.connect(self._canvas.flip_brush_y)
         self.btn_fit.clicked.connect(self._canvas.zoom_fit)
         self.btn_zm.clicked.connect(self._canvas.zoom_out)
         self.btn_zp.clicked.connect(self._canvas.zoom_in)
 
+        self.btn_palette.setEnabled(self.btn_indexed.isChecked())
         self.adjustSize()
+
+    def _set_preview_indexed(self, indexed: bool):
+        # Exclusivité mutuelle (checkable sans QButtonGroup pour rester dans
+        # le même conteneur de layout que les autres boutons de la barre).
+        self.btn_indexed.setChecked(indexed)
+        self.btn_original.setChecked(not indexed)
+        # Le sélecteur de palette n'a de sens qu'en mode indexé.
+        self.btn_palette.setEnabled(indexed)
+        self._canvas.set_preview_indexed(indexed)
 
     # ── Drag (identique à FloatingToolbar, core/scene_editor.py) ───────
 

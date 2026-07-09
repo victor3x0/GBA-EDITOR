@@ -36,5 +36,6 @@
     }
   ],
   "pal_bank": 1,
+  "match_mode": "nearest",
   "max_instances": 1
 }

@@ -651,5 +651,12 @@
       0,
       0
     ]
-  ]
+  ],
+  "active_obj_palettes": [
+    "DMG (GB Default)"
+  ],
+  "active_bg_palettes": [
+    "DMG (GB Default)"
+  ],
+  "backdrop_color": null
 }

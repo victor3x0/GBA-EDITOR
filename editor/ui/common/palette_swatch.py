@@ -20,14 +20,17 @@ def _qcolor(v: int) -> QColor:
 
 def bank_icon(bank: PaletteBank, size: int = 16) -> QIcon:
     """Icone 2x2 échantillonnant 4 couleurs de la banque (claire -> sombre).
-    Grisée si la banque n'a pas encore de couleurs (slot réservé)."""
+    Grisée si la banque n'a pas encore de couleurs (slot réservé). L'index 0
+    (toujours réservé/transparent) est exclu de l'échantillonnage — sinon un
+    quadrant afficherait la même couleur pour toutes les banques du catalogue."""
     px = QPixmap(size, size)
     px.fill(Qt.GlobalColor.transparent)
     painter = QPainter(px)
     half = size // 2
-    if bank.colors:
-        n = len(bank.colors)
-        stops = [bank.colors[min(i * (n - 1) // 3, n - 1)] for i in range(4)]
+    editable = bank.colors[1:] if len(bank.colors) > 1 else bank.colors
+    if editable:
+        n = len(editable)
+        stops = [editable[min(i * (n - 1) // 3, n - 1)] for i in range(4)]
         for (x, y), c in zip([(0, 0), (half, 0), (0, half), (half, half)], stops):
             painter.fillRect(x, y, half, half, _qcolor(c))
     else:

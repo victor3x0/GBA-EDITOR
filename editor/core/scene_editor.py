@@ -48,6 +48,8 @@ from core.project import (
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T
 from core.sprite_compose import compose_frame_image
+from core.color_utils import quantize_image_to_bank, quantize_image_luminance_preserving
+from codegen.asset_pipeline import quantize_asset, resolve_palette_bank, resolve_obj_palette_bank
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -104,6 +106,41 @@ def _make_placeholder_pixmap() -> QPixmap:
     p.drawPixmap(2, 2, icon_px)
     p.end()
     return px
+
+
+def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
+    """Pixmap d'un layer BG pour le canvas — quantifiée avec la vraie banque
+    résolue (scene.active_bg_palettes[layer.pal_bank]) et son match_mode, pour
+    un rendu identique au build. Couleurs natives si aucune banque résolue
+    (même comportement legacy que GritBackground)."""
+    # layer.image vide -> `ap` pointe sur le DOSSIER background_images_dir
+    # (pas un fichier) : ne rien afficher (l'ancien QPixmap(dir) échouait
+    # silencieusement, mais Image.open(dir) lève PermissionError).
+    if not layer.image or not ap.is_file():
+        return None
+    bank = resolve_palette_bank(p, scene.active_bg_palettes, layer.pal_bank)
+    if not bank or not bank.colors:
+        return QPixmap(str(ap))
+    try:
+        img = quantize_asset(ap, bank.colors, getattr(layer, "match_mode", "nearest"))
+    except ValueError:
+        return QPixmap(str(ap))
+    data = bytes(img.tobytes("raw", "RGBA"))
+    qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(qi)
+
+
+def _quantize_preview(img, bank, mode: str):
+    """Quantifie une image RGBA déjà composée en mémoire (aperçu acteur du
+    canvas de scène) — "direct_index" a besoin d'un fichier indexé sur
+    disque, incompatible avec une frame déjà recomposée en RGBA ; retombe sur
+    "nearest" pour CET aperçu uniquement (le build réel, lui, utilise bien le
+    chemin indexé via build_sprite_sheet_indexed)."""
+    if not bank or not bank.colors:
+        return img
+    if mode == "nearest_luminance":
+        return quantize_image_luminance_preserving(img, bank.colors)
+    return quantize_image_to_bank(img, bank.colors)
 
 
 def _preview_frame_for_sprite(sprite, sprite_comp):
@@ -1637,7 +1674,7 @@ class SceneEditor(QWidget):
             ba = project.get_background(scene.background_asset)
             for layer in (ba.layers if ba else []):
                 ap = project.background_images_dir / layer.image
-                self._gba_scene.set_bg(layer.bg_slot, QPixmap(str(ap)) if ap.exists() else None)
+                self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(project, scene, layer, ap))
                 shown.add(layer.bg_slot)
         for i in range(4):
             if i not in shown:
@@ -1660,8 +1697,9 @@ class SceneEditor(QWidget):
         self._gba_scene.clear_sprites()
         p = self._project
 
+        scene = p.active_scene
         _placeholder: QPixmap | None = None
-        for actor in p.active_scene.actors:
+        for actor in scene.actors:
             sprite_comp = actor.get_component("sprite")
             sprite = (
                 p.get_sprite(sprite_comp.sprite_name)
@@ -1674,6 +1712,8 @@ class SceneEditor(QWidget):
                 preview_frame = _preview_frame_for_sprite(sprite, sprite_comp)
                 if preview_frame is not None:
                     img = compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
+                    bank = resolve_obj_palette_bank(p, actor, scene)
+                    img = _quantize_preview(img, bank, getattr(actor, "match_mode", "nearest"))
                     if img.width > 0 and img.height > 0:
                         data = bytes(img.tobytes("raw", "RGBA"))
                         qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
@@ -1798,7 +1838,7 @@ class SceneEditor(QWidget):
             ba = self._project.get_background(scene.background_asset)
             for layer in (ba.layers if ba else []):
                 ap = self._project.background_images_dir / layer.image
-                self._gba_scene.set_bg(layer.bg_slot, QPixmap(str(ap)) if ap.exists() else None)
+                self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(self._project, scene, layer, ap))
                 shown.add(layer.bg_slot)
         for i in range(4):
             if i not in shown:

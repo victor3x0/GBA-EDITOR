@@ -10,12 +10,13 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
+    QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox, QMenu,
 )
-from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtGui import QPixmap, QFont, QIcon
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
-from PyQt6.QtCore import Qt, pyqtSignal
+from ui.common.widgets import W, ScriptPickerPopup
+from ui.common.palette_swatch import bank_icon
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
 from core.project import Project
 
@@ -191,10 +192,18 @@ class BgLayerRow(QFrame):
     - × à droite       → retire le layer entier
     - Vignette vide    → fond gris + icône selon l'état (vide / UI layer)
     """
-    asset_changed  = pyqtSignal(int, str)
-    speed_changed  = pyqtSignal(int, float)
-    bound_toggled  = pyqtSignal(int)
-    layer_removed  = pyqtSignal(int)
+    asset_changed    = pyqtSignal(int, str)
+    speed_changed    = pyqtSignal(int, float)
+    bound_toggled    = pyqtSignal(int)
+    layer_removed    = pyqtSignal(int)
+    pal_bank_changed   = pyqtSignal(int, str)  # slot_index, nom de la PaletteBank
+    match_mode_changed = pyqtSignal(int, str)  # slot_index, "nearest"|"nearest_luminance"|"direct_index"
+
+    _MATCH_MODES = [
+        ("N", "Nearest", "nearest"),
+        ("L", "Nearest luminance", "nearest_luminance"),
+        ("I", "Indexation directe", "direct_index"),
+    ]
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -205,6 +214,7 @@ class BgLayerRow(QFrame):
         self._path: str = ""
         self._highlight = False
         self._is_ui_layer = False
+        self._pal_banks: list = []
         self.setAcceptDrops(True)
         self.setFixedHeight(40)
         self._update_style()
@@ -277,6 +287,39 @@ class BgLayerRow(QFrame):
         )
         row.addWidget(self._speed)
 
+        # Icône palette — compacte (pas de ScriptSlot complet, pas la place
+        # dans une rangée de 40px). Ouvre le même ScriptPickerPopup que
+        # palette_picker_slot, câblé sur BackgroundLayer.pal_bank.
+        self._pal_btn = QToolButton()
+        self._pal_btn.setFixedSize(22, 22)
+        self._pal_btn.setIconSize(QSize(16, 16))
+        self._pal_btn.setToolTip("Choisir la palette de ce layer")
+        self._pal_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:1px solid #333;border-radius:2px;}"
+            f"QToolButton:hover{{border-color:{self._color};}}"
+        )
+        self._pal_btn.clicked.connect(self._open_pal_picker)
+        row.addWidget(self._pal_btn)
+
+        # Algorithme de quantification (match_mode) — menu compact 3 entrées,
+        # pas un 2e picker complet (pas la place dans une rangée de 40px).
+        self._mode_btn = QToolButton()
+        self._mode_btn.setFixedSize(18, 22)
+        self._mode_btn.setText(self._MATCH_MODES[0][0])
+        self._mode_btn.setFont(QFont(T.MONO, 9, QFont.Weight.Bold))
+        self._mode_btn.setStyleSheet(
+            f"QToolButton{{color:{self._color};background:transparent;"
+            "border:1px solid #333;border-radius:2px;}"
+            f"QToolButton:hover{{border-color:{self._color};}}"
+        )
+        self._mode_btn.setToolTip(
+            "Algorithme de quantification — N: nearest (rapide, peut fusionner "
+            "des couleurs) / L: nearest luminance (sans perte si assez de "
+            "slots) / I: indexation directe (PNG indexé requis)"
+        )
+        self._mode_btn.clicked.connect(self._open_mode_menu)
+        row.addWidget(self._mode_btn)
+
         row.addStretch()
 
         btn_remove = W.btn_danger("×")
@@ -347,6 +390,36 @@ class BgLayerRow(QFrame):
         self._speed.blockSignals(True)
         self._speed.setValue(value)
         self._speed.blockSignals(False)
+
+    def set_pal_banks(self, banks: list, current_name: Optional[str]):
+        """banks : PaletteBank actives de la scène (scene.active_bg_palettes,
+        filtrées des slots vides/introuvables) ; current_name : nom résolu du
+        slot actuel (BackgroundLayer.pal_bank), None si non résolvable —
+        même contrat que component_editors/sprite.py pour Actor.pal_bank."""
+        self._pal_banks = banks
+        current = next((b for b in banks if b.name == current_name), None) if current_name else None
+        self._pal_btn.setIcon(bank_icon(current) if current else QIcon())
+
+    def _open_pal_picker(self):
+        if not self._pal_banks:
+            return
+        entries = [(bank.name, bank.name, bank_icon(bank)) for bank in self._pal_banks]
+        popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
+        popup.picked.connect(lambda name: self.pal_bank_changed.emit(self.slot_index, name))
+        popup.show_below(self._pal_btn)
+
+    def set_match_mode(self, mode: str):
+        letter = next((l for l, _, v in self._MATCH_MODES if v == mode), self._MATCH_MODES[0][0])
+        self._mode_btn.setText(letter)
+
+    def _open_mode_menu(self):
+        menu = QMenu(self)
+        for letter, label, value in self._MATCH_MODES:
+            action = menu.addAction(f"{letter} — {label}")
+            action.triggered.connect(
+                lambda _checked, v=value: self.match_mode_changed.emit(self.slot_index, v)
+            )
+        menu.exec(self._mode_btn.mapToGlobal(self._mode_btn.rect().bottomLeft()))
 
     def set_bound(self, checked: bool):
         if checked:

@@ -90,4 +90,28 @@ Fonctionnalités envisagées :
 
 ## Crédits
 
+<<<<<<< HEAD
 Musiques du projet de démo par **Tiptoptom Cat** — [itch.io](https://tiptoptomcat.itch.io/).
+=======
+### Palettes de couleurs
+
+Merci à leurs créateurs :
+
+| Palette | Auteur |
+| --- | --- |
+| DMG (GB Default) / (BG) | Nintendo — Game Boy (DMG-01) |
+| Miyazaki 16 | skeddles |
+| NA16 | Nauris |
+| PICO-8 | Lexaloffle Games |
+| Soft 16 | Endesga |
+| Mystic 16 | polyphrog |
+| Colorquest 16 | polyphrog |
+| Commodore 64 | palette matérielle Commodore |
+| Microsoft Windows 16 | palette système Microsoft |
+
+Beaucoup de ces palettes sont partagées par leurs auteurs sur
+[Lospec](https://lospec.com/palette-list); elles restent la propriété de
+leurs créateurs.
+
+Musiques du projet de démo par **Tiptoptom Cat** — [itch.io](https://tiptoptomcat.itch.io/).
+>>>>>>> 67f4205 (// Mise à jour et Modifications UI)

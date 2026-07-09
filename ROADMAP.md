@@ -23,33 +23,42 @@ sprites assignés au même bank.
 
 ### Décisions verrouillées
 
-- **Deux pools séparés**, fidèles au hardware GBA (mémoire palette OBJ et BG
-  physiquement distinctes) : 16 palettes OBJ (sprites) × 16 couleurs, 16 palettes BG
-  (fonds) × 16 couleurs.
+- **Deux pools hardware séparés**, fidèles au GBA (mémoire palette OBJ et BG
+  physiquement distinctes) : 16 banques OBJ (sprites) × 16 couleurs, 16 banques BG
+  (fonds) × 16 couleurs. Cette séparation vit dans la **sélection active par scène**
+  (voir ci-dessous), pas dans le catalogue d'édition — depuis le 2026-07-08 le
+  catalogue lui-même est unifié (voir plus bas).
 - **Nouvel écran Palette** dédié pour construire ces palettes à la main.
 - **Import** : depuis un PNG (bande de couleurs) ou un export standard Aseprite
   (PNG/`.gpl`) — pas de parsing du format `.aseprite` natif (trop de travail pour la
   valeur ajoutée, fragile aux évolutions du format).
-- **Catalogue de palettes illimité au niveau projet** (2026-07-08, révision du plan
-  initial "16 banks fixes") — sur le modèle GB Studio : autant de palettes nommées que
-  voulu par pool (OBJ/BG), stockées comme n'importe quelle autre Resource
-  (`project/palettes/obj/*.json`, `bg/*.json`, un fichier par palette). Chaque `Scene`
+- **Catalogue de palettes illimité et unifié au niveau projet** (2026-07-08, révision du
+  plan initial "16 banks fixes par pool") — sur le modèle GB Studio : autant de palettes
+  nommées que voulu, **partagées entre OBJ et BG** (une palette n'est que 16 couleurs,
+  rien n'empêche la même définition de servir aux deux — la séparation hardware n'a
+  jamais besoin de vivre dans le catalogue), stockées comme n'importe quelle autre
+  Resource (`project/palettes/*.json`, un fichier par palette, plat). Chaque `Scene`
   choisit jusqu'à 16 palettes actives par pool (`Scene.active_obj_palettes` /
   `active_bg_palettes`, ordre = index de banque hardware) — c'est cette sélection, pas
-  le catalogue, qui occupe réellement les 16 banques au build. `Actor`/`Prefab.pal_bank`
-  reste un `int` mais indexe désormais un **slot de la sélection de la scène**, pas
-  directement le catalogue projet.
+  le catalogue, qui occupe réellement les 16 banques par pool au build.
+  `Actor`/`Prefab.pal_bank` reste un `int` mais indexe désormais un **slot de la
+  sélection OBJ de la scène**, pas directement le catalogue projet.
   - `Prefab.pal_bank` reste scene-relatif comme `Actor.pal_bank` (même forme de champ),
     bien qu'un prefab poolé n'ait pas de scène propriétaire unique (spawn_X() appelable
     depuis n'importe quel script Lua, non analysé statiquement) — un validateur
     (avertissement, pas un blocage) signale les cas où deux scènes résolvent des
     palettes différentes pour le même prefab ou le même sprite.
-  - **Coupe assumée** : la quantification/remap des tuiles d'un `SpriteAsset` (slice 1)
-    reste dédupliquée une fois par nom de sprite pour tout le projet — si le même
-    sprite est utilisé dans deux scènes dont la sélection de palette diffère au slot
-    concerné, un seul jeu de couleurs "gagne" (1ère scène rencontrée) et le validateur
-    avertit. Générer une variante de tuiles par scène est un chantier pipeline à part,
-    pas fait à ce stade.
+  - **Coupe assumée (OBJ)** : la quantification/remap des tuiles d'un `SpriteAsset`
+    (slice 1) reste dédupliquée une fois par nom de sprite pour tout le projet — si le
+    même sprite est utilisé dans deux scènes dont la sélection de palette diffère au
+    slot concerné, un seul jeu de couleurs "gagne" (1ère scène rencontrée) et le
+    validateur avertit. Générer une variante de tuiles par scène est un chantier
+    pipeline à part, pas fait à ce stade.
+  - **Coupe assumée (BG)** : une seule palette BG par scène (`active_bg_palettes[0]`),
+    partagée par tous les layers de la scène — pas d'override par `BackgroundLayer`
+    individuel (le hardware le permettrait via `SE_PALBANK` par tuile, mais le runtime
+    actuel ne l'exploite pas ; voir "Ouvert" ci-dessous). Les slots 1-15 de
+    `active_bg_palettes` restent réservés, sans effet, pour ce futur chantier.
   - Pas de banks réservées (voir "Mis de côté" ci-dessous pour l'ancien plan de
     réservoir auto-import).
 - **`SpriteAsset` et `BackgroundLayer`** ont chacun leur propre champ palette
@@ -93,17 +102,21 @@ sprites assignés au même bank.
 ### Ouvert
 
 - ~~`Scene` doit probablement recevoir un nouveau champ palette dédié~~ — fait
-  (`active_obj_palettes`/`active_bg_palettes`, 2026-07-08), mais uniquement pour la
-  sélection des palettes actives OBJ ; l'override par `BackgroundLayer` individuel
-  (cascade Scène décrite plus haut) reste à faire, probablement au même endroit que le
-  champ `render_mode` (voir v0.3). Le pool BG suit le même modèle de données que OBJ
-  (catalogue illimité) mais son branchement dans le pipeline (`GritBackground`) n'est
-  toujours pas câblé — seul OBJ l'est réellement au build.
+  (`active_obj_palettes`/`active_bg_palettes`, 2026-07-08).
+- ~~Branchement BG dans le pipeline (`GritBackground`)~~ — fait au niveau scène
+  (2026-07-08) : `GritBackground` pré-quantifie les layers vers `active_bg_palettes[0]`
+  et remappe le tileset généré, `main_gen.py` copie une palette canonique par scène
+  dans `PAL_BG_RAM`. Reste ouvert : **override par `BackgroundLayer` individuel**
+  (cascade Scène décrite plus haut, une palette différente par layer dans une même
+  scène) — nécessite de câbler `SE_PALBANK` par tuile dans le runtime + la génération
+  de map (grit produit aujourd'hui un seul tileset partagé `-pS` pour tous les layers
+  d'une scène ; le hardware supporte le per-tile palbank mais rien ne l'exploite),
+  probablement au même endroit que le champ `render_mode` (voir v0.3).
 - Calcul de "couleur la plus proche" (distance colorimétrique — RGB15 GBA ?) non précisé
   (utilisé par `quantize_image_to_bank`, slice 1 — distance euclidienne simple pour
   l'instant, pas de justification perceptuelle particulière).
-- Variante de tuiles par scène (lever la "coupe assumée" ci-dessus) — chantier pipeline
-  à part si le conflit multi-scènes s'avère gênant en pratique.
+- Variante de tuiles par scène (lever la "coupe assumée" OBJ ci-dessus) — chantier
+  pipeline à part si le conflit multi-scènes s'avère gênant en pratique.
 
 ---
 
