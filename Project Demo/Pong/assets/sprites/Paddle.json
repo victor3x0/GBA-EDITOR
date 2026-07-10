@@ -6,7 +6,7 @@
   "states": [
     {
       "name": "Idle",
-      "speed": 8,
+      "speed": 5,
       "loop": true,
       "directions": [
         {

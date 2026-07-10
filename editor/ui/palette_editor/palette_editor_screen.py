@@ -5,12 +5,13 @@ juste 16 couleurs, réutilisable pour les deux pools. C'est la scène qui
 choisit jusqu'à 16 palettes actives par pool parmi ce catalogue (voir Scene
 Inspector, carte "Palettes actives").
 """
+import colorsys
 from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSplitter,
     QTreeWidget, QTreeWidgetItem, QAbstractItemView, QSlider, QSpinBox,
-    QInputDialog, QMessageBox, QMenu,
+    QInputDialog, QMessageBox, QMenu, QLineEdit,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
@@ -19,7 +20,9 @@ from ui.common.theme import C, T
 from ui.common.widgets import W
 
 from core.project import Project, PaletteBank
-from core.color_utils import bgr555_to_rgb888, bgr555_components, components_to_bgr555
+from core.color_utils import (
+    bgr555_to_rgb888, bgr555_components, components_to_bgr555, rgb888_to_bgr555,
+)
 from core.palette_presets import hsb_ramp_bgr555
 from core.history import get_history, DeleteResourceCmd
 from ui.common.palette_swatch import bank_icon as _bank_icon
@@ -29,6 +32,30 @@ SPLITTER_STYLE = (
     "QSplitter::handle:horizontal{width:3px;}"
     f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
 )
+
+
+def _rgb01(rgb01) -> str:
+    """(r,g,b) 0-1 -> 'rgb(R,G,B)' 0-255 pour un stop de gradient QSS."""
+    r, g, b = rgb01
+    return f"rgb({round(r * 255)},{round(g * 255)},{round(b * 255)})"
+
+
+def _grad_slider_qss(stops: list[str]) -> str:
+    """Feuille de style d'un QSlider dont la rainure affiche le gradient
+    `stops` (chaînes 'rgb(...)') — simule la couleur résultante le long du
+    slider. Poignée sobre lisible sur n'importe quel fond."""
+    n = len(stops)
+    grad_stops = ", ".join(
+        f"stop:{(i / (n - 1)):.4f} {c}" for i, c in enumerate(stops)
+    )
+    return (
+        "QSlider::groove:horizontal{height:12px;border-radius:6px;"
+        f"border:1px solid {C.BORDER_MID};"
+        f"background:qlineargradient(x1:0,y1:0,x2:1,y2:0,{grad_stops});}}"
+        "QSlider::handle:horizontal{width:8px;height:20px;margin:-5px 0;"
+        "border-radius:3px;background:#f0f0f0;border:1px solid #101010;}"
+        "QSlider::handle:horizontal:hover{background:#ffffff;}"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -219,7 +246,7 @@ class PaletteEditorScreen(QWidget):
         super().__init__(parent)
         self._project: Optional[Project] = None
         self._bank_name: Optional[str] = None
-        self._active_color: Optional[int] = None
+        self._active_index: Optional[int] = None
         self._blocking = False
         self.setStyleSheet("background:#181818;")
 
@@ -260,50 +287,81 @@ class PaletteEditorScreen(QWidget):
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         cl.addWidget(self._empty_lbl)
 
+        _CENTER = Qt.AlignmentFlag.AlignHCenter
+
         self._title = QLabel("")
         self._title.setFont(QFont(T.MONO, T.XL, QFont.Weight.Bold))
         self._title.setStyleSheet(f"color:{C.TEXT_HI};")
         self._title.setVisible(False)
-        cl.addWidget(self._title)
+        cl.addWidget(self._title, alignment=_CENTER)
 
         self._swatch_row = QHBoxLayout()
         self._swatch_row.setSpacing(4)
         cl.addLayout(self._swatch_row)
         self._swatch_btns: list[QPushButton] = []
 
+        # ── Éditeur de couleur (centré, largeur bornée) ────────────────
         self._editor = QWidget()
+        self._editor.setMaximumWidth(460)
         el = QVBoxLayout(self._editor)
         el.setContentsMargins(0, 10, 0, 0)
-        el.setSpacing(8)
+        el.setSpacing(10)
 
         self._preview = QLabel()
-        self._preview.setFixedSize(60, 60)
-        self._preview.setStyleSheet(f"border:1px solid {C.BORDER_MID}; border-radius:4px;")
-        el.addWidget(self._preview)
+        self._preview.setFixedSize(96, 96)
+        self._preview.setStyleSheet(f"border:1px solid {C.BORDER_MID}; border-radius:6px;")
+        el.addWidget(self._preview, alignment=_CENTER)
 
+        # Champ hexadécimal (#RRGGBB, quantifié 5 bits/canal)
+        hex_row = QHBoxLayout()
+        hex_row.setAlignment(_CENTER)
+        hex_lab = QLabel("HEX")
+        hex_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        hex_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
+        hex_row.addWidget(hex_lab)
+        self._hex = QLineEdit()
+        self._hex.setFixedWidth(100)
+        self._hex.setMaxLength(7)
+        self._hex.setFont(QFont(T.MONO, T.MD))
+        self._hex.setStyleSheet(
+            f"QLineEdit{{background:{C.BG_INPUT};color:{C.TEXT_HI};"
+            f"border:1px solid {C.BORDER_MID};border-radius:3px;padding:3px 6px;}}"
+            f"QLineEdit:focus{{border-color:{C.ACCENT_GRN};}}"
+        )
+        self._hex.editingFinished.connect(self._on_hex_changed)
+        hex_row.addWidget(self._hex)
+        el.addLayout(hex_row)
+
+        # Sliders RGB (0-31, natif GBA) + HSB (dérivé), rainure colorée
         self._sliders: dict[str, QSlider] = {}
         self._spins: dict[str, QSpinBox] = {}
+        self._hsb_sliders: dict[str, QSlider] = {}
+        self._hsb_spins: dict[str, QSpinBox] = {}
+
         for ch, chan_color in (("r", C.AXIS_X), ("g", C.ACCENT_GRN), ("b", C.AXIS_Y)):
-            row = QHBoxLayout()
-            lab = QLabel(ch.upper())
-            lab.setFixedWidth(16)
-            lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-            lab.setStyleSheet(f"color:{chan_color};")
-            row.addWidget(lab)
-            sl = QSlider(Qt.Orientation.Horizontal)
-            sl.setRange(0, 31)
-            sl.valueChanged.connect(lambda v, ch=ch: self._on_channel_changed(ch, v))
-            row.addWidget(sl, 1)
-            sp = QSpinBox()
-            sp.setRange(0, 31)
-            sp.setFixedWidth(50)
-            sp.valueChanged.connect(lambda v, ch=ch: self._on_channel_changed(ch, v))
-            row.addWidget(sp)
+            sl, sp = self._make_channel_row(
+                el, ch.upper(), chan_color, 0, 31,
+                lambda v, ch=ch: self._on_rgb_changed(ch, v),
+            )
             self._sliders[ch] = sl
             self._spins[ch] = sp
-            el.addLayout(row)
 
-        cl.addWidget(self._editor)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color:{C.BORDER_DARK};")
+        el.addWidget(sep)
+
+        for ch, label, maxv, chan_color in (
+            ("h", "H", 359, C.TEXT_DIM), ("s", "S", 100, C.TEXT_DIM), ("v", "L", 100, C.TEXT_DIM),
+        ):
+            sl, sp = self._make_channel_row(
+                el, label, chan_color, 0, maxv,
+                lambda v, ch=ch: self._on_hsb_changed(ch, v),
+            )
+            self._hsb_sliders[ch] = sl
+            self._hsb_spins[ch] = sp
+
+        cl.addWidget(self._editor, alignment=_CENTER)
         cl.addStretch()
         self._editor.setVisible(False)
 
@@ -311,6 +369,28 @@ class PaletteEditorScreen(QWidget):
         split.setSizes([240, 560])
 
         self._show_empty()
+
+    # ── Construction d'une ligne slider coloré + spinbox ───────────
+
+    def _make_channel_row(self, parent_layout, label, color, min_v, max_v, on_change):
+        row = QHBoxLayout()
+        lab = QLabel(label)
+        lab.setFixedWidth(20)
+        lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        lab.setStyleSheet(f"color:{color};")
+        row.addWidget(lab)
+        sl = QSlider(Qt.Orientation.Horizontal)
+        sl.setRange(min_v, max_v)
+        sl.setMinimumWidth(240)
+        sl.valueChanged.connect(on_change)
+        row.addWidget(sl, 1)
+        sp = QSpinBox()
+        sp.setRange(min_v, max_v)
+        sp.setFixedWidth(56)
+        sp.valueChanged.connect(on_change)
+        row.addWidget(sp)
+        parent_layout.addLayout(row)
+        return sl, sp
 
     # ── Chargement ────────────────────────────────────────────────
 
@@ -349,11 +429,11 @@ class PaletteEditorScreen(QWidget):
         self._title.setText(bank.name)
         self._title.setVisible(True)
 
-        self._active_color = bank.colors[1] if len(bank.colors) > 1 else None
+        self._active_index = 1 if len(bank.colors) > 1 else None
         self._render_swatches(bank, selectable=True)
         self._editor.setVisible(bool(bank.colors))
-        if self._active_color is not None:
-            self._load_channels(self._active_color)
+        if self._active_index is not None:
+            self._load_channels(bank.colors[self._active_index])
 
     def _on_bank_deleted(self):
         if self._bank_name is None or not self._current_bank():
@@ -380,12 +460,13 @@ class PaletteEditorScreen(QWidget):
 
     def _render_swatches(self, bank: PaletteBank, selectable: bool):
         self._clear_swatches()
+        self._swatch_row.addStretch(1)   # centrage (stretch avant + après)
         for i, c in enumerate(bank.colors):
             btn = QPushButton()
             btn.setFixedSize(32, 40)
             r, g, b = bgr555_to_rgb888(c)
             swatch_selectable = selectable and i != 0
-            selected = swatch_selectable and c == self._active_color
+            selected = swatch_selectable and i == self._active_index
             border = C.ACCENT_GRN if selected else C.BORDER_MID
             width = 3 if selected else 1
             btn.setStyleSheet(
@@ -393,7 +474,7 @@ class PaletteEditorScreen(QWidget):
                 f"border:{width}px solid {border};border-radius:2px;}}"
             )
             if swatch_selectable:
-                btn.clicked.connect(lambda _checked, c=c: self._select_color(c))
+                btn.clicked.connect(lambda _checked, i=i: self._select_color(i))
             else:
                 btn.setEnabled(False)
             if i == 0:
@@ -402,56 +483,112 @@ class PaletteEditorScreen(QWidget):
             self._swatch_btns.append(btn)
         self._swatch_row.addStretch(1)
 
-    def _select_color(self, value: int):
-        self._active_color = value
-        self._load_channels(value)
+    def _select_color(self, index: int):
+        """Sélectionne le slot `index` (l'index EST le slot hardware visible
+        in-game — on suit l'index, pas la valeur, pour ne jamais réordonner
+        les couleurs sous les pieds de l'utilisateur)."""
         bank = self._current_bank()
-        if bank:
-            self._render_swatches(bank, selectable=True)
+        if not bank or not (0 <= index < len(bank.colors)):
+            return
+        self._active_index = index
+        self._load_channels(bank.colors[index])
+        self._render_swatches(bank, selectable=True)
 
-    # ── Éditeur RGB (0-31, profondeur native GBA) ───────────────────
+    def _active_value(self) -> Optional[int]:
+        bank = self._current_bank()
+        if bank and self._active_index is not None and self._active_index < len(bank.colors):
+            return bank.colors[self._active_index]
+        return None
+
+    # ── Éditeur de couleur (RGB 0-31 natif GBA + HSB dérivé + hex) ────
 
     def _load_channels(self, value: int):
+        """Synchronise tous les contrôles (RGB, HSB, hex, preview, gradients)
+        depuis une valeur BGR555, sans re-déclencher les handlers."""
         self._blocking = True
-        r, g, b = bgr555_components(value)
+        r, g, b = bgr555_components(value)                 # 0-31
         for ch, v in (("r", r), ("g", g), ("b", b)):
             self._sliders[ch].setValue(v)
             self._spins[ch].setValue(v)
+        h, s, l = colorsys.rgb_to_hsv(r / 31, g / 31, b / 31)
+        for ch, v in (("h", round(h * 359)), ("s", round(s * 100)), ("v", round(l * 100))):
+            self._hsb_sliders[ch].setValue(v)
+            self._hsb_spins[ch].setValue(v)
+        R, G, B = bgr555_to_rgb888(value)
+        self._hex.setText(f"#{R:02X}{G:02X}{B:02X}")
         self._update_preview(value)
+        self._update_gradients(value)
         self._blocking = False
 
     def _update_preview(self, value: int):
         r, g, b = bgr555_to_rgb888(value)
         self._preview.setStyleSheet(
-            f"background:rgb({r},{g},{b}); border:1px solid {C.BORDER_MID}; border-radius:4px;"
+            f"background:rgb({r},{g},{b}); border:1px solid {C.BORDER_MID}; border-radius:6px;"
         )
 
-    def _on_channel_changed(self, ch: str, v: int):
-        if self._blocking or self._active_color is None:
+    def _update_gradients(self, value: int):
+        """Recolore chaque rainure de slider pour simuler la couleur obtenue
+        le long du slider (les autres canaux fixés à la valeur courante)."""
+        r, g, b = bgr555_components(value)
+        R, G, B = bgr555_to_rgb888(value)
+        self._sliders["r"].setStyleSheet(_grad_slider_qss([f"rgb(0,{G},{B})", f"rgb(255,{G},{B})"]))
+        self._sliders["g"].setStyleSheet(_grad_slider_qss([f"rgb({R},0,{B})", f"rgb({R},255,{B})"]))
+        self._sliders["b"].setStyleSheet(_grad_slider_qss([f"rgb({R},{G},0)", f"rgb({R},{G},255)"]))
+        h, s, l = colorsys.rgb_to_hsv(r / 31, g / 31, b / 31)
+        self._hsb_sliders["h"].setStyleSheet(_grad_slider_qss(
+            [_rgb01(colorsys.hsv_to_rgb(i / 6, s, l)) for i in range(7)]))
+        self._hsb_sliders["s"].setStyleSheet(_grad_slider_qss(
+            [_rgb01(colorsys.hsv_to_rgb(h, 0, l)), _rgb01(colorsys.hsv_to_rgb(h, 1, l))]))
+        self._hsb_sliders["v"].setStyleSheet(_grad_slider_qss(
+            [_rgb01(colorsys.hsv_to_rgb(h, s, 0)), _rgb01(colorsys.hsv_to_rgb(h, s, 1))]))
+
+    def _apply_color(self, new_value: int):
+        """Écrit `new_value` DANS LE SLOT ÉDITÉ (à son index, sans réordonner),
+        sauvegarde et resynchronise l'UI. Point de passage unique des trois
+        modes d'édition (RGB, HSB, hex). L'ordre des couleurs = l'ordre des
+        index hardware, laissé tel quel : c'est à l'utilisateur d'organiser
+        ses couleurs (l'index est ce qui est réellement visible in-game)."""
+        if self._active_index is None:
             return
         bank = self._current_bank()
-        if not bank:
+        if not bank or not (1 <= self._active_index < len(bank.colors)):
             return
-
-        self._blocking = True
-        self._sliders[ch].setValue(v)
-        self._spins[ch].setValue(v)
-        self._blocking = False
-
-        r, g, b = bgr555_components(self._active_color)
-        r, g, b = {"r": (v, g, b), "g": (r, v, b), "b": (r, g, v)}[ch]
-        new_value = components_to_bgr555(r, g, b)
-
-        # index(..., 1) : ne jamais confondre avec le slot réservé même si
-        # sa valeur (RESERVED_SLOT_COLOR) coïncide avec une couleur choisie
-        # ailleurs dans la banque (ex. un utilisateur qui choisit du noir pur).
-        idx = bank.colors.index(self._active_color, 1)
-        bank.colors[idx] = new_value
-        # L'index 0 (réservé) ne participe jamais au tri par luminosité.
-        bank.colors[1:] = sorted(bank.colors[1:], key=lambda c: sum(bgr555_components(c)), reverse=True)
-        self._active_color = new_value
-
+        bank.colors[self._active_index] = new_value
         self._project.palettes.save(bank)
-        self._update_preview(new_value)
+        self._load_channels(new_value)
         self._render_swatches(bank, selectable=True)
         self._finder.refresh()
+
+    def _on_rgb_changed(self, ch: str, v: int):
+        cur = self._active_value()
+        if self._blocking or cur is None:
+            return
+        r, g, b = bgr555_components(cur)
+        r, g, b = {"r": (v, g, b), "g": (r, v, b), "b": (r, g, v)}[ch]
+        self._apply_color(components_to_bgr555(r, g, b))
+
+    def _on_hsb_changed(self, ch: str, v: int):
+        cur = self._active_value()
+        if self._blocking or cur is None:
+            return
+        r, g, b = bgr555_components(cur)
+        h, s, l = colorsys.rgb_to_hsv(r / 31, g / 31, b / 31)
+        hsb = {"h": h * 359, "s": s * 100, "v": l * 100}
+        hsb[ch] = v
+        rr, gg, bb = colorsys.hsv_to_rgb(hsb["h"] / 359, hsb["s"] / 100, hsb["v"] / 100)
+        self._apply_color(components_to_bgr555(round(rr * 31), round(gg * 31), round(bb * 31)))
+
+    def _on_hex_changed(self):
+        cur = self._active_value()
+        if self._blocking or cur is None:
+            return
+        t = self._hex.text().strip().lstrip("#")
+        if len(t) != 6:
+            self._load_channels(cur)   # entrée invalide -> restaure
+            return
+        try:
+            R, G, B = int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)
+        except ValueError:
+            self._load_channels(cur)
+            return
+        self._apply_color(rgb888_to_bgr555(R, G, B))

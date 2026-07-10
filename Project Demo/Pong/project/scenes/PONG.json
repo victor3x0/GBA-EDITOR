@@ -41,8 +41,8 @@
           "exports_values": {}
         }
       ],
-      "x": 20,
-      "y": 69,
+      "x": 19,
+      "y": 65,
       "flip_h": false,
       "flip_v": false,
       "priority": 3,
@@ -89,8 +89,8 @@
           "exports_values": {}
         }
       ],
-      "x": 214,
-      "y": 65,
+      "x": 213,
+      "y": 63,
       "flip_h": false,
       "flip_v": false,
       "priority": 1,
@@ -761,7 +761,7 @@
     ""
   ],
   "active_bg_palettes": [
-    "pal_Ball",
+    "",
     ""
   ],
   "backdrop_color": null

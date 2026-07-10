@@ -175,8 +175,11 @@ def extract_palette_from_image(path, max_colors: int = 15) -> list[int]:
         color_map = compress_colors(colors, max_colors)
         # dict.fromkeys : dédup les représentants réduits en préservant l'ordre
         colors = list(dict.fromkeys(color_map.values()))
-    colors_sorted = sorted(colors, key=_luma)  # sombre -> lumineux
-    return [RESERVED_SLOT_COLOR] + [rgb888_to_bgr555(r, g, b) for r, g, b in colors_sorted]
+    # PAS de tri : l'ordre = ordre d'apparition des couleurs dans le PNG.
+    # L'index de palette est le slot hardware réellement visible in-game ;
+    # réordonner risquerait de désaligner les tuiles déjà quantifiées d'un
+    # sprite. C'est à l'utilisateur d'organiser ses couleurs en amont.
+    return [RESERVED_SLOT_COLOR] + [rgb888_to_bgr555(r, g, b) for r, g, b in colors]
 
 
 def direct_index_to_bank(path, bank_colors: list[int]) -> "Image.Image":

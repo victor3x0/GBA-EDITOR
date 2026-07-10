@@ -74,8 +74,12 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_scene(ctx)
     _check_actors(ctx)
     _check_backgrounds(ctx)
-    _check_pal_bank_scene_consistency(ctx)
-    _check_bg_pal_bank_scene_consistency(ctx)
+    # NB : pas d'avertissement quand un même sprite/prefab/layer pointant un
+    # SLOT (pal_bank 0-15) résout vers des palettes différentes selon la scène.
+    # C'est un comportement PRÉVISIBLE et voulu (palette-swap par slot, comme
+    # le recoloring de sprites sur GB/NES) : le slot est le même partout, seul
+    # le contenu du slot varie par scène. À l'utilisateur d'aligner ses
+    # palettes par index en amont.
     _check_bg_text_cbb_conflict(ctx)
     _check_direct_index_mode(ctx)
     _check_palette_bank_overflow(ctx)
@@ -174,115 +178,6 @@ def _check_backgrounds(ctx: ValidationContext):
         ap = proj.background_images_dir / layer.image
         if not ap.exists():
             ctx.warn(None, f"Background '{ba_name}' : image introuvable ({layer.image}) — layer ignoré.")
-
-
-def _check_pal_bank_scene_consistency(ctx: ValidationContext):
-    """La quantification des tuiles OBJ (asset_pipeline.py) et les pools de
-    prefabs partagent une résolution globale par nom de sprite/prefab (1er
-    rencontré gagne, cf. ROADMAP.md v0.2 — pas de variante par scène). Si
-    deux scènes résolvent des palettes différentes pour le même sprite ou le
-    même prefab poolé, un avertissement signale les scènes qui vont rendre
-    avec les mauvaises couleurs plutôt que d'échouer silencieusement."""
-    from core.project import OWN_PAL_BANK
-
-    p = ctx.project
-    scenes = list(p.scenes)
-    if len(scenes) < 2:
-        return  # pas de conflit possible avec une seule scène
-
-    def _resolve(entity, scene):
-        pal_bank = getattr(entity, "pal_bank", OWN_PAL_BANK)
-        if pal_bank == OWN_PAL_BANK:
-            return None
-        active = getattr(scene, "active_obj_palettes", [])
-        if not (0 <= pal_bank < len(active)):
-            return None
-        return active[pal_bank] or None
-
-    # Sprites référencés par des actors, potentiellement dans plusieurs scènes
-    sprite_resolutions: dict[str, dict[str, str]] = {}
-    for scene in scenes:
-        for actor in scene.actors:
-            if not actor.active:
-                continue
-            comp = actor.get_component("sprite")
-            if not comp or not comp.active or not comp.sprite_name:
-                continue
-            pal_name = _resolve(actor, scene)
-            if pal_name is not None:
-                sprite_resolutions.setdefault(comp.sprite_name, {})[scene.name] = pal_name
-
-    for sprite_name, by_scene in sprite_resolutions.items():
-        if len(set(by_scene.values())) > 1:
-            detail = ", ".join(f"{sn}→{pn}" for sn, pn in by_scene.items())
-            ctx.warn(None,
-                f"Sprite '{sprite_name}' résout vers des palettes différentes selon "
-                f"la scène ({detail}) — une seule sera utilisée pour les tuiles au "
-                f"build (1ère scène rencontrée), les autres scènes afficheront "
-                f"potentiellement les mauvaises couleurs.")
-
-    # Prefabs poolés — pas de scène propriétaire unique (spawn_X() appelable
-    # depuis n'importe quel script Lua, non analysé statiquement).
-    for pf in p.prefabs:
-        if getattr(pf, "max_instances", 0) <= 0:
-            continue
-        by_scene = {}
-        for scene in scenes:
-            pal_name = _resolve(pf, scene)
-            if pal_name is not None:
-                by_scene[scene.name] = pal_name
-        if len(set(by_scene.values())) > 1:
-            detail = ", ".join(f"{sn}→{pn}" for sn, pn in by_scene.items())
-            ctx.warn(None,
-                f"Prefab '{pf.name}' (poolé) résout vers des palettes différentes "
-                f"selon la scène ({detail}) — un prefab poolé est global (spawn_X() "
-                f"utilisable depuis n'importe quelle scène), une seule couleur sera "
-                f"correcte partout.")
-
-
-def _check_bg_pal_bank_scene_consistency(ctx: ValidationContext):
-    """Un BackgroundAsset peut être partagé par plusieurs scènes (comme un
-    Prefab poolé) — chaque BackgroundLayer choisit sa propre banque
-    (pal_bank, slot de scene.active_bg_palettes). Si layer.pal_bank résout
-    vers des palettes différentes selon la scène qui utilise cet asset, un
-    avertissement signale les scènes qui vont rendre avec les mauvaises
-    couleurs (1ère scène rencontrée gagne au build, cf. pipeline.py —
-    déduplication globale par (asset.name, bg_slot))."""
-    p = ctx.project
-    scenes = list(p.scenes)
-    if len(scenes) < 2:
-        return  # pas de conflit possible avec une seule scène
-
-    def _resolve(layer, scene):
-        active = getattr(scene, "active_bg_palettes", [])
-        pal_bank = getattr(layer, "pal_bank", 0)
-        if not (0 <= pal_bank < len(active)):
-            return None
-        return active[pal_bank] or None
-
-    layer_resolutions: dict[tuple[str, int], dict[str, str]] = {}
-    for scene in scenes:
-        ba_name = getattr(scene, "background_asset", "")
-        if not ba_name:
-            continue
-        ba = p.get_background(ba_name)
-        if not ba:
-            continue
-        for layer in ba.layers:
-            if not layer.image:
-                continue
-            pal_name = _resolve(layer, scene)
-            if pal_name is not None:
-                layer_resolutions.setdefault((ba_name, layer.bg_slot), {})[scene.name] = pal_name
-
-    for (ba_name, bg_slot), by_scene in layer_resolutions.items():
-        if len(set(by_scene.values())) > 1:
-            detail = ", ".join(f"{sn}→{pn}" for sn, pn in by_scene.items())
-            ctx.warn(None,
-                f"Background '{ba_name}' BG{bg_slot} résout vers des palettes "
-                f"différentes selon la scène ({detail}) — une seule sera utilisée "
-                f"pour les tuiles au build (1ère scène rencontrée), les autres "
-                f"scènes afficheront potentiellement les mauvaises couleurs.")
 
 
 def _check_bg_text_cbb_conflict(ctx: ValidationContext):
