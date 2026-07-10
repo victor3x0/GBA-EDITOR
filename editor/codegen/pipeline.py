@@ -26,9 +26,9 @@ from core.toolchain import Toolchain
 from codegen.asset_pipeline import (
     GritBackground, GritSprites, MmutilAudio,
     resolve_sound_assets, count_frames, png_size,
-    resolve_obj_palette_bank, resolve_palette_bank,
     bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
 )
+from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
 from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
@@ -169,44 +169,56 @@ class BuildWorker(EventEmitter, threading.Thread):
             # avertissement pas blocage). Chaque layer choisit SA PROPRE
             # banque (BackgroundLayer.pal_bank), plus de banque unique
             # partagée pour toute la scène.
+            # Couleurs effectives = palette propre du PNG (mode « None »,
+            # pal_bank == OWN) OU palette référencée résolue. L'index de banque
+            # (-mp pour BG) vient de scene_bank_layout (1ère scène rencontrée).
             seen_bg_layers: set[tuple[str, int]] = set()
             unique_bg_layers: list = []
             for d in all_scene_data:
                 ba = d["bg_asset"]
                 if not ba:
                     continue
+                scene = d["scene"]
+                bg_layout = scene_bank_layout(p, scene, "bg")
                 for layer in d["bg_pairs"]:
                     key = (ba.name, layer.bg_slot)
                     if key in seen_bg_layers:
                         continue
                     seen_bg_layers.add(key)
-                    bank = resolve_palette_bank(p, d["scene"].active_bg_palettes, layer.pal_bank)
-                    unique_bg_layers.append((ba, layer, bank))
+                    png = p.background_images_dir / layer.image if layer.image else None
+                    colors = effective_palette_colors(
+                        p, layer.pal_bank, png, scene.active_bg_palettes)
+                    mp_slot = bg_layout.bank_index(layer.pal_bank, colors)
+                    unique_bg_layers.append((ba, layer, colors, mp_slot))
             if ok and unique_bg_layers:
                 ok = ok and self._step_grit_bg(p, unique_bg_layers)
             if ok and unique_bg_layers:
                 ok = ok and self._check_bg_tile_budget(p, unique_bg_layers)
 
             # grit Sprites : union de toutes scènes + prefabs (dédupliqués par
-            # nom — 1er rencontré gagne). La banque de palette est résolue via
-            # la scène propriétaire de l'actor ; pour un prefab poolé (pas de
-            # scène propriétaire unique), on résout via la 1ère scène du
-            # projet — la cohérence entre scènes est vérifiée séparément par
-            # le validateur (avertissement, pas un blocage), cf. ROADMAP.md v0.2.
+            # nom — 1er rencontré gagne). Les couleurs effectives sont résolues
+            # via la scène propriétaire de l'actor ; pour un prefab poolé, via
+            # la 1ère scène du projet — cohérence inter-scènes vérifiée par le
+            # validateur (avertissement, pas un blocage).
             seen_sprites: set[str] = set()
             unique_sprites: list = []
             for d in all_scene_data:
+                scene = d["scene"]
                 for actor, sprite in d["scene_actors"]:
                     if sprite and sprite.asset and sprite.name not in seen_sprites:
                         seen_sprites.add(sprite.name)
-                        bank = resolve_obj_palette_bank(p, actor, d["scene"])
-                        unique_sprites.append((actor, sprite, bank))
+                        colors = effective_palette_colors(
+                            p, actor.pal_bank, p.asset_abs(sprite.asset),
+                            scene.active_obj_palettes)
+                        unique_sprites.append((actor, sprite, colors))
             anchor_scene = all_scenes[0] if all_scenes else None
+            anchor_obj = anchor_scene.active_obj_palettes if anchor_scene else []
             for pf, sprite in prefab_actor_sprites:
                 if sprite and sprite.asset and sprite.name not in seen_sprites:
                     seen_sprites.add(sprite.name)
-                    bank = resolve_obj_palette_bank(p, pf, anchor_scene)
-                    unique_sprites.append((pf, sprite, bank))
+                    colors = effective_palette_colors(
+                        p, getattr(pf, "pal_bank", 0), p.asset_abs(sprite.asset), anchor_obj)
+                    unique_sprites.append((pf, sprite, colors))
             if ok and unique_sprites:
                 ok = ok and self._step_grit_actors(p, unique_sprites)
 
@@ -332,7 +344,7 @@ class BuildWorker(EventEmitter, threading.Thread):
         scènes, qui n'est qu'un avertissement — ici c'est de la mémoire
         écrasée, pas juste une mauvaise couleur)."""
         ok = True
-        for asset, layer, _bank in layers:
+        for asset, layer, *_rest in layers:
             if not layer.image:
                 continue
             w, h = png_size(p.background_images_dir / layer.image)

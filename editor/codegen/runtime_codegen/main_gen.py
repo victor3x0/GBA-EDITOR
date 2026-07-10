@@ -14,8 +14,8 @@ from typing import Optional
 from core.project import (
     Project, Scene, BackgroundLayer,
     Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, AnimState,
-    resolve_pal_bank,
 )
+from codegen.palette_alloc import scene_bank_layout, own_palette
 from codegen.asset_pipeline import (
     count_frames, sprite_unique_frames, _frame_key,
     bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
@@ -228,8 +228,12 @@ def _section_cmap(scene: Scene) -> list[str]:
     return L
 
 
-def _section_spawn(pool_info: list[dict],
+def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
                    actor_defined_events: dict[str, set[str]] | None = None) -> list[str]:
+    """`obj_layout` : layout OBJ de la scène d'ancrage (1ère scène) — spawn_X
+    étant global, l'index de banque d'un prefab poolé est fixé depuis cette
+    scène (cohérent avec la résolution prefab par 1ère scène ; les incohérences
+    inter-scènes sont signalées par le validateur)."""
     if not pool_info:
         return []
 
@@ -241,7 +245,13 @@ def _section_spawn(pool_info: list[dict],
     L = ["/* ── Spawn helpers (prefabs poolés) ────────────────────── */"]
     for pi in pool_info:
         s, start, size, pf = pi["sym"], pi["start"], pi["size"], pi["prefab"]
-        pal = resolve_pal_bank(getattr(pf, "pal_bank", 0))
+        sp = next((c for c in pf.components
+                   if isinstance(c, SpriteComponent) and c.sprite_name), None)
+        sprite = p.get_sprite(sp.sprite_name) if sp else None
+        own = own_palette(p.asset_abs(sprite.asset)) if (sprite and sprite.asset) else []
+        pal = obj_layout.bank_index(getattr(pf, "pal_bank", 0), own) if obj_layout else 0
+        if pal is None:
+            pal = 0
         boxes = [c for c in pf.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
 
         # pool_init est toujours généré par le transpileur, extern inconditionnel
@@ -550,17 +560,15 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
     return result
 
 
-def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
-    """256 valeurs BGR555 (16 banques x 16 couleurs) pour PAL_OBJ_RAM de cette
-    scène, résolues depuis scene.active_obj_palettes — zéro pour tout slot
-    non assigné ou dont la palette référencée n'existe plus dans le
-    catalogue projet."""
+def _layout_palette_words(layout) -> list[int]:
+    """256 valeurs BGR555 (16 banques x 16 couleurs) depuis un SceneBankLayout
+    — inclut les palettes référencées ET les palettes propres auto-allouées
+    (cf. codegen/palette_alloc.py)."""
     words = [0] * 256
-    for i, name in enumerate(getattr(scene, "active_obj_palettes", [])[:16]):
-        bank = p.get_palette(name) if name else None
-        if not bank or not bank.colors:
+    for i, colors in enumerate(layout.slot_colors):
+        if not colors:
             continue
-        for j, c in enumerate(bank.colors[:16]):
+        for j, c in enumerate(colors[:16]):
             words[i * 16 + j] = c
     return words
 
@@ -572,22 +580,16 @@ def _resolve_backdrop_color(p: Project, scene: Scene) -> int:
     return v if v is not None else p.settings.backdrop_color
 
 
+def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
+    """PAL_OBJ_RAM de la scène — layout OBJ (référencées + propres allouées)."""
+    return _layout_palette_words(scene_bank_layout(p, scene, "obj"))
+
+
 def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
-    """256 valeurs BGR555 (16 banques x 16 couleurs) pour PAL_BG_RAM de cette
-    scène, résolues depuis scene.active_bg_palettes — chaque BackgroundLayer
-    choisit sa propre banque via son pal_bank (slot dans cette liste), même
-    mécanisme que _scene_obj_palette_words côté OBJ. words[0] (banque 0,
-    couleur 0) a un rôle hardware supplémentaire — c'est le backdrop affiché
-    quand rien d'opaque n'est dessiné — donc toujours forcé à la couleur de
-    backdrop résolue (scène ou projet), quelle que soit la banque occupant
-    ce slot."""
-    words = [0] * 256
-    for i, name in enumerate(getattr(scene, "active_bg_palettes", [])[:16]):
-        bank = p.get_palette(name) if name else None
-        if not bank or not bank.colors:
-            continue
-        for j, c in enumerate(bank.colors[:16]):
-            words[i * 16 + j] = c
+    """PAL_BG_RAM de la scène — layout BG (référencées + propres allouées).
+    words[0] (banque 0, couleur 0) est forcé à la couleur de backdrop (rôle
+    hardware : affiché quand rien d'opaque n'est dessiné)."""
+    words = _layout_palette_words(scene_bank_layout(p, scene, "bg"))
     words[0] = _resolve_backdrop_color(p, scene)
     return words
 
@@ -608,6 +610,8 @@ def _gen_scene_init(
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
+    obj_layout = scene_bank_layout(p, scene, "obj")
+    bg_layout  = scene_bank_layout(p, scene, "bg")
     L = [f"static void scene_init_{sym}(void) {{"]
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
@@ -643,21 +647,14 @@ def _gen_scene_init(
         bt = sprite_offsets.get(sprite.name, 0)
         ss = f"sprite_{_sym(sprite.name)}"
         L.append(f"    copy16(OBJ_VRAM+{bt}*16, {ss}Tiles, {ss}TilesLen);")
-    # Palettes OBJ — depuis le tableau canonique de la scène
-    # (g_pal_obj_{sym}, résolu depuis scene.active_obj_palettes), pas depuis
-    # le Pal d'un sprite en particulier : correct même si aucun sprite
-    # n'utilise un slot donné, et cohérent quel que soit l'ordre des actors.
-    for i, pal_name in enumerate(getattr(scene, "active_obj_palettes", [])[:16]):
-        if pal_name and p.get_palette(pal_name):
+    # Palettes OBJ — chaque banque occupée du layout (référencée OU palette
+    # propre auto-allouée, cf. palette_alloc) est copiée dans PAL_OBJ_RAM.
+    for i, colors in enumerate(obj_layout.slot_colors):
+        if colors:
             L.append(f"    copy16(PAL_OBJ_RAM+{i}*16, g_pal_obj_{sym}+{i}*16, 32);")
-    # Palette BG — depuis le tableau canonique de la scène
-    # (g_pal_bg_{sym}, résolu depuis scene.active_bg_palettes), chaque layer
-    # choisit sa propre banque (BackgroundLayer.pal_bank) — miroir exact du
-    # mécanisme OBJ ci-dessus. Un layer sans banque résolue (slot vide) n'a
-    # rien copié en VRAM pour son propre Pal (même limitation déjà acceptée
-    # côté OBJ pour un sprite sans banque active).
-    for i, pal_name in enumerate(getattr(scene, "active_bg_palettes", [])[:16]):
-        if pal_name and p.get_palette(pal_name):
+    # Palette BG — même principe (référencées + propres allouées).
+    for i, colors in enumerate(bg_layout.slot_colors):
+        if colors:
             L.append(f"    copy16(PAL_BG_RAM+{i}*16, g_pal_bg_{sym}+{i}*16, 32);")
     # Backdrop — écrit inconditionnellement (indépendant de bgi/de
     # l'occupation du slot 0 ci-dessus, qui ne copie que les slots occupés :
@@ -671,10 +668,12 @@ def _gen_scene_init(
     # DISPCNT
     L.append(f"    REG_DISPCNT = 0x{dispcnt:04X};")
     # Init actors
-    for j, (actor, _) in enumerate(scene_actors):
+    for j, (actor, sprite) in enumerate(scene_actors):
         idx = actor_offset + j
         s = _sym(actor.name)
         boxes = [c for c in actor.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
+        own = own_palette(p.asset_abs(sprite.asset)) if (sprite and sprite.asset) else []
+        pal = obj_layout.bank_index(getattr(actor, "pal_bank", 0), own)
         L += [
             f"    g_actors[{idx}].x       = {actor.x};",
             f"    g_actors[{idx}].y       = {actor.y};",
@@ -684,7 +683,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].flip_v  = {1 if getattr(_get_sprite_comp(actor),'flip_v',False) else 0};",
             f"    g_actors[{idx}].dir_x   = {getattr(actor,'dir_x',0)};",
             f"    g_actors[{idx}].dir_y   = {getattr(actor,'dir_y',0)};",
-            f"    g_actors[{idx}].pal_bank= {resolve_pal_bank(getattr(actor,'pal_bank',0))};",
+            f"    g_actors[{idx}].pal_bank= {pal if pal is not None else 0};",
             f"    g_actors[{idx}].auto_dir= {1 if getattr(_get_sprite_comp(actor),'auto_dir',True) else 0};",
             f"    g_actors[{idx}].anim_state=0;",
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
@@ -1187,7 +1186,7 @@ def generate_main(
     for d in all_scene_data:
         sc = d["scene"]
         sym = _sym(sc.name)
-        if any(n and p.get_palette(n) for n in getattr(sc, "active_obj_palettes", [])[:16]):
+        if scene_bank_layout(p, sc, "obj").bank_count() > 0:
             words = _scene_obj_palette_words(p, sc)
             L += [
                 f"static const unsigned short g_pal_obj_{sym}[256] __attribute__((aligned(4))) = {{",
@@ -1204,7 +1203,9 @@ def generate_main(
     for d in all_scene_data:
         sc = d["scene"]
         sym = _sym(sc.name)
-        if any(n and p.get_palette(n) for n in getattr(sc, "active_bg_palettes", [])[:16]):
+        # Toujours émis si un slot BG est occupé (référencé OU palette propre) ;
+        # le backdrop (PAL_BG_RAM[0]) est écrit séparément dans _gen_scene_init.
+        if scene_bank_layout(p, sc, "bg").bank_count() > 0:
             words = _scene_bg_palette_words(p, sc)
             L += [
                 f"static const unsigned short g_pal_bg_{sym}[256] __attribute__((aligned(4))) = {{",
@@ -1225,8 +1226,10 @@ def generate_main(
         "",
     ]
 
-    # Spawn helpers
-    L += _section_spawn(pi, actor_defined_events=actor_defined_events)
+    # Spawn helpers — index de banque des prefabs poolés résolu via la
+    # 1ère scène (spawn_X est global).
+    _anchor_obj_layout = scene_bank_layout(p, all_scenes[0], "obj") if all_scenes else None
+    L += _section_spawn(pi, p, _anchor_obj_layout, actor_defined_events=actor_defined_events)
 
     # ── scene_init_X() par scène ──────────────────────────────────
     for i, d in enumerate(all_scene_data):

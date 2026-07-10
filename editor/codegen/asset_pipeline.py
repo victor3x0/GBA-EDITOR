@@ -134,26 +134,23 @@ class GritBackground:
     def run(
         self,
         p: Project,
-        layers: list[tuple["BackgroundAsset", BackgroundLayer, Optional["PaletteBank"]]],
+        layers: list[tuple["BackgroundAsset", BackgroundLayer, Optional[list], Optional[int]]],
     ) -> bool:
         """
         layers : liste dédupliquée globalement par (asset.name, layer.bg_slot)
-        — construite par pipeline.py, comme unique_sprites pour les acteurs.
-        Chaque layer choisit sa PROPRE banque (BackgroundLayer.pal_bank, slot
-        de scene.active_bg_palettes) — plus de banque unique partagée par
-        scène. Si une banque est résolue (colors non vide) : quantification +
-        `-mp{layer.pal_bank}` pour forcer le champ SE_PALBANK de la map vers
-        cette banque hardware, + remap_tiles_to_bank pour l'ordre canonique.
-        Sans banque résolue : comportement legacy (grit choisit sa propre
-        palette, jamais copiée en VRAM — même limitation déjà acceptée côté
-        OBJ, cf. g_pal_obj_{scene}/g_pal_bg_{scene}).
+        — construite par pipeline.py. Chaque entrée = (asset, layer, couleurs
+        effectives, mp_slot). Les couleurs effectives = palette propre du PNG
+        (mode « None ») ou palette référencée résolue. `mp_slot` = index de
+        banque hardware alloué (cf. palette_alloc) forcé dans le champ
+        SE_PALBANK de la map via `-mp`. Couleurs None : legacy (grit choisit
+        sa palette, non copiée en VRAM).
         """
         if not layers:
             return True
         if not self._grit:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
-        for asset, layer, bank in layers:
+        for asset, layer, colors, mp_slot in layers:
             if not layer.image:
                 continue
             ap = p.background_images_dir / layer.image
@@ -161,20 +158,19 @@ class GritBackground:
                 self._emit("error_line", f"[grit BG] image manquante : {layer.image}")
                 return False
 
-            quantize = bool(bank and bank.colors)
+            quantize = bool(colors)
             sym = bg_layer_sym(asset.name, layer.bg_slot)
             tmp = p.grit_out_dir / f"{sym}.png"
             mode = getattr(layer, "match_mode", "nearest")
             if quantize:
                 try:
-                    quantize_asset(ap, bank.colors, mode).save(tmp)
+                    quantize_asset(ap, colors, mode).save(tmp)
                 except ValueError as e:
                     self._emit("error_line", f"[grit BG] {e}")
                     return False
                 self._emit("log_line",
                            f"[palette] BG '{asset.name}' BG{layer.bg_slot} -> banque "
-                           f"{layer.pal_bank} ({bank.name or 'sans nom'}, "
-                           f"{len(bank.colors)} couleurs, mode {mode})")
+                           f"{mp_slot} ({len(colors)} couleurs, mode {mode})")
             else:
                 shutil.copy2(ap, tmp)
             self._emit("log_line", f"[grit BG] {asset.name} BG{layer.bg_slot} <- {layer.image}")
@@ -186,13 +182,13 @@ class GritBackground:
                 "-p", "-pn16", "-ftc",
                 "-o", out_base, "-s", sym,
             ]
-            if quantize:
-                cmd.append(f"-mp{layer.pal_bank}")
+            if quantize and mp_slot is not None:
+                cmd.append(f"-mp{mp_slot}")
             if not self._run_cmd(cmd, "[grit BG]", cwd=p.grit_out_dir):
                 return False
 
             if quantize:
-                if not remap_tiles_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
+                if not remap_tiles_to_bank(Path(out_base + ".c"), colors, self._emit):
                     return False
         return True
 
@@ -496,16 +492,14 @@ def resolve_palette_bank(p: Project, active_names: list, slot: int):
 
 
 def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
-    """Résout la PaletteBank OBJ ciblée par `entity.pal_bank` (Actor ou
+    """Résout la PaletteBank OBJ RÉFÉRENCÉE par `entity.pal_bank` (Actor ou
     Prefab) via les palettes OBJ actives de `scene` — pal_bank est un slot
-    (0-15) dans scene.active_obj_palettes, pas une référence directe au
-    catalogue projet (illimité). None si non résolvable (AUTO_PAL_BANK,
-    scène sans sélection à ce slot, ou palette supprimée du catalogue) —
-    dans ce cas le sprite garde son comportement legacy (palette grit
-    propre, non forcée)."""
-    from core.project import AUTO_PAL_BANK
-    pal_bank = getattr(entity, "pal_bank", 0)
-    if scene is None or pal_bank == AUTO_PAL_BANK:
+    (0-15) dans scene.active_obj_palettes. None si OWN_PAL_BANK (l'asset
+    utilise sa propre palette, gérée par palette_alloc), scène absente, slot
+    vide, ou palette supprimée du catalogue."""
+    from core.project import OWN_PAL_BANK
+    pal_bank = getattr(entity, "pal_bank", OWN_PAL_BANK)
+    if scene is None or pal_bank == OWN_PAL_BANK:
         return None
     return resolve_palette_bank(p, getattr(scene, "active_obj_palettes", []), pal_bank)
 
@@ -521,13 +515,13 @@ class GritSprites:
     def run(
         self,
         p: Project,
-        sprites: list[tuple[any, Optional[SpriteAsset], Optional["PaletteBank"]]],
+        sprites: list[tuple[any, Optional[SpriteAsset], Optional[list]]],
     ) -> bool:
         """
-        sprites : liste de (actor_ou_prefab, SpriteAsset, PaletteBank résolue
-        ou None). Un même SpriteAsset n'est converti qu'une fois (dédupliqué
-        par nom — la résolution de banque, y compris le choix de la scène
-        propriétaire en cas de doublon, est faite par l'appelant).
+        sprites : liste de (actor_ou_prefab, SpriteAsset, couleurs effectives
+        ou None). Les couleurs effectives = palette propre du PNG (mode « None »)
+        ou palette référencée résolue — calculées par l'appelant (pipeline.py).
+        Un même SpriteAsset n'est converti qu'une fois (dédup par nom).
         """
         if not sprites:
             return True
@@ -535,7 +529,7 @@ class GritSprites:
             self._emit("error_line", "[grit Actor] introuvable"); return False
 
         done: set[str] = set()
-        for actor_or_pf, sprite, bank in sprites:
+        for actor_or_pf, sprite, colors in sprites:
             if not sprite or not sprite.asset or sprite.name in done:
                 continue
             done.add(sprite.name)
@@ -545,9 +539,8 @@ class GritSprites:
                 self._emit("error_line", f"[grit Actor] asset manquant : {sprite.asset}")
                 return False
 
-            pal_bank = getattr(actor_or_pf, "pal_bank", 0)
             mode = getattr(actor_or_pf, "match_mode", "nearest")
-            quantize = bool(bank and bank.colors)
+            quantize = bool(colors)
 
             if quantize and mode == "direct_index":
                 grit_src = build_sprite_sheet_indexed(ap, sprite, p.grit_out_dir, self._emit)
@@ -558,13 +551,12 @@ class GritSprites:
 
             if quantize:
                 try:
-                    quantize_asset(grit_src, bank.colors, mode).save(grit_src)
+                    quantize_asset(grit_src, colors, mode).save(grit_src)
                 except ValueError as e:
                     self._emit("error_line", f"[grit Actor] {e}")
                     return False
                 self._emit("log_line",
-                           f"[palette] {sprite.name} -> banque {pal_bank} "
-                           f"({bank.name or 'sans nom'}, {len(bank.colors)} couleurs, mode {mode})")
+                           f"[palette] {sprite.name} -> {len(colors)} couleurs, mode {mode}")
 
             out_base = str(p.grit_out_dir / f"sprite_{_sym(sprite.name)}")
             self._emit("log_line",
@@ -580,8 +572,8 @@ class GritSprites:
             if not self._run_cmd(cmd, f"[grit:{sprite.name}]", cwd=p.grit_out_dir):
                 return False
 
-            if bank and bank.colors:
-                if not remap_tiles_to_bank(Path(out_base + ".c"), bank.colors, self._emit):
+            if quantize:
+                if not remap_tiles_to_bank(Path(out_base + ".c"), colors, self._emit):
                     return False
         return True
 

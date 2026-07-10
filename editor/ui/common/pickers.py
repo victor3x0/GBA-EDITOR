@@ -11,6 +11,11 @@ from ui.common.widgets import ScriptSlot, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
 from core.project import PaletteBank
 
+# Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —
+# l'appelant le mappe vers OWN_PAL_BANK (l'asset garde ses couleurs d'origine).
+PALETTE_NONE = "__none__"
+_NONE_LABEL = "Sans palette (couleurs du PNG)"
+
 
 def palette_picker_slot(
     banks: list[PaletteBank],
@@ -20,11 +25,12 @@ def palette_picker_slot(
     on_cleared: Optional[Callable[[], None]] = None,
     add_label: str = "Choisir une palette",
     parent=None,
+    allow_none: bool = True,
 ) -> ScriptSlot:
-    """Slot pour choisir une PaletteBank par nom parmi `banks` — l'appelant
-    décide du sous-ensemble proposé (tout le catalogue projet pour l'éditeur
-    de scène, ou seulement les palettes actives d'une scène pour le picker
-    pal_bank d'un Actor)."""
+    """Slot pour choisir une PaletteBank par nom parmi `banks`. Si
+    `allow_none` (défaut), une entrée « Sans palette » en tête permet de
+    revenir aux couleurs d'origine du PNG — on_picked reçoit alors le jeton
+    PALETTE_NONE. `current_name` None + allow_none => affiche « Sans palette »."""
     slot = ScriptSlot(
         add_label=add_label, accent_color=accent, edit_label="Changer",
         show_clear=on_cleared is not None,
@@ -33,18 +39,23 @@ def palette_picker_slot(
     current = next((b for b in banks if b.name == current_name), None) if current_name else None
     if current:
         slot.set_script(current.name, icon=bank_icon(current))
+    elif allow_none:
+        slot.set_script(_NONE_LABEL)
 
     def _open_picker():
         entries = [(bank.name, bank.name, bank_icon(bank)) for bank in banks]
+        if allow_none:
+            entries.insert(0, (_NONE_LABEL, PALETTE_NONE, None))
         popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
 
         def _picked(name: str):
-            # Met à jour l'affichage du slot AVANT de notifier l'appelant —
-            # sinon le label/icône restent figés sur l'ancienne palette (le
-            # callback ne fait que muter le modèle, pas rafraîchir le widget).
-            b = next((x for x in banks if x.name == name), None)
-            if b:
-                slot.set_script(b.name, icon=bank_icon(b))
+            # Met à jour l'affichage du slot AVANT de notifier l'appelant.
+            if name == PALETTE_NONE:
+                slot.set_script(_NONE_LABEL)
+            else:
+                b = next((x for x in banks if x.name == name), None)
+                if b:
+                    slot.set_script(b.name, icon=bank_icon(b))
             on_picked(name)
 
         popup.picked.connect(_picked)

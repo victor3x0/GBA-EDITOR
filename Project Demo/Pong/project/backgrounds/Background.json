@@ -5,13 +5,13 @@
       "image": "Background.png",
       "bg_slot": 0,
       "scroll_speed": 4.5,
-      "pal_bank": 0,
+      "pal_bank": -1,
       "match_mode": "nearest"
     },
     {
       "image": "",
       "bg_slot": 1,
-      "scroll_speed": 1.0,
+      "scroll_speed": 1.25,
       "pal_bank": 0,
       "match_mode": "nearest"
     }

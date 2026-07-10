@@ -47,7 +47,7 @@
       "flip_v": false,
       "priority": 3,
       "pal_bank": 0,
-      "match_mode": "nearest_luminance",
+      "match_mode": "direct_index",
       "visible": true
     },
     {
@@ -94,8 +94,8 @@
       "flip_h": false,
       "flip_v": false,
       "priority": 1,
-      "pal_bank": 8,
-      "match_mode": "nearest_luminance",
+      "pal_bank": 0,
+      "match_mode": "direct_index",
       "visible": true
     }
   ],
@@ -105,7 +105,7 @@
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
-  "text_bg": 0,
+  "text_bg": 1,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -750,18 +750,19 @@
     ]
   ],
   "active_obj_palettes": [
-    "DMG (GB Default) (BG)",
-    "Autumn Grove",
+    "pal_Ball",
+    "",
     "Blood Moon",
     "",
     "",
     "",
     "",
     "",
-    "pal_Ball"
+    ""
   ],
   "active_bg_palettes": [
-    "DMG (GB Default) (BG)"
+    "pal_Ball",
+    ""
   ],
   "backdrop_color": null
 }

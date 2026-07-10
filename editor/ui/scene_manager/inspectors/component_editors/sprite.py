@@ -59,6 +59,11 @@ class SpriteEditor(BaseComponentEditor):
         )
 
         def _on_pal_picked(name: str):
+            from core.project import OWN_PAL_BANK
+            from ui.common.pickers import PALETTE_NONE
+            if name == PALETTE_NONE:
+                self.insp._set("pal_bank", OWN_PAL_BANK)
+                return
             try:
                 idx = active_names.index(name)
             except ValueError:
@@ -70,11 +75,11 @@ class SpriteEditor(BaseComponentEditor):
             COLOR_SPRITE, on_picked=_on_pal_picked,
             add_label="Choisir une palette", parent=self.insp,
         )
-        if not active_names:
-            pal_slot.setToolTip(
-                "Aucune palette active pour cette scène — à configurer dans "
-                "l'inspecteur de scène (carte \"Palettes actives\")."
-            )
+        pal_slot.setToolTip(
+            "« Sans palette » = couleurs d'origine du PNG (par défaut). "
+            "Sinon, choisir une palette active de la scène (carte "
+            "\"Palettes actives\" de l'inspecteur de scène)."
+        )
         W.row("Palette", pal_slot, layout)
 
         # ── Algorithme de quantification (match_mode, champ Actor) —

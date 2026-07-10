@@ -78,6 +78,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_bg_pal_bank_scene_consistency(ctx)
     _check_bg_text_cbb_conflict(ctx)
     _check_direct_index_mode(ctx)
+    _check_palette_bank_overflow(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -182,7 +183,7 @@ def _check_pal_bank_scene_consistency(ctx: ValidationContext):
     deux scènes résolvent des palettes différentes pour le même sprite ou le
     même prefab poolé, un avertissement signale les scènes qui vont rendre
     avec les mauvaises couleurs plutôt que d'échouer silencieusement."""
-    from core.project import AUTO_PAL_BANK
+    from core.project import OWN_PAL_BANK
 
     p = ctx.project
     scenes = list(p.scenes)
@@ -190,8 +191,8 @@ def _check_pal_bank_scene_consistency(ctx: ValidationContext):
         return  # pas de conflit possible avec une seule scène
 
     def _resolve(entity, scene):
-        pal_bank = getattr(entity, "pal_bank", 0)
-        if pal_bank == AUTO_PAL_BANK:
+        pal_bank = getattr(entity, "pal_bank", OWN_PAL_BANK)
+        if pal_bank == OWN_PAL_BANK:
             return None
         active = getattr(scene, "active_obj_palettes", [])
         if not (0 <= pal_bank < len(active)):
@@ -384,3 +385,24 @@ def _check_direct_index_mode(ctx: ValidationContext):
             ap = p.background_images_dir / layer.image
             if ap.exists():
                 _check_png(ap, f"Background '{ba.name}' BG{layer.bg_slot}")
+
+
+def _check_palette_bank_overflow(ctx: ValidationContext):
+    """Chaque scene ne dispose que de 16 banques materielles par pool (OBJ /
+    BG). Palettes referencees + palettes propres distinctes (assets en mode
+    OWN) sont auto-allouees par palette_alloc ; si le total depasse 16, une
+    ou plusieurs palettes propres ne trouvent pas de slot -> avertissement
+    (non bloquant : ces assets retombent sur la banque 0 au build)."""
+    from codegen.palette_alloc import scene_bank_layout
+    p = ctx.project
+    for scene in p.scenes:
+        for pool, label in (("obj", "OBJ (sprites)"), ("bg", "BG (fonds)")):
+            layout = scene_bank_layout(p, scene, pool)
+            if layout.overflow():
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : plus de 16 palettes {label} "
+                    "nécessaires (référencées + palettes propres des assets "
+                    "sans palette assignée). Certains assets retomberont sur la "
+                    "banque 0 et afficheront de mauvaises couleurs — réduire le "
+                    "nombre de palettes distinctes ou partager des palettes "
+                    "référencées.")

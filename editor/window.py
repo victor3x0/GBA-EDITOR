@@ -28,7 +28,6 @@ from core.project import (
     Project, Scene, Actor, Prefab,
     MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
     SFX_FILE_EXTS, MUSIC_FILE_EXTS,
-    resolve_pal_bank,
 )
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -145,8 +144,9 @@ class GbaStatusBar(QWidget):
                 th = max(1, sp.frame_h // 8)
                 tiles += tw * th
 
-        # Palettes uniques
-        pal_set = {resolve_pal_bank(a.pal_bank) for a in visible_actors if a.get_component("sprite")}
+        # Palettes OBJ occupées (référencées + palettes propres auto-allouées)
+        from codegen.palette_alloc import scene_bank_layout
+        obj_banks = scene_bank_layout(project, scene, "obj").bank_count()
 
         # Estimation sprites par scanline (approx : actors visibles / hauteur en tiles)
         scanline_est = max(oam_count, sum(
@@ -154,12 +154,12 @@ class GbaStatusBar(QWidget):
             if a.get_component("sprite")
         ) // max(1, (160 // 16)))
 
-        values = [oam_count, scanline_est, tiles, len(pal_set)]
+        values = [oam_count, scanline_est, tiles, obj_banks]
         labels = [
             f"{oam_count}/128 sprites",
             f"~{scanline_est}/10 sprites/ligne",
             f"{tiles}/1024 tiles",
-            f"{len(pal_set)}/16 palettes",
+            f"{obj_banks}/16 palettes",
         ]
         for i, (val, lbl) in enumerate(zip(values, labels)):
             self._set(i, val, lbl)

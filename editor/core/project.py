@@ -252,17 +252,13 @@ class PaletteBank(Resource):
             self.colors[0] = RESERVED_SLOT_COLOR
 
 
-# Sentinel Actor.pal_bank / Prefab.pal_bank : "Automatique" — bank résolue par
-# le réservoir auto-import au lieu d'un choix explicite. Le réservoir lui-même
-# (détection des couleurs non palettisées par grit) n'est pas encore implémenté
-# -> resolve_pal_bank() retombe provisoirement sur la banque 0 au build.
-AUTO_PAL_BANK = -1
-
-
-def resolve_pal_bank(value: int) -> int:
-    """Résout un pal_bank d'Actor/Prefab (potentiellement AUTO_PAL_BANK) vers
-    un index de banque hardware valide (0-15) pour le codegen."""
-    return 0 if value == AUTO_PAL_BANK else value
+# Sentinel Actor/Prefab.pal_bank et BackgroundLayer.pal_bank : "Sans palette"
+# — l'asset utilise SA PROPRE palette (couleurs du PNG, index 0 transparent),
+# extraite à la volée et auto-allouée à une banque libre de la scène au build
+# (cf. codegen/palette_alloc.py). C'est le défaut : un asset affiche ses
+# couleurs d'origine tant qu'aucune palette du catalogue n'est explicitement
+# assignée à ce slot.
+OWN_PAL_BANK = -1
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -303,11 +299,11 @@ class BackgroundLayer:
     image:        str   = ""   # nom du fichier PNG dans assets/backgrounds/ (ex: "Sky.png")
     bg_slot:      int   = 0    # slot hardware GBA (0-3)
     scroll_speed: float = 1.0  # vitesse relative (1.0 = défilement normal)
-    pal_bank:     int   = 0    # slot (0-15) dans scene.active_bg_palettes — même
-                               # mécanisme que Actor.pal_bank/Prefab.pal_bank, mais
-                               # BG plutôt qu'OBJ ; chaque layer choisit sa propre
-                               # banque, indépendamment des autres layers du même
-                               # BackgroundAsset.
+    pal_bank:     int   = OWN_PAL_BANK  # slot (0-15) dans scene.active_bg_palettes,
+                               # ou OWN_PAL_BANK (-1, défaut) = palette propre du PNG.
+                               # Même mécanisme que Actor.pal_bank/Prefab.pal_bank,
+                               # mais BG plutôt qu'OBJ ; chaque layer choisit sa
+                               # propre banque, indépendamment des autres layers.
     match_mode:   str   = "nearest"  # "nearest" | "nearest_luminance" | "direct_index"
                                # — algorithme de quantification de ce layer
                                # (cf. core/color_utils.py).
@@ -342,7 +338,7 @@ class BackgroundAsset(Resource):
                 image        = L.get("image", ""),
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
-                pal_bank     = L.get("pal_bank", 0),
+                pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
                 match_mode   = L.get("match_mode", "nearest"),
             )
             for i, L in enumerate(d.get("layers", []))
@@ -770,7 +766,7 @@ class ComponentOwnerMixin:
 class Prefab(Resource, ComponentOwnerMixin):
     name: str = "Prefab"
     components: list = field(default_factory=list)
-    pal_bank: int = 0
+    pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     # Algorithme de quantification des sprites de ce prefab — "nearest" |
     # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
     match_mode: str = "nearest"
@@ -790,7 +786,7 @@ class Prefab(Resource, ComponentOwnerMixin):
         return cls(
             name          = d.get("name", "Prefab"),
             components    = _components_from_list(d.get("components", [])),
-            pal_bank      = d.get("pal_bank", 0),
+            pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
             match_mode    = d.get("match_mode", "nearest"),
             max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
         )
@@ -817,7 +813,7 @@ class Actor(ComponentOwnerMixin):
     flip_h: bool = False
     flip_v: bool = False
     priority: int = 0
-    pal_bank: int = 0
+    pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     # Algorithme de quantification du sprite de cet actor — "nearest" |
     # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
     match_mode: str = "nearest"
@@ -851,7 +847,7 @@ class Actor(ComponentOwnerMixin):
             flip_h      = d.get("flip_h", False),
             flip_v      = d.get("flip_v", False),
             priority    = d.get("priority", 0),
-            pal_bank    = d.get("pal_bank", 0),
+            pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             match_mode  = d.get("match_mode", "nearest"),
             visible     = d.get("visible", True),
         )
@@ -996,7 +992,7 @@ class Scene(Resource):
                     flip_h      = sa.get("flip_h", False),
                     flip_v      = sa.get("flip_v", False),
                     priority    = sa.get("priority", 0),
-                    pal_bank    = sa.get("pal_bank", 0),
+                    pal_bank    = sa.get("pal_bank", OWN_PAL_BANK),
                     visible     = sa.get("visible", True),
                 ))
 

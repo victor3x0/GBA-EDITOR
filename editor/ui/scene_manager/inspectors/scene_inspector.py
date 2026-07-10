@@ -423,11 +423,16 @@ class SceneInspector(QWidget):
         if not self._project or not self._scene: return
         ba = self._project.get_background(self._scene.background_asset)
         if not ba: return
+        from ui.common.pickers import PALETTE_NONE
+        from core.project import OWN_PAL_BANK
         active_names = self._scene.active_bg_palettes
-        try:
-            idx = active_names.index(pal_name)
-        except ValueError:
-            return
+        if pal_name == PALETTE_NONE:
+            idx = OWN_PAL_BANK
+        else:
+            try:
+                idx = active_names.index(pal_name)
+            except ValueError:
+                return
         old = layer.pal_bank
         if old == idx:
             return
@@ -437,6 +442,9 @@ class SceneInspector(QWidget):
             persist_fn=lambda: self._project.save_background(ba),
         ))
         self._rebuild_layer_rows()
+        # Re-quantifie le canvas de scène avec la nouvelle palette (WYSIWYG) —
+        # bg_slot_changed est câblé sur scene_editor.refresh_bg (window.py).
+        get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
         self.changed.emit()
 
     def _on_layer_match_mode(self, layer, mode: str):
@@ -452,6 +460,8 @@ class SceneInspector(QWidget):
             label=f"{ba.name}[{layer.bg_slot}].match_mode",
             persist_fn=lambda: self._project.save_background(ba),
         ))
+        # Re-quantifie le canvas de scène avec le nouvel algorithme (WYSIWYG).
+        get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
         self.changed.emit()
 
     def _on_layer_remove(self, layer):

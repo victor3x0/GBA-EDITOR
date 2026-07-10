@@ -10,9 +10,9 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox, QMenu,
+    QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
 )
-from PyQt6.QtGui import QPixmap, QFont, QIcon
+from PyQt6.QtGui import QPixmap, QFont
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
@@ -215,6 +215,7 @@ class BgLayerRow(QFrame):
         self._highlight = False
         self._is_ui_layer = False
         self._pal_banks: list = []
+        self._match_mode: str = self._MATCH_MODES[0][2]
         self.setAcceptDrops(True)
         self.setFixedHeight(40)
         self._update_style()
@@ -291,34 +292,33 @@ class BgLayerRow(QFrame):
         # dans une rangée de 40px). Ouvre le même ScriptPickerPopup que
         # palette_picker_slot, câblé sur BackgroundLayer.pal_bank.
         self._pal_btn = QToolButton()
-        self._pal_btn.setFixedSize(22, 22)
-        self._pal_btn.setIconSize(QSize(16, 16))
+        self._pal_btn.setFixedSize(30, 30)
+        self._pal_btn.setIconSize(QSize(24, 24))
         self._pal_btn.setToolTip("Choisir la palette de ce layer")
         self._pal_btn.setStyleSheet(
-            "QToolButton{background:transparent;border:1px solid #333;border-radius:2px;}"
+            "QToolButton{background:transparent;border:1px solid #333;"
+            "border-radius:3px;padding:0;}"
             f"QToolButton:hover{{border-color:{self._color};}}"
         )
         self._pal_btn.clicked.connect(self._open_pal_picker)
         row.addWidget(self._pal_btn)
 
-        # Algorithme de quantification (match_mode) — menu compact 3 entrées,
-        # pas un 2e picker complet (pas la place dans une rangée de 40px).
+        # Algorithme de quantification (match_mode) — bouton compact qui
+        # cycle N -> L -> I au simple clic (même principe que le bouton du
+        # panneau "sprite component", en version lettre unique faute de place
+        # dans une rangée de 40px).
         self._mode_btn = QToolButton()
-        self._mode_btn.setFixedSize(18, 22)
+        self._mode_btn.setFixedSize(30, 30)
         self._mode_btn.setText(self._MATCH_MODES[0][0])
-        self._mode_btn.setFont(QFont(T.MONO, 9, QFont.Weight.Bold))
+        self._mode_btn.setFont(QFont(T.MONO, 14, QFont.Weight.Bold))
         self._mode_btn.setStyleSheet(
             f"QToolButton{{color:{self._color};background:transparent;"
-            "border:1px solid #333;border-radius:2px;}"
+            "border:1px solid #333;border-radius:3px;padding:0;}"
             f"QToolButton:hover{{border-color:{self._color};}}"
         )
-        self._mode_btn.setToolTip(
-            "Algorithme de quantification — N: nearest (rapide, peut fusionner "
-            "des couleurs) / L: nearest luminance (sans perte si assez de "
-            "slots) / I: indexation directe (PNG indexé requis)"
-        )
-        self._mode_btn.clicked.connect(self._open_mode_menu)
+        self._mode_btn.clicked.connect(self._cycle_match_mode)
         row.addWidget(self._mode_btn)
+        self._refresh_mode_tooltip()
 
         row.addStretch()
 
@@ -398,28 +398,47 @@ class BgLayerRow(QFrame):
         même contrat que component_editors/sprite.py pour Actor.pal_bank."""
         self._pal_banks = banks
         current = next((b for b in banks if b.name == current_name), None) if current_name else None
-        self._pal_btn.setIcon(bank_icon(current) if current else QIcon())
+        if current:
+            self._pal_btn.setIcon(bank_icon(current))
+            self._pal_btn.setToolTip(f"Palette du layer : {current.name}")
+        else:
+            # « Sans palette » : couleurs d'origine du PNG (défaut) — icône
+            # neutre plutôt qu'un bouton vide.
+            from ui.common.icons import get as _ico
+            self._pal_btn.setIcon(_ico("tool_palette", C.TEXT_DIM, self._color))
+            self._pal_btn.setToolTip("Sans palette (couleurs du PNG) — clic pour changer")
 
     def _open_pal_picker(self):
-        if not self._pal_banks:
-            return
-        entries = [(bank.name, bank.name, bank_icon(bank)) for bank in self._pal_banks]
+        from ui.common.pickers import PALETTE_NONE
+        entries = [("Sans palette (couleurs du PNG)", PALETTE_NONE, None)]
+        entries += [(bank.name, bank.name, bank_icon(bank)) for bank in self._pal_banks]
         popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
         popup.picked.connect(lambda name: self.pal_bank_changed.emit(self.slot_index, name))
         popup.show_below(self._pal_btn)
 
     def set_match_mode(self, mode: str):
+        self._match_mode = mode
         letter = next((l for l, _, v in self._MATCH_MODES if v == mode), self._MATCH_MODES[0][0])
         self._mode_btn.setText(letter)
+        self._refresh_mode_tooltip()
 
-    def _open_mode_menu(self):
-        menu = QMenu(self)
-        for letter, label, value in self._MATCH_MODES:
-            action = menu.addAction(f"{letter} — {label}")
-            action.triggered.connect(
-                lambda _checked, v=value: self.match_mode_changed.emit(self.slot_index, v)
-            )
-        menu.exec(self._mode_btn.mapToGlobal(self._mode_btn.rect().bottomLeft()))
+    def _cycle_match_mode(self):
+        """Simple clic = mode suivant (N -> L -> I -> N), comme le bouton du
+        panneau sprite component. Met à jour la lettre AVANT de notifier."""
+        idx = next((i for i, (_l, _lb, v) in enumerate(self._MATCH_MODES)
+                    if v == self._match_mode), 0)
+        nxt = self._MATCH_MODES[(idx + 1) % len(self._MATCH_MODES)][2]
+        self.set_match_mode(nxt)
+        self.match_mode_changed.emit(self.slot_index, nxt)
+
+    def _refresh_mode_tooltip(self):
+        label = next((lb for _l, lb, v in self._MATCH_MODES if v == self._match_mode),
+                     self._MATCH_MODES[0][1])
+        self._mode_btn.setToolTip(
+            f"Algorithme de quantification : <b>{label}</b><br>"
+            "Clic pour changer (N: nearest · L: nearest luminance · "
+            "I: indexation directe)."
+        )
 
     def set_bound(self, checked: bool):
         if checked:
