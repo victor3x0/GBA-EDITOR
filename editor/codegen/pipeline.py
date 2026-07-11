@@ -34,7 +34,8 @@ from codegen.runtime_codegen.headers import generate_actor_types, generate_actor
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
 from core.project import (Project, Scene, BackgroundLayer, Actor, SpriteAsset,
-                     SpriteComponent, CollisionBoxComponent, ScriptComponent)
+                     SpriteComponent, CollisionBoxComponent, ScriptComponent,
+                     OWN_PAL_BANK)
 from core.validator import validate_project
 
 # Scripting pipeline (Lua → C)
@@ -209,7 +210,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                         seen_sprites.add(sprite.name)
                         colors = effective_palette_colors(
                             p, actor.pal_bank, p.asset_abs(sprite.asset),
-                            scene.active_obj_palettes)
+                            scene.active_obj_palettes, own_pal=sprite.own_palette)
                         unique_sprites.append((actor, sprite, colors))
             anchor_scene = all_scenes[0] if all_scenes else None
             anchor_obj = anchor_scene.active_obj_palettes if anchor_scene else []
@@ -217,7 +218,8 @@ class BuildWorker(EventEmitter, threading.Thread):
                 if sprite and sprite.asset and sprite.name not in seen_sprites:
                     seen_sprites.add(sprite.name)
                     colors = effective_palette_colors(
-                        p, getattr(pf, "pal_bank", 0), p.asset_abs(sprite.asset), anchor_obj)
+                        p, getattr(pf, "pal_bank", OWN_PAL_BANK), p.asset_abs(sprite.asset),
+                        anchor_obj, own_pal=sprite.own_palette)
                     unique_sprites.append((pf, sprite, colors))
             if ok and unique_sprites:
                 ok = ok and self._step_grit_actors(p, unique_sprites)

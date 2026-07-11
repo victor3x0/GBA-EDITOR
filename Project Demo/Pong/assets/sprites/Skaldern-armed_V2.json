@@ -3,6 +3,13 @@
   "asset": "assets/sprites/Skaldern-armed_V2.png",
   "frame_w": 32,
   "frame_h": 32,
+  "preview_palette": "DMG (GB Default)",
+  "own_palette": [
+    26620,
+    4192,
+    14096
+  ],
+  "compress_method": "median_cut",
   "states": [
     {
       "name": "Idle",

@@ -78,11 +78,6 @@ def quantize_image_to_bank(img: "Image.Image", bank_colors: list[int]) -> "Image
     return img
 
 
-def _luma(rgb888: tuple[int, int, int]) -> float:
-    r, g, b = rgb888
-    return 0.299 * r + 0.587 * g + 0.114 * b
-
-
 def compress_colors(
     colors: list[tuple[int, int, int]], max_colors: int
 ) -> dict[tuple[int, int, int], tuple[int, int, int]]:
@@ -100,53 +95,6 @@ def compress_colors(
     quantized = src.quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT).convert("RGB")
     reduced = list(quantized.getdata())
     return dict(zip(colors, reduced))
-
-
-def quantize_image_luminance_preserving(img: "Image.Image", bank_colors: list[int]) -> "Image.Image":
-    """Alternative à `quantize_image_to_bank` : préserve l'information autant
-    que possible. Si l'image référence N couleurs distinctes opaques et qu'il
-    y a assez de slots éditables (<=15), chaque couleur distincte obtient un
-    slot DIFFÉRENT de la banque (jamais de collision) — assignation par
-    écartement régulier le long d'un tri par luminance croissante, couleurs
-    et slots cibles. Si N > 15, `compress_colors` réduit d'abord à 15
-    représentants (l'info se perd alors nécessairement, il n'y a pas assez
-    de place). `img` doit être en mode RGBA. `bank_colors` doit être non-vide."""
-    img = img.convert("RGBA")
-    px = img.load()
-    w, h = img.size
-
-    editable = bank_colors[1:] if len(bank_colors) > 1 else bank_colors
-
-    distinct: dict[tuple[int, int, int], None] = {}
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            if a == 0:
-                continue
-            distinct.setdefault((r, g, b), None)
-    colors = list(distinct.keys())
-    if not colors:
-        return img
-
-    color_map = compress_colors(colors, len(editable))
-    reduced_distinct = sorted(set(color_map.values()), key=_luma)
-    editable_sorted = sorted(editable, key=lambda c: _luma(bgr555_to_rgb888(c)))
-
-    n, m = len(reduced_distinct), len(editable_sorted)
-    assign: dict[tuple[int, int, int], int] = {}
-    for i, c in enumerate(reduced_distinct):
-        idx = round(i * (m - 1) / (n - 1)) if n > 1 else m // 2
-        assign[c] = editable_sorted[idx]
-
-    final_cache = {c: assign[color_map[c]] for c in colors}
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            if a == 0:
-                continue
-            snapped = bgr555_to_rgb888(final_cache[(r, g, b)])
-            px[x, y] = (snapped[0], snapped[1], snapped[2], a)
-    return img
 
 
 def extract_palette_from_image(path, max_colors: int = 15) -> list[int]:
@@ -234,3 +182,203 @@ def direct_index_to_bank(path, bank_colors: list[int]) -> "Image.Image":
             r, g, b = bgr555_to_rgb888(bank_color)
             dst_px[x, y] = (r, g, b, 255)
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Indexation d'un PNG (mode 'P') pour le Sprite Editor
+#
+#  Un sprite indexé est auto-descriptif : index PNG i == index de palette
+#  hardware i (index 0 = transparent par convention). Plus besoin de résoudre
+#  « quelle palette / quelle scène » au build — cf. le cap direct-index.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Méthodes de compression proposées quand un sprite dépasse `max_colors`
+# couleurs. La valeur est le jeton stocké/échangé par l'UI ; le libellé sert à
+# l'affichage.
+COMPRESSION_METHODS = [
+    ("median_cut",   "Median-cut"),
+    ("nearest_pair", "Fusion des paires proches"),
+    ("most_frequent", "Couleurs les plus fréquentes"),
+    ("kmeans",       "k-means"),
+]
+
+
+def _rgb_dist2(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+
+
+def nearest_rgb(color: tuple[int, int, int],
+                candidates: list[tuple[int, int, int]]) -> tuple[int, int, int]:
+    """Couleur de `candidates` la plus proche de `color` (distance RGB²)."""
+    best = candidates[0]
+    best_d = _rgb_dist2(color, best)
+    for c in candidates[1:]:
+        d = _rgb_dist2(color, c)
+        if d < best_d:
+            best_d, best = d, c
+    return best
+
+
+def reduce_nearest_pair(colors: list[tuple[int, int, int]], n: int) -> list[tuple[int, int, int]]:
+    """Réduit `colors` à `n` en retirant à chaque fois l'une des deux couleurs
+    les plus proches (distance RGB²) — garde les couleurs EXACTES (pas de
+    moyenne). Ordre source préservé pour ce qui reste. Brique partagée avec
+    palette_presets._reduce_to."""
+    colors = list(colors)
+    while len(colors) > n:
+        best = None
+        drop = 0
+        for i in range(len(colors)):
+            for j in range(i + 1, len(colors)):
+                d = _rgb_dist2(colors[i], colors[j])
+                if best is None or d < best:
+                    best, drop = d, j
+        colors.pop(drop)
+    return colors
+
+
+def _reps_kmeans(colors, counts, n) -> list[tuple[int, int, int]]:
+    """k représentants par Lloyd pondéré sur les couleurs distinctes,
+    initialisé par le résultat median-cut -> déterministe, sans dépendance
+    externe. Les centres finaux sont arrondis à l'entier le plus proche."""
+    seed = list(dict.fromkeys(compress_colors(colors, n).values()))
+    centers = [tuple(float(v) for v in c) for c in seed]
+    for _ in range(8):
+        sums = [[0.0, 0.0, 0.0, 0.0] for _ in centers]  # r,g,b,poids
+        for c in colors:
+            w = counts.get(c, 1)
+            k = min(range(len(centers)),
+                    key=lambda i: _rgb_dist2(c, tuple(round(v) for v in centers[i])))
+            s = sums[k]
+            s[0] += c[0] * w; s[1] += c[1] * w; s[2] += c[2] * w; s[3] += w
+        moved = False
+        for i, s in enumerate(sums):
+            if s[3] > 0:
+                nc = (s[0] / s[3], s[1] / s[3], s[2] / s[3])
+                if nc != centers[i]:
+                    centers[i] = nc; moved = True
+        if not moved:
+            break
+    reps = list(dict.fromkeys(tuple(round(v) for v in c) for c in centers))
+    return reps
+
+
+def reduce_colors(colors: list[tuple[int, int, int]],
+                  counts: dict, max_colors: int, method: str = "median_cut") -> dict:
+    """Réduit une liste de couleurs RGB distinctes à `max_colors` représentants
+    et retourne un mapping {couleur d'origine -> représentant}. No-op (identité)
+    si `colors` tient déjà. `counts` = {couleur: nb de pixels} (pour
+    most_frequent / kmeans). `method` ∈ COMPRESSION_METHODS."""
+    if len(colors) <= max_colors:
+        return {c: c for c in colors}
+    if method == "median_cut":
+        return compress_colors(colors, max_colors)
+    if method == "nearest_pair":
+        reps = reduce_nearest_pair(colors, max_colors)
+    elif method == "most_frequent":
+        reps = sorted(colors, key=lambda c: counts.get(c, 0), reverse=True)[:max_colors]
+    elif method == "kmeans":
+        reps = _reps_kmeans(colors, counts, max_colors)
+    else:
+        raise ValueError(f"reduce_colors: méthode inconnue {method!r}")
+    return {c: nearest_rgb(c, reps) for c in colors}
+
+
+def _distinct_opaque(img) -> tuple[list, dict]:
+    """Couleurs RGB opaques distinctes d'une image RGBA, dans l'ordre
+    d'apparition (scan haut-gauche -> bas-droite), + comptes par couleur.
+    Un pixel d'alpha 0 est transparent (ignoré)."""
+    data = list(img.getdata())
+    order: list = []
+    counts: dict = {}
+    for px in data:
+        r, g, b, a = px
+        if a == 0:
+            continue
+        key = (r, g, b)
+        c = counts.get(key)
+        if c is None:
+            order.append(key)
+            counts[key] = 1
+        else:
+            counts[key] = c + 1
+    return order, counts
+
+
+def _flat_palette(reps: list[tuple[int, int, int]]) -> list[int]:
+    """Palette PIL plate : index 0 réservé (noir/transparent) + les
+    représentants aux index 1..N."""
+    flat = [0, 0, 0]
+    for r, g, b in reps:
+        flat += [r, g, b]
+    return flat
+
+
+def own_palette_from_source(source, method: str = "median_cut",
+                            max_colors: int = 15) -> list[int]:
+    """Palette propre (compression) d'un sprite, calculée depuis les couleurs
+    opaques du PNG source SANS le modifier : couleurs distinctes → réduction à
+    `max_colors` via `method` → valeurs BGR555 ordonnées (ordre d'apparition).
+    C'est la métadonnée stockée dans le JSON du sprite (index 1..N ; index 0
+    transparent implicite). Retourne [] si le source n'a aucun pixel opaque.
+    `source` : chemin ou image PIL."""
+    from PIL import Image
+    img = (source if hasattr(source, "mode") else Image.open(source)).convert("RGBA")
+    order, counts = _distinct_opaque(img)
+    if not order:
+        return []
+    color_map = reduce_colors(order, counts, max_colors, method)
+    reps_ordered: list = []
+    seen: set = set()
+    for c in order:
+        rep = color_map[c]
+        if rep not in seen:
+            seen.add(rep)
+            reps_ordered.append(rep)
+    return [rgb888_to_bgr555(r, g, b) for r, g, b in reps_ordered]
+
+
+def render_indexed(source, own_palette: list[int]):
+    """Rend une image mode 'P' depuis `source` (chemin/image) en calant chaque
+    pixel opaque sur l'index (1..N) de la couleur `own_palette` (BGR555) la plus
+    proche ; pixel transparent → index 0. La palette de sortie = `own_palette`.
+    Ne modifie JAMAIS le source. Brique de rendu partagée preview + build."""
+    from PIL import Image
+    img = (source if hasattr(source, "mode") else Image.open(source)).convert("RGBA")
+    w, h = img.size
+    out = Image.new("P", (w, h), 0)
+    reps_rgb = [bgr555_to_rgb888(c) for c in own_palette]   # index 1..N
+    if not reps_rgb:
+        out.putpalette(_flat_palette([]))
+        out.info["transparency"] = 0
+        return out
+
+    cache: dict = {}
+    def _idx(rgb):
+        i = cache.get(rgb)
+        if i is None:
+            best, best_d = 1, None
+            for k, rep in enumerate(reps_rgb, start=1):
+                d = _rgb_dist2(rgb, rep)
+                if best_d is None or d < best_d:
+                    best_d, best = d, k
+            cache[rgb] = best
+            i = best
+        return i
+
+    data = list(img.getdata())
+    out.putdata([0 if px[3] == 0 else _idx((px[0], px[1], px[2])) for px in data])
+    out.putpalette(_flat_palette(reps_rgb))
+    out.info["transparency"] = 0
+    return out
+
+
+def recolor_indexed(p_img, bank_colors: list[int]):
+    """Réhabille une image 'P' (index 1..N) avec les couleurs BGR555 de
+    `bank_colors` (index i → bank_colors[i]) → RGBA. Sert au mode preview
+    « indexed » du Sprite Editor (rendu in-game avec une palette référencée)."""
+    reps = [bgr555_to_rgb888(c) for c in bank_colors[1:16]]
+    p_img = p_img.copy()
+    p_img.putpalette(_flat_palette(reps))
+    p_img.info["transparency"] = 0
+    return p_img.convert("RGBA")

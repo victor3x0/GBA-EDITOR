@@ -3,6 +3,13 @@
   "asset": "assets/sprites/Paddle.png",
   "frame_w": 8,
   "frame_h": 32,
+  "preview_palette": "pal_Paddle",
+  "own_palette": [
+    7336,
+    32364,
+    32767
+  ],
+  "compress_method": "median_cut",
   "states": [
     {
       "name": "Idle",

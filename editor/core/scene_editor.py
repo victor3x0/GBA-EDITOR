@@ -48,7 +48,6 @@ from core.project import (
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T
 from core.sprite_compose import compose_frame_image
-from core.color_utils import quantize_image_to_bank, quantize_image_luminance_preserving
 from codegen.asset_pipeline import quantize_asset, resolve_palette_bank, resolve_obj_palette_bank
 from PyQt6.QtGui import (
     QBrush,
@@ -122,7 +121,7 @@ def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
     if not bank or not bank.colors:
         return QPixmap(str(ap))
     try:
-        img = quantize_asset(ap, bank.colors, getattr(layer, "match_mode", "nearest"))
+        img = quantize_asset(ap, bank.colors, "nearest")   # plus de match_mode
     except ValueError:
         return QPixmap(str(ap))
     data = bytes(img.tobytes("raw", "RGBA"))
@@ -130,17 +129,20 @@ def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
     return QPixmap.fromImage(qi)
 
 
-def _quantize_preview(img, bank, mode: str):
-    """Quantifie une image RGBA déjà composée en mémoire (aperçu acteur du
-    canvas de scène) — "direct_index" a besoin d'un fichier indexé sur
-    disque, incompatible avec une frame déjà recomposée en RGBA ; retombe sur
-    "nearest" pour CET aperçu uniquement (le build réel, lui, utilise bien le
-    chemin indexé via build_sprite_sheet_indexed)."""
-    if not bank or not bank.colors:
+def _quantize_preview(img, sprite, bank):
+    """Aperçu acteur du canvas de scène, aligné sur le build INDEXÉ universel :
+    l'image composée est rendue via la own_palette du sprite (compression
+    stockée), puis ses index sont recolorés par la banque référencée
+    (index i -> banque[i]) ou laissés en couleurs propres (OWN). WYSIWYG avec
+    le build réel. Plus de match_mode."""
+    from core.color_utils import render_indexed, recolor_indexed
+    own_pal = list(getattr(sprite, "own_palette", []) or [])
+    if not own_pal:
         return img
-    if mode == "nearest_luminance":
-        return quantize_image_luminance_preserving(img, bank.colors)
-    return quantize_image_to_bank(img, bank.colors)
+    p_img = render_indexed(img, own_pal)
+    if bank and bank.colors:
+        return recolor_indexed(p_img, bank.colors)
+    return p_img.convert("RGBA")
 
 
 def _preview_frame_for_sprite(sprite, sprite_comp):
@@ -1713,7 +1715,7 @@ class SceneEditor(QWidget):
                 if preview_frame is not None:
                     img = compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
                     bank = resolve_obj_palette_bank(p, actor, scene)
-                    img = _quantize_preview(img, bank, getattr(actor, "match_mode", "nearest"))
+                    img = _quantize_preview(img, sprite, bank)
                     if img.width > 0 and img.height > 0:
                         data = bytes(img.tobytes("raw", "RGBA"))
                         qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)

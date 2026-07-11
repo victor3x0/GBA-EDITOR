@@ -85,9 +85,16 @@ class SpriteCenterPanel(QWidget):
 
     # ── API publique ──────────────────────────────────────────────────
 
+    def refresh_own_palette(self):
+        """Re-applique la compression du sprite courant au canvas (après un
+        réordonnancement de la bande) → le rendu dérivé se met à jour."""
+        if self._sprite:
+            self._canvas.set_own_palette(getattr(self._sprite, "own_palette", []))
+
     def load_sprite(self, sprite: SpriteAsset, project: Project):
         self._sprite  = sprite
         self._project = project
+        self._canvas.set_own_palette(getattr(sprite, "own_palette", []))
         self._anim_timer.stop()
         self._canvas_panel.toolbar.btn_play.setChecked(False)
         self._canvas_panel.set_info(
@@ -101,14 +108,16 @@ class SpriteCenterPanel(QWidget):
         )
         self._tiles.load(self._abs_path())
 
-        # Palette de preview : toujours réinitialisée à "DMG (GB Default)"
-        # (verte) pour un sprite fraîchement sélectionné — recherchée par nom,
-        # pas par index 0 : le catalogue est chargé par ordre alphabétique de
-        # fichier (ResourceManager), pas par ordre de création.
+        # Palette de preview : mémorisée par sprite (SpriteAsset.preview_palette).
+        # Repli sur "DMG (GB Default)" (verte) si rien de mémorisé ou palette
+        # supprimée — recherchée par nom, pas par index 0 (le catalogue est
+        # chargé par ordre alphabétique de fichier, pas par ordre de création).
         self._preview_banks = list(project.palettes) if project else []
-        default_bank = (project.get_palette("DMG (GB Default)") if project else None) \
+        stored = getattr(sprite, "preview_palette", None)
+        bank = (project.get_palette(stored) if (stored and project) else None) \
+            or (project.get_palette("DMG (GB Default)") if project else None) \
             or (self._preview_banks[0] if self._preview_banks else None)
-        self._set_preview_palette(default_bank)
+        self._set_preview_palette(bank)
 
     # ── Palette de preview (dropdown depuis la barre d'outils) ─────────
 
@@ -141,6 +150,15 @@ class SpriteCenterPanel(QWidget):
         bank = self._project.get_palette(name) if self._project else None
         if bank:
             self._set_preview_palette(bank)
+            self._remember_preview(name)
+
+    def _remember_preview(self, name: str):
+        """Persiste le choix de palette de preview sur le sprite courant (JSON
+        sidecar, watcher suspendu par le dispatcher). Ne recharge pas l'écran."""
+        if (self._sprite and self._project
+                and getattr(self._sprite, "preview_palette", None) != name):
+            self._sprite.preview_palette = name
+            get_dispatcher().save_sprite(self._sprite)
 
     def on_palette_extracted(self, name: str):
         """Une palette vient d'être extraite du PNG (bouton du panneau droit)
@@ -153,6 +171,7 @@ class SpriteCenterPanel(QWidget):
         bank = self._project.get_palette(name)
         if bank:
             self._set_preview_palette(bank)
+            self._remember_preview(name)
 
     def load_direction(self, state: AnimState, sd: StateDirection):
         if not self._sprite or not self._project:

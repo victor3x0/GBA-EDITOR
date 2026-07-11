@@ -368,11 +368,9 @@ class SceneInspector(QWidget):
                 if 0 <= layer.pal_bank < len(active_names) else None
             )
             row.set_pal_banks(active_banks, current_pal_name)
-            row.set_match_mode(getattr(layer, "match_mode", "nearest"))
             row.asset_changed.connect(lambda _, p, l=layer: self._on_layer_image(l, p))
             row.speed_changed.connect(lambda _, v, l=layer: self._on_layer_speed(l, v))
             row.pal_bank_changed.connect(lambda _, n, l=layer: self._on_layer_pal_bank(l, n))
-            row.match_mode_changed.connect(lambda _, m, l=layer: self._on_layer_match_mode(l, m))
             row.layer_removed.connect(lambda _, l=layer: self._on_layer_remove(l))
             row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
             self._bg_layers_container.addWidget(row)
@@ -444,23 +442,6 @@ class SceneInspector(QWidget):
         self._rebuild_layer_rows()
         # Re-quantifie le canvas de scène avec la nouvelle palette (WYSIWYG) —
         # bg_slot_changed est câblé sur scene_editor.refresh_bg (window.py).
-        get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
-        self.changed.emit()
-
-    def _on_layer_match_mode(self, layer, mode: str):
-        """L'algorithme de quantification d'un layer a changé."""
-        if not self._project or not self._scene: return
-        ba = self._project.get_background(self._scene.background_asset)
-        if not ba: return
-        old = getattr(layer, "match_mode", "nearest")
-        if old == mode:
-            return
-        get_history().push(SetFieldCmd(
-            layer, "match_mode", old, mode,
-            label=f"{ba.name}[{layer.bg_slot}].match_mode",
-            persist_fn=lambda: self._project.save_background(ba),
-        ))
-        # Re-quantifie le canvas de scène avec le nouvel algorithme (WYSIWYG).
         get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
         self.changed.emit()
 

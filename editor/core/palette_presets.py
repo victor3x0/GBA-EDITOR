@@ -28,6 +28,15 @@ def hsb_ramp_bgr555(hue_deg: float, sat: float, steps: int = 16) -> list[int]:
     return colors
 
 
+# Palette de secours de la banque 0 (cf. codegen/palette_alloc.scene_bank_layout).
+# Quand une scène a du contenu palette mais que le slot 0 resterait vide, on le
+# remplit avec cette rampe de gris neutre : tout asset retombant sur la banque 0
+# (référence cassée, débordement >16) affiche alors des couleurs prévisibles au
+# lieu du contenu résiduel de PAL RAM. Index 0 réservé (transparent). Ce n'est
+# PAS une entrée du catalogue projet — juste un remplissage déterministe.
+DEFAULT_PAL_BANK_COLORS = [RESERVED_SLOT_COLOR] + hsb_ramp_bgr555(0, 0.0, steps=16)[1:]
+
+
 # ── DMG (Nintendo Game Boy) ─────────────────────────────────────────────
 # Vert monochrome. Sur GB, un OBJ (sprite) utilise 3 nuances (l'index 0 est
 # transparent) et un BG utilise les 4 teintes du registre BGP — d'où deux
@@ -72,21 +81,11 @@ def _hex_to_rgb(h: str) -> tuple[int, int, int]:
 
 
 def _reduce_to(colors: list[tuple[int, int, int]], n: int) -> list[tuple[int, int, int]]:
-    """Réduit `colors` à `n` en retirant à chaque fois l'une des deux
-    couleurs les plus proches (distance RGB²) — garde les couleurs EXACTES
-    (pas de moyenne), perte perceptuelle minimale. Ordre source préservé
-    pour ce qui reste."""
-    colors = list(colors)
-    while len(colors) > n:
-        best = None
-        drop = 0
-        for i in range(len(colors)):
-            for j in range(i + 1, len(colors)):
-                d = sum((a - b) ** 2 for a, b in zip(colors[i], colors[j]))
-                if best is None or d < best:
-                    best, drop = d, j
-        colors.pop(drop)
-    return colors
+    """Réduit `colors` à `n` couleurs EXACTES (fusion des paires les plus
+    proches). Brique déplacée dans color_utils (partagée avec l'indexation
+    des sprites)."""
+    from core.color_utils import reduce_nearest_pair
+    return reduce_nearest_pair(colors, n)
 
 
 def generate_default_banks() -> list:

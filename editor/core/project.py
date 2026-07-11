@@ -248,6 +248,13 @@ class PaletteBank(Resource):
         incidence puisqu'elle n'est jamais affichée pour une tuile (index de
         palette 0 = toujours transparent au niveau hardware, OBJ comme BG)."""
         if self.colors:
+            # Une banque matérielle = 16 couleurs max (4bpp). Un fichier édité à
+            # la main pourrait en contenir davantage ; on tronque défensivement
+            # pour que grit (quantification sur toutes les couleurs) et main_gen
+            # (`colors[:16]`) ne divergent jamais (indices >15 impossibles en
+            # 4bpp -> tuiles corrompues).
+            if len(self.colors) > 16:
+                self.colors = self.colors[:16]
             from core.color_utils import RESERVED_SLOT_COLOR
             self.colors[0] = RESERVED_SLOT_COLOR
 
@@ -304,9 +311,6 @@ class BackgroundLayer:
                                # Même mécanisme que Actor.pal_bank/Prefab.pal_bank,
                                # mais BG plutôt qu'OBJ ; chaque layer choisit sa
                                # propre banque, indépendamment des autres layers.
-    match_mode:   str   = "nearest"  # "nearest" | "nearest_luminance" | "direct_index"
-                               # — algorithme de quantification de ce layer
-                               # (cf. core/color_utils.py).
 
 
 @dataclass
@@ -325,7 +329,6 @@ class BackgroundAsset(Resource):
                 {
                     "image": L.image, "bg_slot": L.bg_slot,
                     "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
-                    "match_mode": L.match_mode,
                 }
                 for L in self.layers
             ],
@@ -339,7 +342,6 @@ class BackgroundAsset(Resource):
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
                 pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
-                match_mode   = L.get("match_mode", "nearest"),
             )
             for i, L in enumerate(d.get("layers", []))
         ]
@@ -420,6 +422,16 @@ class SpriteAsset(Resource):
     frame_w: int = 16
     frame_h: int = 16
     states: list[AnimState] = field(default_factory=lambda: [AnimState()])
+    # Palette de preview du Sprite Editor mémorisée par sprite (nom de
+    # PaletteBank). Purement éditeur — n'affecte pas le build. None = repli DMG.
+    preview_palette: Optional[str] = None
+    # Compression NON-DESTRUCTIVE du sprite : palette propre (couleurs BGR555
+    # ordonnées, index 1..N ; index 0 transparent implicite) dérivée du PNG
+    # source SANS le modifier, + l'algo qui l'a produite. Source de vérité de
+    # l'indexation (preview + build) — cf. core/color_utils.own_palette_from_source.
+    # [] = pas encore calculée (migration au chargement).
+    own_palette: list = field(default_factory=list)   # list[int] BGR555
+    compress_method: str = "median_cut"
 
     @property
     def tile_w(self) -> int:
@@ -465,6 +477,9 @@ class SpriteAsset(Resource):
             "asset":   self.asset,
             "frame_w": self.frame_w,
             "frame_h": self.frame_h,
+            **({"preview_palette": self.preview_palette} if self.preview_palette else {}),
+            **({"own_palette": self.own_palette,
+                "compress_method": self.compress_method} if self.own_palette else {}),
             "states": [
                 {
                     "name":  s.name,
@@ -555,6 +570,9 @@ class SpriteAsset(Resource):
             frame_w   = frame_w,
             frame_h   = frame_h,
             states    = states,
+            preview_palette = d.get("preview_palette"),
+            own_palette     = list(d.get("own_palette", [])),
+            compress_method = d.get("compress_method", "median_cut"),
         )
 
 
@@ -767,9 +785,6 @@ class Prefab(Resource, ComponentOwnerMixin):
     name: str = "Prefab"
     components: list = field(default_factory=list)
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
-    # Algorithme de quantification des sprites de ce prefab — "nearest" |
-    # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
-    match_mode: str = "nearest"
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
 
     def to_dict(self) -> dict:
@@ -777,7 +792,6 @@ class Prefab(Resource, ComponentOwnerMixin):
             "name":          self.name,
             "components":    _components_to_list(self.components),
             "pal_bank":      self.pal_bank,
-            "match_mode":    self.match_mode,
             "max_instances": self.max_instances,
         }
 
@@ -787,7 +801,6 @@ class Prefab(Resource, ComponentOwnerMixin):
             name          = d.get("name", "Prefab"),
             components    = _components_from_list(d.get("components", [])),
             pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
-            match_mode    = d.get("match_mode", "nearest"),
             max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
         )
 
@@ -814,9 +827,6 @@ class Actor(ComponentOwnerMixin):
     flip_v: bool = False
     priority: int = 0
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
-    # Algorithme de quantification du sprite de cet actor — "nearest" |
-    # "nearest_luminance" | "direct_index" (cf. core/color_utils.py).
-    match_mode: str = "nearest"
     visible: bool = True
 
     def to_dict(self) -> dict:
@@ -831,7 +841,6 @@ class Actor(ComponentOwnerMixin):
             "flip_v":      self.flip_v,
             "priority":    self.priority,
             "pal_bank":    self.pal_bank,
-            "match_mode":  self.match_mode,
             "visible":     self.visible,
         }
 
@@ -848,7 +857,6 @@ class Actor(ComponentOwnerMixin):
             flip_v      = d.get("flip_v", False),
             priority    = d.get("priority", 0),
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
-            match_mode  = d.get("match_mode", "nearest"),
             visible     = d.get("visible", True),
         )
 
@@ -1224,11 +1232,26 @@ class Project:
                 frame_w=8,
                 frame_h=8,
             )
+            # Nouveau dépôt uniquement : on calcule la compression (palette propre)
+            # en MÉTADONNÉES, sans jamais toucher le PNG source (cap non-destructif).
+            # Un sprite déjà connu n'est jamais recompressé automatiquement.
+            sprite.own_palette = self._derive_own_palette(png_path, sprite.compress_method)
             self.sprites.append(sprite)
         sidecar = png_path.with_suffix(".json")
         if not sidecar.exists():
             self.sprites.save(sprite)
         return sprite
+
+    @staticmethod
+    def _derive_own_palette(png_path, method: str = "median_cut") -> list:
+        """Palette propre (compression BGR555 ordonnée) d'un PNG source, calculée
+        SANS modifier le fichier. [] si illisible. cf.
+        core/color_utils.own_palette_from_source."""
+        try:
+            from core.color_utils import own_palette_from_source
+            return own_palette_from_source(png_path, method=method)
+        except Exception:
+            return []
 
     def remove_sprite_png(self, png_path: Path):
         """PNG supprimé de assets/sprites/ : suppression différée du JSON."""
@@ -1624,6 +1647,7 @@ class Project:
         self.palettes.load()
         self._seed_or_migrate_palettes()
         self.sprites.load()
+        self._migrate_sprite_palettes()
         self.sfx.load()
         self.music.load()
         self.fonts.load()
@@ -1631,6 +1655,22 @@ class Project:
         self.prefabs.load()
         self._reconcile_sfx_and_music()
         self._load_scenes_with_migration()
+
+    def _migrate_sprite_palettes(self):
+        """Normalisation NON-DESTRUCTIVE des sprites existants : tout SpriteAsset
+        sans `own_palette` se voit calculer sa compression depuis son PNG source
+        (écrit en métadonnées JSON, PNG jamais touché). Idempotent — une fois
+        `own_palette` présente, la passe la saute (aucune réécriture)."""
+        for sp in list(self.sprites):
+            if sp.own_palette or not sp.asset:
+                continue
+            ap = self.asset_abs(sp.asset)
+            if not ap or not ap.exists():
+                continue
+            pal = self._derive_own_palette(ap, sp.compress_method)
+            if pal:
+                sp.own_palette = pal
+                self.sprites.save(sp)
 
     def _reconcile_sfx_and_music(self):
         """

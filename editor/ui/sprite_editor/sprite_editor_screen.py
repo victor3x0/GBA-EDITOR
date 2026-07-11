@@ -57,6 +57,14 @@ class SpriteEditorScreen(QWidget):
         self._right.sprite_changed.connect(self._left.refresh_anim_tree)
         self._right.direction_added.connect(self._left.select_direction)
         self._right.palette_extracted.connect(self._center.on_palette_extracted)
+        self._right.image_changed.connect(self._on_image_changed)
+        self._right.own_palette_changed.connect(self._center.refresh_own_palette)
+
+    def _on_image_changed(self):
+        """Le PNG du sprite courant a changé (réindexation/remplacement) —
+        recharger le centre pour refléter les nouvelles couleurs/tuiles."""
+        if self._project and self._right._sprite:
+            self._center.load_sprite(self._right._sprite, self._project)
 
     def load_project(self, project: Project):
         self._project = project

@@ -21,6 +21,7 @@ from typing import Optional
 
 from core.project import Project, Scene, OWN_PAL_BANK
 from core.color_utils import extract_palette_from_image
+from core.palette_presets import DEFAULT_PAL_BANK_COLORS
 
 # Cache des palettes propres, invalidé par mtime du PNG.
 _own_cache: dict[tuple[str, float], list[int]] = {}
@@ -72,13 +73,14 @@ class SceneBankLayout:
 
 
 def effective_palette_colors(p: Project, pal_bank: int, png_path,
-                             active_names: list) -> Optional[list[int]]:
+                             active_names: list, own_pal=None) -> Optional[list[int]]:
     """Couleurs vers lesquelles quantifier un asset (grit) :
-    - OWN -> sa palette propre (couleurs du PNG) ;
+    - OWN -> sa palette propre (`own_pal` = métadonnées sprite si fournies ;
+      sinon extraction du PNG, cas BG) ;
     - référencé -> les couleurs de la banque nommée du slot ;
     - None si rien de résoluble (slot vide / palette absente)."""
     if pal_bank == OWN_PAL_BANK:
-        return own_palette(png_path) or None
+        return (list(own_pal) if own_pal else own_palette(png_path)) or None
     if 0 <= pal_bank < len(active_names):
         name = active_names[pal_bank]
         bank = p.get_palette(name) if name else None
@@ -95,33 +97,39 @@ def _prefab_sprite(p: Project, pf):
     return p.get_sprite(comp.sprite_name) if comp else None
 
 
-def _actor_own_sources(p: Project, scene: Scene) -> list[Path]:
-    """PNG des ACTEURS de la scène en mode OWN (pas les prefabs — ceux-ci
-    sont alloués globalement, cf. prefab_own_slots)."""
-    srcs: list[Path] = []
+def _sprite_own_palette(sp) -> list[int]:
+    """Palette propre (compression) d'un sprite = ses métadonnées
+    `own_palette` (BGR555), source de vérité du modèle non-destructif. []
+    si absent."""
+    return list(getattr(sp, "own_palette", None) or []) if sp else []
+
+
+def _actor_own_palettes(p: Project, scene: Scene) -> list[list[int]]:
+    """Palettes propres des ACTEURS de la scène en mode OWN (métadonnées
+    sprite.own_palette ; pas les prefabs — alloués globalement, cf.
+    prefab_own_slots)."""
+    out: list[list[int]] = []
     for a in scene.actors:
         if not a.active or getattr(a, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
             continue
         comp = a.get_component("sprite")
         sp = (p.get_sprite(comp.sprite_name)
               if comp and comp.active and comp.sprite_name else None)
-        ap = p.asset_abs(sp.asset) if sp and sp.asset else None
-        if ap:
-            srcs.append(ap)
-    return srcs
+        cols = _sprite_own_palette(sp)
+        if cols:
+            out.append(cols)
+    return out
 
 
 def _prefab_own_palettes(p: Project) -> list[list[int]]:
-    """Palettes propres distinctes des prefabs poolés en mode OWN (ordre
-    déterministe par ordre du catalogue de prefabs)."""
+    """Palettes propres distinctes des prefabs poolés en mode OWN (métadonnées ;
+    ordre déterministe par ordre du catalogue de prefabs)."""
     out: list[list[int]] = []
     seen: set[tuple] = set()
     for pf in p.prefabs:
         if getattr(pf, "max_instances", 0) <= 0 or getattr(pf, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
             continue
-        sp = _prefab_sprite(p, pf)
-        ap = p.asset_abs(sp.asset) if sp and sp.asset else None
-        cols = own_palette(ap) if ap else []
+        cols = _sprite_own_palette(_prefab_sprite(p, pf))
         key = tuple(cols)
         if cols and key not in seen:
             seen.add(key)
@@ -142,8 +150,14 @@ def prefab_own_slots(p: Project) -> dict[tuple, Optional[int]]:
             if name and p.get_palette(name):
                 occ.add(i)
         scene_named.append(occ)
+    # PAS de fallback `or list(range(16))` ici : si aucun slot n'est libre dans
+    # TOUTES les scènes, assigner quand même des slots (0-15) placerait la
+    # palette du prefab sur une banque occupée par une palette référencée dans
+    # certaines scènes -> mauvaises couleurs silencieuses. On laisse plutôt
+    # `next(it, None)` renvoyer None (débordement) : bank_index retombe sur la
+    # banque 0 et le validateur avertit (_check_palette_bank_overflow).
     globally_free = [j for j in range(16)
-                     if all(j not in occ for occ in scene_named)] or list(range(16))
+                     if all(j not in occ for occ in scene_named)]
     it = iter(globally_free)
     return {tuple(cols): next(it, None) for cols in _prefab_own_palettes(p)}
 
@@ -167,11 +181,11 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     scène dans les slots restants (dédup par couleurs)."""
     if pool == "obj":
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
-        own_sources = _actor_own_sources(p, scene)
+        own_color_lists = _actor_own_palettes(p, scene)          # métadonnées sprite
         pf_slots = prefab_own_slots(p)
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
-        own_sources = _bg_own_sources(p, scene)
+        own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG: extraction
         pf_slots = {}
 
     slots: list[Optional[list[int]]] = [None] * 16
@@ -188,8 +202,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
             slots[slot] = list(key)
 
     # Acteurs/layers de la scène : slots restants.
-    for png in own_sources:
-        cols = own_palette(png)
+    for cols in own_color_lists:
         if not cols:
             continue
         key = tuple(cols)
@@ -199,5 +212,13 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         own_slot[key] = free
         if free is not None:
             slots[free] = list(cols)
+
+    # Banque 0 de secours : si la scène a du contenu palette mais que le slot 0
+    # est resté vide, on le remplit d'une palette déterministe — un asset
+    # retombant sur la banque 0 (référence cassée / débordement) affiche alors
+    # des couleurs prévisibles. `any(slots)` : on n'invente rien pour une scène
+    # vide (émission main_gen reste optimale).
+    if slots[0] is None and any(slots):
+        slots[0] = list(DEFAULT_PAL_BANK_COLORS)
 
     return SceneBankLayout(slots, own_slot)

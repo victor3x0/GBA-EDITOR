@@ -26,6 +26,8 @@ class SpriteRightPanel(QWidget):
     sprite_changed   = pyqtSignal()
     direction_added  = pyqtSignal(object, object)  # AnimState, StateDirection nouvellement ajoutée
     palette_extracted = pyqtSignal(str)            # nom de la PaletteBank créée/mise à jour
+    image_changed    = pyqtSignal()                # source/compression du sprite changée — recharger le centre
+    own_palette_changed = pyqtSignal()             # own_palette réordonnée — rafraîchir le rendu du canvas
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,9 +113,38 @@ class SpriteRightPanel(QWidget):
         lay.addWidget(self._dir_widget)
 
     def _build_palette(self):
+        from .palette_index_strip import PaletteIndexStrip
+        from core.color_utils import COMPRESSION_METHODS
         lay = self._content_layout
         W.separator(lay)
         W.section("PALETTE", lay)
+
+        # Algo de compression — recalcule own_palette depuis le source (le mode
+        # « png » du canvas montre le résultat en direct). Réinitialise l'ordre
+        # manuel (attendu). Sans effet si le source a ≤15 couleurs.
+        self._cb_compress = QComboBox(); self._cb_compress.setFont(QFont(T.MONO, T.SM))
+        for tok, label in COMPRESSION_METHODS:
+            self._cb_compress.addItem(label, tok)
+        self._cb_compress.currentIndexChanged.connect(self._on_compress_changed)
+        W.row("Compression", self._cb_compress, lay)
+
+        # Bande de swatches réordonnable (palette propre du sprite)
+        self._strip = PaletteIndexStrip()
+        self._strip.reindex_requested.connect(self._on_reindex_image)
+        # Réordonner own_palette change le rendu du mode « indexed » (index →
+        # couleur de banque différente) — on rafraîchit le canvas, sans reset de
+        # la palette de preview (own_palette est en mémoire, pas de watcher).
+        self._strip.reordered.connect(self.own_palette_changed)
+        lay.addWidget(self._strip)
+
+        self._btn_import = W.btn_accent("⟐  Importer / remplacer l'image…")
+        self._btn_import.setToolTip(
+            "Choisit une image, l'indexe (mode GBA, ≤15 couleurs + "
+            "transparence) et l'attache au sprite courant."
+        )
+        self._btn_import.clicked.connect(self._on_replace_image)
+        lay.addWidget(self._btn_import)
+
         self._btn_extract = W.btn_accent("⟐  Extraire du PNG")
         self._btn_extract.setToolTip(
             "Crée une palette « pal_<nom> » depuis les couleurs du PNG "
@@ -121,6 +152,48 @@ class SpriteRightPanel(QWidget):
         )
         self._btn_extract.clicked.connect(self._on_extract_palette)
         lay.addWidget(self._btn_extract)
+
+    def _on_reindex_image(self):
+        """Réindexe sur place le PNG existant (migration RGBA → indexé)."""
+        if not self._sprite or not self._project:
+            return
+        from .import_png_dialog import reindex_sprite
+        if reindex_sprite(self._project, self._sprite, self):
+            self._after_image_change()
+
+    def _on_replace_image(self):
+        """Attache un nouveau fichier image au sprite courant."""
+        if not self._sprite or not self._project:
+            return
+        from .import_png_dialog import replace_sprite_image
+        if replace_sprite_image(self._project, self._sprite, self):
+            self._after_image_change()
+
+    def _after_image_change(self):
+        get_dispatcher().save_sprite(self._sprite)
+        self._strip.load(self._sprite, self._project)
+        self.image_changed.emit()
+
+    def _on_compress_changed(self, _):
+        """Recalcule own_palette avec l'algo choisi, depuis le PNG source (jamais
+        modifié). Réinitialise l'ordre manuel de la palette."""
+        if self._blocking or not self._sprite or not self._project or not self._sprite.asset:
+            return
+        method = self._cb_compress.currentData()
+        if method == self._sprite.compress_method:
+            return
+        ap = self._project.root / self._sprite.asset
+        if not ap.exists():
+            return
+        from core.color_utils import own_palette_from_source
+        pal = own_palette_from_source(ap, method)
+        if not pal:
+            return
+        self._sprite.own_palette = pal
+        self._sprite.compress_method = method
+        get_dispatcher().save_sprite(self._sprite)
+        self._strip.load(self._sprite, self._project)
+        self.own_palette_changed.emit()
 
     # ── API publique ──────────────────────────────────────────────
 
@@ -141,6 +214,11 @@ class SpriteRightPanel(QWidget):
             self._sp_speed.setValue(self._state.speed)
             self._chk_loop.setChecked(self._state.loop)
             self._dir_widget.load(self._state)
+
+        # Compression : algo mémorisé + bande réordonnable
+        _mi = self._cb_compress.findData(getattr(sprite, "compress_method", "median_cut"))
+        self._cb_compress.setCurrentIndex(_mi if _mi >= 0 else 0)
+        self._strip.load(sprite, project)
 
         self._blocking = False
 

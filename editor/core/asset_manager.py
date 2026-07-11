@@ -197,13 +197,6 @@ class BgLayerRow(QFrame):
     bound_toggled    = pyqtSignal(int)
     layer_removed    = pyqtSignal(int)
     pal_bank_changed   = pyqtSignal(int, str)  # slot_index, nom de la PaletteBank
-    match_mode_changed = pyqtSignal(int, str)  # slot_index, "nearest"|"nearest_luminance"|"direct_index"
-
-    _MATCH_MODES = [
-        ("N", "Nearest", "nearest"),
-        ("L", "Nearest luminance", "nearest_luminance"),
-        ("I", "Indexation directe", "direct_index"),
-    ]
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -215,7 +208,6 @@ class BgLayerRow(QFrame):
         self._highlight = False
         self._is_ui_layer = False
         self._pal_banks: list = []
-        self._match_mode: str = self._MATCH_MODES[0][2]
         self.setAcceptDrops(True)
         self.setFixedHeight(40)
         self._update_style()
@@ -302,23 +294,6 @@ class BgLayerRow(QFrame):
         )
         self._pal_btn.clicked.connect(self._open_pal_picker)
         row.addWidget(self._pal_btn)
-
-        # Algorithme de quantification (match_mode) — bouton compact qui
-        # cycle N -> L -> I au simple clic (même principe que le bouton du
-        # panneau "sprite component", en version lettre unique faute de place
-        # dans une rangée de 40px).
-        self._mode_btn = QToolButton()
-        self._mode_btn.setFixedSize(30, 30)
-        self._mode_btn.setText(self._MATCH_MODES[0][0])
-        self._mode_btn.setFont(QFont(T.MONO, 14, QFont.Weight.Bold))
-        self._mode_btn.setStyleSheet(
-            f"QToolButton{{color:{self._color};background:transparent;"
-            "border:1px solid #333;border-radius:3px;padding:0;}"
-            f"QToolButton:hover{{border-color:{self._color};}}"
-        )
-        self._mode_btn.clicked.connect(self._cycle_match_mode)
-        row.addWidget(self._mode_btn)
-        self._refresh_mode_tooltip()
 
         row.addStretch()
 
@@ -415,30 +390,6 @@ class BgLayerRow(QFrame):
         popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
         popup.picked.connect(lambda name: self.pal_bank_changed.emit(self.slot_index, name))
         popup.show_below(self._pal_btn)
-
-    def set_match_mode(self, mode: str):
-        self._match_mode = mode
-        letter = next((l for l, _, v in self._MATCH_MODES if v == mode), self._MATCH_MODES[0][0])
-        self._mode_btn.setText(letter)
-        self._refresh_mode_tooltip()
-
-    def _cycle_match_mode(self):
-        """Simple clic = mode suivant (N -> L -> I -> N), comme le bouton du
-        panneau sprite component. Met à jour la lettre AVANT de notifier."""
-        idx = next((i for i, (_l, _lb, v) in enumerate(self._MATCH_MODES)
-                    if v == self._match_mode), 0)
-        nxt = self._MATCH_MODES[(idx + 1) % len(self._MATCH_MODES)][2]
-        self.set_match_mode(nxt)
-        self.match_mode_changed.emit(self.slot_index, nxt)
-
-    def _refresh_mode_tooltip(self):
-        label = next((lb for _l, lb, v in self._MATCH_MODES if v == self._match_mode),
-                     self._MATCH_MODES[0][1])
-        self._mode_btn.setToolTip(
-            f"Algorithme de quantification : <b>{label}</b><br>"
-            "Clic pour changer (N: nearest · L: nearest luminance · "
-            "I: indexation directe)."
-        )
 
     def set_bound(self, checked: bool):
         if checked:

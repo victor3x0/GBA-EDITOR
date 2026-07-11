@@ -81,7 +81,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     # le contenu du slot varie par scène. À l'utilisateur d'aligner ses
     # palettes par index en amont.
     _check_bg_text_cbb_conflict(ctx)
-    _check_direct_index_mode(ctx)
+    _check_pal_bank_reference(ctx)
     _check_palette_bank_overflow(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
@@ -221,65 +221,90 @@ def _check_bg_text_cbb_conflict(ctx: ValidationContext):
                     f"propres tuiles seront écrasées par les glyphes de police.")
 
 
-def _check_direct_index_mode(ctx: ValidationContext):
-    """match_mode="direct_index" (cf. core/color_utils.direct_index_to_bank)
-    suppose un PNG en mode 'P' natif (palette + index par pixel), avec sa
-    transparence conventionnellement à l'index 0 — indépendamment de
-    l'éventuel tag de transparence natif du fichier (contrat fixe de ce
-    mode, pas une détection automatique). Avertit sans bloquer si le PNG
-    assigné n'est pas indexé, ou si sa transparence native déclarée diffère
-    de l'index 0 (signe probable que le fichier n'a pas été préparé pour ce
-    mode)."""
-    from PIL import Image
+def _check_pal_bank_reference(ctx: ValidationContext):
+    """Un asset (actor / prefab / layer BG) peut pointer une palette RÉFÉRENCÉE
+    (pal_bank 0-15) dont le slot est hors de active_*_palettes, vide, ou dont la
+    palette a été supprimée du catalogue. Ce n'est PAS bloquant — ça peut être
+    délibéré (banque destinée à être remplie plus tard, palette-swap par slot) —
+    mais l'asset s'affichera alors avec le contenu du slot tel quel en PAL RAM
+    (souvent la palette de secours de la banque 0), donc de mauvaises couleurs.
+    On avertit en nommant le type et le nom de l'asset concerné.
+
+    Résolution des slots identique au build :
+    - actors  -> active_obj_palettes de LEUR scène ;
+    - prefabs -> active_obj_palettes de la scène d'ancrage (1ère) ;
+    - layers  -> active_bg_palettes de chaque scène utilisant le background."""
+    from core.project import OWN_PAL_BANK
     p = ctx.project
 
-    def _check_png(path, label: str):
-        try:
-            img = Image.open(path)
-        except Exception:
-            return  # fichier illisible/manquant — déjà signalé ailleurs
-        if img.mode != "P":
-            ctx.warn(None,
-                f"{label} : match_mode=\"indexation directe\" mais le PNG n'est "
-                f"pas en mode indexé (mode {img.mode!r}) — aucune couleur ne "
-                f"sera assignée pour ce mode.")
-            return
-        native = img.info.get("transparency")
-        if isinstance(native, int) and native != 0:
-            ctx.warn(None,
-                f"{label} : le PNG a une transparence native à l'index {native}, "
-                f"pas 0 — l'indexation directe traite toujours l'index 0 comme "
-                f"transparent, ce fichier n'est probablement pas préparé pour "
-                f"ce mode.")
+    def _slot_missing(active: list, slot: int) -> bool:
+        if not (0 <= slot < len(active)):
+            return True
+        name = active[slot]
+        return not (name and p.get_palette(name))
 
+    def _sprite_of(entity):
+        comp = entity.get_component("sprite")
+        if not (comp and getattr(comp, "active", True) and comp.sprite_name):
+            return None
+        return p.get_sprite(comp.sprite_name)
+
+    # ── Actors (par scène) ───────────────────────────────────────────
     for scene in p.scenes:
+        active = getattr(scene, "active_obj_palettes", [])
         for actor in scene.actors:
-            if getattr(actor, "match_mode", "nearest") != "direct_index":
+            if not actor.active:
                 continue
-            comp = actor.get_component("sprite")
-            sprite = p.get_sprite(comp.sprite_name) if comp and comp.sprite_name else None
-            if sprite and sprite.asset:
-                ap = p.asset_abs(sprite.asset)
-                if ap and ap.exists():
-                    _check_png(ap, f"Sprite '{sprite.name}' (actor '{actor.name}')")
+            pb = getattr(actor, "pal_bank", OWN_PAL_BANK)
+            if pb == OWN_PAL_BANK:
+                continue
+            sp = _sprite_of(actor)
+            if not (sp and sp.asset):
+                continue  # pas de sprite construit -> pal_bank sans effet
+            if _slot_missing(active, pb):
+                ctx.warn(actor,
+                    f"Actor '{actor.name}' pointe la banque OBJ {pb} de la scène "
+                    f"'{scene.name}', vide ou hors de la sélection active — le "
+                    f"sprite s'affichera avec le contenu par défaut de ce slot.")
 
+    # ── Prefabs poolés (via scène d'ancrage = 1ère scène) ────────────
+    anchor = p.scenes[0] if p.scenes else None
+    anchor_active = getattr(anchor, "active_obj_palettes", []) if anchor else []
     for pf in p.prefabs:
-        if getattr(pf, "match_mode", "nearest") != "direct_index":
+        if getattr(pf, "max_instances", 0) <= 0:
             continue
-        comp = pf.get_component("sprite")
-        sprite = p.get_sprite(comp.sprite_name) if comp and comp.sprite_name else None
-        if sprite and sprite.asset:
-            ap = p.asset_abs(sprite.asset)
-            if ap and ap.exists():
-                _check_png(ap, f"Sprite '{sprite.name}' (prefab '{pf.name}')")
+        pb = getattr(pf, "pal_bank", OWN_PAL_BANK)
+        if pb == OWN_PAL_BANK:
+            continue
+        sp = _sprite_of(pf)
+        if not (sp and sp.asset):
+            continue
+        if _slot_missing(anchor_active, pb):
+            where = f" (résolue via la scène '{anchor.name}')" if anchor else ""
+            ctx.warn(None,
+                f"Prefab '{pf.name}' pointe la banque OBJ {pb}{where}, vide ou "
+                f"hors de la sélection active — ses instances s'afficheront avec "
+                f"le contenu par défaut de ce slot.")
 
-    for ba in p.backgrounds:
+    # ── Layers BG (par scène utilisant le background) ────────────────
+    for scene in p.scenes:
+        active = getattr(scene, "active_bg_palettes", [])
+        ba_name = getattr(scene, "background_asset", "")
+        ba = p.get_background(ba_name) if ba_name else None
+        if not ba:
+            continue
         for layer in ba.layers:
-            if getattr(layer, "match_mode", "nearest") != "direct_index" or not layer.image:
+            if not layer.image:
                 continue
-            ap = p.background_images_dir / layer.image
-            if ap.exists():
-                _check_png(ap, f"Background '{ba.name}' BG{layer.bg_slot}")
+            pb = getattr(layer, "pal_bank", OWN_PAL_BANK)
+            if pb == OWN_PAL_BANK:
+                continue
+            if _slot_missing(active, pb):
+                ctx.warn(None,
+                    f"Background '{ba.name}' BG{layer.bg_slot} (scène "
+                    f"'{scene.name}') pointe la banque BG {pb}, vide ou hors de "
+                    f"la sélection active — le layer s'affichera avec le contenu "
+                    f"par défaut de ce slot.")
 
 
 def _check_palette_bank_overflow(ctx: ValidationContext):

@@ -384,6 +384,18 @@ class SpriteFinderPanel(QWidget):
     def _on_add_sprite(self):
         if not self._project:
             return
+        from PyQt6.QtGui import QCursor
+        menu = QMenu(self)
+        menu.setStyleSheet(_CTX_MENU_QSS)
+        new_a = menu.addAction("Nouveau sprite vide")
+        import_a = menu.addAction("Importer une image…")
+        act = menu.exec(QCursor.pos())
+        if act == new_a:
+            self._create_empty_sprite()
+        elif act == import_a:
+            self._import_sprite()
+
+    def _create_empty_sprite(self):
         name, ok = QInputDialog.getText(self, "Nouveau sprite", "Nom :")
         name = name.strip() if ok else ""
         if not name:
@@ -395,6 +407,14 @@ class SpriteFinderPanel(QWidget):
         sprite = SpriteAsset(name=name)
         self._project.sprites.append(sprite)
         self._project.sprites.save(sprite)
+        self._refresh_sprites(select=sprite)
+
+    def _import_sprite(self):
+        from .import_png_dialog import import_new_sprite
+        dst = import_new_sprite(self._project, self)
+        if not dst:
+            return
+        sprite = self._project.sprites.get(dst.stem)
         self._refresh_sprites(select=sprite)
 
     def _on_sprite_context_menu(self, pos):

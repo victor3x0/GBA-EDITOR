@@ -41,43 +41,6 @@ def count_frames(p: Project, sprite: SpriteAsset) -> int:
     return max(1, len(ordered))
 
 
-def pad_sprite_png(
-    src: Path,
-    frame_w: int,
-    frame_h: int,
-    out_dir: Path,
-    emit: Callable,
-) -> Optional[Path]:
-    """Padde le PNG à des multiples de frame_w×frame_h et le convertit en RGBA.
-
-    La conversion RGBA est indispensable pour les PNGs indexés à palette étendue :
-    grit construit alors sa propre palette optimale depuis les couleurs réellement présentes.
-    """
-    try:
-        from PIL import Image
-        img = Image.open(src)
-        w, h = img.size
-        target_w = ((w + frame_w - 1) // frame_w) * frame_w
-        target_h = ((h + frame_h - 1) // frame_h) * frame_h
-        needs_pad = (w != target_w or h != target_h)
-        rgba = img.convert("RGBA")
-        if not needs_pad:
-            out = out_dir / f"_rgba_{src.name}"
-            rgba.save(out)
-            return out
-        emit("log_line",
-             f"[pad] {src.name} {w}×{h} -> {target_w}×{target_h} "
-             f"(frame {frame_w}×{frame_h})")
-        padded = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-        padded.paste(rgba, (0, 0))
-        out = out_dir / f"_pad_{src.name}"
-        padded.save(out)
-        return out
-    except Exception as e:
-        emit("error_line", f"[pad] erreur padding {src.name} : {e}")
-        return None
-
-
 # ── GritBackground ─────────────────────────────────────────────────────────────
 
 def bg_layer_sym(asset_name: str, bg_slot: int) -> str:
@@ -105,21 +68,14 @@ def bg_map_sbb_count(ms: int) -> int:
 
 
 def quantize_asset(path: Path, bank_colors: list[int], mode: str) -> "Image.Image":
-    """Dispatch vers la fonction de quantification appropriée selon
-    match_mode ("nearest" | "nearest_luminance" | "direct_index") — partagé
-    entre GritBackground et GritSprites. `path` doit être en mode 'P' natif
-    pour "direct_index" (sinon `direct_index_to_bank` lève ValueError) ;
-    n'importe quel mode pour les deux autres (converti en RGBA)."""
-    from core.color_utils import (
-        quantize_image_to_bank, quantize_image_luminance_preserving, direct_index_to_bank,
-    )
+    """Quantifie `path` vers `bank_colors`, retourne une image RGBA.
+    mode="direct_index" : les index 'P' du fichier se calent sur la banque
+    (sprites). mode="nearest" : chaque pixel prend la couleur la plus proche (BG)."""
+    from core.color_utils import quantize_image_to_bank, direct_index_to_bank
     if mode == "direct_index":
         return direct_index_to_bank(path, bank_colors)
     from PIL import Image
-    img = Image.open(path).convert("RGBA")
-    if mode == "nearest_luminance":
-        return quantize_image_luminance_preserving(img, bank_colors)
-    return quantize_image_to_bank(img, bank_colors)
+    return quantize_image_to_bank(Image.open(path).convert("RGBA"), bank_colors)
 
 
 class GritBackground:
@@ -161,7 +117,9 @@ class GritBackground:
             quantize = bool(colors)
             sym = bg_layer_sym(asset.name, layer.bg_slot)
             tmp = p.grit_out_dir / f"{sym}.png"
-            mode = getattr(layer, "match_mode", "nearest")
+            # Plus de match_mode : quantification nearest fixe vers la banque du
+            # layer (le BG n'a pas encore de compression own_palette propre).
+            mode = "nearest"
             if quantize:
                 try:
                     quantize_asset(ap, colors, mode).save(tmp)
@@ -207,14 +165,12 @@ def _frame_key(frame: "AnimFrame") -> tuple:
 
 def sprite_unique_frames(sprite: SpriteAsset) -> tuple[dict, list]:
     """Déduplique les frames d'un sprite (toutes states/directions confondues).
-
-    Fait autorité sur l'ordre des frames à la fois pour le sheet reconstruit
-    (build_sprite_sheet) et pour les tables d'animation C (main_gen._anim_tables_for) :
-    les deux doivent utiliser ce même index pour rester synchronisés.
+    Fait autorité sur l'ordre des frames pour le sheet reconstruit
+    (build_sprite_sheet_indexed) ET les tables d'animation C
+    (main_gen._anim_tables_for) — les deux partagent cet index.
 
     Retourne (frame_index, ordered) où frame_index[key] = position dans ordered,
-    et ordered = [(AnimFrame, flip_h, flip_v), ...] dans l'ordre d'apparition.
-    """
+    et ordered = [(AnimFrame, flip_h, flip_v), ...] dans l'ordre d'apparition."""
     frame_index: dict[tuple, int] = {}
     ordered: list = []
     for state in sprite.states:
@@ -229,80 +185,10 @@ def sprite_unique_frames(sprite: SpriteAsset) -> tuple[dict, list]:
     return frame_index, ordered
 
 
-def _compose_frame(src_img, frame: "AnimFrame", fw: int, fh: int):
-    """Compose une frame fw×fh en peignant chaque tuile 8×8 depuis le PNG source.
-    Une tuile flip_h/flip_v est physiquement retournée avant d'être collée —
-    la GBA n'a pas de flip matériel par tuile au sein d'un OBJ composé."""
-    from PIL import Image
-    out = Image.new("RGBA", (fw, fh), (0, 0, 0, 0))
-    sw, sh = src_img.size
-    for t in frame.tiles:
-        sx, sy = t.src_col * 8, t.src_row * 8
-        if sx < 0 or sy < 0 or sx + 8 > sw or sy + 8 > sh:
-            continue
-        piece = src_img.crop((sx, sy, sx + 8, sy + 8))
-        if t.flip_h:
-            piece = piece.transpose(Image.FLIP_LEFT_RIGHT)
-        if t.flip_v:
-            piece = piece.transpose(Image.FLIP_TOP_BOTTOM)
-        dx, dy = t.dst_col * 8, t.dst_row * 8
-        out.paste(piece, (dx, dy), piece)
-    return out
-
-
-def build_sprite_sheet(
-    src: Path,
-    sprite: SpriteAsset,
-    out_dir: Path,
-    emit: Callable,
-) -> Optional[Path]:
-    """
-    Reconstruit un spritesheet compact à partir de la source PNG et des AnimState.
-    Chaque frame est composée tuile par tuile (8×8) depuis le PNG source.
-    Les frames mirrorées (flip_h / flip_v) sont générées ici et incluses dans le sheet.
-    Retourne le chemin du PNG intermédiaire (dans out_dir), ou None si erreur.
-    """
-    try:
-        from PIL import Image
-        fw, fh = sprite.frame_w, sprite.frame_h
-        src_img = Image.open(src).convert("RGBA")
-
-        _, ordered = sprite_unique_frames(sprite)
-        if not ordered:
-            return pad_sprite_png(src, fw, fh, out_dir, emit)
-
-        all_frames: list = []
-        for f, flip_h, flip_v in ordered:
-            tile = _compose_frame(src_img, f, fw, fh)
-            if flip_h:
-                tile = tile.transpose(Image.FLIP_LEFT_RIGHT)
-            if flip_v:
-                tile = tile.transpose(Image.FLIP_TOP_BOTTOM)
-            all_frames.append(tile)
-
-        # Pack en une seule rangée (grit le préfère)
-        sheet = Image.new("RGBA", (fw * len(all_frames), fh), (0, 0, 0, 0))
-        for i, tile in enumerate(all_frames):
-            sheet.paste(tile, (i * fw, 0))
-
-        out = out_dir / f"_sheet_{src.stem}.png"
-        sheet.save(out)
-        emit("log_line",
-             f"[sheet] {src.name} -> {len(all_frames)} frames "
-             f"({fw}x{fh}px) -> {out.name}")
-        return out
-    except Exception as e:
-        emit("error_line", f"[sheet] erreur reconstruction {src.name} : {e}")
-        return None
-
-
-# ── Sprite sheet reconstruction — variante mode 'P' (indexation directe) ───────
-#
-# Miroir exact de pad_sprite_png/_compose_frame/build_sprite_sheet ci-dessus,
-# mais préserve les index de palette d'origine au lieu de convertir en RGBA —
-# nécessaire pour match_mode="direct_index" (direct_index_to_bank a besoin
-# du PNG intermédiaire encore en mode 'P', avec la palette source intacte).
-# Le chemin RGBA existant n'est jamais touché par ces fonctions.
+# ── Sprite sheet reconstruction — mode 'P' ─────────────────────────────────────
+# Compose les frames en préservant les index de palette (crop/flip par index,
+# pas de couleur). Alimenté par un PNG 'P' issu de render_indexed(source,
+# own_palette) — cf. GritSprites.run.
 
 def _paste_indexed(dst, src, pos: tuple[int, int]):
     """Colle `src` (mode 'P') sur `dst` (mode 'P') à `pos`, en sautant les
@@ -327,8 +213,8 @@ def pad_sprite_png_indexed(
     out_dir: Path,
     emit: Callable,
 ) -> Optional[Path]:
-    """Équivalent indexé de `pad_sprite_png` — pas de conversion RGBA, la
-    palette et les index d'origine sont préservés."""
+    """Padde un PNG 'P' à des multiples de frame_w×frame_h en préservant
+    palette et index (pas de conversion couleur)."""
     try:
         from PIL import Image
         img = Image.open(src)
@@ -356,9 +242,8 @@ def pad_sprite_png_indexed(
 
 
 def _compose_frame_indexed(src_img, frame: "AnimFrame", fw: int, fh: int):
-    """Équivalent indexé de `_compose_frame` — même logique tuile par tuile,
-    mais crop/flip/collage en mode 'P' (réarrangement d'index, pas de calcul
-    de couleur)."""
+    """Compose une frame fw×fh tuile par tuile en mode 'P' (crop/flip/collage
+    par index, pas de calcul couleur)."""
     from PIL import Image
     out = Image.new("P", (fw, fh), 0)
     out.putpalette(src_img.getpalette())
@@ -383,9 +268,9 @@ def build_sprite_sheet_indexed(
     out_dir: Path,
     emit: Callable,
 ) -> Optional[Path]:
-    """Équivalent indexé de `build_sprite_sheet`, utilisé uniquement pour
-    match_mode="direct_index" — préserve le mode 'P' et la palette d'origine
-    à travers toute la recomposition multi-frame."""
+    """Reconstruit le spritesheet compact d'un sprite en mode 'P' (palette et
+    index préservés à travers la recomposition multi-frame). Alimenté par
+    render_indexed(source, own_palette)."""
     try:
         from PIL import Image
         fw, fh = sprite.frame_w, sprite.frame_h
@@ -539,24 +424,29 @@ class GritSprites:
                 self._emit("error_line", f"[grit Actor] asset manquant : {sprite.asset}")
                 return False
 
-            mode = getattr(actor_or_pf, "match_mode", "nearest")
-            quantize = bool(colors)
+            # Résolution INDEXÉE universelle (plus de match_mode) : le sprite est
+            # rendu via SA own_palette (compression décidée dans son .json), puis
+            # ses index se calent sur la banque finale `colors` (OWN -> own_palette ;
+            # référencé -> banque). Fallback sur own_palette si banque non résolue.
+            own_pal = list(getattr(sprite, "own_palette", []) or [])
+            bank_colors = list(colors) if colors else own_pal
 
-            if quantize and mode == "direct_index":
-                grit_src = build_sprite_sheet_indexed(ap, sprite, p.grit_out_dir, self._emit)
-            else:
-                grit_src = build_sprite_sheet(ap, sprite, p.grit_out_dir, self._emit)
+            from core.color_utils import render_indexed
+            p.grit_out_dir.mkdir(parents=True, exist_ok=True)
+            p_src = p.grit_out_dir / f"_srcidx_{_sym(sprite.name)}.png"
+            render_indexed(ap, own_pal).save(p_src, transparency=0)
+            grit_src = build_sprite_sheet_indexed(p_src, sprite, p.grit_out_dir, self._emit)
             if grit_src is None:
                 return False
 
-            if quantize:
+            if bank_colors:
                 try:
-                    quantize_asset(grit_src, colors, mode).save(grit_src)
+                    quantize_asset(grit_src, bank_colors, "direct_index").save(grit_src)
                 except ValueError as e:
                     self._emit("error_line", f"[grit Actor] {e}")
                     return False
                 self._emit("log_line",
-                           f"[palette] {sprite.name} -> {len(colors)} couleurs, mode {mode}")
+                           f"[palette] {sprite.name} -> {len(bank_colors)} couleurs (indexé)")
 
             out_base = str(p.grit_out_dir / f"sprite_{_sym(sprite.name)}")
             self._emit("log_line",
@@ -572,8 +462,8 @@ class GritSprites:
             if not self._run_cmd(cmd, f"[grit:{sprite.name}]", cwd=p.grit_out_dir):
                 return False
 
-            if quantize:
-                if not remap_tiles_to_bank(Path(out_base + ".c"), colors, self._emit):
+            if bank_colors:
+                if not remap_tiles_to_bank(Path(out_base + ".c"), bank_colors, self._emit):
                     return False
         return True
 

@@ -46,8 +46,7 @@
       "flip_h": false,
       "flip_v": false,
       "priority": 3,
-      "pal_bank": 0,
-      "match_mode": "direct_index",
+      "pal_bank": 1,
       "visible": true
     },
     {
@@ -94,8 +93,7 @@
       "flip_h": false,
       "flip_v": false,
       "priority": 1,
-      "pal_bank": 0,
-      "match_mode": "direct_index",
+      "pal_bank": 1,
       "visible": true
     }
   ],
@@ -751,7 +749,7 @@
   ],
   "active_obj_palettes": [
     "pal_Ball",
-    "",
+    "pal_Paddle",
     "Blood Moon",
     "",
     "",

@@ -14,6 +14,7 @@ from typing import Optional
 from core.project import (
     Project, Scene, BackgroundLayer,
     Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, AnimState,
+    OWN_PAL_BANK,
 )
 from codegen.palette_alloc import scene_bank_layout, own_palette
 from codegen.asset_pipeline import (
@@ -248,8 +249,8 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         sp = next((c for c in pf.components
                    if isinstance(c, SpriteComponent) and c.sprite_name), None)
         sprite = p.get_sprite(sp.sprite_name) if sp else None
-        own = own_palette(p.asset_abs(sprite.asset)) if (sprite and sprite.asset) else []
-        pal = obj_layout.bank_index(getattr(pf, "pal_bank", 0), own) if obj_layout else 0
+        own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
+        pal = obj_layout.bank_index(getattr(pf, "pal_bank", OWN_PAL_BANK), own) if obj_layout else 0
         if pal is None:
             pal = 0
         boxes = [c for c in pf.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
@@ -672,8 +673,8 @@ def _gen_scene_init(
         idx = actor_offset + j
         s = _sym(actor.name)
         boxes = [c for c in actor.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
-        own = own_palette(p.asset_abs(sprite.asset)) if (sprite and sprite.asset) else []
-        pal = obj_layout.bank_index(getattr(actor, "pal_bank", 0), own)
+        own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
+        pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
         L += [
             f"    g_actors[{idx}].x       = {actor.x};",
             f"    g_actors[{idx}].y       = {actor.y};",

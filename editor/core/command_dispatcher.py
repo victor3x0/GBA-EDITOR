@@ -23,6 +23,7 @@ Usage :
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+from contextlib import contextmanager
 
 import copy
 
@@ -54,6 +55,18 @@ class CommandDispatcher(EventEmitter):
         """Appelé par MainWindow à chaque chargement/création de projet."""
         self._project = project
         self._watcher = watcher
+
+    @contextmanager
+    def suspended(self):
+        """Suspend le watcher de fichiers pendant une écriture directe sur disque
+        (ex. réécriture d'un PNG indexé par le Sprite Editor) — évite que le
+        watcher recharge tout l'écran et réinitialise l'UI (palette de preview…).
+        No-op si aucun watcher n'est branché (ex. tests headless)."""
+        if self._watcher:
+            with self._watcher.suspended():
+                yield
+        else:
+            yield
 
     # ── Helpers ───────────────────────────────────────────────────
 

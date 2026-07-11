@@ -21,7 +21,6 @@ from ui.common.icons import get as _ico
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
-from core.color_utils import quantize_image_to_bank
 
 _CTX_MENU_QSS = (
     f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
@@ -495,8 +494,11 @@ class _FrameCanvas(QWidget):
         # dropdown palette de la barre d'outils, cf SpriteCenterPanel) :
         # liste de couleurs BGR555, ou None pour les pixels sources.
         self._tint_bank: Optional[list[int]] = None
-        # Mode de preview : True = "indexé" (quantifié sur la banque, rendu
-        # WYSIWYG in-game), False = "original" (couleurs natives du PNG).
+        # Compression NON-DESTRUCTIVE du sprite courant (own_palette BGR555) —
+        # source de vérité du rendu dérivé. [] = pas de compression (source brut).
+        self._own_palette: list = []
+        # Mode de preview : True = "indexé" (own_palette -> banque de preview,
+        # rendu in-game), False = "png" (couleurs compressées de own_palette).
         self._preview_indexed: bool = True
         # (rel_c, rel_r, src_col, src_row, flip_h, flip_v)
         self._brush: list[tuple[int, int, int, int, bool, bool]] = []
@@ -584,9 +586,16 @@ class _FrameCanvas(QWidget):
         self.update()
 
     def set_preview_indexed(self, indexed: bool):
-        """True = preview quantifiée sur la banque (rendu in-game),
-        False = couleurs natives du PNG."""
+        """True = mode 'indexed' (own_palette recoloré par la banque de preview,
+        rendu in-game), False = mode 'png' (couleurs compressées de own_palette)."""
         self._preview_indexed = indexed
+        self.update()
+
+    def set_own_palette(self, own_palette: Optional[list]):
+        """Compression du sprite courant (own_palette BGR555). Le rendu dérive de
+        ça : mode 'png' l'affiche telle quelle, mode 'indexed' la recolore via la
+        banque de preview. [] / None = source brut (pas encore compressé)."""
+        self._own_palette = list(own_palette or [])
         self.update()
 
     # ── Géométrie ────────────────────────────────────────────────────
@@ -792,8 +801,16 @@ class _FrameCanvas(QWidget):
         # Image composée
         img = compose_frame_image(self._abs_path, self._frame,
                                    self._tile_w * 8, self._tile_h * 8)
-        if self._preview_indexed and self._tint_bank:
-            img = quantize_image_to_bank(img, self._tint_bank)
+        # Rendu dérivé du source + own_palette (jamais le PNG modifié) :
+        #   mode 'png'     -> couleurs compressées (own_palette telle quelle)
+        #   mode 'indexed' -> index de own_palette recolorés par la banque preview
+        if self._own_palette:
+            from core.color_utils import render_indexed, recolor_indexed
+            p_img = render_indexed(img, self._own_palette)
+            if self._preview_indexed and self._tint_bank:
+                img = recolor_indexed(p_img, self._tint_bank)
+            else:
+                img = p_img.convert("RGBA")
         if img.width > 0 and img.height > 0:
             data = bytes(img.tobytes("raw", "RGBA"))
             qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
@@ -922,9 +939,9 @@ class _CanvasFloatingToolbar(QFrame):
             f"border:1px solid #3a6a3a;border-radius:4px;}}"
         )
         self.btn_original = QToolButton(); self.btn_original.setText("PNG")
-        self.btn_original.setToolTip("Preview : couleurs natives du PNG")
+        self.btn_original.setToolTip("Preview : résultat compressé du sprite (own_palette)")
         self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexé")
-        self.btn_indexed.setToolTip("Preview : couleurs indexées sur la palette choisie (rendu in-game)")
+        self.btn_indexed.setToolTip("Preview : own_palette recolorée par la palette de preview (rendu in-game)")
         for b in (self.btn_original, self.btn_indexed):
             b.setStyleSheet(_MODE_BTN)
             b.setCheckable(True)
