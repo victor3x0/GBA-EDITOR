@@ -30,6 +30,11 @@ class SpriteCenterPanel(QWidget):
         self._state:     Optional[AnimState]      = None
         self._sd:        Optional[StateDirection] = None
         self._sel_frame: int = 0
+        # Direction miroir (mirror_of défini) : affichée en lecture seule à
+        # partir des frames de la direction source, retournées (flip).
+        self._read_only:   bool = False
+        self._disp_frames: Optional[list] = None
+        self._flip:        tuple[bool, bool] = (False, False)
         self._preview_banks: list = []   # banques proposées dans le dropdown palette
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._on_play_tick)
@@ -181,8 +186,35 @@ class SpriteCenterPanel(QWidget):
         self._sel_frame = 0
         self._anim_timer.stop()
         self._canvas_panel.toolbar.btn_play.setChecked(False)
-        self._timeline.load(self._sprite, state, sd, self._abs_path())
+
+        # Miroir : les frames n'appartiennent pas à cette direction, elles sont
+        # dérivées de la source (mirror_of) + flip. Affichage seul, pas d'édition
+        # — c'est aussi ce que fait le build (asset_pipeline._dedup_frames).
+        self._read_only = sd.mirror_of is not None
+        if self._read_only:
+            src = next((s for s in state.directions if s.dir == sd.mirror_of), None)
+            self._disp_frames = src.frames if src else sd.frames
+            self._flip = (sd.flip_h, sd.flip_v)
+        else:
+            self._disp_frames = None
+            self._flip = (False, False)
+
+        self._timeline.load(self._sprite, state, sd, self._abs_path(),
+                            self._read_only, self._disp_frames, self._flip)
+        self._canvas.set_read_only(self._read_only)
+        self._canvas.set_display_flip(*self._flip)
+        self._tiles.setEnabled(not self._read_only)
+        from ui.sprite_editor.sprite_finder_panel import _dir_label
+        self._canvas_panel.set_read_only_banner(
+            f"MIROIR · {_dir_label(sd)} · lecture seule" if self._read_only else None)
         self._refresh_canvas()
+
+    def _active_frames(self) -> list:
+        """Frames effectivement affichées : source retournée pour un miroir,
+        sinon les frames propres de la direction."""
+        if self._read_only and self._disp_frames is not None:
+            return self._disp_frames
+        return self._sd.frames if self._sd else []
 
     # ── Slots internes ────────────────────────────────────────────────
 
@@ -225,16 +257,16 @@ class SpriteCenterPanel(QWidget):
     # ── Playback ──────────────────────────────────────────────────────
 
     def _on_play_toggled(self, playing: bool):
-        if playing and self._sd and self._sd.frames:
+        if playing and self._sd and self._active_frames():
             speed_ms = max(16, int((self._state.speed if self._state else 8) * 1000 / 60))
             self._anim_timer.start(speed_ms)
         else:
             self._anim_timer.stop()
 
     def _on_play_tick(self):
-        if not self._sd or not self._sd.frames:
+        if not self._sd or not self._active_frames():
             return
-        n = len(self._sd.frames)
+        n = len(self._active_frames())
         self._sel_frame = (self._sel_frame + 1) % n
         # Mettre à jour la sélection dans la timeline sans émettre frame_selected
         for i, t in enumerate(self._timeline._thumbs):
@@ -248,7 +280,7 @@ class SpriteCenterPanel(QWidget):
         if not self._sd or not self._sprite:
             self._canvas.load_frame(None, None, None)
             return
-        frames = self._sd.frames
+        frames = self._active_frames()
         if not frames or not (0 <= self._sel_frame < len(frames)):
             self._canvas.load_frame(None, None, None)
             return

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.project import Project, Scene, OWN_PAL_BANK
-from core.color_utils import extract_palette_from_image
+from core.color_utils import extract_palette_from_image, RESERVED_SLOT_COLOR
 from core.palette_presets import DEFAULT_PAL_BANK_COLORS
 
 # Cache des palettes propres, invalidé par mtime du PNG.
@@ -49,9 +49,11 @@ class SceneBankLayout:
     """Résultat de l'allocation pour une scène + un pool."""
 
     def __init__(self, slot_colors: list[Optional[list[int]]],
-                 own_slot: dict[tuple, Optional[int]]):
+                 own_slot: dict[tuple, Optional[int]],
+                 bg_block: Optional[dict[tuple, Optional[int]]] = None):
         self.slot_colors = slot_colors      # 16 entrées : couleurs BGR555 ou None
         self._own_slot   = own_slot          # tuple(colors) -> index de banque (None si débordement)
+        self._bg_block   = bg_block or {}    # clé palettes fond compressé -> offset de bloc (None si débordement)
 
     def bank_index(self, pal_bank: int, own_colors: Optional[list[int]]) -> Optional[int]:
         """Index de banque hardware d'un asset :
@@ -63,13 +65,22 @@ class SceneBankLayout:
             return None
         return self._own_slot.get(tuple(own_colors))
 
+    def bg_block_offset(self, ba) -> Optional[int]:
+        """Offset (première banque) du bloc alloué à un BackgroundAsset
+        compressé (ses N sous-palettes occupent des banques contiguës) —
+        None si débordement (pas assez de banques libres contiguës)."""
+        key = _bg_palettes_key(ba)
+        return self._bg_block.get(key)
+
     def bank_count(self) -> int:
         """Nombre de banques réellement occupées (référencées + propres)."""
         return sum(1 for c in self.slot_colors if c)
 
     def overflow(self) -> bool:
-        """True si au moins une palette propre n'a pas trouvé de slot libre."""
-        return any(v is None for v in self._own_slot.values())
+        """True si au moins une palette propre (ou un bloc de fond compressé)
+        n'a pas trouvé de place libre."""
+        return (any(v is None for v in self._own_slot.values())
+                or any(v is None for v in self._bg_block.values()))
 
 
 def effective_palette_colors(p: Project, pal_bank: int, png_path,
@@ -80,7 +91,14 @@ def effective_palette_colors(p: Project, pal_bank: int, png_path,
     - référencé -> les couleurs de la banque nommée du slot ;
     - None si rien de résoluble (slot vide / palette absente)."""
     if pal_bank == OWN_PAL_BANK:
-        return (list(own_pal) if own_pal else own_palette(png_path)) or None
+        # `own_pal` (sprite.own_palette) est stocké SANS le slot 0 réservé (cf.
+        # own_palette_from_source) — on le préfixe ici pour obtenir la forme
+        # 16-slots attendue par GritSprites.run() (quantize_asset direct_index
+        # + remap_tiles_to_bank). `own_palette(png_path)` (fallback BG) inclut
+        # déjà ce slot (extract_palette_from_image) — pas de double préfixe.
+        if own_pal:
+            return [RESERVED_SLOT_COLOR] + list(own_pal)
+        return own_palette(png_path) or None
     if 0 <= pal_bank < len(active_names):
         name = active_names[pal_bank]
         bank = p.get_palette(name) if name else None
@@ -163,14 +181,51 @@ def prefab_own_slots(p: Project) -> dict[tuple, Optional[int]]:
 
 
 def _bg_own_sources(p: Project, scene: Scene) -> list[Path]:
-    """PNG des layers BG en mode OWN de la scène."""
+    """PNG des layers BG en mode OWN de la scène, hors fonds COMPRESSÉS
+    (ceux-ci ont déjà leurs propres sous-palettes en métadonnées — gérés à
+    part par `_bg_compressed_sources`/allocation par bloc, cf.
+    [[project_palette_system_design]])."""
     srcs: list[Path] = []
-    ba = p.get_background(scene.background_asset) if scene.background_asset else None
-    for layer in (ba.layers if ba else []):
+    for layer in getattr(scene, "background_layers", []):
         if not layer.image or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
             continue
-        srcs.append(p.background_images_dir / layer.image)
+        ba = p.get_background(layer.image)
+        if ba and getattr(ba, "tileset", None):
+            continue
+        png = ba.source if ba and ba.source else f"{layer.image}.png"
+        srcs.append(p.background_images_dir / png)
     return srcs
+
+
+def _bg_compressed_sources(p: Project, scene: Scene) -> list:
+    """BackgroundAsset compressés (mode OWN) des layers de la scène, dans
+    l'ordre des layers. Chacun peut avoir jusqu'à 16 sous-palettes (une par
+    groupe de tuiles) — il lui faut un BLOC de banques contiguës, pas un slot
+    unique (cf. `_find_free_block`)."""
+    out = []
+    for layer in getattr(scene, "background_layers", []):
+        if not layer.image or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
+            continue
+        ba = p.get_background(layer.image)
+        if ba and getattr(ba, "tileset", None):
+            out.append(ba)
+    return out
+
+
+def _bg_palettes_key(ba) -> tuple:
+    """Clé de dédup d'un fond compressé = contenu exact de ses sous-palettes
+    (deux fonds avec les mêmes couleurs partagent le même bloc de banques)."""
+    return tuple(tuple(pal) for pal in getattr(ba, "palettes", None) or [])
+
+
+def _find_free_block(slots: list, n: int) -> Optional[int]:
+    """Premier offset (0-15) tel que les n banques [offset, offset+n) soient
+    toutes libres — None si aucun bloc contigu de cette taille n'existe."""
+    n = max(1, n)
+    for start in range(0, 17 - n):
+        if all(slots[start + i] is None for i in range(n)):
+            return start
+    return None
 
 
 def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
@@ -183,10 +238,12 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
         own_color_lists = _actor_own_palettes(p, scene)          # métadonnées sprite
         pf_slots = prefab_own_slots(p)
+        compressed_assets = []
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
-        own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG: extraction
+        own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
         pf_slots = {}
+        compressed_assets = _bg_compressed_sources(p, scene)      # BG compressé: métadonnées
 
     slots: list[Optional[list[int]]] = [None] * 16
     for i, name in enumerate(active):
@@ -194,12 +251,39 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         if bank and bank.colors:
             slots[i] = list(bank.colors)
 
+    def _own_bank_content(cols) -> list[int]:
+        """Contenu à écrire dans une banque matérielle pour une palette propre.
+        `sprite.own_palette` (pool OBJ) est stocké SANS le slot 0 réservé (cf.
+        own_palette_from_source : "index 1..N, index 0 transparent implicite,
+        pas inclus") — il faut le préfixer ici, sous peine que la 1ère couleur
+        du sprite atterrisse en position 0 de la banque, où le hardware OBJ la
+        rend transparente quoi qu'il arrive (couleur jamais affichée). Le BG
+        legacy (`own_palette()` ci-dessus, extract_palette_from_image) inclut
+        déjà ce slot — ne pas le préfixer une 2e fois."""
+        return [RESERVED_SLOT_COLOR] + list(cols) if pool == "obj" else list(cols)
+
     own_slot: dict[tuple, Optional[int]] = {}
     # Prefabs poolés : slot global (réservé dans cette scène aussi).
     for key, slot in pf_slots.items():
         own_slot[key] = slot
         if slot is not None and slots[slot] is None:
-            slots[slot] = list(key)
+            slots[slot] = _own_bank_content(key)
+
+    # Fonds compressés (OWN) : bloc de banques CONTIGUËS par asset (N sous-
+    # palettes), dédupliqué par contenu exact. Alloué avant les palettes
+    # propres à slot unique ci-dessous (moins de fragmentation, les blocs sont
+    # plus gros et plus contraints).
+    bg_block: dict[tuple, Optional[int]] = {}
+    for ba in compressed_assets:
+        key = _bg_palettes_key(ba)
+        if key in bg_block:
+            continue
+        n = min(len(key), 16)
+        start = _find_free_block(slots, n)
+        bg_block[key] = start
+        if start is not None:
+            for i in range(n):
+                slots[start + i] = list(key[i])
 
     # Acteurs/layers de la scène : slots restants.
     for cols in own_color_lists:
@@ -211,7 +295,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         free = next((j for j in range(16) if slots[j] is None), None)
         own_slot[key] = free
         if free is not None:
-            slots[free] = list(cols)
+            slots[free] = _own_bank_content(cols)
 
     # Banque 0 de secours : si la scène a du contenu palette mais que le slot 0
     # est resté vide, on le remplit d'une palette déterministe — un asset
@@ -221,4 +305,4 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     if slots[0] is None and any(slots):
         slots[0] = list(DEFAULT_PAL_BANK_COLORS)
 
-    return SceneBankLayout(slots, own_slot)
+    return SceneBankLayout(slots, own_slot, bg_block)

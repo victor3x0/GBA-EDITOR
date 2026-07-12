@@ -80,6 +80,36 @@ class SetFieldCmd(Command):
         return False
 
 
+class SwapFieldCmd(Command):
+    """
+    Échange la valeur d'un même champ entre deux objets (ex: bg_slot de deux
+    BackgroundLayer glissés l'un sur l'autre — réordonnance leur priorité
+    d'affichage). L'échange est sa propre inverse : undo == execute.
+    """
+
+    def __init__(self, obj_a: Any, obj_b: Any, field: str,
+                 label: str = "", persist_fn=None):
+        self._a = obj_a
+        self._b = obj_b
+        self._field = field
+        self.label = label or f"Swap {field}"
+        self._persist = persist_fn
+
+    def _swap(self):
+        a_val = getattr(self._a, self._field)
+        b_val = getattr(self._b, self._field)
+        setattr(self._a, self._field, b_val)
+        setattr(self._b, self._field, a_val)
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._swap()
+
+    def undo(self):
+        self._swap()
+
+
 class MoveActorCmd(Command):
     """Déplacement d'un actor dans le canvas (drag souris)."""
 

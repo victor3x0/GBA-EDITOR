@@ -18,7 +18,7 @@ from core.project import (
 )
 from codegen.palette_alloc import scene_bank_layout, own_palette
 from codegen.asset_pipeline import (
-    count_frames, sprite_unique_frames, _frame_key,
+    count_frames, sprite_unique_frames, _seq_key,
     bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
 )
 from codegen.build_utils import sym as _sym
@@ -66,31 +66,54 @@ def _actor_script(actor: Actor) -> Optional[str]:
     return comp.script if comp and comp.active else None
 
 
-def _bg_info(p: Project, asset_name: str, bg_pairs: list[BackgroundLayer]) -> list[dict]:
-    """Un CBB (16 Ko) dédié par layer = bg_slot ; sa propre map occupe les
-    derniers SBB de ce même CBB (map_sbb_count selon map_size), les SBB
-    restants en tête du CBB sont le budget tuiles de ce layer — cf.
-    pipeline.py::_check_bg_tile_budget pour la vérification correspondante."""
+def _bg_info(p: Project, scene) -> list[dict]:
+    """Un CBB (16 Ko) par layer = bg_slot ; sa map occupe les derniers SBB de ce
+    CBB. Chaque layer de la scène référence une image ; sa compression vient du
+    BackgroundAsset (sidecar) keyé par ce nom. cf. pipeline._check_bg_tile_budget."""
     result = []
-    for layer in bg_pairs:
+    for layer in getattr(scene, "background_layers", []):
         if not layer.image:
             continue
-        ap = p.background_images_dir / layer.image
-        try:
-            from PIL import Image
-            with Image.open(ap) as img:
-                w, h = img.size
-        except Exception:
-            w, h = 240, 160
-        tw, th, ms = bg_map_geometry(w, h)
-        map_sbb_count = bg_map_sbb_count(ms)
+        ba = p.get_background(layer.image)
         bg_slot = layer.bg_slot
-        result.append({
-            "bg": bg_slot, "stem": ap.stem, "sym": bg_layer_sym(asset_name, bg_slot),
-            "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
-            "map_size": ms, "map_sbb_count": map_sbb_count,
-            "speed": int(layer.scroll_speed * 256), "pal_bank": layer.pal_bank,
-        })
+        speed = int(layer.scroll_speed * 256)
+        sym = bg_layer_sym(layer.image, bg_slot)
+        if ba and ba.tileset:
+            # Fond COMPRESSÉ (métadonnées) — 16 palettes via g_pal_bg, tuiles/map
+            # depuis le C émis par pipeline._emit_compressed_bg. Un axe >64 tuiles
+            # dépasse la fenêtre hardware -> streaming (map résidente 64 sur cet axe).
+            tw, th = ba.tiles_w, ba.tiles_h
+            stream_h = tw > 64
+            stream_v = th > 64
+            win_w = 64 if stream_h else tw
+            win_h = 64 if stream_v else th
+            ms = (1 if win_w > 32 else 0) | (2 if win_h > 32 else 0)
+            map_sbb_count = bg_map_sbb_count(ms)
+            result.append({
+                "bg": bg_slot, "stem": ba.name, "sym": sym,
+                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
+                "map_size": ms, "map_sbb_count": map_sbb_count,
+                "speed": speed, "pal_bank": layer.pal_bank, "compressed": True,
+                "stream": stream_h or stream_v, "stream_h": stream_h, "stream_v": stream_v,
+                "win_w": win_w, "win_h": win_h,
+            })
+        else:
+            # Image non compressée -> taille depuis le PNG (chemin legacy).
+            ap = p.background_images_dir / (ba.source if ba and ba.source else f"{layer.image}.png")
+            try:
+                from PIL import Image
+                with Image.open(ap) as img:
+                    w, h = img.size
+            except Exception:
+                w, h = 240, 160
+            tw, th, ms = bg_map_geometry(w, h)
+            map_sbb_count = bg_map_sbb_count(ms)
+            result.append({
+                "bg": bg_slot, "stem": ap.stem, "sym": sym,
+                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
+                "map_size": ms, "map_sbb_count": map_sbb_count,
+                "speed": speed, "pal_bank": layer.pal_bank,
+            })
     return result
 
 
@@ -332,7 +355,9 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
     state_speeds: list[int] = []
     state_loops: list[int] = []
 
-    frame_index, _ = sprite_unique_frames(sprite)
+    # seq_starts fait autorité sur le layout du sheet : chaque direction occupe
+    # un bloc contigu [start, start+count) — le runtime joue frame=start+k.
+    seq_starts, _ = sprite_unique_frames(sprite)
 
     for state in sprite.states:
         state_starts.append(len(entries))
@@ -341,12 +366,8 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
         dir_map = {sd.dir: sd for sd in state.directions}
         for sd in state.directions:
             src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            frame_indices = [
-                frame_index[_frame_key(f) + (sd.flip_h, sd.flip_v)]
-                for f in src_sd.frames
-            ]
-            start = frame_indices[0] if frame_indices else 0
-            count = len(frame_indices)
+            start = seq_starts[_seq_key(src_sd, sd.flip_h, sd.flip_v)]
+            count = len(src_sd.frames)
             entries.append(f"{{{sd.dir},{start},{count}}}")
         entries.append("{255,0,0}")   # sentinel de fin d'état
 
@@ -587,9 +608,9 @@ def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
 
 
 def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
-    """PAL_BG_RAM de la scène — layout BG (référencées + propres allouées).
-    words[0] (banque 0, couleur 0) est forcé à la couleur de backdrop (rôle
-    hardware : affiché quand rien d'opaque n'est dessiné)."""
+    """PAL_BG_RAM de la scène — layout BG (référencées + propres, y compris
+    les blocs de banques des fonds compressés, cf. palette_alloc). words[0]
+    forcé à la couleur de backdrop."""
     words = _layout_palette_words(scene_bank_layout(p, scene, "bg"))
     words[0] = _resolve_backdrop_color(p, scene)
     return words
@@ -630,12 +651,25 @@ def _gen_scene_init(
         for bi in bgi:
             L.append(f"    copy16(TILE_RAM({bi['bg']}), {bi['sym']}Tiles, {bi['sym']}TilesLen);")
         for bi in bgi:
-            ms = bi["map_size"]
-            gcols = 64 if (ms & 1) else 32
-            grows = 64 if (ms & 2) else 32
-            L.append(f"    load_map(MAP_RAM({bi['sbb']}), {bi['sym']}Map, {bi['tw']}, {bi['th']}, {gcols}, {grows});")
+            if bi.get("stream"):
+                # Streaming : charger la fenêtre résidente initiale depuis la map
+                # complète en ROM ; les bords se rechargent au scroll (tick).
+                L.append(f"    bg_stream_init(MAP_RAM({bi['sbb']}), {bi['sym']}Map, "
+                         f"{bi['tw']}, {bi['th']}, {bi['win_w']}, {bi['win_h']});")
+            else:
+                ms = bi["map_size"]
+                gcols = 64 if (ms & 1) else 32
+                grows = 64 if (ms & 2) else 32
+                L.append(f"    load_map(MAP_RAM({bi['sbb']}), {bi['sym']}Map, {bi['tw']}, {bi['th']}, {gcols}, {grows});")
         for bi in bgi:
-            bg = bi["bg"]; sbb = bi["sbb"]; pri = 3 - bg; ms = bi["map_size"]
+            # Priorité GBA = bg_slot directement (bg_slot 0 = priorité 0 =
+            # premier plan). Même convention que l'éditeur (scene_editor.py
+            # GbaScene.set_bg : z = 3 - bg_index, donc bg_slot 0 = zValue le
+            # plus HAUT = dessiné devant dans le canvas Qt) — bg_slot 0 doit
+            # rester devant sur les deux. Or en registre BGxCNT, priorité 0 =
+            # dessiné DEVANT (l'inverse d'un zValue Qt) : `pri = bg` (pas
+            # `3 - bg`) est donc la formule qui fait correspondre les deux.
+            bg = bi["bg"]; sbb = bi["sbb"]; pri = bg; ms = bi["map_size"]
             val = (pri & 3) | (bg & 3) << 2 | (sbb & 0x1F) << 8 | ms << 14
             L.append(f"    *((vu16*)(0x04000008+{bg}*2))=0x{val:04X};")
     # Sprites VRAM
@@ -653,7 +687,9 @@ def _gen_scene_init(
     for i, colors in enumerate(obj_layout.slot_colors):
         if colors:
             L.append(f"    copy16(PAL_OBJ_RAM+{i}*16, g_pal_obj_{sym}+{i}*16, 32);")
-    # Palette BG — même principe (référencées + propres allouées).
+    # Palette BG — chaque banque occupée du layout (référencée, bloc de fond
+    # compressé, ou palette propre auto-allouée, cf. palette_alloc) est copiée
+    # dans PAL_BG_RAM.
     for i, colors in enumerate(bg_layout.slot_colors):
         if colors:
             L.append(f"    copy16(PAL_BG_RAM+{i}*16, g_pal_bg_{sym}+{i}*16, 32);")
@@ -662,10 +698,15 @@ def _gen_scene_init(
     # une scène sans aucune palette BG active doit quand même pouvoir
     # afficher une couleur de fond).
     L.append(f"    PAL_BG_RAM[0] = 0x{_resolve_backdrop_color(p, scene):04X};")
-    # TTE
+    # TTE — CBB/SBB du charblock DU LAYER UI choisi (pas figé sur CBB3) : les
+    # glyphes de police vivent dans le charblock text_bg (bg_slot == text_bg,
+    # cf. per-layer redesign CBB=bg_slot), dernier SBB de ce même charblock.
+    # Le layer UI ne doit porter aucune image (cf. _check_bg_text_cbb_conflict,
+    # devenu bloquant) : ce charblock est donc entièrement libre pour la police.
     text_bg = getattr(scene, "text_bg", -1)
     if text_bg in {0, 1, 2, 3}:
-        L.append(f"    tte_init_se({text_bg}, BG_CBB(3)|BG_SBB(31), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
+        text_sbb = text_bg * 8 + 7
+        L.append(f"    tte_init_se({text_bg}, BG_CBB({text_bg})|BG_SBB({text_sbb}), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
     # DISPCNT
     L.append(f"    REG_DISPCNT = 0x{dispcnt:04X};")
     # Init actors
@@ -938,10 +979,15 @@ def _gen_scene_tick(
         if scene.scroll_v:
             L += ["    if(_g_keys_held&KEY_DOWN)  cam_y++;", "    if(_g_keys_held&KEY_UP)    cam_y--;"]
 
-    # BG scroll offset
+    # BG scroll offset H+V (+ streaming des bords pour un grand niveau)
     if bgi:
         for bi in bgi:
+            if bi.get("stream"):
+                L.append(f"    bg_stream_update(MAP_RAM({bi['sbb']}), {bi['sym']}Map, "
+                         f"{bi['tw']}, {bi['th']}, {bi['win_w']}, {bi['win_h']}, "
+                         f"{int(bi['stream_h'])}, {int(bi['stream_v'])}, cam_x, cam_y);")
             L.append(f"    BGOFS({bi['bg']})=(u16)((cam_x*{bi['speed']})>>8);")
+            L.append(f"    BGVOFS({bi['bg']})=(u16)((cam_y*{bi['speed']})>>8);")
             if scene.scroll_v:
                 L.append(f"    *((vu16*)(0x04000012+{bi['bg']}*4))=(u16)((cam_y*{bi['speed']})>>8);")
 
@@ -1094,8 +1140,7 @@ def generate_main(
         _add_inc('#include "soundbank.bin.h"')
 
     for d in all_scene_data:
-        asset_name = d["bg_asset"].name if d["bg_asset"] else ""
-        bgi_d = _bg_info(p, asset_name, d["bg_pairs"])
+        bgi_d = _bg_info(p, d["scene"])
         for bi in bgi_d:
             _add_inc(f'#include "{bi["sym"]}.h"')
         for _, sprite in d["scene_actors"]:
@@ -1204,8 +1249,8 @@ def generate_main(
     for d in all_scene_data:
         sc = d["scene"]
         sym = _sym(sc.name)
-        # Toujours émis si un slot BG est occupé (référencé OU palette propre) ;
-        # le backdrop (PAL_BG_RAM[0]) est écrit séparément dans _gen_scene_init.
+        # Émis si un slot BG est occupé (référencé, bloc de fond compressé, ou
+        # palette propre) ; le backdrop (PAL_BG_RAM[0]) est écrit séparément.
         if scene_bank_layout(p, sc, "bg").bank_count() > 0:
             words = _scene_bg_palette_words(p, sc)
             L += [
@@ -1236,8 +1281,7 @@ def generate_main(
     for i, d in enumerate(all_scene_data):
         sc         = d["scene"]
         act_off    = scene_offsets[i]
-        asset_name = d["bg_asset"].name if d["bg_asset"] else ""
-        bgi_d      = _bg_info(p, asset_name, d["bg_pairs"])
+        bgi_d      = _bg_info(p, d["scene"])
         sa         = d["scene_actors"]
 
         # lua_idx local (indices GLOBAUX)
@@ -1269,8 +1313,7 @@ def generate_main(
     for i, d in enumerate(all_scene_data):
         sc      = d["scene"]
         act_off = scene_offsets[i]
-        asset_name = d["bg_asset"].name if d["bg_asset"] else ""
-        bgi_d   = _bg_info(p, asset_name, d["bg_pairs"])
+        bgi_d   = _bg_info(p, d["scene"])
         sa      = d["scene_actors"]
 
         lua_idx_d: set[int] = set()

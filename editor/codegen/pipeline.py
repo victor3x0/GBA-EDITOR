@@ -121,13 +121,9 @@ class BuildWorker(EventEmitter, threading.Thread):
             all_actor_sprites_flat: list = []
 
             for scene in all_scenes:
-                # BG layers depuis le BackgroundAsset de la scène
-                bg_pairs = []
-                bg_asset = None
-                if scene.background_asset:
-                    bg_asset = p.get_background(scene.background_asset)
-                    if bg_asset:
-                        bg_pairs = bg_asset.layers[:]
+                # BG layers = ceux de la SCÈNE (chacun référence une image dont
+                # la compression vit dans un BackgroundAsset sidecar keyé par nom).
+                bg_pairs = list(getattr(scene, "background_layers", []))
 
                 # Actors
                 scene_actors: list[tuple[Actor, Optional[SpriteAsset]]] = []
@@ -142,7 +138,6 @@ class BuildWorker(EventEmitter, threading.Thread):
                 all_scene_data.append({
                     "scene": scene,
                     "bg_pairs": bg_pairs,
-                    "bg_asset": bg_asset,
                     "scene_actors": scene_actors,
                 })
                 all_bg_pairs_flat += bg_pairs
@@ -162,31 +157,32 @@ class BuildWorker(EventEmitter, threading.Thread):
 
             ok = True
 
-            # grit BG : un layer par appel, dédupliqué globalement par
-            # (BackgroundAsset.name, bg_slot) — un BackgroundAsset peut être
-            # partagé par plusieurs scènes, comme un SpriteAsset (même
-            # principe que unique_sprites ci-dessous : 1ère scène rencontrée
-            # résout la banque, la cohérence est vérifiée par le validateur,
-            # avertissement pas blocage). Chaque layer choisit SA PROPRE
-            # banque (BackgroundLayer.pal_bank), plus de banque unique
-            # partagée pour toute la scène.
-            # Couleurs effectives = palette propre du PNG (mode « None »,
-            # pal_bank == OWN) OU palette référencée résolue. L'index de banque
-            # (-mp pour BG) vient de scene_bank_layout (1ère scène rencontrée).
-            seen_bg_layers: set[tuple[str, int]] = set()
+            # Chaque layer de scène référence une image ; sa compression vit dans
+            # un BackgroundAsset sidecar (keyé par nom). Fond compressé -> émission
+            # directe (pas grit) ; sinon grit (legacy, rare car tout est compressé).
+            # Dédup globale par (image, bg_slot).
+            seen_bg_layers: set = set()
             unique_bg_layers: list = []
+            seen_compressed: set = set()
             for d in all_scene_data:
-                ba = d["bg_asset"]
-                if not ba:
-                    continue
                 scene = d["scene"]
                 bg_layout = scene_bank_layout(p, scene, "bg")
                 for layer in d["bg_pairs"]:
-                    key = (ba.name, layer.bg_slot)
+                    if not layer.image:
+                        continue
+                    ba = p.get_background(layer.image)
+                    if ba and ba.tileset:
+                        key = (ba.name, layer.bg_slot)
+                        if key not in seen_compressed:
+                            seen_compressed.add(key)
+                            pal_offset = bg_layout.bg_block_offset(ba) or 0
+                            self._emit_compressed_bg(p, ba, layer.bg_slot, pal_offset)
+                        continue
+                    key = (layer.image, layer.bg_slot)
                     if key in seen_bg_layers:
                         continue
                     seen_bg_layers.add(key)
-                    png = p.background_images_dir / layer.image if layer.image else None
+                    png = p.background_images_dir / (ba.source if ba and ba.source else f"{layer.image}.png")
                     colors = effective_palette_colors(
                         p, layer.pal_bank, png, scene.active_bg_palettes)
                     mp_slot = bg_layout.bank_index(layer.pal_bank, colors)
@@ -335,6 +331,24 @@ class BuildWorker(EventEmitter, threading.Thread):
         return GritBackground(
             self.toolchain.resolve_grit(), self._emit, self._run_cmd
         ).run(p, layers)
+
+    def _emit_compressed_bg(self, p, ba, bg_slot, pal_offset=0):
+        """Émet un fond COMPRESSÉ (métadonnées) en C compatible grit — pas de
+        grit. `bg_slot` = slot du layer qui l'utilise. `pal_offset` = banque
+        physique de la 1ère sous-palette (allouée par scene_bank_layout, cf.
+        palette_alloc._find_free_block) — plusieurs layers compressés d'une
+        même scène occupent des blocs de banques BG distincts. cf.
+        codegen/bg_emit."""
+        from codegen.bg_emit import emit_bg_c
+        sym = bg_layer_sym(ba.name, bg_slot)
+        c, h = emit_bg_c(sym, ba.tileset, ba.tilemap, pal_offset)
+        p.grit_out_dir.mkdir(parents=True, exist_ok=True)
+        (p.grit_out_dir / f"{sym}.c").write_text(c)
+        (p.grit_out_dir / f"{sym}.h").write_text(h)
+        self._emit("log_line",
+                   f"[bg] {ba.name} compressé -> {sym} "
+                   f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes, "
+                   f"banque {pal_offset})")
 
     def _check_bg_tile_budget(self, p, layers) -> bool:
         """Garde-fou VRAM : chaque layer a son propre CBB (16 Ko / 512 tuiles

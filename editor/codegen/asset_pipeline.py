@@ -163,26 +163,43 @@ def _frame_key(frame: "AnimFrame") -> tuple:
     ))
 
 
+def _seq_key(src_sd: "StateDirection", flip_h: bool, flip_v: bool) -> tuple:
+    """Clé hashable d'une séquence d'animation : compositions de ses frames
+    (dans l'ordre) + flip appliqué. Deux directions produisant exactement la
+    même suite de frames retournées de la même façon partagent un bloc."""
+    return (tuple(_frame_key(f) for f in src_sd.frames), flip_h, flip_v)
+
+
 def sprite_unique_frames(sprite: SpriteAsset) -> tuple[dict, list]:
-    """Déduplique les frames d'un sprite (toutes states/directions confondues).
+    """Layout du sheet reconstruit : chaque séquence (state,direction) occupe un
+    bloc CONTIGU de frames. C'est impératif — le runtime joue une direction via
+    `frame = start + k` (k = 0..count-1) sur une plage contiguë ; dédupliquer au
+    niveau frame casserait cette contiguïté (séquences non séquentielles →
+    frames erronées / hors limites dans la loop). On déduplique donc au niveau
+    séquence entière : deux directions identiques (mêmes frames + même flip,
+    ex. une source et son omni) partagent le même bloc, mais une frame répétée
+    dans une même séquence (ping-pong A,B,C,B) est stockée telle quelle pour
+    rester contiguë.
+
     Fait autorité sur l'ordre des frames pour le sheet reconstruit
     (build_sprite_sheet_indexed) ET les tables d'animation C
-    (main_gen._anim_tables_for) — les deux partagent cet index.
+    (main_gen._anim_tables_for) — les deux partagent ce layout.
 
-    Retourne (frame_index, ordered) où frame_index[key] = position dans ordered,
-    et ordered = [(AnimFrame, flip_h, flip_v), ...] dans l'ordre d'apparition."""
-    frame_index: dict[tuple, int] = {}
+    Retourne (seq_starts, ordered) où seq_starts[seq_key] = offset de départ du
+    bloc dans ordered, et ordered = [(AnimFrame, flip_h, flip_v), ...] dans
+    l'ordre du sheet."""
+    seq_starts: dict[tuple, int] = {}
     ordered: list = []
     for state in sprite.states:
         dir_map = {sd.dir: sd for sd in state.directions}
         for sd in state.directions:
             src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            for f in src_sd.frames:
-                key = _frame_key(f) + (sd.flip_h, sd.flip_v)
-                if key not in frame_index:
-                    frame_index[key] = len(ordered)
+            key = _seq_key(src_sd, sd.flip_h, sd.flip_v)
+            if key not in seq_starts:
+                seq_starts[key] = len(ordered)
+                for f in src_sd.frames:
                     ordered.append((f, sd.flip_h, sd.flip_v))
-    return frame_index, ordered
+    return seq_starts, ordered
 
 
 # ── Sprite sheet reconstruction — mode 'P' ─────────────────────────────────────
@@ -429,7 +446,15 @@ class GritSprites:
             # ses index se calent sur la banque finale `colors` (OWN -> own_palette ;
             # référencé -> banque). Fallback sur own_palette si banque non résolue.
             own_pal = list(getattr(sprite, "own_palette", []) or [])
-            bank_colors = list(colors) if colors else own_pal
+            # own_pal est SANS le slot 0 réservé (cf. own_palette_from_source) —
+            # render_indexed() l'attend tel quel (voir plus bas), mais bank_colors
+            # (utilisé par quantize_asset direct_index + remap_tiles_to_bank, qui
+            # eux exportent une banque matérielle 16 slots) doit l'inclure — le
+            # cas normal passe déjà par `colors` (préfixé dans
+            # palette_alloc.effective_palette_colors), ce fallback ne sert que si
+            # la résolution en amont a échoué.
+            from core.color_utils import RESERVED_SLOT_COLOR
+            bank_colors = list(colors) if colors else ([RESERVED_SLOT_COLOR] + own_pal if own_pal else [])
 
             from core.color_utils import render_indexed
             p.grit_out_dir.mkdir(parents=True, exist_ok=True)

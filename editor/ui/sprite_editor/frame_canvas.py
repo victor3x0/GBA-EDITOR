@@ -50,8 +50,15 @@ def _pil_to_pixmap(img, size: int) -> QPixmap:
 
 
 def _make_frame_pixmap(abs_path: Optional[Path], frame: AnimFrame,
-                       fw: int, fh: int, size: int = _THUMB_IMG) -> QPixmap:
+                       fw: int, fh: int, size: int = _THUMB_IMG,
+                       flip: tuple[bool, bool] = (False, False)) -> QPixmap:
     img = compose_frame_image(abs_path, frame, fw, fh)
+    if flip[0] or flip[1]:
+        from PIL import Image as _Im
+        if flip[0]:
+            img = img.transpose(_Im.FLIP_LEFT_RIGHT)
+        if flip[1]:
+            img = img.transpose(_Im.FLIP_TOP_BOTTOM)
     return _pil_to_pixmap(img, size)
 
 
@@ -76,6 +83,7 @@ class _FrameThumb(QFrame):
         self._index    = index
         self._frame    = frame
         self._selected = False
+        self._draggable = True   # désactivé pour les miroirs (lecture seule)
         self._press_pos: Optional[QPoint] = None
 
         self.setFixedSize(_THUMB_W, _THUMB_H)
@@ -132,6 +140,8 @@ class _FrameThumb(QFrame):
             self.context_asked.emit(self._index, e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
+        if not self._draggable:
+            return
         if not (e.buttons() & Qt.MouseButton.LeftButton):
             return
         if self._press_pos is None:
@@ -190,6 +200,12 @@ class _FrameTimeline(QWidget):
         self._selected:  int                       = 0
         self._thumbs:    list[_FrameThumb]         = []
         self._drop_before: Optional[int]           = None   # indicateur pendant drag
+        # Mode lecture seule : direction miroir (mirror_of défini). Les frames
+        # affichées sont celles de la direction source, retournées (flip) — le
+        # miroir ne possède pas ses propres frames éditables.
+        self._read_only:      bool                 = False
+        self._disp_frames:    Optional[list]       = None   # frames source du miroir
+        self._flip:           tuple[bool, bool]    = (False, False)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -255,13 +271,25 @@ class _FrameTimeline(QWidget):
     # ── API publique ───────────────────────────────────────────────────
 
     def load(self, sprite: SpriteAsset, state: AnimState,
-             sd: StateDirection, abs_path: Optional[Path]):
-        self._sprite   = sprite
-        self._state    = state
-        self._sd       = sd
-        self._abs_path = abs_path
-        self._selected = 0
+             sd: StateDirection, abs_path: Optional[Path],
+             read_only: bool = False, disp_frames: Optional[list] = None,
+             flip: tuple[bool, bool] = (False, False)):
+        self._sprite     = sprite
+        self._state      = state
+        self._sd         = sd
+        self._abs_path   = abs_path
+        self._selected   = 0
+        self._read_only  = read_only
+        self._disp_frames = disp_frames
+        self._flip       = flip
         self._rebuild()
+
+    def _frames(self) -> list:
+        """Frames à afficher : source retournée en lecture seule (miroir),
+        sinon les frames propres de la direction."""
+        if self._read_only and self._disp_frames is not None:
+            return self._disp_frames
+        return self._sd.frames if self._sd else []
 
     def clear(self):
         self._sprite = self._state = self._sd = None
@@ -290,20 +318,26 @@ class _FrameTimeline(QWidget):
         self._add_btn.hide()
         self._add_btn.setParent(None)
 
+        frames = self._frames()
         if self._sd:
             fw = self._sprite.frame_w if self._sprite else 16
             fh = self._sprite.frame_h if self._sprite else 16
-            for i, frame in enumerate(self._sd.frames):
-                pm  = _make_frame_pixmap(self._abs_path, frame, fw, fh)
+            for i, frame in enumerate(frames):
+                pm  = _make_frame_pixmap(self._abs_path, frame, fw, fh, flip=self._flip)
                 t   = _FrameThumb(i, frame, pm)
                 t.set_selected(i == self._selected)
                 t.clicked.connect(self._on_thumb_clicked)
-                t.context_asked.connect(self._on_context_menu)
+                if self._read_only:
+                    t._draggable = False
+                else:
+                    t.context_asked.connect(self._on_context_menu)
                 self._layout.addWidget(t)
                 self._thumbs.append(t)
 
-        self._layout.addWidget(self._add_btn)
-        self._add_btn.show()
+        # Bouton + masqué en lecture seule (miroir non éditable).
+        if not self._read_only:
+            self._layout.addWidget(self._add_btn)
+            self._add_btn.show()
         self._layout.addStretch()
 
         # Hauteur fixe = viewport, largeur = nombre de frames
@@ -313,7 +347,7 @@ class _FrameTimeline(QWidget):
         self._content.setFixedSize(max(content_w, self._scroll.width()), vp_h)
 
     def _select(self, index: int):
-        if self._sd and 0 <= index < len(self._sd.frames):
+        if self._sd and 0 <= index < len(self._frames()):
             for i, t in enumerate(self._thumbs):
                 t.set_selected(i == index)
             self._selected = index
@@ -331,7 +365,7 @@ class _FrameTimeline(QWidget):
         self._select(index)
 
     def _on_add(self):
-        if not self._sd:
+        if not self._sd or self._read_only:
             return
         # Copie de la frame sélectionnée (ou frame vide)
         if self._sd.frames:
@@ -344,7 +378,7 @@ class _FrameTimeline(QWidget):
         self._select(len(self._sd.frames) - 1)
 
     def _on_context_menu(self, index: int, pos: QPoint):
-        if not self._sd:
+        if not self._sd or self._read_only:
             return
         menu = QMenu(self)
         menu.setStyleSheet(_CTX_MENU_QSS)
@@ -368,7 +402,7 @@ class _FrameTimeline(QWidget):
     # ── Actions frame (partagées menu contextuel + raccourcis clavier) ──
 
     def _copy_frame(self, index: int):
-        if not self._sd or not self._sd.frames:
+        if not self._sd or self._read_only or not self._sd.frames:
             return
         src = self._sd.frames[index]
         self._sd.frames.insert(index + 1, _clone_frame(src))
@@ -377,7 +411,7 @@ class _FrameTimeline(QWidget):
         self._select(index + 1)
 
     def _clone_frame_to_end(self, index: int):
-        if not self._sd or not self._sd.frames:
+        if not self._sd or self._read_only or not self._sd.frames:
             return
         src = self._sd.frames[index]
         self._sd.frames.append(_clone_frame(src))
@@ -386,7 +420,7 @@ class _FrameTimeline(QWidget):
         self._select(len(self._sd.frames) - 1)
 
     def _clear_frame(self, index: int):
-        if not self._sd or not self._sd.frames:
+        if not self._sd or self._read_only or not self._sd.frames:
             return
         self._sd.frames[index].tiles.clear()
         self.frames_changed.emit()
@@ -394,7 +428,7 @@ class _FrameTimeline(QWidget):
         self._select(index)
 
     def _delete_frame(self, index: int):
-        if not self._sd or len(self._sd.frames) <= 1:
+        if not self._sd or self._read_only or len(self._sd.frames) <= 1:
             return
         self._sd.frames.pop(index)
         self.frames_changed.emit()
@@ -404,7 +438,7 @@ class _FrameTimeline(QWidget):
     # ── Drag-drop reorder ─────────────────────────────────────────────
 
     def _drag_enter(self, e):
-        if e.mimeData().hasFormat(_FrameThumb.MIME):
+        if not self._read_only and e.mimeData().hasFormat(_FrameThumb.MIME):
             e.acceptProposedAction()
 
     def _drag_move(self, e):
@@ -419,7 +453,7 @@ class _FrameTimeline(QWidget):
         self._content.update()
 
     def _drop(self, e):
-        if not e.mimeData().hasFormat(_FrameThumb.MIME) or not self._sd:
+        if self._read_only or not e.mimeData().hasFormat(_FrameThumb.MIME) or not self._sd:
             return
         src_idx  = int(e.mimeData().data(_FrameThumb.MIME).data())
         dst_idx  = self._drop_index(e.position().toPoint().x())
@@ -512,6 +546,10 @@ class _FrameCanvas(QWidget):
         # Sélection de tuiles déjà posées (active seulement sans brosse)
         self._select_start: Optional[tuple[int, int]] = None
         self._select_end:   Optional[tuple[int, int]] = None
+        # Lecture seule : direction miroir. L'édition (peindre/effacer/ramasser)
+        # est bloquée ; l'image composée est retournée pour l'affichage (flip).
+        self._read_only:  bool = False
+        self._flip_disp:  tuple[bool, bool] = (False, False)
         self.setMinimumHeight(80)
         self.setMouseTracking(True)
         self.setStyleSheet(f"background:{C.BG_DEEP};")
@@ -573,6 +611,22 @@ class _FrameCanvas(QWidget):
 
     def set_persist_fn(self, fn):
         self._persist_fn = fn
+
+    def set_read_only(self, ro: bool):
+        """Direction miroir : édition bloquée. On coupe aussi la brosse et le
+        curseur repasse en flèche pour signaler qu'on ne peut rien poser."""
+        self._read_only = ro
+        if ro:
+            self._brush = []
+            self._select_start = self._select_end = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_display_flip(self, flip_h: bool, flip_v: bool):
+        """Miroir d'affichage de l'image composée (preview d'une direction
+        miroir) — n'affecte pas les tuiles stockées."""
+        self._flip_disp = (flip_h, flip_v)
+        self.update()
 
     def set_grid(self, on: bool):
         self._show_grid = on
@@ -648,7 +702,7 @@ class _FrameCanvas(QWidget):
             self._mid_drag = (e.pos(), self._pan_x, self._pan_y)
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
-        if not self._frame or not self._sprite:
+        if not self._frame or not self._sprite or self._read_only:
             return
         cell = self._cell_at(e.position())
         if cell is None:
@@ -676,6 +730,8 @@ class _FrameCanvas(QWidget):
             self._hover = cell
             self.update()
             self.hover_changed.emit(cell)
+        if self._read_only:
+            return
         if e.buttons() & Qt.MouseButton.LeftButton and cell:
             if self._brush:
                 self._do_paint(*cell)
@@ -811,6 +867,13 @@ class _FrameCanvas(QWidget):
                 img = recolor_indexed(p_img, self._tint_bank)
             else:
                 img = p_img.convert("RGBA")
+        # Miroir d'affichage (direction miroir en lecture seule).
+        if self._flip_disp[0] or self._flip_disp[1]:
+            from PIL import Image as _Im
+            if self._flip_disp[0]:
+                img = img.transpose(_Im.FLIP_LEFT_RIGHT)
+            if self._flip_disp[1]:
+                img = img.transpose(_Im.FLIP_TOP_BOTTOM)
         if img.width > 0 and img.height > 0:
             data = bytes(img.tobytes("raw", "RGBA"))
             qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
@@ -1058,6 +1121,27 @@ class _FrameCanvasPanel(QWidget):
         self._coord_lbl.setStyleSheet(_FLOAT_STY)
         self._coord_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
+        # Bandeau miroir / lecture seule — visible seulement pour une direction
+        # miroir (mirror_of défini) : signale que le contenu n'est pas éditable.
+        self._ro_lbl = QLabel("", self)
+        self._ro_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        self._ro_lbl.setStyleSheet(
+            f"color:{C.ACCENT_BLU};background:#0e1f2e;"
+            f"border:1px solid {C.ACCENT_BLU};border-radius:4px;padding:3px 8px;"
+        )
+        self._ro_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._ro_lbl.hide()
+
+        self._reposition_overlays()
+
+    def set_read_only_banner(self, text: Optional[str]):
+        """Affiche/masque le bandeau miroir. text=None → masqué."""
+        if text:
+            self._ro_lbl.setText(text)
+            self._ro_lbl.adjustSize()
+            self._ro_lbl.show()
+        else:
+            self._ro_lbl.hide()
         self._reposition_overlays()
 
     def set_info(self, tiles: int, unique: int):
@@ -1075,6 +1159,7 @@ class _FrameCanvasPanel(QWidget):
         self._coord_lbl.move(self.width() - self._coord_lbl.width() - 10,
                              self.height() - self._coord_lbl.height() - 8)
         self._info_lbl.move(self.width() - self._info_lbl.width() - 10, 8)
+        self._ro_lbl.move((self.width() - self._ro_lbl.width()) // 2, 8)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

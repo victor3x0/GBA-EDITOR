@@ -194,17 +194,7 @@ class CommandDispatcher(EventEmitter):
             self._project.palettes.save(bank)
         self._emit("palettes_changed")
 
-    # ── Background asset ──────────────────────────────────────────
-
-    def assign_background_asset(self, name: str):
-        """Assigne (ou vide) le BackgroundAsset de la scène active."""
-        if not self._project or not self._project.active_scene:
-            return
-        scene = self._project.active_scene
-        scene.background_asset = name
-        self._save_scene()
-        self._emit("bg_slot_changed", 0)
-        self._emit("actors_list_changed")
+    # ── Background ────────────────────────────────────────────────
 
     def import_background_png(self, path_str: str):
         """Importe un PNG dans assets/backgrounds/ et crée le BackgroundAsset associé."""

@@ -40,6 +40,7 @@ from ui.script_editor.script_editor import ScriptEditorScreen
 from ui.home.project_picker import HomeScreen, push_recent
 from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
 from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
+from ui.background_editor.background_editor_screen import BackgroundEditorScreen
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
 
@@ -247,8 +248,9 @@ class MainWindow(QMainWindow):
         # (ui/project_picker.py), affiché par main.py avant la fenêtre
         # principale, et rouvrable via _go_home() pour changer de projet.
         self._build_scene_manager_screen()
-        for title in ("Tileset Manager", "Background Editor"):
-            self._screen_stack.addWidget(self._make_placeholder_screen(title))
+        self._screen_stack.addWidget(self._make_placeholder_screen("Tileset Manager"))
+        self._bg_editor = BackgroundEditorScreen()
+        self._screen_stack.addWidget(self._bg_editor)
         self._sprite_editor = SpriteEditorScreen()
         self._screen_stack.addWidget(self._sprite_editor)
         self._palette_editor = PaletteEditorScreen()
@@ -584,6 +586,7 @@ class MainWindow(QMainWindow):
         self._sound_mixer.load_project(self.project)
         self._sprite_editor.load_project(self.project)
         self._palette_editor.load_project(self.project)
+        self._bg_editor.load_project(self.project)
         self._inspector.set_project(self.project)
         self._script_editor.set_project(self.project)
         if self.project.active_scene:

@@ -145,18 +145,40 @@ def _quantize_preview(img, sprite, bank):
     return p_img.convert("RGBA")
 
 
-def _preview_frame_for_sprite(sprite, sprite_comp):
+# dir_x/dir_y (-1|0|1) → dir id 1-8, identique au _dlut du runtime
+# (NW=8,N=1,NE=2,W=7,omni=0,E=3,SW=6,S=5,SE=4).
+_DIR_ID_LUT = {
+    (-1, -1): 8, (0, -1): 1, (1, -1): 2,
+    (-1,  0): 7, (0,  0): 0, (1,  0): 3,
+    (-1,  1): 6, (0,  1): 5, (1,  1): 4,
+}
+
+
+def _preview_frame_for_actor(sprite, sprite_comp, actor):
     """
-    Frame à afficher en statique pour un actor dans le canvas de scène —
-    état initial du component (direction omni si dispo, sinon la première).
+    Frame statique + flip à afficher pour un actor dans le canvas de scène.
+    Choisit la direction correspondant à dir_x/dir_y de l'actor (comme le
+    runtime) ; pour une direction miroir, retourne la frame de la direction
+    source + le flip du miroir (à composer avec le flip du component).
+    Repli identique au runtime : direction demandée absente → omni (dir 0) →
+    première direction. Retourne (frame|None, flip_h, flip_v).
     """
     state_name = getattr(sprite_comp, "initial_state", None) if sprite_comp else None
     state = next((s for s in sprite.states if s.name == state_name), None)
     state = state or (sprite.states[0] if sprite.states else None)
     if not state or not state.directions:
-        return None
-    sd = next((d for d in state.directions if d.dir == 0), state.directions[0])
-    return sd.frames[0] if sd.frames else None
+        return None, False, False
+    dir_map = {sd.dir: sd for sd in state.directions}
+    dx = max(-1, min(1, getattr(actor, "dir_x", 0)))
+    dy = max(-1, min(1, getattr(actor, "dir_y", 0)))
+    want = _DIR_ID_LUT.get((dx, dy), 0)
+    sd = dir_map.get(want) or dir_map.get(0) or state.directions[0]
+    if sd.mirror_of is not None:
+        # Miroir : les frames vivent sur la direction source, retournées.
+        src = dir_map.get(sd.mirror_of, sd)
+        frame = src.frames[0] if src.frames else None
+        return frame, sd.flip_h, sd.flip_v
+    return (sd.frames[0] if sd.frames else None), False, False
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1644,15 +1666,17 @@ class SceneEditor(QWidget):
 
         # Calculer la taille du canvas à partir des BG PNG réels
         max_w, max_h = GBA_W, GBA_H
-        if scene and scene.background_asset:
-            ba = project.get_background(scene.background_asset)
-            for layer in (ba.layers if ba else []):
-                ap = project.background_images_dir / layer.image
-                if ap.exists():
-                    px = QPixmap(str(ap))
-                    if not px.isNull():
-                        max_w = max(max_w, px.width())
-                        max_h = max(max_h, px.height())
+        for layer in (scene.background_layers if scene else []):
+            if not layer.image:
+                continue
+            ba = project.get_background(layer.image)
+            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ap = project.background_images_dir / png
+            if ap.exists():
+                px = QPixmap(str(ap))
+                if not px.isNull():
+                    max_w = max(max_w, px.width())
+                    max_h = max(max_h, px.height())
 
         # Clamper au maximum hardware GBA
         self._canvas_w = min(max_w, MAX_CANVAS_W)
@@ -1672,12 +1696,14 @@ class SceneEditor(QWidget):
 
         # BG layers (sans rescale — taille native)
         shown = set()
-        if scene and scene.background_asset:
-            ba = project.get_background(scene.background_asset)
-            for layer in (ba.layers if ba else []):
-                ap = project.background_images_dir / layer.image
-                self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(project, scene, layer, ap))
-                shown.add(layer.bg_slot)
+        for layer in (scene.background_layers if scene else []):
+            if not layer.image:
+                continue
+            ba = project.get_background(layer.image)
+            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ap = project.background_images_dir / png
+            self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(project, scene, layer, ap))
+            shown.add(layer.bg_slot)
         for i in range(4):
             if i not in shown:
                 self._gba_scene.set_bg(i, None)
@@ -1710,8 +1736,10 @@ class SceneEditor(QWidget):
             )
             ap = p.asset_abs(sprite.asset) if sprite and sprite.asset else None
             frame_px = None
+            dir_fh = dir_fv = False
             if sprite and ap and ap.exists():
-                preview_frame = _preview_frame_for_sprite(sprite, sprite_comp)
+                preview_frame, dir_fh, dir_fv = _preview_frame_for_actor(
+                    sprite, sprite_comp, actor)
                 if preview_frame is not None:
                     img = compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
                     bank = resolve_obj_palette_bank(p, actor, scene)
@@ -1731,8 +1759,10 @@ class SceneEditor(QWidget):
             sx  = getattr(sprite_comp, "scale_x",  1.0) if sprite_comp else 1.0
             sy  = getattr(sprite_comp, "scale_y",  1.0) if sprite_comp else 1.0
             rot = getattr(sprite_comp, "rotation", 0.0) if sprite_comp else 0.0
-            fh  = getattr(sprite_comp, "flip_h",  False) if sprite_comp else False
-            fv  = getattr(sprite_comp, "flip_v",  False) if sprite_comp else False
+            # Flip effectif = flip du component XOR flip de la direction miroir
+            # (ex. Ouest = miroir horizontal de l'Est).
+            fh  = bool(getattr(sprite_comp, "flip_h", False) if sprite_comp else False) ^ dir_fh
+            fv  = bool(getattr(sprite_comp, "flip_v", False) if sprite_comp else False) ^ dir_fv
             item = self._gba_scene.add_sprite(
                 frame_px, actor, save_fn=save_fn,
                 origin_x=ox, origin_y=oy, scale_x=sx, scale_y=sy,
@@ -1836,12 +1866,14 @@ class SceneEditor(QWidget):
             return
         scene = self._project.active_scene
         shown = set()
-        if scene.background_asset:
-            ba = self._project.get_background(scene.background_asset)
-            for layer in (ba.layers if ba else []):
-                ap = self._project.background_images_dir / layer.image
-                self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(self._project, scene, layer, ap))
-                shown.add(layer.bg_slot)
+        for layer in scene.background_layers:
+            if not layer.image:
+                continue
+            ba = self._project.get_background(layer.image)
+            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ap = self._project.background_images_dir / png
+            self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(self._project, scene, layer, ap))
+            shown.add(layer.bg_slot)
         for i in range(4):
             if i not in shown:
                 self._gba_scene.set_bg(i, None)

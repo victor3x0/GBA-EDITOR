@@ -163,62 +163,39 @@ def _check_backgrounds(ctx: ValidationContext):
     if not ctx.scene:
         return
 
-    ba_name = getattr(ctx.scene, "background_asset", "")
-    if not ba_name:
-        return
-
-    ba = proj.get_background(ba_name)
-    if not ba:
-        ctx.warn(None, f"Background asset '{ba_name}' introuvable — la scène compilera sans background.")
-        return
-
-    for layer in ba.layers:
+    for layer in ctx.scene.background_layers:
         if not layer.image:
             continue
-        ap = proj.background_images_dir / layer.image
-        if not ap.exists():
-            ctx.warn(None, f"Background '{ba_name}' : image introuvable ({layer.image}) — layer ignoré.")
+        ba = proj.get_background(layer.image)
+        if not ba:
+            ctx.warn(None, f"Background BG{layer.bg_slot} : image '{layer.image}' introuvable — layer ignoré.")
+            continue
+        png = ba.source if ba.source else f"{layer.image}.png"
+        if not (proj.background_images_dir / png).exists():
+            ctx.warn(None, f"Background BG{layer.bg_slot} : PNG introuvable ({png}) — layer ignoré.")
 
 
 def _check_bg_text_cbb_conflict(ctx: ValidationContext):
-    """tte_init_se(text_bg, BG_CBB(3)|BG_SBB(31), ...) (cf.
-    main_gen._gen_scene_init) fait deux choses distinctes, chacune un
-    problème séparé pour un layer BG :
-    (1) il reprogramme le registre BGxCNT du slot `text_bg` APRÈS la boucle
-    d'init des layers, quel que soit ce slot — un layer BG assigné à ce même
-    bg_slot reste chargé en VRAM mais devient invisible (le registre pointe
-    vers la police, plus vers ce layer) ;
-    (2) il pointe TOUJOURS physiquement vers CBB3/SBB31 pour les données de
-    police, quelle que soit la valeur de text_bg — depuis que chaque
-    BackgroundLayer a son propre CBB (= bg_slot), un layer au bg_slot 3 voit
-    ses propres tuiles écrasées par la police dès qu'un text_bg est actif
-    dans la même scène, peu importe sa valeur. Avant ce changement, tous les
-    layers partageaient CBB0, donc CBB3 restait toujours libre pour le texte
-    — ce 2e cas est une conséquence directe du redesign palette BG par layer."""
+    """tte_init_se(text_bg, BG_CBB(text_bg)|BG_SBB(text_bg*8+7), ...) (cf.
+    main_gen._gen_scene_init) loge la police DANS le charblock du layer UI
+    choisi (bg_slot == text_bg) — plus de CBB3 figé. Le layer UI est donc
+    censé ne porter AUCUNE image : son charblock entier est dédié à la
+    police. Si un vrai layer BG occupe ce même bg_slot, ses tuiles ET son
+    registre BGxCNT sont écrasés par la police — corruption garantie, pas
+    juste un mauvais rendu (même sévérité que _check_bg_tile_budget), donc
+    bloquant plutôt qu'un avertissement."""
     p = ctx.project
     for scene in p.scenes:
         text_bg = getattr(scene, "text_bg", -1)
         if text_bg not in (0, 1, 2, 3):
             continue
-        ba_name = getattr(scene, "background_asset", "")
-        ba = p.get_background(ba_name) if ba_name else None
-        if not ba:
-            continue
-        for layer in ba.layers:
-            if not layer.image:
-                continue
-            if layer.bg_slot == text_bg:
-                ctx.warn(None,
-                    f"Scène '{scene.name}' : text_bg={text_bg} reprogramme le "
-                    f"registre BG{text_bg} après l'init du layer BG{text_bg} de "
-                    f"'{ba_name}' — ce layer restera chargé en VRAM mais "
-                    f"invisible (BG{text_bg} affichera le texte, pas le décor).")
-            elif layer.bg_slot == 3:
-                ctx.warn(None,
-                    f"Scène '{scene.name}' : le layer BG3 de '{ba_name}' partage "
-                    f"le character base block CBB3 avec la police TTE (toujours "
-                    f"CBB3, quelle que soit la valeur de text_bg={text_bg}) — ses "
-                    f"propres tuiles seront écrasées par les glyphes de police.")
+        for layer in scene.background_layers:
+            if layer.image and layer.bg_slot == text_bg:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : le layer BG{text_bg} ('{layer.image}') "
+                    f"partage son bg_slot avec le Layer UI (text_bg={text_bg}) — "
+                    f"son charblock est écrasé par les tuiles de police au build. "
+                    f"Change le Layer UI de slot ou vide l'image de ce layer.")
 
 
 def _check_pal_bank_reference(ctx: ValidationContext):
@@ -286,14 +263,10 @@ def _check_pal_bank_reference(ctx: ValidationContext):
                 f"hors de la sélection active — ses instances s'afficheront avec "
                 f"le contenu par défaut de ce slot.")
 
-    # ── Layers BG (par scène utilisant le background) ────────────────
+    # ── Layers BG (portés par la scène) ──────────────────────────────
     for scene in p.scenes:
         active = getattr(scene, "active_bg_palettes", [])
-        ba_name = getattr(scene, "background_asset", "")
-        ba = p.get_background(ba_name) if ba_name else None
-        if not ba:
-            continue
-        for layer in ba.layers:
+        for layer in scene.background_layers:
             if not layer.image:
                 continue
             pb = getattr(layer, "pal_bank", OWN_PAL_BANK)
@@ -301,7 +274,7 @@ def _check_pal_bank_reference(ctx: ValidationContext):
                 continue
             if _slot_missing(active, pb):
                 ctx.warn(None,
-                    f"Background '{ba.name}' BG{layer.bg_slot} (scène "
+                    f"Background '{layer.image}' BG{layer.bg_slot} (scène "
                     f"'{scene.name}') pointe la banque BG {pb}, vide ou hors de "
                     f"la sélection active — le layer s'affichera avec le contenu "
                     f"par défaut de ce slot.")

@@ -12,17 +12,18 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
 )
-from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtGui import QPixmap, QFont, QDrag
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QMimeData
 
 from core.project import Project
 
 LAYER_NAMES  = ["BG0", "BG1", "BG2", "BG3", "Sprite"]
 LAYER_COLORS = ["#4caf78", "#5b9bd5", "#9b6bc4", "#c48b3c", "#e8a838"]
-MIME_TYPE    = "application/x-gba-asset-path"
+MIME_TYPE     = "application/x-gba-asset-path"
+MIME_BG_LAYER = "application/x-gba-bg-layer-slot"  # réordonnancement des BgLayerRow (échange de bg_slot)
 IMG_EXTS     = {".png", ".bmp"}
 
 
@@ -197,6 +198,7 @@ class BgLayerRow(QFrame):
     bound_toggled    = pyqtSignal(int)
     layer_removed    = pyqtSignal(int)
     pal_bank_changed   = pyqtSignal(int, str)  # slot_index, nom de la PaletteBank
+    layer_swap_requested = pyqtSignal(int, int)  # (bg_slot source, bg_slot cible)
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -208,6 +210,8 @@ class BgLayerRow(QFrame):
         self._highlight = False
         self._is_ui_layer = False
         self._pal_banks: list = []
+        self._bg_names: list = []
+        self._drag_start = None
         self.setAcceptDrops(True)
         self.setFixedHeight(40)
         self._update_style()
@@ -259,11 +263,17 @@ class BgLayerRow(QFrame):
 
         row.addWidget(thumb_container)
 
-        # Badge BG0 / BG1…
+        # Badge BG0 / BG1… — aussi poignée de glisser-déposer pour réordonner
+        # les layers (échange de bg_slot, donc de priorité d'affichage : cf.
+        # `pri = 3 - bg` dans main_gen._gen_scene_init).
         badge = QLabel(LAYER_NAMES[slot_index])
         badge.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
         badge.setStyleSheet(f"color:{self._color};background:transparent;")
         badge.setFixedWidth(34)
+        badge.setCursor(Qt.CursorShape.OpenHandCursor)
+        badge.setToolTip("Glisser pour échanger la priorité d'affichage avec un autre layer")
+        badge.mousePressEvent = self._badge_press
+        badge.mouseMoveEvent = self._badge_move
         row.addWidget(badge)
 
         # Spinbox vitesse
@@ -319,14 +329,21 @@ class BgLayerRow(QFrame):
 
     # ── Asset ─────────────────────────────────────────────────────
 
+    def set_backgrounds(self, names: list, current: str = ""):
+        """Liste des BackgroundImages du projet proposées au picker de ce layer."""
+        self._bg_names = list(names)
+
     def _open_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Importer — {LAYER_NAMES[self.slot_index]}",
-            "", "Images (*.png *.bmp)"
-        )
-        if path:
-            self.set_asset(path)
-            self.asset_changed.emit(self.slot_index, path)
+        """Choisit un BackgroundImage EXISTANT (assets/backgrounds/) — les images
+        s'importent via le Background Editor, plus de QFileDialog Windows ici.
+        Entrée « Vide » en tête pour un layer sans image (même contrat que
+        « Sans palette » côté pal_bank, cf. ui/common/pickers.py)."""
+        from ui.common.widgets import ScriptPickerPopup
+        entries = [("Vide (aucune image)", "", None)]
+        entries += [(n, n, None) for n in (self._bg_names or [])]
+        popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
+        popup.picked.connect(lambda name: self.asset_changed.emit(self.slot_index, name))
+        popup.show_below(self._thumb)
 
     def set_asset(self, path: str):
         self._path = path
@@ -412,10 +429,28 @@ class BgLayerRow(QFrame):
         self.clear_asset()
         self.asset_changed.emit(self.slot_index, "")
 
-    # ── Drag & drop ───────────────────────────────────────────────
+    # ── Drag & drop — réordonnancement (échange de bg_slot/priorité) ──
+    # Plus de drop de FICHIER ici : l'assignation d'une image se fait via le
+    # picker de BackgroundImages (import au Background Editor). Le drag initié
+    # depuis le badge BG0/BG1… sert à échanger la priorité de deux layers.
+
+    def _badge_press(self, e):
+        self._drag_start = e.position().toPoint()
+
+    def _badge_move(self, e):
+        if self._drag_start is None or not (e.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (e.position().toPoint() - self._drag_start).manhattanLength() < 8:
+            return
+        self._drag_start = None
+        drag = QDrag(self)
+        md = QMimeData()
+        md.setData(MIME_BG_LAYER, str(self.slot_index).encode("utf-8"))
+        drag.setMimeData(md)
+        drag.exec(Qt.DropAction.MoveAction)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(MIME_TYPE):
+        if event.mimeData().hasFormat(MIME_BG_LAYER):
             self._highlight = True
             self._update_style()
             event.acceptProposedAction()
@@ -429,17 +464,12 @@ class BgLayerRow(QFrame):
     def dropEvent(self, event):
         self._highlight = False
         self._update_style()
-        path = ""
-        if event.mimeData().hasFormat(MIME_TYPE):
-            path = bytes(event.mimeData().data(MIME_TYPE)).decode("utf-8")
-        elif event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls:
-                path = urls[0].toLocalFile()
-        if path and Path(path).suffix.lower() in IMG_EXTS:
-            self.set_asset(path)
-            self.asset_changed.emit(self.slot_index, path)
-            event.acceptProposedAction()
+        if not event.mimeData().hasFormat(MIME_BG_LAYER):
+            return
+        src = int(bytes(event.mimeData().data(MIME_BG_LAYER)).decode("utf-8"))
+        if src != self.slot_index:
+            self.layer_swap_requested.emit(src, self.slot_index)
+        event.acceptProposedAction()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -465,12 +495,14 @@ class AssignPanel(QWidget):
 
     def refresh_from_project(self, project: Project):
         scene = project.active_scene
-        # BG slots — résolution depuis le BackgroundAsset de la scène
-        ba = project.get_background(scene.background_asset) if scene and scene.background_asset else None
+        # BG slots — résolution depuis les layers de la SCÈNE
+        by_slot = {L.bg_slot: L for L in (scene.background_layers if scene else [])}
         for i in range(min(4, len(self._slots))):
-            layer = next((L for L in (ba.layers if ba else []) if L.bg_slot == i), None)
-            if layer:
-                ap = project.background_images_dir / layer.image
+            layer = by_slot.get(i)
+            if layer and layer.image:
+                ba = project.get_background(layer.image)
+                png = ba.source if ba and ba.source else f"{layer.image}.png"
+                ap = project.background_images_dir / png
                 if ap.exists():
                     self._slots[i].set_asset(str(ap))
                     continue

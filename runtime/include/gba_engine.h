@@ -18,6 +18,7 @@
 #define OBJ_VRAM       ((vu16*)0x06010000)
 #define PAL_OBJ_RAM    ((vu16*)0x05000200)
 #define BGOFS(n)       (*((vu16*)(0x04000010+(n)*4)))
+#define BGVOFS(n)      (*((vu16*)(0x04000012+(n)*4)))
 
 /* ── Copie mot-16 vers VRAM ──────────────────────────────────────── */
 static void copy16(vu16*d, const void*s, u32 b) {
@@ -40,6 +41,66 @@ static void load_map(vu16*dst, const void*src,
             else if (x>=32)     d += 0x400;
             d[qy*32+qx] = t;
         }
+    }
+}
+
+/* ── Streaming de map 2D (grands niveaux qui défilent) ────────────── */
+/* Fenêtre VRAM win_w×win_h (≤64) qui wrappe ; bg_base_col/row = coin haut-gauche
+   monde chargé. Au scroll, on recopie la colonne/ligne entrante dans sa case
+   VRAM (world & 63). `map` = tilemap COMPLÈTE en ROM (tiles_w×tiles_h SE, row-
+   major). `dst` = MAP_RAM(sbb). Un seul fond streamé par scène. Pattern Tonc. */
+static int bg_base_col, bg_base_row;
+
+/* Écrit une SE à (c,r) dans la fenêtre en gérant les quadrants d'une map 64-large
+   (SBB contigus : +0x400 droite, +0x800 bas, +0xC00 coin) — comme load_map. */
+static void bg_se_write(vu16 *dst, int c, int r, u16 se) {
+    if (c >= 32 && r >= 32) dst += 0xC00;
+    else if (r >= 32)       dst += 0x800;
+    else if (c >= 32)       dst += 0x400;
+    dst[(r & 31)*32 + (c & 31)] = se;
+}
+
+static void bg_load_col(vu16 *dst, const unsigned short *map,
+                        int tiles_w, int tiles_h, int win_h, int wc) {
+    for (int r = bg_base_row; r < bg_base_row + win_h; r++) {
+        u16 se = (wc < tiles_w && r < tiles_h) ? map[r*tiles_w + wc] : 0;
+        bg_se_write(dst, wc & 63, r & 63, se);
+    }
+}
+
+static void bg_load_row(vu16 *dst, const unsigned short *map,
+                        int tiles_w, int tiles_h, int win_w, int wr) {
+    for (int c = bg_base_col; c < bg_base_col + win_w; c++) {
+        u16 se = (c < tiles_w && wr < tiles_h) ? map[wr*tiles_w + c] : 0;
+        bg_se_write(dst, c & 63, wr & 63, se);
+    }
+}
+
+static void __attribute__((unused)) bg_stream_init(
+        vu16 *dst, const unsigned short *map,
+        int tiles_w, int tiles_h, int win_w, int win_h) {
+    bg_base_col = 0; bg_base_row = 0;
+    for (int r = 0; r < win_h; r++)
+        for (int c = 0; c < win_w; c++) {
+            u16 se = (c < tiles_w && r < tiles_h) ? map[r*tiles_w + c] : 0;
+            bg_se_write(dst, c, r, se);
+        }
+}
+
+/* Horizontal AVANT vertical : la ligne entrante (load_row) utilise le
+   bg_base_col déjà mis à jour et corrige la case-coin. */
+static void __attribute__((unused)) bg_stream_update(
+        vu16 *dst, const unsigned short *map, int tiles_w, int tiles_h,
+        int win_w, int win_h, int stream_h, int stream_v, int cam_x, int cam_y) {
+    if (stream_h) {
+        int cc = cam_x >> 3;
+        while (bg_base_col < cc) { bg_load_col(dst, map, tiles_w, tiles_h, win_h, bg_base_col + 64); bg_base_col++; }
+        while (bg_base_col > cc) { bg_base_col--; bg_load_col(dst, map, tiles_w, tiles_h, win_h, bg_base_col); }
+    }
+    if (stream_v) {
+        int cr = cam_y >> 3;
+        while (bg_base_row < cr) { bg_load_row(dst, map, tiles_w, tiles_h, win_w, bg_base_row + 64); bg_base_row++; }
+        while (bg_base_row > cr) { bg_base_row--; bg_load_row(dst, map, tiles_w, tiles_h, win_w, bg_base_row); }
     }
 }
 

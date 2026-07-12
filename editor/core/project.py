@@ -315,37 +315,54 @@ class BackgroundLayer:
 
 @dataclass
 class BackgroundAsset(Resource):
-    """
-    Asset background moteur — stocké dans project/backgrounds/{name}.json.
-    Regroupe 1-4 BackgroundLayers (parallax multi-couche possible).
-    """
-    name:   str  = "background"
-    layers: list = field(default_factory=list)   # list[BackgroundLayer]
+    """Sidecar de compression d'UNE image de fond — project/backgrounds/{stem}.json,
+    keyé par le nom du PNG (comme SpriteAsset). Le PNG source n'est jamais modifié.
+    C'est la SCÈNE qui possède ses layers (Scene.background_layers) et référence
+    ce fond par nom — plus de composition multi-layer réutilisable ici."""
+    name:   str  = "background"                     # = stem du PNG source
+    source:  str  = ""                              # PNG dans assets/backgrounds/
+    palettes: list = field(default_factory=list)    # list[list[int]] BGR555 (≤16×≤16)
+    tileset:  list = field(default_factory=list)    # list[str] (64 nibbles hex/tuile)
+    tilemap:  list = field(default_factory=list)    # list[int] (screen entries GBA)
+    tiles_w:  int = 0
+    tiles_h:  int = 0
+    compress_method: str = "median_cut"
+
+    def image_name(self) -> str:
+        return self.source
 
     def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "layers": [
-                {
-                    "image": L.image, "bg_slot": L.bg_slot,
-                    "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
-                }
-                for L in self.layers
-            ],
-        }
+        d = {"name": self.name}
+        if self.source:
+            d["source"] = self.source
+        if self.tileset:
+            d.update({
+                "palettes": self.palettes, "tileset": self.tileset,
+                "tilemap": self.tilemap, "tiles_w": self.tiles_w,
+                "tiles_h": self.tiles_h, "compress_method": self.compress_method,
+            })
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "BackgroundAsset":
-        layers = [
-            BackgroundLayer(
-                image        = L.get("image", ""),
-                bg_slot      = L.get("bg_slot", i),
-                scroll_speed = L.get("scroll_speed", 1.0),
-                pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
-            )
+        ba = cls(
+            name=d.get("name", "background"),
+            source=d.get("source", ""),
+            palettes=list(d.get("palettes", [])),
+            tileset=list(d.get("tileset", [])),
+            tilemap=list(d.get("tilemap", [])),
+            tiles_w=d.get("tiles_w", 0), tiles_h=d.get("tiles_h", 0),
+            compress_method=d.get("compress_method", "median_cut"),
+        )
+        # Anciens layers (format multi-layer) — transitoire, lus pour migrer vers
+        # Scene.background_layers puis abandonnés (to_dict ne les émet plus).
+        ba._legacy_layers = [
+            BackgroundLayer(image=L.get("image", ""), bg_slot=L.get("bg_slot", i),
+                            scroll_speed=L.get("scroll_speed", 1.0),
+                            pal_bank=L.get("pal_bank", OWN_PAL_BANK))
             for i, L in enumerate(d.get("layers", []))
         ]
-        return cls(name=d.get("name", "background"), layers=layers)
+        return ba
 
 
 # Stub rétrocompat (importé par d'anciens modules)
@@ -828,6 +845,10 @@ class Actor(ComponentOwnerMixin):
     priority: int = 0
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     visible: bool = True
+    # Direction initiale discrète (-1|0|1 × -1|0|1) : oriente le sprite affiché
+    # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
+    dir_x: int = 0
+    dir_y: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -842,6 +863,8 @@ class Actor(ComponentOwnerMixin):
             "priority":    self.priority,
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
+            "dir_x":       self.dir_x,
+            "dir_y":       self.dir_y,
         }
 
     @classmethod
@@ -858,6 +881,8 @@ class Actor(ComponentOwnerMixin):
             priority    = d.get("priority", 0),
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
+            dir_x       = d.get("dir_x", 0),
+            dir_y       = d.get("dir_y", 0),
         )
 
 
@@ -919,7 +944,9 @@ class SceneLayer:
 @dataclass
 class Scene(Resource):
     name: str = "Scene"
-    background_asset: str = ""  # nom du BackgroundAsset (project/backgrounds/)
+    # Layers de fond de CETTE scène (inline dans le JSON) — chaque layer référence
+    # un BackgroundAsset (sidecar de compression) par son nom d'image.
+    background_layers: list = field(default_factory=list)  # list[BackgroundLayer]
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
     cam_x: int = 0
     cam_y: int = 0
@@ -949,7 +976,11 @@ class Scene(Resource):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "background_asset": self.background_asset,
+            "background_layers": [
+                {"image": L.image, "bg_slot": L.bg_slot,
+                 "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank}
+                for L in self.background_layers
+            ],
             "actors": [a.to_dict() for a in self.actors],
             "cam_x": self.cam_x,
             "cam_y": self.cam_y,
@@ -970,16 +1001,19 @@ class Scene(Resource):
         """
         legacy_actors : dict nom→Actor chargé depuis project/actors/ (anciens projets).
         Si présent, les entrées `instances[actor_name]` sont converties en Actor inline.
-        Migration : si le JSON a encore 'bg_layers' (ancien format), on en déduit background_asset.
         """
-        # Migration ancien format : bg_layers → background_asset
-        background_asset = d.get("background_asset", "")
-        if not background_asset and "bg_layers" in d:
-            for L in d["bg_layers"]:
-                name = L.get("background_name", "")
-                if name:
-                    background_asset = name
-                    break
+        # Layers de la scène (nouveau format). L'ancien `background_asset` (nom
+        # d'un BackgroundAsset multi-layer) est migré au niveau projet
+        # (Project._migrate_scene_backgrounds) car il faut lire cet asset.
+        bg_layers = [
+            BackgroundLayer(
+                image        = L.get("image", ""),
+                bg_slot      = L.get("bg_slot", i),
+                scroll_speed = L.get("scroll_speed", 1.0),
+                pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
+            )
+            for i, L in enumerate(d.get("background_layers", []))
+        ]
 
         # Nouveau format : acteurs inline
         if "actors" in d:
@@ -1006,7 +1040,7 @@ class Scene(Resource):
 
         scene = cls(
             name=d.get("name", "Scene"),
-            background_asset=background_asset,
+            background_layers=bg_layers,
             actors=actors,
             cam_x=d.get("cam_x", 0),
             cam_y=d.get("cam_y", 0),
@@ -1021,6 +1055,13 @@ class Scene(Resource):
             active_bg_palettes=d.get("active_bg_palettes", []),
             backdrop_color=d.get("backdrop_color"),
         )
+        # Ancien nom de BackgroundAsset (migré au load si background_layers vide).
+        scene._legacy_bg_asset = d.get("background_asset", "")
+        if not scene._legacy_bg_asset and "bg_layers" in d:   # très ancien format
+            for L in d["bg_layers"]:
+                if L.get("background_name"):
+                    scene._legacy_bg_asset = L["background_name"]
+                    break
         scene.ensure_collision_map()
         return scene
 
@@ -1314,18 +1355,34 @@ class Project:
             mgr.commit_deletes()
 
     def sync_background_png(self, png_path: Path):
-        """
-        Crée automatiquement un BackgroundAsset quand un PNG apparaît dans assets/backgrounds/.
-        Si un BackgroundAsset du même nom existe déjà, on ne le modifie pas.
-        """
+        """Crée un BackgroundAsset (sidecar de compression par image, keyé par le
+        stem du PNG) quand un PNG apparaît dans assets/backgrounds/. Ne modifie
+        pas un asset existant. C'est la scène qui possède ses layers."""
         name = png_path.stem
         if self.backgrounds.get(name) is None:
-            ba = BackgroundAsset(
-                name=name,
-                layers=[BackgroundLayer(image=png_path.name, bg_slot=0, scroll_speed=1.0)],
-            )
+            ba = BackgroundAsset(name=name, source=png_path.name)
+            # Nouveau dépôt : compression (métadonnées) sans toucher le PNG.
+            self._compress_background_asset(ba, png_path)
             self.backgrounds.append(ba)
             self.backgrounds.save(ba)
+
+    @staticmethod
+    def _compress_background_asset(ba: "BackgroundAsset", png_path: Path, method: str = None):
+        """Calcule et stocke la compression GBA d'un fond (palettes/tileset/tilemap)
+        depuis son PNG — sans modifier le fichier. cf. core/bg_compress. No-op si
+        illisible."""
+        try:
+            from core.bg_compress import compress_background
+            c = compress_background(png_path, method=method or ba.compress_method)
+            ba.source = png_path.name
+            ba.palettes = c["palettes"]
+            ba.tileset = c["tileset"]
+            ba.tilemap = c["tilemap"]
+            ba.tiles_w = c["tiles_w"]
+            ba.tiles_h = c["tiles_h"]
+            ba.compress_method = c["compress_method"]
+        except Exception:
+            pass
 
     # ── Helpers de lookup ────────────────────────────────────────
 
@@ -1550,9 +1607,14 @@ class Project:
             return
         old_name = bg.name
         self.backgrounds.rename(bg, new_name)
+        # Met à jour les layers des scènes qui référencent ce fond par nom.
         for scene in self.scenes:
-            if scene.background_asset == old_name:
-                scene.background_asset = new_name
+            touched = False
+            for L in scene.background_layers:
+                if L.image == old_name:
+                    L.image = new_name
+                    touched = True
+            if touched:
                 self.save_scene(scene)
 
     def rename_scene(self, scene: Scene, new_name: str):
@@ -1652,9 +1714,54 @@ class Project:
         self.music.load()
         self.fonts.load()
         self.backgrounds.load()
+        self._reconcile_backgrounds()
         self.prefabs.load()
         self._reconcile_sfx_and_music()
         self._load_scenes_with_migration()
+        self._migrate_scene_backgrounds()
+
+    def _migrate_scene_backgrounds(self):
+        """Migration : ancien `scene.background_asset` (BackgroundAsset multi-layer)
+        -> `scene.background_layers`. Chaque layer référence l'image par son STEM ;
+        on s'assure qu'un BackgroundAsset (sidecar de compression) existe par image.
+        Idempotent (ne fait rien si background_layers déjà rempli). PNG intacts."""
+        for scene in self.scenes:
+            legacy = getattr(scene, "_legacy_bg_asset", "")
+            if scene.background_layers or not legacy:
+                continue
+            old = self.get_background(legacy)
+            for L in getattr(old, "_legacy_layers", []) if old else []:
+                stem = Path(L.image).stem if L.image else ""
+                if not stem:
+                    continue
+                ap = self.background_images_dir / L.image
+                if ap.exists() and self.get_background(stem) is None:
+                    self.sync_background_png(ap)   # sidecar de compression par image
+                scene.background_layers.append(BackgroundLayer(
+                    image=stem, bg_slot=L.bg_slot,
+                    scroll_speed=L.scroll_speed, pal_bank=L.pal_bank))
+            scene._legacy_bg_asset = ""
+            if scene.background_layers:
+                self.save_scene(scene)
+
+    def _reconcile_backgrounds(self):
+        """(1) PNG déposés hors éditeur dans assets/backgrounds/ → crée le
+        BackgroundAsset + sa compression (comme sync_background_png). (2) Fonds
+        existants sans tileset → compression calculée. NON-DESTRUCTIF (PNG jamais
+        modifié), idempotent."""
+        d = self.background_images_dir
+        for f in (sorted(d.glob("*")) if d.exists() else []):
+            if f.is_file() and f.suffix.lower() in (".png", ".bmp"):
+                self.sync_background_png(f)
+        for ba in list(self.backgrounds):
+            if ba.tileset:
+                continue
+            img = ba.image_name()
+            ap = self.background_images_dir / img if img else None
+            if ap and ap.exists():
+                self._compress_background_asset(ba, ap)
+                if ba.tileset:
+                    self.backgrounds.save(ba)
 
     def _migrate_sprite_palettes(self):
         """Normalisation NON-DESTRUCTIVE des sprites existants : tout SpriteAsset
