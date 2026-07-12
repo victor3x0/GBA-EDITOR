@@ -52,6 +52,19 @@ def bg_layer_sym(asset_name: str, bg_slot: int) -> str:
     return _sym(f"{asset_name}_bg{bg_slot}")
 
 
+def bg_layer_sym_for(scene, layer) -> str:
+    """Symbole d'un layer au build. Par défaut PARTAGÉ entre scènes
+    (`bg_layer_sym`, dédup ROM). Mais si le layer porte des overrides de palette
+    par tuile (`layer.tile_palettes`), la map devient PROPRE À LA SCÈNE (la
+    scène est la source de vérité) : symbole qualifié par le nom de scène. Les
+    tuiles restant identiques, seule la map (SE_PALBANK) diffère — mais on émet
+    tuiles+map ensemble par simplicité (surcoût ROM seulement pour un fond
+    partagé ET peint dans plusieurs scènes)."""
+    if getattr(layer, "tile_palettes", None):
+        return _sym(f"{scene.name}_{layer.image}_bg{layer.bg_slot}")
+    return bg_layer_sym(layer.image, layer.bg_slot)
+
+
 def bg_map_geometry(w: int, h: int) -> tuple[int, int, int]:
     """tw/th (dimensions en tuiles) + ms (bits map_size grit/BGxCNT, 0-3)
     depuis les dimensions pixel d'une image de layer BG. Partagé entre

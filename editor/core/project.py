@@ -311,6 +311,27 @@ class BackgroundLayer:
                                # Même mécanisme que Actor.pal_bank/Prefab.pal_bank,
                                # mais BG plutôt qu'OBJ ; chaque layer choisit sa
                                # propre banque, indépendamment des autres layers.
+    # Overrides de palette PAR TUILE 8×8 (champ SE_PALBANK du hardware GBA) :
+    # (col, row) -> slot (0-15) dans scene.active_bg_palettes. Absent = utilise
+    # pal_bank (banque de base du layer). Peint depuis le canvas du Scene Manager.
+    tile_palettes: dict = field(default_factory=dict)  # dict[tuple[int,int], int]
+    visible:      bool  = True   # visibilité VIEWPORT éditeur seule — le codegen
+                               # l'ignore (le layer est toujours compilé).
+
+
+def _decode_tile_palettes(raw) -> dict:
+    """Relit tile_palettes du JSON ({"col,row": slot}) en dict[(col,row), slot].
+    Tolère l'absence (None) et les clés mal formées (ignorées)."""
+    out: dict[tuple[int, int], int] = {}
+    if not raw:
+        return out
+    for key, slot in raw.items():
+        try:
+            c, r = key.split(",")
+            out[(int(c), int(r))] = int(slot)
+        except (ValueError, AttributeError):
+            continue
+    return out
 
 
 @dataclass
@@ -978,7 +999,11 @@ class Scene(Resource):
             "name": self.name,
             "background_layers": [
                 {"image": L.image, "bg_slot": L.bg_slot,
-                 "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank}
+                 "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
+                 **({"tile_palettes": {f"{c},{r}": s
+                                       for (c, r), s in L.tile_palettes.items()}}
+                    if L.tile_palettes else {}),
+                 **({} if L.visible else {"visible": False})}
                 for L in self.background_layers
             ],
             "actors": [a.to_dict() for a in self.actors],
@@ -1011,6 +1036,8 @@ class Scene(Resource):
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
                 pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
+                tile_palettes= _decode_tile_palettes(L.get("tile_palettes")),
+                visible      = L.get("visible", True),
             )
             for i, L in enumerate(d.get("background_layers", []))
         ]

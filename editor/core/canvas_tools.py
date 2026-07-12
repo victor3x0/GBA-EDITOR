@@ -412,6 +412,113 @@ class CollisionTool(BaseTool):
         return _steep_slope(sc, sr, ec, er, hi, lo)
 
 
+_BG_TILE = 8
+
+
+class BgPaintTool(BaseTool):
+    """Peinture par palette d'un layer BG (réassignation SE_PALBANK par tuile).
+
+    mode : "bg_paint" (pinceau 8×8) | "bg_rect" (sélection rectangulaire).
+    Clic gauche = peindre la banque active ; clic droit = effacer l'override.
+    L'état (layer actif, banque de peinture, raster) vit dans
+    `view.bg_paint_controller`.
+    """
+
+    _PREVIEW_FILL = QColor(120, 180, 255, 60)
+    _PREVIEW_BORDER = QColor(120, 180, 255, 220)
+
+    def __init__(self, view: GBAView, mode: str):
+        super().__init__(view)
+        self._mode = mode
+        self._erase = False
+        self._anchor: Optional[tuple[int, int]] = None  # (col,row) pour le rect
+        self._preview: QGraphicsRectItem | None = None
+
+    # ── Cycle de vie ─────────────────────────────────────────────
+    def activate(self):
+        self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self._view.setCursor(Qt.CursorShape.CrossCursor)
+        if self._mode == "bg_rect":
+            self._preview = QGraphicsRectItem(0, 0, 0, 0)
+            self._preview.setBrush(QBrush(self._PREVIEW_FILL))
+            self._preview.setPen(QPen(self._PREVIEW_BORDER, 0))
+            self._preview.setZValue(60)
+            self._preview.setVisible(False)
+            self._view.scene().addItem(self._preview)
+
+    def deactivate(self):
+        self._view.unsetCursor()
+        if self._preview and self._preview.scene():
+            self._preview.scene().removeItem(self._preview)
+        self._preview = None
+
+    # ── Helpers ──────────────────────────────────────────────────
+    def _ctrl(self):
+        return getattr(self._view, "bg_paint_controller", None)
+
+    @staticmethod
+    def _tile(pos: QPointF) -> tuple[int, int]:
+        return int(pos.x() // _BG_TILE), int(pos.y() // _BG_TILE)
+
+    # ── Événements ───────────────────────────────────────────────
+    def on_press(self, pos: QPointF, e) -> bool:
+        ctrl = self._ctrl()
+        if not ctrl or not ctrl.ready:
+            return True  # consommé (évite le rubber band) même si rien à peindre
+        self._erase = e.button() == Qt.MouseButton.RightButton
+        ctrl.begin_stroke()
+        col, row = self._tile(pos)
+        if self._mode == "bg_rect":
+            self._anchor = (col, row)
+            self._update_preview(col, row)
+        else:
+            ctrl.paint_tile(col, row, erase=self._erase)
+        return True
+
+    def on_move(self, pos: QPointF, e) -> bool:
+        ctrl = self._ctrl()
+        if not ctrl or not ctrl.ready:
+            return True
+        buttons = e.buttons()
+        pressing = buttons & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
+        col, row = self._tile(pos)
+        if self._mode == "bg_rect" and self._anchor is not None:
+            self._update_preview(col, row)
+        elif self._mode == "bg_paint" and pressing:
+            ctrl.paint_tile(col, row, erase=self._erase)
+        return True
+
+    def on_release(self, pos: QPointF, e) -> bool:
+        ctrl = self._ctrl()
+        if not ctrl or not ctrl.ready:
+            return True
+        if self._mode == "bg_rect" and self._anchor is not None:
+            ac, ar = self._anchor
+            ec, er = self._tile(pos)
+            for r in range(min(ar, er), max(ar, er) + 1):
+                for c in range(min(ac, ec), max(ac, ec) + 1):
+                    ctrl.paint_tile(c, r, erase=self._erase)
+            self._anchor = None
+            if self._preview:
+                self._preview.setVisible(False)
+        ctrl.end_stroke()
+        return True
+
+    def _update_preview(self, col: int, row: int):
+        if not self._preview or self._anchor is None:
+            return
+        ac, ar = self._anchor
+        x0, y0 = min(ac, col) * _BG_TILE, min(ar, row) * _BG_TILE
+        w = (abs(col - ac) + 1) * _BG_TILE
+        h = (abs(row - ar) + 1) * _BG_TILE
+        self._preview.setRect(x0, y0, w, h)
+        self._preview.setVisible(True)
+
+    def on_leave(self):
+        if self._preview and self._anchor is None:
+            self._preview.setVisible(False)
+
+
 def _gentle_slope_rows(
     sc: int,
     sr: int,

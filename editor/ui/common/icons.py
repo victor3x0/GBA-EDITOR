@@ -41,6 +41,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "tool_collision_slope":      ("mdi.trending-up",             "◥"),
     "tool_collision_slope_inv":  ("mdi.trending-down",           "◣"),
     "tool_palette":          ("mdi.palette-outline",         "◐"),
+    "tool_bg_paint":         ("mdi.brush",                   "🖌"),
+    "tool_bg_rect":          ("mdi.select-drag",             "▭"),
+    "eye":                   ("mdi.eye-outline",             "◉"),
+    "eye_off":               ("mdi.eye-off-outline",         "◎"),
     # Project panel — types d'objets
     "actor":                 ("mdi.account",                 "●"),
     "actor_empty":           ("mdi.account-outline",         "○"),

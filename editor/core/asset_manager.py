@@ -199,6 +199,8 @@ class BgLayerRow(QFrame):
     layer_removed    = pyqtSignal(int)
     pal_bank_changed   = pyqtSignal(int, str)  # slot_index, nom de la PaletteBank
     layer_swap_requested = pyqtSignal(int, int)  # (bg_slot source, bg_slot cible)
+    visibility_toggled   = pyqtSignal(int, bool)  # (bg_slot, visible)
+    paint_target_selected = pyqtSignal(int)       # bg_slot du layer peint
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -306,6 +308,37 @@ class BgLayerRow(QFrame):
         row.addWidget(self._pal_btn)
 
         row.addStretch()
+
+        # Sélecteur du layer peint par l'outil de peinture par palette (pinceau).
+        from ui.common.icons import get as _ico
+        self._paint_target_btn = QToolButton()
+        self._paint_target_btn.setCheckable(True)
+        self._paint_target_btn.setFixedSize(22, 22)
+        self._paint_target_btn.setIconSize(QSize(16, 16))
+        self._paint_target_btn.setIcon(_ico("tool_bg_paint", C.TEXT_DIM, self._color))
+        self._paint_target_btn.setToolTip("Peindre ce layer (outil palette)")
+        self._paint_target_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+            f"QToolButton:checked{{background:#253525;border:1px solid {self._color};"
+            "border-radius:3px;}"
+        )
+        self._paint_target_btn.clicked.connect(
+            lambda: self.paint_target_selected.emit(self.slot_index)
+        )
+        row.addWidget(self._paint_target_btn)
+
+        # Œil de visibilité (viewport éditeur).
+        self._eye_btn = QToolButton()
+        self._eye_btn.setFixedSize(22, 22)
+        self._eye_btn.setIconSize(QSize(16, 16))
+        self._visible = True
+        self._eye_btn.setIcon(_ico("eye", C.TEXT_DIM, self._color))
+        self._eye_btn.setToolTip("Masquer/afficher ce layer dans le canvas")
+        self._eye_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+        )
+        self._eye_btn.clicked.connect(self._toggle_visibility)
+        row.addWidget(self._eye_btn)
 
         btn_remove = W.btn_danger("×")
         btn_remove.setFixedSize(22, 22)
@@ -424,6 +457,24 @@ class BgLayerRow(QFrame):
 
     def set_speed_visible(self, visible: bool):
         self._speed.setVisible(visible)
+
+    # ── Visibilité viewport + cible de peinture ───────────────────
+
+    def _toggle_visibility(self):
+        self.set_visible_state(not self._visible)
+        self.visibility_toggled.emit(self.slot_index, self._visible)
+
+    def set_visible_state(self, visible: bool):
+        """Reflète l'état de visibilité (icône œil ouvert/barré)."""
+        from ui.common.icons import get as _ico
+        self._visible = visible
+        key = "eye" if visible else "eye_off"
+        color = C.TEXT_DIM if visible else "#555"
+        self._eye_btn.setIcon(_ico(key, color, self._color))
+
+    def set_paint_target(self, active: bool):
+        """Marque ce layer comme cible active de l'outil de peinture."""
+        self._paint_target_btn.setChecked(active)
 
     def _clear(self):
         self.clear_asset()

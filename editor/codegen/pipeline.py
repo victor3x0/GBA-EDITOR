@@ -26,7 +26,8 @@ from core.toolchain import Toolchain
 from codegen.asset_pipeline import (
     GritBackground, GritSprites, MmutilAudio,
     resolve_sound_assets, count_frames, png_size,
-    bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
+    bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
+    resolve_palette_bank,
 )
 from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
 from codegen.build_utils import sym as _sym_fn
@@ -172,11 +173,17 @@ class BuildWorker(EventEmitter, threading.Thread):
                         continue
                     ba = p.get_background(layer.image)
                     if ba and ba.tileset:
-                        key = (ba.name, layer.bg_slot)
+                        has_ov = bool(getattr(layer, "tile_palettes", None))
+                        sym = bg_layer_sym_for(scene, layer)
+                        # Map PROPRE À LA SCÈNE si overrides (scène = source de
+                        # vérité), sinon partagée entre scènes (dédup ROM).
+                        key = (scene.name, sym) if has_ov else (ba.name, layer.bg_slot)
                         if key not in seen_compressed:
                             seen_compressed.add(key)
                             pal_offset = bg_layout.bg_block_offset(ba) or 0
-                            self._emit_compressed_bg(p, ba, layer.bg_slot, pal_offset)
+                            final_map = self._bg_final_tilemap(
+                                p, scene, ba, layer, pal_offset)
+                            self._emit_compressed_bg(p, ba, sym, final_map)
                         continue
                     key = (layer.image, layer.bg_slot)
                     if key in seen_bg_layers:
@@ -332,23 +339,45 @@ class BuildWorker(EventEmitter, threading.Thread):
             self.toolchain.resolve_grit(), self._emit, self._run_cmd
         ).run(p, layers)
 
-    def _emit_compressed_bg(self, p, ba, bg_slot, pal_offset=0):
+    def _bg_final_tilemap(self, p, scene, ba, layer, pal_offset: int) -> list:
+        """SE finale par cellule du layer (pal_offset DÉJÀ appliqué) :
+        - tuile PEINTE (`layer.tile_palettes`) -> SE_PALBANK = banque HW de la
+          banque de scène choisie (slot dans active_bg_palettes == index HW, cf.
+          scene_bank_layout qui place chaque banque active à son slot). La scène
+          est la source de vérité : l'asset (`ba.tilemap`) reste intact.
+        - tuile normale -> pal_bank local + pal_offset (bloc de l'asset)."""
+        from core.bg_compress import unpack_se, pack_se
+        tp = getattr(layer, "tile_palettes", None) or {}
+        tw = ba.tiles_w or 1
+        out = []
+        for cell, se in enumerate(ba.tilemap):
+            tid, pb, fh, fv = unpack_se(se)
+            col, row = cell % tw, cell // tw
+            slot = tp.get((col, row))
+            # Override valide seulement si la banque de scène résout des couleurs
+            # (sinon rien à afficher — on garde la palette d'origine).
+            if slot is not None and 0 <= slot < 16:
+                bank = resolve_palette_bank(p, scene.active_bg_palettes, slot)
+                if bank and bank.colors:
+                    out.append(pack_se(tid, slot, fh, fv))
+                    continue
+            out.append(pack_se(tid, pb + pal_offset, fh, fv))
+        return out
+
+    def _emit_compressed_bg(self, p, ba, sym, final_tilemap):
         """Émet un fond COMPRESSÉ (métadonnées) en C compatible grit — pas de
-        grit. `bg_slot` = slot du layer qui l'utilise. `pal_offset` = banque
-        physique de la 1ère sous-palette (allouée par scene_bank_layout, cf.
-        palette_alloc._find_free_block) — plusieurs layers compressés d'une
-        même scène occupent des blocs de banques BG distincts. cf.
+        grit. `sym` = symbole du layer (partagé, ou propre à la scène si peint,
+        cf. bg_layer_sym_for). `final_tilemap` = SE avec pal_offset + overrides
+        déjà appliqués (cf. _bg_final_tilemap) — donc pal_offset=0 ici. cf.
         codegen/bg_emit."""
         from codegen.bg_emit import emit_bg_c
-        sym = bg_layer_sym(ba.name, bg_slot)
-        c, h = emit_bg_c(sym, ba.tileset, ba.tilemap, pal_offset)
+        c, h = emit_bg_c(sym, ba.tileset, final_tilemap, pal_offset=0)
         p.grit_out_dir.mkdir(parents=True, exist_ok=True)
         (p.grit_out_dir / f"{sym}.c").write_text(c)
         (p.grit_out_dir / f"{sym}.h").write_text(h)
         self._emit("log_line",
                    f"[bg] {ba.name} compressé -> {sym} "
-                   f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes, "
-                   f"banque {pal_offset})")
+                   f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes)")
 
     def _check_bg_tile_budget(self, p, layers) -> bool:
         """Garde-fou VRAM : chaque layer a son propre CBB (16 Ko / 512 tuiles

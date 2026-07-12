@@ -260,6 +260,26 @@ class CollisionPaintCmd(Command):
             self._persist()
 
 
+class BgPaintCmd(Command):
+    """Stroke de peinture par palette d'un layer BG (SE_PALBANK par tuile).
+    delta : {(col, row): (old_slot|None, new_slot|None)}.
+    Les tuiles sont déjà appliquées au moment du push — execute() n'est appelé
+    que lors d'un redo. Délègue au BgPaintController pour rebâtir le pixmap."""
+
+    def __init__(self, controller, layer, bg_slot: int, delta: dict, persist_fn=None):
+        self._ctrl = controller
+        self._layer = layer
+        self._bg_slot = bg_slot
+        self._delta = delta
+        self.label = "Peinture palette BG"
+
+    def execute(self):
+        self._ctrl.apply_layer_delta(self._layer, self._bg_slot, self._delta, True)
+
+    def undo(self):
+        self._ctrl.apply_layer_delta(self._layer, self._bg_slot, self._delta, False)
+
+
 class AddComponentCmd(Command):
     def __init__(self, actor: "Actor", comp: Any, persist_fn=None):
         self._actor = actor

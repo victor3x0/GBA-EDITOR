@@ -155,6 +155,7 @@ class SceneInspector(QWidget):
 
         # Rows dynamiques des BackgroundLayers (portés par la scène)
         self._bg_layer_rows: list[BgLayerRow] = []
+        self._paint_target_slot: Optional[int] = None  # layer BG peint actif
         self._bg_layers_container = QVBoxLayout()
         self._bg_layers_container.setContentsMargins(0, 2, 0, 0)
         self._bg_layers_container.setSpacing(3)
@@ -313,6 +314,10 @@ class SceneInspector(QWidget):
             row.layer_removed.connect(lambda _, l=layer: self._on_layer_remove(l))
             row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
             row.layer_swap_requested.connect(self._on_layer_swap)
+            row.visibility_toggled.connect(self._on_layer_visibility)
+            row.paint_target_selected.connect(self._on_paint_target)
+            row.set_visible_state(getattr(layer, "visible", True))
+            row.set_paint_target(layer.bg_slot == self._paint_target_slot)
             self._bg_layers_container.addWidget(row)
             self._bg_layer_rows.append(row)
 
@@ -368,6 +373,27 @@ class SceneInspector(QWidget):
         self._rebuild_layer_rows()
         get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
         self.changed.emit()
+
+    def _on_layer_visibility(self, bg_slot: int, visible: bool):
+        """Œil de visibilité viewport d'un layer — persiste layer.visible et
+        met à jour le canvas (le codegen ignore ce champ)."""
+        if not self._scene:
+            return
+        layer = next((l for l in self._scene.background_layers
+                      if l.bg_slot == bg_slot), None)
+        if layer is None or layer.visible == visible:
+            return
+        layer.visible = visible
+        self._persist_scene()
+        get_dispatcher()._emit("bg_layer_visibility", bg_slot, visible)
+
+    def _on_paint_target(self, bg_slot: int):
+        """Sélectionne le layer peint par l'outil de peinture par palette.
+        Radio-like : une seule cible active, les autres lignes se décochent."""
+        self._paint_target_slot = bg_slot
+        for row in self._bg_layer_rows:
+            row.set_paint_target(row.slot_index == bg_slot)
+        get_dispatcher()._emit("bg_paint_layer_changed", bg_slot)
 
     def _on_layer_swap(self, src_slot: int, dst_slot: int):
         """Glisser-déposer d'un BgLayerRow sur un autre : échange leurs

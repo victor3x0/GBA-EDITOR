@@ -352,6 +352,8 @@ class MainWindow(QMainWindow):
         _d.on("actors_list_changed",   self.assets_finder_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
+        _d.on("bg_paint_layer_changed", self.scene_editor.set_paint_layer)
+        _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 3000))
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
         # lambda : _palette_editor est construit plus loin dans _setup_ui que

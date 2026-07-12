@@ -19,7 +19,7 @@ from core.project import (
 from codegen.palette_alloc import scene_bank_layout, own_palette
 from codegen.asset_pipeline import (
     count_frames, sprite_unique_frames, _seq_key,
-    bg_layer_sym, bg_map_geometry, bg_map_sbb_count,
+    bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
 )
 from codegen.build_utils import sym as _sym
 
@@ -82,6 +82,9 @@ def _bg_info(p: Project, scene) -> list[dict]:
             # Fond COMPRESSÉ (métadonnées) — 16 palettes via g_pal_bg, tuiles/map
             # depuis le C émis par pipeline._emit_compressed_bg. Un axe >64 tuiles
             # dépasse la fenêtre hardware -> streaming (map résidente 64 sur cet axe).
+            # Symbole PROPRE À LA SCÈNE si le layer est peint (map d'overrides,
+            # cf. bg_layer_sym_for / pipeline._emit_compressed_bg).
+            sym = bg_layer_sym_for(scene, layer)
             tw, th = ba.tiles_w, ba.tiles_h
             stream_h = tw > 64
             stream_v = th > 64
