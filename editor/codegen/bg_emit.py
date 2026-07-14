@@ -36,15 +36,6 @@ def tileset_words(tileset: list, bpp: int = 4) -> list[int]:
     return out
 
 
-def bg_palette_words(palettes: list) -> list[int]:
-    """≤16 palettes -> 256 mots BGR555 (16 banques × 16), pour PAL_BG_RAM / g_pal_bg."""
-    words = [0] * 256
-    for b, pal in enumerate(palettes[:16]):
-        for i, c in enumerate(pal[:16]):
-            words[b * 16 + i] = c
-    return words
-
-
 def emit_bg_c(sym: str, tileset: list, tilemap: list, pal_offset: int = 0,
               bpp: int = 4) -> tuple[str, str]:
     """Retourne (source .c, header .h) compatibles grit pour un fond compressé.

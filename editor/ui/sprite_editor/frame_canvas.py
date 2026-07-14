@@ -4,11 +4,11 @@ peint tuile par tuile (édition de la frame courante d'une AnimState/StateDirect
 """
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButton,
-    QFrame, QSizePolicy, QScrollArea, QMenu, QApplication,
+    QFrame, QScrollArea, QMenu, QApplication,
 )
 from PyQt6.QtGui import (
     QFont, QColor, QPixmap, QImage, QDrag, QPainter, QPen,

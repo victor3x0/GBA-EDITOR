@@ -30,7 +30,7 @@ from contextlib import contextmanager
 import copy
 
 from core.events import EventEmitter
-from core.project import Actor, Scene, Prefab, BackgroundAsset, BackgroundLayer
+from core.project import Actor, Scene, Prefab
 from core.history import get_history, AddActorCmd, RemoveActorCmd
 from core.selection_bus import get_bus
 

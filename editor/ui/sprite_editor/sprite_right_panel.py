@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QComboBox, QScrollArea
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T
 from ui.common.widgets import W

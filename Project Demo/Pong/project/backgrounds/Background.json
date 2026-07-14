@@ -1,19 +1,5 @@
 {
   "name": "Background",
-  "layers": [
-    {
-      "image": "",
-      "bg_slot": 0,
-      "scroll_speed": 4.5,
-      "pal_bank": -1
-    },
-    {
-      "image": "",
-      "bg_slot": 1,
-      "scroll_speed": 1.25,
-      "pal_bank": 0
-    }
-  ],
   "source": "Background.png",
   "palettes": [
     [
@@ -638,5 +624,10 @@
   ],
   "tiles_w": 30,
   "tiles_h": 20,
-  "compress_method": "median_cut"
+  "compress_method": "median_cut",
+  "diagnostics": {
+    "src_indexed": true,
+    "src_colors": 2,
+    "src_capped": false
+  }
 }

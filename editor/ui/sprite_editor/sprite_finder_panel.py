@@ -1,6 +1,5 @@
 """ui/sprite_editor/sprite_finder_panel.py — panneau gauche : liste des sprites + arbre d'animations."""
 from __future__ import annotations
-from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (

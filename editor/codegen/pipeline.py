@@ -11,7 +11,6 @@ Flux :
   → mgba
 """
 
-import math
 import os
 import re
 import shutil
@@ -25,7 +24,7 @@ from core.events import EventEmitter
 from core.toolchain import Toolchain
 from codegen.asset_pipeline import (
     GritBackground, GritSprites, MmutilAudio,
-    resolve_sound_assets, count_frames, png_size,
+    resolve_sound_assets, png_size,
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
     resolve_palette_bank,
 )
@@ -34,17 +33,13 @@ from codegen.build_utils import sym as _sym_fn
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
-from core.project import (Project, Scene, BackgroundLayer, Actor, SpriteAsset,
-                     SpriteComponent, CollisionBoxComponent, ScriptComponent,
-                     OWN_PAL_BANK)
+from core.project import (Project, Actor, SpriteAsset,
+                     SpriteComponent, OWN_PAL_BANK)
 from core.validator import validate_project
 
-# Scripting pipeline (Lua → C)
+# Pipeline scripting (Lua → C) : importée localement dans les méthodes, d'où
+# l'ajout du dossier au sys.path ici pour que `from scripting.…` se résolve.
 sys.path.insert(0, str(Path(__file__).parent))
-from scripting.parser  import parse as lua_parse, LuaParseError
-from scripting.checker import check as lua_check, BuildContext
-from scripting.codegen import generate as lua_generate, CodegenContext
-from scripting.globals import write_globals
 
 # En mode figé (PyInstaller), "editor" n'est plus un dossier parent réel du
 # module (il devient la racine de sys.path) : remonter 3 parents depuis
@@ -312,13 +307,6 @@ class BuildWorker(EventEmitter, threading.Thread):
     @staticmethod
     def _sym(s: str) -> str:
         return _sym_fn(s)
-
-    @staticmethod
-    def _png_size(path: Path) -> tuple[int, int]:
-        return png_size(path)
-
-    def _count_frames(self, p: Project, sprite: SpriteAsset) -> int:
-        return count_frames(p, sprite)
 
     def _run_cmd(self, cmd, prefix, cwd=None, env=None) -> bool:
         self._emit("log_line",f"{prefix} {' '.join(str(c) for c in cmd)}")

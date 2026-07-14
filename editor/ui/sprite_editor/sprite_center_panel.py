@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QTimer
 
-from ui.common.theme import C, T
+from ui.common.theme import C
 from core.project import Project, SpriteAsset, AnimState, StateDirection
 from core.command_dispatcher import get_dispatcher
 from .frame_canvas import _FrameCanvasPanel, _FrameTimeline, _make_frame_pixmap

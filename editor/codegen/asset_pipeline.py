@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Callable
 
-from core.project import Project, BackgroundLayer, Actor, SpriteAsset
+from core.project import Project, BackgroundLayer, SpriteAsset
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -130,8 +130,8 @@ class GritBackground:
             quantize = bool(colors)
             sym = bg_layer_sym(asset.name, layer.bg_slot)
             tmp = p.grit_out_dir / f"{sym}.png"
-            # Plus de match_mode : quantification nearest fixe vers la banque du
-            # layer (le BG n'a pas encore de compression own_palette propre).
+            # Quantification nearest vers la banque du layer (le BG n'a pas
+            # encore de compression own_palette propre).
             mode = "nearest"
             if quantize:
                 try:
@@ -454,7 +454,7 @@ class GritSprites:
                 self._emit("error_line", f"[grit Actor] asset manquant : {sprite.asset}")
                 return False
 
-            # Résolution INDEXÉE universelle (plus de match_mode) : le sprite est
+            # Résolution INDEXÉE universelle : le sprite est
             # rendu via SA own_palette (compression décidée dans son .json), puis
             # ses index se calent sur la banque finale `colors` (OWN -> own_palette ;
             # référencé -> banque). Fallback sur own_palette si banque non résolue.

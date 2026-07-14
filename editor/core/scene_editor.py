@@ -48,7 +48,7 @@ from core.project import (
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T
 from core.sprite_compose import compose_frame_image
-from codegen.asset_pipeline import quantize_asset, resolve_palette_bank, resolve_obj_palette_bank
+from codegen.asset_pipeline import resolve_palette_bank, resolve_obj_palette_bank
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -68,7 +68,6 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
-    QGraphicsTextItem,
     QGraphicsView,
     QHBoxLayout,
     QLabel,
@@ -105,13 +104,6 @@ def _make_placeholder_pixmap() -> QPixmap:
     p.drawPixmap(2, 2, icon_px)
     p.end()
     return px
-
-
-def _pil_rgba_to_pixmap(img) -> QPixmap:
-    """PIL RGBA → QPixmap (fromImage copie les pixels : `data` peut être libéré)."""
-    data = bytes(img.tobytes("raw", "RGBA"))
-    qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
-    return QPixmap.fromImage(qi)
 
 
 def _pal_to_rgb16(colors_bgr555: list) -> list:
@@ -303,7 +295,7 @@ def _quantize_preview(img, sprite, bank):
     l'image composée est rendue via la own_palette du sprite (compression
     stockée), puis ses index sont recolorés par la banque référencée
     (index i -> banque[i]) ou laissés en couleurs propres (OWN). WYSIWYG avec
-    le build réel. Plus de match_mode."""
+    le build réel."""
     from core.color_utils import render_indexed, recolor_indexed
     own_pal = list(getattr(sprite, "own_palette", []) or [])
     if not own_pal:
@@ -488,7 +480,6 @@ class SpriteItem(QGraphicsPixmapItem):
             r = self.boundingRect().adjusted(0, 0, -1, -1)
             painter.drawRect(r)
             # Petits coins pour renforcer la visibilité
-            cs = 4
             painter.setPen(QPen(QColor("#4caf78"), 2))
             for cx, cy in [
                 (r.left(), r.top()),

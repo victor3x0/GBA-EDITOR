@@ -12,11 +12,9 @@ from pathlib import Path
 from typing import Optional
 
 from core.project import (
-    Project, Scene, BackgroundLayer,
-    Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, AnimState,
-    OWN_PAL_BANK,
+    Project, Scene, Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, OWN_PAL_BANK,
 )
-from codegen.palette_alloc import scene_bank_layout, own_palette
+from codegen.palette_alloc import scene_bank_layout
 from codegen.asset_pipeline import (
     count_frames, sprite_unique_frames, _seq_key,
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
@@ -26,26 +24,6 @@ from codegen.build_utils import sym as _sym
 
 RUNTIME_DIR = Path(__file__).resolve().parents[3] / "runtime"
 
-_EV_SIGS = {
-    "on_start":           "void {s}_on_start(Actor* self);",
-    "on_update":          "void {s}_on_update(Actor* self);",
-    "on_late_update":     "void {s}_on_late_update(Actor* self);",
-    "on_collide":         "void {s}_on_collide(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_collision_enter": "void {s}_on_collision_enter(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_collision_exit":  "void {s}_on_collision_exit(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_button_a":        "void {s}_on_button_a(Actor* self);",
-    "on_button_b":        "void {s}_on_button_b(Actor* self);",
-    "on_button_l":        "void {s}_on_button_l(Actor* self);",
-    "on_button_r":        "void {s}_on_button_r(Actor* self);",
-    "on_button_start":    "void {s}_on_button_start(Actor* self);",
-    "on_button_select":   "void {s}_on_button_select(Actor* self);",
-    "on_button_up":       "void {s}_on_button_up(Actor* self);",
-    "on_button_down":     "void {s}_on_button_down(Actor* self);",
-    "on_button_left":     "void {s}_on_button_left(Actor* self);",
-    "on_button_right":    "void {s}_on_button_right(Actor* self);",
-    "on_tile_collide":    "void {s}_on_tile_collide(Actor* self, int normal_x, int normal_y);",
-    "on_receive":         "void {s}_on_receive(Actor* self, int event_id, int value);",
-}
 
 _BTN_MAP = [
     ("BTN_A",      "on_button_a"),
@@ -136,128 +114,6 @@ def _pool_info(prefabs, pool_start: int) -> list[dict]:
 
 
 # ─── sections du main.c ───────────────────────────────────────────────────────
-
-def _section_includes(
-    scene: Scene,
-    bg_info: list[dict],
-    scene_actors: list,
-    prefab_sprites: list,
-    has_sound: bool,
-    soundbank_h: Path,
-) -> list[str]:
-    L = [
-        f"/* main.c - scene: {scene.name} - genere par GBA Editor */",
-        "#define GBA_ENGINE_IMPL",
-        "#include <gba_interrupt.h>",
-        "#include <gba_systemcalls.h>",
-        "#include <gba_input.h>",
-        '#include "gba_engine.h"',
-    ]
-    if has_sound and soundbank_h.exists():
-        L += ["#include <maxmod.h>", '#include "soundbank.h"']
-    L += ['#include "actor_api.h"', '#include "globals.h"', '#include "constants.h"']
-    if bg_info:
-        L.append('#include "tileset.h"')
-    done: set[str] = set()
-    for _, sprite in (scene_actors + prefab_sprites):
-        if sprite and sprite.asset and sprite.name not in done:
-            L.append(f'#include "sprite_{_sym(sprite.name)}.h"')
-            done.add(sprite.name)
-    return L
-
-
-def _section_externs(
-    scene: Scene,
-    lua_actors: list,
-) -> list[str]:
-    L: list[str] = []
-    if getattr(scene, "script", ""):
-        L += [
-            "", "/* Script de scène */",
-            "void scene_on_start(void);",
-            "void scene_on_update(void);",
-            "void scene_on_late_update(void);",
-        ]
-    if lua_actors:
-        L += ["", "/* Handlers générés depuis les scripts Lua */"]
-        for _, actor, _ in lua_actors:
-            s = _sym(actor.name)
-            L.append(f"/* {actor.name} */")
-            for sig in _EV_SIGS.values():
-                L.append(sig.format(s=s))
-    return L
-
-
-def _section_cmap(scene: Scene) -> list[str]:
-    cmap = scene.collision_map
-    if not cmap:
-        scene.ensure_collision_map()
-        cmap = scene.collision_map
-    rows, cols = len(cmap), len(cmap[0]) if cmap else 1
-    L = [
-        f"#define CMAP_W {cols}", f"#define CMAP_H {rows}",
-        "#define TILE_SIZE 8",
-        f"static const u8 g_cmap[{rows}][{cols}]={{",
-    ]
-    for row in cmap:
-        L.append("    {" + ",".join(str(v) for v in row) + "},")
-    L += [
-        "};",
-        "int tile_solid_at(int px,int py){",
-        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
-        "    if(tx<0||ty<0||tx>=CMAP_W||ty>=CMAP_H) return 1;",
-        "    return g_cmap[ty][tx]!=0;",
-        "}",
-        "int tile_get(int px,int py){",
-        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
-        "    if(tx<0||ty<0||tx>=CMAP_W||ty>=CMAP_H) return 0;",
-        "    return (int)g_cmap[ty][tx];",
-        "}",
-        # resolve_actor_tiles — résolution Y→X
-        "typedef void (*TileCollideCb)(Actor*,int,int);",
-        "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
-        "    for(int i=0;i<a->box_count;i++){",
-        "        CollisionBox*b=&a->boxes[i];",
-        "        if(!b->solid) continue;",
-        "        if(a->vy!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vy>0){",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,bot);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->y=(bot/TILE_SIZE)*TILE_SIZE-(int)b->y-(int)b->h;",
-        "                    if(cb)cb(a,0,1);else a->vy=0;}",
-        "            }else{",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,top);",
-        "                if(!hit) hit=tile_solid_at(right,top);",
-        "                if(hit){a->y=(top/TILE_SIZE+1)*TILE_SIZE-(int)b->y;",
-        "                    if(cb)cb(a,0,-1);else a->vy=0;}",
-        "            }",
-        "        }",
-        "        if(a->vx!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vx>0){",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(right,px);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->x=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
-        "                    if(cb)cb(a,1,0);else a->vx=0;}",
-        "            }else{",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(left,px);",
-        "                if(!hit) hit=tile_solid_at(left,bot);",
-        "                if(hit){a->x=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
-        "                    if(cb)cb(a,-1,0);else a->vx=0;}",
-        "            }",
-        "        }",
-        "    }",
-        "}",
-        "",
-    ]
-    return L
 
 
 def _section_spawn(pool_info: list[dict], p: Project, obj_layout,

@@ -7,10 +7,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QLabel, QPushButton, QFrame,
-    QSizePolicy, QStatusBar, QDialog,
+    QStatusBar, QDialog,
     QInputDialog, QMessageBox,
-    QToolButton, QStackedWidget, QButtonGroup,
-    QToolBar,
+    QToolButton, QStackedWidget, QToolBar,
 )
 from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
@@ -25,9 +24,7 @@ from core.history import get_history
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.project import (
-    Project, Scene, Actor, Prefab,
-    MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
-    SFX_FILE_EXTS, MUSIC_FILE_EXTS,
+    Project, Scene, SFX_FILE_EXTS, MUSIC_FILE_EXTS,
 )
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -338,7 +335,6 @@ class MainWindow(QMainWindow):
         # ── Colonne 3 : Inspector (pleine hauteur) ────────────────
         self._inspector = DynamicInspector()
         self._inspector.actor_changed.connect(self._on_inspector_actor_changed)
-        self._inspector.slot_assigned.connect(self._on_slot_assigned)
         self._inspector.set_script_open_fn(self.open_script)
         self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)
@@ -647,13 +643,6 @@ class MainWindow(QMainWindow):
         if ok and name.strip():
             get_dispatcher().add_prefab(name.strip())
             self.assets_finder_panel.refresh()
-
-    # ── Slot assigned (obsolète — géré par le dropdown BackgroundAsset) ──
-
-    def _on_slot_assigned(self, slot_index: int, path_str: str):
-        pass
-
-    # ── Autres slots ──────────────────────────────────────────────
 
     def _on_scene_changed(self):
         """Fin de drag actor ou déplacement caméra — sauvegarder via le dispatcher."""

@@ -20,13 +20,13 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (
     QPainter, QImage, QColor, QConicalGradient, QPainterPath, QPen, QBrush,
 )
-from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal
+from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 
 from core.color_utils import bgr555_to_rgb888, rgb888_to_bgr555
 
-_SIDE = 210
+_SIDE = 172
 _MARGIN = 6
-_RING_T = 18                       # épaisseur de l'anneau de teinte
+_RING_T = 15                       # épaisseur de l'anneau de teinte
 
 
 class ColorTriangleWheel(QWidget):

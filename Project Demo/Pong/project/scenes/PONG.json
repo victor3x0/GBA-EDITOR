@@ -2,8 +2,14 @@
   "name": "PONG",
   "background_layers": [
     {
-      "image": "BCK_TEST_02",
+      "image": "",
       "bg_slot": 0,
+      "scroll_speed": 1.0,
+      "pal_bank": -1
+    },
+    {
+      "image": "Background",
+      "bg_slot": 1,
       "scroll_speed": 1.0,
       "pal_bank": -1
     }
@@ -48,13 +54,15 @@
           "exports_values": {}
         }
       ],
-      "x": 36,
-      "y": 137,
+      "x": 22,
+      "y": 67,
       "flip_h": false,
       "flip_v": false,
-      "priority": 3,
-      "pal_bank": 1,
-      "visible": true
+      "priority": 0,
+      "pal_bank": -1,
+      "visible": true,
+      "dir_x": 0,
+      "dir_y": 0
     },
     {
       "name": "PADDLE_AUTO",
@@ -96,21 +104,24 @@
         }
       ],
       "x": 208,
-      "y": 131,
+      "y": 65,
       "flip_h": false,
       "flip_v": false,
-      "priority": 1,
-      "pal_bank": 1,
-      "visible": true
+      "priority": 0,
+      "pal_bank": -1,
+      "visible": true,
+      "dir_x": 0,
+      "dir_y": 0
     }
   ],
   "cam_x": 0,
   "cam_y": 0,
-  "cam_follow": "PADDLE_AUTO",
+  "cam_follow": "",
+  "render_mode": 0,
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
-  "text_bg": 1,
+  "text_bg": 0,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -755,9 +766,6 @@
     ]
   ],
   "active_obj_palettes": [
-    "pal_Ball",
-    "pal_Paddle",
-    "Blood Moon",
     "",
     "",
     "",

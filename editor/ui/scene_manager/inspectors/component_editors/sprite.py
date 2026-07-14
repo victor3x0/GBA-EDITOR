@@ -1,13 +1,11 @@
 """Éditeur du SpriteComponent."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QPushButton
-from PyQt6.QtCore import Qt
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot, ScriptPickerPopup
 from ui.common.pickers import sprite_picker_slot, palette_picker_slot
-from ui.common.theme import C, T
+from ui.common.theme import C
 from ui.common.icons import COLOR_SPRITE
 from core.command_dispatcher import get_dispatcher
 

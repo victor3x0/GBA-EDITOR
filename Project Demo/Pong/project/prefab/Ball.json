@@ -35,6 +35,6 @@
       "exports_values": {}
     }
   ],
-  "pal_bank": 1,
+  "pal_bank": 0,
   "max_instances": 1
 }

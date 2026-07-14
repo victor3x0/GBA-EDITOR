@@ -17,7 +17,6 @@ from core.history import get_history, SetFieldCmd, AddComponentCmd, RemoveCompon
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
 
 COMPONENT_LABELS = {
     "sprite":        "Sprite",

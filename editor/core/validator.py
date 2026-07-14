@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from core.project import Project, Actor
+    from core.project import Project
 
 _VALIDATORS: list[Callable] = []
 
@@ -105,8 +105,7 @@ def _check_scene(ctx: ValidationContext):
 
 
 def _check_actors(ctx: ValidationContext):
-    from core.project import (SpriteComponent, CollisionBoxComponent,
-                         ScriptComponent, component_type_name)
+    from core.project import (component_type_name)
 
     for actor in ctx.actors:
         for comp in actor.components:

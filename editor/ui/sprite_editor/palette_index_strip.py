@@ -6,7 +6,6 @@ sprite (le PNG source n'est jamais touché). Drag & drop maison (fantôme + trai
 vert), fiable en zone scrollable contrairement au drag interne de QListWidget.
 """
 from __future__ import annotations
-from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
