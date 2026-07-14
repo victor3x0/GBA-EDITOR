@@ -205,8 +205,11 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "backgrounds")
         with self._watcher.suspended():
-            self._project.sync_background_png(dst)
-        self._emit("status_message", f"Background importé : {dst.stem}")
+            warning = self._project.sync_background_png(dst)
+        msg = f"Background importé : {dst.stem}"
+        if warning:
+            msg += f" — {warning}"
+        self._emit("status_message", msg)
         self._emit("bg_slot_changed", 0)
 
     # ── Prefab avec propagation ───────────────────────────────────

@@ -236,25 +236,29 @@ class PaletteBank(Resource):
     occupe les banques hardware (physiquement séparées OBJ/BG) au build."""
     name: str = ""
     colors: list[int] = field(default_factory=list)  # valeurs BGR555 GBA
+    size: int = 16   # capacité de la palette : 16 (4bpp / une banque) ou 256 (8bpp).
+                     # Persisté dans le .json ; absent d'un ancien fichier -> 16.
 
     def __post_init__(self):
-        """Force l'index 0 vers RESERVED_SLOT_COLOR — point d'application
-        unique, déclenché à la fois par une construction directe (presets,
-        "Ajouter palette" côté UI) et par le chargement depuis disque
-        (Resource.from_dict construit via cls(**kwargs)). Pas besoin de pas
-        de migration séparé : les anciens fichiers JSON gardent leur ancienne
-        valeur d'index 0 tant qu'ils ne sont pas re-sauvegardés, mais cette
-        valeur est de toute façon écrasée à chaque chargement — sans
+        """Normalise `size` (16 ou 256) et force l'index 0 vers
+        RESERVED_SLOT_COLOR — point d'application unique, déclenché à la fois par
+        une construction directe (presets, "Ajouter palette" côté UI) et par le
+        chargement depuis disque (Resource.from_dict construit via cls(**kwargs)).
+        Pas besoin de pas de migration séparé : les anciens fichiers JSON gardent
+        leur ancienne valeur d'index 0 tant qu'ils ne sont pas re-sauvegardés,
+        mais cette valeur est de toute façon écrasée à chaque chargement — sans
         incidence puisqu'elle n'est jamais affichée pour une tuile (index de
         palette 0 = toujours transparent au niveau hardware, OBJ comme BG)."""
+        if self.size not in (16, 256):
+            self.size = 16
         if self.colors:
-            # Une banque matérielle = 16 couleurs max (4bpp). Un fichier édité à
-            # la main pourrait en contenir davantage ; on tronque défensivement
-            # pour que grit (quantification sur toutes les couleurs) et main_gen
-            # (`colors[:16]`) ne divergent jamais (indices >15 impossibles en
-            # 4bpp -> tuiles corrompues).
-            if len(self.colors) > 16:
-                self.colors = self.colors[:16]
+            # On tronque défensivement à la capacité de la banque (un fichier édité
+            # à la main pourrait déborder) : en 16, garantit que grit
+            # (quantification sur toutes les couleurs) et main_gen (`colors[:16]`)
+            # ne divergent jamais (indices >15 impossibles en 4bpp -> tuiles
+            # corrompues) ; en 256, borne au maximum 8bpp.
+            if len(self.colors) > self.size:
+                self.colors = self.colors[:self.size]
             from core.color_utils import RESERVED_SLOT_COLOR
             self.colors[0] = RESERVED_SLOT_COLOR
 
@@ -1495,17 +1499,30 @@ class Project:
                     self.fonts, self.scenes, self.prefabs):
             mgr.commit_deletes()
 
-    def sync_background_png(self, png_path: Path):
+    def sync_background_png(self, png_path: Path) -> Optional[str]:
         """Crée un BackgroundAsset (sidecar de compression par image, keyé par le
         stem du PNG) quand un PNG apparaît dans assets/backgrounds/. Ne modifie
-        pas un asset existant. C'est la scène qui possède ses layers."""
+        pas un asset existant. C'est la scène qui possède ses layers. Renvoie un
+        éventuel avertissement d'import (palette déduite), None sinon."""
         name = png_path.stem
         if self.backgrounds.get(name) is None:
             ba = BackgroundAsset(name=name, source=png_path.name)
-            # Nouveau dépôt : compression (métadonnées) sans toucher le PNG.
+            # Nouveau dépôt : AUTO-DÉTECTION du mode (pivot indexé/non-indexé),
+            # puis compression (métadonnées) sans toucher le PNG.
+            warning = None
+            try:
+                from core.bg_compress import detect_import_mode
+                d = detect_import_mode(png_path)
+                ba.mode = "bitmap" if d["token"] in ("bitmap", "bitmap16") else "tiled"
+                ba.bpp = 8 if d["token"] == "tiled8" else 4
+                warning = d["warning"]
+            except Exception:
+                pass
             self._compress_background_asset(ba, png_path)
             self.backgrounds.append(ba)
             self.backgrounds.save(ba)
+            return warning
+        return None
 
     @staticmethod
     def apply_bg_compression(ba: "BackgroundAsset", source_name: str, c: dict):
@@ -1541,10 +1558,21 @@ class Project:
     def _compress_background_asset(ba: "BackgroundAsset", png_path: Path, method: str = None):
         """Calcule et stocke la compression GBA d'un fond (palettes/tileset/tilemap)
         depuis son PNG — sans modifier le fichier. cf. core/bg_compress. No-op si
-        illisible. Chemin SYNCHRONE (import via watcher, reconcile au chargement)."""
+        illisible. Chemin SYNCHRONE (import via watcher, reconcile au chargement).
+        Dispatch selon le mode DÉJÀ choisi de l'asset (`ba.mode`/`ba.bpp`) — ne
+        re-détecte PAS (la détection est faite une fois à la création), pour ne
+        jamais écraser un choix de mode existant lors d'un reconcile."""
         try:
-            from core.bg_compress import compress_background
-            c = compress_background(png_path, method=method or ba.compress_method)
+            from core.bg_compress import (
+                compress_background, compress_background_8bpp, compress_background_bitmap,
+            )
+            dither = getattr(ba, "dither", False)
+            if getattr(ba, "mode", "tiled") == "bitmap":
+                c = compress_background_bitmap(png_path, dither=dither)
+            elif getattr(ba, "bpp", 4) == 8:
+                c = compress_background_8bpp(png_path, dither=dither)
+            else:
+                c = compress_background(png_path, method=method or ba.compress_method)
             Project.apply_bg_compression(ba, png_path.name, c)
         except Exception:
             pass

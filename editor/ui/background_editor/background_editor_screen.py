@@ -12,7 +12,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QLabel, QListWidget,
-    QListWidgetItem, QComboBox, QFileDialog, QFrame,
+    QListWidgetItem, QFileDialog, QFrame,
     QMenu, QMessageBox, QAbstractItemView, QPushButton, QGridLayout, QCheckBox,
 )
 from PyQt6.QtGui import QFont
@@ -25,7 +25,6 @@ from ui.common.palette_swatch import bank_icon
 from core.project import PaletteBank
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd
-from core.color_utils import COMPRESSION_METHODS
 from core.bg_compress import bg_fits_vram
 from .bg_inpaint_canvas import BgInpaintCanvas
 
@@ -67,7 +66,9 @@ class _CompressTask(QRunnable):
             from core.bg_compress import (
                 compress_background, compress_background_8bpp, compress_background_bitmap,
             )
-            if self._mode == "bitmap":
+            if self._mode in ("bitmap", "bitmap16"):
+                # bitmap16 = vrai 16bpp direct (détecté), pas encore implémenté :
+                # repli interim sur le Mode 4 paletté (quantif 256). cf. detect_import_mode.
                 c = compress_background_bitmap(self._png, dither=self._dither)
             elif self._mode == "tiled8":
                 c = compress_background_8bpp(self._png, dither=self._dither)
@@ -342,6 +343,7 @@ class BgPropertiesPanel(QWidget):
     palette_selected = pyqtSignal(int)  # palette active pour la peinture (index)
     palettes_changed = pyqtSignal()     # liste des palettes mutée → re-render du canvas
     recompress_requested = pyqtSignal(object, object, str, bool)  # (ba, png, mode_token, dither) → hors-thread
+    overlays_changed = pyqtSignal(list, list)  # (info_lines, warning_lines) → overlays du canvas
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -362,40 +364,42 @@ class BgPropertiesPanel(QWidget):
         outer.addWidget(body, 1)
         root = QVBoxLayout(body); root.setContentsMargins(10, 8, 10, 8); root.setSpacing(2)
 
-        # ── Bandeau MODE COULEUR : [4bpp] [8bpp] + dithering (8bpp seulement).
-        #    Changer de mode recompresse le fond (hors-thread).
-        mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 2, 0, 2); mode_row.setSpacing(6)
-        self._btn_4bpp = self._mode_btn("4bpp", "Tuilé · 16 couleurs × 16 palettes · inpainting (pixel-art)")
-        self._btn_8bpp = self._mode_btn("8bpp", "Tuilé · 256 couleurs, une seule palette (pixel-art riche)")
-        self._btn_bitmap = self._mode_btn("Bitmap", "Mode 4 · plein écran 240×160, 256 couleurs, sans tuiles (photos / écrans-titre)")
-        self._btn_4bpp.clicked.connect(lambda: self._set_mode("tiled4"))
-        self._btn_8bpp.clicked.connect(lambda: self._set_mode("tiled8"))
-        self._btn_bitmap.clicked.connect(lambda: self._set_mode("bitmap"))
-        mode_row.addWidget(self._btn_4bpp, 1); mode_row.addWidget(self._btn_8bpp, 1)
-        mode_row.addWidget(self._btn_bitmap, 1)
-        root.addLayout(mode_row)
+        # ── MODE COULEUR : deux axes ORTHOGONAUX. Layout (tuilé/bitmap) ×
+        #    profondeur (4/8/16 bpp) ; certaines combinaisons n'existent pas sur
+        #    GBA → boutons profondeur filtrés selon le layout (cf. _refresh_mode_buttons).
+        #    Changer d'axe recompresse le fond (hors-thread).
+        lay_row = QHBoxLayout(); lay_row.setContentsMargins(0, 2, 0, 0); lay_row.setSpacing(6)
+        lay_row.addWidget(self._axis_label("LAYOUT"))
+        self._btn_tiled = self._mode_btn("Tuilé", "Fond tuilé (Mode 0) — tileset + tilemap, scroll, inpainting")
+        self._btn_bitmap = self._mode_btn("Bitmap", "Bitmap plein écran ≤240×160, sans tuiles (photos / écrans-titre)")
+        self._btn_tiled.clicked.connect(lambda: self._set_layout("tiled"))
+        self._btn_bitmap.clicked.connect(lambda: self._set_layout("bitmap"))
+        lay_row.addWidget(self._btn_tiled, 1); lay_row.addWidget(self._btn_bitmap, 1)
+        root.addLayout(lay_row)
+
+        dep_row = QHBoxLayout(); dep_row.setContentsMargins(0, 2, 0, 2); dep_row.setSpacing(6)
+        dep_row.addWidget(self._axis_label("PROFONDEUR"))
+        self._d4 = self._mode_btn("4bpp", "16 couleurs × 16 palettes · inpainting (pixel-art) — tuilé uniquement")
+        self._d8 = self._mode_btn("8bpp", "256 couleurs, une palette (pixel-art riche / bitmap Mode 4)")
+        self._d16 = self._mode_btn("16bpp", "Couleur directe 15-bit (photos true-color) — à venir, repli Mode 4")
+        self._d4.clicked.connect(lambda: self._set_depth(4))
+        self._d8.clicked.connect(lambda: self._set_depth(8))
+        self._d16.clicked.connect(lambda: self._set_depth(16))
+        dep_row.addWidget(self._d4, 1); dep_row.addWidget(self._d8, 1); dep_row.addWidget(self._d16, 1)
+        root.addLayout(dep_row)
         self._chk_dither = QCheckBox("Dithering")
         self._chk_dither.setFont(QFont(T.MONO, T.SM))
         self._chk_dither.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_dither.toggled.connect(self._on_dither_toggled)
         root.addWidget(self._chk_dither)
 
-        W.separator(root); W.section("IMAGE", root)
-        self._dims = self._info_label(); root.addWidget(self._dims)
-
-        W.separator(root); W.section("COMPRESSION", root)
-        self._tiles = self._info_label(); root.addWidget(self._tiles)
-        self._pals = self._info_label(); root.addWidget(self._pals)
-
-        # Validation NON-BLOQUANTE : alertes sur ce que la compression a dû faire
-        # (dimensions, couleurs/tuile, palettes fusionnées, budget VRAM). Le PNG
-        # source n'est jamais modifié — ces messages décrivent la représentation.
-        self._valid = QLabel("—")
-        self._valid.setFont(QFont(T.MONO, T.SM))
-        self._valid.setWordWrap(True)
-        self._valid.setTextFormat(Qt.TextFormat.RichText)
-        self._valid.setStyleSheet("padding-top:2px;")
-        root.addWidget(self._valid)
+        # NB : les infos read-only (dimensions, origine palette, tuiles/palettes) et
+        # les alertes de validation NON-BLOQUANTES ne vivent plus dans l'inspecteur —
+        # elles sont poussées via `overlays_changed` sur des overlays du canvas
+        # (infos bas-gauche, warnings haut-droite). cf. _emit_overlays / _info_lines /
+        # _validation_lines. Le PNG source n'est jamais modifié : ces messages
+        # décrivent seulement la représentation GBA.
+        W.separator(root)
 
         # ── PALETTES : liste dynamique de swatches (clic = palette peinte,
         #    « + » pour ajouter depuis le catalogue, clic droit = remplacer/vider/
@@ -409,19 +413,6 @@ class BgPropertiesPanel(QWidget):
         self._pal_bar.remove_requested.connect(self._on_pal_remove)
         root.addWidget(self._pal_bar)
 
-        # COMPRESSION AVANCÉE (choix d'algo) — 4bpp uniquement (masqué en 8bpp,
-        # où la quantification 256 couleurs a un seul algo).
-        self._adv_box = QWidget()
-        adv_l = QVBoxLayout(self._adv_box)
-        adv_l.setContentsMargins(0, 0, 0, 0); adv_l.setSpacing(2)
-        W.separator(adv_l); W.section("COMPRESSION AVANCÉE", adv_l)
-        self._cb = QComboBox(); self._cb.setFont(QFont(T.MONO, T.SM))
-        for tok, label in COMPRESSION_METHODS:
-            self._cb.addItem(label, tok)
-        self._cb.currentIndexChanged.connect(self._on_method)
-        W.row("Algo", self._cb, adv_l)
-        root.addWidget(self._adv_box)
-
         self._btn = W.btn_accent("⟐  Importer / remplacer l'image…")
         self._btn.clicked.connect(self._on_replace)
         root.addWidget(self._btn)
@@ -434,10 +425,27 @@ class BgPropertiesPanel(QWidget):
         root.addWidget(self._btn_restore)
         root.addStretch()
 
-    def _info_label(self):
-        l = QLabel("—"); l.setFont(QFont(T.MONO, T.SM)); l.setWordWrap(True)
-        l.setStyleSheet(f"color:{C.TEXT_NORM};")
-        return l
+        # ── EXTRACT PALETTE — ferré en bas de l'inspecteur. Promeut les
+        #    sous-palettes déduites du PNG en PaletteBank partagées du catalogue
+        #    (visibles/éditables depuis le Palette Editor) et les assigne à ce fond.
+        self._btn_extract = QPushButton("⤓  EXTRACT PALETTE")
+        self._btn_extract.setToolTip(
+            "Promeut les palettes déduites du PNG en palettes partagées du "
+            "catalogue (visibles et éditables depuis le Palette Editor). Les "
+            "palettes créées sont assignées à ce fond.")
+        self._btn_extract.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        self._btn_extract.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_extract.setFixedHeight(38)
+        self._btn_extract.setStyleSheet(
+            f"QPushButton{{color:{_BG_COLOR}; background:transparent;"
+            f"border:2px solid {_BG_COLOR}; border-radius:5px; letter-spacing:1px;"
+            f"padding:4px 10px;}}"
+            f"QPushButton:hover{{color:{C.BG_DEEP}; background:{_BG_COLOR};}}"
+            f"QPushButton:disabled{{color:{C.TEXT_MUTED}; border-color:{C.BORDER_DARK};"
+            f"background:transparent;}}"
+        )
+        self._btn_extract.clicked.connect(self._on_extract_palette)
+        root.addWidget(self._btn_extract)
 
     def _mini_btn(self, text: str, tip: str = "") -> QPushButton:
         b = QPushButton(text); b.setToolTip(tip)
@@ -451,6 +459,12 @@ class BgPropertiesPanel(QWidget):
         )
         return b
 
+    def _axis_label(self, text: str) -> QLabel:
+        l = QLabel(text); l.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        l.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        l.setFixedWidth(72)
+        return l
+
     def _mode_btn(self, text: str, tip: str) -> QPushButton:
         b = QPushButton(text); b.setToolTip(tip)
         b.setCheckable(True)
@@ -463,45 +477,79 @@ class BgPropertiesPanel(QWidget):
             f"QPushButton:hover{{color:{C.TEXT_HI};}}"
             f"QPushButton:checked{{color:{_BG_COLOR}; border:2px solid {_BG_COLOR};"
             f"background:{C.BG_SEL};}}"
+            f"QPushButton:disabled{{color:{C.TEXT_MUTED}; border-color:{C.BORDER_DARK};"
+            f"background:{C.BG_INPUT};}}"
         )
         return b
 
-    # ── Mode couleur (4bpp / 8bpp) ────────────────────────────────
+    # ── Mode couleur : 2 axes (layout × profondeur) ───────────────
+    #    Combinaisons valides GBA : tuilé→{4,8}, bitmap→{8,16}. Le 16bpp direct
+    #    n'est pas encore implémenté (repli Mode 4) → bouton visible mais désactivé.
+
+    def _cur_axes(self) -> tuple[str, int]:
+        """(layout, profondeur) courant de l'asset. Le bitmap est du Mode 4 (8bpp) :
+        le 16bpp direct n'étant pas persisté, on le lit toujours comme 8."""
+        if not self._ba:
+            return ("tiled", 4)
+        if self._ba.mode == "bitmap":
+            return ("bitmap", 8)
+        return ("tiled", 8 if self._ba.bpp == 8 else 4)
+
+    @staticmethod
+    def _axes_token(layout: str, depth: int) -> str:
+        if layout == "tiled":
+            return "tiled8" if depth == 8 else "tiled4"
+        return "bitmap16" if depth == 16 else "bitmap"
 
     def _cur_mode_token(self) -> str:
-        if not self._ba:
-            return "tiled4"
-        if self._ba.mode == "bitmap":
-            return "bitmap"
-        return "tiled8" if self._ba.bpp == 8 else "tiled4"
+        return self._axes_token(*self._cur_axes())
 
     def _refresh_mode_buttons(self):
-        tok = self._cur_mode_token()
+        layout, depth = self._cur_axes()
+        tok = self._axes_token(layout, depth)
+        tiled = layout == "tiled"
+        base = bool(self._ba and (self._ba.tileset or self._ba.bitmap))
         self._blocking = True
-        self._btn_4bpp.setChecked(tok == "tiled4")
-        self._btn_8bpp.setChecked(tok == "tiled8")
-        self._btn_bitmap.setChecked(tok == "bitmap")
-        self._chk_dither.setVisible(tok in ("tiled8", "bitmap"))
+        self._btn_tiled.setChecked(tiled)
+        self._btn_bitmap.setChecked(not tiled)
+        self._d4.setChecked(tiled and depth == 4)
+        self._d8.setChecked(depth == 8)
+        self._d16.setChecked(not tiled and depth == 16)
+        # Filtre des profondeurs valides selon le layout.
+        self._btn_tiled.setEnabled(base); self._btn_bitmap.setEnabled(base)
+        self._d4.setEnabled(base and tiled)          # 4bpp : tuilé uniquement
+        self._d8.setEnabled(base)                    # 8bpp : toujours
+        self._d16.setEnabled(False)                  # 16bpp direct : à venir
+        self._chk_dither.setVisible(tok != "tiled4")
         self._chk_dither.setChecked(bool(self._ba and self._ba.dither))
-        self._adv_box.setVisible(tok == "tiled4")
-        enabled = bool(self._ba and (self._ba.tileset or self._ba.bitmap))
-        for b in (self._btn_4bpp, self._btn_8bpp, self._btn_bitmap):
-            b.setEnabled(enabled)
         self._blocking = False
 
-    def _set_mode(self, token: str):
+    def _apply_axes(self, layout: str, depth: int):
+        """Recompresse vers (layout, depth) si le token change ; sinon réaligne l'UI."""
         if self._blocking or not self._ba or not self._project:
             self._refresh_mode_buttons(); return
-        if self._cur_mode_token() == token:
+        token = self._axes_token(layout, depth)
+        if token == self._cur_mode_token():
             self._refresh_mode_buttons(); return
         ap = self._png_path()
         if not ap or not ap.exists():
             self._refresh_mode_buttons(); return
         self.recompress_requested.emit(self._ba, ap, token, self._ba.dither)
 
+    def _set_layout(self, layout: str):
+        # Bascule d'axe : on snappe la profondeur sur une valeur valide du layout
+        # cible (tuilé→{4,8}, bitmap→{8,16}), en gardant l'actuelle si possible.
+        _, depth = self._cur_axes()
+        valid = (4, 8) if layout == "tiled" else (8, 16)
+        self._apply_axes(layout, depth if depth in valid else 8)
+
+    def _set_depth(self, depth: int):
+        layout, _ = self._cur_axes()
+        self._apply_axes(layout, depth)
+
     def _on_dither_toggled(self, on: bool):
         tok = self._cur_mode_token()
-        if self._blocking or not self._ba or tok not in ("tiled8", "bitmap"):
+        if self._blocking or not self._ba or tok == "tiled4":
             return
         ap = self._png_path()
         if not ap or not ap.exists():
@@ -516,32 +564,59 @@ class BgPropertiesPanel(QWidget):
             self._header.set_header("background", "BACKGROUND", ba.name)
         else:
             self._header.set_header("empty", "", "")
-        if ba and ba.mode == "bitmap" and ba.bitmap:
-            self._dims.setText(f"{ba.out_w}×{ba.out_h} px  (bitmap, ajusté à ≤240×160)")
-            self._tiles.setStyleSheet(f"color:{C.TEXT_NORM};")
-            self._tiles.setText("Mode 4 — plein écran, sans tuiles")
-            self._pals.setText("Palette : 256 couleurs (1)")
-        elif ba and ba.tileset:
-            self._dims.setText(f"{ba.tiles_w*8}×{ba.tiles_h*8} px  ({ba.tiles_w}×{ba.tiles_h} tuiles)")
-            # Budget VRAM : 512 tuiles/charblock en 4bpp, 256 en 8bpp (2× la taille).
-            budget_max = 256 if ba.bpp == 8 else 512
-            n = len(ba.tileset); fits, budget = bg_fits_vram(ba.tileset, budget=budget_max)
-            col = C.TEXT_NORM if fits else "#e06060"
-            self._tiles.setStyleSheet(f"color:{col};")
-            self._tiles.setText(f"Tuiles uniques : {n} / {budget}  ({ba.bpp}bpp)"
-                                + ("" if fits else "  ⚠ dépasse la VRAM"))
-            if ba.bpp == 8:
-                self._pals.setText("Palette : 256 couleurs (1)")
-            else:
-                self._pals.setText(f"Palettes : {len(ba.palettes)} / 16")
-            mi = self._cb.findData(getattr(ba, "compress_method", "median_cut"))
-            self._cb.setCurrentIndex(mi if mi >= 0 else 0)
-        else:
-            for l in (self._dims, self._tiles, self._pals):
-                l.setText("—")
         self._blocking = False
         self._refresh_mode_buttons()
-        self._reload_palettes()
+        self._reload_palettes()   # émet aussi les overlays (infos + warnings)
+
+    def _emit_overlays(self):
+        """Pousse les infos read-only + les warnings vers les overlays du canvas."""
+        ba = self._ba
+        info = self._info_lines(ba) if ba else []
+        warns = self._validation_lines(ba) if ba else []
+        self.overlays_changed.emit(info, warns)
+
+    def _info_lines(self, ba) -> list:
+        """Lignes descriptives read-only (dims, origine palette, tuiles, palettes)
+        pour l'overlay bas-gauche du canvas."""
+        if not ba or not (ba.tileset or ba.bitmap):
+            return []
+        lines: list = []
+        if ba.mode == "bitmap" and ba.bitmap:
+            lines.append(f"{ba.out_w}×{ba.out_h} px  ·  bitmap ≤240×160")
+        elif ba.tileset:
+            lines.append(f"{ba.tiles_w*8}×{ba.tiles_h*8} px  ·  {ba.tiles_w}×{ba.tiles_h} tuiles")
+        indexed, ncol, capped = self._source_info(ba)
+        origin = "indexé (palette d'origine)" if indexed else "déduit"
+        ncol_s = "256+" if capped else str(ncol)
+        lines.append(f"Source : {origin} · {ncol_s} couleurs")
+        if ba.mode == "bitmap":
+            lines.append("Mode 4 — plein écran, sans tuiles")
+            lines.append("Palette : 256 couleurs (1)")
+        else:
+            budget = 256 if ba.bpp == 8 else 512
+            lines.append(f"Tuiles uniques : {len(ba.tileset)} / {budget}  ({ba.bpp}bpp)")
+            lines.append("Palette : 256 couleurs (1)" if ba.bpp == 8
+                         else f"Palettes : {len(ba.palettes)} / 16")
+        return lines
+
+    def _source_info(self, ba) -> tuple[bool, int, bool]:
+        """(indexed, n_colors, capped) du PNG source — mis en cache dans
+        `ba.diagnostics` pour ne pas relire l'image à chaque sélection."""
+        d = ba.diagnostics if isinstance(ba.diagnostics, dict) else {}
+        if "src_indexed" in d and "src_colors" in d:
+            return d["src_indexed"], d["src_colors"], bool(d.get("src_capped"))
+        ap = self._png_path()
+        if not ap or not ap.exists():
+            return False, 0, False
+        try:
+            from core.bg_compress import source_palette_info
+            indexed, ncol, capped = source_palette_info(ap)
+        except Exception:
+            return False, 0, False
+        if not isinstance(ba.diagnostics, dict):
+            ba.diagnostics = {}
+        ba.diagnostics.update(src_indexed=indexed, src_colors=ncol, src_capped=capped)
+        return indexed, ncol, capped
 
     # ── Validation (non-bloquante) ────────────────────────────────
 
@@ -604,15 +679,6 @@ class BgPropertiesPanel(QWidget):
             lines.append((f"✓ Compatible GBA ({ba.bpp}bpp) — compressé sans perte.", ok))
         return lines
 
-    def _set_validation(self):
-        if not self._ba:
-            self._valid.setText("—")
-            return
-        html = "<br>".join(
-            f"<span style='color:{col};'>{txt}</span>"
-            for txt, col in self._validation_lines(self._ba))
-        self._valid.setText(html)
-
     # ── Section PALETTES ──────────────────────────────────────────
 
     def _reload_palettes(self, select: int = 0):
@@ -621,13 +687,13 @@ class BgPropertiesPanel(QWidget):
         # Palette non éditable en 8bpp (256) et en bitmap (256).
         read_only = bool(self._ba and (self._ba.mode == "bitmap" or self._ba.bpp == 8))
         self._pal_bar.load(pals, select, read_only=read_only)
+        self._btn_extract.setEnabled(bool(pals))
         if pals and not read_only:
             self.palette_selected.emit(self._pal_bar._active)
-        self._set_validation()
+        self._emit_overlays()
 
     def _refresh_pal_count(self):
-        if self._ba:
-            self._pals.setText(f"Palettes : {len(self._ba.palettes)} / 16")
+        self._emit_overlays()
 
     def _persist_bg(self):
         if self._project and self._ba:
@@ -742,14 +808,48 @@ class BgPropertiesPanel(QWidget):
         img = self._ba.image_name() if self._ba else ""
         return (self._project.background_images_dir / img) if (self._project and img) else None
 
-    def _on_method(self, _):
-        if self._blocking or not self._ba or not self._project:
+    def _on_extract_palette(self):
+        """Promeut les sous-palettes déduites (`ba.palettes`) en PaletteBank
+        partagées du catalogue projet, sous un nom stable dérivé du fond. Les
+        palettes créées deviennent visibles/éditables depuis le Palette Editor
+        et restent celles utilisées par ce fond (elles EN sont l'origine — le
+        rendu du fond est inchangé). Une ré-extraction (après recompression)
+        met à jour les mêmes banques."""
+        if not self._project or not self._ba:
             return
-        ap = self._png_path()
-        if not ap or not ap.exists():
+        ba = self._ba
+        pals = [list(p) for p in ba.palettes]
+        if not pals:
+            QMessageBox.information(
+                self, "Extraction impossible",
+                "Ce fond n'a pas encore de palette à extraire "
+                "(image non compressée ou illisible).")
             return
-        self._ba.compress_method = self._cb.currentData()
-        self.recompress_requested.emit(self._ba, ap, self._cur_mode_token(), self._ba.dither)
+        # 256 couleurs (une banque unique) en 8bpp / bitmap ; 16 en 4bpp tuilé.
+        size = 256 if (ba.mode == "bitmap" or ba.bpp == 8) else 16
+        single = len(pals) == 1
+        created: list[str] = []
+        for i, cols in enumerate(pals):
+            name = f"pal_{ba.name}" if single else f"pal_{ba.name}_{i}"
+            existing = self._project.palettes.get(name)
+            if existing:
+                # Ré-extraction : on écrase les couleurs de la banque déjà générée
+                # (action explicite, régénération attendue — cf. Sprite Editor).
+                existing.colors = list(cols)
+                existing.size = size
+                bank = existing
+            else:
+                bank = PaletteBank(name=name, colors=list(cols), size=size)
+            # Passe par le dispatcher : persistance (watcher suspendu) + événement
+            # « palettes_changed » pour rafraîchir le Palette Editor / les finders.
+            get_dispatcher().save_palette(bank)
+            created.append(bank.name)
+        noun = "palette" if single else "palettes"
+        QMessageBox.information(
+            self, "Palette extraite",
+            f"{len(created)} {noun} ajoutée(s) au catalogue et assignée(s) à "
+            f"« {ba.name} » :\n  " + "\n  ".join(created) + "\n\n"
+            "Elles sont maintenant visibles et éditables depuis le Palette Editor.")
 
     def _on_replace(self):
         if not self._project or not self._ba:
@@ -763,13 +863,13 @@ class BgPropertiesPanel(QWidget):
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dst)
         self._ba.source = dst.name
-        # Ré-auto-détecter le mode pour la nouvelle image.
-        from core.bg_compress import detect_bg_mode, detect_bpp
+        # Ré-auto-détecter le mode pour la nouvelle image (pivot indexé/non-indexé).
+        from core.bg_compress import detect_import_mode
         try:
-            if detect_bg_mode(dst) == "bitmap":
-                token = "bitmap"
-            else:
-                token = "tiled8" if detect_bpp(dst) == 8 else "tiled4"
+            d = detect_import_mode(dst)
+            token = d["token"]
+            if d["warning"]:
+                QMessageBox.information(self, "Import", d["warning"])
         except Exception:
             token = self._cur_mode_token()
         self.recompress_requested.emit(self._ba, dst, token, self._ba.dither)
@@ -805,6 +905,8 @@ class BackgroundEditorScreen(QWidget):
         # mutation de la liste des palettes → re-render du canvas.
         self._props.palette_selected.connect(self._canvas.set_active_palette)
         self._props.palettes_changed.connect(self._canvas.reload)
+        # Infos read-only + warnings → overlays du canvas (bas-gauche / haut-droite).
+        self._props.overlays_changed.connect(self._canvas.set_overlays)
         # (Re)compression demandée par l'inspecteur (algo / remplacer / restaurer)
         # → exécutée hors-thread par l'écran.
         self._props.recompress_requested.connect(self._on_recompress)
@@ -888,14 +990,14 @@ class BackgroundEditorScreen(QWidget):
             from core.project import BackgroundAsset
             ba = BackgroundAsset(name=name, source=dst.name)
             self._project.backgrounds.append(ba)
-        # Auto-détection du mode : trop de tuiles (photo) → bitmap ; sinon
-        # tuilé 4bpp/8bpp selon le nombre de couleurs.
-        from core.bg_compress import detect_bg_mode, detect_bpp
+        # Auto-détection unifiée (pivot indexé/non-indexé) : profondeur ← couleurs,
+        # layout tuilé/bitmap ← unicité des tuiles.
+        from core.bg_compress import detect_import_mode
         try:
-            if detect_bg_mode(dst) == "bitmap":
-                token = "bitmap"
-            else:
-                token = "tiled8" if detect_bpp(dst) == 8 else "tiled4"
+            d = detect_import_mode(dst)
+            token = d["token"]
+            if d["warning"]:
+                QMessageBox.information(self, "Import", d["warning"])
         except Exception:
             token = "tiled4"
         # Sélectionner immédiatement (canvas vide + « Compression… ») puis

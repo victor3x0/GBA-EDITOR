@@ -6,12 +6,13 @@ choisit jusqu'à 16 palettes actives par pool parmi ce catalogue (voir Scene
 Inspector, carte "Palettes actives").
 """
 import colorsys
+import re
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QSplitter,
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView, QSlider, QSpinBox,
-    QInputDialog, QMessageBox, QMenu, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
+    QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QSlider, QSpinBox,
+    QInputDialog, QMessageBox, QMenu, QLineEdit, QStyledItemDelegate,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
@@ -26,6 +27,7 @@ from core.color_utils import (
 from core.palette_presets import hsb_ramp_bgr555
 from core.history import get_history, DeleteResourceCmd
 from ui.common.palette_swatch import bank_icon as _bank_icon
+from ui.palette_editor.color_wheel import ColorTriangleWheel
 
 SPLITTER_STYLE = (
     f"QSplitter::handle{{background:{C.BORDER};}}"
@@ -56,6 +58,18 @@ def _grad_slider_qss(stops: list[str]) -> str:
         "border-radius:3px;background:#f0f0f0;border:1px solid #101010;}"
         "QSlider::handle:horizontal:hover{background:#ffffff;}"
     )
+
+
+class _PaletteNameDelegate(QStyledItemDelegate):
+    """Le libellé du finder affiche « nom  (16/256) », mais l'édition en place ne
+    porte que sur le nom NU (stocké en UserRole) — le suffixe de taille ne pollue
+    jamais le champ de renommage."""
+
+    def setEditorData(self, editor, index):
+        editor.setText(index.data(Qt.ItemDataRole.UserRole) or "")
+
+    def setModelData(self, editor, model, index):
+        model.setData(index, editor.text(), Qt.ItemDataRole.EditRole)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -100,6 +114,7 @@ class PaletteFinderPanel(QWidget):
             "QTreeWidget::item:selected{background:#1a2a3a;}"
             "QTreeWidget::item:hover{background:#202020;}"
         )
+        self._tree.setItemDelegate(_PaletteNameDelegate(self._tree))
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tree.currentItemChanged.connect(self._on_selected)
@@ -141,7 +156,10 @@ class PaletteFinderPanel(QWidget):
         self._tree.blockSignals(True)
         self._tree.clear()
         for bank in self._project.palettes:
-            item = QTreeWidgetItem([bank.name])
+            item = QTreeWidgetItem()
+            # Libellé « nom  (16/256) » ; le nom NU vit en UserRole (clé de lookup
+            # + source de l'édition via _PaletteNameDelegate).
+            item.setText(0, f"{bank.name}  ({bank.size})")
             item.setIcon(0, _bank_icon(bank))
             item.setData(0, Qt.ItemDataRole.UserRole, bank.name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -173,14 +191,22 @@ class PaletteFinderPanel(QWidget):
         bank = self._project.palettes.get(old_name)
         if not bank:
             return
-        new_name = item.text(0).strip()
-        if not new_name or new_name == old_name or self._project.palettes.get(new_name):
+
+        def _set_display(name: str):
             self._tree.blockSignals(True)
-            item.setText(0, old_name)
+            item.setText(0, f"{name}  ({bank.size})")
+            item.setData(0, Qt.ItemDataRole.UserRole, name)
             self._tree.blockSignals(False)
+
+        # Le délégué a écrit le nom nu ; on retire défensivement un suffixe
+        # « (16)/(256) » résiduel au cas où l'édition l'aurait laissé.
+        raw = item.text(0).strip()
+        new_name = re.sub(r"\s*\(\s*(?:16|256)\s*\)\s*$", "", raw).strip()
+        if not new_name or new_name == old_name or self._project.palettes.get(new_name):
+            _set_display(old_name)   # invalide -> restaure nom + suffixe
             return
         self._project.palettes.rename(bank, new_name)
-        item.setData(0, Qt.ItemDataRole.UserRole, new_name)
+        _set_display(new_name)
         self.bank_selected.emit(new_name)
 
     # ── Menu contextuel ──────────────────────────────────────────────
@@ -206,7 +232,13 @@ class PaletteFinderPanel(QWidget):
         name = name.strip()
         if self._project.palettes.get(name):
             return
-        bank = PaletteBank(name=name, colors=hsb_ramp_bgr555(0, 0))
+        kind, ok = QInputDialog.getItem(
+            self, "Type de palette", "Taille :",
+            ["16 couleurs (4bpp)", "256 couleurs (8bpp)"], 0, False)
+        if not ok:
+            return
+        size = 256 if kind.startswith("256") else 16
+        bank = PaletteBank(name=name, colors=hsb_ramp_bgr555(0, 0, steps=size), size=size)
         self._project.palettes.append(bank)
         self._project.palettes.save(bank)
         self.refresh()
@@ -295,14 +327,18 @@ class PaletteEditorScreen(QWidget):
         self._title.setVisible(False)
         cl.addWidget(self._title, alignment=_CENTER)
 
-        self._swatch_row = QHBoxLayout()
-        self._swatch_row.setSpacing(4)
-        cl.addLayout(self._swatch_row)
+        # Grille de swatches : 1 rangée de 16 pour une palette 16, 16×16 pour une
+        # palette 256 (cf. _render_swatches). Conteneur dimensionné au contenu,
+        # centré horizontalement.
+        self._swatch_container = QWidget()
+        self._swatch_grid = QGridLayout(self._swatch_container)
+        self._swatch_grid.setContentsMargins(0, 0, 0, 0)
+        self._swatch_grid.setSpacing(3)
         self._swatch_btns: list[QPushButton] = []
 
         # ── Éditeur de couleur (centré, largeur bornée) ────────────────
         self._editor = QWidget()
-        self._editor.setMaximumWidth(460)
+        self._editor.setFixedWidth(320)   # compact : ne déborde jamais à côté de la roue/grille
         el = QVBoxLayout(self._editor)
         el.setContentsMargins(0, 10, 0, 0)
         el.setSpacing(10)
@@ -361,8 +397,20 @@ class PaletteEditorScreen(QWidget):
             self._hsb_sliders[ch] = sl
             self._hsb_spins[ch] = sp
 
-        cl.addWidget(self._editor, alignment=_CENTER)
-        cl.addStretch()
+        # Roue chromatique (anneau teinte + triangle S/L) — éditeur alternatif,
+        # synchronisé avec les sliders/hex via _load_channels / _apply_color.
+        self._wheel = ColorTriangleWheel()
+        self._wheel.color_changed.connect(self._on_wheel_changed)
+
+        # Corps réagencé selon la taille de palette (cf. _relayout) : palette 16 =
+        # grille en haut + roue|sliders dessous ; palette 256 = grille à gauche +
+        # roue/sliders empilés à droite (sinon le stack vertical déborde l'écran).
+        self._body = QWidget()
+        self._body_grid = QGridLayout(self._body)
+        self._body_grid.setContentsMargins(0, 0, 0, 0)
+        self._body_grid.setHorizontalSpacing(20)
+        self._body_grid.setVerticalSpacing(12)
+        cl.addWidget(self._body, 1)
         self._editor.setVisible(False)
 
         split.addWidget(self._center)
@@ -381,7 +429,7 @@ class PaletteEditorScreen(QWidget):
         row.addWidget(lab)
         sl = QSlider(Qt.Orientation.Horizontal)
         sl.setRange(min_v, max_v)
-        sl.setMinimumWidth(240)
+        sl.setMinimumWidth(170)
         sl.valueChanged.connect(on_change)
         row.addWidget(sl, 1)
         sp = QSpinBox()
@@ -429,11 +477,49 @@ class PaletteEditorScreen(QWidget):
         self._title.setText(bank.name)
         self._title.setVisible(True)
 
+        self._relayout(getattr(bank, "size", 16))
         self._active_index = 1 if len(bank.colors) > 1 else None
         self._render_swatches(bank, selectable=True)
-        self._editor.setVisible(bool(bank.colors))
+        has = bool(bank.colors)
+        self._editor.setVisible(has)
+        self._wheel.setVisible(has)
         if self._active_index is not None:
             self._load_channels(bank.colors[self._active_index])
+
+    def _relayout(self, size: int):
+        """Réagence grille / roue / sliders selon la taille de palette. Les 3
+        widgets sont réutilisés (déplacés dans le QGridLayout), jamais recréés.
+        Des colonnes/rangées ressort absorbent le vide pour centrer/écarter les
+        blocs sans déborder (sliders à largeur fixe)."""
+        g = self._body_grid
+        for w in (self._swatch_container, self._wheel, self._editor):
+            g.removeWidget(w)
+        for i in range(4):                      # remet à zéro les ressorts des 2 modes
+            g.setColumnStretch(i, 0); g.setRowStretch(i, 0)
+        top = Qt.AlignmentFlag.AlignTop
+        hc = Qt.AlignmentFlag.AlignHCenter
+        bottom = Qt.AlignmentFlag.AlignBottom
+        if size == 256:
+            # Grille à GAUCHE (2 rangées) ; roue + sliders empilés à DROITE, l'espace
+            # variable étant au milieu (col 1) et en bas (row 2).
+            g.addWidget(self._swatch_container, 0, 0, 2, 1, top)
+            g.addWidget(self._wheel, 0, 2, hc | bottom)
+            g.addWidget(self._editor, 1, 2, hc | top)
+            g.setColumnStretch(1, 1)
+            g.setRowStretch(2, 1)
+        else:
+            # Grille en HAUT (pleine largeur, centrée) ; roue+sliders regroupés et
+            # CENTRÉS dessous (colonnes ressort 0 et 3 de part et d'autre).
+            g.addWidget(self._swatch_container, 0, 0, 1, 4, hc)
+            g.addWidget(self._wheel, 1, 1, top | Qt.AlignmentFlag.AlignRight)
+            g.addWidget(self._editor, 1, 2, top | Qt.AlignmentFlag.AlignLeft)
+            g.setColumnStretch(0, 1); g.setColumnStretch(3, 1)
+            g.setRowStretch(2, 1)
+
+    def _on_wheel_changed(self, value: int):
+        if self._blocking or self._active_value() is None:
+            return
+        self._apply_color(value)
 
     def _on_bank_deleted(self):
         if self._bank_name is None or not self._current_bank():
@@ -443,56 +529,63 @@ class PaletteEditorScreen(QWidget):
         self._empty_lbl.setVisible(True)
         self._title.setVisible(False)
         self._editor.setVisible(False)
+        self._wheel.setVisible(False)
         self._clear_swatches()
 
     # ── Swatches ──────────────────────────────────────────────────
 
     def _clear_swatches(self):
-        # Vide tout le layout (boutons ET le stretch final) — sinon les
-        # stretches s'accumulent d'un appel a l'autre et poussent les
-        # swatches progressivement vers la droite.
-        while self._swatch_row.count():
-            item = self._swatch_row.takeAt(0)
+        while self._swatch_grid.count():
+            item = self._swatch_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
         self._swatch_btns.clear()
 
+    def _style_swatch(self, btn: QPushButton, index: int, color: int, selected: bool):
+        r, g, b = bgr555_to_rgb888(color)
+        border = C.ACCENT_GRN if selected else C.BORDER_MID
+        width = 3 if selected else 1
+        btn.setStyleSheet(
+            f"QPushButton{{background:rgb({r},{g},{b});"
+            f"border:{width}px solid {border};border-radius:2px;}}"
+        )
+
     def _render_swatches(self, bank: PaletteBank, selectable: bool):
         self._clear_swatches()
-        self._swatch_row.addStretch(1)   # centrage (stretch avant + après)
+        # 16 colonnes dans les deux cas : palette 16 -> 1 rangée ; palette 256 ->
+        # grille 16×16. Cellules plus petites en 256 pour rester compact.
+        cols = 16
+        cw, ch = (18, 18) if getattr(bank, "size", 16) == 256 else (32, 40)
         for i, c in enumerate(bank.colors):
             btn = QPushButton()
-            btn.setFixedSize(32, 40)
-            r, g, b = bgr555_to_rgb888(c)
+            btn.setFixedSize(cw, ch)
             swatch_selectable = selectable and i != 0
-            selected = swatch_selectable and i == self._active_index
-            border = C.ACCENT_GRN if selected else C.BORDER_MID
-            width = 3 if selected else 1
-            btn.setStyleSheet(
-                f"QPushButton{{background:rgb({r},{g},{b});"
-                f"border:{width}px solid {border};border-radius:2px;}}"
-            )
+            self._style_swatch(btn, i, c, selected=swatch_selectable and i == self._active_index)
             if swatch_selectable:
                 btn.clicked.connect(lambda _checked, i=i: self._select_color(i))
             else:
                 btn.setEnabled(False)
             if i == 0:
                 btn.setToolTip("Réservé — toujours transparent (hardware GBA)")
-            self._swatch_row.addWidget(btn)
+            self._swatch_grid.addWidget(btn, i // cols, i % cols)
             self._swatch_btns.append(btn)
-        self._swatch_row.addStretch(1)
 
     def _select_color(self, index: int):
         """Sélectionne le slot `index` (l'index EST le slot hardware visible
         in-game — on suit l'index, pas la valeur, pour ne jamais réordonner
-        les couleurs sous les pieds de l'utilisateur)."""
+        les couleurs sous les pieds de l'utilisateur). Ne re-stylise que l'ancien
+        et le nouveau slot (pas de re-render complet : crucial en 256 couleurs)."""
         bank = self._current_bank()
         if not bank or not (0 <= index < len(bank.colors)):
             return
+        old = self._active_index
         self._active_index = index
+        if old is not None and 0 < old < len(self._swatch_btns) and old != index:
+            self._style_swatch(self._swatch_btns[old], old, bank.colors[old], selected=False)
+        if 0 <= index < len(self._swatch_btns):
+            self._style_swatch(self._swatch_btns[index], index, bank.colors[index], selected=True)
         self._load_channels(bank.colors[index])
-        self._render_swatches(bank, selectable=True)
 
     def _active_value(self) -> Optional[int]:
         bank = self._current_bank()
@@ -518,6 +611,7 @@ class PaletteEditorScreen(QWidget):
         self._hex.setText(f"#{R:02X}{G:02X}{B:02X}")
         self._update_preview(value)
         self._update_gradients(value)
+        self._wheel.set_value(value)   # no-op pendant un drag de la roue
         self._blocking = False
 
     def _update_preview(self, value: int):
@@ -556,7 +650,10 @@ class PaletteEditorScreen(QWidget):
         bank.colors[self._active_index] = new_value
         self._project.palettes.save(bank)
         self._load_channels(new_value)
-        self._render_swatches(bank, selectable=True)
+        # Met à jour uniquement le swatch édité (pas de re-render complet).
+        idx = self._active_index
+        if 0 <= idx < len(self._swatch_btns):
+            self._style_swatch(self._swatch_btns[idx], idx, new_value, selected=True)
         self._finder.refresh()
 
     def _on_rgb_changed(self, ch: str, v: int):

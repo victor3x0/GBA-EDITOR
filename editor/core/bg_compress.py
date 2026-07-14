@@ -19,7 +19,8 @@ from core.color_utils import (
     RESERVED_SLOT_COLOR,
 )
 
-TILE_BUDGET = 512   # tuiles 4bpp par charblock (16 Ko)
+TILE_BUDGET = 512        # tuiles 4bpp par charblock (16 Ko)
+TILE_BUDGET_8BPP = 256   # tuiles 8bpp par charblock (2× la taille → moitié moins)
 GBA_SCREEN_W = 240
 GBA_SCREEN_H = 160
 
@@ -42,12 +43,123 @@ def _hex_to_tile8(s: str) -> list:
     return [int(s[i:i + 2], 16) for i in range(0, len(s), 2)]
 
 
-def detect_bpp(source) -> int:
-    """Mode couleur conseillé : 8 si l'image a > 256 couleurs distinctes, sinon 4.
-    Instantané (getcolors s'arrête à 256). Ne modifie pas le source."""
+def _open_image(source):
+    """Ouvre le source PIL sans le convertir (préserve le mode 'P' indexé). Si un
+    Image est déjà passé, le renvoie tel quel."""
     from PIL import Image
-    img = (source if hasattr(source, "mode") else Image.open(source)).convert("RGB")
-    return 8 if img.getcolors(maxcolors=256) is None else 4
+    return source if hasattr(source, "mode") else Image.open(source)
+
+
+def _is_indexed(img) -> bool:
+    """Vrai si le PNG porte sa propre palette (mode 'P'/'PA') — la palette est
+    alors l'AUTORITÉ voulue par l'auteur, on ne la re-déduit pas."""
+    return img.mode in ("P", "PA")
+
+
+def count_source_colors(source, cap: int = 257) -> tuple[int, bool]:
+    """Nombre de couleurs distinctes de l'image, plafonné à `cap`. Renvoie
+    (n, capped). Deux régimes selon l'origine de la palette :
+    - indexé : nombre d'entrées de palette réellement utilisées (l'autorité) ;
+    - non-indexé : couleurs opaques distinctes après snap 5-bit (& 0xF8), donc un
+      dégradé subtil qui s'effondre en BGR555 ne gonfle pas le compte à tort.
+    Ne modifie pas le source."""
+    img = _open_image(source)
+    if _is_indexed(img):
+        used = img.getcolors(maxcolors=cap)   # [(count, index), ...] ou None si > cap
+        if used is None:
+            return cap, True
+        return len(used), False
+    try:
+        import numpy as np
+    except Exception:
+        # Repli sans numpy : getcolors sur RGB (sans snap → borne haute, suffisant).
+        cols = img.convert("RGB").getcolors(maxcolors=cap)
+        return (cap, True) if cols is None else (len(cols), False)
+    arr = np.asarray(img.convert("RGBA"))
+    if arr.size == 0:
+        return 0, False
+    opaque = (arr[..., :3] & 0xF8)[arr[..., 3] > 0]
+    if opaque.size == 0:
+        return 0, False
+    packed = (opaque[:, 0].astype(np.uint32) << 16) \
+        | (opaque[:, 1].astype(np.uint32) << 8) | opaque[:, 2]
+    n = int(np.unique(packed).size)
+    return (cap, True) if n > cap else (n, False)
+
+
+def source_palette_info(source) -> tuple[bool, int, bool]:
+    """(indexed, n_colors, capped) pour l'UI : le PNG porte-t-il sa propre palette
+    (indexé), et combien de couleurs. n_colors=-1 si plafonné. Léger (aucune dédup
+    de tuiles, contrairement à detect_import_mode). Ne modifie pas le source."""
+    indexed = _is_indexed(_open_image(source))
+    n, capped = count_source_colors(source)
+    return indexed, (-1 if capped else n), capped
+
+
+def detect_bpp(source) -> int:
+    """Profondeur indexée conseillée : 4 si ≤16 couleurs distinctes, sinon 8.
+    NE décide PAS du layout tuilé/bitmap (cf. detect_import_mode). Compte les
+    couleurs comme count_source_colors (palette d'un PNG indexé, ou couleurs
+    snappées 5-bit sinon) — corrige l'ancien seuil qui rendait 4bpp jusqu'à 256
+    couleurs, incohérent avec « une palette active ». Ne modifie pas le source."""
+    n, _ = count_source_colors(source, cap=17)
+    return 4 if n <= 16 else 8
+
+
+def detect_import_mode(source, tile_budget: int = TILE_BUDGET) -> dict:
+    """Décision d'import UNIFIÉE (le pivot = le PNG est-il indexé ?). Renvoie un
+    dict de faits + un `token` pour l'UI. Ne modifie jamais le source.
+
+    Deux axes ORTHOGONAUX :
+    - profondeur (bpp) ← nombre de couleurs : ≤16 → 4 ; ≤256 → 8 ; >256 → 16 ;
+    - layout (tiled/bitmap) ← répétition des tuiles (photo qui ne se tuile pas).
+
+    Règles :
+    - PNG indexé = palette autorité → jamais 16bpp (palette ≤256 par définition) ;
+    - PNG non-indexé = palette déduite ; >256 couleurs = seul vrai cas 16bpp
+      (aucune représentation indexée possible) ;
+    - `warning` n'est posé QUE si la déduction force une perte (non-indexé
+      hors-palette ou couleurs plafonnées), pas sur le cas courant.
+    Clés : indexed, n_colors (-1 = plafonné), bpp (4/8/16), mode (tiled/bitmap),
+    token (tiled4/tiled8/bitmap/bitmap16), warning (str|None)."""
+    n, capped = count_source_colors(source, cap=257)
+    indexed = _is_indexed(_open_image(source))
+
+    if n <= 16:
+        bpp = 4
+    elif n <= 256:
+        bpp = 8
+    else:
+        bpp = 16   # >256 couleurs : indexation impossible → couleur directe
+
+    # Layout : le 16bpp est bitmap par nature (ni palette ni tuiles) ; sinon on
+    # tranche photo vs pixel-art par l'unicité des tuiles (budget selon la bpp).
+    if bpp == 16:
+        mode = "bitmap"
+    else:
+        budget = TILE_BUDGET_8BPP if bpp == 8 else tile_budget
+        mode = detect_bg_mode(source, tile_budget=budget)
+
+    if bpp == 16:
+        token = "bitmap16"
+    elif mode == "bitmap":
+        token = "bitmap"          # Mode 4 : bitmap paletté (≤256)
+    else:
+        token = "tiled8" if bpp == 8 else "tiled4"
+
+    warning = None
+    if not indexed and (bpp == 16 or capped):
+        warning = ("PNG non indexé et riche en couleurs : palette déduite "
+                   "automatiquement (perte possible).")
+
+    return {
+        "indexed": indexed,
+        "n_colors": -1 if capped else n,
+        "bpp": bpp,
+        "mode": mode,
+        "token": token,
+        "warning": warning,
+    }
 
 
 def pack_se(tile_id: int, pal_bank: int, flip_h: bool, flip_v: bool) -> int:
@@ -182,12 +294,240 @@ def analyze_background_source(source, max_colors: int = 16,
     }
 
 
+# ── Chemin « indexé direct » (partagé 4bpp / 8bpp / bitmap) ──────────────────
+# Principe UNIFIÉ : dès qu'un PNG est indexé (mode 'P'/'PA'), sa palette déclarée
+# (PLTE) est l'AUTORITÉ voulue par l'auteur — on la préserve TELLE QUELLE (ordre
+# + entrées déclarées mais non peintes) et on indexe les pixels DIRECTEMENT par
+# l'index natif (slot k = entrée native k), sans re-quantification : aucune
+# couleur déclarée ne disparaît. Convention GBA/auteur : l'index 0 = transparent
+# (backdrop). Vaut quelle que soit la profondeur, tant que la palette tient sous
+# le plafond 256 (garanti par le mode 'P'). Sinon (PNG non indexé), on retombe
+# sur les chemins déduits (quantification depuis les couleurs peintes).
+
+
+def _native_palette_bgr555(pal_raw: list, n_slots: int) -> list:
+    """Palette matérielle (BGR555) depuis la PLTE brute : slot 0 réservé/
+    transparent, slots 1..n_slots-1 = entrées natives converties (0 si absente).
+    Préserve l'ordre ET les entrées déclarées mais inutilisées."""
+    pal = [RESERVED_SLOT_COLOR]
+    for i in range(1, n_slots):
+        base = i * 3
+        if base + 2 < len(pal_raw):
+            pal.append(rgb888_to_bgr555(pal_raw[base], pal_raw[base + 1], pal_raw[base + 2]))
+        else:
+            pal.append(0)
+    return pal
+
+
+def _indexed_direct_source(source):
+    """(pimg 'P', alpha 'L', pal_raw PLTE, used) pour le chemin indexé direct, ou
+    None si le PNG n'est pas indexé / sans palette. `alpha` résout uniformément la
+    transparence réelle (tRNS / mode PA) via RGBA ; `used` = getcolors (comptage
+    et index max). Le source n'est pas modifié."""
+    src = _open_image(source)
+    if not _is_indexed(src):
+        return None
+    pimg = src if src.mode == "P" else src.convert("P")
+    pal_raw = pimg.getpalette() or []
+    if not pal_raw:
+        return None
+    used = pimg.getcolors(maxcolors=257) or []    # [(count, index), ...]
+    alpha = src.convert("RGBA").getchannel("A")
+    return pimg, alpha, pal_raw, used
+
+
+def _compress_background_indexed_4bpp(source) -> Optional[dict]:
+    """Chemin direct 4bpp : PNG indexé dont les index utilisés tiennent dans UNE
+    sous-palette (≤ 15). None si non indexé, ou index utilisé > 15 (plusieurs
+    sous-palettes nécessaires → repli sur le packing déduit de compress_background)."""
+    from PIL import Image
+    prep = _indexed_direct_source(source)
+    if prep is None:
+        return None
+    pimg, alpha, pal_raw, used = prep
+    if any(idx > 15 for _c, idx in used):
+        return None
+    palette = _native_palette_bgr555(pal_raw, 16)
+    n_declared = min(16, len(pal_raw) // 3)
+
+    w, h = pimg.size
+    tw, th = (w + 7) // 8, (h + 7) // 8
+    if w % 8 or h % 8:                            # padding à un multiple de 8
+        pad_p = Image.new("P", (tw * 8, th * 8), 0); pad_p.paste(pimg, (0, 0)); pimg = pad_p
+        pad_a = Image.new("L", (tw * 8, th * 8), 0); pad_a.paste(alpha, (0, 0)); alpha = pad_a
+    ipx = pimg.load()
+    apx = alpha.load()
+
+    tileset: list = []
+    lookup: dict = {}
+    tilemap: list = []
+    tile_used: list = []                          # couleurs opaques distinctes/tuile (diag)
+    for ty in range(th):
+        for tx in range(tw):
+            grid = []
+            seen: set = set()
+            for y in range(8):
+                for x in range(8):
+                    px, py = tx * 8 + x, ty * 8 + y
+                    idx = ipx[px, py] & 0xFF
+                    if apx[px, py] == 0 or idx == 0 or idx > 15:
+                        grid.append(0)            # transparent (backdrop)
+                    else:
+                        grid.append(idx)          # index natif = index GBA (identité)
+                        seen.add(idx)
+            tid, fh, fv = _dedup_tile(tuple(grid), lookup, tileset)
+            tilemap.append(pack_se(tid, 0, fh, fv))
+            tile_used.append(len(seen))
+
+    return {
+        "palettes": [palette],                     # UNE sous-palette de 16 (PLTE native)
+        "tileset": [_tile_to_hex(t) for t in tileset],
+        "tilemap": tilemap,
+        "tiles_w": tw,
+        "tiles_h": th,
+        # `compress_method` reste un algo VALIDE (relu par reduce_colors sur
+        # certains chemins) : le chemin direct est choisi d'après le PNG (indexé
+        # ou non) à chaque compression, pas d'après ce champ. L'origine « indexé
+        # direct » est tracée par `src_indexed` ci-dessous.
+        "compress_method": "median_cut",
+        "bpp": 4,
+        "diagnostics": {
+            "src_w": w, "src_h": h,
+            "multiple_of_8": (w % 8 == 0 and h % 8 == 0),
+            "tiles_w": tw, "tiles_h": th,
+            "max_tile_colors": max(tile_used, default=0),
+            "tiles_reduced": 0,                    # aucune réduction : indexation directe
+            "pre_merge_palettes": 1,
+            "final_palettes": 1,
+            "unique_tiles": len(tileset),
+            # Origine : renseignée ici pour que l'inspecteur affiche la taille de
+            # la PALETTE DÉCLARÉE (et non les seules couleurs peintes). Lu en
+            # priorité par BgPropertiesPanel._source_info.
+            "src_indexed": True,
+            "src_colors": n_declared,
+        },
+    }
+
+
+def _compress_background_indexed_8bpp(source) -> Optional[dict]:
+    """Chemin direct 8bpp tuilé : PNG indexé (≤ 256), palette native (256)
+    préservée, tuiles en octets indexées directement. None si non indexé."""
+    from PIL import Image
+    prep = _indexed_direct_source(source)
+    if prep is None:
+        return None
+    pimg, alpha, pal_raw, used = prep
+    pal256 = _native_palette_bgr555(pal_raw, 256)
+    n_declared = min(256, len(pal_raw) // 3)
+    n_used = len(used)
+
+    w, h = pimg.size
+    tw, th = (w + 7) // 8, (h + 7) // 8
+    if w % 8 or h % 8:
+        pad_p = Image.new("P", (tw * 8, th * 8), 0); pad_p.paste(pimg, (0, 0)); pimg = pad_p
+        pad_a = Image.new("L", (tw * 8, th * 8), 0); pad_a.paste(alpha, (0, 0)); alpha = pad_a
+    ipx = pimg.load()
+    apx = alpha.load()
+
+    tileset: list = []
+    lookup: dict = {}
+    tilemap: list = []
+    for ty in range(th):
+        for tx in range(tw):
+            grid = []
+            for y in range(8):
+                for x in range(8):
+                    px, py = tx * 8 + x, ty * 8 + y
+                    idx = ipx[px, py] & 0xFF
+                    grid.append(0 if (apx[px, py] == 0 or idx == 0) else idx)
+            tid, fh, fv = _dedup_tile(tuple(grid), lookup, tileset)
+            tilemap.append(pack_se(tid, 0, fh, fv))
+
+    return {
+        "palettes": [pal256],                              # UNE palette de 256 (PLTE native)
+        "tileset": [_tile_to_hex8(t) for t in tileset],
+        "tilemap": tilemap,
+        "tiles_w": tw,
+        "tiles_h": th,
+        "compress_method": "quantize_256",
+        "bpp": 8,
+        "diagnostics": {
+            "src_w": w, "src_h": h,
+            "multiple_of_8": (w % 8 == 0 and h % 8 == 0),
+            "tiles_w": tw, "tiles_h": th,
+            "total_colors": n_used,
+            "unique_tiles": len(tileset),
+            "dither": False,
+            "bpp": 8,
+            "src_indexed": True,
+            "src_colors": n_declared,
+        },
+    }
+
+
+def _compress_background_indexed_bitmap(source) -> Optional[dict]:
+    """Chemin direct bitmap (Mode 4) : PNG indexé (≤ 256), palette native (256)
+    préservée. L'ajustement « contain » ≤240×160 se fait en NEAREST sur l'image
+    'P' (les index natifs restent valides, aucune couleur inventée). None si non
+    indexé."""
+    from PIL import Image
+    prep = _indexed_direct_source(source)
+    if prep is None:
+        return None
+    pimg, alpha, pal_raw, used = prep
+    pal256 = _native_palette_bgr555(pal_raw, 256)
+    n_declared = min(256, len(pal_raw) // 3)
+    n_used = len(used)
+
+    w, h = pimg.size
+    scale = min(GBA_SCREEN_W / w, GBA_SCREEN_H / h, 1.0)   # jamais d'agrandissement
+    out_w = max(1, min(GBA_SCREEN_W, round(w * scale)))
+    out_h = max(1, min(GBA_SCREEN_H, round(h * scale)))
+    if (out_w, out_h) != (w, h):
+        pimg = pimg.resize((out_w, out_h), Image.NEAREST)
+        alpha = alpha.resize((out_w, out_h), Image.NEAREST)
+    ipx = pimg.load()
+    apx = alpha.load()
+
+    buf = bytearray(out_w * out_h)
+    for y in range(out_h):
+        row = y * out_w
+        for x in range(out_w):
+            idx = ipx[x, y] & 0xFF
+            buf[row + x] = 0 if (apx[x, y] == 0 or idx == 0) else idx
+
+    return {
+        "mode": "bitmap",
+        "palettes": [pal256],
+        "bitmap": buf.hex(),
+        "out_w": out_w, "out_h": out_h,
+        "bpp": 8,
+        "diagnostics": {
+            "src_w": w, "src_h": h,
+            "out_w": out_w, "out_h": out_h,
+            "scaled": (out_w, out_h) != (w, h),
+            "total_colors": n_used,
+            "dither": False,
+            "mode": "bitmap",
+            "src_indexed": True,
+            "src_colors": n_declared,
+        },
+    }
+
+
 def compress_background(source, max_palettes: int = 16, max_colors: int = 16,
                         method: str = "median_cut") -> dict:
     """PNG -> représentation GBA (palettes BGR555 + tileset + tilemap). Ne modifie
     jamais le source. `max_colors`=16 (dont index 0 transparent), `max_palettes`=16.
     Le résultat inclut un sous-dict `diagnostics` (pression de compression : couleurs
-    par tuile, palettes avant fusion, dimensions) pour le validateur de l'éditeur."""
+    par tuile, palettes avant fusion, dimensions) pour le validateur de l'éditeur.
+
+    PNG INDEXÉ tenant en 4bpp : la palette déclarée est préservée telle quelle
+    (cf. `_compress_background_indexed_4bpp`) au lieu d'être re-déduite depuis les
+    seules couleurs peintes."""
+    direct = _compress_background_indexed_4bpp(source)
+    if direct is not None:
+        return direct
     img, w, h, tw, th = _open_padded(source)
     editable = max_colors - 1   # 15 couleurs utiles + index 0 transparent
 
@@ -280,7 +620,14 @@ def compress_background_8bpp(source, dither: bool = False) -> dict:
     """PNG -> représentation GBA 8bpp : UNE palette de ≤256 couleurs, tuiles en
     octets (index 0-255), dédup (flips). Ne modifie jamais le source. Rapide : le
     quantifieur C de PIL fait le gros du travail (pas de packing multi-palettes).
-    L'index 0 est réservé/transparent (pixels alpha 0)."""
+    L'index 0 est réservé/transparent (pixels alpha 0).
+
+    PNG INDEXÉ : la palette déclarée (≤256) est préservée telle quelle et les
+    tuiles sont indexées directement (cf. `_compress_background_indexed_8bpp`),
+    au lieu d'être re-quantifiées depuis les seules couleurs peintes."""
+    direct = _compress_background_indexed_8bpp(source)
+    if direct is not None:
+        return direct
     from PIL import Image
     img, w, h, tw, th = _open_padded(source)
     alpha = img.getchannel("A").load()
@@ -404,7 +751,14 @@ def compress_background_bitmap(source, dither: bool = False) -> dict:
     index par pixel) + palette de 256. L'image est ajustée « contain » (ratio
     préservé, jamais agrandie) dans 240×160. Le source n'est jamais modifié.
     Rapide (quantifieur C de PIL). Convient aux photos (pas de tuiles → pas de
-    limite de déduplication)."""
+    limite de déduplication).
+
+    PNG INDEXÉ : la palette déclarée (≤256) est préservée telle quelle et le
+    buffer est indexé directement (redimension « contain » en NEAREST pour garder
+    des index valides), cf. `_compress_background_indexed_bitmap`."""
+    direct = _compress_background_indexed_bitmap(source)
+    if direct is not None:
+        return direct
     from PIL import Image
     img = (source if hasattr(source, "mode") else Image.open(source)).convert("RGBA")
     w, h = img.size

@@ -18,11 +18,11 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton,
+    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton, QGraphicsOpacityEffect,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem,
 )
 from PyQt6.QtGui import QColor, QPainter, QPixmap, QImage, QTransform, QPen
-from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, QPropertyAnimation, pyqtSignal
 
 from core.bg_compress import (
     unpack_se, _hex_to_tile, _flip_h, _flip_v, render_bg_preview,
@@ -37,6 +37,33 @@ def _pil_to_qimage(img) -> QImage:
     data = bytes(img.tobytes("raw", "RGBA"))
     return QImage(data, img.width, img.height,
                   QImage.Format.Format_RGBA8888).copy()
+
+
+class _HoverOverlay(QLabel):
+    """Étiquette d'info flottante sur le canvas : semi-transparente au repos,
+    pleinement opaque au survol (fondu court). L'opacité porte sur TOUT le widget
+    (fond + texte) via un QGraphicsOpacityEffect."""
+    _REST, _HOVER = 0.55, 1.0
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._fx = QGraphicsOpacityEffect(self)
+        self._fx.setOpacity(self._REST)
+        self.setGraphicsEffect(self._fx)
+        self._anim = QPropertyAnimation(self._fx, b"opacity", self)
+        self._anim.setDuration(120)
+
+    def _fade_to(self, v: float):
+        self._anim.stop()
+        self._anim.setStartValue(self._fx.opacity())
+        self._anim.setEndValue(v)
+        self._anim.start()
+
+    def enterEvent(self, e):
+        self._fade_to(self._HOVER); super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._fade_to(self._REST); super().leaveEvent(e)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -576,6 +603,45 @@ class BgInpaintCanvas(QWidget):
         )
         self._busy.hide()
 
+        # Overlays d'infos : infos read-only du fond (bas-gauche) + warnings de
+        # validation empilés (haut-droite). Alimentés par l'inspecteur via
+        # set_overlays() ; repositionnés au resize.
+        self._info_ov = self._make_overlay(Qt.AlignmentFlag.AlignLeft)
+        self._warn_ov = self._make_overlay(Qt.AlignmentFlag.AlignRight)
+
+    def _make_overlay(self, halign) -> QLabel:
+        l = _HoverOverlay(self)
+        l.setTextFormat(Qt.TextFormat.RichText)
+        l.setAlignment(halign | Qt.AlignmentFlag.AlignTop)
+        l.setStyleSheet(
+            "background:rgba(12,12,15,215); color:#e6e6e6; font-family:monospace;"
+            "font-size:11px; border-radius:5px; padding:5px 8px;"
+        )
+        l.hide()
+        return l
+
+    def set_overlays(self, info_lines: list, warn_lines: list):
+        """Infos read-only (bas-gauche) + warnings (haut-droite). `info_lines` =
+        list[str] ; `warn_lines` = list[(texte_html, couleur)]."""
+        if info_lines:
+            self._info_ov.setText("<br>".join(info_lines))
+            self._info_ov.adjustSize(); self._info_ov.show()
+        else:
+            self._info_ov.hide()
+        if warn_lines:
+            self._warn_ov.setText("<br>".join(
+                f"<span style='color:{c};'>{t}</span>" for t, c in warn_lines))
+            self._warn_ov.adjustSize(); self._warn_ov.show()
+        else:
+            self._warn_ov.hide()
+        self._reposition_overlays()
+
+    def _reposition_overlays(self):
+        m = 10
+        self._info_ov.move(m, max(m, self.height() - self._info_ov.height() - m))
+        self._warn_ov.move(max(m, self.width() - self._warn_ov.width() - m), m)
+        self._info_ov.raise_(); self._warn_ov.raise_()
+
     def set_busy(self, on: bool, text: str = "Compression…"):
         self._busy.setText(text)
         self._busy.setVisible(on)
@@ -613,5 +679,6 @@ class BgInpaintCanvas(QWidget):
         y = max(0, min(tb.y(), self.height() - tb.height()))
         tb.move(x, y)
         tb.raise_()
+        self._reposition_overlays()
         if self._busy.isVisible():
             self._center_busy()
