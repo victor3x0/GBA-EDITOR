@@ -21,6 +21,7 @@ COLOR_SCRIPT  = "#ffcb6b"
 COLOR_SCENE   = "#89ddff"
 COLOR_FOLDER  = "#546e7a"
 COLOR_SPRITE  = "#f78c6c"
+COLOR_BACKGROUND = "#82aaff"
 COLOR_SFX     = "#c3e88d"
 COLOR_MUSIC   = "#87d3c3"
 # Script Editor — catégories du panneau latéral (pas de type d'objet dédié)
@@ -41,8 +42,9 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "tool_collision_slope":      ("mdi.trending-up",             "◥"),
     "tool_collision_slope_inv":  ("mdi.trending-down",           "◣"),
     "tool_palette":          ("mdi.palette-outline",         "◐"),
-    "tool_bg_paint":         ("mdi.brush",                   "🖌"),
-    "tool_bg_rect":          ("mdi.select-drag",             "▭"),
+    "tool_inpaint_brush":         ("mdi.brush",                   "🖌"),
+    "tool_inpaint_rect":          ("mdi.select-drag",             "▭"),
+    "tool_fill":                  ("mdi.format-color-fill",       "🪣"),
     "eye":                   ("mdi.eye-outline",             "◉"),
     "eye_off":               ("mdi.eye-off-outline",         "◎"),
     # Project panel — types d'objets

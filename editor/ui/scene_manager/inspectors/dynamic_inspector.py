@@ -156,6 +156,16 @@ class DynamicInspector(QWidget):
         elif isinstance(obj, Prefab):
             self.show_prefab(obj, self._project)
 
+    def refresh_current(self):
+        """Recharge le panneau courant depuis les données projet — capte les
+        assets modifiés dans un autre écran (ex. palettes d'un fond recompressé
+        → grisées de la carte PALETTES ACTIVES). Ne change pas le mode affiché
+        ni ne rebranche de signaux."""
+        if self._stack.currentIndex() == self._MODE_SCENE:
+            sc, pr = self._scene_insp._scene, self._scene_insp._project
+            if sc and pr:
+                self._scene_insp.load(sc, pr)
+
     def show_empty(self):
         self._set_header("empty", "", "")
         self._stack.setCurrentIndex(self._MODE_EMPTY)

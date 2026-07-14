@@ -172,18 +172,39 @@ class BuildWorker(EventEmitter, threading.Thread):
                     if not layer.image:
                         continue
                     ba = p.get_background(layer.image)
+                    # Fond bitmap (Mode 4) : non supporté au build (increment 2) —
+                    # ignoré (sinon traité comme un fond tuilé/grit → données invalides).
+                    if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
+                        self._emit("log_line",
+                                   f"[bg] '{ba.name}' bitmap (Mode 4) — non supporté au "
+                                   f"build (increment 2) → ignoré")
+                        continue
                     if ba and ba.tileset:
-                        has_ov = bool(getattr(layer, "tile_palettes", None))
+                        has_ov = bool(getattr(layer, "tile_palette_overrides", None))
                         sym = bg_layer_sym_for(scene, layer)
                         # Map PROPRE À LA SCÈNE si overrides (scène = source de
                         # vérité), sinon partagée entre scènes (dédup ROM).
                         key = (scene.name, sym) if has_ov else (ba.name, layer.bg_slot)
                         if key not in seen_compressed:
                             seen_compressed.add(key)
-                            pal_offset = bg_layout.bg_block_offset(ba) or 0
+                            # Garde-fou 8bpp → 4bpp (transitoire) : aucun tileset
+                            # 8bpp ne doit atteindre bg_emit (il serait interprété
+                            # en 4bpp = corrompu).
+                            build_ba = self._bg_build_asset(p, ba)
+                            if build_ba is None:
+                                continue   # bitmap (Mode 4) — non émis (increment 2)
+                            # 8bpp = palette 256 sur TOUTE la PAL_BG_RAM : incompatible
+                            # avec un 2e calque de fond dans la même scène.
+                            if (getattr(build_ba, "bpp", 4) == 8
+                                    and sum(1 for L in d["bg_pairs"] if L.image) > 1):
+                                self._emit("error_line",
+                                           f"[bg] '{build_ba.name}' 8bpp occupe toute la palette "
+                                           f"BG — les autres calques de fond de la scène "
+                                           f"'{scene.name}' auront des couleurs incorrectes")
+                            pal_offset = bg_layout.bg_block_offset(build_ba) or 0
                             final_map = self._bg_final_tilemap(
-                                p, scene, ba, layer, pal_offset)
-                            self._emit_compressed_bg(p, ba, sym, final_map)
+                                p, scene, build_ba, layer, pal_offset)
+                            self._emit_compressed_bg(p, build_ba, sym, final_map)
                         continue
                     key = (layer.image, layer.bg_slot)
                     if key in seen_bg_layers:
@@ -341,16 +362,19 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     def _bg_final_tilemap(self, p, scene, ba, layer, pal_offset: int) -> list:
         """SE finale par cellule du layer (pal_offset DÉJÀ appliqué) :
-        - tuile PEINTE (`layer.tile_palettes`) -> SE_PALBANK = banque HW de la
+        - tuile PEINTE (`layer.tile_palette_overrides`) -> SE_PALBANK = banque HW de la
           banque de scène choisie (slot dans active_bg_palettes == index HW, cf.
           scene_bank_layout qui place chaque banque active à son slot). La scène
           est la source de vérité : l'asset (`ba.tilemap`) reste intact.
         - tuile normale -> pal_bank local + pal_offset (bloc de l'asset)."""
         from core.bg_compress import unpack_se, pack_se
-        tp = getattr(layer, "tile_palettes", None) or {}
+        tp = getattr(layer, "tile_palette_overrides", None) or {}
         tw = ba.tiles_w or 1
         out = []
-        for cell, se in enumerate(ba.tilemap):
+        # effective_tilemap() = baseline + overrides d'inpainting ASSET
+        # (BackgroundInpainting, partagé). Les overrides de SCÈNE (`tp`) se
+        # superposent par-dessus ci-dessous.
+        for cell, se in enumerate(ba.effective_tilemap()):
             tid, pb, fh, fv = unpack_se(se)
             col, row = cell % tw, cell // tw
             slot = tp.get((col, row))
@@ -364,6 +388,17 @@ class BuildWorker(EventEmitter, threading.Thread):
             out.append(pack_se(tid, pb + pal_offset, fh, fv))
         return out
 
+    def _bg_build_asset(self, p, ba):
+        """Filtre les fonds non émissibles au build. Un fond BITMAP (Mode 4) est
+        ignoré (retourne None — support ROM = increment 2). Les fonds tuilés,
+        4bpp comme 8bpp, sont émis nativement (retournés tels quels)."""
+        if getattr(ba, "mode", "tiled") == "bitmap":
+            self._emit("log_line",
+                       f"[bg] '{ba.name}' fond bitmap (Mode 4) — non supporté au build "
+                       f"(increment 2) → ignoré")
+            return None
+        return ba
+
     def _emit_compressed_bg(self, p, ba, sym, final_tilemap):
         """Émet un fond COMPRESSÉ (métadonnées) en C compatible grit — pas de
         grit. `sym` = symbole du layer (partagé, ou propre à la scène si peint,
@@ -371,12 +406,13 @@ class BuildWorker(EventEmitter, threading.Thread):
         déjà appliqués (cf. _bg_final_tilemap) — donc pal_offset=0 ici. cf.
         codegen/bg_emit."""
         from codegen.bg_emit import emit_bg_c
-        c, h = emit_bg_c(sym, ba.tileset, final_tilemap, pal_offset=0)
+        bpp = getattr(ba, "bpp", 4)
+        c, h = emit_bg_c(sym, ba.tileset, final_tilemap, pal_offset=0, bpp=bpp)
         p.grit_out_dir.mkdir(parents=True, exist_ok=True)
         (p.grit_out_dir / f"{sym}.c").write_text(c)
         (p.grit_out_dir / f"{sym}.h").write_text(h)
         self._emit("log_line",
-                   f"[bg] {ba.name} compressé -> {sym} "
+                   f"[bg] {ba.name} compressé ({bpp}bpp) -> {sym} "
                    f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes)")
 
     def _check_bg_tile_budget(self, p, layers) -> bool:

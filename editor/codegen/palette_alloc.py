@@ -16,6 +16,7 @@ cohérents sans se coordonner explicitement.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -228,6 +229,18 @@ def _find_free_block(slots: list, n: int) -> Optional[int]:
     return None
 
 
+def _own_bank_content(cols, pool: str) -> list[int]:
+    """Contenu à écrire dans une banque matérielle pour une palette propre.
+    `sprite.own_palette` (pool OBJ) est stocké SANS le slot 0 réservé (cf.
+    own_palette_from_source : "index 1..N, index 0 transparent implicite, pas
+    inclus") — il faut le préfixer ici, sous peine que la 1ère couleur du sprite
+    atterrisse en position 0 de la banque, où le hardware OBJ la rend
+    transparente quoi qu'il arrive (couleur jamais affichée). Le BG legacy
+    (`own_palette()`, extract_palette_from_image) inclut déjà ce slot — ne pas
+    le préfixer une 2e fois."""
+    return [RESERVED_SLOT_COLOR] + list(cols) if pool == "obj" else list(cols)
+
+
 def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     """Alloue les 16 banques d'un pool ("obj"|"bg") pour une scène :
     (1) palettes référencées à leur index fixe ; (2) pour OBJ, palettes propres
@@ -251,23 +264,12 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         if bank and bank.colors:
             slots[i] = list(bank.colors)
 
-    def _own_bank_content(cols) -> list[int]:
-        """Contenu à écrire dans une banque matérielle pour une palette propre.
-        `sprite.own_palette` (pool OBJ) est stocké SANS le slot 0 réservé (cf.
-        own_palette_from_source : "index 1..N, index 0 transparent implicite,
-        pas inclus") — il faut le préfixer ici, sous peine que la 1ère couleur
-        du sprite atterrisse en position 0 de la banque, où le hardware OBJ la
-        rend transparente quoi qu'il arrive (couleur jamais affichée). Le BG
-        legacy (`own_palette()` ci-dessus, extract_palette_from_image) inclut
-        déjà ce slot — ne pas le préfixer une 2e fois."""
-        return [RESERVED_SLOT_COLOR] + list(cols) if pool == "obj" else list(cols)
-
     own_slot: dict[tuple, Optional[int]] = {}
     # Prefabs poolés : slot global (réservé dans cette scène aussi).
     for key, slot in pf_slots.items():
         own_slot[key] = slot
         if slot is not None and slots[slot] is None:
-            slots[slot] = _own_bank_content(key)
+            slots[slot] = _own_bank_content(key, pool)
 
     # Fonds compressés (OWN) : bloc de banques CONTIGUËS par asset (N sous-
     # palettes), dédupliqué par contenu exact. Alloué avant les palettes
@@ -277,6 +279,20 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     for ba in compressed_assets:
         key = _bg_palettes_key(ba)
         if key in bg_block:
+            continue
+        if getattr(ba, "bpp", 4) == 8:
+            # 8bpp : UNE palette de 256 couleurs qui occupe LES 16 banques de
+            # PAL_BG_RAM (le pal_bank des SE est ignoré par le hardware). Ne peut
+            # donc PAS cohabiter avec d'autres palettes BG : si des banques sont
+            # déjà prises (référencées / autre asset), c'est un débordement.
+            pal256 = list(key[0]) if key else []
+            if all(s is None for s in slots):
+                for i in range(16):
+                    chunk = pal256[i * 16:(i + 1) * 16]
+                    slots[i] = list(chunk) + [0] * (16 - len(chunk))
+                bg_block[key] = 0
+            else:
+                bg_block[key] = None   # débordement (cohabitation impossible)
             continue
         n = min(len(key), 16)
         start = _find_free_block(slots, n)
@@ -295,7 +311,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         free = next((j for j in range(16) if slots[j] is None), None)
         own_slot[key] = free
         if free is not None:
-            slots[free] = _own_bank_content(cols)
+            slots[free] = _own_bank_content(cols, pool)
 
     # Banque 0 de secours : si la scène a du contenu palette mais que le slot 0
     # est resté vide, on le remplit d'une palette déterministe — un asset
@@ -306,3 +322,193 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         slots[0] = list(DEFAULT_PAL_BANK_COLORS)
 
     return SceneBankLayout(slots, own_slot, bg_block)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Vue éditeur — surface l'allocation par scène dans l'inspecteur
+# ─────────────────────────────────────────────────────────────────────────────
+# `scene_bank_layout` (ci-dessus) résout l'allocation AU BUILD, en silence. Ces
+# structures remontent la MÊME information dans l'éditeur (carte PALETTES
+# ACTIVES) : les palettes de la scène (éditables) suivies des palettes propres
+# des assets (grisées), pour que l'utilisateur voie et pilote les 16 banques au
+# lieu d'une boîte noire. Aucun champ de modèle nouveau : l'état « override » se
+# lit dans `pal_bank` (OWN vs slot référencé), la palette propre reste toujours
+# disponible (`sprite.own_palette`, modèle non-destructif).
+
+
+@dataclass
+class InstanceRef:
+    """Une instance de scène (acteur ou layer BG) qui apporte une palette
+    propre. `obj` est l'Actor / BackgroundLayer réel — muter `obj.pal_bank`
+    override (ou restaure) cette instance."""
+    kind: str          # "actor" | "bg_layer"
+    obj: object
+    label: str         # nom lisible (acteur / "BG{slot}")
+    pal_bank: int      # état courant : OWN_PAL_BANK ou slot scène référencé
+
+
+@dataclass
+class ScenePaletteEntry:
+    """Une palette ACTIVE de la scène (éditable). `slot` = index de banque
+    hardware (== index dans active_*_palettes, valeur de pal_bank pour la
+    référencer)."""
+    slot: int
+    name: str
+    colors: list
+
+
+@dataclass
+class AssetPaletteEntry:
+    """Une palette PROPRE d'asset partagée par ≥1 instance de la scène,
+    dédupliquée par couleurs. `state` :
+    - "own"      → aucune instance overridée : occupe une banque libre (grisée) ;
+    - "override" → toutes les instances pointent vers une palette de scène
+      (`ref_slot`) : ne consomme PAS de banque en plus (pointeur)."""
+    own_colors: list               # forme banque hardware (clé de dédup + rendu grisé)
+    instances: list                # list[InstanceRef]
+    state: str = "own"             # "own" | "override"
+    ref_slot: Optional[int] = None # override : slot scène ciblé
+    bank_span: int = 1             # nb de banques occupées (>1 pour fonds compressés)
+    overridable: bool = True       # False pour fonds compressés/bitmap (bloc multi-banques)
+
+
+@dataclass
+class ScenePaletteView:
+    """Vue ordonnée d'un pool ("obj"|"bg") pour une scène : palettes de scène
+    (contiguës depuis slot 0) puis palettes propres d'asset (grisées/override).
+    `banks_used` = banques réellement occupées (scène + assets « own », spans
+    compris) — le bouton « + » n'apparaît que s'il reste de la place."""
+    pool: str
+    scene_entries: list            # list[ScenePaletteEntry]
+    asset_entries: list            # list[AssetPaletteEntry]
+    banks_used: int
+
+    def can_add(self) -> bool:
+        return self.banks_used < 16
+
+
+def _obj_instance_pairs(p: Project, scene: Scene) -> list[tuple[tuple, InstanceRef]]:
+    """(clé couleurs, InstanceRef) pour chaque acteur actif à composant sprite
+    ayant une palette propre. La clé est la forme banque hardware (préfixe slot
+    0 réservé) — cohérente avec scene_bank_layout."""
+    out: list[tuple[tuple, InstanceRef]] = []
+    for a in scene.actors:
+        if not getattr(a, "active", True):
+            continue
+        comp = a.get_component("sprite")
+        if not (comp and getattr(comp, "active", True) and getattr(comp, "sprite_name", "")):
+            continue
+        cols = _sprite_own_palette(p.get_sprite(comp.sprite_name))
+        if not cols:
+            continue
+        key = tuple(_own_bank_content(cols, "obj"))
+        out.append((key, InstanceRef("actor", a, a.name,
+                                     getattr(a, "pal_bank", OWN_PAL_BANK))))
+    return out
+
+
+def _bg_instance_pairs(p: Project, scene: Scene) -> list[tuple[tuple, InstanceRef]]:
+    """(clé couleurs, InstanceRef) pour chaque layer BG legacy (non compressé)
+    ayant une palette propre extractible. Les fonds compressés/bitmap sont
+    exclus ici — ils occupent un BLOC de banques et sont remontés à part
+    (non-overridables pour l'instant, cf. scene_palette_view)."""
+    out: list[tuple[tuple, InstanceRef]] = []
+    for layer in getattr(scene, "background_layers", []):
+        if not getattr(layer, "image", ""):
+            continue
+        ba = p.get_background(layer.image)
+        if ba and getattr(ba, "tileset", None):
+            continue   # compressé : géré comme entrée de bloc
+        png = ba.source if ba and ba.source else f"{layer.image}.png"
+        cols = own_palette(p.background_images_dir / png)
+        if not cols:
+            continue
+        key = tuple(_own_bank_content(cols, "bg"))
+        out.append((key, InstanceRef("bg_layer", layer, f"BG{layer.bg_slot}",
+                                     getattr(layer, "pal_bank", OWN_PAL_BANK))))
+    return out
+
+
+def _bg_compressed_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
+    """Entrées d'asset pour les fonds COMPRESSÉS des layers de la scène : chacun
+    occupe un BLOC de N banques contiguës (ses N sous-palettes, SE_PALBANK par
+    tuile) — pas un slot unique. Non-overridables (on ne remappe pas un bloc
+    vers une seule palette de scène). Dédupliqués par contenu exact des
+    sous-palettes ; l'affichage échantillonne la 1ère sous-palette."""
+    groups: dict[tuple, tuple] = {}   # key -> (ba, [InstanceRef])
+    order: list[tuple] = []
+    for layer in getattr(scene, "background_layers", []):
+        if not getattr(layer, "image", ""):
+            continue
+        ba = p.get_background(layer.image)
+        if not (ba and getattr(ba, "tileset", None)):
+            continue
+        key = _bg_palettes_key(ba)
+        if key not in groups:
+            groups[key] = (ba, [])
+            order.append(key)
+        groups[key][1].append(InstanceRef(
+            "bg_layer", layer, f"BG{layer.bg_slot} ({layer.image})",
+            getattr(layer, "pal_bank", OWN_PAL_BANK)))
+    out: list[AssetPaletteEntry] = []
+    for key in order:
+        ba, refs = groups[key]
+        pals = getattr(ba, "palettes", None) or []
+        out.append(AssetPaletteEntry(
+            own_colors=list(pals[0]) if pals else [],
+            instances=refs, state="own", ref_slot=None,
+            bank_span=max(1, len(pals)), overridable=False,
+        ))
+    return out
+
+
+def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
+    """Construit la vue éditeur d'un pool pour une scène (cf. ScenePaletteView).
+
+    Dérivé du modèle, sans mutation : énumère les instances de la scène,
+    regroupe par palette propre (dédup couleurs) et lit `pal_bank` pour l'état
+    own/override. Ordre stable (première apparition)."""
+    active = list(getattr(scene, f"active_{pool}_palettes", []))
+
+    scene_entries: list[ScenePaletteEntry] = []
+    for i, name in enumerate(active):
+        if not name:
+            continue
+        bank = p.get_palette(name)
+        scene_entries.append(ScenePaletteEntry(
+            slot=i, name=name,
+            colors=list(bank.colors) if bank and bank.colors else [],
+        ))
+
+    pairs = _obj_instance_pairs(p, scene) if pool == "obj" else _bg_instance_pairs(p, scene)
+
+    groups: dict[tuple, list[InstanceRef]] = {}
+    order: list[tuple] = []
+    for key, ref in pairs:
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(ref)
+
+    asset_entries: list[AssetPaletteEntry] = []
+    for key in order:
+        refs = groups[key]
+        own_refs = [r for r in refs if r.pal_bank == OWN_PAL_BANK]
+        if own_refs:
+            state, ref_slot = "own", None
+        else:
+            # Toutes overridées : slot de référence commun (elles partagent la
+            # même palette propre, donc convergent normalement vers le même).
+            state, ref_slot = "override", refs[0].pal_bank
+        asset_entries.append(AssetPaletteEntry(
+            own_colors=list(key), instances=refs, state=state, ref_slot=ref_slot,
+        ))
+
+    # BG compressé : blocs de banques (non-overridables) après les entrées à
+    # slot unique, dans l'ordre des layers.
+    if pool == "bg":
+        asset_entries += _bg_compressed_entries(p, scene)
+
+    banks_used = (len(scene_entries)
+                  + sum(e.bank_span for e in asset_entries if e.state == "own"))
+    return ScenePaletteView(pool, scene_entries, asset_entries, banks_used)

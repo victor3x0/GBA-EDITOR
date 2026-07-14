@@ -4,32 +4,126 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QComboBox,
-    QCheckBox, QScrollArea, QPushButton,
+    QCheckBox, QScrollArea, QPushButton, QMessageBox,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
-from core.project import Project, Scene
+from core.project import Project, Scene, OWN_PAL_BANK
 from core.asset_manager import BgLayerRow
-from core.history import get_history, SetFieldCmd, SwapFieldCmd, AddListItemCmd, RemoveListItemCmd
+from core.history import (
+    get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
+    RemoveListItemCmd, SetSceneModeCmd,
+)
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup
-from ui.common.palette_swatch import bank_icon as _bank_icon
+from ui.common.palette_swatch import (
+    bank_icon as _bank_icon, swatch_icon as _swatch_icon, plus_icon as _plus_icon,
+)
+
+
+class _ScenePaletteCmd(Command):
+    """Mutation undoable de l'allocation palette d'un pool ("obj"|"bg") de la
+    scène. Snapshot COMPLET (active_*_palettes + pal_bank de toutes les
+    instances du pool) → undo/redo fidèles, couvre uniformément replace / add /
+    remove (avec réindexation des références) / override / restore.
+
+    `mutate_fn` applique la nouvelle configuration ; le snapshot avant (pris à
+    la construction) et après (pris au 1er execute) suffisent à rejouer sans
+    ré-exécuter la logique de mutation."""
+
+    def __init__(self, scene, pool: str, mutate_fn, label: str,
+                 persist_fn=None, refresh_fn=None):
+        self._scene = scene
+        self._pool = pool
+        self._mutate = mutate_fn
+        self.label = label
+        self._persist = persist_fn
+        self._refresh = refresh_fn
+        self._before = self._snapshot()
+        self._after = None
+
+    def _active(self) -> list:
+        return getattr(self._scene, f"active_{self._pool}_palettes")
+
+    def _instances(self) -> list:
+        return (self._scene.actors if self._pool == "obj"
+                else self._scene.background_layers)
+
+    def _snapshot(self):
+        return (list(self._active()),
+                [(o, getattr(o, "pal_bank", OWN_PAL_BANK)) for o in self._instances()])
+
+    def _restore(self, snap):
+        active, banks = snap
+        self._active()[:] = active
+        for o, pb in banks:
+            o.pal_bank = pb
+
+    def _finish(self):
+        if self._persist:
+            self._persist()
+        if self._refresh:
+            self._refresh()
+
+    def execute(self):
+        if self._after is None:
+            self._mutate()
+            self._after = self._snapshot()
+        else:
+            self._restore(self._after)   # redo
+        self._finish()
+
+    def undo(self):
+        self._restore(self._before)
+        self._finish()
+
+
+# ── Table des modes vidéo GBA (pilote l'inspecteur adaptatif) ──────────────────
+# kind : "tiled" (0/1/2, fonds tuilés) | "bitmap" (3/4/5, un fond plein écran BG2).
+# bg_slots : slots BG hardware valides ; affine : slots en mode affine (rotation).
+# bg_palettes : la scène sélectionne-t-elle des banques de palette BG ? (non en 3/5).
+MODE_INFO: dict[int, dict] = {
+    0: {"kind": "tiled",  "bg_slots": (0, 1, 2, 3), "affine": (),     "bg_palettes": True,
+        "res": (240, 160), "tip": "4 fonds tuilés réguliers (BG0-3) · 4/8bpp"},
+    1: {"kind": "tiled",  "bg_slots": (0, 1, 2),    "affine": (2,),   "bg_palettes": True,
+        "res": (240, 160), "tip": "BG0-1 réguliers + BG2 affine (rotation/échelle)"},
+    2: {"kind": "tiled",  "bg_slots": (2, 3),       "affine": (2, 3), "bg_palettes": True,
+        "res": (240, 160), "tip": "BG2-3 affines"},
+    3: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
+        "res": (240, 160), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 240×160 (sans palette)"},
+    4: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": True,
+        "res": (240, 160), "bpp": 8,  "tip": "Bitmap BG2 · 8bpp paletté (256 couleurs) · 240×160"},
+    5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
+        "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 160×128"},
+}
 
 
 # ──────────────────────────────────────────────────────────────────
-#  _PaletteSlotGrid — 16 slots (2 barres horizontales de 8) d'un pool
+#  _PaletteSlotGrid — vue live des 16 banques d'un pool (cf. palette_alloc)
 # ──────────────────────────────────────────────────────────────────
 class _PaletteSlotGrid(QWidget):
     """
-    Grille compacte 2 lignes x 8 colonnes (2 barres horizontales) — chaque
-    slot est une icône carrée cliquable (même rendu que le finder du Palette
-    Editor), noire quand vide. Clic = popup de choix parmi le catalogue
-    projet ; clic droit = vider.
+    Grille compacte 2 lignes x 8 colonnes qui matérialise l'allocation d'une
+    scène (ScenePaletteView), dans l'ordre :
+
+      [ palettes de scène (éditables) ][ palettes d'asset (grisées / override) ]
+      [ bouton + ][ banques libres (noires) ]
+
+    - palette de scène : clic = remplacer (catalogue), clic droit = retirer ;
+    - palette d'asset « own » (grisée) : clic = override par une palette de
+      scène ; « override » (marqueur d'angle) : clic droit = revenir à la
+      palette d'origine de l'asset ;
+    - « + » : ajoute une palette de scène (masqué quand les 16 banques sont
+      pleines).
     """
 
-    slot_picked = pyqtSignal(int, str)   # index (0-15), nom (ou "" pour vider)
+    scene_replace  = pyqtSignal(int, str)     # slot hardware, nouveau nom
+    scene_add      = pyqtSignal(str)          # nouveau nom de palette de scène
+    scene_remove   = pyqtSignal(int)          # slot hardware à retirer
+    asset_override = pyqtSignal(object, int)  # AssetPaletteEntry, slot scène ciblé
+    asset_restore  = pyqtSignal(object)       # AssetPaletteEntry
 
     _COLS = 8   # 2 barres horizontales de 8 (row = i//8, col = i%8)
     _ICON_SIZE = 28
@@ -41,44 +135,140 @@ class _PaletteSlotGrid(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
         self._buttons: list[QPushButton] = []
+        self._catalog: list = []
+        self._scene_entries: list = []   # pour le picker d'override
 
-    def load(self, banks: list, active_names: list):
+    # ── Styles de cellule ─────────────────────────────────────────
+    def _style(self, *, bg: str, border: str, dashed: bool = False, width: int = 1) -> str:
+        b = "dashed" if dashed else "solid"
+        return (f"QPushButton{{background:{bg};border:{width}px {b} {border};border-radius:4px;}}"
+                f"QPushButton:hover{{border-color:{self._accent};}}")
+
+    def load(self, view, catalog: list):
+        """view : ScenePaletteView ; catalog : list[PaletteBank] (choix +/replace)."""
         for b in self._buttons:
             self._layout.removeWidget(b)
             b.deleteLater()
         self._buttons.clear()
+        self._catalog = catalog
+        self._scene_entries = list(view.scene_entries)
 
-        for i in range(16):
-            name = active_names[i] if i < len(active_names) else ""
-            bank = next((b for b in banks if b.name == name), None) if name else None
-            btn = QPushButton()
-            btn.setFixedSize(self._ICON_SIZE + 10, self._ICON_SIZE + 10)
-            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            if bank:
-                btn.setIcon(_bank_icon(bank, size=self._ICON_SIZE))
-                btn.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
-                btn.setToolTip(f"Slot {i} — {bank.name}")
-                btn.setStyleSheet(
-                    f"QPushButton{{background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};border-radius:4px;}}"
-                    f"QPushButton:hover{{border-color:{self._accent};}}"
-                )
-            else:
-                btn.setToolTip(f"Slot {i} — vide")
-                btn.setStyleSheet(
-                    f"QPushButton{{background:#000000;border:1px solid {C.BORDER_MID};border-radius:4px;}}"
-                    f"QPushButton:hover{{border-color:{self._accent};}}"
-                )
-            btn.clicked.connect(lambda _c, i=i, btn=btn, banks=banks: self._open_picker(i, btn, banks))
-            btn.customContextMenuRequested.connect(lambda _pos, i=i: self.slot_picked.emit(i, ""))
-            row, col = divmod(i, self._COLS)
+        # Ordre : palettes de scène → bouton « + » (séparateur) → palettes
+        # d'asset (grisées) → banques libres. Le « + » sépare l'éditable du
+        # grisé ; ajouter une palette de scène le décale (ainsi que les assets)
+        # vers la droite. Le « + » n'occupe pas de banque : il disparaît quand
+        # les 16 sont pleines, et scène/assets redeviennent contigus.
+        cells: list[tuple[str, object]] = []
+        for e in view.scene_entries:
+            cells.append(("scene", e))
+        if view.can_add():
+            cells.append(("plus", None))
+        for e in view.asset_entries:
+            # Un fond compressé occupe un BLOC de N banques → N cellules
+            # (même swatch), pour que la grille reflète les banques consommées.
+            for _ in range(max(1, getattr(e, "bank_span", 1))):
+                cells.append(("asset", e))
+        while len(cells) < 16:
+            cells.append(("empty", None))
+
+        for pos, (kind, entry) in enumerate(cells[:16]):
+            btn = self._make_cell(kind, entry, view)
+            row, col = divmod(pos, self._COLS)
             self._layout.addWidget(btn, row, col)
             self._buttons.append(btn)
 
-    def _open_picker(self, i: int, anchor_btn: QPushButton, banks: list):
-        entries = [(b.name, b.name, _bank_icon(b)) for b in banks]
+    def _make_cell(self, kind: str, entry, view) -> QPushButton:
+        btn = QPushButton()
+        btn.setFixedSize(self._ICON_SIZE + 10, self._ICON_SIZE + 10)
+        btn.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
+        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        if kind == "scene":
+            btn.setIcon(_swatch_icon(entry.colors, self._ICON_SIZE))
+            btn.setToolTip(f"Slot {entry.slot} — {entry.name}\n"
+                           f"Clic : remplacer · Clic droit : retirer")
+            btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=C.BORDER_MID))
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_scene(b, e.slot))
+            btn.customContextMenuRequested.connect(
+                lambda _p, e=entry: self.scene_remove.emit(e.slot))
+
+        elif kind == "asset":
+            names = ", ".join(i.label for i in entry.instances)
+            if entry.state == "override":
+                target = next((s for s in view.scene_entries
+                               if s.slot == entry.ref_slot), None)
+                cols = target.colors if target else entry.own_colors
+                btn.setIcon(_swatch_icon(cols, self._ICON_SIZE,
+                                         override=True, marker_color=self._accent))
+                tgt = target.name if target else "?"
+                btn.setToolTip(f"{names} → {tgt} (override)\n"
+                               f"Clic : changer · Clic droit : palette d'origine")
+                btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=self._accent))
+                btn.customContextMenuRequested.connect(
+                    lambda _p, e=entry: self.asset_restore.emit(e))
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_override(b, e))
+            elif not getattr(entry, "overridable", True):
+                # Bloc compressé : palette d'asset fixe, non remappable.
+                btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
+                span = getattr(entry, "bank_span", 1)
+                span_txt = f" — bloc de {span} banques" if span > 1 else ""
+                btn.setToolTip(f"{names} — fond compressé{span_txt}\n(palette non éditable)")
+                btn.setStyleSheet(
+                    f"QPushButton{{background:{C.BG_BASE};"
+                    f"border:1px solid {C.BORDER_DARK};border-radius:4px;}}")
+            else:  # own — palette propre grisée (overridable)
+                btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
+                btn.setToolTip(f"{names} — palette propre (non éditable)\n"
+                               f"Clic : override avec une palette de scène")
+                btn.setStyleSheet(self._style(bg=C.BG_BASE, border=C.BORDER_MID, dashed=True))
+                btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_override(b, e))
+
+        elif kind == "plus":
+            btn.setIcon(_plus_icon(self._ICON_SIZE, self._accent))
+            btn.setToolTip("Ajouter une palette de scène")
+            btn.setStyleSheet(
+                f"QPushButton{{background:#000000;"
+                f"border:1px dashed {self._accent};border-radius:4px;}}"
+                f"QPushButton:hover{{background:{C.SEL_BG};}}")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _c, b=btn: self._pick_add(b))
+
+        else:  # empty — banque libre
+            btn.setEnabled(False)
+            btn.setToolTip("Banque libre")
+            btn.setStyleSheet(self._style(bg="#000000", border=C.BORDER_DARK))
+
+        return btn
+
+    # ── Pickers ───────────────────────────────────────────────────
+    def _catalog_entries(self) -> list:
+        return [(b.name, b.name, _bank_icon(b)) for b in self._catalog]
+
+    def _pick_scene(self, anchor: QPushButton, slot: int):
+        popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
+                                  parent=self, new_label=None)
+        popup.picked.connect(lambda name, s=slot: self.scene_replace.emit(s, name))
+        popup.show_below(anchor)
+
+    def _pick_add(self, anchor: QPushButton):
+        popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
+                                  parent=self, new_label=None)
+        popup.picked.connect(lambda name: self.scene_add.emit(name))
+        popup.show_below(anchor)
+
+    def _pick_override(self, anchor: QPushButton, entry):
+        """Popup des palettes de SCÈNE — sélectionner override cet asset vers
+        cette banque (emit AssetPaletteEntry + slot ciblé)."""
+        if not self._scene_entries:
+            return
+        entries = [(s.name, str(s.slot), _swatch_icon(s.colors))
+                   for s in self._scene_entries]
         popup = ScriptPickerPopup(entries, self._accent, parent=self, new_label=None)
-        popup.picked.connect(lambda name, i=i: self.slot_picked.emit(i, name))
-        popup.show_below(anchor_btn)
+        popup.picked.connect(lambda val, e=entry: self.asset_override.emit(e, int(val)))
+        popup.show_below(anchor)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -143,8 +333,27 @@ class SceneInspector(QWidget):
             )
             return lbl
 
+        # ── Carte Mode vidéo (Scene Mode) ─────────────────────────
+        mode_card, mode_inner = _card(C.ACCENT_GRN)
+        mode_inner.addWidget(_card_title("SCENE MODE", C.ACCENT_GRN))
+        mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(3)
+        self._mode_btns: list[QPushButton] = []
+        for m in range(6):
+            b = self._make_mode_btn(m)
+            b.clicked.connect(lambda _c=False, m=m: self._on_set_mode(m))
+            mode_row.addWidget(b)
+            self._mode_btns.append(b)
+        mode_row.addStretch(1)   # boutons compacts alignés à gauche (les 6 tiennent toujours)
+        mode_inner.addLayout(mode_row)
+        self._mode_hint = QLabel("")
+        self._mode_hint.setFont(QFont(T.MONO, T.XS)); self._mode_hint.setWordWrap(True)
+        self._mode_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
+        mode_inner.addWidget(self._mode_hint)
+        cl.addWidget(mode_card)
+
         # ── Carte Background Asset ────────────────────────────────
         bg_card, bg_inner = _card(C.ACCENT_BLU)
+        self._bg_card = bg_card
 
         bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
         bg_hdr.addWidget(_card_title("BACKGROUND", C.ACCENT_BLU), 1)
@@ -155,16 +364,38 @@ class SceneInspector(QWidget):
 
         # Rows dynamiques des BackgroundLayers (portés par la scène)
         self._bg_layer_rows: list[BgLayerRow] = []
-        self._paint_target_slot: Optional[int] = None  # layer BG peint actif
+        self._inpaint_layer_slot: Optional[int] = None  # layer BG peint actif
         self._bg_layers_container = QVBoxLayout()
         self._bg_layers_container.setContentsMargins(0, 2, 0, 0)
         self._bg_layers_container.setSpacing(3)
         bg_inner.addLayout(self._bg_layers_container)
 
+        # Slot « fond bitmap » (modes 3/4/5) — un seul fond plein écran sur BG2.
+        self._bitmap_box = QWidget()
+        bmp_l = QVBoxLayout(self._bitmap_box)
+        bmp_l.setContentsMargins(0, 2, 0, 0); bmp_l.setSpacing(3)
+        self._btn_bitmap_pick = QPushButton("Choisir un fond bitmap…")
+        self._btn_bitmap_pick.setFont(QFont(T.MONO, T.SM))
+        self._btn_bitmap_pick.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_bitmap_pick.setStyleSheet(
+            f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
+            f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px 8px; text-align:left;}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI}; border-color:{C.ACCENT_BLU};}}"
+        )
+        self._btn_bitmap_pick.clicked.connect(self._pick_bitmap_bg)
+        bmp_l.addWidget(self._btn_bitmap_pick)
+        self._bitmap_note = QLabel("")
+        self._bitmap_note.setFont(QFont(T.MONO, T.XS)); self._bitmap_note.setWordWrap(True)
+        self._bitmap_note.setStyleSheet(f"color:{C.TEXT_DIM};")
+        bmp_l.addWidget(self._bitmap_note)
+        bg_inner.addWidget(self._bitmap_box)
+        self._bitmap_box.setVisible(False)
+
         cl.addWidget(bg_card)
 
         # ── Carte Paramètres ──────────────────────────────────────
         param_card, param_inner = _card(C.TEXT_DIM)
+        self._param_card = param_card
         param_inner.addWidget(_card_title("PARAMÈTRES", C.TEXT_NORM))
 
         ui_row = QHBoxLayout(); ui_row.setSpacing(6)
@@ -219,6 +450,7 @@ class SceneInspector(QWidget):
         pal_inner.addWidget(_card_title("PALETTES ACTIVES", C.ACCENT_GRN))
 
         self._pal_grids: dict[str, _PaletteSlotGrid] = {}
+        self._pal_sublabels: dict[str, QLabel] = {}
         for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
                                     ("bg", C.ACCENT_BLU, "BACKGROUND")):
             sub_lbl = QLabel(title)
@@ -226,9 +458,14 @@ class SceneInspector(QWidget):
             sub_lbl.setStyleSheet(f"color:{color}; letter-spacing:1px; margin-top:4px;")
             pal_inner.addWidget(sub_lbl)
             grid = _PaletteSlotGrid(color)
-            grid.slot_picked.connect(lambda i, name, pool=pool: self._on_palette_picked(pool, i, name))
+            grid.scene_replace.connect(lambda slot, name, pool=pool: self._on_scene_replace(pool, slot, name))
+            grid.scene_add.connect(lambda name, pool=pool: self._on_scene_add(pool, name))
+            grid.scene_remove.connect(lambda slot, pool=pool: self._on_scene_remove(pool, slot))
+            grid.asset_override.connect(lambda entry, slot, pool=pool: self._on_asset_override(pool, entry, slot))
+            grid.asset_restore.connect(lambda entry, pool=pool: self._on_asset_restore(pool, entry))
             pal_inner.addWidget(grid)
             self._pal_grids[pool] = grid
+            self._pal_sublabels[pool] = sub_lbl
 
         cl.addWidget(pal_card)
 
@@ -269,9 +506,156 @@ class SceneInspector(QWidget):
         self._combo_text_bg.setCurrentIndex(text_bg)
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
-        self._rebuild_layer_rows()
         self._rebuild_palette_slots()
+        self._apply_mode_ui()
         self._blocking = False
+
+    # ── Scene Mode (0-5) ──────────────────────────────────────────
+
+    def _make_mode_btn(self, m: int) -> QPushButton:
+        b = QPushButton(str(m))
+        b.setCheckable(True)
+        b.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        b.setFixedSize(40, 26)   # compact : les 6 boutons tiennent dans un panneau étroit
+        b.setStyleSheet(
+            f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
+            f"border:1px solid {C.BORDER_MID}; border-radius:3px;}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI};}}"
+            f"QPushButton:checked{{color:{C.ACCENT_GRN}; border:2px solid {C.ACCENT_GRN};"
+            f"background:{C.SEL_BG};}}"
+            f"QPushButton:disabled{{color:{C.TEXT_MUTED}; background:{C.BG_BASE};"
+            f"border-color:{C.BORDER_DARK};}}"
+        )
+        # Seul le Mode 0 rend réellement pour l'instant ; les autres sont grisés
+        # (le sélecteur/inspecteur adaptatif existe, mais pas encore le rendu).
+        if m == 0:
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(f"Mode 0 — {MODE_INFO[0]['tip']}")
+        else:
+            b.setEnabled(False)
+            b.setToolTip(f"Mode {m} — {MODE_INFO[m]['tip']}\n(rendu non encore implémenté — bientôt)")
+        return b
+
+    def _refresh_mode_buttons(self):
+        mode = getattr(self._scene, "render_mode", 0) if self._scene else 0
+        for i, b in enumerate(self._mode_btns):
+            b.setChecked(i == mode)
+
+    def _is_bitmap_layer(self, layer) -> bool:
+        ba = self._project.get_background(layer.image) if (self._project and layer.image) else None
+        return bool(ba and getattr(ba, "mode", "tiled") == "bitmap")
+
+    def _pruned_by_mode(self, m: int) -> list:
+        """Liste lisible des éléments qui seront supprimés en passant au mode `m`."""
+        info = MODE_INFO[m]
+        out: list = []
+        if info["kind"] == "bitmap":
+            for L in self._scene.background_layers:
+                if not self._is_bitmap_layer(L):
+                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.image})" if L.image else " (vide)"))
+        else:
+            valid = set(info["bg_slots"])
+            for L in self._scene.background_layers:
+                if L.bg_slot not in valid or self._is_bitmap_layer(L):
+                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.image})" if L.image else " (vide)"))
+        if not info["bg_palettes"]:
+            n = sum(1 for name in self._scene.active_bg_palettes if name)
+            if n:
+                out.append(f"{n} palette(s) BG active(s)")
+        return out
+
+    def _on_set_mode(self, m: int):
+        if self._blocking or not self._scene:
+            return
+        if m == getattr(self._scene, "render_mode", 0):
+            self._refresh_mode_buttons(); return
+        pruned = self._pruned_by_mode(m)
+        if pruned:
+            msg = (f"Passer en Mode {m} supprimera :\n• " + "\n• ".join(pruned)
+                   + "\n\nContinuer ? (Ctrl+Z pour annuler)")
+            if QMessageBox.question(
+                self, "Changer de mode de scène", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            ) != QMessageBox.StandardButton.Yes:
+                self._refresh_mode_buttons()
+                return
+        info = MODE_INFO[m]
+        old = self._scene.background_layers
+        if info["kind"] == "bitmap":
+            new_layers = [L for L in old if self._is_bitmap_layer(L)][:1]
+            for L in new_layers:
+                L.bg_slot = 2
+        else:
+            valid = set(info["bg_slots"])
+            new_layers = [L for L in old if L.bg_slot in valid and not self._is_bitmap_layer(L)]
+        new_bg_pals = list(self._scene.active_bg_palettes) if info["bg_palettes"] else []
+        get_history().push(SetSceneModeCmd(
+            self._scene, m, new_layers, new_bg_pals,
+            persist_fn=self._persist_scene,
+            refresh_fn=lambda: self.load(self._scene, self._project),
+        ))
+        self.changed.emit()
+
+    def _clear_layer_rows(self):
+        for row in self._bg_layer_rows:
+            row.hide(); row.setParent(None); row.deleteLater()
+        self._bg_layer_rows.clear()
+
+    def _refresh_bitmap_slot(self, info: dict):
+        """Met à jour le slot « fond bitmap » (modes 3/4/5) depuis la scène."""
+        layer = next((L for L in self._scene.background_layers
+                      if self._is_bitmap_layer(L)), None)
+        name = layer.image if layer else None
+        self._btn_bitmap_pick.setText(name or "Choisir un fond bitmap…")
+        rw, rh = info.get("res", (240, 160))
+        bpp = info.get("bpp", 8)
+        depth = "8bpp paletté (256)" if bpp == 8 else "16bpp couleur directe"
+        self._bitmap_note.setText(f"BG2 · {rw}×{rh} · {depth}"
+                                  + ("" if name else " — aucun fond sélectionné"))
+
+    def _pick_bitmap_bg(self):
+        if not self._project or not self._scene:
+            return
+        bitmaps = [b for b in self._project.backgrounds
+                   if getattr(b, "mode", "tiled") == "bitmap"]
+        if not bitmaps:
+            QMessageBox.information(
+                self, "Aucun fond bitmap",
+                "Importe d'abord une image en mode Bitmap dans le Background Editor.")
+            return
+        entries = [(b.name, b.name) for b in bitmaps]
+        popup = ScriptPickerPopup(entries, C.ACCENT_BLU, parent=self, new_label=None)
+        popup.picked.connect(self._set_bitmap_bg)
+        popup.show_below(self._btn_bitmap_pick)
+
+    def _set_bitmap_bg(self, name: str):
+        from core.project import BackgroundLayer
+        self._scene.background_layers[:] = [BackgroundLayer(image=name, bg_slot=2)]
+        self._persist_scene()
+        self._apply_mode_ui()
+        self.changed.emit()
+
+    def _apply_mode_ui(self):
+        """Adapte l'inspecteur au mode de la scène : zone background, paramètres,
+        palettes actives."""
+        mode = getattr(self._scene, "render_mode", 0) if self._scene else 0
+        info = MODE_INFO.get(mode, MODE_INFO[0])
+        is_tiled = info["kind"] == "tiled"
+        self._refresh_mode_buttons()
+        self._mode_hint.setText(info["tip"])
+        # BACKGROUND : rangées tuilées vs slot bitmap.
+        self._btn_bg_add.setVisible(is_tiled)
+        self._bitmap_box.setVisible(not is_tiled)
+        self._clear_layer_rows()
+        if is_tiled:
+            self._rebuild_layer_rows()
+        else:
+            self._refresh_bitmap_slot(info)
+        # PARAMÈTRES (texte TTE + scroll) : tuilé seulement.
+        self._param_card.setVisible(is_tiled)
+        # PALETTES : OBJ toujours, BG seulement en tuilé.
+        self._pal_sublabels["bg"].setVisible(is_tiled)
+        self._pal_grids["bg"].setVisible(is_tiled)
 
     def _rebuild_layer_rows(self):
         """Reconstruit les BgLayerRow depuis les layers de la SCÈNE."""
@@ -315,9 +699,9 @@ class SceneInspector(QWidget):
             row.bound_toggled.connect(lambda idx: self._on_bound_toggled(idx))
             row.layer_swap_requested.connect(self._on_layer_swap)
             row.visibility_toggled.connect(self._on_layer_visibility)
-            row.paint_target_selected.connect(self._on_paint_target)
+            row.inpaint_layer_selected.connect(self._on_inpaint_layer)
             row.set_visible_state(getattr(layer, "visible", True))
-            row.set_paint_target(layer.bg_slot == self._paint_target_slot)
+            row.set_inpaint_layer(layer.bg_slot == self._inpaint_layer_slot)
             self._bg_layers_container.addWidget(row)
             self._bg_layer_rows.append(row)
 
@@ -387,13 +771,13 @@ class SceneInspector(QWidget):
         self._persist_scene()
         get_dispatcher()._emit("bg_layer_visibility", bg_slot, visible)
 
-    def _on_paint_target(self, bg_slot: int):
+    def _on_inpaint_layer(self, bg_slot: int):
         """Sélectionne le layer peint par l'outil de peinture par palette.
         Radio-like : une seule cible active, les autres lignes se décochent."""
-        self._paint_target_slot = bg_slot
+        self._inpaint_layer_slot = bg_slot
         for row in self._bg_layer_rows:
-            row.set_paint_target(row.slot_index == bg_slot)
-        get_dispatcher()._emit("bg_paint_layer_changed", bg_slot)
+            row.set_inpaint_layer(row.slot_index == bg_slot)
+        get_dispatcher()._emit("inpaint_layer_changed", bg_slot)
 
     def _on_layer_swap(self, src_slot: int, dst_slot: int):
         """Glisser-déposer d'un BgLayerRow sur un autre : échange leurs
@@ -433,13 +817,17 @@ class SceneInspector(QWidget):
         self.changed.emit()
 
     def _add_bg_layer(self):
-        """Ajoute un nouveau layer vide à la scène."""
-        if not self._scene or len(self._scene.background_layers) >= 4:
+        """Ajoute un nouveau layer vide à la scène, sur un slot BG valide pour le
+        mode courant (Mode 0 : BG0-3 ; Mode 1 : BG0-2 ; Mode 2 : BG2-3)."""
+        if not self._scene:
             return
-        from core.project import BackgroundLayer
+        valid_slots = MODE_INFO.get(getattr(self._scene, "render_mode", 0),
+                                    MODE_INFO[0])["bg_slots"]
         used_slots = {L.bg_slot for L in self._scene.background_layers}
-        next_slot = next((i for i in range(4) if i not in used_slots),
-                         len(self._scene.background_layers))
+        next_slot = next((i for i in valid_slots if i not in used_slots), None)
+        if next_slot is None:
+            return   # tous les slots BG du mode sont occupés
+        from core.project import BackgroundLayer
         new_layer = BackgroundLayer(image="", bg_slot=next_slot, scroll_speed=1.0)
 
         def _refresh():
@@ -458,9 +846,11 @@ class SceneInspector(QWidget):
     _DEFAULT_BG_PALETTE_NAME = "DMG (GB Default) (BG)"   # BG  : 4 nuances
 
     def _rebuild_palette_slots(self):
+        from codegen.palette_alloc import scene_palette_view, ScenePaletteView
         if not self._scene or not self._project:
+            empty = ScenePaletteView("", [], [], 0)
             for pool in ("obj", "bg"):
-                self._pal_grids[pool].load([], [])
+                self._pal_grids[pool].load(empty, [])
             return
 
         # Catalogue unifié — les deux barres (OBJ/BG) piochent dans le même
@@ -481,26 +871,112 @@ class SceneInspector(QWidget):
                 active.append(default_name)
                 self._persist()
 
-            self._pal_grids[pool].load(banks, active)
+            view = scene_palette_view(self._project, self._scene, pool)
+            self._pal_grids[pool].load(view, banks)
 
-    def _on_palette_picked(self, pool: str, slot_idx: int, name: str):
-        if self._blocking or not self._scene:
-            return
-        lst = self._scene.active_obj_palettes if pool == "obj" else self._scene.active_bg_palettes
-        while len(lst) <= slot_idx:
-            lst.append("")
-        if lst[slot_idx] == name:
-            return
-        lst[slot_idx] = name
-        self._persist()
+    # ── Handlers grille de palettes ─────────────────────────────────
+
+    def _active_list(self, pool: str) -> list:
+        return self._scene.active_obj_palettes if pool == "obj" else self._scene.active_bg_palettes
+
+    def _palette_refresh(self, pool: str):
+        """Rebâtit la grille + rafraîchit le canvas après une mutation palette."""
         self._rebuild_palette_slots()
         if pool == "bg":
-            # Les BgLayerRow affichent l'icône de la banque résolue via
-            # layer.pal_bank -> active_bg_palettes[idx] — à reconstruire si
-            # cette sélection change ailleurs que depuis la rangée elle-même.
-            self._rebuild_layer_rows()
+            self._rebuild_layer_rows()   # les BgLayerRow résolvent leur icône via active_bg_palettes
+            for L in self._scene.background_layers:
+                get_dispatcher()._emit("bg_slot_changed", L.bg_slot)
+        else:
+            get_dispatcher()._emit("scene_sprites_changed")   # re-quantifier les acteurs
         self.changed.emit()
-        self.changed.emit()
+
+    def _push_palette_cmd(self, pool: str, mutate_fn, label: str):
+        get_history().push(_ScenePaletteCmd(
+            self._scene, pool, mutate_fn, label,
+            persist_fn=self._persist,
+            refresh_fn=lambda p=pool: self._palette_refresh(p),
+        ))
+
+    def _on_scene_replace(self, pool: str, slot: int, name: str):
+        """Remplace la palette de scène du slot par une autre du catalogue."""
+        if self._blocking or not self._scene:
+            return
+        active = self._active_list(pool)
+        if not (0 <= slot < len(active)) or active[slot] == name:
+            return
+
+        def mutate(a=active, s=slot, n=name):
+            a[s] = n
+        self._push_palette_cmd(pool, mutate, f"Palette scène [{slot}] → {name}")
+
+    def _on_scene_add(self, pool: str, name: str):
+        """Ajoute une palette de scène au premier slot libre — donc juste après
+        la dernière palette de scène (les slots libres = banques auto des
+        assets). Le « + » et les grisées se décalent d'un cran."""
+        if self._blocking or not self._scene:
+            return
+        active = self._active_list(pool)
+
+        def mutate(a=active, n=name):
+            free = next((i for i, x in enumerate(a) if not x), None)
+            if free is None:
+                a.append(n)
+            else:
+                a[free] = n
+        self._push_palette_cmd(pool, mutate, f"Ajouter palette scène {name}")
+
+    def _on_scene_remove(self, pool: str, slot: int):
+        """Retire la palette de scène du slot et RÉINDEXE les références :
+        instance pointant sur `slot` → OWN ; pointant au-delà → décrémentée."""
+        if self._blocking or not self._scene:
+            return
+        active = self._active_list(pool)
+        if not (0 <= slot < len(active)):
+            return
+        instances = self._instances_for(pool)
+
+        def mutate(a=active, s=slot, insts=instances):
+            del a[s]
+            for o in insts:
+                pb = getattr(o, "pal_bank", OWN_PAL_BANK)
+                if pb == s:
+                    o.pal_bank = OWN_PAL_BANK
+                elif pb > s:
+                    o.pal_bank = pb - 1
+        self._push_palette_cmd(pool, mutate, f"Retirer palette scène [{slot}]")
+
+    def _on_asset_override(self, pool: str, entry, slot: int):
+        """Override la palette propre d'un groupe d'assets vers une palette de
+        scène : toutes les instances du groupe passent en pal_bank=slot."""
+        if self._blocking or not self._scene:
+            return
+        active = self._active_list(pool)
+        if not (0 <= slot < len(active) and active[slot]):
+            return
+        targets = [i.obj for i in entry.instances if getattr(i, "obj", None) is not None]
+        if not targets:
+            return
+
+        def mutate(objs=targets, s=slot):
+            for o in objs:
+                o.pal_bank = s
+        self._push_palette_cmd(pool, mutate, f"Override asset → slot {slot}")
+
+    def _on_asset_restore(self, pool: str, entry):
+        """Revient à la palette d'origine (propre) du groupe d'assets."""
+        if self._blocking or not self._scene:
+            return
+        targets = [i.obj for i in entry.instances if getattr(i, "obj", None) is not None]
+        if not targets:
+            return
+
+        def mutate(objs=targets):
+            for o in objs:
+                o.pal_bank = OWN_PAL_BANK
+        self._push_palette_cmd(pool, mutate, "Restaurer palette d'origine")
+
+    def _instances_for(self, pool: str) -> list:
+        return self._scene.actors if pool == "obj" else self._scene.background_layers
 
     def _on_bound_toggled(self, idx: int):
         if self._blocking or not self._scene: return

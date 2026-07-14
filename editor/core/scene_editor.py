@@ -133,7 +133,7 @@ class BgLayerRaster:
     BackgroundAsset), exactement comme le build. L'asset n'est JAMAIS modifié.
 
     Par-dessus, des **overrides de scène** réassignent la palette d'une tuile
-    (`layer.tile_palettes` → slot dans `scene.active_bg_palettes`) : on relit le
+    (`layer.tile_palette_overrides` → slot dans `scene.active_bg_palettes`) : on relit le
     MÊME index de pixel dans une autre banque de 16 couleurs (sémantique
     `SE_PALBANK` du GBA). Réversible — retirer l'override rend la palette
     d'origine. Patche un bloc 8×8 en place pendant la peinture."""
@@ -145,12 +145,22 @@ class BgLayerRaster:
         #                 palettes(list[list[int]] BGR555)} — palettes d'origine.
         # bank_rgb_for : callable(slot:int) -> list[(r,g,b)] (16) | None, banque
         #                active de la scène pour un override.
-        from core.bg_compress import _hex_to_tile
         self.tiles_w = compiled["tiles_w"]
         self.tiles_h = compiled["tiles_h"]
-        self._tiles = [_hex_to_tile(t) for t in compiled["tileset"]]
         self._tilemap = list(compiled["tilemap"])
-        self._pal_rgb = [_pal_to_rgb16(pal) for pal in compiled["palettes"]]
+        self._bpp = compiled.get("bpp", 4)
+        if self._bpp == 8:
+            # 8bpp : tuiles en octets, UNE palette de 256 couleurs (pas de banques,
+            # pas d'override de scène — cf. _pal_for).
+            from core.bg_compress import _hex_to_tile8
+            from core.color_utils import bgr555_to_rgb888
+            self._tiles = [_hex_to_tile8(t) for t in compiled["tileset"]]
+            pal = compiled["palettes"][0] if compiled["palettes"] else []
+            self._pal_rgb = [[bgr555_to_rgb888(c) for c in pal]]
+        else:
+            from core.bg_compress import _hex_to_tile
+            self._tiles = [_hex_to_tile(t) for t in compiled["tileset"]]
+            self._pal_rgb = [_pal_to_rgb16(pal) for pal in compiled["palettes"]]
         self._bank_rgb_for = bank_rgb_for
         self._qimg = QImage(self.tiles_w * self.TILE, self.tiles_h * self.TILE,
                             QImage.Format.Format_RGBA8888)
@@ -177,7 +187,7 @@ class BgLayerRaster:
         for y in range(self.TILE):
             for x in range(self.TILE):
                 idx = grid[y * self.TILE + x]
-                if idx == 0:
+                if idx == 0 or idx >= len(pal_rgb):
                     continue
                 r, g, b = pal_rgb[idx]
                 px[x, y] = (r, g, b, 255)
@@ -185,8 +195,9 @@ class BgLayerRaster:
 
     def _pal_for(self, cell: int, slot):
         """Palette RGB à utiliser pour une cellule : override de scène si `slot`
-        résolu, sinon la palette d'origine de la tuile."""
-        if slot is not None:
+        résolu (4bpp uniquement), sinon la palette d'origine de la tuile. En 8bpp,
+        pas de banques ni d'override : toujours l'unique palette de 256."""
+        if self._bpp != 8 and slot is not None:
             bank = self._bank_rgb_for(slot)
             if bank:
                 return bank
@@ -194,14 +205,14 @@ class BgLayerRaster:
         return self._pal_rgb[pb] if pb < len(self._pal_rgb) else self._pal_rgb[0]
 
     # ── Composition ───────────────────────────────────────────────
-    def render(self, tile_palettes: dict):
+    def render(self, tile_palette_overrides: dict):
         """Recompose tout le layer : palettes d'origine + overrides de scène."""
         from PIL import Image
         out = Image.new("RGBA", (self.tiles_w * self.TILE, self.tiles_h * self.TILE),
                         (0, 0, 0, 0))
         for cell in range(len(self._tilemap)):
             col, row = cell % self.tiles_w, cell // self.tiles_w
-            slot = tile_palettes.get((col, row))
+            slot = tile_palette_overrides.get((col, row))
             blk = self._cell_block(cell, self._pal_for(cell, slot))
             out.paste(blk, (col * self.TILE, row * self.TILE))
         self._qimg = _pil_to_qimage(out)
@@ -235,9 +246,12 @@ def _asset_compiled(p: Project, ba, ap) -> Optional[dict]:
     sidecar `ba` si compressé, sinon compressée à la volée depuis le PNG
     (fallback legacy rare). None si indisponible."""
     if ba and ba.tileset:
+        # effective_tilemap() : baseline + overrides d'inpainting asset
+        # (BackgroundInpainting), pour que le canvas de scène montre le fond
+        # tel qu'édité au niveau éditeur, partagé entre toutes les scènes.
         return {"tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
-                "tileset": ba.tileset, "tilemap": ba.tilemap,
-                "palettes": ba.palettes}
+                "tileset": ba.tileset, "tilemap": ba.effective_tilemap(),
+                "palettes": ba.palettes, "bpp": getattr(ba, "bpp", 4)}
     if ap and ap.is_file():
         from core.bg_compress import compress_background
         try:
@@ -265,13 +279,13 @@ def build_bg_raster(p: Project, scene, layer, ap) -> Optional["BgLayerRaster"]:
         return _pal_to_rgb16(b.colors) if b and b.colors else None
 
     raster = BgLayerRaster(compiled, _bank_rgb_for)
-    raster.render(getattr(layer, "tile_palettes", {}) or {})
+    raster.render(getattr(layer, "tile_palette_overrides", {}) or {})
     return raster
 
 
 def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
     """Pixmap d'un layer BG pour le canvas — rendu PAR TUILE depuis la palette
-    d'origine de l'asset + overrides de scène peints (`layer.tile_palettes`).
+    d'origine de l'asset + overrides de scène peints (`layer.tile_palette_overrides`).
     Repli sur le PNG brut si l'asset n'a pas de représentation exploitable."""
     # layer.image vide -> `ap` pointe sur le DOSSIER background_images_dir
     # (pas un fichier) : ne rien afficher (l'ancien QPixmap(dir) échouait
@@ -657,16 +671,16 @@ class FloatingToolbar(QFrame):
         "collision_slope_inv": "tool_collision_slope_inv",
     }
 
-    # Sous-outils peinture palette BG — (id, icon_key, label, tooltip)
-    _BG_PAINT_MODES = [
-        ("bg_paint", "tool_bg_paint", "Pinceau palette",
-         "Peindre la palette d'une tuile (pinceau 8×8)"),
-        ("bg_rect", "tool_bg_rect", "Rectangle palette",
-         "Peindre la palette sur une zone rectangulaire"),
+    # Sous-outils inpainting de scène — (id, icon_key, label, tooltip)
+    _INPAINT_MODES = [
+        ("inpaint_brush", "tool_inpaint_brush", "Pinceau",
+         "Inpainting : repeindre la palette d'une tuile (pinceau 8×8)"),
+        ("inpaint_rect", "tool_inpaint_rect", "Rectangle",
+         "Inpainting : repeindre la palette sur une zone rectangulaire"),
     ]
-    _BG_PAINT_ICON_KEYS = {
-        "bg_paint": "tool_bg_paint",
-        "bg_rect": "tool_bg_rect",
+    _INPAINT_ICON_KEYS = {
+        "inpaint_brush": "tool_inpaint_brush",
+        "inpaint_rect": "tool_inpaint_rect",
     }
 
     def __init__(self, parent=None):
@@ -678,7 +692,7 @@ class FloatingToolbar(QFrame):
         self._drag_offset = QPoint()
         self._current_tool = "select"
         self._current_collision = "collision_8"
-        self._current_bg_paint = "bg_paint"
+        self._current_inpaint = "inpaint_brush"
 
         self.setFixedWidth(46)
         self.setStyleSheet("""
@@ -750,19 +764,19 @@ class FloatingToolbar(QFrame):
         self._btns["collision"] = self._btn_collision
 
         # ── Bouton peinture palette BG avec dropdown ──────────────
-        self._btn_bg_paint = QToolButton()
-        self._btn_bg_paint.setIcon(
-            _ico(self._BG_PAINT_ICON_KEYS[self._current_bg_paint],
+        self._btn_inpaint = QToolButton()
+        self._btn_inpaint.setIcon(
+            _ico(self._INPAINT_ICON_KEYS[self._current_inpaint],
                  COLOR_DEFAULT, COLOR_ACTIVE)
         )
-        self._btn_bg_paint.setIconSize(QSize(24, 24))
-        self._btn_bg_paint.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._btn_bg_paint.setToolTip("Peinture par palette BG  (B)")
-        self._btn_bg_paint.setCheckable(True)
-        self._btn_bg_paint.setFixedSize(36, 36)
-        self._btn_bg_paint.clicked.connect(self._on_bg_paint_click)
-        layout.addWidget(self._btn_bg_paint, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._btns["bg_paint_btn"] = self._btn_bg_paint
+        self._btn_inpaint.setIconSize(QSize(24, 24))
+        self._btn_inpaint.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_inpaint.setToolTip("Inpainting de scène  (B)")
+        self._btn_inpaint.setCheckable(True)
+        self._btn_inpaint.setFixedSize(36, 36)
+        self._btn_inpaint.clicked.connect(self._on_inpaint_click)
+        layout.addWidget(self._btn_inpaint, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._btns["inpaint_btn"] = self._btn_inpaint
 
         # ── Séparateur + outil palette ────────────────────────────
         sep2 = QFrame()
@@ -839,10 +853,10 @@ class FloatingToolbar(QFrame):
 
     # ── Peinture palette BG dropdown ──────────────────────────────
 
-    def _on_bg_paint_click(self):
-        self._show_bg_paint_menu()
+    def _on_inpaint_click(self):
+        self._show_inpaint_menu()
 
-    def _show_bg_paint_menu(self):
+    def _show_inpaint_menu(self):
         from PyQt6.QtGui import QAction
         from PyQt6.QtWidgets import QMenu
 
@@ -858,27 +872,27 @@ class FloatingToolbar(QFrame):
         from ui.common.icons import COLOR_DEFAULT
         from ui.common.icons import get as _ico
 
-        for mode_id, icon_key, label, tip in self._BG_PAINT_MODES:
+        for mode_id, icon_key, label, tip in self._INPAINT_MODES:
             act = QAction(label, self)
             act.setIcon(_ico(icon_key, COLOR_DEFAULT))
             act.setToolTip(tip)
             act.setCheckable(True)
-            act.setChecked(self._current_bg_paint == mode_id)
-            act.triggered.connect(lambda _, m=mode_id: self._select_bg_paint_mode(m))
+            act.setChecked(self._current_inpaint == mode_id)
+            act.triggered.connect(lambda _, m=mode_id: self._select_inpaint_mode(m))
             menu.addAction(act)
 
-        btn_pos = self._btn_bg_paint.mapToGlobal(
-            QPoint(self._btn_bg_paint.width() + 4, 0)
+        btn_pos = self._btn_inpaint.mapToGlobal(
+            QPoint(self._btn_inpaint.width() + 4, 0)
         )
         menu.exec(btn_pos)
 
-    def _select_bg_paint_mode(self, mode: str):
-        self._current_bg_paint = mode
+    def _select_inpaint_mode(self, mode: str):
+        self._current_inpaint = mode
         from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
         from ui.common.icons import get as _ico
 
-        self._btn_bg_paint.setIcon(
-            _ico(self._BG_PAINT_ICON_KEYS[mode], COLOR_DEFAULT, COLOR_ACTIVE)
+        self._btn_inpaint.setIcon(
+            _ico(self._INPAINT_ICON_KEYS[mode], COLOR_DEFAULT, COLOR_ACTIVE)
         )
         self._set_tool(mode)
 
@@ -891,7 +905,7 @@ class FloatingToolbar(QFrame):
             is_active = (
                 tid == tool
                 or (tid == "collision" and tool.startswith("collision"))
-                or (tid == "bg_paint_btn" and tool.startswith("bg_"))
+                or (tid == "inpaint_btn" and tool.startswith("inpaint"))
             )
             btn.setChecked(is_active)
         self.tool_changed.emit(tool)
@@ -1201,7 +1215,7 @@ class GBAView(QGraphicsView):
         self._snap_on = False
         self._snap_preview: "QGraphicsRectItem | None" = None
         # Contrôleur de peinture par palette BG (injecté par SceneEditor).
-        self.bg_paint_controller: "Optional[BgPaintController]" = None
+        self.inpainting_controller: "Optional[SceneInpaintingController]" = None
 
     def leaveEvent(self, e):
         if self._snap_preview:
@@ -1633,7 +1647,7 @@ def _layer_png_path(project: Project, layer):
 # ──────────────────────────────────────────────────────────────────
 #  Contrôleur de peinture par palette BG (SE_PALBANK par tuile)
 # ──────────────────────────────────────────────────────────────────
-class BgPaintController:
+class SceneInpaintingController:
     """Pilote la peinture par palette d'un layer BG dans le canvas de scène.
 
     Analogue au couple collision_overlay/collision_painted : détient l'état
@@ -1662,7 +1676,7 @@ class BgPaintController:
         actives = getattr(scene, "active_bg_palettes", []) if scene else []
         self._bank = 0 if actives else None
 
-    def set_active_layer(self, bg_slot: Optional[int]):
+    def set_inpaint_layer(self, bg_slot: Optional[int]):
         """Choisit le layer peint (par bg_slot). Construit son raster."""
         self._layer = None
         self._raster = None
@@ -1676,10 +1690,10 @@ class BgPaintController:
             ap = _layer_png_path(self._project, self._layer)
             self._raster = build_bg_raster(self._project, self._scene, self._layer, ap)
 
-    def set_active_bank(self, slot: Optional[int]):
+    def set_inpaint_bank(self, slot: Optional[int]):
         self._bank = slot
 
-    def active_banks(self) -> list:
+    def scene_bg_banks(self) -> list:
         """Liste (slot, PaletteBank) des banques BG actives résolues de la scène
         — source du bandeau de sélection de peinture."""
         out: list = []
@@ -1693,11 +1707,11 @@ class BgPaintController:
         return out
 
     @property
-    def active_layer_slot(self) -> Optional[int]:
+    def inpaint_layer_slot(self) -> Optional[int]:
         return self._layer.bg_slot if self._layer is not None else None
 
     @property
-    def active_bank(self) -> Optional[int]:
+    def inpaint_bank(self) -> Optional[int]:
         return self._bank
 
     @property
@@ -1715,7 +1729,7 @@ class BgPaintController:
     def begin_stroke(self):
         self._stroke = {}
 
-    def paint_tile(self, col: int, row: int, erase: bool = False):
+    def inpaint_tile(self, col: int, row: int, erase: bool = False):
         """Peint (ou efface) l'override d'une tuile ; met à jour le canvas en
         direct. Enregistre l'ancienne valeur dans le stroke courant."""
         if not self.ready or self._layer is None:
@@ -1724,7 +1738,7 @@ class BgPaintController:
             return
         key = (col, row)
         new = None if erase else self._bank
-        old = self._layer.tile_palettes.get(key)
+        old = self._layer.tile_palette_overrides.get(key)
         if old == new:
             return
         if self._stroke is not None:
@@ -1737,9 +1751,9 @@ class BgPaintController:
 
     def _apply_tile(self, key: tuple[int, int], slot: Optional[int]):
         if slot is None:
-            self._layer.tile_palettes.pop(key, None)
+            self._layer.tile_palette_overrides.pop(key, None)
         else:
-            self._layer.tile_palettes[key] = slot
+            self._layer.tile_palette_overrides[key] = slot
         if self._raster is not None:
             self._raster.patch_tile(key[0], key[1], slot)
 
@@ -1753,25 +1767,25 @@ class BgPaintController:
         self._stroke = None
         if not delta or self._layer is None:
             return
-        from core.history import BgPaintCmd, get_history
-        cmd = BgPaintCmd(self, self._layer, self._layer.bg_slot, dict(delta))
+        from core.history import SceneInpaintingCmd, get_history
+        cmd = SceneInpaintingCmd(self, self._layer, self._layer.bg_slot, dict(delta))
         h = get_history()
         h._undo.append(cmd)
         h._redo.clear()
         h.changed.emit()
         self._persist()
 
-    # ── Undo/redo (appelé par BgPaintCmd) ────────────────────────
-    def apply_layer_delta(self, layer, bg_slot: int, delta: dict, forward: bool):
+    # ── Undo/redo (appelé par SceneInpaintingCmd) ────────────────────────
+    def apply_override_delta(self, layer, bg_slot: int, delta: dict, forward: bool):
         """Réapplique un delta sur un layer (forward=redo, sinon undo), rebâtit
         le pixmap de ce layer, et persiste. Robuste même si ce n'est plus le
         layer actif."""
         for key, (old, new) in delta.items():
             slot = new if forward else old
             if slot is None:
-                layer.tile_palettes.pop(key, None)
+                layer.tile_palette_overrides.pop(key, None)
             else:
-                layer.tile_palettes[key] = slot
+                layer.tile_palette_overrides[key] = slot
         self.rebuild_layer_pixmap(bg_slot)
         self._persist()
 
@@ -1800,17 +1814,17 @@ class BgPaintController:
 # ──────────────────────────────────────────────────────────────────
 #  Bandeau flottant de sélection de la banque de peinture
 # ──────────────────────────────────────────────────────────────────
-class BgPaletteStrip(QFrame):
+class SceneInpaintingBankStrip(QFrame):
     """Bandeau flottant : pastilles des banques BG actives de la scène. Clic →
-    banque de peinture active du BgPaintController. Visible seulement quand un
+    banque de peinture active du SceneInpaintingController. Visible seulement quand un
     outil de peinture BG est actif."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._ctrl: Optional[BgPaintController] = None
+        self._ctrl: Optional[SceneInpaintingController] = None
         self._btns: dict[int, QToolButton] = {}
         self.setStyleSheet("""
-            BgPaletteStrip { background:#1c1c1c; border:1px solid #333;
+            SceneInpaintingBankStrip { background:#1c1c1c; border:1px solid #333;
                              border-radius:8px; }
             QToolButton { border:1px solid #2a2a2a; background:transparent;
                           border-radius:4px; padding:1px; }
@@ -1826,7 +1840,7 @@ class BgPaletteStrip(QFrame):
         self._layout.addWidget(self._hint)
         self.setVisible(False)
 
-    def bind(self, ctrl: "BgPaintController"):
+    def bind(self, ctrl: "SceneInpaintingController"):
         self._ctrl = ctrl
 
     def refresh(self):
@@ -1835,10 +1849,10 @@ class BgPaletteStrip(QFrame):
             b.setParent(None)
             b.deleteLater()
         self._btns.clear()
-        banks = self._ctrl.active_banks() if self._ctrl else []
+        banks = self._ctrl.scene_bg_banks() if self._ctrl else []
         self._hint.setVisible(not banks)
         from ui.common.palette_swatch import bank_icon
-        active = self._ctrl.active_bank if self._ctrl else None
+        active = self._ctrl.inpaint_bank if self._ctrl else None
         for slot, bank in banks:
             btn = QToolButton()
             btn.setCheckable(True)
@@ -1857,7 +1871,7 @@ class BgPaletteStrip(QFrame):
 
     def _select(self, slot: int):
         if self._ctrl:
-            self._ctrl.set_active_bank(slot)
+            self._ctrl.set_inpaint_bank(slot)
         for s, b in self._btns.items():
             b.setChecked(s == slot)
 
@@ -1882,25 +1896,25 @@ class CanvasContainer(QWidget):
         self._toolbar.raise_()
 
         # Bandeau flottant de sélection de la banque de peinture (bas-centre).
-        self._bg_palette_strip = BgPaletteStrip(self)
-        self._bg_palette_strip.raise_()
+        self._inpaint_bank_strip = SceneInpaintingBankStrip(self)
+        self._inpaint_bank_strip.raise_()
 
-    def bind_bg_paint(self, ctrl: "BgPaintController"):
-        self._bg_palette_strip.bind(ctrl)
+    def bind_inpainting(self, ctrl: "SceneInpaintingController"):
+        self._inpaint_bank_strip.bind(ctrl)
 
-    def refresh_bg_palette(self):
-        self._bg_palette_strip.refresh()
-        self._position_bg_strip()
+    def refresh_inpaint_banks(self):
+        self._inpaint_bank_strip.refresh()
+        self._position_inpaint_strip()
 
-    def set_bg_palette_visible(self, visible: bool):
+    def set_inpaint_strip_visible(self, visible: bool):
         if visible:
-            self._bg_palette_strip.refresh()
-            self._position_bg_strip()
-        self._bg_palette_strip.setVisible(visible)
-        self._bg_palette_strip.raise_()
+            self._inpaint_bank_strip.refresh()
+            self._position_inpaint_strip()
+        self._inpaint_bank_strip.setVisible(visible)
+        self._inpaint_bank_strip.raise_()
 
-    def _position_bg_strip(self):
-        strip = self._bg_palette_strip
+    def _position_inpaint_strip(self):
+        strip = self._inpaint_bank_strip
         strip.adjustSize()
         x = max(0, (self.width() - strip.width()) // 2)
         y = max(0, self.height() - strip.height() - 12)
@@ -1920,9 +1934,9 @@ class CanvasContainer(QWidget):
         y = max(0, min(tb.y(), self.height() - tb.height()))
         tb.move(x, y)
         tb.raise_()
-        if self._bg_palette_strip.isVisible():
-            self._position_bg_strip()
-            self._bg_palette_strip.raise_()
+        if self._inpaint_bank_strip.isVisible():
+            self._position_inpaint_strip()
+            self._inpaint_bank_strip.raise_()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -2058,9 +2072,9 @@ class SceneEditor(QWidget):
         self._gba_view.collision_painted.connect(self._on_collision_painted)
 
         # Contrôleur de peinture par palette BG + bandeau de palette flottant.
-        self._bg_paint_ctrl = BgPaintController(self._gba_scene)
-        self._gba_view.bg_paint_controller = self._bg_paint_ctrl
-        self._canvas_container.bind_bg_paint(self._bg_paint_ctrl)
+        self._inpainting_ctrl = SceneInpaintingController(self._gba_scene)
+        self._gba_view.inpainting_controller = self._inpainting_ctrl
+        self._canvas_container.bind_inpainting(self._inpainting_ctrl)
 
     # ── Événements ────────────────────────────────────────────────
 
@@ -2149,10 +2163,10 @@ class SceneEditor(QWidget):
                 from core.canvas_tools import CollisionTool
 
                 self._gba_view.set_tool(CollisionTool(self._gba_view, t))
-            case t if t.startswith("bg_"):
-                from core.canvas_tools import BgPaintTool
+            case t if t.startswith("inpaint"):
+                from core.canvas_tools import SceneInpaintingTool
 
-                self._gba_view.set_tool(BgPaintTool(self._gba_view, t))
+                self._gba_view.set_tool(SceneInpaintingTool(self._gba_view, t))
             case "add":
                 self._gba_view.set_tool(AddActorTool(self._gba_view))
             case "erase":
@@ -2160,7 +2174,7 @@ class SceneEditor(QWidget):
             case _:
                 self._gba_view.set_tool(SelectTool(self._gba_view))
         # Bandeau de palette visible seulement pour les outils de peinture BG.
-        self._canvas_container.set_bg_palette_visible(tool_id.startswith("bg_"))
+        self._canvas_container.set_inpaint_strip_visible(tool_id.startswith("inpaint"))
 
     def _on_collision_painted(self):
         """Persiste la collision_map après chaque stroke."""
@@ -2226,8 +2240,8 @@ class SceneEditor(QWidget):
                 self._gba_scene.set_bg(i, None)
 
         # Contexte de peinture par palette + peuplement du bandeau de palettes.
-        self._bg_paint_ctrl.set_context(project, scene)
-        self._canvas_container.refresh_bg_palette()
+        self._inpainting_ctrl.set_context(project, scene)
+        self._canvas_container.refresh_inpaint_banks()
 
         self._reload_sprites()
 
@@ -2402,14 +2416,14 @@ class SceneEditor(QWidget):
 
         # La banque de base / les layers ont pu changer : resynchroniser le
         # contrôleur de peinture (raster du layer actif) et le bandeau.
-        prev_slot = self._bg_paint_ctrl.active_layer_slot
-        self._bg_paint_ctrl.set_context(self._project, scene)
-        self._bg_paint_ctrl.set_active_layer(prev_slot)
-        self._canvas_container.refresh_bg_palette()
+        prev_slot = self._inpainting_ctrl.inpaint_layer_slot
+        self._inpainting_ctrl.set_context(self._project, scene)
+        self._inpainting_ctrl.set_inpaint_layer(prev_slot)
+        self._canvas_container.refresh_inpaint_banks()
 
-    def set_paint_layer(self, bg_slot: int):
+    def set_inpaint_layer(self, bg_slot: int):
         """Choisit le layer BG peint par l'outil de peinture (via l'inspecteur)."""
-        self._bg_paint_ctrl.set_active_layer(bg_slot)
+        self._inpainting_ctrl.set_inpaint_layer(bg_slot)
 
     def set_layer_visible(self, bg_slot: int, visible: bool):
         """Masque/affiche un layer dans le canvas (visibilité viewport éditeur)."""

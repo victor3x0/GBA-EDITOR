@@ -854,6 +854,7 @@ class AssetHeaderBar(QWidget):
                 "camera": _kind_colors(icons.COLOR_SCENE),
                 "script": _kind_colors(icons.COLOR_SCRIPT),
                 "sprite": _kind_colors(icons.COLOR_SPRITE),
+                "background": _kind_colors(icons.COLOR_BACKGROUND),
                 "sfx":    _kind_colors(icons.COLOR_SFX),
                 "music":  _kind_colors(icons.COLOR_MUSIC),
                 "uses":   _kind_colors(icons.COLOR_PREFAB),

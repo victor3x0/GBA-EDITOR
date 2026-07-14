@@ -16,7 +16,7 @@ Usage :
     "scene_sprites_changed"        — recréer les sprites canvas
     "actors_list_changed"          — rafraîchir la liste actors
     "bg_slot_changed"  (int slot)  — rafraîchir un BG slot précis
-    "bg_paint_layer_changed" (int slot)      — layer BG peint actif
+    "inpaint_layer_changed" (int slot)      — layer BG peint actif
     "bg_layer_visibility"    (int, bool)     — visibilité viewport d'un layer BG
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts

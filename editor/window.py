@@ -352,7 +352,7 @@ class MainWindow(QMainWindow):
         _d.on("actors_list_changed",   self.assets_finder_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
-        _d.on("bg_paint_layer_changed", self.scene_editor.set_paint_layer)
+        _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
         _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 3000))
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
@@ -503,6 +503,22 @@ class MainWindow(QMainWindow):
         self._screen_stack.setCurrentIndex(index)
         self._history.clear()
         self._bus.clear()
+        if index == 0:   # Scene Manager : re-synchroniser avec les assets
+            self._refresh_scene_manager()   # modifiés dans un autre écran
+
+    def _refresh_scene_manager(self):
+        """En revenant au Scene Manager, re-render le canvas + l'inspecteur
+        depuis les assets COURANTS. Le switch d'écran ne recharge rien : une
+        modification faite dans le Background/Sprite Editor (recompression,
+        inpainting, palettes) resterait sinon invisible ici jusqu'à la
+        re-sélection de la scène."""
+        se = getattr(self, "scene_editor", None)
+        if se is not None and getattr(se, "_project", None) is not None:
+            se.refresh_bg()        # re-render les fonds depuis les BackgroundAsset
+            se._reload_sprites()   # re-quantifier les acteurs (sprites édités)
+        insp = getattr(self, "_inspector", None)
+        if insp is not None:
+            insp.refresh_current()  # carte palettes / rangées layers (grisées d'asset)
 
     def _switch_screen(self, name: str):
         idx = self.SCREENS.index(name) if name in self.SCREENS else 0

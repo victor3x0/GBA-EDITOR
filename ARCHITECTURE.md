@@ -20,7 +20,7 @@ gba-editor/
 │   │   └── ...
 │   ├── codegen/
 │   │   ├── pipeline.py              ← orchestration build
-│   │   ├── asset_pipeline.py        ← grit (sprites + BG)
+│   │   ├── asset_pipeline.py        ← grit (sprites + BG + Sounds)
 │   │   └── runtime_codegen/         ← génération main.c, scènes, acteurs
 │   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
 │   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C

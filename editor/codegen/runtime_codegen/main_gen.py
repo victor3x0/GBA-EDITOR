@@ -75,6 +75,10 @@ def _bg_info(p: Project, scene) -> list[dict]:
         if not layer.image:
             continue
         ba = p.get_background(layer.image)
+        # Fond bitmap (Mode 4) : non supporté au build (increment 2) — ignoré ici
+        # (sinon il serait traité comme un fond tuilé legacy → symbole manquant).
+        if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
+            continue
         bg_slot = layer.bg_slot
         speed = int(layer.scroll_speed * 256)
         sym = bg_layer_sym(layer.image, bg_slot)
@@ -99,6 +103,7 @@ def _bg_info(p: Project, scene) -> list[dict]:
                 "speed": speed, "pal_bank": layer.pal_bank, "compressed": True,
                 "stream": stream_h or stream_v, "stream_h": stream_h, "stream_v": stream_v,
                 "win_w": win_w, "win_h": win_h,
+                "bpp8": getattr(ba, "bpp", 4) == 8,   # BGxCNT bit 7 (256/1)
             })
         else:
             # Image non compressée -> taille depuis le PNG (chemin legacy).
@@ -674,6 +679,8 @@ def _gen_scene_init(
             # `3 - bg`) est donc la formule qui fait correspondre les deux.
             bg = bi["bg"]; sbb = bi["sbb"]; pri = bg; ms = bi["map_size"]
             val = (pri & 3) | (bg & 3) << 2 | (sbb & 0x1F) << 8 | ms << 14
+            if bi.get("bpp8"):
+                val |= 0x0080   # bit 7 : couleurs 256/1 (8bpp) au lieu de 16/16
             L.append(f"    *((vu16*)(0x04000008+{bg}*2))=0x{val:04X};")
     # Sprites VRAM
     all_sprites = scene_actors + (p._prefab_sprites_cache if hasattr(p, "_prefab_sprites_cache") else [])

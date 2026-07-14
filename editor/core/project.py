@@ -314,13 +314,13 @@ class BackgroundLayer:
     # Overrides de palette PAR TUILE 8×8 (champ SE_PALBANK du hardware GBA) :
     # (col, row) -> slot (0-15) dans scene.active_bg_palettes. Absent = utilise
     # pal_bank (banque de base du layer). Peint depuis le canvas du Scene Manager.
-    tile_palettes: dict = field(default_factory=dict)  # dict[tuple[int,int], int]
+    tile_palette_overrides: dict = field(default_factory=dict)  # dict[tuple[int,int], int]
     visible:      bool  = True   # visibilité VIEWPORT éditeur seule — le codegen
                                # l'ignore (le layer est toujours compilé).
 
 
-def _decode_tile_palettes(raw) -> dict:
-    """Relit tile_palettes du JSON ({"col,row": slot}) en dict[(col,row), slot].
+def _decode_tile_palette_overrides(raw) -> dict:
+    """Relit tile_palette_overrides du JSON ({"col,row": slot}) en dict[(col,row), slot].
     Tolère l'absence (None) et les clés mal formées (ignorées)."""
     out: dict[tuple[int, int], int] = {}
     if not raw:
@@ -348,9 +348,88 @@ class BackgroundAsset(Resource):
     tiles_w:  int = 0
     tiles_h:  int = 0
     compress_method: str = "median_cut"
+    # Mode couleur GBA du fond : 4 (jusqu'à 16 sous-palettes de 16, pal_bank par
+    # tuile — défaut) ou 8 (une seule palette de 256 couleurs, tuiles en octets,
+    # pas d'inpainting). Auto-détecté à l'import (> 256 couleurs -> 8bpp).
+    bpp: int = 4
+    dither: bool = False   # 8bpp uniquement : dithering du quantifieur (OFF par défaut)
+    # Type de fond : "tiled" (Mode 0, tuilé — défaut, cf. bpp) ou "bitmap" (Mode 4,
+    # plein écran 240×160, 256 couleurs, SANS tuiles — pour les photos/écrans-titre).
+    mode: str = "tiled"
+    bitmap: str = ""       # mode bitmap : index 8bpp du buffer (hex, out_w*out_h octets)
+    out_w: int = 0         # dimensions du bitmap après ajustement à ≤240×160
+    out_h: int = 0
+    # BackgroundInpainting (niveau ÉDITEUR, partagé entre scènes) : réassigne la
+    # palette (pal_bank local, index dans `palettes`) d'une tuile 8×8. La baseline
+    # `tilemap` reste intacte ; `effective_tilemap()` applique ces overrides.
+    # Analogue à BackgroundLayer.tile_palette_overrides mais au niveau de l'asset.
+    tile_palette_overrides: dict = field(default_factory=dict)  # dict[(col,row), pal_index]
+    # Diagnostics de compression (validateur éditeur, non-bloquant) — calculés à
+    # la compression, cf. bg_compress.compress_background. Le PNG reste intact.
+    diagnostics: dict = field(default_factory=dict)
 
     def image_name(self) -> str:
         return self.source
+
+    def effective_tilemap(self) -> list[int]:
+        """Tilemap avec les overrides d'inpainting asset appliqués (pal_bank par
+        tuile). La baseline `tilemap` n'est jamais modifiée — c'est ce helper que
+        consomment le canvas de scène, le canvas du Background Editor et le build,
+        pour que l'inpainting soit partagé partout."""
+        if not self.tile_palette_overrides:
+            return list(self.tilemap)
+        from core.bg_compress import unpack_se, pack_se
+        tw = self.tiles_w or 1
+        out: list[int] = []
+        for cell, se in enumerate(self.tilemap):
+            tid, pb, fh, fv = unpack_se(se)
+            ov = self.tile_palette_overrides.get((cell % tw, cell // tw))
+            out.append(pack_se(tid, pb if ov is None else ov, fh, fv))
+        return out
+
+    def add_palette_colors(self, colors: list) -> int:
+        """Ajoute une sous-palette (copie de ≤16 couleurs BGR555, ex: depuis une
+        PaletteBank du catalogue). Retourne son index, ou -1 si déjà 16 palettes."""
+        if len(self.palettes) >= 16:
+            return -1
+        pal = list(colors[:16])
+        pal += [0] * (16 - len(pal))
+        self.palettes.append(pal)
+        return len(self.palettes) - 1
+
+    def replace_palette(self, idx: int, colors: list) -> None:
+        """Remplace les couleurs de la sous-palette `idx`."""
+        if 0 <= idx < len(self.palettes):
+            pal = list(colors[:16])
+            pal += [0] * (16 - len(pal))
+            self.palettes[idx] = pal
+
+    def clear_palette(self, idx: int) -> None:
+        """Vide la sous-palette `idx` (ne garde que l'index 0 réservé) — les
+        tuiles qui l'utilisent deviennent transparentes. Ne retire pas la
+        palette (indices inchangés), contrairement à remove_palette."""
+        if 0 <= idx < len(self.palettes):
+            from core.color_utils import RESERVED_SLOT_COLOR
+            self.palettes[idx] = [RESERVED_SLOT_COLOR] + [0] * 15
+
+    def remove_palette(self, idx: int) -> None:
+        """Supprime la sous-palette `idx` et réconcilie les références : toute
+        tuile/override pointant sur `idx` retombe sur 0, les index `> idx` sont
+        décrémentés — dans les overrides ET dans les pal_bank de la baseline."""
+        if not (0 <= idx < len(self.palettes)):
+            return
+        self.palettes.pop(idx)
+
+        def _remap(v: int) -> int:
+            return 0 if v == idx else (v - 1 if v > idx else v)
+
+        self.tile_palette_overrides = {
+            k: _remap(s) for k, s in self.tile_palette_overrides.items()
+        }
+        from core.bg_compress import unpack_se, pack_se
+        for cell, se in enumerate(self.tilemap):
+            tid, pb, fh, fv = unpack_se(se)
+            self.tilemap[cell] = pack_se(tid, _remap(pb), fh, fv)
 
     def to_dict(self) -> dict:
         d = {"name": self.name}
@@ -362,6 +441,24 @@ class BackgroundAsset(Resource):
                 "tilemap": self.tilemap, "tiles_w": self.tiles_w,
                 "tiles_h": self.tiles_h, "compress_method": self.compress_method,
             })
+            if self.tile_palette_overrides:
+                d["tile_palette_overrides"] = {
+                    f"{c},{r}": s for (c, r), s in self.tile_palette_overrides.items()
+                }
+            if self.diagnostics:
+                d["diagnostics"] = self.diagnostics
+            if self.bpp != 4:
+                d["bpp"] = self.bpp
+            if self.dither:
+                d["dither"] = True
+        if self.mode == "bitmap" and self.bitmap:
+            d.update({
+                "mode": "bitmap", "bitmap": self.bitmap,
+                "out_w": self.out_w, "out_h": self.out_h,
+                "palettes": self.palettes,
+            })
+            if self.diagnostics:
+                d["diagnostics"] = self.diagnostics
         return d
 
     @classmethod
@@ -374,6 +471,14 @@ class BackgroundAsset(Resource):
             tilemap=list(d.get("tilemap", [])),
             tiles_w=d.get("tiles_w", 0), tiles_h=d.get("tiles_h", 0),
             compress_method=d.get("compress_method", "median_cut"),
+            tile_palette_overrides=_decode_tile_palette_overrides(
+                d.get("tile_palette_overrides")),
+            diagnostics=dict(d.get("diagnostics") or {}),
+            bpp=int(d.get("bpp", 4)),
+            dither=bool(d.get("dither", False)),
+            mode=d.get("mode", "tiled"),
+            bitmap=d.get("bitmap", ""),
+            out_w=int(d.get("out_w", 0)), out_h=int(d.get("out_h", 0)),
         )
         # Anciens layers (format multi-layer) — transitoire, lus pour migrer vers
         # Scene.background_layers puis abandonnés (to_dict ne les émet plus).
@@ -974,6 +1079,10 @@ class Scene(Resource):
     cam_follow: str = ""   # nom de l'Actor à suivre ("" = caméra libre)
     scroll_h: bool = True  # défilement horizontal activé
     scroll_v: bool = False # défilement vertical activé
+    # Mode vidéo GBA de la scène (0-5). 0 = 4 fonds tuilés réguliers (défaut) ;
+    # 1/2 = tuilé + affine ; 3/4/5 = un fond bitmap plein écran (BG2). Pilote
+    # l'inspecteur (zones background/palettes). cf. ui MODE_INFO.
+    render_mode: int = 0
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
@@ -1000,9 +1109,9 @@ class Scene(Resource):
             "background_layers": [
                 {"image": L.image, "bg_slot": L.bg_slot,
                  "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
-                 **({"tile_palettes": {f"{c},{r}": s
-                                       for (c, r), s in L.tile_palettes.items()}}
-                    if L.tile_palettes else {}),
+                 **({"tile_palette_overrides": {f"{c},{r}": s
+                                       for (c, r), s in L.tile_palette_overrides.items()}}
+                    if L.tile_palette_overrides else {}),
                  **({} if L.visible else {"visible": False})}
                 for L in self.background_layers
             ],
@@ -1010,6 +1119,7 @@ class Scene(Resource):
             "cam_x": self.cam_x,
             "cam_y": self.cam_y,
             "cam_follow": self.cam_follow,
+            "render_mode": self.render_mode,
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
             "script": self.script,
@@ -1036,7 +1146,10 @@ class Scene(Resource):
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
                 pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
-                tile_palettes= _decode_tile_palettes(L.get("tile_palettes")),
+                # Migration : ancienne clé "tile_palettes" (avant l'harmonisation
+                # de nomenclature) relue pour préserver les scènes déjà peintes.
+                tile_palette_overrides= _decode_tile_palette_overrides(
+                    L.get("tile_palette_overrides") or L.get("tile_palettes")),
                 visible      = L.get("visible", True),
             )
             for i, L in enumerate(d.get("background_layers", []))
@@ -1072,6 +1185,7 @@ class Scene(Resource):
             cam_x=d.get("cam_x", 0),
             cam_y=d.get("cam_y", 0),
             cam_follow=d.get("cam_follow", ""),
+            render_mode=int(d.get("render_mode", 0)),
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),
@@ -1394,20 +1508,44 @@ class Project:
             self.backgrounds.save(ba)
 
     @staticmethod
-    def _compress_background_asset(ba: "BackgroundAsset", png_path: Path, method: str = None):
-        """Calcule et stocke la compression GBA d'un fond (palettes/tileset/tilemap)
-        depuis son PNG — sans modifier le fichier. cf. core/bg_compress. No-op si
-        illisible."""
-        try:
-            from core.bg_compress import compress_background
-            c = compress_background(png_path, method=method or ba.compress_method)
-            ba.source = png_path.name
-            ba.palettes = c["palettes"]
+    def apply_bg_compression(ba: "BackgroundAsset", source_name: str, c: dict):
+        """Applique un résultat de compression (dict de bg_compress.compress_background)
+        à un BackgroundAsset. Séparé du calcul pour permettre une compression
+        hors-thread : le worker calcule `c`, le thread UI applique via ce helper."""
+        ba.source = source_name
+        ba.palettes = c["palettes"]
+        ba.diagnostics = c.get("diagnostics", {})
+        ba.bpp = c.get("bpp", 4)
+        ba.mode = c.get("mode", "tiled")
+        if ba.mode == "bitmap":
+            ba.bitmap = c["bitmap"]
+            ba.out_w = c["out_w"]
+            ba.out_h = c["out_h"]
+            # Pas de représentation tuilée en bitmap.
+            ba.tileset = []
+            ba.tilemap = []
+            ba.tiles_w = 0
+            ba.tiles_h = 0
+            ba.tile_palette_overrides = {}
+        else:
             ba.tileset = c["tileset"]
             ba.tilemap = c["tilemap"]
             ba.tiles_w = c["tiles_w"]
             ba.tiles_h = c["tiles_h"]
             ba.compress_method = c["compress_method"]
+            ba.bitmap = ""
+            ba.out_w = 0
+            ba.out_h = 0
+
+    @staticmethod
+    def _compress_background_asset(ba: "BackgroundAsset", png_path: Path, method: str = None):
+        """Calcule et stocke la compression GBA d'un fond (palettes/tileset/tilemap)
+        depuis son PNG — sans modifier le fichier. cf. core/bg_compress. No-op si
+        illisible. Chemin SYNCHRONE (import via watcher, reconcile au chargement)."""
+        try:
+            from core.bg_compress import compress_background
+            c = compress_background(png_path, method=method or ba.compress_method)
+            Project.apply_bg_compression(ba, png_path.name, c)
         except Exception:
             pass
 
@@ -1633,6 +1771,15 @@ class Project:
         if not new_name or new_name == bg.name:
             return
         old_name = bg.name
+        # Renommer aussi le PNG source : un BackgroundAsset est keyé par le stem
+        # de son PNG (name == stem(source)). Sans ça, _reconcile_backgrounds
+        # recréerait un asset orphelin depuis l'ancien PNG au prochain chargement.
+        old_png = (self.background_images_dir / bg.source) if bg.source else None
+        if old_png and old_png.exists():
+            new_png = old_png.with_name(f"{new_name}{old_png.suffix}")
+            if not new_png.exists():
+                old_png.rename(new_png)
+                bg.source = new_png.name
         self.backgrounds.rename(bg, new_name)
         # Met à jour les layers des scènes qui référencent ce fond par nom.
         for scene in self.scenes:
@@ -1843,6 +1990,12 @@ class Project:
 
         proj = cls(root)
         proj.settings.name = name
+
+        # Peupler le catalogue de palettes par défaut dès la création (sinon
+        # le seeding n'a lieu qu'au prochain load() et les palettes n'apparaissent
+        # qu'après un redémarrage). Réutilise la logique de seed/migration :
+        # palettes.items étant vide, on retombe sur les presets par défaut.
+        proj._seed_or_migrate_palettes()
 
         # Créer une scène de démarrage par défaut
         default_scene = Scene(name="Scene_01")

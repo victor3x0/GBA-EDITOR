@@ -533,7 +533,8 @@ class _FrameCanvas(QWidget):
         self._own_palette: list = []
         # Mode de preview : True = "indexé" (own_palette -> banque de preview,
         # rendu in-game), False = "png" (couleurs compressées de own_palette).
-        self._preview_indexed: bool = True
+        # Défaut = PNG (couleurs propres du sprite, sans banque de preview).
+        self._preview_indexed: bool = False
         # (rel_c, rel_r, src_col, src_row, flip_h, flip_v)
         self._brush: list[tuple[int, int, int, int, bool, bool]] = []
         self._hover: Optional[tuple[int, int]]       = None
@@ -1014,7 +1015,7 @@ class _CanvasFloatingToolbar(QFrame):
         # seulement en mode indexé. L'icône reflète la palette active (mise à
         # jour par SpriteCenterPanel) ; le clic ouvre un dropdown de palettes.
         self.btn_palette = _icon_btn("tool_palette", "Palette de preview")
-        self.btn_indexed.setChecked(True)
+        self.btn_original.setChecked(True)   # défaut = PNG (couleurs propres)
         self.btn_original.clicked.connect(lambda: self._set_preview_indexed(False))
         self.btn_indexed.clicked.connect(lambda: self._set_preview_indexed(True))
         _sep()

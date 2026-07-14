@@ -415,13 +415,13 @@ class CollisionTool(BaseTool):
 _BG_TILE = 8
 
 
-class BgPaintTool(BaseTool):
+class SceneInpaintingTool(BaseTool):
     """Peinture par palette d'un layer BG (réassignation SE_PALBANK par tuile).
 
-    mode : "bg_paint" (pinceau 8×8) | "bg_rect" (sélection rectangulaire).
+    mode : "inpaint_brush" (pinceau 8×8) | "inpaint_rect" (sélection rectangulaire).
     Clic gauche = peindre la banque active ; clic droit = effacer l'override.
     L'état (layer actif, banque de peinture, raster) vit dans
-    `view.bg_paint_controller`.
+    `view.inpainting_controller`.
     """
 
     _PREVIEW_FILL = QColor(120, 180, 255, 60)
@@ -438,7 +438,7 @@ class BgPaintTool(BaseTool):
     def activate(self):
         self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
         self._view.setCursor(Qt.CursorShape.CrossCursor)
-        if self._mode == "bg_rect":
+        if self._mode == "inpaint_rect":
             self._preview = QGraphicsRectItem(0, 0, 0, 0)
             self._preview.setBrush(QBrush(self._PREVIEW_FILL))
             self._preview.setPen(QPen(self._PREVIEW_BORDER, 0))
@@ -454,7 +454,7 @@ class BgPaintTool(BaseTool):
 
     # ── Helpers ──────────────────────────────────────────────────
     def _ctrl(self):
-        return getattr(self._view, "bg_paint_controller", None)
+        return getattr(self._view, "inpainting_controller", None)
 
     @staticmethod
     def _tile(pos: QPointF) -> tuple[int, int]:
@@ -468,11 +468,11 @@ class BgPaintTool(BaseTool):
         self._erase = e.button() == Qt.MouseButton.RightButton
         ctrl.begin_stroke()
         col, row = self._tile(pos)
-        if self._mode == "bg_rect":
+        if self._mode == "inpaint_rect":
             self._anchor = (col, row)
             self._update_preview(col, row)
         else:
-            ctrl.paint_tile(col, row, erase=self._erase)
+            ctrl.inpaint_tile(col, row, erase=self._erase)
         return True
 
     def on_move(self, pos: QPointF, e) -> bool:
@@ -482,22 +482,22 @@ class BgPaintTool(BaseTool):
         buttons = e.buttons()
         pressing = buttons & (Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton)
         col, row = self._tile(pos)
-        if self._mode == "bg_rect" and self._anchor is not None:
+        if self._mode == "inpaint_rect" and self._anchor is not None:
             self._update_preview(col, row)
-        elif self._mode == "bg_paint" and pressing:
-            ctrl.paint_tile(col, row, erase=self._erase)
+        elif self._mode == "inpaint_brush" and pressing:
+            ctrl.inpaint_tile(col, row, erase=self._erase)
         return True
 
     def on_release(self, pos: QPointF, e) -> bool:
         ctrl = self._ctrl()
         if not ctrl or not ctrl.ready:
             return True
-        if self._mode == "bg_rect" and self._anchor is not None:
+        if self._mode == "inpaint_rect" and self._anchor is not None:
             ac, ar = self._anchor
             ec, er = self._tile(pos)
             for r in range(min(ar, er), max(ar, er) + 1):
                 for c in range(min(ac, ec), max(ac, ec) + 1):
-                    ctrl.paint_tile(c, r, erase=self._erase)
+                    ctrl.inpaint_tile(c, r, erase=self._erase)
             self._anchor = None
             if self._preview:
                 self._preview.setVisible(False)
