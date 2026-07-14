@@ -1,16 +1,19 @@
 # GBA Editor
 
-Un éditeur visuel pour créer des jeux Game Boy Advance : scènes, sprites, collisions et un langage de scripts intégré (Lua, transpilé en C) depuis une seule interface. 
-Basé sur Python/PyQt6, s'appuie sur la toolchain  **devkitPro** pour compiler des ROMs `.gba` jouables sur émulateur ou hardware.
+Un éditeur visuel pour créer des jeux Game Boy Advance en Lua : scènes, sprites, collisions, son, depuis une seule interface.
+Développé en Python/PyQt6, le projet s'appuie sur la toolchain devkitPro pour compiler de véritables ROMs .gba, jouables aussi bien sur émulateur que sur console.
+Le choix de Lua s'est imposé pour sa simplicité et sa légèreté. Les scripts sont transpilés en C lors de la compilation, garantissant des ROMs optimisées, sans machine virtuelle ni coût d'exécution supplémentaire.
 
 ---
 
 ## Comment ça marche
 
-Chaque projet est entièrement regroupé dans son propre dossier. 
+Chaque projet est entièrement contenu dans son propre dossier. 
 Vous y retrouvez vos ressources (sprites, backgrounds, scripts, sons...), ainsi que les scènes et les éléments qui composent votre jeu.
 Importez vos backgrounds, ajoutez un acteur, construisez la logique de votre jeu.
-Il suffit de cliquer sur Build & Run. L'éditeur s'occupe automatiquement de préparer les ressources & de générer le code C nécessaire afin de compiler la ROM.
+Il suffit de cliquer sur Build & Run. 
+
+L'éditeur s'occupe automatiquement de préparer les ressources & de générer le code C nécessaire afin de tester votre jeu.
 
 ---
 
@@ -18,7 +21,7 @@ Il suffit de cliquer sur Build & Run. L'éditeur s'occupe automatiquement de pr�
 
 1. Télécharger le dernier `.exe` depuis l'onglet [Releases](https://github.com/victor3x0/GBA-EDITOR/releases).
 
-Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'éditeur les détecte automatiquement s'ils sont installés, sinon il propose leur chemin de téléchargement) :
+Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'éditeur les détecte automatiquement leur installation) :
 
 | Outil | Rôle | Lien |
 |-------|------|----------------|
@@ -27,7 +30,7 @@ Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'édi
 
 ## Fonctionnalités
 
-- **Éditeur de scènes** : composez vos niveaux en plaçant acteurs, collisions et caméra directement sur un canvas GBA..
+- **Éditeur de scènes** : composez vos niveaux en plaçant acteurs, collisions et caméra directement sur un canvas GBA.
 
 ![Scene Manager](docs/screenshots/SceneEditor.png) 
 
@@ -50,6 +53,15 @@ Un jeu Pong complet (scènes, sprites, scripts, son) est disponible dans [`Proje
 
 ---
 
+### Objectif de la Version 1.0
+
+Première version stable de **GBA Editor**.
+
+- Consolidation des fonctionnalités
+- Deuxième jeu de démo
+- Stabilisation du runtime et de l'éditeur
+- Documentation utilisateur
+
 ## Roadmap vers la v1.0
 
 - **v0.2** : Gestion des palettes de couleurs 
@@ -62,22 +74,12 @@ Un jeu Pong complet (scènes, sprites, scripts, son) est disponible dans [`Proje
 - **v0.9** : Distribution élargie (Linux)
 - **v0.10**: Traduction de l'interface de l'éditeur
 
-### 🚀 Version 1.0
-
-Première version stable de **GBA Editor**.
-
-- Consolidation des fonctionnalités
-- Deuxième jeu de démo
-- Stabilisation du runtime et de l'éditeur
-- Documentation utilisateur
-
 ## Les versions suivantes exploreront des fonctionnalités plus avancées de la Game Boy Advance :
-
-- **v2.0** : Backgrounds affines ("Mode 7"), rotation et zoom des couches de fond.
-- **v3.0** : Support des modes bitmap (modes vidéo 3, 4 et 5) pour le rendu en framebuffer.
 
 Fonctionnalités envisagées :
 
+- Backgrounds affines ("Mode 7"), rotation et zoom des couches de fond.
+- Support des modes bitmap (modes vidéo 3, 4 et 5) pour le rendu en framebuffer.
 - Support du câble Link (multijoueur)
 - Nouveaux outils d'édition
 - Optimisations du runtime
