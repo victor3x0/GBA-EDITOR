@@ -1,10 +1,11 @@
 {
   "name": "INTRO",
-  "background_asset": "",
+  "background_layers": [],
   "actors": [],
   "cam_x": 0,
   "cam_y": 0,
   "cam_follow": "",
+  "render_mode": 0,
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/INTRO.lua",
@@ -651,5 +652,12 @@
       0,
       0
     ]
-  ]
+  ],
+  "active_obj_palettes": [
+    "DMG (GB Default)"
+  ],
+  "active_bg_palettes": [
+    "DMG (GB Default)"
+  ],
+  "backdrop_color": null
 }

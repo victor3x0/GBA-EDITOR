@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QComboBox, QScrollArea
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T
 from ui.common.widgets import W
@@ -23,8 +23,10 @@ class SpriteRightPanel(QWidget):
     Panneau droit : header (nom éditable) + paramètres sprite + widget directionnel.
     """
 
-    sprite_changed  = pyqtSignal()
-    direction_added = pyqtSignal(object, object)  # AnimState, StateDirection nouvellement ajoutée
+    sprite_changed   = pyqtSignal()
+    direction_added  = pyqtSignal(object, object)  # AnimState, StateDirection nouvellement ajoutée
+    image_changed    = pyqtSignal()                # source du sprite changée — recharger le centre
+    palettes_changed = pyqtSignal()                # PAL_BANK mutée (grille) — rafraîchir la bande de preview
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,6 +71,7 @@ class SpriteRightPanel(QWidget):
 
         self._build_params()
         self._build_direction()
+        self._build_palette()
 
         self._content_layout.addStretch()
         scroll.setWidget(content)
@@ -108,6 +111,100 @@ class SpriteRightPanel(QWidget):
         self._dir_widget.directions_changed.connect(self._on_directions_changed)
         lay.addWidget(self._dir_widget)
 
+    def _build_palette(self):
+        from ui.common.palette_slot_grid import PaletteSlotGridAsset
+        lay = self._content_layout
+        W.separator(lay)
+        W.section("PALETTE", lay)
+
+        # Grille unifiée (modèle scène/background) : les sous-palettes de la
+        # PAL_BANK du sprite — dérivées du PNG grisées + overridables, « + » pour
+        # ajouter une banque du catalogue. La palette active de PEINTURE/preview se
+        # choisit dans la bande en tête du canvas.
+        self._pal_grid = PaletteSlotGridAsset(C.ACCENT_ORG, override_catalog=True)
+        self._pal_grid.scene_add.connect(self._on_pal_add)
+        self._pal_grid.scene_replace.connect(self._on_pal_replace)
+        self._pal_grid.scene_remove.connect(self._on_pal_remove)
+        self._pal_grid.asset_override.connect(self._on_pal_override)
+        self._pal_grid.asset_restore.connect(self._on_pal_restore)
+        lay.addWidget(self._pal_grid)
+
+        self._btn_import = W.btn_accent("⟐  Importer / remplacer l'image…")
+        self._btn_import.setToolTip(
+            "Choisit une image, la valide et l'encode (GBA, non-destructif) et "
+            "l'attache au sprite courant."
+        )
+        self._btn_import.clicked.connect(self._on_replace_image)
+        lay.addWidget(self._btn_import)
+
+        self._btn_extract = W.btn_accent("⟐  Extraire du PNG")
+        self._btn_extract.setToolTip(
+            "Crée une palette « pal_<nom> » du catalogue depuis les couleurs du PNG "
+            "(index 0 = transparence, puis du plus sombre au plus lumineux)."
+        )
+        self._btn_extract.clicked.connect(self._on_extract_palette)
+        lay.addWidget(self._btn_extract)
+
+    # ── Grille de palettes (sous-palettes de la PAL_BANK) ─────────
+    def _reload_palettes(self):
+        from ui.common.asset_palette_view import sprite_palette_view
+        view = sprite_palette_view(self._sprite)
+        catalog = list(self._project.palettes) if self._project else []
+        self._pal_grid.load(view, catalog)
+
+    def _pal_mutated(self):
+        """Persiste + rafraîchit la grille et le centre (bande de preview)."""
+        get_dispatcher().save_sprite(self._sprite)
+        self._reload_palettes()
+        self.palettes_changed.emit()
+
+    def _on_pal_add(self, name: str):
+        if not self._sprite or not self._project:
+            return
+        bank = self._project.get_palette(name)
+        if bank and self._sprite.add_palette_colors(bank.colors) >= 0:
+            self._pal_mutated()
+
+    def _on_pal_replace(self, idx: int, name: str):
+        if not self._sprite or not self._project or not (0 <= idx < len(self._sprite.palettes)):
+            return
+        bank = self._project.get_palette(name)
+        if bank:
+            self._sprite.replace_palette(idx, bank.colors)
+            self._pal_mutated()
+
+    def _on_pal_override(self, entry, name: str):
+        if not self._sprite or not self._project:
+            return
+        bank = self._project.get_palette(name)
+        if bank:
+            self._sprite.override_palette(entry.idx, name, bank.colors)
+            self._pal_mutated()
+
+    def _on_pal_restore(self, entry):
+        if self._sprite:
+            self._sprite.restore_palette(entry.idx)
+            self._pal_mutated()
+
+    def _on_pal_remove(self, idx: int):
+        if (self._sprite and 0 <= idx < len(self._sprite.palettes)
+                and len(self._sprite.palettes) > 1):
+            self._sprite.remove_palette(idx)
+            self._pal_mutated()
+
+    def _on_replace_image(self):
+        """Remplace le fichier image du sprite courant (ré-encodage non-destructif)."""
+        if not self._sprite or not self._project:
+            return
+        from .import_png_dialog import replace_sprite_image
+        if replace_sprite_image(self._project, self._sprite, self):
+            self._after_image_change()
+
+    def _after_image_change(self):
+        get_dispatcher().save_sprite(self._sprite)
+        self._reload_palettes()
+        self.image_changed.emit()
+
     # ── API publique ──────────────────────────────────────────────
 
     def load_sprite(self, sprite: SpriteAsset, project: Project):
@@ -127,6 +224,9 @@ class SpriteRightPanel(QWidget):
             self._sp_speed.setValue(self._state.speed)
             self._chk_loop.setChecked(self._state.loop)
             self._dir_widget.load(self._state)
+
+        # Grille des sous-palettes (PAL_BANK du sprite)
+        self._reload_palettes()
 
         self._blocking = False
 
@@ -157,6 +257,28 @@ class SpriteRightPanel(QWidget):
             self.sprite_changed.emit()
 
     # ── Slots ─────────────────────────────────────────────────────
+
+    def _on_extract_palette(self):
+        if not self._sprite or not self._project or not self._sprite.asset:
+            return
+        ap = self._project.root / self._sprite.asset
+        if not ap.exists():
+            return
+        from core.color_utils import extract_palette_from_image
+        from core.project import PaletteBank
+        colors = extract_palette_from_image(ap)
+        name = f"pal_{self._sprite.name}"
+        existing = self._project.palettes.get(name)
+        if existing:
+            # Ré-extraction d'une palette déjà générée : on écrase ses couleurs
+            # (action explicite "extraire", régénération attendue).
+            existing.colors = colors
+            bank = existing
+        else:
+            bank = PaletteBank(name=name, colors=colors)
+        # Passe par le dispatcher : persistance (watcher suspendu) + événement
+        # "palettes_changed" pour que le Palette Finder se rafraîchisse.
+        get_dispatcher().save_palette(bank)
 
     def _on_name_changed(self, new_name: str):
         if self._blocking or not self._sprite or not self._project:

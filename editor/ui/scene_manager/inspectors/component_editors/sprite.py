@@ -1,12 +1,11 @@
 """Éditeur du SpriteComponent."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox
-from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot, ScriptPickerPopup
-from ui.common.theme import C, T
+from ui.common.pickers import sprite_picker_slot, palette_picker_slot
+from ui.common.theme import C
 from ui.common.icons import COLOR_SPRITE
 from core.command_dispatcher import get_dispatcher
 
@@ -20,29 +19,13 @@ class SpriteEditor(BaseComponentEditor):
 
         # ── Sprite : bouton qui se déploie en liste filtrable, comme le
         #    slot "Ajouter un script" — plus de sélection de PNG direct.
-        slot = ScriptSlot(
-            add_label="Choisir un sprite",
-            accent_color=COLOR_SPRITE,
-            edit_label="Changer",
-        )
-        if sprite:
-            slot.set_script(sprite.name)
-
-        def _open_picker():
-            names = sorted(s.name for s in proj.sprites)
-            popup = ScriptPickerPopup(
-                [(n, n) for n in names], COLOR_SPRITE, parent=self.insp, new_label=None,
-            )
-            popup.picked.connect(lambda name: _on_sprite_picked(name))
-            popup.show_below(slot)
-
         def _on_sprite_picked(name: str):
             if self.insp._blocking or not self.insp._actor or name == comp.sprite_name:
                 return
             comp.sprite_name = name
             self.insp._save_component_change(None)
             self.insp._refresh_sprite_preview()
-            self.insp._build_editor(comp)   # re-affiche Frame/État/Anim pour le sprite choisi
+            self.insp._build_editor(comp)   # re-affiche État/Anim pour le sprite choisi
 
         def _on_sprite_cleared():
             if self.insp._blocking or not self.insp._actor:
@@ -52,53 +35,71 @@ class SpriteEditor(BaseComponentEditor):
             self.insp._refresh_sprite_preview()
             self.insp._build_editor(comp)
 
-        slot.set_callbacks(on_add=_open_picker, on_open=_open_picker, on_clear=_on_sprite_cleared)
+        slot = sprite_picker_slot(
+            [s.name for s in proj.sprites], sprite.name if sprite else None,
+            COLOR_SPRITE, on_picked=_on_sprite_picked, on_cleared=_on_sprite_cleared,
+            add_label="Choisir un sprite", parent=self.insp,
+        )
         W.row("Sprite", slot, layout)
 
-        # ── Frame size (tailles OAM valides GBA uniquement) ──────
-        _VALID_SIZES = {
-            8:  [8, 16, 32],
-            16: [8, 16, 32],
-            32: [8, 16, 32, 64],
-            64: [32, 64],
-        }
-        cur_w = sprite.frame_w if sprite else 16
-        cur_h = sprite.frame_h if sprite else 16
+        # ── Palette OBJ (pal_bank est un champ Actor/Prefab) ─────────────
+        #    Deux cas distincts :
+        #    · MODÈLE de prefab (pas de scène) → picker de SLOT numéroté 0-15
+        #      (+ « Sans palette ») : l'utilisateur choisit le slot hardware
+        #      que toute instance utilisera, prévisible quelle que soit la scène.
+        #    · Acteur / instance de prefab (dans une scène) → picker de palette
+        #      ACTIVE nommée (+ « Sans palette »), comme un acteur normal.
+        from core.project import OWN_PAL_BANK
+        from ui.common.pickers import PALETTE_NONE
+        actor = self.insp._actor
+        scene = self.insp._scene
 
-        cb_w = QComboBox(); cb_w.setFont(QFont(T.MONO, T.SM))
-        cb_h = QComboBox(); cb_h.setFont(QFont(T.MONO, T.SM))
-        cb_w.setEnabled(sprite is not None)
-        cb_h.setEnabled(sprite is not None)
+        if getattr(self.insp, "_is_prefab_template", False):
+            from ui.common.pickers import bank_slot_picker_slot
+            cur = getattr(actor, "pal_bank", OWN_PAL_BANK)
+            cur_slot = None if cur == OWN_PAL_BANK else cur
 
-        for v in [8, 16, 32, 64]:
-            cb_w.addItem(str(v))
-        cb_w.setCurrentText(str(cur_w))
+            def _on_slot_picked(val: str):
+                self.insp._set("pal_bank",
+                               OWN_PAL_BANK if val == PALETTE_NONE else int(val))
 
-        def _refresh_h(w_val, keep_h=None):
-            cb_h.blockSignals(True)
-            cb_h.clear()
-            for v in _VALID_SIZES.get(w_val, [8]):
-                cb_h.addItem(str(v))
-            target = str(keep_h) if keep_h in _VALID_SIZES.get(w_val, []) else str(_VALID_SIZES[w_val][0])
-            cb_h.setCurrentText(target)
-            cb_h.blockSignals(False)
+            pal_slot = bank_slot_picker_slot(
+                cur_slot, COLOR_SPRITE, on_picked=_on_slot_picked, parent=self.insp,
+            )
+            pal_slot.setToolTip(
+                "Modèle de prefab : choisis le SLOT de banque (0-15) que toute "
+                "instance utilisera, ou « Sans palette » (couleurs du PNG, slot "
+                "auto-alloué). Le slot est le même dans toutes les scènes."
+            )
+        else:
+            active_names = scene.active_obj_palettes if scene else []
+            active_banks = [b for n in active_names if (b := proj.get_palette(n))]
+            current_pal_name = (
+                active_names[actor.pal_bank]
+                if actor and 0 <= actor.pal_bank < len(active_names) else None
+            )
 
-        _refresh_h(cur_w, cur_h)
+            def _on_pal_picked(name: str):
+                if name == PALETTE_NONE:
+                    self.insp._set("pal_bank", OWN_PAL_BANK)
+                    return
+                try:
+                    idx = active_names.index(name)
+                except ValueError:
+                    return
+                self.insp._set("pal_bank", idx)
 
-        def _on_w(idx):
-            w = int(cb_w.currentText())
-            old_h = int(cb_h.currentText()) if cb_h.currentText() else None
-            _refresh_h(w, old_h)
-            h = int(cb_h.currentText())
-            self._set_sprite_field(comp, "frame_w", w)
-            self._set_sprite_field(comp, "frame_h", h)
-
-        def _on_h(_idx):
-            self._set_sprite_field(comp, "frame_h", int(cb_h.currentText()))
-
-        cb_w.currentIndexChanged.connect(_on_w)
-        cb_h.currentIndexChanged.connect(_on_h)
-        W.pair("Frame", "W", C.AXIS_X, cb_w, "H", C.AXIS_Y, cb_h, layout)
+            pal_slot = palette_picker_slot(
+                active_banks, current_pal_name,
+                COLOR_SPRITE, on_picked=_on_pal_picked,
+                add_label="Choisir une palette", parent=self.insp,
+            )
+            pal_slot.setToolTip(
+                "« Sans palette » = couleurs d'origine du PNG (par défaut). "
+                "Sinon, choisir une palette active de la scène (carte "
+                "\"Palettes actives\" de l'inspecteur de scène)."
+            )
+        W.row("Palette", pal_slot, layout)
 
         # ── État initial : même bouton+popup filtrable que "Sprite" ──
         state_slot = ScriptSlot(
@@ -175,15 +176,6 @@ class SpriteEditor(BaseComponentEditor):
     def _set_comp_field(self, comp, field, value):
         if self.insp._blocking or not self.insp._actor: return
         setattr(comp, field, value)
-        self.insp._save_component_change(comp)
-
-    def _set_sprite_field(self, comp, field, value):
-        if self.insp._blocking or not self.insp._actor: return
-        sprite = self.insp._project.get_sprite(comp.sprite_name) if comp.sprite_name else None
-        if not sprite:
-            return
-        setattr(sprite, field, value)
-        get_dispatcher().save_sprite(sprite)
         self.insp._save_component_change(comp)
 
     def _set_anim_speed(self, comp, value: int):

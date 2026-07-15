@@ -12,35 +12,18 @@ from pathlib import Path
 from typing import Optional
 
 from core.project import (
-    Project, Scene, BackgroundLayer,
-    Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, AnimState,
+    Project, Scene, Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, OWN_PAL_BANK,
 )
-from codegen.asset_pipeline import count_frames, sprite_unique_frames, _frame_key
+from codegen.palette_alloc import scene_bank_layout
+from codegen.asset_pipeline import (
+    count_frames, sprite_unique_frames, _seq_key,
+    bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
+)
 from codegen.build_utils import sym as _sym
 
 
 RUNTIME_DIR = Path(__file__).resolve().parents[3] / "runtime"
 
-_EV_SIGS = {
-    "on_start":           "void {s}_on_start(Actor* self);",
-    "on_update":          "void {s}_on_update(Actor* self);",
-    "on_late_update":     "void {s}_on_late_update(Actor* self);",
-    "on_collide":         "void {s}_on_collide(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_collision_enter": "void {s}_on_collision_enter(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_collision_exit":  "void {s}_on_collision_exit(Actor* self, Actor* other, u8 my_box, u8 other_box);",
-    "on_button_a":        "void {s}_on_button_a(Actor* self);",
-    "on_button_b":        "void {s}_on_button_b(Actor* self);",
-    "on_button_l":        "void {s}_on_button_l(Actor* self);",
-    "on_button_r":        "void {s}_on_button_r(Actor* self);",
-    "on_button_start":    "void {s}_on_button_start(Actor* self);",
-    "on_button_select":   "void {s}_on_button_select(Actor* self);",
-    "on_button_up":       "void {s}_on_button_up(Actor* self);",
-    "on_button_down":     "void {s}_on_button_down(Actor* self);",
-    "on_button_left":     "void {s}_on_button_left(Actor* self);",
-    "on_button_right":    "void {s}_on_button_right(Actor* self);",
-    "on_tile_collide":    "void {s}_on_tile_collide(Actor* self, int normal_x, int normal_y);",
-    "on_receive":         "void {s}_on_receive(Actor* self, int event_id, int value);",
-}
 
 _BTN_MAP = [
     ("BTN_A",      "on_button_a"),
@@ -61,28 +44,62 @@ def _actor_script(actor: Actor) -> Optional[str]:
     return comp.script if comp and comp.active else None
 
 
-def _bg_info(p: Project, bg_pairs: list[BackgroundLayer]) -> list[dict]:
-    sbb_map = {0: 8, 1: 12, 2: 20, 3: 28}
-    result  = []
-    for layer in bg_pairs:
-        if not layer.image:
+def _bg_info(p: Project, scene) -> list[dict]:
+    """Un CBB (16 Ko) par layer = bg_slot ; sa map occupe les derniers SBB de ce
+    CBB. Chaque layer de la scène référence une image ; sa compression vient du
+    BackgroundAsset (sidecar) keyé par ce nom. cf. pipeline._check_bg_tile_budget."""
+    result = []
+    for layer in getattr(scene, "background_layers", []):
+        if not layer.background_name:
             continue
-        ap = p.background_images_dir / layer.image
-        try:
-            from PIL import Image
-            with Image.open(ap) as img:
-                w, h = img.size
-        except Exception:
-            w, h = 240, 160
-        tw = min(max(math.ceil(w / 8), 1), 64)
-        th = min(max(math.ceil(h / 8), 1), 64)
-        ms = (1 if tw > 32 else 0) | (2 if th > 32 else 0)
-        stem = ap.stem
-        result.append({
-            "bg": layer.bg_slot, "stem": stem, "sym": _sym(stem),
-            "tw": tw, "th": th, "sbb": sbb_map.get(layer.bg_slot, 8),
-            "map_size": ms, "speed": int(layer.scroll_speed * 256),
-        })
+        ba = p.get_background(layer.background_name)
+        # Fond bitmap (Mode 4) : non supporté au build (increment 2) — ignoré ici
+        # (sinon il serait traité comme un fond tuilé legacy → symbole manquant).
+        if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
+            continue
+        bg_slot = layer.bg_slot
+        speed = int(layer.scroll_speed * 256)
+        sym = bg_layer_sym(layer.background_name, bg_slot)
+        if ba and ba.tileset:
+            # Fond COMPRESSÉ (métadonnées) — 16 palettes via g_pal_bg, tuiles/map
+            # depuis le C émis par pipeline._emit_encoded_bg. Un axe >64 tuiles
+            # dépasse la fenêtre hardware -> streaming (map résidente 64 sur cet axe).
+            # Symbole PROPRE À LA SCÈNE si le layer est peint (map d'overrides,
+            # cf. bg_layer_sym_for / pipeline._emit_encoded_bg).
+            sym = bg_layer_sym_for(scene, layer)
+            tw, th = ba.tiles_w, ba.tiles_h
+            stream_h = tw > 64
+            stream_v = th > 64
+            win_w = 64 if stream_h else tw
+            win_h = 64 if stream_v else th
+            ms = (1 if win_w > 32 else 0) | (2 if win_h > 32 else 0)
+            map_sbb_count = bg_map_sbb_count(ms)
+            result.append({
+                "bg": bg_slot, "stem": ba.name, "sym": sym,
+                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
+                "map_size": ms, "map_sbb_count": map_sbb_count,
+                "speed": speed, "pal_bank": layer.pal_bank, "compressed": True,
+                "stream": stream_h or stream_v, "stream_h": stream_h, "stream_v": stream_v,
+                "win_w": win_w, "win_h": win_h,
+                "bpp8": getattr(ba, "bpp", 4) == 8,   # BGxCNT bit 7 (256/1)
+            })
+        else:
+            # Image non compressée -> taille depuis le PNG (chemin legacy).
+            ap = p.background_images_dir / (ba.asset if ba and ba.asset else f"{layer.background_name}.png")
+            try:
+                from PIL import Image
+                with Image.open(ap) as img:
+                    w, h = img.size
+            except Exception:
+                w, h = 240, 160
+            tw, th, ms = bg_map_geometry(w, h)
+            map_sbb_count = bg_map_sbb_count(ms)
+            result.append({
+                "bg": bg_slot, "stem": ap.stem, "sym": sym,
+                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
+                "map_size": ms, "map_sbb_count": map_sbb_count,
+                "speed": speed, "pal_bank": layer.pal_bank,
+            })
     return result
 
 
@@ -98,131 +115,13 @@ def _pool_info(prefabs, pool_start: int) -> list[dict]:
 
 # ─── sections du main.c ───────────────────────────────────────────────────────
 
-def _section_includes(
-    scene: Scene,
-    bg_info: list[dict],
-    scene_actors: list,
-    prefab_sprites: list,
-    has_sound: bool,
-    soundbank_h: Path,
-) -> list[str]:
-    L = [
-        f"/* main.c - scene: {scene.name} - genere par GBA Editor */",
-        "#define GBA_ENGINE_IMPL",
-        "#include <gba_interrupt.h>",
-        "#include <gba_systemcalls.h>",
-        "#include <gba_input.h>",
-        '#include "gba_engine.h"',
-    ]
-    if has_sound and soundbank_h.exists():
-        L += ["#include <maxmod.h>", '#include "soundbank.h"']
-    L += ['#include "actor_api.h"', '#include "globals.h"', '#include "constants.h"']
-    if bg_info:
-        L.append('#include "tileset.h"')
-    done: set[str] = set()
-    for _, sprite in (scene_actors + prefab_sprites):
-        if sprite and sprite.asset and sprite.name not in done:
-            L.append(f'#include "sprite_{_sym(sprite.name)}.h"')
-            done.add(sprite.name)
-    return L
 
-
-def _section_externs(
-    scene: Scene,
-    lua_actors: list,
-) -> list[str]:
-    L: list[str] = []
-    if getattr(scene, "script", ""):
-        L += [
-            "", "/* Script de scène */",
-            "void scene_on_start(void);",
-            "void scene_on_update(void);",
-            "void scene_on_late_update(void);",
-        ]
-    if lua_actors:
-        L += ["", "/* Handlers générés depuis les scripts Lua */"]
-        for _, actor, _ in lua_actors:
-            s = _sym(actor.name)
-            L.append(f"/* {actor.name} */")
-            for sig in _EV_SIGS.values():
-                L.append(sig.format(s=s))
-    return L
-
-
-def _section_cmap(scene: Scene) -> list[str]:
-    cmap = scene.collision_map
-    if not cmap:
-        scene.ensure_collision_map()
-        cmap = scene.collision_map
-    rows, cols = len(cmap), len(cmap[0]) if cmap else 1
-    L = [
-        f"#define CMAP_W {cols}", f"#define CMAP_H {rows}",
-        "#define TILE_SIZE 8",
-        f"static const u8 g_cmap[{rows}][{cols}]={{",
-    ]
-    for row in cmap:
-        L.append("    {" + ",".join(str(v) for v in row) + "},")
-    L += [
-        "};",
-        "int tile_solid_at(int px,int py){",
-        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
-        "    if(tx<0||ty<0||tx>=CMAP_W||ty>=CMAP_H) return 1;",
-        "    return g_cmap[ty][tx]!=0;",
-        "}",
-        "int tile_get(int px,int py){",
-        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
-        "    if(tx<0||ty<0||tx>=CMAP_W||ty>=CMAP_H) return 0;",
-        "    return (int)g_cmap[ty][tx];",
-        "}",
-        # resolve_actor_tiles — résolution Y→X
-        "typedef void (*TileCollideCb)(Actor*,int,int);",
-        "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
-        "    for(int i=0;i<a->box_count;i++){",
-        "        CollisionBox*b=&a->boxes[i];",
-        "        if(!b->solid) continue;",
-        "        if(a->vy!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vy>0){",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,bot);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->y=(bot/TILE_SIZE)*TILE_SIZE-(int)b->y-(int)b->h;",
-        "                    if(cb)cb(a,0,1);else a->vy=0;}",
-        "            }else{",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,top);",
-        "                if(!hit) hit=tile_solid_at(right,top);",
-        "                if(hit){a->y=(top/TILE_SIZE+1)*TILE_SIZE-(int)b->y;",
-        "                    if(cb)cb(a,0,-1);else a->vy=0;}",
-        "            }",
-        "        }",
-        "        if(a->vx!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vx>0){",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(right,px);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->x=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
-        "                    if(cb)cb(a,1,0);else a->vx=0;}",
-        "            }else{",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(left,px);",
-        "                if(!hit) hit=tile_solid_at(left,bot);",
-        "                if(hit){a->x=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
-        "                    if(cb)cb(a,-1,0);else a->vx=0;}",
-        "            }",
-        "        }",
-        "    }",
-        "}",
-        "",
-    ]
-    return L
-
-
-def _section_spawn(pool_info: list[dict],
+def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
                    actor_defined_events: dict[str, set[str]] | None = None) -> list[str]:
+    """`obj_layout` : layout OBJ de la scène d'ancrage (1ère scène) — spawn_X
+    étant global, l'index de banque d'un prefab poolé est fixé depuis cette
+    scène (cohérent avec la résolution prefab par 1ère scène ; les incohérences
+    inter-scènes sont signalées par le validateur)."""
     if not pool_info:
         return []
 
@@ -234,7 +133,13 @@ def _section_spawn(pool_info: list[dict],
     L = ["/* ── Spawn helpers (prefabs poolés) ────────────────────── */"]
     for pi in pool_info:
         s, start, size, pf = pi["sym"], pi["start"], pi["size"], pi["prefab"]
-        pal = getattr(pf, "pal_bank", 0)
+        sp = next((c for c in pf.components
+                   if isinstance(c, SpriteComponent) and c.sprite_name), None)
+        sprite = p.get_sprite(sp.sprite_name) if sp else None
+        own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
+        pal = obj_layout.bank_index(getattr(pf, "pal_bank", OWN_PAL_BANK), own) if obj_layout else 0
+        if pal is None:
+            pal = 0
         boxes = [c for c in pf.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
 
         # pool_init est toujours généré par le transpileur, extern inconditionnel
@@ -314,7 +219,9 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
     state_speeds: list[int] = []
     state_loops: list[int] = []
 
-    frame_index, _ = sprite_unique_frames(sprite)
+    # seq_starts fait autorité sur le layout du sheet : chaque direction occupe
+    # un bloc contigu [start, start+count) — le runtime joue frame=start+k.
+    seq_starts, _ = sprite_unique_frames(sprite)
 
     for state in sprite.states:
         state_starts.append(len(entries))
@@ -323,12 +230,8 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
         dir_map = {sd.dir: sd for sd in state.directions}
         for sd in state.directions:
             src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            frame_indices = [
-                frame_index[_frame_key(f) + (sd.flip_h, sd.flip_v)]
-                for f in src_sd.frames
-            ]
-            start = frame_indices[0] if frame_indices else 0
-            count = len(frame_indices)
+            start = seq_starts[_seq_key(src_sd, sd.flip_h, sd.flip_v)]
+            count = len(src_sd.frames)
             entries.append(f"{{{sd.dir},{start},{count}}}")
         entries.append("{255,0,0}")   # sentinel de fin d'état
 
@@ -543,6 +446,40 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
     return result
 
 
+def _layout_palette_words(layout) -> list[int]:
+    """256 valeurs BGR555 (16 banques x 16 couleurs) depuis un SceneBankLayout
+    — inclut les palettes référencées ET les palettes propres auto-allouées
+    (cf. codegen/palette_alloc.py)."""
+    words = [0] * 256
+    for i, colors in enumerate(layout.slot_colors):
+        if not colors:
+            continue
+        for j, c in enumerate(colors[:16]):
+            words[i * 16 + j] = c
+    return words
+
+
+def _resolve_backdrop_color(p: Project, scene: Scene) -> int:
+    """Scene.backdrop_color surcharge ProjectSettings.backdrop_color si
+    défini (None = hérite du projet)."""
+    v = getattr(scene, "backdrop_color", None)
+    return v if v is not None else p.settings.backdrop_color
+
+
+def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
+    """PAL_OBJ_RAM de la scène — layout OBJ (référencées + propres allouées)."""
+    return _layout_palette_words(scene_bank_layout(p, scene, "obj"))
+
+
+def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
+    """PAL_BG_RAM de la scène — layout BG (référencées + propres, y compris
+    les blocs de banques des fonds compressés, cf. palette_alloc). words[0]
+    forcé à la couleur de backdrop."""
+    words = _layout_palette_words(scene_bank_layout(p, scene, "bg"))
+    words[0] = _resolve_backdrop_color(p, scene)
+    return words
+
+
 def _gen_scene_init(
     p: Project,
     scene: Scene,
@@ -559,6 +496,8 @@ def _gen_scene_init(
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
+    obj_layout = scene_bank_layout(p, scene, "obj")
+    bg_layout  = scene_bank_layout(p, scene, "bg")
     L = [f"static void scene_init_{sym}(void) {{"]
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
@@ -570,18 +509,34 @@ def _gen_scene_init(
         L.append(f"    g_cmap_h = CMAP_H_{sym.upper()};")
     else:
         L.append("    g_active_cmap = NULL; g_cmap_w = 0; g_cmap_h = 0;")
-    # BG layers
-    ts_sym = f"{sym}_tileset"  # préfixe grit : ex. PONG_tileset
+    # BG layers — chaque layer a son propre CBB (= bg_slot) pour ses tuiles,
+    # sa map vit dans les derniers SBB de ce même CBB (cf. _bg_info).
     if bgi:
-        L.append(f"    copy16(TILE_RAM(0), {ts_sym}Tiles, {ts_sym}TilesLen);")
         for bi in bgi:
-            ms = bi["map_size"]
-            gcols = 64 if (ms & 1) else 32
-            grows = 64 if (ms & 2) else 32
-            L.append(f"    load_map(MAP_RAM({bi['sbb']}), {bi['sym']}Map, {bi['tw']}, {bi['th']}, {gcols}, {grows});")
+            L.append(f"    copy16(TILE_RAM({bi['bg']}), {bi['sym']}Tiles, {bi['sym']}TilesLen);")
         for bi in bgi:
-            bg = bi["bg"]; sbb = bi["sbb"]; pri = 3 - bg; ms = bi["map_size"]
-            val = (pri & 3) | (sbb & 0x1F) << 8 | ms << 14
+            if bi.get("stream"):
+                # Streaming : charger la fenêtre résidente initiale depuis la map
+                # complète en ROM ; les bords se rechargent au scroll (tick).
+                L.append(f"    bg_stream_init(MAP_RAM({bi['sbb']}), {bi['sym']}Map, "
+                         f"{bi['tw']}, {bi['th']}, {bi['win_w']}, {bi['win_h']});")
+            else:
+                ms = bi["map_size"]
+                gcols = 64 if (ms & 1) else 32
+                grows = 64 if (ms & 2) else 32
+                L.append(f"    load_map(MAP_RAM({bi['sbb']}), {bi['sym']}Map, {bi['tw']}, {bi['th']}, {gcols}, {grows});")
+        for bi in bgi:
+            # Priorité GBA = bg_slot directement (bg_slot 0 = priorité 0 =
+            # premier plan). Même convention que l'éditeur (scene_editor.py
+            # GbaScene.set_bg : z = 3 - bg_index, donc bg_slot 0 = zValue le
+            # plus HAUT = dessiné devant dans le canvas Qt) — bg_slot 0 doit
+            # rester devant sur les deux. Or en registre BGxCNT, priorité 0 =
+            # dessiné DEVANT (l'inverse d'un zValue Qt) : `pri = bg` (pas
+            # `3 - bg`) est donc la formule qui fait correspondre les deux.
+            bg = bi["bg"]; sbb = bi["sbb"]; pri = bg; ms = bi["map_size"]
+            val = (pri & 3) | (bg & 3) << 2 | (sbb & 0x1F) << 8 | ms << 14
+            if bi.get("bpp8"):
+                val |= 0x0080   # bit 7 : couleurs 256/1 (8bpp) au lieu de 16/16
             L.append(f"    *((vu16*)(0x04000008+{bg}*2))=0x{val:04X};")
     # Sprites VRAM
     all_sprites = scene_actors + (p._prefab_sprites_cache if hasattr(p, "_prefab_sprites_cache") else [])
@@ -593,29 +548,40 @@ def _gen_scene_init(
         bt = sprite_offsets.get(sprite.name, 0)
         ss = f"sprite_{_sym(sprite.name)}"
         L.append(f"    copy16(OBJ_VRAM+{bt}*16, {ss}Tiles, {ss}TilesLen);")
-    # Palettes OBJ
-    done_pal: set[int] = set()
-    for actor, sprite in scene_actors:
-        if sprite and sprite.asset:
-            pal = getattr(actor, "pal_bank", 0)
-            if pal not in done_pal:
-                done_pal.add(pal)
-                ss = f"sprite_{_sym(sprite.name)}"
-                L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
-    # Palettes BG
-    if bgi:
-        L.append(f"    copy16(PAL_BG_RAM, {ts_sym}Pal, {ts_sym}PalLen);")
-    # TTE
+    # Palettes OBJ — chaque banque occupée du layout (référencée OU palette
+    # propre auto-allouée, cf. palette_alloc) est copiée dans PAL_OBJ_RAM.
+    for i, colors in enumerate(obj_layout.slot_colors):
+        if colors:
+            L.append(f"    copy16(PAL_OBJ_RAM+{i}*16, g_pal_obj_{sym}+{i}*16, 32);")
+    # Palette BG — chaque banque occupée du layout (référencée, bloc de fond
+    # compressé, ou palette propre auto-allouée, cf. palette_alloc) est copiée
+    # dans PAL_BG_RAM.
+    for i, colors in enumerate(bg_layout.slot_colors):
+        if colors:
+            L.append(f"    copy16(PAL_BG_RAM+{i}*16, g_pal_bg_{sym}+{i}*16, 32);")
+    # Backdrop — écrit inconditionnellement (indépendant de bgi/de
+    # l'occupation du slot 0 ci-dessus, qui ne copie que les slots occupés :
+    # une scène sans aucune palette BG active doit quand même pouvoir
+    # afficher une couleur de fond).
+    L.append(f"    PAL_BG_RAM[0] = 0x{_resolve_backdrop_color(p, scene):04X};")
+    # TTE — CBB/SBB du charblock DU LAYER UI choisi (pas figé sur CBB3) : les
+    # glyphes de police vivent dans le charblock text_bg (bg_slot == text_bg,
+    # cf. per-layer redesign CBB=bg_slot), dernier SBB de ce même charblock.
+    # Le layer UI ne doit porter aucune image (cf. _check_bg_text_cbb_conflict,
+    # devenu bloquant) : ce charblock est donc entièrement libre pour la police.
     text_bg = getattr(scene, "text_bg", -1)
     if text_bg in {0, 1, 2, 3}:
-        L.append(f"    tte_init_se({text_bg}, BG_CBB(3)|BG_SBB(31), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
+        text_sbb = text_bg * 8 + 7
+        L.append(f"    tte_init_se({text_bg}, BG_CBB({text_bg})|BG_SBB({text_sbb}), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
     # DISPCNT
     L.append(f"    REG_DISPCNT = 0x{dispcnt:04X};")
     # Init actors
-    for j, (actor, _) in enumerate(scene_actors):
+    for j, (actor, sprite) in enumerate(scene_actors):
         idx = actor_offset + j
         s = _sym(actor.name)
         boxes = [c for c in actor.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
+        own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
+        pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
         L += [
             f"    g_actors[{idx}].x       = {actor.x};",
             f"    g_actors[{idx}].y       = {actor.y};",
@@ -625,7 +591,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].flip_v  = {1 if getattr(_get_sprite_comp(actor),'flip_v',False) else 0};",
             f"    g_actors[{idx}].dir_x   = {getattr(actor,'dir_x',0)};",
             f"    g_actors[{idx}].dir_y   = {getattr(actor,'dir_y',0)};",
-            f"    g_actors[{idx}].pal_bank= {getattr(actor,'pal_bank',0)};",
+            f"    g_actors[{idx}].pal_bank= {pal if pal is not None else 0};",
             f"    g_actors[{idx}].auto_dir= {1 if getattr(_get_sprite_comp(actor),'auto_dir',True) else 0};",
             f"    g_actors[{idx}].anim_state=0;",
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
@@ -879,10 +845,15 @@ def _gen_scene_tick(
         if scene.scroll_v:
             L += ["    if(_g_keys_held&KEY_DOWN)  cam_y++;", "    if(_g_keys_held&KEY_UP)    cam_y--;"]
 
-    # BG scroll offset
+    # BG scroll offset H+V (+ streaming des bords pour un grand niveau)
     if bgi:
         for bi in bgi:
+            if bi.get("stream"):
+                L.append(f"    bg_stream_update(MAP_RAM({bi['sbb']}), {bi['sym']}Map, "
+                         f"{bi['tw']}, {bi['th']}, {bi['win_w']}, {bi['win_h']}, "
+                         f"{int(bi['stream_h'])}, {int(bi['stream_v'])}, cam_x, cam_y);")
             L.append(f"    BGOFS({bi['bg']})=(u16)((cam_x*{bi['speed']})>>8);")
+            L.append(f"    BGVOFS({bi['bg']})=(u16)((cam_y*{bi['speed']})>>8);")
             if scene.scroll_v:
                 L.append(f"    *((vu16*)(0x04000012+{bi['bg']}*4))=(u16)((cam_y*{bi['speed']})>>8);")
 
@@ -1035,9 +1006,9 @@ def generate_main(
         _add_inc('#include "soundbank.bin.h"')
 
     for d in all_scene_data:
-        bgi_d = _bg_info(p, d["bg_pairs"])
-        if bgi_d:
-            _add_inc(f'#include "{_sym(d["scene"].name)}_tileset.h"')
+        bgi_d = _bg_info(p, d["scene"])
+        for bi in bgi_d:
+            _add_inc(f'#include "{bi["sym"]}.h"')
         for _, sprite in d["scene_actors"]:
             if sprite and sprite.asset:
                 _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
@@ -1118,6 +1089,43 @@ def generate_main(
                 "",
             ]
 
+    # ── Palettes OBJ actives par scène (16 banques x 16 couleurs, résolues
+    #    depuis Scene.active_obj_palettes -> project.palettes) ────────────
+    # Émis uniquement si au moins un slot est réellement occupé — sinon la
+    # boucle copy16 correspondante dans _gen_scene_init ne référence jamais
+    # ce tableau ("defined but not used", en plus de gaspiller 512 octets
+    # de ROM par scène sans palette OBJ active, ex. INTRO/VICTORY).
+    for d in all_scene_data:
+        sc = d["scene"]
+        sym = _sym(sc.name)
+        if scene_bank_layout(p, sc, "obj").bank_count() > 0:
+            words = _scene_obj_palette_words(p, sc)
+            L += [
+                f"static const unsigned short g_pal_obj_{sym}[256] __attribute__((aligned(4))) = {{",
+                "    " + ", ".join(f"0x{v:04X}" for v in words),
+                "};",
+                "",
+            ]
+
+    # ── Palettes BG actives par scène (16 banques x 16 couleurs, résolues
+    #    depuis Scene.active_bg_palettes -> project.palettes) ──────────────
+    # Même garde qu'OBJ ci-dessus — le backdrop (PAL_BG_RAM[0]) est écrit à
+    # part comme constante littérale (_resolve_backdrop_color), pas depuis
+    # ce tableau, donc rien ne le référence si aucun slot BG n'est occupé.
+    for d in all_scene_data:
+        sc = d["scene"]
+        sym = _sym(sc.name)
+        # Émis si un slot BG est occupé (référencé, bloc de fond compressé, ou
+        # palette propre) ; le backdrop (PAL_BG_RAM[0]) est écrit séparément.
+        if scene_bank_layout(p, sc, "bg").bank_count() > 0:
+            words = _scene_bg_palette_words(p, sc)
+            L += [
+                f"static const unsigned short g_pal_bg_{sym}[256] __attribute__((aligned(4))) = {{",
+                "    " + ", ".join(f"0x{v:04X}" for v in words),
+                "};",
+                "",
+            ]
+
     # ── Globals ───────────────────────────────────────────────────
     L += [
         f"Actor g_actors[{n_actors}];",
@@ -1130,14 +1138,16 @@ def generate_main(
         "",
     ]
 
-    # Spawn helpers
-    L += _section_spawn(pi, actor_defined_events=actor_defined_events)
+    # Spawn helpers — index de banque des prefabs poolés résolu via la
+    # 1ère scène (spawn_X est global).
+    _anchor_obj_layout = scene_bank_layout(p, all_scenes[0], "obj") if all_scenes else None
+    L += _section_spawn(pi, p, _anchor_obj_layout, actor_defined_events=actor_defined_events)
 
     # ── scene_init_X() par scène ──────────────────────────────────
     for i, d in enumerate(all_scene_data):
         sc         = d["scene"]
         act_off    = scene_offsets[i]
-        bgi_d      = _bg_info(p, d["bg_pairs"])
+        bgi_d      = _bg_info(p, d["scene"])
         sa         = d["scene_actors"]
 
         # lua_idx local (indices GLOBAUX)
@@ -1169,7 +1179,7 @@ def generate_main(
     for i, d in enumerate(all_scene_data):
         sc      = d["scene"]
         act_off = scene_offsets[i]
-        bgi_d   = _bg_info(p, d["bg_pairs"])
+        bgi_d   = _bg_info(p, d["scene"])
         sa      = d["scene_actors"]
 
         lua_idx_d: set[int] = set()
@@ -1222,29 +1232,15 @@ def generate_main(
             loop = "MM_PLAY_LOOP" if getattr(music_item, "loop", True) else "MM_PLAY_ONCE"
             L.append(f"    mmStart(MOD_{_sym(music_item.name).upper()}, {loop});")
 
-    # Sprites VRAM (une seule fois au démarrage — toutes scènes)
+    # Sprites VRAM (une seule fois au démarrage — toutes scènes). Les
+    # palettes OBJ ne sont PLUS copiées ici : chaque scene_init_X() charge
+    # déjà la sienne (g_pal_obj_{sym}) au bon moment, y compris pour la
+    # scène de départ (appelée juste après, cf. boucle principale ci-dessous).
     if sprite_offsets:
         L.append("    /* Tiles sprites → OBJ VRAM (toutes scènes) */")
         for name, base in sprite_offsets.items():
             ss = f"sprite_{_sym(name)}"
             L.append(f"    copy16(OBJ_VRAM+{base}*16, {ss}Tiles, {ss}TilesLen);")
-        L.append("    /* Palettes OBJ */")
-        done_pal: set[int] = set()
-        for d in all_scene_data:
-            for actor, sprite in d["scene_actors"]:
-                if sprite and sprite.asset:
-                    pal = getattr(actor, "pal_bank", 0)
-                    if pal not in done_pal:
-                        done_pal.add(pal)
-                        ss = f"sprite_{_sym(sprite.name)}"
-                        L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
-        for pf, sprite in prefab_actor_sprites:
-            if sprite and sprite.asset:
-                pal = getattr(pf, "pal_bank", 0)
-                if pal not in done_pal:
-                    done_pal.add(pal)
-                    ss = f"sprite_{_sym(sprite.name)}"
-                    L.append(f"    copy16(PAL_OBJ_RAM+{pal}*16, {ss}Pal, {ss}PalLen);")
 
     L += [
         f"    g_next_scene = {start_idx};   /* {start_scene} */",

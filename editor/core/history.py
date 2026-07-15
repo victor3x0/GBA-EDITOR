@@ -80,6 +80,36 @@ class SetFieldCmd(Command):
         return False
 
 
+class SwapFieldCmd(Command):
+    """
+    Échange la valeur d'un même champ entre deux objets (ex: bg_slot de deux
+    BackgroundLayer glissés l'un sur l'autre — réordonnance leur priorité
+    d'affichage). L'échange est sa propre inverse : undo == execute.
+    """
+
+    def __init__(self, obj_a: Any, obj_b: Any, field: str,
+                 label: str = "", persist_fn=None):
+        self._a = obj_a
+        self._b = obj_b
+        self._field = field
+        self.label = label or f"Swap {field}"
+        self._persist = persist_fn
+
+    def _swap(self):
+        a_val = getattr(self._a, self._field)
+        b_val = getattr(self._b, self._field)
+        setattr(self._a, self._field, b_val)
+        setattr(self._b, self._field, a_val)
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._swap()
+
+    def undo(self):
+        self._swap()
+
+
 class MoveActorCmd(Command):
     """Déplacement d'un actor dans le canvas (drag souris)."""
 
@@ -228,6 +258,78 @@ class CollisionPaintCmd(Command):
             self._overlay.set_tile(col, row, old)
         if self._persist:
             self._persist()
+
+
+class SceneInpaintingCmd(Command):
+    """Stroke d'inpainting de scène (réassignation SE_PALBANK par tuile).
+    delta : {(col, row): (old_slot|None, new_slot|None)}.
+    Les tuiles sont déjà appliquées au moment du push — execute() n'est appelé
+    que lors d'un redo. Délègue au SceneInpaintingController pour rebâtir le pixmap."""
+
+    def __init__(self, controller, layer, bg_slot: int, delta: dict, persist_fn=None):
+        self._ctrl = controller
+        self._layer = layer
+        self._bg_slot = bg_slot
+        self._delta = delta
+        self.label = "Inpainting de scène"
+
+    def execute(self):
+        self._ctrl.apply_override_delta(self._layer, self._bg_slot, self._delta, True)
+
+    def undo(self):
+        self._ctrl.apply_override_delta(self._layer, self._bg_slot, self._delta, False)
+
+
+class BackgroundInpaintingCmd(Command):
+    """Stroke d'inpainting de fond au niveau ÉDITEUR : réassignation de la palette
+    (pal_bank local) par tuile dans `BackgroundAsset.tile_palette_overrides`,
+    partagé entre toutes les scènes. delta : {(col,row): (old_idx|None, new_idx|None)}.
+    Les tuiles sont déjà appliquées au moment du push — execute() ne sert qu'au redo.
+    Délègue au BgInpaintController pour rebâtir le pixmap + persister."""
+
+    def __init__(self, controller, ba, delta: dict):
+        self._ctrl = controller
+        self._ba = ba
+        self._delta = delta
+        self.label = "Inpainting de fond"
+
+    def execute(self):
+        self._ctrl.apply_override_delta(self._ba, self._delta, True)
+
+    def undo(self):
+        self._ctrl.apply_override_delta(self._ba, self._delta, False)
+
+
+class SetSceneModeCmd(Command):
+    """Change le mode vidéo d'une scène (0-5). Le changement élague les calques/
+    palettes BG incompatibles → on snapshot (render_mode, background_layers,
+    active_bg_palettes) pour un undo fidèle."""
+
+    def __init__(self, scene, new_mode, new_layers, new_bg_palettes,
+                 persist_fn=None, refresh_fn=None):
+        self._scene = scene
+        self._old = (scene.render_mode, list(scene.background_layers),
+                     list(scene.active_bg_palettes))
+        self._new = (new_mode, list(new_layers), list(new_bg_palettes))
+        self.label = f"Mode de scène → Mode {new_mode}"
+        self._persist = persist_fn
+        self._refresh = refresh_fn
+
+    def _apply(self, state):
+        mode, layers, pals = state
+        self._scene.render_mode = mode
+        self._scene.background_layers[:] = layers
+        self._scene.active_bg_palettes[:] = pals
+        if self._persist:
+            self._persist()
+        if self._refresh:
+            self._refresh()
+
+    def execute(self):
+        self._apply(self._new)
+
+    def undo(self):
+        self._apply(self._old)
 
 
 class AddComponentCmd(Command):

@@ -1,6 +1,19 @@
 {
   "name": "PONG",
-  "background_asset": "Background",
+  "background_layers": [
+    {
+      "image": "",
+      "bg_slot": 0,
+      "scroll_speed": 1.0,
+      "pal_bank": -1
+    },
+    {
+      "image": "Background",
+      "bg_slot": 1,
+      "scroll_speed": 1.0,
+      "pal_bank": -1
+    }
+  ],
   "actors": [
     {
       "name": "PADDLE_PLAYER",
@@ -41,13 +54,15 @@
           "exports_values": {}
         }
       ],
-      "x": 20,
-      "y": 64,
+      "x": 22,
+      "y": 67,
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
-      "pal_bank": 0,
-      "visible": true
+      "pal_bank": -1,
+      "visible": true,
+      "dir_x": 0,
+      "dir_y": 0
     },
     {
       "name": "PADDLE_AUTO",
@@ -89,21 +104,24 @@
         }
       ],
       "x": 208,
-      "y": 64,
+      "y": 65,
       "flip_h": false,
       "flip_v": false,
-      "priority": 1,
-      "pal_bank": 0,
-      "visible": true
+      "priority": 0,
+      "pal_bank": -1,
+      "visible": true,
+      "dir_x": 0,
+      "dir_y": 0
     }
   ],
   "cam_x": 0,
   "cam_y": 0,
   "cam_follow": "",
+  "render_mode": 0,
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
-  "text_bg": 1,
+  "text_bg": 0,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -746,5 +764,18 @@
       1,
       1
     ]
-  ]
+  ],
+  "active_obj_palettes": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ],
+  "active_bg_palettes": [
+    "",
+    ""
+  ],
+  "backdrop_color": null
 }

@@ -16,17 +16,21 @@ Usage :
     "scene_sprites_changed"        — recréer les sprites canvas
     "actors_list_changed"          — rafraîchir la liste actors
     "bg_slot_changed"  (int slot)  — rafraîchir un BG slot précis
+    "inpaint_layer_changed" (int slot)      — layer BG peint actif
+    "bg_layer_visibility"    (int, bool)     — visibilité viewport d'un layer BG
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts
+    "palettes_changed"             — rafraîchir le catalogue de palettes
 """
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
+from contextlib import contextmanager
 
 import copy
 
 from core.events import EventEmitter
-from core.project import Actor, Scene, Prefab, BackgroundAsset, BackgroundLayer
+from core.project import Actor, Scene, Prefab
 from core.history import get_history, AddActorCmd, RemoveActorCmd
 from core.selection_bus import get_bus
 
@@ -53,6 +57,18 @@ class CommandDispatcher(EventEmitter):
         """Appelé par MainWindow à chaque chargement/création de projet."""
         self._project = project
         self._watcher = watcher
+
+    @contextmanager
+    def suspended(self):
+        """Suspend le watcher de fichiers pendant une écriture directe sur disque
+        (ex. réécriture d'un PNG indexé par le Sprite Editor) — évite que le
+        watcher recharge tout l'écran et réinitialise l'UI (palette de preview…).
+        No-op si aucun watcher n'est branché (ex. tests headless)."""
+        if self._watcher:
+            with self._watcher.suspended():
+                yield
+        else:
+            yield
 
     # ── Helpers ───────────────────────────────────────────────────
 
@@ -165,17 +181,22 @@ class CommandDispatcher(EventEmitter):
             self._project.save_sprite(sprite)
         self._emit("scene_sprites_changed")
 
-    # ── Background asset ──────────────────────────────────────────
+    # ── Palette ───────────────────────────────────────────────────
 
-    def assign_background_asset(self, name: str):
-        """Assigne (ou vide) le BackgroundAsset de la scène active."""
-        if not self._project or not self._project.active_scene:
+    def save_palette(self, bank) -> None:
+        """Persiste une PaletteBank (l'ajoute au catalogue si nouvelle) et
+        notifie les écrans affichant le catalogue — ex. une palette extraite
+        depuis le Sprite Editor doit apparaître dans le Palette Finder sans
+        recharger le projet."""
+        if not self._project:
             return
-        scene = self._project.active_scene
-        scene.background_asset = name
-        self._save_scene()
-        self._emit("bg_slot_changed", 0)
-        self._emit("actors_list_changed")
+        if self._project.palettes.get(bank.name) is None:
+            self._project.palettes.append(bank)
+        with self._watcher.suspended():
+            self._project.palettes.save(bank)
+        self._emit("palettes_changed")
+
+    # ── Background ────────────────────────────────────────────────
 
     def import_background_png(self, path_str: str):
         """Importe un PNG dans assets/backgrounds/ et crée le BackgroundAsset associé."""
@@ -184,9 +205,30 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "backgrounds")
         with self._watcher.suspended():
-            self._project.sync_background_png(dst)
-        self._emit("status_message", f"Background importé : {dst.stem}")
+            warning = self._project.sync_background_png(dst)
+        msg = f"Background importé : {dst.stem}"
+        if warning:
+            msg += f" — {warning}"
+        self._emit("status_message", msg)
         self._emit("bg_slot_changed", 0)
+
+    # ── Sprite ────────────────────────────────────────────────────
+
+    def import_sprite_png(self, path_str: str):
+        """Importe un PNG dans assets/sprites/ et crée le SpriteAsset associé, via
+        le pipeline aligné sur les backgrounds : Validator → Encodage → asset.
+        Miroir de import_background_png."""
+        if not self._project or not path_str:
+            return
+        ap = Path(path_str)
+        dst = self._project.import_asset(ap, "sprites")
+        with self._watcher.suspended():
+            warning = self._project.sync_sprite_png(dst)
+        msg = f"Sprite importé : {dst.stem}"
+        if warning:
+            msg += f" — {warning}"
+        self._emit("status_message", msg)
+        self._emit("scene_sprites_changed")
 
     # ── Prefab avec propagation ───────────────────────────────────
 

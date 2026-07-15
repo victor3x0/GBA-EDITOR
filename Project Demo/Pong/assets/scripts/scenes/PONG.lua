@@ -46,6 +46,6 @@ function on_update()
 end
 
 function on_late_update()
-    display.print(9, 0, "%d", global.get("score_player"))
-    display.print(20, 0, "%d", global.get("score_auto"))
+    display.print(9, 2, "%d", global.get("score_player"))
+    display.print(20, 2, "%d", global.get("score_auto"))
 end

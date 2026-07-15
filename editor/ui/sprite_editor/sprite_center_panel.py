@@ -3,89 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QToolButton, QSplitter,
-)
-from PyQt6.QtGui import QFont, QKeySequence, QShortcut
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
+from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtCore import Qt, QTimer
 
-from ui.common.theme import C, T
-from ui.common.icons import get as _ico
+from ui.common.theme import C
 from core.project import Project, SpriteAsset, AnimState, StateDirection
 from core.command_dispatcher import get_dispatcher
 from .frame_canvas import _FrameCanvasPanel, _FrameTimeline, _make_frame_pixmap
 from .spritesheet_viewer import _SpritesheetViewer
 
 # ── Zone centre — Preview ──────────────────────────────────────────────────────
+# La barre playback (|◀ ▶ ▶| grille/palette) et le header (flip/fit/zoom,
+# tag CANVAS, stats) sont flottants, superposés au canvas — voir
+# _CanvasFloatingToolbar / _FrameCanvasPanel dans frame_canvas.py.
 
-class _PlaybackBar(QWidget):
-    """Barre de contrôle playback (|◀ ▶ ▶| ⊞ ◉)."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(44)
-        self.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER_DARK};")
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 4, 12, 4)
-        layout.setSpacing(2)
-
-        _BTN = (
-            f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
-            f"border:1px solid {C.BORDER};border-radius:3px;"
-            f"font-size:{T.LG}px;padding:4px 8px;min-width:28px;}}"
-            f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
-            f"QToolButton:checked{{color:{C.ACCENT_GRN};border-color:{C.ACCENT_GRN};}}"
-        )
-
-        from ui.common.icons import get as _ico
-
-        specs = [
-            ("playback_prev",     "Première frame"),
-            ("playback_play",     "Lecture"),
-            ("playback_next",     "Dernière frame"),
-            (None, None),
-            ("playback_grid",     "Afficher grille"),
-            # Placeholder en attendant la gestion des palettes de couleurs —
-            # désactivé pour ne pas laisser croire qu'il fait quelque chose.
-            ("tool_palette",      "Couleur de peinture (bientôt disponible)"),
-        ]
-
-        self.btn_play: Optional[QToolButton] = None
-        self.btn_grid: Optional[QToolButton] = None
-
-        for icon_key, tip in specs:
-            if icon_key is None:
-                sep = QFrame()
-                sep.setFrameShape(QFrame.Shape.VLine)
-                sep.setStyleSheet(f"color:{C.BORDER}; margin:6px 4px;")
-                layout.addWidget(sep)
-                continue
-            btn = QToolButton()
-            btn.setIcon(_ico(icon_key, C.TEXT_DIM, C.ACCENT_GRN))
-            btn.setIconSize(QSize(18, 18))
-            btn.setStyleSheet(_BTN)
-            btn.setCheckable(icon_key in ("playback_play", "playback_grid"))
-            if icon_key == "tool_palette":
-                btn.setEnabled(False)
-            if tip:
-                btn.setToolTip(tip)
-            layout.addWidget(btn)
-            if icon_key == "playback_play":
-                self.btn_play = btn
-            elif icon_key == "playback_grid":
-                btn.setChecked(True)
-                self.btn_grid = btn
-
-        layout.addStretch()
-
-        self._info = QLabel("")
-        self._info.setFont(QFont(T.MONO, T.XS))
-        self._info.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
-        layout.addWidget(self._info)
-
-    def set_info(self, tiles: int, unique: int):
-        self._info.setText(f"Tiles={tiles}  Unique={unique}")
 class SpriteCenterPanel(QWidget):
     """Zone centre : playback · canvas · tile picker · timeline."""
 
@@ -97,6 +30,11 @@ class SpriteCenterPanel(QWidget):
         self._state:     Optional[AnimState]      = None
         self._sd:        Optional[StateDirection] = None
         self._sel_frame: int = 0
+        # Direction miroir (mirror_of défini) : affichée en lecture seule à
+        # partir des frames de la direction source, retournées (flip).
+        self._read_only:   bool = False
+        self._disp_frames: Optional[list] = None
+        self._flip:        tuple[bool, bool] = (False, False)
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._on_play_tick)
         self._build()
@@ -105,9 +43,6 @@ class SpriteCenterPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
-        self._playback = _PlaybackBar()
-        root.addWidget(self._playback)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
@@ -138,10 +73,9 @@ class SpriteCenterPanel(QWidget):
         self._timeline.frames_changed.connect(self._on_frames_changed)
         root.addWidget(self._timeline)
 
-        if self._playback.btn_grid:
-            self._playback.btn_grid.toggled.connect(self._canvas.set_grid)
-        if self._playback.btn_play:
-            self._playback.btn_play.toggled.connect(self._on_play_toggled)
+        toolbar = self._canvas_panel.toolbar
+        toolbar.btn_play.toggled.connect(self._on_play_toggled)
+        self._canvas_panel.paint_strip.selected.connect(self._on_paint_palette_selected)
 
         # Shift+X/Y : portés ici (pas sur _FrameCanvas seul) pour marcher
         # aussi bien après un clic dans le canvas que dans le tile picker —
@@ -155,13 +89,18 @@ class SpriteCenterPanel(QWidget):
 
     # ── API publique ──────────────────────────────────────────────────
 
+    def refresh_palettes(self):
+        """La PAL_BANK a été mutée par la grille (panneau droit) : recharge la
+        bande de preview du canvas (peut avoir grandi/rétréci/changé de couleurs)."""
+        self._load_paint_strip()
+
     def load_sprite(self, sprite: SpriteAsset, project: Project):
         self._sprite  = sprite
         self._project = project
+        self._canvas.set_own_palette(getattr(sprite, "own_palette", []))
         self._anim_timer.stop()
-        if self._playback.btn_play:
-            self._playback.btn_play.setChecked(False)
-        self._playback.set_info(
+        self._canvas_panel.toolbar.btn_play.setChecked(False)
+        self._canvas_panel.set_info(
             tiles=sprite.tiles_per_frame * sum(
                 len(sd.frames)
                 for s in sprite.states
@@ -171,6 +110,30 @@ class SpriteCenterPanel(QWidget):
             unique=sprite.tiles_per_frame,
         )
         self._tiles.load(self._abs_path())
+        self._load_paint_strip()
+
+    # ── Bande de preview (PAL_BANK du sprite, tête du canvas) ──────────
+
+    def _load_paint_strip(self):
+        """Peuple la bande depuis `sprite.palettes` (PAL_BANK) ; palette active
+        (index 0 par défaut, non persistée — cf. Background Editor) → teinte le
+        canvas. Masquée si le sprite n'a pas encore de PAL_BANK (pas d'asset)."""
+        strip = self._canvas_panel.paint_strip
+        palettes = list(getattr(self._sprite, "palettes", []) or []) if self._sprite else []
+        if palettes:
+            strip.load(palettes, active=0)
+            strip.setVisible(True)
+            self._canvas.set_tint(palettes[0])
+        else:
+            strip.setVisible(False)
+            self._canvas.set_tint(None)
+
+    def _on_paint_palette_selected(self, idx: int):
+        if not self._sprite:
+            return
+        palettes = getattr(self._sprite, "palettes", []) or []
+        if 0 <= idx < len(palettes):
+            self._canvas.set_tint(palettes[idx])
 
     def load_direction(self, state: AnimState, sd: StateDirection):
         if not self._sprite or not self._project:
@@ -179,10 +142,36 @@ class SpriteCenterPanel(QWidget):
         self._sd = sd
         self._sel_frame = 0
         self._anim_timer.stop()
-        if self._playback.btn_play:
-            self._playback.btn_play.setChecked(False)
-        self._timeline.load(self._sprite, state, sd, self._abs_path())
+        self._canvas_panel.toolbar.btn_play.setChecked(False)
+
+        # Miroir : les frames n'appartiennent pas à cette direction, elles sont
+        # dérivées de la source (mirror_of) + flip. Affichage seul, pas d'édition
+        # — c'est aussi ce que fait le build (asset_pipeline._dedup_frames).
+        self._read_only = sd.mirror_of is not None
+        if self._read_only:
+            src = next((s for s in state.directions if s.dir == sd.mirror_of), None)
+            self._disp_frames = src.frames if src else sd.frames
+            self._flip = (sd.flip_h, sd.flip_v)
+        else:
+            self._disp_frames = None
+            self._flip = (False, False)
+
+        self._timeline.load(self._sprite, state, sd, self._abs_path(),
+                            self._read_only, self._disp_frames, self._flip)
+        self._canvas.set_read_only(self._read_only)
+        self._canvas.set_display_flip(*self._flip)
+        self._tiles.setEnabled(not self._read_only)
+        from ui.sprite_editor.sprite_finder_panel import _dir_label
+        self._canvas_panel.set_read_only_banner(
+            f"MIROIR · {_dir_label(sd)} · lecture seule" if self._read_only else None)
         self._refresh_canvas()
+
+    def _active_frames(self) -> list:
+        """Frames effectivement affichées : source retournée pour un miroir,
+        sinon les frames propres de la direction."""
+        if self._read_only and self._disp_frames is not None:
+            return self._disp_frames
+        return self._sd.frames if self._sd else []
 
     # ── Slots internes ────────────────────────────────────────────────
 
@@ -225,16 +214,16 @@ class SpriteCenterPanel(QWidget):
     # ── Playback ──────────────────────────────────────────────────────
 
     def _on_play_toggled(self, playing: bool):
-        if playing and self._sd and self._sd.frames:
+        if playing and self._sd and self._active_frames():
             speed_ms = max(16, int((self._state.speed if self._state else 8) * 1000 / 60))
             self._anim_timer.start(speed_ms)
         else:
             self._anim_timer.stop()
 
     def _on_play_tick(self):
-        if not self._sd or not self._sd.frames:
+        if not self._sd or not self._active_frames():
             return
-        n = len(self._sd.frames)
+        n = len(self._active_frames())
         self._sel_frame = (self._sel_frame + 1) % n
         # Mettre à jour la sélection dans la timeline sans émettre frame_selected
         for i, t in enumerate(self._timeline._thumbs):
@@ -248,7 +237,7 @@ class SpriteCenterPanel(QWidget):
         if not self._sd or not self._sprite:
             self._canvas.load_frame(None, None, None)
             return
-        frames = self._sd.frames
+        frames = self._active_frames()
         if not frames or not (0 <= self._sel_frame < len(frames)):
             self._canvas.load_frame(None, None, None)
             return

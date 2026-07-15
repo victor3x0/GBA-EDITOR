@@ -12,16 +12,18 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
 )
-from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtGui import QPixmap, QFont, QDrag
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
-from PyQt6.QtCore import Qt, pyqtSignal
+from ui.common.widgets import W, ScriptPickerPopup
+from ui.common.palette_swatch import bank_icon
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QMimeData
 
 from core.project import Project
 
 LAYER_NAMES  = ["BG0", "BG1", "BG2", "BG3", "Sprite"]
 LAYER_COLORS = ["#4caf78", "#5b9bd5", "#9b6bc4", "#c48b3c", "#e8a838"]
-MIME_TYPE    = "application/x-gba-asset-path"
+MIME_TYPE     = "application/x-gba-asset-path"
+MIME_BG_LAYER = "application/x-gba-bg-layer-slot"  # réordonnancement des BgLayerRow (échange de bg_slot)
 IMG_EXTS     = {".png", ".bmp"}
 
 
@@ -191,10 +193,14 @@ class BgLayerRow(QFrame):
     - × à droite       → retire le layer entier
     - Vignette vide    → fond gris + icône selon l'état (vide / UI layer)
     """
-    asset_changed  = pyqtSignal(int, str)
-    speed_changed  = pyqtSignal(int, float)
-    bound_toggled  = pyqtSignal(int)
-    layer_removed  = pyqtSignal(int)
+    asset_changed    = pyqtSignal(int, str)
+    speed_changed    = pyqtSignal(int, float)
+    bound_toggled    = pyqtSignal(int)
+    layer_removed    = pyqtSignal(int)
+    pal_bank_changed   = pyqtSignal(int, str)  # slot_index, nom de la PaletteBank
+    layer_swap_requested = pyqtSignal(int, int)  # (bg_slot source, bg_slot cible)
+    visibility_toggled   = pyqtSignal(int, bool)  # (bg_slot, visible)
+    inpaint_layer_selected = pyqtSignal(int)       # bg_slot du layer peint
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -205,6 +211,9 @@ class BgLayerRow(QFrame):
         self._path: str = ""
         self._highlight = False
         self._is_ui_layer = False
+        self._pal_banks: list = []
+        self._bg_names: list = []
+        self._drag_start = None
         self.setAcceptDrops(True)
         self.setFixedHeight(40)
         self._update_style()
@@ -256,11 +265,17 @@ class BgLayerRow(QFrame):
 
         row.addWidget(thumb_container)
 
-        # Badge BG0 / BG1…
+        # Badge BG0 / BG1… — aussi poignée de glisser-déposer pour réordonner
+        # les layers (échange de bg_slot, donc de priorité d'affichage : cf.
+        # `pri = 3 - bg` dans main_gen._gen_scene_init).
         badge = QLabel(LAYER_NAMES[slot_index])
         badge.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
         badge.setStyleSheet(f"color:{self._color};background:transparent;")
         badge.setFixedWidth(34)
+        badge.setCursor(Qt.CursorShape.OpenHandCursor)
+        badge.setToolTip("Glisser pour échanger la priorité d'affichage avec un autre layer")
+        badge.mousePressEvent = self._badge_press
+        badge.mouseMoveEvent = self._badge_move
         row.addWidget(badge)
 
         # Spinbox vitesse
@@ -277,7 +292,53 @@ class BgLayerRow(QFrame):
         )
         row.addWidget(self._speed)
 
+        # Icône palette — compacte (pas de ScriptSlot complet, pas la place
+        # dans une rangée de 40px). Ouvre le même ScriptPickerPopup que
+        # palette_picker_slot, câblé sur BackgroundLayer.pal_bank.
+        self._pal_btn = QToolButton()
+        self._pal_btn.setFixedSize(30, 30)
+        self._pal_btn.setIconSize(QSize(24, 24))
+        self._pal_btn.setToolTip("Choisir la palette de ce layer")
+        self._pal_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:1px solid #333;"
+            "border-radius:3px;padding:0;}"
+            f"QToolButton:hover{{border-color:{self._color};}}"
+        )
+        self._pal_btn.clicked.connect(self._open_pal_picker)
+        row.addWidget(self._pal_btn)
+
         row.addStretch()
+
+        # Sélecteur du layer peint par l'outil de peinture par palette (pinceau).
+        from ui.common.icons import get as _ico
+        self._inpaint_layer_btn = QToolButton()
+        self._inpaint_layer_btn.setCheckable(True)
+        self._inpaint_layer_btn.setFixedSize(22, 22)
+        self._inpaint_layer_btn.setIconSize(QSize(16, 16))
+        self._inpaint_layer_btn.setIcon(_ico("tool_inpaint_brush", C.TEXT_DIM, self._color))
+        self._inpaint_layer_btn.setToolTip("Inpainter ce layer (repeindre ses palettes)")
+        self._inpaint_layer_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+            f"QToolButton:checked{{background:#253525;border:1px solid {self._color};"
+            "border-radius:3px;}"
+        )
+        self._inpaint_layer_btn.clicked.connect(
+            lambda: self.inpaint_layer_selected.emit(self.slot_index)
+        )
+        row.addWidget(self._inpaint_layer_btn)
+
+        # Œil de visibilité (viewport éditeur).
+        self._eye_btn = QToolButton()
+        self._eye_btn.setFixedSize(22, 22)
+        self._eye_btn.setIconSize(QSize(16, 16))
+        self._visible = True
+        self._eye_btn.setIcon(_ico("eye", C.TEXT_DIM, self._color))
+        self._eye_btn.setToolTip("Masquer/afficher ce layer dans le canvas")
+        self._eye_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+        )
+        self._eye_btn.clicked.connect(self._toggle_visibility)
+        row.addWidget(self._eye_btn)
 
         btn_remove = W.btn_danger("×")
         btn_remove.setFixedSize(22, 22)
@@ -301,14 +362,21 @@ class BgLayerRow(QFrame):
 
     # ── Asset ─────────────────────────────────────────────────────
 
+    def set_backgrounds(self, names: list, current: str = ""):
+        """Liste des BackgroundImages du projet proposées au picker de ce layer."""
+        self._bg_names = list(names)
+
     def _open_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Importer — {LAYER_NAMES[self.slot_index]}",
-            "", "Images (*.png *.bmp)"
-        )
-        if path:
-            self.set_asset(path)
-            self.asset_changed.emit(self.slot_index, path)
+        """Choisit un BackgroundImage EXISTANT (assets/backgrounds/) — les images
+        s'importent via le Background Editor, plus de QFileDialog Windows ici.
+        Entrée « Vide » en tête pour un layer sans image (même contrat que
+        « Sans palette » côté pal_bank, cf. ui/common/pickers.py)."""
+        from ui.common.widgets import ScriptPickerPopup
+        entries = [("Vide (aucune image)", "", None)]
+        entries += [(n, n, None) for n in (self._bg_names or [])]
+        popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
+        popup.picked.connect(lambda name: self.asset_changed.emit(self.slot_index, name))
+        popup.show_below(self._thumb)
 
     def set_asset(self, path: str):
         self._path = path
@@ -348,6 +416,31 @@ class BgLayerRow(QFrame):
         self._speed.setValue(value)
         self._speed.blockSignals(False)
 
+    def set_pal_banks(self, banks: list, current_name: Optional[str]):
+        """banks : PaletteBank actives de la scène (scene.active_bg_palettes,
+        filtrées des slots vides/introuvables) ; current_name : nom résolu du
+        slot actuel (BackgroundLayer.pal_bank), None si non résolvable —
+        même contrat que component_editors/sprite.py pour Actor.pal_bank."""
+        self._pal_banks = banks
+        current = next((b for b in banks if b.name == current_name), None) if current_name else None
+        if current:
+            self._pal_btn.setIcon(bank_icon(current))
+            self._pal_btn.setToolTip(f"Palette du layer : {current.name}")
+        else:
+            # « Sans palette » : couleurs d'origine du PNG (défaut) — icône
+            # neutre plutôt qu'un bouton vide.
+            from ui.common.icons import get as _ico
+            self._pal_btn.setIcon(_ico("tool_palette", C.TEXT_DIM, self._color))
+            self._pal_btn.setToolTip("Sans palette (couleurs du PNG) — clic pour changer")
+
+    def _open_pal_picker(self):
+        from ui.common.pickers import PALETTE_NONE
+        entries = [("Sans palette (couleurs du PNG)", PALETTE_NONE, None)]
+        entries += [(bank.name, bank.name, bank_icon(bank)) for bank in self._pal_banks]
+        popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
+        popup.picked.connect(lambda name: self.pal_bank_changed.emit(self.slot_index, name))
+        popup.show_below(self._pal_btn)
+
     def set_bound(self, checked: bool):
         if checked:
             self._radio.setText("●")
@@ -365,14 +458,50 @@ class BgLayerRow(QFrame):
     def set_speed_visible(self, visible: bool):
         self._speed.setVisible(visible)
 
+    # ── Visibilité viewport + cible de peinture ───────────────────
+
+    def _toggle_visibility(self):
+        self.set_visible_state(not self._visible)
+        self.visibility_toggled.emit(self.slot_index, self._visible)
+
+    def set_visible_state(self, visible: bool):
+        """Reflète l'état de visibilité (icône œil ouvert/barré)."""
+        from ui.common.icons import get as _ico
+        self._visible = visible
+        key = "eye" if visible else "eye_off"
+        color = C.TEXT_DIM if visible else "#555"
+        self._eye_btn.setIcon(_ico(key, color, self._color))
+
+    def set_inpaint_layer(self, active: bool):
+        """Marque ce layer comme cible active de l'outil de peinture."""
+        self._inpaint_layer_btn.setChecked(active)
+
     def _clear(self):
         self.clear_asset()
         self.asset_changed.emit(self.slot_index, "")
 
-    # ── Drag & drop ───────────────────────────────────────────────
+    # ── Drag & drop — réordonnancement (échange de bg_slot/priorité) ──
+    # Plus de drop de FICHIER ici : l'assignation d'une image se fait via le
+    # picker de BackgroundImages (import au Background Editor). Le drag initié
+    # depuis le badge BG0/BG1… sert à échanger la priorité de deux layers.
+
+    def _badge_press(self, e):
+        self._drag_start = e.position().toPoint()
+
+    def _badge_move(self, e):
+        if self._drag_start is None or not (e.buttons() & Qt.MouseButton.LeftButton):
+            return
+        if (e.position().toPoint() - self._drag_start).manhattanLength() < 8:
+            return
+        self._drag_start = None
+        drag = QDrag(self)
+        md = QMimeData()
+        md.setData(MIME_BG_LAYER, str(self.slot_index).encode("utf-8"))
+        drag.setMimeData(md)
+        drag.exec(Qt.DropAction.MoveAction)
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(MIME_TYPE):
+        if event.mimeData().hasFormat(MIME_BG_LAYER):
             self._highlight = True
             self._update_style()
             event.acceptProposedAction()
@@ -386,17 +515,12 @@ class BgLayerRow(QFrame):
     def dropEvent(self, event):
         self._highlight = False
         self._update_style()
-        path = ""
-        if event.mimeData().hasFormat(MIME_TYPE):
-            path = bytes(event.mimeData().data(MIME_TYPE)).decode("utf-8")
-        elif event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls:
-                path = urls[0].toLocalFile()
-        if path and Path(path).suffix.lower() in IMG_EXTS:
-            self.set_asset(path)
-            self.asset_changed.emit(self.slot_index, path)
-            event.acceptProposedAction()
+        if not event.mimeData().hasFormat(MIME_BG_LAYER):
+            return
+        src = int(bytes(event.mimeData().data(MIME_BG_LAYER)).decode("utf-8"))
+        if src != self.slot_index:
+            self.layer_swap_requested.emit(src, self.slot_index)
+        event.acceptProposedAction()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -422,12 +546,14 @@ class AssignPanel(QWidget):
 
     def refresh_from_project(self, project: Project):
         scene = project.active_scene
-        # BG slots — résolution depuis le BackgroundAsset de la scène
-        ba = project.get_background(scene.background_asset) if scene and scene.background_asset else None
+        # BG slots — résolution depuis les layers de la SCÈNE
+        by_slot = {L.bg_slot: L for L in (scene.background_layers if scene else [])}
         for i in range(min(4, len(self._slots))):
-            layer = next((L for L in (ba.layers if ba else []) if L.bg_slot == i), None)
-            if layer:
-                ap = project.background_images_dir / layer.image
+            layer = by_slot.get(i)
+            if layer and layer.background_name:
+                ba = project.get_background(layer.background_name)
+                png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
+                ap = project.background_images_dir / png
                 if ap.exists():
                     self._slots[i].set_asset(str(ap))
                     continue

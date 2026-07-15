@@ -213,6 +213,63 @@ class ProjectSettings:
     start_scene: str = ""
     author: str = ""
     version: str = "0.1"
+    # Réservoir auto-import (cf. ROADMAP.md v0.2) — réglage projet, pas éditeur.
+    palette_auto_import_enabled: bool = True
+    # Couleur de backdrop par défaut (BGR555) — PAL_BG_RAM[0], affichée quand
+    # rien d'opaque n'est dessiné nulle part. Scene.backdrop_color peut la
+    # surcharger par scène. Pas d'écran dédié pour l'instant (même traitement
+    # que palette_auto_import_enabled) — édition JSON manuelle en attendant.
+    backdrop_color: int = 0
+
+
+# ──────────────────────────────────────────────────────────────────
+#  PaletteBank — une banque de 16 couleurs (pool OBJ, GBA hardware)
+# ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class PaletteBank(Resource):
+    """Une palette nommée de 16 couleurs, catalogue illimité et unifié au
+    niveau projet (project/palettes/*.json, un fichier par palette — cf.
+    ResourceManager) — partagé entre OBJ et BG, une même palette peut servir
+    aux deux. Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes
+    / active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui
+    occupe les banques hardware (physiquement séparées OBJ/BG) au build."""
+    name: str = ""
+    colors: list[int] = field(default_factory=list)  # valeurs BGR555 GBA
+    size: int = 16   # capacité de la palette : 16 (4bpp / une banque) ou 256 (8bpp).
+                     # Persisté dans le .json ; absent d'un ancien fichier -> 16.
+
+    def __post_init__(self):
+        """Normalise `size` (16 ou 256) et force l'index 0 vers
+        RESERVED_SLOT_COLOR — point d'application unique, déclenché à la fois par
+        une construction directe (presets, "Ajouter palette" côté UI) et par le
+        chargement depuis disque (Resource.from_dict construit via cls(**kwargs)).
+        Pas besoin de pas de migration séparé : les anciens fichiers JSON gardent
+        leur ancienne valeur d'index 0 tant qu'ils ne sont pas re-sauvegardés,
+        mais cette valeur est de toute façon écrasée à chaque chargement — sans
+        incidence puisqu'elle n'est jamais affichée pour une tuile (index de
+        palette 0 = toujours transparent au niveau hardware, OBJ comme BG)."""
+        if self.size not in (16, 256):
+            self.size = 16
+        if self.colors:
+            # On tronque défensivement à la capacité de la banque (un fichier édité
+            # à la main pourrait déborder) : en 16, garantit que grit
+            # (quantification sur toutes les couleurs) et main_gen (`colors[:16]`)
+            # ne divergent jamais (indices >15 impossibles en 4bpp -> tuiles
+            # corrompues) ; en 256, borne au maximum 8bpp.
+            if len(self.colors) > self.size:
+                self.colors = self.colors[:self.size]
+            from core.color_utils import RESERVED_SLOT_COLOR
+            self.colors[0] = RESERVED_SLOT_COLOR
+
+
+# Sentinel Actor/Prefab.pal_bank et BackgroundLayer.pal_bank : "Sans palette"
+# — l'asset utilise SA PROPRE palette (couleurs du PNG, index 0 transparent),
+# extraite à la volée et auto-allouée à une banque libre de la scène au build
+# (cf. codegen/palette_alloc.py). C'est le défaut : un asset affiche ses
+# couleurs d'origine tant qu'aucune palette du catalogue n'est explicitement
+# assignée à ce slot.
+OWN_PAL_BANK = -1
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -244,46 +301,289 @@ class Constant:
 # ──────────────────────────────────────────────────────────────────
 #  BackgroundLayer / BackgroundAsset
 #  BackgroundImage = simple PNG dans assets/backgrounds/ (pas de JSON)
-#  BackgroundAsset = asset moteur dans project/backgrounds/{name}.json
+#  BackgroundAsset = sidecar d'import dans assets/backgrounds/{name}.json (à côté du PNG)
 # ──────────────────────────────────────────────────────────────────
 
 @dataclass
 class BackgroundLayer:
-    """Une couche d'un BackgroundAsset : image + slot GBA + vitesse de défilement."""
-    image:        str   = ""   # nom du fichier PNG dans assets/backgrounds/ (ex: "Sky.png")
+    """Une couche de fond d'une scène : référence un BackgroundAsset (par nom) +
+    slot GBA + vitesse de défilement."""
+    background_name: str = ""  # nom du BackgroundAsset référencé (= stem du PNG) ;
+                               # le fichier PNG vit sur BackgroundAsset.asset, pas ici
+                               # (convention : cf. SpriteComponent.sprite_name)
     bg_slot:      int   = 0    # slot hardware GBA (0-3)
     scroll_speed: float = 1.0  # vitesse relative (1.0 = défilement normal)
+    pal_bank:     int   = OWN_PAL_BANK  # slot (0-15) dans scene.active_bg_palettes,
+                               # ou OWN_PAL_BANK (-1, défaut) = palette propre du PNG.
+                               # Même mécanisme que Actor.pal_bank/Prefab.pal_bank,
+                               # mais BG plutôt qu'OBJ ; chaque layer choisit sa
+                               # propre banque, indépendamment des autres layers.
+    # Overrides de palette PAR TUILE 8×8 (champ SE_PALBANK du hardware GBA) :
+    # (col, row) -> slot (0-15) dans scene.active_bg_palettes. Absent = utilise
+    # pal_bank (banque de base du layer). Peint depuis le canvas du Scene Manager.
+    tile_palette_overrides: dict = field(default_factory=dict)  # dict[tuple[int,int], int]
+    visible:      bool  = True   # visibilité VIEWPORT éditeur seule — le codegen
+                               # l'ignore (le layer est toujours compilé).
+
+
+def _decode_tile_palette_overrides(raw) -> dict:
+    """Relit tile_palette_overrides du JSON ({"col,row": slot}) en dict[(col,row), slot].
+    Tolère l'absence (None) et les clés mal formées (ignorées)."""
+    out: dict[tuple[int, int], int] = {}
+    if not raw:
+        return out
+    for key, slot in raw.items():
+        try:
+            c, r = key.split(",")
+            out[(int(c), int(r))] = int(slot)
+        except (ValueError, AttributeError):
+            continue
+    return out
+
+
+def _decode_palette_overrides(raw) -> dict:
+    """Relit palette_overrides du JSON ({"idx": "nom_catalogue"}) en dict[int, str].
+    Tolère l'absence (None) et les clés mal formées (ignorées)."""
+    out: dict[int, str] = {}
+    if not raw:
+        return out
+    for key, name in raw.items():
+        try:
+            out[int(key)] = str(name)
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+class SubPaletteAssetMixin:
+    """Gestion partagée des SOUS-PALETTES d'un asset (sa PAL_BANK), sur le modèle
+    scène : palettes dérivées du PNG grisées + override catalogue + « + ».
+
+    Les FIELDS `palettes` / `source_palettes` / `palette_overrides` sont déclarés
+    par chaque dataclass consommatrice (BackgroundAsset, SpriteAsset). `palettes`
+    = couleurs EFFECTIVES (rendu/build) ; `source_palettes` = baseline PNG
+    restaurable ; `palette_overrides` = {idx dérivé -> nom banque catalogue}.
+    `remove_palette` ne remappe la tilemap que si l'asset en a une (fonds) —
+    inopérant pour les sprites (OAM, pas de tilemap)."""
+
+    def add_palette_colors(self, colors: list) -> int:
+        """Ajoute une sous-palette (copie de ≤16 couleurs BGR555, ex: depuis une
+        PaletteBank du catalogue). Retourne son index, ou -1 si déjà 16 palettes."""
+        if len(self.palettes) >= 16:
+            return -1
+        pal = list(colors[:16])
+        pal += [0] * (16 - len(pal))
+        self.palettes.append(pal)
+        return len(self.palettes) - 1
+
+    def replace_palette(self, idx: int, colors: list) -> None:
+        """Remplace les couleurs de la sous-palette `idx`."""
+        if 0 <= idx < len(self.palettes):
+            pal = list(colors[:16])
+            pal += [0] * (16 - len(pal))
+            self.palettes[idx] = pal
+
+    def clear_palette(self, idx: int) -> None:
+        """Vide la sous-palette `idx` (ne garde que l'index 0 réservé). Ne retire
+        pas la palette (indices inchangés), contrairement à remove_palette."""
+        if 0 <= idx < len(self.palettes):
+            from core.color_utils import RESERVED_SLOT_COLOR
+            self.palettes[idx] = [RESERVED_SLOT_COLOR] + [0] * 15
+
+    def remove_palette(self, idx: int) -> None:
+        """Supprime la sous-palette `idx` et réconcilie les références : toute
+        tuile/override pointant sur `idx` retombe sur 0, les index `> idx` sont
+        décrémentés. Le remap de la baseline tuilée n'agit que sur un asset à
+        tilemap (fonds)."""
+        if not (0 <= idx < len(self.palettes)):
+            return
+        self.palettes.pop(idx)
+
+        def _remap(v: int) -> int:
+            return 0 if v == idx else (v - 1 if v > idx else v)
+
+        # Overrides d'inpainting par tuile + baseline tilemap : fonds uniquement.
+        if getattr(self, "tile_palette_overrides", None):
+            self.tile_palette_overrides = {
+                k: _remap(s) for k, s in self.tile_palette_overrides.items()
+            }
+        tilemap = getattr(self, "tilemap", None)
+        if tilemap:
+            from core.bg_import import unpack_se, pack_se
+            for cell, se in enumerate(tilemap):
+                tid, pb, fh, fv = unpack_se(se)
+                tilemap[cell] = pack_se(tid, _remap(pb), fh, fv)
+        # Origine/override suivent le décalage d'index (retirer une dérivée
+        # raccourcit la baseline ; l'override d'une dérivée disparue est levé).
+        if idx < len(self.source_palettes):
+            self.source_palettes.pop(idx)
+        self.palette_overrides = {
+            _remap(k): n for k, n in self.palette_overrides.items() if k != idx
+        }
+
+    # ── Origine des palettes (modèle scène : grisé + override) ────
+    def derived_count(self) -> int:
+        """Nb de sous-palettes DÉRIVÉES du PNG (baseline). Les indices
+        `< derived_count` sont grisés/overridables ; les suivants sont ajoutés
+        du catalogue (éditables)."""
+        return len(self.source_palettes)
+
+    def is_derived(self, idx: int) -> bool:
+        """La sous-palette `idx` provient-elle du PNG (grisée/overridable) ?"""
+        return 0 <= idx < len(self.source_palettes)
+
+    def is_overridden(self, idx: int) -> bool:
+        return idx in self.palette_overrides
+
+    def override_palette(self, idx: int, name: str, colors: list) -> None:
+        """Override une sous-palette DÉRIVÉE par une banque du catalogue : ses
+        couleurs effectives deviennent `colors`, l'origine PNG reste dans
+        `source_palettes` (restaurable). No-op si `idx` n'est pas dérivée."""
+        if not self.is_derived(idx):
+            return
+        self.replace_palette(idx, colors)
+        self.palette_overrides[idx] = name
+
+    def restore_palette(self, idx: int) -> None:
+        """Restaure une sous-palette dérivée overridée à ses couleurs PNG d'origine."""
+        if idx in self.palette_overrides and self.is_derived(idx):
+            self.replace_palette(idx, self.source_palettes[idx])
+            self.palette_overrides.pop(idx, None)
 
 
 @dataclass
-class BackgroundAsset(Resource):
-    """
-    Asset background moteur — stocké dans project/backgrounds/{name}.json.
-    Regroupe 1-4 BackgroundLayers (parallax multi-couche possible).
-    """
-    name:   str  = "background"
-    layers: list = field(default_factory=list)   # list[BackgroundLayer]
+class BackgroundAsset(SubPaletteAssetMixin, Resource):
+    """Sidecar d'import d'UNE image de fond — assets/backgrounds/{stem}.json, à côté
+    du PNG et keyé par son nom (comme SpriteAsset). Le PNG source n'est jamais modifié.
+    C'est la SCÈNE qui possède ses layers (Scene.background_layers) et référence
+    ce fond par nom — plus de composition multi-layer réutilisable ici."""
+    name:   str  = "background"                     # = stem du PNG source
+    asset:   str  = ""                              # PNG dans assets/backgrounds/ (convention .asset, cf. SpriteAsset)
+    palettes: list = field(default_factory=list)    # list[list[int]] BGR555 (≤16×≤16)
+    tileset:  list = field(default_factory=list)    # list[str] (64 nibbles hex/tuile)
+    tilemap:  list = field(default_factory=list)    # list[int] (screen entries GBA)
+    tiles_w:  int = 0
+    tiles_h:  int = 0
+    quantize_method: str = "median_cut"
+    # Mode couleur GBA du fond : 4 (jusqu'à 16 sous-palettes de 16, pal_bank par
+    # tuile — défaut) ou 8 (une seule palette de 256 couleurs, tuiles en octets,
+    # pas d'inpainting). Auto-détecté à l'import (> 256 couleurs -> 8bpp).
+    bpp: int = 4
+    dither: bool = False   # 8bpp uniquement : dithering du quantifieur (OFF par défaut)
+    # Type de fond : "tiled" (Mode 0, tuilé — défaut, cf. bpp) ou "bitmap" (Mode 4,
+    # plein écran 240×160, 256 couleurs, SANS tuiles — pour les photos/écrans-titre).
+    mode: str = "tiled"
+    bitmap: str = ""       # mode bitmap : index 8bpp du buffer (hex, out_w*out_h octets)
+    out_w: int = 0         # dimensions du bitmap après ajustement à ≤240×160
+    out_h: int = 0
+    # BackgroundInpainting (niveau ÉDITEUR, partagé entre scènes) : réassigne la
+    # palette (pal_bank local, index dans `palettes`) d'une tuile 8×8. La baseline
+    # `tilemap` reste intacte ; `effective_tilemap()` applique ces overrides.
+    # Analogue à BackgroundLayer.tile_palette_overrides mais au niveau de l'asset.
+    tile_palette_overrides: dict = field(default_factory=dict)  # dict[(col,row), pal_index]
+    # Diagnostics de compression (validateur éditeur, non-bloquant) — calculés à
+    # la compression, cf. bg_import.encode_background. Le PNG reste intact.
+    diagnostics: dict = field(default_factory=dict)
+    # Origine des sous-palettes pour l'éditeur (modèle scène : grisé + override).
+    # `source_palettes` = snapshot des palettes DÉRIVÉES du PNG à la compression
+    # (baseline restaurable). Les indices < len(source_palettes) sont dérivés
+    # (grisés/overridables) ; les suivants sont ajoutés depuis le catalogue
+    # (éditables). `ba.palettes` reste les couleurs EFFECTIVES (rendu/build
+    # inchangés) : une dérivée overridée a ses couleurs = celles du catalogue et
+    # son index figure dans `palette_overrides` (idx -> nom de banque catalogue).
+    source_palettes: list = field(default_factory=list)    # list[list[int]] BGR555
+    palette_overrides: dict = field(default_factory=dict)  # dict[int, str]
+
+    def image_name(self) -> str:
+        return self.asset
+
+    def effective_tilemap(self) -> list[int]:
+        """Tilemap avec les overrides d'inpainting asset appliqués (pal_bank par
+        tuile). La baseline `tilemap` n'est jamais modifiée — c'est ce helper que
+        consomment le canvas de scène, le canvas du Background Editor et le build,
+        pour que l'inpainting soit partagé partout."""
+        if not self.tile_palette_overrides:
+            return list(self.tilemap)
+        from core.bg_import import unpack_se, pack_se
+        tw = self.tiles_w or 1
+        out: list[int] = []
+        for cell, se in enumerate(self.tilemap):
+            tid, pb, fh, fv = unpack_se(se)
+            ov = self.tile_palette_overrides.get((cell % tw, cell // tw))
+            out.append(pack_se(tid, pb if ov is None else ov, fh, fv))
+        return out
 
     def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "layers": [
-                {"image": L.image, "bg_slot": L.bg_slot, "scroll_speed": L.scroll_speed}
-                for L in self.layers
-            ],
-        }
+        d = {"name": self.name}
+        if self.asset:
+            d["asset"] = self.asset
+        if self.tileset:
+            d.update({
+                "palettes": self.palettes, "tileset": self.tileset,
+                "tilemap": self.tilemap, "tiles_w": self.tiles_w,
+                "tiles_h": self.tiles_h, "quantize_method": self.quantize_method,
+            })
+            if self.tile_palette_overrides:
+                d["tile_palette_overrides"] = {
+                    f"{c},{r}": s for (c, r), s in self.tile_palette_overrides.items()
+                }
+            if self.source_palettes:
+                d["source_palettes"] = self.source_palettes
+            if self.palette_overrides:
+                d["palette_overrides"] = {
+                    str(i): n for i, n in self.palette_overrides.items()
+                }
+            if self.diagnostics:
+                d["diagnostics"] = self.diagnostics
+            if self.bpp != 4:
+                d["bpp"] = self.bpp
+            if self.dither:
+                d["dither"] = True
+        if self.mode == "bitmap" and self.bitmap:
+            d.update({
+                "mode": "bitmap", "bitmap": self.bitmap,
+                "out_w": self.out_w, "out_h": self.out_h,
+                "palettes": self.palettes,
+            })
+            if self.diagnostics:
+                d["diagnostics"] = self.diagnostics
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "BackgroundAsset":
-        layers = [
-            BackgroundLayer(
-                image        = L.get("image", ""),
-                bg_slot      = L.get("bg_slot", i),
-                scroll_speed = L.get("scroll_speed", 1.0),
-            )
+        ba = cls(
+            name=d.get("name", "background"),
+            asset=d.get("asset", d.get("source", "")),   # rétro-compat: ancienne clé "source"
+            palettes=list(d.get("palettes", [])),
+            tileset=list(d.get("tileset", [])),
+            tilemap=list(d.get("tilemap", [])),
+            tiles_w=d.get("tiles_w", 0), tiles_h=d.get("tiles_h", 0),
+            quantize_method=d.get("quantize_method", d.get("compress_method", "median_cut")),
+            tile_palette_overrides=_decode_tile_palette_overrides(
+                d.get("tile_palette_overrides")),
+            diagnostics=dict(d.get("diagnostics") or {}),
+            bpp=int(d.get("bpp", 4)),
+            dither=bool(d.get("dither", False)),
+            mode=d.get("mode", "tiled"),
+            bitmap=d.get("bitmap", ""),
+            out_w=int(d.get("out_w", 0)), out_h=int(d.get("out_h", 0)),
+            source_palettes=list(d.get("source_palettes", [])),
+            palette_overrides=_decode_palette_overrides(d.get("palette_overrides")),
+        )
+        # Migration : un fond tuilé sans `source_palettes` (antérieur à l'origine
+        # des palettes) prend ses palettes courantes comme baseline dérivée —
+        # toutes deviennent grisées/overridables. Idempotent (persisté au save).
+        if ba.tileset and not ba.source_palettes and ba.palettes:
+            ba.source_palettes = [list(p) for p in ba.palettes]
+        # Anciens layers (format multi-layer) — transitoire, lus pour migrer vers
+        # Scene.background_layers puis abandonnés (to_dict ne les émet plus).
+        ba._legacy_layers = [
+            BackgroundLayer(background_name=L.get("image", ""), bg_slot=L.get("bg_slot", i),
+                            scroll_speed=L.get("scroll_speed", 1.0),
+                            pal_bank=L.get("pal_bank", OWN_PAL_BANK))
             for i, L in enumerate(d.get("layers", []))
         ]
-        return cls(name=d.get("name", "background"), layers=layers)
+        return ba
 
 
 # Stub rétrocompat (importé par d'anciens modules)
@@ -345,7 +645,7 @@ class AnimState:
 
 
 @dataclass
-class SpriteAsset(Resource):
+class SpriteAsset(SubPaletteAssetMixin, Resource):
     """
     Spritesheet PNG + découpage en frames + états d'animation.
     Stocké dans project/sprites/{name}.json
@@ -360,6 +660,22 @@ class SpriteAsset(Resource):
     frame_w: int = 16
     frame_h: int = 16
     states: list[AnimState] = field(default_factory=lambda: [AnimState()])
+    # Compression NON-DESTRUCTIVE du sprite : palette propre (couleurs BGR555
+    # ordonnées, index 1..N ; index 0 transparent implicite) dérivée du PNG
+    # source SANS le modifier, + l'algo qui l'a produite. Source de vérité de
+    # l'indexation (preview + build) — cf. core/color_utils.own_palette_from_source.
+    # [] = pas encore calculée (migration au chargement).
+    own_palette: list = field(default_factory=list)   # list[int] BGR555
+    quantize_method: str = "median_cut"
+    # Modèle sous-palettes (aligné BackgroundAsset, cf. SubPaletteAssetMixin) = la
+    # PAL_BANK du sprite. `palettes` = couleurs EFFECTIVES (forme banque hardware,
+    # index 0 réservé), `source_palettes` = baseline PNG restaurable,
+    # `palette_overrides` = {idx dérivé -> nom catalogue}. Pendant la transition,
+    # `own_palette` reste peuplé (pont de compat build/preview/palette_alloc) =
+    # sous-palette primaire sans l'index 0.
+    palettes: list = field(default_factory=list)           # list[list[int]] BGR555
+    source_palettes: list = field(default_factory=list)    # list[list[int]] BGR555
+    palette_overrides: dict = field(default_factory=dict)  # dict[int, str]
 
     @property
     def tile_w(self) -> int:
@@ -405,6 +721,12 @@ class SpriteAsset(Resource):
             "asset":   self.asset,
             "frame_w": self.frame_w,
             "frame_h": self.frame_h,
+            **({"own_palette": self.own_palette,
+                "quantize_method": self.quantize_method} if self.own_palette else {}),
+            **({"palettes": self.palettes} if self.palettes else {}),
+            **({"source_palettes": self.source_palettes} if self.source_palettes else {}),
+            **({"palette_overrides": {str(i): n for i, n in self.palette_overrides.items()}}
+               if self.palette_overrides else {}),
             "states": [
                 {
                     "name":  s.name,
@@ -489,13 +811,28 @@ class SpriteAsset(Resource):
             )
 
         states = [_parse_state(s) for s in d.get("states", [])] or [AnimState()]
-        return cls(
+        sprite = cls(
             name      = d.get("name", "sprite"),
             asset     = d.get("asset"),
             frame_w   = frame_w,
             frame_h   = frame_h,
             states    = states,
+            own_palette     = list(d.get("own_palette", [])),
+            quantize_method = d.get("quantize_method", d.get("compress_method", "median_cut")),
+            palettes          = list(d.get("palettes", [])),
+            source_palettes   = list(d.get("source_palettes", [])),
+            palette_overrides = _decode_palette_overrides(d.get("palette_overrides")),
         )
+        # Migration : un sprite sans `palettes` (antérieur au modèle sous-palettes)
+        # dérive sa PAL_BANK de son `own_palette` (forme banque hardware : index 0
+        # réservé + couleurs propres). Idempotent (persisté au save).
+        if not sprite.palettes and sprite.own_palette:
+            from core.color_utils import RESERVED_SLOT_COLOR
+            bank = ([RESERVED_SLOT_COLOR] + list(sprite.own_palette))[:16]
+            bank += [0] * (16 - len(bank))
+            sprite.palettes = [bank]
+            sprite.source_palettes = [list(bank)]
+        return sprite
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -706,7 +1043,7 @@ class ComponentOwnerMixin:
 class Prefab(Resource, ComponentOwnerMixin):
     name: str = "Prefab"
     components: list = field(default_factory=list)
-    pal_bank: int = 0
+    pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
 
     def to_dict(self) -> dict:
@@ -722,7 +1059,7 @@ class Prefab(Resource, ComponentOwnerMixin):
         return cls(
             name          = d.get("name", "Prefab"),
             components    = _components_from_list(d.get("components", [])),
-            pal_bank      = d.get("pal_bank", 0),
+            pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
             max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
         )
 
@@ -748,8 +1085,12 @@ class Actor(ComponentOwnerMixin):
     flip_h: bool = False
     flip_v: bool = False
     priority: int = 0
-    pal_bank: int = 0
+    pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     visible: bool = True
+    # Direction initiale discrète (-1|0|1 × -1|0|1) : oriente le sprite affiché
+    # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
+    dir_x: int = 0
+    dir_y: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -764,6 +1105,8 @@ class Actor(ComponentOwnerMixin):
             "priority":    self.priority,
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
+            "dir_x":       self.dir_x,
+            "dir_y":       self.dir_y,
         }
 
     @classmethod
@@ -778,8 +1121,10 @@ class Actor(ComponentOwnerMixin):
             flip_h      = d.get("flip_h", False),
             flip_v      = d.get("flip_v", False),
             priority    = d.get("priority", 0),
-            pal_bank    = d.get("pal_bank", 0),
+            pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
+            dir_x       = d.get("dir_x", 0),
+            dir_y       = d.get("dir_y", 0),
         )
 
 
@@ -841,18 +1186,33 @@ class SceneLayer:
 @dataclass
 class Scene(Resource):
     name: str = "Scene"
-    background_asset: str = ""  # nom du BackgroundAsset (project/backgrounds/)
+    # Layers de fond de CETTE scène (inline dans le JSON) — chaque layer référence
+    # un BackgroundAsset (sidecar de compression) par son nom d'image.
+    background_layers: list = field(default_factory=list)  # list[BackgroundLayer]
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
     cam_x: int = 0
     cam_y: int = 0
     cam_follow: str = ""   # nom de l'Actor à suivre ("" = caméra libre)
     scroll_h: bool = True  # défilement horizontal activé
     scroll_v: bool = False # défilement vertical activé
+    # Mode vidéo GBA de la scène (0-5). 0 = 4 fonds tuilés réguliers (défaut) ;
+    # 1/2 = tuilé + affine ; 3/4/5 = un fond bitmap plein écran (BG2). Pilote
+    # l'inspecteur (zones background/palettes). cf. ui MODE_INFO.
+    render_mode: int = 0
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
+    # Palettes actives de cette scène — noms référençant project.obj_palettes/
+    # bg_palettes (catalogue illimité). Ordre = index de banque hardware
+    # (slot 0 = 1er élément). Actor/Prefab.pal_bank indexe dans CETTE liste,
+    # pas directement le catalogue projet.
+    active_obj_palettes: list = field(default_factory=list)  # list[str]
+    active_bg_palettes:  list = field(default_factory=list)  # list[str]
+    # Override de ProjectSettings.backdrop_color pour cette scène (BGR555) ;
+    # None = hérite du défaut projet.
+    backdrop_color: Optional[int] = None
 
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
@@ -862,17 +1222,29 @@ class Scene(Resource):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "background_asset": self.background_asset,
+            "background_layers": [
+                {"background_name": L.background_name, "bg_slot": L.bg_slot,
+                 "scroll_speed": L.scroll_speed, "pal_bank": L.pal_bank,
+                 **({"tile_palette_overrides": {f"{c},{r}": s
+                                       for (c, r), s in L.tile_palette_overrides.items()}}
+                    if L.tile_palette_overrides else {}),
+                 **({} if L.visible else {"visible": False})}
+                for L in self.background_layers
+            ],
             "actors": [a.to_dict() for a in self.actors],
             "cam_x": self.cam_x,
             "cam_y": self.cam_y,
             "cam_follow": self.cam_follow,
+            "render_mode": self.render_mode,
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
             "script": self.script,
             "text_bg": self.text_bg,
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
+            "active_obj_palettes": self.active_obj_palettes,
+            "active_bg_palettes": self.active_bg_palettes,
+            "backdrop_color": self.backdrop_color,
         }
 
     @classmethod
@@ -880,16 +1252,24 @@ class Scene(Resource):
         """
         legacy_actors : dict nom→Actor chargé depuis project/actors/ (anciens projets).
         Si présent, les entrées `instances[actor_name]` sont converties en Actor inline.
-        Migration : si le JSON a encore 'bg_layers' (ancien format), on en déduit background_asset.
         """
-        # Migration ancien format : bg_layers → background_asset
-        background_asset = d.get("background_asset", "")
-        if not background_asset and "bg_layers" in d:
-            for L in d["bg_layers"]:
-                name = L.get("background_name", "")
-                if name:
-                    background_asset = name
-                    break
+        # Layers de la scène (nouveau format). L'ancien `background_asset` (nom
+        # d'un BackgroundAsset multi-layer) est migré au niveau projet
+        # (Project._migrate_scene_backgrounds) car il faut lire cet asset.
+        bg_layers = [
+            BackgroundLayer(
+                background_name = L.get("background_name", L.get("image", "")),   # rétro-compat: ancienne clé "image"
+                bg_slot      = L.get("bg_slot", i),
+                scroll_speed = L.get("scroll_speed", 1.0),
+                pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
+                # Migration : ancienne clé "tile_palettes" (avant l'harmonisation
+                # de nomenclature) relue pour préserver les scènes déjà peintes.
+                tile_palette_overrides= _decode_tile_palette_overrides(
+                    L.get("tile_palette_overrides") or L.get("tile_palettes")),
+                visible      = L.get("visible", True),
+            )
+            for i, L in enumerate(d.get("background_layers", []))
+        ]
 
         # Nouveau format : acteurs inline
         if "actors" in d:
@@ -910,24 +1290,35 @@ class Scene(Resource):
                     flip_h      = sa.get("flip_h", False),
                     flip_v      = sa.get("flip_v", False),
                     priority    = sa.get("priority", 0),
-                    pal_bank    = sa.get("pal_bank", 0),
+                    pal_bank    = sa.get("pal_bank", OWN_PAL_BANK),
                     visible     = sa.get("visible", True),
                 ))
 
         scene = cls(
             name=d.get("name", "Scene"),
-            background_asset=background_asset,
+            background_layers=bg_layers,
             actors=actors,
             cam_x=d.get("cam_x", 0),
             cam_y=d.get("cam_y", 0),
             cam_follow=d.get("cam_follow", ""),
+            render_mode=int(d.get("render_mode", 0)),
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),
             text_bg=d.get("text_bg", 1),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),
+            active_obj_palettes=d.get("active_obj_palettes", []),
+            active_bg_palettes=d.get("active_bg_palettes", []),
+            backdrop_color=d.get("backdrop_color"),
         )
+        # Ancien nom de BackgroundAsset (migré au load si background_layers vide).
+        scene._legacy_bg_asset = d.get("background_asset", "")
+        if not scene._legacy_bg_asset and "bg_layers" in d:   # très ancien format
+            for L in d["bg_layers"]:
+                if L.get("background_name"):
+                    scene._legacy_bg_asset = L["background_name"]
+                    break
         scene.ensure_collision_map()
         return scene
 
@@ -953,6 +1344,7 @@ class Project:
         self.sfx:         ResourceManager[Sfx]         = ResourceManager(self.sfx_dir, Sfx)
         self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
+        self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -989,6 +1381,26 @@ class Project:
         return self.project_dir / "variables.json"
 
     @property
+    def legacy_palettes_file(self) -> Path:
+        """Ancien catalogue monolithique (pré-migration) — project/palettes.json."""
+        return self.project_dir / "palettes.json"
+
+    @property
+    def palettes_dir(self) -> Path:
+        """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
+        return self.project_dir / "palettes"
+
+    @property
+    def legacy_obj_palettes_dir(self) -> Path:
+        """Ancien pool OBJ séparé (pré-fusion) — project/palettes/obj/."""
+        return self.project_dir / "palettes" / "obj"
+
+    @property
+    def legacy_bg_palettes_dir(self) -> Path:
+        """Ancien pool BG séparé (pré-fusion) — project/palettes/bg/."""
+        return self.project_dir / "palettes" / "bg"
+
+    @property
     def sprites_dir(self) -> Path:
         return self.assets_dir / "sprites"
 
@@ -998,8 +1410,11 @@ class Project:
 
     @property
     def backgrounds_dir(self) -> Path:
-        """Dossier des BackgroundAssets (JSON moteur)."""
-        return self.project_dir / "backgrounds"
+        """Dossier des sidecars BackgroundAsset (JSON) — co-localisé avec le PNG
+        source dans assets/backgrounds/, même modèle que SpriteAsset
+        (assets/sprites/). Migration depuis l'ancien project/backgrounds/ :
+        _migrate_bg_sidecar_location()."""
+        return self.assets_dir / "backgrounds"
 
     @property
     def background_images_dir(self) -> Path:
@@ -1103,26 +1518,42 @@ class Project:
             shutil.copy2(src, dst)
         return dst
 
-    def sync_sprite_png(self, png_path: Path) -> "SpriteAsset":
-        """
-        Appelé quand un PNG apparaît dans assets/sprites/.
-        Crée le sidecar JSON à côté si absent, l'ajoute à self.sprites si nécessaire.
-        Retourne le SpriteAsset correspondant.
-        """
+    def sync_sprite_png(self, png_path: Path) -> Optional[str]:
+        """Appelé quand un PNG apparaît dans assets/sprites/ (watcher/import). Crée
+        le SpriteAsset + son sidecar si absent, via le pipeline aligné sur les
+        backgrounds : Validator (détection) → Encodage non-destructif → asset
+        éditable. Un sprite déjà connu n'est jamais ré-encodé automatiquement.
+        Renvoie un éventuel avertissement d'import (palette réduite), None sinon."""
         name = png_path.stem
         sprite = self.sprites.get(name)
+        warning = None
         if sprite is None:
-            sprite = SpriteAsset(
-                name=name,
-                asset=self.asset_rel(png_path),
-                frame_w=8,
-                frame_h=8,
-            )
+            sprite = SpriteAsset(name=name, asset=self.asset_rel(png_path),
+                                 frame_w=8, frame_h=8)
+            # Validator + encodage : métadonnées uniquement, PNG jamais modifié.
+            try:
+                from core.sprite_import import detect_sprite_import_mode, encode_sprite
+                warning = detect_sprite_import_mode(png_path).get("warning")
+                Project.apply_sprite_encoding(
+                    sprite, encode_sprite(png_path, sprite.quantize_method))
+            except Exception:
+                pass
             self.sprites.append(sprite)
         sidecar = png_path.with_suffix(".json")
         if not sidecar.exists():
             self.sprites.save(sprite)
-        return sprite
+        return warning
+
+    @staticmethod
+    def apply_sprite_encoding(sprite: "SpriteAsset", c: dict):
+        """Applique un résultat d'`encode_sprite` au SpriteAsset (calcul/application
+        séparés, comme apply_bg_encoding). Peuple la PAL_BANK (sous-palettes) +
+        le pont de compat `own_palette`. Nouvelle baseline restaurable."""
+        sprite.palettes = [list(p) for p in c["palettes"]]
+        sprite.source_palettes = [list(p) for p in c["palettes"]]
+        sprite.palette_overrides = {}
+        sprite.own_palette = list(c["own_palette"])     # pont de compat build/preview
+        sprite.quantize_method = c["quantize_method"]
 
     def remove_sprite_png(self, png_path: Path):
         """PNG supprimé de assets/sprites/ : suppression différée du JSON."""
@@ -1184,19 +1615,87 @@ class Project:
                     self.fonts, self.scenes, self.prefabs):
             mgr.commit_deletes()
 
-    def sync_background_png(self, png_path: Path):
-        """
-        Crée automatiquement un BackgroundAsset quand un PNG apparaît dans assets/backgrounds/.
-        Si un BackgroundAsset du même nom existe déjà, on ne le modifie pas.
-        """
+    def sync_background_png(self, png_path: Path) -> Optional[str]:
+        """Crée un BackgroundAsset (sidecar de compression par image, keyé par le
+        stem du PNG) quand un PNG apparaît dans assets/backgrounds/. Ne modifie
+        pas un asset existant. C'est la scène qui possède ses layers. Renvoie un
+        éventuel avertissement d'import (palette déduite), None sinon."""
         name = png_path.stem
         if self.backgrounds.get(name) is None:
-            ba = BackgroundAsset(
-                name=name,
-                layers=[BackgroundLayer(image=png_path.name, bg_slot=0, scroll_speed=1.0)],
-            )
+            ba = BackgroundAsset(name=name, asset=png_path.name)
+            # Nouveau dépôt : AUTO-DÉTECTION du mode (pivot indexé/non-indexé),
+            # puis compression (métadonnées) sans toucher le PNG.
+            warning = None
+            try:
+                from core.bg_import import detect_import_mode
+                d = detect_import_mode(png_path)
+                ba.mode = "bitmap" if d["token"] in ("bitmap", "bitmap16") else "tiled"
+                ba.bpp = 8 if d["token"] == "tiled8" else 4
+                warning = d["warning"]
+            except Exception:
+                pass
+            self._encode_background_asset(ba, png_path)
             self.backgrounds.append(ba)
             self.backgrounds.save(ba)
+            return warning
+        return None
+
+    @staticmethod
+    def apply_bg_encoding(ba: "BackgroundAsset", source_name: str, c: dict):
+        """Applique un résultat de compression (dict de bg_import.encode_background)
+        à un BackgroundAsset. Séparé du calcul pour permettre une compression
+        hors-thread : le worker calcule `c`, le thread UI applique via ce helper."""
+        ba.asset = source_name
+        ba.palettes = c["palettes"]
+        # Nouvelle baseline dérivée du PNG : snapshot restaurable + reset des
+        # overrides (l'origine des palettes repart de la compression fraîche).
+        ba.source_palettes = [list(p) for p in c["palettes"]]
+        ba.palette_overrides = {}
+        ba.diagnostics = c.get("diagnostics", {})
+        ba.bpp = c.get("bpp", 4)
+        ba.mode = c.get("mode", "tiled")
+        if ba.mode == "bitmap":
+            ba.bitmap = c["bitmap"]
+            ba.out_w = c["out_w"]
+            ba.out_h = c["out_h"]
+            # Pas de représentation tuilée en bitmap.
+            ba.tileset = []
+            ba.tilemap = []
+            ba.tiles_w = 0
+            ba.tiles_h = 0
+            ba.tile_palette_overrides = {}
+        else:
+            ba.tileset = c["tileset"]
+            ba.tilemap = c["tilemap"]
+            ba.tiles_w = c["tiles_w"]
+            ba.tiles_h = c["tiles_h"]
+            ba.quantize_method = c["quantize_method"]
+            ba.bitmap = ""
+            ba.out_w = 0
+            ba.out_h = 0
+
+    @staticmethod
+    def _encode_background_asset(ba: "BackgroundAsset", png_path: Path, method: str = None):
+        """Calcule et stocke la compression GBA d'un fond (palettes/tileset/tilemap)
+        depuis son PNG — sans modifier le fichier. cf. core/bg_import. No-op si
+        illisible. Chemin SYNCHRONE (import via watcher, reconcile au chargement).
+        Dispatch selon le mode DÉJÀ choisi de l'asset (`ba.mode`/`ba.bpp`) — ne
+        re-détecte PAS (la détection est faite une fois à la création), pour ne
+        jamais écraser un choix de mode existant lors d'un reconcile."""
+        try:
+            from core.bg_import import (
+                encode_background, encode_background_8bpp, encode_background_bitmap,
+            )
+            dither = getattr(ba, "dither", False)
+            if getattr(ba, "mode", "tiled") == "bitmap":
+                c = encode_background_bitmap(png_path, dither=dither)
+            elif getattr(ba, "bpp", 4) == 8:
+                c = encode_background_8bpp(png_path, dither=dither)
+            else:
+                c = encode_background(png_path, method=method or ba.quantize_method)
+            Project.apply_bg_encoding(ba, png_path.name, c)
+        except Exception:
+            pass
 
     # ── Helpers de lookup ────────────────────────────────────────
 
@@ -1208,6 +1707,9 @@ class Project:
 
     def get_prefab(self, name: str) -> Optional[Prefab]:
         return self.prefabs.get(name)
+
+    def get_palette(self, name: str) -> Optional[PaletteBank]:
+        return self.palettes.get(name)
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:
@@ -1237,6 +1739,8 @@ class Project:
             "start_scene": self.settings.start_scene,
             "author":      self.settings.author,
             "version":     self.settings.version,
+            "palette_auto_import_enabled": self.settings.palette_auto_import_enabled,
+            "backdrop_color": self.settings.backdrop_color,
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -1248,6 +1752,8 @@ class Project:
         self.settings.start_scene = d.get("start_scene", "")
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
+        self.settings.palette_auto_import_enabled = d.get("palette_auto_import_enabled", True)
+        self.settings.backdrop_color = d.get("backdrop_color", 0)
 
     # ── I/O variables (globals + constants) ─────────────────────────
     # Assets côté éditeur sans dépendance externe -> project/variables.json,
@@ -1291,6 +1797,71 @@ class Project:
             )
             for c in d.get("constants", [])
         ]
+
+    # ── I/O palettes (catalogue illimité, un fichier par palette) ───────
+
+    def _seed_or_migrate_palettes(self):
+        """Appelé après self.palettes.load(). Priorité :
+        (1) ancien catalogue monolithique project/palettes.json (pré-catalogue-
+            illimité, deux pools 16+16 dans un seul fichier) ;
+        (2) anciens pools séparés project/palettes/obj/ + bg/ (catalogue
+            illimité mais encore scindé OBJ/BG, une session avant la fusion) ;
+        (3) projet neuf sans aucune trace de ce qui précède -> seed avec les
+            presets par défaut.
+        Aux étapes (1)/(2), les collisions de nom entre OBJ et BG sont
+        résolues : couleurs identiques -> dédupliquées (une seule entrée
+        gardée) ; couleurs différentes -> le doublon BG est suffixé " (BG)"."""
+        if self.palettes.items:
+            return
+
+        def _merge(name: str, colors: list, is_bg: bool):
+            if not name:
+                return
+            existing = self.palettes.get(name)
+            if existing is None:
+                self.palettes.append(PaletteBank(name=name, colors=colors))
+                return
+            if existing.colors == colors:
+                return  # doublon identique entre pools -> rien à faire
+            final_name = f"{name} (BG)" if is_bg else name
+            if self.palettes.get(final_name) is None:
+                self.palettes.append(PaletteBank(name=final_name, colors=colors))
+
+        if self.legacy_palettes_file.exists():
+            d = json.loads(self.legacy_palettes_file.read_text(encoding="utf-8"))
+            for b in d.get("obj_banks", []):
+                _merge(b.get("name", ""), list(b.get("colors", [])), is_bg=False)
+            for b in d.get("bg_banks", []):
+                _merge(b.get("name", ""), list(b.get("colors", [])), is_bg=True)
+            self.palettes.save_all()
+            self.legacy_palettes_file.rename(
+                self.legacy_palettes_file.parent / (self.legacy_palettes_file.name + ".migrated"))
+            return
+
+        legacy_obj_files = sorted(self.legacy_obj_palettes_dir.glob("*.json")) \
+            if self.legacy_obj_palettes_dir.exists() else []
+        legacy_bg_files = sorted(self.legacy_bg_palettes_dir.glob("*.json")) \
+            if self.legacy_bg_palettes_dir.exists() else []
+        if legacy_obj_files or legacy_bg_files:
+            for f in legacy_obj_files:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                _merge(d.get("name", ""), list(d.get("colors", [])), is_bg=False)
+            for f in legacy_bg_files:
+                d = json.loads(f.read_text(encoding="utf-8"))
+                _merge(d.get("name", ""), list(d.get("colors", [])), is_bg=True)
+            self.palettes.save_all()
+            if self.legacy_obj_palettes_dir.exists():
+                self.legacy_obj_palettes_dir.rename(
+                    self.legacy_obj_palettes_dir.parent / "obj.migrated")
+            if self.legacy_bg_palettes_dir.exists():
+                self.legacy_bg_palettes_dir.rename(
+                    self.legacy_bg_palettes_dir.parent / "bg.migrated")
+            return
+
+        from core.palette_presets import generate_default_banks
+        for bank in generate_default_banks():
+            self.palettes.append(bank)
+        self.palettes.save_all()
 
     # ── I/O scenes (restaure aussi la scène active) ────────────────
 
@@ -1348,10 +1919,24 @@ class Project:
         if not new_name or new_name == bg.name:
             return
         old_name = bg.name
+        # Renommer aussi le PNG source : un BackgroundAsset est keyé par le stem
+        # de son PNG (name == stem(source)). Sans ça, _reconcile_backgrounds
+        # recréerait un asset orphelin depuis l'ancien PNG au prochain chargement.
+        old_png = (self.background_images_dir / bg.asset) if bg.asset else None
+        if old_png and old_png.exists():
+            new_png = old_png.with_name(f"{new_name}{old_png.suffix}")
+            if not new_png.exists():
+                old_png.rename(new_png)
+                bg.asset = new_png.name
         self.backgrounds.rename(bg, new_name)
+        # Met à jour les layers des scènes qui référencent ce fond par nom.
         for scene in self.scenes:
-            if scene.background_asset == old_name:
-                scene.background_asset = new_name
+            touched = False
+            for L in scene.background_layers:
+                if L.background_name == old_name:
+                    L.background_name = new_name
+                    touched = True
+            if touched:
                 self.save_scene(scene)
 
     def rename_scene(self, scene: Scene, new_name: str):
@@ -1432,7 +2017,8 @@ class Project:
 
     def load(self):
         # S'assurer que tous les sous-dossiers existent
-        for sub in ("project/scenes", "project/prefab", "project/backgrounds",
+        for sub in ("project/scenes", "project/prefab",
+                    "project/palettes",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1442,14 +2028,99 @@ class Project:
         self._migrate_on_load()
         self.load_settings()
         self.load_variables()
+        self.palettes.load()
+        self._seed_or_migrate_palettes()
         self.sprites.load()
+        self._migrate_sprite_palettes()
         self.sfx.load()
         self.music.load()
         self.fonts.load()
+        self._migrate_bg_sidecar_location()
         self.backgrounds.load()
+        self._reconcile_backgrounds()
         self.prefabs.load()
         self._reconcile_sfx_and_music()
         self._load_scenes_with_migration()
+        self._migrate_scene_backgrounds()
+
+    def _migrate_scene_backgrounds(self):
+        """Migration : ancien `scene.background_asset` (BackgroundAsset multi-layer)
+        -> `scene.background_layers`. Chaque layer référence l'image par son STEM ;
+        on s'assure qu'un BackgroundAsset (sidecar de compression) existe par image.
+        Idempotent (ne fait rien si background_layers déjà rempli). PNG intacts."""
+        for scene in self.scenes:
+            legacy = getattr(scene, "_legacy_bg_asset", "")
+            if scene.background_layers or not legacy:
+                continue
+            old = self.get_background(legacy)
+            for L in getattr(old, "_legacy_layers", []) if old else []:
+                stem = Path(L.background_name).stem if L.background_name else ""
+                if not stem:
+                    continue
+                ap = self.background_images_dir / L.background_name
+                if ap.exists() and self.get_background(stem) is None:
+                    self.sync_background_png(ap)   # sidecar de compression par image
+                scene.background_layers.append(BackgroundLayer(
+                    background_name=stem, bg_slot=L.bg_slot,
+                    scroll_speed=L.scroll_speed, pal_bank=L.pal_bank))
+            scene._legacy_bg_asset = ""
+            if scene.background_layers:
+                self.save_scene(scene)
+
+    def _migrate_bg_sidecar_location(self):
+        """Migration : sidecar BackgroundAsset déplacé de project/backgrounds/ vers
+        assets/backgrounds/ (co-localisé avec le PNG source, comme SpriteAsset).
+        Déplace les *.json restants (sans écraser une cible existante) puis retire
+        l'ancien dossier s'il devient vide. Idempotent. PNG jamais touchés."""
+        old_dir = self.project_dir / "backgrounds"
+        if not old_dir.exists() or old_dir.resolve() == self.backgrounds_dir.resolve():
+            return
+        self.backgrounds_dir.mkdir(parents=True, exist_ok=True)
+        for f in sorted(old_dir.glob("*.json")):
+            dest = self.backgrounds_dir / f.name
+            if not dest.exists():
+                f.rename(dest)
+        try:
+            old_dir.rmdir()   # échoue si non vide → on laisse tel quel
+        except OSError:
+            pass
+
+    def _reconcile_backgrounds(self):
+        """(1) PNG déposés hors éditeur dans assets/backgrounds/ → crée le
+        BackgroundAsset + sa compression (comme sync_background_png). (2) Fonds
+        existants sans tileset → compression calculée. NON-DESTRUCTIF (PNG jamais
+        modifié), idempotent."""
+        d = self.background_images_dir
+        for f in (sorted(d.glob("*")) if d.exists() else []):
+            if f.is_file() and f.suffix.lower() in (".png", ".bmp"):
+                self.sync_background_png(f)
+        for ba in list(self.backgrounds):
+            if ba.tileset:
+                continue
+            img = ba.image_name()
+            ap = self.background_images_dir / img if img else None
+            if ap and ap.exists():
+                self._encode_background_asset(ba, ap)
+                if ba.tileset:
+                    self.backgrounds.save(ba)
+
+    def _migrate_sprite_palettes(self):
+        """Normalisation NON-DESTRUCTIVE des sprites existants sans PAL_BANK :
+        encode depuis le PNG source (métadonnées JSON, PNG jamais touché).
+        Idempotent — une fois `palettes` présente (encode ici, ou migration
+        from_dict depuis un ancien `own_palette`), la passe saute."""
+        for sp in list(self.sprites):
+            if sp.palettes or not sp.asset:
+                continue
+            ap = self.asset_abs(sp.asset)
+            if not ap or not ap.exists():
+                continue
+            try:
+                from core.sprite_import import encode_sprite
+                Project.apply_sprite_encoding(sp, encode_sprite(ap, sp.quantize_method))
+                self.sprites.save(sp)
+            except Exception:
+                pass
 
     def _reconcile_sfx_and_music(self):
         """
@@ -1488,6 +2159,12 @@ class Project:
 
         proj = cls(root)
         proj.settings.name = name
+
+        # Peupler le catalogue de palettes par défaut dès la création (sinon
+        # le seeding n'a lieu qu'au prochain load() et les palettes n'apparaissent
+        # qu'après un redémarrage). Réutilise la logique de seed/migration :
+        # palettes.items étant vide, on retombe sur les presets par défaut.
+        proj._seed_or_migrate_palettes()
 
         # Créer une scène de démarrage par défaut
         default_scene = Scene(name="Scene_01")

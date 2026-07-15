@@ -3,10 +3,17 @@
   "asset": "assets/sprites/Paddle.png",
   "frame_w": 8,
   "frame_h": 32,
+  "preview_palette": "pal_Paddle",
+  "own_palette": [
+    7336,
+    32364,
+    32767
+  ],
+  "compress_method": "median_cut",
   "states": [
     {
       "name": "Idle",
-      "speed": 8,
+      "speed": 5,
       "loop": true,
       "directions": [
         {
@@ -22,15 +29,15 @@
                 },
                 {
                   "src_col": 0,
-                  "src_row": 1,
-                  "dst_col": 0,
-                  "dst_row": 2
-                },
-                {
-                  "src_col": 0,
                   "src_row": 2,
                   "dst_col": 0,
                   "dst_row": 3
+                },
+                {
+                  "src_col": 0,
+                  "src_row": 1,
+                  "dst_col": 0,
+                  "dst_row": 2
                 },
                 {
                   "src_col": 0,

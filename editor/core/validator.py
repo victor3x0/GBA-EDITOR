@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from core.project import Project, Actor
+    from core.project import Project
 
 _VALIDATORS: list[Callable] = []
 
@@ -74,6 +74,15 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_scene(ctx)
     _check_actors(ctx)
     _check_backgrounds(ctx)
+    # NB : pas d'avertissement quand un même sprite/prefab/layer pointant un
+    # SLOT (pal_bank 0-15) résout vers des palettes différentes selon la scène.
+    # C'est un comportement PRÉVISIBLE et voulu (palette-swap par slot, comme
+    # le recoloring de sprites sur GB/NES) : le slot est le même partout, seul
+    # le contenu du slot varie par scène. À l'utilisateur d'aligner ses
+    # palettes par index en amont.
+    _check_bg_text_cbb_conflict(ctx)
+    _check_pal_bank_reference(ctx)
+    _check_palette_bank_overflow(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -96,8 +105,7 @@ def _check_scene(ctx: ValidationContext):
 
 
 def _check_actors(ctx: ValidationContext):
-    from core.project import (SpriteComponent, CollisionBoxComponent,
-                         ScriptComponent, component_type_name)
+    from core.project import (component_type_name)
 
     for actor in ctx.actors:
         for comp in actor.components:
@@ -154,18 +162,139 @@ def _check_backgrounds(ctx: ValidationContext):
     if not ctx.scene:
         return
 
-    ba_name = getattr(ctx.scene, "background_asset", "")
-    if not ba_name:
-        return
-
-    ba = proj.get_background(ba_name)
-    if not ba:
-        ctx.warn(None, f"Background asset '{ba_name}' introuvable — la scène compilera sans background.")
-        return
-
-    for layer in ba.layers:
-        if not layer.image:
+    for layer in ctx.scene.background_layers:
+        if not layer.background_name:
             continue
-        ap = proj.background_images_dir / layer.image
-        if not ap.exists():
-            ctx.warn(None, f"Background '{ba_name}' : image introuvable ({layer.image}) — layer ignoré.")
+        ba = proj.get_background(layer.background_name)
+        if not ba:
+            ctx.warn(None, f"Background BG{layer.bg_slot} : image '{layer.background_name}' introuvable — layer ignoré.")
+            continue
+        png = ba.asset if ba.asset else f"{layer.background_name}.png"
+        if not (proj.background_images_dir / png).exists():
+            ctx.warn(None, f"Background BG{layer.bg_slot} : PNG introuvable ({png}) — layer ignoré.")
+
+
+def _check_bg_text_cbb_conflict(ctx: ValidationContext):
+    """tte_init_se(text_bg, BG_CBB(text_bg)|BG_SBB(text_bg*8+7), ...) (cf.
+    main_gen._gen_scene_init) loge la police DANS le charblock du layer UI
+    choisi (bg_slot == text_bg) — plus de CBB3 figé. Le layer UI est donc
+    censé ne porter AUCUNE image : son charblock entier est dédié à la
+    police. Si un vrai layer BG occupe ce même bg_slot, ses tuiles ET son
+    registre BGxCNT sont écrasés par la police — corruption garantie, pas
+    juste un mauvais rendu (même sévérité que _check_bg_tile_budget), donc
+    bloquant plutôt qu'un avertissement."""
+    p = ctx.project
+    for scene in p.scenes:
+        text_bg = getattr(scene, "text_bg", -1)
+        if text_bg not in (0, 1, 2, 3):
+            continue
+        for layer in scene.background_layers:
+            if layer.background_name and layer.bg_slot == text_bg:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : le layer BG{text_bg} ('{layer.background_name}') "
+                    f"partage son bg_slot avec le Layer UI (text_bg={text_bg}) — "
+                    f"son charblock est écrasé par les tuiles de police au build. "
+                    f"Change le Layer UI de slot ou vide l'image de ce layer.")
+
+
+def _check_pal_bank_reference(ctx: ValidationContext):
+    """Un asset (actor / prefab / layer BG) peut pointer une palette RÉFÉRENCÉE
+    (pal_bank 0-15) dont le slot est hors de active_*_palettes, vide, ou dont la
+    palette a été supprimée du catalogue. Ce n'est PAS bloquant — ça peut être
+    délibéré (banque destinée à être remplie plus tard, palette-swap par slot) —
+    mais l'asset s'affichera alors avec le contenu du slot tel quel en PAL RAM
+    (souvent la palette de secours de la banque 0), donc de mauvaises couleurs.
+    On avertit en nommant le type et le nom de l'asset concerné.
+
+    Résolution des slots identique au build :
+    - actors  -> active_obj_palettes de LEUR scène ;
+    - prefabs -> active_obj_palettes de la scène d'ancrage (1ère) ;
+    - layers  -> active_bg_palettes de chaque scène utilisant le background."""
+    from core.project import OWN_PAL_BANK
+    p = ctx.project
+
+    def _slot_missing(active: list, slot: int) -> bool:
+        if not (0 <= slot < len(active)):
+            return True
+        name = active[slot]
+        return not (name and p.get_palette(name))
+
+    def _sprite_of(entity):
+        comp = entity.get_component("sprite")
+        if not (comp and getattr(comp, "active", True) and comp.sprite_name):
+            return None
+        return p.get_sprite(comp.sprite_name)
+
+    # ── Actors (par scène) ───────────────────────────────────────────
+    for scene in p.scenes:
+        active = getattr(scene, "active_obj_palettes", [])
+        for actor in scene.actors:
+            if not actor.active:
+                continue
+            pb = getattr(actor, "pal_bank", OWN_PAL_BANK)
+            if pb == OWN_PAL_BANK:
+                continue
+            sp = _sprite_of(actor)
+            if not (sp and sp.asset):
+                continue  # pas de sprite construit -> pal_bank sans effet
+            if _slot_missing(active, pb):
+                ctx.warn(actor,
+                    f"Actor '{actor.name}' pointe la banque OBJ {pb} de la scène "
+                    f"'{scene.name}', vide ou hors de la sélection active — le "
+                    f"sprite s'affichera avec le contenu par défaut de ce slot.")
+
+    # ── Prefabs poolés (via scène d'ancrage = 1ère scène) ────────────
+    anchor = p.scenes[0] if p.scenes else None
+    anchor_active = getattr(anchor, "active_obj_palettes", []) if anchor else []
+    for pf in p.prefabs:
+        if getattr(pf, "max_instances", 0) <= 0:
+            continue
+        pb = getattr(pf, "pal_bank", OWN_PAL_BANK)
+        if pb == OWN_PAL_BANK:
+            continue
+        sp = _sprite_of(pf)
+        if not (sp and sp.asset):
+            continue
+        if _slot_missing(anchor_active, pb):
+            where = f" (résolue via la scène '{anchor.name}')" if anchor else ""
+            ctx.warn(None,
+                f"Prefab '{pf.name}' pointe la banque OBJ {pb}{where}, vide ou "
+                f"hors de la sélection active — ses instances s'afficheront avec "
+                f"le contenu par défaut de ce slot.")
+
+    # ── Layers BG (portés par la scène) ──────────────────────────────
+    for scene in p.scenes:
+        active = getattr(scene, "active_bg_palettes", [])
+        for layer in scene.background_layers:
+            if not layer.background_name:
+                continue
+            pb = getattr(layer, "pal_bank", OWN_PAL_BANK)
+            if pb == OWN_PAL_BANK:
+                continue
+            if _slot_missing(active, pb):
+                ctx.warn(None,
+                    f"Background '{layer.background_name}' BG{layer.bg_slot} (scène "
+                    f"'{scene.name}') pointe la banque BG {pb}, vide ou hors de "
+                    f"la sélection active — le layer s'affichera avec le contenu "
+                    f"par défaut de ce slot.")
+
+
+def _check_palette_bank_overflow(ctx: ValidationContext):
+    """Chaque scene ne dispose que de 16 banques materielles par pool (OBJ /
+    BG). Palettes referencees + palettes propres distinctes (assets en mode
+    OWN) sont auto-allouees par palette_alloc ; si le total depasse 16, une
+    ou plusieurs palettes propres ne trouvent pas de slot -> avertissement
+    (non bloquant : ces assets retombent sur la banque 0 au build)."""
+    from codegen.palette_alloc import scene_bank_layout
+    p = ctx.project
+    for scene in p.scenes:
+        for pool, label in (("obj", "OBJ (sprites)"), ("bg", "BG (fonds)")):
+            layout = scene_bank_layout(p, scene, pool)
+            if layout.overflow():
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : plus de 16 palettes {label} "
+                    "nécessaires (référencées + palettes propres des assets "
+                    "sans palette assignée). Certains assets retomberont sur la "
+                    "banque 0 et afficheront de mauvaises couleurs — réduire le "
+                    "nombre de palettes distinctes ou partager des palettes "
+                    "référencées.")

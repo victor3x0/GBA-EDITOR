@@ -7,10 +7,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QLabel, QPushButton, QFrame,
-    QSizePolicy, QStatusBar, QDialog,
+    QStatusBar, QDialog,
     QInputDialog, QMessageBox,
-    QToolButton, QStackedWidget, QButtonGroup,
-    QToolBar,
+    QToolButton, QStackedWidget, QToolBar,
 )
 from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
@@ -18,16 +17,14 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
 from ui.common.theme import C, T
 
 from codegen import BuildWorker
-from core.scene_editor import SceneEditor
+from ui.scene_manager.scene_canvas import SceneEditor
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
 from core.history import get_history
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.project import (
-    Project, Scene, Actor, Prefab,
-    MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
-    SFX_FILE_EXTS, MUSIC_FILE_EXTS,
+    Project, Scene, SFX_FILE_EXTS, MUSIC_FILE_EXTS,
 )
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -39,6 +36,8 @@ from ui.sound_mixer.sound_panel import SoundMixerScreen
 from ui.script_editor.script_editor import ScriptEditorScreen
 from ui.home.project_picker import HomeScreen, push_recent
 from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
+from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
+from ui.background_editor.background_editor_screen import BackgroundEditorScreen
 
 PROJECTS_DIR = Path(__file__).parent.parent / "projects"
 
@@ -143,8 +142,9 @@ class GbaStatusBar(QWidget):
                 th = max(1, sp.frame_h // 8)
                 tiles += tw * th
 
-        # Palettes uniques
-        pal_set = {a.pal_bank for a in visible_actors if a.get_component("sprite")}
+        # Palettes OBJ occupées (référencées + palettes propres auto-allouées)
+        from codegen.palette_alloc import scene_bank_layout
+        obj_banks = scene_bank_layout(project, scene, "obj").bank_count()
 
         # Estimation sprites par scanline (approx : actors visibles / hauteur en tiles)
         scanline_est = max(oam_count, sum(
@@ -152,12 +152,12 @@ class GbaStatusBar(QWidget):
             if a.get_component("sprite")
         ) // max(1, (160 // 16)))
 
-        values = [oam_count, scanline_est, tiles, len(pal_set)]
+        values = [oam_count, scanline_est, tiles, obj_banks]
         labels = [
             f"{oam_count}/128 sprites",
             f"~{scanline_est}/10 sprites/ligne",
             f"{tiles}/1024 tiles",
-            f"{len(pal_set)}/16 palettes",
+            f"{obj_banks}/16 palettes",
         ]
         for i, (val, lbl) in enumerate(zip(values, labels)):
             self._set(i, val, lbl)
@@ -180,7 +180,7 @@ class GbaStatusBar(QWidget):
 class MainWindow(QMainWindow):
     SCREENS = [
         "Scene Manager", "Tileset Manager", "Background Editor",
-        "Sprite Editor", "Sound Mixer", "Script Editor",
+        "Sprite Editor", "Palette Editor", "Sound Mixer", "Script Editor",
     ]
 
     # Routage assets/<dossier>/*.ext → (méthode sync, méthode remove, label,
@@ -245,10 +245,13 @@ class MainWindow(QMainWindow):
         # (ui/project_picker.py), affiché par main.py avant la fenêtre
         # principale, et rouvrable via _go_home() pour changer de projet.
         self._build_scene_manager_screen()
-        for title in ("Tileset Manager", "Background Editor"):
-            self._screen_stack.addWidget(self._make_placeholder_screen(title))
+        self._screen_stack.addWidget(self._make_placeholder_screen("Tileset Manager"))
+        self._bg_editor = BackgroundEditorScreen()
+        self._screen_stack.addWidget(self._bg_editor)
         self._sprite_editor = SpriteEditorScreen()
         self._screen_stack.addWidget(self._sprite_editor)
+        self._palette_editor = PaletteEditorScreen()
+        self._screen_stack.addWidget(self._palette_editor)
         self._sound_mixer = SoundMixerScreen()
         self._screen_stack.addWidget(self._sound_mixer)
         self._script_editor = ScriptEditorScreen()
@@ -332,7 +335,6 @@ class MainWindow(QMainWindow):
         # ── Colonne 3 : Inspector (pleine hauteur) ────────────────
         self._inspector = DynamicInspector()
         self._inspector.actor_changed.connect(self._on_inspector_actor_changed)
-        self._inspector.slot_assigned.connect(self._on_slot_assigned)
         self._inspector.set_script_open_fn(self.open_script)
         self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)
@@ -346,8 +348,13 @@ class MainWindow(QMainWindow):
         _d.on("actors_list_changed",   self.assets_finder_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
+        _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
+        _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 3000))
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
+        # lambda : _palette_editor est construit plus loin dans _setup_ui que
+        # ce bloc d'abonnement — résoudre l'attribut au moment de l'émission.
+        _d.on("palettes_changed",      lambda: self._palette_editor.refresh())
 
         self._h_split.setSizes([220, 820, 240])
         self._h_split.setStretchFactor(0, 0)
@@ -492,6 +499,22 @@ class MainWindow(QMainWindow):
         self._screen_stack.setCurrentIndex(index)
         self._history.clear()
         self._bus.clear()
+        if index == 0:   # Scene Manager : re-synchroniser avec les assets
+            self._refresh_scene_manager()   # modifiés dans un autre écran
+
+    def _refresh_scene_manager(self):
+        """En revenant au Scene Manager, re-render le canvas + l'inspecteur
+        depuis les assets COURANTS. Le switch d'écran ne recharge rien : une
+        modification faite dans le Background/Sprite Editor (recompression,
+        inpainting, palettes) resterait sinon invisible ici jusqu'à la
+        re-sélection de la scène."""
+        se = getattr(self, "scene_editor", None)
+        if se is not None and getattr(se, "_project", None) is not None:
+            se.refresh_bg()        # re-render les fonds depuis les BackgroundAsset
+            se._reload_sprites()   # re-quantifier les acteurs (sprites édités)
+        insp = getattr(self, "_inspector", None)
+        if insp is not None:
+            insp.refresh_current()  # carte palettes / rangées layers (grisées d'asset)
 
     def _switch_screen(self, name: str):
         idx = self.SCREENS.index(name) if name in self.SCREENS else 0
@@ -576,6 +599,8 @@ class MainWindow(QMainWindow):
         self.assets_finder_panel.load_project(self.project)
         self._sound_mixer.load_project(self.project)
         self._sprite_editor.load_project(self.project)
+        self._palette_editor.load_project(self.project)
+        self._bg_editor.load_project(self.project)
         self._inspector.set_project(self.project)
         self._script_editor.set_project(self.project)
         if self.project.active_scene:
@@ -618,13 +643,6 @@ class MainWindow(QMainWindow):
         if ok and name.strip():
             get_dispatcher().add_prefab(name.strip())
             self.assets_finder_panel.refresh()
-
-    # ── Slot assigned (obsolète — géré par le dropdown BackgroundAsset) ──
-
-    def _on_slot_assigned(self, slot_index: int, path_str: str):
-        pass
-
-    # ── Autres slots ──────────────────────────────────────────────
 
     def _on_scene_changed(self):
         """Fin de drag actor ou déplacement caméra — sauvegarder via le dispatcher."""

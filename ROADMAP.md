@@ -1,10 +1,10 @@
+
 # Roadmap détaillée
 
 Ce document est la version détaillée de la section "Roadmap" du [README](README.md) — le
 README reste volontairement condensé (une ligne par version, pour un lecteur public) ;
 ce fichier explique le scope, les décisions verrouillées et les questions encore ouvertes
-derrière chaque jalon. Construit en session le 2026-07-06, juste après la sortie de la v0.1
-(démo Pong complète).
+derrière chaque jalon.
 
 Convention : **Décisions verrouillées** = tranché, à implémenter tel quel. **Ouvert** =
 identifié mais volontairement non tranché — à rouvrir quand le chantier démarre
@@ -21,24 +21,85 @@ détection de conflit. `grit` génère une palette "optimale" par PNG indépenda
 (`editor/codegen/asset_pipeline.py:52-53`), sans garantie de compatibilité entre deux
 sprites assignés au même bank.
 
+### Livré (branche `ColorPaletteSystem`)
+
+Le cœur de la v0.2 est en place. Livré à ce stade :
+
+- **Catalogue unifié illimité** (`PaletteBank`, `project/palettes/*.json`, un fichier par
+  palette, partagé OBJ/BG) + **sélection active par scène** (`Scene.active_obj_palettes` /
+  `active_bg_palettes`, jusqu'à 16 banques par pool). Le picker à swatches a remplacé les
+  `pal_bank: int` bruts partout (Actor/Prefab/`BackgroundLayer`).
+- **Écran Palette dédié** avec édition manuelle, roue chromatique, saisie BGR555, rampes,
+  damier de transparence, import/export PNG et `.gpl`.
+- **Allocation déterministe** des 16 banques par scène/pool (`codegen/palette_alloc.py`,
+  `scene_bank_layout`) : palettes référencées à leur slot fixe, palettes propres
+  auto-allouées aux slots libres. Source de vérité unique partagée par grit et `main_gen`.
+- **Validateur** : avertissement sur conflit inter-scènes (même sprite/prefab résolu vers
+  des palettes différentes) et sur débordement des 16 banques.
+
+Au-delà du plan initial, plusieurs chantiers ont été livrés dans la foulée (voir aussi
+[ARCHITECTURE.md](ARCHITECTURE.md), section « Système de palette & import d'assets ») :
+
+- **Import non-destructif d'assets** — un PNG déposé est détecté, validé et **encodé** en
+  métadonnées (sidecar JSON à côté du source, jamais réécrit). Une **quantification**
+  (réduction de couleurs, destructive) n'intervient qu'en repli, si la source n'est pas
+  déjà GBA-compatible. Le `match_mode` initial a été supprimé au profit d'un **build en
+  indexé universel** ; le champ sprite `compress_method` est devenu `quantize_method`.
+- **Encodage de fond** (`core/bg_import.py`) — tuilerie 8×8 + dédup + jusqu'à 16
+  sous-palettes par fond (`SE_PALBANK` par tuile), émission C directe sans grit
+  (`codegen/bg_emit.py`). Sidecar `BackgroundAsset` co-localisé avec le PNG dans
+  `assets/backgrounds/` (même modèle que `SpriteAsset`).
+- **Palette BG par layer** — `BackgroundLayer.pal_bank` remplace l'ancienne « une seule
+  palette BG par scène » (voir décision barrée ci-dessous), CBB = `bg_slot`, garde-fou VRAM
+  bloquant au build (`_check_bg_tile_budget`).
+- **Inpainting (repeindre la palette par tuile 8×8, non-destructif)** — deux niveaux :
+  *scène* (`BackgroundLayer.tile_palette_overrides`, canvas du Scene Manager, la scène est
+  source de vérité) et *éditeur* (`BackgroundAsset.tile_palette_overrides`,
+  `effective_tilemap()`, partagé entre scènes). L'asset/PNG d'origine reste intact ; la
+  gomme restaure.
+- **Modes de fond** — tuilé 4bpp / 8bpp + bitmap Mode 4 (photos), **auto-détectés à
+  l'import** (`detect_import_mode` : pivot indexé/non-indexé, bornes ≤16 / ≤256 / >256).
+
 ### Décisions verrouillées
 
-- **Deux pools séparés**, fidèles au hardware GBA (mémoire palette OBJ et BG
-  physiquement distinctes) : 16 palettes OBJ (sprites) × 16 couleurs, 16 palettes BG
-  (fonds) × 16 couleurs.
+- **Deux pools hardware séparés**, fidèles au GBA (mémoire palette OBJ et BG
+  physiquement distinctes) : 16 banques OBJ (sprites) × 16 couleurs, 16 banques BG
+  (fonds) × 16 couleurs. Cette séparation vit dans la **sélection active par scène**
+  (voir ci-dessous), pas dans le catalogue d'édition — depuis le 2026-07-08 le
+  catalogue lui-même est unifié (voir plus bas).
 - **Nouvel écran Palette** dédié pour construire ces palettes à la main.
 - **Import** : depuis un PNG (bande de couleurs) ou un export standard Aseprite
   (PNG/`.gpl`) — pas de parsing du format `.aseprite` natif (trop de travail pour la
   valeur ajoutée, fragile aux évolutions du format).
-- **Réservoir auto-import** : N banks par pool réservées à l'import automatique (grit
-  récupère les couleurs des PNG non explicitement palettisés). Défaut N=3 (48 couleurs
-  auto par pool).
-  - Quand le réservoir est plein : **pas d'éviction** — la nouvelle couleur est mappée
-    vers la couleur auto existante la plus proche. Aucun asset déjà construit ne change
-    de rendu (contrairement à un override silencieux, qui aurait pu casser des assets
-    sans rapport).
-  - **Réglages projet** (pas éditeur) : le toggle marche/arrêt de l'auto-import ET le
-    nombre de banks réservées sont tous les deux des réglages par projet.
+- **Catalogue de palettes illimité et unifié au niveau projet** (2026-07-08, révision du
+  plan initial "16 banks fixes par pool") — sur le modèle GB Studio : autant de palettes
+  nommées que voulu, **partagées entre OBJ et BG** (une palette n'est que 16 couleurs,
+  rien n'empêche la même définition de servir aux deux — la séparation hardware n'a
+  jamais besoin de vivre dans le catalogue), stockées comme n'importe quelle autre
+  Resource (`project/palettes/*.json`, un fichier par palette, plat). Chaque `Scene`
+  choisit jusqu'à 16 palettes actives par pool (`Scene.active_obj_palettes` /
+  `active_bg_palettes`, ordre = index de banque hardware) — c'est cette sélection, pas
+  le catalogue, qui occupe réellement les 16 banques par pool au build.
+  `Actor`/`Prefab.pal_bank` reste un `int` mais indexe désormais un **slot de la
+  sélection OBJ de la scène**, pas directement le catalogue projet.
+  - `Prefab.pal_bank` reste scene-relatif comme `Actor.pal_bank` (même forme de champ),
+    bien qu'un prefab poolé n'ait pas de scène propriétaire unique (spawn_X() appelable
+    depuis n'importe quel script Lua, non analysé statiquement) — un validateur
+    (avertissement, pas un blocage) signale les cas où deux scènes résolvent des
+    palettes différentes pour le même prefab ou le même sprite.
+  - **Coupe assumée (OBJ)** : la quantification/remap des tuiles d'un `SpriteAsset`
+    (slice 1) reste dédupliquée une fois par nom de sprite pour tout le projet — si le
+    même sprite est utilisé dans deux scènes dont la sélection de palette diffère au
+    slot concerné, un seul jeu de couleurs "gagne" (1ère scène rencontrée) et le
+    validateur avertit. Générer une variante de tuiles par scène est un chantier
+    pipeline à part, pas fait à ce stade.
+  - ~~**Coupe assumée (BG)** : une seule palette BG par scène (`active_bg_palettes[0]`),
+    partagée par tous les layers de la scène — pas d'override par `BackgroundLayer`
+    individuel.~~ **→ levée (livré)** : `BackgroundLayer.pal_bank` donne une palette par
+    layer, et l'inpainting descend au `SE_PALBANK` par tuile 8×8. Les 16 banques de
+    `active_bg_palettes` sont désormais toutes exploitables.
+  - Pas de banks réservées (voir "Mis de côté" ci-dessous pour l'ancien plan de
+    réservoir auto-import).
 - **`SpriteAsset` et `BackgroundLayer`** ont chacun leur propre champ palette
   configurable (nouveau — contrairement à `Actor`/`Prefab` qui ont déjà `pal_bank`).
 - **Deux cascades de surcharge séparées, sans influence croisée** :
@@ -54,27 +115,72 @@ sprites assignés au même bank.
 - Remplacement des `pal_bank: int` bruts par un vrai picker référençant les palettes
   nommées de l'écran, avec swatches visuels.
 
-### Ouvert
+### Mis de côté (2026-07-07)
 
-- `Scene` doit probablement recevoir un nouveau champ palette dédié pour porter les
-  overrides par `BackgroundLayer` — à ajouter au même endroit que le champ `render_mode`
-  (voir v0.3).
-- Calcul de "couleur la plus proche" (distance colorimétrique — RGB15 GBA ?) non précisé.
+- **Réservoir auto-import** — le plan initial (N banks par pool réservées à l'import
+  automatique, grit récupère les couleurs des PNG non explicitement palettisés, mapping
+  vers la couleur auto la plus proche sans éviction quand le réservoir est plein) a été
+  **abandonné temporairement** avant implémentation, sur deux problèmes de conception
+  identifiés en revue :
+  - *Dégradation silencieuse* : à N=3 (48 couleurs/pool), le réservoir sature vite ;
+    au-delà, les couleurs dérivent vers l'approximation la plus proche sans aucun
+    avertissement — confusion probable ("pourquoi mon sprite a changé de couleur en
+    ajoutant un autre sprite ?").
+  - *Non-déterminisme* : quelle couleur atterrit dans quelle bank dépend de l'ordre de
+    traitement des sprites au build, qui n'est pas garanti stable — même projet, même
+    assets, rendu potentiellement différent selon des détails d'implémentation du
+    pipeline plutôt que des choix explicites.
+  - **État actuel** : les 16 banks par pool sont toutes directement utilisables/éditables
+    (pas de réservation). `ProjectSettings.palette_auto_import_enabled` reste comme champ
+    projet pour une reprise future, mais rien dans l'UI ne s'y réfère actuellement — ni
+    banks réservées, ni option "Automatique" dans le picker.
+  - À rouvrir avec une conception plus solide : débordement *visible* au build (warning
+    explicite plutôt que silencieux) + ordre de traitement déterministe (tri par nom,
+    pas ordre d'itération).
+
+### Reste à faire (finitions v0.2)
+
+Le gros est livré (voir « Livré » plus haut). Restent des finitions :
+
+- ~~`Scene` doit probablement recevoir un nouveau champ palette dédié~~ — **fait**
+  (`active_obj_palettes`/`active_bg_palettes`).
+- ~~Branchement BG dans le pipeline + override par `BackgroundLayer` individuel~~ —
+  **fait** : palette par layer (`BackgroundLayer.pal_bank`), émission directe des fonds
+  encodés (`SE_PALBANK` par tuile) sans grit, palette canonique par scène copiée dans
+  `PAL_BG_RAM` par `main_gen`.
+- **Support ROM du mode bitmap (Mode 4)** — les fonds bitmap sont éditables et encodés
+  côté éditeur, mais **ignorés au build** (`_bg_build_asset` retourne `None`,
+  « increment 2 »). C'est la principale finition restante côté runtime.
+- **Vrai 16bpp** — un import 16bpp retombe aujourd'hui sur `bitmap16`, repli interim vers
+  Mode 4 ; l'UI bitmap dédiée reste à faire.
+- **8bpp** — une palette 256 occupe toute la `PAL_BG_RAM` : garde-fou en place (un seul
+  layer de fond par scène en 8bpp), pas de cohabitation multi-layers.
+- **Aperçu contextuel** dans l'écran Palette (point restant du redesign UI).
+- Calcul de "couleur la plus proche" (distance colorimétrique) — distance euclidienne
+  simple pour l'instant, pas de justification perceptuelle.
+- Variante de tuiles par scène (lever la "coupe assumée" OBJ ci-dessus) — chantier
+  pipeline à part si le conflit multi-scènes s'avère gênant en pratique.
 
 ---
 
 ## v0.3 — Fondations runtime "background vivant" + Texte & UI in-game
 
-### État actuel (vérifié par exploration du runtime, 2026-07-06)
+### v0.3.1 — Fondations runtime "background vivant"
 
-Le système de background est aujourd'hui **build-time only**, pensé pour du décor
-pré-cuit et statique :
+#### État actuel (vérifié par exploration du runtime, corrigé le 2026-07-06)
+
+Le système de background est aujourd'hui pensé pour du décor pré-cuit, mais moins figé
+qu'il n'y paraît au premier abord :
 
 - Mode 0 confirmé (4 layers regular max), mais **un seul tileset partagé par scène**,
   chargé une fois dans un charblock fixe à l'init (`editor/codegen/runtime_codegen/main_gen.py:576`).
-- **Le scroll parallax n'est pas câblé** : le champ `scroll_speed` existe sur
-  `BackgroundLayer` mais rien n'écrit dans les registres `BGxHOFS/VOFS` au runtime —
-  champ mort aujourd'hui.
+- **Le scroll et le parallax SONT câblés** (correction : une première exploration avait
+  conclu par erreur que `scroll_speed` était un champ mort — elle cherchait les noms
+  `REG_BG0X`/`REG_BG0Y` littéraux et manquait la macro réellement utilisée). En réalité :
+  `BGOFS(n) = cam_x * layer.speed >> 8` par layer (`main_gen.py:885`), et `BGOFS`
+  pointe bien sur le registre hardware réel `REG_BG0HOFS` (`0x04000010+n*4`,
+  `runtime/include/gba_engine.h:20`). Le scroll est piloté par `cam_x`/`cam_y`
+  (voir v0.6.1 Caméra), pas par un défilement autonome indépendant de la caméra.
 - **Aucune mutation de tilemap au runtime** : pas de fonction pour écrire une tuile à
   `(x,y)`, ni côté C (`gba_engine.h`) ni exposée en Lua. `tile.get` (`api.py:378-383`)
   ne lit que la carte de collision, pas la VRAM.
@@ -82,29 +188,30 @@ pré-cuit et statique :
   scène et jamais retouchés.
 - Tout l'agencement VRAM (charblock/screenblock) est figé au moment du build.
 
-Le texte est un **cas particulier de la même primitive manquante** : afficher du texte
-sur un BG, c'est écrire des index de tuiles (glyphes) dans une tilemap au runtime, frame
-après frame. Donc la fondation "mutation de tilemap au runtime" sert à la fois le texte
-et (en v0.4) l'éditeur de background/l'animation — pas de scope redondant entre les deux
+Le texte est un **cas particulier de la primitive manquante "mutation de tilemap"** :
+afficher du texte sur un BG, c'est écrire des index de tuiles (glyphes) dans une tilemap
+au runtime, frame après frame. Donc cette fondation sert à la fois le texte (v0.3.2) et
+(en v0.4) l'éditeur de background/l'animation — pas de scope redondant entre les deux
 chantiers.
 
-### Décisions verrouillées
+#### Décisions verrouillées
 
-- Câblage réel du scroll matériel (écriture effective des registres `BGxHOFS/VOFS`).
 - Primitive générique de **mutation de tilemap au runtime**, exposée en Lua.
 - **Show/hide de layer** exposé en Lua.
-- Police custom (`Font`, actuellement un stub vide dans `project.py:544`) et API texte
-  enrichie (dialogues, HUD, menus) — construits sur la primitive de mutation ci-dessus.
-- **UI en sprite** : ajout d'un flag `screen_space: bool` sur `Actor` pour ancrer un
-  actor à l'écran plutôt qu'au monde (ne scrolle pas avec la caméra). Réutilise tel quel
-  le système `SpriteComponent` existant (animations, états, éditeur de sprite).
 - **Champ `render_mode` sur `Scene`** (`editor/core/project.py`, dataclass `Scene`
   autour de la ligne 842, à côté de `text_bg`/`collision_layer`) : ajouté dès maintenant,
   défaut = Mode 0, **caché dans `scene_inspector.py`** tant qu'aucun autre mode n'est
   supporté. Anticipe v2.0 (Mode 7) et v3.0 (bitmap) sans migration de fichiers de scène
   plus tard.
 
-### Ouvert
+### v0.3.2 — Texte & API
+
+#### Décisions verrouillées
+
+- Police custom (`Font`, actuellement un stub vide dans `project.py:544`) et API texte
+  enrichie (dialogues, HUD, menus) — construits sur la primitive de mutation de v0.3.1.
+
+#### Ouvert
 
 - API texte concrète : effet machine à écrire ? retour à la ligne automatique ? une ou
   plusieurs polices actives simultanément par scène ?
@@ -112,39 +219,57 @@ chantiers.
   glyphes vs éditeur de police dédié ?
 - Le layer BG unique réservé à l'UI (`Scene.text_bg` actuel) suffit-il une fois panneaux
   + texte + police custom ajoutés, ou faut-il en réserver plusieurs ?
+
+### v0.3.3 — UI en sprite
+
+#### Décisions verrouillées
+
+- Ajout d'un flag `screen_space: bool` sur `Actor` pour ancrer un actor à l'écran plutôt
+  qu'au monde (ne scrolle pas avec la caméra). Réutilise tel quel le système
+  `SpriteComponent` existant (animations, états, éditeur de sprite).
+
+#### Ouvert
+
 - Ordre d'affichage (z-order) entre UI en sprite (`screen_space`) et UI en background
-  quand les deux se superposent — non défini.
+  (v0.3.2) quand les deux se superposent — non défini.
 
 ---
 
 ## v0.4 — Éditeur de Background & animation de tuiles
 
-Construit sur les fondations de la v0.3 (primitive de mutation de tilemap, scroll réel,
+Construit sur les fondations de la v0.3.1 (primitive de mutation de tilemap, scroll réel,
 show/hide).
 
-### Décisions verrouillées
+### v0.4.1 — Éditeur de Background
 
-- **Éditeur de Background** : dessiner directement sur des Background Layers via des
-  tilesets utilisateur importés ("tilesets utilisateur", jamais compilés tels quels).
-  La classe résultante peut être ajoutée à une scène.
+#### Décisions verrouillées
+
+- Dessiner directement sur des Background Layers via des tilesets utilisateur importés
+  ("tilesets utilisateur", jamais compilés tels quels). La classe résultante peut être
+  ajoutée à une scène.
 - Cet écran permet aussi de créer des **UI layers réutilisables** (across scenes, sans
   redéfinition).
-- **Animation de tuiles**, trois techniques possibles selon le cas d'usage :
+
+#### Ouvert
+
+- Aujourd'hui un seul charblock est câblé en dur par scène (voir v0.3.1). Décor + UI
+  layer réutilisable en parallèle implique plusieurs charblocks/screenblocks simultanés
+  — ampleur du changement de codegen VRAM pas encore évaluée.
+- Une "UI layer réutilisable" est-elle un nouveau type de `Resource`, ou une variante de
+  `BackgroundAsset` ?
+- Indicateur de budget VRAM dans l'éditeur (évoqué en principe, pas conçu) — pertinent
+  dès que plusieurs tilesets/charblocks coexistent.
+
+### v0.4.2 — Animation de tuiles
+
+#### Décisions verrouillées
+
+- Trois techniques possibles selon le cas d'usage :
   1. *Swap d'index dans la tilemap* — peu coûteux, bien pour une torche/eau localisée.
   2. *Réécriture du charblock (DMA)* — anime instantanément toutes les cellules
      utilisant cette tuile, coût VRAM par frame, bien pour un effet plein écran.
   3. *Cycle de palette* — rotation des couleurs d'un bank (eau, lave qui scintille),
      quasi gratuit, se branche naturellement sur l'écran Palette de la v0.2.
-
-### Ouvert
-
-- Aujourd'hui un seul charblock est câblé en dur par scène (voir état v0.3 ci-dessus).
-  Décor + UI layer réutilisable en parallèle implique plusieurs charblocks/screenblocks
-  simultanés — ampleur du changement de codegen VRAM pas encore évaluée.
-- Une "UI layer réutilisable" est-elle un nouveau type de `Resource`, ou une variante de
-  `BackgroundAsset` ?
-- Indicateur de budget VRAM dans l'éditeur (évoqué en principe, pas conçu) — pertinent
-  dès que plusieurs tilesets/charblocks coexistent.
 
 ---
 
@@ -162,17 +287,119 @@ S'appuie sur le système `Globals` déjà existant pour décider quoi persister.
 
 ## v0.6 — Polish de la boucle de jeu
 
-### Scope
+### v0.6.1 — Caméra
 
-- **Caméra** : bounds (limites de scroll), shake, zones — aujourd'hui juste
-  follow-target + pan manuel (`camera_inspector.py`), pas de bounds/shake/zones.
-- **Transitions de scène** : fade in/out — aujourd'hui `scene.switch()` est un cut
-  instantané (`api.py:264-268`), aucune trace de fade dans le codebase.
-- **Pentes** : 22 types de tiles de pente sont définis côté éditeur
-  (`project.py:792-816`, `TILE_SLOPE_L/R` 26°/45°/63° + miroirs plafond), à finaliser
-  côté runtime.
+Gros sujet, à la fois fonctionnel et rendu — pas encore débattu en détail au-delà de
+l'état des lieux ci-dessous.
 
-### Ouvert
+#### État actuel (vérifié le 2026-07-06)
+
+**Deux mécanismes de caméra coexistent aujourd'hui, indépendants et non coordonnés :**
+
+1. **Déclaratif** (`Scene.cam_follow`, configuré par nom dans `camera_inspector.py`) —
+   généré automatiquement dans le `scene_tick` : centre exactement sur l'acteur ciblé
+   (`cam_x = actor.x - 120`, `cam_y = actor.y - 80` — 120/160 = moitié de la résolution
+   écran 240×160), avec **clamp aux bords du monde**, mais seulement si `scroll_h`/
+   `scroll_v` sont activés et qu'un fond existe (`main_gen.py:858-873`). Pas de zone
+   morte : la caméra recentre exactement sur la cible à chaque frame.
+2. **Scriptable** (`camera.follow(x, y, margin_x, margin_y)` en Lua → `camera_follow`
+   en C, `runtime/include/actor_api_static.h:118-122`) — suivi par **zone morte**
+   configurable (la caméra ne bouge que quand la cible sort de la marge), mais **sans
+   aucun clamp aux bords du monde**.
+3. Scroll manuel (aucun `cam_follow` configuré) : le D-pad déplace `cam_x`/`cam_y`
+   directement (`main_gen.py:876-880`), **sans clamp non plus**.
+
+Les trois écrivent les mêmes globales `cam_x`/`cam_y` sans coordination. **Risque
+concret, pas juste théorique** : une scène avec `cam_follow` configuré dans l'inspector
+ET un script qui appelle `camera.follow()` se disputent la position de la caméra.
+
+Le parallax est câblé et fonctionne déjà pour n'importe lequel des trois mécanismes
+ci-dessus, puisqu'il ne fait que lire `cam_x` (voir v0.3.1) — pas un sujet à reconstruire,
+juste à exploiter.
+
+**Zoom : impossible en Mode 0** (les layers BG regular ne supportent pas le
+scaling) — bloqué tant que les layers affines de la v2.0 n'existent pas. À exclure
+explicitement du scope v0.6.1, pas un oubli.
+
+#### Décisions verrouillées (2026-07-06)
+
+Contrainte de départ : la GBA n'a qu'un seul écran physique, et le multijoueur est hors
+scope — "plusieurs caméras" ne peut donc pas vouloir dire plusieurs viewports simultanés
+(pas de split-screen). Ça veut dire : **plusieurs configurations de caméra définissables,
+une seule active à la fois par scène.**
+
+- **`Camera` devient un nouveau type de `Resource`**, sur le même modèle que
+  `Prefab`/`Sfx`/`Music`/`Font` (`to_dict`/`from_dict`). Ceci **remplace** les deux
+  mécanismes en conflit décrits ci-dessus (`Scene.cam_follow` déclaratif +
+  `camera.follow()` scriptable ad hoc) par une seule source de vérité : un objet
+  `Camera` porte target/zone morte/bounds/shake en un seul endroit.
+- **Stockage : `project/cameras/{name}.json`** — pas `assets/` (une config de caméra ne
+  dépend d'aucune ressource externe, cohérent avec la distinction `assets/` vs
+  `project/` déjà en place pour Prefab/variables).
+- **Réutilisable entre scènes**, comme un Prefab — une caméra "boss_cam" définie une
+  fois peut être référencée par plusieurs scènes.
+- **Une seule caméra active à la fois par scène** (pas de rendu simultané, cohérent avec
+  le hardware).
+- **Changement de caméra active : appel API explicite uniquement**
+  (`camera.activate("nom")` depuis un script) — **pas** de switch automatique par
+  zone/trigger. Un comportement "zone" (ex: verrouiller la caméra dans une salle de
+  boss) reste possible sans nouveau concept dédié : le script appelle simplement
+  `camera.activate()` depuis le callback `onTriggerEnter` d'un `CollisionBoxComponent`
+  trigger déjà existant. Pas besoin d'une Resource `CameraZone` séparée.
+- **Caméra par défaut auto-créée à la création d'une scène** — l'utilisateur n'a jamais
+  besoin de créer explicitement une `Camera` pour le cas simple à une seule caméra ;
+  une Resource `Camera` par défaut est générée automatiquement en même temps que la
+  `Scene`.
+- **Nouveau champ sur `Scene`** (aux côtés de `render_mode`, voir v0.3.1) : référence par
+  nom vers la `Camera` active **au démarrage** de la scène — remplace
+  `Scene.cam_follow` comme point d'entrée déclaratif. Ce champ ne fixe que l'état
+  initial ; `camera.activate()` peut en changer ensuite pendant l'exécution.
+- **`scroll_h`/`scroll_v` restent sur `Scene`, ne migrent pas dans `Camera`.** Ce sont
+  deux concepts différents : la `Camera` décide *comment* `cam_x`/`cam_y` sont calculés
+  (suivi, zone morte, shake) ; `scroll_h`/`scroll_v` décrivent *si le niveau lui-même*
+  est censé défiler dans cet axe (propriété du level design porté par la Scène et ses
+  `BackgroundLayer`, pas de la caméra active). Changer de caméra active ne doit pas
+  changer si le niveau défile. `scroll_h`/`scroll_v` agissent comme un filtre appliqué
+  par-dessus la position calculée par la `Camera`, avant écriture dans `BGOFS`/OAM.
+  - **Bug existant à corriger dans le même chantier** : aujourd'hui `scroll_h=False` ne
+    bloque pas réellement le mouvement de la caméra en mode suivi, il ne bloque que le
+    clamp aux bords (`main_gen.py:868` : `cam_x` est réassigné à `actor.x-120`
+    indépendamment de `scroll_h`). Le flag ne fait pas ce que son nom promet — à
+    corriger en posant le nouveau modèle, pas à documenter tel quel.
+- **`Camera` peut recevoir un script Lua**, même pattern que `Scene.script`
+  (`project.py:851`) et `ScriptComponent` : champ `script: str`, hooks `on_start()` /
+  `on_update()` / `on_late_update()`. Les champs déclaratifs (target/zone morte/clamp/
+  shake) sont **toujours calculés en premier** ; si un script est attaché, son
+  `on_late_update()` s'exécute ensuite et peut lire/écraser `cam_x`/`cam_y` — comme un
+  `ScriptComponent` d'Actor qui tourne après les autres systèmes. Permet un usage
+  purement déclaratif (débutant), purement scripté (`target` laissé vide), ou hybride
+  (déclaratif comme base + ajustement fin par script) sans flag de bascule dédié.
+
+#### Ouvert
+
+- Champs exacts de la Resource `Camera` (target actor par nom ? marges de zone morte ?
+  bounds on/off ? paramètres de shake — amplitude/durée/décroissance ?) — pas encore
+  spécifiés en détail.
+- Nom exact du nouveau champ `Scene` et convention de nommage de la caméra par défaut
+  auto-créée (ex : même nom que la scène ? toujours `"Default"` ?).
+- Migration des scènes existantes : `Scene.cam_x`/`cam_y`/`cam_follow` actuels
+  deviennent obsolètes au profit de ce nouveau champ — stratégie de migration à définir
+  (pré-1.0, donc probablement pas critique).
+- **Shake** — paramètres non conçus (amplitude, durée, décroissance).
+- **Bounds clamping** — aujourd'hui présent seulement dans l'ancien mécanisme
+  déclaratif ; à porter proprement dans le nouveau modèle `Camera`.
+
+### v0.6.2 — Transitions de scène
+
+- Fade in/out — aujourd'hui `scene.switch()` est un cut instantané (`api.py:264-268`),
+  aucune trace de fade dans le codebase.
+
+### v0.6.3 — Pentes / collision
+
+- 22 types de tiles de pente sont définis côté éditeur (`project.py:792-816`,
+  `TILE_SLOPE_L/R` 26°/45°/63° + miroirs plafond), à finaliser côté runtime.
+
+#### Ouvert
 
 - La résolution runtime réelle des pentes n'a **jamais été confirmée** par
   l'exploration — ce point pourrait être à *construire* plutôt qu'à *finaliser*.
@@ -185,19 +412,25 @@ S'appuie sur le système `Globals` déjà existant pour décider quoi persister.
 Les resources `Sfx` (`project.py:504-512`) et `Music` (`project.py:522-534`) sont
 aujourd'hui des stubs marqués TODO explicitement dans le code.
 
-### Scope
+### v0.7.1 — Clarification des resources Sfx/Music
 
-- Clarifier `Sfx` : format source (wav brut vs conversion Maxmod), pitch.
-- Clarifier `Music` : module tracker (.mod/.s3m/.xm/.it via Maxmod), loop point.
-- **Écran de mixage** (existe déjà en partie, `ui/sound_mixer/sound_panel.py`) enrichi :
-  preview live du mix SFX+musique, volume par canal/catégorie, gestion des priorités
-  (nombre de canaux hardware GBA limité).
-- API Lua `sfx.play`/`music.play` avec overrides pitch/volume à l'appel (pas seulement
-  au niveau resource).
+- `Sfx` : format source (wav brut vs conversion Maxmod), pitch.
+- `Music` : module tracker (.mod/.s3m/.xm/.it via Maxmod), loop point.
 
-### Ouvert
+### v0.7.2 — Écran de mixage
+
+- Existe déjà en partie (`ui/sound_mixer/sound_panel.py`), à enrichir : preview live du
+  mix SFX+musique, volume par canal/catégorie, gestion des priorités (nombre de canaux
+  hardware GBA limité).
+
+#### Ouvert
 
 - Politique de priorité/culling quand trop de SFX jouent simultanément — non décidée.
+
+### v0.7.3 — API Lua
+
+- `sfx.play`/`music.play` avec overrides pitch/volume à l'appel (pas seulement au
+  niveau resource).
 
 ---
 
