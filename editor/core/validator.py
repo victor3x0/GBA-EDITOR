@@ -163,13 +163,13 @@ def _check_backgrounds(ctx: ValidationContext):
         return
 
     for layer in ctx.scene.background_layers:
-        if not layer.image:
+        if not layer.background_name:
             continue
-        ba = proj.get_background(layer.image)
+        ba = proj.get_background(layer.background_name)
         if not ba:
-            ctx.warn(None, f"Background BG{layer.bg_slot} : image '{layer.image}' introuvable — layer ignoré.")
+            ctx.warn(None, f"Background BG{layer.bg_slot} : image '{layer.background_name}' introuvable — layer ignoré.")
             continue
-        png = ba.source if ba.source else f"{layer.image}.png"
+        png = ba.asset if ba.asset else f"{layer.background_name}.png"
         if not (proj.background_images_dir / png).exists():
             ctx.warn(None, f"Background BG{layer.bg_slot} : PNG introuvable ({png}) — layer ignoré.")
 
@@ -189,9 +189,9 @@ def _check_bg_text_cbb_conflict(ctx: ValidationContext):
         if text_bg not in (0, 1, 2, 3):
             continue
         for layer in scene.background_layers:
-            if layer.image and layer.bg_slot == text_bg:
+            if layer.background_name and layer.bg_slot == text_bg:
                 ctx.error(None,
-                    f"Scène '{scene.name}' : le layer BG{text_bg} ('{layer.image}') "
+                    f"Scène '{scene.name}' : le layer BG{text_bg} ('{layer.background_name}') "
                     f"partage son bg_slot avec le Layer UI (text_bg={text_bg}) — "
                     f"son charblock est écrasé par les tuiles de police au build. "
                     f"Change le Layer UI de slot ou vide l'image de ce layer.")
@@ -266,14 +266,14 @@ def _check_pal_bank_reference(ctx: ValidationContext):
     for scene in p.scenes:
         active = getattr(scene, "active_bg_palettes", [])
         for layer in scene.background_layers:
-            if not layer.image:
+            if not layer.background_name:
                 continue
             pb = getattr(layer, "pal_bank", OWN_PAL_BANK)
             if pb == OWN_PAL_BANK:
                 continue
             if _slot_missing(active, pb):
                 ctx.warn(None,
-                    f"Background '{layer.image}' BG{layer.bg_slot} (scène "
+                    f"Background '{layer.background_name}' BG{layer.bg_slot} (scène "
                     f"'{scene.name}') pointe la banque BG {pb}, vide ou hors de "
                     f"la sélection active — le layer s'affichera avec le contenu "
                     f"par défaut de ce slot.")

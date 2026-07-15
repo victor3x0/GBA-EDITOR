@@ -61,8 +61,8 @@ def bg_layer_sym_for(scene, layer) -> str:
     tuiles+map ensemble par simplicité (surcoût ROM seulement pour un fond
     partagé ET peint dans plusieurs scènes)."""
     if getattr(layer, "tile_palette_overrides", None):
-        return _sym(f"{scene.name}_{layer.image}_bg{layer.bg_slot}")
-    return bg_layer_sym(layer.image, layer.bg_slot)
+        return _sym(f"{scene.name}_{layer.background_name}_bg{layer.bg_slot}")
+    return bg_layer_sym(layer.background_name, layer.bg_slot)
 
 
 def bg_map_geometry(w: int, h: int) -> tuple[int, int, int]:
@@ -120,11 +120,12 @@ class GritBackground:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
         for asset, layer, colors, mp_slot in layers:
-            if not layer.image:
+            if not layer.background_name:
                 continue
-            ap = p.background_images_dir / layer.image
+            png_name = asset.asset if asset and asset.asset else f"{layer.background_name}.png"
+            ap = p.background_images_dir / png_name
             if not ap.exists():
-                self._emit("error_line", f"[grit BG] image manquante : {layer.image}")
+                self._emit("error_line", f"[grit BG] image manquante : {layer.background_name}")
                 return False
 
             quantize = bool(colors)
@@ -144,7 +145,7 @@ class GritBackground:
                            f"{mp_slot} ({len(colors)} couleurs, mode {mode})")
             else:
                 shutil.copy2(ap, tmp)
-            self._emit("log_line", f"[grit BG] {asset.name} BG{layer.bg_slot} <- {layer.image}")
+            self._emit("log_line", f"[grit BG] {asset.name} BG{layer.bg_slot} <- {layer.background_name}")
 
             out_base = str(p.grit_out_dir / sym)
             cmd = [

@@ -14,7 +14,7 @@ gba-editor/
 │   ├── core/
 │   │   ├── project.py               ← modèle de données (project.json + project/**)
 │   │   ├── project_watcher.py       ← détection live des assets
-│   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions.
+│   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions, peindre des tuiles.
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
 │   │   ├── toolchain.py             ← détection devkitPro/mGBA (PATH, config, emplacements connus)
 │   │   └── ...
@@ -46,7 +46,7 @@ gba-editor/
 │       │   ├── spritesheet_viewer.py      ← tile picker sur le PNG source
 │       │   ├── direction_widget.py        ← sélecteur 3×3 de directions
 │       │   ├── sprite_center_panel.py     ← assemble playback+canvas+tiles+timeline
-│       │   ├── sprite_right_panel.py      ← propriétés/collision/anim settings
+│       │   ├── sprite_right_panel.py      ← propriétés/collision/anim settings/palette
 │       │   └── sprite_editor_screen.py    ← écran complet (assemble les 3 colonnes)
 │       ├── sound_mixer/
 │       │   └── sound_panel.py
@@ -70,11 +70,11 @@ gba-editor/
         ├── project.json             ← config racine uniquement (nom, scène de démarrage, auteur, version)
         ├── assets/                  ← dépend d'une ressource externe (image, son...)
         │   ├── sprites/             ← PNG + JSON sidecar (SpriteAsset)
-        │   ├── backgrounds/         ← PNG bruts (BackgroundImage)
+        │   ├── backgrounds/         ← PNG + JSON sidecar (BackgroundAsset)
         │   └── scripts/             ← scripts Lua source (acteurs + scènes)
         ├── project/                 ← données éditeur pures, aucune dépendance externe
         │   ├── scenes/              ← définition des scènes (.json)
-        │   ├── backgrounds/         ← BackgroundAsset (.json) — assemblages de layers
+        │   ├── palettes/            ← PaletteBank (.json) — catalogue de palettes nommées, 1 fichier/palette
         │   ├── prefab/              ← préfabs d'acteurs (.json)
         │   └── variables.json       ← globals + constants du projet
         └── build/                   ← 100% généré, gitignored — compile assets/ ET project/
@@ -94,10 +94,11 @@ Ces concepts ont un équivalent direct dans le hardware ou la toolchain.
 | `TileCell` | tile index VRAM | Une tile 8×8 référencée par son index dans VRAM |
 | `AnimFrame` | plage de tile indices | Un état visuel = N tiles dans VRAM |
 | `Actor` | `OBJATTR` (OAM) | Instance affichée à l'écran via une entrée OAM |
-| `BackgroundImage` | PNG source | Image brute dans `assets/backgrounds/`, source pour grit |
-| `BackgroundLayer` | charblock + screenblock BG | `{image, bg_slot, scroll_speed}` — un plan BG physique |
-| `BackgroundAsset` | `REG_BGxCNT` × N | Assemblage de layers dans `project/backgrounds/*.json`, assigné à une scène |
-| `Scene.background_asset` | ensemble de `REG_BGxCNT` activés | Référence (par nom) au `BackgroundAsset` de la scène |
+| `BackgroundLayer` | charblock (CBB=`bg_slot`) + screenblock | `{image, bg_slot, scroll_speed, pal_bank, tile_palette_overrides}` — un plan BG physique **de la scène** |
+| `BackgroundAsset` | tileset + sous-palettes | Sidecar (`project/backgrounds/{image}.json`), keyé par nom comme `SpriteAsset` — PNG source jamais modifié 
+| `Scene.background_layers` | jusqu'à 4 `REG_BGxCNT` | Liste de `BackgroundLayer` inline dans le JSON de la scène (chacun référence un `BackgroundAsset` par nom d'asset) |
+| `PaletteBank` | 16 couleurs BGR555 | Palette nommée du catalogue (`project/palettes/*.json`), partagée OBJ/BG |
+| `Scene.active_obj_palettes` / `Scene.active_bg_palettes` | 16 banques `PAL_OBJ`/`PAL_BG` | Sélection ordonnée (index = banque hardware) des palettes actives de la scène ; `pal_bank` indexe dans cette liste |
 | `Scene` | `scene_init_X` / `scene_tick_X` | Paire de fonctions C dispatchées via vtable dans `main.c` |
 | `ScriptComponent` (Lua) | fonction C compilée | Le Lua est transpilé vers C, pas interprété à l'exécution |
 
@@ -124,11 +125,11 @@ Ces concepts n'ont pas d'équivalent direct dans grit ou le hardware GBA.
 
 - **`assets/` vs `project/`** — la distinction qui structure tout le projet : `assets/` contient ce qui dépend d'une ressource externe à l'éditeur (une image PNG, un son) ; `project/` contient les données propres à l'éditeur, sans dépendance externe (scènes, prefabs, variables...). Les deux sont traités par l'éditeur et compilés dans `build/` — la différence est l'origine de la donnée, pas son traitement.
 - `assets/` → la source de vérité des assets bruts ; le JSON sidecar est auto-géré par l'éditeur
-- `assets/backgrounds/` → PNG bruts (`BackgroundImage`) ; `project/backgrounds/` → assemblages de layers (`BackgroundAsset`)
+- `assets/backgrounds/` → PNG bruts (`BackgroundAsset`) ; → sidecar d'importation par image (`BackgroundAsset` : tileset + sous-palettes, PNG jamais modifié). 
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
 - `build/grit_out/` et `build/src/` → effacés et regénérés à chaque build ; `build/obj/` est conservé pour la compilation incrémentale
 - `project.json` → config racine uniquement (nom, scène de démarrage, auteur, version) ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
-- Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `Scene.background_asset`) — jamais par chemin absolu
+- Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `BackgroundLayer.backgroundasset_name`, palette active par nom de `PaletteBank`) — jamais par chemin absolu
 - Les scripts Lua sont **transpilés vers C** au build, pas interprétés à l'exécution
 - Les `GlobalVar` sont des variables C partagées entre tous les scripts du jeu (`globals.h` / `globals.c` générés une fois par build, pas par scène)
 - Chaque scène génère une paire C `scene_init_X` / `scene_tick_X` dispatchée via une vtable statique dans `main.c`
@@ -142,8 +143,8 @@ Le script Lua n'est jamais traduit directement en texte C : il passe par un AST 
 ```
 texte Lua → parser.py → AST Python → checker.py (validation) → codegen.py → texte C
                                             ↑                        ↑
-                                            └──── scripting/api.py ──┘
-                                              (RUNTIME_API : catalogue unique)
+                                            └── scripting/api.py ──┘
+                                          (RUNTIME_API : catalogue unique)
 ```
 
 - **`parser.py`** — modélise la grammaire Lua en dataclasses Python (`StmtIf`, `ExprInvoke` pour `self:method()`, etc.). Spécifique à Lua : remplacer le langage de script demanderait de réécrire ce fichier (et une partie du pattern-matching de `checker.py`/`codegen.py` sur ces formes syntaxiques), mais pas le reste de la chaîne.
@@ -154,17 +155,93 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 
 ---
 
+## Système de palette & compression d'assets
+
+Ajouté par la branche `ColorPaletteSystem`. Deux idées structurent tout : **un catalogue
+de palettes nommées** activées par scène. — les PNG sources ne sont jamais réécrits ; les couleurs et la tuilerie vivent dans des sidecars JSON, recalculés au build.
+
+### Catalogue et sélection par scène
+
+
+- **`PaletteBank`** (`core/project.py`) — une palette nommée de 16 couleurs BGR555,
+  catalogue illimité et **unifié** (`project/palettes/*.json`, un fichier par palette),
+  partagé entre les pools OBJ et BG. L'index 0 est toujours forcé transparent.
+- **Sélection active par scène** — `Scene.active_obj_palettes` / `active_bg_palettes` :
+  jusqu'à 16 noms de `PaletteBank` par pool, l'ordre = index de banque hardware. C'est
+  cette sélection (pas le catalogue) qui occupe réellement les banques
+  `PAL_OBJ_RAM` / `PAL_BG_RAM` au build. Les deux pools GBA sont physiquement séparés.
+- **`pal_bank`** sur `Actor` / `Prefab` / `BackgroundLayer` — soit un slot `0-15` dans la
+  sélection de la scène, soit le sentinel **`OWN_PAL_BANK` (-1)** = « palette issu de l'asset » :
+
+
+### Allocation des banques — source de vérité unique
+
+`codegen/palette_alloc.py::scene_bank_layout(project, scene, pool)` résout, pour une scène
+et un pool, quelles couleurs occupent chacune des 16 banques hardware :
+
+1. palettes référencées → à leur slot fixe (index dans `active_*_palettes`) ;
+4. fonds compressés → un **bloc de banques contiguës** (une par sous-palette).
+
+Déterministe : `pipeline.py` (quantification grit) et `main_gen.py` (émission des
+`PAL_*_RAM`) lisent le même layout sans se coordonner. Le débordement (>16 banques) n'est
+jamais silencieux : `bank_index` retombe sur la banque 0 et le validateur avertit.
+
+### Compression non-destructive
+
+- **Sprites** — chaque `SpriteAsset` conserve sa **palette propre** (`own_palette`, BGR555)
+  dérivée d'un png indexé directement (ou déduite depuis un png non-indexé). Au build, le sprite est quantifié vers sa palette effective (propre ou
+  banque référencée) et indexé, sans réécrire le PNG.
+- **Fonds** — `core/bg_compress.py` produit un `BackgroundAsset` (sidecar par image) :
+  tuilerie 8×8 + déduplication + jusqu'à 16 **sous-palettes** (`SE_PALBANK` par tuile en
+  4bpp). L'émission C se fait **directement** (`codegen/bg_emit.py::emit_bg_c`), sans passer
+  par grit. Trois modes, **auto-détectés à l'import** (`detect_import_mode`) :
+
+  | Mode | `BackgroundAsset` | Rendu |
+  |------|-------------------|-------|
+  | Tuilé 4bpp | `bpp=4`, ≤16 sous-palettes | Mode 0, `SE_PALBANK` par tuile, inpainting possible |
+  | Tuilé 8bpp | `bpp=8`, 1 palette de 256 | Mode 0, occupe toute la `PAL_BG_RAM` (1 seul layer) |
+  | Bitmap | `mode="bitmap"` | Mode 4 plein écran (photos) — **éditable mais pas encore émis au build** |
+
+### Inpainting — repeindre la palette par tuile (non-destructif)
+
+Réassigner la banque de palette d'une tuile 8×8 sans toucher aux pixels. La baseline
+(`BackgroundAsset.tilemap`) reste intacte ; `effective_tilemap()` applique les overrides.
+Deux niveaux :
+
+- **Éditeur** — `BackgroundAsset.tile_palette_overrides` : partagé par toutes les scènes
+  qui utilisent ce fond (canvas du Background Editor).
+- **Scène** — `BackgroundLayer.tile_palette_overrides` : propre à une scène, se superpose
+  par-dessus l'inpainting éditeur (canvas du Scene Manager). La scène est source de vérité ;
+  le build produit alors une map propre à la scène plutôt que la map partagée.
+
+La gomme restaure la palette d'origine (supprime l'override).
+
+### Garde-fous (validateur)
+
+- **Conflit inter-scènes** — même sprite/prefab résolu vers des palettes différentes selon
+  la scène → **avertissement** (une seule variante de tuiles est générée, 1ʳᵉ scène gagne).
+- **Débordement de banques** (>16 par pool) → avertissement, fallback banque 0.
+- **Budget VRAM tuiles** (`pipeline._check_bg_tile_budget`) — un layer dont les tuiles
+  générées déborderaient sur l'espace réservé à sa propre map → **erreur bloquante** (ici
+  c'est de la mémoire écrasée au runtime, pas juste une mauvaise couleur).
+
+---
+
 ## Pipeline de build (ROM)
 
 ```
 ① Validation du projet (scenes, sprites, scripts)
 
-② grit BG — par scène (si un BackgroundAsset est assigné)
-   assets/backgrounds/{image}.png  (via BackgroundAsset.layers)
-       → grit              → build/grit_out/{scene}_tileset.c/.h
+② Fonds — par layer de scène (dédup par image+bg_slot, ou par scène si inpainting)
+   fond COMPRESSÉ (cas courant : tileset + sous-palettes déjà dans le BackgroundAsset)
+       → bg_emit           → build/grit_out/{layer}.c/.h   (émission directe, PAS grit)
+   fond legacy non compressé
+       → grit              → build/grit_out/{layer}.c/.h
+   (bitmap Mode 4 : ignoré au build — cf. Système de palette)
 
-③ grit Sprites — union de toutes les scènes + prefabs (dédupliqués)
-   assets/sprites/{name}.png
+③ Sprites — union de toutes les scènes + prefabs (dédupliqués par nom)
+   assets/sprites/{name}.png  quantifié vers sa palette effective (propre ou banque
+   référencée, résolue par palette_alloc)
        → grit              → build/grit_out/sprite_{name}.c/.h
 
 ④ Audio (optionnel)

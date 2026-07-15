@@ -35,7 +35,6 @@ class SpriteCenterPanel(QWidget):
         self._read_only:   bool = False
         self._disp_frames: Optional[list] = None
         self._flip:        tuple[bool, bool] = (False, False)
-        self._preview_banks: list = []   # banques proposées dans le dropdown palette
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._on_play_tick)
         self._build()
@@ -76,7 +75,7 @@ class SpriteCenterPanel(QWidget):
 
         toolbar = self._canvas_panel.toolbar
         toolbar.btn_play.toggled.connect(self._on_play_toggled)
-        toolbar.btn_palette.clicked.connect(self._open_preview_palette_picker)
+        self._canvas_panel.paint_strip.selected.connect(self._on_paint_palette_selected)
 
         # Shift+X/Y : portés ici (pas sur _FrameCanvas seul) pour marcher
         # aussi bien après un clic dans le canvas que dans le tile picker —
@@ -90,11 +89,10 @@ class SpriteCenterPanel(QWidget):
 
     # ── API publique ──────────────────────────────────────────────────
 
-    def refresh_own_palette(self):
-        """Re-applique la compression du sprite courant au canvas (après un
-        réordonnancement de la bande) → le rendu dérivé se met à jour."""
-        if self._sprite:
-            self._canvas.set_own_palette(getattr(self._sprite, "own_palette", []))
+    def refresh_palettes(self):
+        """La PAL_BANK a été mutée par la grille (panneau droit) : recharge la
+        bande de preview du canvas (peut avoir grandi/rétréci/changé de couleurs)."""
+        self._load_paint_strip()
 
     def load_sprite(self, sprite: SpriteAsset, project: Project):
         self._sprite  = sprite
@@ -112,71 +110,30 @@ class SpriteCenterPanel(QWidget):
             unique=sprite.tiles_per_frame,
         )
         self._tiles.load(self._abs_path())
+        self._load_paint_strip()
 
-        # Palette de preview : mémorisée par sprite (SpriteAsset.preview_palette).
-        # Repli sur "DMG (GB Default)" (verte) si rien de mémorisé ou palette
-        # supprimée — recherchée par nom, pas par index 0 (le catalogue est
-        # chargé par ordre alphabétique de fichier, pas par ordre de création).
-        self._preview_banks = list(project.palettes) if project else []
-        stored = getattr(sprite, "preview_palette", None)
-        bank = (project.get_palette(stored) if (stored and project) else None) \
-            or (project.get_palette("DMG (GB Default)") if project else None) \
-            or (self._preview_banks[0] if self._preview_banks else None)
-        self._set_preview_palette(bank)
+    # ── Bande de preview (PAL_BANK du sprite, tête du canvas) ──────────
 
-    # ── Palette de preview (dropdown depuis la barre d'outils) ─────────
-
-    def _set_preview_palette(self, bank):
-        """Applique une banque à la preview du canvas et reflète son icône
-        sur le bouton palette de la barre d'outils (ou l'icône générique si
-        aucune banque)."""
-        self._canvas.set_tint(bank.colors if bank else None)
-        btn = self._canvas_panel.toolbar.btn_palette
-        if bank:
-            from ui.common.palette_swatch import bank_icon
-            btn.setIcon(bank_icon(bank, 22))
-            btn.setToolTip(f"Palette de preview : {bank.name}")
+    def _load_paint_strip(self):
+        """Peuple la bande depuis `sprite.palettes` (PAL_BANK) ; palette active
+        (index 0 par défaut, non persistée — cf. Background Editor) → teinte le
+        canvas. Masquée si le sprite n'a pas encore de PAL_BANK (pas d'asset)."""
+        strip = self._canvas_panel.paint_strip
+        palettes = list(getattr(self._sprite, "palettes", []) or []) if self._sprite else []
+        if palettes:
+            strip.load(palettes, active=0)
+            strip.setVisible(True)
+            self._canvas.set_tint(palettes[0])
         else:
-            from ui.common.icons import get as _ico
-            btn.setIcon(_ico("tool_palette", C.TEXT_DIM, C.ACCENT_GRN))
-            btn.setToolTip("Palette de preview")
+            strip.setVisible(False)
+            self._canvas.set_tint(None)
 
-    def _open_preview_palette_picker(self):
-        if not self._preview_banks:
+    def _on_paint_palette_selected(self, idx: int):
+        if not self._sprite:
             return
-        from ui.common.widgets import ScriptPickerPopup
-        from ui.common.palette_swatch import bank_icon
-        entries = [(b.name, b.name, bank_icon(b)) for b in self._preview_banks]
-        popup = ScriptPickerPopup(entries, C.ACCENT_GRN, parent=self, new_label=None)
-        popup.picked.connect(self._on_preview_palette_picked)
-        popup.show_below(self._canvas_panel.toolbar.btn_palette)
-
-    def _on_preview_palette_picked(self, name: str):
-        bank = self._project.get_palette(name) if self._project else None
-        if bank:
-            self._set_preview_palette(bank)
-            self._remember_preview(name)
-
-    def _remember_preview(self, name: str):
-        """Persiste le choix de palette de preview sur le sprite courant (JSON
-        sidecar, watcher suspendu par le dispatcher). Ne recharge pas l'écran."""
-        if (self._sprite and self._project
-                and getattr(self._sprite, "preview_palette", None) != name):
-            self._sprite.preview_palette = name
-            get_dispatcher().save_sprite(self._sprite)
-
-    def on_palette_extracted(self, name: str):
-        """Une palette vient d'être extraite du PNG (bouton du panneau droit)
-        — la sélectionner pour la preview et basculer en mode indexé pour
-        montrer immédiatement le rendu quantifié."""
-        if not self._project:
-            return
-        self._preview_banks = list(self._project.palettes)
-        self._canvas_panel.toolbar._set_preview_indexed(True)
-        bank = self._project.get_palette(name)
-        if bank:
-            self._set_preview_palette(bank)
-            self._remember_preview(name)
+        palettes = getattr(self._sprite, "palettes", []) or []
+        if 0 <= idx < len(palettes):
+            self._canvas.set_tint(palettes[idx])
 
     def load_direction(self, state: AnimState, sd: StateDirection):
         if not self._sprite or not self._project:

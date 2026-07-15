@@ -3,7 +3,7 @@
 3 colonnes : finder (backgrounds) · canvas d'inpainting (BackgroundInpainting :
 repeindre la palette par tuile 8×8, partagé entre scènes, cf. bg_inpaint_canvas) ·
 inspecteur (dimensions, budget tuiles, liste des palettes éditables, algo de
-compression). La compression est non-destructive (cf. core/bg_compress) — le PNG
+compression). La compression est non-destructive (cf. core/bg_import) — le PNG
 n'est jamais modifié, tout vit en métadonnées dans le .json du BackgroundAsset.
 """
 from __future__ import annotations
@@ -19,13 +19,14 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, QObject, QRunnable, QThreadPool, pyqtSignal
 
 from ui.common.theme import C, T
-from ui.common.widgets import W, FinderSection, AssetHeaderBar, ScriptPickerPopup
+from ui.common.widgets import W, FinderSection, AssetHeaderBar
 from ui.common.icons import COLOR_BACKGROUND
-from ui.common.palette_swatch import bank_icon
+from ui.common.palette_slot_grid import PaletteSlotGridAsset
+from ui.common.asset_palette_view import background_palette_view
 from core.project import PaletteBank
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd
-from core.bg_compress import bg_fits_vram
+from core.bg_import import bg_fits_vram
 from .bg_inpaint_canvas import BgInpaintCanvas
 
 _BG_COLOR = COLOR_BACKGROUND
@@ -40,17 +41,17 @@ _CTX_MENU_QSS = (
 
 
 # ── Compression hors-thread ─────────────────────────────────────────────────
-# La compression (bg_compress) peut prendre plusieurs secondes sur un grand fond
+# La compression (bg_import) peut prendre plusieurs secondes sur un grand fond
 # ou une photo : on la lance dans un worker du QThreadPool pour ne JAMAIS geler
 # l'éditeur. Le worker calcule le dict de compression ; le thread UI l'applique
-# à l'asset (Project.apply_bg_compression) puis rafraîchit.
+# à l'asset (Project.apply_bg_encoding) puis rafraîchit.
 
 class _CompressSignals(QObject):
     done   = pyqtSignal(int, str, dict)   # token, source_name, résultat
     failed = pyqtSignal(int, str)          # token, message
 
 
-class _CompressTask(QRunnable):
+class _EncodeTask(QRunnable):
     def __init__(self, token: int, png_path: Path, mode: str, method: str, dither: bool):
         super().__init__()
         self._token = token
@@ -63,17 +64,17 @@ class _CompressTask(QRunnable):
 
     def run(self):
         try:
-            from core.bg_compress import (
-                compress_background, compress_background_8bpp, compress_background_bitmap,
+            from core.bg_import import (
+                encode_background, encode_background_8bpp, encode_background_bitmap,
             )
             if self._mode in ("bitmap", "bitmap16"):
                 # bitmap16 = vrai 16bpp direct (détecté), pas encore implémenté :
                 # repli interim sur le Mode 4 paletté (quantif 256). cf. detect_import_mode.
-                c = compress_background_bitmap(self._png, dither=self._dither)
+                c = encode_background_bitmap(self._png, dither=self._dither)
             elif self._mode == "tiled8":
-                c = compress_background_8bpp(self._png, dither=self._dither)
+                c = encode_background_8bpp(self._png, dither=self._dither)
             else:
-                c = compress_background(self._png, method=self._method)
+                c = encode_background(self._png, method=self._method)
             self.signals.done.emit(self._token, self._name, c)
         except Exception as e:  # noqa: BLE001 — remonté à l'UI, pas avalé
             self.signals.failed.emit(self._token, str(e))
@@ -218,7 +219,7 @@ class BgFinderPanel(QWidget):
         # Le PNG source doit partir avec l'asset : sinon _reconcile_backgrounds
         # recrée le fond au prochain chargement du projet. Les métadonnées de
         # compression vivent dans le JSON, qu'un Ctrl+Z (restore) ramène intact.
-        png = (self._project.background_images_dir / ba.source) if ba.source else None
+        png = (self._project.background_images_dir / ba.asset) if ba.asset else None
         with get_dispatcher().suspended():
             if png and png.exists():
                 png.unlink()
@@ -226,121 +227,11 @@ class BgFinderPanel(QWidget):
             self._project.backgrounds, ba, lambda: self.refresh()))
 
 
-# ── Liste dynamique de palettes (swatches) ──────────────────────────────────
-
-class _BgPaletteBar(QWidget):
-    """Liste dynamique des sous-palettes d'un fond, rendue en swatches (même
-    style que le _PaletteSlotGrid du Scene Inspector). Ce n'est PAS une grille
-    fixe de 16 : autant de cases que de palettes, plus un « + » (jusqu'à 16) pour
-    en ajouter une. Clic = palette active de peinture ; clic droit = remplacer /
-    vider / supprimer."""
-
-    selected         = pyqtSignal(int)
-    add_requested    = pyqtSignal()
-    replace_requested = pyqtSignal(int)
-    clear_requested  = pyqtSignal(int)
-    remove_requested = pyqtSignal(int)
-
-    _COLS = 8
-    _ICON = 28
-
-    def __init__(self, accent: str, parent=None):
-        super().__init__(parent)
-        self._accent = accent
-        self._active = 0
-        self._grid = QGridLayout(self)
-        self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setSpacing(4)
-        self._pal_btns: list[QPushButton] = []
-        self._add_btn: Optional[QPushButton] = None
-        self._read_only = False
-
-    def load(self, palettes: list, active: int = 0, read_only: bool = False):
-        self._read_only = read_only
-        for b in self._pal_btns:
-            self._grid.removeWidget(b); b.deleteLater()
-        self._pal_btns.clear()
-        if self._add_btn is not None:
-            self._grid.removeWidget(self._add_btn); self._add_btn.deleteLater()
-            self._add_btn = None
-
-        n = len(palettes)
-        self._active = max(0, min(active, n - 1)) if n else -1
-        for i, pal in enumerate(palettes):
-            btn = QPushButton()
-            btn.setFixedSize(self._ICON + 10, self._ICON + 10)
-            bank = PaletteBank(name=f"Palette {i}", colors=list(pal))
-            btn.setIcon(bank_icon(bank, size=self._ICON))
-            btn.setIconSize(QSize(self._ICON, self._ICON))
-            if read_only:
-                btn.setToolTip("Palette 256 couleurs (8bpp) — lecture seule")
-            else:
-                btn.setToolTip(f"Palette {i} — clic : peindre avec · clic droit : remplacer/vider/supprimer")
-                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-                btn.customContextMenuRequested.connect(
-                    lambda pos, i=i, b=btn: self._ctx(b, pos, i))
-            self._style(btn, i == self._active)
-            btn.clicked.connect(lambda _c=False, i=i: self._select(i))
-            self._grid.addWidget(btn, *divmod(i, self._COLS))
-            self._pal_btns.append(btn)
-
-        if n < 16 and not read_only:
-            add = QPushButton("＋")
-            add.setFixedSize(self._ICON + 10, self._ICON + 10)
-            add.setFont(QFont(T.MONO, T.LG, QFont.Weight.Bold))
-            add.setCursor(Qt.CursorShape.PointingHandCursor)
-            add.setToolTip("Ajouter une palette (depuis le catalogue projet)")
-            add.setStyleSheet(
-                f"QPushButton{{color:{self._accent}; background:{C.BG_INPUT};"
-                f"border:1px dashed {C.BORDER_MID}; border-radius:4px;}}"
-                f"QPushButton:hover{{border-color:{self._accent}; color:{C.TEXT_HI};}}"
-            )
-            add.clicked.connect(lambda: self.add_requested.emit())
-            self._grid.addWidget(add, *divmod(n, self._COLS))
-            self._add_btn = add
-
-    def _style(self, btn: QPushButton, active: bool):
-        border = self._accent if active else C.BORDER_MID
-        width = 2 if active else 1
-        btn.setStyleSheet(
-            f"QPushButton{{background:{C.BG_INPUT}; border:{width}px solid {border};"
-            f"border-radius:4px;}}"
-            f"QPushButton:hover{{border-color:{self._accent};}}"
-        )
-
-    def _select(self, i: int):
-        self._active = i
-        for j, b in enumerate(self._pal_btns):
-            self._style(b, j == i)
-        self.selected.emit(i)
-
-    def _ctx(self, btn: QPushButton, pos, i: int):
-        menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
-        a_rep = menu.addAction("Remplacer (catalogue)…")
-        a_clr = menu.addAction("Vider la palette")
-        menu.addSeparator()
-        a_del = menu.addAction("Supprimer la palette")
-        a_del.setEnabled(len(self._pal_btns) > 1)
-        act = menu.exec(btn.mapToGlobal(pos))
-        if act == a_rep:
-            self.replace_requested.emit(i)
-        elif act == a_clr:
-            self.clear_requested.emit(i)
-        elif act == a_del:
-            self.remove_requested.emit(i)
-
-    def anchor(self) -> QWidget:
-        """Widget d'ancrage pour les popups (le bouton +, sinon la barre)."""
-        return self._add_btn or self
-
-
 # ── Propriétés (droite) ─────────────────────────────────────────────────────
 
 class BgPropertiesPanel(QWidget):
     changed = pyqtSignal()          # compression recalculée → re-render du canvas
     renamed = pyqtSignal()          # fond renommé depuis l'en-tête → rafraîchir le finder
-    palette_selected = pyqtSignal(int)  # palette active pour la peinture (index)
     palettes_changed = pyqtSignal()     # liste des palettes mutée → re-render du canvas
     recompress_requested = pyqtSignal(object, object, str, bool)  # (ba, png, mode_token, dither) → hors-thread
     overlays_changed = pyqtSignal(list, list)  # (info_lines, warning_lines) → overlays du canvas
@@ -401,17 +292,19 @@ class BgPropertiesPanel(QWidget):
         # décrivent seulement la représentation GBA.
         W.separator(root)
 
-        # ── PALETTES : liste dynamique de swatches (clic = palette peinte,
-        #    « + » pour ajouter depuis le catalogue, clic droit = remplacer/vider/
-        #    supprimer). Réutilise bank_icon et le style du Scene Inspector.
+        # ── PALETTES : grille unifiée (modèle Scene Inspector). Palettes dérivées
+        #    du PNG grisées + overridables (clic = pointer une banque du catalogue,
+        #    clic droit = restaurer l'origine) ; « + » ajoute une palette du
+        #    catalogue (éditable, clic = remplacer, clic droit = retirer). La
+        #    palette active de PEINTURE se choisit dans la bande en haut du canvas.
         W.separator(root); W.section("PALETTES", root)
-        self._pal_bar = _BgPaletteBar(_BG_COLOR)
-        self._pal_bar.selected.connect(self.palette_selected)
-        self._pal_bar.add_requested.connect(self._on_pal_add)
-        self._pal_bar.replace_requested.connect(self._on_pal_replace)
-        self._pal_bar.clear_requested.connect(self._on_pal_clear)
-        self._pal_bar.remove_requested.connect(self._on_pal_remove)
-        root.addWidget(self._pal_bar)
+        self._pal_grid = PaletteSlotGridAsset(_BG_COLOR, override_catalog=True)
+        self._pal_grid.scene_add.connect(self._on_pal_add)
+        self._pal_grid.scene_replace.connect(self._on_pal_replace)
+        self._pal_grid.scene_remove.connect(self._on_pal_remove)
+        self._pal_grid.asset_override.connect(self._on_pal_override)
+        self._pal_grid.asset_restore.connect(self._on_pal_restore)
+        root.addWidget(self._pal_grid)
 
         self._btn = W.btn_accent("⟐  Importer / remplacer l'image…")
         self._btn.clicked.connect(self._on_replace)
@@ -609,7 +502,7 @@ class BgPropertiesPanel(QWidget):
         if not ap or not ap.exists():
             return False, 0, False
         try:
-            from core.bg_compress import source_palette_info
+            from core.bg_import import source_palette_info
             indexed, ncol, capped = source_palette_info(ap)
         except Exception:
             return False, 0, False
@@ -630,8 +523,8 @@ class BgPropertiesPanel(QWidget):
         ap = self._png_path()
         if ap and ap.exists():
             try:
-                from core.bg_compress import analyze_background_source
-                ba.diagnostics = analyze_background_source(ap, method=ba.compress_method)
+                from core.bg_import import analyze_background_source
+                ba.diagnostics = analyze_background_source(ap, method=ba.quantize_method)
             except Exception:
                 ba.diagnostics = {}
         return ba.diagnostics or {}
@@ -682,14 +575,15 @@ class BgPropertiesPanel(QWidget):
     # ── Section PALETTES ──────────────────────────────────────────
 
     def _reload_palettes(self, select: int = 0):
-        has_data = bool(self._ba and (self._ba.tileset or self._ba.bitmap))
-        pals = self._ba.palettes if has_data else []
-        # Palette non éditable en 8bpp (256) et en bitmap (256).
+        # Grille unifiée : palettes dérivées grisées/overridables + palettes
+        # ajoutées du catalogue. La palette de PEINTURE active vit désormais dans
+        # la bande en haut du canvas (rebâtie via palettes_changed → canvas.reload).
+        # `select` est conservé pour la compat d'appel mais n'est plus consommé ici.
         read_only = bool(self._ba and (self._ba.mode == "bitmap" or self._ba.bpp == 8))
-        self._pal_bar.load(pals, select, read_only=read_only)
-        self._btn_extract.setEnabled(bool(pals))
-        if pals and not read_only:
-            self.palette_selected.emit(self._pal_bar._active)
+        view = background_palette_view(self._ba, read_only=read_only)
+        catalog = list(self._project.palettes) if self._project else []
+        self._pal_grid.load(view, catalog)
+        self._btn_extract.setEnabled(bool(self._ba and self._ba.palettes))
         self._emit_overlays()
 
     def _refresh_pal_count(self):
@@ -700,59 +594,60 @@ class BgPropertiesPanel(QWidget):
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(self._ba)
 
-    def _open_catalog_popup(self, anchor, on_pick):
-        if not self._project:
+    def _on_pal_add(self, name: str):
+        """« + » : ajoute une palette du catalogue (banque `name`)."""
+        if not self._ba or not self._project:
             return
-        banks = list(self._project.palettes)
-        if not banks:
-            QMessageBox.information(self, "Catalogue vide",
-                                    "Aucune palette dans le catalogue du projet.")
+        bank = self._project.get_palette(name)
+        if not bank:
             return
-        entries = [(b.name, b.name, bank_icon(b)) for b in banks]
-        popup = ScriptPickerPopup(entries, _BG_COLOR, parent=self, new_label=None)
+        idx = self._ba.add_palette_colors(bank.colors)
+        if idx < 0:
+            QMessageBox.warning(self, "Limite atteinte",
+                                "Un fond ne peut avoir que 16 palettes.")
+            return
+        self._persist_bg()
+        self._reload_palettes()
+        self._refresh_pal_count()
+        self.palettes_changed.emit()
 
-        def _picked(name: str):
-            b = next((x for x in banks if x.name == name), None)
-            if b:
-                on_pick(b)
+    def _on_pal_replace(self, idx: int, name: str):
+        """Remplace une palette AJOUTÉE (index réel `idx`) par la banque `name`."""
+        if not self._ba or not self._project or not (0 <= idx < len(self._ba.palettes)):
+            return
+        bank = self._project.get_palette(name)
+        if not bank:
+            return
+        self._ba.replace_palette(idx, bank.colors)
+        self._persist_bg()
+        self._reload_palettes()
+        self.palettes_changed.emit()
 
-        popup.picked.connect(_picked)
-        popup.show_below(anchor)
+    def _on_pal_override(self, entry, name: str):
+        """Override une palette DÉRIVÉE (grisée) par la banque catalogue `name` :
+        ses couleurs effectives sont remplacées, l'origine PNG reste restaurable."""
+        if not self._ba or not self._project:
+            return
+        bank = self._project.get_palette(name)
+        if not bank:
+            return
+        self._ba.override_palette(entry.idx, name, bank.colors)
+        self._persist_bg()
+        self._reload_palettes()
+        self.palettes_changed.emit()
 
-    def _on_pal_add(self):
+    def _on_pal_restore(self, entry):
+        """Restaure une palette dérivée overridée à ses couleurs PNG d'origine."""
         if not self._ba:
             return
-        def _pick(bank):
-            idx = self._ba.add_palette_colors(bank.colors)
-            if idx < 0:
-                QMessageBox.warning(self, "Limite atteinte",
-                                    "Un fond ne peut avoir que 16 palettes.")
-                return
-            self._persist_bg()
-            self._reload_palettes(select=idx)
-            self._refresh_pal_count()
-            self.palettes_changed.emit()
-        self._open_catalog_popup(self._pal_bar.anchor(), _pick)
-
-    def _on_pal_replace(self, idx: int):
-        if not self._ba or not (0 <= idx < len(self._ba.palettes)):
-            return
-        def _pick(bank):
-            self._ba.replace_palette(idx, bank.colors)
-            self._persist_bg()
-            self._reload_palettes(select=idx)
-            self.palettes_changed.emit()
-        self._open_catalog_popup(self._pal_bar.anchor(), _pick)
-
-    def _on_pal_clear(self, idx: int):
-        if not self._ba or not (0 <= idx < len(self._ba.palettes)):
-            return
-        self._ba.clear_palette(idx)
+        self._ba.restore_palette(entry.idx)
         self._persist_bg()
-        self._reload_palettes(select=idx)
+        self._reload_palettes()
         self.palettes_changed.emit()
 
     def _on_pal_remove(self, idx: int):
+        """Retire une palette AJOUTÉE (index réel `idx`). Les tuiles qui la
+        référencent retombent sur la palette 0."""
         if not self._ba or not (0 <= idx < len(self._ba.palettes)) or len(self._ba.palettes) <= 1:
             return
         if QMessageBox.question(
@@ -764,7 +659,7 @@ class BgPropertiesPanel(QWidget):
             return
         self._ba.remove_palette(idx)
         self._persist_bg()
-        self._reload_palettes(select=min(idx, len(self._ba.palettes) - 1))
+        self._reload_palettes()
         self._refresh_pal_count()
         self.palettes_changed.emit()
 
@@ -862,9 +757,9 @@ class BgPropertiesPanel(QWidget):
         dst = self._project.background_images_dir / f"{self._ba.name}.png"
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, dst)
-        self._ba.source = dst.name
+        self._ba.asset = dst.name
         # Ré-auto-détecter le mode pour la nouvelle image (pivot indexé/non-indexé).
-        from core.bg_compress import detect_import_mode
+        from core.bg_import import detect_import_mode
         try:
             d = detect_import_mode(dst)
             token = d["token"]
@@ -901,9 +796,8 @@ class BackgroundEditorScreen(QWidget):
         self._finder.import_asked.connect(self._on_import)
         self._props.changed.connect(self._canvas.reload)
         self._props.renamed.connect(self._on_renamed)
-        # Peinture : palette active choisie dans l'inspecteur → canvas ;
-        # mutation de la liste des palettes → re-render du canvas.
-        self._props.palette_selected.connect(self._canvas.set_active_palette)
+        # Mutation de la liste des palettes → re-render du canvas (sa bande de
+        # peinture en tête se reconstruit alors depuis ba.palettes).
         self._props.palettes_changed.connect(self._canvas.reload)
         # Infos read-only + warnings → overlays du canvas (bas-gauche / haut-droite).
         self._props.overlays_changed.connect(self._canvas.set_overlays)
@@ -931,14 +825,14 @@ class BackgroundEditorScreen(QWidget):
         token = self._compress_token
         self._canvas.set_busy(True)
 
-        task = _CompressTask(token, Path(png_path), mode, method or ba.compress_method, dither)
+        task = _EncodeTask(token, Path(png_path), mode, method or ba.quantize_method, dither)
 
         def _done(tok, name, c):
             self._compress_tasks.discard(task)
             if tok != self._compress_token:
                 return  # résultat périmé (une compression plus récente a été lancée)
             from core.project import Project
-            Project.apply_bg_compression(ba, name, c)
+            Project.apply_bg_encoding(ba, name, c)
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(ba)
             self._canvas.set_busy(False)
@@ -960,12 +854,12 @@ class BackgroundEditorScreen(QWidget):
 
     def _on_recompress(self, ba, png_path, mode, dither):
         self._compress_async(
-            ba, png_path, mode, ba.compress_method, dither,
+            ba, png_path, mode, ba.quantize_method, dither,
             then=lambda: (self._props.load(ba, self._project), self._canvas.reload()))
 
     def _on_selected(self, ba):
-        # Charger le canvas AVANT l'inspecteur : `props.load` émet palette_selected
-        # (sélection de la palette active) que le canvas doit déjà connaître.
+        # Charger le canvas AVANT l'inspecteur : le canvas bâtit sa bande de
+        # peinture depuis `ba` (palette active de peinture) ; l'inspecteur suit.
         self._canvas.load(self._project, ba)
         self._props.load(ba, self._project)
 
@@ -988,11 +882,11 @@ class BackgroundEditorScreen(QWidget):
         ba = self._project.get_background(name)
         if ba is None:
             from core.project import BackgroundAsset
-            ba = BackgroundAsset(name=name, source=dst.name)
+            ba = BackgroundAsset(name=name, asset=dst.name)
             self._project.backgrounds.append(ba)
         # Auto-détection unifiée (pivot indexé/non-indexé) : profondeur ← couleurs,
         # layout tuilé/bitmap ← unicité des tuiles.
-        from core.bg_compress import detect_import_mode
+        from core.bg_import import detect_import_mode
         try:
             d = detect_import_mode(dst)
             token = d["token"]
@@ -1004,5 +898,5 @@ class BackgroundEditorScreen(QWidget):
         # compresser hors-thread — l'éditeur n'est jamais bloqué.
         self._finder.refresh(select=ba.name)
         self._compress_async(
-            ba, dst, token, ba.compress_method, ba.dither,
+            ba, dst, token, ba.quantize_method, ba.dither,
             then=lambda: self._on_selected(ba))

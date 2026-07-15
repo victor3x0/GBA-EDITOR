@@ -550,9 +550,9 @@ class AssignPanel(QWidget):
         by_slot = {L.bg_slot: L for L in (scene.background_layers if scene else [])}
         for i in range(min(4, len(self._slots))):
             layer = by_slot.get(i)
-            if layer and layer.image:
-                ba = project.get_background(layer.image)
-                png = ba.source if ba and ba.source else f"{layer.image}.png"
+            if layer and layer.background_name:
+                ba = project.get_background(layer.background_name)
+                png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
                 ap = project.background_images_dir / png
                 if ap.exists():
                     self._slots[i].set_asset(str(ap))

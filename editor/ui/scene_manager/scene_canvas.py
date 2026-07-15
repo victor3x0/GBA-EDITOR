@@ -1,5 +1,5 @@
 """
-GBA Editor — Scene Editor
+GBA Editor — Scene Canvas
 Canvas dynamique (max 512×512) avec caméra 240×160 déplaçable.
 
 Layers (z-order) :
@@ -144,13 +144,13 @@ class BgLayerRaster:
         if self._bpp == 8:
             # 8bpp : tuiles en octets, UNE palette de 256 couleurs (pas de banques,
             # pas d'override de scène — cf. _pal_for).
-            from core.bg_compress import _hex_to_tile8
+            from core.bg_import import _hex_to_tile8
             from core.color_utils import bgr555_to_rgb888
             self._tiles = [_hex_to_tile8(t) for t in compiled["tileset"]]
             pal = compiled["palettes"][0] if compiled["palettes"] else []
             self._pal_rgb = [[bgr555_to_rgb888(c) for c in pal]]
         else:
-            from core.bg_compress import _hex_to_tile
+            from core.bg_import import _hex_to_tile
             self._tiles = [_hex_to_tile(t) for t in compiled["tileset"]]
             self._pal_rgb = [_pal_to_rgb16(pal) for pal in compiled["palettes"]]
         self._bank_rgb_for = bank_rgb_for
@@ -160,7 +160,7 @@ class BgLayerRaster:
     # ── Décodage d'une cellule ────────────────────────────────────
     def _cell_grid(self, cell: int):
         """Grille d'index 8×8 (list[64]) de la cellule, flips appliqués."""
-        from core.bg_compress import unpack_se, _flip_h, _flip_v
+        from core.bg_import import unpack_se, _flip_h, _flip_v
         tid, pb, fh, fv = unpack_se(self._tilemap[cell])
         grid = tuple(self._tiles[tid]) if tid < len(self._tiles) else tuple([0] * 64)
         if fh:
@@ -245,9 +245,9 @@ def _asset_compiled(p: Project, ba, ap) -> Optional[dict]:
                 "tileset": ba.tileset, "tilemap": ba.effective_tilemap(),
                 "palettes": ba.palettes, "bpp": getattr(ba, "bpp", 4)}
     if ap and ap.is_file():
-        from core.bg_compress import compress_background
+        from core.bg_import import encode_background
         try:
-            return compress_background(ap)
+            return encode_background(ap)
         except (ValueError, OSError):
             return None
     return None
@@ -259,9 +259,9 @@ def build_bg_raster(p: Project, scene, layer, ap) -> Optional["BgLayerRaster"]:
     image — indépendant de `layer.pal_bank` (plus de banque de base requise :
     c'est ça qui rend les layers « Sans palette » peignables). None si pas
     d'image/asset exploitable."""
-    if not layer.image or not ap.is_file():
+    if not layer.background_name or not ap.is_file():
         return None
-    ba = p.get_background(layer.image)
+    ba = p.get_background(layer.background_name)
     compiled = _asset_compiled(p, ba, ap)
     if not compiled or not compiled.get("tilemap"):
         return None
@@ -279,10 +279,10 @@ def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
     """Pixmap d'un layer BG pour le canvas — rendu PAR TUILE depuis la palette
     d'origine de l'asset + overrides de scène peints (`layer.tile_palette_overrides`).
     Repli sur le PNG brut si l'asset n'a pas de représentation exploitable."""
-    # layer.image vide -> `ap` pointe sur le DOSSIER background_images_dir
+    # layer.background_name vide -> `ap` pointe sur le DOSSIER background_images_dir
     # (pas un fichier) : ne rien afficher (l'ancien QPixmap(dir) échouait
     # silencieusement, mais Image.open(dir) lève PermissionError).
-    if not layer.image or not ap.is_file():
+    if not layer.background_name or not ap.is_file():
         return None
     raster = build_bg_raster(p, scene, layer, ap)
     if raster is not None:
@@ -1630,8 +1630,8 @@ class CollisionOverlay(QGraphicsItem):
 
 def _layer_png_path(project: Project, layer):
     """Chemin du PNG source d'un layer (via son BackgroundAsset sidecar)."""
-    ba = project.get_background(layer.image)
-    png = ba.source if ba and ba.source else f"{layer.image}.png"
+    ba = project.get_background(layer.background_name)
+    png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
     return project.background_images_dir / png
 
 
@@ -2055,7 +2055,7 @@ class SceneEditor(QWidget):
         self._gba_view.viewport().installEventFilter(self)
 
         # Outil par défaut
-        from core.canvas_tools import SelectTool
+        from ui.scene_manager.canvas_tools import SelectTool
 
         self._gba_view.set_tool(SelectTool(self._gba_view))
 
@@ -2147,15 +2147,15 @@ class SceneEditor(QWidget):
     # ── Outil actif ───────────────────────────────────────────────
 
     def _on_tool_changed(self, tool_id: str):
-        from core.canvas_tools import AddActorTool, CollisionTool, EraseTool, SelectTool
+        from ui.scene_manager.canvas_tools import AddActorTool, CollisionTool, EraseTool, SelectTool
 
         match tool_id:
             case t if t.startswith("collision"):
-                from core.canvas_tools import CollisionTool
+                from ui.scene_manager.canvas_tools import CollisionTool
 
                 self._gba_view.set_tool(CollisionTool(self._gba_view, t))
             case t if t.startswith("inpaint"):
-                from core.canvas_tools import SceneInpaintingTool
+                from ui.scene_manager.canvas_tools import SceneInpaintingTool
 
                 self._gba_view.set_tool(SceneInpaintingTool(self._gba_view, t))
             case "add":
@@ -2188,10 +2188,10 @@ class SceneEditor(QWidget):
         # Calculer la taille du canvas à partir des BG PNG réels
         max_w, max_h = GBA_W, GBA_H
         for layer in (scene.background_layers if scene else []):
-            if not layer.image:
+            if not layer.background_name:
                 continue
-            ba = project.get_background(layer.image)
-            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ba = project.get_background(layer.background_name)
+            png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
             ap = project.background_images_dir / png
             if ap.exists():
                 px = QPixmap(str(ap))
@@ -2218,10 +2218,10 @@ class SceneEditor(QWidget):
         # BG layers (sans rescale — taille native)
         shown = set()
         for layer in (scene.background_layers if scene else []):
-            if not layer.image:
+            if not layer.background_name:
                 continue
-            ba = project.get_background(layer.image)
-            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ba = project.get_background(layer.background_name)
+            png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
             ap = project.background_images_dir / png
             self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(project, scene, layer, ap))
             self._gba_scene.set_bg_visible(layer.bg_slot, getattr(layer, "visible", True))
@@ -2393,10 +2393,10 @@ class SceneEditor(QWidget):
         scene = self._project.active_scene
         shown = set()
         for layer in scene.background_layers:
-            if not layer.image:
+            if not layer.background_name:
                 continue
-            ba = self._project.get_background(layer.image)
-            png = ba.source if ba and ba.source else f"{layer.image}.png"
+            ba = self._project.get_background(layer.background_name)
+            png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
             ap = self._project.background_images_dir / png
             self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(self._project, scene, layer, ap))
             self._gba_scene.set_bg_visible(layer.bg_slot, getattr(layer, "visible", True))

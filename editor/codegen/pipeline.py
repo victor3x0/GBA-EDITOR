@@ -159,14 +159,14 @@ class BuildWorker(EventEmitter, threading.Thread):
             # Dédup globale par (image, bg_slot).
             seen_bg_layers: set = set()
             unique_bg_layers: list = []
-            seen_compressed: set = set()
+            seen_encoded: set = set()
             for d in all_scene_data:
                 scene = d["scene"]
                 bg_layout = scene_bank_layout(p, scene, "bg")
                 for layer in d["bg_pairs"]:
-                    if not layer.image:
+                    if not layer.background_name:
                         continue
-                    ba = p.get_background(layer.image)
+                    ba = p.get_background(layer.background_name)
                     # Fond bitmap (Mode 4) : non supporté au build (increment 2) —
                     # ignoré (sinon traité comme un fond tuilé/grit → données invalides).
                     if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
@@ -180,8 +180,8 @@ class BuildWorker(EventEmitter, threading.Thread):
                         # Map PROPRE À LA SCÈNE si overrides (scène = source de
                         # vérité), sinon partagée entre scènes (dédup ROM).
                         key = (scene.name, sym) if has_ov else (ba.name, layer.bg_slot)
-                        if key not in seen_compressed:
-                            seen_compressed.add(key)
+                        if key not in seen_encoded:
+                            seen_encoded.add(key)
                             # Garde-fou 8bpp → 4bpp (transitoire) : aucun tileset
                             # 8bpp ne doit atteindre bg_emit (il serait interprété
                             # en 4bpp = corrompu).
@@ -191,7 +191,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                             # 8bpp = palette 256 sur TOUTE la PAL_BG_RAM : incompatible
                             # avec un 2e calque de fond dans la même scène.
                             if (getattr(build_ba, "bpp", 4) == 8
-                                    and sum(1 for L in d["bg_pairs"] if L.image) > 1):
+                                    and sum(1 for L in d["bg_pairs"] if L.background_name) > 1):
                                 self._emit("error_line",
                                            f"[bg] '{build_ba.name}' 8bpp occupe toute la palette "
                                            f"BG — les autres calques de fond de la scène "
@@ -199,13 +199,13 @@ class BuildWorker(EventEmitter, threading.Thread):
                             pal_offset = bg_layout.bg_block_offset(build_ba) or 0
                             final_map = self._bg_final_tilemap(
                                 p, scene, build_ba, layer, pal_offset)
-                            self._emit_compressed_bg(p, build_ba, sym, final_map)
+                            self._emit_encoded_bg(p, build_ba, sym, final_map)
                         continue
-                    key = (layer.image, layer.bg_slot)
+                    key = (layer.background_name, layer.bg_slot)
                     if key in seen_bg_layers:
                         continue
                     seen_bg_layers.add(key)
-                    png = p.background_images_dir / (ba.source if ba and ba.source else f"{layer.image}.png")
+                    png = p.background_images_dir / (ba.asset if ba and ba.asset else f"{layer.background_name}.png")
                     colors = effective_palette_colors(
                         p, layer.pal_bank, png, scene.active_bg_palettes)
                     mp_slot = bg_layout.bank_index(layer.pal_bank, colors)
@@ -355,7 +355,7 @@ class BuildWorker(EventEmitter, threading.Thread):
           scene_bank_layout qui place chaque banque active à son slot). La scène
           est la source de vérité : l'asset (`ba.tilemap`) reste intact.
         - tuile normale -> pal_bank local + pal_offset (bloc de l'asset)."""
-        from core.bg_compress import unpack_se, pack_se
+        from core.bg_import import unpack_se, pack_se
         tp = getattr(layer, "tile_palette_overrides", None) or {}
         tw = ba.tiles_w or 1
         out = []
@@ -387,7 +387,7 @@ class BuildWorker(EventEmitter, threading.Thread):
             return None
         return ba
 
-    def _emit_compressed_bg(self, p, ba, sym, final_tilemap):
+    def _emit_encoded_bg(self, p, ba, sym, final_tilemap):
         """Émet un fond COMPRESSÉ (métadonnées) en C compatible grit — pas de
         grit. `sym` = symbole du layer (partagé, ou propre à la scène si peint,
         cf. bg_layer_sym_for). `final_tilemap` = SE avec pal_offset + overrides
@@ -414,9 +414,10 @@ class BuildWorker(EventEmitter, threading.Thread):
         écrasée, pas juste une mauvaise couleur)."""
         ok = True
         for asset, layer, *_rest in layers:
-            if not layer.image:
+            if not layer.background_name:
                 continue
-            w, h = png_size(p.background_images_dir / layer.image)
+            png_name = asset.asset if asset and asset.asset else f"{layer.background_name}.png"
+            w, h = png_size(p.background_images_dir / png_name)
             _, _, ms = bg_map_geometry(w, h)
             map_sbb_count = bg_map_sbb_count(ms)
             tile_budget = (8 - map_sbb_count) * 64
