@@ -184,30 +184,30 @@ def prefab_own_slots(p: Project) -> dict[tuple, Optional[int]]:
 def _bg_own_sources(p: Project, scene: Scene) -> list[Path]:
     """PNG des layers BG en mode OWN de la scène, hors fonds COMPRESSÉS
     (ceux-ci ont déjà leurs propres sous-palettes en métadonnées — gérés à
-    part par `_bg_compressed_sources`/allocation par bloc, cf.
+    part par `_bg_encoded_sources`/allocation par bloc, cf.
     [[project_palette_system_design]])."""
     srcs: list[Path] = []
     for layer in getattr(scene, "background_layers", []):
-        if not layer.image or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
+        if not layer.background_name or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
             continue
-        ba = p.get_background(layer.image)
+        ba = p.get_background(layer.background_name)
         if ba and getattr(ba, "tileset", None):
             continue
-        png = ba.source if ba and ba.source else f"{layer.image}.png"
+        png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
         srcs.append(p.background_images_dir / png)
     return srcs
 
 
-def _bg_compressed_sources(p: Project, scene: Scene) -> list:
+def _bg_encoded_sources(p: Project, scene: Scene) -> list:
     """BackgroundAsset compressés (mode OWN) des layers de la scène, dans
     l'ordre des layers. Chacun peut avoir jusqu'à 16 sous-palettes (une par
     groupe de tuiles) — il lui faut un BLOC de banques contiguës, pas un slot
     unique (cf. `_find_free_block`)."""
     out = []
     for layer in getattr(scene, "background_layers", []):
-        if not layer.image or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
+        if not layer.background_name or getattr(layer, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
             continue
-        ba = p.get_background(layer.image)
+        ba = p.get_background(layer.background_name)
         if ba and getattr(ba, "tileset", None):
             out.append(ba)
     return out
@@ -251,12 +251,12 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
         own_color_lists = _actor_own_palettes(p, scene)          # métadonnées sprite
         pf_slots = prefab_own_slots(p)
-        compressed_assets = []
+        encoded_assets = []
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
         own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
         pf_slots = {}
-        compressed_assets = _bg_compressed_sources(p, scene)      # BG compressé: métadonnées
+        encoded_assets = _bg_encoded_sources(p, scene)      # BG encodé: métadonnées
 
     slots: list[Optional[list[int]]] = [None] * 16
     for i, name in enumerate(active):
@@ -276,7 +276,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     # propres à slot unique ci-dessous (moins de fragmentation, les blocs sont
     # plus gros et plus contraints).
     bg_block: dict[tuple, Optional[int]] = {}
-    for ba in compressed_assets:
+    for ba in encoded_assets:
         key = _bg_palettes_key(ba)
         if key in bg_block:
             continue
@@ -414,12 +414,12 @@ def _bg_instance_pairs(p: Project, scene: Scene) -> list[tuple[tuple, InstanceRe
     (non-overridables pour l'instant, cf. scene_palette_view)."""
     out: list[tuple[tuple, InstanceRef]] = []
     for layer in getattr(scene, "background_layers", []):
-        if not getattr(layer, "image", ""):
+        if not getattr(layer, "background_name", ""):
             continue
-        ba = p.get_background(layer.image)
+        ba = p.get_background(layer.background_name)
         if ba and getattr(ba, "tileset", None):
             continue   # compressé : géré comme entrée de bloc
-        png = ba.source if ba and ba.source else f"{layer.image}.png"
+        png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
         cols = own_palette(p.background_images_dir / png)
         if not cols:
             continue
@@ -429,7 +429,7 @@ def _bg_instance_pairs(p: Project, scene: Scene) -> list[tuple[tuple, InstanceRe
     return out
 
 
-def _bg_compressed_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
+def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
     """Entrées d'asset pour les fonds COMPRESSÉS des layers de la scène : chacun
     occupe un BLOC de N banques contiguës (ses N sous-palettes, SE_PALBANK par
     tuile) — pas un slot unique. Non-overridables (on ne remappe pas un bloc
@@ -438,9 +438,9 @@ def _bg_compressed_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
     groups: dict[tuple, tuple] = {}   # key -> (ba, [InstanceRef])
     order: list[tuple] = []
     for layer in getattr(scene, "background_layers", []):
-        if not getattr(layer, "image", ""):
+        if not getattr(layer, "background_name", ""):
             continue
-        ba = p.get_background(layer.image)
+        ba = p.get_background(layer.background_name)
         if not (ba and getattr(ba, "tileset", None)):
             continue
         key = _bg_palettes_key(ba)
@@ -448,7 +448,7 @@ def _bg_compressed_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
             groups[key] = (ba, [])
             order.append(key)
         groups[key][1].append(InstanceRef(
-            "bg_layer", layer, f"BG{layer.bg_slot} ({layer.image})",
+            "bg_layer", layer, f"BG{layer.bg_slot} ({layer.background_name})",
             getattr(layer, "pal_bank", OWN_PAL_BANK)))
     out: list[AssetPaletteEntry] = []
     for key in order:
@@ -507,7 +507,7 @@ def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
     # BG compressé : blocs de banques (non-overridables) après les entrées à
     # slot unique, dans l'ordre des layers.
     if pool == "bg":
-        asset_entries += _bg_compressed_entries(p, scene)
+        asset_entries += _bg_encoded_entries(p, scene)
 
     banks_used = (len(scene_entries)
                   + sum(e.bank_span for e in asset_entries if e.state == "own"))

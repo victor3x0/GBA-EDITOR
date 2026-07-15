@@ -50,22 +50,22 @@ def _bg_info(p: Project, scene) -> list[dict]:
     BackgroundAsset (sidecar) keyé par ce nom. cf. pipeline._check_bg_tile_budget."""
     result = []
     for layer in getattr(scene, "background_layers", []):
-        if not layer.image:
+        if not layer.background_name:
             continue
-        ba = p.get_background(layer.image)
+        ba = p.get_background(layer.background_name)
         # Fond bitmap (Mode 4) : non supporté au build (increment 2) — ignoré ici
         # (sinon il serait traité comme un fond tuilé legacy → symbole manquant).
         if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
             continue
         bg_slot = layer.bg_slot
         speed = int(layer.scroll_speed * 256)
-        sym = bg_layer_sym(layer.image, bg_slot)
+        sym = bg_layer_sym(layer.background_name, bg_slot)
         if ba and ba.tileset:
             # Fond COMPRESSÉ (métadonnées) — 16 palettes via g_pal_bg, tuiles/map
-            # depuis le C émis par pipeline._emit_compressed_bg. Un axe >64 tuiles
+            # depuis le C émis par pipeline._emit_encoded_bg. Un axe >64 tuiles
             # dépasse la fenêtre hardware -> streaming (map résidente 64 sur cet axe).
             # Symbole PROPRE À LA SCÈNE si le layer est peint (map d'overrides,
-            # cf. bg_layer_sym_for / pipeline._emit_compressed_bg).
+            # cf. bg_layer_sym_for / pipeline._emit_encoded_bg).
             sym = bg_layer_sym_for(scene, layer)
             tw, th = ba.tiles_w, ba.tiles_h
             stream_h = tw > 64
@@ -85,7 +85,7 @@ def _bg_info(p: Project, scene) -> list[dict]:
             })
         else:
             # Image non compressée -> taille depuis le PNG (chemin legacy).
-            ap = p.background_images_dir / (ba.source if ba and ba.source else f"{layer.image}.png")
+            ap = p.background_images_dir / (ba.asset if ba and ba.asset else f"{layer.background_name}.png")
             try:
                 from PIL import Image
                 with Image.open(ap) as img:

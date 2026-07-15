@@ -212,6 +212,24 @@ class CommandDispatcher(EventEmitter):
         self._emit("status_message", msg)
         self._emit("bg_slot_changed", 0)
 
+    # ── Sprite ────────────────────────────────────────────────────
+
+    def import_sprite_png(self, path_str: str):
+        """Importe un PNG dans assets/sprites/ et crée le SpriteAsset associé, via
+        le pipeline aligné sur les backgrounds : Validator → Encodage → asset.
+        Miroir de import_background_png."""
+        if not self._project or not path_str:
+            return
+        ap = Path(path_str)
+        dst = self._project.import_asset(ap, "sprites")
+        with self._watcher.suspended():
+            warning = self._project.sync_sprite_png(dst)
+        msg = f"Sprite importé : {dst.stem}"
+        if warning:
+            msg += f" — {warning}"
+        self._emit("status_message", msg)
+        self._emit("scene_sprites_changed")
+
     # ── Prefab avec propagation ───────────────────────────────────
 
     def save_prefab(self, prefab: Prefab):

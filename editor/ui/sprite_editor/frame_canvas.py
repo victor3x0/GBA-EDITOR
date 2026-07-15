@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 
 from ui.common.theme import C, T
 from ui.common.icons import get as _ico
+from ui.common.paint_palette_strip import PaintPaletteStrip
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
@@ -1005,16 +1006,12 @@ class _CanvasFloatingToolbar(QFrame):
         self.btn_original = QToolButton(); self.btn_original.setText("PNG")
         self.btn_original.setToolTip("Preview : résultat compressé du sprite (own_palette)")
         self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexé")
-        self.btn_indexed.setToolTip("Preview : own_palette recolorée par la palette de preview (rendu in-game)")
+        self.btn_indexed.setToolTip("Preview : recolorée par la palette active de la bande PALETTE (rendu in-game)")
         for b in (self.btn_original, self.btn_indexed):
             b.setStyleSheet(_MODE_BTN)
             b.setCheckable(True)
             b.setFixedHeight(36)
             layout.addWidget(b)
-        # Sélecteur de palette de preview — juste après "Indexé", actif
-        # seulement en mode indexé. L'icône reflète la palette active (mise à
-        # jour par SpriteCenterPanel) ; le clic ouvre un dropdown de palettes.
-        self.btn_palette = _icon_btn("tool_palette", "Palette de preview")
         self.btn_original.setChecked(True)   # défaut = PNG (couleurs propres)
         self.btn_original.clicked.connect(lambda: self._set_preview_indexed(False))
         self.btn_indexed.clicked.connect(lambda: self._set_preview_indexed(True))
@@ -1048,7 +1045,6 @@ class _CanvasFloatingToolbar(QFrame):
         self.btn_zm.clicked.connect(self._canvas.zoom_out)
         self.btn_zp.clicked.connect(self._canvas.zoom_in)
 
-        self.btn_palette.setEnabled(self.btn_indexed.isChecked())
         self.adjustSize()
 
     def _set_preview_indexed(self, indexed: bool):
@@ -1056,8 +1052,6 @@ class _CanvasFloatingToolbar(QFrame):
         # le même conteneur de layout que les autres boutons de la barre).
         self.btn_indexed.setChecked(indexed)
         self.btn_original.setChecked(not indexed)
-        # Le sélecteur de palette n'a de sens qu'en mode indexé.
-        self.btn_palette.setEnabled(indexed)
         self._canvas.set_preview_indexed(indexed)
 
     # ── Drag (identique à FloatingToolbar, core/scene_editor.py) ───────
@@ -1096,6 +1090,13 @@ class _FrameCanvasPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+
+        # Bande de peinture/preview en TÊTE (modèle Background Editor) : les
+        # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
+        # clic = palette active pour le mode « Indexé ». Masquée si aucune palette.
+        self.paint_strip = PaintPaletteStrip(C.ACCENT_ORG, "PALETTE")
+        self.paint_strip.setVisible(False)
+        root.addWidget(self.paint_strip)
 
         self.canvas = _FrameCanvas()
         self.canvas.hover_changed.connect(self._on_hover_changed)

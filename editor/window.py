@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
 from ui.common.theme import C, T
 
 from codegen import BuildWorker
-from core.scene_editor import SceneEditor
+from ui.scene_manager.scene_canvas import SceneEditor
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
 from core.history import get_history

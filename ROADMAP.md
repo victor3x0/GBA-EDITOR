@@ -1,10 +1,10 @@
+
 # Roadmap détaillée
 
 Ce document est la version détaillée de la section "Roadmap" du [README](README.md) — le
 README reste volontairement condensé (une ligne par version, pour un lecteur public) ;
 ce fichier explique le scope, les décisions verrouillées et les questions encore ouvertes
-derrière chaque jalon. Construit en session le 2026-07-06, juste après la sortie de la v0.1
-(démo Pong complète).
+derrière chaque jalon.
 
 Convention : **Décisions verrouillées** = tranché, à implémenter tel quel. **Ouvert** =
 identifié mais volontairement non tranché — à rouvrir quand le chantier démarre
@@ -20,6 +20,45 @@ Aujourd'hui, `Actor` et `Prefab` ont un champ `pal_bank: int` brut (`editor/core
 détection de conflit. `grit` génère une palette "optimale" par PNG indépendamment
 (`editor/codegen/asset_pipeline.py:52-53`), sans garantie de compatibilité entre deux
 sprites assignés au même bank.
+
+### Livré (branche `ColorPaletteSystem`)
+
+Le cœur de la v0.2 est en place. Livré à ce stade :
+
+- **Catalogue unifié illimité** (`PaletteBank`, `project/palettes/*.json`, un fichier par
+  palette, partagé OBJ/BG) + **sélection active par scène** (`Scene.active_obj_palettes` /
+  `active_bg_palettes`, jusqu'à 16 banques par pool). Le picker à swatches a remplacé les
+  `pal_bank: int` bruts partout (Actor/Prefab/`BackgroundLayer`).
+- **Écran Palette dédié** avec édition manuelle, roue chromatique, saisie BGR555, rampes,
+  damier de transparence, import/export PNG et `.gpl`.
+- **Allocation déterministe** des 16 banques par scène/pool (`codegen/palette_alloc.py`,
+  `scene_bank_layout`) : palettes référencées à leur slot fixe, palettes propres
+  auto-allouées aux slots libres. Source de vérité unique partagée par grit et `main_gen`.
+- **Validateur** : avertissement sur conflit inter-scènes (même sprite/prefab résolu vers
+  des palettes différentes) et sur débordement des 16 banques.
+
+Au-delà du plan initial, plusieurs chantiers ont été livrés dans la foulée (voir aussi
+[ARCHITECTURE.md](ARCHITECTURE.md), section « Système de palette & import d'assets ») :
+
+- **Import non-destructif d'assets** — un PNG déposé est détecté, validé et **encodé** en
+  métadonnées (sidecar JSON à côté du source, jamais réécrit). Une **quantification**
+  (réduction de couleurs, destructive) n'intervient qu'en repli, si la source n'est pas
+  déjà GBA-compatible. Le `match_mode` initial a été supprimé au profit d'un **build en
+  indexé universel** ; le champ sprite `compress_method` est devenu `quantize_method`.
+- **Encodage de fond** (`core/bg_import.py`) — tuilerie 8×8 + dédup + jusqu'à 16
+  sous-palettes par fond (`SE_PALBANK` par tuile), émission C directe sans grit
+  (`codegen/bg_emit.py`). Sidecar `BackgroundAsset` co-localisé avec le PNG dans
+  `assets/backgrounds/` (même modèle que `SpriteAsset`).
+- **Palette BG par layer** — `BackgroundLayer.pal_bank` remplace l'ancienne « une seule
+  palette BG par scène » (voir décision barrée ci-dessous), CBB = `bg_slot`, garde-fou VRAM
+  bloquant au build (`_check_bg_tile_budget`).
+- **Inpainting (repeindre la palette par tuile 8×8, non-destructif)** — deux niveaux :
+  *scène* (`BackgroundLayer.tile_palette_overrides`, canvas du Scene Manager, la scène est
+  source de vérité) et *éditeur* (`BackgroundAsset.tile_palette_overrides`,
+  `effective_tilemap()`, partagé entre scènes). L'asset/PNG d'origine reste intact ; la
+  gomme restaure.
+- **Modes de fond** — tuilé 4bpp / 8bpp + bitmap Mode 4 (photos), **auto-détectés à
+  l'import** (`detect_import_mode` : pivot indexé/non-indexé, bornes ≤16 / ≤256 / >256).
 
 ### Décisions verrouillées
 
@@ -54,11 +93,11 @@ sprites assignés au même bank.
     slot concerné, un seul jeu de couleurs "gagne" (1ère scène rencontrée) et le
     validateur avertit. Générer une variante de tuiles par scène est un chantier
     pipeline à part, pas fait à ce stade.
-  - **Coupe assumée (BG)** : une seule palette BG par scène (`active_bg_palettes[0]`),
+  - ~~**Coupe assumée (BG)** : une seule palette BG par scène (`active_bg_palettes[0]`),
     partagée par tous les layers de la scène — pas d'override par `BackgroundLayer`
-    individuel (le hardware le permettrait via `SE_PALBANK` par tuile, mais le runtime
-    actuel ne l'exploite pas ; voir "Ouvert" ci-dessous). Les slots 1-15 de
-    `active_bg_palettes` restent réservés, sans effet, pour ce futur chantier.
+    individuel.~~ **→ levée (livré)** : `BackgroundLayer.pal_bank` donne une palette par
+    layer, et l'inpainting descend au `SE_PALBANK` par tuile 8×8. Les 16 banques de
+    `active_bg_palettes` sont désormais toutes exploitables.
   - Pas de banks réservées (voir "Mis de côté" ci-dessous pour l'ancien plan de
     réservoir auto-import).
 - **`SpriteAsset` et `BackgroundLayer`** ont chacun leur propre champ palette
@@ -99,22 +138,26 @@ sprites assignés au même bank.
     explicite plutôt que silencieux) + ordre de traitement déterministe (tri par nom,
     pas ordre d'itération).
 
-### Ouvert
+### Reste à faire (finitions v0.2)
 
-- ~~`Scene` doit probablement recevoir un nouveau champ palette dédié~~ — fait
-  (`active_obj_palettes`/`active_bg_palettes`, 2026-07-08).
-- ~~Branchement BG dans le pipeline (`GritBackground`)~~ — fait au niveau scène
-  (2026-07-08) : `GritBackground` pré-quantifie les layers vers `active_bg_palettes[0]`
-  et remappe le tileset généré, `main_gen.py` copie une palette canonique par scène
-  dans `PAL_BG_RAM`. Reste ouvert : **override par `BackgroundLayer` individuel**
-  (cascade Scène décrite plus haut, une palette différente par layer dans une même
-  scène) — nécessite de câbler `SE_PALBANK` par tuile dans le runtime + la génération
-  de map (grit produit aujourd'hui un seul tileset partagé `-pS` pour tous les layers
-  d'une scène ; le hardware supporte le per-tile palbank mais rien ne l'exploite),
-  probablement au même endroit que le champ `render_mode` (voir v0.3).
-- Calcul de "couleur la plus proche" (distance colorimétrique — RGB15 GBA ?) non précisé
-  (utilisé par `quantize_image_to_bank`, slice 1 — distance euclidienne simple pour
-  l'instant, pas de justification perceptuelle particulière).
+Le gros est livré (voir « Livré » plus haut). Restent des finitions :
+
+- ~~`Scene` doit probablement recevoir un nouveau champ palette dédié~~ — **fait**
+  (`active_obj_palettes`/`active_bg_palettes`).
+- ~~Branchement BG dans le pipeline + override par `BackgroundLayer` individuel~~ —
+  **fait** : palette par layer (`BackgroundLayer.pal_bank`), émission directe des fonds
+  encodés (`SE_PALBANK` par tuile) sans grit, palette canonique par scène copiée dans
+  `PAL_BG_RAM` par `main_gen`.
+- **Support ROM du mode bitmap (Mode 4)** — les fonds bitmap sont éditables et encodés
+  côté éditeur, mais **ignorés au build** (`_bg_build_asset` retourne `None`,
+  « increment 2 »). C'est la principale finition restante côté runtime.
+- **Vrai 16bpp** — un import 16bpp retombe aujourd'hui sur `bitmap16`, repli interim vers
+  Mode 4 ; l'UI bitmap dédiée reste à faire.
+- **8bpp** — une palette 256 occupe toute la `PAL_BG_RAM` : garde-fou en place (un seul
+  layer de fond par scène en 8bpp), pas de cohabitation multi-layers.
+- **Aperçu contextuel** dans l'écran Palette (point restant du redesign UI).
+- Calcul de "couleur la plus proche" (distance colorimétrique) — distance euclidienne
+  simple pour l'instant, pas de justification perceptuelle.
 - Variante de tuiles par scène (lever la "coupe assumée" OBJ ci-dessus) — chantier
   pipeline à part si le conflit multi-scènes s'avère gênant en pratique.
 

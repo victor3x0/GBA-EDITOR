@@ -18,18 +18,21 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton, QGraphicsOpacityEffect,
+    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton,
+    QGraphicsOpacityEffect,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem,
 )
 from PyQt6.QtGui import QColor, QPainter, QPixmap, QImage, QTransform, QPen
 from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, QPropertyAnimation, pyqtSignal
 
-from core.bg_compress import (
+from core.bg_import import (
     unpack_se, _hex_to_tile, _flip_h, _flip_v, render_bg_preview,
     render_bitmap_preview,
 )
 from core.color_utils import bgr555_to_rgb888
-from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE
+from ui.common.theme import C, T
+from ui.common.paint_palette_strip import PaintPaletteStrip
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE, COLOR_BACKGROUND
 
 
 def _pil_to_qimage(img) -> QImage:
@@ -576,17 +579,23 @@ class BgInpaintToolbar(QFrame):
 
 # ──────────────────────────────────────────────────────────────────
 #  Wrapper canvas + toolbar
-# ──────────────────────────────────────────────────────────────────
 class BgInpaintCanvas(QWidget):
-    """Panneau central du Background Editor : canvas de peinture + toolbar."""
+    """Panneau central du Background Editor : bande de peinture + canvas + toolbar."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ctrl = BgInpaintController()
         self._view = BgInpaintView(self._ctrl, self)
+        self._ba = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        # Bande de peinture en tête (sélection de la palette active) puis canvas.
+        self._paint_strip = PaintPaletteStrip(COLOR_BACKGROUND, "PEINDRE", self)
+        self._paint_strip.selected.connect(self.set_active_palette)
+        self._paint_strip.setVisible(False)
+        layout.addWidget(self._paint_strip)
         layout.addWidget(self._view)
 
         self._toolbar = BgInpaintToolbar(self)
@@ -655,21 +664,33 @@ class BgInpaintCanvas(QWidget):
                         (self.height() - self._busy.height()) // 2)
 
     def load(self, project, ba):
+        self._ba = ba
         self._ctrl.set_context(project, ba)
         # Inpainting = tuilé 4bpp uniquement. En 8bpp (une palette 256) et en
-        # bitmap (Mode 4) : peinture désactivée, toolbar masquée (aperçu seul).
+        # bitmap (Mode 4) : peinture désactivée, toolbar + bande masquées (aperçu seul).
         paintable = bool(ba and getattr(ba, "mode", "tiled") == "tiled"
                          and getattr(ba, "bpp", 4) == 4)
         self._ctrl.set_paint_enabled(paintable)
         self._toolbar.setVisible(paintable)
+        if paintable:
+            self._paint_strip.load(list(ba.palettes), active=0)
+            self._paint_strip.setVisible(True)
+            self._ctrl.set_active_palette(0)
+        else:
+            self._paint_strip.setVisible(False)
         self._view.load_background()
 
     def set_active_palette(self, idx: int):
         self._ctrl.set_active_palette(idx)
 
     def reload(self):
-        """Re-render après édition des palettes (inspecteur) — met à jour le
-        pixmap via le callback on_rendered, sans réinitialiser le zoom."""
+        """Re-render après édition des palettes (inspecteur) — reconstruit aussi
+        la bande de peinture (la liste des palettes a pu changer) puis met à jour
+        le pixmap via on_rendered, sans réinitialiser le zoom."""
+        if self._ba is not None and self._ctrl.paintable:
+            cur = self._paint_strip.active()
+            self._paint_strip.load(list(self._ba.palettes), active=cur)
+            self._ctrl.set_active_palette(self._paint_strip.active())
         self._ctrl.reload_render()
 
     def resizeEvent(self, e):

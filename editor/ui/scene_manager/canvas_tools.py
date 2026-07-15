@@ -46,7 +46,7 @@ from PyQt6.QtGui import QBrush, QColor, QPen
 from PyQt6.QtWidgets import QGraphicsRectItem, QGraphicsView
 
 if TYPE_CHECKING:
-    from core.scene_editor import GBAView
+    from ui.scene_manager.scene_canvas import GBAView
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ class EraseTool(BaseTool):
 
     def on_press(self, pos: QPointF, e) -> bool:
         from core.command_dispatcher import get_dispatcher
-        from core.scene_editor import SpriteItem
+        from ui.scene_manager.scene_canvas import SpriteItem
 
         items = self._view.scene().items(pos)
         for item in items:

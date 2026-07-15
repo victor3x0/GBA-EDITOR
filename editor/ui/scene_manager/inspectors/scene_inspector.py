@@ -3,11 +3,11 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame, QComboBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
     QCheckBox, QScrollArea, QPushButton, QMessageBox,
 )
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.project import Project, Scene, OWN_PAL_BANK
 from core.asset_manager import BgLayerRow
@@ -18,9 +18,7 @@ from core.history import (
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup
-from ui.common.palette_swatch import (
-    bank_icon as _bank_icon, swatch_icon as _swatch_icon, plus_icon as _plus_icon,
-)
+from ui.common.palette_slot_grid import PaletteSlotGridAsset
 
 
 class _ScenePaletteCmd(Command):
@@ -98,177 +96,6 @@ MODE_INFO: dict[int, dict] = {
     5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
         "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 160×128"},
 }
-
-
-# ──────────────────────────────────────────────────────────────────
-#  _PaletteSlotGrid — vue live des 16 banques d'un pool (cf. palette_alloc)
-# ──────────────────────────────────────────────────────────────────
-class _PaletteSlotGrid(QWidget):
-    """
-    Grille compacte 2 lignes x 8 colonnes qui matérialise l'allocation d'une
-    scène (ScenePaletteView), dans l'ordre :
-
-      [ palettes de scène (éditables) ][ palettes d'asset (grisées / override) ]
-      [ bouton + ][ banques libres (noires) ]
-
-    - palette de scène : clic = remplacer (catalogue), clic droit = retirer ;
-    - palette d'asset « own » (grisée) : clic = override par une palette de
-      scène ; « override » (marqueur d'angle) : clic droit = revenir à la
-      palette d'origine de l'asset ;
-    - « + » : ajoute une palette de scène (masqué quand les 16 banques sont
-      pleines).
-    """
-
-    scene_replace  = pyqtSignal(int, str)     # slot hardware, nouveau nom
-    scene_add      = pyqtSignal(str)          # nouveau nom de palette de scène
-    scene_remove   = pyqtSignal(int)          # slot hardware à retirer
-    asset_override = pyqtSignal(object, int)  # AssetPaletteEntry, slot scène ciblé
-    asset_restore  = pyqtSignal(object)       # AssetPaletteEntry
-
-    _COLS = 8   # 2 barres horizontales de 8 (row = i//8, col = i%8)
-    _ICON_SIZE = 28
-
-    def __init__(self, accent: str, parent=None):
-        super().__init__(parent)
-        self._accent = accent
-        self._layout = QGridLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(4)
-        self._buttons: list[QPushButton] = []
-        self._catalog: list = []
-        self._scene_entries: list = []   # pour le picker d'override
-
-    # ── Styles de cellule ─────────────────────────────────────────
-    def _style(self, *, bg: str, border: str, dashed: bool = False, width: int = 1) -> str:
-        b = "dashed" if dashed else "solid"
-        return (f"QPushButton{{background:{bg};border:{width}px {b} {border};border-radius:4px;}}"
-                f"QPushButton:hover{{border-color:{self._accent};}}")
-
-    def load(self, view, catalog: list):
-        """view : ScenePaletteView ; catalog : list[PaletteBank] (choix +/replace)."""
-        for b in self._buttons:
-            self._layout.removeWidget(b)
-            b.deleteLater()
-        self._buttons.clear()
-        self._catalog = catalog
-        self._scene_entries = list(view.scene_entries)
-
-        # Ordre : palettes de scène → bouton « + » (séparateur) → palettes
-        # d'asset (grisées) → banques libres. Le « + » sépare l'éditable du
-        # grisé ; ajouter une palette de scène le décale (ainsi que les assets)
-        # vers la droite. Le « + » n'occupe pas de banque : il disparaît quand
-        # les 16 sont pleines, et scène/assets redeviennent contigus.
-        cells: list[tuple[str, object]] = []
-        for e in view.scene_entries:
-            cells.append(("scene", e))
-        if view.can_add():
-            cells.append(("plus", None))
-        for e in view.asset_entries:
-            # Un fond compressé occupe un BLOC de N banques → N cellules
-            # (même swatch), pour que la grille reflète les banques consommées.
-            for _ in range(max(1, getattr(e, "bank_span", 1))):
-                cells.append(("asset", e))
-        while len(cells) < 16:
-            cells.append(("empty", None))
-
-        for pos, (kind, entry) in enumerate(cells[:16]):
-            btn = self._make_cell(kind, entry, view)
-            row, col = divmod(pos, self._COLS)
-            self._layout.addWidget(btn, row, col)
-            self._buttons.append(btn)
-
-    def _make_cell(self, kind: str, entry, view) -> QPushButton:
-        btn = QPushButton()
-        btn.setFixedSize(self._ICON_SIZE + 10, self._ICON_SIZE + 10)
-        btn.setIconSize(QSize(self._ICON_SIZE, self._ICON_SIZE))
-        btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-
-        if kind == "scene":
-            btn.setIcon(_swatch_icon(entry.colors, self._ICON_SIZE))
-            btn.setToolTip(f"Slot {entry.slot} — {entry.name}\n"
-                           f"Clic : remplacer · Clic droit : retirer")
-            btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=C.BORDER_MID))
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_scene(b, e.slot))
-            btn.customContextMenuRequested.connect(
-                lambda _p, e=entry: self.scene_remove.emit(e.slot))
-
-        elif kind == "asset":
-            names = ", ".join(i.label for i in entry.instances)
-            if entry.state == "override":
-                target = next((s for s in view.scene_entries
-                               if s.slot == entry.ref_slot), None)
-                cols = target.colors if target else entry.own_colors
-                btn.setIcon(_swatch_icon(cols, self._ICON_SIZE,
-                                         override=True, marker_color=self._accent))
-                tgt = target.name if target else "?"
-                btn.setToolTip(f"{names} → {tgt} (override)\n"
-                               f"Clic : changer · Clic droit : palette d'origine")
-                btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=self._accent))
-                btn.customContextMenuRequested.connect(
-                    lambda _p, e=entry: self.asset_restore.emit(e))
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_override(b, e))
-            elif not getattr(entry, "overridable", True):
-                # Bloc compressé : palette d'asset fixe, non remappable.
-                btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
-                span = getattr(entry, "bank_span", 1)
-                span_txt = f" — bloc de {span} banques" if span > 1 else ""
-                btn.setToolTip(f"{names} — fond compressé{span_txt}\n(palette non éditable)")
-                btn.setStyleSheet(
-                    f"QPushButton{{background:{C.BG_BASE};"
-                    f"border:1px solid {C.BORDER_DARK};border-radius:4px;}}")
-            else:  # own — palette propre grisée (overridable)
-                btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
-                btn.setToolTip(f"{names} — palette propre (non éditable)\n"
-                               f"Clic : override avec une palette de scène")
-                btn.setStyleSheet(self._style(bg=C.BG_BASE, border=C.BORDER_MID, dashed=True))
-                btn.setCursor(Qt.CursorShape.PointingHandCursor)
-                btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_override(b, e))
-
-        elif kind == "plus":
-            btn.setIcon(_plus_icon(self._ICON_SIZE, self._accent))
-            btn.setToolTip("Ajouter une palette de scène")
-            btn.setStyleSheet(
-                f"QPushButton{{background:#000000;"
-                f"border:1px dashed {self._accent};border-radius:4px;}}"
-                f"QPushButton:hover{{background:{C.SEL_BG};}}")
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda _c, b=btn: self._pick_add(b))
-
-        else:  # empty — banque libre
-            btn.setEnabled(False)
-            btn.setToolTip("Banque libre")
-            btn.setStyleSheet(self._style(bg="#000000", border=C.BORDER_DARK))
-
-        return btn
-
-    # ── Pickers ───────────────────────────────────────────────────
-    def _catalog_entries(self) -> list:
-        return [(b.name, b.name, _bank_icon(b)) for b in self._catalog]
-
-    def _pick_scene(self, anchor: QPushButton, slot: int):
-        popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
-                                  parent=self, new_label=None)
-        popup.picked.connect(lambda name, s=slot: self.scene_replace.emit(s, name))
-        popup.show_below(anchor)
-
-    def _pick_add(self, anchor: QPushButton):
-        popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
-                                  parent=self, new_label=None)
-        popup.picked.connect(lambda name: self.scene_add.emit(name))
-        popup.show_below(anchor)
-
-    def _pick_override(self, anchor: QPushButton, entry):
-        """Popup des palettes de SCÈNE — sélectionner override cet asset vers
-        cette banque (emit AssetPaletteEntry + slot ciblé)."""
-        if not self._scene_entries:
-            return
-        entries = [(s.name, str(s.slot), _swatch_icon(s.colors))
-                   for s in self._scene_entries]
-        popup = ScriptPickerPopup(entries, self._accent, parent=self, new_label=None)
-        popup.picked.connect(lambda val, e=entry: self.asset_override.emit(e, int(val)))
-        popup.show_below(anchor)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -449,7 +276,7 @@ class SceneInspector(QWidget):
         pal_card, pal_inner = _card(C.ACCENT_GRN)
         pal_inner.addWidget(_card_title("PALETTES ACTIVES", C.ACCENT_GRN))
 
-        self._pal_grids: dict[str, _PaletteSlotGrid] = {}
+        self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}
         for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
                                     ("bg", C.ACCENT_BLU, "BACKGROUND")):
@@ -457,7 +284,7 @@ class SceneInspector(QWidget):
             sub_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
             sub_lbl.setStyleSheet(f"color:{color}; letter-spacing:1px; margin-top:4px;")
             pal_inner.addWidget(sub_lbl)
-            grid = _PaletteSlotGrid(color)
+            grid = PaletteSlotGridAsset(color)
             grid.scene_replace.connect(lambda slot, name, pool=pool: self._on_scene_replace(pool, slot, name))
             grid.scene_add.connect(lambda name, pool=pool: self._on_scene_add(pool, name))
             grid.scene_remove.connect(lambda slot, pool=pool: self._on_scene_remove(pool, slot))
@@ -542,7 +369,7 @@ class SceneInspector(QWidget):
             b.setChecked(i == mode)
 
     def _is_bitmap_layer(self, layer) -> bool:
-        ba = self._project.get_background(layer.image) if (self._project and layer.image) else None
+        ba = self._project.get_background(layer.background_name) if (self._project and layer.background_name) else None
         return bool(ba and getattr(ba, "mode", "tiled") == "bitmap")
 
     def _pruned_by_mode(self, m: int) -> list:
@@ -552,12 +379,12 @@ class SceneInspector(QWidget):
         if info["kind"] == "bitmap":
             for L in self._scene.background_layers:
                 if not self._is_bitmap_layer(L):
-                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.image})" if L.image else " (vide)"))
+                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.background_name})" if L.background_name else " (vide)"))
         else:
             valid = set(info["bg_slots"])
             for L in self._scene.background_layers:
                 if L.bg_slot not in valid or self._is_bitmap_layer(L):
-                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.image})" if L.image else " (vide)"))
+                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.background_name})" if L.background_name else " (vide)"))
         if not info["bg_palettes"]:
             n = sum(1 for name in self._scene.active_bg_palettes if name)
             if n:
@@ -605,7 +432,7 @@ class SceneInspector(QWidget):
         """Met à jour le slot « fond bitmap » (modes 3/4/5) depuis la scène."""
         layer = next((L for L in self._scene.background_layers
                       if self._is_bitmap_layer(L)), None)
-        name = layer.image if layer else None
+        name = layer.background_name if layer else None
         self._btn_bitmap_pick.setText(name or "Choisir un fond bitmap…")
         rw, rh = info.get("res", (240, 160))
         bpp = info.get("bpp", 8)
@@ -630,7 +457,7 @@ class SceneInspector(QWidget):
 
     def _set_bitmap_bg(self, name: str):
         from core.project import BackgroundLayer
-        self._scene.background_layers[:] = [BackgroundLayer(image=name, bg_slot=2)]
+        self._scene.background_layers[:] = [BackgroundLayer(background_name=name, bg_slot=2)]
         self._persist_scene()
         self._apply_mode_ui()
         self.changed.emit()
@@ -679,10 +506,10 @@ class SceneInspector(QWidget):
 
         for layer in self._scene.background_layers:
             row = BgLayerRow(layer.bg_slot)
-            row.set_backgrounds(bg_names, layer.image)
-            if layer.image:
-                ba = self._project.get_background(layer.image)
-                png = ba.source if ba and ba.source else f"{layer.image}.png"
+            row.set_backgrounds(bg_names, layer.background_name)
+            if layer.background_name:
+                ba = self._project.get_background(layer.background_name)
+                png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
                 ap = self._project.background_images_dir / png
                 if ap.exists():
                     row.set_asset(str(ap))
@@ -716,11 +543,11 @@ class SceneInspector(QWidget):
     def _on_layer_image(self, layer, name: str):
         """Un BackgroundImage (nom) a été choisi pour un layer — l'image existe
         déjà dans assets/backgrounds/ (import via le Background Editor)."""
-        if not self._scene or layer.image == name:
+        if not self._scene or layer.background_name == name:
             return
         get_history().push(SetFieldCmd(
-            layer, "image", layer.image, name,
-            label=f"BG{layer.bg_slot}.image",
+            layer, "background_name", layer.background_name, name,
+            label=f"BG{layer.bg_slot}.background_name",
             persist_fn=lambda: (self._persist_scene(), self._rebuild_layer_rows()),
         ))
         get_dispatcher()._emit("bg_slot_changed", layer.bg_slot)
@@ -828,7 +655,7 @@ class SceneInspector(QWidget):
         if next_slot is None:
             return   # tous les slots BG du mode sont occupés
         from core.project import BackgroundLayer
-        new_layer = BackgroundLayer(image="", bg_slot=next_slot, scroll_speed=1.0)
+        new_layer = BackgroundLayer(background_name="", bg_slot=next_slot, scroll_speed=1.0)
 
         def _refresh():
             self._persist_scene()
@@ -1010,9 +837,9 @@ class SceneInspector(QWidget):
         self._refresh_ui_layer_marks()
         text_bg = getattr(self._scene, "text_bg", -1)
         conflict = next((l for l in self._scene.background_layers
-                          if l.image and l.bg_slot == text_bg), None)
+                          if l.background_name and l.bg_slot == text_bg), None)
         self._lbl_text_bg_warn.setText(
-            f"⚠ BG{text_bg} porte '{conflict.image}' — sera écrasé par le texte"
+            f"⚠ BG{text_bg} porte '{conflict.background_name}' — sera écrasé par le texte"
             if conflict else ""
         )
 

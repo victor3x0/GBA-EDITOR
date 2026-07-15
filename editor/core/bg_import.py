@@ -1,13 +1,16 @@
-"""core/bg_compress.py — compression NON-DESTRUCTIVE d'un fond GBA (Mode 0, 4bpp).
+"""core/bg_import.py — import & encodage d'un fond GBA (Mode 0, 4bpp).
 
-Transforme un PNG de fond en la représentation matérielle GBA, stockée en
-métadonnées (le PNG source n'est jamais modifié) :
+Encode un PNG de fond en sa représentation matérielle GBA, stockée en métadonnées
+(le PNG source n'est jamais modifié) — opération NON-DESTRUCTIVE pour un asset déjà
+GBA-compatible (palette indexée préservée à l'identique) :
 - jusqu'à 16 palettes de 16 couleurs (256), sélection par tuile ;
 - un tileset de tuiles 8×8 UNIQUES (dédup + flips H/V) — c'est la dédup qui fait
   rentrer un grand niveau en VRAM ;
 - une tilemap de SE (screen entries) : (tile_id, pal_bank, flip_h, flip_v) par case.
 
-Algorithme glouton (MVP raffinable). Toutes les couleurs sont snappées en 5 bits
+Une QUANTIFICATION des couleurs (réduction destructive) n'intervient qu'en repli,
+quand la source n'est PAS déjà indexée/compatible (trop de couleurs) — cf.
+`encode_background` et `reduce_colors`. Toutes les couleurs sont snappées en 5 bits
 par canal (représentables en BGR555) dès l'extraction, donc la dédup couleur est
 exacte vis-à-vis du hardware.
 """
@@ -336,10 +339,10 @@ def _indexed_direct_source(source):
     return pimg, alpha, pal_raw, used
 
 
-def _compress_background_indexed_4bpp(source) -> Optional[dict]:
+def _encode_background_indexed_4bpp(source) -> Optional[dict]:
     """Chemin direct 4bpp : PNG indexé dont les index utilisés tiennent dans UNE
     sous-palette (≤ 15). None si non indexé, ou index utilisé > 15 (plusieurs
-    sous-palettes nécessaires → repli sur le packing déduit de compress_background)."""
+    sous-palettes nécessaires → repli sur le packing déduit de encode_background)."""
     from PIL import Image
     prep = _indexed_direct_source(source)
     if prep is None:
@@ -385,11 +388,11 @@ def _compress_background_indexed_4bpp(source) -> Optional[dict]:
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
-        # `compress_method` reste un algo VALIDE (relu par reduce_colors sur
+        # `quantize_method` reste un algo VALIDE (relu par reduce_colors sur
         # certains chemins) : le chemin direct est choisi d'après le PNG (indexé
         # ou non) à chaque compression, pas d'après ce champ. L'origine « indexé
         # direct » est tracée par `src_indexed` ci-dessous.
-        "compress_method": "median_cut",
+        "quantize_method": "median_cut",
         "bpp": 4,
         "diagnostics": {
             "src_w": w, "src_h": h,
@@ -409,7 +412,7 @@ def _compress_background_indexed_4bpp(source) -> Optional[dict]:
     }
 
 
-def _compress_background_indexed_8bpp(source) -> Optional[dict]:
+def _encode_background_indexed_8bpp(source) -> Optional[dict]:
     """Chemin direct 8bpp tuilé : PNG indexé (≤ 256), palette native (256)
     préservée, tuiles en octets indexées directement. None si non indexé."""
     from PIL import Image
@@ -449,7 +452,7 @@ def _compress_background_indexed_8bpp(source) -> Optional[dict]:
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
-        "compress_method": "quantize_256",
+        "quantize_method": "quantize_256",
         "bpp": 8,
         "diagnostics": {
             "src_w": w, "src_h": h,
@@ -465,7 +468,7 @@ def _compress_background_indexed_8bpp(source) -> Optional[dict]:
     }
 
 
-def _compress_background_indexed_bitmap(source) -> Optional[dict]:
+def _encode_background_indexed_bitmap(source) -> Optional[dict]:
     """Chemin direct bitmap (Mode 4) : PNG indexé (≤ 256), palette native (256)
     préservée. L'ajustement « contain » ≤240×160 se fait en NEAREST sur l'image
     'P' (les index natifs restent valides, aucune couleur inventée). None si non
@@ -515,7 +518,7 @@ def _compress_background_indexed_bitmap(source) -> Optional[dict]:
     }
 
 
-def compress_background(source, max_palettes: int = 16, max_colors: int = 16,
+def encode_background(source, max_palettes: int = 16, max_colors: int = 16,
                         method: str = "median_cut") -> dict:
     """PNG -> représentation GBA (palettes BGR555 + tileset + tilemap). Ne modifie
     jamais le source. `max_colors`=16 (dont index 0 transparent), `max_palettes`=16.
@@ -523,9 +526,9 @@ def compress_background(source, max_palettes: int = 16, max_colors: int = 16,
     par tuile, palettes avant fusion, dimensions) pour le validateur de l'éditeur.
 
     PNG INDEXÉ tenant en 4bpp : la palette déclarée est préservée telle quelle
-    (cf. `_compress_background_indexed_4bpp`) au lieu d'être re-déduite depuis les
+    (cf. `_encode_background_indexed_4bpp`) au lieu d'être re-déduite depuis les
     seules couleurs peintes."""
-    direct = _compress_background_indexed_4bpp(source)
+    direct = _encode_background_indexed_4bpp(source)
     if direct is not None:
         return direct
     img, w, h, tw, th = _open_padded(source)
@@ -600,7 +603,7 @@ def compress_background(source, max_palettes: int = 16, max_colors: int = 16,
         "tilemap": tilemap,                               # list[int] (screen entries GBA)
         "tiles_w": tw,
         "tiles_h": th,
-        "compress_method": method,
+        "quantize_method": method,
         "bpp": 4,
         # Diagnostics (validateur éditeur) — le source n'est jamais modifié.
         "diagnostics": {
@@ -616,16 +619,16 @@ def compress_background(source, max_palettes: int = 16, max_colors: int = 16,
     }
 
 
-def compress_background_8bpp(source, dither: bool = False) -> dict:
+def encode_background_8bpp(source, dither: bool = False) -> dict:
     """PNG -> représentation GBA 8bpp : UNE palette de ≤256 couleurs, tuiles en
     octets (index 0-255), dédup (flips). Ne modifie jamais le source. Rapide : le
     quantifieur C de PIL fait le gros du travail (pas de packing multi-palettes).
     L'index 0 est réservé/transparent (pixels alpha 0).
 
     PNG INDEXÉ : la palette déclarée (≤256) est préservée telle quelle et les
-    tuiles sont indexées directement (cf. `_compress_background_indexed_8bpp`),
+    tuiles sont indexées directement (cf. `_encode_background_indexed_8bpp`),
     au lieu d'être re-quantifiées depuis les seules couleurs peintes."""
-    direct = _compress_background_indexed_8bpp(source)
+    direct = _encode_background_indexed_8bpp(source)
     if direct is not None:
         return direct
     from PIL import Image
@@ -671,7 +674,7 @@ def compress_background_8bpp(source, dither: bool = False) -> dict:
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
-        "compress_method": "quantize_256",
+        "quantize_method": "quantize_256",
         "bpp": 8,
         "diagnostics": {
             "src_w": w, "src_h": h,
@@ -746,7 +749,7 @@ def render_bg_preview(compiled: dict):
     return out
 
 
-def compress_background_bitmap(source, dither: bool = False) -> dict:
+def encode_background_bitmap(source, dither: bool = False) -> dict:
     """PNG -> représentation GBA Mode 4 : bitmap plein écran ≤240×160, 8bpp (un
     index par pixel) + palette de 256. L'image est ajustée « contain » (ratio
     préservé, jamais agrandie) dans 240×160. Le source n'est jamais modifié.
@@ -755,8 +758,8 @@ def compress_background_bitmap(source, dither: bool = False) -> dict:
 
     PNG INDEXÉ : la palette déclarée (≤256) est préservée telle quelle et le
     buffer est indexé directement (redimension « contain » en NEAREST pour garder
-    des index valides), cf. `_compress_background_indexed_bitmap`."""
-    direct = _compress_background_indexed_bitmap(source)
+    des index valides), cf. `_encode_background_indexed_bitmap`."""
+    direct = _encode_background_indexed_bitmap(source)
     if direct is not None:
         return direct
     from PIL import Image
