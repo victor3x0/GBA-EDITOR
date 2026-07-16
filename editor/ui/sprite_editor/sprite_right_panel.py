@@ -8,15 +8,9 @@ from PyQt6.QtCore import pyqtSignal
 from ui.common.theme import C, T
 from ui.common.widgets import W
 from core.project import Project, SpriteAsset, AnimState, AnimFrame, StateDirection
+from core.models.sprite import valid_frame_heights, resolve_direction_mirrors
 from core.command_dispatcher import get_dispatcher
-from .direction_widget import DirectionWidget, _H_MIRROR_PAIRS, _V_MIRROR_PAIRS
-
-_VALID_FRAME_SIZES = {
-    8:  [8, 16, 32],
-    16: [8, 16, 32],
-    32: [8, 16, 32, 64],
-    64: [32, 64],
-}
+from .direction_widget import DirectionWidget
 
 class SpriteRightPanel(QWidget):
     """
@@ -121,7 +115,7 @@ class SpriteRightPanel(QWidget):
         # PAL_BANK du sprite — dérivées du PNG grisées + overridables, « + » pour
         # ajouter une banque du catalogue. La palette active de PEINTURE/preview se
         # choisit dans la bande en tête du canvas.
-        self._pal_grid = PaletteSlotGridAsset(C.ACCENT_ORG, override_catalog=True)
+        self._pal_grid = PaletteSlotGridAsset(C.ACCENT_ORG)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
         self._pal_grid.scene_remove.connect(self._on_pal_remove)
@@ -244,7 +238,7 @@ class SpriteRightPanel(QWidget):
     def _refresh_h_combo(self, w_val: int, keep_h: int = 0):
         self._cb_h.blockSignals(True)
         self._cb_h.clear()
-        valid = _VALID_FRAME_SIZES.get(w_val, [8])
+        valid = valid_frame_heights(w_val)
         for v in valid:
             self._cb_h.addItem(str(v))
         target = str(keep_h) if keep_h in valid else str(valid[0])
@@ -285,7 +279,7 @@ class SpriteRightPanel(QWidget):
             return
         new_name = new_name.strip()
         if new_name and new_name != self._sprite.name:
-            self._project.sprites.rename(self._sprite, new_name)
+            get_dispatcher().rename_sprite(self._sprite, new_name)
             self.sprite_changed.emit()
 
     def _on_frame_w_changed(self, _):
@@ -322,27 +316,13 @@ class SpriteRightPanel(QWidget):
         # Reconstruire les StateDirection depuis la sélection
         dir_map = {sd.dir: sd for sd in self._state.directions}
         added_dirs = [d for d in active_dirs if d not in dir_map]
-        new_dirs = []
-        mirrored_set: set[int] = set()
-        if h_mirror:
-            for src, dst in _H_MIRROR_PAIRS:
-                if src in active_dirs:
-                    mirrored_set.add(dst)
-        if v_mirror:
-            for src, dst in _V_MIRROR_PAIRS:
-                if src in active_dirs:
-                    mirrored_set.add(dst)
+        mirrors = resolve_direction_mirrors(active_dirs, h_mirror, v_mirror)
 
+        new_dirs = []
         for d in active_dirs:
-            if d in mirrored_set:
-                # Trouver la source de ce miroir
-                src = next(
-                    (s for s, dst in (_H_MIRROR_PAIRS + _V_MIRROR_PAIRS) if dst == d),
-                    None
-                )
-                fh = any(dst == d for s, dst in _H_MIRROR_PAIRS) and h_mirror
-                fv = any(dst == d for s, dst in _V_MIRROR_PAIRS) and v_mirror
-                existing = dir_map.get(d)
+            existing = dir_map.get(d)
+            if d in mirrors:
+                src, fh, fv = mirrors[d]
                 new_dirs.append(StateDirection(
                     dir=d,
                     frames=existing.frames if existing else [AnimFrame()],
@@ -350,7 +330,6 @@ class SpriteRightPanel(QWidget):
                     mirror_of=src,
                 ))
             else:
-                existing = dir_map.get(d)
                 new_dirs.append(existing or StateDirection(
                     dir=d, frames=[AnimFrame()],
                 ))

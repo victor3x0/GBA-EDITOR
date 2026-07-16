@@ -1,4 +1,5 @@
-"""Panneau gauche — arbre projet style GB Studio."""
+
+"""Panneau gauche — arbre projet avec sections collapsibles"""
 
 import os
 from pathlib import Path
@@ -809,7 +810,7 @@ class AssetsFinderPanel(QWidget):
         finder_hdr.setStyleSheet(f"background:{_BG}; border-bottom:1px solid #232323;")
         fl = QHBoxLayout(finder_hdr)
         fl.setContentsMargins(8, 0, 0, 0)
-        finder_lbl = QLabel("ASSETS FINDER")
+        finder_lbl = QLabel("Project Viewer")
         finder_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
         finder_lbl.setStyleSheet(f"color:{_DIM}; letter-spacing:1px;")
         fl.addWidget(finder_lbl)

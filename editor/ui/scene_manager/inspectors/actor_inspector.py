@@ -495,11 +495,16 @@ class ActorInspector(QWidget):
             f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
         )
 
-    def load_prefab(self, prefab, project: Project):
+    def load_prefab(self, prefab, project: Project, scene: Optional[Scene] = None):
+        """`scene` : scène active de l'éditeur (contexte d'affichage) — un
+        Prefab n'appartient à aucune scène, mais son champ Palette utilise le
+        même picker qu'un Actor normal : à l'instanciation, il arrive dans une
+        scène et se comporte exactement comme un actor (repli sur le slot 0
+        si le slot assigné n'a pas de palette active dans cette scène-là)."""
         self._actor = prefab
         self._project = project
         self._is_prefab_template = True
-        self._scene = None
+        self._scene = scene
         self._apply_context_color(self._COLOR_PREFAB, self._COLOR_SEL_BG_PREFAB)
         if not prefab:
             self._content.setVisible(False); self._empty.setVisible(True); return

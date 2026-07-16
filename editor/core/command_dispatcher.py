@@ -137,6 +137,7 @@ class CommandDispatcher(EventEmitter):
         actor = self._project.instantiate_actor_from_prefab(prefab, name, x=x, y=y)
         self._project.active_scene.actors.append(actor)
         self._save_scene()
+        self._emit("actors_list_changed")
         self._emit("scene_sprites_changed")
         get_bus().select(actor)
         return actor
@@ -181,6 +182,16 @@ class CommandDispatcher(EventEmitter):
             self._project.save_sprite(sprite)
         self._emit("scene_sprites_changed")
 
+    def rename_sprite(self, sprite, new_name: str) -> None:
+        """Renomme un SpriteAsset (PNG + sidecar) et répare les SpriteComponent
+        qui le référencent par nom, sur tous les Actors (scènes) et Prefabs —
+        cf. Project.rename_sprite. Notifie les canvas scène ouverts."""
+        if not self._project:
+            return
+        with self._watcher.suspended():
+            self._project.rename_sprite(sprite, new_name)
+        self._emit("scene_sprites_changed")
+
     # ── Palette ───────────────────────────────────────────────────
 
     def save_palette(self, bank) -> None:
@@ -197,6 +208,17 @@ class CommandDispatcher(EventEmitter):
         self._emit("palettes_changed")
 
     # ── Background ────────────────────────────────────────────────
+
+    def notify_background_changed(self, ba) -> None:
+        """Émet bg_slot_changed pour chaque layer de la scène active référençant
+        ce BackgroundAsset — pour que le Scene Manager rafraîchisse son canvas
+        immédiatement après une mutation depuis le Background Editor (palette,
+        inpainting, recompression). N'affecte pas la sauvegarde elle-même."""
+        if not self._project or not self._project.active_scene:
+            return
+        for layer in self._project.active_scene.background_layers:
+            if layer.background_name == ba.name:
+                self._emit("bg_slot_changed", layer.bg_slot)
 
     def import_background_png(self, path_str: str):
         """Importe un PNG dans assets/backgrounds/ et crée le BackgroundAsset associé."""

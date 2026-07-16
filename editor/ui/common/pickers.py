@@ -65,42 +65,6 @@ def palette_picker_slot(
     return slot
 
 
-def bank_slot_picker_slot(
-    current_slot: Optional[int],
-    accent: str,
-    on_picked: Callable[[str], None],
-    parent=None,
-    num_slots: int = 16,
-) -> ScriptSlot:
-    """Picker de SLOT matériel numéroté (0 à num_slots-1) — pour un MODÈLE de
-    prefab, qui n'a pas de scène et ne peut donc pas référencer une palette
-    nommée. L'utilisateur choisit directement le slot de banque hardware que
-    TOUTE instance utilisera (prévisible quelle que soit la scène). Entrée
-    « Sans palette » (couleurs du PNG, auto-allouée) en tête.
-    `current_slot` : int (0-15) ou None (== OWN). on_picked reçoit PALETTE_NONE
-    ou la chaîne du numéro de slot."""
-    slot = ScriptSlot(
-        add_label="Choisir un slot", accent_color=accent, edit_label="Changer",
-        show_clear=False,
-    )
-    slot.set_script(_NONE_LABEL if current_slot is None else f"Slot {current_slot}")
-
-    def _open_picker():
-        entries = [(_NONE_LABEL, PALETTE_NONE, None)]
-        entries += [(f"Slot {i}", str(i), None) for i in range(num_slots)]
-        popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
-
-        def _picked(val: str):
-            slot.set_script(_NONE_LABEL if val == PALETTE_NONE else f"Slot {val}")
-            on_picked(val)
-
-        popup.picked.connect(_picked)
-        popup.show_below(slot)
-
-    slot.set_callbacks(on_add=_open_picker, on_open=_open_picker)
-    return slot
-
-
 def sprite_picker_slot(
     sprite_names: list[str],
     current_name: Optional[str],

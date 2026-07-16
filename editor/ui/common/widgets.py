@@ -630,10 +630,12 @@ class ScriptPickerPopup(QFrame):
         """Affiche le popup sous le widget anchor."""
         self.adjustSize()
         pos = anchor.mapToGlobal(QPoint(0, anchor.height() + 2))
-        # Éviter de sortir à droite de l'écran
-        screen = QApplication.primaryScreen().availableGeometry()
-        if pos.x() + self.width() > screen.right():
-            pos.setX(screen.right() - self.width() - 4)
+        # Éviter de sortir à droite de l'écran — celui de l'ancre (pas
+        # forcément l'écran primaire : la fenêtre peut être sur un 2e moniteur).
+        screen = anchor.screen() or QApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        if pos.x() + self.width() > geo.right():
+            pos.setX(geo.right() - self.width() - 4)
         self.move(pos)
         self.show()
 

@@ -288,7 +288,7 @@ class SceneInspector(QWidget):
             grid.scene_replace.connect(lambda slot, name, pool=pool: self._on_scene_replace(pool, slot, name))
             grid.scene_add.connect(lambda name, pool=pool: self._on_scene_add(pool, name))
             grid.scene_remove.connect(lambda slot, pool=pool: self._on_scene_remove(pool, slot))
-            grid.asset_override.connect(lambda entry, slot, pool=pool: self._on_asset_override(pool, entry, slot))
+            grid.asset_override.connect(lambda entry, name, pool=pool: self._on_asset_override(pool, entry, name))
             grid.asset_restore.connect(lambda entry, pool=pool: self._on_asset_restore(pool, entry))
             pal_inner.addWidget(grid)
             self._pal_grids[pool] = grid
@@ -772,22 +772,35 @@ class SceneInspector(QWidget):
                     o.pal_bank = pb - 1
         self._push_palette_cmd(pool, mutate, f"Retirer palette scène [{slot}]")
 
-    def _on_asset_override(self, pool: str, entry, slot: int):
-        """Override la palette propre d'un groupe d'assets vers une palette de
-        scène : toutes les instances du groupe passent en pal_bank=slot."""
+    def _on_asset_override(self, pool: str, entry, name: str):
+        """Override la palette propre d'un groupe d'assets vers une palette du
+        CATALOGUE de l'éditeur (comme une couleur normale, pas seulement les
+        palettes déjà actives de la scène) : réutilise le slot actif existant
+        si `name` y figure déjà, sinon l'ajoute au premier slot libre (même
+        logique que `_on_scene_add`) — jamais deux slots pour la même palette."""
         if self._blocking or not self._scene:
             return
         active = self._active_list(pool)
-        if not (0 <= slot < len(active) and active[slot]):
-            return
         targets = [i.obj for i in entry.instances if getattr(i, "obj", None) is not None]
         if not targets:
             return
 
-        def mutate(objs=targets, s=slot):
+        def mutate(a=active, n=name, objs=targets):
+            try:
+                slot = a.index(n)
+            except ValueError:
+                free = next((i for i, x in enumerate(a) if not x), None)
+                if free is None:
+                    if len(a) >= 16:
+                        return
+                    a.append(n)
+                    slot = len(a) - 1
+                else:
+                    a[free] = n
+                    slot = free
             for o in objs:
-                o.pal_bank = s
-        self._push_palette_cmd(pool, mutate, f"Override asset → slot {slot}")
+                o.pal_bank = slot
+        self._push_palette_cmd(pool, mutate, f"Override asset → {name}")
 
     def _on_asset_restore(self, pool: str, entry):
         """Revient à la palette d'origine (propre) du groupe d'assets."""

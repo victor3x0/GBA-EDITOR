@@ -187,7 +187,8 @@ class DynamicInspector(QWidget):
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_prefab(self, prefab, project):
-        self._actor_insp.load_prefab(prefab, project)
+        scene = project.active_scene if project else None
+        self._actor_insp.load_prefab(prefab, project, scene)
         self._set_header("prefab", "PREFAB", prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 

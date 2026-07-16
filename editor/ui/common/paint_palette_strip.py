@@ -23,6 +23,8 @@ class PaintPaletteStrip(QWidget):
         self._accent = accent
         self._active = 0
         self._btns: list[QPushButton] = []
+        self._colors: list = []   # palettes du dernier load(), pour ré-identifier la
+                                   # sélection par CONTENU (pas par index) au reload suivant
         self.setStyleSheet(
             f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER_DARK};")
         lay = QHBoxLayout(self)
@@ -41,13 +43,31 @@ class PaintPaletteStrip(QWidget):
         return self._active
 
     def load(self, palettes: list, active: int = 0):
+        """`active` ne sert que de repli (premier chargement, ou si la palette
+        précédemment active a disparu) : si elle est encore présente dans
+        `palettes` (même contenu, peu importe son nouvel index — une palette
+        insérée avant elle décale tout), elle reste sélectionnée. Sans ce
+        repérage par CONTENU, un index resterait valide mais pointerait sur
+        une palette différente après insertion/suppression, désynchronisant
+        la surbrillance et l'aperçu peint (couleurs d'une autre palette)."""
+        prev_colors = (
+            self._colors[self._active]
+            if self._colors and 0 <= self._active < len(self._colors) else None
+        )
         for b in self._btns:
             self._row.removeWidget(b)
             b.deleteLater()
         self._btns.clear()
-        n = len(palettes)
-        self._active = max(0, min(active, n - 1)) if n else 0
-        for i, cols in enumerate(palettes):
+        self._colors = [list(cols) for cols in palettes]
+        n = len(self._colors)
+        resolved = active
+        if prev_colors is not None:
+            try:
+                resolved = self._colors.index(prev_colors)
+            except ValueError:
+                pass
+        self._active = max(0, min(resolved, n - 1)) if n else 0
+        for i, cols in enumerate(self._colors):
             btn = QPushButton()
             btn.setFixedSize(self._ICON + 8, self._ICON + 8)
             btn.setIcon(swatch_icon(list(cols), self._ICON))

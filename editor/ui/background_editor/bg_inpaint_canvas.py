@@ -299,6 +299,7 @@ class BgInpaintController:
             from core.command_dispatcher import get_dispatcher
             with get_dispatcher().suspended():
                 self._project.save_background(ba)
+            get_dispatcher().notify_background_changed(ba)
         if ba is self._ba:
             self._render_full()
             self._notify()
@@ -309,6 +310,7 @@ class BgInpaintController:
         from core.command_dispatcher import get_dispatcher
         with get_dispatcher().suspended():
             self._project.save_background(self._ba)
+        get_dispatcher().notify_background_changed(self._ba)
 
 
 # ──────────────────────────────────────────────────────────────────

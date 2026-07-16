@@ -48,6 +48,7 @@ from core.project import (
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T
 from core.sprite_compose import compose_frame_image
+from core.color_utils import quantize_preview
 from codegen.asset_pipeline import resolve_palette_bank, resolve_obj_palette_bank
 from PyQt6.QtGui import (
     QBrush,
@@ -233,26 +234,6 @@ def _pil_to_qimage(img) -> QImage:
                   QImage.Format.Format_RGBA8888).copy()
 
 
-def _asset_compiled(p: Project, ba, ap) -> Optional[dict]:
-    """Représentation compressée (palette d'origine) d'un layer : depuis le
-    sidecar `ba` si compressé, sinon compressée à la volée depuis le PNG
-    (fallback legacy rare). None si indisponible."""
-    if ba and ba.tileset:
-        # effective_tilemap() : baseline + overrides d'inpainting asset
-        # (BackgroundInpainting), pour que le canvas de scène montre le fond
-        # tel qu'édité au niveau éditeur, partagé entre toutes les scènes.
-        return {"tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
-                "tileset": ba.tileset, "tilemap": ba.effective_tilemap(),
-                "palettes": ba.palettes, "bpp": getattr(ba, "bpp", 4)}
-    if ap and ap.is_file():
-        from core.bg_import import encode_background
-        try:
-            return encode_background(ap)
-        except (ValueError, OSError):
-            return None
-    return None
-
-
 def build_bg_raster(p: Project, scene, layer, ap) -> Optional["BgLayerRaster"]:
     """Construit le `BgLayerRaster` d'un layer depuis sa palette d'origine
     (représentation compressée de l'asset). Peignable pour TOUT layer ayant une
@@ -262,7 +243,8 @@ def build_bg_raster(p: Project, scene, layer, ap) -> Optional["BgLayerRaster"]:
     if not layer.background_name or not ap.is_file():
         return None
     ba = p.get_background(layer.background_name)
-    compiled = _asset_compiled(p, ba, ap)
+    from core.bg_import import compiled_background
+    compiled = compiled_background(ba, ap)
     if not compiled or not compiled.get("tilemap"):
         return None
 
@@ -288,22 +270,6 @@ def _bg_pixmap(p: Project, scene, layer, ap) -> Optional[QPixmap]:
     if raster is not None:
         return raster.to_pixmap()
     return QPixmap(str(ap))
-
-
-def _quantize_preview(img, sprite, bank):
-    """Aperçu acteur du canvas de scène, aligné sur le build INDEXÉ universel :
-    l'image composée est rendue via la own_palette du sprite (compression
-    stockée), puis ses index sont recolorés par la banque référencée
-    (index i -> banque[i]) ou laissés en couleurs propres (OWN). WYSIWYG avec
-    le build réel."""
-    from core.color_utils import render_indexed, recolor_indexed
-    own_pal = list(getattr(sprite, "own_palette", []) or [])
-    if not own_pal:
-        return img
-    p_img = render_indexed(img, own_pal)
-    if bank and bank.colors:
-        return recolor_indexed(p_img, bank.colors)
-    return p_img.convert("RGBA")
 
 
 # dir_x/dir_y (-1|0|1) → dir id 1-8, identique au _dlut du runtime
@@ -2269,7 +2235,7 @@ class SceneEditor(QWidget):
                 if preview_frame is not None:
                     img = compose_frame_image(ap, preview_frame, sprite.frame_w, sprite.frame_h)
                     bank = resolve_obj_palette_bank(p, actor, scene)
-                    img = _quantize_preview(img, sprite, bank)
+                    img = quantize_preview(img, sprite, bank)
                     if img.width > 0 and img.height > 0:
                         data = bytes(img.tobytes("raw", "RGBA"))
                         qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)

@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from ui.common.theme import C, T
 from ui.common.icons import get as _ico
 from core.project import AnimState
+from core.models.sprite import resolve_direction_mirrors
 
 _DIR_GRID = [
     # (dir_id, icon_key, tooltip, grid_row, grid_col)
@@ -15,11 +16,6 @@ _DIR_GRID = [
     (7, "dir_w",  "W",  1, 0), (0, "dir_omni", "Omni (toutes directions)", 1, 1), (3, "dir_e", "E",  1, 2),
     (6, "dir_sw", "SW", 2, 0), (5, "dir_s", "S",  2, 1), (4, "dir_se", "SE", 2, 2),
 ]
-
-# Paires source → miroir horizontal (E→W, NE→NW, SE→SW)
-_H_MIRROR_PAIRS = [(3, 7), (2, 8), (4, 6)]
-# Paires source → miroir vertical (N→S, NE→SE, NW→SW)
-_V_MIRROR_PAIRS = [(1, 5), (2, 4), (8, 6)]
 
 _BTN_SIZE = 44   # pixels, carré
 
@@ -201,21 +197,12 @@ class DirectionWidget(QWidget):
         """Met à jour l'apparence des boutons miroirs selon l'état H/V."""
         self._blocking = True
         active = {d for d, btn in self._dir_btns.items() if btn.isChecked()}
-        mirrored: set[int] = set()
+        mirrors = resolve_direction_mirrors(active, self._h_mirror, self._v_mirror)
 
-        if self._h_mirror:
-            for src, dst in _H_MIRROR_PAIRS:
-                if src in active:
-                    mirrored.add(dst)
-                    self._dir_btns[dst].setChecked(True)
-        if self._v_mirror:
-            for src, dst in _V_MIRROR_PAIRS:
-                if src in active:
-                    mirrored.add(dst)
-                    self._dir_btns[dst].setChecked(True)
-
+        for dst in mirrors:
+            self._dir_btns[dst].setChecked(True)
         for dir_id, btn in self._dir_btns.items():
-            btn.set_mirrored(dir_id in mirrored)
+            btn.set_mirrored(dir_id in mirrors)
 
         self._blocking = False
 

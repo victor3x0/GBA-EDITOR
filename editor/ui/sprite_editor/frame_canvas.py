@@ -63,13 +63,6 @@ def _make_frame_pixmap(abs_path: Optional[Path], frame: AnimFrame,
     return _pil_to_pixmap(img, size)
 
 
-def _clone_frame(frame: AnimFrame) -> AnimFrame:
-    return AnimFrame(tiles=[
-        TilePlacement(t.src_col, t.src_row, t.dst_col, t.dst_row, t.flip_h, t.flip_v)
-        for t in frame.tiles
-    ])
-
-
 class _FrameThumb(QFrame):
     """Vignette d'un frame, draggable via QDrag."""
 
@@ -371,7 +364,7 @@ class _FrameTimeline(QWidget):
         # Copie de la frame sélectionnée (ou frame vide)
         if self._sd.frames:
             src = self._sd.frames[self._selected]
-            self._sd.frames.append(_clone_frame(src))
+            self._sd.frames.append(src.clone())
         else:
             self._sd.frames.append(AnimFrame())
         self.frames_changed.emit()
@@ -406,7 +399,7 @@ class _FrameTimeline(QWidget):
         if not self._sd or self._read_only or not self._sd.frames:
             return
         src = self._sd.frames[index]
-        self._sd.frames.insert(index + 1, _clone_frame(src))
+        self._sd.frames.insert(index + 1, src.clone())
         self.frames_changed.emit()
         self._rebuild()
         self._select(index + 1)
@@ -415,7 +408,7 @@ class _FrameTimeline(QWidget):
         if not self._sd or self._read_only or not self._sd.frames:
             return
         src = self._sd.frames[index]
-        self._sd.frames.append(_clone_frame(src))
+        self._sd.frames.append(src.clone())
         self.frames_changed.emit()
         self._rebuild()
         self._select(len(self._sd.frames) - 1)

@@ -518,6 +518,26 @@ def _encode_background_indexed_bitmap(source) -> Optional[dict]:
     }
 
 
+def compiled_background(ba, source_path) -> Optional[dict]:
+    """Représentation compressée (palette d'origine) d'un fond, pour un rendu
+    éditeur (canvas de scène) : depuis le sidecar `ba` (BackgroundAsset) si déjà
+    compressé, sinon compressée à la volée depuis le PNG (fallback legacy rare,
+    asset pas encore reconcilié). None si indisponible."""
+    if ba and ba.tileset:
+        # effective_tilemap() : baseline + overrides d'inpainting asset
+        # (BackgroundInpainting), pour que le rendu montre le fond tel qu'édité
+        # au niveau éditeur, partagé entre toutes les scènes.
+        return {"tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
+                "tileset": ba.tileset, "tilemap": ba.effective_tilemap(),
+                "palettes": ba.palettes, "bpp": getattr(ba, "bpp", 4)}
+    if source_path and source_path.is_file():
+        try:
+            return encode_background(source_path)
+        except (ValueError, OSError):
+            return None
+    return None
+
+
 def encode_background(source, max_palettes: int = 16, max_colors: int = 16,
                         method: str = "median_cut") -> dict:
     """PNG -> représentation GBA (palettes BGR555 + tileset + tilemap). Ne modifie
@@ -808,6 +828,24 @@ def encode_background_bitmap(source, dither: bool = False) -> dict:
             "mode": "bitmap",
         },
     }
+
+
+def encode_by_mode(source, mode_token: str, method: str = "median_cut",
+                    dither: bool = False) -> dict:
+    """Dispatch unique vers `encode_background`/`encode_background_8bpp`/
+    `encode_background_bitmap` selon un token de mode ("tiled4"|"tiled8"|
+    "bitmap"|"bitmap16" — vocabulaire de `detect_import_mode`). Partagé par
+    l'import initial, la recompression depuis l'inspecteur (Background Editor)
+    et `core.asset_sync.encode_background_asset`, pour qu'il n'existe qu'un
+    seul endroit qui décide quel encodeur appeler.
+
+    "bitmap16" = vrai 16bpp direct (détecté), pas encore implémenté : repli
+    interim sur le Mode 4 paletté (quantif 256), cf. `detect_import_mode`."""
+    if mode_token in ("bitmap", "bitmap16"):
+        return encode_background_bitmap(source, dither=dither)
+    if mode_token == "tiled8":
+        return encode_background_8bpp(source, dither=dither)
+    return encode_background(source, method=method)
 
 
 def render_bitmap_preview(compiled: dict):

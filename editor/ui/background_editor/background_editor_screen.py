@@ -64,17 +64,8 @@ class _EncodeTask(QRunnable):
 
     def run(self):
         try:
-            from core.bg_import import (
-                encode_background, encode_background_8bpp, encode_background_bitmap,
-            )
-            if self._mode in ("bitmap", "bitmap16"):
-                # bitmap16 = vrai 16bpp direct (détecté), pas encore implémenté :
-                # repli interim sur le Mode 4 paletté (quantif 256). cf. detect_import_mode.
-                c = encode_background_bitmap(self._png, dither=self._dither)
-            elif self._mode == "tiled8":
-                c = encode_background_8bpp(self._png, dither=self._dither)
-            else:
-                c = encode_background(self._png, method=self._method)
+            from core.bg_import import encode_by_mode
+            c = encode_by_mode(self._png, self._mode, self._method, self._dither)
             self.signals.done.emit(self._token, self._name, c)
         except Exception as e:  # noqa: BLE001 — remonté à l'UI, pas avalé
             self.signals.failed.emit(self._token, str(e))
@@ -298,7 +289,7 @@ class BgPropertiesPanel(QWidget):
         #    catalogue (éditable, clic = remplacer, clic droit = retirer). La
         #    palette active de PEINTURE se choisit dans la bande en haut du canvas.
         W.separator(root); W.section("PALETTES", root)
-        self._pal_grid = PaletteSlotGridAsset(_BG_COLOR, override_catalog=True)
+        self._pal_grid = PaletteSlotGridAsset(_BG_COLOR)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
         self._pal_grid.scene_remove.connect(self._on_pal_remove)
@@ -593,6 +584,7 @@ class BgPropertiesPanel(QWidget):
         if self._project and self._ba:
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(self._ba)
+            get_dispatcher().notify_background_changed(self._ba)
 
     def _on_pal_add(self, name: str):
         """« + » : ajoute une palette du catalogue (banque `name`)."""
@@ -835,6 +827,7 @@ class BackgroundEditorScreen(QWidget):
             Project.apply_bg_encoding(ba, name, c)
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(ba)
+            get_dispatcher().notify_background_changed(ba)
             self._canvas.set_busy(False)
             if then:
                 then()

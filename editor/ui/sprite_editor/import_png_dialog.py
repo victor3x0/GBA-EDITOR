@@ -13,16 +13,14 @@ from typing import Optional
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
-from core.sprite_import import encode_sprite, detect_sprite_import_mode
+from core import asset_sync
 from core.command_dispatcher import get_dispatcher
 
 
 def _encode_and_store(project, sprite, source) -> Optional[str]:
     """Encode `source` sur `sprite` (métadonnées, PNG intact) + persiste via le
     dispatcher. Renvoie un warning d'import éventuel (palette réduite)."""
-    from core.project import Project
-    warning = detect_sprite_import_mode(source).get("warning")
-    Project.apply_sprite_encoding(sprite, encode_sprite(source, sprite.quantize_method))
+    warning = asset_sync.encode_sprite_asset(sprite, source)
     get_dispatcher().save_sprite(sprite)
     return warning
 

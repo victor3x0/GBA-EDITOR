@@ -405,7 +405,7 @@ class SpriteFinderPanel(QWidget):
             return
         sprite = SpriteAsset(name=name)
         self._project.sprites.append(sprite)
-        self._project.sprites.save(sprite)
+        get_dispatcher().save_sprite(sprite)
         self._refresh_sprites(select=sprite)
 
     def _import_sprite(self):
@@ -447,7 +447,7 @@ class SpriteFinderPanel(QWidget):
             item.setText(0, sp.name)
             self._sprite_tree.blockSignals(False)
             return
-        self._project.sprites.rename(sp, new_name)
+        get_dispatcher().rename_sprite(sp, new_name)
         self._sprite_tree.blockSignals(True)
         item.setText(0, sp.name)
         self._sprite_tree.blockSignals(False)

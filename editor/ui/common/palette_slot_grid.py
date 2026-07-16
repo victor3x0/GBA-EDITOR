@@ -41,9 +41,10 @@ class PaletteSlotGridAsset(QWidget):
       [ bouton + ][ banques libres (noires) ]
 
     - palette de scène : clic = remplacer (catalogue), clic droit = retirer ;
-    - palette d'asset « own » (grisée) : clic = override par une palette de
-      scène ; « override » (marqueur d'angle) : clic droit = revenir à la
-      palette d'origine de l'asset ;
+    - palette d'asset « own » (grisée) : clic = override par une palette du
+      CATALOGUE de l'éditeur (comme une couleur normale) ; « override »
+      (marqueur d'angle) : clic droit = revenir à la palette d'origine de
+      l'asset ;
     - « + » : ajoute une palette de scène (masqué quand les 16 banques sont
       pleines).
     """
@@ -51,27 +52,23 @@ class PaletteSlotGridAsset(QWidget):
     scene_replace  = pyqtSignal(int, str)        # slot hardware, nouveau nom
     scene_add      = pyqtSignal(str)             # nouveau nom de palette de scène
     scene_remove   = pyqtSignal(int)             # slot hardware à retirer
-    # AssetPaletteEntry, cible : slot scène (int) en mode scène, nom de banque
-    # catalogue (str) en mode `override_catalog` (tier asset).
+    # AssetPaletteEntry, nom de banque catalogue (str) — le consommateur
+    # résout/réutilise le slot actif (tier scène) ou l'override direct
+    # (tier asset, cf. SubPaletteAssetMixin.palette_overrides).
     asset_override = pyqtSignal(object, object)
     asset_restore  = pyqtSignal(object)          # AssetPaletteEntry
 
     _COLS = 8   # 2 barres horizontales de 8 (row = i//8, col = i%8)
     _ICON_SIZE = 28
 
-    def __init__(self, accent: str, parent=None, *, override_catalog: bool = False):
+    def __init__(self, accent: str, parent=None):
         super().__init__(parent)
         self._accent = accent
-        # override_catalog=False (défaut, scène) : override une palette d'asset
-        # vers une palette ACTIVE de la scène (slot). True (tier asset) : override
-        # vers une banque du CATALOGUE (nom) — cf. Background/Sprite Editor.
-        self._override_catalog = override_catalog
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
         self._buttons: list[QPushButton] = []
         self._catalog: list = []
-        self._scene_entries: list = []   # pour le picker d'override
 
     # ── Styles de cellule ─────────────────────────────────────────
     def _style(self, *, bg: str, border: str, dashed: bool = False, width: int = 1) -> str:
@@ -86,7 +83,6 @@ class PaletteSlotGridAsset(QWidget):
             b.deleteLater()
         self._buttons.clear()
         self._catalog = catalog
-        self._scene_entries = list(view.scene_entries)
 
         # Ordre : palettes de scène → bouton « + » (séparateur) → palettes
         # d'asset (grisées) → banques libres. Le « + » sépare l'éditable du
@@ -200,21 +196,14 @@ class PaletteSlotGridAsset(QWidget):
         popup.show_below(anchor)
 
     def _pick_override(self, anchor: QPushButton, entry):
-        """Popup de choix de la cible d'override.
-        - tier asset (`override_catalog`) : banques du CATALOGUE → emit (entry, nom:str) ;
-        - tier scène : palettes ACTIVES de la scène → emit (entry, slot:int)."""
-        if self._override_catalog:
-            if not self._catalog:
-                return
-            popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
-                                      parent=self, new_label=None)
-            popup.picked.connect(lambda name, e=entry: self.asset_override.emit(e, name))
-            popup.show_below(anchor)
+        """Popup de choix de la cible d'override : tout le CATALOGUE de
+        l'éditeur (comme une couleur normale), aux deux tiers — emit (entry,
+        nom_catalogue:str). Au tier scène, le consommateur (SceneInspector)
+        réutilise un slot actif existant portant ce nom, ou l'ajoute au
+        premier slot libre : jamais deux slots pour la même palette."""
+        if not self._catalog:
             return
-        if not self._scene_entries:
-            return
-        entries = [(s.name, str(s.slot), _swatch_icon(s.colors))
-                   for s in self._scene_entries]
-        popup = ScriptPickerPopup(entries, self._accent, parent=self, new_label=None)
-        popup.picked.connect(lambda val, e=entry: self.asset_override.emit(e, int(val)))
+        popup = ScriptPickerPopup(self._catalog_entries(), self._accent,
+                                  parent=self, new_label=None)
+        popup.picked.connect(lambda name, e=entry: self.asset_override.emit(e, name))
         popup.show_below(anchor)

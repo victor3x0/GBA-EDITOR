@@ -382,3 +382,18 @@ def recolor_indexed(p_img, bank_colors: list[int]):
     p_img.putpalette(_flat_palette(reps))
     p_img.info["transparency"] = 0
     return p_img.convert("RGBA")
+
+
+def quantize_preview(img, sprite, bank):
+    """Aperçu acteur du canvas de scène, aligné sur le build INDEXÉ universel :
+    l'image composée est rendue via la own_palette du sprite (compression
+    stockée), puis ses index sont recolorés par la banque référencée
+    (index i -> banque[i]) ou laissés en couleurs propres (OWN). WYSIWYG avec
+    le build réel."""
+    own_pal = list(getattr(sprite, "own_palette", []) or [])
+    if not own_pal:
+        return img
+    p_img = render_indexed(img, own_pal)
+    if bank and bank.colors:
+        return recolor_indexed(p_img, bank.colors)
+    return p_img.convert("RGBA")

@@ -12,7 +12,16 @@ gba-editor/
 │   ├── main.py                      ← point d'entrée
 │   ├── window.py                    ← MainWindow + onglets
 │   ├── core/
-│   │   ├── project.py               ← modèle de données (project.json + project/**)
+│   │   ├── project.py               ← classe Project : chemins canoniques, CRUD, orchestration save/load
+│   │   ├── models/                  ← modèle de domaine (dataclasses + sérialisation), un fichier par sous-domaine
+│   │   │   ├── resource.py, settings.py, palette.py, sub_palette.py
+│   │   │   ├── components.py            ← Components ECS (CollisionBox/Sprite/SoundFx/Script) + registre
+│   │   │   ├── sprite.py, background.py, audio.py
+│   │   │   └── scene.py                 ← Actor, Prefab, Scene, collision map
+│   │   ├── resource_manager.py      ← ResourceManager générique (I/O JSON par collection)
+│   │   ├── project_migrations.py    ← migrations/réconciliations de formats JSON legacy (appelées par Project.load)
+│   │   ├── asset_sync.py            ← orchestration d'encodage déclenchée par l'apparition d'un PNG/audio sur disque
+│   │   ├── collision_slopes.py      ← génération des tiles de pente (Bresenham) pour CollisionTool
 │   │   ├── project_watcher.py       ← détection live des assets
 │   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions, peindre des tuiles.
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
@@ -163,7 +172,7 @@ de palettes nommées** activées par scène. — les PNG sources ne sont jamais 
 ### Catalogue et sélection par scène
 
 
-- **`PaletteBank`** (`core/project.py`) — une palette nommée de 16 couleurs BGR555,
+- **`PaletteBank`** (`core/models/palette.py`) — une palette nommée de 16 couleurs BGR555,
   catalogue illimité et **unifié** (`project/palettes/*.json`, un fichier par palette),
   partagé entre les pools OBJ et BG. L'index 0 est toujours forcé transparent.
 - **Sélection active par scène** — `Scene.active_obj_palettes` / `active_bg_palettes` :

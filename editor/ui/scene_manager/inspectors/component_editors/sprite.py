@@ -43,62 +43,44 @@ class SpriteEditor(BaseComponentEditor):
         W.row("Sprite", slot, layout)
 
         # ── Palette OBJ (pal_bank est un champ Actor/Prefab) ─────────────
-        #    Deux cas distincts :
-        #    · MODÈLE de prefab (pas de scène) → picker de SLOT numéroté 0-15
-        #      (+ « Sans palette ») : l'utilisateur choisit le slot hardware
-        #      que toute instance utilisera, prévisible quelle que soit la scène.
-        #    · Acteur / instance de prefab (dans une scène) → picker de palette
-        #      ACTIVE nommée (+ « Sans palette »), comme un acteur normal.
+        # Un Prefab n'est qu'un modèle : à l'instanciation, il arrive dans une
+        # scène et se comporte comme un actor normal — même picker de palette
+        # ACTIVE nommée (+ « Sans palette ») aux deux niveaux. Si le slot
+        # assigné n'a pas de palette active dans la scène où il finit instancié,
+        # il retombe sur le slot 0, comme n'importe quel actor (pas un cas
+        # spécial des prefabs).
         from core.project import OWN_PAL_BANK
         from ui.common.pickers import PALETTE_NONE
         actor = self.insp._actor
         scene = self.insp._scene
 
-        if getattr(self.insp, "_is_prefab_template", False):
-            from ui.common.pickers import bank_slot_picker_slot
-            cur = getattr(actor, "pal_bank", OWN_PAL_BANK)
-            cur_slot = None if cur == OWN_PAL_BANK else cur
+        active_names = scene.active_obj_palettes if scene else []
+        active_banks = [b for n in active_names if (b := proj.get_palette(n))]
+        current_pal_name = (
+            active_names[actor.pal_bank]
+            if actor and 0 <= actor.pal_bank < len(active_names) else None
+        )
 
-            def _on_slot_picked(val: str):
-                self.insp._set("pal_bank",
-                               OWN_PAL_BANK if val == PALETTE_NONE else int(val))
+        def _on_pal_picked(name: str):
+            if name == PALETTE_NONE:
+                self.insp._set("pal_bank", OWN_PAL_BANK)
+                return
+            try:
+                idx = active_names.index(name)
+            except ValueError:
+                return
+            self.insp._set("pal_bank", idx)
 
-            pal_slot = bank_slot_picker_slot(
-                cur_slot, COLOR_SPRITE, on_picked=_on_slot_picked, parent=self.insp,
-            )
-            pal_slot.setToolTip(
-                "Modèle de prefab : choisis le SLOT de banque (0-15) que toute "
-                "instance utilisera, ou « Sans palette » (couleurs du PNG, slot "
-                "auto-alloué). Le slot est le même dans toutes les scènes."
-            )
-        else:
-            active_names = scene.active_obj_palettes if scene else []
-            active_banks = [b for n in active_names if (b := proj.get_palette(n))]
-            current_pal_name = (
-                active_names[actor.pal_bank]
-                if actor and 0 <= actor.pal_bank < len(active_names) else None
-            )
-
-            def _on_pal_picked(name: str):
-                if name == PALETTE_NONE:
-                    self.insp._set("pal_bank", OWN_PAL_BANK)
-                    return
-                try:
-                    idx = active_names.index(name)
-                except ValueError:
-                    return
-                self.insp._set("pal_bank", idx)
-
-            pal_slot = palette_picker_slot(
-                active_banks, current_pal_name,
-                COLOR_SPRITE, on_picked=_on_pal_picked,
-                add_label="Choisir une palette", parent=self.insp,
-            )
-            pal_slot.setToolTip(
-                "« Sans palette » = couleurs d'origine du PNG (par défaut). "
-                "Sinon, choisir une palette active de la scène (carte "
-                "\"Palettes actives\" de l'inspecteur de scène)."
-            )
+        pal_slot = palette_picker_slot(
+            active_banks, current_pal_name,
+            COLOR_SPRITE, on_picked=_on_pal_picked,
+            add_label="Choisir une palette", parent=self.insp,
+        )
+        pal_slot.setToolTip(
+            "« Sans palette » = couleurs d'origine du PNG (par défaut). "
+            "Sinon, choisir une palette active de la scène (carte "
+            "\"Palettes actives\" de l'inspecteur de scène)."
+        )
         W.row("Palette", pal_slot, layout)
 
         # ── État initial : même bouton+popup filtrable que "Sprite" ──
