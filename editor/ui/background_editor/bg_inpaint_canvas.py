@@ -31,8 +31,8 @@ from core.bg_import import (
 )
 from core.color_utils import bgr555_to_rgb888
 from ui.common.theme import C, T
-from ui.common.paint_palette_strip import PaintPaletteStrip
-from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE, COLOR_BACKGROUND
+from ui.common.palette_bank_strip import PaletteBankStrip
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE
 
 
 def _pil_to_qimage(img) -> QImage:
@@ -593,12 +593,14 @@ class BgInpaintCanvas(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        # Bande de peinture en tête (sélection de la palette active) puis canvas.
-        self._paint_strip = PaintPaletteStrip(COLOR_BACKGROUND, "PEINDRE", self)
+        layout.addWidget(self._view)
+
+        # Bandeau flottant de sélection de la palette de peinture (bas-centre,
+        # même widget que Scene Manager/Sprite Editor — cf. palette_bank_strip).
+        self._paint_strip = PaletteBankStrip("Aucune palette", self)
         self._paint_strip.selected.connect(self.set_active_palette)
         self._paint_strip.setVisible(False)
-        layout.addWidget(self._paint_strip)
-        layout.addWidget(self._view)
+        self._paint_strip.raise_()
 
         self._toolbar = BgInpaintToolbar(self)
         self._toolbar.move(10, 10)
@@ -665,6 +667,17 @@ class BgInpaintCanvas(QWidget):
         self._busy.move((self.width() - self._busy.width()) // 2,
                         (self.height() - self._busy.height()) // 2)
 
+    def _position_paint_strip(self):
+        strip = self._paint_strip
+        strip.adjustSize()
+        x = max(0, (self.width() - strip.width()) // 2)
+        y = max(0, self.height() - strip.height() - 12)
+        strip.move(x, y)
+
+    @staticmethod
+    def _palette_entries(palettes: list) -> list:
+        return [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
+
     def load(self, project, ba):
         self._ba = ba
         self._ctrl.set_context(project, ba)
@@ -675,9 +688,10 @@ class BgInpaintCanvas(QWidget):
         self._ctrl.set_paint_enabled(paintable)
         self._toolbar.setVisible(paintable)
         if paintable:
-            self._paint_strip.load(list(ba.palettes), active=0)
+            self._paint_strip.load(self._palette_entries(ba.palettes), active=0)
             self._paint_strip.setVisible(True)
-            self._ctrl.set_active_palette(0)
+            self._position_paint_strip()
+            self._ctrl.set_active_palette(self._paint_strip.active())
         else:
             self._paint_strip.setVisible(False)
         self._view.load_background()
@@ -691,7 +705,8 @@ class BgInpaintCanvas(QWidget):
         le pixmap via on_rendered, sans réinitialiser le zoom."""
         if self._ba is not None and self._ctrl.paintable:
             cur = self._paint_strip.active()
-            self._paint_strip.load(list(self._ba.palettes), active=cur)
+            self._paint_strip.load(self._palette_entries(self._ba.palettes), active=cur)
+            self._position_paint_strip()
             self._ctrl.set_active_palette(self._paint_strip.active())
         self._ctrl.reload_render()
 
@@ -702,6 +717,9 @@ class BgInpaintCanvas(QWidget):
         y = max(0, min(tb.y(), self.height() - tb.height()))
         tb.move(x, y)
         tb.raise_()
+        if self._paint_strip.isVisible():
+            self._position_paint_strip()
+            self._paint_strip.raise_()
         self._reposition_overlays()
         if self._busy.isVisible():
             self._center_busy()

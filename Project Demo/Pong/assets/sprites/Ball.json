@@ -3,14 +3,53 @@
   "asset": "assets/sprites/Ball.png",
   "frame_w": 8,
   "frame_h": 8,
-  "preview_palette": "pal_Ball",
   "own_palette": [
     7336,
     32364,
     32767,
     32633
   ],
-  "compress_method": "most_frequent",
+  "quantize_method": "most_frequent",
+  "palettes": [
+    [
+      0,
+      7336,
+      32364,
+      32767,
+      32633,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
+  "source_palettes": [
+    [
+      0,
+      7336,
+      32364,
+      32767,
+      32633,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  ],
   "states": [
     {
       "name": "Idle",

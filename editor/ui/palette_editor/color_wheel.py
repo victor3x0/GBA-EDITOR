@@ -45,8 +45,20 @@ class ColorTriangleWheel(QWidget):
         self._drag = None             # "ring" | "tri" | None
         self._ring_img: QImage | None = None
         self._tri_img: QImage | None = None
+        self._built_dpr = 0.0         # DPR pour lequel les images ont été bâties
         self._rebuild_ring()
         self._rebuild_triangle()
+
+    # ── HiDPI ─────────────────────────────────────────────────────
+
+    def _dpr(self) -> float:
+        """Ratio de pixels physiques de l'écran courant (1.0 par défaut). Les
+        images internes sont bâties à cette résolution puis taggées pour que Qt
+        les affiche nettes, sans upscaling, à leur taille logique."""
+        try:
+            return float(self.devicePixelRatioF()) or 1.0
+        except Exception:
+            return 1.0
 
     # ── État / conversions ────────────────────────────────────────
 
@@ -109,12 +121,15 @@ class ColorTriangleWheel(QWidget):
     # ── Rendu (images cachées) ────────────────────────────────────
 
     def _rebuild_ring(self):
-        img = QImage(_SIDE, _SIDE, QImage.Format.Format_ARGB32_Premultiplied)
+        dpr = self._dpr()
+        n = round(_SIDE * dpr)
+        img = QImage(n, n, QImage.Format.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(dpr)      # le painter travaille en coords logiques
         img.fill(Qt.GlobalColor.transparent)
         p = QPainter(img)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         grad = QConicalGradient(self._cx, self._cy, 0.0)
-        for i in range(0, 361, 10):
+        for i in range(0, 361, 3):        # pas fin → anneau parfaitement lisse
             r, g, b = colorsys.hsv_to_rgb((i % 360) / 360, 1, 1)
             grad.setColorAt(i / 360, QColor(round(r * 255), round(g * 255), round(b * 255)))
         path = QPainterPath()
@@ -122,28 +137,37 @@ class ColorTriangleWheel(QWidget):
         inner = QPainterPath()
         inner.addEllipse(QPointF(self._cx, self._cy), self._r_in, self._r_in)
         p.setClipPath(path.subtracted(inner))
-        p.fillRect(img.rect(), QBrush(grad))
+        p.fillRect(0, 0, _SIDE, _SIDE, QBrush(grad))
         p.end()
         self._ring_img = img
+        self._built_dpr = dpr
 
     def _rebuild_triangle(self):
-        A, B, C = self._tri_vertices()
-        ys, xs = np.mgrid[0:_SIDE, 0:_SIDE].astype(np.float64)
+        dpr = self._dpr()
+        n = round(_SIDE * dpr)
+        A, B, C = (v * dpr for v in self._tri_vertices())   # sommets en px physiques
+        ys, xs = np.mgrid[0:n, 0:n].astype(np.float64)
         px, py = xs + 0.5, ys + 0.5
         wa, wb, wc = self._barycentric(px, py, A, B, C)
         mask = (wa >= 0) & (wb >= 0) & (wc >= 0)
         hr, hg, hb = colorsys.hsv_to_rgb(self._hue, 1.0, 1.0)
         hue = np.array([hr, hg, hb]) * 255.0
         col = wa[..., None] * hue[None, None, :] + wb[..., None] * 255.0
-        buf = np.zeros((_SIDE, _SIDE, 4), np.uint8)
+        buf = np.zeros((n, n, 4), np.uint8)
         buf[..., 0:3] = np.clip(col, 0, 255).astype(np.uint8)
         buf[..., 3] = np.where(mask, 255, 0).astype(np.uint8)
-        self._tri_img = QImage(buf.tobytes(), _SIDE, _SIDE,
-                               QImage.Format.Format_RGBA8888).copy()
+        img = QImage(buf.tobytes(), n, n, QImage.Format.Format_RGBA8888).copy()
+        img.setDevicePixelRatio(dpr)
+        self._tri_img = img
 
     # ── Peinture ──────────────────────────────────────────────────
 
     def paintEvent(self, _e):
+        # Fenêtre passée sur un écran de DPR différent → images bâties pour
+        # l'ancien ratio : les reconstruire avant de peindre (net partout).
+        if abs(self._dpr() - self._built_dpr) > 1e-3:
+            self._rebuild_ring()
+            self._rebuild_triangle()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self._ring_img:

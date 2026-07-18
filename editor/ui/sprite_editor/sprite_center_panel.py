@@ -117,15 +117,17 @@ class SpriteCenterPanel(QWidget):
     def _load_paint_strip(self):
         """Peuple la bande depuis `sprite.palettes` (PAL_BANK) ; la bande
         préserve elle-même la sélection précédente si cette palette existe
-        encore (par contenu, cf. PaintPaletteStrip.load) — repli sur l'index 0
+        encore (par contenu, cf. PaletteBankStrip.load) — repli sur l'index 0
         seulement au premier chargement ou si elle a disparu. Teinte le canvas
         avec la palette RÉELLEMENT sélectionnée après coup (pas toujours [0]).
         Masquée si le sprite n'a pas encore de PAL_BANK (pas d'asset)."""
         strip = self._canvas_panel.paint_strip
         palettes = list(getattr(self._sprite, "palettes", []) or []) if self._sprite else []
         if palettes:
-            strip.load(palettes, active=0)
+            entries = [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
+            strip.load(entries, active=0)
             strip.setVisible(True)
+            self._canvas_panel._position_paint_strip()
             self._canvas.set_tint(palettes[strip.active()])
         else:
             strip.setVisible(False)

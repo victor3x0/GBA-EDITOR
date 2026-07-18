@@ -103,6 +103,8 @@ class BuildWorker(EventEmitter, threading.Thread):
                 self._emit("finished", False)
                 return
 
+            self._emit("progress", 0.03)
+
             all_scenes = p.scenes
             scene_names = [s.name for s in all_scenes]
             self._emit("log_line", f"[build] {p.settings.name}")
@@ -214,6 +216,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 ok = ok and self._step_grit_bg(p, unique_bg_layers)
             if ok and unique_bg_layers:
                 ok = ok and self._check_bg_tile_budget(p, unique_bg_layers)
+            if ok: self._emit("progress", 0.20)
 
             # grit Sprites : union de toutes scènes + prefabs (dédupliqués par
             # nom — 1er rencontré gagne). Les couleurs effectives sont résolues
@@ -242,9 +245,11 @@ class BuildWorker(EventEmitter, threading.Thread):
                     unique_sprites.append((pf, sprite, colors))
             if ok and unique_sprites:
                 ok = ok and self._step_grit_actors(p, unique_sprites)
+            if ok: self._emit("progress", 0.35)
 
             if ok and sound_assets:
                 ok = ok and self._step_mmutil(p, sound_assets)
+            if ok: self._emit("progress", 0.45)
 
             # Headers : tous les actors de toutes les scènes
             if ok:
@@ -253,17 +258,20 @@ class BuildWorker(EventEmitter, threading.Thread):
                     p, all_sa, sound_assets, all_scenes=all_scenes,
                     total_actors=sum(len(d["scene_actors"]) for d in all_scene_data),
                 )
+            if ok: self._emit("progress", 0.55)
 
             # Collecte des events définis + écriture globals.h/c depuis project.globals
             actor_defined_events: dict[str, set[str]] = {}
             global_names: list[str] = []
             if ok:
                 global_names = self._write_project_globals(p, all_scene_data, actor_defined_events)
+            if ok: self._emit("progress", 0.60)
 
             # Écriture constants.h depuis project.constants
             const_names: list[str] = []
             if ok:
                 const_names = self._write_project_constants(p)
+            if ok: self._emit("progress", 0.65)
 
             # Transpilation Lua → C pour chaque scène (prefabs compilés une seule fois)
             compiled_prefabs: set[str] = set()
@@ -277,6 +285,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                         precomputed_const_names=const_names,
                         compiled_prefabs=compiled_prefabs,
                     )
+            if ok: self._emit("progress", 0.80)
 
             if ok:
                 ok = self._step_gen_main(
@@ -284,10 +293,13 @@ class BuildWorker(EventEmitter, threading.Thread):
                     prefab_actor_sprites=prefab_actor_sprites,
                     actor_defined_events=actor_defined_events,
                 )
+            if ok: self._emit("progress", 0.88)
             if ok:
                 ok = self._step_make(p)
+            if ok: self._emit("progress", 0.97)
             if ok:
                 ok = self._step_launch_mgba(p)
+            if ok: self._emit("progress", 1.0)
 
             self._emit("finished", ok)
 

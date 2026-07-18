@@ -47,6 +47,7 @@ from core.project import (
 )
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T
+from ui.common.palette_bank_strip import PaletteBankStrip
 from core.sprite_compose import compose_frame_image
 from core.color_utils import quantize_preview
 from codegen.asset_pipeline import resolve_palette_bank, resolve_obj_palette_bank
@@ -1769,71 +1770,6 @@ class SceneInpaintingController:
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Bandeau flottant de sélection de la banque de peinture
-# ──────────────────────────────────────────────────────────────────
-class SceneInpaintingBankStrip(QFrame):
-    """Bandeau flottant : pastilles des banques BG actives de la scène. Clic →
-    banque de peinture active du SceneInpaintingController. Visible seulement quand un
-    outil de peinture BG est actif."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._ctrl: Optional[SceneInpaintingController] = None
-        self._btns: dict[int, QToolButton] = {}
-        self.setStyleSheet("""
-            SceneInpaintingBankStrip { background:#1c1c1c; border:1px solid #333;
-                             border-radius:8px; }
-            QToolButton { border:1px solid #2a2a2a; background:transparent;
-                          border-radius:4px; padding:1px; }
-            QToolButton:hover   { border-color:#4a4a4a; }
-            QToolButton:checked { border:2px solid #4caf78; }
-        """)
-        self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(6, 5, 6, 5)
-        self._layout.setSpacing(4)
-        self._hint = QLabel("Aucune banque BG active")
-        self._hint.setFont(QFont(T.MONO, T.SM))
-        self._hint.setStyleSheet("color:#666;background:transparent;")
-        self._layout.addWidget(self._hint)
-        self.setVisible(False)
-
-    def bind(self, ctrl: "SceneInpaintingController"):
-        self._ctrl = ctrl
-
-    def refresh(self):
-        # Vider
-        for b in self._btns.values():
-            b.setParent(None)
-            b.deleteLater()
-        self._btns.clear()
-        banks = self._ctrl.scene_bg_banks() if self._ctrl else []
-        self._hint.setVisible(not banks)
-        from ui.common.palette_swatch import bank_icon
-        active = self._ctrl.inpaint_bank if self._ctrl else None
-        for slot, bank in banks:
-            btn = QToolButton()
-            btn.setCheckable(True)
-            btn.setIcon(bank_icon(bank, 22))
-            btn.setIconSize(QSize(22, 22))
-            btn.setFixedSize(30, 30)
-            btn.setToolTip(f"Banque {slot} — {bank.name}")
-            btn.setChecked(slot == active)
-            btn.clicked.connect(lambda _, s=slot: self._select(s))
-            self._layout.addWidget(btn)
-            self._btns[slot] = btn
-        # Aucune banque active choisie encore → prendre la 1re dispo.
-        if banks and (active is None or active not in self._btns):
-            self._select(banks[0][0])
-        self.adjustSize()
-
-    def _select(self, slot: int):
-        if self._ctrl:
-            self._ctrl.set_inpaint_bank(slot)
-        for s, b in self._btns.items():
-            b.setChecked(s == slot)
-
-
-# ──────────────────────────────────────────────────────────────────
 #  Wrapper canvas + toolbar flottante
 # ──────────────────────────────────────────────────────────────────
 class CanvasContainer(QWidget):
@@ -1852,21 +1788,32 @@ class CanvasContainer(QWidget):
         self._toolbar.tool_changed.connect(self._on_tool_changed)
         self._toolbar.raise_()
 
-        # Bandeau flottant de sélection de la banque de peinture (bas-centre).
-        self._inpaint_bank_strip = SceneInpaintingBankStrip(self)
+        # Bandeau flottant de sélection de la banque de peinture (bas-centre,
+        # même widget que Sprite Editor/Background Editor — cf. palette_bank_strip).
+        self._inpaint_ctrl: Optional[SceneInpaintingController] = None
+        self._inpaint_bank_strip = PaletteBankStrip("Aucune banque BG active", self)
+        self._inpaint_bank_strip.selected.connect(self._on_inpaint_bank_selected)
         self._inpaint_bank_strip.raise_()
 
     def bind_inpainting(self, ctrl: "SceneInpaintingController"):
-        self._inpaint_bank_strip.bind(ctrl)
+        self._inpaint_ctrl = ctrl
+
+    def _on_inpaint_bank_selected(self, slot: int):
+        if self._inpaint_ctrl:
+            self._inpaint_ctrl.set_inpaint_bank(slot)
 
     def refresh_inpaint_banks(self):
-        self._inpaint_bank_strip.refresh()
+        ctrl = self._inpaint_ctrl
+        banks = ctrl.scene_bg_banks() if ctrl else []
+        entries = [(slot, f"Banque {slot} — {bank.name}", bank.colors) for slot, bank in banks]
+        self._inpaint_bank_strip.load(entries, active=ctrl.inpaint_bank if ctrl else None)
+        if ctrl:
+            ctrl.set_inpaint_bank(self._inpaint_bank_strip.active())
         self._position_inpaint_strip()
 
     def set_inpaint_strip_visible(self, visible: bool):
         if visible:
-            self._inpaint_bank_strip.refresh()
-            self._position_inpaint_strip()
+            self.refresh_inpaint_banks()
         self._inpaint_bank_strip.setVisible(visible)
         self._inpaint_bank_strip.raise_()
 

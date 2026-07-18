@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 
 from ui.common.theme import C, T
 from ui.common.icons import get as _ico
-from ui.common.paint_palette_strip import PaintPaletteStrip
+from ui.common.palette_bank_strip import PaletteBankStrip
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
@@ -1084,16 +1084,17 @@ class _FrameCanvasPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Bande de peinture/preview en TÊTE (modèle Background Editor) : les
-        # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
-        # clic = palette active pour le mode « Indexé ». Masquée si aucune palette.
-        self.paint_strip = PaintPaletteStrip(C.ACCENT_ORG, "PALETTE")
-        self.paint_strip.setVisible(False)
-        root.addWidget(self.paint_strip)
-
         self.canvas = _FrameCanvas()
         self.canvas.hover_changed.connect(self._on_hover_changed)
         root.addWidget(self.canvas, 1)
+
+        # Bandeau flottant de sélection de palette (bas-centre, même widget que
+        # Scene Manager/Background Editor — cf. palette_bank_strip) : les
+        # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
+        # clic = palette active pour le mode « Indexé ». Masqué si aucune palette.
+        self.paint_strip = PaletteBankStrip("Aucune palette", self)
+        self.paint_strip.setVisible(False)
+        self.paint_strip.raise_()
 
         self.toolbar = _CanvasFloatingToolbar(self.canvas, self)
         self.toolbar.move(10, 10)
@@ -1155,6 +1156,14 @@ class _FrameCanvasPanel(QWidget):
                              self.height() - self._coord_lbl.height() - 8)
         self._info_lbl.move(self.width() - self._info_lbl.width() - 10, 8)
         self._ro_lbl.move((self.width() - self._ro_lbl.width()) // 2, 8)
+        self._position_paint_strip()
+
+    def _position_paint_strip(self):
+        strip = self.paint_strip
+        strip.adjustSize()
+        x = max(0, (self.width() - strip.width()) // 2)
+        y = max(0, self.height() - strip.height() - 12)
+        strip.move(x, y)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1164,4 +1173,6 @@ class _FrameCanvasPanel(QWidget):
         tb.move(x, y)
         tb.raise_()
         self._reposition_overlays()
+        if self.paint_strip.isVisible():
+            self.paint_strip.raise_()
 

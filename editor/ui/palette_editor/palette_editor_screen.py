@@ -15,12 +15,17 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QFrame,
     QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QSlider, QSpinBox,
     QInputDialog, QMessageBox, QMenu, QLineEdit, QStyledItemDelegate,
-    QFileDialog, QDialog, QComboBox, QDialogButtonBox, QToolButton,
+    QFileDialog, QDialog, QComboBox, QDialogButtonBox, QToolButton, QScrollArea,
+    QAbstractSpinBox,
 )
-from PyQt6.QtGui import QFont, QPixmap, QPainter, QColor, QIcon, QGuiApplication
-from PyQt6.QtCore import Qt, QSize, QEvent, pyqtSignal
+from PyQt6.QtGui import (
+    QFont, QPainter, QColor, QGuiApplication, QPen, QBrush, QPainterPath,
+)
+from PyQt6.QtCore import (
+    Qt, QSize, QEvent, QRectF, QVariantAnimation, QEasingCurve, pyqtSignal,
+)
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 
 from core.project import Project, PaletteBank
@@ -28,7 +33,9 @@ from core.color_utils import (
     bgr555_to_rgb888, bgr555_components, components_to_bgr555, rgb888_to_bgr555,
 )
 from core.palette_presets import hsb_ramp_bgr555
-from core.history import get_history, DeleteResourceCmd
+from core.history import (
+    get_history, DeleteResourceCmd, SetPaletteColorCmd, SetPaletteColorsCmd,
+)
 from ui.common.palette_swatch import bank_icon as _bank_icon
 from ui.palette_editor.color_wheel import ColorTriangleWheel
 
@@ -45,21 +52,117 @@ SWATCH_CELL_256 = 32
 SWATCH_GAP = 3
 
 
-def _checker_icon(size: int, a: str = "#3a3a3a", b: str = "#262626", cells: int = 4) -> QIcon:
-    """Icône damier (transparence) — même pixmap en mode Normal et Disabled pour
-    que le slot index 0 (désactivé) ne soit pas grisé par Qt."""
-    pm = QPixmap(size, size)
-    p = QPainter(pm)
-    step = max(2, size // cells)
-    for yy in range(0, size, step):
-        for xx in range(0, size, step):
-            on = ((xx // step) + (yy // step)) % 2 == 0
-            p.fillRect(xx, yy, step, step, QColor(a if on else b))
-    p.end()
-    ic = QIcon()
-    ic.addPixmap(pm, QIcon.Mode.Normal)
-    ic.addPixmap(pm, QIcon.Mode.Disabled)
-    return ic
+class SwatchButton(QPushButton):
+    """Case de palette peinte sur mesure : coins arrondis + contour de sélection
+    — blanc (case active/curseur) ou vert (membre d'une sélection) — ANIMÉ. Une
+    valeur `_lift` (0→1) pilote l'apparition du contour : survol = fondu discret,
+    sélection = « pop » (l'easing OutBack dépasse légèrement 1 puis revient) qui
+    attire l'œil → meilleure lisibilité de l'état sans ombre interne. Taille fixe,
+    tout est peint EN DEDANS → la géométrie ne bouge jamais."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rgb = (0, 0, 0)
+        self._selected = False
+        self._active = False
+        self._checker = False        # slot index 0 (transparent GBA)
+        self._hover = False
+        self._lift = 0.0             # proéminence animée du contour (0..~1.1)
+        self._anim: Optional[QVariantAnimation] = None
+        self._ready = False          # 1er set = snap (pas d'anim au 1er rendu)
+
+    # ── État + animation ──────────────────────────────────────────
+    def set_swatch(self, rgb, selected: bool, active: bool, animate: bool = True):
+        self._rgb, self._selected, self._active, self._checker = rgb, selected, active, False
+        self._retarget(animate)
+        self._ready = True
+        self.update()
+
+    def set_checker(self):
+        self._checker = True
+        self._ready = True
+        self.update()
+
+    def enterEvent(self, e):
+        self._hover = True; self._retarget(True); super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._hover = False; self._retarget(True); super().leaveEvent(e)
+
+    def _target(self) -> float:
+        if self._active or self._selected:
+            return 1.0
+        if self._hover and self.isEnabled():
+            return 0.4                # liseré de survol, discret
+        return 0.0
+
+    def _retarget(self, animate: bool):
+        t = self._target()
+        if not (animate and self._ready) or abs(self._lift - t) < 0.005:
+            if self._anim:
+                self._anim.stop()
+            self._lift = t
+            return
+        if self._anim is None:
+            self._anim = QVariantAnimation(self)
+            self._anim.setDuration(150)
+            self._anim.setEasingCurve(QEasingCurve.Type.OutBack)   # léger dépassement = pop
+            self._anim.valueChanged.connect(self._on_anim)
+        self._anim.stop()
+        self._anim.setStartValue(float(self._lift))
+        self._anim.setEndValue(float(t))
+        self._anim.start()
+
+    def _on_anim(self, v):
+        self._lift = float(v)
+        self.update()
+
+    def _radius(self) -> float:
+        return max(4.0, round(self.height() * 0.16))     # coins nettement arrondis
+
+    # ── Peinture ──────────────────────────────────────────────────
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rad = self._radius()
+        rect = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
+        path = QPainterPath(); path.addRoundedRect(rect, rad, rad)
+
+        if self._checker:                      # damier transparence, non sélectionnable
+            p.setClipPath(path)
+            step = max(3, self.height() // 5)
+            for yy in range(0, self.height(), step):
+                for xx in range(0, self.width(), step):
+                    on = ((xx // step) + (yy // step)) % 2 == 0
+                    p.fillRect(xx, yy, step, step, QColor("#3a3a3a" if on else "#262626"))
+            return
+
+        r, g, b = self._rgb
+        p.fillPath(path, QColor(r, g, b))
+
+        # Contour animé : la couleur dépend de l'état, l'épaisseur suit `_lift`
+        # (croît en s'installant, avec un léger dépassement → pop). Dessiné EN
+        # DEDANS pour ne pas rogner la géométrie.
+        lift = max(0.0, self._lift)
+        if lift > 0.02:
+            if self._active:
+                ring = QColor(C.TEXT_HI)      # blanc — curseur / case active
+            elif self._selected:
+                ring = QColor(C.ACCENT_GRN)   # vert — membre d'une multi-sélection
+            elif self._hover and self.isEnabled():
+                ring = QColor(C.TEXT_DIM)
+            else:
+                ring = None
+            if ring is not None:
+                w = 2.0 * min(1.15, lift)
+                pen = QPen(ring); pen.setWidthF(w)
+                pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+                p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+                off = w / 2.0
+                rp = QPainterPath()
+                rp.addRoundedRect(rect.adjusted(off, off, -off, -off),
+                                  max(1.0, rad - off), max(1.0, rad - off))
+                p.drawPath(rp)
 
 
 _HEX6 = re.compile(r"#?([0-9a-fA-F]{6})")
@@ -400,11 +503,12 @@ class PaletteEditorScreen(QWidget):
         self._project: Optional[Project] = None
         self._bank_name: Optional[str] = None
         self._active_index: Optional[int] = None    # slot édité (curseur)
-        self._anchor_index: Optional[int] = None     # ancre pour la plage shift+clic
-        self._sel_range: Optional[tuple[int, int]] = None   # (lo, hi) inclus, ou None
+        self._anchor_index: Optional[int] = None     # ancre de la sélection au drag
+        self._sel_range: Optional[tuple[int, int]] = None   # (lo, hi) contigu, ou None (mode rect)
         self._selected_set: set[int] = set()         # indices actuellement surlignés
-        self._active_drawn: Optional[int] = None      # case au marqueur blanc actuel
+        self._active_drawn: Optional[int] = None      # case au liseré meneur actuel
         self._dragging = False                       # sélection au cliqué-glissé en cours
+        self._drag_mode = "rect"                     # "rect" (défaut) | "range" (Shift+drag)
         self._drag_grab: Optional[QPushButton] = None
         self._blocking = False
         self.setStyleSheet("background:#181818;")
@@ -442,6 +546,12 @@ class PaletteEditorScreen(QWidget):
         cl = QHBoxLayout(self._center)
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(0)
+        # Splitter interne : grille de swatches | inspecteur → poignée draggable
+        # entre les deux, comme le pane finder de gauche.
+        center_split = QSplitter(Qt.Orientation.Horizontal)
+        center_split.setStyleSheet(SPLITTER_STYLE)
+        center_split.setChildrenCollapsible(False)
+        cl.addWidget(center_split)
 
         _CENTER = Qt.AlignmentFlag.AlignHCenter
 
@@ -506,11 +616,15 @@ class PaletteEditorScreen(QWidget):
         il.addStretch(1)
 
         scl.addWidget(inner, 1)
-        cl.addWidget(swatch_col, 1)
+        center_split.addWidget(swatch_col)
 
-        # ── Colonne droite : carte « inspecteur de couleur » ancrée ──
+        # ── Colonne droite : carte « inspecteur de couleur » redimensionnable ──
+        # Header fixe (COULEUR · index) + corps défilant (QScrollArea) : plus
+        # aucun débordement quelle que soit la hauteur/l'échelle HiDPI. Largeur
+        # ajustable via la poignée du splitter (bornée pour rester lisible).
         self._editor_card = QWidget()
-        self._editor_card.setFixedWidth(300)
+        self._editor_card.setMinimumWidth(300)
+        self._editor_card.setMaximumWidth(480)
         self._editor_card.setStyleSheet(f"background:{C.BG_RAISED}; border-left:1px solid {C.BORDER};")
         ecl = QVBoxLayout(self._editor_card)
         ecl.setContentsMargins(0, 0, 0, 0)
@@ -527,89 +641,108 @@ class PaletteEditorScreen(QWidget):
         chl2.addWidget(self._color_hdr)
         ecl.addWidget(card_hdr)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}" + QSS.scrollbar)
+        ecl.addWidget(scroll, 1)
+
         self._editor = QWidget()
+        self._editor.setStyleSheet("background:transparent;")
         el = QVBoxLayout(self._editor)
         el.setContentsMargins(12, 12, 12, 12)
-        el.setSpacing(10)
+        el.setSpacing(14)
 
-        self._preview = QLabel()
-        self._preview.setFixedSize(96, 96)
-        self._preview.setStyleSheet(f"border:1px solid {C.BORDER_MID}; border-radius:6px;")
-        el.addWidget(self._preview, alignment=_CENTER)
-
-        # Formulaire HEX (#RRGGBB, quantifié 5 bits/canal) + valeur BGR555 native
-        # GBA (ce qui finit réellement en ROM). Le point « snap » signale qu'un
-        # hex saisi a dû être ajusté à la grille 15 bits.
-        info = QGridLayout()
-        info.setHorizontalSpacing(8)
-        info.setVerticalSpacing(6)
-        info.setContentsMargins(0, 0, 0, 0)
-
-        hex_lab = QLabel("HEX")
-        hex_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        hex_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
-        info.addWidget(hex_lab, 0, 0)
-        self._hex = QLineEdit()
-        self._hex.setFixedWidth(100)
-        self._hex.setMaxLength(7)
-        self._hex.setFont(QFont(T.MONO, T.MD))
-        self._hex.setStyleSheet(
-            f"QLineEdit{{background:{C.BG_INPUT};color:{C.TEXT_HI};"
-            f"border:1px solid {C.BORDER_MID};border-radius:3px;padding:3px 6px;}}"
-            f"QLineEdit:focus{{border-color:{C.ACCENT_GRN};}}"
-        )
-        self._hex.editingFinished.connect(self._on_hex_changed)
-        info.addWidget(self._hex, 0, 1)
-
-        btn_copy = QToolButton()
-        btn_copy.setText("⧉")
-        btn_copy.setFixedSize(24, 24)
-        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_copy.setToolTip("Copier le HEX (Ctrl+C)")
-        btn_copy.setStyleSheet(
-            f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;}}"
-            f"QToolButton:hover{{color:{C.ACCENT_GRN};}}"
-        )
-        btn_copy.clicked.connect(self._copy_color)
-        info.addWidget(btn_copy, 0, 2)
-
-        bgr_lab = QLabel("BGR555")
-        bgr_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        bgr_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
-        info.addWidget(bgr_lab, 1, 0)
-        self._bgr = QLabel("—")
-        self._bgr.setFont(QFont(T.MONO, T.MD))
-        self._bgr.setStyleSheet(f"color:{C.TEXT_NORM};")
-        info.addWidget(self._bgr, 1, 1)
-        self._snap = QLabel("")
-        self._snap.setFont(QFont(T.MONO, T.SM))
-        self._snap.setStyleSheet(f"color:{C.AXIS_X};")
-        self._snap.setToolTip("Couleur ajustée à la grille 15 bits du GBA (5 bits/canal)")
-        info.addWidget(self._snap, 1, 2)
-        info.setColumnStretch(2, 1)
-        el.addLayout(info)
-
-        # Roue chromatique (anneau teinte + triangle S/L) — dans la carte, sous
-        # le preview/hex. Synchronisée avec sliders/hex via _load_channels.
+        # ── 1. Roue chromatique (élément de sélection principal) ──────
         self._wheel = ColorTriangleWheel()
         self._wheel.color_changed.connect(self._on_wheel_changed)
         el.addWidget(self._wheel, alignment=_CENTER)
 
-        # Sliders RGB (0-31, natif GBA) + HSB (dérivé), rainure colorée
+        # ── 2. Ligne d'identité : chip aperçu + HEX éditable + copie ;
+        # BGR555 natif GBA (ce qui finit en ROM) + badge « snap » (hex ajusté
+        # à la grille 15 bits) dessous. ──────────────────────────────
+        ident = QHBoxLayout()
+        ident.setContentsMargins(0, 0, 0, 0)
+        ident.setSpacing(10)
+
+        self._preview = QLabel()
+        self._preview.setFixedSize(44, 44)
+        self._preview.setStyleSheet(f"border:1px solid {C.BORDER_MID}; border-radius:4px;")
+        ident.addWidget(self._preview, 0, Qt.AlignmentFlag.AlignTop)
+
+        ident_col = QVBoxLayout()
+        ident_col.setContentsMargins(0, 0, 0, 0)
+        ident_col.setSpacing(6)
+
+        hex_row = QHBoxLayout()
+        hex_row.setContentsMargins(0, 0, 0, 0)
+        hex_row.setSpacing(6)
+        _LBL_W = 64                       # large assez pour « BGR555 » non tronqué
+        hex_lab = QLabel("HEX")
+        hex_lab.setFixedWidth(_LBL_W)
+        hex_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        hex_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
+        hex_row.addWidget(hex_lab)
+        self._hex = QLineEdit()
+        self._hex.setMaxLength(7)
+        self._hex.setFont(QFont(T.MONO, T.MD))
+        self._hex.setStyleSheet(QSS.lineedit)
+        self._hex.editingFinished.connect(self._on_hex_changed)
+        # Entrée valide ET rend le focus à la grille → les flèches reprennent.
+        self._hex.returnPressed.connect(
+            lambda: self._swatch_container.setFocus(Qt.FocusReason.OtherFocusReason))
+        hex_row.addWidget(self._hex, 1)
+        btn_copy = W.btn_ghost("Copier")   # libellé explicite (⧉ était incompris)
+        btn_copy.setToolTip("Copier le HEX dans le presse-papier (Ctrl+C)")
+        btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_copy.clicked.connect(self._copy_color)
+        hex_row.addWidget(btn_copy)
+        ident_col.addLayout(hex_row)
+
+        bgr_row = QHBoxLayout()
+        bgr_row.setContentsMargins(0, 0, 0, 0)
+        bgr_row.setSpacing(6)
+        bgr_lab = QLabel("BGR555")
+        bgr_lab.setFixedWidth(_LBL_W)
+        bgr_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        bgr_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
+        bgr_row.addWidget(bgr_lab)
+        self._bgr = QLabel("—")
+        self._bgr.setFont(QFont(T.MONO, T.MD))
+        self._bgr.setStyleSheet(f"color:{C.TEXT_NORM};")
+        bgr_row.addWidget(self._bgr)
+        self._snap = QLabel("")
+        self._snap.setFont(QFont(T.MONO, T.SM))
+        self._snap.setStyleSheet(f"color:{C.AXIS_X};")
+        self._snap.setToolTip("Couleur ajustée à la grille 15 bits du GBA (5 bits/canal)")
+        self._snap.setVisible(False)
+        bgr_row.addWidget(self._snap)
+        bgr_row.addStretch(1)
+        ident_col.addLayout(bgr_row)
+
+        ident.addLayout(ident_col, 1)
+        el.addLayout(ident)
+
+        # ── 3. Sliders RGB (0-31, natif GBA), rainure dégradée ────────
         self._sliders: dict[str, QSlider] = {}
         self._spins: dict[str, QSpinBox] = {}
         self._hsb_sliders: dict[str, QSlider] = {}
         self._hsb_spins: dict[str, QSpinBox] = {}
 
+        rgb_box = QVBoxLayout()
+        rgb_box.setContentsMargins(0, 0, 0, 0)
+        rgb_box.setSpacing(10)
         for ch, chan_color in (("r", C.AXIS_X), ("g", C.ACCENT_GRN), ("b", C.AXIS_Y)):
             sl, sp = self._make_channel_row(
-                el, ch.upper(), chan_color, 0, 31,
+                rgb_box, ch.upper(), chan_color, 0, 31,
                 lambda v, ch=ch: self._on_rgb_changed(ch, v),
             )
             self._sliders[ch] = sl
             self._spins[ch] = sp
+        el.addLayout(rgb_box)
 
-        # ── TSL (dérivé) — repliable : HEX + RGB suffisent le plus souvent ──
+        # ── 4. TSL (dérivé) — repliable : HEX + RGB suffisent le plus souvent ──
         self._hsb_toggle = QPushButton("▸  TSL")
         self._hsb_toggle.setCheckable(True)
         self._hsb_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -623,6 +756,7 @@ class PaletteEditorScreen(QWidget):
         el.addWidget(self._hsb_toggle)
 
         self._hsb_box = QWidget()
+        self._hsb_box.setStyleSheet("background:transparent;")
         hb = QVBoxLayout(self._hsb_box)
         hb.setContentsMargins(0, 4, 0, 0)
         hb.setSpacing(10)
@@ -637,10 +771,13 @@ class PaletteEditorScreen(QWidget):
             self._hsb_spins[ch] = sp
         self._hsb_box.setVisible(False)
         el.addWidget(self._hsb_box)
+        el.addStretch(1)
 
-        ecl.addWidget(self._editor)
-        ecl.addStretch(1)
-        cl.addWidget(self._editor_card)
+        scroll.setWidget(self._editor)
+        center_split.addWidget(self._editor_card)
+        center_split.setStretchFactor(0, 1)   # la grille absorbe le redimensionnement
+        center_split.setStretchFactor(1, 0)
+        center_split.setSizes([620, 320])
         self._editor_card.setVisible(False)
 
         split.addWidget(self._center)
@@ -652,19 +789,27 @@ class PaletteEditorScreen(QWidget):
 
     def _make_channel_row(self, parent_layout, label, color, min_v, max_v, on_change):
         row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
         lab = QLabel(label)
-        lab.setFixedWidth(20)
+        lab.setFixedWidth(18)
         lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
         lab.setStyleSheet(f"color:{color};")
         row.addWidget(lab)
         sl = QSlider(Qt.Orientation.Horizontal)
         sl.setRange(min_v, max_v)
-        sl.setMinimumWidth(170)
+        sl.setMinimumWidth(140)
         sl.valueChanged.connect(on_change)
         row.addWidget(sl, 1)
         sp = QSpinBox()
         sp.setRange(min_v, max_v)
-        sp.setFixedWidth(56)
+        sp.setFixedWidth(44)
+        sp.setFont(QFont(T.MONO, T.MD))
+        sp.setStyleSheet(QSS.spinbox)
+        # Pas de boutons ▲▼ : leur colonne dessine un trait vertical collé au
+        # nombre (« petite barre »). Valeur éditable au clavier / molette / slider.
+        sp.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sp.valueChanged.connect(on_change)
         row.addWidget(sp)
         parent_layout.addLayout(row)
@@ -744,7 +889,7 @@ class PaletteEditorScreen(QWidget):
         le surlignage de sélection, recharge le slot actif et l'icône du finder."""
         self._project.palettes.save(bank)
         self._render_swatches(bank, selectable=True)
-        self._refresh_selection_styles(bank)
+        self._restore_selection(bank)
         if self._active_index is not None and self._active_index < len(bank.colors):
             self._load_channels(bank.colors[self._active_index])
         self._finder.refresh()
@@ -834,24 +979,13 @@ class PaletteEditorScreen(QWidget):
         self._swatch_btns.clear()
         self._selected_set = set()
 
-    def _style_swatch(self, btn: QPushButton, index: int, color: int,
-                      selected: bool, active: bool = False):
-        r, g, b = bgr555_to_rgb888(color)
-        # Sans bordure au repos (débruitage de la carte 256) : la géométrie ne
-        # bouge pas car les boutons ont une taille fixe — la bordure se dessine EN
-        # DEDANS. `active` = liseré blanc (curseur / bord meneur d'une plage),
-        # `selected` = liseré accent, sinon rien + liseré discret au survol.
-        if active:
-            style = (f"QPushButton{{background:rgb({r},{g},{b});"
-                     f"border:2px solid {C.TEXT_HI};border-radius:2px;}}")
-        elif selected:
-            style = (f"QPushButton{{background:rgb({r},{g},{b});"
-                     f"border:2px solid {C.ACCENT_GRN};border-radius:2px;}}")
-        else:
-            style = (f"QPushButton{{background:rgb({r},{g},{b});"
-                     f"border:none;border-radius:2px;}}"
-                     f"QPushButton:hover{{border:2px solid {C.TEXT_DIM};}}")
-        btn.setStyleSheet(style)
+    def _style_swatch(self, btn: "SwatchButton", index: int, color: int,
+                      selected: bool, active: bool = False, animate: bool = True):
+        # Délègue au SwatchButton (peinture custom) : remplissage + contour animé
+        # blanc (actif) / vert (sélection). `active` = curseur / meneur d'une plage,
+        # `selected` = membre d'une multi-sélection.
+        btn.set_swatch(bgr555_to_rgb888(color), selected=selected, active=active,
+                       animate=animate)
 
     def _coord_label(self, text: str, width: int) -> QLabel:
         lab = QLabel(text)
@@ -878,18 +1012,16 @@ class PaletteEditorScreen(QWidget):
             for r in range(16):
                 self._swatch_grid.addWidget(self._coord_label(f"{r * 16:02X}", 22), r + 1, 0)
         for i, c in enumerate(bank.colors):
-            btn = QPushButton()
+            btn = SwatchButton()
             btn.setFixedSize(cw, ch)
             if i == 0:
-                btn.setIcon(_checker_icon(min(cw, ch) - 6))
-                btn.setIconSize(QSize(cw - 6, ch - 6))
-                btn.setStyleSheet(
-                    f"QPushButton{{background:{C.BG_INPUT};border:none;border-radius:2px;}}"
-                )
+                btn.set_checker()              # damier transparence (hardware GBA)
                 btn.setEnabled(False)
                 btn.setToolTip("Réservé — toujours transparent (hardware GBA)")
             else:
-                self._style_swatch(btn, i, c, selected=selectable and i == self._active_index)
+                # La case active (couleur éditée) porte le contour blanc.
+                is_active = bool(selectable and i == self._active_index)
+                self._style_swatch(btn, i, c, selected=is_active, active=is_active)
                 if selectable:
                     btn.installEventFilter(self)   # sélection au cliqué-glissé
                 else:
@@ -898,14 +1030,15 @@ class PaletteEditorScreen(QWidget):
             self._swatch_btns.append(btn)
         self._selected_set = ({self._active_index}
                               if selectable and self._active_index else set())
-        self._active_drawn = None
+        self._active_drawn = self._active_index if self._selected_set else None
 
     # ── Sélection au cliqué-glissé (drag) ────────────────────────────
 
     def eventFilter(self, obj, event):
-        """Souris déléguée par les swatches : clic-gauche = début de sélection,
-        glisser = extension de la plage, relâcher = fin, clic-droit = menu.
-        Clavier délégué par le conteneur : flèches (navigation), Ctrl+C/V."""
+        """Souris déléguée par les swatches : clic-gauche = début de sélection
+        (drag = rectangle, Shift+drag = plage contiguë par index), relâcher =
+        fin, clic-droit = menu. Clavier délégué par le conteneur : flèches
+        (navigation, + Shift pour étendre la plage), Ctrl+C/V, Suppr, Entrée."""
         et = event.type()
         if et == QEvent.Type.KeyPress and obj is self._swatch_container:
             if self._handle_grid_key(event):
@@ -918,7 +1051,8 @@ class PaletteEditorScreen(QWidget):
                     return True
                 return False
             if event.button() == Qt.MouseButton.LeftButton and idx >= 1:
-                self._begin_drag(idx)
+                shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                self._begin_drag(idx, shift)
                 return True
         elif et == QEvent.Type.MouseMove and self._dragging:
             self._drag_to(event.globalPosition().toPoint())
@@ -942,6 +1076,12 @@ class PaletteEditorScreen(QWidget):
         bank = self._current_bank()
         if not bank or self._active_index is None:
             return False
+        # Suppr / Backspace : vider le(s) slot(s) sélectionné(s) (0x0000).
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._clear_selected(); return True
+        # Entrée : passer au champ HEX pour une saisie numérique rapide.
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._hex.setFocus(); self._hex.selectAll(); return True
         size = getattr(bank, "size", 16)
         cols = 16 if size == 256 else 4
         delta = {Qt.Key.Key_Left: -1, Qt.Key.Key_Right: 1,
@@ -954,11 +1094,13 @@ class PaletteEditorScreen(QWidget):
         if (mod & Qt.KeyboardModifier.ShiftModifier) and self._anchor_index is not None:
             lo, hi = sorted((self._anchor_index, ni))
             self._sel_range = (lo, hi) if lo != hi else None
+            new = {i for i in range(lo, hi + 1) if 1 <= i < len(bank.colors)}
         else:
             self._anchor_index = ni
             self._sel_range = None
+            new = {ni}
         self._active_index = ni
-        self._refresh_selection_styles(bank)
+        self._apply_selection(bank, new, ni)
         self._load_channels(bank.colors[ni])
         self._set_color_hdr(ni)
         return True
@@ -991,16 +1133,29 @@ class PaletteEditorScreen(QWidget):
                 return i
         return None
 
-    def _begin_drag(self, index: int):
+    def _begin_drag(self, index: int, shift: bool = False):
         bank = self._current_bank()
         if not bank or not (1 <= index < len(bank.colors)):
             return
         self._dragging = True
         self._swatch_container.setFocus()      # active la navigation clavier
-        self._anchor_index = index
-        self._sel_range = None
+        n = len(bank.colors)
+        if shift and self._anchor_index is not None and 1 <= self._anchor_index < n:
+            # Shift+clic (ou shift+drag) : PROLONGE la sélection contiguë depuis
+            # l'ancre (dernier clic simple) jusqu'à `index` → tous les index entre
+            # les deux extrémités. L'ancre est conservée (pas de reset).
+            self._drag_mode = "range"
+            lo, hi = sorted((self._anchor_index, index))
+            self._sel_range = (lo, hi) if lo != hi else None
+            new = {i for i in range(lo, hi + 1) if 1 <= i < n}
+        else:
+            # Clic simple : nouvelle ancre ; le drag simple fera un rectangle 2D.
+            self._drag_mode = "rect"
+            self._anchor_index = index
+            self._sel_range = None
+            new = {index}
         self._active_index = index
-        self._refresh_selection_styles(bank)
+        self._apply_selection(bank, new, index)
         self._load_channels(bank.colors[index])
         self._set_color_hdr(index)
         self._drag_grab = self._swatch_btns[index]
@@ -1008,15 +1163,31 @@ class PaletteEditorScreen(QWidget):
 
     def _drag_to(self, gpos):
         bank = self._current_bank()
-        if not bank:
+        if not bank or self._anchor_index is None:
             return
         idx = self._cell_at_global(gpos)
         if idx is None or not (1 <= idx < len(bank.colors)) or idx == self._active_index:
             return
-        lo, hi = sorted((self._anchor_index, idx))
-        self._sel_range = (lo, hi) if lo != hi else None
+        n = len(bank.colors)
+        cols = 16 if getattr(bank, "size", 16) == 256 else 4
+        if self._drag_mode == "range":
+            # Plage contiguë par index (Shift+drag) — sert aussi de base à la rampe.
+            lo, hi = sorted((self._anchor_index, idx))
+            self._sel_range = (lo, hi) if lo != hi else None
+            new = {i for i in range(lo, hi + 1) if 1 <= i < n}
+        else:
+            # Rectangle 2D (drag simple) — comme les autres canvas. Non contigu
+            # par index → pas de rampe (voir menu contextuel). Ignore l'index 0.
+            self._sel_range = None
+            ar, ac = divmod(self._anchor_index, cols)
+            br, bc = divmod(idx, cols)
+            r0, r1 = sorted((ar, br))
+            c0, c1 = sorted((ac, bc))
+            new = {rr * cols + cc
+                   for rr in range(r0, r1 + 1) for cc in range(c0, c1 + 1)
+                   if 1 <= rr * cols + cc < n}
         self._active_index = idx
-        self._refresh_selection_styles(bank)
+        self._apply_selection(bank, new, idx, animate=False)   # move continu → snap
         self._load_channels(bank.colors[idx])
         self._set_color_hdr(idx)
 
@@ -1031,10 +1202,12 @@ class PaletteEditorScreen(QWidget):
     def _show_swatch_menu(self, gpos):
         if not self._selected_set:
             return
-        lo, hi = min(self._selected_set), max(self._selected_set)
         menu = QMenu(self)
         a_ramp = menu.addAction("Créer une rampe")
-        a_ramp.setEnabled(hi - lo >= 2)
+        # Rampe = interpolation le long d'index CONTIGUS → uniquement en mode
+        # plage (Shift+drag / Shift+flèches), pas sur une sélection rectangle.
+        a_ramp.setEnabled(self._sel_range is not None
+                          and self._sel_range[1] - self._sel_range[0] >= 2)
         menu.addSeparator()
         a_clear = menu.addAction("Vider")
         a_del = menu.addAction("Supprimer (décale les swatchs)")
@@ -1048,14 +1221,16 @@ class PaletteEditorScreen(QWidget):
 
     def _clear_selected(self):
         """Remet les slots sélectionnés à noir (0x0000) — la palette garde sa
-        taille et ses index."""
+        taille et ses index. Undoable en une seule entrée (Ctrl+Z)."""
         bank = self._current_bank()
         if not bank or not self._selected_set:
             return
-        for i in self._selected_set:
-            if 1 <= i < len(bank.colors):
-                bank.colors[i] = 0
-        self._reload_after_bulk(bank)
+        delta = {i: (bank.colors[i], 0) for i in self._selected_set
+                 if 1 <= i < len(bank.colors) and bank.colors[i] != 0}
+        if not delta:
+            return
+        get_history().push(
+            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Vider les couleurs"))
 
     def _delete_selected(self):
         """Supprime les slots sélectionnés et DÉCALE les suivants vers la gauche ;
@@ -1072,42 +1247,50 @@ class PaletteEditorScreen(QWidget):
         self._anchor_index = self._active_index
         self._project.palettes.save(bank)
         self._render_swatches(bank, selectable=True)
-        self._refresh_selection_styles(bank)
+        self._restore_selection(bank)
         if self._active_index is not None and self._active_index < len(bank.colors):
             self._load_channels(bank.colors[self._active_index])
             self._set_color_hdr(self._active_index)
         self._finder.refresh()
 
-    def _refresh_selection_styles(self, bank: PaletteBank):
-        """Re-stylise uniquement les cases dont l'état de sélection change
-        (diff avec la sélection précédente) — crucial en 256 couleurs. Dans une
-        PLAGE, la case active (bord meneur) porte un liseré blanc distinct."""
+    def _apply_selection(self, bank: PaletteBank, new_set: set[int],
+                         leader: Optional[int], animate: bool = True):
+        """Applique une sélection ARBITRAIRE (rectangle ou plage) en ne re-stylant
+        que les cases dont l'état change (diff — crucial en 256 couleurs). La case
+        `leader` (curseur actif) porte le liseré blanc ; les autres membres, le
+        vert. `animate=False` pour les gros changements (rubber-band, bulk) afin
+        d'éviter des dizaines d'animations simultanées."""
+        def _restyle(idx):
+            if 0 < idx < len(self._swatch_btns) and idx < len(bank.colors):
+                self._style_swatch(self._swatch_btns[idx], idx, bank.colors[idx],
+                                   selected=(idx in new_set), active=(idx == leader),
+                                   animate=animate)
+
+        for idx in self._selected_set - new_set:      # sortis de la sélection
+            _restyle(idx)
+        for idx in new_set - self._selected_set:       # entrés
+            _restyle(idx)
+        # Le meneur a bougé à l'intérieur de la sélection : re-styliser l'ancien
+        # (rétrogradé en vert) et le nouveau (promu blanc).
+        if self._active_drawn != leader:
+            for idx in {self._active_drawn, leader}:
+                if idx is not None and idx in new_set:
+                    _restyle(idx)
+        self._selected_set = set(new_set)
+        self._active_drawn = leader
+
+    def _restore_selection(self, bank: PaletteBank):
+        """Ré-applique la sélection après un re-render complet (bulk) : plage
+        contiguë si `_sel_range`, sinon la case active seule. Sans animation
+        (les boutons viennent d'être recréés → état snap)."""
         if self._sel_range:
-            new = set(range(self._sel_range[0], self._sel_range[1] + 1))
+            new = {i for i in range(self._sel_range[0], self._sel_range[1] + 1)
+                   if 1 <= i < len(bank.colors)}
         elif self._active_index is not None:
             new = {self._active_index}
         else:
             new = set()
-        act = self._active_index if self._sel_range else None    # marqueur blanc si plage
-
-        def _style(idx):
-            self._style_swatch(self._swatch_btns[idx], idx, bank.colors[idx],
-                               selected=True, active=(idx == act))
-
-        for idx in self._selected_set - new:
-            if 0 < idx < len(self._swatch_btns):
-                self._style_swatch(self._swatch_btns[idx], idx, bank.colors[idx], selected=False)
-        for idx in new - self._selected_set:
-            if 0 < idx < len(self._swatch_btns):
-                _style(idx)
-        # Le marqueur actif a bougé à l'intérieur de la plage : re-stylise l'ancien
-        # (rétrogradé en vert) et le nouveau (promu blanc).
-        if self._active_drawn != act:
-            for idx in {self._active_drawn, act} & new:
-                if idx is not None and 0 < idx < len(self._swatch_btns):
-                    _style(idx)
-        self._selected_set = new
-        self._active_drawn = act
+        self._apply_selection(bank, new, self._active_index, animate=False)
 
     def _active_value(self) -> Optional[int]:
         bank = self._current_bank()
@@ -1133,6 +1316,7 @@ class PaletteEditorScreen(QWidget):
         self._hex.setText(f"#{R:02X}{G:02X}{B:02X}")
         self._bgr.setText(f"0x{value & 0x7FFF:04X}")
         self._snap.setText("")            # valeur exacte : pas de snap par défaut
+        self._snap.setVisible(False)      # vide → ne réserve aucune fente (barre parasite)
         self._update_preview(value)
         self._update_gradients(value)
         self._wheel.set_value(value)   # no-op pendant un drag de la roue
@@ -1161,23 +1345,60 @@ class PaletteEditorScreen(QWidget):
             [_rgb01(colorsys.hsv_to_rgb(h, s, 0)), _rgb01(colorsys.hsv_to_rgb(h, s, 1))]))
 
     def _apply_color(self, new_value: int):
-        """Écrit `new_value` DANS LE SLOT ÉDITÉ (à son index, sans réordonner),
-        sauvegarde et resynchronise l'UI. Point de passage unique des trois
-        modes d'édition (RGB, HSB, hex). L'ordre des couleurs = l'ordre des
-        index hardware, laissé tel quel : c'est à l'utilisateur d'organiser
-        ses couleurs (l'index est ce qui est réellement visible in-game)."""
+        """Écrit `new_value` DANS LE SLOT ÉDITÉ (à son index, sans réordonner)
+        via l'historique (undo/redo). Point de passage unique des trois modes
+        d'édition (RGB, HSB, hex). L'ordre des couleurs = l'ordre des index
+        hardware, laissé tel quel : c'est à l'utilisateur d'organiser ses
+        couleurs (l'index est ce qui est réellement visible in-game)."""
         if self._active_index is None:
             return
         bank = self._current_bank()
         if not bank or not (1 <= self._active_index < len(bank.colors)):
             return
-        bank.colors[self._active_index] = new_value
-        self._project.palettes.save(bank)
-        self._load_channels(new_value)
-        # Met à jour uniquement le swatch édité (pas de re-render complet).
         idx = self._active_index
-        if 0 <= idx < len(self._swatch_btns):
-            self._style_swatch(self._swatch_btns[idx], idx, new_value, selected=True)
+        old = bank.colors[idx]
+        if old == new_value:
+            return
+        # Passe par l'historique : Ctrl+Z/Y annulent/refont ; les modifs
+        # consécutives sur le même slot (drag) fusionnent en une seule entrée.
+        get_history().push(
+            SetPaletteColorCmd(bank, idx, old, new_value, self._persist_color))
+
+    # ── Callbacks de persistance (execute/undo des commandes couleur) ──
+
+    def _persist_color(self, bank: PaletteBank, index: int):
+        """Rappelée par SetPaletteColorCmd (execute ET undo) : persiste la
+        banque et resynchronise l'UI de façon ciblée (swatch + inspecteur si
+        slot actif + finder). Garantit le rafraîchissement sur Ctrl+Z/Y,
+        indépendamment de window._flush_after_undo_redo()."""
+        self._project.palettes.save(bank)
+        if bank is not self._current_bank():
+            # Undo/redo visant une banque non affichée : la ramener à l'écran
+            # (re-render complet via la sélection du finder).
+            self._bank_name = bank.name
+            self._finder.select_bank(bank.name)
+            return
+        if 0 <= index < len(self._swatch_btns) and index < len(bank.colors):
+            is_leader = index == self._active_index
+            self._style_swatch(self._swatch_btns[index], index, bank.colors[index],
+                               selected=(is_leader or index in self._selected_set),
+                               active=is_leader)
+        if index == self._active_index and index < len(bank.colors):
+            self._load_channels(bank.colors[index])
+        self._finder.refresh()
+
+    def _persist_bank(self, bank: PaletteBank):
+        """Rappelée par SetPaletteColorsCmd (édition groupée) : persiste et
+        re-render toute la grille de la banque affichée."""
+        self._project.palettes.save(bank)
+        if bank is not self._current_bank():
+            self._bank_name = bank.name
+            self._finder.select_bank(bank.name)
+            return
+        self._render_swatches(bank, selectable=True)
+        self._restore_selection(bank)
+        if self._active_index is not None and self._active_index < len(bank.colors):
+            self._load_channels(bank.colors[self._active_index])
         self._finder.refresh()
 
     def _on_rgb_changed(self, ch: str, v: int):
@@ -1218,3 +1439,4 @@ class PaletteEditorScreen(QWidget):
         # ne retombe pas exactement sur la grille 15 bits, on le signale.
         if bgr555_to_rgb888(new) != (R, G, B):
             self._snap.setText("≈ snap")
+            self._snap.setVisible(True)

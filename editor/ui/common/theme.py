@@ -20,6 +20,8 @@ Stylesheet globale à appliquer une seule fois dans main.py :
     app.setStyleSheet(GLOBAL_QSS)
 """
 
+from pathlib import Path as _Path
+
 # ──────────────────────────────────────────────────────────────────
 #  Typographie — échelle de tailles et familles de polices
 # ──────────────────────────────────────────────────────────────────
@@ -89,6 +91,20 @@ C = _Colors()
 
 
 # ──────────────────────────────────────────────────────────────────
+#  Petites flèches ▲▼ des QSpinBox — assets PNG livrés à côté de ce
+#  module (référencés par CHEMIN, pas data-URI : le loader url() des QSS
+#  ne supporte pas les data-URI, seuls les chemins/ressources marchent).
+#  `.as_posix()` → slashs avant même sur Windows (QSS n'aime pas `\`).
+# ──────────────────────────────────────────────────────────────────
+
+_ICON_DIR = _Path(__file__).resolve().parent
+
+
+def _spin_arrow(name: str) -> str:
+    return _ICON_DIR.joinpath(name).as_posix()
+
+
+# ──────────────────────────────────────────────────────────────────
 #  Fragments QSS réutilisables widget par widget
 # ──────────────────────────────────────────────────────────────────
 
@@ -106,16 +122,31 @@ QSpinBox, QDoubleSpinBox {{
     font-family: monospace;
     font-size: {T.MD2}px;
 }}
-QSpinBox::up-button, QSpinBox::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-    width: 16px;
-    border-left: 1px solid {C.BORDER_MID};
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border; subcontrol-position: top right;
+    width: 15px; border: none; background: transparent;
+    border-top-right-radius: 4px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    width: 15px; border: none; background: transparent;
+    border-bottom-right-radius: 4px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
     background: {C.BG_HOVER};
 }}
-QSpinBox::up-button:hover, QSpinBox::down-button:hover,
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
-    background: {C.BG_HOVER};
-    border-color: {C.BORDER_MID};
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url({_spin_arrow('spinbox_up.png')}); width: 9px; height: 9px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url({_spin_arrow('spinbox_down.png')}); width: 9px; height: 9px;
+}}
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
+    image: url({_spin_arrow('spinbox_up_hi.png')});
+}}
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
+    image: url({_spin_arrow('spinbox_down_hi.png')});
 }}
 QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 1px solid {C.ACCENT_GRN};

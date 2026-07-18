@@ -2,13 +2,13 @@
   "name": "PONG",
   "background_layers": [
     {
-      "image": "",
+      "background_name": "",
       "bg_slot": 0,
-      "scroll_speed": 1.0,
+      "scroll_speed": 1.25,
       "pal_bank": -1
     },
     {
-      "image": "Background",
+      "background_name": "Background",
       "bg_slot": 1,
       "scroll_speed": 1.0,
       "pal_bank": -1
@@ -121,7 +121,7 @@
   "scroll_h": false,
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
-  "text_bg": 0,
+  "text_bg": 2,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -774,8 +774,8 @@
     ""
   ],
   "active_bg_palettes": [
-    "",
-    ""
+    "DMG (GB Default) (BG)",
+    "pal_Ball"
   ],
   "backdrop_color": null
 }
