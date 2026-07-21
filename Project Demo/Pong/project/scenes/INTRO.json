@@ -659,5 +659,6 @@
   "active_bg_palettes": [
     "DMG (GB Default)"
   ],
-  "backdrop_color": null
+  "backdrop_color": null,
+  "notes": ""
 }

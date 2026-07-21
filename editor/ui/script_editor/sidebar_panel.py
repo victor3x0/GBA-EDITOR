@@ -22,8 +22,10 @@ class SidebarPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Bornes larges = colonne « étirable » dans le QSplitter du Script Editor
+        # (même esprit que les finders du Sprite Editor : min/max, pas de fixe).
         self.setMinimumWidth(190)
-        self.setMaximumWidth(260)
+        self.setMaximumWidth(400)
         self.setStyleSheet(f"background:{_BG};")
 
         outer = QVBoxLayout(self)

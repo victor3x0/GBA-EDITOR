@@ -30,7 +30,7 @@ from core.project import (
 # ── Sous-composants UI ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 from ui.scene_manager.assets_finder_panel import AssetsFinderPanel
-from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog
+from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog, AnimatedBuildButton
 from ui.scene_manager.inspectors import DynamicInspector
 from ui.sound_mixer.sound_panel import SoundMixerScreen
 from ui.script_editor.script_editor import ScriptEditorScreen
@@ -50,7 +50,7 @@ class GbaStatusBar(QWidget):
     Barre fixe en bas de la fenêtre affichant les compteurs GBA en temps réel.
     Inspiré de GB Studio : les limites hardware sont visibles, pas cachées.
     """
-    _STYLE_OK   = f"color:{C.ACCENT_GRN};"
+    _STYLE_OK   = f"color:{C.POWER};"
     _STYLE_WARN = f"color:{C.ACCENT_YLW};"
     _STYLE_CRIT = f"color:{C.ACCENT_RED};"
 
@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
             f"QSplitter::handle{{background:{C.BORDER};}}"
             "QSplitter::handle:horizontal{width:3px;}"
             "QSplitter::handle:vertical{height:3px;}"
-            f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
+            f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
         )
 
         screen = QWidget()
@@ -450,15 +450,7 @@ class MainWindow(QMainWindow):
         self._tb_project_lbl.clicked.connect(self._go_home)
         tb.addWidget(self._tb_project_lbl)
         tb.addSeparator()
-        self._tb_build_btn = QToolButton()
-        self._tb_build_btn.setText("  Build & Run")
-        self._tb_build_btn.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        self._tb_build_btn.setStyleSheet(
-            "QToolButton{background:#2a5c34;color:#c8ffc8;border:none;"
-            "border-radius:4px;padding:6px 16px;}"
-            "QToolButton:hover{background:#3a7a44;}"
-            f"QToolButton:disabled{{background:#1a3a24;color:{C.TEXT_DIM};}}"
-        )
+        self._tb_build_btn = AnimatedBuildButton()
         self._tb_build_btn.setEnabled(False)
         self._tb_build_btn.clicked.connect(self._run_build)
         tb.addWidget(self._tb_build_btn)
@@ -624,10 +616,11 @@ class MainWindow(QMainWindow):
 
     def _add_scene(self):
         if not self.project: return
-        name, ok = QInputDialog.getText(self, "Nouvelle scene", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_scene(name.strip())
-            self.assets_finder_panel.refresh()
+        from core.command_dispatcher import unique_name
+        name = unique_name("Scene", {s.name for s in self.project.scenes})
+        get_dispatcher().add_scene(name)
+        self.assets_finder_panel.refresh()
+        self.assets_finder_panel.begin_rename_scene(name)
 
     def _add_actor(self):
         if not self.project or not self.project.active_scene: return
@@ -639,10 +632,11 @@ class MainWindow(QMainWindow):
 
     def _add_prefab(self):
         if not self.project: return
-        name, ok = QInputDialog.getText(self, "Nouveau Prefab", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_prefab(name.strip())
-            self.assets_finder_panel.refresh()
+        from core.command_dispatcher import unique_name
+        name = unique_name("Prefab", {p.name for p in self.project.prefabs})
+        get_dispatcher().add_prefab(name)
+        self.assets_finder_panel.refresh()
+        self.assets_finder_panel.begin_rename_prefab(name)
 
     def _on_scene_changed(self):
         """Fin de drag actor ou déplacement caméra — sauvegarder via le dispatcher."""
@@ -836,6 +830,7 @@ class MainWindow(QMainWindow):
             self._open_toolchain_dialog(); return
 
         self.build_panel.set_building(True)
+        self._tb_build_btn.build_started.emit()
         msg = f"\n[build] {self.project.settings.name} — scene : {self.project.active_scene.name}"
         self.build_panel.log_info(msg)
         self._script_editor.build_panel.log_info(msg)
@@ -852,6 +847,7 @@ class MainWindow(QMainWindow):
         self._worker = BuildWorker(project=self.project, toolchain=self.toolchain)
         self._worker.on("log_line",   lambda m:  self._build_queue.put(("log",      m)))
         self._worker.on("error_line", lambda m:  self._build_queue.put(("error",    m)))
+        self._worker.on("progress",   lambda f:  self._build_queue.put(("progress", f)))
         self._worker.on("finished",   lambda ok: self._build_queue.put(("finished", ok)))
         self._worker.start()
         self._build_drain.start()
@@ -867,6 +863,8 @@ class MainWindow(QMainWindow):
                 elif kind == "error":
                     self.build_panel.log_error(data)
                     self._script_editor.build_panel.log_error(data)
+                elif kind == "progress":
+                    self._tb_build_btn.set_progress(data)
                 elif kind == "finished":
                     self._build_drain.stop()
                     self._on_build_finished(data)
@@ -875,6 +873,7 @@ class MainWindow(QMainWindow):
 
     def _on_build_finished(self, success: bool):
         self.build_panel.set_building(False)
+        self._tb_build_btn.build_finished.emit(success)
         if success:
             self.build_panel.log_info("[build] ROM generee — mgba lance")
             self._script_editor.build_panel.log_info("[build] ROM generee — mgba lance")

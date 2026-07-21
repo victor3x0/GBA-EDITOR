@@ -1,14 +1,14 @@
 {
-  "name": "PONG",
+  "name": "Arène",
   "background_layers": [
     {
-      "image": "",
+      "background_name": "",
       "bg_slot": 0,
       "scroll_speed": 1.0,
       "pal_bank": -1
     },
     {
-      "image": "Background",
+      "background_name": "Background",
       "bg_slot": 1,
       "scroll_speed": 1.0,
       "pal_bank": -1
@@ -54,15 +54,22 @@
           "exports_values": {}
         }
       ],
-      "x": 22,
-      "y": 67,
+      "x": {
+        "unit": "t",
+        "n": 3
+      },
+      "y": {
+        "unit": "t",
+        "n": 8
+      },
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
       "pal_bank": -1,
       "visible": true,
       "dir_x": 0,
-      "dir_y": 0
+      "dir_y": 0,
+      "notes": ""
     },
     {
       "name": "PADDLE_AUTO",
@@ -111,7 +118,8 @@
       "pal_bank": -1,
       "visible": true,
       "dir_x": 0,
-      "dir_y": 0
+      "dir_y": 0,
+      "notes": ""
     }
   ],
   "cam_x": 0,
@@ -774,8 +782,9 @@
     ""
   ],
   "active_bg_palettes": [
-    "",
-    ""
+    "DMG (GB Default) (BG)",
+    "pal_Ball"
   ],
-  "backdrop_color": null
+  "backdrop_color": null,
+  "notes": ""
 }

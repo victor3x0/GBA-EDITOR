@@ -39,6 +39,19 @@ if TYPE_CHECKING:
     from core.project_watcher import ProjectWatcher
 
 
+def unique_name(base: str, existing) -> str:
+    """Nom unique dérivé de `base` : `base`, puis `base_2`, `base_3`… en évitant
+    les noms déjà présents dans `existing`. Sert au nommage automatique lors de
+    la création d'assets (pas de pop-up — cf. feedback inline over dialogs)."""
+    existing = set(existing)
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
+
+
 class CommandDispatcher(EventEmitter):
     """
     Dispatcher centralisé — singleton, initialiser via setup() après chaque chargement projet.
@@ -120,6 +133,40 @@ class CommandDispatcher(EventEmitter):
 
         get_history().push(RemoveActorCmd(scene, actor, index, persist_fn=persist))
         self._emit("status_message", f"Actor supprimé : {actor.name}")
+
+    def duplicate_actor(self, actor: Actor, dx: int = 8, dy: int = 8) -> Optional[Actor]:
+        """Duplique un actor (copie profonde des composants) dans la scène active,
+        décalé de (dx, dy) et renommé de façon unique. Undoable."""
+        if not self._project or not self._project.active_scene:
+            return None
+        scene = self._project.active_scene
+        if actor not in scene.actors:
+            return None
+        existing = {a.name for a in scene.actors}
+        name = f"{actor.name}_copy"
+        i = 1
+        while name in existing:
+            i += 1
+            name = f"{actor.name}_copy{i}"
+        new = copy.deepcopy(actor)
+        new.name = name
+        # La position peut être un littéral px/tile ou une réf de variable :
+        # on la résout en pixels avant d'appliquer le décalage (la copie devient
+        # un placement littéral distinct).
+        from core.models.field_value import FieldValue, make_resolver
+        r = make_resolver(self._project)
+        new.x = FieldValue.parse(actor.x).px(r) + dx
+        new.y = FieldValue.parse(actor.y).px(r) + dy
+
+        def persist():
+            self._save_scene()
+            self._emit("actors_list_changed")
+            self._emit("scene_sprites_changed")
+
+        get_history().push(AddActorCmd(scene, new, persist_fn=persist))
+        get_bus().select(new)
+        self._emit("status_message", f"Actor dupliqué : {name}")
+        return new
 
     def instantiate_prefab(self, prefab_name: str, x: int, y: int) -> Optional[Actor]:
         """Instancie un prefab dans la scène active aux coordonnées données."""

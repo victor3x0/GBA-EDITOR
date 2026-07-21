@@ -5,7 +5,7 @@ Usage :
     from ui.common.theme import C, T, QSS, GLOBAL_QSS
 
 Couleurs via C :
-    C.ACCENT_GRN   C.BG_INPUT   C.TEXT_DIM ...
+    C.ACCENT   C.POWER   C.BG_INPUT   C.TEXT_DIM ...
 
 Typographie via T :
     QFont(T.MONO, T.MD)   →  QFont("monospace", 9)
@@ -19,6 +19,8 @@ Fragments QSS via QSS :
 Stylesheet globale à appliquer une seule fois dans main.py :
     app.setStyleSheet(GLOBAL_QSS)
 """
+
+from pathlib import Path as _Path
 
 # ──────────────────────────────────────────────────────────────────
 #  Typographie — échelle de tailles et familles de polices
@@ -47,27 +49,35 @@ T = _Typography()
 # ──────────────────────────────────────────────────────────────────
 
 class _Colors:
-    # Fonds (du plus sombre au plus clair)
-    BG_DEEP   = "#0e0e0e"   # barre statut, séparateurs forts
-    BG_BASE   = "#141414"   # fond panels principaux
-    BG_PANEL  = "#1a1a1a"   # fond widgets, inspector
-    BG_RAISED = "#1e1e1e"   # menus, toolbars
-    BG_INPUT  = "#252525"   # inputs (spinbox, lineedit, combobox)
-    BG_HOVER  = "#2e2e2e"   # survol boutons
-    BG_SEL    = "#1e3a2a"   # fond sélection verte
+    # Fonds — ramp sombre teintée indigo/violet (identité GameBoy Advance)
+    BG_DEEP   = "#0c0c12"   # barre statut, séparateurs forts
+    BG_BASE   = "#12121a"   # fond panels principaux
+    BG_PANEL  = "#181820"   # fond widgets, inspector
+    BG_RAISED = "#1e1e29"   # menus, toolbars
+    BG_INPUT  = "#242430"   # inputs (spinbox, lineedit, combobox)
+    BG_HOVER  = "#2e2e3d"   # survol boutons
+    BG_SEL    = "#241f3a"   # fond sélection périwinkle
 
     # Bordures
-    BORDER      = "#2e2e2e"  # bordure par défaut
-    BORDER_MID  = "#383838"  # bordure inputs
-    BORDER_DARK = "#232323"  # séparateurs discrets
+    BORDER      = "#2c2c3a"  # bordure par défaut
+    BORDER_MID  = "#383848"  # bordure inputs
+    BORDER_DARK = "#22222e"  # séparateurs discrets
 
-    # Accents — couleurs sémantiques du projet
-    ACCENT_GRN = "#4caf78"  # vert GBA  — sélection, transform, focus
-    ACCENT_BLU = "#7ecfff"  # bleu      — components, refs Lua
-    ACCENT_ORG = "#c48b3c"  # orange    — scripts, éditeur
-    ACCENT_PRP = "#9b7bd5"  # violet    — prefabs
+    # ── Accents — RÔLES sémantiques (voir project_theme_gba_redesign) ──
+    ACCENT     = "#9b8cff"  # périwinkle — accent PRIMAIRE structurel
+    #                         (sélection, focus, onglet actif, survol)
+    POWER      = "#5be08b"  # vert power-LED — RÉSERVÉ : Build, process
+    #                         actif / tâche de fond, état « live ». Rare = fort.
     ACCENT_RED = "#e05050"  # rouge     — erreurs, suppression
     ACCENT_YLW = "#e8c547"  # jaune     — avertissements
+
+    # Legacy — DEPRECATED : encore utilisés comme teintes de pools de palette
+    # (labels OBJ/BG) et divers. À terme, remplacer par les familles de type
+    # (icons.py). Le vert structurel `ACCENT_GRN` a été entièrement migré et
+    # supprimé (→ ACCENT périwinkle, ou POWER pour le live).
+    ACCENT_BLU = "#82aaff"
+    ACCENT_ORG = "#c48b3c"
+    ACCENT_PRP = "#9b7bd5"
 
     # Textes
     TEXT_HI    = "#eeeeee"  # titre, valeurs importantes
@@ -79,13 +89,27 @@ class _Colors:
     AXIS_X = "#c07070"   # rouge doux — axe X
     AXIS_Y = "#7090c0"   # bleu doux  — axe Y
 
-    # Sélection panel
-    SEL_BG     = "#192519"
-    SEL_BORDER = "#4caf78"
-    SEL_TEXT   = "#d0f0d8"
+    # Sélection panel (périwinkle)
+    SEL_BG     = "#1e1a33"
+    SEL_BORDER = "#9b8cff"
+    SEL_TEXT   = "#ddd6ff"
 
 
 C = _Colors()
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Petites flèches ▲▼ des QSpinBox — assets PNG livrés à côté de ce
+#  module (référencés par CHEMIN, pas data-URI : le loader url() des QSS
+#  ne supporte pas les data-URI, seuls les chemins/ressources marchent).
+#  `.as_posix()` → slashs avant même sur Windows (QSS n'aime pas `\`).
+# ──────────────────────────────────────────────────────────────────
+
+_ICON_DIR = _Path(__file__).resolve().parent
+
+
+def _spin_arrow(name: str) -> str:
+    return _ICON_DIR.joinpath(name).as_posix()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -106,19 +130,34 @@ QSpinBox, QDoubleSpinBox {{
     font-family: monospace;
     font-size: {T.MD2}px;
 }}
-QSpinBox::up-button, QSpinBox::down-button,
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
-    width: 16px;
-    border-left: 1px solid {C.BORDER_MID};
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border; subcontrol-position: top right;
+    width: 15px; border: none; background: transparent;
+    border-top-right-radius: 4px;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    width: 15px; border: none; background: transparent;
+    border-bottom-right-radius: 4px;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
     background: {C.BG_HOVER};
 }}
-QSpinBox::up-button:hover, QSpinBox::down-button:hover,
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {{
-    background: {C.BG_HOVER};
-    border-color: {C.BORDER_MID};
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url({_spin_arrow('spinbox_up.png')}); width: 9px; height: 9px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url({_spin_arrow('spinbox_down.png')}); width: 9px; height: 9px;
+}}
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
+    image: url({_spin_arrow('spinbox_up_hi.png')});
+}}
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
+    image: url({_spin_arrow('spinbox_down_hi.png')});
 }}
 QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 1px solid {C.ACCENT_GRN};
+    border: 1px solid {C.ACCENT};
 }}
 """
 
@@ -135,7 +174,7 @@ QLineEdit {{
     font-size: {T.MD}px;
 }}
 QLineEdit:focus {{
-    border: 1px solid {C.ACCENT_GRN};
+    border: 1px solid {C.ACCENT};
 }}
 QLineEdit:read-only {{
     color: {C.TEXT_DIM};
@@ -160,11 +199,11 @@ QCheckBox::indicator {{
     background: {C.BG_INPUT};
 }}
 QCheckBox::indicator:checked {{
-    background: {C.ACCENT_GRN};
-    border-color: {C.ACCENT_GRN};
+    background: {C.ACCENT};
+    border-color: {C.ACCENT};
 }}
 QCheckBox::indicator:hover {{
-    border-color: {C.ACCENT_GRN};
+    border-color: {C.ACCENT};
 }}
 """
 
@@ -181,7 +220,7 @@ QComboBox {{
     font-size: {T.MD}px;
 }}
 QComboBox:focus {{
-    border: 1px solid {C.ACCENT_GRN};
+    border: 1px solid {C.ACCENT};
 }}
 QComboBox::drop-down {{
     border: none;
@@ -193,17 +232,19 @@ QComboBox QAbstractItemView {{
     border: 1px solid {C.BORDER_MID};
     border-radius: 0;
     selection-background-color: {C.BG_SEL};
-    selection-color: {C.ACCENT_GRN};
+    selection-color: {C.ACCENT};
     outline: none;
 }}
 """
 
     @property
     def button_primary(self) -> str:
+        # Action primaire « ordinaire » (Ouvrir, Créer…) → périwinkle.
+        # Le vert POWER est réservé au Build / process actif, pas ici.
         return f"""
 QPushButton {{
-    background: #2a5c34;
-    color: #c8ffc8;
+    background: #3a2f6b;
+    color: #ddd6ff;
     border: none;
     border-radius: 3px;
     padding: 4px 12px;
@@ -211,9 +252,9 @@ QPushButton {{
     font-size: {T.MD}px;
     font-weight: bold;
 }}
-QPushButton:hover  {{ background: #3a7a44; }}
-QPushButton:pressed {{ background: #1e4828; }}
-QPushButton:disabled {{ background: #1a3a24; color: #555; }}
+QPushButton:hover  {{ background: #4a3d85; }}
+QPushButton:pressed {{ background: #2c2350; }}
+QPushButton:disabled {{ background: #241f3a; color: #555; }}
 """
 
     @property
@@ -261,8 +302,8 @@ QListWidget::item {{
 }}
 QListWidget::item:selected {{
     background: {C.BG_SEL};
-    color: {C.ACCENT_GRN};
-    border-left: 2px solid {C.ACCENT_GRN};
+    color: {C.ACCENT};
+    border-left: 2px solid {C.ACCENT};
 }}
 QListWidget::item:hover:!selected {{
     background: {C.BG_HOVER};
@@ -316,7 +357,7 @@ QSplitter::handle:vertical {{
     height: 3px;
 }}
 QSplitter::handle:hover {{
-    background: {C.ACCENT_GRN};
+    background: {C.ACCENT};
 }}
 """
 
@@ -351,7 +392,7 @@ QMenu::item {{
 }}
 QMenu::item:selected {{
     background: {C.BG_SEL};
-    color: {C.ACCENT_GRN};
+    color: {C.ACCENT};
 }}
 QMenu::separator {{
     height: 1px;
@@ -382,8 +423,8 @@ QToolButton:hover {{
     color: {C.TEXT_HI};
 }}
 QToolButton:checked {{
-    background: #2a3a2a;
-    color: {C.ACCENT_GRN};
+    background: {C.BG_SEL};
+    color: {C.ACCENT};
 }}
 """
 
@@ -398,7 +439,7 @@ QMenuBar {{
     border-bottom: 1px solid {C.BORDER};
 }}
 QMenuBar::item:selected {{ background: {C.BG_HOVER}; }}
-QMenuBar::item:pressed  {{ background: {C.BG_SEL}; color: {C.ACCENT_GRN}; }}
+QMenuBar::item:pressed  {{ background: {C.BG_SEL}; color: {C.ACCENT}; }}
 """
 
     @property
@@ -431,8 +472,8 @@ QTabBar::tab {{
 }}
 QTabBar::tab:selected {{
     background: {C.BG_PANEL};
-    color: {C.ACCENT_GRN};
-    border-top: 2px solid {C.ACCENT_GRN};
+    color: {C.ACCENT};
+    border-top: 2px solid {C.ACCENT};
 }}
 QTabBar::tab:hover:!selected {{
     background: {C.BG_HOVER};

@@ -14,6 +14,7 @@ from typing import Optional
 from core.project import (
     Project, Scene, Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, OWN_PAL_BANK,
 )
+from core.models.field_value import FieldValue as _FV
 from codegen.palette_alloc import scene_bank_layout
 from codegen.asset_pipeline import (
     count_frames, sprite_unique_frames, _seq_key,
@@ -169,9 +170,11 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         ]
         for bi, cb in enumerate(boxes):
             tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
+            bx, by = _FV.parse(cb.x).c_expr(), _FV.parse(cb.y).c_expr()
+            bw, bh = _FV.parse(cb.w).c_expr(), _FV.parse(cb.h).c_expr()
             L += [
-                f"            g_actors[_i].boxes[{bi}].x=(s8){cb.x}; g_actors[_i].boxes[{bi}].y=(s8){cb.y};",
-                f"            g_actors[_i].boxes[{bi}].w=(u8){cb.w};  g_actors[_i].boxes[{bi}].h=(u8){cb.h};",
+                f"            g_actors[_i].boxes[{bi}].x=(s8){bx}; g_actors[_i].boxes[{bi}].y=(s8){by};",
+                f"            g_actors[_i].boxes[{bi}].w=(u8){bw};  g_actors[_i].boxes[{bi}].h=(u8){bh};",
                 f"            g_actors[_i].boxes[{bi}].solid={1 if cb.solid else 0}; g_actors[_i].boxes[{bi}].tag={tag_s};",
             ]
         L.append(f"            {s}_pool_init(&g_actors[_i]);")
@@ -583,8 +586,8 @@ def _gen_scene_init(
         own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
         pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
         L += [
-            f"    g_actors[{idx}].x       = {actor.x};",
-            f"    g_actors[{idx}].y       = {actor.y};",
+            f"    g_actors[{idx}].x       = {_FV.parse(actor.x).c_expr()};",
+            f"    g_actors[{idx}].y       = {_FV.parse(actor.y).c_expr()};",
             f"    g_actors[{idx}].active  = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].visible = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].flip_h  = {1 if getattr(_get_sprite_comp(actor),'flip_h',False) else 0};",
@@ -599,9 +602,11 @@ def _gen_scene_init(
         ]
         for bi2, cb in enumerate(boxes):
             tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
+            bx, by = _FV.parse(cb.x).c_expr(), _FV.parse(cb.y).c_expr()
+            bw, bh = _FV.parse(cb.w).c_expr(), _FV.parse(cb.h).c_expr()
             L += [
-                f"    g_actors[{idx}].boxes[{bi2}].x=(s8){cb.x}; g_actors[{idx}].boxes[{bi2}].y=(s8){cb.y};",
-                f"    g_actors[{idx}].boxes[{bi2}].w=(u8){cb.w};  g_actors[{idx}].boxes[{bi2}].h=(u8){cb.h};",
+                f"    g_actors[{idx}].boxes[{bi2}].x=(s8){bx}; g_actors[{idx}].boxes[{bi2}].y=(s8){by};",
+                f"    g_actors[{idx}].boxes[{bi2}].w=(u8){bw};  g_actors[{idx}].boxes[{bi2}].h=(u8){bh};",
                 f"    g_actors[{idx}].boxes[{bi2}].solid={1 if cb.solid else 0}; g_actors[{idx}].boxes[{bi2}].tag={tag_s};",
             ]
     # Pool init

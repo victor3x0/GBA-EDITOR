@@ -31,8 +31,9 @@ from core.bg_import import (
 )
 from core.color_utils import bgr555_to_rgb888
 from ui.common.theme import C, T
-from ui.common.paint_palette_strip import PaintPaletteStrip
-from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE, COLOR_BACKGROUND
+from ui.common.palette_bank_strip import PaletteBankStrip
+from ui.common.canvas_top_bar import CanvasTopBar, BAR_HEIGHT
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE
 
 
 def _pil_to_qimage(img) -> QImage:
@@ -343,13 +344,18 @@ class _GridOverlay(QGraphicsItem):
 #  Vue zoomable / pan / peinture
 # ──────────────────────────────────────────────────────────────────
 class BgInpaintView(QGraphicsView):
+    zoom_changed = pyqtSignal(float)
+    cursor_moved = pyqtSignal(int, int)   # px dans l'image ; (-1,-1) = hors image
+
+    _ZOOM_LEVELS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0]
+
     def __init__(self, controller: BgInpaintController, parent=None):
         self._ctrl = controller
         self._scene = QGraphicsScene()
         super().__init__(self._scene, parent)
         self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         self.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        self.setBackgroundBrush(QColor("#111111"))
+        self.setBackgroundBrush(QColor(C.BG_DEEP))
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -360,9 +366,14 @@ class BgInpaintView(QGraphicsView):
         self._grid = _GridOverlay(0, 0)
         self._grid.setZValue(10)
         self._scene.addItem(self._grid)
+        self._grid_on = True     # préférence utilisateur (toggle de la barre)
 
         self._zoom = 2.0
         self._apply_zoom()
+
+        # Position du curseur en continu (barre du haut), même sans bouton enfoncé.
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
 
         self._tool = "brush"
         self._painting = False
@@ -378,30 +389,59 @@ class BgInpaintView(QGraphicsView):
         # pas au zoom : l'utilisateur garde son cadrage pendant qu'il peint.
         self._pix_item.setPixmap(self._ctrl.pixmap())
 
+    _DEFAULT_ZOOM = 2.0
+
     def load_background(self):
-        """Nouveau fond sélectionné : pixmap + grille + sceneRect, puis fit.
-        Le fit est aussi différé (singleShot) car, au moment du chargement, la
-        vue n'a pas toujours encore sa taille finale (layout du splitter)."""
+        """Nouveau fond sélectionné : pixmap + grille + sceneRect, puis cadrage
+        au zoom par défaut (200 %, comme le canvas du Scene Manager) centré sur
+        l'image. Le centrage est aussi différé (singleShot) car, au moment du
+        chargement, la vue n'a pas toujours sa taille finale (layout du splitter).
+        Le bouton « ajuster » reste là pour les grands fonds."""
         self._pix_item.setPixmap(self._ctrl.pixmap())
         w, h = self._ctrl.image_size()
         self._grid.resize(w, h)
-        self._grid.setVisible(self._ctrl.grid_visible())
+        self._sync_grid()
         self._scene.setSceneRect(0, 0, max(w, 1), max(h, 1))
-        self.fit()
-        QTimer.singleShot(0, self.fit)
+        self._zoom = self._DEFAULT_ZOOM
+        self._apply_zoom()
+        self._center()
+        QTimer.singleShot(0, self._center)
+
+    def _center(self):
+        w, h = self._ctrl.image_size()
+        if w and h:
+            self.centerOn(w / 2, h / 2)
 
     def set_tool(self, tool: str):
         self._tool = tool
+
+    # ── Grille ───────────────────────────────────────────────────
+    def _sync_grid(self):
+        """La grille 8×8 n'a de sens qu'en tuilé : le toggle ne peut que la
+        masquer, jamais la forcer sur un bitmap."""
+        self._grid.setVisible(self._grid_on and self._ctrl.grid_visible())
+
+    def set_grid_visible(self, on: bool):
+        self._grid_on = on
+        self._sync_grid()
 
     # ── Zoom ─────────────────────────────────────────────────────
     def _apply_zoom(self):
         t = QTransform()
         t.scale(self._zoom, self._zoom)
         self.setTransform(t)
+        self.zoom_changed.emit(self._zoom)
 
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
         self._zoom = max(0.25, min(self._zoom * factor, 16.0))
+        self._apply_zoom()
+
+    def zoom_step(self, direction: int):
+        """Zoom par crans (boutons de la barre) — cran le plus proche, puis ±1."""
+        levels = self._ZOOM_LEVELS
+        idx = min(range(len(levels)), key=lambda i: abs(levels[i] - self._zoom))
+        self._zoom = levels[max(0, min(idx + direction, len(levels) - 1))]
         self._apply_zoom()
 
     def fit(self):
@@ -409,11 +449,23 @@ class BgInpaintView(QGraphicsView):
         if w and h:
             self.fitInView(0, 0, w, h, Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom = self.transform().m11()
+            self.zoom_changed.emit(self._zoom)
 
     # ── Hit-test ─────────────────────────────────────────────────
     def _cell_at(self, e) -> tuple[int, int]:
         pos = self.mapToScene(e.position().toPoint())
         return int(pos.x() // 8), int(pos.y() // 8)
+
+    def _emit_cursor(self, e):
+        pos = self.mapToScene(e.position().toPoint())
+        x, y = int(pos.x()), int(pos.y())
+        w, h = self._ctrl.image_size()
+        inside = 0 <= x < w and 0 <= y < h
+        self.cursor_moved.emit(x if inside else -1, y if inside else -1)
+
+    def leaveEvent(self, e):
+        self.cursor_moved.emit(-1, -1)
+        super().leaveEvent(e)
 
     # ── Souris ───────────────────────────────────────────────────
     def mousePressEvent(self, e):
@@ -430,6 +482,7 @@ class BgInpaintView(QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        self._emit_cursor(e)
         if self._panning:
             p = e.position().toPoint()
             d = p - self._pan_last
@@ -501,17 +554,18 @@ class BgInpaintToolbar(QFrame):
         self._dragging = False
         self._drag_offset = QPoint()
         self._current = "brush"
+        self.min_y = 0     # borne haute du drag (la barre du canvas l'occupe)
 
         self.setFixedWidth(46)
-        self.setStyleSheet("""
-            BgInpaintToolbar {
-                background: #1c1c1c;
-                border: 1px solid #333;
+        self.setStyleSheet(f"""
+            BgInpaintToolbar {{
+                background: {C.BG_RAISED};
+                border: 1px solid {C.BORDER};
                 border-radius: 8px;
-            }
-            QToolButton { border: none; background: transparent; border-radius: 5px; }
-            QToolButton:hover   { background: #2a2a2a; }
-            QToolButton:checked { background: #253525; border: 1px solid #3a6a3a; }
+            }}
+            QToolButton {{ border: none; background: transparent; border-radius: 5px; }}
+            QToolButton:hover   {{ background: {C.BG_HOVER}; }}
+            QToolButton:checked {{ background: {C.BG_SEL}; border: 1px solid {C.ACCENT}; }}
         """)
 
         layout = QVBoxLayout(self)
@@ -571,7 +625,7 @@ class BgInpaintToolbar(QFrame):
             new_pos = self.mapToParent(e.pos()) - self._drag_offset
             p = self.parent()
             x = max(0, min(new_pos.x(), p.width() - self.width()))
-            y = max(0, min(new_pos.y(), p.height() - self.height()))
+            y = max(self.min_y, min(new_pos.y(), p.height() - self.height()))
             self.move(x, y)
 
     def mouseReleaseEvent(self, e):
@@ -590,18 +644,33 @@ class BgInpaintCanvas(QWidget):
         self._view = BgInpaintView(self._ctrl, self)
         self._ba = None
 
+        # Barre d'état au-dessus du canvas — même composant que le Scene Manager.
+        self._bar = CanvasTopBar("Ajuster le fond à la vue")
+        self._bar.zoom_step_asked.connect(self._view.zoom_step)
+        self._bar.fit_asked.connect(self._view.fit)
+        self._chk_grid = self._bar.add_toggle(
+            "view_grid", "Grille 8 px (tuile GBA)", self._view.set_grid_visible)
+        self._chk_grid.setChecked(True)
+        self._view.zoom_changed.connect(self._bar.set_zoom)
+        self._view.cursor_moved.connect(self._on_cursor_moved)
+        self._bar.set_zoom(self._view._zoom)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        # Bande de peinture en tête (sélection de la palette active) puis canvas.
-        self._paint_strip = PaintPaletteStrip(COLOR_BACKGROUND, "PEINDRE", self)
-        self._paint_strip.selected.connect(self.set_active_palette)
-        self._paint_strip.setVisible(False)
-        layout.addWidget(self._paint_strip)
+        layout.addWidget(self._bar)
         layout.addWidget(self._view)
 
+        # Bandeau flottant de sélection de la palette de peinture (bas-centre,
+        # même widget que Scene Manager/Sprite Editor — cf. palette_bank_strip).
+        self._paint_strip = PaletteBankStrip("Aucune palette", self)
+        self._paint_strip.selected.connect(self.set_active_palette)
+        self._paint_strip.setVisible(False)
+        self._paint_strip.raise_()
+
         self._toolbar = BgInpaintToolbar(self)
-        self._toolbar.move(10, 10)
+        self._toolbar.min_y = BAR_HEIGHT
+        self._toolbar.move(10, BAR_HEIGHT + 10)
         self._toolbar.tool_changed.connect(self._view.set_tool)
         self._toolbar.raise_()
 
@@ -648,9 +717,12 @@ class BgInpaintCanvas(QWidget):
         self._reposition_overlays()
 
     def _reposition_overlays(self):
+        # Les flottants sont enfants du panneau entier : décaler du haut pour ne
+        # pas recouvrir la barre.
         m = 10
-        self._info_ov.move(m, max(m, self.height() - self._info_ov.height() - m))
-        self._warn_ov.move(max(m, self.width() - self._warn_ov.width() - m), m)
+        top = BAR_HEIGHT + m
+        self._info_ov.move(m, max(top, self.height() - self._info_ov.height() - m))
+        self._warn_ov.move(max(m, self.width() - self._warn_ov.width() - m), top)
         self._info_ov.raise_(); self._warn_ov.raise_()
 
     def set_busy(self, on: bool, text: str = "Compression…"):
@@ -663,7 +735,25 @@ class BgInpaintCanvas(QWidget):
 
     def _center_busy(self):
         self._busy.move((self.width() - self._busy.width()) // 2,
-                        (self.height() - self._busy.height()) // 2)
+                        BAR_HEIGHT + (self.height() - BAR_HEIGHT - self._busy.height()) // 2)
+
+    def _on_cursor_moved(self, x: int, y: int):
+        self._bar.set_cursor_px(*((None, None) if x < 0 else (x, y)))
+
+    def _position_paint_strip(self):
+        """Centre le bandeau en bas du panneau. À la sélection d'un fond au
+        démarrage, le splitter n'a pas encore attribué sa largeur finale au
+        canvas : on repositionne aussi au tour de boucle suivant (et à chaque
+        resize) pour que le bandeau ne reste pas calé sur une géométrie périmée."""
+        strip = self._paint_strip
+        strip.reflow()
+        x = max(0, (self.width() - strip.width()) // 2)
+        y = max(BAR_HEIGHT, self.height() - strip.height() - 12)
+        strip.move(x, y)
+
+    @staticmethod
+    def _palette_entries(palettes: list) -> list:
+        return [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
 
     def load(self, project, ba):
         self._ba = ba
@@ -675,12 +765,16 @@ class BgInpaintCanvas(QWidget):
         self._ctrl.set_paint_enabled(paintable)
         self._toolbar.setVisible(paintable)
         if paintable:
-            self._paint_strip.load(list(ba.palettes), active=0)
+            self._paint_strip.load(self._palette_entries(ba.palettes), active=0)
             self._paint_strip.setVisible(True)
-            self._ctrl.set_active_palette(0)
+            self._position_paint_strip()
+            QTimer.singleShot(0, self._position_paint_strip)
+            self._ctrl.set_active_palette(self._paint_strip.active())
         else:
             self._paint_strip.setVisible(False)
         self._view.load_background()
+        self._bar.set_canvas_size(*self._ctrl.image_size())
+        self._bar.set_cursor_px(None, None)
 
     def set_active_palette(self, idx: int):
         self._ctrl.set_active_palette(idx)
@@ -691,7 +785,8 @@ class BgInpaintCanvas(QWidget):
         le pixmap via on_rendered, sans réinitialiser le zoom."""
         if self._ba is not None and self._ctrl.paintable:
             cur = self._paint_strip.active()
-            self._paint_strip.load(list(self._ba.palettes), active=cur)
+            self._paint_strip.load(self._palette_entries(self._ba.palettes), active=cur)
+            self._position_paint_strip()
             self._ctrl.set_active_palette(self._paint_strip.active())
         self._ctrl.reload_render()
 
@@ -699,9 +794,15 @@ class BgInpaintCanvas(QWidget):
         super().resizeEvent(e)
         tb = self._toolbar
         x = max(0, min(tb.x(), self.width() - tb.width()))
-        y = max(0, min(tb.y(), self.height() - tb.height()))
+        y = max(BAR_HEIGHT, min(tb.y(), self.height() - tb.height()))
         tb.move(x, y)
         tb.raise_()
+        # isVisibleTo (et non isVisible) : au démarrage, les resize arrivent avant
+        # que la fenêtre soit montrée — isVisible() serait encore False et le
+        # bandeau resterait figé sur la géométrie initiale du splitter.
+        if self._paint_strip.isVisibleTo(self):
+            self._position_paint_strip()
+            self._paint_strip.raise_()
         self._reposition_overlays()
         if self._busy.isVisible():
             self._center_busy()

@@ -1,75 +1,13 @@
 """ui/sprite_editor/direction_widget.py — sélecteur de directions 3×3 pour une AnimState."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGridLayout, QToolButton
-from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QToolButton
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from ui.common.theme import C, T
-from ui.common.icons import get as _ico
+from ui.common.direction_grid import DirectionGrid
 from core.project import AnimState
 from core.models.sprite import resolve_direction_mirrors
-
-_DIR_GRID = [
-    # (dir_id, icon_key, tooltip, grid_row, grid_col)
-    (8, "dir_nw", "NW", 0, 0), (1, "dir_n", "N",  0, 1), (2, "dir_ne", "NE", 0, 2),
-    (7, "dir_w",  "W",  1, 0), (0, "dir_omni", "Omni (toutes directions)", 1, 1), (3, "dir_e", "E",  1, 2),
-    (6, "dir_sw", "SW", 2, 0), (5, "dir_s", "S",  2, 1), (4, "dir_se", "SE", 2, 2),
-]
-
-_BTN_SIZE = 44   # pixels, carré
-
-_STY_NORMAL = (
-    f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
-    f"border:1px solid {C.BORDER};border-radius:5px;"
-    f"font-size:16px;}}"
-    f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};"
-    f"border-color:{C.BORDER_MID};}}"
-    f"QToolButton:checked{{color:{C.ACCENT_GRN};border:2px solid {C.ACCENT_GRN};"
-    f"background:{C.BG_SEL};}}"
-)
-_STY_MIRRORED = (
-    f"QToolButton{{color:#3a6a8a;background:#0d1a22;"
-    f"border:1px dashed #2a4a5a;border-radius:5px;"
-    f"font-size:16px;}}"
-    f"QToolButton:checked{{color:{C.ACCENT_BLU};border:2px dashed {C.ACCENT_BLU};"
-    f"background:#0e1f2e;}}"
-)
-_STY_OMNI = (
-    f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_DEEP};"
-    f"border:1px solid {C.BORDER_DARK};border-radius:5px;"
-    f"font-size:14px;}}"
-    f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
-    f"QToolButton:checked{{color:{C.ACCENT_GRN};border:2px solid {C.ACCENT_GRN};"
-    f"background:{C.BG_SEL};}}"
-)
-
-class _DirButton(QToolButton):
-    """Bouton de direction dans la grille 3×3 — icône flèche (ui/icons.py), taille carrée fixe."""
-
-    def __init__(self, dir_id: int, icon_key: str, tooltip: str, parent=None):
-        super().__init__(parent)
-        self.dir_id = dir_id
-        self._icon_key = icon_key
-        self.setCheckable(True)
-        self.setFixedSize(_BTN_SIZE, _BTN_SIZE)
-        self.setIconSize(QSize(20, 20))
-        self.setToolTip(tooltip)
-        self._is_omni = (dir_id == 0)
-        self.set_mirrored(False)
-
-    def set_mirrored(self, mirrored: bool):
-        from ui.common.icons import get as _ico
-
-        if self._is_omni:
-            self.setStyleSheet(_STY_OMNI)
-            self.setIcon(_ico(self._icon_key, C.TEXT_DIM, C.ACCENT_GRN))
-        elif mirrored:
-            self.setStyleSheet(_STY_MIRRORED)
-            self.setIcon(_ico(self._icon_key, "#3a6a8a", C.ACCENT_BLU))
-        else:
-            self.setStyleSheet(_STY_NORMAL)
-            self.setIcon(_ico(self._icon_key, C.TEXT_DIM, C.ACCENT_GRN))
 
 
 class DirectionWidget(QWidget):
@@ -88,34 +26,16 @@ class DirectionWidget(QWidget):
         self._build()
 
     def _build(self):
-        from PyQt6.QtWidgets import QGridLayout
-
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 6, 0, 6)
         root.setSpacing(8)
         root.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        # Grille 3×3 — taille fixe pour garder un vrai carré
-        GAP = 4
-        SIDE = _BTN_SIZE * 3 + GAP * 2
-        grid_w = QWidget()
-        grid_w.setFixedSize(SIDE, SIDE)
-        grid_w.setStyleSheet("background:transparent;")
-        grid = QGridLayout(grid_w)
-        grid.setSpacing(GAP)
-        grid.setContentsMargins(0, 0, 0, 0)
-        for c in range(3):
-            grid.setColumnMinimumWidth(c, _BTN_SIZE)
-            grid.setRowMinimumHeight(c, _BTN_SIZE)
-
-        self._dir_btns: dict[int, _DirButton] = {}
-        for dir_id, icon, tip, row, col in _DIR_GRID:
-            btn = _DirButton(dir_id, icon, tip)
-            btn.toggled.connect(lambda checked, d=dir_id: self._on_dir_toggled(d, checked))
-            grid.addWidget(btn, row, col)
-            self._dir_btns[dir_id] = btn
-
-        root.addWidget(grid_w, alignment=Qt.AlignmentFlag.AlignHCenter)
+        # Grille 3×3 partagée (ui/common/direction_grid.py)
+        self._grid = DirectionGrid()
+        self._grid.dir_toggled.connect(self._on_dir_toggled)
+        self._dir_btns = self._grid.buttons
+        root.addWidget(self._grid, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Boutons H / V mirror
         _MIRROR_BTN = (

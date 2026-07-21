@@ -69,6 +69,7 @@ class Prefab(Resource, ComponentOwnerMixin):
     components: list = field(default_factory=list)
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
+    notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
 
     def to_dict(self) -> dict:
         return {
@@ -76,6 +77,7 @@ class Prefab(Resource, ComponentOwnerMixin):
             "components":    _components_to_list(self.components),
             "pal_bank":      self.pal_bank,
             "max_instances": self.max_instances,
+            "notes":         self.notes,
         }
 
     @classmethod
@@ -85,6 +87,7 @@ class Prefab(Resource, ComponentOwnerMixin):
             components    = _components_from_list(d.get("components", [])),
             pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
             max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
+            notes         = d.get("notes", ""),
         )
 
 
@@ -115,6 +118,7 @@ class Actor(ComponentOwnerMixin):
     # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
     dir_x: int = 0
     dir_y: int = 0
+    notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
 
     def to_dict(self) -> dict:
         return {
@@ -131,6 +135,7 @@ class Actor(ComponentOwnerMixin):
             "visible":     self.visible,
             "dir_x":       self.dir_x,
             "dir_y":       self.dir_y,
+            "notes":       self.notes,
         }
 
     @classmethod
@@ -149,6 +154,7 @@ class Actor(ComponentOwnerMixin):
             visible     = d.get("visible", True),
             dir_x       = d.get("dir_x", 0),
             dir_y       = d.get("dir_y", 0),
+            notes       = d.get("notes", ""),
         )
 
 
@@ -186,6 +192,7 @@ class Scene(Resource):
     # Override de ProjectSettings.backdrop_color pour cette scène (BGR555) ;
     # None = hérite du défaut projet.
     backdrop_color: Optional[int] = None
+    notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
 
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
@@ -218,6 +225,7 @@ class Scene(Resource):
             "active_obj_palettes": self.active_obj_palettes,
             "active_bg_palettes": self.active_bg_palettes,
             "backdrop_color": self.backdrop_color,
+            "notes": self.notes,
         }
 
     @classmethod
@@ -284,6 +292,7 @@ class Scene(Resource):
             active_obj_palettes=d.get("active_obj_palettes", []),
             active_bg_palettes=d.get("active_bg_palettes", []),
             backdrop_color=d.get("backdrop_color"),
+            notes=d.get("notes", ""),
         )
         # Ancien nom de BackgroundAsset (migré au load si background_layers vide).
         scene._legacy_bg_asset = d.get("background_asset", "")

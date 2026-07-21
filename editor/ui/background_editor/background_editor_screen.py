@@ -36,7 +36,7 @@ _CTX_MENU_QSS = (
     f"border:1px solid {C.BORDER_MID}; font-family:{T.MONO};"
     f"font-size:{T.MD}px; padding:2px;}}"
     f"QMenu::item{{padding:4px 20px 4px 12px; border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL}; color:{C.ACCENT_GRN};}}"
+    f"QMenu::item:selected{{background:{C.BG_SEL}; color:{C.ACCENT};}}"
 )
 
 
@@ -251,7 +251,6 @@ class BgPropertiesPanel(QWidget):
         #    GBA → boutons profondeur filtrés selon le layout (cf. _refresh_mode_buttons).
         #    Changer d'axe recompresse le fond (hors-thread).
         lay_row = QHBoxLayout(); lay_row.setContentsMargins(0, 2, 0, 0); lay_row.setSpacing(6)
-        lay_row.addWidget(self._axis_label("LAYOUT"))
         self._btn_tiled = self._mode_btn("Tuilé", "Fond tuilé (Mode 0) — tileset + tilemap, scroll, inpainting")
         self._btn_bitmap = self._mode_btn("Bitmap", "Bitmap plein écran ≤240×160, sans tuiles (photos / écrans-titre)")
         self._btn_tiled.clicked.connect(lambda: self._set_layout("tiled"))
@@ -260,7 +259,6 @@ class BgPropertiesPanel(QWidget):
         root.addLayout(lay_row)
 
         dep_row = QHBoxLayout(); dep_row.setContentsMargins(0, 2, 0, 2); dep_row.setSpacing(6)
-        dep_row.addWidget(self._axis_label("PROFONDEUR"))
         self._d4 = self._mode_btn("4bpp", "16 couleurs × 16 palettes · inpainting (pixel-art) — tuilé uniquement")
         self._d8 = self._mode_btn("8bpp", "256 couleurs, une palette (pixel-art riche / bitmap Mode 4)")
         self._d16 = self._mode_btn("16bpp", "Couleur directe 15-bit (photos true-color) — à venir, repli Mode 4")
@@ -342,12 +340,6 @@ class BgPropertiesPanel(QWidget):
             f"QPushButton:disabled{{color:{C.TEXT_MUTED}; border-color:{C.BORDER_DARK};}}"
         )
         return b
-
-    def _axis_label(self, text: str) -> QLabel:
-        l = QLabel(text); l.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        l.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
-        l.setFixedWidth(72)
-        return l
 
     def _mode_btn(self, text: str, tip: str) -> QPushButton:
         b = QPushButton(text); b.setToolTip(tip)
@@ -523,7 +515,7 @@ class BgPropertiesPanel(QWidget):
     def _validation_lines(self, ba) -> list:
         if not ba or not (ba.tileset or ba.bitmap):
             return [("⚠ Compression impossible — image illisible ou vide.", C.ACCENT_RED)]
-        warn, err, ok = C.ACCENT_YLW, C.ACCENT_RED, C.ACCENT_GRN
+        warn, err, ok = C.ACCENT_YLW, C.ACCENT_RED, C.POWER
         if ba.mode == "bitmap":
             diag = self._diag_for(ba)
             lines: list = []

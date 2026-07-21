@@ -20,7 +20,7 @@ _SETTINGS_KEY = "screen_button_order"
 _BTN_NORMAL = (
     f"QToolButton{{color:{C.TEXT_NORM};border:none;padding:6px 14px;border-radius:4px;}}"
     f"QToolButton:hover{{background:{C.BG_HOVER};color:{C.TEXT_HI};}}"
-    f"QToolButton:checked{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
+    f"QToolButton:checked{{background:{C.BG_SEL};color:{C.ACCENT};}}"
 )
 # Bouton source pendant le drag : grisé, sert de placeholder visuel
 _BTN_GHOST_SRC = (
@@ -29,7 +29,7 @@ _BTN_GHOST_SRC = (
 )
 # Bouton fantôme flottant
 _BTN_GHOST = (
-    f"QToolButton{{color:#ddd;border:1px solid {C.ACCENT_GRN};"
+    f"QToolButton{{color:#ddd;border:1px solid {C.ACCENT};"
     "padding:6px 14px;border-radius:4px;background:#1e2e1e;}"
 )
 
@@ -81,7 +81,7 @@ class ReorderableButtonBar(QWidget):
         # ── Indicateur de drop (trait vertical vert) ──────────────────
         self._indicator = QFrame(self)
         self._indicator.setFixedWidth(2)
-        self._indicator.setStyleSheet(f"background:{C.ACCENT_GRN};border-radius:1px;")
+        self._indicator.setStyleSheet(f"background:{C.ACCENT};border-radius:1px;")
         self._indicator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._indicator.hide()
 

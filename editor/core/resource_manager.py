@@ -4,6 +4,7 @@ réutilisé par Project pour chacune de ses collections (scenes, sprites,
 backgrounds, prefabs, sfx, music, fonts, palettes)."""
 
 import json
+import time
 from pathlib import Path
 from typing import Generic, Iterator, Optional, Type, TypeVar
 
@@ -20,14 +21,36 @@ def safe_filename(name: str) -> str:
 
 
 def _atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
-    """Écrit `text` dans `path` de façon atomique (tmp → rename)."""
+    """Écrit `text` dans `path` de façon atomique (tmp → rename).
+
+    Sous Windows, `os.replace` lève transitoirement PermissionError (WinError 5
+    « accès refusé ») ou une sharing violation (WinError 32) quand un autre
+    process tient brièvement un handle sur la cible : indexeur, antivirus, ou
+    le QFileSystemWatcher qui ré-arme sa surveillance du dossier. C'est très
+    probable lors de sauvegardes en rafale (maintien d'une flèche = nudge
+    répété, molette continue sur un spinbox). Non rattrapée, l'exception
+    remonte hors d'un slot Qt et PyQt6 abandonne le process → crash observé.
+    On réessaie donc le rename quelques fois (le verrou transitoire se libère
+    en quelques dizaines de ms) avant d'abandonner."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(text, encoding=encoding)
-        tmp.replace(path)   # atomique sur NTFS/ext4
+        for attempt in range(_REPLACE_RETRIES):
+            try:
+                tmp.replace(path)   # atomique sur NTFS/ext4
+                return
+            except PermissionError:
+                if attempt == _REPLACE_RETRIES - 1:
+                    raise
+                time.sleep(_REPLACE_RETRY_DELAY)
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+
+
+# Rename atomique : nb de tentatives et délai entre elles (cf. _atomic_write).
+_REPLACE_RETRIES = 12
+_REPLACE_RETRY_DELAY = 0.02   # 12 × 20 ms ≈ 240 ms de fenêtre de retry
 
 
 class ResourceManager(Generic[T]):

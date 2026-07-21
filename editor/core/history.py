@@ -234,6 +234,72 @@ class DeleteResourceCmd(Command):
             self._refresh()
 
 
+class SetPaletteColorCmd(Command):
+    """
+    Édition d'une couleur d'une PaletteBank à un index donné (Palette Editor).
+    Les éditions consécutives sur le même (bank, index) sont fusionnées — un
+    drag de slider / roue = une seule entrée d'undo (comme SetFieldCmd).
+
+    apply_fn(index) est fournie par l'écran : elle persiste la banque et
+    resynchronise l'UI (swatch, inspecteur, finder). C'est ce callback qui
+    garantit le rafraîchissement du Palette Editor sur undo/redo, comme
+    DeleteResourceCmd.refresh_fn.
+    """
+
+    def __init__(self, bank: Any, index: int, old_val: int, new_val: int, apply_fn):
+        self._bank = bank
+        self._index = index
+        self._old = old_val
+        self._new = new_val
+        self.label = f"Couleur index {index}"
+        self._apply = apply_fn
+
+    def _set(self, value: int):
+        if 0 <= self._index < len(self._bank.colors):
+            self._bank.colors[self._index] = value
+        self._apply(self._bank, self._index)
+
+    def execute(self):
+        self._set(self._new)
+
+    def undo(self):
+        self._set(self._old)
+
+    def merge(self, newer: "Command") -> bool:
+        if (isinstance(newer, SetPaletteColorCmd)
+                and self._bank is newer._bank and self._index == newer._index):
+            self._new = newer._new
+            self._apply = newer._apply
+            return True
+        return False
+
+
+class SetPaletteColorsCmd(Command):
+    """
+    Édition groupée de plusieurs slots d'une PaletteBank en UNE seule entrée
+    d'undo (ex: vider une sélection). delta = {index: (old_val, new_val)}.
+    apply_fn(bank) re-render la banque et persiste (voir SetPaletteColorCmd).
+    """
+
+    def __init__(self, bank: Any, delta: dict, apply_fn, label: str = "Modifier palette"):
+        self._bank = bank
+        self._delta = delta
+        self.label = label
+        self._apply = apply_fn
+
+    def _set(self, pick: int):
+        for i, pair in self._delta.items():
+            if 0 <= i < len(self._bank.colors):
+                self._bank.colors[i] = pair[pick]
+        self._apply(self._bank)
+
+    def execute(self):
+        self._set(1)
+
+    def undo(self):
+        self._set(0)
+
+
 class CollisionPaintCmd(Command):
     """
     Stroke de peinture collision (pinceau ou slope). Un stroke = press → release.

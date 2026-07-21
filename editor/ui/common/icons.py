@@ -12,23 +12,37 @@ Fallback       : QIcon vide si qtawesome absent (pas de crash)
 from __future__ import annotations
 from PyQt6.QtGui import QIcon
 
-# ── Couleurs sémantiques ──────────────────────────────────────────
-COLOR_DEFAULT = "#888888"
-COLOR_ACTIVE  = "#4caf78"
-COLOR_ACTOR   = "#7ecfff"
-COLOR_PREFAB  = "#c792ea"
-COLOR_SCRIPT  = "#ffcb6b"
-COLOR_SCENE   = "#89ddff"
-COLOR_FOLDER  = "#546e7a"
-COLOR_SPRITE  = "#f78c6c"
-COLOR_BACKGROUND = "#82aaff"
-COLOR_SFX     = "#c3e88d"
-COLOR_MUSIC   = "#87d3c3"
-# Script Editor — catégories du panneau latéral (pas de type d'objet dédié)
-COLOR_EVENT    = "#4ec9b0"   # teal — event handlers (on_start, on_update...)
-COLOR_BEHAVIOR = "#b48aff"   # violet — modules behavior (require())
-COLOR_GLOBAL   = "#e5c07b"   # jaune — variables globales
-COLOR_CONST    = "#e06c75"   # rouge corail — constantes (lecture seule)
+# ── Couleurs par type d'asset — 4 FAMILLES (voir project_theme_gba_redesign)
+# Une couleur par famille ; l'identité intra-famille passe par la FORME de
+# l'icône (account / puzzle / image…), pas par la teinte. Bande chaude pour
+# Entités/Monde/Logique, teal pour l'Audio — toutes distinctes du périwinkle
+# chrome (C.ACCENT) et du vert power-LED (C.POWER).
+_FAM_ENTITY = "#f75c3c"   # Entités : actor, prefab, sprite  (rouge vermillon)
+_FAM_WORLD  = "#f5a623"   # Monde   : scene, camera, background  (ambre-orange)
+_FAM_LOGIC  = "#ec4a9a"   # Logique : script  (magenta)
+_FAM_AUDIO  = "#15c9b2"   # Audio   : sfx, music  (teal vif)
+
+COLOR_DEFAULT = "#8a8aa0"   # neutre légèrement teinté indigo
+COLOR_ACTIVE  = "#5be08b"   # = C.POWER — état actif / live
+COLOR_FOLDER  = "#5a6b82"   # dossier — slate neutre
+
+COLOR_ACTOR      = _FAM_ENTITY
+COLOR_PREFAB     = _FAM_ENTITY
+COLOR_SPRITE     = _FAM_ENTITY
+COLOR_SCENE      = _FAM_WORLD
+COLOR_BACKGROUND = _FAM_WORLD
+COLOR_SCRIPT     = _FAM_LOGIC
+COLOR_SFX        = _FAM_AUDIO
+COLOR_MUSIC      = _FAM_AUDIO
+# Script Editor — vocabulaire « code » (events / behaviors / globals / consts).
+# Tout ce qui relève du code partage UNE couleur = la famille Logique
+# (COLOR_SCRIPT, magenta) ; on distingue les catégories par la FORME de l'icône
+# et le libellé, pas par la teinte. Les valeurs One-Dark d'origine (teal/violet/
+# jaune/rouge) collisionnaient avec Audio / chrome / warning / danger.
+COLOR_EVENT    = COLOR_SCRIPT
+COLOR_BEHAVIOR = COLOR_SCRIPT
+COLOR_GLOBAL   = COLOR_SCRIPT
+COLOR_CONST    = COLOR_SCRIPT
 
 # ── Registre : nom logique → (qta_key, unicode_fallback) ──────────
 # Pour swapper l'icon set : remplacer les qta_key par les nouveaux.
@@ -47,6 +61,19 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "tool_fill":                  ("mdi.format-color-fill",       "🪣"),
     "eye":                   ("mdi.eye-outline",             "◉"),
     "eye_off":               ("mdi.eye-off-outline",         "◎"),
+    # Toggles d'affichage du canvas (toolbar Scene Manager)
+    "zoom":                  ("mdi.magnify",                 "⚲"),
+    "zoom_in":               ("mdi.magnify-plus-outline",    "⊕"),
+    "zoom_out":              ("mdi.magnify-minus-outline",   "⊖"),
+    "fit_page":              ("mdi.fit-to-page-outline",     "⊡"),
+    "view_grid":             ("mdi.grid",                    "▦"),
+    "view_grid_large":       ("mdi.grid-large",              "▤"),
+    "view_snap":             ("mdi.magnet",                  "⇲"),
+    "view_boxes":            ("mdi.account-box",             "▭"),
+    "view_collision":        ("mdi.wall",                    "▨"),
+    "warning":               ("mdi.alert",                   "⚠"),
+    "scroll_h":              ("mdi.arrow-left-right-bold",   "↔"),
+    "scroll_v":              ("mdi.arrow-up-down-bold",      "↕"),
     # Project panel — types d'objets
     "actor":                 ("mdi.account",                 "●"),
     "actor_empty":           ("mdi.account-outline",         "○"),

@@ -1,3 +1,8 @@
+exports = {
+    Test = { type = "int", default = 3, label = "Test" },
+    nouvelle_var = { type = "string", default = "", label = "nouvelle_var" },
+}
+
 function on_start()
     if global.get("winner") == 0 then
         music.play("Claimed DX")

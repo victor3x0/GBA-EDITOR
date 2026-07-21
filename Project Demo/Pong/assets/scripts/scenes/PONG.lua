@@ -1,3 +1,7 @@
+exports = {
+    nouvelle_var = { type = "int", default = 0, label = "nouvelle_var" },
+}
+
 function on_start()
     music.play("Admin Rights - Full DX FAST")
     global.set("score_player", 0)

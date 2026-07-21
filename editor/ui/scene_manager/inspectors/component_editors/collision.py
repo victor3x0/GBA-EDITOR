@@ -77,20 +77,22 @@ class CollisionEditor(BaseComponentEditor):
         hl.addWidget(chk_solid); hl.addWidget(lbl); hl.addStretch()
         W.row("Mode", mode_lbl, layout)
 
-        # ── AABB ──────────────────────────────────────────────────
-        sp_x = W.spinbox(getattr(comp, "x", 0))
-        sp_y = W.spinbox(getattr(comp, "y", 0))
-        sp_w = W.spinbox(getattr(comp, "w", 16), min_v=1)
-        sp_h = W.spinbox(getattr(comp, "h", 16), min_v=1)
+        # ── AABB — champs px/tile ou référence de variable ────────
+        # Les valeurs peuvent être un littéral (px/tile) ou pointer une
+        # variable déclarée (global g_<nom> / constante CONST_<NOM>).
+        proj = self.insp._project
+        vf_x = W.value_field(getattr(comp, "x", 0), project=proj)
+        vf_y = W.value_field(getattr(comp, "y", 0), project=proj)
+        vf_w = W.value_field(getattr(comp, "w", 16), project=proj, min_px=1)
+        vf_h = W.value_field(getattr(comp, "h", 16), project=proj, min_px=1)
 
-        for sp, fname in ((sp_x, "x"), (sp_y, "y"), (sp_w, "w"), (sp_h, "h")):
-            sp.valueChanged.connect(lambda v, f=fname: self.set_field(comp, f, v))
-            self.register_syncer(fname, lambda v, w=sp: (
-                w.blockSignals(True), w.setValue(int(v)), w.blockSignals(False)))
-            _tip(sp, f"collision.{fname}")
+        for vf, fname in ((vf_x, "x"), (vf_y, "y"), (vf_w, "w"), (vf_h, "h")):
+            vf.changed.connect(lambda raw, f=fname: self.set_field(comp, f, raw))
+            self.register_syncer(fname, lambda v, w=vf: w.set_raw(v))
+            _tip(vf, f"collision.{fname}")
 
-        W.pair("Offset", "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, layout)
-        W.pair("Taille", "W", C.ACCENT_BLU, sp_w, "H", C.ACCENT_PRP, sp_h, layout)
+        W.pair("Offset", "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
+        W.pair("Taille", "W", C.ACCENT_BLU, vf_w, "H", C.ACCENT_PRP, vf_h, layout)
 
         def _on_solid(v):
             self.set_field(comp, "solid", v)

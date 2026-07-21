@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QBuffer, QByteArray, QIODevice
 
 from ui.common.theme import C, T
 from ui.common.widgets import W
-from ui.common.icons import get as _ico, COLOR_SFX, COLOR_MUSIC
+from ui.common.icons import get as _ico, COLOR_DEFAULT
 
 from core.project import Project, Sfx, Music
 from core.mod_file import load_mod
@@ -28,7 +28,7 @@ from core.history import get_history, DeleteResourceCmd
 SPLITTER_STYLE = (
     f"QSplitter::handle{{background:{C.BORDER};}}"
     "QSplitter::handle:horizontal{width:3px;}"
-    f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
+    f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
 )
 
 SFX_EXTS   = "*.wav *.ogg"
@@ -81,9 +81,9 @@ class AudioPlayer(QWidget):
         self._btn.setFixedSize(28, 22)
         self._btn.setFont(QFont(T.MONO, T.MD))
         self._btn.setStyleSheet(
-            f"QPushButton{{background:{C.BG_SEL};color:{C.ACCENT_GRN};border:1px solid #3a4a3a;"
+            f"QPushButton{{background:{C.BG_SEL};color:{C.ACCENT};border:1px solid #3a3a5a;"
             "border-radius:3px;}"
-            "QPushButton:hover{background:#3a4a3a;}"
+            "QPushButton:hover{background:#2e2e3d;}"
         )
         self._btn.clicked.connect(self._toggle)
         layout.addWidget(self._btn)
@@ -103,7 +103,7 @@ class AudioPlayer(QWidget):
         self._vol.setRange(0, 100); self._vol.setValue(80); self._vol.setFixedWidth(70)
         self._vol.setStyleSheet(f"QSlider::groove:horizontal{{height:4px;background:{C.BORDER_MID};border-radius:2px;}}"
                           "QSlider::handle:horizontal{width:10px;height:10px;margin:-3px 0;"
-                          f"background:{C.ACCENT_GRN};border-radius:5px;}}")
+                          f"background:{C.ACCENT};border-radius:5px;}}")
         self._vol.valueChanged.connect(self._on_volume)
         layout.addWidget(self._vol)
 
@@ -429,16 +429,16 @@ class SoundFinderPanel(QWidget):
 
         # SFX section — add/supprimer remontés dans le header (style asset finder)
         self._sfx_section = self._make_section(
-            "SFX", C.ACCENT_ORG, lambda: self._add(Sfx), "Ajouter un SFX",
+            "SFX", C.TEXT_NORM, lambda: self._add(Sfx), "Ajouter un SFX",
             lambda: self._del(Sfx), "Supprimer le SFX sélectionné")
         root.addWidget(self._sfx_section)
         self._sfx_list = QTreeWidget()
         self._sfx_list.setHeaderHidden(True)
         self._sfx_list.setFont(QFont(T.MONO, T.MD))
         self._sfx_list.setStyleSheet(
-            f"QTreeWidget{{background:#161616;color:{C.TEXT_NORM};border:none;}}"
-            "QTreeWidget::item:selected{background:#3a2a1a;}"
-            "QTreeWidget::item:hover{background:#252010;}"
+            f"QTreeWidget{{background:{C.BG_BASE};color:{C.TEXT_NORM};border:none;}}"
+            f"QTreeWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
+            f"QTreeWidget::item:hover{{background:{C.BG_HOVER};}}"
         )
         self._sfx_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._sfx_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -457,16 +457,16 @@ class SoundFinderPanel(QWidget):
 
         # Music section
         self._music_section = self._make_section(
-            "MUSIC", C.ACCENT_PRP, lambda: self._add(Music), "Ajouter une Music",
+            "MUSIC", C.TEXT_NORM, lambda: self._add(Music), "Ajouter une Music",
             lambda: self._del(Music), "Supprimer la Music sélectionnée")
         root.addWidget(self._music_section)
         self._music_list = QTreeWidget()
         self._music_list.setHeaderHidden(True)
         self._music_list.setFont(QFont(T.MONO, T.MD))
         self._music_list.setStyleSheet(
-            f"QTreeWidget{{background:#161616;color:{C.TEXT_NORM};border:none;}}"
-            "QTreeWidget::item:selected{background:#2a1a3a;}"
-            "QTreeWidget::item:hover{background:#201030;}"
+            f"QTreeWidget{{background:{C.BG_BASE};color:{C.TEXT_NORM};border:none;}}"
+            f"QTreeWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
+            f"QTreeWidget::item:hover{{background:{C.BG_HOVER};}}"
         )
         self._music_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._music_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -528,7 +528,7 @@ class SoundFinderPanel(QWidget):
             return dict(
                 list=self._sfx_list, other_list=self._music_list,
                 manager=self._project.sfx if self._project else None,
-                icon_key="sfx", icon_color=COLOR_SFX,
+                icon_key="sfx", icon_color=COLOR_DEFAULT,
                 selected=self.sfx_selected, play_requested=self.sfx_play_requested,
                 deleted=self.sfx_deleted,
                 add_title="Nouveau SFX", del_label="le SFX",
@@ -537,7 +537,7 @@ class SoundFinderPanel(QWidget):
         return dict(
             list=self._music_list, other_list=self._sfx_list,
             manager=self._project.music if self._project else None,
-            icon_key="music", icon_color=COLOR_MUSIC,
+            icon_key="music", icon_color=COLOR_DEFAULT,
             selected=self.music_selected, play_requested=self.music_play_requested,
             deleted=self.music_deleted,
             add_title="Nouvelle piste", del_label="la piste",
@@ -657,7 +657,7 @@ class SoundMixerScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project: Optional[Project] = None
-        self.setStyleSheet("background:#181818;")
+        self.setStyleSheet(f"background:{C.BG_PANEL};")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)

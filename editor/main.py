@@ -18,19 +18,20 @@ if _EDITOR_DIR not in sys.path:
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
-from ui.common.theme import GLOBAL_QSS
+from ui.common.theme import GLOBAL_QSS, C
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
 
 
 def dark_palette() -> QPalette:
-    """Thème sombre sobre — fond neutre, accents verts GBA."""
+    """Thème sombre teinté indigo/violet (identité GBA) — accent primaire
+    périwinkle. Toutes les valeurs dérivent de ui.common.theme.C."""
     p = QPalette()
-    bg      = QColor("#1a1a1a")
-    surface = QColor("#242424")
-    border  = QColor("#333333")
+    bg      = QColor(C.BG_PANEL)
+    surface = QColor(C.BG_INPUT)
+    border  = QColor(C.BORDER_MID)
     text    = QColor("#d4d4d4")
-    muted   = QColor("#888888")
-    accent  = QColor("#4caf78")
+    muted   = QColor(C.TEXT_DIM)
+    accent  = QColor(C.ACCENT)
 
     p.setColor(QPalette.ColorRole.Window,          bg)
     p.setColor(QPalette.ColorRole.WindowText,      text)

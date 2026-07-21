@@ -4,7 +4,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSizePolicy,
-    QMenu, QInputDialog, QMessageBox, QAbstractItemView,
+    QMenu, QMessageBox, QAbstractItemView,
     QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtGui import QFont, QColor
@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from ui.common.widgets import FinderSection
 from ui.common.theme import C, T
-from ui.common.icons import get as _ico, COLOR_SPRITE
+from ui.common.icons import get as _ico, COLOR_DEFAULT
 from core.project import Project, SpriteAsset, AnimState, StateDirection
 from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd
 from core.command_dispatcher import get_dispatcher
@@ -36,8 +36,8 @@ QTreeWidget::item {{
 }}
 QTreeWidget::item:selected {{
     background: {C.BG_SEL};
-    color: {C.ACCENT_GRN};
-    border-left: 2px solid {C.ACCENT_GRN};
+    color: {C.ACCENT};
+    border-left: 2px solid {C.ACCENT};
 }}
 QTreeWidget::item:hover:!selected {{
     background: {C.BG_HOVER};
@@ -70,7 +70,7 @@ _CTX_MENU_QSS = (
     f"border:1px solid {C.BORDER_MID};font-family:monospace;"
     f"font-size:{T.MD}px;padding:2px;}}"
     f"QMenu::item{{padding:4px 20px 4px 12px;border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
+    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
 )
 
 # Sentinelle : "conserver la sélection courante si elle existe encore après
@@ -131,7 +131,7 @@ class SpriteFinderPanel(QWidget):
         root.addWidget(finder_hdr)
 
         # ── Sprites ───────────────────────────────────────────────
-        sec_sprites = FinderSection("SPRITES", COLOR_SPRITE)
+        sec_sprites = FinderSection("SPRITES")
         sec_sprites.add_clicked.connect(self._on_add_sprite)
         root.addWidget(sec_sprites, 3)
 
@@ -151,7 +151,7 @@ class SpriteFinderPanel(QWidget):
         sec_sprites.set_widget(self._sprite_tree)
 
         # ── Animations ────────────────────────────────────────────
-        sec_anim = FinderSection("ANIMATIONS STATES", COLOR_SPRITE)
+        sec_anim = FinderSection("ANIMATIONS STATES")
         sec_anim.add_clicked.connect(self._on_add_state)
         root.addWidget(sec_anim, 2)
 
@@ -261,7 +261,7 @@ class SpriteFinderPanel(QWidget):
         item = QTreeWidgetItem([sp.name])
         item.setFont(0, QFont(T.MONO, T.SM))
         item.setForeground(0, QColor(C.TEXT_NORM))
-        item.setIcon(0, _ico("sprite", COLOR_SPRITE))
+        item.setIcon(0, _ico("sprite", COLOR_DEFAULT))
         item.setData(0, Qt.ItemDataRole.UserRole, sp)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         if isinstance(parent, QTreeWidget):
@@ -293,7 +293,7 @@ class SpriteFinderPanel(QWidget):
             state_item = QTreeWidgetItem([state.name])
             state_item.setFont(0, QFont(T.MONO, T.SM, QFont.Weight.Bold))
             state_item.setForeground(0, QColor(C.TEXT_HI))
-            state_item.setIcon(0, _ico("anim_state", COLOR_SPRITE))
+            state_item.setIcon(0, _ico("anim_state", COLOR_DEFAULT))
             state_item.setData(0, Qt.ItemDataRole.UserRole, (state, None))
             state_item.setFlags(state_item.flags() | Qt.ItemFlag.ItemIsEditable)
             self._anim_tree.addTopLevelItem(state_item)
@@ -306,8 +306,8 @@ class SpriteFinderPanel(QWidget):
                 mirrored = sd.mirror_of is not None
                 fg = C.TEXT_DIM if mirrored else C.TEXT_NORM
                 sd_item.setForeground(0, QColor(fg))
-                icon_color = C.ACCENT_BLU if mirrored else COLOR_SPRITE
-                sd_item.setIcon(0, _ico(_DIR_ICON_KEYS.get(sd.dir, "dir_omni"), icon_color))
+                # Mirror signalé par le texte grisé (fg) ; icône neutre.
+                sd_item.setIcon(0, _ico(_DIR_ICON_KEYS.get(sd.dir, "dir_omni"), COLOR_DEFAULT))
                 sd_item.setData(0, Qt.ItemDataRole.UserRole, (state, sd))
                 state_item.addChild(sd_item)
 
@@ -381,32 +381,11 @@ class SpriteFinderPanel(QWidget):
     # ── Sprites : ajout / renommage / suppression ───────────────────
 
     def _on_add_sprite(self):
+        # Un sprite se crée uniquement par import d'une image (l'option
+        # « sprite vide » a été retirée) — le « + » ouvre directement l'import.
         if not self._project:
             return
-        from PyQt6.QtGui import QCursor
-        menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
-        new_a = menu.addAction("Nouveau sprite vide")
-        import_a = menu.addAction("Importer une image…")
-        act = menu.exec(QCursor.pos())
-        if act == new_a:
-            self._create_empty_sprite()
-        elif act == import_a:
-            self._import_sprite()
-
-    def _create_empty_sprite(self):
-        name, ok = QInputDialog.getText(self, "Nouveau sprite", "Nom :")
-        name = name.strip() if ok else ""
-        if not name:
-            return
-        if self._project.sprites.get(name):
-            QMessageBox.warning(self, "Nom déjà utilisé",
-                                f"Un sprite nommé « {name} » existe déjà.")
-            return
-        sprite = SpriteAsset(name=name)
-        self._project.sprites.append(sprite)
-        get_dispatcher().save_sprite(sprite)
-        self._refresh_sprites(select=sprite)
+        self._import_sprite()
 
     def _import_sprite(self):
         from .import_png_dialog import import_new_sprite

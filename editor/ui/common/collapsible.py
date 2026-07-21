@@ -107,7 +107,7 @@ class SectionItem(QFrame):
 
     def _update_style(self):
         if self._active:
-            self.setStyleSheet("background:#2a3a2a; border-left:2px solid #4caf78;")
+            self.setStyleSheet("background:#241f3a; border-left:2px solid #9b8cff;")
         else:
             self.setStyleSheet("background:transparent; border-left:2px solid transparent;")
 

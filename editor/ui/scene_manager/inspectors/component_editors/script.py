@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot
 from ui.common.theme import C, T, QSS
+from ui.common import icons
 
 
 @register("script")
@@ -20,7 +21,7 @@ class ScriptEditor(BaseComponentEditor):
 
         slot = ScriptSlot(
             add_label    = "Ajouter un script",
-            accent_color = C.ACCENT_GRN,
+            accent_color = icons.COLOR_SCRIPT,
             hint         = "on_start · on_update · on_collide · …",
         )
         if sp and sp.exists():

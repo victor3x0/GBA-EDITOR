@@ -18,7 +18,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 
 from ui.common.theme import C, T
 from ui.common.icons import get as _ico
-from ui.common.paint_palette_strip import PaintPaletteStrip
+from ui.common.palette_bank_strip import PaletteBankStrip
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
@@ -28,7 +28,7 @@ _CTX_MENU_QSS = (
     f"border:1px solid {C.BORDER_MID};font-family:monospace;"
     f"font-size:{T.MD}px;padding:2px;}}"
     f"QMenu::item{{padding:4px 20px 4px 12px;border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
+    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
 )
 
 # ── Frame timeline ─────────────────────────────────────────────────────────────
@@ -112,11 +112,11 @@ class _FrameThumb(QFrame):
     def _refresh_style(self):
         if self._selected:
             self.setStyleSheet(
-                f"QFrame{{background:{C.BG_SEL};border:2px solid {C.ACCENT_GRN};"
+                f"QFrame{{background:{C.BG_SEL};border:2px solid {C.ACCENT};"
                 f"border-radius:4px;}}"
             )
             self._idx_lbl.setStyleSheet(
-                f"color:{C.ACCENT_GRN};background:transparent;")
+                f"color:{C.ACCENT};background:transparent;")
         else:
             self.setStyleSheet(
                 f"QFrame{{background:{C.BG_INPUT};border:1px solid {C.BORDER};"
@@ -246,7 +246,7 @@ class _FrameTimeline(QWidget):
             f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
             f"border:1px dashed {C.BORDER};border-radius:4px;"
             f"font-size:{T.LG}px;}}"
-            f"QToolButton:hover{{color:{C.ACCENT_GRN};border-color:{C.ACCENT_GRN};}}"
+            f"QToolButton:hover{{color:{C.ACCENT};border-color:{C.ACCENT};}}"
         )
         self._add_btn.setToolTip("Ajouter une frame")
         self._add_btn.clicked.connect(self._on_add)
@@ -479,7 +479,7 @@ class _FrameTimeline(QWidget):
         if self._drop_before is None or not self._thumbs:
             return
         painter = QPainter(self._content)
-        pen = QPen(QColor(C.ACCENT_GRN), 2)
+        pen = QPen(QColor(C.ACCENT), 2)
         painter.setPen(pen)
         n = len(self._thumbs)
         if self._drop_before < n:
@@ -905,7 +905,7 @@ class _FrameCanvas(QWidget):
                 else:
                     painter.drawPixmap(dest, self._src_pixmap, src)
             painter.setOpacity(1.0)
-            painter.setPen(QPen(QColor(C.ACCENT_GRN), 2))
+            painter.setPen(QPen(QColor(C.ACCENT), 2))
             painter.drawRect(QRect(ox + hc * tile_px, oy + hr * tile_px, tile_px, tile_px))
         elif self._hover:
             painter.setPen(QPen(QColor(C.TEXT_DIM), 1, Qt.PenStyle.DashLine))
@@ -950,10 +950,10 @@ class _CanvasFloatingToolbar(QFrame):
         self._drag_offset = QPoint()
 
         self.setStyleSheet(
-            "_CanvasFloatingToolbar{background:#1c1c1c;border:1px solid #333;border-radius:8px;}"
+            f"_CanvasFloatingToolbar{{background:{C.BG_RAISED};border:1px solid {C.BORDER};border-radius:8px;}}"
             "QToolButton{border:none;background:transparent;border-radius:4px;}"
-            "QToolButton:hover{background:#2a2a2a;}"
-            "QToolButton:checked{background:#253525;border:1px solid #3a6a3a;}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};}}"
+            f"QToolButton:checked{{background:{C.BG_SEL};border:1px solid {C.ACCENT};}}"
         )
 
         layout = QHBoxLayout(self)
@@ -973,7 +973,7 @@ class _CanvasFloatingToolbar(QFrame):
 
         def _icon_btn(icon_key: str, tip: str, checkable: bool = False) -> QToolButton:
             b = QToolButton()
-            b.setIcon(_ico(icon_key, C.TEXT_DIM, C.ACCENT_GRN))
+            b.setIcon(_ico(icon_key, C.TEXT_DIM, C.ACCENT))
             b.setIconSize(QSize(22, 22))
             b.setFixedSize(36, 36)
             b.setCheckable(checkable)
@@ -992,9 +992,9 @@ class _CanvasFloatingToolbar(QFrame):
         _MODE_BTN = (
             f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
             f"font-size:{T.SM}px;padding:0 8px;font-weight:bold;}}"
-            f"QToolButton:hover{{color:{C.TEXT_HI};background:#2a2a2a;}}"
-            f"QToolButton:checked{{color:{C.ACCENT_GRN};background:#253525;"
-            f"border:1px solid #3a6a3a;border-radius:4px;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
+            f"QToolButton:checked{{color:{C.ACCENT};background:{C.BG_SEL};"
+            f"border:1px solid {C.ACCENT};border-radius:4px;}}"
         )
         self.btn_original = QToolButton(); self.btn_original.setText("PNG")
         self.btn_original.setToolTip("Preview : résultat compressé du sprite (own_palette)")
@@ -1016,7 +1016,7 @@ class _CanvasFloatingToolbar(QFrame):
         _TXT_BTN = (
             f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
             f"font-size:{T.LG}px;padding:0 8px;}}"
-            f"QToolButton:hover{{color:{C.TEXT_HI};background:#2a2a2a;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
         )
         self.btn_fit = QToolButton(); self.btn_fit.setText("Fit")
         self.btn_zm  = QToolButton(); self.btn_zm.setText("−")
@@ -1084,16 +1084,17 @@ class _FrameCanvasPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Bande de peinture/preview en TÊTE (modèle Background Editor) : les
-        # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
-        # clic = palette active pour le mode « Indexé ». Masquée si aucune palette.
-        self.paint_strip = PaintPaletteStrip(C.ACCENT_ORG, "PALETTE")
-        self.paint_strip.setVisible(False)
-        root.addWidget(self.paint_strip)
-
         self.canvas = _FrameCanvas()
         self.canvas.hover_changed.connect(self._on_hover_changed)
         root.addWidget(self.canvas, 1)
+
+        # Bandeau flottant de sélection de palette (bas-centre, même widget que
+        # Scene Manager/Background Editor — cf. palette_bank_strip) : les
+        # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
+        # clic = palette active pour le mode « Indexé ». Masqué si aucune palette.
+        self.paint_strip = PaletteBankStrip("Aucune palette", self)
+        self.paint_strip.setVisible(False)
+        self.paint_strip.raise_()
 
         self.toolbar = _CanvasFloatingToolbar(self.canvas, self)
         self.toolbar.move(10, 10)
@@ -1155,6 +1156,14 @@ class _FrameCanvasPanel(QWidget):
                              self.height() - self._coord_lbl.height() - 8)
         self._info_lbl.move(self.width() - self._info_lbl.width() - 10, 8)
         self._ro_lbl.move((self.width() - self._ro_lbl.width()) // 2, 8)
+        self._position_paint_strip()
+
+    def _position_paint_strip(self):
+        strip = self.paint_strip
+        strip.reflow()
+        x = max(0, (self.width() - strip.width()) // 2)
+        y = max(0, self.height() - strip.height() - 12)
+        strip.move(x, y)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1164,4 +1173,6 @@ class _FrameCanvasPanel(QWidget):
         tb.move(x, y)
         tb.raise_()
         self._reposition_overlays()
+        if self.paint_strip.isVisible():
+            self.paint_strip.raise_()
 

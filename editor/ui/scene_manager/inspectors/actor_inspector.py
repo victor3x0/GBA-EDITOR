@@ -17,6 +17,9 @@ from core.history import get_history, SetFieldCmd, AddComponentCmd, RemoveCompon
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
+from ui.common.widgets import NotesEdit
+from ui.common.direction_grid import DirectionPicker
+from ui.common import icons
 
 COMPONENT_LABELS = {
     "sprite":        "Sprite",
@@ -83,89 +86,6 @@ class ComponentListWidget(QListWidget):
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Sélecteur de direction 3×3
-# ──────────────────────────────────────────────────────────────────
-_DIR_ARROWS = {
-    (-1, -1): "↖", (0, -1): "↑", (1, -1): "↗",
-    (-1,  0): "←", (0,  0): "·", (1,  0): "→",
-    (-1,  1): "↙", (0,  1): "↓", (1,  1): "↘",
-}
-
-class _DirectionPicker(QWidget):
-    """Grille 3×3 de boutons représentant une direction discrète (-1|0|1 × -1|0|1)."""
-
-    changed = pyqtSignal(int, int)   # dir_x, dir_y
-
-    _CELL = 22   # px par cellule
-    _GAP  = 2
-
-    _SS_OFF = (
-        f"QPushButton{{background:#1e1e1e;color:#555;border:1px solid #2a2a2a;"
-        f"border-radius:2px;font-size:11px;padding:0;}}"
-        f"QPushButton:hover{{background:#2a2a2a;color:#aaa;border-color:#3a3a3a;}}"
-    )
-    _SS_ON = (
-        f"QPushButton{{background:#1e3a2a;color:#4caf78;border:1px solid #4caf78;"
-        f"border-radius:2px;font-size:11px;padding:0;}}"
-    )
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._dir_x = 0
-        self._dir_y = 0
-
-        grid = QHBoxLayout(self)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(0)
-
-        # 3 colonnes
-        self._btns: dict[tuple[int,int], QPushButton] = {}
-        cols = [QVBoxLayout() for _ in range(3)]
-        for col_l in cols:
-            col_l.setSpacing(self._GAP)
-            col_l.setContentsMargins(0, 0, 0, 0)
-
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                btn = QPushButton(_DIR_ARROWS[(dx, dy)])
-                btn.setFixedSize(QSize(self._CELL, self._CELL))
-                btn.setStyleSheet(self._SS_OFF)
-                btn.clicked.connect(lambda _=False, x=dx, y=dy: self._on_click(x, y))
-                self._btns[(dx, dy)] = btn
-                col_idx = dx + 1
-                cols[col_idx].addWidget(btn)
-
-        for i, col_l in enumerate(cols):
-            w = QWidget()
-            w.setLayout(col_l)
-            w.setFixedWidth(self._CELL)
-            grid.addWidget(w)
-            if i < 2:
-                grid.addSpacing(self._GAP)
-
-        self._update_styles()
-        total = 3 * self._CELL + 2 * self._GAP
-        self.setFixedSize(total, 3 * self._CELL + 2 * self._GAP)
-
-    def set_direction(self, dx: int, dy: int):
-        self._dir_x = max(-1, min(1, dx))
-        self._dir_y = max(-1, min(1, dy))
-        self._update_styles()
-
-    def _on_click(self, dx: int, dy: int):
-        self._dir_x = dx
-        self._dir_y = dy
-        self._update_styles()
-        self.changed.emit(dx, dy)
-
-    def _update_styles(self):
-        for (dx, dy), btn in self._btns.items():
-            btn.setStyleSheet(
-                self._SS_ON if (dx == self._dir_x and dy == self._dir_y) else self._SS_OFF
-            )
-
-
-# ──────────────────────────────────────────────────────────────────
 #  ActorInspector
 # ──────────────────────────────────────────────────────────────────
 class ActorInspector(QWidget):
@@ -205,6 +125,25 @@ class ActorInspector(QWidget):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(5)
 
+        # ── NOTE card — partagée Actor/Prefab ────────────────────
+        notes_card = QFrame()
+        notes_card.setObjectName("notes_card")
+        notes_card.setStyleSheet(
+            f"QFrame#notes_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
+            f"QLabel{{background:transparent;border:none;}}"
+        )
+        nl = QVBoxLayout(notes_card)
+        nl.setContentsMargins(8, 6, 8, 8)
+        nl.setSpacing(5)
+        notes_lbl = QLabel("NOTE")
+        notes_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        notes_lbl.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
+        nl.addWidget(notes_lbl)
+        self._notes_edit = NotesEdit()
+        self._notes_edit.committed.connect(lambda text: self._set("notes", text))
+        nl.addWidget(self._notes_edit)
+        cl.addWidget(notes_card)
+
         # ── Header : preview sprite + nom ────────────────────────
         header_frame = QFrame()
         header_frame.setStyleSheet(
@@ -235,7 +174,7 @@ class ActorInspector(QWidget):
 
         self._tag_lbl = QLabel("Index : —")
         self._tag_lbl.setFont(QFont(T.MONO, T.SM))
-        self._tag_lbl.setStyleSheet(f"color:{C.ACCENT_GRN};")
+        self._tag_lbl.setStyleSheet(f"color:{icons.COLOR_ACTOR};")
         self._tag_lbl.setToolTip(
             "Position de l'actor dans la scène (ordre de traitement et de rendu)."
         )
@@ -246,7 +185,7 @@ class ActorInspector(QWidget):
         # ── Badge prefab (visible seulement si actor.prefab_name) ──
         self._prefab_badge = QFrame()
         self._prefab_badge.setStyleSheet(
-            f"background:{C.BG_DEEP}; border-left:3px solid {C.ACCENT_PRP}; border-radius:2px;"
+            f"background:{C.BG_DEEP}; border-left:3px solid {icons.COLOR_PREFAB}; border-radius:2px;"
         )
         self._prefab_badge.setFixedHeight(28)
         pb_layout = QHBoxLayout(self._prefab_badge)
@@ -254,15 +193,15 @@ class ActorInspector(QWidget):
         pb_layout.setSpacing(6)
         self._prefab_badge_lbl = QLabel()
         self._prefab_badge_lbl.setFont(QFont(T.MONO, T.SM))
-        self._prefab_badge_lbl.setStyleSheet(f"color:{C.ACCENT_PRP};")
+        self._prefab_badge_lbl.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
         pb_layout.addWidget(self._prefab_badge_lbl, 1)
         btn_open_prefab = QPushButton("Ouvrir prefab")
         btn_open_prefab.setFont(QFont(T.MONO, T.XS))
         btn_open_prefab.setFixedHeight(18)
         btn_open_prefab.setStyleSheet(
-            f"QPushButton{{color:{C.ACCENT_PRP};background:transparent;border:1px solid {C.ACCENT_PRP};"
+            f"QPushButton{{color:{icons.COLOR_PREFAB};background:transparent;border:1px solid {icons.COLOR_PREFAB};"
             f"border-radius:2px;padding:0 5px;}}"
-            f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.ACCENT_PRP};}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI};background:{icons.COLOR_PREFAB};}}"
         )
         btn_open_prefab.clicked.connect(self._open_prefab)
         pb_layout.addWidget(btn_open_prefab)
@@ -293,9 +232,9 @@ class ActorInspector(QWidget):
         self._transform_group = QFrame()
         self._transform_group.setObjectName("transform_card")
         self._transform_group.setStyleSheet(
-            f"QFrame#transform_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
-            f"border-left:3px solid {C.ACCENT_GRN};border-radius:4px;}}"
-            # Les enfants QFrame (séparateurs, etc.) ne reçoivent pas le style parent
+            f"QFrame#transform_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
+            # Section à plat par élévation (cf scene_inspector) ; l'identité de
+            # famille passe par la couleur du titre, plus par un liseré.
             f"QFrame#transform_card QFrame{{background:transparent;border:none;}}"
             f"QLabel{{background:transparent;border:none;}}"
         )
@@ -307,18 +246,18 @@ class ActorInspector(QWidget):
         tg_hdr = QHBoxLayout()
         tg_lbl = QLabel("TRANSFORM")
         tg_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
-        tg_lbl.setStyleSheet(f"color:{C.ACCENT_GRN}; letter-spacing:1px;")
+        tg_lbl.setStyleSheet(f"color:{icons.COLOR_ACTOR}; letter-spacing:1px;")
         tg_hdr.addWidget(tg_lbl); tg_hdr.addStretch()
         tl.addLayout(tg_hdr)
 
         from ui.common.widgets import W as _W
 
-        # ── Position : X [ ]  Y [ ] ──────────────────────────────
-        self._tx = _W.spinbox(0, min_v=-512, max_v=512)
-        self._tx.valueChanged.connect(lambda v: self._set("x", v))
+        # ── Position : X [ ]  Y [ ] — px / tile / réf de variable ────
+        self._tx = _W.value_field(0, project=self._project)
+        self._tx.changed.connect(lambda raw: self._set("x", raw))
         _tip(self._tx, "actor.x")
-        self._ty = _W.spinbox(0, min_v=-512, max_v=512)
-        self._ty.valueChanged.connect(lambda v: self._set("y", v))
+        self._ty = _W.value_field(0, project=self._project)
+        self._ty.changed.connect(lambda raw: self._set("y", raw))
         _tip(self._ty, "actor.y")
         _W.pair("Position", "X", C.AXIS_X, self._tx, "Y", C.AXIS_Y, self._ty, tl,
                 label_width=58)
@@ -330,7 +269,7 @@ class ActorInspector(QWidget):
         dir_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
         dir_lbl.setFixedWidth(58)
         dir_row.addWidget(dir_lbl)
-        self._dir_picker = _DirectionPicker()
+        self._dir_picker = DirectionPicker()
         self._dir_picker.changed.connect(self._on_direction)
         dir_row.addWidget(self._dir_picker)
         dir_row.addStretch()
@@ -355,8 +294,7 @@ class ActorInspector(QWidget):
         _comp_card = QFrame()
         _comp_card.setObjectName("comp_card")
         _comp_card.setStyleSheet(
-            f"QFrame#comp_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
-            f"border-left:3px solid {C.ACCENT_GRN};border-radius:4px;}}"
+            f"QFrame#comp_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
             f"QFrame#comp_card QFrame{{background:transparent;border:none;}}"
             f"QFrame#comp_card QLabel{{background:transparent;border:none;}}"
         )
@@ -373,7 +311,7 @@ class ActorInspector(QWidget):
         )
         # Template avec slot {c} pour la couleur d'accent
         _toggle_style = (
-            "QToolButton{color:" + "{c}" + f";border:none;background:{C.BG_PANEL};"
+            "QToolButton{color:" + "{c}" + ";border:none;background:transparent;"
             "font-family:monospace;font-size:8pt;font-weight:bold;"
             f"text-align:left;padding:4px 8px;letter-spacing:1px;}}"
             f"QToolButton:hover{{background:{C.BG_HOVER};}}"
@@ -387,7 +325,7 @@ class ActorInspector(QWidget):
         comp_hdr_row.setSpacing(2)
         self._comp_toggle = QToolButton()
         self._comp_toggle.setText(f"▾  COMPONENTS")
-        self._comp_toggle.setStyleSheet(_toggle_style.replace("{c}", C.ACCENT_GRN))
+        self._comp_toggle.setStyleSheet(_toggle_style.replace("{c}", icons.COLOR_ACTOR))
         self._comp_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._comp_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._comp_toggle.setFixedHeight(26)
@@ -412,8 +350,8 @@ class ActorInspector(QWidget):
             f"QListWidget{{background:{C.BG_DEEP};color:{C.TEXT_NORM};"
             f"border:none;border-radius:0;}}"
             f"QListWidget::item{{padding:4px 8px;border-bottom:1px solid {C.BORDER_DARK};}}"
-            f"QListWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT_GRN};"
-            f"border-left:2px solid {C.ACCENT_GRN};}}"
+            f"QListWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};"
+            f"border-left:2px solid {C.ACCENT};}}"
             f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
         )
         self._comp_list.currentRowChanged.connect(self._on_component_selected)
@@ -427,8 +365,7 @@ class ActorInspector(QWidget):
         self._editor_card = QFrame()
         self._editor_card.setObjectName("editor_card")
         self._editor_card.setStyleSheet(
-            f"QFrame#editor_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
-            f"border-left:3px solid {C.ACCENT_ORG};border-radius:4px;}}"
+            f"QFrame#editor_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
             f"QFrame#editor_card QFrame{{background:transparent;border:none;}}"
             f"QFrame#editor_card QLabel{{background:transparent;border:none;}}"
         )
@@ -459,7 +396,7 @@ class ActorInspector(QWidget):
         self._editor_toggle.clicked.connect(lambda: self._toggle_section(
             self._editor_toggle, self._editor_container, "ÉDITEUR", self._ctx_color))
 
-        self._ctx_color = C.ACCENT_GRN   # couleur courante du contexte (actor par défaut)
+        self._ctx_color = icons.COLOR_ACTOR   # couleur courante du contexte (actor par défaut)
         self._editor_section_visible = True   # état mémorisé du toggle ÉDITEUR
 
         cl.addStretch()
@@ -471,20 +408,20 @@ class ActorInspector(QWidget):
     # ── Chargement ───────────────────────────────────────────────
 
     # Couleurs de contexte (cohérentes avec assets_finder_panel et InspectorPanel)
-    _COLOR_ACTOR  = C.ACCENT_GRN
-    _COLOR_PREFAB = C.ACCENT_BLU
+    _COLOR_ACTOR  = icons.COLOR_ACTOR
+    _COLOR_PREFAB = icons.COLOR_PREFAB
     _COLOR_SEL_BG_ACTOR  = C.BG_SEL
-    _COLOR_SEL_BG_PREFAB = f"{C.ACCENT_BLU}15"
+    _COLOR_SEL_BG_PREFAB = f"{icons.COLOR_PREFAB}15"
 
     def _apply_context_color(self, color: str, sel_bg: str):
         """Met à jour les toggles COMPONENTS / ÉDITEUR, la bordure de carte et la sélection de liste."""
         self._ctx_color = color
         tpl = self._toggle_style_tpl
         self._comp_toggle.setStyleSheet(tpl.replace("{c}", color))
-        # La bordure gauche de la carte Components suit la couleur de contexte
+        # Carte ÉDITEUR à plat (élévation) — l'identité passe par la couleur du
+        # toggle (self._ctx_color), plus par un liseré.
         self._editor_card.setStyleSheet(
-            f"QFrame#editor_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
-            f"border-left:3px solid {C.ACCENT_ORG};border-radius:4px;}}"
+            f"QFrame#editor_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
         )
         self._comp_list.setStyleSheet(
             f"QListWidget{{background:{C.BG_DEEP};color:{C.TEXT_NORM};"
@@ -510,6 +447,7 @@ class ActorInspector(QWidget):
             self._content.setVisible(False); self._empty.setVisible(True); return
         self._empty.setVisible(False); self._content.setVisible(True)
         self._blocking = True
+        self._notes_edit.set_text_silent(getattr(prefab, "notes", ""))
         self._active.setChecked(True)
         self._prefab_badge.setVisible(False)   # un prefab n'est pas une instance
         self._transform_group.setVisible(False)
@@ -526,6 +464,7 @@ class ActorInspector(QWidget):
             self._content.setVisible(False); self._empty.setVisible(True); return
         self._empty.setVisible(False); self._content.setVisible(True)
         self._blocking = True
+        self._notes_edit.set_text_silent(getattr(actor, "notes", ""))
         # Index dans la scène
         if scene:
             try:
@@ -543,7 +482,10 @@ class ActorInspector(QWidget):
         else:
             self._prefab_badge.setVisible(False)
         self._transform_group.setVisible(True)
-        self._tx.setValue(actor.x); self._ty.setValue(actor.y)
+        from core.models.field_value import variables_from_project
+        _vars = variables_from_project(self._project)
+        self._tx.set_variables(_vars); self._ty.set_variables(_vars)
+        self._tx.set_raw(actor.x); self._ty.set_raw(actor.y)
         self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
         self._tpriority.setValue(actor.priority)
         self._tvisible.setChecked(actor.visible)
@@ -554,7 +496,7 @@ class ActorInspector(QWidget):
     def update_position(self, x: int, y: int):
         if self._blocking or not self._actor: return
         self._blocking = True
-        self._tx.setValue(x); self._ty.setValue(y)
+        self._tx.set_raw(x); self._ty.set_raw(y)
         self._blocking = False
 
     def notify_lua_changed(self, path: str):
@@ -626,7 +568,7 @@ class ActorInspector(QWidget):
             f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
             f"border:1px solid {C.BORDER_MID};font-family:monospace;font-size:10pt;padding:2px;}}"
             f"QMenu::item{{padding:5px 20px 5px 12px;border-radius:2px;}}"
-            f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT_GRN};}}"
+            f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
         )
         for png in pngs:
             action = menu.addAction(png.stem)

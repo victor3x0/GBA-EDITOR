@@ -9,6 +9,8 @@ from ui.common.theme import C, T
 from .actor_inspector import ActorInspector
 from .scene_inspector import SceneInspector
 from .camera_inspector import CameraInspector
+from .project_inspector import ProjectInspector
+from .script_inspector import ScriptInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector, VariableUsesInspector
 
 
@@ -33,6 +35,8 @@ class DynamicInspector(QWidget):
     _MODE_PREFAB_USES = 4
     _MODE_SCRIPT_USES = 5
     _MODE_VARIABLE_USES = 6
+    _MODE_PROJECT     = 7
+    _MODE_SCRIPT      = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -98,6 +102,15 @@ class DynamicInspector(QWidget):
         self._variable_uses_insp.edit_requested.connect(self._on_script_edit_requested)
         self._stack.addWidget(self._variable_uses_insp)
 
+        # 7 — projet (mode par défaut : aucune sélection)
+        self._project_insp = ProjectInspector()
+        self._stack.addWidget(self._project_insp)
+
+        # 8 — script (asset .lua sélectionné dans le Project Viewer)
+        self._script_insp = ScriptInspector()
+        self._stack.addWidget(self._script_insp)
+        self._current_script_path = None   # utilisé par _on_header_rename
+
         self._stack.setCurrentIndex(self._MODE_EMPTY)
 
         from core.selection_bus import get_bus
@@ -111,7 +124,7 @@ class DynamicInspector(QWidget):
     # ── Helpers header ───────────────────────────────────────────
 
     def _set_header(self, kind: str, type_text: str, name_text: str):
-        editable = kind in ("scene", "actor", "prefab")
+        editable = kind in ("scene", "actor", "prefab", "script_asset")
         self._header.set_header(kind, type_text, name_text, editable=editable)
         self._header_mode = kind
 
@@ -135,6 +148,29 @@ class DynamicInspector(QWidget):
                     from core.command_dispatcher import get_dispatcher
                     get_dispatcher()._emit("actors_list_changed")
                 self._header.set_name(actor.name)
+        elif self._header_mode == "script_asset":
+            path = self._current_script_path
+            if not path or not path.exists():
+                return
+            new_stem = new_name.strip()
+            if not new_stem or new_stem == path.stem:
+                self._header.set_name(path.name)
+                return
+            new_path = path.parent / f"{new_stem}{path.suffix}"
+            if new_path.exists():
+                self._header.set_name(path.name)
+                return
+            from core.history import get_history, RenameFileCmd
+            from core.command_dispatcher import get_dispatcher
+
+            def _refresh():
+                current = new_path if new_path.exists() else path
+                self._current_script_path = current
+                self._header.set_name(current.name)
+                self._script_insp.load(current)
+                get_dispatcher().notify_scripts_changed()
+
+            get_history().push(RenameFileCmd(path, new_path, _refresh))
 
     # ── API publique ─────────────────────────────────────────────
 
@@ -144,22 +180,36 @@ class DynamicInspector(QWidget):
 
     def on_selection(self, obj):
         """Reçu du bus — afficher le bon panneau selon le type de l'objet."""
+        from pathlib import Path as _P
         from core.project import Actor, Scene, Prefab
+        from core.selection_bus import CameraSelection
         if obj is None:
-            self.show_empty()
+            # Mode par défaut : aperçu du projet (pas le message d'aide vide) —
+            # cf. clic hors de la zone active du canvas.
+            self.show_project()
+        elif isinstance(obj, CameraSelection):
+            # Clic sur l'ICÔNE caméra spécifiquement (cf. CameraItem.shape() —
+            # le rectangle de vue 240×160 n'est qu'un retour visuel, il ne
+            # déclenche jamais ce marqueur) → inspecteur caméra.
+            self.show_camera(obj.scene, self._project)
         elif isinstance(obj, Actor):
             scene = self._project.active_scene if self._project else None
             self.show_actor(obj, self._project, scene)
         elif isinstance(obj, Scene):
-            # Sélection d'une scène via le canvas (caméra) → inspector caméra
-            self.show_camera(obj, self._project)
+            # Sélection générique de la scène (clic vide dans la zone active du
+            # canvas) → son propre inspecteur, comme Actor/Prefab.
+            self.show_scene(obj, self._project)
         elif isinstance(obj, Prefab):
             self.show_prefab(obj, self._project)
+        elif isinstance(obj, _P):
+            # Un script (.lua) sélectionné dans le Project Viewer — pas de
+            # Resource dédiée, un simple chemin de fichier sur le bus.
+            self.show_script(obj, self._project)
 
     def refresh_current(self):
         """Recharge le panneau courant depuis les données projet — capte les
         assets modifiés dans un autre écran (ex. palettes d'un fond recompressé
-        → grisées de la carte PALETTES ACTIVES). Ne change pas le mode affiché
+        → grisées de la carte PALETTES). Ne change pas le mode affiché
         ni ne rebranche de signaux."""
         if self._stack.currentIndex() == self._MODE_SCENE:
             sc, pr = self._scene_insp._scene, self._scene_insp._project
@@ -169,6 +219,14 @@ class DynamicInspector(QWidget):
     def show_empty(self):
         self._set_header("empty", "", "")
         self._stack.setCurrentIndex(self._MODE_EMPTY)
+
+    def show_project(self):
+        """Mode par défaut de l'inspecteur — aucune sélection (clic hors
+        canvas, Échap, suppression du dernier actor sélectionné…)."""
+        self._project_insp.load(self._project)
+        name = self._project.settings.name if self._project else ""
+        self._set_header("project", "PROJET", name)
+        self._stack.setCurrentIndex(self._MODE_PROJECT)
 
     def show_scene(self, scene, project):
         self._scene_insp.load(scene, project)
@@ -196,6 +254,16 @@ class DynamicInspector(QWidget):
         self._camera_insp.load(scene, project)
         self._set_header("camera", "CAMÉRA", "240 × 160")
         self._stack.setCurrentIndex(self._MODE_CAMERA)
+
+    def show_script(self, path, project=None):
+        """Script .lua sélectionné dans le Project Viewer — note libre +
+        variables exposées (ScriptInspector)."""
+        from pathlib import Path as _P
+        path = _P(path)
+        self._current_script_path = path
+        self._script_insp.load(path)
+        self._set_header("script_asset", "SCRIPT", path.name)
+        self._stack.setCurrentIndex(self._MODE_SCRIPT)
 
     def show_prefab_uses(self, prefab, project=None):
         proj = project or self._project

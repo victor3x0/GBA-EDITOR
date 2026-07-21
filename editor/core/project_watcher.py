@@ -60,6 +60,16 @@ class ProjectWatcher(QObject):
         self._timers: dict[str, QTimer] = {}
         self._project_root: Optional[Path] = None
         self._suppress = False
+        # Timer unique et ré-armable qui lève la suppression. Réutilisé (plutôt
+        # que QTimer.singleShot) pour qu'une rafale de sauvegardes internes
+        # (maintien d'une flèche = nudge répété, molette continue sur un spinbox)
+        # garde le watcher suppressé jusqu'à 350 ms APRÈS la DERNIÈRE écriture.
+        # Sinon la 1re sauvegarde ré-arme le watcher en plein milieu de la rafale
+        # et une écriture suivante est vue comme « modif externe » → rechargement
+        # de la scène qui recrée les items en cours de manipulation → crash.
+        self._suppress_timer = QTimer(self)
+        self._suppress_timer.setSingleShot(True)
+        self._suppress_timer.timeout.connect(self._clear_suppress)
 
         # snapshot des fichiers connus dans chaque dossier surveillé
         # dir_str -> set[file_str]
@@ -125,7 +135,10 @@ class ProjectWatcher(QObject):
                 self._watcher.addPaths(paths)
             if dirs:
                 self._watcher.addPaths(dirs)
-            QTimer.singleShot(self._DEBOUNCE_MS + 150, self._clear_suppress)
+            # Ré-arme le délai : chaque sortie de suspended() repousse la levée
+            # de suppression, donc la fenêtre ne se ferme que 350 ms après la
+            # toute dernière sauvegarde de la rafale (cf. _suppress_timer).
+            self._suppress_timer.start(self._DEBOUNCE_MS + 150)
 
     # ── Interne ─────────────────────────────────────────────────────
 
@@ -145,6 +158,8 @@ class ProjectWatcher(QObject):
         for t in self._timers.values():
             t.stop()
         self._timers.clear()
+        self._suppress_timer.stop()
+        self._suppress = False
         self._dir_snapshots.clear()
 
     def _index_files(self, project_path: Path):

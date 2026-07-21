@@ -84,7 +84,7 @@ class AssignSlot(QFrame):
         btn_import.setFixedSize(20, 20)
         btn_import.setStyleSheet(
             "QToolButton{color:#666;border:none;background:none;font-size:12px;}"
-            "QToolButton:hover{color:#4caf78;}"
+            "QToolButton:hover{color:#9b8cff;}"
         )
         btn_import.clicked.connect(self._open_dialog)
         layout.addWidget(btn_import)
@@ -319,7 +319,7 @@ class BgLayerRow(QFrame):
         self._inpaint_layer_btn.setToolTip("Inpainter ce layer (repeindre ses palettes)")
         self._inpaint_layer_btn.setStyleSheet(
             "QToolButton{background:transparent;border:none;padding:0;}"
-            f"QToolButton:checked{{background:#253525;border:1px solid {self._color};"
+            f"QToolButton:checked{{background:#241f3a;border:1px solid {self._color};"
             "border-radius:3px;}"
         )
         self._inpaint_layer_btn.clicked.connect(
