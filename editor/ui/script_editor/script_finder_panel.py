@@ -10,7 +10,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QEvent
 
 from ui.common.theme import C, T
-from ui.common.icons import COLOR_SCRIPT, COLOR_GLOBAL, COLOR_CONST
+from ui.common.icons import COLOR_DEFAULT
 from ui.common.widgets import FinderSection
 from .colors import _BG, _BG_HDR, _BG_HOVER, _BG_SEL_REF, _BORDER, _TEXT_DIM, _TEXT_HI, _TEXT_NORM, _C_REF
 from .sidebar_widgets import _SubSection
@@ -41,7 +41,7 @@ class _FileEntryWidget(QWidget):
         from ui.common.icons import get as _ico
         icon_key = "script_lua" if path.suffix == ".lua" else "script_file"
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(_ico(icon_key, COLOR_SCRIPT).pixmap(QSize(13, 13)))
+        icon_lbl.setPixmap(_ico(icon_key, COLOR_DEFAULT).pixmap(QSize(13, 13)))
         icon_lbl.setFixedWidth(16)
         root.addWidget(icon_lbl)
 
@@ -77,7 +77,7 @@ class _FileEntryWidget(QWidget):
         self._editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._editor.setStyleSheet(
             f"QLineEdit{{background:{C.BG_INPUT};color:{C.TEXT_HI};"
-            f"border:1px solid {C.ACCENT_GRN};border-radius:2px;padding:0 3px;}}"
+            f"border:1px solid {C.ACCENT};border-radius:2px;padding:0 3px;}}"
         )
         self._editor.hide()
         self._editor.returnPressed.connect(self._finish_rename)
@@ -218,7 +218,9 @@ class ScriptFinderPanel(QWidget):
         # ── Tree panel ─────────────────────────────────────────────
         self._tree_panel = QWidget()
         self._tree_panel.setStyleSheet(f"background:{_BG};")
-        self._tree_panel.setFixedWidth(200)
+        # Largeur minimale (pas fixe) : la colonne peut s'étirer dans le
+        # QSplitter du Script Editor, le tree_panel remplit l'espace disponible.
+        self._tree_panel.setMinimumWidth(200)
         tree_l = QVBoxLayout(self._tree_panel)
         tree_l.setContentsMargins(0, 0, 0, 0)
         tree_l.setSpacing(0)
@@ -226,7 +228,7 @@ class ScriptFinderPanel(QWidget):
         # SCRIPT FINDER — même en-tête (flèche + titre coloré + recherche)
         # que les autres finders ; pas de "+" ici (aucune création de script
         # depuis ce panneau, seulement depuis l'Assets finder).
-        sec_scripts = FinderSection("SCRIPT FINDER", COLOR_SCRIPT)
+        sec_scripts = FinderSection("SCRIPT FINDER")
         sec_scripts.set_add_visible(False)
         tree_l.addWidget(sec_scripts, 1)
 
@@ -245,22 +247,38 @@ class ScriptFinderPanel(QWidget):
         sec_scripts.set_widget(scroll)
 
         # CONSTANTS puis GLOBALS — même ordre et même en-tête que l'Assets finder
-        sec_const = FinderSection("CONSTANTS", COLOR_CONST)
+        sec_const = FinderSection("CONSTANTS")
         self._constants_panel = VarTablePanel(kind="const")
         self._constants_panel.snippet_requested.connect(self.snippet_requested)
         sec_const.set_widget(self._constants_panel)
         sec_const.add_clicked.connect(self._constants_panel._add_var)
         tree_l.addWidget(sec_const)
 
-        sec_globals = FinderSection("GLOBALS", COLOR_GLOBAL)
+        sec_globals = FinderSection("GLOBALS")
         self._globals_panel = VarTablePanel(kind="global")
         self._globals_panel.snippet_requested.connect(self.snippet_requested)
         sec_globals.set_widget(self._globals_panel)
         sec_globals.add_clicked.connect(self._globals_panel._add_var)
         tree_l.addWidget(sec_globals)
 
-        layout.addWidget(self._tree_panel)
+        layout.addWidget(self._tree_panel, 1)   # remplit la largeur de la colonne
         self._tree_panel.setVisible(False)
+        self._apply_column_width()
+
+    # Colonne « étirable » dans un QSplitter : quand le finder est déplié, on
+    # laisse une plage de largeurs (poignée du splitter) ; quand il est replié,
+    # on force la colonne à la largeur de la bande (24 px) pour que le splitter
+    # rende l'espace à l'éditeur au lieu de laisser un vide.
+    _COL_MIN = 224   # bande 24 + tree_panel min 200
+    _COL_MAX = 560
+    _STRIP_W = 24
+
+    def _apply_column_width(self):
+        if self._expanded:
+            self.setMinimumWidth(self._COL_MIN)
+            self.setMaximumWidth(self._COL_MAX)
+        else:
+            self.setFixedWidth(self._STRIP_W)
 
     def set_project(self, project):
         self._constants_panel.set_project(project)
@@ -270,11 +288,13 @@ class ScriptFinderPanel(QWidget):
         self._expanded = True
         self._tree_panel.setVisible(True)
         self._toggle_btn.setText("‹")
+        self._apply_column_width()
 
     def _do_toggle(self):
         self._expanded = not self._expanded
         self._tree_panel.setVisible(self._expanded)
         self._toggle_btn.setText("›" if self._expanded else "‹")
+        self._apply_column_width()
 
     def set_root(self, scripts_dir: Path):
         self._root_path = scripts_dir

@@ -50,7 +50,7 @@ class GbaStatusBar(QWidget):
     Barre fixe en bas de la fenêtre affichant les compteurs GBA en temps réel.
     Inspiré de GB Studio : les limites hardware sont visibles, pas cachées.
     """
-    _STYLE_OK   = f"color:{C.ACCENT_GRN};"
+    _STYLE_OK   = f"color:{C.POWER};"
     _STYLE_WARN = f"color:{C.ACCENT_YLW};"
     _STYLE_CRIT = f"color:{C.ACCENT_RED};"
 
@@ -284,7 +284,7 @@ class MainWindow(QMainWindow):
             f"QSplitter::handle{{background:{C.BORDER};}}"
             "QSplitter::handle:horizontal{width:3px;}"
             "QSplitter::handle:vertical{height:3px;}"
-            f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
+            f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
         )
 
         screen = QWidget()
@@ -616,10 +616,11 @@ class MainWindow(QMainWindow):
 
     def _add_scene(self):
         if not self.project: return
-        name, ok = QInputDialog.getText(self, "Nouvelle scene", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_scene(name.strip())
-            self.assets_finder_panel.refresh()
+        from core.command_dispatcher import unique_name
+        name = unique_name("Scene", {s.name for s in self.project.scenes})
+        get_dispatcher().add_scene(name)
+        self.assets_finder_panel.refresh()
+        self.assets_finder_panel.begin_rename_scene(name)
 
     def _add_actor(self):
         if not self.project or not self.project.active_scene: return
@@ -631,10 +632,11 @@ class MainWindow(QMainWindow):
 
     def _add_prefab(self):
         if not self.project: return
-        name, ok = QInputDialog.getText(self, "Nouveau Prefab", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_prefab(name.strip())
-            self.assets_finder_panel.refresh()
+        from core.command_dispatcher import unique_name
+        name = unique_name("Prefab", {p.name for p in self.project.prefabs})
+        get_dispatcher().add_prefab(name)
+        self.assets_finder_panel.refresh()
+        self.assets_finder_panel.begin_rename_prefab(name)
 
     def _on_scene_changed(self):
         """Fin de drag actor ou déplacement caméra — sauvegarder via le dispatcher."""

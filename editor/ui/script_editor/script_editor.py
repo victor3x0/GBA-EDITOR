@@ -172,13 +172,25 @@ class ScriptEditorScreen(QWidget):
         self._file_tree.file_requested.connect(lambda p: self.open_script(Path(p)))
         self._file_tree.snippet_requested.connect(self._editor_insert_snippet)
 
-        body = QWidget()
-        body_l = QHBoxLayout(body)
-        body_l.setContentsMargins(0, 0, 0, 0)
-        body_l.setSpacing(0)
-        body_l.addWidget(self._sidebar)
-        body_l.addWidget(center_split, 1)
-        body_l.addWidget(self._file_tree)
+        # Corps dans un QSplitter horizontal : colonnes redimensionnables à la
+        # souris, comme le Sprite Editor / Scene Manager (panneaux « étirables »
+        # bornés par min/max, pas de largeur fixe). Le centre s'étire, les côtés
+        # gardent leur taille. childrenCollapsible=False : la poignée ne réduit
+        # pas une colonne à 0 par accident (le finder a son propre bouton ‹/›).
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setStyleSheet(
+            f"QSplitter::handle{{background:{_BORDER};}}"
+            f"QSplitter::handle:horizontal{{width:2px;}}"
+            f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
+        )
+        body.setChildrenCollapsible(False)
+        body.addWidget(self._sidebar)
+        body.addWidget(center_split)
+        body.addWidget(self._file_tree)
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
+        body.setStretchFactor(2, 0)
+        body.setSizes([220, 900, 224])
         root.addWidget(body, 1)
 
     # ── API publique ──────────────────────────────────────────────────

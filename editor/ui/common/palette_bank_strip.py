@@ -43,7 +43,7 @@ class PaletteBankStrip(QFrame):
             QToolButton { border:1px solid #2a2a2a; background:transparent;
                           border-radius:4px; padding:1px; }
             QToolButton:hover   { border-color:#4a4a4a; }
-            QToolButton:checked { border:2px solid #4caf78; }
+            QToolButton:checked { border:2px solid #9b8cff; }
         """)
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(6, 5, 6, 5)
@@ -57,6 +57,16 @@ class PaletteBankStrip(QFrame):
     def active(self):
         """Id de l'entrée actuellement sélectionnée (None si la bande est vide)."""
         return self._active
+
+    def reflow(self):
+        """Recale la taille du bandeau sur son contenu, de façon fiable.
+
+        `adjustSize()` seul lit `sizeHint()`, qui peut être périmé/minimal tant
+        que le layout n'a pas été activé — d'où le bug intermittent où le
+        bandeau se « compresse » à la taille d'une seule pastille. Activer le
+        layout d'abord force un calcul de géométrie synchrone et à jour."""
+        self._layout.activate()
+        self.adjustSize()
 
     def load(self, entries: list, active=None):
         """`entries` : list[(id, label, colors)]. `active` : repli si aucune
@@ -90,7 +100,7 @@ class PaletteBankStrip(QFrame):
             btn.clicked.connect(lambda _c=False, i=id_: self._select(i))
             self._layout.addWidget(btn)
             self._btns[id_] = btn
-        self.adjustSize()
+        self.reflow()
 
     def _select(self, id_):
         if id_ == self._active:

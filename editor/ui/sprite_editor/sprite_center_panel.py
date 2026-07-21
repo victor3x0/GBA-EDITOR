@@ -49,7 +49,7 @@ class SpriteCenterPanel(QWidget):
         splitter.setStyleSheet(
             f"QSplitter::handle{{background:{C.BORDER};}}"
             f"QSplitter::handle:vertical{{height:3px;}}"
-            f"QSplitter::handle:vertical:hover{{background:{C.ACCENT_GRN};}}"
+            f"QSplitter::handle:vertical:hover{{background:{C.ACCENT};}}"
         )
 
         self._canvas_panel = _FrameCanvasPanel()

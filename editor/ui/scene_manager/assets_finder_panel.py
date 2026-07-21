@@ -9,12 +9,12 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QToolButton, QInputDialog, QMessageBox,
     QFileDialog, QTreeWidget, QTreeWidgetItem, QMenu, QAbstractItemView,
-    QApplication, QSizePolicy, QComboBox,
+    QApplication, QSizePolicy, QLineEdit, QSpinBox,
 )
 from PyQt6.QtGui import QFont, QColor, QDrag, QAction
-from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray
+from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray, QTimer
 
-from ui.common.theme import T
+from ui.common.theme import T, C, QSS
 from ui.common.widgets import W, FinderSection
 
 from core.project import (
@@ -24,10 +24,7 @@ from core.project import (
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd, DeleteFileCmd
-from ui.common.icons import (
-    get as _ico, COLOR_ACTOR, COLOR_PREFAB, COLOR_SCRIPT, COLOR_FOLDER,
-    COLOR_SCENE, COLOR_GLOBAL, COLOR_CONST,
-)
+from ui.common.icons import get as _ico, COLOR_DEFAULT
 
 PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
 
@@ -42,20 +39,22 @@ T_PREFAB = "prefab"
 T_SCRIPT = "script"
 T_FOLDER = "folder"
 
-# ── Thème ─────────────────────────────────────────────────────────
-_BG      = "#141414"
-_HEADER  = "#1a1a1a"
-_HOVER   = "#1e1e1e"
-_SEL_BG  = "#1e3a2a"
-_SEL_FG  = "#4caf78"
-_TEXT    = "#999999"
-_DIM     = "#555555"
-# Couleurs de type d'objet — centralisées dans ui/icons.py (même source
-# que les icônes _ico(...) ci-dessous, pour éviter tout écart icône/texte).
-_C_SCENE  = COLOR_SCENE
-_C_PREFAB = COLOR_PREFAB
-_C_SCRIPT = COLOR_SCRIPT
-_C_FOLDER = COLOR_FOLDER
+# ── Thème ─── surfaces indigo centralisées (cf. project_theme_gba_redesign) ──
+_BG      = C.BG_BASE      # fond de l'arbre / panneaux (indigo profond)
+_HEADER  = C.BG_PANEL     # bandeaux de section (SCENES, PREFABS…)
+_HOVER   = C.BG_HOVER     # survol de ligne
+_SEL_BG  = C.BG_SEL       # fond sélection périwinkle
+_SEL_FG  = C.ACCENT       # texte/liseré sélection
+_TEXT    = C.TEXT_NORM
+_DIM     = C.TEXT_DIM
+# Plus de code couleur par type d'asset dans le finder : texte en tons de
+# thème, icônes en neutre (COLOR_DEFAULT), distinction par forme d'icône.
+# Le code couleur ne subsiste qu'aux niveaux locaux (scene canvas) et dans
+# l'en-tête d'inspecteur (AssetHeaderBar).
+_C_SCENE  = _TEXT
+_C_PREFAB = _TEXT
+_C_SCRIPT = _TEXT
+_C_FOLDER = _DIM
 
 _TREE_QSS = f"""
 QTreeWidget {{
@@ -167,10 +166,10 @@ class _SceneTree(_Tree):
             s_item.setData(0, _ROLE_TYPE, T_SCENE)
             s_item.setData(0, _ROLE_OBJ, scene)
             s_item.setData(0, _ROLE_PATH, i)
-            fg = QColor(_SEL_FG if is_active else _C_SCENE)
-            s_item.setForeground(0, fg)
-            s_item.setFont(0, QFont(T.MONO, T.MD,
-                                    QFont.Weight.Bold if is_active else QFont.Weight.Normal))
+            s_item.setForeground(0, QColor(_C_SCENE))
+            s_item.setFont(0, QFont(T.MONO, T.MD, QFont.Weight.Normal))
+            if is_active:
+                s_item.setBackground(0, QColor(C.BG_SEL))
 
             for actor in scene.actors:
                 a_item = QTreeWidgetItem(s_item)
@@ -186,10 +185,10 @@ class _SceneTree(_Tree):
 
     def _update_actor_item(self, item: QTreeWidgetItem, actor: Actor):
         if actor.prefab_name:
-            item.setIcon(0, _ico("prefab", COLOR_PREFAB))
+            item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
             item.setToolTip(0, f"Instance de prefab : {actor.prefab_name}")
         else:
-            item.setIcon(0, _ico("actor", COLOR_ACTOR))
+            item.setIcon(0, _ico("actor", COLOR_DEFAULT))
             item.setToolTip(0, "")
 
         # Le texte de l'item EST le texte édité en place (QTreeWidgetItem ne
@@ -378,9 +377,19 @@ class _AssetTree(_Tree):
         self._type  = asset_type   # T_PREFAB ou T_SCRIPT
         self.setDragEnabled(True)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.itemClicked.connect(self._on_click)
         self.itemDoubleClicked.connect(self._on_double_click)
         self.customContextMenuRequested.connect(self._ctx_menu)
         self.itemChanged.connect(self._on_item_changed)
+
+    # ── Clic ────────────────────────────────────────────────────────
+
+    def _on_click(self, item: QTreeWidgetItem, _col: int):
+        """Simple clic sur un script → ScriptInspector (note + variables
+        exposées). Les prefabs restent sur leur route existante (double-clic /
+        menu contextuel « Éditer le prefab »)."""
+        if item.data(0, _ROLE_TYPE) == T_SCRIPT:
+            get_bus().select(item.data(0, _ROLE_OBJ))
 
     # ── Peuplement depuis le disque ───────────────────────────────
 
@@ -401,7 +410,7 @@ class _AssetTree(_Tree):
         for entry in entries:
             if entry.is_dir():
                 folder = QTreeWidgetItem(parent)
-                folder.setIcon(0, _ico("folder", COLOR_FOLDER))
+                folder.setIcon(0, _ico("folder", COLOR_DEFAULT))
                 folder.setText(0, entry.name)
                 folder.setData(0, _ROLE_TYPE, T_FOLDER)
                 folder.setData(0, _ROLE_PATH, entry)
@@ -416,7 +425,7 @@ class _AssetTree(_Tree):
                     obj = project.get_prefab(entry.stem)
                     if not obj:
                         continue
-                    item.setIcon(0, _ico("prefab", COLOR_PREFAB))
+                    item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
                     item.setText(0, entry.stem)
                     item.setData(0, _ROLE_TYPE, T_PREFAB)
                     item.setData(0, _ROLE_OBJ, obj)
@@ -424,7 +433,7 @@ class _AssetTree(_Tree):
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
                 else:
                     icon_key = "script_lua" if entry.suffix == ".lua" else "script_file"
-                    item.setIcon(0, _ico(icon_key, COLOR_SCRIPT))
+                    item.setIcon(0, _ico(icon_key, COLOR_DEFAULT))
                     item.setText(0, entry.name)
                     item.setData(0, _ROLE_TYPE, T_SCRIPT)
                     item.setData(0, _ROLE_OBJ, entry)
@@ -526,7 +535,7 @@ class _AssetTree(_Tree):
         proj.prefabs.rename(prefab, new_name)
         new_path = proj.prefabs._path(prefab.name)
         self.blockSignals(True)
-        item.setIcon(0, _ico("prefab", COLOR_PREFAB))
+        item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
         item.setText(0, prefab.name)
         item.setData(0, _ROLE_PATH, new_path)
         self.blockSignals(False)
@@ -555,7 +564,7 @@ class _AssetTree(_Tree):
             current = new_path if new_path.exists() else path
             self.blockSignals(True)
             icon_key = "script_lua" if current.suffix == ".lua" else "script_file"
-            item.setIcon(0, _ico(icon_key, COLOR_SCRIPT))
+            item.setIcon(0, _ico(icon_key, COLOR_DEFAULT))
             item.setText(0, current.name)
             item.setData(0, _ROLE_OBJ, current)
             item.setData(0, _ROLE_PATH, current)
@@ -592,160 +601,273 @@ class _AssetTree(_Tree):
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Table GLOBALS / CONSTANTS (nom / type / valeur)
+#  Liste GLOBALS / CONSTANTS — une ligne par variable
+#  [ nom éditable ] [ bouton type ▾ ] [ champ valeur réactif au type ]
 # ──────────────────────────────────────────────────────────────────
 
-class _ValuesTable(QWidget):
+# Types déclarables + plage de valeur numérique associée (le champ valeur se
+# règle dessus). "bool" est traité à part (toggle true/false, valeur 0/1).
+_VAR_TYPES  = ["int", "bool", "u8", "u16", "s8", "s16"]
+_VAR_RANGES = {
+    "int": (-2147483648, 2147483647),
+    "u8":  (0, 255),
+    "u16": (0, 65535),
+    "s8":  (-128, 127),
+    "s16": (-32768, 32767),
+}
+
+
+def _clamp_to_type(value: int, type_: str) -> int:
+    """Ramène `value` dans la plage du type (bool → 0/1)."""
+    if type_ == "bool":
+        return 1 if value else 0
+    lo, hi = _VAR_RANGES.get(type_, _VAR_RANGES["int"])
+    return max(lo, min(hi, value))
+
+
+class _ValueSpin(QSpinBox):
+    """Spinbox qui n'attrape la molette que s'il a déjà le focus — sinon la
+    molette scrolle le panneau (les lignes vivent dans une QScrollArea)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, e):
+        if self.hasFocus():
+            super().wheelEvent(e)
+        else:
+            e.ignore()
+
+
+class _VarRow(QWidget):
+    """Une variable = une ligne. Le champ valeur est reconstruit quand le type
+    change (bool ↔ numérique), d'où l'aspect « réactif »."""
+
+    _ROW_H = 26
+
+    def __init__(self, owner: "_ValuesList", entry):
+        super().__init__()
+        self._owner = owner
+        self._entry = entry
+        self.setFixedHeight(self._ROW_H)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 1, 6, 1)
+        row.setSpacing(4)
+
+        # Nom — édition en place, sans cadre (pas d'aspect champ de formulaire)
+        self._name = QLineEdit(entry.name)
+        self._name.setFont(QFont(T.MONO, T.MD))
+        self._name.setFrame(False)
+        self._name.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self._name.setStyleSheet(
+            f"QLineEdit{{background:transparent;border:none;color:{_TEXT};padding:0;}}"
+            f"QLineEdit:focus{{border-bottom:1px solid {C.ACCENT};}}"
+        )
+        self._name.editingFinished.connect(self._commit_name)
+        row.addWidget(self._name, 1)
+
+        # Bouton type — menu déroulant des types déclarables
+        self._type_btn = QToolButton()
+        self._type_btn.setText(entry.type)
+        self._type_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._type_btn.setFixedWidth(48)
+        self._type_btn.setStyleSheet(
+            f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
+            f"border:1px solid {C.BORDER};border-radius:3px;padding:1px 4px;"
+            f"font-family:{T.MONO};font-size:{T.SM}px;}}"
+            f"QToolButton:hover{{color:{C.TEXT_HI};border-color:{C.ACCENT};}}"
+            f"QToolButton::menu-indicator{{image:none;width:0;}}"
+        )
+        menu = QMenu(self._type_btn)
+        menu.setFont(QFont(T.MONO, T.MD))
+        for t in _VAR_TYPES:
+            menu.addAction(t, lambda tt=t: self._on_type_selected(tt))
+        self._type_btn.setMenu(menu)
+        row.addWidget(self._type_btn)
+
+        # Champ valeur — construit selon le type courant
+        self._value_w: QWidget | None = None
+        self._build_value()
+
+    # ── Valeur : construction réactive ────────────────────────────
+    def _build_value(self):
+        if self._value_w is not None:
+            self._layout_row().removeWidget(self._value_w)
+            self._value_w.deleteLater()
+            self._value_w = None
+
+        val = self._owner.value_of(self._entry)
+        if self._entry.type == "bool":
+            w = QToolButton()
+            w.setCheckable(True)
+            w.setChecked(bool(val))
+            w.setText("true" if val else "false")
+            w.setFixedWidth(76)
+            w.setStyleSheet(self._bool_qss())
+            w.toggled.connect(self._on_bool_toggled)
+        else:
+            w = _ValueSpin()
+            lo, hi = _VAR_RANGES.get(self._entry.type, _VAR_RANGES["int"])
+            w.setRange(lo, hi)
+            w.setValue(_clamp_to_type(val, self._entry.type))
+            w.setFixedWidth(76)
+            w.setAlignment(Qt.AlignmentFlag.AlignRight)
+            w.setStyleSheet(
+                f"QSpinBox{{color:{_TEXT};background:{C.BG_INPUT};"
+                f"border:1px solid {C.BORDER};border-radius:3px;padding:1px 4px;"
+                f"font-family:{T.MONO};font-size:{T.SM}px;}}"
+                f"QSpinBox:focus{{border-color:{C.ACCENT};}}"
+            )
+            w.valueChanged.connect(self._commit_value)  # après setValue : pas de faux commit
+        self._value_w = w
+        self._layout_row().addWidget(w)
+
+    def _bool_qss(self) -> str:
+        # true = accent périwinkle (chrome), false = neutre discret
+        return (
+            f"QToolButton{{background:{C.BG_INPUT};border:1px solid {C.BORDER};"
+            f"border-radius:3px;color:{C.TEXT_DIM};font-family:{T.MONO};"
+            f"font-size:{T.SM}px;padding:1px 4px;}}"
+            f"QToolButton:checked{{color:{C.ACCENT};border-color:{C.ACCENT};}}"
+        )
+
+    def _layout_row(self) -> QHBoxLayout:
+        return self.layout()  # type: ignore[return-value]
+
+    # ── Handlers ──────────────────────────────────────────────────
+    def _on_type_selected(self, new_type: str):
+        if new_type == self._entry.type:
+            return
+        self._entry.type = new_type
+        # Recadrer la valeur dans la nouvelle plage puis reconstruire le champ.
+        self._owner.set_value(self._entry, _clamp_to_type(
+            self._owner.value_of(self._entry), new_type))
+        self._type_btn.setText(new_type)
+        self._build_value()
+        self._owner.persist()
+
+    def _on_bool_toggled(self, checked: bool):
+        self._value_w.setText("true" if checked else "false")  # type: ignore[union-attr]
+        self._owner.set_value(self._entry, 1 if checked else 0)
+        self._owner.persist()
+
+    def _commit_value(self, value: int):
+        self._owner.set_value(self._entry, value)
+        self._owner.persist()
+
+    def _commit_name(self):
+        new_name = self._name.text().strip()
+        if new_name == self._entry.name:
+            return
+        if not self._owner.rename(self._entry, new_name):
+            QMessageBox.warning(self, "Nom déjà utilisé", f"« {new_name} » existe déjà.")
+            self._name.setText(self._entry.name)
+
+    def contextMenuEvent(self, e):
+        menu = QMenu(self)
+        menu.setFont(QFont(T.MONO, T.MD))
+        a_uses = menu.addAction("Voir les utilisations")
+        menu.addSeparator()
+        a_del = menu.addAction("Supprimer")
+        action = menu.exec(e.globalPos())
+        if action == a_del:
+            self._owner.delete(self._entry)
+        elif action == a_uses:
+            self._owner.request_uses(self._entry)
+
+
+class _ValuesList(QWidget):
     """
-    Table nom/type/valeur partagée par les sections GLOBALS et CONSTANTS de
+    Liste des variables partagée par les sections GLOBALS et CONSTANTS de
     l'Assets finder. kind="global" -> project.globals (GlobalVar, valeur
     mutable = "default") ; kind="const" -> project.constants (Constant,
-    valeur figée). Renommage en place (clic sur le nom déjà sélectionné,
-    même mécanisme que les autres finders), clic droit : Supprimer / Voir
-    les utilisations.
+    valeur figée). Une ligne = un `_VarRow`. Renommage en place, clic droit :
+    Voir les utilisations / Supprimer.
     """
-
-    _TYPES = ["int", "bool", "u8", "u16", "s8", "s16"]
 
     def __init__(self, panel: "AssetsFinderPanel", kind: str, parent=None):
         super().__init__(parent)
         self._panel = panel
         self._kind = kind   # "global" | "const"
         self._project: Optional[Project] = None
-        self._color = COLOR_GLOBAL if kind == "global" else COLOR_CONST
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 2, 0, 4)
+        self._root.setSpacing(0)
 
-        self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["nom", "type", "valeur"])
-        self._tree.setColumnWidth(0, 110)
-        self._tree.setColumnWidth(1, 50)
-        self._tree.setRootIsDecorated(False)
-        self._tree.setIndentation(0)
-        self._tree.setStyleSheet(_TREE_QSS)
-        self._tree.setFrameShape(QFrame.Shape.NoFrame)
-        self._tree.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-        self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._tree.itemChanged.connect(self._on_item_changed)
-        self._tree.customContextMenuRequested.connect(self._ctx_menu)
-        layout.addWidget(self._tree)
+        self._empty = QLabel("  aucune variable")
+        self._empty.setFont(QFont(T.MONO, T.SM))
+        self._empty.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
+        self._root.addWidget(self._empty)
 
     def set_project(self, project: Project):
         self._project = project
 
+    # ── Accès modèle (const=value / global=default) ───────────────
     def _entries(self) -> list:
         if not self._project:
             return []
         return self._project.constants if self._kind == "const" else self._project.globals
 
-    def _value_of(self, entry) -> int:
+    def value_of(self, entry) -> int:
         return entry.value if self._kind == "const" else entry.default
 
-    def _set_value(self, entry, value: int):
+    def set_value(self, entry, value: int):
         if self._kind == "const":
             entry.value = value
         else:
             entry.default = value
 
-    def reload(self):
-        self._tree.blockSignals(True)
-        self._tree.clear()
-        for entry in self._entries():
-            self._add_row(entry)
-        self._tree.blockSignals(False)
-        h = self._tree.sizeHintForRow(0) if self._tree.topLevelItemCount() else 0
-        self._tree.setFixedHeight(max(self._tree.topLevelItemCount() * 22 + 24, 24))
+    def rename(self, entry, new_name: str) -> bool:
+        if not new_name or not self._project:
+            return False
+        return self._project.rename_variable(self._kind, entry, new_name)
 
-    def _add_row(self, entry):
-        item = QTreeWidgetItem([entry.name, "", str(self._value_of(entry))])
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        item.setData(0, Qt.ItemDataRole.UserRole, entry)
-        item.setForeground(0, QColor(self._color))
-        self._tree.addTopLevelItem(item)
-        combo = QComboBox()
-        combo.addItems(self._TYPES)
-        combo.setCurrentText(entry.type)
-        combo.currentTextChanged.connect(lambda t, e=entry: self._on_type_changed(e, t))
-        self._tree.setItemWidget(item, 1, combo)
+    def request_uses(self, entry):
+        self._panel.variable_uses_requested.emit(self._kind, entry.name)
 
-    def _on_type_changed(self, entry, new_type: str):
-        entry.type = new_type
-        self._persist()
-
-    def _on_item_changed(self, item: QTreeWidgetItem, col: int):
-        entry = item.data(0, Qt.ItemDataRole.UserRole)
-        if entry is None:
-            return
-        if col == 0:
-            self._commit_rename(item, entry)
-        elif col == 2:
-            self._commit_value(item, entry)
-
-    def _commit_rename(self, item: QTreeWidgetItem, entry):
-        new_name = item.text(0).strip()
-        if not self._project or not self._project.rename_variable(self._kind, entry, new_name):
-            if new_name and new_name != entry.name:
-                QMessageBox.warning(self, "Nom déjà utilisé", f"« {new_name} » existe déjà.")
-            self._tree.blockSignals(True)
-            item.setText(0, entry.name)
-            self._tree.blockSignals(False)
-
-    def _commit_value(self, item: QTreeWidgetItem, entry):
-        try:
-            value = int(item.text(2).strip())
-        except ValueError:
-            value = self._value_of(entry)
-        self._set_value(entry, value)
-        self._tree.blockSignals(True)
-        item.setText(2, str(value))
-        self._tree.blockSignals(False)
-        self._persist()
-
-    def _persist(self):
+    def persist(self):
         if self._project:
             self._project.save_variables()
 
-    def _ctx_menu(self, pos: QPoint):
-        item = self._tree.itemAt(pos)
-        if not item:
-            return
-        entry = item.data(0, Qt.ItemDataRole.UserRole)
-        menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
-        a_uses = menu.addAction("Voir les utilisations")
-        menu.addSeparator()
-        a_del = menu.addAction("Supprimer")
-        action = menu.exec(self._tree.viewport().mapToGlobal(pos))
-        if action == a_del:
-            self._delete(entry)
-        elif action == a_uses:
-            self._panel.variable_uses_requested.emit(self._kind, entry.name)
-
-    def _delete(self, entry):
+    def delete(self, entry):
         if not self._project:
             return
         get_history().push(RemoveListItemCmd(
-            self._entries(), entry, persist_fn=self._persist,
+            self._entries(), entry, persist_fn=self.persist,
             label=f"Supprimer {entry.name}",
         ))
         self.reload()
 
+    # ── Peuplement ────────────────────────────────────────────────
+    def reload(self):
+        while self._root.count() > 1:  # garde le label vide en position 0
+            item = self._root.takeAt(1)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        entries = self._entries()
+        self._empty.setVisible(not entries)
+        for entry in entries:
+            self._root.addWidget(_VarRow(self, entry))
+        n = max(len(entries), 1)
+        self.setFixedHeight(n * _VarRow._ROW_H + 6)
+
     def add_new(self):
         if not self._project:
             return
-        title = "Nouvelle constante" if self._kind == "const" else "Nouvelle variable globale"
-        name, ok = QInputDialog.getText(self, title, "Nom :")
-        name = name.strip() if ok else ""
-        if not name:
-            return
+        from core.command_dispatcher import unique_name
+        base = "constante" if self._kind == "const" else "variable"
+        name = unique_name(base, {e.name for e in self._entries()})
         if self._project.add_variable(self._kind, name) is None:
-            QMessageBox.warning(self, "Nom déjà utilisé", f"« {name} » existe déjà.")
             return
         self.reload()
+        # Focus + sélection du nom de la nouvelle ligne pour renommage immédiat
+        last = self._root.itemAt(self._root.count() - 1)
+        row = last.widget() if last else None
+        if isinstance(row, _VarRow):
+            QTimer.singleShot(0, lambda w=row._name: (w.setFocus(), w.selectAll()))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -782,17 +904,17 @@ class AssetsFinderPanel(QWidget):
         hdr = QFrame()
         hdr.setFixedHeight(36)
         hdr.setStyleSheet(
-            f"background:{_HEADER}; border-bottom:1px solid #2a2a2a;")
+            f"background:{_HEADER}; border-bottom:1px solid {C.BORDER};")
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(8, 0, 8, 0)
         self._project_lbl = QLabel("Aucun projet")
         self._project_lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
-        self._project_lbl.setStyleSheet("color:#ccc;")
+        self._project_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
         hl.addWidget(self._project_lbl, 1)
         _btn_qss = (
-            "QPushButton{color:#777;background:#222;border:1px solid #333;"
+            f"QPushButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};"
             f"border-radius:3px;padding:0 7px;font-family:{T.MONO};font-size:{T.SM}px;}}"
-            "QPushButton:hover{color:#ccc;background:#2a2a2a;}"
+            f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
         )
         btn_new  = QPushButton("Nouveau"); btn_new.setFixedHeight(22)
         btn_open = QPushButton("Ouvrir");  btn_open.setFixedHeight(22)
@@ -807,7 +929,7 @@ class AssetsFinderPanel(QWidget):
         #    autres écrans : Sprite finder / Script finder / Sound finder) ──
         finder_hdr = QFrame()
         finder_hdr.setFixedHeight(20)
-        finder_hdr.setStyleSheet(f"background:{_BG}; border-bottom:1px solid #232323;")
+        finder_hdr.setStyleSheet(f"background:{_BG}; border-bottom:1px solid {C.BORDER_DARK};")
         fl = QHBoxLayout(finder_hdr)
         fl.setContentsMargins(8, 0, 0, 0)
         finder_lbl = QLabel("Project Viewer")
@@ -828,11 +950,11 @@ class AssetsFinderPanel(QWidget):
         cl.setSpacing(0)
 
         # Sections
-        self._sec_scenes  = FinderSection("SCENES",    _C_SCENE)
-        self._sec_prefabs = FinderSection("PREFABS",   _C_PREFAB)
-        self._sec_scripts = FinderSection("SCRIPTS",   _C_SCRIPT)
-        self._sec_const   = FinderSection("CONSTANTS", COLOR_CONST)
-        self._sec_globals = FinderSection("GLOBALS",   COLOR_GLOBAL)
+        self._sec_scenes  = FinderSection("SCENES")
+        self._sec_prefabs = FinderSection("PREFABS")
+        self._sec_scripts = FinderSection("SCRIPTS")
+        self._sec_const   = FinderSection("CONSTANTS")
+        self._sec_globals = FinderSection("GLOBALS")
 
         self._sec_scenes.add_clicked.connect(self.scene_add_requested)
         self._sec_prefabs.add_clicked.connect(self._add_prefab)
@@ -859,7 +981,7 @@ class AssetsFinderPanel(QWidget):
             lbl = QLabel(f"  {text}")
             lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
             lbl.setStyleSheet(f"color:{_DIM}; background:{_HEADER};"
-                              f"border-bottom:1px solid #232323; padding:3px 0;")
+                              f"border-bottom:1px solid {C.BORDER_DARK}; padding:3px 0;")
             lbl.setFixedHeight(18)
             return lbl
 
@@ -872,8 +994,8 @@ class AssetsFinderPanel(QWidget):
         self._sec_scripts.set_widget(scripts_body)
 
         # CONSTANTS / GLOBALS : table nom/type/valeur
-        self._tbl_const   = _ValuesTable(self, "const")
-        self._tbl_globals = _ValuesTable(self, "global")
+        self._tbl_const   = _ValuesList(self, "const")
+        self._tbl_globals = _ValuesList(self, "global")
         self._sec_const.set_widget(self._tbl_const)
         self._sec_globals.set_widget(self._tbl_globals)
         self._sec_const.add_clicked.connect(self._tbl_const.add_new)
@@ -948,60 +1070,66 @@ class AssetsFinderPanel(QWidget):
     def _add_prefab(self):
         if not self._project:
             return
-        name, ok = QInputDialog.getText(self, "Nouveau prefab", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_prefab(name.strip())
-            self.refresh()
+        from core.command_dispatcher import unique_name
+        name = unique_name("Prefab", {p.name for p in self._project.prefabs})
+        get_dispatcher().add_prefab(name)
+        self.refresh()
+        self.begin_rename_prefab(name)
+
+    # ── Renommage inline d'un asset fraîchement créé (pas de pop-up) ──
+    def _begin_rename(self, tree, name: str):
+        """Sélectionne l'item nommé `name` dans `tree` et entre en édition
+        (renommage en place), une fois le refresh terminé."""
+        if QTreeWidgetItemIterator is None:
+            return
+        def go():
+            it = QTreeWidgetItemIterator(tree)
+            while it.value():
+                item = it.value()
+                if item.text(0) == name and bool(item.flags() & Qt.ItemFlag.ItemIsEditable):
+                    tree.setCurrentItem(item)
+                    tree.editItem(item, 0)
+                    return
+                it += 1
+        QTimer.singleShot(0, go)
+
+    def begin_rename_scene(self, name: str):
+        self._begin_rename(self._tree_scenes, name)
+
+    def begin_rename_prefab(self, name: str):
+        self._begin_rename(self._tree_prefabs, name)
 
     def _show_add_script_menu(self):
         menu = QMenu(self)
-        menu.setStyleSheet(
-            "QMenu{background:#1e1e1e;color:#ccc;border:1px solid #333;border-radius:4px;padding:4px;}"
-            "QMenu::item{padding:5px 16px 5px 10px;border-radius:3px;}"
-            "QMenu::item:selected{background:#2a3a2a;color:#4caf78;}"
-        )
+        menu.setStyleSheet(QSS.menu)
         menu.addAction("Behavior Script", self._new_behavior_script)
         btn = self._sec_scripts._btn_add
         menu.exec(btn.mapToGlobal(QPoint(0, btn.height())))
 
     def _new_actor_script(self):
-        if not self._project:
-            return
-        name, ok = QInputDialog.getText(
-            self, "Nouveau script actor", "Nom (sans .lua) :")
-        if ok and name.strip():
-            from scripting.script_templates import ScriptTemplateContext, generate_script_template
-            d = self._project.scripts_actors_dir
-            d.mkdir(parents=True, exist_ok=True)
-            sp = d / f"{name.strip()}.lua"
-            if not sp.exists():
-                # Pas d'actor précis à ce stade (créé depuis l'Assets finder,
-                # pas depuis l'inspector d'un actor) — contexte de composants vide,
-                # même template "actor" que component_editors/script.py sinon.
-                ctx = ScriptTemplateContext(kind="actor", name=name.strip())
-                sp.write_text(generate_script_template(ctx), encoding="utf-8")
-            self._refresh_scripts()
-            self.script_opened.emit(str(sp))
-            if os.name == "nt":
-                os.startfile(str(sp))
+        self._create_script("actor", self._project.scripts_actors_dir if self._project else None, "Actor")
 
     def _new_behavior_script(self):
-        if not self._project:
+        self._create_script("behavior", self._project.scripts_behaviors_dir if self._project else None, "Behavior")
+
+    def _create_script(self, kind: str, directory, base: str):
+        """Crée un script au nommage automatique (pas de pop-up) et l'ouvre."""
+        if not self._project or directory is None:
             return
-        name, ok = QInputDialog.getText(
-            self, "Nouveau script behavior", "Nom (sans .lua) :")
-        if ok and name.strip():
-            from scripting.script_templates import ScriptTemplateContext, generate_script_template
-            d = self._project.scripts_behaviors_dir
-            d.mkdir(parents=True, exist_ok=True)
-            sp = d / f"{name.strip()}.lua"
-            if not sp.exists():
-                ctx = ScriptTemplateContext(kind="behavior", name=name.strip())
-                sp.write_text(generate_script_template(ctx), encoding="utf-8")
-            self._refresh_scripts()
-            self.script_opened.emit(str(sp))
-            if os.name == "nt":
-                os.startfile(str(sp))
+        from core.command_dispatcher import unique_name
+        from scripting.script_templates import ScriptTemplateContext, generate_script_template
+        directory.mkdir(parents=True, exist_ok=True)
+        existing = {f.stem for f in directory.glob("*.lua")}
+        name = unique_name(base, existing)
+        sp = directory / f"{name}.lua"
+        # Pas d'actor précis à ce stade (créé depuis l'Assets finder) — contexte
+        # de composants vide, même template que component_editors/script.py.
+        ctx = ScriptTemplateContext(kind=kind, name=name)
+        sp.write_text(generate_script_template(ctx), encoding="utf-8")
+        self._refresh_scripts()
+        self.script_opened.emit(str(sp))
+        if os.name == "nt":
+            os.startfile(str(sp))
 
     @property
     def project(self) -> Project:

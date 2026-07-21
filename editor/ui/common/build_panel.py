@@ -189,7 +189,7 @@ class BuildPanel(QWidget):
         self.console.setReadOnly(True)
         self.console.setFont(QFont(T.MONO, T.SM))
         self.console.setStyleSheet(
-            "background:#0d0d0d; color:#c8ffc8; border:none; padding:4px;"
+            f"background:{C.BG_DEEP}; color:#c8ffc8; border:none; padding:4px;"
         )
         self.console.setMaximumBlockCount(500)
         layout.addWidget(self.console)
@@ -222,7 +222,7 @@ class ToolchainBar(QFrame):
         super().__init__(parent)
         self.toolchain = toolchain
         self.setFixedHeight(28)
-        self.setStyleSheet(f"background:#1a1f1a; border-bottom:1px solid {C.BORDER};")
+        self.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(12)
@@ -251,10 +251,10 @@ class ToolchainBar(QFrame):
     def refresh(self):
         ok = self.toolchain.devkitpro_ok
         self._dkp.setText("devkitPro ✓" if ok else "devkitPro ✗")
-        self._dkp.setStyleSheet(f"color:{C.ACCENT_GRN};" if ok else f"color:{C.ACCENT_RED};")
+        self._dkp.setStyleSheet(f"color:{C.POWER};" if ok else f"color:{C.ACCENT_RED};")
         ok2 = self.toolchain.mgba_ok
         self._mgba.setText("mgba ✓" if ok2 else "mgba ✗")
-        self._mgba.setStyleSheet(f"color:{C.ACCENT_GRN};" if ok2 else f"color:{C.ACCENT_RED};")
+        self._mgba.setStyleSheet(f"color:{C.POWER};" if ok2 else f"color:{C.ACCENT_RED};")
 
 
 class ToolchainDialog(QDialog):

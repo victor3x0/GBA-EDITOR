@@ -29,7 +29,7 @@ from typing import Any
 
 KNOWN_TYPES = {
     "int", "float", "string", "bool",
-    "vec2", "rect",
+    "vec2", "vec3", "rect",
     "enum",
     "actor_ref", "scene_ref", "sfx_ref",
 }
@@ -45,12 +45,13 @@ def parse_exports(lua_path: Path) -> list[dict]:
 
 # ── Parser interne ─────────────────────────────────────────────────
 
-def _parse_exports_table(text: str) -> list[dict]:
+def _find_exports_block(text: str) -> tuple[int, int] | None:
+    """Span (start, end) du contenu INTERNE de `exports = { ... }` (bornes
+    exclusives des accolades), ou None si la table est absente. Partagé par
+    le parsing (ci-dessous) et l'écriture (add_export/remove_export)."""
     m = re.search(r'\bexports\s*=\s*\{', text)
     if not m:
-        return []
-
-    # Extraire le bloc {...} de niveau 0
+        return None
     start = m.end()
     depth = 1
     i = start
@@ -60,8 +61,15 @@ def _parse_exports_table(text: str) -> list[dict]:
         elif text[i] == '}':
             depth -= 1
         i += 1
-    block = text[start : i - 1]
+    return start, i - 1
 
+
+def _parse_exports_table(text: str) -> list[dict]:
+    block_range = _find_exports_block(text)
+    if block_range is None:
+        return []
+    start, end = block_range
+    block = text[start:end]
     return [v for v in (_parse_entry(e) for e in _split_entries(block)) if v]
 
 
@@ -160,11 +168,199 @@ def _parse_value(raw: str, typ: str) -> Any:
         nums = re.findall(r'-?[\d.]+', raw)
         return [float(nums[0]), float(nums[1])] if len(nums) >= 2 else [0.0, 0.0]
 
+    if typ == "vec3":
+        nums = re.findall(r'-?[\d.]+', raw)
+        return [float(n) for n in nums[:3]] if len(nums) >= 3 else [0.0, 0.0, 0.0]
+
     if typ == "rect":
         nums = re.findall(r'-?[\d.]+', raw)
         if len(nums) >= 4:
             return [float(n) for n in nums[:4]]
         return [0.0, 0.0, 16.0, 16.0]
 
-    # string, enum, *_ref
-    return raw.strip('"\'')
+    # string, enum, *_ref — déséchappe les retours-ligne (strings multi-lignes)
+    return raw.strip('"\'').replace('\\n', '\n')
+
+
+# ── Écriture — ajout/retrait d'une déclaration ──────────────────────
+#  Utilisé par le Script Inspector (section VARIABLES EXPOSÉES) : add_export
+#  écrit une déclaration minimale, valeur par défaut neutre selon le type —
+#  l'utilisateur affine ensuite min/max/values/default à la main dans le
+#  script si besoin (même esprit que les autres inspecteurs : l'éditeur pose
+#  la structure, pas chaque détail).
+
+_DEFAULTS: dict[str, Any] = {
+    "int": 0, "float": 0.0, "bool": False, "string": "",
+    "vec2": [0, 0], "vec3": [0, 0, 0], "rect": [0, 0, 16, 16],
+    "enum": "", "actor_ref": "", "scene_ref": "", "sfx_ref": "",
+}
+
+
+def default_value(typ: str) -> Any:
+    """Valeur par défaut neutre pour un type (utilisé par l'UI au changement
+    de type)."""
+    d = _DEFAULTS.get(typ, "")
+    return list(d) if isinstance(d, list) else d
+
+
+def _num(v: Any) -> str:
+    """Formate un nombre sans .0 superflu quand c'est un entier."""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def _lua_literal(value: Any, typ: str) -> str:
+    if typ == "bool":
+        return "true" if value else "false"
+    if typ in ("int", "float"):
+        return _num(value)
+    if typ in ("vec2", "vec3", "rect"):
+        seq = value if isinstance(value, (list, tuple)) else []
+        return "{" + ", ".join(_num(v) for v in seq) + "}"
+    # string, enum, *_ref — échappe les retours-ligne pour rester un littéral
+    # Lua sur une ligne (déséchappé au parse). Les guillemets nus restent une
+    # limite préexistante (non échappés).
+    return '"' + str(value).replace('\n', '\\n') + '"'
+
+
+def add_export(lua_path: Path, name: str, typ: str, label: str | None = None) -> None:
+    """Ajoute une nouvelle variable à la table `exports` (la crée si absente,
+    juste après un éventuel bloc @note — cf. scripting/script_notes.py)."""
+    if typ not in KNOWN_TYPES:
+        raise ValueError(f"Type de variable inconnu : {typ}")
+    text = lua_path.read_text(encoding="utf-8", errors="ignore") if lua_path.exists() else ""
+    label = label or name
+    default_repr = _lua_literal(_DEFAULTS.get(typ, ""), typ)
+    new_entry = f'{name} = {{ type = "{typ}", default = {default_repr}, label = "{label}" }}'
+
+    block_range = _find_exports_block(text)
+    if block_range is None:
+        from scripting.script_notes import note_block_span
+        insert_at = span[1] if (span := note_block_span(text)) else 0
+        table = f"exports = {{\n    {new_entry},\n}}\n\n"
+        text = text[:insert_at] + table + text[insert_at:]
+    else:
+        start, end = block_range
+        entries = _split_entries(text[start:end])
+        if any(re.match(rf'^{re.escape(name)}\s*=', e) for e in entries):
+            return   # nom déjà exporté — l'appelant (UI) vérifie l'unicité en amont
+        entries.append(new_entry)
+        new_inner = "\n" + ",\n".join(f"    {e.strip()}" for e in entries) + ",\n"
+        text = text[:start] + new_inner + text[end:]
+    lua_path.write_text(text, encoding="utf-8")
+
+
+def _entry_key(entry: str) -> str | None:
+    m = re.match(r'^(\w+)\s*=', entry)
+    return m.group(1) if m else None
+
+
+def _rewrite_entry(lua_path: Path, name: str, transform) -> bool:
+    """Applique `transform(entry_str) -> entry_str` à l'entrée `name` de la
+    table exports et réécrit le fichier. Retourne True si une entrée a changé.
+    Préserve toutes les autres clés de l'entrée (min/max/default/label/values)."""
+    if not lua_path.exists():
+        return False
+    text = lua_path.read_text(encoding="utf-8", errors="ignore")
+    block_range = _find_exports_block(text)
+    if block_range is None:
+        return False
+    start, end = block_range
+    entries = _split_entries(text[start:end])
+    out, changed = [], False
+    for e in entries:
+        if _entry_key(e) == name:
+            new_e = transform(e)
+            if new_e != e:
+                changed = True
+            out.append(new_e)
+        else:
+            out.append(e)
+    if not changed:
+        return False
+    new_inner = ("\n" + ",\n".join(f"    {x.strip()}" for x in out) + ",\n") if out else "\n"
+    lua_path.write_text(text[:start] + new_inner + text[end:], encoding="utf-8")
+    return True
+
+
+def rename_export(lua_path: Path, old_name: str, new_name: str) -> bool:
+    """Renomme la clé d'une variable exposée (préserve le reste de sa
+    déclaration). Retourne False si `new_name` est déjà pris ou introuvable."""
+    if not lua_path.exists() or old_name == new_name:
+        return False
+    text = lua_path.read_text(encoding="utf-8", errors="ignore")
+    block_range = _find_exports_block(text)
+    if block_range is None:
+        return False
+    start, end = block_range
+    names = {_entry_key(e) for e in _split_entries(text[start:end])}
+    if new_name in names:
+        return False
+    return _rewrite_entry(
+        lua_path, old_name,
+        lambda e: re.sub(r'^\w+', new_name, e, count=1))
+
+
+def set_export_type(lua_path: Path, name: str, new_type: str) -> bool:
+    """Change le `type` d'une variable exposée (l'insère si absent)."""
+    if new_type not in KNOWN_TYPES:
+        return False
+
+    def _t(entry: str) -> str:
+        if re.search(r'\btype\s*=\s*"\w+"', entry):
+            return re.sub(r'(\btype\s*=\s*")\w+(")', rf'\g<1>{new_type}\g<2>', entry)
+        # pas de type explicite : l'insérer juste après la 1ère accolade
+        return re.sub(r'\{', f'{{ type = "{new_type}",', entry, count=1)
+
+    return _rewrite_entry(lua_path, name, _t)
+
+
+def _format_entry(name: str, var: dict) -> str:
+    """Régénère la déclaration `name = { … }` depuis un dict (type/default/
+    label/min/max/values). Robuste — remplace l'édition regex clé par clé."""
+    typ = var.get("type", "int")
+    if typ not in KNOWN_TYPES:
+        typ = "int"
+    default = var.get("default")
+    if default is None:
+        default = default_value(typ)
+    parts = [
+        f'type = "{typ}"',
+        f'default = {_lua_literal(default, typ)}',
+        f'label = "{var.get("label") or name}"',
+    ]
+    if var.get("min") is not None:
+        parts.append(f'min = {_num(var["min"])}')
+    if var.get("max") is not None:
+        parts.append(f'max = {_num(var["max"])}')
+    if typ == "enum" and var.get("values"):
+        vals = ", ".join(f'"{v}"' for v in var["values"])
+        parts.append(f'values = {{{vals}}}')
+    return f'{name} = {{ ' + ", ".join(parts) + ' }'
+
+
+def update_export(lua_path: Path, name: str, var: dict) -> bool:
+    """Réécrit intégralement la déclaration de la variable `name` depuis `var`
+    (le dict issu de parse_exports, avec les champs modifiés). Préserve donc
+    tout ce que l'UI a relu — appeler avec le dict complet, pas partiel."""
+    return _rewrite_entry(lua_path, name, lambda _e: _format_entry(name, var))
+
+
+def remove_export(lua_path: Path, name: str) -> None:
+    """Retire une variable de la table `exports` par son nom (no-op si absente
+    ou si la table elle-même n'existe pas)."""
+    if not lua_path.exists():
+        return
+    text = lua_path.read_text(encoding="utf-8", errors="ignore")
+    block_range = _find_exports_block(text)
+    if block_range is None:
+        return
+    start, end = block_range
+    entries = _split_entries(text[start:end])
+    kept = [e for e in entries if not re.match(rf'^{re.escape(name)}\s*=', e)]
+    if len(kept) == len(entries):
+        return
+    new_inner = ("\n" + ",\n".join(f"    {e.strip()}" for e in kept) + ",\n") if kept else "\n"
+    text = text[:start] + new_inner + text[end:]
+    lua_path.write_text(text, encoding="utf-8")

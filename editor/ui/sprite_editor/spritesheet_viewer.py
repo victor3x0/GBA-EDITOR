@@ -153,8 +153,8 @@ class _SpritesheetCanvas(QWidget):
 
         for col, row in self._selection:
             r = QRect(col * tpx, row * tpx, tpx, tpx)
-            painter.fillRect(r, QColor(76, 175, 120, 80))
-            painter.setPen(QPen(QColor(C.ACCENT_GRN), 1))
+            painter.fillRect(r, QColor(155, 140, 255, 80))
+            painter.setPen(QPen(QColor(C.ACCENT), 1))
             painter.drawRect(r)
 
         painter.end()
@@ -248,7 +248,7 @@ class _SpritesheetViewer(QWidget):
             self._brush_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
         else:
             self._brush_lbl.setText(f"Brosse : {n} tuile{'s' if n > 1 else ''}")
-            self._brush_lbl.setStyleSheet(f"color:{C.ACCENT_GRN};background:transparent;")
+            self._brush_lbl.setStyleSheet(f"color:{C.ACCENT};background:transparent;")
 
     def _zoom_in(self):
         if self._canvas._zoom < 6:

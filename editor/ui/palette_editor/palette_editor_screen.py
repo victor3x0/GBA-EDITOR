@@ -42,7 +42,7 @@ from ui.palette_editor.color_wheel import ColorTriangleWheel
 SPLITTER_STYLE = (
     f"QSplitter::handle{{background:{C.BORDER};}}"
     "QSplitter::handle:horizontal{width:3px;}"
-    f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
+    f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
 )
 
 # Taille de cellule des swatches : grandes cases en 16 (4×4 qui remplit l'espace),
@@ -148,7 +148,7 @@ class SwatchButton(QPushButton):
             if self._active:
                 ring = QColor(C.TEXT_HI)      # blanc — curseur / case active
             elif self._selected:
-                ring = QColor(C.ACCENT_GRN)   # vert — membre d'une multi-sélection
+                ring = QColor(C.ACCENT)   # vert — membre d'une multi-sélection
             elif self._hover and self.isEnabled():
                 ring = QColor(C.TEXT_DIM)
             else:
@@ -279,15 +279,15 @@ class PaletteFinderPanel(QWidget):
         fl.addWidget(finder_lbl)
         root.addWidget(finder_hdr)
 
-        root.addWidget(self._make_section("PALETTES", C.ACCENT_GRN))
+        root.addWidget(self._make_section("PALETTES", C.ACCENT))
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setFont(QFont(T.MONO, T.MD))
         self._tree.setIconSize(QSize(16, 16))
         self._tree.setStyleSheet(
-            f"QTreeWidget{{background:#161616;color:{C.TEXT_NORM};border:none;}}"
-            "QTreeWidget::item:selected{background:#1a2a3a;}"
-            "QTreeWidget::item:hover{background:#202020;}"
+            f"QTreeWidget{{background:{C.BG_BASE};color:{C.TEXT_NORM};border:none;}}"
+            f"QTreeWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
+            f"QTreeWidget::item:hover{{background:{C.BG_HOVER};}}"
         )
         self._tree.setItemDelegate(_PaletteNameDelegate(self._tree))
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
@@ -511,7 +511,7 @@ class PaletteEditorScreen(QWidget):
         self._drag_mode = "rect"                     # "rect" (défaut) | "range" (Shift+drag)
         self._drag_grab: Optional[QPushButton] = None
         self._blocking = False
-        self.setStyleSheet("background:#181818;")
+        self.setStyleSheet(f"background:{C.BG_PANEL};")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -524,7 +524,7 @@ class PaletteEditorScreen(QWidget):
         hl.setContentsMargins(12, 0, 12, 0)
         lbl = QLabel("PALETTE EDITOR")
         lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{C.ACCENT_GRN};")
+        lbl.setStyleSheet(f"color:{C.ACCENT};")
         hl.addWidget(lbl)
         hl.addStretch()
         root.addWidget(hdr)
@@ -637,7 +637,7 @@ class PaletteEditorScreen(QWidget):
         chl2.setContentsMargins(12, 0, 12, 0)
         self._color_hdr = QLabel("COULEUR")
         self._color_hdr.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        self._color_hdr.setStyleSheet(f"color:{C.ACCENT_GRN}; letter-spacing:1px;")
+        self._color_hdr.setStyleSheet(f"color:{C.ACCENT}; letter-spacing:1px;")
         chl2.addWidget(self._color_hdr)
         ecl.addWidget(card_hdr)
 
@@ -733,7 +733,7 @@ class PaletteEditorScreen(QWidget):
         rgb_box = QVBoxLayout()
         rgb_box.setContentsMargins(0, 0, 0, 0)
         rgb_box.setSpacing(10)
-        for ch, chan_color in (("r", C.AXIS_X), ("g", C.ACCENT_GRN), ("b", C.AXIS_Y)):
+        for ch, chan_color in (("r", C.AXIS_X), ("g", C.POWER), ("b", C.AXIS_Y)):
             sl, sp = self._make_channel_row(
                 rgb_box, ch.upper(), chan_color, 0, 31,
                 lambda v, ch=ch: self._on_rgb_changed(ch, v),
@@ -750,7 +750,7 @@ class PaletteEditorScreen(QWidget):
             f"QPushButton{{text-align:left;color:{C.TEXT_DIM};background:transparent;"
             f"border:none;border-top:1px solid {C.BORDER_DARK};padding:6px 0 2px 0;}}"
             f"QPushButton:hover{{color:{C.TEXT_NORM};}}"
-            f"QPushButton:checked{{color:{C.ACCENT_GRN};}}"
+            f"QPushButton:checked{{color:{C.ACCENT};}}"
         )
         self._hsb_toggle.clicked.connect(self._toggle_hsb)
         el.addWidget(self._hsb_toggle)

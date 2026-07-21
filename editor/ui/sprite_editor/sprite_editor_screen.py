@@ -35,7 +35,7 @@ class SpriteEditorScreen(QWidget):
         splitter.setStyleSheet(
             f"QSplitter::handle{{background:{C.BORDER};}}"
             f"QSplitter::handle:horizontal{{width:2px;}}"
-            f"QSplitter::handle:hover{{background:{C.ACCENT_GRN};}}"
+            f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
         )
 
         self._left   = SpriteFinderPanel()

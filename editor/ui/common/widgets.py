@@ -22,7 +22,7 @@ from typing import Callable, Any
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QCheckBox, QLineEdit, QSpinBox,
     QDoubleSpinBox, QComboBox, QScrollArea, QApplication, QTreeWidget, QTreeWidgetItem,
-    QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy,
+    QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy, QPlainTextEdit,
 )
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
@@ -47,10 +47,10 @@ BTN_GHOST = (
     f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER_DARK};}}"
 )
 BTN_ACCENT = (
-    f"QPushButton{{color:{C.ACCENT_GRN};background:transparent;"
-    f"border:1px solid {C.ACCENT_GRN};border-radius:3px;"
+    f"QPushButton{{color:{C.ACCENT};background:transparent;"
+    f"border:1px solid {C.ACCENT};border-radius:3px;"
     f"font-family:{T.MONO};font-size:{T.SM}px;padding:2px 6px;}}"
-    f"QPushButton:hover{{color:{C.BG_DEEP};background:{C.ACCENT_GRN};}}"
+    f"QPushButton:hover{{color:{C.BG_DEEP};background:{C.ACCENT};}}"
     f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER_DARK};}}"
 )
 BTN_DANGER = (
@@ -64,8 +64,8 @@ BTN_DANGER = (
 BTN_ICON = (
     f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
     f"font-size:{T.XXL}px;padding:0 3px;}}"
-    f"QToolButton:hover{{color:{C.ACCENT_GRN};}}"
-    f"QToolButton:pressed{{color:{C.ACCENT_GRN};opacity:0.7;}}"
+    f"QToolButton:hover{{color:{C.ACCENT};}}"
+    f"QToolButton:pressed{{color:{C.ACCENT};opacity:0.7;}}"
 )
 
 
@@ -122,7 +122,7 @@ class _W:
             f"QLineEdit{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER};border-radius:3px;"
             f"font-family:{T.MONO};font-size:{T.SM}px;padding:2px 6px;}}"
-            f"QLineEdit:focus{{border-color:{C.ACCENT_GRN};}}"
+            f"QLineEdit:focus{{border-color:{C.ACCENT};}}"
         )
         return e
 
@@ -255,7 +255,7 @@ class _W:
         le.setFont(_FONT_MONO_SM)
         le.setPlaceholderText(default_fn)
         le.setStyleSheet(
-            f"color:{C.ACCENT_GRN}; background:{C.BG_DEEP};"
+            f"color:{C.ACCENT}; background:{C.BG_DEEP};"
             f"border:1px solid {C.BORDER_DARK}; border-radius:3px; padding:2px 5px;"
         )
         le.textChanged.connect(
@@ -361,9 +361,62 @@ class _W:
         sp.setStyleSheet(_QSS.spinbox)
         return sp
 
+    def value_field(self, raw=0, project=None, variables=None,
+                    min_px: int = -512, max_px: int = 512,
+                    allow_tile: bool = True):
+        """Champ de valeur px / tile / référence de variable — voir
+        ui/common/value_field.py. `project` alimente automatiquement la liste
+        des variables (globals + constantes) ; sinon passer `variables`
+        explicitement. Retourne un ValueField (signal `changed(raw)`)."""
+        from ui.common.value_field import ValueField
+        from core.models.field_value import variables_from_project
+        vars_ = variables if variables is not None else variables_from_project(project)
+        return ValueField(raw, vars_, min_px=min_px, max_px=max_px, allow_tile=allow_tile)
+
 
 W = _W()
 """Instance globale — importer W et utiliser W.row(), W.btn_ghost(), etc."""
+
+
+# ── NotesEdit ─────────────────────────────────────────────────────────
+#  Zone de note libre partagée par SceneInspector / ActorInspector (Actor ET
+#  Prefab). Commit uniquement à la perte de focus (signal `committed`), pas
+#  à chaque frappe — même convention que les QLineEdit.editingFinished de
+#  l'inspecteur (cf. component_editors/script.py), et ça évite une écriture
+#  disque par caractère tapé (cf. le crash de sauvegardes en rafale).
+
+class NotesEdit(QPlainTextEdit):
+    committed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._baseline = ""
+        self.setPlaceholderText("Notes libres…")
+        self.setFont(QFont(T.MONO, T.SM))
+        self.setFixedHeight(60)
+        # Hauteur fixe : politique verticale Fixed, sinon (Expanding par défaut
+        # d'un QPlainTextEdit) le layout parent croit la carte extensible et
+        # gonfle le voisin (ex: titre NOTE) de tout l'espace en trop.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setStyleSheet(
+            f"QPlainTextEdit{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
+            f"border:1px solid {C.BORDER_MID};border-radius:4px;padding:4px 6px;}}"
+            f"QPlainTextEdit:focus{{border:1px solid {C.ACCENT};}}"
+        )
+
+    def set_text_silent(self, text: str):
+        """Charge une valeur sans déclencher `committed` (rechargement inspecteur)."""
+        self._baseline = text or ""
+        self.blockSignals(True)
+        self.setPlainText(self._baseline)
+        self.blockSignals(False)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        text = self.toPlainText()
+        if text != self._baseline:
+            self._baseline = text
+            self.committed.emit(text)
 
 
 # ── ScriptSlot ────────────────────────────────────────────────────────
@@ -658,7 +711,10 @@ class FinderSection(QFrame):
 
     add_clicked = pyqtSignal()
 
-    def __init__(self, title: str, color: str, parent=None):
+    def __init__(self, title: str, color: str = C.TEXT_NORM, parent=None):
+        # `color` par défaut neutre : les finders n'utilisent plus de code
+        # couleur par type d'asset (distinction par forme d'icône + libellé).
+        # Le paramètre reste pour un usage ponctuel hors finder si besoin.
         super().__init__(parent)
         self._expanded = True
         self.setStyleSheet(f"background:{C.BG_BASE};")
@@ -671,8 +727,8 @@ class FinderSection(QFrame):
         hdr = QFrame()
         hdr.setFixedHeight(28)
         hdr.setStyleSheet(
-            f"background:{C.BG_PANEL}; border-top:1px solid #232323;"
-            f"border-bottom:1px solid #232323;"
+            f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};"
+            f"border-bottom:1px solid {C.BORDER_DARK};"
         )
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(0, 0, 6, 0)
@@ -855,11 +911,13 @@ class AssetHeaderBar(QWidget):
                 "scene":  _kind_colors(icons.COLOR_SCENE),
                 "camera": _kind_colors(icons.COLOR_SCENE),
                 "script": _kind_colors(icons.COLOR_SCRIPT),
+                "script_asset": _kind_colors(icons.COLOR_SCRIPT),
                 "sprite": _kind_colors(icons.COLOR_SPRITE),
                 "background": _kind_colors(icons.COLOR_BACKGROUND),
                 "sfx":    _kind_colors(icons.COLOR_SFX),
                 "music":  _kind_colors(icons.COLOR_MUSIC),
                 "uses":   _kind_colors(icons.COLOR_PREFAB),
+                "project": _kind_colors(C.ACCENT),
                 "empty":  ("#161616", "#333333", "#555555"),
             }
         return cls._PALETTE

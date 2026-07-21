@@ -1,3 +1,7 @@
+exports = {
+    nouvelle_var = { type = "int", default = 0, label = "nouvelle_var" },
+}
+
 function on_update()
     local x = self:get_x()
     local y = self:get_y()

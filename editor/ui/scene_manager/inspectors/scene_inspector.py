@@ -4,10 +4,10 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
-    QCheckBox, QScrollArea, QPushButton, QMessageBox,
+    QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton,
 )
 from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 
 from core.project import Project, Scene, OWN_PAL_BANK
 from core.asset_manager import BgLayerRow
@@ -17,8 +17,9 @@ from core.history import (
 )
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W, ScriptPickerPopup
+from ui.common.widgets import W, ScriptPickerPopup, NotesEdit
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
+from ui.common import icons
 
 
 class _ScenePaletteCmd(Command):
@@ -136,18 +137,20 @@ class SceneInspector(QWidget):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
 
-        def _card(accent: str) -> tuple:
-            """Retourne (card QFrame, inner_layout QVBoxLayout)."""
+        def _card(accent: str = "") -> tuple:
+            """Section à plat : léger fond élevé (BG_RAISED sur le BG_PANEL de
+            l'inspecteur), sans bordure ni liseré. Le regroupement se fait par
+            élévation, l'identité par la couleur du titre — plus les cadres
+            empilés jugés « lourds » (voir project_theme_gba_redesign)."""
             f = QFrame()
+            f.setObjectName("sc_card")
             f.setStyleSheet(
-                f"QFrame#sc_card{{background:{C.BG_BASE};border:1px solid {C.BORDER};"
-                f"border-left:3px solid {accent};border-radius:4px;}}"
+                f"QFrame#sc_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
                 f"QFrame#sc_card QFrame{{background:transparent;border:none;}}"
                 f"QFrame#sc_card QLabel{{background:transparent;border:none;}}"
             )
-            f.setObjectName("sc_card")
             inner = QVBoxLayout(f)
-            inner.setContentsMargins(8, 6, 8, 8)
+            inner.setContentsMargins(10, 8, 10, 10)
             inner.setSpacing(6)
             return f, inner
 
@@ -160,30 +163,115 @@ class SceneInspector(QWidget):
             )
             return lbl
 
-        # ── Carte Mode vidéo (Scene Mode) ─────────────────────────
-        mode_card, mode_inner = _card(C.ACCENT_GRN)
-        mode_inner.addWidget(_card_title("SCENE MODE", C.ACCENT_GRN))
-        mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(3)
-        self._mode_btns: list[QPushButton] = []
-        for m in range(6):
-            b = self._make_mode_btn(m)
-            b.clicked.connect(lambda _c=False, m=m: self._on_set_mode(m))
-            mode_row.addWidget(b)
-            self._mode_btns.append(b)
-        mode_row.addStretch(1)   # boutons compacts alignés à gauche (les 6 tiennent toujours)
+        # ── Carte Note libre ───────────────────────────────────────
+        notes_card, notes_inner = _card(C.TEXT_DIM)
+        notes_inner.addWidget(_card_title("NOTE", C.TEXT_NORM))
+        self._notes_edit = NotesEdit()
+        self._notes_edit.committed.connect(lambda text: self._set_scene_field("notes", text))
+        notes_inner.addWidget(self._notes_edit)
+        cl.addWidget(notes_card)
+
+        # ── Carte Mode vidéo (Scene Mode) — mode + paramètres + script ─────
+        # Fusion des anciennes cartes SCENE MODE / PARAMÈTRES / SCRIPT : un seul
+        # bouton affiche le mode actif (menu déroulant pour en choisir un autre,
+        # même logique de garde-fou/pruning qu'avant), les paramètres de la scène
+        # (Layer UI, Scrolling) prennent place à sa droite, et le script de scène
+        # est rattaché juste en dessous.
+        mode_card, mode_inner = _card(C.ACCENT)
+        mode_inner.addWidget(_card_title("SCENE MODE", C.ACCENT))
+
+        mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(12)
+        self._btn_mode = QPushButton("MODE 0")
+        self._btn_mode.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        self._btn_mode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_mode.setFixedSize(84, 44)
+        self._btn_mode.setStyleSheet(
+            f"QPushButton{{color:{C.ACCENT}; background:{C.BG_INPUT};"
+            f"border:2px solid {C.ACCENT}; border-radius:5px;}}"
+            f"QPushButton:hover{{background:{C.BG_HOVER};}}"
+        )
+        self._btn_mode.setToolTip("Changer le mode vidéo de la scène")
+        self._btn_mode.clicked.connect(self._show_mode_menu)
+        mode_row.addWidget(self._btn_mode)
+
+        # Colonne paramètres (Layer UI + Scrolling) — masquée en mode bitmap
+        # (cf. _apply_mode_ui), placée à droite du bouton de mode.
+        self._param_col = QWidget()
+        param_inner = QVBoxLayout(self._param_col)
+        param_inner.setContentsMargins(0, 0, 0, 0)
+        param_inner.setSpacing(4)
+
+        scroll_row = QHBoxLayout(); scroll_row.setSpacing(6)
+        lbl_scroll = QLabel("Scrolling :")
+        lbl_scroll.setFont(QFont(T.MONO, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_scroll.setFixedWidth(70)
+        scroll_row.addWidget(lbl_scroll)
+        self._chk_scroll_h = self._mk_scroll_toggle("scroll_h", "Défilement horizontal")
+        self._chk_scroll_v = self._mk_scroll_toggle("scroll_v", "Défilement vertical")
+        scroll_row.addWidget(self._chk_scroll_h)
+        scroll_row.addWidget(self._chk_scroll_v)
+        scroll_row.addStretch()
+        self._chk_scroll_h.toggled.connect(self._on_scroll_changed)
+        self._chk_scroll_v.toggled.connect(self._on_scroll_changed)
+        param_inner.addLayout(scroll_row)
+
+        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
+        lbl_ui = QLabel("Layer UI :")
+        lbl_ui.setFont(QFont(T.MONO, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_ui.setFixedWidth(70)
+        self._combo_text_bg = QComboBox()
+        self._combo_text_bg.setFont(QFont(T.MONO, T.SM))
+        self._combo_text_bg.setStyleSheet(QSS.combobox)
+        for i in range(4):
+            self._combo_text_bg.addItem(f"BG{i}" + (" (défaut)" if i == 1 else ""), i)
+        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
+        self._combo_text_bg.setToolTip(
+            "<b>Calque réservé au texte HUD (TTE)</b><br><br>"
+            "Le texte affiché en jeu (score, dialogue…) occupe un calque BG entier.<br>"
+            "Choisir un BG qui n'est pas utilisé par un décor.<br><br>"
+            "<b>Conflit ⚠</b> : si ce BG est déjà assigné à un background,<br>"
+            "les deux se superposent et le résultat est indéfini."
+        )
+        self._lbl_text_bg_warn = QLabel()
+        self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
+        self._lbl_text_bg_warn.setVisible(False)
+        ui_row.addWidget(lbl_ui)
+        ui_row.addWidget(self._combo_text_bg)
+        ui_row.addWidget(self._lbl_text_bg_warn)
+        ui_row.addStretch(1)
+        param_inner.addLayout(ui_row)
+
+        mode_row.addWidget(self._param_col, 1)
         mode_inner.addLayout(mode_row)
+
         self._mode_hint = QLabel("")
         self._mode_hint.setFont(QFont(T.MONO, T.XS)); self._mode_hint.setWordWrap(True)
         self._mode_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
         mode_inner.addWidget(self._mode_hint)
+
+        W.separator(mode_inner)
+
+        from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
+        self._scene_script_slot = ScriptSlot(
+            add_label    = "Ajouter un script de scène",
+            accent_color = C.ACCENT_ORG,
+            hint         = "on_start · on_update · on_late_update",
+        )
+        self._scene_script_slot.set_callbacks(
+            on_add   = self._scene_script_new,
+            on_open  = self._scene_script_open,
+            on_clear = self._scene_script_clear,
+        )
+        mode_inner.addWidget(self._scene_script_slot)
+
         cl.addWidget(mode_card)
 
         # ── Carte Background Asset ────────────────────────────────
-        bg_card, bg_inner = _card(C.ACCENT_BLU)
+        bg_card, bg_inner = _card(C.ACCENT)
         self._bg_card = bg_card
 
         bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
-        bg_hdr.addWidget(_card_title("BACKGROUND", C.ACCENT_BLU), 1)
+        bg_hdr.addWidget(_card_title("BACKGROUND LAYERS", C.ACCENT), 1)
         self._btn_bg_add = W.btn_add("Ajouter un calque BG (max 4)")
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
         bg_hdr.addWidget(self._btn_bg_add)
@@ -220,66 +308,18 @@ class SceneInspector(QWidget):
 
         cl.addWidget(bg_card)
 
-        # ── Carte Paramètres ──────────────────────────────────────
-        param_card, param_inner = _card(C.TEXT_DIM)
-        self._param_card = param_card
-        param_inner.addWidget(_card_title("PARAMÈTRES", C.TEXT_NORM))
-
-        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
-        lbl_ui = QLabel("Layer UI :")
-        lbl_ui.setFont(QFont(T.MONO, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_ui.setFixedWidth(70)
-        self._combo_text_bg = QComboBox()
-        self._combo_text_bg.setFont(QFont(T.MONO, T.SM))
-        self._combo_text_bg.setStyleSheet(QSS.combobox)
-        for i in range(4):
-            self._combo_text_bg.addItem(f"BG{i}" + (" (défaut)" if i == 1 else ""), i)
-        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
-        self._combo_text_bg.setToolTip(
-            "<b>Calque réservé au texte HUD (TTE)</b><br><br>"
-            "Le texte affiché en jeu (score, dialogue…) occupe un calque BG entier.<br>"
-            "Choisir un BG qui n'est pas utilisé par un décor.<br><br>"
-            "<b>Conflit ⚠</b> : si ce BG est déjà assigné à un background,<br>"
-            "les deux se superposent et le résultat est indéfini."
-        )
-        self._lbl_text_bg_warn = QLabel("")
-        self._lbl_text_bg_warn.setFont(QFont(T.MONO, T.XS))
-        self._lbl_text_bg_warn.setStyleSheet(f"color:{C.ACCENT_YLW};")
-        ui_row.addWidget(lbl_ui)
-        ui_row.addWidget(self._combo_text_bg)
-        ui_row.addWidget(self._lbl_text_bg_warn, 1)
-        param_inner.addLayout(ui_row)
-
-        scroll_row = QHBoxLayout(); scroll_row.setSpacing(6)
-        lbl_scroll = QLabel("Scrolling :")
-        lbl_scroll.setFont(QFont(T.MONO, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_scroll.setFixedWidth(70)
-        self._chk_scroll_h = QCheckBox("Horizontal")
-        self._chk_scroll_v = QCheckBox("Vertical")
-        for chk in (self._chk_scroll_h, self._chk_scroll_v):
-            chk.setFont(QFont(T.MONO, T.SM))
-            chk.setStyleSheet(QSS.checkbox)
-            scroll_row.addWidget(chk)
-        scroll_row.insertWidget(0, lbl_scroll)
-        scroll_row.addStretch()
-        self._chk_scroll_h.toggled.connect(self._on_scroll_changed)
-        self._chk_scroll_v.toggled.connect(self._on_scroll_changed)
-        param_inner.addLayout(scroll_row)
-
-        cl.addWidget(param_card)
-
-        # ── Carte Palettes actives ─────────────────────────────────
+        # ── Carte Palettes ─────────────────────────────────────────
         # Le catalogue de palettes (Palette Editor) est illimité au niveau
         # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
-        pal_card, pal_inner = _card(C.ACCENT_GRN)
-        pal_inner.addWidget(_card_title("PALETTES ACTIVES", C.ACCENT_GRN))
+        pal_card, pal_inner = _card(C.ACCENT)
+        pal_inner.addWidget(_card_title("PALETTES", C.ACCENT))
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}
         for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
-                                    ("bg", C.ACCENT_BLU, "BACKGROUND")):
+                                    ("bg", C.ACCENT_BLU, "BCK (backgrounds)")):
             sub_lbl = QLabel(title)
             sub_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
             sub_lbl.setStyleSheet(f"color:{color}; letter-spacing:1px; margin-top:4px;")
@@ -296,25 +336,6 @@ class SceneInspector(QWidget):
 
         cl.addWidget(pal_card)
 
-        # ── Carte Script ──────────────────────────────────────────
-        sc_card, sc_inner = _card(C.ACCENT_ORG)
-        sc_inner.addWidget(_card_title("SCRIPT", C.ACCENT_ORG))
-
-        from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
-        self._scene_script_slot = ScriptSlot(
-            add_label    = "Ajouter un script de scène",
-            accent_color = C.ACCENT_ORG,
-            hint         = "on_start · on_update · on_late_update",
-        )
-        self._scene_script_slot.set_callbacks(
-            on_add   = self._scene_script_new,
-            on_open  = self._scene_script_open,
-            on_clear = self._scene_script_clear,
-        )
-        sc_inner.addWidget(self._scene_script_slot)
-
-        cl.addWidget(sc_card)
-
         cl.addStretch()
         layout.addWidget(self._content)
         layout.addStretch()
@@ -326,6 +347,7 @@ class SceneInspector(QWidget):
             self._content.setVisible(False); self._empty.setVisible(True); return
         self._empty.setVisible(False); self._content.setVisible(True)
         self._blocking = True
+        self._notes_edit.set_text_silent(getattr(scene, "notes", ""))
         self._chk_scroll_h.setChecked(scene.scroll_h)
         self._chk_scroll_v.setChecked(scene.scroll_v)
         self._refresh_scroll_speeds()
@@ -337,36 +359,50 @@ class SceneInspector(QWidget):
         self._apply_mode_ui()
         self._blocking = False
 
+    def _mk_scroll_toggle(self, icon_key: str, tip: str) -> QToolButton:
+        """Toggle iconifié (double flèche) pour un axe de scrolling — remplace
+        la case à cocher texte, cohérent avec les toggles d'affichage du canvas
+        (cf. scene_canvas._mk_view_toggle)."""
+        b = QToolButton()
+        b.setIcon(icons.get(icon_key, C.TEXT_DIM, C.ACCENT))
+        b.setIconSize(QSize(16, 16))
+        b.setCheckable(True)
+        b.setFixedSize(28, 26)
+        b.setToolTip(tip)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER_MID};background:{C.BG_INPUT};"
+            f"border-radius:4px;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
+            f"QToolButton:checked{{background:{C.BG_SEL};border:1px solid {C.ACCENT};}}"
+        )
+        return b
+
     # ── Scene Mode (0-5) ──────────────────────────────────────────
 
-    def _make_mode_btn(self, m: int) -> QPushButton:
-        b = QPushButton(str(m))
-        b.setCheckable(True)
-        b.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        b.setFixedSize(40, 26)   # compact : les 6 boutons tiennent dans un panneau étroit
-        b.setStyleSheet(
-            f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
-            f"border:1px solid {C.BORDER_MID}; border-radius:3px;}}"
-            f"QPushButton:hover{{color:{C.TEXT_HI};}}"
-            f"QPushButton:checked{{color:{C.ACCENT_GRN}; border:2px solid {C.ACCENT_GRN};"
-            f"background:{C.SEL_BG};}}"
-            f"QPushButton:disabled{{color:{C.TEXT_MUTED}; background:{C.BG_BASE};"
-            f"border-color:{C.BORDER_DARK};}}"
-        )
-        # Seul le Mode 0 rend réellement pour l'instant ; les autres sont grisés
-        # (le sélecteur/inspecteur adaptatif existe, mais pas encore le rendu).
-        if m == 0:
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip(f"Mode 0 — {MODE_INFO[0]['tip']}")
-        else:
-            b.setEnabled(False)
-            b.setToolTip(f"Mode {m} — {MODE_INFO[m]['tip']}\n(rendu non encore implémenté — bientôt)")
-        return b
+    def _show_mode_menu(self):
+        """Menu déroulant du bouton de mode — remplace l'ancienne rangée de
+        6 boutons. Seul le Mode 0 rend réellement pour l'instant ; les autres
+        restent grisés (le sélecteur/inspecteur adaptatif existe déjà, pas
+        encore le rendu), même garde-fou qu'avant."""
+        current = getattr(self._scene, "render_mode", 0) if self._scene else 0
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        menu.setToolTipsVisible(True)
+        for m in range(6):
+            label = f"Mode {m}" + ("  ✓" if m == current else "")
+            act = menu.addAction(label)
+            if m == 0:
+                act.setToolTip(MODE_INFO[0]["tip"])
+            else:
+                act.setEnabled(False)
+                act.setToolTip(f"{MODE_INFO[m]['tip']}\n(rendu non encore implémenté — bientôt)")
+            act.triggered.connect(lambda _c=False, m=m: self._on_set_mode(m))
+        menu.exec(self._btn_mode.mapToGlobal(QPoint(0, self._btn_mode.height())))
 
     def _refresh_mode_buttons(self):
         mode = getattr(self._scene, "render_mode", 0) if self._scene else 0
-        for i, b in enumerate(self._mode_btns):
-            b.setChecked(i == mode)
+        self._btn_mode.setText(f"MODE {mode}")
 
     def _is_bitmap_layer(self, layer) -> bool:
         ba = self._project.get_background(layer.background_name) if (self._project and layer.background_name) else None
@@ -478,8 +514,8 @@ class SceneInspector(QWidget):
             self._rebuild_layer_rows()
         else:
             self._refresh_bitmap_slot(info)
-        # PARAMÈTRES (texte TTE + scroll) : tuilé seulement.
-        self._param_card.setVisible(is_tiled)
+        # Paramètres (texte TTE + scroll) : tuilé seulement.
+        self._param_col.setVisible(is_tiled)
         # PALETTES : OBJ toujours, BG seulement en tuilé.
         self._pal_sublabels["bg"].setVisible(is_tiled)
         self._pal_grids["bg"].setVisible(is_tiled)
@@ -538,7 +574,13 @@ class SceneInspector(QWidget):
 
     def _persist_scene(self):
         if self._project and self._scene:
-            self._project.save_scene(self._scene)
+            # Suspendre le watcher pendant l'écriture : sinon le fichier de scène
+            # qu'on vient d'écrire est re-détecté comme « modifié en externe »,
+            # ce qui recharge la scène et RECONSTRUIT l'inspecteur — détruisant
+            # le widget en cours d'interaction (ex. le QDoubleSpinBox de vitesse
+            # d'un BG sous la molette) → crash. Cf. dispatcher._save_scene.
+            with get_dispatcher().suspended():
+                self._project.save_scene(self._scene)
 
     def _on_layer_image(self, layer, name: str):
         """Un BackgroundImage (nom) a été choisi pour un layer — l'image existe
@@ -851,10 +893,11 @@ class SceneInspector(QWidget):
         text_bg = getattr(self._scene, "text_bg", -1)
         conflict = next((l for l in self._scene.background_layers
                           if l.background_name and l.bg_slot == text_bg), None)
-        self._lbl_text_bg_warn.setText(
-            f"⚠ BG{text_bg} porte '{conflict.background_name}' — sera écrasé par le texte"
-            if conflict else ""
-        )
+        self._lbl_text_bg_warn.setVisible(bool(conflict))
+        if conflict:
+            self._lbl_text_bg_warn.setToolTip(
+                f"BG{text_bg} porte '{conflict.background_name}' — sera écrasé par le texte"
+            )
 
     def _refresh_ui_layer_marks(self):
         """Marque visuellement (icône 'UI') la rangée dont le bg_slot == Layer

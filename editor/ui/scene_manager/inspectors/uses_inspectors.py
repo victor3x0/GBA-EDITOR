@@ -21,6 +21,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.selection_bus import get_bus
 from ui.common.theme import C, T
+from ui.common import icons
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ from ui.common.theme import C, T
 #  optionnel) + liste scrollable + helpers de construction de lignes.
 # ──────────────────────────────────────────────────────────────────
 class _UsesInspectorBase(QWidget):
-    _HEADER_COLOR = C.ACCENT_GRN
+    _HEADER_COLOR = icons.COLOR_DEFAULT
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
     _SECTION_TITLE = ""
@@ -192,12 +193,12 @@ class PrefabUsesInspector(_UsesInspectorBase):
     """
     edit_requested = pyqtSignal(object)   # Prefab — demande d'édition
 
-    _HEADER_COLOR = C.ACCENT_BLU
+    _HEADER_COLOR = icons.COLOR_PREFAB
     _HEADER_BG_ALPHA = "30"
     _HEADER_BORDER_ALPHA = "50"
     _SECTION_TITLE = "PREFAB USES"
     _ACTION_BTN_TEXT = "Éditer le prefab"
-    _ACTION_BTN_COLOR = "#7ecfff"
+    _ACTION_BTN_COLOR = icons.COLOR_PREFAB
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -258,12 +259,12 @@ class ScriptUsesInspector(_UsesInspectorBase):
     """
     edit_requested = pyqtSignal(str)   # path du script
 
-    _HEADER_COLOR = C.ACCENT_ORG
+    _HEADER_COLOR = icons.COLOR_SCRIPT
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
     _SECTION_TITLE = "SCRIPT USES"
     _ACTION_BTN_TEXT = "Éditer le script"
-    _ACTION_BTN_COLOR = C.ACCENT_ORG
+    _ACTION_BTN_COLOR = icons.COLOR_SCRIPT
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -345,7 +346,7 @@ class VariableUsesInspector(_UsesInspectorBase):
 
     _LABELS = {"global": "GLOBAL USES", "const": "CONSTANT USES"}
 
-    _HEADER_COLOR = C.ACCENT_GRN
+    _HEADER_COLOR = icons.COLOR_GLOBAL
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
     _SECTION_TITLE = "GLOBAL USES"
@@ -408,11 +409,11 @@ class VariableUsesInspector(_UsesInspectorBase):
         rl.setContentsMargins(10, 0, 8, 0)
         icon_lbl = QLabel("λ")
         icon_lbl.setFont(QFont(T.MONO, T.MD))
-        icon_lbl.setStyleSheet(f"color:{C.ACCENT_GRN};")
+        icon_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
         icon_lbl.setFixedWidth(16)
         name_lbl = QLabel(script_path.name)
         name_lbl.setFont(QFont(T.MONO, T.MD))
-        name_lbl.setStyleSheet(f"color:{C.ACCENT_GRN};")
+        name_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
         count_lbl = QLabel(f"×{count}")
         count_lbl.setFont(QFont(T.MONO, T.SM))
         count_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")

@@ -40,7 +40,7 @@ def _grey(qc: QColor, amount: float = 0.62) -> QColor:
 
 
 def swatch_icon(colors, size: int = 16, *, greyed: bool = False,
-                override: bool = False, marker_color: str = C.ACCENT_GRN) -> QIcon:
+                override: bool = False, marker_color: str = C.ACCENT) -> QIcon:
     """Icône 2x2 échantillonnant 4 couleurs d'une liste BGR555 brute.
 
     - `greyed`   : couleurs atténuées vers le gris (palette propre d'asset,
@@ -75,7 +75,7 @@ def swatch_icon(colors, size: int = 16, *, greyed: bool = False,
     return QIcon(px)
 
 
-def plus_icon(size: int = 16, color: str = C.ACCENT_GRN) -> QIcon:
+def plus_icon(size: int = 16, color: str = C.ACCENT) -> QIcon:
     """Icône « + » peinte (indépendante de la police) pour le bouton d'ajout."""
     px = QPixmap(size, size)
     px.fill(Qt.GlobalColor.transparent)

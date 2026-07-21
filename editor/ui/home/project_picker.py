@@ -104,7 +104,7 @@ class ToolchainStatus(QWidget):
             lbl = QLabel(f"{'✓' if ok else '✗'} {name}")
             lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
             lbl.setStyleSheet(
-                f"color:{'#4caf78' if ok else '#a05050'};background:transparent;"
+                f"color:{'#5be08b' if ok else '#a05050'};background:transparent;"
             )
             row_l.addWidget(lbl)
         row_l.addStretch()
@@ -316,7 +316,7 @@ class HomeScreen(QDialog):
         btn_new.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
         btn_new.setFixedHeight(30)
         btn_new.setStyleSheet(
-            f"QPushButton{{color:#000;background:{C.ACCENT_GRN};"
+            f"QPushButton{{color:#000;background:{C.ACCENT};"
             f"border:none;border-radius:4px;padding:0 14px;}}"
             f"QPushButton:hover{{background:#5dc487;}}"
             f"QPushButton:pressed{{background:#3d9060;}}"
@@ -473,7 +473,7 @@ class _NewProjectDialog(QDialog):
         btn_ok.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
         btn_ok.setFixedHeight(28)
         btn_ok.setStyleSheet(
-            f"QPushButton{{color:#000;background:{C.ACCENT_GRN};"
+            f"QPushButton{{color:#000;background:{C.ACCENT};"
             f"border:none;border-radius:4px;padding:0 16px;}}"
             f"QPushButton:hover{{background:#5dc487;}}"
         )

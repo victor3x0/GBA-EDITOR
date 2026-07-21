@@ -46,8 +46,9 @@ from core.project import (
     Project,
 )
 from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
-from ui.common.theme import T
+from ui.common.theme import T, QSS, C
 from ui.common.palette_bank_strip import PaletteBankStrip
+from ui.common.canvas_top_bar import CanvasTopBar
 from core.sprite_compose import compose_frame_image
 from core.color_utils import quantize_preview
 from codegen.asset_pipeline import resolve_palette_bank, resolve_obj_palette_bank
@@ -80,7 +81,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from core.selection_bus import get_bus
+from core.selection_bus import get_bus, CameraSelection
 
 # ── Constantes GBA ───────────────────────────────────────────────
 GBA_W = 240
@@ -328,10 +329,14 @@ class SpriteItem(QGraphicsPixmapItem):
         rotation: float = 0.0,
         flip_h: bool = False,
         flip_v: bool = False,
+        resolver=None,
         parent=None,
     ):
         super().__init__(pixmap, parent)
         self.scene_sprite = actor
+        # Résout une position x/y (px littéral, tile, ou réf de variable) en
+        # pixels concrets pour l'affichage — cf. core.models.field_value.
+        self._pos_resolver = resolver
         self.snap = snap
         # Initialisés avant setPos()/setFlags() plus bas : itemChange() peut être
         # appelé dès la construction (ItemSendsGeometryChanges) et les lit.
@@ -368,7 +373,18 @@ class SpriteItem(QGraphicsPixmapItem):
             self.setTransform(t)
 
         # Item (0,0) = position logique de l'acteur — la caméra suit directement
-        self.setPos(actor.x, actor.y)
+        self.setPos(*self.pos_px())
+
+    def pos_px(self) -> tuple[int, int]:
+        """Position logique de l'acteur résolue en pixels (px/tile/réf variable)."""
+        from core.models.field_value import FieldValue
+        a = self.scene_sprite
+        return (FieldValue.parse(a.x).px(self._pos_resolver),
+                FieldValue.parse(a.y).px(self._pos_resolver))
+
+    def sync_pos(self):
+        """Repositionne l'item Qt depuis le modèle (setPos programmatique)."""
+        self.setPos(*self.pos_px())
 
     def set_canvas_size(self, w: int, h: int):
         self._canvas_w = w
@@ -381,8 +397,8 @@ class SpriteItem(QGraphicsPixmapItem):
     _CLICK_THRESHOLD = 2
 
     def mousePressEvent(self, e):
-        # Capturer la position avant le début du drag
-        self._drag_origin = (self.scene_sprite.x, self.scene_sprite.y)
+        # Capturer la position (résolue en px) avant le début du drag
+        self._drag_origin = self.pos_px()
         self._drag_confirmed = False
         super().mousePressEvent(e)
 
@@ -390,7 +406,7 @@ class SpriteItem(QGraphicsPixmapItem):
         super().mouseReleaseEvent(e)
         if self._drag_origin is not None:
             old_x, old_y = self._drag_origin
-            new_x, new_y = self.scene_sprite.x, self.scene_sprite.y
+            new_x, new_y = self.pos_px()
             if (old_x, old_y) != (new_x, new_y):
                 # Pousser la commande SANS re-exécuter (le drag a déjà modifié actor)
                 cmd = MoveActorCmd(self.scene_sprite, old_x, old_y, new_x, new_y)
@@ -405,7 +421,8 @@ class SpriteItem(QGraphicsPixmapItem):
 
     def item_pos(self) -> tuple[float, float]:
         """Position Qt de l'item = position logique de l'acteur (item origin = ancrage)."""
-        return float(self.scene_sprite.x), float(self.scene_sprite.y)
+        px, py = self.pos_px()
+        return float(px), float(py)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
@@ -442,12 +459,12 @@ class SpriteItem(QGraphicsPixmapItem):
         # Outline vert propre quand sélectionné
         if self.isSelected():
             painter.save()
-            painter.setPen(QPen(QColor("#4caf78"), 1, Qt.PenStyle.SolidLine))
+            painter.setPen(QPen(QColor("#9b8cff"), 1, Qt.PenStyle.SolidLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             r = self.boundingRect().adjusted(0, 0, -1, -1)
             painter.drawRect(r)
             # Petits coins pour renforcer la visibilité
-            painter.setPen(QPen(QColor("#4caf78"), 2))
+            painter.setPen(QPen(QColor("#9b8cff"), 2))
             for cx, cy in [
                 (r.left(), r.top()),
                 (r.right(), r.top()),
@@ -622,12 +639,6 @@ class FloatingToolbar(QFrame):
             "Slope sol inversé (triangle, Bresenham)",
         ),
     ]
-    _COLLISION_ICON_KEYS = {
-        "collision_8": "tool_collision_8",
-        "collision_16": "tool_collision_16",
-        "collision_slope": "tool_collision_slope",
-        "collision_slope_inv": "tool_collision_slope_inv",
-    }
 
     # Sous-outils inpainting de scène — (id, icon_key, label, tooltip)
     _INPAINT_MODES = [
@@ -653,22 +664,22 @@ class FloatingToolbar(QFrame):
         self._current_inpaint = "inpaint_brush"
 
         self.setFixedWidth(46)
-        self.setStyleSheet("""
-            FloatingToolbar {
-                background: #1c1c1c;
-                border: 1px solid #333;
+        self.setStyleSheet(f"""
+            FloatingToolbar {{
+                background: {C.BG_RAISED};
+                border: 1px solid {C.BORDER};
                 border-radius: 8px;
-            }
-            QToolButton {
+            }}
+            QToolButton {{
                 border: none;
                 background: transparent;
                 border-radius: 5px;
-            }
-            QToolButton:hover   { background: #2a2a2a; }
-            QToolButton:checked {
-                background: #253525;
-                border: 1px solid #3a6a3a;
-            }
+            }}
+            QToolButton:hover   {{ background: {C.BG_HOVER}; }}
+            QToolButton:checked {{
+                background: {C.BG_SEL};
+                border: 1px solid {C.ACCENT};
+            }}
         """)
 
         layout = QVBoxLayout(self)
@@ -705,13 +716,10 @@ class FloatingToolbar(QFrame):
 
         # ── Bouton collision avec dropdown ────────────────────────
         self._btn_collision = QToolButton()
-        self._btn_collision.setIcon(
-            _ico(
-                self._COLLISION_ICON_KEYS[self._current_collision],
-                COLOR_DEFAULT,
-                COLOR_ACTIVE,
-            )
-        )
+        # Icône « mur » partagée avec le toggle « Collisions scène » de la
+        # toolbar haute : une seule identité visuelle pour la collision. Le
+        # sous-mode actif (8/16/slope) se choisit dans le menu déroulant.
+        self._btn_collision.setIcon(_ico("view_collision", COLOR_DEFAULT, COLOR_ACTIVE))
         self._btn_collision.setIconSize(QSize(24, 24))
         self._btn_collision.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self._btn_collision.setToolTip("Édition de collisions  (C)")
@@ -777,8 +785,8 @@ class FloatingToolbar(QFrame):
                 padding: 4px;
             }
             QMenu::item { padding: 5px 14px 5px 8px; border-radius: 3px; icon-size: 20px; }
-            QMenu::item:selected { background: #253525; color: #4caf78; }
-            QMenu::item:checked  { color: #4caf78; }
+            QMenu::item:selected { background: #241f3a; color: #9b8cff; }
+            QMenu::item:checked  { color: #9b8cff; }
         """)
 
         from ui.common.icons import COLOR_DEFAULT
@@ -800,13 +808,9 @@ class FloatingToolbar(QFrame):
         menu.exec(btn_pos)
 
     def _select_collision_mode(self, mode: str):
+        # Le bouton garde l'icône « mur » (identité collision partagée) ; le
+        # sous-mode choisi est indiqué par la coche du menu déroulant.
         self._current_collision = mode
-        from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
-        from ui.common.icons import get as _ico
-
-        self._btn_collision.setIcon(
-            _ico(self._COLLISION_ICON_KEYS[mode], COLOR_DEFAULT, COLOR_ACTIVE)
-        )
         self._set_tool(mode)
 
     # ── Peinture palette BG dropdown ──────────────────────────────
@@ -824,8 +828,8 @@ class FloatingToolbar(QFrame):
             QMenu { background:#1e1e1e; color:#ccc; border:1px solid #3a3a3a;
                     border-radius:4px; padding:4px; }
             QMenu::item { padding:5px 14px 5px 8px; border-radius:3px; icon-size:20px; }
-            QMenu::item:selected { background:#253525; color:#4caf78; }
-            QMenu::item:checked  { color:#4caf78; }
+            QMenu::item:selected { background:#241f3a; color:#9b8cff; }
+            QMenu::item:checked  { color:#9b8cff; }
         """)
         from ui.common.icons import COLOR_DEFAULT
         from ui.common.icons import get as _ico
@@ -871,6 +875,17 @@ class FloatingToolbar(QFrame):
     @property
     def current_tool(self) -> str:
         return self._current_tool
+
+    def activate_shortcut(self, group: str):
+        """Active un outil depuis un raccourci clavier. Pour 'collision' /
+        'inpaint', reprend le dernier sous-mode utilisé (comme un clic ré-active
+        le mode courant). Passe par _set_tool → boutons + signal synchronisés."""
+        if group == "collision":
+            self._set_tool(self._current_collision)
+        elif group == "inpaint":
+            self._set_tool(self._current_inpaint)
+        else:
+            self._set_tool(group)
 
     # ── Drag ──────────────────────────────────────────────────────
 
@@ -955,14 +970,17 @@ class ActorBoxOverlay(QGraphicsItem):
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
         self._actors: list = []
+        self._var_defaults: dict = {}   # (src, name) -> valeur par défaut (aperçu des refs)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.setZValue(160)
         self.setVisible(False)
 
-    def set_actors(self, actors: list):
+    def set_actors(self, actors: list, var_defaults: dict | None = None):
         self._actors = list(actors)
+        if var_defaults is not None:
+            self._var_defaults = var_defaults
         self.setVisible(bool(self._actors))
         self.update()
 
@@ -971,6 +989,11 @@ class ActorBoxOverlay(QGraphicsItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         from core.project import CollisionBoxComponent
+        from core.models.field_value import FieldValue
+
+        # Un champ peut être une référence de variable : on résout à la valeur
+        # par défaut de la variable pour dessiner une box représentative.
+        resolve = lambda src, name: self._var_defaults.get((src, name))
 
         pen_s = QPen(self._B_SOLID, 0)
         pen_t = QPen(self._B_TRIGGER, 0)
@@ -978,16 +1001,18 @@ class ActorBoxOverlay(QGraphicsItem):
             for comp in actor.components:
                 if not isinstance(comp, CollisionBoxComponent) or not comp.active:
                     continue
-                x = actor.x + comp.x
-                y = actor.y + comp.y
+                x = FieldValue.parse(actor.x).px(resolve) + FieldValue.parse(comp.x).px(resolve)
+                y = FieldValue.parse(actor.y).px(resolve) + FieldValue.parse(comp.y).px(resolve)
+                w = FieldValue.parse(comp.w).px(resolve)
+                h = FieldValue.parse(comp.h).px(resolve)
                 if comp.solid:
-                    painter.fillRect(x, y, comp.w, comp.h, self._C_SOLID)
+                    painter.fillRect(x, y, w, h, self._C_SOLID)
                     painter.setPen(pen_s)
                 else:
-                    painter.fillRect(x, y, comp.w, comp.h, self._C_TRIGGER)
+                    painter.fillRect(x, y, w, h, self._C_TRIGGER)
                     painter.setPen(pen_t)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(x, y, comp.w, comp.h)
+                painter.drawRect(x, y, w, h)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1022,9 +1047,9 @@ class GBAScene(QGraphicsScene):
     def collision_overlay(self) -> "CollisionOverlay":
         return self._collision_overlay
 
-    def update_actor_boxes(self, actors: list):
+    def update_actor_boxes(self, actors: list, var_defaults: dict | None = None):
         """Met à jour les boîtes de collision acteurs affichées."""
-        self._actor_box_overlay.set_actors(actors)
+        self._actor_box_overlay.set_actors(actors, var_defaults)
 
     def set_collision_view(self, visible: bool):
         """Toggle 'Collisions scène' — indépendant de l'outil CollisionTool."""
@@ -1100,6 +1125,7 @@ class GBAScene(QGraphicsScene):
         scale_x: float = 1.0, scale_y: float = 1.0,
         rotation: float = 0.0,
         flip_h: bool = False, flip_v: bool = False,
+        resolver=None,
     ) -> SpriteItem:
         item = SpriteItem(
             pixmap, actor,
@@ -1108,6 +1134,7 @@ class GBAScene(QGraphicsScene):
             origin_x=origin_x, origin_y=origin_y,
             scale_x=scale_x, scale_y=scale_y,
             rotation=rotation, flip_h=flip_h, flip_v=flip_v,
+            resolver=resolver,
         )
         self.addItem(item)
         self._sprite_items.append(item)
@@ -1155,6 +1182,14 @@ class GBAScene(QGraphicsScene):
 # ──────────────────────────────────────────────────────────────────
 class GBAView(QGraphicsView):
     prefab_template_dropped = pyqtSignal(str, QPointF)
+    # Émis après CHAQUE clic gauche traité par Qt (RubberBandDrag), qu'il ait
+    # ou non changé la sélection — Qt.selectionChanged ne se déclenche QUE si
+    # l'ensemble sélectionné change réellement : un clic répété en dehors du
+    # canvas alors que la sélection est déjà vide, ou un 2e clic dans la zone
+    # active alors qu'une actor était déjà désélectionné, ne le ferait jamais
+    # fire, et l'inspecteur resterait figé sur son panneau précédent. Ce signal
+    # force une réévaluation à chaque clic, indépendamment de tout changement.
+    left_click_settled = pyqtSignal()
 
     def __init__(self, scene: GBAScene, parent=None):
         super().__init__(scene, parent)
@@ -1163,7 +1198,10 @@ class GBAView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self.setBackgroundBrush(QColor("#111111"))
+        self.setBackgroundBrush(QColor(C.BG_DEEP))
+        # Focus clavier : nécessaire pour que les raccourcis du canvas (contexte
+        # WidgetWithChildren de SceneEditor) se déclenchent quand la vue est active.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._zoom = 2.0
         self._apply_zoom()
         self.setAcceptDrops(True)
@@ -1174,6 +1212,19 @@ class GBAView(QGraphicsView):
         self._snap_preview: "QGraphicsRectItem | None" = None
         # Contrôleur de peinture par palette BG (injecté par SceneEditor).
         self.inpainting_controller: "Optional[SceneInpaintingController]" = None
+        # Pan au clic-central — agit sur les scrollbars, donc indépendant de
+        # l'outil actif et du zoom. `_pan_last` = dernière position viewport (px).
+        self._panning = False
+        self._pan_last: "Optional[QPointF]" = None
+        self._pan_prev_cursor = None
+        # Position (coords scène) du dernier clic gauche non consommé par l'outil
+        # actif — lu par SceneEditor._on_selection_changed pour distinguer un clic
+        # dans la zone active du canvas (→ re-sélectionne la scène) d'un clic en
+        # dehors (→ désélectionne tout). Valide uniquement PENDANT l'appel à
+        # super().mousePressEvent() ci-dessous (remis à None juste après) : ça
+        # évite qu'une valeur périmée soit relue par un _on_selection_changed
+        # déclenché plus tard pour une tout autre raison (Échap, clic droit…).
+        self._last_click_scene_pos: "Optional[QPointF]" = None
 
     def leaveEvent(self, e):
         if self._snap_preview:
@@ -1227,6 +1278,8 @@ class GBAView(QGraphicsView):
     # ── Outil actif ───────────────────────────────────────────────
 
     collision_painted = pyqtSignal()
+    # Clic-droit sur un actor en mode Sélection → (SpriteItem, QPoint global).
+    actor_context_requested = pyqtSignal(object, object)
 
     @property
     def collision_overlay(self) -> Optional["CollisionOverlay"]:
@@ -1260,6 +1313,10 @@ class GBAView(QGraphicsView):
 
     def mousePressEvent(self, e):
         _btn = e.button()
+        if _btn == Qt.MouseButton.MiddleButton:
+            self._start_pan(e.position())
+            e.accept()
+            return
         if (
             _btn in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
             and self._active_tool
@@ -1268,9 +1325,25 @@ class GBAView(QGraphicsView):
             if self._active_tool.on_press(pos, e):
                 e.accept()
                 return
+        if _btn == Qt.MouseButton.LeftButton:
+            self._last_click_scene_pos = self.mapToScene(e.position().toPoint())
         super().mousePressEvent(e)
+        if _btn == Qt.MouseButton.LeftButton:
+            self.left_click_settled.emit()
+        self._last_click_scene_pos = None
 
     def mouseMoveEvent(self, e):
+        # Pan au clic-central : translate la vue via les scrollbars, avant toute
+        # autre logique (snap preview, délégation outil).
+        if self._panning and (e.buttons() & Qt.MouseButton.MiddleButton):
+            delta = e.position() - self._pan_last
+            self._pan_last = e.position()
+            hbar = self.horizontalScrollBar()
+            vbar = self.verticalScrollBar()
+            hbar.setValue(hbar.value() - round(delta.x()))
+            vbar.setValue(vbar.value() - round(delta.y()))
+            e.accept()
+            return
         pos = self.mapToScene(e.position().toPoint())
         # Snap preview — indépendant de l'outil actif
         if self._snap_on:
@@ -1288,6 +1361,10 @@ class GBAView(QGraphicsView):
 
     def mouseReleaseEvent(self, e):
         _btn = e.button()
+        if _btn == Qt.MouseButton.MiddleButton and self._panning:
+            self._end_pan()
+            e.accept()
+            return
         if (
             _btn in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton)
             and self._active_tool
@@ -1298,8 +1375,43 @@ class GBAView(QGraphicsView):
                 return
         super().mouseReleaseEvent(e)
 
+    # ── Pan clic-central ──────────────────────────────────────────
+
+    def _start_pan(self, viewport_pos: "QPointF"):
+        self._panning = True
+        self._pan_last = viewport_pos
+        self._pan_prev_cursor = self.cursor()
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def _end_pan(self):
+        self._panning = False
+        self._pan_last = None
+        if self._pan_prev_cursor is not None:
+            self.setCursor(self._pan_prev_cursor)
+            self._pan_prev_cursor = None
+
+    def _actor_item_at(self, scene_pos) -> "Optional[SpriteItem]":
+        """Premier SpriteItem sous la position (scène) donnée, sinon None."""
+        for it in self.scene().items(scene_pos):
+            if isinstance(it, SpriteItem):
+                return it
+        return None
+
     def contextMenuEvent(self, e):
-        """Empêche le menu contextuel du clic-droit — celui-ci est utilisé pour peindre."""
+        """En mode Sélection : clic-droit sur un actor → menu contextuel
+        (Renommer / Dupliquer / Supprimer). Pour les autres outils, le clic-droit
+        sert à peindre ou à l'outil — pas de menu OS."""
+        from ui.scene_manager.canvas_tools import SelectTool
+        if isinstance(self._active_tool, SelectTool):
+            item = self._actor_item_at(self.mapToScene(e.pos()))
+            if item is not None:
+                # Sélectionner l'actor cliqué pour que le menu agisse dessus
+                # sans ambiguïté visuelle.
+                self.scene().clearSelection()
+                item.setSelected(True)
+                self.actor_context_requested.emit(item, e.globalPos())
+            e.accept()
+            return
         if self._active_tool:
             e.accept()
             return
@@ -1819,7 +1931,7 @@ class CanvasContainer(QWidget):
 
     def _position_inpaint_strip(self):
         strip = self._inpaint_bank_strip
-        strip.adjustSize()
+        strip.reflow()
         x = max(0, (self.width() - strip.width()) // 2)
         y = max(0, self.height() - strip.height() - 12)
         strip.move(x, y)
@@ -1830,6 +1942,10 @@ class CanvasContainer(QWidget):
     @property
     def current_tool(self) -> str:
         return self._toolbar.current_tool
+
+    def activate_tool_shortcut(self, group: str):
+        """Relais des raccourcis clavier d'outil vers la toolbar flottante."""
+        self._toolbar.activate_shortcut(group)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1856,107 +1972,61 @@ class SceneEditor(QWidget):
         self._canvas_w = GBA_W
         self._canvas_h = GBA_H
         self._show_all_boxes = False
+        # Sauvegarde coalescée : un nudge clavier maintenu (auto-repeat) ne doit
+        # pas écrire la scène sur disque à chaque frappe — on ne persiste qu'une
+        # fois l'utilisateur arrêté, ce qui évite la rafale d'écritures atomiques
+        # (source des verrous transitoires Windows) et réduit l'I/O.
+        from PyQt6.QtCore import QTimer
+        self._nudge_save_timer = QTimer(self)
+        self._nudge_save_timer.setSingleShot(True)
+        self._nudge_save_timer.setInterval(180)
+        self._nudge_save_timer.timeout.connect(self._flush_nudge_save)
         self._setup_ui()
+
+    def _flush_nudge_save(self):
+        from core.command_dispatcher import get_dispatcher
+        get_dispatcher().save_scene()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── Toolbar haut ──────────────────────────────────────────
-        toolbar = QFrame()
-        toolbar.setFixedHeight(36)
-        toolbar.setStyleSheet("background:#1e1e1e; border-bottom:1px solid #2a2a2a;")
-        tb_layout = QHBoxLayout(toolbar)
-        tb_layout.setContentsMargins(8, 0, 8, 0)
-        tb_layout.setSpacing(12)
-        font = QFont(T.MONO, T.MD)
+        # ── Barre haut — composant partagé (cf. ui/common/canvas_top_bar) ──
+        self._bar = CanvasTopBar("Ajuster la scène à la vue  (F)")
+        self._bar.zoom_step_asked.connect(self._zoom_step)
+        self._bar.fit_asked.connect(self._fit)
+        self._bar.set_canvas_size(GBA_W, GBA_H)
 
-        lbl_zoom = QLabel("Zoom :")
-        lbl_zoom.setFont(font)
-        lbl_zoom.setStyleSheet("color:#888;")
-        tb_layout.addWidget(lbl_zoom)
+        # ── Toggles d'affichage iconifiés (remplacent les cases texte) ──
+        self._chk_grid8 = self._bar.add_toggle(
+            "view_grid", "Grille 8 px (tuile GBA)", self._on_grid8_toggle)
+        self._chk_grid16 = self._bar.add_toggle(
+            "view_grid_large", "Grille 16 px", self._on_grid16_toggle)
+        self._chk_snap = self._bar.add_toggle(
+            "view_snap", "Snap — aligner les acteurs sur la grille au déplacement",
+            self._on_snap_toggle)
+        self._bar.add_spacing(10)
+        self._chk_boxes_actors = self._bar.add_toggle(
+            "view_boxes", "Boxes acteurs — boîtes de collision de tous les acteurs",
+            self._on_boxes_actors_toggle)
+        self._chk_collision_view = self._bar.add_toggle(
+            "view_collision", "Collisions scène — carte de collisions peinte",
+            self._on_collision_view_toggle)
 
-        self._btn_zoom_out = QPushButton("−")
-        self._btn_zoom_out.setFixedSize(24, 24)
-        self._btn_zoom_out.setFont(font)
-        self._btn_zoom_out.clicked.connect(lambda: self._zoom_step(-1))
-        tb_layout.addWidget(self._btn_zoom_out)
-
-        self._zoom_label = QLabel("×2")
-        self._zoom_label.setFont(font)
-        self._zoom_label.setStyleSheet("color:#ccc;")
-        self._zoom_label.setFixedWidth(36)
-        tb_layout.addWidget(self._zoom_label)
-
-        self._btn_zoom_in = QPushButton("+")
-        self._btn_zoom_in.setFixedSize(24, 24)
-        self._btn_zoom_in.setFont(font)
-        self._btn_zoom_in.clicked.connect(lambda: self._zoom_step(+1))
-        tb_layout.addWidget(self._btn_zoom_in)
-
-        self._btn_fit = QPushButton("Fit")
-        self._btn_fit.setFixedWidth(36)
-        self._btn_fit.setFont(font)
-        self._btn_fit.clicked.connect(self._fit)
-        tb_layout.addWidget(self._btn_fit)
-
-        tb_layout.addSpacing(16)
-
-        self._chk_grid8 = QCheckBox("Grille 8px")
-        self._chk_grid8.setFont(font)
-        self._chk_grid8.setStyleSheet("color:#aaa;")
-        self._chk_grid8.toggled.connect(self._on_grid8_toggle)
-        tb_layout.addWidget(self._chk_grid8)
-
-        self._chk_grid16 = QCheckBox("16px")
-        self._chk_grid16.setFont(font)
-        self._chk_grid16.setStyleSheet("color:#aaa;")
-        self._chk_grid16.toggled.connect(self._on_grid16_toggle)
-        tb_layout.addWidget(self._chk_grid16)
-
-        self._chk_snap = QCheckBox("Snap")
-        self._chk_snap.setFont(font)
-        self._chk_snap.setStyleSheet("color:#aaa;")
-        self._chk_snap.toggled.connect(self._on_snap_toggle)
-        tb_layout.addWidget(self._chk_snap)
-
-        tb_layout.addSpacing(16)
-
-        self._chk_boxes_actors = QCheckBox("Boxes acteurs")
-        self._chk_boxes_actors.setFont(font)
-        self._chk_boxes_actors.setStyleSheet("color:#aaa;")
-        self._chk_boxes_actors.toggled.connect(self._on_boxes_actors_toggle)
-        tb_layout.addWidget(self._chk_boxes_actors)
-
-        self._chk_collision_view = QCheckBox("Collisions scène")
-        self._chk_collision_view.setFont(font)
-        self._chk_collision_view.setStyleSheet("color:#aaa;")
-        self._chk_collision_view.toggled.connect(self._on_collision_view_toggle)
-        tb_layout.addWidget(self._chk_collision_view)
-
-        tb_layout.addStretch()
-
-        # Label taille canvas
-        self._canvas_size_label = QLabel(f"{GBA_W}×{GBA_H}")
-        self._canvas_size_label.setFont(font)
-        self._canvas_size_label.setStyleSheet("color:#555;")
-        tb_layout.addWidget(self._canvas_size_label)
-
-        tb_layout.addSpacing(8)
-
-        self._coord_label = QLabel("x:— y:—")
-        self._coord_label.setFont(font)
-        self._coord_label.setStyleSheet("color:#555;")
-        tb_layout.addWidget(self._coord_label)
-
-        layout.addWidget(toolbar)
+        layout.addWidget(self._bar)
 
         # ── Canvas ────────────────────────────────────────────────
         self._gba_scene = GBAScene()
         self._gba_view = GBAView(self._gba_scene)
         self._gba_view.setMouseTracking(True)
         self._gba_scene.selectionChanged.connect(self._on_selection_changed)
+        # Filet de sécurité : Qt.selectionChanged ne fire que si l'ensemble
+        # sélectionné change réellement — un clic répété dans le même état
+        # (déjà vide, dedans ou dehors) ne le déclenche pas, et l'inspecteur ne
+        # se met jamais à jour. left_click_settled force la réévaluation après
+        # CHAQUE clic gauche (cf. GBAView.mousePressEvent).
+        self._gba_view.left_click_settled.connect(self._on_selection_changed)
         self._gba_scene.changed.connect(self._on_scene_item_changed)
         self._gba_view.prefab_template_dropped.connect(self._on_prefab_template_dropped)
         get_bus().changed.connect(self.on_selection)
@@ -1974,11 +2044,16 @@ class SceneEditor(QWidget):
 
         self._canvas_container.tool_changed.connect(self._on_tool_changed)
         self._gba_view.collision_painted.connect(self._on_collision_painted)
+        self._gba_view.actor_context_requested.connect(self._on_actor_context_menu)
+
+        self._setup_shortcuts()
 
         # Contrôleur de peinture par palette BG + bandeau de palette flottant.
         self._inpainting_ctrl = SceneInpaintingController(self._gba_scene)
         self._gba_view.inpainting_controller = self._inpainting_ctrl
         self._canvas_container.bind_inpainting(self._inpainting_ctrl)
+
+        self._update_zoom_label()
 
     # ── Événements ────────────────────────────────────────────────
 
@@ -1988,12 +2063,8 @@ class SceneEditor(QWidget):
         if obj == self._gba_view.viewport() and event.type() == QEvent.Type.MouseMove:
             pos = self._gba_view.mapToScene(event.pos())
             x, y = int(pos.x()), int(pos.y())
-            if 0 <= x < self._canvas_w and 0 <= y < self._canvas_h:
-                self._coord_label.setText(f"x:{x} y:{y}")
-                self._coord_label.setStyleSheet("color:#aaa;")
-            else:
-                self._coord_label.setText("x:— y:—")
-                self._coord_label.setStyleSheet("color:#555;")
+            inside = 0 <= x < self._canvas_w and 0 <= y < self._canvas_h
+            self._bar.set_cursor_px(x if inside else None, y if inside else None)
         return False
 
     # ── Zoom ──────────────────────────────────────────────────────
@@ -2008,15 +2079,137 @@ class SceneEditor(QWidget):
         self._gba_view.zoom_to(levels[idx])
         self._update_zoom_label()
 
+    # ── Raccourcis clavier ────────────────────────────────────────
+
+    def _setup_shortcuts(self):
+        """Raccourcis clavier du canvas. Contexte WidgetWithChildrenShortcut :
+        actifs seulement quand le focus est dans le SceneEditor (donc pas quand
+        on tape dans un champ d'un autre panneau)."""
+        from PyQt6.QtGui import QShortcut, QKeySequence
+
+        def mk(seq, slot):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+            return sc
+
+        # Bascule d'outil — mêmes lettres que les tooltips de la toolbar
+        mk("S", lambda: self._shortcut_tool("select"))
+        mk("A", lambda: self._shortcut_tool("add"))
+        mk("E", lambda: self._shortcut_tool("erase"))
+        mk("C", lambda: self._shortcut_tool("collision"))
+        mk("B", lambda: self._shortcut_tool("inpaint"))
+        mk("P", lambda: self._shortcut_tool("palette"))
+        # Vue
+        mk("F", self._fit)
+        # Sélection / édition
+        mk("Escape", self._shortcut_escape)
+        mk("Del", self._shortcut_delete)
+        mk("Backspace", self._shortcut_delete)
+        mk("Ctrl+D", self._shortcut_duplicate)
+        # Nudge de la sélection : 1 px, Shift = 8 px (cran de grille)
+        for seq, (dx, dy) in {
+            "Left": (-1, 0), "Right": (1, 0), "Up": (0, -1), "Down": (0, 1),
+            "Shift+Left": (-8, 0), "Shift+Right": (8, 0),
+            "Shift+Up": (0, -8), "Shift+Down": (0, 8),
+        }.items():
+            mk(seq, lambda dx=dx, dy=dy: self._shortcut_nudge(dx, dy))
+
+    def _selected_sprite_items(self) -> list:
+        return [it for it in self._gba_scene.selectedItems()
+                if isinstance(it, SpriteItem)]
+
+    # ── Menu contextuel actor (clic-droit en mode Sélection) ──────
+
+    def _on_actor_context_menu(self, item: "SpriteItem", global_pos):
+        from PyQt6.QtWidgets import QMenu
+        from core.command_dispatcher import get_dispatcher
+        actor = item.scene_sprite
+        menu = QMenu(self)
+        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setStyleSheet(QSS.menu)
+        act_rename = menu.addAction("Renommer…")
+        act_dup = menu.addAction("Dupliquer")
+        menu.addSeparator()
+        act_del = menu.addAction("Supprimer")
+        chosen = menu.exec(global_pos)
+        if chosen is act_rename:
+            self._rename_actor(actor)
+        elif chosen is act_dup:
+            get_dispatcher().duplicate_actor(actor)
+        elif chosen is act_del:
+            get_dispatcher().delete_actor(actor)
+
+    def _rename_actor(self, actor):
+        from PyQt6.QtWidgets import QInputDialog
+        new_name, ok = QInputDialog.getText(
+            self, "Renommer l'acteur", "Nom :", text=actor.name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == actor.name:
+            return
+        actor.name = new_name
+        from core.command_dispatcher import get_dispatcher
+        disp = get_dispatcher()
+        disp.save_scene()
+        disp._emit("actors_list_changed")
+        disp._emit("scene_sprites_changed")
+        get_bus().select(actor)   # rafraîchit l'inspecteur / l'en-tête
+
+    def _shortcut_tool(self, group: str):
+        self._canvas_container.activate_tool_shortcut(group)
+
+    def _shortcut_escape(self):
+        self._gba_scene.clearSelection()
+        self._canvas_container.activate_tool_shortcut("select")
+
+    def _shortcut_delete(self):
+        actors = [it.scene_sprite for it in self._selected_sprite_items()]
+        if not actors:
+            return
+        from core.command_dispatcher import get_dispatcher
+        disp = get_dispatcher()
+        for a in actors:
+            disp.delete_actor(a)
+
+    def _shortcut_duplicate(self):
+        items = self._selected_sprite_items()
+        if not items:
+            return
+        from core.command_dispatcher import get_dispatcher
+        disp = get_dispatcher()
+        for it in items:
+            disp.duplicate_actor(it.scene_sprite)
+
+    def _shortcut_nudge(self, dx: int, dy: int):
+        items = self._selected_sprite_items()
+        if not items:
+            return
+        from core.history import get_history, MoveActorCmd
+        for it in items:
+            a = it.scene_sprite
+            ox, oy = it.pos_px()   # résout px/tile/réf avant d'ajouter le delta
+
+            def persist(it=it):
+                # Le garde-fou itemChange (_drag_origin is None) empêche le
+                # re-snap et la réécriture du modèle sur ce setPos programmatique.
+                it.sync_pos()
+                self._update_actor_box_overlay()
+
+            get_history().push(
+                MoveActorCmd(a, ox, oy, ox + dx, oy + dy, persist_fn=persist))
+        # Persistance différée/coalescée (cf. _nudge_save_timer) : un maintien de
+        # flèche déclenche une seule sauvegarde après relâchement, pas une par
+        # frappe. Le modèle en mémoire est déjà à jour pour l'affichage.
+        self._nudge_save_timer.start()
+
     def _fit(self):
         self._gba_view.fit(self._canvas_w, self._canvas_h)
         self._update_zoom_label()
 
     def _update_zoom_label(self):
-        z = self._gba_view._zoom
-        self._zoom_label.setText(
-            f"×{z:.1f}".rstrip("0").rstrip(".") if z != int(z) else f"×{int(z)}"
-        )
+        self._bar.set_zoom(self._gba_view._zoom)
 
     def _on_grid8_toggle(self, checked: bool):
         if checked:
@@ -2047,15 +2240,19 @@ class SceneEditor(QWidget):
         if not self._project:
             self._gba_scene.update_actor_boxes([])
             return
+        # Valeurs par défaut des variables déclarées — pour dessiner les box
+        # dont un champ (x/y/w/h) référence un global/const plutôt qu'un littéral.
+        from core.models.field_value import var_defaults_from_project
+        var_defaults = var_defaults_from_project(self._project)
         if self._show_all_boxes:
-            self._gba_scene.update_actor_boxes(self._project.active_scene.actors)
+            self._gba_scene.update_actor_boxes(self._project.active_scene.actors, var_defaults)
         else:
             actors = [
                 item.scene_sprite
                 for item in self._gba_scene._sprite_items
                 if item.isSelected()
             ]
-            self._gba_scene.update_actor_boxes(actors)
+            self._gba_scene.update_actor_boxes(actors, var_defaults)
 
     # ── Outil actif ───────────────────────────────────────────────
 
@@ -2116,7 +2313,7 @@ class SceneEditor(QWidget):
         self._canvas_w = min(max_w, MAX_CANVAS_W)
         self._canvas_h = min(max_h, MAX_CANVAS_H)
         self._gba_scene.resize_canvas(self._canvas_w, self._canvas_h)
-        self._canvas_size_label.setText(f"{self._canvas_w}×{self._canvas_h}")
+        self._bar.set_canvas_size(self._canvas_w, self._canvas_h)
 
         # Collision map
         if scene:
@@ -2164,6 +2361,10 @@ class SceneEditor(QWidget):
         self._gba_scene.clear_sprites()
         p = self._project
 
+        # Résolveur des positions référençant une variable (défaut de la var).
+        from core.models.field_value import make_resolver
+        _pos_resolver = make_resolver(p)
+
         scene = p.active_scene
         _placeholder: QPixmap | None = None
         for actor in scene.actors:
@@ -2206,6 +2407,7 @@ class SceneEditor(QWidget):
                 frame_px, actor, save_fn=save_fn,
                 origin_x=ox, origin_y=oy, scale_x=sx, scale_y=sy,
                 rotation=rot, flip_h=fh, flip_v=fv,
+                resolver=_pos_resolver,
             )
             item.scene_sprite = actor
 
@@ -2243,7 +2445,22 @@ class SceneEditor(QWidget):
             # cours) — rien à traiter, elle n'existe déjà plus.
             return
         if not selected:
-            get_bus().clear()
+            # Clic dans la zone active du canvas (sceneRect, cf. GBAScene) sans
+            # rien toucher → sélection de la SCÈNE elle-même (SceneInspector,
+            # comme Actor/Prefab affichent leur propre inspecteur). Ceci est
+            # DISTINCT d'un clic sur l'icône caméra (ci-dessous, marqué
+            # CameraSelection) : le rectangle de vue 240×160 n'est qu'un retour
+            # visuel, il ne doit pas « prendre » le clic ni ouvrir l'inspecteur
+            # caméra à la place. Clic en dehors — ou toute autre cause de
+            # désélection (Échap, suppression du dernier actor…) où aucune
+            # position de clic n'est disponible — → tout désélectionner,
+            # l'inspecteur retombe sur son mode par défaut (aperçu du projet).
+            pos = self._gba_view._last_click_scene_pos
+            in_canvas = pos is not None and self._gba_scene.sceneRect().contains(pos)
+            if in_canvas and self._project and self._project.active_scene:
+                get_bus().select(self._project.active_scene)
+            else:
+                get_bus().clear()
             if not self._show_all_boxes:
                 self._gba_scene.update_actor_boxes([])
             return
@@ -2253,7 +2470,7 @@ class SceneEditor(QWidget):
                 x, y = self._gba_scene.camera_pos()
                 self._project.active_scene.cam_x = x
                 self._project.active_scene.cam_y = y
-                get_bus().select(self._project.active_scene)
+                get_bus().select(CameraSelection(self._project.active_scene))
         elif isinstance(first, SpriteItem):
             get_bus().select(first.scene_sprite)
         self._update_actor_box_overlay()
@@ -2269,13 +2486,24 @@ class SceneEditor(QWidget):
             if item:
                 item.setSelected(True)
                 self._gba_view.centerOn(item)
+        elif isinstance(obj, CameraSelection):
+            # Re-sélectionner l'item caméra pour cet aller-retour bus : sans ce
+            # cas, le clic sur l'icône (qui sélectionne nativement la caméra
+            # via Qt AVANT même d'émettre CameraSelection sur le bus) se faisait
+            # aussitôt désélectionner par la boucle ci-dessus — l'overlay jaune
+            # (self._view) clignotait et restait dans un état incohérent avec
+            # isSelected(). En NE traitant PAS ce cas ici (tout autre obj), la
+            # caméra reste déselectionnée et son overlay disparaît fiablement.
+            cam = self._gba_scene._camera
+            if cam:
+                cam.setSelected(True)
         self._gba_scene.blockSignals(False)
 
     def move_actor_item(self, actor: Actor):
         """Repositionne l'item Qt d'un actor sans recréer la scène (drag ou spinbox)."""
         item = self._find_item(actor)
         if item:
-            item.setPos(actor.x, actor.y)
+            item.sync_pos()
 
     def _find_item(self, actor: Actor) -> Optional[SpriteItem]:
         for item in self._gba_scene._sprite_items:
@@ -2336,4 +2564,4 @@ class SceneEditor(QWidget):
     def update_actor_position(self, actor: Actor):
         item = self._find_item(actor)
         if item:
-            item.setPos(actor.x, actor.y)
+            item.sync_pos()

@@ -18,10 +18,24 @@ from __future__ import annotations
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
+class CameraSelection:
+    """Marqueur de sélection : l'ICÔNE caméra a été cliquée dans le canvas —
+    distinct d'une sélection de Scene « nue » (qui affiche le SceneInspector,
+    comme Actor/Prefab affichent leur propre inspecteur). Le rectangle de vue
+    240×160 de la caméra n'est qu'un retour visuel, non cliquable ; seule
+    l'icône déclenche ce marqueur (cf. CameraItem.shape() dans scene_canvas.py).
+    Sans lui, impossible de distinguer les deux intentions une fois passées
+    par le bus, puisque les deux portent le même objet Scene."""
+    __slots__ = ("scene",)
+
+    def __init__(self, scene):
+        self.scene = scene
+
+
 class SelectionBus(QObject):
     """
     Singleton de sélection. Émet changed(obj) à chaque changement.
-    obj peut être : Actor | Scene | Prefab | None
+    obj peut être : Actor | Scene | Prefab | CameraSelection | None
     """
 
     changed = pyqtSignal(object)
