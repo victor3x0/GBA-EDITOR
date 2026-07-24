@@ -120,6 +120,53 @@ def sync_music_file(project, path: Path):
     return music
 
 
+def sync_font_file(project, path: Path) -> Optional[str]:
+    """Appelé quand une planche PNG ou un descripteur `.fnt` apparaît dans
+    assets/fonts/. Crée le Font + son sidecar si absent.
+
+    Deux points d'entrée, un seul asset : le `.fnt` apporte le mapping des
+    caractères, le PNG nu le fait déduire (grille + charset proposé, corrigeables
+    dans l'écran Police). Une police déjà connue n'est jamais ré-analysée
+    automatiquement — sinon on écraserait les corrections de l'utilisateur.
+
+    Renvoie un avertissement d'import, None si tout va bien."""
+    from core.models.font import Font
+    from core import font_import
+
+    name = path.stem
+    font = project.fonts.get(name)
+    warning = None
+    if font is None:
+        font = Font(name=name)
+        # Échec dur (format illisible, planche introuvable) : aucun asset créé —
+        # mieux vaut rien qu'une police vide qui traîne et se sauvegarde. Un
+        # échec mou (planche lisible mais aucun glyphe trouvé) crée l'asset :
+        # l'utilisateur corrigera la taille de cellule dans l'écran Police.
+        try:
+            if path.suffix.lower() == ".fnt":
+                fields = font_import.import_font_fnt(path)
+                page = fields.pop("page_path", None)
+                if page is None:
+                    return (f"Police « {name} » : le descripteur ne référence aucune "
+                            f"planche PNG trouvable — dépose la planche à côté du .fnt.")
+                font.asset = project.asset_rel(page)
+                font.descriptor = project.asset_rel(path)
+            else:
+                fields = font_import.import_font_png(path)
+                font.asset = project.asset_rel(path)
+            font_import.apply_font_import(font, fields)
+        except Exception as exc:
+            return f"Police « {name} » : import impossible ({exc})."
+        if not font.glyphs:
+            warning = (f"Police « {name} » : aucun glyphe détecté — vérifie la "
+                       f"taille de cellule dans l'écran Police.")
+        project.fonts.append(font)
+    sidecar = path.with_suffix(".json")
+    if not sidecar.exists():
+        project.fonts.save(font)
+    return warning
+
+
 def sync_background_png(project, png_path: Path) -> Optional[str]:
     """Crée un BackgroundAsset (sidecar de compression par image, keyé par le
     stem du PNG) quand un PNG apparaît dans assets/backgrounds/. Ne modifie

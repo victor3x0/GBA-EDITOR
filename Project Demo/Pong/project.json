@@ -1,8 +1,8 @@
 {
   "name": "Pong",
-  "start_scene": "Arène",
+  "start_scene": "INTRO",
+  "last_scene": "ARENA",
   "author": "",
   "version": "0.1",
-  "palette_auto_import_enabled": true,
-  "backdrop_color": 0
+  "backdrop_color": 32416
 }

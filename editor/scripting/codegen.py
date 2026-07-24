@@ -29,10 +29,34 @@ from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
+    DOMAIN_TEXT, DOMAIN_FONT,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
+    text_constant, font_constant,
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
+
+
+# ─── Types C des variables exposées (table `exports`) ─────────────
+# Le type déclaré dans le .lua pilote la déclaration C émise ; sans lui, une
+# string exportée devenait `static int x = "";` (erreur gcc int-conversion).
+# Le moteur est entièrement entier — aucun float dans runtime/ — donc `float`
+# devient un int (le parser tronque déjà les littéraux, cf. ExprNumber).
+# Les *_ref valent un index/handle entier (la résolution éditeur → valeur
+# d'instance n'est pas encore câblée, cf. Script Inspector).
+_EXPORT_C_TYPE: dict[str, str] = {
+    "int":       "int",
+    "float":     "int",
+    "bool":      "int",
+    "enum":      "int",
+    "actor_ref": "int",
+    "scene_ref": "int",
+    "sfx_ref":   "int",
+    "string":    "const char *",
+}
+# Types composites : pas de scalaire C équivalent, on ne déclare rien (un
+# commentaire garde la trace de la variable côté C).
+_EXPORT_COMPOSITE = ("vec2", "vec3", "rect")
 
 
 # ─── Contexte de génération ───────────────────────────────────────
@@ -59,6 +83,8 @@ class CodegenContext:
     sfx_autoplay: bool = False   # True → SoundFxComponent.trigger == "on_spawn"
     sfx_volumes: dict = field(default_factory=dict)  # {nom Sfx: volume 0-255} — sfx_play(id, volume)
     music_info: dict = field(default_factory=dict)  # {nom Music: (loop, volume)} — music_play(id, loop, volume)
+    text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
+    font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
 
 
 # ─── Générateur ───────────────────────────────────────────────────
@@ -216,6 +242,18 @@ class CodeGen:
             self._w("/* Music */")
             for i, name in enumerate(self.ctx.music_names):
                 self._w(f"#define {music_constant(name)} {i}")
+        # Constantes Texte — index dans la table g_texts émise par main_gen
+        if self.ctx.text_keys:
+            self._w("")
+            self._w("/* Textes */")
+            for i, key in enumerate(self.ctx.text_keys):
+                self._w(f"#define {text_constant(key)} {i}")
+        # Constantes Police — index dans g_fonts (même ordre que main_gen)
+        if self.ctx.font_names:
+            self._w("")
+            self._w("/* Polices */")
+            for i, name in enumerate(self.ctx.font_names):
+                self._w(f"#define {font_constant(name)} {i}")
         self._w("")
 
     # ── Variables locales top-level (static = scope fichier) ──────
@@ -243,19 +281,78 @@ class CodeGen:
         if not non_require:
             return
         if self.ctx.is_pooled:
-            # Prefab poolé : locals → self->data[N] (état par instance)
+            # Prefab poolé : locals → self->data[N] (état par instance). Seuls
+            # les scalaires entiers y tiennent — une string/composite retombe
+            # sur une déclaration de fichier (partagée entre instances, sans
+            # danger : ce sont des constantes d'initialisation).
             self._w("/* Variables locales — stockées dans Actor.data[] (une par instance) */")
-            for i, loc in enumerate(non_require):
-                init_val = self._expr(loc.value) if loc.value is not None else "0"
-                self._pool_locals[loc.name] = (i, init_val)
-                self._w(f"/* data[{i}] = {loc.name} (init={init_val}) */")
+            slot = 0
+            for loc in non_require:
+                c_type, init, note = self._local_decl(loc)
+                if c_type == "int":
+                    self._pool_locals[loc.name] = (slot, init)
+                    self._w(f"/* data[{slot}] = {loc.name} (init={init}) */")
+                    slot += 1
+                elif c_type is None:
+                    self._w(f"/* {loc.name} : {note} */")
+                else:
+                    self._w(f"static {c_type} {self._unused_attr(loc)}{loc.name} = {init};"
+                            f"   /* {note or 'partagé entre instances'} */")
         else:
             # Actor statique : locals → variables C statiques (partagées, OK car une seule instance)
             self._w("/* Variables locales à cet acteur */")
             for loc in non_require:
-                init = f" = {self._expr(loc.value)}" if loc.value is not None else " = 0"
-                self._w(f"static int {loc.name}{init};")
+                c_type, init, note = self._local_decl(loc)
+                if c_type is None:
+                    self._w(f"/* {loc.name} : {note} */")
+                    continue
+                suffix = f"   /* {note} */" if note else ""
+                self._w(f"static {c_type} {self._unused_attr(loc)}{loc.name} = {init};{suffix}")
         self._w("")
+
+    @staticmethod
+    def _unused_attr(loc: LuaLocal) -> str:
+        """Une variable exposée est déclarée pour l'éditeur : elle peut
+        légitimement n'être lue par aucune ligne du script (-Wunused-variable
+        à chaque build sinon). Un vrai `local` inutilisé reste signalé."""
+        return "__attribute__((unused)) " if loc.export_type else ""
+
+    def _local_decl(self, loc: LuaLocal) -> tuple[Optional[str], str, str]:
+        """(type C, initialiseur, commentaire) pour un local top-level ou une
+        variable exposée. Type C = None → rien à déclarer (composite).
+
+        Le type déclaré dans `exports` fait foi ; pour un vrai `local`, il est
+        déduit de la valeur d'initialisation (une string littérale n'est pas
+        un int)."""
+        typ = (loc.export_type or "").strip()
+        if typ in _EXPORT_COMPOSITE:
+            return None, "", f"type '{typ}' non représentable en scalaire C — non déclaré"
+
+        init = self._expr(loc.value) if loc.value is not None else None
+
+        if typ in _EXPORT_C_TYPE:
+            c_type = _EXPORT_C_TYPE[typ]
+            if c_type == "const char *":
+                return c_type, init if init is not None else '""', ""
+            if init is None:
+                return c_type, "0", ""
+            # Un défaut string sur un type entier (actor_ref/scene_ref/enum non
+            # résolus) ne peut pas initialiser un int : on repart de 0.
+            if isinstance(loc.value, ExprString):
+                return c_type, "0", f"référence '{loc.value.value or 'vide'}' non résolue au build"
+            # Les littéraux flottants sont déjà tronqués par le parser
+            # (ExprNumber(int(...)) — le moteur n'a pas de flottants).
+            return c_type, init, ""
+
+        if typ:
+            self.warnings.append(
+                f"exports : type '{typ}' inconnu pour '{loc.name}' — déclaré en int."
+            )
+
+        # Vrai `local` (ou export de type inconnu) : déduction depuis la valeur.
+        if isinstance(loc.value, ExprString):
+            return "const char *", init, ""
+        return "int", init if init is not None else "0", ""
 
     # ── Fonctions / handlers ──────────────────────────────────────
 
@@ -504,6 +601,8 @@ class CodeGen:
             case d if d == DOMAIN_KEY:    return key_constant(name)
             case d if d == DOMAIN_TAG:    return tag_constant(name)
             case d if d == DOMAIN_SCENE:  return scene_constant(name)
+            case d if d == DOMAIN_TEXT:   return text_constant(name)
+            case d if d == DOMAIN_FONT:   return font_constant(name)
             case _:                        return f'"{name}"'
 
     # ── Cas spéciaux ──────────────────────────────────────────────

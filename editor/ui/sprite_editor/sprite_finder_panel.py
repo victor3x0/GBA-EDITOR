@@ -481,9 +481,18 @@ class SpriteFinderPanel(QWidget):
             item.setText(0, state.name)
             self._anim_tree.blockSignals(False)
             return
-        state.name = new_name
-        if self._project and self._current_sprite:
-            get_dispatcher().save_sprite(self._current_sprite)
+        old_name = state.name
+        if self._project:
+            # self:play_anim("…") dans les scripts suit le renommage.
+            from scripting.api import DOMAIN_ANIM
+            refs = self._project.rename_lua_refs(DOMAIN_ANIM, old_name, new_name)
+            state.name = new_name
+            if self._current_sprite:
+                get_dispatcher().save_sprite(self._current_sprite)
+            self._project._notify_renamed("Animation", old_name, new_name, refs,
+                                          feminine=True)
+        else:
+            state.name = new_name
         self._anim_tree.blockSignals(True)
         item.setText(0, state.name)
         self._anim_tree.blockSignals(False)

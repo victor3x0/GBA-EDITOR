@@ -1,7 +1,10 @@
-"""Sfx / Music / Font — assets audio et police, stockés dans project/{sfx,music,fonts}/{name}.json.
+"""Sfx / Music — assets audio, stockés dans project/{sfx,music}/{name}.json.
 
-TODO: champs à définir ensemble (format wav/source brut vs converti Maxmod,
-volume, pitch, charset, largeur fixe/variable, spritesheet glyphes...)."""
+La police a quitté ce module pour `core/models/font.py` quand elle a cessé
+d'être un stub (glyphes, grille, charset dérivé).
+
+TODO: champs audio à définir ensemble (format wav/source brut vs converti
+Maxmod, volume, pitch...)."""
 
 from dataclasses import dataclass
 from typing import Optional
@@ -29,9 +32,3 @@ class Music(Resource):
     asset: Optional[str] = None
     loop: bool = True
     volume: int = 255
-
-
-@dataclass
-class Font(Resource):
-    name: str = "font"
-    asset: Optional[str] = None

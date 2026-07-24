@@ -75,6 +75,11 @@ def transpile_all(
     music_names = [m.name for m in p.music] if hasattr(p, "music") else []
     music_info  = ({m.name: (getattr(m, "loop", True), getattr(m, "volume", 255)) for m in p.music}
                    if hasattr(p, "music") else {})
+    # Textes et polices : l'ORDRE fait foi (il devient l'index dans les tables C
+    # émises par main_gen). project_fonts() est la source unique côté polices.
+    from codegen.runtime_codegen.main_gen import project_fonts
+    text_keys   = [t.key for t in getattr(p, "texts", [])]
+    font_names  = [f.name for f in project_fonts(p)]
     all_syms    = [_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
@@ -126,6 +131,8 @@ def transpile_all(
             global_types = {g.name: g.type for g in p.globals},
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = sfx_comp_name,
+            text_keys    = text_keys,
+            font_names   = font_names,
         )
         script, ok = _compile_script(sp, ctx_check, emit, sp.name)
         if not ok:
@@ -175,6 +182,8 @@ def transpile_all(
             sfx_autoplay  = sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            text_keys     = text_keys,
+            font_names    = font_names,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -233,6 +242,8 @@ def transpile_all(
             sfx_autoplay  = pf_sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            text_keys     = text_keys,
+            font_names    = font_names,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
         pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -258,6 +269,8 @@ def transpile_all(
             scene_names   = _scene_names,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            text_keys     = text_keys,
+            font_names    = font_names,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')

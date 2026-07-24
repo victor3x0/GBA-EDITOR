@@ -21,6 +21,8 @@ Usage :
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts
     "palettes_changed"             — rafraîchir le catalogue de palettes
+    "project_tree_changed"         — un élément a été renommé : repeupler les
+                                     arbres du panneau projet (cf. Project._notify_renamed)
 """
 from __future__ import annotations
 from pathlib import Path

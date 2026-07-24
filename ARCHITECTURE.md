@@ -137,8 +137,9 @@ Ces concepts n'ont pas d'équivalent direct dans grit ou le hardware GBA.
 - `assets/backgrounds/` → PNG bruts (`BackgroundAsset`) ; → sidecar d'importation par image (`BackgroundAsset` : tileset + sous-palettes, PNG jamais modifié). 
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
 - `build/grit_out/` et `build/src/` → effacés et regénérés à chaque build ; `build/obj/` est conservé pour la compilation incrémentale
-- `project.json` → config racine uniquement (nom, scène de démarrage, auteur, version) ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
+- `project.json` → config racine uniquement (nom, scène de démarrage, auteur, version) ; `start_scene` (point de départ du **jeu**, éditable dans le ProjectInspector) et `last_scene` (dernière scène ouverte dans l'**éditeur**, restaurée à l'ouverture) sont deux champs distincts — ouvrir une scène ne redéfinit jamais le point de départ ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
 - Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `BackgroundLayer.backgroundasset_name`, palette active par nom de `PaletteBank`) — jamais par chemin absolu
+- Un argument de script qui cite un élément du projet est déclaré par le `domain` de son `Param` dans `scripting/api.py` (`DOMAIN_SCENE`, `DOMAIN_SFX`, `DOMAIN_GLOBAL`…). Cette table unique sert au checker (valider), au codegen (résoudre en index physique) et à `scripting/refactor.py` (suivre les renommages) : déclarer le domaine d'un nouvel argument suffit à alimenter les trois. Un renommage éditeur (`Project.rename_*`) réécrit les références Lua correspondantes en repérage **structurel** — jamais textuel, donc ni les commentaires ni les strings sans rapport ne bougent
 - Les scripts Lua sont **transpilés vers C** au build, pas interprétés à l'exécution
 - Les `GlobalVar` sont des variables C partagées entre tous les scripts du jeu (`globals.h` / `globals.c` générés une fois par build, pas par scène)
 - Chaque scène génère une paire C `scene_init_X` / `scene_tick_X` dispatchée via une vtable statique dans `main.c`
@@ -161,6 +162,200 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **`checker.py`** — parcourt l'AST et valide les appels contre `RUNTIME_API` (fonction connue, bon nombre d'arguments — y compris les fonctions variadiques comme `display.print`, nom de ressource existant). Ne bloque le build que sur les erreurs (`CheckError.level == "error"`) ; les avertissements (ex. valeur littérale hors plage pour un `global.set` typé) sont journalisés sans empêcher la compilation. Appliqué uniformément aux scripts actor, scène et prefab via `lua_compiler.py::_compile_script` — un prefab avec une erreur bloque désormais le build comme un actor, plutôt que d'être silencieusement sauté. Les behaviors (`require("behaviors/x")`, inlinés par `codegen.py::_emit_inlined_behaviors`) passent par le même checker avec `check_event_names=False` (leurs fonctions top-level sont des noms de méthode arbitraires, pas des handlers d'événement) ; fichier manquant ou erreur de parse y remontent comme avertissement plutôt que de casser silencieusement ou de lever une exception Python brute.
 - **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`global.get`/`set` → accès direct à la variable C, `self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation.
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une seule entrée dans `RUNTIME_API` suffit. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
+
+---
+
+## Layers BG vivants (shadows de registres)
+
+Changer *un* champ d'un registre BG (la priorité, sans toucher au screenblock) suppose de
+connaître les autres bits. `DISPCNT` et `BGxCNT` sont pourtant relisables (R/W) — mais
+`BGxHOFS/VOFS`, eux, sont **write-only**, donc le décalage de scroll DOIT vivre en RAM de
+toute façon. Plutôt que deux modèles, un seul : `gba_engine.h` garde une copie de tout —
+`g_dispcnt_sh`, `g_bgcnt_sh[4]` — et **toute** écriture passe par `dispcnt_set()` /
+`bg_cnt_set()`, y compris celles émises à l'init de scène par `main_gen.py`. C'est ce qui
+rend modifiables en cours de jeu des choses jusque-là figées au build : visibilité,
+priorité (z-order), screenblock affiché.
+
+- `display_reset()` remet layers, windows et blending à neuf en tête de `scene_init_*`, avant que la
+  scène ne les repeuple — sinon une scène hériterait des layers de la précédente.
+- `g_bg_ofs_x/y[4]` = décalage **propre au layer**, distinct du scroll caméra.
+  `scene_tick_*` écrit `BGOFS = (cam × vitesse de parallax) + décalage propre`, donc les
+  deux se composent au lieu de se battre. Un layer sans image (UI/texte) n'est pas touché
+  par le tick : pour lui, l'écriture directe de `layer_set_scroll()` fait foi.
+- `bg_se_addr()` résout une coordonnée en tuiles vers l'adresse de la screen entry, en
+  gérant les 4 tailles de map régulières et leur découpage en blocs 32×32 (+0x400 à
+  droite, +0x800 en bas d'une map 64-large, +0xC00 au coin). Les coordonnées bouclent
+  comme le matériel.
+- `tilemap_set()` ne touche que les 10 bits d'index : le flip et la banque de palette de
+  la case survivent. Repeindre (`tilemap_set_palette`) est l'inpainting appliqué au
+  runtime — même mécanique `SE_PALBANK`, mêmes 16 banques.
+
+Ces fonctions sont déclarées dans `gba_engine.h` et définies dans `main.c` (via
+`GBA_ENGINE_IMPL`) ; `actor_api_static.h` les redéclare `extern` pour que les scripts
+d'actor et de scène, compilés en TU séparées, puissent les appeler. Même schéma que les
+wrappers texte TTE.
+
+### Windows — le pochoir, pas la boîte
+
+Une window GBA **ne dessine rien**. C'est un pochoir : par région de l'écran, elle dit
+quels layers et sprites ont le droit de s'afficher, et si le blending s'y applique.
+D'où sa valeur pour l'UI — elle exprime le *où* sans jamais imposer un *à quoi ça
+ressemble* (cf. `ROADMAP.md` v0.3.2, « neutralité de style »).
+
+Quatre régions, par priorité décroissante : `WINR_0` (rectangle 0), `WINR_1`
+(rectangle 1), `WINR_OBJ` (fenêtre-objet), `WINR_OUT` (tout le reste). Un pixel obéit à
+la première qui le contient. `WININ` porte les 6 bits (BG0-3, OBJ, blending) des deux
+rectangles, `WINOUT` ceux de l'extérieur et de la fenêtre-objet — d'où `win_region_sh()`,
+qui mappe une région vers (shadow, décalage).
+
+- `window_reset()` (appelé par `display_reset()`) pose **tout autorisé partout, aucune
+  window active**. Sans ce défaut, activer une window éteindrait tout l'écran hors du
+  rectangle : `WINOUT` régit le reste du monde dès qu'une seule window existe. C'est le
+  piège matériel classique, neutralisé une fois pour toutes.
+- `window_set()` clampe à 240×160 et interdit les rectangles inversés : le matériel a un
+  comportement erratique sur `X1>X2` ou `X2>240`, ces cas ne sortent pas de la fonction.
+- **Fenêtre-objet** : `Actor.obj_mode` (0 normal, 1 semi-transparent, 2 fenêtre) est
+  injecté dans `attr0` bits 10-11 aux **trois** sites d'émission OAM de `main_gen.py`
+  (acteur de scène, prefab poolé, sprite affine). En mode 2 le sprite n'est plus dessiné :
+  ses pixels opaques découpent `WINR_OBJ`, ce qui donne une région de forme libre et
+  animée sans interruption HBlank.
+
+Les constantes sont préfixées `WINR_*` : libtonc définit déjà `WIN_OBJ`, `WIN_BG0`… comme
+masques de bits, sémantique incompatible.
+
+### Blending — deux jeux de cibles
+
+`BLDCNT` porte **deux** listes de cibles, pas une : le *dessus* (bits 0-5, ce qui est
+mélangé) et le *dessous* (bits 8-13, ce avec quoi — situé derrière selon les priorités).
+D'où le paramètre `side` de `blend_set_layer/obj/backdrop`, 0 = dessus, 1 = dessous. En
+mode alpha, aucun mélange ne se produit là où un pixel du dessus n'a pas de pixel du
+dessous derrière lui : c'est la cause première des effets qui « ne marchent pas », et le
+dessous manquant est très souvent le backdrop.
+
+Trois portes en cascade, à garder en tête quand on débugge un effet absent :
+
+1. **Le mode** (`blend_set_mode`) — 0 aucun, 1 alpha, 2 vers le blanc, 3 vers le noir.
+   Les modes 2 et 3 n'utilisent que le dessus, et se dosent par `BLDY` (`blend_set_fade`),
+   pas par `BLDALPHA`.
+2. **Les cibles** — dessus ET dessous pour l'alpha, dessus seul pour les fondus.
+3. **Les régions** — `window_set_blend()` décide *où* tout ceci s'applique. C'est la
+   combinaison qui donne l'effet le plus courant d'une UI : estomper le monde dans
+   `WINR_OUT`, couper l'estompe dans `WINR_0`, donc un panneau net sur un monde assombri,
+   sans dépenser un octet de VRAM.
+
+Un sprite en `obj_mode` 1 (semi-transparent) court-circuite la liste du dessus : il se
+mélange quel que soit le réglage OBJ — utile pour un seul fantôme translucide.
+
+`BLDCNT`/`BLDALPHA` sont shadowés (`g_bldcnt_sh`, `g_bldalpha_sh`) ; `BLDY` est write-only
+et n'a aucun lecteur, donc pas de shadow. `eva`/`evb`/`evy` sont des seizièmes clampés à
+0-16 par `ev_clamp()` — au-delà le matériel sature, on préfère un comportement identique
+partout.
+
+---
+
+## Textes du joueur — table de chaînes
+
+`project/texts.json`, modèle dans `core/models/text.py`. Un seul fichier plutôt qu'un par
+entrée (contrairement aux palettes) : des centaines d'entrées courtes, qu'un traducteur
+veut voir d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté.
+
+**Trois identifiants, un seul résolvable** — c'est la décision structurante :
+
+| Champ | Rôle | Résolvable ? |
+| --- | --- | --- |
+| `id` | opaque (12 chiffres), tiré une fois, jamais affiché | dans les **fichiers de données** — insensible au renommage |
+| `key` | poignée lisible, ce qu'écrit un script Lua | oui, **au build** uniquement → index de table C, comme `SFX_*` |
+| `label` | organisation libre, peut se répéter | **jamais** |
+
+Deux identifiants résolvables donneraient de l'ambiguïté (deux entrées au même label), un
+signal brouillé (un label *invite* à être retouché, une clé non) et un graphe de
+dépendances à deux passes. Le confort de lecture est rendu par l'UI — autocomplétion et
+aperçu du contenu en ligne — pas par un second chemin de résolution.
+
+**La clé situe, elle ne résume pas.** Elle est dérivée du *contexte* de création
+(`village_garde_01`), jamais du contenu : le contenu est réécrit vingt fois pendant
+l'écriture, la place dans le jeu bouge rarement. Une clé tirée du contenu
+(`garde_je_suis`) devient un mensonge dès que le garde devient un mendiant. Corollaire
+verrouillé : **la clé n'est jamais recalculée** — posée une fois, elle appartient à
+l'utilisateur ; le sens n'y arrive que par renommage manuel (`menu_confirmer`), signalé
+par `auto_key = False`.
+
+`_repair_texts()` rattrape un fichier édité à la main (id ou clé manquant/dupliqué) :
+l'id prime, c'est l'identité ; une clé en double est celle qu'on renumérote.
+
+Un `Text` est destiné au **joueur**, donc traduisible — c'est ce qui le distingue d'un
+`string` technique (nom de fichier, code interne), qui reste un littéral dans le script.
+
+---
+
+## Polices — un asset, deux points d'entrée
+
+`core/models/font.py` + `core/font_import.py`, sidecar à côté de la planche dans
+`assets/fonts/`. Deux formats acceptés, volontairement pas plus : **PNG nu** ou
+**BMFont `.fnt`**. Les deux remplissent le même sidecar — un format d'entrée n'est
+qu'une façade, comme `detect_import_mode` pour les fonds.
+
+**Le modèle est à rectangles, pas à grille.** Chaque `Glyph` porte son propre rectangle
+dans la planche : c'est ce qui permet d'accueillir BMFont, dont les glyphes sont posés
+librement dans la page. Une planche régulière n'est que le cas où tous les rectangles
+sont identiques ; `cell_w`/`cell_h` ne restent qu'une aide à la déduction et à
+l'affichage.
+
+- **Le charset n'est pas un champ** — c'est `"".join(g.char for g in glyphs)`. Une seule
+  source de vérité, et l'écran Police éditera `Glyph.char` case par case plutôt qu'une
+  chaîne de 95 caractères.
+- **PNG nu = cas dégradé.** `detect_grid()` énumère les découpages réguliers et note les
+  candidats : tomber sur un nombre de cases d'un charset connu pèse le plus lourd, puis
+  les cellules carrées, puis les multiples de 8. `propose_charset()` fournit une première
+  attribution, corrigeable. Les cases vides **en fin** de planche sont du bourrage et sont
+  retirées — une case vide *au milieu* est légitime, c'est l'espace.
+- **`.fnt` = rien à deviner** : codepoints, rectangles, `xadvance` et `lineHeight` sont
+  déclarés. `xadvance` prime sur toute mesure d'encre — c'est une décision typographique
+  de l'auteur, pas un constat. Formats texte et XML gérés ; le binaire lève une erreur
+  explicite plutôt que de produire une police vide.
+- **`advance` est mesuré dès l'import mais ignoré au rendu v1**, qui est à chasse fixe
+  (un glyphe = une tuile). Le jour du rendu proportionnel, aucune police n'est à
+  réimporter.
+- **`tile_count()`** donne le coût VRAM en tuiles 8×8 : ces tuiles vivent dans le
+  charblock du layer d'UI, en concurrence directe avec le décor.
+- **`missing_chars()`** croise une police avec un texte. Couplé à la table de textes, ça
+  signale les caractères manquants *avant* de les découvrir sur la console — et ce sera
+  critique en v0.8 quand une traduction arrivera avec des `ß`.
+
+### Du sidecar à la ROM
+
+`codegen/font_emit.py` encode une police en tuiles 4bpp et émet les tables C ; `main_gen`
+les pose dans `main.c` et charge la police au début de chaque scène.
+
+- **Un glyphe → `tiles_x × tiles_y` tuiles** (une seule pour du 8×8, le cas courant),
+  déposées à la suite dans le charblock du layer d'UI à partir de `FONT_TILE_BASE = 1` —
+  la tuile 0 reste vide, c'est celle que pose `text_clear()`. Palette des glyphes en
+  banque BG **15** (`FONT_PAL_BANK`), convention héritée du chemin TTE.
+- **Un texte est émis en codepoints `u16`, pas en glyphes.** La correspondance
+  caractère → tuile se fait au runtime, par dichotomie sur la table triée de la police
+  courante. C'est ce qui rend un texte **indépendant de la police** — indispensable en
+  v0.8, où une traduction peut exiger un autre jeu de glyphes. Le coût est une recherche
+  par caractère à l'affichage, pas par frame.
+- **Le texte vit sur LE layer d'UI** (`Scene.text_bg`), d'où l'absence de paramètre
+  `layer` dans l'API : les glyphes sont chargés dans le charblock de ce layer, et un
+  charblock appartient à un layer. Un paramètre `layer` serait mensonger.
+- **Une seule police résidente** à la fois : `text_set_font()` recopie glyphes et palette
+  en VRAM. C'est un appel délibéré, pas un coût par frame.
+- L'ordre des tables fait foi : `project_fonts()` (dans `main_gen`) est la source unique
+  dont `lua_compiler` dérive les `#define FONT_*`, et l'ordre de `project.texts` donne les
+  `TEXT_*`. Les deux côtés doivent voir la même liste, sinon un script pointerait sur la
+  mauvaise entrée.
+
+Une clé de texte ou un nom de police inconnus sont une **erreur** de checker, pas un
+avertissement : le `#define` n'existerait pas et la compilation C échouerait de toute
+façon, avec un message bien moins clair.
+
+`sync_font_file()` distingue deux échecs : **dur** (format illisible, planche
+introuvable) → aucun asset créé, mieux vaut rien qu'une police vide qui se sauvegarde ;
+**mou** (planche lisible, aucun glyphe trouvé) → asset créé avec avertissement,
+l'utilisateur corrigera la taille de cellule. `reconcile_fonts()` traite les `.fnt`
+d'abord : quand descripteur et planche sont tous deux présents, le descripteur fait foi
+et sa page ne doit pas créer une seconde police en doublon.
 
 ---
 

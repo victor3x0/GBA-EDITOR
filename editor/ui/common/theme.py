@@ -226,6 +226,14 @@ QComboBox::drop-down {{
     border: none;
     width: 22px;
 }}
+/* Sans cette flèche, un QComboBox stylé est indiscernable d'un QLineEdit —
+   on réutilise l'asset des QSpinBox pour garder une seule forme de chevron. */
+QComboBox::down-arrow {{
+    image: url({_spin_arrow('spinbox_down.png')}); width: 9px; height: 9px;
+}}
+QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
+    image: url({_spin_arrow('spinbox_down_hi.png')});
+}}
 QComboBox QAbstractItemView {{
     background: {C.BG_RAISED};
     color: {C.TEXT_HI};

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QToolButton, QInputDialog, QMessageBox,
     QFileDialog, QTreeWidget, QTreeWidgetItem, QMenu, QAbstractItemView,
-    QApplication, QSizePolicy, QLineEdit, QSpinBox,
+    QApplication, QSizePolicy, QLineEdit, QSpinBox, QDialog,
 )
 from PyQt6.QtGui import QFont, QColor, QDrag, QAction
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray, QTimer
@@ -110,8 +110,14 @@ class _Tree(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        # Renommage en place : clic sur un item déjà sélectionné (pas de dialogue modal)
-        self.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
+        # Renommage en place, jamais de dialogue modal : clic sur un item déjà
+        # sélectionné, F2 (EditKeyPressed), ou « Renommer » au menu contextuel
+        # (add_rename_action ci-dessous) — les trois ouvrent le même éditeur,
+        # validé par Entrée ou perte de focus (itemChanged → _commit_rename_*).
+        self.setEditTriggers(
+            QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.setStyleSheet(_TREE_QSS)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -120,6 +126,17 @@ class _Tree(QTreeWidget):
         self.model().rowsRemoved.connect(self._fit)
         self.itemExpanded.connect(self._fit)
         self.itemCollapsed.connect(self._fit)
+
+    def add_rename_action(self, menu: QMenu, item: QTreeWidgetItem, label: str):
+        """Entrée « Renommer » qui bascule l'item en édition en place. Grisée
+        si l'item n'est pas renommable (dossier, en-tête de section)."""
+        act = menu.addAction(label)
+        act.setShortcut("F2")            # affiché dans le menu ; géré par EditKeyPressed
+        act.setEnabled(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
+        # editItem() sur l'item survolé, pas sur la sélection courante : le clic
+        # droit ne sélectionne pas forcément la ligne visée.
+        act.triggered.connect(lambda _=False, it=item: self.editItem(it, 0))
+        return act
 
     def _fit(self):
         h = self.sizeHintForRow(0) if self.topLevelItemCount() else 0
@@ -268,6 +285,7 @@ class _SceneTree(_Tree):
             menu.addAction("Ajouter un actor").triggered.connect(
                 self._panel.actor_add_requested)
             menu.addSeparator()
+            self.add_rename_action(menu, item, "Renommer la scène")
             menu.addAction("Supprimer la scène").triggered.connect(
                 lambda: self._delete_scene(scene))
 
@@ -284,6 +302,7 @@ class _SceneTree(_Tree):
             menu.addAction("Descendre tout en bas").triggered.connect(
                 lambda: self._move_actor(scene, actor, "bottom"))
             menu.addSeparator()
+            self.add_rename_action(menu, item, "Renommer l'actor")
             menu.addAction("Supprimer l'actor").triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
 
@@ -301,30 +320,40 @@ class _SceneTree(_Tree):
     def _commit_rename_scene(self, item: QTreeWidgetItem):
         scene: Scene = item.data(0, _ROLE_OBJ)
         new_name = item.text(0).strip()
-        if not new_name or new_name == scene.name:
+        proj = self._panel._project
+        if not new_name or new_name == scene.name or not proj:
             self.blockSignals(True)
             item.setText(0, scene.name)
             self.blockSignals(False)
             return
-        scene.name = new_name
+        # Via le projet : renomme AUSSI le fichier de scène (sinon l'ancien JSON
+        # reste sur le disque et réapparaît en double au chargement suivant),
+        # reporte la scène de démarrage et réécrit les scene.switch("…").
+        proj.rename_scene(scene, new_name)
         self.blockSignals(True)
         item.setText(0, scene.name)
         self.blockSignals(False)
-        get_dispatcher().save_scene()
 
     def _commit_rename_actor(self, item: QTreeWidgetItem):
         actor: Actor = item.data(0, _ROLE_OBJ)
         new_name = item.text(0).strip()
+        proj = self._panel._project
         if not new_name or new_name == actor.name:
             self.blockSignals(True)
             self._update_actor_item(item, actor)
             self.blockSignals(False)
             return
-        actor.name = new_name
+        # Scène propriétaire = item parent (l'actor peut ne pas être dans la
+        # scène active, que save_scene() serait seule à sauvegarder).
+        parent = item.parent()
+        scene = parent.data(0, _ROLE_OBJ) if parent else None
+        if proj:
+            proj.rename_actor(actor, new_name, scene=scene)
+        else:
+            actor.name = new_name
         self.blockSignals(True)
         self._update_actor_item(item, actor)
         self.blockSignals(False)
-        get_dispatcher().save_scene()
         get_dispatcher()._emit("actors_list_changed")
 
     def _delete_scene(self, scene: Scene):
@@ -494,6 +523,7 @@ class _AssetTree(_Tree):
             menu.addAction("Voir les instances").triggered.connect(
                 lambda: self._panel.prefab_uses_requested.emit(prefab))
             menu.addSeparator()
+            self.add_rename_action(menu, item, "Renommer le prefab")
             menu.addAction("Supprimer le prefab").triggered.connect(
                 lambda: self._delete_prefab(prefab))
 
@@ -504,6 +534,7 @@ class _AssetTree(_Tree):
             menu.addAction("Voir les utilisations").triggered.connect(
                 lambda: self._panel.script_uses_requested.emit(str(path)))
             menu.addSeparator()
+            self.add_rename_action(menu, item, "Renommer le script")
             menu.addAction("Supprimer le script").triggered.connect(
                 lambda: self._delete_script(path))
 
@@ -532,7 +563,9 @@ class _AssetTree(_Tree):
             self.blockSignals(False)
             return
         proj = self._panel._project
-        proj.prefabs.rename(prefab, new_name)
+        # Via le projet : réécrit aussi les actor.spawn("…") des scripts et
+        # les instances de scène qui pointent le template par nom.
+        proj.rename_prefab(prefab, new_name)
         new_path = proj.prefabs._path(prefab.name)
         self.blockSignals(True)
         item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
@@ -1053,13 +1086,10 @@ class AssetsFinderPanel(QWidget):
     # ── Projets ───────────────────────────────────────────────────
 
     def _prompt_new(self):
-        name, ok = QInputDialog.getText(self, "Nouveau projet", "Nom :")
-        if ok and name.strip():
-            path = PROJECTS_DIR / name.strip()
-            if path.exists():
-                QMessageBox.warning(self, "Erreur", f"'{name}' existe déjà.")
-                return
-            self.project_created.emit(name.strip(), str(path))
+        from ui.home.project_picker import _NewProjectDialog
+        dlg = _NewProjectDialog(PROJECTS_DIR, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.project_created.emit(dlg.result_name, str(dlg.result_path))
 
     def _prompt_open(self):
         path = QFileDialog.getExistingDirectory(

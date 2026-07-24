@@ -9,11 +9,35 @@ extern Actor g_actors[];
 extern u32   _g_keys_held;
 extern u32   _g_keys_pressed;
 
-/* Caméra */
+/* Caméra — une zone de taille écran fixe (SCREEN_W×SCREEN_H) dont l'origine
+   (cam_x, cam_y) est en espace-monde. Tout le reste (scroll BG, position
+   écran des sprites) se dérive de cette seule zone plutôt que de littéraux
+   240/160/120/80 épars (cf. project_camera_abstraction). */
+#define SCREEN_W 240
+#define SCREEN_H 160
 extern int cam_x, cam_y;
 static inline void camera_set(int x, int y) { cam_x=x; cam_y=y; }
 static inline int  camera_get_x(void)        { return cam_x; }
 static inline int  camera_get_y(void)        { return cam_y; }
+
+/* Bornes de scroll (taille du monde en pixels) — g_cam_max_x/y (définis dans
+   main.c comme cam_x/cam_y) valent -1 par défaut (axe illimité). Réglées par
+   scene_init depuis Scene.cam_bounds_w/h, ou par un script via
+   camera.set_bounds() (ex: débloquer une nouvelle zone au runtime). Minimum
+   toujours 0 (origine du monde). */
+extern int g_cam_max_x, g_cam_max_y;
+static inline void camera_set_bounds(int world_w, int world_h) {
+    g_cam_max_x = (world_w > 0) ? world_w - SCREEN_W : -1;
+    g_cam_max_y = (world_h > 0) ? world_h - SCREEN_H : -1;
+}
+/* Appliquée une fois par frame par le moteur (scene tick), après tout code
+   ayant pu écrire cam_x/cam_y cette frame-là — suivi authoré ou script :
+   un seul point de vérité pour les bornes, peu importe qui a bougé la
+   caméra. */
+static inline void camera_apply_bounds(void) {
+    if (g_cam_max_x >= 0) { if (cam_x < 0) cam_x = 0; if (cam_x > g_cam_max_x) cam_x = g_cam_max_x; }
+    if (g_cam_max_y >= 0) { if (cam_y < 0) cam_y = 0; if (cam_y > g_cam_max_y) cam_y = g_cam_max_y; }
+}
 
 /* Mouvement */
 static inline void actor_move(Actor* s, int dx, int dy)        { s->x+=dx; s->y+=dy; }
@@ -91,6 +115,13 @@ static inline int actor_get_tag(const Actor* s) { return s->tag; }
 /* Palette (flash de dégâts, invincibilité…) */
 static inline void actor_set_pal(Actor* s, int bank) { s->pal_bank = bank & 0xF; }
 
+/* Mode OAM — 0 = sprite normal, 2 = fenêtre-objet : le sprite n'est plus
+   dessiné, ses pixels opaques DÉCOUPENT la région window.OBJ (forme libre,
+   animable, sans interruption). Mode 1 (semi-transparent) suppose le
+   blending, pas encore câblé. */
+static inline void actor_set_obj_mode(Actor* s, int mode) { s->obj_mode = mode & 3; }
+static inline int  actor_get_obj_mode(const Actor* s)     { return s->obj_mode; }
+
 /* Maths */
 static inline int math_abs  (int x)              { return x < 0 ? -x : x; }
 static inline int math_clamp(int x, int lo, int hi){ return x<lo?lo:x>hi?hi:x; }
@@ -116,10 +147,10 @@ static inline int math_rand(int lo, int hi) {
 
 /* Caméra — suivi avec zone morte (dead-zone follow) */
 static inline void camera_follow(int tx, int ty, int mx, int my) {
-    if (tx - cam_x < mx)           cam_x = tx - mx;
-    if (tx - cam_x > 240 - mx)     cam_x = tx - (240 - mx);
-    if (ty - cam_y < my)           cam_y = ty - my;
-    if (ty - cam_y > 160 - my)     cam_y = ty - (160 - my);
+    if (tx - cam_x < mx)              cam_x = tx - mx;
+    if (tx - cam_x > SCREEN_W - mx)   cam_x = tx - (SCREEN_W - mx);
+    if (ty - cam_y < my)              cam_y = ty - my;
+    if (ty - cam_y > SCREEN_H - my)   cam_y = ty - (SCREEN_H - my);
 }
 
 /* Envoi d'event à tous les actors actifs (G_ACTOR_COUNT défini dans actor_api.h) */
@@ -131,6 +162,57 @@ static inline void camera_follow(int tx, int ty, int mx, int my) {
 
 /* tile_solid_at exposée pour les scripts (définie dans main.c) */
 extern int tile_solid_at(int px, int py);
+
+/* Layers BG vivants — définis dans main.c via GBA_ENGINE_IMPL (gba_engine.h).
+   `bg` = bg_slot 0-3 ; tx/ty en tuiles dans la map du layer. */
+extern void layer_show        (int bg, int on);
+extern int  layer_is_visible  (int bg);
+extern void layer_set_priority(int bg, int prio);
+extern int  layer_get_priority(int bg);
+extern void layer_set_scroll  (int bg, int x, int y);
+extern void layer_scroll_by   (int bg, int dx, int dy);
+extern int  layer_get_scroll_x(int bg);
+extern int  layer_get_scroll_y(int bg);
+extern void layer_set_map     (int bg, int sbb);
+extern int  layer_get_map     (int bg);
+
+/* Windows — pochoirs par région d'écran (r : 0=WIN0, 1=WIN1, 2=fenêtre-objet,
+   3=extérieur). Ne dessinent rien : autorisent ou non l'affichage. */
+extern void window_show      (int n, int on);
+extern int  window_is_visible(int n);
+extern void window_set       (int n, int x, int y, int w, int h);
+extern void window_set_layer (int r, int bg, int on);
+extern int  window_get_layer (int r, int bg);
+extern void window_set_obj   (int r, int on);
+extern void window_set_blend (int r, int on);
+
+/* Texte — le texte vit sur LE layer d'UI de la scène (Scene.text_bg) : les
+   glyphes sont chargés dans le charblock de ce layer, d'où l'absence de
+   paramètre `layer`. tx/ty en tuiles. `n` = nombre de caractères révélés
+   (machine à écrire) ; le rythme appartient au script. */
+extern void text_set_font (int f);
+extern int  text_length   (int id);
+extern void text_clear    (int tx, int ty, int w, int h);
+extern void text_draw     (int id, int tx, int ty);
+extern void text_draw_upto(int id, int tx, int ty, int n);
+extern void text_draw_box (int id, int tx, int ty, int w, int n);
+
+/* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
+   avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,
+   3 vers le noir. */
+extern void blend_set_mode    (int mode);
+extern int  blend_get_mode    (void);
+extern void blend_set_layer   (int side, int bg, int on);
+extern void blend_set_obj     (int side, int on);
+extern void blend_set_backdrop(int side, int on);
+extern void blend_set_alpha   (int eva, int evb);
+extern void blend_set_fade    (int evy);
+
+extern void tilemap_set        (int bg, int tx, int ty, int tile);
+extern int  tilemap_get        (int bg, int tx, int ty);
+extern void tilemap_set_palette(int bg, int tx, int ty, int bank);
+extern void tilemap_set_flip   (int bg, int tx, int ty, int fh, int fv);
+extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
 
 /* Fonctions texte HUD — définies dans main.c via GBA_ENGINE_IMPL (wrappers TTE) */
 extern void draw_printf(int col, int row, const char *fmt, ...);

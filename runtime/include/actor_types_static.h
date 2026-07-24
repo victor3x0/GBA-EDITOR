@@ -27,6 +27,7 @@ typedef struct Actor {
     int dir_x;             /* direction X courante : -1 | 0 | 1 */
     int dir_y;             /* direction Y courante : -1 | 0 | 1 */
     int pal_bank;          /* palette OAM (0-15) — modifiable via set_pal() */
+    int obj_mode;          /* 0=normal, 1=semi-transparent, 2=fenêtre-objet (OBJWIN) */
     int data[8];           /* variables locales par instance (prefabs poolés) */
     int box_count;         /* nombre de boxes actives (0..MAX_BOXES) */
     CollisionBox boxes[MAX_BOXES];

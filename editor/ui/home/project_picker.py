@@ -17,7 +17,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QFileDialog, QSizePolicy,
-    QLineEdit, QWidget,
+    QLineEdit, QWidget, QMessageBox,
 )
 from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
@@ -404,6 +404,11 @@ class HomeScreen(QDialog):
 # ── Dialogue nouveau projet ───────────────────────────────────────────
 
 class _NewProjectDialog(QDialog):
+    """
+    Nom + dossier parent éditables séparément (le nom ne dicte plus
+    l'emplacement) ; le chemin final s'affiche en aperçu sous les deux champs.
+    """
+
     result_path: Optional[Path] = None
     result_name: str            = ""
 
@@ -411,94 +416,146 @@ class _NewProjectDialog(QDialog):
         super().__init__(parent)
         self._projects_dir = projects_dir
         self.setWindowTitle("Nouveau projet")
-        self.setFixedSize(420, 160)
+        self.setFixedSize(480, 260)
         self.setModal(True)
         self.setStyleSheet(f"QDialog{{background:{C.BG_BASE};}}")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 20, 20, 20)
-        root.setSpacing(12)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── Header ───────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setFixedHeight(52)
+        hdr.setStyleSheet(
+            f"background:{C.BG_PANEL};border-bottom:1px solid {C.BORDER_DARK};"
+        )
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(20, 0, 20, 0)
+        hl.setSpacing(10)
+        icon_lbl = QLabel("📁")
+        icon_lbl.setFont(QFont(T.MONO, T.XXL))
+        icon_lbl.setStyleSheet("background:transparent;")
+        hl.addWidget(icon_lbl)
+        title_lbl = QLabel("Nouveau projet")
+        title_lbl.setFont(QFont(T.MONO, T.LG, QFont.Weight.Bold))
+        title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
+        hl.addWidget(title_lbl)
+        hl.addStretch()
+        root.addWidget(hdr)
+
+        # ── Corps ────────────────────────────────────────────────
+        body = QWidget()
+        body.setStyleSheet("background:transparent;")
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(20, 18, 20, 0)
+        bl.setSpacing(14)
+
+        def _field_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
+            return lbl
 
         # Nom du projet
-        row1 = QHBoxLayout()
-        lbl = QLabel("Nom :")
-        lbl.setFont(QFont(T.MONO, T.MD))
-        lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl.setFixedWidth(60)
+        bl.addWidget(_field_label("NOM DU PROJET"))
         self._name_edit = QLineEdit()
         self._name_edit.setFont(QFont(T.MONO, T.MD))
         self._name_edit.setStyleSheet(QSS.lineedit)
+        self._name_edit.setFixedHeight(32)
         self._name_edit.setPlaceholderText("MonJeu")
-        row1.addWidget(lbl)
-        row1.addWidget(self._name_edit, 1)
-        root.addLayout(row1)
+        bl.addWidget(self._name_edit)
 
         # Dossier parent
+        bl.addWidget(_field_label("EMPLACEMENT"))
         row2 = QHBoxLayout()
-        lbl2 = QLabel("Dans :")
-        lbl2.setFont(QFont(T.MONO, T.MD))
-        lbl2.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl2.setFixedWidth(60)
-        self._dir_lbl = QLabel(str(projects_dir))
-        self._dir_lbl.setFont(QFont(T.MONO, T.XS))
-        self._dir_lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-        btn_dir = QPushButton("…")
-        btn_dir.setFixedSize(28, 26)
-        btn_dir.setStyleSheet(
-            f"QPushButton{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
-            f"border:1px solid {C.BORDER};border-radius:3px;}}"
-            f"QPushButton:hover{{background:{C.BG_HOVER};}}"
-        )
+        row2.setSpacing(6)
+        self._dir_edit = QLineEdit(str(projects_dir))
+        self._dir_edit.setFont(QFont(T.MONO, T.MD))
+        self._dir_edit.setStyleSheet(QSS.lineedit)
+        self._dir_edit.setFixedHeight(32)
+        btn_dir = QPushButton("Parcourir…")
+        btn_dir.setFont(QFont(T.MONO, T.SM))
+        btn_dir.setFixedHeight(32)
+        btn_dir.setStyleSheet(QSS.button_ghost)
         btn_dir.clicked.connect(self._pick_dir)
-        row2.addWidget(lbl2)
-        row2.addWidget(self._dir_lbl, 1)
+        row2.addWidget(self._dir_edit, 1)
         row2.addWidget(btn_dir)
-        root.addLayout(row2)
+        bl.addLayout(row2)
 
-        root.addStretch()
+        # Aperçu du chemin final
+        self._preview_lbl = QLabel()
+        self._preview_lbl.setFont(QFont(T.MONO, T.XS))
+        self._preview_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
+        self._preview_lbl.setWordWrap(True)
+        bl.addWidget(self._preview_lbl)
 
-        # Boutons
-        btns = QHBoxLayout()
-        btns.addStretch()
+        bl.addStretch()
+        root.addWidget(body, 1)
+
+        # ── Boutons ──────────────────────────────────────────────
+        footer = QWidget()
+        footer.setStyleSheet(
+            f"background:{C.BG_PANEL};border-top:1px solid {C.BORDER_DARK};"
+        )
+        fl = QHBoxLayout(footer)
+        fl.setContentsMargins(16, 10, 16, 10)
+        fl.setSpacing(8)
+        fl.addStretch()
         btn_cancel = QPushButton("Annuler")
         btn_cancel.setFont(QFont(T.MONO, T.SM))
-        btn_cancel.setFixedHeight(28)
-        btn_cancel.setStyleSheet(
-            f"QPushButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
-            f"border:1px solid {C.BORDER};border-radius:4px;padding:0 12px;}}"
-            f"QPushButton:hover{{color:{C.TEXT_HI};}}"
-        )
+        btn_cancel.setFixedHeight(30)
+        btn_cancel.setStyleSheet(QSS.button_ghost)
         btn_cancel.clicked.connect(self.reject)
         btn_ok = QPushButton("Créer")
         btn_ok.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
-        btn_ok.setFixedHeight(28)
+        btn_ok.setFixedHeight(30)
         btn_ok.setStyleSheet(
             f"QPushButton{{color:#000;background:{C.ACCENT};"
             f"border:none;border-radius:4px;padding:0 16px;}}"
-            f"QPushButton:hover{{background:#5dc487;}}"
+            f"QPushButton:hover{{background:#ab9eff;}}"
+            f"QPushButton:pressed{{background:#7d6ce0;}}"
         )
         btn_ok.clicked.connect(self._create)
-        btns.addWidget(btn_cancel)
-        btns.addWidget(btn_ok)
-        root.addLayout(btns)
+        fl.addWidget(btn_cancel)
+        fl.addWidget(btn_ok)
+        root.addWidget(footer)
+
+        self._name_edit.textChanged.connect(self._update_preview)
+        self._dir_edit.textChanged.connect(self._update_preview)
+        self._update_preview()
 
         self._name_edit.setFocus()
         self._name_edit.returnPressed.connect(self._create)
 
+    def _update_preview(self):
+        name = self._name_edit.text().strip()
+        dir_ = self._dir_edit.text().strip() or str(self._projects_dir)
+        if name:
+            self._preview_lbl.setText(f"→ {Path(dir_) / name}")
+        else:
+            self._preview_lbl.setText(f"→ {dir_}")
+
     def _pick_dir(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Choisir le dossier parent", str(self._projects_dir)
+            self, "Choisir le dossier parent", self._dir_edit.text().strip() or str(self._projects_dir)
         )
         if path:
-            self._projects_dir = Path(path)
-            self._dir_lbl.setText(path)
+            self._dir_edit.setText(path)
 
     def _create(self):
         name = self._name_edit.text().strip()
         if not name:
             self._name_edit.setFocus()
             return
-        path = self._projects_dir / name
+        dir_ = self._dir_edit.text().strip()
+        if not dir_:
+            self._dir_edit.setFocus()
+            return
+        path = Path(dir_) / name
+        if path.exists():
+            QMessageBox.warning(self, "Erreur", f"'{name}' existe déjà dans ce dossier.")
+            return
         path.mkdir(parents=True, exist_ok=True)
         self.result_path = path
         self.result_name = name

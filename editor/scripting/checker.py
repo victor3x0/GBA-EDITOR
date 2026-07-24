@@ -25,7 +25,8 @@ from .parser import (
     ExprInvoke, ExprCall, ExprIndex, ExprName, ExprString,
     ExprNumber, ExprUnop, ExprBool,
 )
-from .api import RUNTIME_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE
+from .api import (RUNTIME_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC,
+                  DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT)
 
 
 # ─── Résultat ─────────────────────────────────────────────────────
@@ -52,6 +53,8 @@ class BuildContext:
     global_types: dict[str, str] = None  # nom -> type ("int"/"bool"/"u8"/"u16"/"s8"/"s16")
     const_names:  list[str]  = None    # noms de Constant déclarées dans le projet
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
+    text_keys:    list[str]  = None    # clés de la table de textes du projet
+    font_names:   list[str]  = None    # noms des polices encodables
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
 
@@ -207,6 +210,10 @@ class Checker:
                 self._check_music(key, val)
             elif param.domain == DOMAIN_KEY:
                 self._check_key(key, val)
+            elif param.domain == DOMAIN_TEXT:
+                self._check_text(key, val)
+            elif param.domain == DOMAIN_FONT:
+                self._check_font(key, val)
 
     def _check_anim(self, call_key: str, name: str):
         if self.ctx.anim_names is not None and name not in self.ctx.anim_names:
@@ -228,6 +235,26 @@ class Checker:
             self.errors.append(CheckError(
                 "warning",
                 f"{call_key}('{name}') : music '{name}' introuvable dans le projet.",
+            ))
+
+    def _check_text(self, call_key: str, key: str):
+        """Une clé de texte inconnue est une ERREUR, pas un avertissement : le
+        #define n'existerait pas et la compilation C échouerait de toute façon,
+        avec un message bien moins clair."""
+        if self.ctx.text_keys is not None and key not in self.ctx.text_keys:
+            near = ", ".join(sorted(self.ctx.text_keys)[:5]) or "aucun texte dans le projet"
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{key}') : texte '{key}' introuvable dans la table du "
+                f"projet ({near}).",
+            ))
+
+    def _check_font(self, call_key: str, name: str):
+        if self.ctx.font_names is not None and name not in self.ctx.font_names:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : police '{name}' introuvable ou sans glyphes "
+                f"({', '.join(self.ctx.font_names) or 'aucune police utilisable'}).",
             ))
 
     def _check_global_name(self, call_key: str, args: list):
@@ -284,14 +311,18 @@ class Checker:
             ))
 
     def _check_scene_switch(self, args: list):
+        """Une scène inconnue est une ERREUR, pas un avertissement : le
+        #define SCENE_IDX_* n'existerait pas et gcc échouerait de toute façon,
+        avec un message bien moins clair (même raison que _check_text).
+        Rappel : on attend le nom de la SCÈNE, pas celui de son script."""
         if not args or not isinstance(args[0], ExprString):
             return
         name = args[0].value
         if self.ctx.scene_names is not None and name not in self.ctx.scene_names:
             self.errors.append(CheckError(
-                "warning",
-                f"scene.switch('{name}') : scène '{name}' introuvable dans le projet "
-                f"({', '.join(self.ctx.scene_names) or 'aucune'}).",
+                "error",
+                f"scene.switch('{name}') : scène '{name}' introuvable dans le projet. "
+                f"Scènes disponibles : {', '.join(self.ctx.scene_names) or 'aucune'}.",
             ))
 
     def _check_get_actor(self, args: list):

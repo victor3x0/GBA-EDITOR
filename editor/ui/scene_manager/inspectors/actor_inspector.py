@@ -49,6 +49,21 @@ _TOOLTIPS = {
     "actor.visible":     ("self:set_visible(true/false)",
                           "Masque l'actor sans le désactiver.\n"
                           "Le slot OAM reste réservé mais avec bit OBJ_DISABLE."),
+    "actor.obj_mode":    ("self:set_obj_mode(0 | 2)",
+                          "Rôle du sprite dans le système de windows (masques d'écran).\n"
+                          "\n"
+                          "Normal : le sprite est dessiné, comme n'importe quel autre.\n"
+                          "\n"
+                          "Masque (window OBJ) : le sprite n'est PLUS dessiné. Ses pixels\n"
+                          "opaques deviennent la FORME de la window OBJ — la seule région\n"
+                          "qui ne soit pas un rectangle, contrairement à WIN0 et WIN1.\n"
+                          "Elle suit le sprite et s'anime avec lui (ex. halo de lampe torche).\n"
+                          "\n"
+                          "Le sprite ne fait que découper : ce qui s'AFFICHE dans la découpe\n"
+                          "se règle sur la ligne WINDOW OBJ de la carte WINDOWS de la scène.\n"
+                          "Sans cette ligne, la découpe n'a aucun effet visible.\n"
+                          "\n"
+                          "GBA : OAM attribute 0, bits 10–11."),
 }
 
 def _tip(w: QWidget, key: str):
@@ -259,8 +274,18 @@ class ActorInspector(QWidget):
         self._ty = _W.value_field(0, project=self._project)
         self._ty.changed.connect(lambda raw: self._set("y", raw))
         _tip(self._ty, "actor.y")
+        # Largeur de colonne des libellés : mesurée sur le plus long du groupe
+        # plutôt que codée en dur — « monospace » se résout à des fontes de
+        # métriques différentes selon la machine, une valeur fixe tronquerait
+        # « Mode window » ici et pas là.
+        from PyQt6.QtGui import QFontMetrics
+        _lbl_w = max(
+            QFontMetrics(QFont(T.MONO, T.SM)).horizontalAdvance(t)
+            for t in ("Position", "Priority", "Mode window")
+        ) + 4
+
         _W.pair("Position", "X", C.AXIS_X, self._tx, "Y", C.AXIS_Y, self._ty, tl,
-                label_width=58)
+                label_width=_lbl_w)
 
         # ── Direction initiale : sélecteur 3×3 ───────────────────
         dir_row = QHBoxLayout(); dir_row.setSpacing(8)
@@ -281,7 +306,20 @@ class ActorInspector(QWidget):
         self._tpriority = _W.spinbox(0, min_v=0, max_v=3)
         self._tpriority.valueChanged.connect(lambda v: self._set("priority", v))
         _tip(self._tpriority, "actor.priority")
-        _W.row("Priority", self._tpriority, tl, label_width=58)
+        _W.row("Priority", self._tpriority, tl, label_width=_lbl_w)
+
+        # ── Mode window ───────────────────────────────────────────
+        # 2 = window OBJ : le sprite devient un pochoir de forme libre.
+        # Mode 1 (semi-transparent) volontairement absent — il suppose le
+        # blending, pas encore câblé côté runtime.
+        # Le champ reste `obj_mode` (nom du registre GBA, OAM attr0 bits 10-11,
+        # et API Lua publique self:set_obj_mode) : seuls les libellés adoptent
+        # le vocabulaire « window » du panneau WINDOWS de la scène.
+        self._tobj_mode = _W.combobox(["Normal", "Masque (window OBJ)"])
+        self._tobj_mode.currentIndexChanged.connect(
+            lambda i: self._set("obj_mode", 2 if i == 1 else 0))
+        _tip(self._tobj_mode, "actor.obj_mode")
+        _W.row("Mode window", self._tobj_mode, tl, label_width=_lbl_w)
 
         # ── Visible ───────────────────────────────────────────────
         self._tvisible = QCheckBox("Visible"); self._tvisible.setStyleSheet(QSS.checkbox)
@@ -488,6 +526,7 @@ class ActorInspector(QWidget):
         self._tx.set_raw(actor.x); self._ty.set_raw(actor.y)
         self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
         self._tpriority.setValue(actor.priority)
+        self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
         self._tvisible.setChecked(actor.visible)
         self._blocking = False
         self._refresh_component_list()

@@ -5,11 +5,12 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
     QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton,
+    QCheckBox, QSpinBox,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 
-from core.project import Project, Scene, OWN_PAL_BANK
+from core.project import Project, Scene, OWN_PAL_BANK, WindowSlot
 from core.asset_manager import BgLayerRow
 from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
@@ -97,6 +98,114 @@ MODE_INFO: dict[int, dict] = {
     5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
         "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 160×128"},
 }
+
+
+# ──────────────────────────────────────────────────────────────────
+#  _WindowSlotRow — une window matérielle (WIN0 ou WIN1) authorée
+# ──────────────────────────────────────────────────────────────────
+class _WindowSlotRow(QFrame):
+    """Rectangle + visibilité + gating de layers pour une WindowSlot.
+    Mutation directe de la WindowSlot (pas d'historique par frappe, comme
+    CameraInspector) ; `changed` déclenche la persistance côté SceneInspector."""
+    changed = pyqtSignal()
+    remove_requested = pyqtSignal(object)   # (slot,)
+
+    def __init__(self, slot, parent=None):
+        super().__init__(parent)
+        self.slot = slot
+        self.setObjectName("win_row")
+        self.setStyleSheet(
+            f"QFrame#win_row{{background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};"
+            f"border-radius:4px;}}"
+        )
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(4)
+
+        is_obj = int(slot.region) == 2
+        hdr = QHBoxLayout(); hdr.setSpacing(6)
+        title = QLabel("WINDOW OBJ" if is_obj else f"WIN{slot.region}")
+        title.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        title.setStyleSheet(f"color:{C.ACCENT_ORG if is_obj else C.ACCENT_BLU};")
+        hdr.addWidget(title)
+        self._chk_visible = QCheckBox("Active")
+        self._chk_visible.setStyleSheet(QSS.checkbox)
+        self._chk_visible.setChecked(slot.visible)
+        self._chk_visible.toggled.connect(self._on_field_changed)
+        hdr.addWidget(self._chk_visible)
+        hdr.addStretch()
+        btn_del = QPushButton("×")
+        btn_del.setFixedSize(20, 20)
+        btn_del.setStyleSheet(
+            f"QPushButton{{color:{C.TEXT_DIM};background:transparent;border:none;font-weight:bold;}}"
+            f"QPushButton:hover{{color:{C.ACCENT_RED};}}"
+        )
+        btn_del.clicked.connect(lambda: self.remove_requested.emit(self.slot))
+        hdr.addWidget(btn_del)
+        outer.addLayout(hdr)
+
+        # La fenêtre-objet n'a pas de rectangle : sa forme vient des pixels
+        # opaques des sprites en mode « fenêtre-objet » (Actor.obj_mode).
+        self._spins = {}
+        if is_obj:
+            note = QLabel("Pas de rectangle : la forme vient des sprites réglés sur\n"
+                          "« Masque (window OBJ) » dans l'inspecteur d'Actor.")
+            note.setFont(QFont(T.MONO, T.XS))
+            note.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            note.setWordWrap(True)
+            outer.addWidget(note)
+        else:
+            rect_row = QHBoxLayout(); rect_row.setSpacing(6)
+            for label, attr, maxv in (("X", "x", 240), ("Y", "y", 160), ("L", "w", 240), ("H", "h", 160)):
+                col = QVBoxLayout()
+                lbl = QLabel(label)
+                lbl.setFont(QFont(T.MONO, T.XS)); lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+                col.addWidget(lbl)
+                spin = QSpinBox()
+                spin.setFont(QFont(T.MONO, T.SM))
+                spin.setStyleSheet(QSS.spinbox)
+                spin.setRange(0, maxv)
+                spin.setValue(getattr(slot, attr))
+                spin.setFixedWidth(52)
+                spin.valueChanged.connect(self._on_field_changed)
+                self._spins[attr] = spin
+                col.addWidget(spin)
+                rect_row.addLayout(col)
+            rect_row.addStretch()
+            outer.addLayout(rect_row)
+
+        layers_row = QHBoxLayout(); layers_row.setSpacing(6)
+        layers_row.addWidget(self._mk_dim_label("Traverse :"))
+        self._chk_bg = []
+        for i in range(4):
+            c = QCheckBox(f"BG{i}")
+            c.setStyleSheet(QSS.checkbox)
+            c.setChecked(bool(slot.layers_shown[i]) if i < len(slot.layers_shown) else True)
+            c.toggled.connect(self._on_field_changed)
+            self._chk_bg.append(c)
+            layers_row.addWidget(c)
+        self._chk_obj = QCheckBox("OBJ")
+        self._chk_obj.setStyleSheet(QSS.checkbox)
+        self._chk_obj.setChecked(slot.obj_shown)
+        self._chk_obj.toggled.connect(self._on_field_changed)
+        layers_row.addWidget(self._chk_obj)
+        layers_row.addStretch()
+        outer.addLayout(layers_row)
+
+    def _mk_dim_label(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setFont(QFont(T.MONO, T.XS))
+        lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+        return lbl
+
+    def _on_field_changed(self, *_):
+        s = self.slot
+        for attr, spin in self._spins.items():   # vide pour la fenêtre-objet
+            setattr(s, attr, spin.value())
+        s.visible = self._chk_visible.isChecked()
+        s.layers_shown = [c.isChecked() for c in self._chk_bg]
+        s.obj_shown = self._chk_obj.isChecked()
+        self.changed.emit()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -241,6 +350,39 @@ class SceneInspector(QWidget):
         ui_row.addStretch(1)
         param_inner.addLayout(ui_row)
 
+        # ── Backdrop ──────────────────────────────────────────────
+        # Couleur de l'index 0 de PAL_BG_RAM : ce que le hardware affiche là où
+        # AUCUN layer ni sprite ne dessine — donc aussi ce qui apparaît dans une
+        # window qui masque tout.
+        bd_row = QHBoxLayout(); bd_row.setSpacing(6)
+        lbl_bd = QLabel("Backdrop :")
+        lbl_bd.setFont(QFont(T.MONO, T.SM)); lbl_bd.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_bd.setFixedWidth(70)
+        self._btn_backdrop = QPushButton()
+        self._btn_backdrop.setFixedSize(40, 22)
+        self._btn_backdrop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_backdrop.clicked.connect(self._pick_backdrop)
+        self._btn_backdrop.setToolTip(
+            "<b>Couleur de fond (backdrop)</b><br><br>"
+            "Index 0 de la palette BG — affiché partout où aucun calque ni<br>"
+            "sprite ne dessine, y compris à travers une window qui masque tout.<br><br>"
+            "Quantifiée en BGR555 (5 bits par canal) comme sur console."
+        )
+        self._lbl_backdrop = QLabel()
+        self._lbl_backdrop.setFont(QFont(T.MONO, T.XS))
+        self._lbl_backdrop.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._btn_backdrop_reset = W.btn_ghost("Défaut projet")
+        self._btn_backdrop_reset.setFont(QFont(T.MONO, T.XS))
+        self._btn_backdrop_reset.setToolTip(
+            "Réutiliser la couleur de backdrop définie au niveau du projet")
+        self._btn_backdrop_reset.clicked.connect(self._reset_backdrop)
+        bd_row.addWidget(lbl_bd)
+        bd_row.addWidget(self._btn_backdrop)
+        bd_row.addWidget(self._lbl_backdrop)
+        bd_row.addStretch(1)
+        bd_row.addWidget(self._btn_backdrop_reset)
+        param_inner.addLayout(bd_row)
+
         mode_row.addWidget(self._param_col, 1)
         mode_inner.addLayout(mode_row)
 
@@ -265,6 +407,40 @@ class SceneInspector(QWidget):
         mode_inner.addWidget(self._scene_script_slot)
 
         cl.addWidget(mode_card)
+
+        # ── Carte Windows (WIN0/WIN1) ──────────────────────────────
+        win_card, win_inner = _card(C.ACCENT_BLU)
+        win_hdr = QHBoxLayout(); win_hdr.setContentsMargins(0, 0, 0, 0); win_hdr.setSpacing(4)
+        win_hdr.addWidget(_card_title("WINDOWS", C.ACCENT_BLU), 1)
+        self._btn_win_add = {}
+        for region, tip in (
+            (0, "Ajouter WIN0"),
+            (1, "Ajouter WIN1"),
+            (2, "Ajouter la window OBJ (forme libre, donnée par les sprites)"),
+        ):
+            btn = W.btn_add(tip)
+            btn.clicked.connect(lambda _c=False, r=region: self._add_window(r))
+            self._btn_win_add[region] = btn
+            win_hdr.addWidget(btn)
+        win_inner.addLayout(win_hdr)
+
+        win_info = QLabel(
+            "Masques d'écran : WIN0/WIN1 rectangulaires, window OBJ de forme "
+            "libre. Cadrent où un layer ou un sprite s'affiche — ils ne "
+            "dessinent rien. Scriptables aussi (window.*)."
+        )
+        win_info.setFont(QFont(T.MONO, T.XS))
+        win_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        win_info.setWordWrap(True)
+        win_inner.addWidget(win_info)
+
+        self._window_rows: list[_WindowSlotRow] = []
+        self._windows_container = QVBoxLayout()
+        self._windows_container.setContentsMargins(0, 2, 0, 0)
+        self._windows_container.setSpacing(4)
+        win_inner.addLayout(self._windows_container)
+
+        cl.addWidget(win_card)
 
         # ── Carte Background Asset ────────────────────────────────
         bg_card, bg_inner = _card(C.ACCENT)
@@ -356,6 +532,8 @@ class SceneInspector(QWidget):
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
         self._rebuild_palette_slots()
+        self._rebuild_window_rows()
+        self._refresh_backdrop()
         self._apply_mode_ui()
         self._blocking = False
 
@@ -709,6 +887,61 @@ class SceneInspector(QWidget):
         ))
         self.changed.emit()
 
+    # ── Windows (WIN0/WIN1) ──────────────────────────────────────────
+
+    def _add_window(self, region: int):
+        if not self._scene or any(ws.region == region for ws in self._scene.windows):
+            return
+        new_slot = WindowSlot(region=region)
+
+        def _refresh():
+            self._persist_scene()
+            self._rebuild_window_rows()
+            get_dispatcher()._emit("windows_changed")
+
+        get_history().push(AddListItemCmd(
+            self._scene.windows, new_slot, persist_fn=_refresh,
+            label=f"Ajouter WIN{region}",
+        ))
+        self.changed.emit()
+
+    def _remove_window(self, slot):
+        if not self._scene or slot not in self._scene.windows:
+            return
+
+        def _refresh():
+            self._persist_scene()
+            self._rebuild_window_rows()
+            get_dispatcher()._emit("windows_changed")
+
+        get_history().push(RemoveListItemCmd(
+            self._scene.windows, slot, persist_fn=_refresh,
+            label=f"Supprimer WIN{slot.region}",
+        ))
+        self.changed.emit()
+
+    def _on_window_field_changed(self):
+        self._persist_scene()
+        get_dispatcher()._emit("windows_changed")
+        self.changed.emit()
+
+    def _rebuild_window_rows(self):
+        while self._windows_container.count():
+            item = self._windows_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._window_rows = []
+        windows = list(self._scene.windows) if self._scene else []
+        for slot in sorted(windows, key=lambda ws: ws.region):
+            row = _WindowSlotRow(slot)
+            row.changed.connect(self._on_window_field_changed)
+            row.remove_requested.connect(self._remove_window)
+            self._windows_container.addWidget(row)
+            self._window_rows.append(row)
+        used_regions = {ws.region for ws in windows}
+        for region, btn in self._btn_win_add.items():
+            btn.setVisible(region not in used_regions)
+
     # ── Palettes actives ────────────────────────────────────────────
 
     _DEFAULT_PALETTE_NAME    = "DMG (GB Default)"        # OBJ : 3 nuances (index 0 transparent)
@@ -878,6 +1111,60 @@ class SceneInspector(QWidget):
         self._set_scene_field("scroll_h", self._chk_scroll_h.isChecked())
         self._set_scene_field("scroll_v", self._chk_scroll_v.isChecked())
         self.changed.emit()
+
+    # ── Backdrop ────────────────────────────────────────────────────
+
+    def _effective_backdrop(self) -> int:
+        """BGR555 réellement compilé : override de scène, sinon défaut projet
+        (même résolution que main_gen._resolve_backdrop_color)."""
+        if not self._scene:
+            return 0
+        v = getattr(self._scene, "backdrop_color", None)
+        if v is not None:
+            return v
+        return self._project.settings.backdrop_color if self._project else 0
+
+    def _refresh_backdrop(self):
+        from core.color_utils import bgr555_to_rgb888
+        v = self._effective_backdrop()
+        r, g, b = bgr555_to_rgb888(v)
+        self._btn_backdrop.setStyleSheet(
+            f"QPushButton{{background:rgb({r},{g},{b});"
+            f"border:1px solid {C.BORDER_MID};border-radius:3px;}}"
+            f"QPushButton:hover{{border-color:{C.ACCENT};}}"
+        )
+        overridden = getattr(self._scene, "backdrop_color", None) is not None
+        self._lbl_backdrop.setText(f"0x{v:04X}" + ("" if overridden else "  (projet)"))
+        self._btn_backdrop_reset.setVisible(overridden)
+
+    def _pick_backdrop(self):
+        from PyQt6.QtWidgets import QColorDialog
+        from core.color_utils import bgr555_to_rgb888, rgb888_to_bgr555
+        if not self._scene:
+            return
+        r, g, b = bgr555_to_rgb888(self._effective_backdrop())
+        col = QColorDialog.getColor(
+            QColor(r, g, b), self, "Couleur de backdrop",
+            QColorDialog.ColorDialogOption.DontUseNativeDialog,
+        )
+        if not col.isValid():
+            return
+        # Quantification BGR555 : la valeur stockée est celle que la console
+        # affichera réellement, pas la couleur 8 bits choisie dans le dialogue.
+        self._set_scene_field(
+            "backdrop_color", rgb888_to_bgr555(col.red(), col.green(), col.blue()),
+            extra_persist=self._notify_backdrop,
+        )
+        self.changed.emit()
+
+    def _reset_backdrop(self):
+        """Retire l'override de scène — la couleur du projet reprend la main."""
+        self._set_scene_field("backdrop_color", None, extra_persist=self._notify_backdrop)
+        self.changed.emit()
+
+    def _notify_backdrop(self):
+        self._refresh_backdrop()
+        get_dispatcher()._emit("backdrop_changed")
 
     def _on_text_bg_changed(self):
         if self._blocking or not self._scene: return

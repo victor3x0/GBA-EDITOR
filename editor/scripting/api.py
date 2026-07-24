@@ -36,12 +36,25 @@ PARAM_ACTOR        = "actor"         # nom Lua → &g_actors[TAG_NAME]
 # ─── Domaines de résolution pour les arguments "str" ──────────────
 # Quand le codegen voit PARAM_STR il a besoin de savoir dans quel
 # espace de noms chercher la constante C.
-DOMAIN_ANIM  = "anim"    # ANIM_{actor}_{name}
-DOMAIN_SFX   = "sfx"     # SFX_{name}
-DOMAIN_MUSIC = "music"   # MUSIC_{name}
-DOMAIN_KEY   = "key"     # BTN_{name}
-DOMAIN_TAG   = "tag"     # TAG_{name}
-DOMAIN_SCENE = "scene"   # SCENE_IDX_{name}
+#
+# Le `domain` d'un paramètre est aussi la déclaration « cet argument RÉFÉRENCE
+# un élément nommé du projet » : c'est ce qui permet à scripting/refactor.py de
+# suivre les renommages, sans liste de fonctions codée en dur. Tout nouvel
+# argument qui cite un nom d'asset doit donc porter son domaine.
+DOMAIN_ANIM   = "anim"    # ANIM_{actor}_{name}
+DOMAIN_SFX    = "sfx"     # SFX_{name}
+DOMAIN_MUSIC  = "music"   # MUSIC_{name}
+DOMAIN_KEY    = "key"     # BTN_{name} — enum fixe du hardware, jamais renommé
+DOMAIN_TAG    = "tag"     # TAG_{name}
+DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
+DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
+DOMAIN_FONT   = "font"    # FONT_{name}
+DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
+# Domaines résolus par un _emit_* dédié du codegen (pas de constante C
+# générique) : ils n'en restent pas moins des références nommées.
+DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
+DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
+DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
 
 
 @dataclass
@@ -100,6 +113,18 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="self:apply_velocity", c_func="actor_apply_velocity",
         params=[], self_first=True,
         doc="Applique vx/vy à x/y.",
+    ),
+
+    "self:set_obj_mode": ApiFunc(
+        lua_name="self:set_obj_mode", c_func="actor_set_obj_mode",
+        params=[Param("mode", PARAM_INT)],
+        self_first=True,
+        doc="Mode OAM : 0 = sprite normal, 2 = masque (window OBJ) — le sprite n'est plus dessiné, ses pixels opaques donnent sa forme à la window OBJ (région 2). 1 = semi-transparent, réservé au blending, pas encore câblé.",
+    ),
+    "self:get_obj_mode": ApiFunc(
+        lua_name="self:get_obj_mode", c_func="actor_get_obj_mode",
+        params=[], self_first=True, ret="int",
+        doc="Mode OAM courant de l'actor (0, 1 ou 2).",
     ),
 
     # ── Lecture position / vélocité ───────────────────────────────
@@ -218,13 +243,13 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # ── Spawn ──────────────────────────────────────────────────────
     "actor.spawn": ApiFunc(
         lua_name="actor.spawn", c_func="_spawn",     # résolu par codegen
-        params=[Param("prefab", PARAM_STR, "prefab"), Param("x", PARAM_INT), Param("y", PARAM_INT)],
+        params=[Param("prefab", PARAM_STR, DOMAIN_PREFAB), Param("x", PARAM_INT), Param("y", PARAM_INT)],
         ret="void",
         doc='Instancie un prefab poolé à (x, y). Ex: actor.spawn("Bullet", self:get_x(), self:get_y()).',
     ),
     "get_actor": ApiFunc(
         lua_name="get_actor", c_func="_get_actor",   # résolu par codegen
-        params=[Param("name", PARAM_STR)],
+        params=[Param("name", PARAM_STR, DOMAIN_ACTOR)],
         ret="actor",
         doc='Référence directe vers un actor de la scène par son nom. Résolu à la compilation, zéro overhead runtime. Ex: get_actor("PADDLE_AUTO"):get_x().',
     ),
@@ -272,13 +297,13 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # qu'un appel de fonction. Ces entrées servent surtout au checker.
     "global.get": ApiFunc(
         lua_name="global.get", c_func="_global_get",   # résolu par codegen
-        params=[Param("name", PARAM_STR)],
+        params=[Param("name", PARAM_STR, DOMAIN_GLOBAL)],
         ret="int",
         doc="Lit une variable globale (partagée entre tous les scripts).",
     ),
     "global.set": ApiFunc(
         lua_name="global.set", c_func="_global_set",   # résolu par codegen
-        params=[Param("name", PARAM_STR), Param("value", PARAM_INT)],
+        params=[Param("name", PARAM_STR, DOMAIN_GLOBAL), Param("value", PARAM_INT)],
         doc="Écrit une variable globale.",
     ),
 
@@ -287,7 +312,7 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # qu'un appel de fonction. Lecture seule — pas de const.set.
     "const.get": ApiFunc(
         lua_name="const.get", c_func="_const_get",   # résolu par codegen
-        params=[Param("name", PARAM_STR)],
+        params=[Param("name", PARAM_STR, DOMAIN_CONST)],
         ret="int",
         doc="Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
     ),
@@ -332,6 +357,12 @@ RUNTIME_API: dict[str, ApiFunc] = {
             Param("margin_y", PARAM_INT),
         ],
         doc="Suit le point (x,y) avec une zone morte. Ex: camera.follow(self:get_x(), self:get_y(), 40, 20)",
+    ),
+    "camera.set_bounds": ApiFunc(
+        lua_name="camera.set_bounds", c_func="camera_set_bounds",
+        params=[Param("world_w", PARAM_INT), Param("world_h", PARAM_INT)],
+        doc="Définit les bornes de scroll (taille du monde en pixels, 0 = axe illimité). "
+            "Ex: débloquer une nouvelle zone au runtime.",
     ),
 
     # ── Maths ────────────────────────────────────────────────────
@@ -382,6 +413,210 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Valeur brute de la tile à la position monde (x, y) en pixels. 0 = vide, >0 = valeur de la tile.",
     ),
 
+    # ── Layer BG ───────────────────────────────────────────────────
+    # `n` = bg_slot 0-3, le même index que dans l'inspecteur de scène.
+    # Priorité 0 = dessiné devant (convention alignée sur bg_slot).
+    "layer.show": ApiFunc(
+        lua_name="layer.show", c_func="layer_show",
+        params=[Param("n", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Affiche (true) ou cache (false) le layer de fond n. Ex: layer.show(2, false)",
+    ),
+    "layer.is_visible": ApiFunc(
+        lua_name="layer.is_visible", c_func="layer_is_visible",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="1 si le layer n est affiché, 0 sinon.",
+    ),
+    "layer.set_priority": ApiFunc(
+        lua_name="layer.set_priority", c_func="layer_set_priority",
+        params=[Param("n", PARAM_INT), Param("prio", PARAM_INT)],
+        doc="Change l'ordre d'affichage du layer n (0 = devant, 3 = derrière), sprites compris.",
+    ),
+    "layer.get_priority": ApiFunc(
+        lua_name="layer.get_priority", c_func="layer_get_priority",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="Priorité actuelle du layer n (0 = devant).",
+    ),
+    "layer.set_scroll": ApiFunc(
+        lua_name="layer.set_scroll", c_func="layer_set_scroll",
+        params=[Param("n", PARAM_INT), Param("x", PARAM_INT), Param("y", PARAM_INT)],
+        doc="Décalage propre du layer n, en pixels, ajouté au scroll caméra.",
+    ),
+    "layer.scroll_by": ApiFunc(
+        lua_name="layer.scroll_by", c_func="layer_scroll_by",
+        params=[Param("n", PARAM_INT), Param("dx", PARAM_INT), Param("dy", PARAM_INT)],
+        doc="Ajoute (dx, dy) au décalage propre du layer n. Ex: nuages qui dérivent seuls.",
+    ),
+    "layer.get_scroll_x": ApiFunc(
+        lua_name="layer.get_scroll_x", c_func="layer_get_scroll_x",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="Décalage horizontal propre du layer n (hors caméra).",
+    ),
+    "layer.get_scroll_y": ApiFunc(
+        lua_name="layer.get_scroll_y", c_func="layer_get_scroll_y",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="Décalage vertical propre du layer n (hors caméra).",
+    ),
+    "layer.set_map": ApiFunc(
+        lua_name="layer.set_map", c_func="layer_set_map",
+        params=[Param("n", PARAM_INT), Param("sbb", PARAM_INT)],
+        doc="Avancé — bascule le layer n sur un autre screenblock (0-31). Permet de préparer une carte puis de l'afficher d'un coup, sans tearing.",
+    ),
+    "layer.get_map": ApiFunc(
+        lua_name="layer.get_map", c_func="layer_get_map",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="Avancé — screenblock actuellement affiché par le layer n.",
+    ),
+
+    # ── Texte ──────────────────────────────────────────────────────
+    # Le texte se pose sur LE layer d'UI de la scène (Scene.text_bg) : les
+    # glyphes vivent dans le charblock de ce layer. Pas de paramètre `layer`,
+    # il serait mensonger. tx/ty en tuiles.
+    "text.draw": ApiFunc(
+        lua_name="text.draw", c_func="text_draw",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)],
+        doc='Affiche un texte du projet à (tx, ty), en tuiles. Ex: text.draw("village_garde_01", 2, 16)',
+    ),
+    "text.draw_box": ApiFunc(
+        lua_name="text.draw_box", c_func="text_draw_box",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("w", PARAM_INT), Param("n", PARAM_INT)],
+        doc="Affiche un texte dans une boîte de w tuiles de large, avec retour à la ligne sur les mots. n = caractères révélés (-1 = tout).",
+    ),
+    "text.draw_upto": ApiFunc(
+        lua_name="text.draw_upto", c_func="text_draw_upto",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("n", PARAM_INT)],
+        doc="Affiche les n premiers caractères — la machine à écrire. Le rythme t'appartient : fais varier n. Ex: text.draw_upto(\"intro_01\", 2, 16, scene.frame() / 2)",
+    ),
+    "text.clear": ApiFunc(
+        lua_name="text.clear", c_func="text_clear",
+        params=[Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("w", PARAM_INT), Param("h", PARAM_INT)],
+        doc="Efface un rectangle de w×h tuiles sur le layer d'UI.",
+    ),
+    "text.length": ApiFunc(
+        lua_name="text.length", c_func="text_length",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT)], ret="int",
+        doc="Nombre de caractères d'un texte — la borne de la machine à écrire.",
+    ),
+    "text.set_font": ApiFunc(
+        lua_name="text.set_font", c_func="text_set_font",
+        params=[Param("f", PARAM_STR, DOMAIN_FONT)],
+        doc='Charge une police en mémoire vidéo. Une seule à la fois. Ex: text.set_font("Pixelia")',
+    ),
+
+    # ── Window ─────────────────────────────────────────────────────
+    # Une window ne dessine rien : c'est un pochoir. Elle dit, par région
+    # de l'écran, qui a le droit de s'afficher. L'apparence vient de ce
+    # qu'on met dedans (tilemap, sprites) — jamais de la window elle-même.
+    # Régions : 0 = WIN0, 1 = WIN1, 2 = window OBJ, 3 = extérieur.
+    "window.show": ApiFunc(
+        lua_name="window.show", c_func="window_show",
+        params=[Param("n", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Active (true) ou désactive (false) la window n : 0 et 1 = les deux rectangles, 2 = la window OBJ.",
+    ),
+    "window.is_visible": ApiFunc(
+        lua_name="window.is_visible", c_func="window_is_visible",
+        params=[Param("n", PARAM_INT)], ret="int",
+        doc="1 si la window n est active, 0 sinon.",
+    ),
+    "window.set": ApiFunc(
+        lua_name="window.set", c_func="window_set",
+        params=[Param("n", PARAM_INT), Param("x", PARAM_INT), Param("y", PARAM_INT),
+                Param("w", PARAM_INT), Param("h", PARAM_INT)],
+        doc="Rectangle en pixels écran de la window n (0 ou 1). Clampé à 240×160.",
+    ),
+    "window.set_layer": ApiFunc(
+        lua_name="window.set_layer", c_func="window_set_layer",
+        params=[Param("r", PARAM_INT), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non le layer de fond `bg` dans la région r (0=WIN0, 1=WIN1, 2=window OBJ, 3=extérieur).",
+    ),
+    "window.get_layer": ApiFunc(
+        lua_name="window.get_layer", c_func="window_get_layer",
+        params=[Param("r", PARAM_INT), Param("bg", PARAM_INT)], ret="int",
+        doc="1 si le layer `bg` est autorisé dans la région r, 0 sinon.",
+    ),
+    "window.set_obj": ApiFunc(
+        lua_name="window.set_obj", c_func="window_set_obj",
+        params=[Param("r", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non les sprites dans la région r.",
+    ),
+    "window.set_blend": ApiFunc(
+        lua_name="window.set_blend", c_func="window_set_blend",
+        params=[Param("r", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non le blending dans la région r. Assombrir le monde SAUF un panneau = blending activé dans la région 3, coupé dans la 0.",
+    ),
+
+    # ── Blend ──────────────────────────────────────────────────────
+    # Deux jeux de cibles : le dessus (side 0, ce qui est mélangé) et le
+    # dessous (side 1, ce avec quoi — situé derrière selon les priorités).
+    # window.set_blend() décide ensuite des RÉGIONS où tout ceci s'applique.
+    "blend.set_mode": ApiFunc(
+        lua_name="blend.set_mode", c_func="blend_set_mode",
+        params=[Param("mode", PARAM_INT)],
+        doc="0 = aucun mélange, 1 = alpha, 2 = éclaircir vers le blanc, 3 = assombrir vers le noir.",
+    ),
+    "blend.get_mode": ApiFunc(
+        lua_name="blend.get_mode", c_func="blend_get_mode",
+        params=[], ret="int",
+        doc="Mode de mélange courant (0-3).",
+    ),
+    "blend.set_layer": ApiFunc(
+        lua_name="blend.set_layer", c_func="blend_set_layer",
+        params=[Param("side", PARAM_INT), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Prend (ou non) le layer de fond `bg` comme cible. side 0 = le dessus, 1 = le dessous.",
+    ),
+    "blend.set_obj": ApiFunc(
+        lua_name="blend.set_obj", c_func="blend_set_obj",
+        params=[Param("side", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Prend (ou non) les sprites comme cible du dessus (side 0) ou du dessous (side 1).",
+    ),
+    "blend.set_backdrop": ApiFunc(
+        lua_name="blend.set_backdrop", c_func="blend_set_backdrop",
+        params=[Param("side", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Prend (ou non) la couleur de fond de la scène comme cible. Souvent le dessous manquant quand rien n'est dessiné derrière.",
+    ),
+    "blend.set_alpha": ApiFunc(
+        lua_name="blend.set_alpha", c_func="blend_set_alpha",
+        params=[Param("eva", PARAM_INT), Param("evb", PARAM_INT)],
+        doc="Dosage du mode 1, en seizièmes (0-16) : eva pour le dessus, evb pour le dessous. Ex: blend.set_alpha(8, 8) = moitié-moitié.",
+    ),
+    "blend.set_fade": ApiFunc(
+        lua_name="blend.set_fade", c_func="blend_set_fade",
+        params=[Param("evy", PARAM_INT)],
+        doc="Intensité des modes 2 et 3, en seizièmes (0 = rien, 16 = blanc ou noir complet). Un fondu = incrémenter evy frame après frame.",
+    ),
+
+    # ── Tilemap ────────────────────────────────────────────────────
+    # tx/ty en TUILES dans la map du layer (pas en pixels monde) ; les
+    # coordonnées wrappent comme le hardware.
+    "tilemap.set": ApiFunc(
+        lua_name="tilemap.set", c_func="tilemap_set",
+        params=[Param("n", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT), Param("tile", PARAM_INT)],
+        doc="Pose la tuile d'index `tile` en (tx, ty) sur le layer n. Conserve le flip et la palette de la case.",
+    ),
+    "tilemap.get": ApiFunc(
+        lua_name="tilemap.get", c_func="tilemap_get",
+        params=[Param("n", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)], ret="int",
+        doc="Index de tuile actuellement en (tx, ty) sur le layer n.",
+    ),
+    "tilemap.set_palette": ApiFunc(
+        lua_name="tilemap.set_palette", c_func="tilemap_set_palette",
+        params=[Param("n", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT), Param("bank", PARAM_INT)],
+        doc="Repeint la case (tx, ty) avec la banque de palette `bank` (0-15) — l'inpainting, au runtime.",
+    ),
+    "tilemap.set_flip": ApiFunc(
+        lua_name="tilemap.set_flip", c_func="tilemap_set_flip",
+        params=[Param("n", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("h", PARAM_BOOL), Param("v", PARAM_BOOL)],
+        doc="Retourne la case (tx, ty) horizontalement et/ou verticalement.",
+    ),
+    "tilemap.fill": ApiFunc(
+        lua_name="tilemap.fill", c_func="tilemap_fill",
+        params=[Param("n", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("w", PARAM_INT), Param("h", PARAM_INT), Param("tile", PARAM_INT)],
+        doc="Remplit un rectangle de w×h tuiles à partir de (tx, ty) avec la tuile `tile`.",
+    ),
 
 }
 
@@ -605,6 +840,16 @@ def tag_constant(actor_name: str) -> str:
 def scene_constant(scene_name: str) -> str:
     """'Victory' → 'SCENE_IDX_VICTORY'"""
     return f"SCENE_IDX_{_c_ident(scene_name)}"
+
+
+def text_constant(text_key: str) -> str:
+    """'village_garde_01' → 'TEXT_VILLAGE_GARDE_01'"""
+    return f"TEXT_{_c_ident(text_key)}"
+
+
+def font_constant(font_name: str) -> str:
+    """'Pixelia' → 'FONT_PIXELIA'"""
+    return f"FONT_{_c_ident(font_name)}"
 
 
 # ─── Événements de scène ───────────────────────────────────────────

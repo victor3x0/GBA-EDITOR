@@ -114,6 +114,11 @@ class Actor(ComponentOwnerMixin):
     priority: int = 0
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     visible: bool = True
+    # Mode OAM (bits 10-11 d'attr0) : 0 = sprite normal, 2 = fenêtre-objet —
+    # le sprite n'est plus dessiné, ses pixels opaques DÉCOUPENT la région
+    # window.OBJ (forme libre, animable). Mode 1 (semi-transparent) suppose le
+    # blending, pas encore câblé. Modifiable au runtime par self:set_obj_mode().
+    obj_mode: int = 0
     # Direction initiale discrète (-1|0|1 × -1|0|1) : oriente le sprite affiché
     # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
     dir_x: int = 0
@@ -133,6 +138,7 @@ class Actor(ComponentOwnerMixin):
             "priority":    self.priority,
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
+            "obj_mode":    self.obj_mode,
             "dir_x":       self.dir_x,
             "dir_y":       self.dir_y,
             "notes":       self.notes,
@@ -152,10 +158,42 @@ class Actor(ComponentOwnerMixin):
             priority    = d.get("priority", 0),
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
+            obj_mode    = d.get("obj_mode", 0),
             dir_x       = d.get("dir_x", 0),
             dir_y       = d.get("dir_y", 0),
             notes       = d.get("notes", ""),
         )
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Window — une région d'écran matérielle (WIN0 ou WIN1)
+# ──────────────────────────────────────────────────────────────────
+
+@dataclass
+class WindowSlot:
+    """Une window matérielle GBA (WIN0 ou WIN1) authorée par la scène.
+    `region` est l'index hardware réel (0 ou 1) — PAS la position dans
+    Scene.windows, pour rester correct si l'utilisateur n'a que WIN1 sans
+    WIN0. Rectangle en pixels écran, clampé 240×160 par window_set() au
+    runtime (même fonction que l'API Lua window.set() — un seul point
+    d'écriture, cf. project_camera_abstraction pour le même principe
+    appliqué à la caméra).
+
+    Défaut = tout traverse (visible=False, tous les layers_shown à True,
+    obj_shown=True) : ajouter une window sans rien configurer ne doit RIEN
+    cacher — l'utilisateur restreint ensuite, jamais l'inverse (neutralité
+    de style, cf. ROADMAP v0.3.2). L'OBJ-window (région 2) et la région
+    "extérieur" (3) n'ont pas de rectangle propre — elles restent 100%
+    scriptables (window.set_obj, window.set_layer(3, ...)), hors périmètre
+    de cette UI géométrique."""
+    region: int = 0     # 0 = WIN0, 1 = WIN1
+    x: int = 0
+    y: int = 0
+    w: int = 240
+    h: int = 160
+    visible: bool = False
+    layers_shown: list = field(default_factory=lambda: [True, True, True, True])  # BG0-3
+    obj_shown: bool = True
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -171,9 +209,27 @@ class Scene(Resource):
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
     cam_x: int = 0
     cam_y: int = 0
-    cam_follow: str = ""   # nom de l'Actor à suivre ("" = caméra libre)
-    scroll_h: bool = True  # défilement horizontal activé
-    scroll_v: bool = False # défilement vertical activé
+    cam_follow: str = ""   # nom de l'Actor à suivre (utilisé si cam_mode == "follow")
+    # Mode caméra — pilote QUI écrit cam_x/cam_y au runtime :
+    #   "fixed"  : reste à (cam_x, cam_y), authoré ci-dessus (pas de mouvement)
+    #   "follow" : suit cam_follow via camera_follow() (deadzone cam_margin_x/y),
+    #              même fonction runtime que l'API Lua camera.follow()
+    #   "script" : le codegen ne touche plus à la caméra, scripts seuls
+    # (cf. mémoire project_camera_abstraction — un seul point d'écriture).
+    cam_mode: str = "fixed"
+    cam_margin_x: int = 40   # deadzone horizontale (px), mode "follow"
+    cam_margin_y: int = 20   # deadzone verticale (px), mode "follow"
+    # Bornes de scroll (taille du monde en pixels) ; None = axe illimité.
+    # Champ explicite (plus de déduction depuis la vitesse de parallax d'un
+    # layer) ; pré-remplissable dans l'inspecteur depuis les fonds de la scène.
+    cam_bounds_w: Optional[int] = None
+    cam_bounds_h: Optional[int] = None
+    # Windows matérielles (WIN0/WIN1) authorées pour cette scène — max 2,
+    # une par région (cf. WindowSlot). Liste vide = comportement identique à
+    # aujourd'hui (aucune window active, tout s'affiche normalement).
+    windows: list = field(default_factory=list)  # list[WindowSlot]
+    scroll_h: bool = True  # défilement horizontal activé (mode "follow")
+    scroll_v: bool = False # défilement vertical activé (mode "follow")
     # Mode vidéo GBA de la scène (0-5). 0 = 4 fonds tuilés réguliers (défaut) ;
     # 1/2 = tuilé + affine ; 3/4/5 = un fond bitmap plein écran (BG2). Pilote
     # l'inspecteur (zones background/palettes). cf. ui MODE_INFO.
@@ -215,6 +271,17 @@ class Scene(Resource):
             "cam_x": self.cam_x,
             "cam_y": self.cam_y,
             "cam_follow": self.cam_follow,
+            "cam_mode": self.cam_mode,
+            "cam_margin_x": self.cam_margin_x,
+            "cam_margin_y": self.cam_margin_y,
+            "cam_bounds_w": self.cam_bounds_w,
+            "cam_bounds_h": self.cam_bounds_h,
+            "windows": [
+                {"region": ws.region, "x": ws.x, "y": ws.y, "w": ws.w, "h": ws.h,
+                 "visible": ws.visible, "layers_shown": ws.layers_shown,
+                 "obj_shown": ws.obj_shown}
+                for ws in self.windows
+            ],
             "render_mode": self.render_mode,
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
@@ -282,6 +349,26 @@ class Scene(Resource):
             cam_x=d.get("cam_x", 0),
             cam_y=d.get("cam_y", 0),
             cam_follow=d.get("cam_follow", ""),
+            # Migration : anciennes scènes sans cam_mode — "follow" si un
+            # cam_follow était déjà authoré, sinon "fixed" (le scroll libre au
+            # D-pad qui s'activait implicitement en son absence est retiré,
+            # cf. project_camera_abstraction).
+            cam_mode=d.get("cam_mode") or ("follow" if d.get("cam_follow") else "fixed"),
+            cam_margin_x=d.get("cam_margin_x", 40),
+            cam_margin_y=d.get("cam_margin_y", 20),
+            cam_bounds_w=d.get("cam_bounds_w"),
+            cam_bounds_h=d.get("cam_bounds_h"),
+            windows=[
+                WindowSlot(
+                    region=wd.get("region", 0),
+                    x=wd.get("x", 0), y=wd.get("y", 0),
+                    w=wd.get("w", 240), h=wd.get("h", 160),
+                    visible=wd.get("visible", False),
+                    layers_shown=wd.get("layers_shown", [True, True, True, True]),
+                    obj_shown=wd.get("obj_shown", True),
+                )
+                for wd in d.get("windows", [])
+            ],
             render_mode=int(d.get("render_mode", 0)),
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),

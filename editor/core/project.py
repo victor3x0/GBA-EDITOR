@@ -34,16 +34,24 @@ Scene, Actor, ...`) continue de fonctionner sans changement.
 import json
 import shutil
 import copy
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 from core import asset_sync, project_migrations
 from core.resource_manager import ResourceManager, safe_filename, _atomic_write
+# Domaines de référence Lua — un renommage d'élément met à jour les scripts
+# qui le citent (cf. rename_lua_refs / scripting/refactor.py).
+from scripting.api import (
+    DOMAIN_SCENE, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
+    DOMAIN_TEXT, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_ACTOR, DOMAIN_ANIM,
+)
 
 # ── Ré-export du modèle de domaine (compat des ~27 fichiers qui font
 #    `from core.project import Scene, Actor, SpriteAsset, ...`) ────────────
 from core.models.resource import Resource, MIME_PREFAB_TEMPLATE, MIME_SCRIPT
 from core.models.settings import ProjectSettings, GlobalVar, Constant
+from core.models.text import Text, make_key as make_text_key, new_id as new_text_id
 from core.models.palette import PaletteBank, OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin
 from core.models.components import (
@@ -52,7 +60,8 @@ from core.models.components import (
 )
 from core.models.sprite import TilePlacement, AnimFrame, StateDirection, AnimState, SpriteAsset
 from core.models.background import BackgroundLayer, BackgroundAsset, Tileset
-from core.models.audio import Sfx, Music, Font, SFX_FILE_EXTS, MUSIC_FILE_EXTS
+from core.models.audio import Sfx, Music, SFX_FILE_EXTS, MUSIC_FILE_EXTS
+from core.models.font import Font, Glyph, FONT_FILE_EXTS
 from core.models.scene import (
     TILE_EMPTY, TILE_SOLID,
     TILE_SLOPE_L, TILE_SLOPE_R, TILE_SLOPE_L_LO, TILE_SLOPE_L_HI,
@@ -62,7 +71,7 @@ from core.models.scene import (
     TILE_SLOPE_R_STEEP_HI, TILE_SLOPE_R_STEEP_LO, TILE_SLOPE_L_STEEP_HI, TILE_SLOPE_L_STEEP_LO,
     TILE_SLOPE_R_STEEP_HI_INV, TILE_SLOPE_R_STEEP_LO_INV,
     TILE_SLOPE_L_STEEP_HI_INV, TILE_SLOPE_L_STEEP_LO_INV,
-    COLLISION_TILE_SIZE, make_collision_map, SceneLayer, Prefab, Actor, Scene,
+    COLLISION_TILE_SIZE, make_collision_map, SceneLayer, Prefab, Actor, Scene, WindowSlot,
 )
 
 
@@ -95,6 +104,9 @@ class Project:
         # Constantes déclarées explicitement dans le projet (lecture seule)
         self.constants:   list[Constant] = []
 
+        # Table des textes destinés au joueur (traduisibles, cf. models/text.py)
+        self.texts:       list[Text] = []
+
         # Scène active (index dans self.scenes)
         self._active_scene_idx: int = 0
 
@@ -122,6 +134,15 @@ class Project:
     def variables_file(self) -> Path:
         """Globals + constants du projet — project/variables.json (pas de dépendance externe)."""
         return self.project_dir / "variables.json"
+
+    @property
+    def texts_file(self) -> Path:
+        """Table des textes du joueur — project/texts.json.
+
+        Un seul fichier plutôt qu'un par entrée (contrairement aux palettes) :
+        on parle de centaines d'entrées courtes, et un traducteur veut tout voir
+        d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté."""
+        return self.project_dir / "texts.json"
 
     @property
     def legacy_palettes_file(self) -> Path:
@@ -231,8 +252,11 @@ class Project:
 
     def set_active_scene(self, index: int):
         self._active_scene_idx = max(0, min(index, len(self.scenes) - 1))
-        if self.active_scene:
-            self.settings.start_scene = self.active_scene.name
+        if self.active_scene and self.settings.last_scene != self.active_scene.name:
+            # Mémorise la scène ouverte pour la prochaine session — surtout PAS
+            # start_scene, qui est le point de départ du jeu choisi par l'auteur
+            # (cf. ProjectInspector).
+            self.settings.last_scene = self.active_scene.name
             self.save_settings()
 
     # ── Résolution des assets ─────────────────────────────────────
@@ -343,9 +367,9 @@ class Project:
         data = {
             "name":        self.settings.name,
             "start_scene": self.settings.start_scene,
+            "last_scene":  self.settings.last_scene,
             "author":      self.settings.author,
             "version":     self.settings.version,
-            "palette_auto_import_enabled": self.settings.palette_auto_import_enabled,
             "backdrop_color": self.settings.backdrop_color,
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
@@ -356,9 +380,14 @@ class Project:
         d = json.loads(self.project_file.read_text(encoding="utf-8"))
         self.settings.name        = d.get("name", self.root.name)
         self.settings.start_scene = d.get("start_scene", "")
+        # Projets antérieurs à la séparation start_scene/last_scene : start_scene
+        # y servait aussi de « dernière scène ouverte ».
+        self.settings.last_scene  = d.get("last_scene", self.settings.start_scene)
         self.settings.author      = d.get("author", "")
         self.settings.version     = d.get("version", "0.1")
-        self.settings.palette_auto_import_enabled = d.get("palette_auto_import_enabled", True)
+        # `palette_auto_import_enabled` des anciens project.json est ignoré :
+        # le réservoir auto-import est abandonné (cf. ROADMAP.md v0.2), la clé
+        # disparaît du fichier à la prochaine sauvegarde.
         self.settings.backdrop_color = d.get("backdrop_color", 0)
 
     # ── I/O variables (globals + constants) ─────────────────────────
@@ -404,6 +433,82 @@ class Project:
             for c in d.get("constants", [])
         ]
 
+    # ── I/O textes (table de chaînes destinées au joueur) ───────────
+
+    def save_texts(self):
+        data = {"texts": [t.to_dict() for t in self.texts]}
+        self.project_dir.mkdir(parents=True, exist_ok=True)
+        _atomic_write(self.texts_file, json.dumps(data, indent=2, ensure_ascii=False))
+
+    def load_texts(self):
+        self.texts = []
+        if not self.texts_file.exists():
+            return
+        d = json.loads(self.texts_file.read_text(encoding="utf-8"))
+        self.texts = [Text.from_dict(t) for t in d.get("texts", [])]
+        self._repair_texts()
+
+    def _repair_texts(self):
+        """Rattrape un fichier édité à la main : id manquant ou dupliqué, clé
+        manquante ou dupliquée. L'id prime — c'est lui l'identité ; une clé en
+        double est celle qu'on renumérote."""
+        seen_ids: set[int] = set()
+        seen_keys: set[str] = set()
+        for t in self.texts:
+            if not t.id or t.id in seen_ids:
+                t.id = new_text_id(seen_ids)
+            seen_ids.add(t.id)
+            if not t.key or t.key in seen_keys:
+                t.key = make_text_key(t.scene, taken=seen_keys)
+            seen_keys.add(t.key)
+
+    # ── CRUD textes ─────────────────────────────────────────────────
+
+    def text_keys(self) -> set[str]:
+        return {t.key for t in self.texts}
+
+    def get_text(self, key: str) -> Optional[Text]:
+        """Résolution par clé — l'unique chemin de résolution côté script."""
+        return next((t for t in self.texts if t.key == key), None)
+
+    def get_text_by_id(self, tid: int) -> Optional[Text]:
+        """Résolution par id — pour les références stockées dans les fichiers
+        de données (inspecteurs, scènes), insensibles au renommage."""
+        return next((t for t in self.texts if t.id == tid), None)
+
+    def new_text(self, content: str = "", scene: str = "",
+                 context: str = "", label: str = "") -> Text:
+        """Crée une entrée. La clé vient du contexte de création, jamais du
+        contenu (cf. models/text.py)."""
+        t = Text(
+            id      = new_text_id({x.id for x in self.texts}),
+            key     = make_text_key(scene, context, taken=self.text_keys()),
+            label   = label,
+            content = content,
+            scene   = scene,
+        )
+        self.texts.append(t)
+        return t
+
+    def rename_text_key(self, text: Text, new_key: str) -> bool:
+        """Renomme la clé d'un texte. Retourne False si le nom est vide ou déjà
+        pris — l'appelant (UI) affiche l'erreur. Les appels text.draw("clé")
+        des scripts suivent (cf. rename_lua_refs)."""
+        new_key = (new_key or "").strip()
+        if not new_key or any(t.key == new_key and t is not text for t in self.texts):
+            return False
+        old_key = text.key
+        with self._renaming():
+            refs = self.rename_lua_refs(DOMAIN_TEXT, old_key, new_key)
+            text.key = new_key
+            text.auto_key = False
+        self._notify_renamed("Texte", old_key, new_key, refs)
+        return True
+
+    def delete_text(self, text: Text):
+        if text in self.texts:
+            self.texts.remove(text)
+
     # ── Renommage (supprime l'ancien fichier + répare les références) ──
     # ResourceManager.rename() seul ne suffit pas : il faut aussi mettre à
     # jour tout ce qui référence l'ancien nom ailleurs dans le projet.
@@ -432,6 +537,7 @@ class Project:
                     touched = True
             if touched:
                 self.save_scene(scene)
+        self._notify_renamed("Fond", old_name, new_name)
 
     def rename_sprite(self, sprite: SpriteAsset, new_name: str):
         new_name = new_name.strip()
@@ -468,16 +574,139 @@ class Project:
                     touched = True
             if touched:
                 self.save_prefab(prefab)
+        # Aucun domaine Lua : un sprite se référence par son composant, pas
+        # depuis un script (les animations, elles, ont DOMAIN_ANIM).
+        self._notify_renamed("Sprite", old_name, new_name)
 
     def rename_scene(self, scene: Scene, new_name: str):
         new_name = new_name.strip()
         if not new_name or new_name == scene.name:
             return
         old_name = scene.name
-        self.scenes.rename(scene, new_name)
-        if self.settings.start_scene == old_name:
-            self.settings.start_scene = new_name
-            self.save_settings()
+        with self._renaming():
+            self.scenes.rename(scene, new_name)
+            touched = False
+            for field in ("start_scene", "last_scene"):
+                if getattr(self.settings, field) == old_name:
+                    setattr(self.settings, field, new_name)
+                    touched = True
+            if touched:
+                self.save_settings()
+            refs = self.rename_lua_refs(DOMAIN_SCENE, old_name, new_name)
+        self._notify_renamed("Scène", old_name, new_name, refs, feminine=True)
+
+    def rename_prefab(self, prefab, new_name: str):
+        new_name = new_name.strip()
+        if not new_name or new_name == prefab.name:
+            return
+        old_name = prefab.name
+        with self._renaming():
+            self.prefabs.rename(prefab, new_name)
+            # Instances placées dans les scènes : elles pointent le template par nom.
+            for scene in self.scenes:
+                touched = False
+                for actor in scene.actors:
+                    if getattr(actor, "prefab_name", "") == old_name:
+                        actor.prefab_name = new_name
+                        touched = True
+                if touched:
+                    self.save_scene(scene)
+            refs = self.rename_lua_refs(DOMAIN_PREFAB, old_name, new_name)
+        self._notify_renamed("Prefab", old_name, new_name, refs)
+
+    def rename_actor(self, actor, new_name: str, scene: Optional[Scene] = None):
+        """Actor placé dans une scène (pas un template de prefab — cf.
+        rename_prefab). `scene` est sauvegardée si fournie."""
+        new_name = new_name.strip()
+        if not new_name or new_name == actor.name:
+            return
+        old_name = actor.name
+        with self._renaming():
+            refs = self.rename_lua_refs(DOMAIN_ACTOR, old_name, new_name)
+            actor.name = new_name
+            if scene is not None:
+                self.save_scene(scene)
+        self._notify_renamed("Actor", old_name, new_name, refs)
+
+    def rename_sound(self, asset, new_name: str):
+        """Sfx ou Music — même chemin, seul le domaine Lua diffère."""
+        new_name = new_name.strip()
+        if not new_name or new_name == asset.name:
+            return
+        old_name = asset.name
+        is_music = isinstance(asset, Music)
+        with self._renaming():
+            (self.music if is_music else self.sfx).rename(asset, new_name)
+            refs = self.rename_lua_refs(DOMAIN_MUSIC if is_music else DOMAIN_SFX,
+                                        old_name, new_name)
+        self._notify_renamed("Musique" if is_music else "SFX",
+                             old_name, new_name, refs, feminine=is_music)
+
+    def rename_font(self, font, new_name: str):
+        new_name = new_name.strip()
+        if not new_name or new_name == font.name:
+            return
+        old_name = font.name
+        with self._renaming():
+            self.fonts.rename(font, new_name)
+            refs = self.rename_lua_refs(DOMAIN_FONT, old_name, new_name)
+        self._notify_renamed("Police", old_name, new_name, refs, feminine=True)
+
+    # ── Références Lua ───────────────────────────────────────────────
+    # Un script cite un élément du projet par son NOM, mais ce nom n'est
+    # qu'une étiquette d'auteur : au build il est déjà résolu en index
+    # physique (SCENE_IDX_*, SFX_*, g_<var>…). Renommer côté éditeur doit
+    # donc mettre les scripts à jour tout seul — le lien survit, l'écriture
+    # reste lisible. Repérage structurel via scripting/refactor.py : seuls
+    # les arguments déclarés comme références bougent (jamais un commentaire
+    # ni une string sans rapport).
+
+    def rename_lua_refs(self, domain: str, old: str, new: str) -> dict:
+        """Propage un renommage dans les scripts. Retourne {script: n} —
+        vide si aucun script ne citait l'ancien nom."""
+        from scripting.refactor import rename_in_project
+        return rename_in_project(self, domain, old, new)
+
+    # ── Renommage — plomberie commune ────────────────────────────────
+
+    @contextmanager
+    def _renaming(self):
+        """Suspend le watcher pendant un renommage : le fichier de scène
+        déplacé et les scripts réécrits sont NOS écritures. Sans ça le watcher
+        les rapporte comme « modifié à l'extérieur », l'éditeur recharge et
+        son propre message écrase celui du renommage. No-op hors GUI."""
+        try:
+            from core.command_dispatcher import get_dispatcher
+        except ImportError:
+            yield
+            return
+        with get_dispatcher().suspended():
+            yield
+
+    def _notify_renamed(self, label: str, old: str, new: str,
+                        refs: Optional[dict] = None,
+                        feminine: bool = False) -> None:
+        """Message de statut + rafraîchissement des vues qui affichent le nom.
+        Émis pour TOUT renommage, qu'il ait touché des scripts ou non — sinon
+        l'utilisateur n'a aucun retour quand rien ne référençait l'élément.
+        Silencieux hors GUI (build en ligne de commande, tests)."""
+        try:
+            from core.command_dispatcher import get_dispatcher
+        except ImportError:
+            return
+        msg = f"{label} renommé{'e' if feminine else ''} : « {old} » → « {new} »"
+        if refs:
+            n_refs  = sum(refs.values())
+            files   = ", ".join(sorted(p.name for p in refs))
+            msg += (f" — {n_refs} référence(s) mise(s) à jour dans "
+                    f"{len(refs)} script(s) : {files}")
+        dispatcher = get_dispatcher()
+        dispatcher._emit("project_tree_changed")
+        if refs:
+            dispatcher.notify_scripts_changed()
+        # En dernier : les rafraîchissements ci-dessus peuvent poster leur
+        # propre message de statut, celui du renommage doit rester visible.
+        dispatcher._emit("status_message", msg)
 
     # ── CRUD variables (globals / constants) ────────────────────────
     # Unicité vérifiée PAR TYPE uniquement : un global et une constante
@@ -507,8 +736,14 @@ class Project:
             return False
         if self.variable_name_taken(kind, new_name, exclude=entry):
             return False
-        entry.name = new_name
-        self.save_variables()
+        old_name = entry.name
+        with self._renaming():
+            refs = self.rename_lua_refs(
+                DOMAIN_CONST if kind == "const" else DOMAIN_GLOBAL, old_name, new_name)
+            entry.name = new_name
+            self.save_variables()
+        self._notify_renamed("Constante" if kind == "const" else "Global",
+                             old_name, new_name, refs, feminine=(kind == "const"))
         return True
 
     # ── Raccourcis de sauvegarde par objet (delegue au ResourceManager) ──
@@ -526,6 +761,7 @@ class Project:
     def save(self):
         self.save_settings()
         self.save_variables()
+        self.save_texts()
         self.sprites.save_all()
         self.sfx.save_all()
         self.music.save_all()
@@ -547,6 +783,7 @@ class Project:
         project_migrations.migrate_on_load(self)
         self.load_settings()
         self.load_variables()
+        self.load_texts()
         self.palettes.load()
         project_migrations.seed_or_migrate_palettes(self)
         self.sprites.load()
@@ -559,6 +796,7 @@ class Project:
         project_migrations.reconcile_backgrounds(self)
         self.prefabs.load()
         project_migrations.reconcile_sfx_and_music(self)
+        project_migrations.reconcile_fonts(self)
         project_migrations.load_scenes_with_migration(self)
         project_migrations.migrate_scene_backgrounds(self)
 
@@ -597,6 +835,7 @@ class Project:
         default_scene = Scene(name="Scene_01")
         proj.scenes.append(default_scene)
         proj.settings.start_scene = "Scene_01"
+        proj.settings.last_scene  = "Scene_01"
 
         proj.save()
 

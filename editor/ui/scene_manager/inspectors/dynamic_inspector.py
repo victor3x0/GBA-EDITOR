@@ -141,9 +141,12 @@ class DynamicInspector(QWidget):
             project = self._actor_insp._project
             if actor and new_name != actor.name:
                 if self._actor_insp._is_prefab_template:
-                    project.prefabs.rename(actor, new_name)
+                    project.rename_prefab(actor, new_name)
                 else:
-                    actor.name = new_name
+                    # rename_actor s'occupe des get_actor("…") des scripts et
+                    # du message de statut ; _persist() sauve la scène + les
+                    # sprites du canvas.
+                    project.rename_actor(actor, new_name)
                     self._actor_insp._persist()
                     from core.command_dispatcher import get_dispatcher
                     get_dispatcher()._emit("actors_list_changed")
@@ -215,6 +218,9 @@ class DynamicInspector(QWidget):
             sc, pr = self._scene_insp._scene, self._scene_insp._project
             if sc and pr:
                 self._scene_insp.load(sc, pr)
+        elif self._stack.currentIndex() == self._MODE_PROJECT:
+            # Compteurs d'assets + liste des scènes du sélecteur de démarrage
+            self._project_insp.load(self._project)
 
     def show_empty(self):
         self._set_header("empty", "", "")

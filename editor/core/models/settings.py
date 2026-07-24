@@ -6,15 +6,16 @@ from dataclasses import dataclass
 @dataclass
 class ProjectSettings:
     name: str = "mon_jeu"
-    start_scene: str = ""
+    start_scene: str = ""   # scène sur laquelle démarre le JEU (choisie par l'auteur)
+    # Dernière scène ouverte dans l'ÉDITEUR — état d'interface, pas réglage de
+    # jeu : restauré à l'ouverture du projet. Séparé de start_scene, sinon
+    # éditer une autre scène écraserait silencieusement le point de départ.
+    last_scene: str = ""
     author: str = ""
     version: str = "0.1"
-    # Réservoir auto-import (cf. ROADMAP.md v0.2) — réglage projet, pas éditeur.
-    palette_auto_import_enabled: bool = True
     # Couleur de backdrop par défaut (BGR555) — PAL_BG_RAM[0], affichée quand
-    # rien d'opaque n'est dessiné nulle part. Scene.backdrop_color peut la
-    # surcharger par scène. Pas d'écran dédié pour l'instant (même traitement
-    # que palette_auto_import_enabled) — édition JSON manuelle en attendant.
+    # rien d'opaque n'est dessiné nulle part. Éditée dans le ProjectInspector ;
+    # Scene.backdrop_color peut la surcharger par scène.
     backdrop_color: int = 0
 
 

@@ -89,6 +89,10 @@ GBA_H = 160
 MAX_CANVAS_W = 512  # limite hardware BG tuilé régulier
 MAX_CANVAS_H = 512
 
+# Aperçu des windows matérielles — une teinte par région (WIN0, WIN1), reprise
+# du bleu de la carte WINDOWS de l'inspecteur de scène.
+_WIN_COLORS = ("#82aaff", "#c48b3c")
+
 _PLACEHOLDER_SIZE = 16
 
 
@@ -342,6 +346,7 @@ class SpriteItem(QGraphicsPixmapItem):
         # appelé dès la construction (ItemSendsGeometryChanges) et les lit.
         self._drag_origin: tuple[int, int] | None = None
         self._drag_confirmed = False
+        self._mask_rects: list = []   # découpe par les windows (cf. set_mask_rects)
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
         self._save_fn = save_fn
@@ -451,11 +456,36 @@ class SpriteItem(QGraphicsPixmapItem):
             return QPointF(x, y)
         return super().itemChange(change, value)
 
+    def set_mask_rects(self, rects: list):
+        """Régions (coordonnées de SCÈNE) où ce sprite ne s'affiche pas —
+        windows actives dont le bit OBJ est coupé. Cf. GBAScene.update_window_masks."""
+        if rects == self._mask_rects:
+            return
+        self._mask_rects = list(rects)
+        self.update()
+
     def paint(self, painter, option, widget=None):
         # Supprimer le rendu de sélection Qt par défaut (dashed bleu)
         clean = QStyleOptionGraphicsItem(option)
         clean.state &= ~QStyle.StateFlag.State_Selected
-        super().paint(painter, clean, widget)
+        if self._mask_rects:
+            # Clip limité au PIXMAP : l'outline de sélection et le repère
+            # d'origine ci-dessous restent visibles, sinon un acteur masqué
+            # deviendrait impossible à repérer et à manipuler dans l'éditeur.
+            # mapFromScene : l'item porte scale/flip/rotation et un offset,
+            # les rects arrivent en coordonnées de scène.
+            painter.save()
+            path = QPainterPath()
+            path.addRect(self.boundingRect())
+            for r in self._mask_rects:
+                cut = QPainterPath()
+                cut.addPolygon(self.mapFromScene(r))
+                path = path.subtracted(cut)
+            painter.setClipPath(path)
+            super().paint(painter, clean, widget)
+            painter.restore()
+        else:
+            super().paint(painter, clean, widget)
         # Outline vert propre quand sélectionné
         if self.isSelected():
             painter.save()
@@ -492,6 +522,37 @@ class SpriteItem(QGraphicsPixmapItem):
 #  Item caméra — icône draggable + zone de vision
 # ──────────────────────────────────────────────────────────────────
 _CAM_ICO_SIZE = 20  # px, carré
+
+
+class _MaskablePixmapItem(QGraphicsPixmapItem):
+    """Layer BG dont des régions peuvent être découpées à l'affichage.
+
+    Sert à refléter dans le canvas ce que les windows matérielles font
+    réellement à l'écran : une window active dont `layers_shown[bg]` est faux
+    empêche ce layer de s'afficher DANS son rectangle (registre WININ). Les
+    rects sont donnés en coordonnées de scène — l'item étant posé à l'origine,
+    coordonnées d'item et de scène coïncident."""
+
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(pixmap, parent)
+        self._mask_rects: list[QRectF] = []
+
+    def set_mask_rects(self, rects: list):
+        if rects == self._mask_rects:
+            return
+        self._mask_rects = list(rects)
+        self.update()
+
+    def paint(self, painter: QPainter, option, widget=None):
+        if self._mask_rects:
+            path = QPainterPath()
+            path.addRect(self.boundingRect())
+            for r in self._mask_rects:
+                cut = QPainterPath()
+                cut.addRect(r)
+                path = path.subtracted(cut)
+            painter.setClipPath(path)
+        super().paint(painter, option, widget)
 
 
 class CameraItem(QGraphicsItem):
@@ -541,6 +602,63 @@ class CameraItem(QGraphicsItem):
         self._view.setAcceptHoverEvents(False)
         self._view.setVisible(False)
 
+        # Windows (WIN0/WIN1) — enfants de la caméra : une window est en espace
+        # ÉCRAN, elle suit donc la vue automatiquement (position locale = position
+        # dans l'écran GBA), sans recalcul à chaque déplacement de caméra.
+        self._window_items: list[QGraphicsRectItem] = []
+
+    # ── Windows (aperçu) ──────────────────────────────────────────
+
+    def set_windows(self, windows: list):
+        """Dessine l'aperçu des WindowSlot de la scène dans le cadre écran.
+
+        Le rectangle est clampé à 240×160 comme le fait `window_set()` au
+        runtime — l'aperçu montre donc la zone RÉELLEMENT obtenue sur console,
+        pas la saisie brute (une window plus large que l'écran est tronquée)."""
+        for it in self._window_items:
+            it.setParentItem(None)
+            if it.scene():
+                it.scene().removeItem(it)
+        self._window_items = []
+
+        for ws in sorted(windows or [], key=lambda w: w.region):
+            # Fenêtre-objet (région 2) : pas de rectangle — sa forme vient des
+            # pixels opaques des sprites en obj_mode=2, non prévisualisable ici.
+            if int(ws.region) not in (0, 1):
+                continue
+            x0 = max(0, min(int(ws.x), GBA_W))
+            y0 = max(0, min(int(ws.y), GBA_H))
+            x1 = max(x0, min(int(ws.x) + int(ws.w), GBA_W))
+            y1 = max(y0, min(int(ws.y) + int(ws.h), GBA_H))
+
+            color = QColor(_WIN_COLORS[int(ws.region) % len(_WIN_COLORS)])
+            pen = QPen(color)
+            pen.setWidth(0)
+            pen.setCosmetic(True)
+            # Trait plein = window active au runtime ; pointillé = authorée mais
+            # window_show(region, 0) → invisible sur console.
+            pen.setStyle(Qt.PenStyle.SolidLine if ws.visible else Qt.PenStyle.DotLine)
+
+            rect = QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0, self)
+            rect.setPen(pen)
+            fill = QColor(color)
+            fill.setAlpha(40 if ws.visible else 16)
+            rect.setBrush(QBrush(fill))
+            rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+            rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            rect.setAcceptHoverEvents(False)
+            rect.setToolTip(
+                f"WIN{ws.region} — {x1 - x0}×{y1 - y0} px à ({x0}, {y0})"
+                + ("" if ws.visible else "\n(inactive — window_show à 0)")
+            )
+            self._window_items.append(rect)
+
+        # Le cadre écran sert de contexte à l'aperçu : sans lui, des rectangles
+        # flottent sans repère. On le force donc dès qu'une window existe, même
+        # caméra non sélectionnée.
+        self._view.setVisible(bool(self._window_items) or self.isSelected())
+
     # ── QGraphicsItem interface ───────────────────────────────────
 
     def boundingRect(self) -> QRectF:
@@ -575,11 +693,19 @@ class CameraItem(QGraphicsItem):
             x = max(0, min(p.x(), self._canvas_w - GBA_W))
             y = max(0, min(p.y(), self._canvas_h - GBA_H))
             return QPointF(x, y)
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            # Les windows sont en espace écran : leur découpe des layers BG
+            # (espace monde) doit suivre la caméra.
+            sc = self.scene()
+            if sc is not None and hasattr(sc, "update_window_masks"):
+                sc.update_window_masks()
         if change == QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged:
             # prepareGeometryChange() notifie Qt que la zone de dessin
             # effective change (icon seul → icon + viewport 240×160).
             self.prepareGeometryChange()
-            self._view.setVisible(bool(value))
+            # Le cadre reste affiché à la désélection s'il sert de contexte à
+            # l'aperçu des windows (cf. set_windows).
+            self._view.setVisible(bool(value) or bool(self._window_items))
         return super().itemChange(change, value)
 
 
@@ -1030,7 +1156,10 @@ class GBAScene(QGraphicsScene):
         self._sprite_items: list[SpriteItem] = []
         self._grid_item: Optional[GridItem] = None
         self._border: Optional[QGraphicsRectItem] = None
+        self._backdrop: Optional[QGraphicsRectItem] = None
         self._camera: Optional[CameraItem] = None
+        self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
+        self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
         self._snap = False
         self._collision_view = False  # toggle "Collisions scène"
         self._setup_border()
@@ -1063,12 +1192,32 @@ class GBAScene(QGraphicsScene):
         self.setSceneRect(0, 0, w, h)
         if self._border:
             self._border.setRect(0, 0, w, h)
+        if self._backdrop:
+            self._backdrop.setRect(0, 0, w, h)
         if self._camera:
             self._camera.set_canvas_size(w, h)
         for item in self._sprite_items:
             item.set_canvas_size(w, h)
         if self._grid_item:
             self._grid_item.resize(w, h)
+
+    def set_backdrop(self, bgr555: int):
+        """Couleur du backdrop (index 0 de PAL_BG_RAM) — peinte SOUS tous les
+        layers (z=-1). C'est ce que le hardware affiche là où rien n'est dessiné :
+        une window qui masque tout laisse donc apparaître cette couleur, et le
+        canvas le reflète."""
+        from core.color_utils import bgr555_to_rgb888
+        r, g, b = bgr555_to_rgb888(int(bgr555) & 0x7FFF)
+        if self._backdrop is None:
+            self._backdrop = QGraphicsRectItem(0, 0, self._canvas_w, self._canvas_h)
+            self._backdrop.setPen(QPen(Qt.PenStyle.NoPen))
+            self._backdrop.setZValue(-1)
+            self._backdrop.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            self._backdrop.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+            self._backdrop.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.addItem(self._backdrop)
+        self._backdrop.setRect(0, 0, self._canvas_w, self._canvas_h)
+        self._backdrop.setBrush(QBrush(QColor(r, g, b)))
 
     def _setup_border(self):
         pen = QPen(QColor("#ff6b6b"))
@@ -1095,6 +1244,62 @@ class GBAScene(QGraphicsScene):
             return int(p.x()), int(p.y())
         return 0, 0
 
+    def set_windows(self, windows: list):
+        """Aperçu des WindowSlot dans le cadre écran (porté par la caméra)."""
+        self._windows = list(windows or [])
+        if self._camera:
+            self._camera.set_windows(self._windows)
+        self.update_window_masks()
+
+    def update_window_masks(self):
+        """Applique aux layers BG le découpage des windows ACTIVES.
+
+        Seule une window `visible` compte : une window authorée mais laissée à
+        `window_show(region, 0)` n'a aucun effet sur console, elle ne doit donc
+        rien masquer ici non plus. Recalculé au déplacement de la caméra, les
+        rects étant en espace écran."""
+        cam = self._camera.pos() if self._camera else QPointF(0, 0)
+
+        def _screen_rect(ws) -> Optional[QRectF]:
+            """Rect de la window en coordonnées de scène, clampé à l'écran."""
+            x0 = max(0, min(int(ws.x), GBA_W))
+            y0 = max(0, min(int(ws.y), GBA_H))
+            x1 = max(x0, min(int(ws.x) + int(ws.w), GBA_W))
+            y1 = max(y0, min(int(ws.y) + int(ws.h), GBA_H))
+            if x1 <= x0 or y1 <= y0:
+                return None
+            return QRectF(cam.x() + x0, cam.y() + y0, x1 - x0, y1 - y0)
+
+        # Windows actives et rectangulaires (la fenêtre-objet n'a pas de rect).
+        active = [ws for ws in self._windows
+                  if ws.visible and int(ws.region) in (0, 1)]
+
+        # Layers BG — bit par layer (WININ bits 0-3).
+        for bg_index, item in enumerate(self._bg_items):
+            if not isinstance(item, _MaskablePixmapItem):
+                continue
+            rects = []
+            for ws in active:
+                shown = getattr(ws, "layers_shown", [True] * 4)
+                if bg_index < len(shown) and shown[bg_index]:
+                    continue   # ce layer traverse la window : rien à découper
+                r = _screen_rect(ws)
+                if r is not None:
+                    rects.append(r)
+            item.set_mask_rects(rects)
+
+        # Sprites — bit OBJ commun à tous (WININ bit 4), pas par acteur.
+        obj_rects = []
+        for ws in active:
+            if getattr(ws, "obj_shown", True):
+                continue   # les sprites traversent cette window
+            r = _screen_rect(ws)
+            if r is not None:
+                obj_rects.append(r)
+        self._obj_mask_rects = obj_rects
+        for sp in self._sprite_items:
+            sp.set_mask_rects(obj_rects)
+
     # ── BG layers ─────────────────────────────────────────────────
 
     def set_bg(self, bg_index: int, pixmap: Optional[QPixmap]):
@@ -1103,7 +1308,7 @@ class GBAScene(QGraphicsScene):
             self.removeItem(self._bg_items[bg_index])
             self._bg_items[bg_index] = None
         if pixmap:
-            item = QGraphicsPixmapItem(pixmap)
+            item = _MaskablePixmapItem(pixmap)
             item.setZValue(z)
             item.setOpacity(0.9 if bg_index > 0 else 1.0)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
@@ -1138,6 +1343,10 @@ class GBAScene(QGraphicsScene):
         )
         self.addItem(item)
         self._sprite_items.append(item)
+        # Sprite créé après le calcul des masques (rechargement de scène) :
+        # lui appliquer la découpe courante sans attendre le prochain recalcul.
+        if self._obj_mask_rects:
+            item.set_mask_rects(self._obj_mask_rects)
         return item
 
     def clear_sprites(self):
@@ -2149,9 +2358,14 @@ class SceneEditor(QWidget):
         new_name = new_name.strip()
         if not new_name or new_name == actor.name:
             return
-        actor.name = new_name
         from core.command_dispatcher import get_dispatcher
         disp = get_dispatcher()
+        # Via le projet : réécrit les get_actor("…") des scripts et poste le
+        # message de statut (même chemin que le renommage par l'en-tête).
+        if self._project:
+            self._project.rename_actor(actor, new_name)
+        else:
+            actor.name = new_name
         disp.save_scene()
         disp._emit("actors_list_changed")
         disp._emit("scene_sprites_changed")
@@ -2320,6 +2534,9 @@ class SceneEditor(QWidget):
             scene.ensure_collision_map(self._canvas_w, self._canvas_h)
             self._gba_scene.collision_overlay.load(scene.collision_map)
 
+        # Backdrop (sous tous les layers)
+        self.refresh_backdrop()
+
         # Caméra
         cam_x = scene.cam_x if scene else 0
         cam_y = scene.cam_y if scene else 0
@@ -2339,6 +2556,10 @@ class SceneEditor(QWidget):
         for i in range(4):
             if i not in shown:
                 self._gba_scene.set_bg(i, None)
+
+        # Windows — APRÈS les layers BG : le masquage s'applique aux items
+        # fraîchement créés ci-dessus.
+        self._gba_scene.set_windows(getattr(scene, "windows", []) if scene else [])
 
         # Contexte de peinture par palette + peuplement du bandeau de palettes.
         self._inpainting_ctrl.set_context(project, scene)
@@ -2546,6 +2767,10 @@ class SceneEditor(QWidget):
             if i not in shown:
                 self._gba_scene.set_bg(i, None)
 
+        # Les items BG viennent d'être recréés : réappliquer le découpage des
+        # windows, sinon il est perdu à chaque rafraîchissement de fond.
+        self._gba_scene.update_window_masks()
+
         # La banque de base / les layers ont pu changer : resynchroniser le
         # contrôleur de peinture (raster du layer actif) et le bandeau.
         prev_slot = self._inpainting_ctrl.inpaint_layer_slot
@@ -2560,6 +2785,21 @@ class SceneEditor(QWidget):
     def set_layer_visible(self, bg_slot: int, visible: bool):
         """Masque/affiche un layer dans le canvas (visibilité viewport éditeur)."""
         self._gba_scene.set_bg_visible(bg_slot, visible)
+
+    def refresh_windows(self):
+        """Redessine l'aperçu des windows (après édition dans l'inspecteur)."""
+        scene = self._project.active_scene if self._project else None
+        self._gba_scene.set_windows(getattr(scene, "windows", []) if scene else [])
+
+    def refresh_backdrop(self):
+        """Réapplique la couleur de backdrop (override de scène, sinon projet)."""
+        if not self._project:
+            return
+        scene = self._project.active_scene
+        v = getattr(scene, "backdrop_color", None) if scene else None
+        if v is None:
+            v = self._project.settings.backdrop_color
+        self._gba_scene.set_backdrop(v)
 
     def update_actor_position(self, actor: Actor):
         item = self._find_item(actor)

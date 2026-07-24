@@ -483,6 +483,44 @@ def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
     return words
 
 
+def project_fonts(p) -> list:
+    """Polices réellement encodables (planche présente sur disque).
+
+    Source de vérité partagée : `main_gen` émet les tables dans cet ordre et
+    `lua_compiler` en dérive les `#define FONT_*` — les deux doivent voir la
+    même liste, sinon un script pointerait sur la mauvaise police."""
+    out = []
+    for f in getattr(p, "fonts", []):
+        if f.asset and f.glyphs and p.asset_abs(f.asset) and p.asset_abs(f.asset).exists():
+            out.append(f)
+    return out
+
+
+def _fonts_and_texts_lines(p, emit=None) -> list[str]:
+    """Tables C des polices et des textes (cf. codegen/font_emit)."""
+    from codegen.font_emit import encode_font, emit_fonts_c, emit_texts_c
+
+    encoded = []
+    for f in project_fonts(p):
+        try:
+            e = encode_font(f, p.asset_abs(f.asset))
+        except Exception as exc:
+            if emit:
+                emit("error_line", f"[font] {f.name} : encodage impossible ({exc})")
+            continue
+        if e.get("warning") and emit:
+            emit("log_line", f"[font] {e['warning']}")
+        if emit:
+            emit("log_line", f"[font] {f.name} -> {e['n_tiles']} tuiles, "
+                             f"{len(e['codepoints'])} glyphes")
+        encoded.append((f.name, e))
+
+    texts = list(getattr(p, "texts", []))
+    if emit and texts:
+        emit("log_line", f"[text] {len(texts)} entrée(s) de texte")
+    return emit_fonts_c(encoded) + emit_texts_c(texts)
+
+
 def _gen_scene_init(
     p: Project,
     scene: Scene,
@@ -505,6 +543,12 @@ def _gen_scene_init(
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
     L.append("    bg_maps_clear();")
+    L.append("    display_reset();")
+    # Caméra — position de départ + bornes de monde (0 = axe illimité côté
+    # C). Réinitialisées à chaque scène : cam_x/cam_y ne doivent pas hériter
+    # de la scène précédente (cf. project_camera_abstraction).
+    L.append(f"    cam_x = {int(scene.cam_x)}; cam_y = {int(scene.cam_y)};")
+    L.append(f"    camera_set_bounds({int(scene.cam_bounds_w or 0)}, {int(scene.cam_bounds_h or 0)});")
     # Cmap dispatch
     if scene.collision_map and any(v != 0 for row in scene.collision_map for v in row):
         L.append(f"    g_active_cmap = g_cmap_{sym};")
@@ -540,7 +584,10 @@ def _gen_scene_init(
             val = (pri & 3) | (bg & 3) << 2 | (sbb & 0x1F) << 8 | ms << 14
             if bi.get("bpp8"):
                 val |= 0x0080   # bit 7 : couleurs 256/1 (8bpp) au lieu de 16/16
-            L.append(f"    *((vu16*)(0x04000008+{bg}*2))=0x{val:04X};")
+            # bg_cnt_set plutôt qu'une écriture directe : le registre est
+            # write-only, la shadow permet ensuite de changer priorité /
+            # screenblock au runtime sans perdre les autres bits.
+            L.append(f"    bg_cnt_set({bg}, 0x{val:04X});")
     # Sprites VRAM
     all_sprites = scene_actors + (p._prefab_sprites_cache if hasattr(p, "_prefab_sprites_cache") else [])
     done_vram: set[str] = set()
@@ -576,8 +623,36 @@ def _gen_scene_init(
     if text_bg in {0, 1, 2, 3}:
         text_sbb = text_bg * 8 + 7
         L.append(f"    tte_init_se({text_bg}, BG_CBB({text_bg})|BG_SBB({text_sbb}), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
+    # Texte custom (text.*) — le layer d'UI porte les glyphes ; la 1ère police
+    # du projet est chargée par défaut, `text.set_font()` en change.
+    L.append(f"    text_set_layer({text_bg if text_bg in {0,1,2,3} else -1});")
+    if project_fonts(p):
+        L.append("    text_set_font(0);")
     # DISPCNT
-    L.append(f"    REG_DISPCNT = 0x{dispcnt:04X};")
+    L.append(f"    dispcnt_set(0x{dispcnt:04X});")
+    # Windows (WIN0/WIN1/fenêtre-objet) — mêmes fonctions runtime que l'API Lua
+    # window.* : un script peut reconfigurer/désactiver ensuite (dernier écrivain
+    # gagne, pas de mécanisme séparé). Rien n'est émis si la scène n'a aucune
+    # window authorée (display_reset() a déjà tout remis à « aucune window active »).
+    #
+    # IMPÉRATIVEMENT APRÈS dispcnt_set : window_show() pose un bit DISPCNT
+    # (13=WIN0, 14=WIN1, 15=OBJWIN) dans la shadow, alors que dispcnt_set()
+    # REMPLACE la shadow entière (g_dispcnt_sh = val). Émis avant, l'activation
+    # des windows serait silencieusement effacée — la window resterait invisible
+    # en jeu alors que tous ses autres registres sont corrects.
+    for ws in getattr(scene, "windows", []):
+        region = int(ws.region)
+        # Région 2 (fenêtre-objet) n'a pas de rectangle : sa forme vient des
+        # pixels opaques des sprites en obj_mode=2. Surtout, window_set() fait
+        # `n &= 1` — l'appeler avec 2 écraserait le rectangle de WIN0.
+        if region in (0, 1):
+            L.append(f"    window_set({region}, {int(ws.x)}, {int(ws.y)}, {int(ws.w)}, {int(ws.h)});")
+        layers = list(getattr(ws, "layers_shown", [True, True, True, True]))
+        for bg in range(4):
+            on = 1 if (bg < len(layers) and layers[bg]) else 0
+            L.append(f"    window_set_layer({region}, {bg}, {on});")
+        L.append(f"    window_set_obj({region}, {1 if ws.obj_shown else 0});")
+        L.append(f"    window_show({region}, {1 if ws.visible else 0});")
     # Init actors
     for j, (actor, sprite) in enumerate(scene_actors):
         idx = actor_offset + j
@@ -595,6 +670,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].dir_x   = {getattr(actor,'dir_x',0)};",
             f"    g_actors[{idx}].dir_y   = {getattr(actor,'dir_y',0)};",
             f"    g_actors[{idx}].pal_bank= {pal if pal is not None else 0};",
+            f"    g_actors[{idx}].obj_mode= {int(getattr(actor, 'obj_mode', 0)) & 3};",
             f"    g_actors[{idx}].auto_dir= {1 if getattr(_get_sprite_comp(actor),'auto_dir',True) else 0};",
             f"    g_actors[{idx}].anim_state=0;",
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
@@ -673,7 +749,7 @@ def _affine_oam_lines(idx: int, aff: dict, sprite, bt: int, priority_expr: str) 
         f"        shadow_oam[{aslot*4+1}].dummy=(u16)(s16)(g_actors[{idx}].flip_h?{-pb}:{pb});",
         f"        shadow_oam[{aslot*4+2}].dummy=(u16)(s16)(g_actors[{idx}].flip_v?{-pc}:{pc});",
         f"        shadow_oam[{aslot*4+3}].dummy=(u16)(s16)(g_actors[{idx}].flip_v?{-pd}:{pd});",
-        f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(1<<8)|(1<<9)|({sh}<<14);",
+        f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(1<<8)|(1<<9)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
         f"        shadow_oam[{idx}].attr1=(sx&0x1FF)|({aslot}<<9)|({sz}<<14);",
         f"        shadow_oam[{idx}].attr2=(ti&0x3FF)|({priority_expr}<<10)|(g_actors[{idx}].pal_bank<<12);",
     ]
@@ -826,29 +902,24 @@ def _gen_scene_tick(
     if getattr(scene, "script", ""):
         L.append(f"    {sym}_scene_on_late_update();")
 
-    # Camera follow
-    world_bi = min(bgi, key=lambda b: abs(b["speed"] - 256)) if bgi else None
-    if scene.cam_follow and bgi:
+    # Caméra — un seul point d'écriture (camera_follow), qu'il soit déclenché
+    # ici (mode "follow" authoré) ou par un script (camera.set/follow) en mode
+    # "script". Les bornes de monde sont appliquées inconditionnellement par
+    # camera_apply_bounds() juste après, peu importe qui a écrit cam_x/cam_y
+    # cette frame-là — un seul point de vérité (cf. project_camera_abstraction).
+    cam_mode = getattr(scene, "cam_mode", "follow" if scene.cam_follow else "fixed")
+    if cam_mode == "follow" and scene.cam_follow:
         follow_local = next((j for j, (a, _) in enumerate(scene_actors) if a.name == scene.cam_follow), None)
         if follow_local is not None:
             follow_idx = actor_offset + follow_local
-            L += [
-                f"    cam_x = g_actors[{follow_idx}].x - 120;",
-                f"    cam_y = g_actors[{follow_idx}].y - 80;",
-            ]
-            if scene.scroll_h and world_bi:
-                ww = world_bi["tw"] * 8
-                L += ["    if(cam_x<0) cam_x=0;", f"    if(cam_x>{ww}-240) cam_x={ww}-240;"]
-            if scene.scroll_v and world_bi:
-                wh = world_bi["th"] * 8
-                L += ["    if(cam_y<0) cam_y=0;", f"    if(cam_y>{wh}-160) cam_y={wh}-160;"]
-
-    # Scroll caméra manuel
-    if bgi and not scene.cam_follow:
-        if scene.scroll_h:
-            L += ["    if(_g_keys_held&KEY_RIGHT) cam_x++;", "    if(_g_keys_held&KEY_LEFT)  cam_x--;"]
-        if scene.scroll_v:
-            L += ["    if(_g_keys_held&KEY_DOWN)  cam_y++;", "    if(_g_keys_held&KEY_UP)    cam_y--;"]
+            mx = int(getattr(scene, "cam_margin_x", 40))
+            my = int(getattr(scene, "cam_margin_y", 20))
+            # Axe désactivé (scroll_h/scroll_v) : on donne cam_x/cam_y lui-même
+            # comme cible sur cet axe → écart nul → camera_follow ne le bouge pas.
+            tx = f"g_actors[{follow_idx}].x" if scene.scroll_h else "cam_x"
+            ty = f"g_actors[{follow_idx}].y" if scene.scroll_v else "cam_y"
+            L.append(f"    camera_follow({tx}, {ty}, {mx}, {my});")
+    L.append("    camera_apply_bounds();")
 
     # BG scroll offset H+V (+ streaming des bords pour un grand niveau)
     if bgi:
@@ -857,10 +928,10 @@ def _gen_scene_tick(
                 L.append(f"    bg_stream_update(MAP_RAM({bi['sbb']}), {bi['sym']}Map, "
                          f"{bi['tw']}, {bi['th']}, {bi['win_w']}, {bi['win_h']}, "
                          f"{int(bi['stream_h'])}, {int(bi['stream_v'])}, cam_x, cam_y);")
-            L.append(f"    BGOFS({bi['bg']})=(u16)((cam_x*{bi['speed']})>>8);")
-            L.append(f"    BGVOFS({bi['bg']})=(u16)((cam_y*{bi['speed']})>>8);")
-            if scene.scroll_v:
-                L.append(f"    *((vu16*)(0x04000012+{bi['bg']}*4))=(u16)((cam_y*{bi['speed']})>>8);")
+            # Scroll = caméra × vitesse de parallax + décalage propre au layer
+            # (layer_set_scroll / layer_scroll_by depuis Lua).
+            L.append(f"    BGOFS({bi['bg']})=(u16)(((cam_x*{bi['speed']})>>8)+layer_get_scroll_x({bi['bg']}));")
+            L.append(f"    BGVOFS({bi['bg']})=(u16)(((cam_y*{bi['speed']})>>8)+layer_get_scroll_y({bi['bg']}));")
 
     # Animation (state machine + direction)
     anim_actors = [(actor_offset + j, a, s2) for j, (a, s2) in enumerate(scene_actors) if s2 and s2.asset and s2.states]
@@ -895,7 +966,7 @@ def _gen_scene_tick(
                     f"        int sx=g_actors[{idx}].x-cam_x{ox_s}; int sy=g_actors[{idx}].y-cam_y{oy_s};",
                     f"        u16 ti=(u16)({bt}+g_actors[{idx}].frame*{sprite.tiles_per_frame});",
                     f"        int fh=g_actors[{idx}].flip_h; int fv=g_actors[{idx}].flip_v;",
-                    f"        shadow_oam[{idx}].attr0=(sy&0xFF)|({sh}<<14);",
+                    f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
                     f"        shadow_oam[{idx}].attr1=(sx&0x1FF)|(fh<<12)|(fv<<13)|({sz}<<14);",
                     f"        shadow_oam[{idx}].attr2=(ti&0x3FF)|({actor.priority}<<10)|(g_actors[{idx}].pal_bank<<12);",
                     f"    }}else{{ shadow_oam[{idx}].attr0=0x0200; }}",
@@ -931,7 +1002,7 @@ def _gen_scene_tick(
                     f"        int sx=g_actors[{oam_slot}].x-cam_x{ox_s}; int sy=g_actors[{oam_slot}].y-cam_y{oy_s};",
                     f"        u16 ti=(u16)({bt}+g_actors[{oam_slot}].frame*{pf_spr.tiles_per_frame});",
                     f"        int fh=g_actors[{oam_slot}].flip_h; int fv=g_actors[{oam_slot}].flip_v;",
-                    f"        shadow_oam[{oam_slot}].attr0=(sy&0xFF)|({sh}<<14);",
+                    f"        shadow_oam[{oam_slot}].attr0=(sy&0xFF)|(g_actors[{oam_slot}].obj_mode<<10)|({sh}<<14);",
                     f"        shadow_oam[{oam_slot}].attr1=(sx&0x1FF)|(fh<<12)|(fv<<13)|({sz}<<14);",
                     f"        shadow_oam[{oam_slot}].attr2=(ti&0x3FF)|(0<<10)|(g_actors[{oam_slot}].pal_bank<<12);",
                     f"    }}else{{ shadow_oam[{oam_slot}].attr0=0x0200; }}",
@@ -1058,6 +1129,9 @@ def generate_main(
             ]
     L.append("")
 
+    # ── Polices + table des textes ───────────────────────────────
+    L += _fonts_and_texts_lines(p, emit)
+
     # ── Tables d'animation par SpriteAsset (dédupliquées) ────────
     _all_sprites_flat = [
         pair
@@ -1137,6 +1211,7 @@ def generate_main(
         "u32   _g_keys_held    = 0;",
         "u32   _g_keys_pressed = 0;",
         "int   cam_x = 0, cam_y = 0;",
+        "int   g_cam_max_x = -1, g_cam_max_y = -1;",
         "int   _g_frame = 0;",
         "int   g_current_scene = -1;",
         "int   g_next_scene    = -1;",

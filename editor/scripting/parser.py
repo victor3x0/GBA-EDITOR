@@ -44,6 +44,10 @@ class LuaFunction:
 class LuaLocal:
     name:    str
     value:   Any      # noeud Expr (peut être None si pas initialisé)
+    # Type déclaré dans la table `exports` ("int", "string", "actor_ref"…) —
+    # None pour un vrai `local`, dont le type C est alors déduit de la valeur.
+    # Cf. scripting/exports_parser.KNOWN_TYPES et codegen._local_decl.
+    export_type: Optional[str] = None
 
 
 # ── Statements ────────────────────────────────────────────────────
@@ -201,15 +205,22 @@ class _Converter:
                         key = getattr(field_node.key, "id", None)
                         if key is None:
                             continue
-                        # chercher default dans la sous-table
+                        # chercher default ET type dans la sous-table : le type
+                        # déclaré pilote le type C émis (une string exportée ne
+                        # doit pas devenir un `int`), cf. codegen._local_decl.
                         default_val = None
+                        decl_type   = None
                         if type(field_node.value).__name__ == "Table":
                             for sub in field_node.value.fields:
                                 sub_key = getattr(sub.key, "id", None)
                                 if sub_key == "default" and sub.value is not None:
                                     default_val = self._expr(sub.value)
-                                    break
-                        locals_.append(LuaLocal(name=key, value=default_val))
+                                elif sub_key == "type" and sub.value is not None:
+                                    typ_expr = self._expr(sub.value)
+                                    if isinstance(typ_expr, ExprString):
+                                        decl_type = typ_expr.value
+                        locals_.append(LuaLocal(name=key, value=default_val,
+                                                export_type=decl_type))
             # On ignore les autres statements top-level.
 
         return LuaScript(

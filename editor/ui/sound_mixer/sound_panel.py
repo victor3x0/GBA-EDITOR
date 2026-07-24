@@ -321,7 +321,9 @@ class _AssetInspectorBase(QWidget):
         if self._blocking or not self._asset or not self._project: return
         new_name = new_name.strip()
         if new_name and new_name != self._asset.name:
-            self._manager().rename(self._asset, new_name)
+            # Passe par le projet (pas le ResourceManager brut) : il met aussi
+            # à jour les sfx.play()/music.play() des scripts.
+            self._project.rename_sound(self._asset, new_name)
             self.changed.emit()
 
     def _on_loop(self, v):
@@ -593,7 +595,11 @@ class SoundFinderPanel(QWidget):
             item.setText(0, asset.name)
             lst.blockSignals(False)
             return
-        info["manager"].rename(asset, new_name)
+        # Via le projet : met aussi à jour les sfx.play()/music.play() des scripts.
+        if self._project:
+            self._project.rename_sound(asset, new_name)
+        else:
+            info["manager"].rename(asset, new_name)
         lst.blockSignals(True)
         item.setText(0, asset.name)
         lst.blockSignals(False)

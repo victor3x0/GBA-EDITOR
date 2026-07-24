@@ -350,7 +350,10 @@ class MainWindow(QMainWindow):
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
         _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
         _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
-        _d.on("status_message",        lambda msg: self._status.showMessage(msg, 3000))
+        _d.on("windows_changed",        self.scene_editor.refresh_windows)
+        _d.on("backdrop_changed",       self.scene_editor.refresh_backdrop)
+        _d.on("status_message",        lambda msg: self._status.showMessage(msg, 6000))
+        _d.on("project_tree_changed",  self.assets_finder_panel.refresh)
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
         # lambda : _palette_editor est construit plus loin dans _setup_ui que
         # ce bloc d'abonnement — résoudre l'attribut au moment de l'émission.

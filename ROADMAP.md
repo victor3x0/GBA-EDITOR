@@ -131,9 +131,10 @@ Au-delà du plan initial, plusieurs chantiers ont été livrés dans la foulée 
     assets, rendu potentiellement différent selon des détails d'implémentation du
     pipeline plutôt que des choix explicites.
   - **État actuel** : les 16 banks par pool sont toutes directement utilisables/éditables
-    (pas de réservation). `ProjectSettings.palette_auto_import_enabled` reste comme champ
-    projet pour une reprise future, mais rien dans l'UI ne s'y réfère actuellement — ni
-    banks réservées, ni option "Automatique" dans le picker.
+    (pas de réservation). `ProjectSettings.palette_auto_import_enabled` a été **supprimé**
+    (le nouveau système de couleurs — catalogue unifié + sélection par scène — le rend
+    caduc) ; la clé des anciens `project.json` est ignorée au chargement. Rien dans l'UI
+    ne s'y réfère : ni banks réservées, ni option "Automatique" dans le picker.
   - À rouvrir avec une conception plus solide : débordement *visible* au build (warning
     explicite plutôt que silencieux) + ordre de traitement déterministe (tri par nom,
     pas ordre d'itération).
@@ -167,7 +168,10 @@ Le gros est livré (voir « Livré » plus haut). Restent des finitions :
 
 ### v0.3.1 — Fondations runtime "background vivant"
 
-#### État actuel (vérifié par exploration du runtime, corrigé le 2026-07-06)
+#### État de départ (vérifié par exploration du runtime, corrigé le 2026-07-06)
+
+> Constat **avant** le chantier — voir « Livré » plus bas pour ce qui a changé depuis.
+
 
 Le système de background est aujourd'hui pensé pour du décor pré-cuit, mais moins figé
 qu'il n'y paraît au premier abord :
@@ -196,13 +200,37 @@ chantiers.
 
 #### Décisions verrouillées
 
-- Primitive générique de **mutation de tilemap au runtime**, exposée en Lua.
-- **Show/hide de layer** exposé en Lua.
+- ~~Primitive générique de **mutation de tilemap au runtime**, exposée en Lua~~ — **fait**.
+- ~~**Show/hide de layer** exposé en Lua~~ — **fait**.
 - **Champ `render_mode` sur `Scene`** (`editor/core/project.py`, dataclass `Scene`
   autour de la ligne 842, à côté de `text_bg`/`collision_layer`) : ajouté dès maintenant,
   défaut = Mode 0, **caché dans `scene_inspector.py`** tant qu'aucun autre mode n'est
   supporté. Anticipe v2.0 (Mode 7) et v3.0 (bitmap) sans migration de fichiers de scène
   plus tard.
+
+#### Livré
+
+Socle « layer vivant » posé, plus large que le show/hide + `tile(x,y)` initialement prévu :
+tout ce qui était gratuit une fois les **shadows de registres** en place a été pris au
+passage (voir `ARCHITECTURE.md` → « Layers BG vivants »).
+
+- `gba_engine.h` — shadows `g_dispcnt_sh` / `g_bgcnt_sh[4]`, `display_reset()` en tête
+  de `scene_init_*`, et **toutes** les écritures de registre BG du codegen passent
+  désormais par `dispcnt_set()` / `bg_cnt_set()`.
+- **Lua `layer.*`** : `show`, `is_visible`, `set_priority`/`get_priority` (z-order
+  dynamique, sprites compris), `set_scroll`/`scroll_by`/`get_scroll_x`/`get_scroll_y`
+  (décalage propre au layer, **additionné** au scroll caméra par `scene_tick_*` — les deux
+  se composent), `set_map`/`get_map` (bascule de screenblock = double-buffering de
+  tilemap, avancé).
+- **Lua `tilemap.*`** : `set`/`get` (index de tuile, flip et palette de la case
+  préservés), `set_palette` (l'inpainting au runtime), `set_flip`, `fill`. Coordonnées en
+  **tuiles** dans la carte du layer — à ne pas confondre avec `tile.get()`, qui lit la
+  collision en pixels monde.
+- Documenté dans `api_reference.json` (catégories Layer et Tilemap du script editor).
+
+Restent hors périmètre, à ouvrir plus tard : fenêtres (WIN0/WIN1/OBJ-window), blending
+(`BLDCNT`), mosaïque, et tout ce qui demande une infrastructure d'IRQ HBlank (effets par
+scanline). Aucun n'est bloquant pour la v0.3.2.
 
 ### v0.3.2 — Texte & API
 
@@ -210,6 +238,158 @@ chantiers.
 
 - Police custom (`Font`, actuellement un stub vide dans `project.py:544`) et API texte
   enrichie (dialogues, HUD, menus) — construits sur la primitive de mutation de v0.3.1.
+- **Windows (régions d'écran) exposées brutes.** On garde le mot « window » du GBA ;
+  c'est à notre documentation d'expliquer le concept de région. Les **deux** rectangles
+  matériels sont exposés tels quels — pas d'allocateur : l'utilisateur gère la pénurie,
+  un allocateur qui réattribue en douce rendrait les bugs incompréhensibles.
+  **Purement scriptable** dans un premier temps (leur place dans l'éditeur se décidera
+  le moment venu). **Fenêtre-objet incluse** — c'est elle qui donne les formes libres.
+
+##### Neutralité de style — règle de conception
+
+Objectif explicite : **couvrir tous les besoins sans induire un style graphique**. La
+window matérielle est le bon socle précisément parce qu'elle ne dessine rien : elle dit
+*où*, jamais *à quoi ça ressemble*. Trois garde-fous, à tenir dans la durée :
+
+1. **Aucun skin par défaut.** Si on livre des exemples, on en livre plusieurs
+   visuellement opposés (cadre pixel-art épais, bandeau plein sans bordure, texte nu sur
+   fond estompé), dans le projet de démo — jamais dans le moteur. Un seul exemple *est*
+   un défaut, quoi qu'en dise la doc.
+2. **Le 9-slice est un outil, pas un look.** Proposer d'auteur un panneau étirable est
+   légitime ; en faire le seul chemin ne l'est pas. Panneau en sprites, panneau plein
+   écran ou pas de panneau du tout doivent rester aussi simples.
+3. **Aucune position ni géométrie par défaut.** Pas de « le texte va dans le tiers
+   inférieur ». Et **vocabulaire de moteur** dans l'API : région, layer, tilemap — jamais
+   `dialogue`, `message`, `textbox`. Un nom de fonction est une suggestion de design.
+
+#### Livré (socle window)
+
+- `gba_engine.h` — shadows `g_winin_sh`/`g_winout_sh`, `window_reset()` appelé par
+  `display_reset()` : défaut = **tout autorisé partout, aucune window active**, pour
+  qu'activer une window ne vide pas l'écran par surprise (le piège classique de
+  `WINOUT`). Rectangles clampés à 240×160 et jamais inversés — le matériel se comporte
+  de façon erratique sur X1>X2, ces cas ne sortent pas de `window_set()`.
+- **Lua `window.*`** : `show`, `is_visible`, `set` (rectangle), `set_layer`/`get_layer`,
+  `set_obj`, `set_blend`. Régions : 0 = WIN0, 1 = WIN1, 2 = fenêtre-objet, 3 = extérieur.
+- **Fenêtre-objet** : champ `Actor.obj_mode`, injecté dans `attr0` aux 3 sites d'émission
+  OAM (acteur, prefab poolé, affine), piloté par `self:set_obj_mode(2)`. Mode 1
+  (semi-transparent) réservé au blending, pas encore câblé.
+- Constantes C préfixées `WINR_*` — les `WIN_*` de libtonc existent déjà avec une
+  sémantique différente (masques de bits).
+
+#### Livré (blending)
+
+Complète le socle window : `window.set_blend()` autorisait le mélange par région, mais
+rien ne le configurait. C'est fait, et l'effet « panneau net sur monde assombri » est
+désormais réalisable de bout en bout, sans un octet de VRAM.
+
+- `gba_engine.h` — shadows `g_bldcnt_sh`/`g_bldalpha_sh` (`BLDY` est write-only et n'a
+  aucun lecteur : pas de shadow), `blend_reset()` appelé par `display_reset()`,
+  coefficients clampés à 0-16 par `ev_clamp()`.
+- **Lua `blend.*`** : `set_mode`/`get_mode` (0 aucun, 1 alpha, 2 vers le blanc, 3 vers le
+  noir), `set_layer`/`set_obj`/`set_backdrop` (paramètre `side` : 0 = le dessus, 1 = le
+  dessous — `BLDCNT` porte **deux** listes de cibles, pas une), `set_alpha(eva, evb)`,
+  `set_fade(evy)`.
+- `bg_layers_reset()` renommé **`display_reset()`** : il remet désormais à neuf les
+  layers, les windows ET le blending. L'ancien nom était devenu faux.
+
+#### Texte — décisions verrouillées (2026-07-21)
+
+Le point de départ n'est pas l'API d'affichage mais **où le texte est stocké** : la v0.8
+exige qu'il soit référencé par clé dès la v0.3. Principe directeur : **séparer le stockage
+de la saisie**. Les conflater donne soit des clés à taper partout, soit du texte enterré
+dans les scripts.
+
+- **Stockage** — table au niveau projet (`project/texts.json`, `core/models/text.py`),
+  entrée dans le graphe de dépendances, compilée en table C indexée par constante.
+- **Saisie** — l'utilisateur ne tape jamais une clé. Trois portes, une seule table :
+  le champ dans l'inspecteur (type d'export `text`), l'écran Textes, et
+  `text.get("...")` avec autocomplétion.
+- **Un type d'export `text` distinct de `string`** : `text` = destiné au joueur, référencé,
+  traduisible ; `string` = technique, littéral, reste dans le script. Un mot maintenant
+  évite un tri manuel en v0.8.
+- **La table reste plate — pas d'éditeur de dialogue.** Ni arbre de conversation, ni
+  portraits, ni choix branchés : c'est le même piège que les boîtes Pokémon, un éditeur de
+  dialogue *est* une décision de genre. Le séquencement reste du script, écrit une fois
+  dans un behavior réutilisable et paramétré par une référence — c'est ça qui tue la
+  redondance, pas la table.
+- **Trois identifiants, un seul résolvable** : `id` opaque (fichiers de données, insensible
+  au renommage), `key` lisible (résolue **au build**, ce qu'écrit le Lua), `label` libre
+  (jamais résolu). Détail dans `ARCHITECTURE.md` → « Textes du joueur ».
+- **La clé situe, elle ne résume pas** : dérivée du contexte de création
+  (`village_garde_01`), jamais du contenu — sinon elle ment dès que le garde devient un
+  mendiant. **Jamais recalculée** ; le sens arrive par renommage manuel quand un texte le
+  mérite.
+- **Registry à id opaques** : les textes servent de **pilote**. Généraliser aux sprites,
+  scènes, palettes, sfx, prefabs (et à tous les `DOMAIN_*` du codegen) révise la convention
+  `<asset>_name` livrée en v0.2 — chantier à part, à ouvrir une fois le modèle éprouvé.
+
+#### Livré (stockage des textes)
+
+- `core/models/text.py` — dataclass `Text` (`id`/`key`/`label`/`content`/`note`/`scene`/
+  `auto_key`), `slug()` qui déplie les accents, `new_id()` sur 12 chiffres (survit à une
+  fusion de branches, là où un compteur monotone casserait), `make_key()` positionnel.
+- `Project` — `texts_file`, `load_texts`/`save_texts` (câblés dans `load()`/`save()`),
+  `new_text`, `get_text` (par clé) / `get_text_by_id`, `rename_text_key`, `delete_text`,
+  et `_repair_texts()` pour un fichier édité à la main.
+
+#### Polices — décisions verrouillées (2026-07-21)
+
+- **Un glyphe = une tuile** (rendu à chasse fixe, sur la primitive `tilemap.*` de la
+  v0.3.1). Le rendu pixel-dans-la-tuile — chasse proportionnelle, placement au pixel — est
+  reporté ; l'asset stocke déjà `advance` pour que **rien ne soit à réimporter** ce
+  jour-là. Bénéfice caché du choix : un glyphe étant une tuile, `tilemap.set_palette` le
+  recolore, les windows le découpent, la priorité de layer le place — sans une ligne de
+  code spécifique au texte.
+- **Deux points d'entrée, pas plus** : planche **PNG** ou descripteur **BMFont `.fnt`**.
+  TTF/OTF écarté (rastérisation imprécise, sélection de taille pénible) alors que le
+  corpus de polices pixel d'itch.io est déjà énorme et vient en PNG. BDF et `.hex` Unifont
+  restent en réserve.
+- **Charset explicite et corrigeable**, jamais un « ASCII 32-126 » figé : c'est ce qui
+  permet les accents, et des icônes de boutons ou n'importe quel symbole dans une police.
+  Neutralité de style appliquée aux polices — on ne présuppose pas un alphabet.
+- **Pas d'éditeur de glyphes** : on dessine dans son outil habituel, comme pour les
+  sprites. Et **pas d'assistant d'import** en plusieurs étapes — le dépôt suffit, l'écran
+  Police sert aux ajustements.
+- **Pas de police par défaut, mais jamais de cul-de-sac** : une étagère de départ de trois
+  polices visuellement opposées, présentées comme des exemples à modifier. Le pluriel est
+  ce qui fait la différence entre un exemple et un défaut (même règle que les panneaux).
+  `display.print` (TTE) reste disponible entre-temps, donc aucun projet n'est muet.
+
+#### Livré (asset Font + import)
+
+- `core/models/font.py` — `Glyph` (rect + `advance` + offsets) et `Font` (`asset`,
+  `descriptor`, `cell_w/h`, `line_height`, `glyphs`), modèle **à rectangles** pour
+  accueillir BMFont ; `charset` dérivé, `missing_chars()`, `tile_count()`.
+- `core/font_import.py` — `detect_grid()` (découpage noté), `propose_charset()`,
+  `import_font_png()` (mesure d'encre, bourrage de fin retiré), `parse_bmfont()`
+  texte + XML, `import_font_fnt()`.
+- `core/asset_sync.py::sync_font_file` + `project_migrations.reconcile_fonts`
+  (dépôts hors ligne, `.fnt` prioritaire sur sa page).
+
+#### Livré (encodeur + API texte)
+
+- `codegen/font_emit.py` — `encode_font()` (glyphes → tuiles 4bpp, palette des couleurs
+  d'encre les plus fréquentes, table codepoint → tuile **triée** pour la dichotomie
+  runtime), `emit_fonts_c()`, `emit_texts_c()`.
+- **Runtime** (`gba_engine.h`) — `FontInfo`, `text_set_layer`, `text_set_font` (charge
+  glyphes + palette en VRAM), `text_draw`, `text_draw_upto`, `text_draw_box` (retour à la
+  ligne **au mot**, avec coupe au caractère en filet pour un mot plus long que la boîte),
+  `text_clear`, `text_length`.
+- **Lua `text.*`** — `draw`, `draw_box`, `draw_upto`, `clear`, `length`, `set_font`.
+  Nouveaux domaines `DOMAIN_TEXT`/`DOMAIN_FONT` : une clé de texte ou un nom de police
+  inconnus sont une **erreur** de checker (le `#define` n'existerait pas).
+- `main_gen` émet les tables et appelle `text_set_layer` + `text_set_font(0)` à l'init de
+  chaque scène. Un projet sans police ni texte émet des tables vides et compile.
+
+**Pas de réglage de vitesse dans le moteur** : `text.draw_upto(id, tx, ty, n)` révèle les
+n premiers caractères, et le rythme appartient au script. Un champ « vitesse du texte »
+dans l'inspecteur choisirait le genre à la place de l'utilisateur — même refus que pour
+les boîtes de dialogue.
+
+Reste à faire côté v0.3.2 : le type d'export `text` branché sur l'inspecteur existant,
+l'écran Textes et l'écran Police. `rename_text_key` ne réécrit pas encore les références
+Lua — à faire avec le type d'export, sur le modèle de `rename_export`.
 
 #### Ouvert
 
@@ -241,6 +421,23 @@ Construit sur les fondations de la v0.3.1 (primitive de mutation de tilemap, scr
 show/hide).
 
 ### v0.4.1 — Éditeur de Background
+
+#### Déjà livré (par ricochet de la v0.2) — volet *peinture de palette* uniquement
+
+L'écran Background Editor **existe** (`editor/ui/screens/background_editor_screen.py`), mais
+uniquement dans sa dimension *couleur* — rien du volet « dessin » ci-dessous :
+
+- Import / remplacement d'un PNG de fond, détection automatique du mode (tuilé 4bpp,
+  tuilé 8bpp, bitmap Mode 4) et encodage, avec avertissement quand la détection force
+  une perte.
+- **Inpainting éditeur** : repeindre le `SE_PALBANK` d'une tuile 8×8 au pinceau sur le
+  canvas, non-destructif (`BackgroundAsset.tile_palette_overrides` + `effective_tilemap()`),
+  partagé par toutes les scènes qui utilisent le fond ; la gomme restaure l'original.
+- Grille de sous-palettes (`PaletteSlotGridAsset`) alimentée par le catalogue, plafond 16.
+
+Ce qui reste donc **entièrement** à faire en v0.4.1, c'est la *peinture de tuiles* : poser
+des tuiles d'un tileset utilisateur sur une tilemap, et les UI layers réutilisables. Le
+fond reste aujourd'hui une image importée qu'on recolore, pas une carte qu'on compose.
 
 #### Décisions verrouillées
 
@@ -507,6 +704,27 @@ chemin de codegen, pas juste "un layer de plus".
 
 Volontairement décrit à haut niveau — la portée exacte dépendra de ce qui aura été
 appris en construisant les fondations de la v0.3.
+
+#### Piste posée le 2026-07-21 — l'abstraction « caméra » sera remise en cause ici
+
+La caméra n'est aujourd'hui pas une entité : `cam_x`/`cam_y` plus un `Scene.cam_follow`.
+Elle est en train d'en devenir une, en absorbant les **windows** de la v0.3.2 — auquel cas
+ce n'est plus « où on regarde » mais **une configuration d'écran nommée qu'on active** :
+cadrage, suivi, et régions qui découpent l'affichage. Modèle retenu : des caméras
+**mutuellement exclusives** (une seule active à la fois), donc 2 windows par caméra
+n'implique jamais plus de 2 rectangles par frame — la contrainte matérielle tient.
+
+Nom de travail : **`Caméra2D`** (convention Godot, immédiatement lisible). Réserve à
+garder en tête : il promet une `Caméra3D` qui n'existera jamais sur GBA. Le Mode 7 n'est
+pas de la 3D mais une transformation **affine** 2D. Le jour où une seconde caméra arrive,
+le vrai axe est donc *régulière* (translation seule, `BGOFS`) vs *affine* (translation +
+rotation + zoom, `BGxPA-PD` + point de référence) — pas 2D/3D.
+
+Deux choses à traiter à ce moment-là, pas avant :
+- **Unifier les deux mécanismes de caméra concurrents** (cf. v0.6.1) : c'est quand la
+  caméra devient un objet nommé porteur d'un état qu'il devient absurde d'en avoir deux.
+- **Le split-screen** rouvrira la question « une région appartient-elle à une caméra, ou
+  l'inverse ? ». Tant que les caméras sont exclusives, la question ne se pose pas.
 
 ### v3.0 — Modes bitmap (framebuffer direct)
 

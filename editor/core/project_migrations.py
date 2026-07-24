@@ -128,9 +128,12 @@ def load_scenes_with_migration(project):
         except Exception as e:
             print(f"[project] erreur lecture Scene {f.name}: {e}")
 
-    if project.settings.start_scene:
+    # Rouvrir sur la dernière scène éditée (repli : la scène de démarrage du jeu,
+    # qui tenait ce rôle avant la séparation des deux champs).
+    restore = project.settings.last_scene or project.settings.start_scene
+    if restore:
         for i, s in enumerate(project.scenes):
-            if s.name == project.settings.start_scene:
+            if s.name == restore:
                 project._active_scene_idx = i
                 break
 
@@ -232,3 +235,27 @@ def reconcile_sfx_and_music(project):
     for f in sorted(project.music_dir.glob("*")) if project.music_dir.exists() else []:
         if f.is_file() and f.suffix.lower() in MUSIC_FILE_EXTS:
             sync_music_file(project, f)
+
+
+def reconcile_fonts(project):
+    """Même rôle pour assets/fonts/ : planches PNG et descripteurs `.fnt`
+    déposés hors ligne.
+
+    Le `.fnt` passe en premier : quand les deux fichiers sont là, c'est lui qui
+    fait foi (il porte le mapping des caractères), et il référence sa planche —
+    laquelle ne doit donc pas créer une seconde police en doublon."""
+    from core.models.font import FONT_FILE_EXTS
+    from core.asset_sync import sync_font_file
+    if not project.fonts_dir.exists():
+        return
+    files = [f for f in sorted(project.fonts_dir.glob("*"))
+             if f.is_file() and f.suffix.lower() in FONT_FILE_EXTS]
+    pages = set()
+    for f in [x for x in files if x.suffix.lower() == ".fnt"]:
+        sync_font_file(project, f)
+        font = project.fonts.get(f.stem)
+        if font and font.asset:
+            pages.add(project.asset_abs(font.asset))
+    for f in [x for x in files if x.suffix.lower() != ".fnt"]:
+        if f not in pages:
+            sync_font_file(project, f)

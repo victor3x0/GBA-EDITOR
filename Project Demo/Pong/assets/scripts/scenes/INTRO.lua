@@ -10,6 +10,6 @@ end
 
 function on_update()
     if input.pressed("start") then
-        scene.switch("PONG")
+        scene.switch("ARENA")
     end
 end

@@ -167,5 +167,27 @@ def generate_actor_api(
             "static inline void scene_switch(int idx){ g_next_scene = idx; }",
         ]
 
+    # Constantes LAYER_* — un fond posé dans une scène (bg_slot 0-3), adressable
+    # depuis un script (layer.set_scroll(LAYER_X, ...)) sans littéral magique.
+    # `sym` (bg_layer_sym_for) inclut déjà le bg_slot → pas de collision entre
+    # deux layers de la même scène référençant le même asset à des slots
+    # différents. Dédupliquée : un layer partagé (même asset+slot) entre
+    # plusieurs scènes ne produit qu'une seule constante.
+    if all_scenes:
+        from codegen.runtime_codegen.main_gen import _bg_info
+        seen_layer_syms: set[str] = set()
+        layer_lines: list[str] = []
+        for sc in all_scenes:
+            for bi in _bg_info(p, sc):
+                sym_u = bi["sym"].upper()
+                if sym_u in seen_layer_syms:
+                    continue
+                seen_layer_syms.add(sym_u)
+                layer_lines.append(f"#define LAYER_{sym_u} {bi['bg']}")
+        if layer_lines:
+            a.append("")
+            a.append("/* Fonds posés dans les scènes — un par (asset, bg_slot) unique */")
+            a += layer_lines
+
     a += ["", "#endif /* ACTOR_API_H */", ""]
     (p.src_dir / "actor_api.h").write_text("\n".join(a), encoding="utf-8")

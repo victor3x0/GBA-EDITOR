@@ -230,6 +230,16 @@
           "params": [],
           "returns": "number — position Y caméra",
           "doc_anchor": "camera-get_y"
+        },
+        {
+          "label": "camera.set_bounds(world_w, world_h)",
+          "snippet": "camera.set_bounds(world_w, world_h)",
+          "description": "Définit les bornes de scroll (taille du monde en pixels). 0 = axe illimité. Utile pour débloquer une nouvelle zone au runtime.",
+          "params": [
+            { "name": "world_w", "type": "number", "description": "Largeur du monde en pixels (0 = illimité)" },
+            { "name": "world_h", "type": "number", "description": "Hauteur du monde en pixels (0 = illimité)" }
+          ],
+          "doc_anchor": "camera-set_bounds"
         }
       ]
     },
@@ -414,6 +424,422 @@
           ],
           "returns": "number — valeur de la tile (0 = vide)",
           "doc_anchor": "tile-get"
+        }
+      ]
+    },
+    {
+      "name": "Layer",
+      "entries": [
+        {
+          "label": "layer.show(n, on)",
+          "snippet": "layer.show(2, false)",
+          "description": "Affiche ou cache un layer de fond. n = le slot de fond 0-3, celui de l'inspecteur de scène. Le layer garde son contenu : le rallumer le fait réapparaître tel quel.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "on", "type": "boolean", "description": "true = visible, false = caché" }
+          ],
+          "doc_anchor": "layer-show"
+        },
+        {
+          "label": "layer.is_visible(n)",
+          "snippet": "layer.is_visible(2)",
+          "description": "Teste si le layer n est actuellement affiché.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+          ],
+          "returns": "number — 1 si visible, 0 sinon",
+          "doc_anchor": "layer-is_visible"
+        },
+        {
+          "label": "layer.set_priority(n, prio)",
+          "snippet": "layer.set_priority(1, 0)",
+          "description": "Change l'ordre d'affichage du layer, sprites compris : 0 = devant, 3 = derrière. Permet de faire passer un décor devant le joueur (feuillage, pont) ou de remonter un panneau d'UI.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "prio", "type": "number", "description": "Priorité 0-3 (0 = premier plan)" }
+          ],
+          "doc_anchor": "layer-set_priority"
+        },
+        {
+          "label": "layer.get_priority(n)",
+          "snippet": "layer.get_priority(1)",
+          "description": "Priorité actuelle du layer n (0 = devant).",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+          ],
+          "returns": "number — priorité 0-3",
+          "doc_anchor": "layer-get_priority"
+        },
+        {
+          "label": "layer.set_scroll(n, x, y)",
+          "snippet": "layer.set_scroll(0, 0, 0)",
+          "description": "Décalage propre du layer, en pixels. Il s'ajoute au scroll de la caméra (la vitesse de parallax du layer continue de s'appliquer). Sert à décaler un layer indépendamment du monde : nuages, secousse, panneau qui glisse.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "x", "type": "number", "description": "Décalage horizontal en pixels" },
+            { "name": "y", "type": "number", "description": "Décalage vertical en pixels" }
+          ],
+          "doc_anchor": "layer-set_scroll"
+        },
+        {
+          "label": "layer.scroll_by(n, dx, dy)",
+          "snippet": "layer.scroll_by(0, 1, 0)",
+          "description": "Ajoute (dx, dy) au décalage propre du layer. Appelé chaque frame dans on_update, donne un défilement autonome (nuages qui dérivent, eau qui coule) sans bouger la caméra.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "dx", "type": "number", "description": "Pixels ajoutés horizontalement" },
+            { "name": "dy", "type": "number", "description": "Pixels ajoutés verticalement" }
+          ],
+          "doc_anchor": "layer-scroll_by"
+        },
+        {
+          "label": "layer.get_scroll_x(n)",
+          "snippet": "layer.get_scroll_x(0)",
+          "description": "Décalage horizontal propre du layer (n'inclut pas la caméra).",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+          ],
+          "returns": "number — décalage en pixels",
+          "doc_anchor": "layer-get_scroll_x"
+        },
+        {
+          "label": "layer.get_scroll_y(n)",
+          "snippet": "layer.get_scroll_y(0)",
+          "description": "Décalage vertical propre du layer (n'inclut pas la caméra).",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+          ],
+          "returns": "number — décalage en pixels",
+          "doc_anchor": "layer-get_scroll_y"
+        },
+        {
+          "label": "layer.set_map(n, sbb)",
+          "snippet": "layer.set_map(1, 12)",
+          "description": "Avancé — bascule le layer sur un autre screenblock (0-31). Permet de composer une carte pendant qu'une autre est affichée, puis de l'afficher d'un coup, sans déchirure. Les appels tilemap.* suivants visent le nouveau screenblock.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "sbb", "type": "number", "description": "Numéro de screenblock (0-31)" }
+          ],
+          "doc_anchor": "layer-set_map"
+        },
+        {
+          "label": "layer.get_map(n)",
+          "snippet": "layer.get_map(1)",
+          "description": "Avancé — screenblock actuellement affiché par le layer n.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+          ],
+          "returns": "number — screenblock 0-31",
+          "doc_anchor": "layer-get_map"
+        }
+      ]
+    },
+    {
+      "name": "Texte",
+      "entries": [
+        {
+          "label": "text.draw(id, tx, ty)",
+          "snippet": "text.draw(\"village_garde_01\", 2, 16)",
+          "description": "Affiche un texte de la table du projet. tx/ty sont en tuiles (1 tuile = 8 px). Le texte se pose sur le layer d'interface de la scène — c'est là que vivent les glyphes de la police, donc il n'y a pas de layer à choisir.",
+          "params": [
+            { "name": "id", "type": "string", "description": "Clé du texte dans la table du projet" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" }
+          ],
+          "doc_anchor": "text-draw"
+        },
+        {
+          "label": "text.draw_box(id, tx, ty, w, n)",
+          "snippet": "text.draw_box(\"village_garde_01\", 2, 14, 26, -1)",
+          "description": "Affiche un texte dans une boîte de w tuiles de large, avec retour à la ligne automatique sur les mots (un mot trop long pour la boîte est coupé). n = nombre de caractères révélés, -1 pour tout.",
+          "params": [
+            { "name": "id", "type": "string", "description": "Clé du texte" },
+            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
+            { "name": "w", "type": "number", "description": "Largeur de la boîte, en tuiles" },
+            { "name": "n", "type": "number", "description": "Caractères révélés (-1 = tout)" }
+          ],
+          "doc_anchor": "text-draw_box"
+        },
+        {
+          "label": "text.draw_upto(id, tx, ty, n)",
+          "snippet": "text.draw_upto(\"village_garde_01\", 2, 16, scene.frame() / 2)",
+          "description": "Affiche les n premiers caractères — l'effet machine à écrire. Le rythme vous appartient entièrement : le moteur ne décide d'aucune vitesse. Faire varier n avec scene.frame() donne un défilement régulier ; un compteur à vous permet de ralentir sur la ponctuation, de jouer un son par lettre, ou de tout révéler d'un coup au bouton.",
+          "params": [
+            { "name": "id", "type": "string", "description": "Clé du texte" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "n", "type": "number", "description": "Nombre de caractères révélés" }
+          ],
+          "doc_anchor": "text-draw_upto"
+        },
+        {
+          "label": "text.length(id)",
+          "snippet": "text.length(\"village_garde_01\")",
+          "description": "Nombre de caractères d'un texte. C'est la borne de la machine à écrire : quand n l'atteint, le texte est entièrement révélé.",
+          "params": [
+            { "name": "id", "type": "string", "description": "Clé du texte" }
+          ],
+          "returns": "number — nombre de caractères",
+          "doc_anchor": "text-length"
+        },
+        {
+          "label": "text.clear(tx, ty, w, h)",
+          "snippet": "text.clear(0, 0, 30, 4)",
+          "description": "Efface un rectangle de w×h tuiles sur le layer d'interface.",
+          "params": [
+            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
+            { "name": "w", "type": "number", "description": "Largeur en tuiles" },
+            { "name": "h", "type": "number", "description": "Hauteur en tuiles" }
+          ],
+          "doc_anchor": "text-clear"
+        },
+        {
+          "label": "text.set_font(f)",
+          "snippet": "text.set_font(\"Pixelia\")",
+          "description": "Charge une police en mémoire vidéo. Une seule police est résidente à la fois : rappeler cette fonction remplace la précédente. La première police du projet est chargée automatiquement au début de chaque scène.",
+          "params": [
+            { "name": "f", "type": "string", "description": "Nom de la police du projet" }
+          ],
+          "doc_anchor": "text-set_font"
+        }
+      ]
+    },
+    {
+      "name": "Window",
+      "entries": [
+        {
+          "label": "window.show(n, on)",
+          "snippet": "window.show(0, true)",
+          "description": "Active ou désactive une window. Une window ne dessine rien : c'est un pochoir, qui dit par région de l'écran QUI a le droit de s'afficher. L'apparence vient de ce que vous mettez dedans. n : 0 et 1 = les deux rectangles, 2 = la window OBJ. Attention : dès qu'une window est active, la région 3 (extérieur) régit tout le reste de l'écran.",
+          "params": [
+            { "name": "n", "type": "number", "description": "0 = window 0, 1 = window 1, 2 = window OBJ" },
+            { "name": "on", "type": "boolean", "description": "true = active" }
+          ],
+          "doc_anchor": "window-show"
+        },
+        {
+          "label": "window.is_visible(n)",
+          "snippet": "window.is_visible(0)",
+          "description": "Teste si la window n est active.",
+          "params": [
+            { "name": "n", "type": "number", "description": "0, 1 ou 2 (window OBJ)" }
+          ],
+          "returns": "number — 1 si active, 0 sinon",
+          "doc_anchor": "window-is_visible"
+        },
+        {
+          "label": "window.set(n, x, y, w, h)",
+          "snippet": "window.set(0, 24, 96, 192, 56)",
+          "description": "Définit le rectangle d'une window, en pixels écran (240×160). Il n'y a que DEUX rectangles disponibles sur GBA, 0 et 1 — c'est une contrainte de la console, pas de l'éditeur. Animer ce rectangle frame après frame donne les transitions (iris, volet, bandeau).",
+          "params": [
+            { "name": "n", "type": "number", "description": "Window 0 ou 1" },
+            { "name": "x", "type": "number", "description": "Bord gauche, en pixels écran" },
+            { "name": "y", "type": "number", "description": "Bord haut, en pixels écran" },
+            { "name": "w", "type": "number", "description": "Largeur en pixels" },
+            { "name": "h", "type": "number", "description": "Hauteur en pixels" }
+          ],
+          "doc_anchor": "window-set"
+        },
+        {
+          "label": "window.set_layer(r, bg, on)",
+          "snippet": "window.set_layer(0, 2, true)",
+          "description": "Autorise ou non un layer de fond à s'afficher dans une région. Régions : 0 = window 0, 1 = window 1, 2 = window OBJ, 3 = tout l'extérieur. Un pixel obéit à la première région qui le contient, dans cet ordre. C'est ainsi qu'un layer plein écran ne se voit que dans un rectangle.",
+          "params": [
+            { "name": "r", "type": "number", "description": "Région 0-3 (3 = extérieur)" },
+            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" },
+            { "name": "on", "type": "boolean", "description": "true = autorisé dans cette région" }
+          ],
+          "doc_anchor": "window-set_layer"
+        },
+        {
+          "label": "window.get_layer(r, bg)",
+          "snippet": "window.get_layer(0, 2)",
+          "description": "Teste si le layer bg est autorisé dans la région r.",
+          "params": [
+            { "name": "r", "type": "number", "description": "Région 0-3" },
+            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" }
+          ],
+          "returns": "number — 1 si autorisé, 0 sinon",
+          "doc_anchor": "window-get_layer"
+        },
+        {
+          "label": "window.set_obj(r, on)",
+          "snippet": "window.set_obj(0, false)",
+          "description": "Autorise ou non les sprites dans la région r. Couper les sprites dans un rectangle empêche un personnage de passer par-dessus une zone d'interface.",
+          "params": [
+            { "name": "r", "type": "number", "description": "Région 0-3" },
+            { "name": "on", "type": "boolean", "description": "true = sprites autorisés" }
+          ],
+          "doc_anchor": "window-set_obj"
+        },
+        {
+          "label": "window.set_blend(r, on)",
+          "snippet": "window.set_blend(3, true)",
+          "description": "Autorise ou non le mélange de couleurs dans la région r. Combinaison la plus utile : mélange activé dans la région 3 et coupé dans la région 0, ce qui estompe tout l'écran SAUF votre rectangle — sans dépenser le moindre octet de mémoire vidéo.",
+          "params": [
+            { "name": "r", "type": "number", "description": "Région 0-3" },
+            { "name": "on", "type": "boolean", "description": "true = mélange appliqué ici" }
+          ],
+          "doc_anchor": "window-set_blend"
+        },
+        {
+          "label": "self:set_obj_mode(mode)",
+          "snippet": "self:set_obj_mode(2)",
+          "description": "Mode d'affichage du sprite. 0 = normal. 2 = window OBJ : le sprite n'est plus dessiné, ses pixels opaques DÉCOUPENT la région 2 — une région de forme absolument libre, animable comme n'importe quelle animation de sprite, là où les windows 0 et 1 restent rectangulaires. Le prix : une entrée d'affichage et de la mémoire sprite. (Mode 1 = semi-transparent, réservé au mélange de couleurs, pas encore câblé.)",
+          "params": [
+            { "name": "mode", "type": "number", "description": "0 = normal, 1 = semi-transparent, 2 = window OBJ" }
+          ],
+          "doc_anchor": "self-set_obj_mode"
+        },
+        {
+          "label": "self:get_obj_mode()",
+          "snippet": "self:get_obj_mode()",
+          "description": "Mode d'affichage courant du sprite (0, 1 ou 2).",
+          "params": [],
+          "returns": "number — 0, 1 ou 2",
+          "doc_anchor": "self-get_obj_mode"
+        }
+      ]
+    },
+    {
+      "name": "Blend",
+      "entries": [
+        {
+          "label": "blend.set_mode(mode)",
+          "snippet": "blend.set_mode(1)",
+          "description": "Type de mélange de couleurs. 0 = aucun, 1 = alpha (transparence entre deux couches), 2 = éclaircir vers le blanc, 3 = assombrir vers le noir. Les modes 2 et 3 se dosent avec blend.set_fade(), le mode 1 avec blend.set_alpha().",
+          "params": [
+            { "name": "mode", "type": "number", "description": "0 aucun, 1 alpha, 2 vers le blanc, 3 vers le noir" }
+          ],
+          "doc_anchor": "blend-set_mode"
+        },
+        {
+          "label": "blend.get_mode()",
+          "snippet": "blend.get_mode()",
+          "description": "Mode de mélange courant (0-3).",
+          "params": [],
+          "returns": "number — 0 à 3",
+          "doc_anchor": "blend-get_mode"
+        },
+        {
+          "label": "blend.set_layer(side, bg, on)",
+          "snippet": "blend.set_layer(0, 1, true)",
+          "description": "Désigne un layer de fond comme participant au mélange. Il y a DEUX jeux de cibles : le dessus (side 0), ce qui est mélangé, et le dessous (side 1), ce avec quoi — c'est-à-dire ce qui se trouve derrière selon les priorités. En mode alpha, rien ne se passe là où un pixel du dessus n'a aucun pixel du dessous derrière lui : c'est la cause n°1 d'un effet qui « ne marche pas ».",
+          "params": [
+            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
+            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" },
+            { "name": "on", "type": "boolean", "description": "true = ce layer participe" }
+          ],
+          "doc_anchor": "blend-set_layer"
+        },
+        {
+          "label": "blend.set_obj(side, on)",
+          "snippet": "blend.set_obj(0, true)",
+          "description": "Désigne les sprites comme cible du dessus ou du dessous. Note : un sprite passé en self:set_obj_mode(1) se mélange de toute façon, indépendamment de ce réglage — pratique pour un seul fantôme translucide sans toucher aux autres.",
+          "params": [
+            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
+            { "name": "on", "type": "boolean", "description": "true = les sprites participent" }
+          ],
+          "doc_anchor": "blend-set_obj"
+        },
+        {
+          "label": "blend.set_backdrop(side, on)",
+          "snippet": "blend.set_backdrop(1, true)",
+          "description": "Désigne la couleur de fond de la scène comme cible. C'est très souvent le dessous qui manque : là où aucun layer ne dessine, seul le fond est derrière.",
+          "params": [
+            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
+            { "name": "on", "type": "boolean", "description": "true = le fond participe" }
+          ],
+          "doc_anchor": "blend-set_backdrop"
+        },
+        {
+          "label": "blend.set_alpha(eva, evb)",
+          "snippet": "blend.set_alpha(8, 8)",
+          "description": "Dosage du mode 1, en seizièmes (0 à 16) : eva pour le dessus, evb pour le dessous. (8, 8) donne moitié-moitié, (16, 0) rend le dessus complètement opaque. Les deux n'ont pas à totaliser 16 — les dépasser éclaircit l'image.",
+          "params": [
+            { "name": "eva", "type": "number", "description": "Part du dessus, 0-16" },
+            { "name": "evb", "type": "number", "description": "Part du dessous, 0-16" }
+          ],
+          "doc_anchor": "blend-set_alpha"
+        },
+        {
+          "label": "blend.set_fade(evy)",
+          "snippet": "blend.set_fade(8)",
+          "description": "Intensité des modes 2 et 3, en seizièmes : 0 = rien, 16 = blanc ou noir complet. Un fondu d'entrée ou de sortie, c'est cette valeur incrémentée frame après frame. Combiné à window.set_blend(), l'estompe ne s'applique que dans les régions choisies.",
+          "params": [
+            { "name": "evy", "type": "number", "description": "Intensité 0-16" }
+          ],
+          "doc_anchor": "blend-set_fade"
+        }
+      ]
+    },
+    {
+      "name": "Tilemap",
+      "entries": [
+        {
+          "label": "tilemap.set(n, tx, ty, tile)",
+          "snippet": "tilemap.set(1, 5, 3, 0)",
+          "description": "Pose une tuile sur le layer n. tx/ty sont en TUILES dans la carte du layer (1 tuile = 8 px), pas en pixels monde, et bouclent au bord comme le matériel. Le flip et la palette de la case sont conservés.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "tile", "type": "number", "description": "Index de tuile dans le tileset du layer (0-1023)" }
+          ],
+          "doc_anchor": "tilemap-set"
+        },
+        {
+          "label": "tilemap.get(n, tx, ty)",
+          "snippet": "tilemap.get(1, 5, 3)",
+          "description": "Index de tuile actuellement posé en (tx, ty) sur le layer n. À ne pas confondre avec tile.get(), qui lit la carte de collision à une position monde en pixels.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" }
+          ],
+          "returns": "number — index de tuile (0-1023)",
+          "doc_anchor": "tilemap-get"
+        },
+        {
+          "label": "tilemap.set_palette(n, tx, ty, bank)",
+          "snippet": "tilemap.set_palette(1, 5, 3, 4)",
+          "description": "Repeint une case avec une autre sous-palette (0-15) sans changer son dessin — l'équivalent en jeu du pinceau de palette du Background Editor. Idéal pour une case qui s'allume, gèle, ou passe en nuit.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "bank", "type": "number", "description": "Sous-palette 0-15" }
+          ],
+          "doc_anchor": "tilemap-set_palette"
+        },
+        {
+          "label": "tilemap.set_flip(n, tx, ty, h, v)",
+          "snippet": "tilemap.set_flip(1, 5, 3, true, false)",
+          "description": "Retourne une case horizontalement et/ou verticalement. Gratuit côté matériel : un miroir ne coûte aucune tuile supplémentaire.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "h", "type": "boolean", "description": "Miroir horizontal" },
+            { "name": "v", "type": "boolean", "description": "Miroir vertical" }
+          ],
+          "doc_anchor": "tilemap-set_flip"
+        },
+        {
+          "label": "tilemap.fill(n, tx, ty, w, h, tile)",
+          "snippet": "tilemap.fill(1, 0, 0, 30, 20, 0)",
+          "description": "Remplit un rectangle de w×h tuiles avec la même tuile. Pratique pour effacer une zone (tuile 0) ou poser un fond de panneau.",
+          "params": [
+            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
+            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
+            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
+            { "name": "w", "type": "number", "description": "Largeur en tuiles" },
+            { "name": "h", "type": "number", "description": "Hauteur en tuiles" },
+            { "name": "tile", "type": "number", "description": "Index de tuile à poser" }
+          ],
+          "doc_anchor": "tilemap-fill"
         }
       ]
     }
