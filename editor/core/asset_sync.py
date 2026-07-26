@@ -86,6 +86,26 @@ def remove_music_file(project, path: Path):
         project.music.soft_delete(music)
 
 
+def remove_font_file(project, path: Path):
+    """Fichier supprimé de assets/fonts/ : suppression différée du JSON.
+
+    Une police vit sur DEUX fichiers possibles (planche + descripteur `.fnt`),
+    dont les noms peuvent différer. On retire donc la police que ce fichier
+    porte réellement — par son stem, ou parce qu'elle le référence comme
+    planche/descripteur — plutôt que de supposer stem == nom de police."""
+    font = project.fonts.get(path.stem)
+    if font is None:
+        for f in project.fonts:
+            for rel in (f.asset, f.descriptor):
+                if rel and project.asset_abs(rel) == path:
+                    font = f
+                    break
+            if font:
+                break
+    if font:
+        project.fonts.soft_delete(font)
+
+
 def sync_sfx_file(project, path: Path):
     """
     Appelé quand un fichier audio apparaît dans assets/sfx/.
@@ -137,6 +157,15 @@ def sync_font_file(project, path: Path) -> Optional[str]:
     font = project.fonts.get(name)
     warning = None
     if font is None:
+        # La planche d'un `.fnt` déjà importé ne doit pas créer une SECONDE
+        # police : le descripteur fait foi (il porte le mapping des caractères)
+        # et référence déjà cette image. reconcile_fonts applique cette règle en
+        # ordonnant ses passes, mais un dépôt à chaud (watcher) arrive fichier
+        # par fichier — d'où le garde ici, au seul endroit qui crée un Font.
+        if path.suffix.lower() != ".fnt":
+            for f in project.fonts:
+                if f.asset and project.asset_abs(f.asset) == path:
+                    return None
         font = Font(name=name)
         # Échec dur (format illisible, planche introuvable) : aucun asset créé —
         # mieux vaut rien qu'une police vide qui traîne et se sauvegarde. Un
@@ -152,7 +181,16 @@ def sync_font_file(project, path: Path) -> Optional[str]:
                 font.asset = project.asset_rel(page)
                 font.descriptor = project.asset_rel(path)
             else:
-                fields = font_import.import_font_png(path)
+                # Planche opaque : le fond dominant est PROPOSÉ comme couleur
+                # transparente. Une proposition, pas un verdict — l'écran
+                # Police laisse la repiquer, ou l'effacer si elle est fausse.
+                font.bg_color = font_import.detect_bg_color(path)
+                # `space_color` est None à ce stade (rien à deviner : un
+                # marqueur d'espacement ne se distingue pas d'une couleur de
+                # dessin), donc la police entre en MONO. Elle passera en
+                # proportionnel le jour où l'utilisateur repiquera la couleur.
+                fields = font_import.import_font_png(
+                    path, keys=font.key_colors(), space_color=font.space_color)
                 font.asset = project.asset_rel(path)
             font_import.apply_font_import(font, fields)
         except Exception as exc:

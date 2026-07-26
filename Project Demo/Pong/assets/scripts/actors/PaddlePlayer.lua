@@ -1,5 +1,5 @@
 exports = {
-    nouvelle_var = { type = "int", default = 0, label = "nouvelle_var" },
+    nouvelle_var = { type = "int", default = 6, label = "nouvelle_var", min = 0, max = 10 },
 }
 
 function on_update()

@@ -49,6 +49,7 @@ DOMAIN_TAG    = "tag"     # TAG_{name}
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
 DOMAIN_FONT   = "font"    # FONT_{name}
+DOMAIN_REGION = "region"  # REGION_{name} — zone de texte authorée (UILayout)
 DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
 # Domaines résolus par un _emit_* dédié du codegen (pas de constante C
 # générique) : ils n'en restent pas moins des références nommées.
@@ -317,20 +318,15 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
     ),
 
-    # ── Affichage texte HUD ───────────────────────────────────────
-    # col/row en tiles (1 tile = 8px).
-    # display.print : style printf — args variadiques passés tels quels au C.
-    "display.print": ApiFunc(
-        lua_name="display.print", c_func="draw_printf",
-        params=[Param("col", PARAM_INT), Param("row", PARAM_INT), Param("fmt", PARAM_STR_LITERAL)],
-        variadic=True,
-        doc='Affiche du texte formaté à (col, row). Ex: display.print(1,1,"P1: %d",score)',
-    ),
-    "display.clear": ApiFunc(
-        lua_name="display.clear", c_func="draw_clear",
-        params=[Param("col", PARAM_INT), Param("row", PARAM_INT), Param("len", PARAM_INT)],
-        doc="Efface len tiles à partir de (col, row) sur le HUD.",
-    ),
+    # ── Affichage texte : voir `text.*` (cf. REMOVED_API) ─────────
+    # `display.print` / `display.clear` (libtonc TTE) ont été RETIRÉS. Leur
+    # chaîne de format vivait dans le script, donc hors de la table de textes :
+    # intraduisible, alors que la table existe pour ça. Et la police de TTE
+    # occupait les mêmes tuiles que la nôtre, les deux s'écrasant.
+    #
+    # Migration : un libellé devient une entrée de table (`text.draw`), une
+    # valeur devient `text.draw_num`. Les noms retirés sont listés dans
+    # REMOVED_API pour que le checker guide au lieu de dire « inconnu ».
 
     # ── Caméra ────────────────────────────────────────────────────
     "camera.set": ApiFunc(
@@ -476,17 +472,35 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)],
         doc='Affiche un texte du projet à (tx, ty), en tuiles. Ex: text.draw("village_garde_01", 2, 16)',
     ),
-    "text.draw_box": ApiFunc(
-        lua_name="text.draw_box", c_func="text_draw_box",
-        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
-                Param("w", PARAM_INT), Param("n", PARAM_INT)],
-        doc="Affiche un texte dans une boîte de w tuiles de large, avec retour à la ligne sur les mots. n = caractères révélés (-1 = tout).",
+    # ── Rendu dans une RÉGION ──────────────────────────────────────
+    # La région porte position, largeur de coupe, alignement et police : ce que
+    # `draw_box` faisait passer en arguments, sauf que c'est désormais authoré
+    # dans le canvas de scène et donc VISIBLE. Le couple draw / draw_upto y est
+    # repris à l'identique — une seule grammaire pour les deux placements.
+    "text.draw_in": ApiFunc(
+        lua_name="text.draw_in", c_func="text_draw_in",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("region", PARAM_STR, DOMAIN_REGION)],
+        doc='Affiche un texte dans une zone dessinée dans la scène. Ex: text.draw_in("village_garde", "boite_bas")',
+    ),
+    "text.draw_in_upto": ApiFunc(
+        lua_name="text.draw_in_upto", c_func="text_draw_in_upto",
+        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("region", PARAM_STR, DOMAIN_REGION),
+                Param("n", PARAM_INT)],
+        doc='Machine à écrire dans une zone : les n premiers caractères. Le rythme t\'appartient. Ex: text.draw_in_upto("intro", "boite_bas", scene.frame() / 2)',
     ),
     "text.draw_upto": ApiFunc(
         lua_name="text.draw_upto", c_func="text_draw_upto",
         params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
                 Param("n", PARAM_INT)],
         doc="Affiche les n premiers caractères — la machine à écrire. Le rythme t'appartient : fais varier n. Ex: text.draw_upto(\"intro_01\", 2, 16, scene.frame() / 2)",
+    ),
+    # Le SEUL texte dont le contenu ne vient pas de la table — un nombre ne se
+    # traduit pas. Les libellés qui l'entourent restent des entrées de table :
+    # « Score : » avec text.draw, la valeur avec celle-ci.
+    "text.draw_num": ApiFunc(
+        lua_name="text.draw_num", c_func="text_draw_num",
+        params=[Param("value", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)],
+        doc='Affiche un nombre à (tx, ty), en tuiles, avec la police courante. Ex: text.draw_num(global.get("score"), 9, 2)',
     ),
     "text.clear": ApiFunc(
         lua_name="text.clear", c_func="text_clear",
@@ -618,6 +632,36 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Remplit un rectangle de w×h tuiles à partir de (tx, ty) avec la tuile `tile`.",
     ),
 
+}
+
+
+# ─── API retirée ──────────────────────────────────────────────────
+# Le checker laisse passer un appel inconnu : ce peut être un helper défini par
+# l'utilisateur. Une fonction RETIRÉE, elle, doit être signalée — sinon l'erreur
+# n'arrive qu'à la compilation C, sous la forme d'un « implicit declaration of
+# draw_printf » qui ne dit rien de ce qu'il faut écrire à la place.
+#
+# {clé retirée: message de migration}. Y ajouter une entrée est le geste qui
+# accompagne toute suppression d'API.
+
+REMOVED_API: dict[str, str] = {
+    "display.print":
+        "display.print a été retiré (libtonc TTE hors du workflow). Sa chaîne de "
+        "format vivait dans le script, donc hors de la table de textes : "
+        "intraduisible. Remplace un libellé par une entrée de table affichée "
+        'avec text.draw("clé", tx, ty), et une valeur par '
+        "text.draw_num(valeur, tx, ty).",
+    "display.clear":
+        "display.clear a été retiré (libtonc TTE hors du workflow). Utilise "
+        "text.clear(tx, ty, w, h) — même unité (tuiles), mais une HAUTEUR au "
+        "lieu d'une longueur de ligne.",
+    "text.draw_box":
+        "text.draw_box a été retiré : sa géométrie (position, largeur de coupe) "
+        "vivait dans le script, donc invisible dans l'éditeur et incalculable "
+        "avant le build. Dessine une zone de texte dans le canvas de scène, "
+        'puis appelle text.draw_in("clé", "nom_de_zone") — ou '
+        'text.draw_in_upto("clé", "nom_de_zone", n) pour la machine à écrire. '
+        "L'alignement, lui, n'existait pas et devient un réglage de la zone.",
 }
 
 
@@ -850,6 +894,11 @@ def text_constant(text_key: str) -> str:
 def font_constant(font_name: str) -> str:
     """'Pixelia' → 'FONT_PIXELIA'"""
     return f"FONT_{_c_ident(font_name)}"
+
+
+def region_constant(region_name: str) -> str:
+    """'boite_bas' → 'REGION_BOITE_BAS'"""
+    return f"REGION_{_c_ident(region_name)}"
 
 
 # ─── Événements de scène ───────────────────────────────────────────

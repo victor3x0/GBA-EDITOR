@@ -45,7 +45,7 @@ from core.project import (
     Actor,
     Project,
 )
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T, QSS, C
 from ui.common.palette_bank_strip import PaletteBankStrip
 from ui.common.canvas_top_bar import CanvasTopBar
@@ -70,6 +70,7 @@ from PyQt6.QtWidgets import (
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
+    QGraphicsSimpleTextItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -94,21 +95,46 @@ MAX_CANVAS_H = 512
 _WIN_COLORS = ("#82aaff", "#c48b3c")
 
 _PLACEHOLDER_SIZE = 16
+_PLACEHOLDER_ICO = 12
+
+
+def _screen_scale(painter: QPainter, widget=None) -> float:
+    """Combien de pixels ÉCRAN vaut une unité de scène pour ce painter — zoom de
+    la vue (et transform de l'item) × devicePixelRatio de l'écran. Les icônes
+    d'UI du canvas s'en servent pour se faire rendre à la bonne résolution au
+    lieu d'être un pixmap agrandi."""
+    lod = QStyleOptionGraphicsItem.levelOfDetailFromTransform(painter.worldTransform())
+    return lod * (widget.devicePixelRatioF() if widget is not None else 1.0)
+
+
+def _draw_placeholder(painter: QPainter, scale: float = 1.0) -> None:
+    """Repère 16×16 des actors/prefabs sans sprite, dessiné dans le repère
+    courant du painter. `scale` = facteur d'échelle écran effectif : le glyphe
+    est demandé à cette résolution pour rester net quand la vue est zoomée."""
+    from ui.common.icons import scaled_pixmap
+
+    s = _PLACEHOLDER_SIZE
+    painter.fillRect(QRectF(0, 0, s, s), QColor(30, 60, 90, 210))
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+    painter.setPen(QPen(QColor(100, 180, 255, 220), 1))
+    painter.drawRect(QRectF(0, 0, s - 1, s - 1))
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+    px = scaled_pixmap("actor_empty", "#88ccff", _PLACEHOLDER_ICO, scale)
+    painter.drawPixmap(
+        QRectF(2, 2, _PLACEHOLDER_ICO, _PLACEHOLDER_ICO), px, QRectF(px.rect())
+    )
 
 
 def _make_placeholder_pixmap() -> QPixmap:
-    """Pixmap 16×16 pour les actors/prefabs sans sprite."""
-    from ui.common.icons import get as _ico
+    """Pixmap 16×16 pour les actors/prefabs sans sprite.
 
+    Porte la GÉOMÉTRIE de l'item (boundingRect, hit-test) ; à l'écran c'est
+    `_draw_placeholder()` qui redessine le repère au zoom courant
+    (cf. SpriteItem.paint) — un pixmap figé serait flou dès le zoom ×2."""
     px = QPixmap(_PLACEHOLDER_SIZE, _PLACEHOLDER_SIZE)
     px.fill(Qt.GlobalColor.transparent)
     p = QPainter(px)
-    p.fillRect(0, 0, _PLACEHOLDER_SIZE, _PLACEHOLDER_SIZE, QColor(30, 60, 90, 210))
-    pen = QPen(QColor(100, 180, 255, 220), 1)
-    p.setPen(pen)
-    p.drawRect(0, 0, _PLACEHOLDER_SIZE - 1, _PLACEHOLDER_SIZE - 1)
-    icon_px = _ico("actor_empty", "#88ccff").pixmap(QSize(12, 12))
-    p.drawPixmap(2, 2, icon_px)
+    _draw_placeholder(p)
     p.end()
     return px
 
@@ -334,10 +360,14 @@ class SpriteItem(QGraphicsPixmapItem):
         flip_h: bool = False,
         flip_v: bool = False,
         resolver=None,
+        placeholder: bool = False,
         parent=None,
     ):
         super().__init__(pixmap, parent)
         self.scene_sprite = actor
+        # Actor sans sprite : le pixmap ne sert que de géométrie, le repère est
+        # redessiné à chaque paint() au zoom courant (cf. _paint_content).
+        self._placeholder = placeholder
         # Résout une position x/y (px littéral, tile, ou réf de variable) en
         # pixels concrets pour l'affichage — cf. core.models.field_value.
         self._pos_resolver = resolver
@@ -464,6 +494,18 @@ class SpriteItem(QGraphicsPixmapItem):
         self._mask_rects = list(rects)
         self.update()
 
+    def _paint_content(self, painter, option, widget):
+        """Le sprite lui-même : pixmap du jeu (nearest-neighbor, c'est du pixel
+        art), ou repère d'actor sans sprite — une icône d'UI, redessinée à la
+        résolution écran pour ne pas devenir floue au zoom."""
+        if not self._placeholder:
+            super().paint(painter, option, widget)
+            return
+        painter.save()
+        painter.translate(self.offset())
+        _draw_placeholder(painter, _screen_scale(painter, widget))
+        painter.restore()
+
     def paint(self, painter, option, widget=None):
         # Supprimer le rendu de sélection Qt par défaut (dashed bleu)
         clean = QStyleOptionGraphicsItem(option)
@@ -482,10 +524,10 @@ class SpriteItem(QGraphicsPixmapItem):
                 cut.addPolygon(self.mapFromScene(r))
                 path = path.subtracted(cut)
             painter.setClipPath(path)
-            super().paint(painter, clean, widget)
+            self._paint_content(painter, clean, widget)
             painter.restore()
         else:
-            super().paint(painter, clean, widget)
+            self._paint_content(painter, clean, widget)
         # Outline vert propre quand sélectionné
         if self.isSelected():
             painter.save()
@@ -580,13 +622,6 @@ class CameraItem(QGraphicsItem):
         self.setPos(cam_x, cam_y)
         self.setToolTip("Caméra GBA — 240×160 px\nGlisser pour déplacer la vue")
 
-        # Icône qtawesome — deux états (normal / sélectionné)
-        from ui.common.icons import get as _ico
-
-        sz = QSize(_CAM_ICO_SIZE, _CAM_ICO_SIZE)
-        self._px_normal = _ico("camera", "#666666").pixmap(sz)
-        self._px_selected = _ico("camera", "#ffdd44").pixmap(sz)
-
         # Zone de vision — enfant non-interactif
         pen = QPen(QColor("#ffdd44"))
         pen.setWidth(0)
@@ -672,12 +707,20 @@ class CameraItem(QGraphicsItem):
         return path
 
     def paint(self, painter: QPainter, option, widget=None):
-        # Icône UI (pas du pixel art de jeu) : lissée localement, sans affecter
-        # le rendu nearest-neighbor des sprites/backgrounds ailleurs sur le canvas.
+        # Icône UI (pas du pixel art de jeu) : rendue à la résolution écran du
+        # zoom courant plutôt qu'agrandie depuis un pixmap de 20 px — sinon elle
+        # est floue dès le zoom ×2 (le canvas s'ouvre déjà à ×2). Lissage local,
+        # sans affecter le nearest-neighbor des sprites/BG ailleurs sur le canvas.
+        from ui.common.icons import scaled_pixmap
+
+        color = "#ffdd44" if self.isSelected() else "#666666"
+        px = scaled_pixmap("camera", color, _CAM_ICO_SIZE,
+                           _screen_scale(painter, widget))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        px = self._px_selected if self.isSelected() else self._px_normal
-        painter.drawPixmap(0, 0, px)
+        painter.drawPixmap(
+            QRectF(0, 0, _CAM_ICO_SIZE, _CAM_ICO_SIZE), px, QRectF(px.rect())
+        )
 
     # ── Canvas resize ─────────────────────────────────────────────
 
@@ -877,16 +920,20 @@ class FloatingToolbar(QFrame):
         sep2.setFixedHeight(1)
         layout.addWidget(sep2)
 
-        btn_pal = QToolButton()
-        btn_pal.setIcon(_ico("tool_palette", COLOR_DEFAULT, COLOR_ACTIVE))
-        btn_pal.setIconSize(QSize(20, 20))
-        btn_pal.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        btn_pal.setToolTip("Palette couleurs  (P)")
-        btn_pal.setCheckable(True)
-        btn_pal.setFixedSize(34, 34)
-        btn_pal.clicked.connect(lambda: self._set_tool("palette"))
-        layout.addWidget(btn_pal, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._btns["palette"] = btn_pal
+        # Zone de texte. Occupe le slot de l'ancien bouton « Palette couleurs »,
+        # qui appelait `_set_tool("palette")` — un tool_id qu'aucun cas de
+        # `_on_tool_changed` ne reconnaissait, donc un bouton cochable sans
+        # effet, et un raccourci P mort avec lui.
+        btn_region = QToolButton()
+        btn_region.setIcon(_ico("tool_text_region", COLOR_DEFAULT, COLOR_ACTIVE))
+        btn_region.setIconSize(QSize(20, 20))
+        btn_region.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        btn_region.setToolTip("Zone de texte  (T)")
+        btn_region.setCheckable(True)
+        btn_region.setFixedSize(34, 34)
+        btn_region.clicked.connect(lambda: self._set_tool("ui_region"))
+        layout.addWidget(btn_region, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._btns["ui_region"] = btn_region
 
         layout.addStretch()
         self.adjustSize()
@@ -1160,6 +1207,7 @@ class GBAScene(QGraphicsScene):
         self._camera: Optional[CameraItem] = None
         self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
         self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
+        self._ui_region_items: list = []  # zones de texte (UILayout de la scène)
         self._snap = False
         self._collision_view = False  # toggle "Collisions scène"
         self._setup_border()
@@ -1330,7 +1378,7 @@ class GBAScene(QGraphicsScene):
         scale_x: float = 1.0, scale_y: float = 1.0,
         rotation: float = 0.0,
         flip_h: bool = False, flip_v: bool = False,
-        resolver=None,
+        resolver=None, placeholder: bool = False,
     ) -> SpriteItem:
         item = SpriteItem(
             pixmap, actor,
@@ -1339,7 +1387,7 @@ class GBAScene(QGraphicsScene):
             origin_x=origin_x, origin_y=origin_y,
             scale_x=scale_x, scale_y=scale_y,
             rotation=rotation, flip_h=flip_h, flip_v=flip_v,
-            resolver=resolver,
+            resolver=resolver, placeholder=placeholder,
         )
         self.addItem(item)
         self._sprite_items.append(item)
@@ -1353,6 +1401,42 @@ class GBAScene(QGraphicsScene):
         for item in self._sprite_items:
             self.removeItem(item)
         self._sprite_items.clear()
+
+    # ── Zones de texte ────────────────────────────────────────────
+
+    def set_ui_regions(self, layout_asset, project, scene, save_fn=None):
+        """Redessine les zones de la mise en page référencée par la scène.
+
+        Reconstruction complète plutôt que mise à jour en place : une zone peut
+        avoir changé d'ancrage (donc d'origine), de taille ou de cible, et
+        recalculer chaque cas séparément multiplierait les chemins pour un
+        nombre d'items qui se compte sur les doigts.
+
+        La reconstruction ne doit PAS coûter la sélection : détruire l'item
+        sélectionné fait émettre à Qt une sélection vide, que le canvas traduit
+        en « clic dans le vide » → l'inspecteur de la zone se refermait à chaque
+        frappe dans une spinbox. On note la zone sélectionnée, on tait les
+        signaux le temps du remplacement, et on la re-sélectionne sur son
+        nouvel item."""
+        # Identité, pas égalité : deux zones peuvent avoir les mêmes champs.
+        kept = [it._region for it in self._ui_region_items if it.isSelected()]
+        was_blocked = self.signalsBlocked()
+        self.blockSignals(True)
+        try:
+            for it in self._ui_region_items:
+                if it.scene():
+                    self.removeItem(it)
+            self._ui_region_items = []
+            if layout_asset is None:
+                return
+            for r in layout_asset.regions:
+                item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
+                self.addItem(item)
+                self._ui_region_items.append(item)
+                if any(r is k for k in kept):
+                    item.setSelected(True)
+        finally:
+            self.blockSignals(was_blocked)
 
     def set_snap(self, snap: bool):
         self._snap = snap
@@ -1421,6 +1505,7 @@ class GBAView(QGraphicsView):
         self._snap_preview: "QGraphicsRectItem | None" = None
         # Contrôleur de peinture par palette BG (injecté par SceneEditor).
         self.inpainting_controller: "Optional[SceneInpaintingController]" = None
+        self.ui_region_controller: "Optional[UIRegionController]" = None
         # Pan au clic-central — agit sur les scrollbars, donc indépendant de
         # l'outil actif et du zoom. `_pan_last` = dernière position viewport (px).
         self._panning = False
@@ -1926,6 +2011,175 @@ def _layer_png_path(project: Project, layer):
 # ──────────────────────────────────────────────────────────────────
 #  Contrôleur de peinture par palette BG (SE_PALBANK par tuile)
 # ──────────────────────────────────────────────────────────────────
+class UIRegionItem(QGraphicsRectItem):
+    """Une zone de texte dessinée dans le canvas — sélectionnable, déplaçable.
+
+    Le rectangle est en coordonnées LOCALES (0,0,w,h) et la position porte x/y :
+    sans ça, déplacer l'item ne changerait pas `pos()` et il n'y aurait rien à
+    relire au relâchement.
+
+    Le déplacement est validé au RELÂCHEMENT, pas à chaque pixel : pousser une
+    commande d'historique par événement de souris remplirait la pile de cent
+    entrées pour un seul geste. Même raison que pour le drag d'un actor.
+
+    Une zone ancrée sur un actor est dessinée à l'offset près de son acteur si
+    on le trouve — sinon à l'origine de l'écran, avec un liseré discontinu qui
+    dit que la position affichée n'est pas celle du jeu."""
+
+    _COLOR = QColor(150, 140, 255)
+
+    def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
+        super().__init__(0, 0, max(8, region.w), max(8, region.h), parent)
+        self._layout, self._region = layout_asset, region
+        self._project, self._scene = project, scene
+        self._save = save_fn
+        self._press_pos = None
+
+        ox, oy, anchored = self._origin()
+        self.setPos(ox, oy)
+
+        pen = QPen(self._COLOR)
+        pen.setWidth(0)
+        pen.setCosmetic(True)
+        if not anchored:
+            pen.setStyle(Qt.PenStyle.DotLine)
+        self.setPen(pen)
+        self.setBrush(QBrush(QColor(150, 140, 255, 38)))
+        self.setZValue(120)
+        self.setFlags(
+            QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+        )
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        tx, ty, tw, th = region.tile_rect()
+        target = "sprite (OBJ)" if region.resolved_target(rm) == "obj" else "fond (BG)"
+        self.setToolTip(f"Zone « {region.name} » — {self._layout.name}\n"
+                        f"{tw}×{th} tuiles · cible {target}\n"
+                        f"Glisser pour déplacer")
+
+        # Étiquette : le nom est ce que cite le script, il doit être lisible
+        # sans passer par l'inspecteur.
+        self._label = QGraphicsSimpleTextItem(region.name, self)
+        self._label.setBrush(QBrush(self._COLOR))
+        fnt = self._label.font()
+        fnt.setPointSizeF(5.0)
+        self._label.setFont(fnt)
+        self._label.setPos(1, 1)
+        self._label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, False)
+
+    def _origin(self) -> tuple[int, int, bool]:
+        """Position à l'écran + « l'ancre a-t-elle été résolue ? »."""
+        r = self._region
+        if r.anchor != "actor":
+            return r.x, r.y, True
+        for a in getattr(self._scene, "actors", []):
+            if a.name == r.anchor_actor:
+                return a.x + r.x, a.y + r.y, True
+        return r.x, r.y, False
+
+    # ── Interaction ──────────────────────────────────────────────
+    def mousePressEvent(self, e):
+        self._press_pos = self.pos()
+        from core.selection_bus import get_bus, UIRegionSelection
+        get_bus().select(UIRegionSelection(self._layout, self._region))
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        if self._press_pos is None:
+            return
+        start, self._press_pos = self._press_pos, None
+        # Snap tuile pour une cible BG — le moteur y écrit des entrées de
+        # tilemap, l'origine ne peut pas tomber entre deux tuiles.
+        rm = int(getattr(self._scene, "render_mode", 0) or 0)
+        step = 8 if self._region.resolved_target(rm) == "bg" else 1
+        nx = int(self.pos().x()) // step * step
+        ny = int(self.pos().y()) // step * step
+        self.setPos(nx, ny)
+        if (nx, ny) == (int(start.x()), int(start.y())):
+            return
+        # Un ancrage actor stocke un OFFSET : c'est lui qu'il faut réécrire,
+        # pas la position absolue lue dans le canvas.
+        ax = ay = 0
+        if self._region.anchor == "actor":
+            for a in getattr(self._scene, "actors", []):
+                if a.name == self._region.anchor_actor:
+                    ax, ay = a.x, a.y
+                    break
+        from core.history import get_history, MoveUIRegionCmd
+        get_history().push(MoveUIRegionCmd(
+            self._region, self._region.x, self._region.y,
+            nx - ax, ny - ay, persist_fn=self._save))
+
+
+class UIRegionController(QObject):
+    """Crée et persiste les zones de texte dessinées dans le canvas.
+
+    Analogue à `SceneInpaintingController` : détient le contexte (projet,
+    scène) et applique le geste de l'outil au modèle.
+
+    **Crée la mise en page à la demande.** Dessiner une zone dans une scène qui
+    n'en référence aucune en fabrique une, nommée d'après la scène. Obliger à
+    créer d'abord une mise en page vide, puis à la référencer, puis à dessiner,
+    ferait payer trois gestes pour une intention — alors que le cas courant est
+    « une mise en page par scène » et qu'elle reste partageable ensuite.
+
+    L'unicité du nom est cherchée sur TOUT le projet : c'est l'espace de noms
+    des constantes `REGION_*` (cf. models/ui_region.py)."""
+
+    # Deux signaux et pas un : `persist_fn` d'une commande d'historique est
+    # rappelé à l'ANNULATION comme à l'exécution. Confondre les deux ferait
+    # annoncer « zone créée » en annulant sa création, et resélectionnerait une
+    # zone qui vient d'être retirée.
+    regions_changed = pyqtSignal()                # sauver + redessiner
+    region_created  = pyqtSignal(object, object)  # (UILayout, UIRegion) — une fois
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._project: Optional[Project] = None
+        self._scene = None
+
+    def set_context(self, project: Optional[Project], scene):
+        self._project, self._scene = project, scene
+
+    @property
+    def ready(self) -> bool:
+        return self._project is not None and self._scene is not None
+
+    def _ensure_layout(self):
+        from core.models.ui_region import UILayout
+        lay = self._project.scene_ui_layout(self._scene)
+        if lay is not None:
+            return lay
+        base = getattr(self._scene, "name", "") or "ui"
+        name, n = base, 2
+        while self._project.get_ui_layout(name) is not None:
+            name = f"{base}_{n:02d}"; n += 1
+        lay = UILayout(name=name)
+        self._project.ui_layouts.append(lay)
+        self._scene.ui_layout = name
+        return lay
+
+    def create_region(self, x: int, y: int, w: int, h: int):
+        from core.models.ui_region import UIRegion, unique_region_name
+        from core.history import get_history, AddListItemCmd
+        if not self.ready:
+            return None
+        lay = self._ensure_layout()
+        r = UIRegion(name=unique_region_name(self._project.region_names(), "zone"),
+                     x=int(x), y=int(y), w=int(w), h=int(h))
+        # Par l'historique : dessiner une zone est une modification comme une
+        # autre, elle doit s'annuler. `_ensure_layout` reste hors historique —
+        # une mise en page vide et non référencée ne gêne personne, alors qu'un
+        # undo qui la retire casserait les zones créées ensuite.
+        get_history().push(AddListItemCmd(
+            lay.regions, r, persist_fn=self.regions_changed.emit,
+            label=f"Ajouter zone {r.name}"))
+        self.region_created.emit(lay, r)
+        return r
+
+
 class SceneInpaintingController:
     """Pilote la peinture par palette d'un layer BG dans le canvas de scène.
 
@@ -2262,6 +2516,17 @@ class SceneEditor(QWidget):
         self._gba_view.inpainting_controller = self._inpainting_ctrl
         self._canvas_container.bind_inpainting(self._inpainting_ctrl)
 
+        # Contrôleur des zones de texte (outil « Zone de texte »).
+        self._ui_region_ctrl = UIRegionController(self)
+        self._gba_view.ui_region_controller = self._ui_region_ctrl
+        self._ui_region_ctrl.region_created.connect(self._on_region_created)
+        # Sauver PUIS redessiner : la zone créée (ou remise par un redo) n'a pas
+        # encore d'item. Le redessin n'est pas branché sur le drag d'une zone
+        # existante — détruire un item depuis son propre mouseReleaseEvent est
+        # ce qui faisait planter le rechargement par le watcher.
+        self._ui_region_ctrl.regions_changed.connect(self._save_ui_regions)
+        self._ui_region_ctrl.regions_changed.connect(self._reload_ui_regions)
+
         self._update_zoom_label()
 
     # ── Événements ────────────────────────────────────────────────
@@ -2308,7 +2573,7 @@ class SceneEditor(QWidget):
         mk("E", lambda: self._shortcut_tool("erase"))
         mk("C", lambda: self._shortcut_tool("collision"))
         mk("B", lambda: self._shortcut_tool("inpaint"))
-        mk("P", lambda: self._shortcut_tool("palette"))
+        mk("T", lambda: self._shortcut_tool("ui_region"))
         # Vue
         mk("F", self._fit)
         # Sélection / édition
@@ -2486,10 +2751,54 @@ class SceneEditor(QWidget):
                 self._gba_view.set_tool(AddActorTool(self._gba_view))
             case "erase":
                 self._gba_view.set_tool(EraseTool(self._gba_view))
+            case "ui_region":
+                from ui.scene_manager.canvas_tools import UIRegionTool
+
+                self._gba_view.set_tool(UIRegionTool(self._gba_view))
             case _:
                 self._gba_view.set_tool(SelectTool(self._gba_view))
         # Bandeau de palette visible seulement pour les outils de peinture BG.
         self._canvas_container.set_inpaint_strip_visible(tool_id.startswith("inpaint"))
+
+    def _reload_ui_regions(self):
+        """(Re)dessine les zones de la scène active."""
+        scene = self._project.active_scene if self._project else None
+        lay = self._project.scene_ui_layout(scene) if (self._project and scene) else None
+        self._gba_scene.set_ui_regions(lay, self._project, scene,
+                                       save_fn=self._save_ui_regions)
+
+    def _save_ui_regions(self):
+        """Persiste après un déplacement de zone au canvas, et recharge
+        l'inspecteur : ses spinbox montreraient sinon l'ancienne position."""
+        if not self._project:
+            return
+        # Écriture par le dispatcher (watcher suspendu) — cf. la même règle dans
+        # UIRegionInspector._persist : une écriture nue passe pour une édition
+        # externe et déclenche un rechargement de scène en plein geste.
+        get_dispatcher().save_all()
+        self.scene_changed.emit()
+        from core.selection_bus import get_bus, UIRegionSelection
+        cur = get_bus().current
+        if isinstance(cur, UIRegionSelection):
+            get_bus().changed.emit(cur)
+
+    def _on_region_created(self, layout, region):
+        """Sélectionne la zone et l'annonce. La sauvegarde et le redessin
+        passent par `regions_changed` — eux doivent aussi jouer à l'annulation.
+
+        La mise en page est un asset PARTAGÉ : le message dit combien de scènes
+        la référencent, sinon on ajoute une zone à douze scènes en croyant
+        l'ajouter à une."""
+        if not self._project:
+            return
+        from core.selection_bus import get_bus, UIRegionSelection
+        get_bus().select(UIRegionSelection(layout, region))
+        users = self._project.ui_layout_users(layout.name)
+        shared = f" — partagée par {len(users)} scènes" if len(users) > 1 else ""
+        tw, th = region.tile_rect()[2:]
+        get_dispatcher().status(
+            f"Zone « {region.name} » créée dans « {layout.name} »"
+            f"{shared} · {tw}×{th} tuiles")
 
     def _on_collision_painted(self):
         """Persiste la collision_map après chaque stroke."""
@@ -2563,6 +2872,8 @@ class SceneEditor(QWidget):
 
         # Contexte de peinture par palette + peuplement du bandeau de palettes.
         self._inpainting_ctrl.set_context(project, scene)
+        self._ui_region_ctrl.set_context(project, scene)
+        self._reload_ui_regions()
         self._canvas_container.refresh_inpaint_banks()
 
         self._reload_sprites()
@@ -2609,7 +2920,8 @@ class SceneEditor(QWidget):
                         data = bytes(img.tobytes("raw", "RGBA"))
                         qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
                         frame_px = QPixmap.fromImage(qi)
-            if frame_px is None:
+            is_placeholder = frame_px is None
+            if is_placeholder:
                 if _placeholder is None:
                     _placeholder = _make_placeholder_pixmap()
                 frame_px = _placeholder
@@ -2628,7 +2940,7 @@ class SceneEditor(QWidget):
                 frame_px, actor, save_fn=save_fn,
                 origin_x=ox, origin_y=oy, scale_x=sx, scale_y=sy,
                 rotation=rot, flip_h=fh, flip_v=fv,
-                resolver=_pos_resolver,
+                resolver=_pos_resolver, placeholder=is_placeholder,
             )
             item.scene_sprite = actor
 
@@ -2718,6 +3030,18 @@ class SceneEditor(QWidget):
             cam = self._gba_scene._camera
             if cam:
                 cam.setSelected(True)
+        else:
+            # Même raison que la caméra : la zone s'annonce sur le bus AVANT que
+            # Qt ne la sélectionne (cf. UIRegionItem.mousePressEvent), et le bus
+            # est réémis après un drag ou une édition. Sans ce cas, la boucle de
+            # désélection ci-dessus effaçait le liseré d'une zone que
+            # l'inspecteur montre pourtant comme sélectionnée.
+            from core.selection_bus import UIRegionSelection
+            if isinstance(obj, UIRegionSelection):
+                for it in self._gba_scene._ui_region_items:
+                    if it._region is obj.region:
+                        it.setSelected(True)
+                        break
         self._gba_scene.blockSignals(False)
 
     def move_actor_item(self, actor: Actor):
@@ -2775,6 +3099,8 @@ class SceneEditor(QWidget):
         # contrôleur de peinture (raster du layer actif) et le bandeau.
         prev_slot = self._inpainting_ctrl.inpaint_layer_slot
         self._inpainting_ctrl.set_context(self._project, scene)
+        self._ui_region_ctrl.set_context(self._project, scene)
+        self._reload_ui_regions()
         self._inpainting_ctrl.set_inpaint_layer(prev_slot)
         self._canvas_container.refresh_inpaint_banks()
 

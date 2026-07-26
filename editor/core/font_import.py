@@ -54,24 +54,50 @@ def propose_charset(n_cells: int) -> str:
 
 # ── Analyse d'image ───────────────────────────────────────────────
 
-def _ink_mask(img):
+def dominant_color(img) -> tuple[int, int, int]:
+    """Couleur la plus fréquente de la planche — le fond, quasi toujours : une
+    police est très majoritairement composée de vide. Sert à PROPOSER
+    `Font.bg_color` à l'import, jamais à l'imposer (l'utilisateur repique à la
+    pipette quand la planche est atypique)."""
+    import numpy as np
+    rgb = np.array(img.convert("RGB"))
+    colors, counts = np.unique(rgb.reshape(-1, 3), axis=0, return_counts=True)
+    return tuple(int(v) for v in colors[counts.argmax()])
+
+
+def detect_bg_color(png_path: Path) -> Optional[tuple[int, int, int]]:
+    """Fond proposé pour une planche OPAQUE. None si l'image porte déjà de la
+    transparence : elle sait déjà où est son vide, rien à deviner."""
+    from PIL import Image
+    img = Image.open(png_path)
+    if img.mode in ("RGBA", "LA") or "transparency" in img.info:
+        return None
+    return dominant_color(img)
+
+
+def _ink_mask(img, keys=()):
     """Matrice booléenne « ce pixel est de l'encre ».
 
-    Avec un canal alpha, l'encre est ce qui est opaque. Sans alpha, on prend la
-    couleur la plus fréquente pour le fond — une planche de police est très
-    majoritairement composée de fond, l'hypothèse est sûre."""
+    Trois sources de vide, cumulatives : le canal alpha, les couleurs-clés
+    désignées par l'utilisateur (`Font.bg_color` / `space_color`), et — en
+    dernier recours seulement — la couleur dominante d'une planche opaque dont
+    aucune clé n'a été désignée. Ce repli garde le comportement d'avant les
+    pipettes ; dès qu'une clé existe, c'est elle qui fait foi, y compris quand
+    elle n'est pas la couleur majoritaire."""
     import numpy as np
-    from PIL import Image
 
-    if img.mode in ("RGBA", "LA") or "transparency" in img.info:
-        rgba = img.convert("RGBA")
-        return np.array(rgba)[:, :, 3] > 0
-
+    has_alpha = img.mode in ("RGBA", "LA") or "transparency" in img.info
     rgb = np.array(img.convert("RGB"))
-    flat = rgb.reshape(-1, 3)
-    colors, counts = np.unique(flat, axis=0, return_counts=True)
-    background = colors[counts.argmax()]
-    return np.any(rgb != background, axis=2)
+    ink = (np.array(img.convert("RGBA"))[:, :, 3] > 0) if has_alpha \
+        else np.ones(rgb.shape[:2], dtype=bool)
+
+    keys = [tuple(k) for k in keys if k is not None]
+    if keys:
+        for k in keys:
+            ink &= ~np.all(rgb == np.array(k, dtype=rgb.dtype), axis=2)
+    elif not has_alpha:
+        ink &= np.any(rgb != np.array(dominant_color(img), dtype=rgb.dtype), axis=2)
+    return ink
 
 
 def detect_grid(img) -> tuple[int, int]:
@@ -106,32 +132,56 @@ def detect_grid(img) -> tuple[int, int]:
     return best
 
 
-def _measure_advance(ink, x: int, y: int, w: int, h: int) -> int:
-    """Largeur d'encre d'un glyphe : dernière colonne non vide + 1.
+def _advance_from_spacing(rgb, x: int, y: int, w: int, h: int, space_color) -> int:
+    """Chasse lue sur le MARQUEUR D'ESPACEMENT : largeur de cellule moins le
+    bloc de colonnes entièrement colorées qui la termine.
 
-    Mesurée à l'import pour le rendu proportionnel futur ; le rendu v1 à chasse
-    fixe l'ignore. Une case vide (l'espace) renvoie la largeur de cellule."""
+    C'est une **déclaration** de l'auteur, pas une mesure : la couleur dit où
+    s'arrête le caractère, y compris quand il finit par des pixels vides
+    (accolade, guillemet) ou porte un jambage qui dépasse. Mesurer l'encre à la
+    place collerait les lettres, faute de flanc.
+
+    Mesuré depuis la DROITE, en bloc contigu : une colonne isolée de cette
+    couleur au milieu d'un dessin est un accident de planche, pas une frontière.
+    Une case entièrement marquée est l'espace — sa chasse est la cellule
+    entière, sinon il n'avancerait pas."""
     import numpy as np
-    sub = ink[y:y + h, x:x + w]
-    cols = np.any(sub, axis=0)
-    if not cols.any():
-        return w
-    return int(np.nonzero(cols)[0][-1]) + 1
+    sub = rgb[y:y + h, x:x + w]
+    is_space = np.all(np.all(sub == np.array(space_color, dtype=sub.dtype), axis=2), axis=0)
+    trailing = 0
+    for i in range(w - 1, -1, -1):
+        if not is_space[i]:
+            break
+        trailing += 1
+    return (w - trailing) or w
 
 
 # ── Import PNG nu ─────────────────────────────────────────────────
 
-def import_font_png(png_path: Path, cell: Optional[tuple[int, int]] = None) -> dict:
+def import_font_png(png_path: Path, cell: Optional[tuple[int, int]] = None,
+                    keys=(), space_color=None) -> dict:
     """Analyse une planche PNG. Retourne les champs à poser sur le `Font`.
 
     Les cases entièrement vides en fin de planche sont du remplissage, pas des
-    glyphes : on les retire plutôt que de leur attribuer un caractère."""
+    glyphes : on les retire plutôt que de leur attribuer un caractère.
+
+    `keys` = couleurs déjà désignées comme transparentes sur la police (une
+    re-découpe part de ce que l'utilisateur a repiqué, elle ne redevine pas).
+
+    `space_color` gouverne la CHASSE, et lui seul : désigné, il déclare où finit
+    chaque caractère ; absent, la planche est traitée en **mono** (chasse =
+    cellule). Pas de repli sur une mesure d'encre — deviner une chasse
+    proportionnelle sans flanc déclaré donne un texte irrégulier que
+    l'utilisateur devrait corriger case par case, alors que du mono régulier est
+    toujours lisible. Cf. `measure_advances` pour le recalcul à la pipette."""
     from PIL import Image
+    import numpy as np
 
     img = Image.open(png_path)
     cw, ch = cell or detect_grid(img)
     cols, rows = max(1, img.size[0] // cw), max(1, img.size[1] // ch)
-    ink = _ink_mask(img)
+    ink = _ink_mask(img, keys)
+    rgb = np.array(img.convert("RGB"))
 
     rects = [(c * cw, r * ch) for r in range(rows) for c in range(cols)]
     # Remplissage de fin : on coupe après le dernier glyphe encré. Une case vide
@@ -146,11 +196,39 @@ def import_font_png(png_path: Path, cell: Optional[tuple[int, int]] = None) -> d
     glyphs = [
         Glyph(char=charset[i] if i < len(charset) else " ",
               x=x, y=y, w=cw, h=ch,
-              advance=_measure_advance(ink, x, y, cw, ch))
+              advance=(_advance_from_spacing(rgb, x, y, cw, ch, space_color)
+                       if space_color is not None else cw))
         for i, (x, y) in enumerate(rects)
     ]
     return {"cell_w": cw, "cell_h": ch, "line_height": ch,
             "glyphs": glyphs, "source_format": "png"}
+
+
+def measure_advances(png_path: Path, glyphs, space_color=None) -> list[int]:
+    """Chasses recalculées sur les rectangles EXISTANTS de `glyphs`.
+
+    Distinct de `import_font_png` : désigner la couleur d'espacement ne doit PAS
+    redécouper la planche. Les caractères corrigés à la main et les cases
+    fusionnées survivent — seule la chasse est relue.
+
+    Sans `space_color`, retour en mono : la chasse de chaque glyphe redevient sa
+    propre largeur (donc la cellule pour une planche régulière, et la largeur
+    réelle d'une case fusionnée)."""
+    if space_color is None:
+        return [g.w for g in glyphs]
+    import numpy as np
+    from PIL import Image
+    rgb = np.array(Image.open(png_path).convert("RGB"))
+    h_img, w_img = rgb.shape[:2]
+    out: list[int] = []
+    for g in glyphs:
+        # Un rectangle qui sort de l'image (planche remplacée par une plus
+        # petite) garde sa chasse : mieux vaut une valeur périmée qu'un plantage.
+        if g.x + g.w > w_img or g.y + g.h > h_img:
+            out.append(g.advance)
+        else:
+            out.append(_advance_from_spacing(rgb, g.x, g.y, g.w, g.h, space_color))
+    return out
 
 
 # ── Import BMFont .fnt ────────────────────────────────────────────

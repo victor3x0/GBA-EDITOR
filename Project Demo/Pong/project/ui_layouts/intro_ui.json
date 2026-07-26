@@ -1,0 +1,34 @@
+{
+  "name": "intro_ui",
+  "regions": [
+    {
+      "name": "titre",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": 0,
+      "y": 56,
+      "w": 240,
+      "h": 16,
+      "font_name": "omelette_8x8_heavy_mono",
+      "align": "center",
+      "target": "",
+      "preview_text": "intro",
+      "animated_glyphs": 0
+    },
+    {
+      "name": "invite",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": 0,
+      "y": 88,
+      "w": 240,
+      "h": 16,
+      "font_name": "omelette_8x8_heavy_mono",
+      "align": "center",
+      "target": "",
+      "preview_text": "intro_02",
+      "animated_glyphs": 0
+    }
+  ],
+  "notes": "Titre centré + invite en machine à écrire."
+}

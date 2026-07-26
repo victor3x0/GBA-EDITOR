@@ -10,7 +10,11 @@ Fallback       : QIcon vide si qtawesome absent (pas de crash)
 """
 
 from __future__ import annotations
-from PyQt6.QtGui import QIcon
+import tempfile
+from pathlib import Path
+from PyQt6.QtCore import QSize
+from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtWidgets import QApplication
 
 # ── Couleurs par type d'asset — 4 FAMILLES (voir project_theme_gba_redesign)
 # Une couleur par famille ; l'identité intra-famille passe par la FORME de
@@ -56,6 +60,9 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "tool_collision_slope":      ("mdi.trending-up",             "◥"),
     "tool_collision_slope_inv":  ("mdi.trending-down",           "◣"),
     "tool_palette":          ("mdi.palette-outline",         "◐"),
+    # Zone de texte : un rectangle qui contient du texte — l'outil délimite une
+    # surface, il ne saisit pas de texte (celui-ci vient de la table).
+    "tool_text_region":      ("mdi.format-text-variant-outline", "⌸"),
     "tool_inpaint_brush":         ("mdi.brush",                   "🖌"),
     "tool_inpaint_rect":          ("mdi.select-drag",             "▭"),
     "tool_fill":                  ("mdi.format-color-fill",       "🪣"),
@@ -129,6 +136,17 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "btn_start":             ("mdi.keyboard-return",         "⏎"),
     "btn_select":            ("mdi.menu",                    "≡"),
     "behavior_stub":         ("mdi.function-variant",        "ƒ"),
+    # Text Editor — couleurs-clés d'une planche de police
+    "eyedropper":            ("mdi.eyedropper",              "⚲"),
+    "clear":                 ("mdi.close",                   "✕"),
+    # Text Editor — clé d'un texte : accrochée au rangement ou nommée à la main
+    "key_auto":              ("mdi.link-variant",            "⚯"),
+    "key_manual":            ("mdi.link-variant-off",        "⚮"),
+    "copy":                  ("mdi.content-copy",            "⧉"),
+    "copied":                ("mdi.check",                   "✓"),
+    # Chrome des widgets — consommées par les QSS via qss_image()
+    "spin_up":               ("mdi.menu-up",                 "▲"),
+    "spin_down":             ("mdi.menu-down",               "▼"),
 }
 
 # ── Backend (chargé une seule fois) ──────────────────────────────
@@ -162,7 +180,90 @@ def get(name: str,
     return QIcon()
 
 
+# ── Icônes dessinées dans une vue zoomable ───────────────────────
+# Un pixmap rendu une fois à N px devient flou (ou crénelé) dès que la vue
+# l'agrandit. Les items de canvas passent donc par ici : ils redemandent le
+# glyphe à la résolution ÉCRAN effective (zoom de la vue × devicePixelRatio)
+# et le dessinent dans un rect de `size` unités de scène.
+
+_SCALE_STEP = 0.5     # quantification du facteur — borne le nombre d'entrées
+_SCALE_MAX = 16.0     # au-delà, le glyphe est déjà largement sur-échantillonné
+_scaled_cache: dict[tuple[str, str, int, float], QPixmap] = {}
+
+
+def scaled_pixmap(name: str,
+                  color: str = COLOR_DEFAULT,
+                  size: int = 16,
+                  scale: float = 1.0) -> QPixmap:
+    """
+    Pixmap de l'icône rendue à `size × scale` pixels réels, mise en cache.
+    L'appelant dessine dans un rect de `size` unités (rect cible + rect source
+    complet) : le résultat est net à tout niveau de zoom.
+    """
+    q = min(max(round(scale / _SCALE_STEP) * _SCALE_STEP, _SCALE_STEP), _SCALE_MAX)
+    key = (name, color, size, q)
+    px = _scaled_cache.get(key)
+    if px is None:
+        n = max(1, int(round(size * q)))
+        px = get(name, color).pixmap(QSize(n, n))
+        _scaled_cache[key] = px
+    return px
+
+
 def fallback(name: str) -> str:
     """Caractère Unicode de repli pour les widgets qui ne supportent pas QIcon."""
     entry = _REGISTRY.get(name)
     return entry[1] if entry else "?"
+
+
+# ── Icônes pour les QSS ───────────────────────────────────────────
+# `image: url(...)` ne sait lire qu'un fichier ou une ressource Qt : pas de
+# police d'icônes, pas de data-URI. On matérialise donc l'icône en PNG dans
+# un cache disque. Le CHEMIN est déterministe (clé + couleur + taille), donc
+# calculable à l'import de theme.py — alors que le RENDU exige une
+# QApplication vivante et n'arrive qu'ensuite (ensure_qss_assets).
+
+_CACHE_DIR = Path(tempfile.gettempdir()) / "gba_editor_icons"
+_pending: dict[Path, tuple[str, str, int, float]] = {}
+
+
+def _render(path: Path) -> None:
+    """Écrit le PNG si possible ; silencieux tant que Qt n'est pas prêt."""
+    if _qta is None or QApplication.instance() is None or path.exists():
+        return
+    qta_key, color, size, scale = _pending[path]
+    try:
+        icon = _qta.icon(qta_key, color=color, scale_factor=scale)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        icon.pixmap(size, size).save(str(path), "PNG")
+    except Exception:
+        pass
+
+
+def qss_image(name: str, color: str = COLOR_DEFAULT,
+              size: int = 16, scale: float = 1.0) -> str:
+    """
+    Chemin POSIX (QSS n'aime pas les `\\`) d'un PNG rendu depuis l'icon set.
+    `scale` grossit le glyphe dans sa boîte — les icônes MDI laissent une
+    marge généreuse, trop discrète pour du petit chrome de widget.
+    Retourne "" si l'icône est inconnue ou le backend absent : l'appelant
+    omet alors la règle `image:` au lieu de pointer un fichier fantôme.
+    """
+    entry = _REGISTRY.get(name)
+    if entry is None or _qta is None:
+        return ""
+    qta_key = entry[0]
+    slug = f"{qta_key.replace('.', '_')}_{color.lstrip('#')}_{size}_{scale:g}"
+    path = _CACHE_DIR / f"{slug}.png"
+    _pending[path] = (qta_key, color, size, scale)
+    _render(path)
+    return path.as_posix()
+
+
+def ensure_qss_assets() -> None:
+    """
+    Rend les PNG demandés par les QSS. À appeler une fois après la création
+    de la QApplication et avant `setStyleSheet`.
+    """
+    for path in list(_pending):
+        _render(path)

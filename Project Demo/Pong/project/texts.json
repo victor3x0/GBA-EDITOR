@@ -1,3 +1,70 @@
 {
-  "texts": []
+  "texts": [
+    {
+      "id": 512649292740,
+      "key": "intro",
+      "path": [
+        "INTRO"
+      ],
+      "content": "PONG",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 698408366946,
+      "key": "intro_02",
+      "path": [
+        "INTRO"
+      ],
+      "content": "PRESS START",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 208987591065,
+      "key": "victory",
+      "path": [
+        "VICTORY"
+      ],
+      "content": "PLAYER WINS!",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 553680334419,
+      "key": "victory_02",
+      "path": [
+        "VICTORY"
+      ],
+      "content": "CPU WINS!",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 736886934342,
+      "key": "victory_03",
+      "path": [
+        "VICTORY"
+      ],
+      "content": "PRESS START",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 879132643943,
+      "key": "arena_bulle",
+      "path": [
+        "ARENA"
+      ],
+      "content": "GO!",
+      "note": "Bulle ancrée sur la raquette du joueur — test du rendu en sprites.",
+      "scene": "",
+      "auto_key": false
+    }
+  ]
 }

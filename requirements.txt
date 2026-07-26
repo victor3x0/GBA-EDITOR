@@ -1,4 +1,12 @@
+# Dépendances Python de l'éditeur — `pip install -r requirements.txt`.
+#
+# Ne lister ici que les paquets importés DIRECTEMENT par editor/ : les
+# dépendances transitives sont tirées par pip toutes seules (antlr4 et
+# multimethod pour luaparser, PyQt6-Qt6/PyQt6-sip pour PyQt6, qtpy pour
+# qtawesome). `python packaging/check_deps.py` vérifie que cette liste
+# couvre bien tous les imports du code — la CI le lance avant le build.
 PyQt6
 Pillow
 qtawesome
 numpy
+luaparser

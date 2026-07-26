@@ -19,7 +19,9 @@ L'éditeur s'occupe automatiquement de préparer les ressources & de générer l
 
 ## Installation
 
-1. Télécharger le dernier `.exe` depuis l'onglet [Releases](https://github.com/victor3x0/GBA-EDITOR/releases).
+1. Télécharger depuis l'onglet [Releases](https://github.com/victor3x0/GBA-EDITOR/releases), au choix :
+   - **`GBAEditor-<version>-windows-setup.exe`** — installateur. S'installe pour votre compte utilisateur uniquement, sans demander de droits administrateur.
+   - **`GBAEditor-<version>-windows-portable.zip`** — version portable. Décompressez où vous voulez et lancez `GBA Editor.exe`.
 
 Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'éditeur les détecte automatiquement leur installation) :
 

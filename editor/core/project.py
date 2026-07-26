@@ -34,11 +34,13 @@ Scene, Actor, ...`) continue de fonctionner sans changement.
 import json
 import shutil
 import copy
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
 from core import asset_sync, project_migrations
+from core.app_paths import IS_FROZEN
 from core.resource_manager import ResourceManager, safe_filename, _atomic_write
 # Domaines de référence Lua — un renommage d'élément met à jour les scripts
 # qui le citent (cf. rename_lua_refs / scripting/refactor.py).
@@ -51,7 +53,10 @@ from scripting.api import (
 #    `from core.project import Scene, Actor, SpriteAsset, ...`) ────────────
 from core.models.resource import Resource, MIME_PREFAB_TEMPLATE, MIME_SCRIPT
 from core.models.settings import ProjectSettings, GlobalVar, Constant
-from core.models.text import Text, make_key as make_text_key, new_id as new_text_id
+from core.models.text import (
+    Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
+    new_id as new_text_id,
+)
 from core.models.palette import PaletteBank, OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin
 from core.models.components import (
@@ -62,6 +67,7 @@ from core.models.sprite import TilePlacement, AnimFrame, StateDirection, AnimSta
 from core.models.background import BackgroundLayer, BackgroundAsset, Tileset
 from core.models.audio import Sfx, Music, SFX_FILE_EXTS, MUSIC_FILE_EXTS
 from core.models.font import Font, Glyph, FONT_FILE_EXTS
+from core.models.ui_region import UILayout, UIRegion
 from core.models.scene import (
     TILE_EMPTY, TILE_SOLID,
     TILE_SLOPE_L, TILE_SLOPE_R, TILE_SLOPE_L_LO, TILE_SLOPE_L_HI,
@@ -97,6 +103,7 @@ class Project:
         self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
         self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
+        self.ui_layouts: ResourceManager[UILayout] = ResourceManager(self.ui_layouts_dir, UILayout)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -143,6 +150,15 @@ class Project:
         on parle de centaines d'entrées courtes, et un traducteur veut tout voir
         d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté."""
         return self.project_dir / "texts.json"
+
+    @property
+    def ui_layouts_dir(self) -> Path:
+        """Mises en page d'UI — project/ui_layouts/*.json.
+
+        Un fichier par mise en page (contrairement aux textes, monolithiques) :
+        une mise en page est un objet qu'on renomme, duplique et partage entre
+        scènes, donc qui mérite une identité de fichier — comme une palette."""
+        return self.project_dir / "ui_layouts"
 
     @property
     def legacy_palettes_file(self) -> Path:
@@ -317,6 +333,12 @@ class Project:
     def sync_background_png(self, png_path: Path) -> Optional[str]:
         return asset_sync.sync_background_png(self, png_path)
 
+    def sync_font_file(self, path: Path) -> Optional[str]:
+        return asset_sync.sync_font_file(self, path)
+
+    def remove_font_file(self, path: Path):
+        asset_sync.remove_font_file(self, path)
+
     @staticmethod
     def apply_bg_encoding(ba: "BackgroundAsset", source_name: str, c: dict):
         asset_sync.apply_bg_encoding(ba, source_name, c)
@@ -324,7 +346,7 @@ class Project:
     def commit_all_removals(self):
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
-                    self.fonts, self.scenes, self.prefabs):
+                    self.fonts, self.scenes, self.prefabs, self.ui_layouts):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -340,6 +362,35 @@ class Project:
 
     def get_palette(self, name: str) -> Optional[PaletteBank]:
         return self.palettes.get(name)
+
+    def get_ui_layout(self, name: str) -> Optional[UILayout]:
+        return self.ui_layouts.get(name)
+
+    def scene_ui_layout(self, scene) -> Optional[UILayout]:
+        """Mise en page d'une scène, ou None si elle n'en référence aucune (ou
+        si la référence est cassée — un nom qui ne résout plus ne doit pas
+        faire tomber le chargement, le validateur le signalera)."""
+        name = getattr(scene, "ui_layout", "")
+        return self.ui_layouts.get(name) if name else None
+
+    def all_regions(self) -> list:
+        """[(UILayout, UIRegion)] de tout le projet, dans un ordre STABLE.
+
+        C'est cet ordre qui devient l'index dans la table C `g_ui_regions` —
+        même convention que les textes et les polices (« l'ORDRE fait foi »).
+        Ordre des mises en page, puis des régions dans chacune."""
+        return [(lay, r) for lay in self.ui_layouts for r in lay.regions]
+
+    def region_names(self) -> list[str]:
+        """Noms de région du projet entier — l'espace de nommage des
+        constantes `REGION_*`, donc ce contre quoi vérifier l'unicité."""
+        return [r.name for _, r in self.all_regions()]
+
+    def ui_layout_users(self, name: str) -> list:
+        """Scènes qui référencent cette mise en page. Alimente le badge
+        « partagée — N scènes » : éditer une région depuis le canvas modifie un
+        objet commun, et le taire casserait N scènes d'un geste."""
+        return [s for s in self.scenes if getattr(s, "ui_layout", "") == name]
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:
@@ -455,11 +506,12 @@ class Project:
         seen_ids: set[int] = set()
         seen_keys: set[str] = set()
         for t in self.texts:
+            t.path = norm_text_path(t.path)
             if not t.id or t.id in seen_ids:
                 t.id = new_text_id(seen_ids)
             seen_ids.add(t.id)
             if not t.key or t.key in seen_keys:
-                t.key = make_text_key(t.scene, taken=seen_keys)
+                t.key = text_key_from_path(t.path, taken=seen_keys)
             seen_keys.add(t.key)
 
     # ── CRUD textes ─────────────────────────────────────────────────
@@ -476,32 +528,71 @@ class Project:
         de données (inspecteurs, scènes), insensibles au renommage."""
         return next((t for t in self.texts if t.id == tid), None)
 
-    def new_text(self, content: str = "", scene: str = "",
-                 context: str = "", label: str = "") -> Text:
-        """Crée une entrée. La clé vient du contexte de création, jamais du
-        contenu (cf. models/text.py)."""
+    def new_text(self, content: str = "", scene: str = "", path=None) -> Text:
+        """Crée une entrée. La clé dérive du chemin de rangement, jamais du
+        contenu (cf. models/text.py).
+
+        Un texte créé depuis une scène naît sous un nœud portant son nom :
+        l'arbre se remplit tout seul, et le chemin par défaut situe déjà."""
+        p = norm_text_path(path if path is not None else ([scene] if scene else []))
         t = Text(
             id      = new_text_id({x.id for x in self.texts}),
-            key     = make_text_key(scene, context, taken=self.text_keys()),
-            label   = label,
+            key     = text_key_from_path(p, taken=self.text_keys()),
+            path    = p,
             content = content,
             scene   = scene,
         )
         self.texts.append(t)
         return t
 
+    def text_path_key(self, text: Text) -> str:
+        """Clé que le chemin actuel de `text` produirait — sans l'appliquer.
+        Sa propre clé est exclue des collisions, sinon un texte déjà posé au
+        bon endroit se verrait proposer un rang `_02` contre lui-même."""
+        return text_key_from_path(text.path, taken=self.text_keys() - {text.key})
+
     def rename_text_key(self, text: Text, new_key: str) -> bool:
-        """Renomme la clé d'un texte. Retourne False si le nom est vide ou déjà
-        pris — l'appelant (UI) affiche l'erreur. Les appels text.draw("clé")
-        des scripts suivent (cf. rename_lua_refs)."""
+        """Renommage MANUEL. Retourne False si le nom est vide ou déjà pris —
+        l'appelant (UI) affiche l'erreur. Les appels text.draw("clé") des
+        scripts suivent (cf. rename_lua_refs).
+
+        La clé se DÉTACHE alors du chemin (`auto_key=False`) : elle appartient
+        à l'utilisateur, ranger le texte ailleurs ne la touchera plus."""
+        return self._apply_text_key(text, new_key, manual=True)
+
+    def resync_text_key(self, text: Text) -> Optional[str]:
+        """Recale une clé automatique sur le chemin de rangement, et retourne
+        la nouvelle clé (None si rien n'a bougé).
+
+        No-op sur une clé nommée à la main — c'est tout l'intérêt de
+        `auto_key` : le rangement reste un geste cosmétique tant que
+        l'utilisateur n'a pas pris la main sur la clé."""
+        if not text.auto_key:
+            return None
+        want = self.text_path_key(text)
+        return want if (want != text.key
+                        and self._apply_text_key(text, want, manual=False)) else None
+
+    def restore_text_key(self, text: Text, key: str) -> bool:
+        """Repose une clé telle quelle sans la marquer « nommée à la main ».
+
+        Sert à l'ANNULATION d'un rangement : rejouer `resync_text_key` en sens
+        inverse ne rendrait pas forcément la même clé (le rang `_NN` dépend des
+        clés prises à cet instant), il faut donc remettre l'exacte ancienne."""
+        return self._apply_text_key(text, key, manual=False)
+
+    def _apply_text_key(self, text: Text, new_key: str, *, manual: bool) -> bool:
         new_key = (new_key or "").strip()
         if not new_key or any(t.key == new_key and t is not text for t in self.texts):
             return False
         old_key = text.key
+        if new_key == old_key:
+            return True
         with self._renaming():
             refs = self.rename_lua_refs(DOMAIN_TEXT, old_key, new_key)
             text.key = new_key
-            text.auto_key = False
+            if manual:
+                text.auto_key = False
         self._notify_renamed("Texte", old_key, new_key, refs)
         return True
 
@@ -674,14 +765,29 @@ class Project:
         """Suspend le watcher pendant un renommage : le fichier de scène
         déplacé et les scripts réécrits sont NOS écritures. Sans ça le watcher
         les rapporte comme « modifié à l'extérieur », l'éditeur recharge et
-        son propre message écrase celui du renommage. No-op hors GUI."""
+        son propre message écrase celui du renommage. No-op hors GUI.
+
+        Persiste aussi la frappe en cours du Script Editor AVANT de commencer :
+        la réécriture lit les scripts sur disque, une ligne encore dans le
+        buffer ne serait pas mise à jour."""
         try:
             from core.command_dispatcher import get_dispatcher
         except ImportError:
             yield
             return
-        with get_dispatcher().suspended():
+        dispatcher = get_dispatcher()
+        dispatcher.flush_script_edits()
+        with dispatcher.suspended():
             yield
+
+    def _notify_status(self, msg: str) -> None:
+        """Message de statut simple. Silencieux hors GUI (build en ligne de
+        commande, tests) — même repli que _notify_renamed."""
+        try:
+            from core.command_dispatcher import get_dispatcher
+        except ImportError:
+            return
+        get_dispatcher()._emit("status_message", msg)
 
     def _notify_renamed(self, label: str, old: str, new: str,
                         refs: Optional[dict] = None,
@@ -766,6 +872,7 @@ class Project:
         self.sfx.save_all()
         self.music.save_all()
         self.fonts.save_all()
+        self.ui_layouts.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()
@@ -773,7 +880,7 @@ class Project:
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
-                    "project/palettes",
+                    "project/palettes", "project/ui_layouts",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -791,6 +898,8 @@ class Project:
         self.sfx.load()
         self.music.load()
         self.fonts.load()
+        # Avant les scènes : une scène référence sa mise en page par nom.
+        self.ui_layouts.load()
         project_migrations.migrate_bg_sidecar_location(self)
         self.backgrounds.load()
         project_migrations.reconcile_backgrounds(self)
@@ -799,6 +908,12 @@ class Project:
         project_migrations.reconcile_fonts(self)
         project_migrations.load_scenes_with_migration(self)
         project_migrations.migrate_scene_backgrounds(self)
+        # En dernier : la migration display.* → text.* crée des entrées de
+        # table et réécrit des scripts. Son message doit rester visible, d'où
+        # le passage par _notify (silencieux hors GUI).
+        msg = project_migrations.migrate_display_calls(self)
+        if msg:
+            self._notify_status(msg)
 
     # ── Création / ouverture ──────────────────────────────────────
 
@@ -839,14 +954,20 @@ class Project:
 
         proj.save()
 
-        # Launcher .bat — ouvre l'éditeur directement sur ce projet
-        editor_dir = Path(__file__).parent
-        editor_root = editor_dir.parent
+        # Launcher .bat — ouvre l'éditeur directement sur ce projet.
+        # Figé (exe distribué) : appeler l'exe. Depuis les sources : passer
+        # par l'interpréteur courant. L'ancienne version écrivait toujours
+        # `python editor\main.py` depuis la racine du repo, ce qui ne peut
+        # pas marcher chez quelqu'un qui n'a que l'exe.
         bat_path = root / f"{name}.bat"
+        if IS_FROZEN:
+            cmd = f"\"{Path(sys.executable)}\" --project \"{root}\""
+        else:
+            editor_root = Path(__file__).resolve().parents[2]
+            cmd = (f"cd /d \"{editor_root}\"\r\n"
+                   f"\"{Path(sys.executable)}\" editor\\main.py --project \"{root}\"")
         bat_path.write_text(
-            f"@echo off\r\n"
-            f"cd /d \"{editor_root}\"\r\n"
-            f"python editor\\main.py --project \"{root}\"\r\n",
+            f"@echo off\r\n{cmd}\r\n",
             encoding="utf-8"
         )
 

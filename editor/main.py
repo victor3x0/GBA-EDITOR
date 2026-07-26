@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
 from ui.common.theme import GLOBAL_QSS, C
+from ui.common import icons
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
 
 
@@ -63,11 +64,13 @@ if __name__ == "__main__":
     app.setApplicationName("GBA Editor")
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
+    # Les QSS référencent quelques icônes par chemin de fichier : il faut les
+    # rendre maintenant (la QApplication existe) avant d'appliquer la feuille.
+    icons.ensure_qss_assets()
     app.setStyleSheet(GLOBAL_QSS)
 
     # Si aucun projet fourni en argument, afficher l'écran d'accueil
     if project_path is None:
-        PROJECTS_DIR.mkdir(exist_ok=True)
         picker = HomeScreen(PROJECTS_DIR)
         if picker.exec() != QDialog.DialogCode.Accepted or not picker.result_path:
             sys.exit(0)

@@ -236,6 +236,10 @@ class Scene(Resource):
     render_mode: int = 0
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
+    # Mise en page d'UI référencée par NOM (project/ui_layouts/<nom>.json) —
+    # la géométrie authorée des zones de texte. "" = aucune, le script place
+    # alors tout lui-même via text.draw(id, tx, ty). cf. models/ui_region.py
+    ui_layout: str = ""
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
@@ -287,6 +291,7 @@ class Scene(Resource):
             "scroll_v": self.scroll_v,
             "script": self.script,
             "text_bg": self.text_bg,
+            "ui_layout": self.ui_layout,
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
             "active_obj_palettes": self.active_obj_palettes,
@@ -374,6 +379,7 @@ class Scene(Resource):
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),
             text_bg=d.get("text_bg", 1),
+            ui_layout=d.get("ui_layout", ""),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),
             active_obj_palettes=d.get("active_obj_palettes", []),

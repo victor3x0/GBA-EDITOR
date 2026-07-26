@@ -195,7 +195,12 @@ extern int  text_length   (int id);
 extern void text_clear    (int tx, int ty, int w, int h);
 extern void text_draw     (int id, int tx, int ty);
 extern void text_draw_upto(int id, int tx, int ty, int n);
-extern void text_draw_box (int id, int tx, int ty, int w, int n);
+extern void text_draw_num (int value, int tx, int ty);
+/* Rendu dans une zone dessinée dans le canvas de scène : elle porte position,
+   largeur de coupe, alignement et police. Remplace `text_draw_box`, dont la
+   géométrie vivait dans le script (donc invisible dans l'éditeur). */
+extern void text_draw_in     (int id, int region);
+extern void text_draw_in_upto(int id, int region, int n);
 
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,
@@ -215,8 +220,9 @@ extern void tilemap_set_flip   (int bg, int tx, int ty, int fh, int fv);
 extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
 
 /* Fonctions texte HUD — définies dans main.c via GBA_ENGINE_IMPL (wrappers TTE) */
-extern void draw_printf(int col, int row, const char *fmt, ...);
-extern void draw_clear (int col, int row, int len);
+/* draw_printf / draw_clear retirés avec libtonc TTE — cf. gba_engine.h.
+   Remplacements : text_draw (libellé, depuis la table) et text_draw_num
+   (valeur). */
 
 /* Vrai si au moins une solid box a un tile solide juste dessous */
 static inline int actor_on_ground(const Actor*a) {

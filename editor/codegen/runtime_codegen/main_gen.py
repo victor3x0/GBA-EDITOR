@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import shutil
-from pathlib import Path
 from typing import Optional
 
 from core.project import (
@@ -21,9 +20,7 @@ from codegen.asset_pipeline import (
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
 )
 from codegen.build_utils import sym as _sym
-
-
-RUNTIME_DIR = Path(__file__).resolve().parents[3] / "runtime"
+from core.app_paths import RUNTIME_DIR
 
 
 _BTN_MAP = [
@@ -101,7 +98,46 @@ def _bg_info(p: Project, scene) -> list[dict]:
                 "map_size": ms, "map_sbb_count": map_sbb_count,
                 "speed": speed, "pal_bank": layer.pal_bank,
             })
+    _apply_vram_layout(p, scene, result)
     return result
+
+
+def _layer_tiles_used(p, bi: dict) -> int:
+    """Tuiles réellement générées pour un layer. Deux sources selon le chemin :
+    le sidecar pour un fond compressé (connu sans grit), l'en-tête grit sinon."""
+    ba = p.get_background(bi["stem"]) if bi.get("stem") else None
+    if bi.get("compressed") and ba is not None and ba.tileset:
+        return len(ba.tileset)
+    header = p.grit_out_dir / f"{bi['sym']}.h"
+    if header.exists():
+        import re
+        m = re.search(rf"{bi['sym']}TilesLen\s+(\d+)", header.read_text())
+        if m:
+            return int(m.group(1)) // 32
+    # Inconnu (grit pas encore passé) : on suppose le pire pour ne pas
+    # sur-promettre de la place à un voisin.
+    return 512
+
+
+def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
+    """Remplace le placement historique des maps par celui de l'allocateur.
+
+    Écrit `sbb` sur place, et mémorise le placement du texte sur la scène pour
+    que `_gen_scene_init` le retrouve — les deux doivent voir EXACTEMENT la même
+    allocation, sinon les tuiles et la map du texte partent à des adresses qui
+    ne se correspondent plus."""
+    from codegen.vram_alloc import scene_layout
+    from codegen.font_emit import scene_text_tiles
+    slots = {bi["bg"]: _layer_tiles_used(p, bi) for bi in bgi}
+    maps  = {bi["bg"]: bi["map_sbb_count"] for bi in bgi}
+    text_bg = getattr(scene, "text_bg", -1)
+    # names=None : réservation à l'échelle du projet. Restreindre à la mise en
+    # page de la scène demande d'abord d'indexer text.set_font (cf. font_emit).
+    text_tiles = scene_text_tiles(project_fonts(p), None)
+    lay = scene_layout(slots, maps, text_bg, text_tiles)
+    for bi in bgi:
+        bi["sbb"] = lay.map_sbb[bi["bg"]]
+    scene._vram_layout = lay   # consommé par _gen_scene_init
 
 
 def _pool_info(prefabs, pool_start: int) -> list[dict]:
@@ -205,6 +241,37 @@ def _sprite_offsets_for(p: Project, sprites: list) -> tuple[dict, dict]:
         nframes[sprite.name] = nf
         tile_offset += sprite.tiles_per_frame * nf
     return offsets, nframes
+
+
+def _obj_tiles_used(p: Project, sprites: list) -> int:
+    """Tuiles de VRAM OBJ occupées par les sprites — donc la 1re tuile libre.
+
+    Recalcule l'accumulation de `_sprite_offsets_for` plutôt que de lui faire
+    rendre un total de plus : les deux doivent packer à l'identique, et un
+    second compteur à tenir à jour finirait par diverger."""
+    seen, total = set(), 0
+    for _, sprite in sprites:
+        if not sprite or not sprite.asset or sprite.name in seen:
+            continue
+        seen.add(sprite.name)
+        total += sprite.tiles_per_frame * count_frames(p, sprite)
+    return total
+
+
+def _obj_text_alloc(p: Project) -> dict:
+    """Placement OBJ de chaque zone : {nom: {oam_rel, tile_rel, ...}}.
+
+    Relatif à sa MISE EN PAGE, pas au projet : deux mises en page se partagent
+    la même plage réservée puisqu'une seule est active par scène. Sans ça, cinq
+    boîtes de dialogue dans cinq mises en page réserveraient cinq fois la place
+    alors qu'on n'en voit jamais qu'une."""
+    from core.models.ui_region import layout_obj_budget
+    out = {}
+    for lay in getattr(p, "ui_layouts", []):
+        bud = layout_obj_budget(lay)
+        for name, place in bud["place"].items():
+            out[name] = place
+    return out
 
 
 def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
@@ -497,8 +564,9 @@ def project_fonts(p) -> list:
 
 
 def _fonts_and_texts_lines(p, emit=None) -> list[str]:
-    """Tables C des polices et des textes (cf. codegen/font_emit)."""
-    from codegen.font_emit import encode_font, emit_fonts_c, emit_texts_c
+    """Tables C des polices, des textes et des zones (cf. codegen/font_emit)."""
+    from codegen.font_emit import (encode_font, emit_fonts_c, emit_texts_c,
+                                   emit_ui_regions_c)
 
     encoded = []
     for f in project_fonts(p):
@@ -511,14 +579,52 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
         if e.get("warning") and emit:
             emit("log_line", f"[font] {e['warning']}")
         if emit:
+            # Le CHEMIN de rendu et le coût VRAM réel, pas seulement le nombre
+            # de tuiles : une police composée n'en charge aucune, c'est la
+            # surface qui coûte. Sans ça, un basculement automatique (police
+            # trop grosse) serait invisible dans le log.
+            from codegen.font_emit import render_composited, font_vram_tiles
+            mode = "composition" if render_composited(f) else "tilemap"
             emit("log_line", f"[font] {f.name} -> {e['n_tiles']} tuiles, "
-                             f"{len(e['codepoints'])} glyphes")
+                             f"{len(e['codepoints'])} glyphes, rendu {mode}, "
+                             f"{font_vram_tiles(f)} tuiles VRAM")
         encoded.append((f.name, e))
 
     texts = list(getattr(p, "texts", []))
     if emit and texts:
         emit("log_line", f"[text] {len(texts)} entrée(s) de texte")
-    return emit_fonts_c(encoded) + emit_texts_c(texts)
+
+    regions = p.all_regions() if hasattr(p, "all_regions") else []
+    if emit and regions:
+        emit("log_line", f"[text] {len(regions)} zone(s) de texte "
+                         f"({len(p.ui_layouts)} mise(s) en page)")
+    font_names = [f.name for f in project_fonts(p)]
+    return (emit_fonts_c(encoded) + emit_texts_c(texts)
+            + emit_ui_regions_c(regions, font_names, emit,
+                                obj_place=_obj_text_alloc(p),
+                                actor_index=_region_actor_index(p)))
+
+
+def _region_actor_index(p: Project) -> dict:
+    """{nom de zone: index global dans g_actors} pour les zones ancrées actor.
+
+    Résolu contre la PREMIÈRE scène qui référence la mise en page. Une mise en
+    page partagée par deux scènes où l'acteur n'a pas le même index global
+    donnerait deux réponses ; on prend la première et on le signale, plutôt que
+    d'ajouter une indirection par scène pour un cas qui n'existe pas encore
+    (une bulle est en pratique dans la mise en page de sa scène)."""
+    out: dict = {}
+    offset = 0
+    for scene in p.scenes:
+        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+        actors = [a for a in getattr(scene, "actors", [])]
+        if lay is not None:
+            names = {a.name: offset + i for i, a in enumerate(actors)}
+            for r in lay.regions:
+                if r.anchor == "actor" and r.name not in out:
+                    out[r.name] = names.get(r.anchor_actor, -1)
+        offset += len(actors)
+    return out
 
 
 def _gen_scene_init(
@@ -534,6 +640,8 @@ def _gen_scene_init(
     has_sound: bool,
     sound_assets: dict | None,
     actor_defined_events: dict[str, set[str]] | None = None,
+    obj_text_oam: int = -1,
+    obj_text_tile: int = 0,
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
@@ -614,20 +722,41 @@ def _gen_scene_init(
     # une scène sans aucune palette BG active doit quand même pouvoir
     # afficher une couleur de fond).
     L.append(f"    PAL_BG_RAM[0] = 0x{_resolve_backdrop_color(p, scene):04X};")
-    # TTE — CBB/SBB du charblock DU LAYER UI choisi (pas figé sur CBB3) : les
-    # glyphes de police vivent dans le charblock text_bg (bg_slot == text_bg,
-    # cf. per-layer redesign CBB=bg_slot), dernier SBB de ce même charblock.
-    # Le layer UI ne doit porter aucune image (cf. _check_bg_text_cbb_conflict,
-    # devenu bloquant) : ce charblock est donc entièrement libre pour la police.
+    # Texte (text.*) — le layer d'UI porte les glyphes ; la 1ère police du
+    # projet est chargée par défaut, `text.set_font()` en change.
+    #
+    # Plus d'init TTE ici : libtonc est sorti du workflow. TTE chargeait SA
+    # police à partir de la tuile 1 de ce même charblock, là où text_set_font
+    # pose la nôtre — les deux s'écrasaient. Un seul système de texte, donc un
+    # seul occupant du charblock (cf. gba_engine.h, section TTE retiré).
     text_bg = getattr(scene, "text_bg", -1)
+    lay = getattr(scene, "_vram_layout", None)
     if text_bg in {0, 1, 2, 3}:
-        text_sbb = text_bg * 8 + 7
-        L.append(f"    tte_init_se({text_bg}, BG_CBB({text_bg})|BG_SBB({text_sbb}), SE_PALBANK(15), 0x7FFF, 0, &fwf_default, NULL);")
-    # Texte custom (text.*) — le layer d'UI porte les glyphes ; la 1ère police
-    # du projet est chargée par défaut, `text.set_font()` en change.
+        # BGxCNT du layer d'UI. Il n'a pas d'image, donc la boucle des fonds
+        # ci-dessus ne l'a pas configuré — et c'est `tte_init_se` qui s'en
+        # chargeait avant, en effet de bord. Sans cette ligne le registre reste
+        # à 0 (display_reset) : CBB 0 ET SBB 0, donc les screen entries du texte
+        # atterrissent PILE sur ses propres tuiles de glyphes.
+        #
+        # CBB et SBB viennent de l'allocateur : le charblock du texte n'est plus
+        # forcément le sien, c'est tout l'intérêt (cf. codegen/vram_alloc.py).
+        text_cbb = lay.text_cbb if lay else text_bg
+        text_sbb = lay.text_sbb if lay else text_bg * 8 + 7
+        text_cnt = (text_bg & 3) | (text_cbb & 3) << 2 | (text_sbb & 0x1F) << 8
+        L.append(f"    bg_cnt_set({text_bg}, 0x{text_cnt:04X});"
+                 f"   /* layer UI BG{text_bg} : CBB{text_cbb}, SBB{text_sbb} */")
     L.append(f"    text_set_layer({text_bg if text_bg in {0,1,2,3} else -1});")
     if project_fonts(p):
+        # APRÈS text_set_layer (qui repose le charblock par défaut) et AVANT
+        # text_set_font (qui copie les glyphes à cette adresse).
+        L.append(f"    text_set_charblock({lay.text_cbb if lay else text_bg});")
+        L.append(f"    text_set_tile_base({lay.text_base if lay else 1});")
         L.append("    text_set_font(0);")
+    # Bande de sprites du texte : après les sprites d'acteurs (tuiles) et après
+    # tous les slots d'acteurs et de pools (OAM). -1 = aucune zone en cible OBJ.
+    if obj_text_oam >= 0:
+        L.append(f"    text_obj_set_actor_fn(_txt_actor_x, _txt_actor_y);")
+        L.append(f"    text_obj_set_base({obj_text_oam}, {obj_text_tile});")
     # DISPCNT
     L.append(f"    dispcnt_set(0x{dispcnt:04X});")
     # Windows (WIN0/WIN1/fenêtre-objet) — mêmes fonctions runtime que l'API Lua
@@ -1062,6 +1191,33 @@ def generate_main(
 
     sprite_offsets, sprite_nframes = _sprite_offsets_for(p, all_sprite_pairs)
 
+    # Bases de la bande de texte OBJ : la queue de ce que les sprites occupent.
+    _obj_alloc = _obj_text_alloc(p)
+    _obj_need  = max((pl["oam_rel"] + pl["oam"] for pl in _obj_alloc.values()),
+                     default=0)
+    obj_text_oam  = n_actors if _obj_need else -1
+    obj_text_tile = _obj_tiles_used(p, all_sprite_pairs)
+    if _obj_need and emit:
+        emit("log_line",
+             f"[text] bande OBJ : OAM {obj_text_oam}..{obj_text_oam + _obj_need - 1} "
+             f"(sur 128), tuiles depuis {obj_text_tile}")
+        if obj_text_oam + _obj_need > 128:
+            emit("error_line",
+                 f"[error] les zones de texte en sprites demandent "
+                 f"{_obj_need} slots OAM après {n_actors} d'acteurs — "
+                 f"le matériel n'en a que 128.")
+        # Les tuiles OBJ tombent à 512 en mode bitmap (la VRAM BG y empiète sur
+        # l'espace sprite) : c'est la scène la plus contrainte qui commande.
+        _tiles_need = max((pl["tile_rel"] + pl["tiles"] for pl in _obj_alloc.values()),
+                          default=0)
+        _cap = 512 if any(getattr(sc, "render_mode", 0) in (3, 4, 5)
+                          for sc in p.scenes) else 1024
+        if obj_text_tile + _tiles_need > _cap:
+            emit("error_line",
+                 f"[error] les zones de texte en sprites demandent "
+                 f"{_tiles_need} tuiles OBJ après {obj_text_tile} de sprites, "
+                 f"soit plus que les {_cap} disponibles.")
+
     # ── Génération des includes (union de toutes les scènes) ──────
     L: list[str] = []
     seen_incs: set[str] = set()
@@ -1223,6 +1379,18 @@ def generate_main(
     _anchor_obj_layout = scene_bank_layout(p, all_scenes[0], "obj") if all_scenes else None
     L += _section_spawn(pi, p, _anchor_obj_layout, actor_defined_events=actor_defined_events)
 
+    # Position d'un acteur pour les zones de texte ancrées : `gba_engine.h`
+    # ignore la structure Actor (elle est déclarée dans actor_api_static.h, qui
+    # inclut le moteur et non l'inverse), d'où ces deux accesseurs passés par
+    # pointeur de fonction plutôt qu'une dépendance inversée.
+    if obj_text_oam >= 0:
+        L += [
+            "/* ── Position d'acteur pour les zones de texte ancrées ─── */",
+            "static int _txt_actor_x(int i) { return g_actors[i].x; }",
+            "static int _txt_actor_y(int i) { return g_actors[i].y; }",
+            "",
+        ]
+
     # ── scene_init_X() par scène ──────────────────────────────────
     for i, d in enumerate(all_scene_data):
         sc         = d["scene"]
@@ -1253,6 +1421,7 @@ def generate_main(
             p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
             sprite_offsets, dispcnt, has_sound, sound_assets,
             actor_defined_events=actor_defined_events,
+            obj_text_oam=obj_text_oam, obj_text_tile=obj_text_tile,
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────

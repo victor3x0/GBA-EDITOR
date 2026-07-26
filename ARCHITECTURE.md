@@ -69,9 +69,11 @@ gba-editor/
 │           └── script_editor.py            ← écran complet (assemble sidebar+éditeur+finder)
 ├── runtime/
 │   └── Makefile                     ← copié dans build/ au moment du build
-├── packaging/                       ← packaging PyInstaller + CI (voir section dédiée)
-│   ├── gba_editor.spec
+├── packaging/                       ← packaging Nuitka + CI (voir section dédiée)
+│   ├── nuitka_build.py              ← commande de build unique (CI et local)
+│   ├── check_deps.py                ← garde-fou requirements.txt vs imports réels
 │   ├── icon.ico / icon.png
+│   ├── windows/installer.nsi        ← installateur NSIS (par utilisateur)
 │   └── linux/                       ← AppImage (job CI en pause)
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
@@ -265,23 +267,36 @@ veut voir d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté.
 | --- | --- | --- |
 | `id` | opaque (12 chiffres), tiré une fois, jamais affiché | dans les **fichiers de données** — insensible au renommage |
 | `key` | poignée lisible, ce qu'écrit un script Lua | oui, **au build** uniquement → index de table C, comme `SFX_*` |
-| `label` | organisation libre, peut se répéter | **jamais** |
+| `path` | rangement libre, 1 à 3 niveaux, peut se répéter | **jamais** |
 
-Deux identifiants résolvables donneraient de l'ambiguïté (deux entrées au même label), un
-signal brouillé (un label *invite* à être retouché, une clé non) et un graphe de
-dépendances à deux passes. Le confort de lecture est rendu par l'UI — autocomplétion et
-aperçu du contenu en ligne — pas par un second chemin de résolution.
+Deux identifiants résolvables donneraient de l'ambiguïté (deux entrées au même
+rangement), un signal brouillé (un libellé *invite* à être retouché, une clé non) et un
+graphe de dépendances à deux passes. Le confort de lecture est rendu par l'UI —
+autocomplétion et aperçu du contenu en ligne — pas par un second chemin de résolution.
 
-**La clé situe, elle ne résume pas.** Elle est dérivée du *contexte* de création
-(`village_garde_01`), jamais du contenu : le contenu est réécrit vingt fois pendant
+**La clé situe, elle ne résume pas.** Elle est dérivée de la *place* du texte
+(`village_garde`), jamais du contenu : le contenu est réécrit vingt fois pendant
 l'écriture, la place dans le jeu bouge rarement. Une clé tirée du contenu
-(`garde_je_suis`) devient un mensonge dès que le garde devient un mendiant. Corollaire
-verrouillé : **la clé n'est jamais recalculée** — posée une fois, elle appartient à
-l'utilisateur ; le sens n'y arrive que par renommage manuel (`menu_confirmer`), signalé
-par `auto_key = False`.
+(`garde_je_suis`) devient un mensonge dès que le garde devient un mendiant.
 
-`_repair_texts()` rattrape un fichier édité à la main (id ou clé manquant/dupliqué) :
-l'id prime, c'est l'identité ; une clé en double est celle qu'on renumérote.
+**Le chemin propose la clé, il ne la possède pas.** Tant que `auto_key` est vrai, ranger
+le texte ailleurs recale sa clé et réécrit les scripts qui la citent — sans danger, une
+clé automatique est jetable. Dès que l'utilisateur la nomme à la main, `auto_key` tombe et
+la clé se détache définitivement. Sans ce détachement, ranger reviendrait à **refactorer** :
+renommer un nœud produirait un diff de N fichiers `.lua` versionnés pour un geste
+cosmétique. Et une clé strictement dérivée forcerait un dernier niveau unique — le libellé
+ne serait plus libre, juste une clé déguisée ; d'où le rang `_NN` en cas de collision.
+
+Le chemin est stocké comme **liste**, jamais comme chaîne à séparateur : un libellé libre
+a le droit de contenir `/`. L'arbre de l'écran Textes est une **vue** — `texts.json` reste
+plat, les nœuds sont dérivés à chaque reconstruction (rien à garbage-collecter, diffs git
+lisibles, dep-graph inchangé). Contrepartie assumée : **pas de nœud vide**, créer un
+rangement veut dire y créer un texte.
+
+`_repair_texts()` rattrape un fichier édité à la main (id ou clé manquant/dupliqué,
+chemin mal formé) : l'id prime, c'est l'identité ; une clé en double est celle qu'on
+renumérote. `Text.from_dict` migre au passage l'ancien champ plat `label` en `path`
+à un seul niveau.
 
 Un `Text` est destiné au **joueur**, donc traduisible — c'est ce qui le distingue d'un
 `string` technique (nom de fichier, code interne), qui reste un littéral dans le script.
@@ -479,14 +494,17 @@ Orchestré par `editor/codegen/pipeline.py` (`BuildWorker`), déclenché depuis 
 
 ---
 
-## Packaging & distribution (PyInstaller + GitHub Releases)
+## Packaging & distribution (Nuitka + NSIS + GitHub Releases)
 
 À ne pas confondre avec le pipeline ROM ci-dessus : ceci construit l'**éditeur lui-même** en exécutable distribuable, pas une ROM GBA.
 
-- **`packaging/gba_editor.spec`** — spec PyInstaller, mode **onefile** (un seul `.exe`, pas d'installeur). Build : `pyinstaller packaging/gba_editor.spec --noconfirm` → `dist/GBA Editor.exe`.
-- **`editor/codegen/pipeline.py:RUNTIME_DIR`** — en mode figé (`sys.frozen`), résolu via `sys._MEIPASS / "runtime"` plutôt que `Path(__file__).parent.parent.parent` (qui ne pointe plus vers la racine du repo une fois packagé). `runtime/` est embarqué comme donnée du bundle via le `.spec`.
-- **`editor/plugins/`** est copié tel quel (pas seulement compilé dans le PYZ) : chargé dynamiquement via `importlib.util.spec_from_file_location`, ça nécessite des fichiers `.py` réels sur disque au runtime.
-- **`.github/workflows/release.yml`** — se déclenche sur `release: published` (ou `workflow_dispatch` pour tester sans publier). Build Windows only actuellement (le job Linux/AppImage est présent mais `if: false`, en pause en attendant un test sur une vraie distro). Le job `publish` attache l'exe à la Release automatiquement.
+- **`packaging/nuitka_build.py`** — définition unique de la commande de build, utilisée à l'identique par la CI et en local (`python packaging/nuitka_build.py --version 0.3.2 --output-dir build-out`). Nuitka en mode **standalone** (dossier), pas onefile : l'installateur pose de toute façon un dossier, et le onefile ne ferait que ré-extraire à chaque lancement. Sortie : `build-out/GBAEditor/`.
+- **`packaging/check_deps.py`** — relève les imports réels du code par AST et vérifie que `requirements.txt` les couvre tous. Lancé en CI **avant** le build : c'est le filet qui manquait quand `luaparser` est parti en release sans être déclaré.
+- **`packaging/windows/installer.nsi`** — installateur NSIS **par utilisateur** (`%LOCALAPPDATA%\Programs\GBAEditor`, aucune élévation UAC, désinstallation sous HKCU). La désinstallation laisse volontairement en place les projets (`~/GBAProjects`) et la config toolchain (`%APPDATA%\GBAEditor`).
+- **`editor/core/app_paths.py`** — source unique de vérité pour « où tourne-t-on ». `IS_FROZEN` s'appuie sur `__compiled__` (le marqueur Nuitka ; **`sys._MEIPASS` n'existe pas** hors PyInstaller), et `APP_DIR` vaut le dossier de l'exe en distribution, la racine du repo depuis les sources. `RUNTIME_DIR` en dérive. Tout module ayant besoin d'un chemin de données passe par ici — c'est la duplication de ce calcul qui avait laissé `runtime_codegen/{main_gen,headers}.py` chercher `runtime/` hors du bundle, faisant échouer les copies de `.h` en silence.
+- **Disposition des données** — les données embarquées reproduisent l'arborescence des sources (`runtime/`, `plugins/`, `scripting/api_reference.json`), parce que les modules les résolvent via `Path(__file__).parent` et que Nuitka donne aux modules compilés un `__file__` cohérent dans la distribution. Les images référencées par les QSS ne sont **pas** embarquées : `ui/common/icons.py:qss_image()` les rend depuis qtawesome dans `%TEMP%/gba_editor_icons/` au démarrage (`ensure_qss_assets()`, appelé après la `QApplication` et avant `setStyleSheet`) — un cache en zone temporaire, donc toujours inscriptible même pour une installation en lecture seule.
+- **`editor/plugins/`** est copié tel quel, **non compilé** : chargé dynamiquement via `importlib.util.spec_from_file_location`, ça nécessite des `.py` réels sur disque au runtime. Corollaire assumé : le code des plugins reste lisible dans la distribution, contrairement au reste.
+- **`.github/workflows/release.yml`** — se déclenche sur `release: published` (ou `workflow_dispatch` pour tester sans publier). Publie deux artefacts Windows : l'installateur `.exe` et un ZIP portable. Le job Linux/AppImage est présent mais `if: false`, en pause en attendant un test sur une vraie distro. Le cache Nuitka est indispensable : un build à froid est nettement plus long que l'ancien assemblage PyInstaller.
 - **mGBA / devkitPro ne sont jamais embarqués** — dépendances système externes, détectées à l'exécution par `editor/core/toolchain.py` (`resolve_mgba`, `resolve_grit`, `resolve_make`, `resolve_arm_gcc`). Un mécanisme d'auto-download de mGBA a été tenté (Inno Setup puis AppImage) et **abandonné délibérément** — flux 100% manuel par choix (voir historique de conversation packaging).
 
 ### Pièges connus (Python figé vs. dev)

@@ -20,7 +20,7 @@ Stylesheet globale à appliquer une seule fois dans main.py :
     app.setStyleSheet(GLOBAL_QSS)
 """
 
-from pathlib import Path as _Path
+from ui.common import icons as _icons
 
 # ──────────────────────────────────────────────────────────────────
 #  Typographie — échelle de tailles et familles de polices
@@ -99,17 +99,28 @@ C = _Colors()
 
 
 # ──────────────────────────────────────────────────────────────────
-#  Petites flèches ▲▼ des QSpinBox — assets PNG livrés à côté de ce
-#  module (référencés par CHEMIN, pas data-URI : le loader url() des QSS
-#  ne supporte pas les data-URI, seuls les chemins/ressources marchent).
-#  `.as_posix()` → slashs avant même sur Windows (QSS n'aime pas `\`).
+#  Petites flèches ▲▼ des QSpinBox / QComboBox — comme le reste de
+#  l'application, elles viennent de l'icon set (ui.common.icons), pas
+#  d'assets PNG versionnés. icons.qss_image() les matérialise dans un
+#  cache disque parce que le loader url() des QSS ne sait lire qu'un
+#  fichier : ni police d'icônes, ni data-URI.
+#  Rendues en 2× puis affichées à _ARROW_PX pour rester nettes en HiDPI.
 # ──────────────────────────────────────────────────────────────────
 
-_ICON_DIR = _Path(__file__).resolve().parent
+_ARROW_PX = 9
+_ARROW_SCALE = 1.9   # remplit la boîte MDI, sinon le triangle est minuscule
 
 
-def _spin_arrow(name: str) -> str:
-    return _ICON_DIR.joinpath(name).as_posix()
+def _arrow_rule(selectors: str, name: str, color: str) -> str:
+    """Règle `image:` pour une flèche, ou "" si l'icon set est indisponible
+    — auquel cas Qt garde sa flèche native plutôt qu'une case vide."""
+    path = _icons.qss_image(name, color, _ARROW_PX * 2, _ARROW_SCALE)
+    if not path:
+        return ""
+    return (f"{selectors} {{\n"
+            f"    image: url({path}); "
+            f"width: {_ARROW_PX}px; height: {_ARROW_PX}px;\n"
+            f"}}")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -144,18 +155,14 @@ QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
     background: {C.BG_HOVER};
 }}
-QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
-    image: url({_spin_arrow('spinbox_up.png')}); width: 9px; height: 9px;
-}}
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
-    image: url({_spin_arrow('spinbox_down.png')}); width: 9px; height: 9px;
-}}
-QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {{
-    image: url({_spin_arrow('spinbox_up_hi.png')});
-}}
-QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {{
-    image: url({_spin_arrow('spinbox_down_hi.png')});
-}}
+{_arrow_rule("QSpinBox::up-arrow, QDoubleSpinBox::up-arrow",
+             "spin_up", C.TEXT_NORM)}
+{_arrow_rule("QSpinBox::down-arrow, QDoubleSpinBox::down-arrow",
+             "spin_down", C.TEXT_NORM)}
+{_arrow_rule("QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover",
+             "spin_up", C.TEXT_HI)}
+{_arrow_rule("QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover",
+             "spin_down", C.TEXT_HI)}
 QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 1px solid {C.ACCENT};
 }}
@@ -227,13 +234,10 @@ QComboBox::drop-down {{
     width: 22px;
 }}
 /* Sans cette flèche, un QComboBox stylé est indiscernable d'un QLineEdit —
-   on réutilise l'asset des QSpinBox pour garder une seule forme de chevron. */
-QComboBox::down-arrow {{
-    image: url({_spin_arrow('spinbox_down.png')}); width: 9px; height: 9px;
-}}
-QComboBox::down-arrow:hover, QComboBox::down-arrow:on {{
-    image: url({_spin_arrow('spinbox_down_hi.png')});
-}}
+   on réutilise l'icône des QSpinBox pour garder une seule forme de chevron. */
+{_arrow_rule("QComboBox::down-arrow", "spin_down", C.TEXT_NORM)}
+{_arrow_rule("QComboBox::down-arrow:hover, QComboBox::down-arrow:on",
+             "spin_down", C.TEXT_HI)}
 QComboBox QAbstractItemView {{
     background: {C.BG_RAISED};
     color: {C.TEXT_HI};

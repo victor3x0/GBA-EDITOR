@@ -9,7 +9,6 @@
 #include <gba_systemcalls.h>
 #include <gba_interrupt.h>
 #include <gba_input.h>
-#include "tonc_tte.h"
 
 /* ── Accès mémoire GBA ──────────────────────────────────────────── */
 #define TILE_RAM(cbb)  ((vu16*)(0x06000000+(cbb)*0x4000))
@@ -183,39 +182,109 @@ void blend_set_backdrop(int side, int on);
 void blend_set_alpha   (int eva, int evb);   /* 0-16 chacun, mode 1 */
 void blend_set_fade    (int evy);            /* 0-16, modes 2 et 3 */
 
+/* ── Shadow OAM ──────────────────────────────────────────────────── */
+/* Déclarée ici et non en fin de fichier : le rendu de texte en sprites y écrit,
+   et il est défini plus bas. */
+static OBJATTR shadow_oam[128];
+
 /* ── Texte ───────────────────────────────────────────────────────── */
-/* Un glyphe = une (ou plusieurs) tuile(s) : écrire du texte, c'est poser des
-   index de tuiles. Le texte vit donc sur LE layer d'UI de la scène
-   (`Scene.text_bg`) et nulle part ailleurs — les glyphes sont chargés dans le
+/* Le texte vit sur LE layer d'UI de la scène (`Scene.text_bg`) et nulle part
+   ailleurs : tuiles de glyphes comme surface de composition occupent le
    charblock de ce layer, et un charblock appartient à un layer. D'où l'absence
    de paramètre `layer` : il serait mensonger.
+
+   `tx`/`ty` sont en TUILES dans toute l'API — l'ORIGINE d'un texte est
+   alignée à la tuile. C'est le placement des glyphes ENTRE EUX qui devient
+   pixellisé en proportionnel (cf. FontInfo.proportional). Garder l'origine en
+   tuiles laisse `text_clear` et les windows raisonner sur les mêmes unités que
+   le reste du moteur.
 
    Un texte est stocké en codepoints Unicode, pas en glyphes : la
    correspondance se fait à l'affichage via la police courante, ce qui rend un
    texte indépendant de la police (nécessaire en v0.8 pour les traductions). */
 
+/* Un glyphe peut couvrir PLUSIEURS caractères (ligature : « ... » dessiné
+   d'un bloc) et occuper PLUSIEURS tuiles (case 16×16 dans une planche 8×8).
+   D'où les tables parallèles ci-dessous, une entrée par glyphe.
+
+   `cp` porte le PREMIER codepoint de chaque glyphe et reste trié : la
+   dichotomie y trouve un groupe de candidats partageant ce caractère
+   d'attaque. Dans un groupe, l'émission range les séquences de la plus
+   longue à la plus courte — la première correspondance complète trouvée en
+   balayant est donc la plus longue, sans comparer les candidats entre eux. */
 typedef struct FontInfo {
     const unsigned int*   tiles;    /* glyphes, 8 mots par tuile */
     int                   n_tiles;
     const unsigned short* pal;      /* 16 couleurs BGR555 */
-    const unsigned short* cp;       /* codepoints TRIÉS */
+    const unsigned short* cp;       /* 1er codepoint de chaque glyphe, TRIÉ */
     const unsigned short* slot;     /* index de 1ère tuile, parallèle à cp */
+    const unsigned short* seq;      /* séquences de codepoints, concaténées */
+    const unsigned short* seq_off;  /* offset de la séquence dans `seq` */
+    const unsigned char*  seq_len;  /* longueur de la séquence (>= 1) */
+    const unsigned char*  gw;       /* largeur du glyphe, en tuiles */
+    const unsigned char*  gh;       /* hauteur du glyphe, en tuiles */
     int                   n_glyphs;
-    int                   tiles_x;  /* cellule du glyphe, en tuiles */
-    int                   tiles_y;
+    int                   tiles_x;  /* cellule PAR DÉFAUT (avance de secours) */
+    int                   tiles_y;  /* et interligne */
+    /* Chasses, avance de secours et interligne sont émis DÉJÀ RÉSOLUS (en
+       pixels) : le rendu les lit sans se demander quel chemin il suit. */
+    const unsigned char*  adv;      /* chasse de chaque glyphe, en PIXELS */
+    int                   cell_w;   /* avance d'un caractère absent, en px */
+    int                   line_h;   /* interligne en px */
+    int                   composited; /* 1 = composition pixel, 0 = tilemap */
 } FontInfo;
 
 extern const FontInfo g_fonts[];
 extern const unsigned short* const g_texts[];
 extern const unsigned short g_text_len[];
 
+/* Une zone de texte AUTHORÉE dans le canvas de scène (cf. models/ui_region.py).
+   Elle ne dessine rien : elle dit où le texte se pose, sa largeur de coupe et
+   son alignement — ce que `text_draw_box` faisait passer en arguments, en
+   moins visible.
+
+   Coordonnées en PIXELS écran, déjà alignées à la tuile pour une cible BG
+   (l'émetteur s'en charge). `font` vaut 255 quand la zone hérite de la police
+   courante. `target` 1 = OBJ : le rendu sprite n'existe pas encore, ces zones
+   ne s'affichent pas — le build le signale plutôt que de laisser chercher. */
+typedef struct UIRegionInfo {
+    short x, y, w, h;
+    unsigned char align;    /* 0 gauche, 1 centre, 2 droite */
+    unsigned char font;     /* index dans g_fonts, 255 = police courante */
+    unsigned char target;   /* 0 = BG, 1 = OBJ */
+    unsigned char anchor;   /* 0 écran, 1 monde, 2 acteur */
+    /* Cible OBJ seulement — placement de la bande de sprites, calculé par le
+       codegen. RELATIF à la mise en page : une même mise en page sert plusieurs
+       scènes, qui n'ont pas le même nombre d'acteurs donc pas la même base.
+       Même raisonnement que `FontInfo.slot`. */
+    short actor;            /* index dans g_actors, -1 = aucun */
+    short oam_rel;          /* 1er slot OAM, relatif à la base de la scène */
+    short oam_count;        /* slots occupés par la bande */
+    short tile_rel;         /* 1re tuile OBJ, relative à la base */
+    short tiles_row;        /* tuiles par rangée de 8 px */
+    short rows;             /* rangées de 8 px */
+    short anim;             /* budget de glyphes animés (0 = bande seule) */
+    unsigned char priority; /* priorité OBJ (0 = devant) */
+    unsigned char pal_bank; /* banque de palette OBJ */
+} UIRegionInfo;
+
+extern const UIRegionInfo g_ui_regions[];
+
 void text_set_layer(int bg);        /* posé par scene_init depuis Scene.text_bg */
+void text_set_tile_base(int t);     /* posé par scene_init — cf. allocateur */
 void text_set_font (int f);         /* charge glyphes + palette en VRAM */
 int  text_length   (int id);
 void text_clear    (int tx, int ty, int w, int h);
 void text_draw     (int id, int tx, int ty);
 void text_draw_upto(int id, int tx, int ty, int n);   /* machine à écrire */
-void text_draw_box (int id, int tx, int ty, int w, int n);
+void text_draw_num (int value, int tx, int ty);       /* seul contenu hors table */
+/* Rendu dans une zone authorée — remplace text_draw_box, dont la géométrie
+   vivait dans le script. Le couple draw/draw_upto est repris à l'identique. */
+void text_draw_in     (int id, int region);
+void text_draw_in_upto(int id, int region, int n);
+void text_clear_in    (int region);          /* cache la bande d'une zone OBJ */
+void text_obj_set_base(int oam, int tile);   /* posé par scene_init */
+void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int));
 
 void tilemap_set        (int bg, int tx, int ty, int tile);
 int  tilemap_get        (int bg, int tx, int ty);
@@ -437,96 +506,722 @@ void window_set_blend(int r, int on) { win_bit_set(r, 5, on); }
    d'UI — mêmes constantes que codegen/font_emit.py (FONT_PAL_BANK,
    FONT_TILE_BASE). La tuile 0 reste vide : c'est elle que pose text_clear. */
 #define FONT_PAL_BANK   15
-#define FONT_TILE_BASE  1
+
+/* Première tuile du charblock occupée par le texte. VARIABLE, posée par
+   `scene_init` : le texte n'a pas besoin d'un charblock à lui (95 tuiles de
+   glyphes pour 448 réservées), il doit pouvoir se loger APRÈS les tuiles d'un
+   fond dans un charblock partagé. Les `slot[]` émis sont relatifs à cette base
+   (cf. codegen/font_emit.py), donc rien n'est cuit à la compilation.
+
+   Défaut 1 : la tuile 0 reste vide, c'est elle que pose `text_clear` en mono. */
+#define FONT_TILE_BASE_DEFAULT  1
+
+/* DEUX CHEMINS DE RENDU, choisis par la police (FontInfo.composited), jamais
+   par un réglage — c'est l'émetteur qui décide (cf. font_emit.render_composited).
+
+   • TILEMAP (composited == 0) — les tuiles de glyphes vivent en VRAM et le
+     tilemap pointe dessus. Écrire du texte, c'est poser des index de tuiles :
+     coût nul, aucune écriture de pixel. C'est le chemin d'origine.
+
+   • COMPOSITION (composited == 1) — une tuile se pose à 8 px près, donc le
+     tilemap ne sait pas placer un glyphe à x=13. On réserve à la place une
+     SURFACE de tuiles vierges, le tilemap pointe dessus une fois, et les
+     glyphes y sont COMPOSÉS pixel par pixel depuis la ROM. Les tuiles de
+     glyphes ne vont alors jamais en VRAM : elles ne servent que de source.
+
+   Ce second point vaut aussi pour une police MONO trop grosse : composer coûte
+   la surface et RIEN de plus, quelle que soit la taille de la police. Une
+   police de 2000 glyphes (64 Ko de tuiles — impossible, un charblock en fait
+   16) devient affichable au prix de 240 tuiles. L'émetteur bascule donc de
+   lui-même dès que les glyphes coûtent plus cher que la surface : on prend
+   simplement le moins cher des deux.
+
+   Adressage de la surface : déterministe à partir de la position écran,
+   `base + (ty % TEXT_SURF_H) * TEXT_SURF_W + (tx % TEXT_SURF_W)`. Aucun état
+   d'allocation, donc redessiner au même endroit réutilise les mêmes tuiles —
+   c'est ce qui rend `text_draw_upto` (machine à écrire) stable, et ce qui
+   permet à deux boîtes de coexister sans se marcher dessus. Limite assumée :
+   deux boîtes distantes d'un multiple exact de TEXT_SURF_H rangées partagent
+   leurs tuiles. 30×8 = 240 tuiles, soit moins de la moitié du charblock. */
+#define TEXT_SURF_W  30   /* largeur d'écran en tuiles */
+#define TEXT_SURF_H  8
+
+/* Doit rester d'accord avec ALIGNS de core/models/ui_region.py — c'est
+   l'émetteur qui écrit ces valeurs dans g_ui_regions. */
+/* Plafond de glyphes animés par zone — tableaux de capture de taille fixe,
+   pas d'allocation dynamique sur cible. Doit rester égal à ANIM_GLYPH_MAX de
+   core/models/ui_region.py, qui dimensionne la réserve côté codegen. */
+#define TEXT_ANIM_MAX 32
+
+#define TEXT_ALIGN_LEFT   0
+#define TEXT_ALIGN_CENTER 1
+#define TEXT_ALIGN_RIGHT  2
 
 static int g_text_layer = -1;
+static int g_text_cbb   = 0;
+static int g_text_tile_base = FONT_TILE_BASE_DEFAULT;
 static const FontInfo *g_font = 0;
 
-void text_set_layer(int bg) { g_text_layer = (bg >= 0 && bg <= 3) ? bg : -1; }
-
-/* Charge les glyphes dans le charblock du layer d'UI et la palette dans sa
-   banque réservée. Une seule police résidente à la fois : rappeler cette
-   fonction remplace la précédente (coût d'une copie VRAM, pas par frame). */
-void text_set_font(int f) {
-    const FontInfo *fi = &g_fonts[f];
-    g_font = fi;
-    if (g_text_layer < 0 || !fi->tiles) return;
-    copy16(TILE_RAM(g_text_layer) + FONT_TILE_BASE * 16, fi->tiles, fi->n_tiles * 32);
-    copy16(PAL_BG_RAM + FONT_PAL_BANK * 16, fi->pal, 32);
+/* Le LAYER (0-3) où s'affiche le texte. Sert aux écritures de tilemap. */
+void text_set_layer(int bg) {
+    g_font = 0;            /* cf. text_set_font : la destination change */
+    g_text_layer = (bg >= 0 && bg <= 3) ? bg : -1;
+    g_text_cbb   = (bg >= 0 && bg <= 3) ? bg : 0;   /* défaut : CBB = layer */
 }
 
-/* Codepoint → 1ère tuile du glyphe. Dichotomie : la table est triée à
-   l'émission. -1 si le caractère n'existe pas dans la police. */
-static int text_slot(int cp) {
+/* Le CHARBLOCK où vivent les tuiles du texte — DISTINCT du layer. C'est ce qui
+   permet au texte de squatter le charblock d'un fond au lieu d'en monopoliser
+   un : le champ CharBlock de BGxCNT est indépendant du numéro de layer.
+   À appeler APRÈS text_set_layer (qui repose le défaut) et AVANT text_set_font. */
+void text_set_charblock(int cbb) {
+    g_font = 0;            /* cf. text_set_font */
+    g_text_cbb = (cbb >= 0 && cbb <= 3) ? cbb : 0;
+}
+
+/* Où commencent les tuiles du texte dans ce charblock. Posé par scene_init
+   depuis l'allocateur ; à appeler AVANT text_set_font, qui copie les glyphes à
+   cette adresse. La borne est la portée d'un index de map (10 bits) : le bloc
+   du texte peut déborder sur le charblock suivant comme n'importe quel layer. */
+void text_set_tile_base(int t) {
+    g_font = 0;            /* cf. text_set_font */
+    g_text_tile_base = (t > 0 && t < 1024) ? t : FONT_TILE_BASE_DEFAULT;
+}
+
+/* Charge la palette, et les glyphes SEULEMENT en mono : le chemin
+   proportionnel compose depuis la ROM et n'a que faire de tuiles de glyphes en
+   VRAM — les y copier gaspillerait la place que prend la surface. Une seule
+   police résidente à la fois : rappeler cette fonction remplace la précédente
+   (coût d'une copie VRAM, pas par frame). */
+void text_set_font(int f) {
+    const FontInfo *fi = &g_fonts[f];
+    /* Idempotent : recharger la police DÉJÀ résidente ne fait rien. Sans cette
+       garde, une zone qui déclare sa police (`text_draw_in`) recopierait tous
+       ses glyphes en VRAM à chaque frame en chemin mono.
+
+       « Résidente » veut dire : à CETTE adresse. `text_set_layer`,
+       `text_set_charblock` et `text_set_tile_base` remettent donc `g_font` à
+       zéro — sans quoi un changement de scène qui repose la base sauterait la
+       recopie et laisserait le texte pointer des tuiles jamais écrites. */
+    if (g_font == fi) return;
+    g_font = fi;
+    if (g_text_layer < 0 || !fi->tiles) return;
+    if (!fi->composited)
+        copy16(TILE_RAM(g_text_cbb) + g_text_tile_base * 16, fi->tiles, fi->n_tiles * 32);
+    copy16(PAL_BG_RAM + FONT_PAL_BANK * 16, fi->pal, 32);
+    /* Même palette côté sprites : une bande de texte OBJ lit PAL_OBJ_RAM, pas
+       PAL_BG_RAM. La copier toujours (32 octets) coûte moins cher que de
+       savoir si une zone OBJ existe. */
+    copy16(PAL_OBJ_RAM + FONT_PAL_BANK * 16, fi->pal, 32);
+}
+
+/* Tuile de surface qui rend la case écran (tx, ty). */
+/* ── Bloc de composition courant ──────────────────────────────────
+   La surface BG et une bande de sprites ne diffèrent que par DEUX choses : où
+   sont les tuiles, et comment on les indexe. Tout le reste — mise en page,
+   chasses, ligatures, alignement, machine à écrire — est commun. D'où cette
+   indirection plutôt qu'un second moteur de composition pour les OBJ : en
+   écrire un deuxième, c'était garantir qu'un jour les deux ne coupent plus les
+   lignes au même endroit.
+
+   `h == 0` désigne la surface BG, adressée MODULO (elle est partagée par tout
+   l'écran, d'où son aliasing). Une bande OBJ est un bloc privé de w×h tuiles,
+   adressé directement. */
+/* Capture : quand `g_cap_max > 0`, la mise en page NE DESSINE PAS ses
+   `g_cap_max` premiers glyphes et note où ils tombaient. Ils sortent ainsi de
+   la bande (qui garde un trou à leur place) pour recevoir chacun leur sprite —
+   c'est ce qui rend un effet par caractère possible sans recomposer toute la
+   zone à chaque frame. */
+static int   g_cap_max = 0;
+static int   g_cap_n   = 0;
+static short g_cap_x[TEXT_ANIM_MAX], g_cap_y[TEXT_ANIM_MAX], g_cap_gi[TEXT_ANIM_MAX];
+
+static volatile u32 *g_blit_mem = 0;
+static int g_blit_tile0 = 0;
+static int g_blit_w  = TEXT_SURF_W;
+static int g_blit_h  = 0;          /* 0 = surface BG (modulo) */
+static int g_blit_ox = 0, g_blit_oy = 0;   /* origine du bloc, en TUILES */
+
+static void blit_use_bg_surface(void) {
+    g_blit_mem   = (volatile u32*)(TILE_RAM(g_text_cbb));
+    g_blit_tile0 = g_text_tile_base;
+    g_blit_w     = TEXT_SURF_W;
+    g_blit_h     = 0;
+    g_blit_ox    = g_blit_oy = 0;
+}
+
+/* Tuile du bloc courant couvrant la case écran (tx, ty), ou -1 si la case est
+   HORS du bloc — seule une bande peut être débordée, la surface BG bouclant sur
+   elle-même. Retourner -1 plutôt que de replier fait qu'un texte trop long pour
+   sa zone est TRONQUÉ au lieu d'aller écrire dans le sprite du voisin. */
+static int text_surf_tile(int tx, int ty) {
+    if (g_blit_h == 0) {
+        int cx = tx % TEXT_SURF_W, cy = ty % TEXT_SURF_H;
+        if (cx < 0) cx += TEXT_SURF_W;
+        if (cy < 0) cy += TEXT_SURF_H;
+        return g_blit_tile0 + cy * TEXT_SURF_W + cx;
+    }
+    int cx = tx - g_blit_ox, cy = ty - g_blit_oy;
+    if (cx < 0 || cy < 0 || cx >= g_blit_w || cy >= g_blit_h) return -1;
+    return g_blit_tile0 + cy * g_blit_w + cx;
+}
+
+/* Masque des quartets NON NULS de `v` : 0xF là où le pixel est encré, 0 là où
+   il est transparent (index 0). C'est ce qui permet d'écrire un glyphe sans
+   effacer le voisin dont il chevauche la tuile — le cas normal dès que les
+   chasses ne sont plus des multiples de 8.
+
+   Les bits d'un quartet sont ramenés sur son bit 0 (les décalages ne dépassent
+   jamais 3, donc aucun quartet ne contamine son voisin), puis `* 0xF` rétablit
+   les quatre bits : les bits retenus étant espacés de 4, la multiplication ne
+   propage aucune retenue. */
+static inline u32 text_nib_mask(u32 v) {
+    u32 m = v | (v >> 1);
+    m |= m >> 2;
+    return (m & 0x11111111u) * 0xFu;
+}
+
+/* Compose une rangée de 8 pixels 4bpp au point ÉCRAN (px, py), en pixels.
+   `row` = un mot de tuile source (8 quartets, quartet i = pixel x+i).
+
+   La rangée chevauche deux tuiles dès que px n'est pas un multiple de 8 : c'est
+   le cas normal en proportionnel, d'où les deux écritures. La VRAM refuse les
+   accès 8 bits, tout passe donc par des mots de 32. */
+static void text_blit_row(int px, int py, u32 row) {
+    if (!row) return;                       /* rangée entièrement transparente */
+    volatile u32 *base = g_blit_mem;
+    int shift = (px & 7) * 4;
+    u32 m     = text_nib_mask(row);
+    int t0    = text_surf_tile(px >> 3, py >> 3);
+    if (t0 >= 0) {
+        volatile u32 *w0 = base + t0 * 8 + (py & 7);
+        *w0 = (*w0 & ~(m << shift)) | ((row << shift) & (m << shift));
+    }
+    /* Débord sur la tuile suivante — seulement si le glyphe n'est pas aligné.
+       Le décalage inverse serait indéfini pour shift == 0, d'où le garde. */
+    if (shift) {
+        int rs = 32 - shift;
+        u32 mh = m >> rs;
+        int t1 = text_surf_tile((px >> 3) + 1, py >> 3);
+        if (mh && t1 >= 0) {
+            volatile u32 *w1 = base + t1 * 8 + (py & 7);
+            *w1 = (*w1 & ~mh) | ((row >> rs) & mh);
+        }
+    }
+}
+
+/* Index du glyphe correspondant à s[i..len), au PLUS LONG. Retourne -1 si
+   aucun ne correspond, sinon l'index dans les tables parallèles ; *consumed
+   reçoit le nombre de codepoints avalés (1 pour un caractère simple, plus
+   pour une ligature).
+
+   Dichotomie sur le 1er codepoint, puis balayage du groupe. Comme l'émission
+   trie les séquences longues d'abord DANS le groupe, la première qui
+   correspond entièrement est la plus longue — c'est ce qui fait qu'une police
+   contenant « . » et « ... » rend bien la ligature et non trois points. */
+static int text_find(const unsigned short* s, int i, int len, int* consumed) {
+    *consumed = 1;
     if (!g_font || g_font->n_glyphs <= 0) return -1;
-    int lo = 0, hi = g_font->n_glyphs - 1;
+    int cp = s[i];
+    int lo = 0, hi = g_font->n_glyphs - 1, found = -1;
     while (lo <= hi) {
         int mid = (lo + hi) >> 1;
         int v = g_font->cp[mid];
-        if (v == cp) return g_font->slot[mid];
-        if (v < cp) lo = mid + 1; else hi = mid - 1;
+        if (v == cp) { found = mid; hi = mid - 1; }   /* remonter au 1er du groupe */
+        else if (v < cp) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    if (found < 0) return -1;
+    for (int k = found; k < g_font->n_glyphs && g_font->cp[k] == cp; k++) {
+        int n = g_font->seq_len[k];
+        if (i + n > len) continue;              /* déborde du texte */
+        const unsigned short* q = g_font->seq + g_font->seq_off[k];
+        int ok = 1;
+        for (int j = 1; j < n; j++)             /* j=0 déjà vérifié par cp */
+            if (s[i + j] != q[j]) { ok = 0; break; }
+        if (ok) { *consumed = n; return k; }
     }
     return -1;
 }
 
 int text_length(int id) { return g_text_len[id]; }
 
+/* Vide la zone. En mono il suffit de remettre le tilemap sur la tuile 0 ; en
+   proportionnel les pixels sont DANS les tuiles de surface, c'est donc elles
+   qu'il faut remettre à zéro — sinon le texte suivant s'écrirait par-dessus
+   l'ancien, la composition ne faisant que poser de l'encre. */
 void text_clear(int tx, int ty, int w, int h) {
     if (g_text_layer < 0) return;
+    int prop = g_font && g_font->composited;
+    blit_use_bg_surface();          /* text_clear ne vide QUE la surface BG */
+    volatile u32 *base = g_blit_mem;
     for (int r = 0; r < h; r++)
-        for (int c = 0; c < w; c++)
-            tilemap_set(g_text_layer, tx + c, ty + r, 0);
-}
-
-/* Pose un glyphe et retourne sa largeur en tuiles (l'avance reste fixe en
-   v1 : une cellule). Un caractère absent de la police laisse un trou plutôt
-   que de décaler tout le reste de la ligne. */
-static int text_put(int cp, int tx, int ty) {
-    int slot = text_slot(cp);
-    int txs = g_font ? g_font->tiles_x : 1;
-    int tys = g_font ? g_font->tiles_y : 1;
-    if (slot >= 0) {
-        for (int r = 0; r < tys; r++)
-            for (int c = 0; c < txs; c++) {
-                int t = slot + r * txs + c;
-                tilemap_set(g_text_layer, tx + c, ty + r, t);
-                tilemap_set_palette(g_text_layer, tx + c, ty + r, FONT_PAL_BANK);
+        for (int c = 0; c < w; c++) {
+            if (prop) {
+                volatile u32 *t = base + text_surf_tile(tx + c, ty + r) * 8;
+                for (int k = 0; k < 8; k++) t[k] = 0;
+            } else {
+                tilemap_set(g_text_layer, tx + c, ty + r, 0);
             }
-    }
-    return txs;
+        }
 }
 
-/* n < 0 = tout le texte ; sinon les n premiers caractères (machine à écrire).
+/* Fait pointer le tilemap de la zone sur ses tuiles de surface, et les vide.
+   Appelé avant toute composition : sans ça la zone montrerait les tuiles de la
+   composition précédente, ou n'importe quel index laissé par le décor. */
+static void text_surf_prepare(int tx, int ty, int w, int h) {
+    volatile u32 *base = g_blit_mem;
+    for (int r = 0; r < h; r++)
+        for (int c = 0; c < w; c++) {
+            int t = text_surf_tile(tx + c, ty + r);
+            tilemap_set(g_text_layer, tx + c, ty + r, t);
+            tilemap_set_palette(g_text_layer, tx + c, ty + r, FONT_PAL_BANK);
+            volatile u32 *p = base + t * 8;
+            for (int k = 0; k < 8; k++) p[k] = 0;
+        }
+}
+
+/* Compose le glyphe `gi` au point ÉCRAN (px, py) en pixels. */
+static void text_put_px(int gi, int px, int py) {
+    if (!g_font || gi < 0) return;
+    int tw = g_font->gw[gi], th = g_font->gh[gi];
+    /* `slot` est RELATIF au bloc alloué au texte, donc directement l'offset
+       de la source en ROM — plus de base à retrancher. */
+    const unsigned int *src = g_font->tiles + g_font->slot[gi] * 8;
+    for (int r = 0; r < th; r++)
+        for (int c = 0; c < tw; c++) {
+            const unsigned int *tile = src + (r * tw + c) * 8;
+            for (int k = 0; k < 8; k++)
+                text_blit_row(px + c * 8, py + r * 8 + k, tile[k]);
+        }
+}
+
+/* Pose le glyphe `gi` par le TILEMAP, à la case (tx, ty) — chemin mono. Chaque
+   glyphe porte sa taille : une case fusionnée 16×16 couvre 2×2 tuiles là où une
+   case 8×8 en couvre une. */
+static void text_put_tiles(int gi, int tx, int ty) {
+    /* `slot` est relatif au bloc du texte : le tilemap, lui, veut un index
+       ABSOLU dans le charblock — d'où la base. */
+    int slot = g_text_tile_base + g_font->slot[gi];
+    int txs  = g_font->gw[gi];
+    int tys  = g_font->gh[gi];
+    for (int r = 0; r < tys; r++)
+        for (int c = 0; c < txs; c++) {
+            int t = slot + r * txs + c;
+            tilemap_set(g_text_layer, tx + c, ty + r, t);
+            tilemap_set_palette(g_text_layer, tx + c, ty + r, FONT_PAL_BANK);
+        }
+}
+
+/* ── Géométrie commune aux deux chemins ──────────────────────────── */
+/* Tout se calcule en PIXELS, y compris en mono : là, les chasses valent
+   gw*8 et l'interligne tiles_y*8, donc les positions retombent d'elles-mêmes
+   sur des multiples de 8. Une seule mise en page pour les deux rendus — la
+   coupe au mot et le filet de sécurité n'existent qu'en un exemplaire. */
+
+static int text_adv_px(int gi) {
+    return (gi < 0) ? g_font->cell_w : g_font->adv[gi];
+}
+
+static int text_line_px(void) { return g_font->line_h; }
+
+/* Largeur en PIXELS du mot commençant en `i` (jusqu'à l'espace ou la fin) —
+   mesurée en avançant glyphe par glyphe, puisque les chasses varient. */
+static int text_word_width(const unsigned short* s, int i, int len) {
+    int w = 0;
+    while (i < len && s[i] != ' ' && s[i] != '\n') {
+        int used, gi = text_find(s, i, len, &used);
+        w += text_adv_px(gi);
+        i += used;
+    }
+    return w;
+}
+
+/* Mise en page ET rendu, en un seul parcours.
+
+   `measure` = 1 ne dessine rien et renvoie l'étendue occupée en TUILES : c'est
+   ce que le chemin proportionnel doit connaître avant de composer, pour savoir
+   quelles tuiles de surface préparer. Un seul algorithme sert les deux passes —
+   mesurer avec un code différent de celui qui dessine, c'est se garantir un
+   décalage entre la zone préparée et la zone écrite.
+
+   `wrap` est en TUILES (contrat de l'API Lua, inchangé), converti ici en pixels.
+
+   n < 0 = tout le texte ; sinon les n premiers caractères (machine à écrire).
    Le rythme appartient au script, pas au moteur : aucun réglage de vitesse
    ici, l'appelant fait varier n comme il veut. */
-static void text_render(int id, int tx, int ty, int wrap, int n) {
-    if (g_text_layer < 0 || !g_font) return;
-    const unsigned short *s = g_texts[id];
-    int len = g_text_len[id];
-    if (n >= 0 && n < len) len = n;
-    int txs = g_font->tiles_x, tys = g_font->tiles_y;
-    int x = tx, y = ty;
-    for (int i = 0; i < len; i++) {
+/* Où finit la ligne qui commence en `i`, et combien elle mesure.
+
+   C'est le SEUL endroit qui décide d'une coupe. L'alignement a besoin de la
+   largeur d'une ligne AVANT de la tracer ; la mesurer avec un second code
+   aurait garanti qu'un jour les deux ne coupent plus au même endroit — le
+   travers contre lequel `measure` existait déjà.
+
+   *end  = premier codepoint qui n'est plus sur cette ligne (borne du tracé) ;
+   *next = où reprendre (l'espace de coupe et le '\n' sont AVALÉS, pas tracés) ;
+   *w    = largeur en pixels de la ligne. */
+static void text_scan_line(const unsigned short* s, int i, int len, int wrap_px,
+                           int* end, int* next, int* w) {
+    int x = 0;
+    while (i < len) {
         int cp = s[i];
-        if (cp == '\n') { x = tx; y += tys; continue; }
-        if (wrap > 0 && cp == ' ') {
+        if (cp == '\n') { *end = i; *next = i + 1; *w = x; return; }
+        if (wrap_px > 0 && cp == ' ') {
             /* Coupe au MOT : on mesure le mot qui suit l'espace ; s'il ne tient
                pas sur la ligne, on passe à la suivante et l'espace disparaît
                (pas d'espace parasite en début de ligne). */
-            int wlen = 0;
-            for (int j = i + 1; j < len && s[j] != ' ' && s[j] != '\n'; j++) wlen++;
-            if ((x - tx) + (1 + wlen) * txs > wrap) { x = tx; y += tys; continue; }
+            int used_sp, gsp = text_find(s, i, len, &used_sp);
+            int wlen = text_word_width(s, i + used_sp, len);
+            if (x + text_adv_px(gsp) + wlen > wrap_px) {
+                *end = i; *next = i + used_sp; *w = x; return;
+            }
         }
-        /* Filet : un mot plus long que la boîte est coupé au caractère, sinon
-           il déborderait indéfiniment. */
-        if (wrap > 0 && (x - tx) + txs > wrap) { x = tx; y += tys; }
-        x += text_put(cp, x, y);
+        int used, gi = text_find(s, i, len, &used);
+        int a = text_adv_px(gi);
+        /* Filet : un mot plus long que la boîte est coupé au glyphe. La garde
+           `x > 0` est ce qui empêche une boîte plus étroite qu'un seul glyphe
+           de ne jamais avancer — ce glyphe déborde, c'est le moindre mal. */
+        if (wrap_px > 0 && x > 0 && x + a > wrap_px) { *end = i; *next = i; *w = x; return; }
+        x += a;
+        i += used;
     }
+    *end = i; *next = i; *w = x;
+}
+
+/* Décalage d'une ligne dans sa boîte. Sans largeur de boîte, aligner ne veut
+   rien dire : `wrap_px == 0` retombe donc à gauche quel que soit le réglage.
+   Jamais négatif — une ligne plus large que sa boîte ne doit pas sortir à
+   GAUCHE de son origine, où rien n'a été préparé ni effacé. */
+static int text_align_off(int align, int wrap_px, int line_w) {
+    if (wrap_px <= 0 || line_w >= wrap_px) return 0;
+    int off = 0;
+    if (align == TEXT_ALIGN_CENTER) off = (wrap_px - line_w) / 2;
+    else if (align == TEXT_ALIGN_RIGHT) off = wrap_px - line_w;
+    /* Chemin TILEMAP : un glyphe se pose à la tuile, pas au pixel. Un offset de
+       76 px y deviendrait 72 en silence — et deux glyphes voisins pourraient
+       viser la même case. On cale donc sur la grille, ce qui centre à la tuile
+       près : sans effet visible pour une police mono, qui vit déjà sur cette
+       grille. Les chemins composés (proportionnel, bande de sprites) gardent
+       le pixel. */
+    if (!g_font->composited && !g_blit_h) off &= ~7;
+    return off;
+}
+
+static void text_layout(const unsigned short *s, int slen, int tx, int ty,
+                        int wrap, int n, int measure, int align,
+                        int *out_w, int *out_h) {
+    /* `n` borne ce qu'on DESSINE, pas ce qu'on met en page.
+
+       Tronquer la chaîne avant de la couper (ce que faisait la version
+       précédente) fait re-composer le texte à chaque frame de la machine à
+       écrire : un mot encore incomplet mesure moins large, tient donc sur la
+       ligne courante, puis saute à la suivante en s'achevant. Sur un texte
+       ferré ou centré, ce n'est plus un mot qui bouge mais la ligne entière.
+       La mise en page se fait donc sur le texte FINAL, et la révélation n'est
+       qu'un masque — ce qui rend aussi la surface préparée stable. */
+    int len = slen;
+
+    int line   = text_line_px();
+    int wrap_px = wrap > 0 ? wrap * 8 : 0;
+    int ox = tx * 8, oy = ty * 8;         /* origine ÉCRAN en pixels */
+    int y = oy;
+    int max_x = ox, i = 0;
+
+    while (i < len) {
+        int end, next, lw;
+        text_scan_line(s, i, len, wrap_px, &end, &next, &lw);
+        int x = ox + text_align_off(align, wrap_px, lw);
+        while (i < end) {
+            /* Correspondance au plus long : une ligature avale plusieurs
+               codepoints d'un coup. */
+            int used, gi = text_find(s, i, len, &used);
+            if (!measure && gi >= 0 && (n < 0 || i < n)) {
+                if (g_cap_max && g_cap_n < g_cap_max) {
+                    /* Réservé au chemin par glyphe : noté, pas dessiné —
+                       le dessiner aussi le ferait apparaître deux fois. */
+                    g_cap_x[g_cap_n]  = (short)x;
+                    g_cap_y[g_cap_n]  = (short)y;
+                    g_cap_gi[g_cap_n] = (short)gi;
+                    g_cap_n++;
+                } else if (g_font->composited || g_blit_h) {
+                    /* `g_blit_h` non nul = bloc PRIVÉ (bande de sprites). On y
+                       compose toujours, même avec une police mono : poser des
+                       tuiles irait écrire dans la tilemap du layer d'UI, qui
+                       n'a rien à voir avec le sprite qu'on est en train de
+                       remplir. Les glyphes se lisent en ROM dans les deux
+                       modes, il n'y a donc rien de plus à charger. */
+                    text_put_px(gi, x, y);
+                } else text_put_tiles(gi, x >> 3, y >> 3);
+            }
+            x += text_adv_px(gi);
+            i += used;
+        }
+        if (x > max_x) max_x = x;
+        i = next;
+        y += line;
+    }
+    y -= line;                 /* la dernière ligne tracée, pas la suivante */
+    if (y < oy) y = oy;        /* texte vide : une ligne quand même */
+    if (out_w) {
+        /* Étendue en tuiles, bornes ARRONDIES : un glyphe posé à x=13 mord sur
+           la tuile 1, elle doit être préparée. */
+        int w = (max_x - ox + 7) / 8;
+        *out_w = w > 0 ? w : 1;
+    }
+    if (out_h) {
+        int h = (y + line - oy + 7) / 8;
+        *out_h = h > 0 ? h : 1;
+    }
+}
+
+/* Rend une SUITE DE CODEPOINTS. Les entrées de la table de textes n'en sont
+   qu'une source parmi d'autres : `text_draw_num` fabrique la sienne en RAM et
+   passe par le même chemin, donc par les mêmes chasses, la même surface et le
+   même effacement. Dupliquer un mini-rendu pour les nombres aurait garanti
+   qu'un jour l'un des deux dérive. */
+static void text_render_cp_al(const unsigned short *s, int slen,
+                              int tx, int ty, int wrap, int n, int align) {
+    if (g_text_layer < 0 || !g_font) return;
+    blit_use_bg_surface();
+    if (g_font->composited) {
+        /* Préparer AVANT de composer : la composition ne pose que de l'encre,
+           elle n'efface pas ce qui était là. La zone préparée doit couvrir le
+           texte ALIGNÉ, d'où le même `align` dans les deux passes. */
+        int w = 1, h = 1;
+        text_layout(s, slen, tx, ty, wrap, n, 1, align, &w, &h);
+        text_surf_prepare(tx, ty, w, h);
+    }
+    text_layout(s, slen, tx, ty, wrap, n, 0, align, 0, 0);
+}
+
+static void text_render_cp(const unsigned short *s, int slen,
+                           int tx, int ty, int wrap, int n) {
+    text_render_cp_al(s, slen, tx, ty, wrap, n, TEXT_ALIGN_LEFT);
+}
+
+static void text_render(int id, int tx, int ty, int wrap, int n) {
+    text_render_cp(g_texts[id], g_text_len[id], tx, ty, wrap, n);
 }
 
 void text_draw     (int id, int tx, int ty)                 { text_render(id, tx, ty, 0, -1); }
 void text_draw_upto(int id, int tx, int ty, int n)          { text_render(id, tx, ty, 0, n); }
-void text_draw_box (int id, int tx, int ty, int w, int n)   { text_render(id, tx, ty, w, n); }
+
+/* ── Rendu dans une zone authorée ─────────────────────────────────
+   Remplace `text_draw_box` : la géométrie ne vient plus des arguments mais de
+   `g_ui_regions`, donc de ce que l'auteur a dessiné dans le canvas.
+
+   La zone peut imposer sa police. Le faire à chaque appel serait ruineux en
+   chemin mono (recopie des glyphes en VRAM) si `text_set_font` n'était pas
+   idempotent — il l'est, cf. sa garde. */
+static void text_render_obj(int id, const UIRegionInfo *R, int n);
+
+static void text_render_region(int id, int r, int n) {
+    const UIRegionInfo *R = &g_ui_regions[r];
+    if (R->font != 255) text_set_font(R->font);
+    if (!g_font) return;
+    if (R->target == 1) { text_render_obj(id, R, n); return; }
+    if (g_text_layer < 0) return;
+    text_render_cp_al(g_texts[id], g_text_len[id],
+                      R->x >> 3, R->y >> 3, R->w >> 3, n, R->align);
+}
+
+void text_draw_in     (int id, int r)        { text_render_region(id, r, -1); }
+void text_draw_in_upto(int id, int r, int n) { text_render_region(id, r, n); }
+
+/* ── Bande de sprites ─────────────────────────────────────────────
+   Une zone en cible OBJ est couverte par des sprites 64×8 (ou moins pour la
+   dernière colonne) posés sur son rectangle, et le texte s'y compose par le
+   MÊME chemin que sur la surface BG — seul le bloc de destination change.
+
+   Pourquoi des blocs de 8 px de haut et pas un sprite par ligne de texte :
+   l'interligne vient de la police, qui peut être changée par un script. Une
+   allocation qui en dépendrait ne serait pas calculable au build. */
+
+/* Position d'un acteur, fournie par le code généré. `gba_engine.h` ignore la
+   structure `Actor` — elle vit dans actor_api_static.h, qui inclut celui-ci et
+   non l'inverse. Un pointeur de fonction évite d'inverser cette dépendance
+   pour deux entiers. */
+static int (*g_actor_x_fn)(int) = 0;
+static int (*g_actor_y_fn)(int) = 0;
+
+void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int)) {
+    g_actor_x_fn = fx;
+    g_actor_y_fn = fy;
+}
+
+static int g_obj_oam_base  = -1;   /* 1er slot OAM réservé au texte */
+static int g_obj_tile_base = 0;    /* 1re tuile OBJ réservée au texte */
+
+/* Posés par scene_init depuis l'allocation du codegen. -1 = aucune place
+   réservée : les zones OBJ ne s'affichent alors pas, plutôt que d'aller écrire
+   dans les sprites des acteurs. */
+void text_obj_set_base(int oam, int tile) {
+    g_obj_oam_base  = oam;
+    g_obj_tile_base = tile;
+}
+
+/* Largeur du n-ième sprite de la bande couvrant `w` px, et son décalage x.
+   Reproduit `strip_columns()` de core/models/ui_region.py — l'émetteur et le
+   moteur doivent découper pareil, sinon les tuiles allouées ne sont pas celles
+   que le sprite lit. */
+static int text_strip_col(int w, int i, int *out_x) {
+    int x = 0, left = w < 8 ? 8 : w;
+    for (int k = 0; ; k++) {
+        int cw = left >= 32 ? 32 : left >= 16 ? 16 : 8;
+        if (k == i) { if (out_x) *out_x = x; return cw; }
+        x += cw; left -= cw;
+        if (left <= 0) { if (out_x) *out_x = x; return 0; }
+    }
+}
+
+/* Forme (attr0 bits 14-15) et taille (attr1 bits 14-15) d'une colonne `cw`×8.
+   Le matériel n'offre, en forme « large », que 16×8, 32×8, 32×16 et 64×32 :
+   **un 64×8 n'existe pas**, d'où le plafond à 32 px de `text_strip_col`. */
+static int text_strip_size(int cw) { return cw == 32 ? 1 : 0; }   /* 8x8|16x8:0, 32x8:1 */
+static int text_strip_shape(int cw) { return cw == 8 ? 0 : 1; }   /* 8x8 = carré */
+
+static void text_render_obj(int id, const UIRegionInfo *R, int n) {
+    if (g_obj_oam_base < 0 || !g_font) return;
+
+    /* Origine ÉCRAN. Une zone ancrée sur un acteur ajoute sa position — c'est
+       ce que l'ancrage promet, et ce que la grille BG ne savait pas faire. */
+    int ox = R->x, oy = R->y;
+    if (R->anchor == 2 && R->actor >= 0 && g_actor_x_fn) {
+        ox += g_actor_x_fn(R->actor);
+        oy += g_actor_y_fn(R->actor);
+    }
+
+    int rows = R->rows, tiles_row = R->tiles_row;
+    int tile0 = g_obj_tile_base + R->tile_rel;
+
+    /* Le bloc est PRIVÉ : pas de modulo, et l'origine est celle de la zone.
+       Composer en coordonnées écran laisserait `text_layout` calculer comme
+       pour le BG, sans rien savoir de la bande. */
+    g_blit_mem   = (volatile u32*)OBJ_VRAM;
+    g_blit_tile0 = tile0;
+    g_blit_w     = tiles_row;
+    g_blit_h     = rows;
+    g_blit_ox    = ox >> 3;
+    g_blit_oy    = oy >> 3;
+
+    /* Vider la bande : la composition ne pose que de l'encre. */
+    for (int t = 0; t < tiles_row * rows; t++) {
+        volatile u32 *p = (volatile u32*)OBJ_VRAM + (tile0 + t) * 8;
+        for (int k = 0; k < 8; k++) p[k] = 0;
+    }
+
+    /* Les glyphes réservés sont CAPTURÉS (donc absents de la bande) plutôt que
+       dessinés : ils reçoivent leur propre sprite juste après. Écrêtage naturel
+       — au-delà du budget, la capture s'arrête et les glyphes suivants
+       retombent dans la bande, en statique. */
+    g_cap_max = R->anim > TEXT_ANIM_MAX ? TEXT_ANIM_MAX : R->anim;
+    g_cap_n   = 0;
+    text_layout(g_texts[id], g_text_len[id], ox >> 3, oy >> 3,
+                R->w >> 3, n, 0, R->align, 0, 0);
+    int captured = g_cap_n;
+    g_cap_max = 0;
+
+    /* Poser les sprites de la bande. */
+    int slot = g_obj_oam_base + R->oam_rel;
+    int strip_slots = 0;
+    for (int r = 0; r < rows; r++) {
+        int cx = 0, tcol = 0;
+        for (int i = 0; ; i++) {
+            int cw = text_strip_col(R->w, i, &cx);
+            if (!cw) break;
+            int sx = (ox + cx) & 0x1FF;
+            int sy = (oy + r * 8) & 0xFF;
+            shadow_oam[slot].attr0 = sy | (0 << 10) | (text_strip_shape(cw) << 14);
+            shadow_oam[slot].attr1 = sx | (text_strip_size(cw) << 14);
+            shadow_oam[slot].attr2 = ((tile0 + r * tiles_row + tcol) & 0x3FF)
+                                   | (R->priority << 10) | (R->pal_bank << 12);
+            slot++; strip_slots++;
+            tcol += cw >> 3;
+        }
+    }
+
+    /* ── Glyphes animés ───────────────────────────────────────────
+       Chacun dans un OBJ 16×16 qui lui est propre : un glyphe 8×8 posé hors
+       grille (chasse proportionnelle) chevauche jusqu'à 2×2 tuiles. Le sprite
+       est ancré à la tuile et le glyphe composé au reste de la division —
+       le placement reste donc exact au pixel.
+
+       Avec un décalage nul, le rendu est indiscernable de celui de la bande :
+       c'est ce qui permettra de vérifier l'effet quand il arrivera, et ce qui
+       rend ce chemin sûr en attendant. */
+    /* `text_layout` prend son origine en TUILES : l'espace de mise en page
+       commence donc à `ox & ~7`, pas à `ox`. La bande compense ce décalage
+       sans le savoir (son sprite est posé à `ox + cx` alors qu'il montre la
+       tuile contenant le pixel `(ox & ~7) + cx` — les deux erreurs s'annulent).
+       Le chemin par glyphe doit le faire EXPLICITEMENT, sinon son sprite est
+       posé jusqu'à 7 px à côté, et l'écart change à chaque fois que la zone
+       traverse une frontière de tuile — ce qui se voit comme un retard sur un
+       ancrage qui bouge. */
+    int sub_x = ox & 7, sub_y = oy & 7;
+    int atile = tile0 + R->tiles_row * rows;
+    for (int k = 0; k < captured; k++) {
+        int gx = g_cap_x[k], gy = g_cap_y[k];
+        /* Origine ÉCRAN de la tuile qui porte le glyphe. */
+        int bx = (gx & ~7) + sub_x, by = (gy & ~7) + sub_y;
+        int t  = atile + k * 4;              /* 4 tuiles = un OBJ 16×16 */
+
+        for (int q = 0; q < 4; q++) {
+            volatile u32 *pz = (volatile u32*)OBJ_VRAM + (t + q) * 8;
+            for (int w = 0; w < 8; w++) pz[w] = 0;
+        }
+        /* Bloc privé de 2×2 tuiles, dont l'origine écran est (bx, by). */
+        g_blit_tile0 = t;
+        g_blit_w = 2; g_blit_h = 2;
+        g_blit_ox = bx >> 3; g_blit_oy = by >> 3;
+        text_put_px(g_cap_gi[k], gx, gy);
+
+        shadow_oam[slot].attr0 = (by & 0xFF) | (0 << 14);      /* carré */
+        shadow_oam[slot].attr1 = (bx & 0x1FF) | (1 << 14);     /* taille 1 = 16×16 */
+        shadow_oam[slot].attr2 = (t & 0x3FF)
+                               | (R->priority << 10) | (R->pal_bank << 12);
+        slot++;
+    }
+
+    /* Masquer la réserve non utilisée : un texte plus court que le budget
+       laisserait sinon les glyphes de l'appel précédent à l'écran. */
+    for (int k = captured; k < R->anim; k++)
+        shadow_oam[slot++].attr0 = 0x0200;
+    (void)strip_slots;
+}
+
+/* Cache la bande d'une zone — l'équivalent de `text_clear` côté sprites. */
+void text_clear_in(int r) {
+    const UIRegionInfo *R = &g_ui_regions[r];
+    if (R->target != 1 || g_obj_oam_base < 0) return;
+    int slot = g_obj_oam_base + R->oam_rel;
+    for (int k = 0; k < R->oam_count; k++)
+        shadow_oam[slot + k].attr0 = 0x0200;   /* bit 9 = objet désactivé */
+    /* oam_count couvre la bande ET la réserve animée : cacher la zone doit
+       tout cacher, sinon un glyphe animé resterait seul à l'écran. */
+}
+
+/* Affiche un ENTIER avec les glyphes de la police courante.
+
+   Seule primitive de texte dont le contenu n'est pas dans la table — et c'est
+   volontaire : un nombre n'a rien à y faire, il ne se traduit pas. Les libellés
+   qui l'entourent, eux, restent des entrées de table (« Score : » se dessine
+   avec text.draw, la valeur avec celle-ci) — c'est ce qui remplace
+   `display.print("%d", …)` sans réintroduire de littéral dans les scripts.
+
+   Un chiffre absent de la police laisse le trou d'une cellule, comme partout
+   ailleurs (text_layout) : mieux qu'un nombre silencieusement faux. */
+void text_draw_num(int value, int tx, int ty) {
+    unsigned short buf[12];
+    int n = 0;
+    unsigned int mag = (value < 0) ? (unsigned int)(-(long)value) : (unsigned int)value;
+    /* Chiffres produits à l'envers, puis retournés : pas de division par
+       puissance de 10 à deviner, et 0 sort bien comme "0". */
+    do { buf[n++] = (unsigned short)('0' + mag % 10u); mag /= 10u; } while (mag && n < 11);
+    if (value < 0) buf[n++] = '-';
+    for (int i = 0, j = n - 1; i < j; i++, j--) {
+        unsigned short t = buf[i]; buf[i] = buf[j]; buf[j] = t;
+    }
+    text_render_cp(buf, n, tx, ty, 0, -1);
+}
 
 /* ── Blending ────────────────────────────────────────────────────── */
 /* BLDCNT : bits 0-5 = cibles du dessus (BG0-3, OBJ, backdrop),
@@ -578,31 +1273,22 @@ void blend_set_fade(int evy) {
 
 #endif /* GBA_ENGINE_IMPL */
 
-/* ── Système texte HUD (via libtonc TTE, CBB3/SBB31) ────────────── */
-/* Le BG hardware utilisé est configuré par scène (défaut BG3). CBB=3, SBB=31.  */
-/* se0=0xF001 : glyphes démarrent à la tuile 1, tuile 0 reste transparente. */
+/* ── Ancien système texte HUD (libtonc TTE) — RETIRÉ ─────────────
+   `draw_printf` / `draw_clear` (Lua `display.print` / `display.clear`) sont
+   partis avec libtonc. Deux raisons, la seconde étant la vraie :
 
-void draw_printf(int col, int row, const char *fmt, ...);
-void draw_clear (int col, int row, int len);
+   • TTE chargeait sa police à partir de la tuile 1 du charblock du layer d'UI,
+     exactement où `text_set_font` pose la nôtre — les deux s'écrasaient, donc
+     `display.print` rendait des glyphes corrompus dès qu'un projet avait une
+     police. Deux systèmes de texte sur le même charblock, sans allocation.
 
-#ifdef GBA_ENGINE_IMPL
-#include <stdarg.h>
+   • Sa chaîne de format vivait dans le SCRIPT (`display.print(1,1,"P1: %d",s)`),
+     donc hors de la table de textes : intraduisible. C'est précisément le trou
+     que la table existe pour fermer (cf. models/text.py). Le garder, c'était
+     maintenir une API qui contredit la règle de l'autre.
 
-void draw_printf(int col, int row, const char *fmt, ...) {
-    char buf[64];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    tte_set_pos(col * 8, row * 8);
-    tte_write(buf);
-}
-
-void draw_clear(int col, int row, int len) {
-    tte_erase_rect(col * 8, row * 8, (col + len) * 8, (row + 1) * 8);
-}
-
-#endif /* GBA_ENGINE_IMPL */
+   Remplacements : `text.draw` pour un libellé (il vit dans la table, donc il se
+   traduit) et `text.draw_num` pour une valeur (un nombre ne se traduit pas). */
 
 /* ── Clear toutes les BG screenblocks ───────────────────────────── */
 static void bg_maps_clear(void) {
@@ -612,8 +1298,6 @@ static void bg_maps_clear(void) {
     }
 }
 
-/* ── Shadow OAM ──────────────────────────────────────────────────── */
-static OBJATTR shadow_oam[128];
 
 static void oam_update(void) {
     CpuFastSet(shadow_oam, (void*)OAM, COPY32|(128*sizeof(OBJATTR)/4));

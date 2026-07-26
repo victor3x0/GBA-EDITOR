@@ -30,6 +30,7 @@ from codegen.asset_pipeline import (
 )
 from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
 from codegen.build_utils import sym as _sym_fn
+from core.app_paths import RUNTIME_DIR
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
@@ -40,16 +41,6 @@ from core.validator import validate_project
 # Pipeline scripting (Lua → C) : importée localement dans les méthodes, d'où
 # l'ajout du dossier au sys.path ici pour que `from scripting.…` se résolve.
 sys.path.insert(0, str(Path(__file__).parent))
-
-# En mode figé (PyInstaller), "editor" n'est plus un dossier parent réel du
-# module (il devient la racine de sys.path) : remonter 3 parents depuis
-# __file__ ne pointe plus vers la racine du repo mais au-dessus du bundle.
-# runtime/ est donc embarqué à la racine du bundle (voir le .spec) et on
-# le résout depuis sys._MEIPASS dans ce cas.
-if getattr(sys, "frozen", False):
-    RUNTIME_DIR = Path(sys._MEIPASS) / "runtime"
-else:
-    RUNTIME_DIR = Path(__file__).parent.parent.parent / "runtime"
 
 
 class BuildWorker(EventEmitter, threading.Thread):
@@ -416,15 +407,19 @@ class BuildWorker(EventEmitter, threading.Thread):
                    f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes)")
 
     def _check_bg_tile_budget(self, p, layers) -> bool:
-        """Garde-fou VRAM : chaque layer a son propre CBB (16 Ko / 512 tuiles
-        4bpp), partagé avec sa propre map (les derniers N SBB du CBB, N selon
-        map_size). Un layer dont les tuiles générées débordent sur l'espace
-        réservé à sa map écraserait silencieusement cette map en VRAM au
-        runtime — on bloque le build plutôt que de laisser cette corruption
-        passer inaperçue (contrairement au conflit de palette OBJ/BG entre
-        scènes, qui n'est qu'un avertissement — ici c'est de la mémoire
-        écrasée, pas juste une mauvaise couleur)."""
+        """Garde-fou VRAM : un layer dont les tuiles débordent sur ce qui est
+        alloué juste au-dessus (une map, le bloc du texte, un autre layer)
+        écraserait silencieusement cette zone au runtime — on bloque le build
+        plutôt que de laisser la corruption passer inaperçue (contrairement au
+        conflit de palette OBJ/BG entre scènes, qui n'est qu'un avertissement :
+        ici c'est de la mémoire écrasée, pas juste une mauvaise couleur).
+
+        Le budget vient de l'ALLOCATEUR (codegen/vram_alloc.py), plus d'un
+        plafond fixe : il dépend de ce que la scène range réellement au-dessus
+        du layer, et vaut jusqu'à 1024 tuiles quand le charblock suivant est
+        libre (portée d'un index de map sur 10 bits)."""
         ok = True
+        budgets = self._scene_tile_budgets(p)
         for asset, layer, *_rest in layers:
             if not layer.background_name:
                 continue
@@ -432,7 +427,10 @@ class BuildWorker(EventEmitter, threading.Thread):
             w, h = png_size(p.background_images_dir / png_name)
             _, _, ms = bg_map_geometry(w, h)
             map_sbb_count = bg_map_sbb_count(ms)
-            tile_budget = (8 - map_sbb_count) * 64
+            # Le budget le plus SERRÉ parmi les scènes qui utilisent ce layer :
+            # les tuiles sont partagées, l'allocation ne l'est pas.
+            tile_budget = budgets.get((asset.name, layer.bg_slot),
+                                      (8 - map_sbb_count) * 64)
             sym = bg_layer_sym(asset.name, layer.bg_slot)
             header = p.grit_out_dir / f"{sym}.h"
             m = re.search(rf"{sym}TilesLen\s+(\d+)", header.read_text()) if header.exists() else None
@@ -445,13 +443,54 @@ class BuildWorker(EventEmitter, threading.Thread):
                 self._emit(
                     "error_line",
                     f"[grit BG] '{asset.name}' BG{layer.bg_slot} : {tiles_used} tuiles "
-                    f"générées, budget CBB{layer.bg_slot} disponible {tile_budget} tuiles "
-                    f"(après réservation de {map_sbb_count} SBB pour sa propre map) — "
-                    f"réduire le nombre de tuiles uniques de ce layer (moins de "
-                    f"couleurs/motifs) ou sa taille de map."
+                    f"générées, budget disponible {tile_budget} tuiles depuis la "
+                    f"base du charblock {layer.bg_slot} — réduire le nombre de "
+                    f"tuiles uniques de ce layer (moins de couleurs/motifs), sa "
+                    f"taille de map, ou déplacer un autre layer de cette scène."
                 )
                 ok = False
         return ok
+
+    def _scene_tile_budgets(self, p) -> dict:
+        """{(nom du fond, bg_slot): budget en tuiles} — le MINIMUM sur toutes
+        les scènes qui posent ce fond sur ce slot.
+
+        Un même fond peut servir dans plusieurs scènes, avec des voisins
+        différents donc des budgets différents. Ses tuiles, elles, sont générées
+        une fois : c'est la scène la plus contrainte qui commande."""
+        from codegen.vram_alloc import scene_layout
+        from codegen.font_emit import scene_text_tiles
+        from codegen.runtime_codegen.main_gen import project_fonts
+        # names=None : cf. font_emit.scene_text_tiles — même valeur qu'avant,
+        # la restriction par mise en page attend l'indexation de text.set_font.
+        text_tiles = scene_text_tiles(project_fonts(p), None)
+        out: dict = {}
+        for scene in p.scenes:
+            slots, maps, names = {}, {}, {}
+            for layer in getattr(scene, "background_layers", []):
+                if not layer.background_name:
+                    continue
+                ba = p.get_background(layer.background_name)
+                if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
+                    continue
+                png = p.background_images_dir / (
+                    ba.asset if ba and ba.asset else f"{layer.background_name}.png")
+                w, h = png_size(png)
+                _, _, ms = bg_map_geometry(w, h)
+                # Nombre de tuiles inconnu ici pour un fond legacy (grit n'a pas
+                # encore tourné) : on prend le pire, l'allocateur reste correct
+                # — il donnera juste un budget prudent.
+                slots[layer.bg_slot] = len(ba.tileset) if (ba and ba.tileset) else 512
+                maps[layer.bg_slot] = bg_map_sbb_count(ms)
+                names[layer.bg_slot] = layer.background_name
+            if not slots:
+                continue
+            lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), text_tiles)
+            for slot, name in names.items():
+                key = (name, slot)
+                b = lay.budget[slot]
+                out[key] = min(out[key], b) if key in out else b
+        return out
 
     # ── Étape 2 : grit Actors ─────────────────────────────────────
 

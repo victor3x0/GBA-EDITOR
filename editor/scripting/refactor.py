@@ -172,6 +172,177 @@ def find_refs_in_project(project, domain: str, name: str) -> dict[Path, list[Lua
     return found
 
 
+def index_refs_in_project(project, domain: str) -> dict[str, dict[Path, int]]:
+    """{valeur référencée: {script: nombre d'occurrences}} pour tout un domaine.
+
+    Un SEUL parcours des scripts couvre toutes les valeurs du domaine, là où
+    `find_refs_in_project` reparse tout pour un seul nom. C'est ce qu'il faut à
+    une vue « utilisé par » posée sur une table entière : l'utilisateur passe
+    d'une entrée à l'autre sans relancer luaparser à chaque sélection."""
+    index: dict[str, dict[Path, int]] = {}
+    for p in script_paths(project):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for ref in iter_refs(text, path=p, domain=domain):
+            index.setdefault(ref.value, {}).setdefault(p, 0)
+            index[ref.value][p] += 1
+    return index
+
+
+# ── Migration display.* → text.* ──────────────────────────────────
+# `display.print` / `display.clear` (libtonc TTE) ont été retirés. Leur chaîne
+# de format vivait dans le script, donc hors de la table de textes :
+# intraduisible (cf. api.REMOVED_API).
+#
+# Ce qui se migre TOUT SEUL : un littéral sans marqueur de format. Le texte
+# part dans la table, l'appel devient `text.draw("clé", col, row)`. Ce qui ne
+# se migre pas : dès qu'il y a un `%` ou des arguments variadiques, il faut
+# décider ce qui devient un libellé traduisible et ce qui devient un
+# `text.draw_num` — une décision d'auteur, que le checker signale plutôt que
+# de la prendre à sa place.
+
+def _print_calls(text: str):
+    """[(node, key)] des appels display.* d'un script, dans l'ordre du source."""
+    if not _LUAPARSER_OK:
+        return []
+    try:
+        tree = _lua_ast.parse(text)
+    except Exception:
+        return []
+    out = []
+    for node in _lua_ast.walk(tree):
+        if not isinstance(node, _nodes.Call):
+            continue
+        key = _call_key(node)
+        if key in ("display.print", "display.clear"):
+            out.append((node, key))
+    out.sort(key=lambda t: t[0].start_char)
+    return out
+
+
+def _string_value(node) -> str:
+    """Contenu d'un noeud String, sans guillemets. Selon la version de
+    luaparser, `.s` sort en bytes et `.raw` en str — on prend ce qui vient."""
+    for attr in ("raw", "s"):
+        v = getattr(node, attr, None)
+        if isinstance(v, str):
+            return v
+        if isinstance(v, (bytes, bytearray)):
+            return v.decode("utf-8", "replace")
+    return ""
+
+
+def _src(text: str, node) -> str:
+    """Texte source exact d'un noeud — préserve les expressions d'argument
+    telles que l'auteur les a écrites (`col + 2`, `const.get("X")`…)."""
+    return text[node.start_char:node.stop_char + 1]
+
+
+def _call_span(text: str, node) -> tuple[int, int]:
+    """Bornes source d'un appel, préfixe d'objet INCLUS.
+
+    Sur `display.print(…)`, luaparser fait commencer le Call ET son Index AU
+    POINT (mesuré : start_char == 7 pour « display.print(…) »), et le noeud
+    `Name('display')` ne porte aucun offset. Remplacer cette étendue laisserait
+    donc un « display » orphelin collé au remplacement.
+
+    On remonte depuis le point : espaces éventuels (`display . print` est du Lua
+    valide), puis les caractères d'identifiant. Le point de départ vient de
+    l'AST, l'extension est mécanique — aucune recherche textuelle à l'aveugle."""
+    start, stop = node.start_char, node.stop_char
+    if start < len(text) and text[start] == ".":
+        i = start
+        while i > 0 and text[i - 1] in " \t":
+            i -= 1
+        while i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+            i -= 1
+        start = i
+    return start, stop
+
+
+def _skipped_src(text: str, node) -> str:
+    """Appel non migré, tel qu'il apparaît dans le source — c'est ce qu'on
+    montre à l'utilisateur, il doit donc inclure le préfixe d'objet."""
+    st, sp = _call_span(text, node)
+    return text[st:sp + 1]
+
+
+def migrate_display_in_text(text: str, new_text_fn) -> tuple[str, int, list[str]]:
+    """(source réécrit, nombre de migrations, appels laissés en place).
+
+    `new_text_fn(content) -> clé` crée l'entrée de table et rend sa clé ;
+    l'appelant décide du rangement. Réécriture de DROITE À GAUCHE par offsets,
+    donc la mise en forme et les commentaires du reste du fichier sont
+    préservés octet pour octet (même règle que rename_in_text)."""
+    calls = _print_calls(text)
+    if not calls:
+        return text, 0, []
+
+    edits: list[tuple[int, int, str]] = []
+    skipped: list[str] = []
+    for node, key in calls:
+        args = node.args or []
+        if key == "display.clear":
+            # display.clear(col, row, len) -> text.clear(col, row, len, 1)
+            # Équivalence exacte : `len` était une longueur de ligne en tuiles,
+            # text.clear prend une largeur ET une hauteur.
+            if len(args) != 3:
+                skipped.append(_skipped_src(text, node))
+                continue
+            a = [_src(text, x) for x in args]
+            st, sp = _call_span(text, node)
+            edits.append((st, sp, f"text.clear({a[0]}, {a[1]}, {a[2]}, 1)"))
+            continue
+        # display.print(col, row, "littéral")
+        if len(args) != 3 or not isinstance(args[2], _nodes.String):
+            skipped.append(_skipped_src(text, node))
+            continue
+        content = _string_value(args[2])
+        if "%" in content:
+            skipped.append(_skipped_src(text, node))
+            continue
+        text_key = new_text_fn(content)
+        a = [_src(text, x) for x in args]
+        st, sp = _call_span(text, node)
+        edits.append((st, sp, f'text.draw("{text_key}", {a[0]}, {a[1]})'))
+
+    out = text
+    for start, stop, repl in sorted(edits, key=lambda e: e[0], reverse=True):
+        out = out[:start] + repl + out[stop + 1:]
+    return out, len(edits), skipped
+
+
+def migrate_display_in_project(project) -> dict:
+    """Migre tous les scripts du projet. Retourne
+    {"migrated": {script: n}, "skipped": {script: [appels]}}.
+
+    Les entrées de table sont rangées sous le nom du script d'origine : c'est le
+    contexte de création, donc ce que la clé doit situer (cf. models/text.py,
+    « la clé situe, elle ne résume pas »)."""
+    migrated: dict[Path, int] = {}
+    skipped: dict[Path, list[str]] = {}
+    for p in script_paths(project):
+        try:
+            src = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "display." not in src:          # filtre bon marché avant de parser
+            continue
+
+        def _new(content: str, _stem=p.stem) -> str:
+            return project.new_text(content=content, path=[_stem]).key
+
+        out, n, left = migrate_display_in_text(src, _new)
+        if n:
+            p.write_text(out, encoding="utf-8")
+            migrated[p] = n
+        if left:
+            skipped[p] = left
+    return {"migrated": migrated, "skipped": skipped}
+
+
 def rename_in_project(project, domain: str, old: str, new: str) -> dict[Path, int]:
     """Réécrit toutes les références `old` → `new` du domaine donné dans les
     scripts du projet. Retourne {script: nombre de remplacements} (vide si

@@ -20,6 +20,8 @@ Usage :
     "bg_layer_visibility"    (int, bool)     — visibilité viewport d'un layer BG
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts
+    "flush_script_edits"           — le Script Editor doit persister sa frappe
+                                     en cours (avant réécriture de scripts)
     "palettes_changed"             — rafraîchir le catalogue de palettes
     "project_tree_changed"         — un élément a été renommé : repeupler les
                                      arbres du panneau projet (cf. Project._notify_renamed)
@@ -117,6 +119,14 @@ class CommandDispatcher(EventEmitter):
         get_bus().select(actor)
         self._emit("status_message", f"Actor créé : {name}")
         return actor
+
+    def status(self, msg: str):
+        """Affiche un message dans la barre de statut.
+
+        Exposé parce que des écrans en émettent aussi (une zone de texte créée
+        au canvas, par exemple) : sans ce point d'entrée, ils appelleraient
+        `_emit` depuis l'extérieur du dispatcher."""
+        self._emit("status_message", msg)
 
     def delete_actor(self, actor: Actor):
         """Supprime un actor de la scène active (avec historique)."""
@@ -350,6 +360,15 @@ class CommandDispatcher(EventEmitter):
     def notify_scripts_changed(self):
         """Notifie que la liste des scripts a changé (création, suppression)."""
         self._emit("scripts_changed")
+
+    def flush_script_edits(self):
+        """Demande au Script Editor de persister sa frappe en cours.
+
+        Émis AVANT toute réécriture de scripts sur disque (renommage) : sans ça
+        la réécriture part de la version disque, ignore les lignes non sauvées,
+        et l'éditeur se retrouve avec un buffer en conflit dont la sauvegarde
+        rétablirait l'ancien nom — le lien serait cassé en silence."""
+        self._emit("flush_script_edits")
 
 
 _dispatcher = CommandDispatcher()

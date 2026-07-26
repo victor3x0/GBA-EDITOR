@@ -139,6 +139,43 @@ class MoveActorCmd(Command):
         return False
 
 
+class MoveUIRegionCmd(Command):
+    """Déplacement d'une zone de texte dans le canvas.
+
+    Structurellement identique à `MoveActorCmd` mais distincte à dessein : la
+    fusion ne doit PAS confondre les deux (un drag d'actor suivi d'un drag de
+    zone sont deux entrées d'historique), et l'étiquette est ce que l'utilisateur
+    lit dans Édition → Annuler.
+
+    x/y d'une zone ancrée sur un actor sont un OFFSET : la commande stocke ce
+    qu'on lui donne, c'est à l'appelant d'avoir déjà retranché l'origine."""
+
+    def __init__(self, region, old_x: int, old_y: int,
+                 new_x: int, new_y: int, persist_fn=None):
+        self._region = region
+        self._old = (old_x, old_y)
+        self._new = (new_x, new_y)
+        self.label = f"Déplacer zone {region.name}"
+        self._persist = persist_fn
+
+    def execute(self):
+        self._region.x, self._region.y = self._new
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        self._region.x, self._region.y = self._old
+        if self._persist:
+            self._persist()
+
+    def merge(self, newer: "Command") -> bool:
+        if isinstance(newer, MoveUIRegionCmd) and self._region is newer._region:
+            self._new = newer._new
+            self._persist = newer._persist
+            return True
+        return False
+
+
 class AddActorCmd(Command):
     def __init__(self, scene: "Scene", actor: "Actor", persist_fn=None):
         self._scene = scene

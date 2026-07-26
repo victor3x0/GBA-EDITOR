@@ -16,6 +16,7 @@
   "scroll_v": false,
   "script": "assets/scripts/scenes/INTRO.lua",
   "text_bg": 1,
+  "ui_layout": "intro_ui",
   "collision_layer": 0,
   "collision_map": [
     [

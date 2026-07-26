@@ -23,6 +23,39 @@ def migrate_on_load(project):
             f.write_text(migrated, encoding="utf-8")
 
 
+def migrate_display_calls(project):
+    """`display.print` / `display.clear` (libtonc TTE, retirés) → `text.*`.
+
+    Appelée APRÈS load_texts : la migration crée des entrées de table, il faut
+    donc que la table soit chargée et que les clés déjà prises soient connues.
+    Seuls les appels à littéral pur bougent ; ceux qui formatent une valeur
+    restent en place et le checker les signale (cf. api.REMOVED_API) — décider
+    ce qui devient un libellé traduisible et ce qui devient un `text.draw_num`
+    appartient à l'auteur.
+
+    Rewrite de scripts VERSIONNÉS en git : on le signale, on ne le fait pas en
+    silence. Renvoie un message ou None."""
+    from scripting.refactor import migrate_display_in_project
+    r = migrate_display_in_project(project)
+    migrated, skipped = r["migrated"], r["skipped"]
+    if not migrated and not skipped:
+        return None
+    if migrated:
+        project.save_texts()
+    parts = []
+    if migrated:
+        n = sum(migrated.values())
+        parts.append(f"{n} appel(s) display.* migré(s) vers text.* dans "
+                     f"{len(migrated)} script(s) : "
+                     + ", ".join(sorted(p.name for p in migrated)))
+    if skipped:
+        n = sum(len(v) for v in skipped.values())
+        parts.append(f"{n} appel(s) formaté(s) à reprendre à la main "
+                     f"({', '.join(sorted(p.name for p in skipped))}) — "
+                     f"text.draw pour le libellé, text.draw_num pour la valeur")
+    return " ; ".join(parts)
+
+
 def seed_or_migrate_palettes(project):
     """Appelé après project.palettes.load(). Priorité :
     (1) ancien catalogue monolithique project/palettes.json (pré-catalogue-

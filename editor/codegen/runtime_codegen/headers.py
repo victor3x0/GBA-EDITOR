@@ -6,14 +6,11 @@ Sorties  : fichiers écrits dans p.src_dir/
 """
 from __future__ import annotations
 import shutil
-from pathlib import Path
 from typing import Optional
 
 from core.project import Project, Actor, SpriteAsset, CollisionBoxComponent, AnimState
 from codegen.build_utils import sym as _sym
-
-
-RUNTIME_DIR = Path(__file__).resolve().parents[3] / "runtime"
+from core.app_paths import RUNTIME_DIR
 
 
 def generate_actor_types(
@@ -77,7 +74,10 @@ def generate_actor_api(
     max_actors: int | None = None,  # taille réelle du tableau g_actors
 ) -> None:
     """Écrit actor_api_static.h (copie) et actor_api.h (généré)."""
-    for static_h in ("actor_api_static.h", "gba_engine.h", "gba_font.h", "runtime.h"):
+    # gba_font.h retiré : police 1bpp dont le consommateur (`text_init()`)
+    # n'existe plus depuis l'asset Font — elle était encore recopiée dans
+    # chaque build sans qu'aucune ligne ne la lise.
+    for static_h in ("actor_api_static.h", "gba_engine.h", "runtime.h"):
         src_h = RUNTIME_DIR / "include" / static_h
         if src_h.exists():
             shutil.copy2(src_h, p.src_dir / static_h)

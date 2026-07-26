@@ -25,8 +25,9 @@ from .parser import (
     ExprInvoke, ExprCall, ExprIndex, ExprName, ExprString,
     ExprNumber, ExprUnop, ExprBool,
 )
-from .api import (RUNTIME_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC,
-                  DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT)
+from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
+                  DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
+                  DOMAIN_REGION)
 
 
 # ─── Résultat ─────────────────────────────────────────────────────
@@ -55,6 +56,7 @@ class BuildContext:
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     text_keys:    list[str]  = None    # clés de la table de textes du projet
     font_names:   list[str]  = None    # noms des polices encodables
+    region_names: list[str]  = None    # zones de texte authorées (toutes mises en page)
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
 
@@ -165,8 +167,11 @@ class Checker:
                 return
             api = RUNTIME_API.get(key)
             if api is None:
-                # Pas une erreur : peut être une fonction helper définie par l'user
-                pass
+                # Une API RETIRÉE est une erreur guidée ; un nom simplement
+                # inconnu reste toléré (helper défini par l'utilisateur).
+                removed = REMOVED_API.get(key or "")
+                if removed:
+                    self.errors.append(CheckError("error", removed))
             else:
                 self._check_args(key, api, e.args)
 
@@ -214,6 +219,8 @@ class Checker:
                 self._check_text(key, val)
             elif param.domain == DOMAIN_FONT:
                 self._check_font(key, val)
+            elif param.domain == DOMAIN_REGION:
+                self._check_region(key, val)
 
     def _check_anim(self, call_key: str, name: str):
         if self.ctx.anim_names is not None and name not in self.ctx.anim_names:
@@ -255,6 +262,18 @@ class Checker:
                 "error",
                 f"{call_key}('{name}') : police '{name}' introuvable ou sans glyphes "
                 f"({', '.join(self.ctx.font_names) or 'aucune police utilisable'}).",
+            ))
+
+    def _check_region(self, call_key: str, name: str):
+        """Une zone inconnue est une ERREUR, pas un avertissement : le
+        `#define REGION_*` n'existerait pas et la faute ne remonterait qu'en
+        « implicit declaration » à la compilation C, qui ne dit pas quoi
+        écrire. Même sévérité que pour une clé de texte, pour la même raison."""
+        if self.ctx.region_names is not None and name not in self.ctx.region_names:
+            near = ", ".join(sorted(self.ctx.region_names)[:5]) or                 "aucune zone dans le projet — dessines-en une dans le canvas de scène"
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : zone de texte '{name}' introuvable ({near}).",
             ))
 
     def _check_global_name(self, call_key: str, args: list):

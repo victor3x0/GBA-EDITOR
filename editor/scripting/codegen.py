@@ -29,9 +29,9 @@ from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
-    DOMAIN_TEXT, DOMAIN_FONT,
+    DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
-    text_constant, font_constant,
+    text_constant, font_constant, region_constant,
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
@@ -85,6 +85,7 @@ class CodegenContext:
     music_info: dict = field(default_factory=dict)  # {nom Music: (loop, volume)} — music_play(id, loop, volume)
     text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
+    region_names: list[str] = field(default_factory=list)  # zones de texte (ordre = index dans g_ui_regions)
 
 
 # ─── Générateur ───────────────────────────────────────────────────
@@ -254,6 +255,14 @@ class CodeGen:
             self._w("/* Polices */")
             for i, name in enumerate(self.ctx.font_names):
                 self._w(f"#define {font_constant(name)} {i}")
+        # Constantes Zone de texte — index dans g_ui_regions. L'espace de noms
+        # est le PROJET, pas la mise en page (cf. models/ui_region.py) : c'est
+        # ce qui permet à cette table d'être plate, comme celle des textes.
+        if self.ctx.region_names:
+            self._w("")
+            self._w("/* Zones de texte */")
+            for i, name in enumerate(self.ctx.region_names):
+                self._w(f"#define {region_constant(name)} {i}")
         self._w("")
 
     # ── Variables locales top-level (static = scope fichier) ──────
@@ -603,6 +612,7 @@ class CodeGen:
             case d if d == DOMAIN_SCENE:  return scene_constant(name)
             case d if d == DOMAIN_TEXT:   return text_constant(name)
             case d if d == DOMAIN_FONT:   return font_constant(name)
+            case d if d == DOMAIN_REGION: return region_constant(name)
             case _:                        return f'"{name}"'
 
     # ── Cas spéciaux ──────────────────────────────────────────────

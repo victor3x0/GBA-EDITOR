@@ -54,14 +54,8 @@
           "exports_values": {}
         }
       ],
-      "x": {
-        "unit": "t",
-        "n": 3
-      },
-      "y": {
-        "unit": "t",
-        "n": 8
-      },
+      "x": 20,
+      "y": 65,
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
@@ -111,8 +105,8 @@
           "exports_values": {}
         }
       ],
-      "x": 210,
-      "y": 68,
+      "x": 213,
+      "y": 65,
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
@@ -138,6 +132,7 @@
   "scroll_v": false,
   "script": "assets/scripts/scenes/PONG.lua",
   "text_bg": 0,
+  "ui_layout": "arena_ui",
   "collision_layer": 0,
   "collision_map": [
     [

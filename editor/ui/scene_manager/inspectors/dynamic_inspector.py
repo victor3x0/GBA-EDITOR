@@ -11,6 +11,7 @@ from .scene_inspector import SceneInspector
 from .camera_inspector import CameraInspector
 from .project_inspector import ProjectInspector
 from .script_inspector import ScriptInspector
+from .ui_region_inspector import UIRegionInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector, VariableUsesInspector
 
 
@@ -26,6 +27,9 @@ class DynamicInspector(QWidget):
     """
     changed       = pyqtSignal()
     actor_changed = pyqtSignal(object)   # Actor | None — payload propre pour window.py
+    # Une zone éditée ou supprimée doit être redessinée dans le canvas : `changed`
+    # est trop général (il est aussi émis par la scène et les actors).
+    ui_regions_changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
 
     _MODE_EMPTY       = 0
@@ -37,6 +41,7 @@ class DynamicInspector(QWidget):
     _MODE_VARIABLE_USES = 6
     _MODE_PROJECT     = 7
     _MODE_SCRIPT      = 8
+    _MODE_UI_REGION   = 9
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,6 +115,12 @@ class DynamicInspector(QWidget):
         self._script_insp = ScriptInspector()
         self._stack.addWidget(self._script_insp)
         self._current_script_path = None   # utilisé par _on_header_rename
+
+        # 9 — zone de texte (UIRegion sélectionnée dans le canvas)
+        self._region_insp = UIRegionInspector()
+        self._region_insp.changed.connect(self.changed)
+        self._region_insp.changed.connect(self.ui_regions_changed)
+        self._stack.addWidget(self._region_insp)
 
         self._stack.setCurrentIndex(self._MODE_EMPTY)
 
@@ -185,11 +196,13 @@ class DynamicInspector(QWidget):
         """Reçu du bus — afficher le bon panneau selon le type de l'objet."""
         from pathlib import Path as _P
         from core.project import Actor, Scene, Prefab
-        from core.selection_bus import CameraSelection
+        from core.selection_bus import CameraSelection, UIRegionSelection
         if obj is None:
             # Mode par défaut : aperçu du projet (pas le message d'aide vide) —
             # cf. clic hors de la zone active du canvas.
             self.show_project()
+        elif isinstance(obj, UIRegionSelection):
+            self.show_ui_region(obj.layout, obj.region, self._project)
         elif isinstance(obj, CameraSelection):
             # Clic sur l'ICÔNE caméra spécifiquement (cf. CameraItem.shape() —
             # le rectangle de vue 240×160 n'est qu'un retour visuel, il ne
@@ -208,6 +221,14 @@ class DynamicInspector(QWidget):
             # Un script (.lua) sélectionné dans le Project Viewer — pas de
             # Resource dédiée, un simple chemin de fichier sur le bus.
             self.show_script(obj, self._project)
+
+    def show_ui_region(self, layout_asset, region, project):
+        """Zone de texte — la mise en page est un asset, d'où son nom dans le
+        bandeau plutôt que celui de la scène."""
+        scene = project.active_scene if project else None
+        self._region_insp.load(layout_asset, region, project, scene)
+        self._set_header("ui_region", "ZONE DE TEXTE", region.name)
+        self._stack.setCurrentIndex(self._MODE_UI_REGION)
 
     def refresh_current(self):
         """Recharge le panneau courant depuis les données projet — capte les

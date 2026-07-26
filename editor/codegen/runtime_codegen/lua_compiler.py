@@ -80,6 +80,9 @@ def transpile_all(
     from codegen.runtime_codegen.main_gen import project_fonts
     text_keys   = [t.key for t in getattr(p, "texts", [])]
     font_names  = [f.name for f in project_fonts(p)]
+    # Zones de texte : l'ordre de `all_regions()` devient l'index dans
+    # g_ui_regions, comme pour les textes et les polices.
+    region_names = (p.region_names() if hasattr(p, "region_names") else [])
     all_syms    = [_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
@@ -133,6 +136,7 @@ def transpile_all(
             sfx_component_name = sfx_comp_name,
             text_keys    = text_keys,
             font_names   = font_names,
+            region_names = region_names,
         )
         script, ok = _compile_script(sp, ctx_check, emit, sp.name)
         if not ok:
@@ -156,6 +160,7 @@ def transpile_all(
                 global_names = list(global_names) if global_names else None,
                 global_types = {g.name: g.type for g in p.globals},
                 const_names  = list(const_names) if const_names else None,
+                region_names = region_names,
             )
             scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)
             if not ok:
@@ -184,6 +189,7 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            region_names  = region_names,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -222,6 +228,7 @@ def transpile_all(
             global_types = {g.name: g.type for g in p.globals},
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = pf_sfx_comp_name,
+            region_names = region_names,
         )
         pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
         if not ok:
@@ -244,6 +251,7 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            region_names  = region_names,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
         pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -271,6 +279,7 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            region_names  = region_names,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')

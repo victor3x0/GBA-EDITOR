@@ -8,7 +8,14 @@ Project Demo/*/build/
 # Config toolchain locale — chemins devkitPro/mGBA spécifiques à la machine
 editor/core/toolchain.json
 
-# Packaging — sorties générées par PyInstaller (voir packaging/), quel que
+# Packaging — sorties générées par le build (voir packaging/), quel que
 # soit le dossier depuis lequel la commande est lancée (racine ou packaging/)
 build/
 dist/
+build-out/
+*.dist/
+*.build/
+*.onefile-build/
+GBAEditor-*-windows-setup.exe
+GBAEditor-*-windows-portable.zip
+*.AppImage

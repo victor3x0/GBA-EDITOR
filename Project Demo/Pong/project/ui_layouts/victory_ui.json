@@ -1,0 +1,34 @@
+{
+  "name": "victory_ui",
+  "regions": [
+    {
+      "name": "resultat",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": 0,
+      "y": 56,
+      "w": 240,
+      "h": 16,
+      "font_name": "omelette_8x8_heavy_mono",
+      "align": "center",
+      "target": "",
+      "preview_text": "victory",
+      "animated_glyphs": 0
+    },
+    {
+      "name": "invite_fin",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": 0,
+      "y": 96,
+      "w": 232,
+      "h": 16,
+      "font_name": "omelette_8x8_heavy_mono",
+      "align": "right",
+      "target": "",
+      "preview_text": "victory_03",
+      "animated_glyphs": 0
+    }
+  ],
+  "notes": "Résultat centré (deux longueurs), invite ferrée à droite."
+}

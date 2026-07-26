@@ -243,7 +243,7 @@ class ScriptInspector(QWidget):
             self._build_numeric_editor(var, vbox, is_float=(typ == "float"))
 
         elif typ == "string":
-            from ui.common.screen_text_preview import ScreenTextPreview
+            from ui.common.screen_text_preview import ScreenTextPreview, MAX_CELLS
             edit = _StringEdit()
             edit.setPlainText(str(var.get("default") or ""))
             edit.setFont(QFont(T.MONO, T.MD))
@@ -257,13 +257,16 @@ class ScriptInspector(QWidget):
             cap = QLabel()
             cap.setFont(QFont(T.MONO, T.XS))
 
+            # Jauge, pas aperçu : une chaîne exposée n'est liée à aucune police
+            # (et n'est pas forcément du texte à afficher). Le libellé annonce
+            # donc la grille de mesure — 8 px/caractère — et non un rendu.
             def sync_preview(_=None):
                 preview.set_text(edit.toPlainText())
                 if preview.truncated:
-                    cap.setText("⚠ tronqué — au-delà de 32 caractères")
+                    cap.setText(f"⚠ dépasse l'écran — au-delà de {MAX_CELLS} caractères de 8px")
                     cap.setStyleSheet(f"color:{C.ACCENT_RED}; background:transparent;")
                 else:
-                    cap.setText("aperçu · écran 260px")
+                    cap.setText("jauge · écran 240px, 8px/caractère")
                     cap.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
             edit.textChanged.connect(sync_preview)
             edit.committed.connect(

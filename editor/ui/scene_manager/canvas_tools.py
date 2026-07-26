@@ -414,3 +414,107 @@ class SceneInpaintingTool(BaseTool):
         if self._preview and self._anchor is None:
             self._preview.setVisible(False)
 
+
+# ──────────────────────────────────────────────────────────────────
+#  Zone de texte — tracé rectangulaire
+# ──────────────────────────────────────────────────────────────────
+
+
+class UIRegionTool(BaseTool):
+    """Dessine une zone de texte (`UIRegion`) au rectangle.
+
+    Le geste est celui de `SceneInpaintingTool` en mode rect — ancre au press,
+    aperçu au move, création au release — parce que c'est déjà le geste
+    « délimiter une surface » du canvas, et qu'en inventer un second pour la
+    même intention rendrait l'outil étranger au reste.
+
+    Snap à la tuile PENDANT le tracé et pas seulement au moment d'écrire : une
+    zone en cible BG ne peut pas commencer entre deux tuiles, et l'aperçu doit
+    montrer ce qui sera réellement posé. Un rectangle qui rétrécirait au
+    relâchement ferait douter du clic.
+
+    Clic sans glisser = zone de taille par défaut : c'est le geste de qui sait
+    déjà où il la veut et la redimensionnera dans l'inspecteur."""
+
+    _FILL   = QColor(150, 140, 255, 55)
+    _BORDER = QColor(150, 140, 255, 230)
+    _DEFAULT_W, _DEFAULT_H = 128, 32     # px, multiples de 8
+
+    def __init__(self, view: GBAView):
+        super().__init__(view)
+        self._anchor: Optional[tuple[int, int]] = None   # (x, y) px snappés
+        self._preview: QGraphicsRectItem | None = None
+
+    # ── Cycle de vie ─────────────────────────────────────────────
+    def activate(self):
+        self._view.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self._view.setCursor(Qt.CursorShape.CrossCursor)
+        self._preview = QGraphicsRectItem(0, 0, 0, 0)
+        self._preview.setBrush(QBrush(self._FILL))
+        self._preview.setPen(QPen(self._BORDER, 0))
+        self._preview.setZValue(70)      # au-dessus de l'aperçu d'inpainting
+        self._preview.setVisible(False)
+        self._view.scene().addItem(self._preview)
+
+    def deactivate(self):
+        self._view.unsetCursor()
+        if self._preview and self._preview.scene():
+            self._preview.scene().removeItem(self._preview)
+        self._preview = None
+        self._anchor = None
+
+    # ── Helpers ──────────────────────────────────────────────────
+    def _ctrl(self):
+        return getattr(self._view, "ui_region_controller", None)
+
+    @staticmethod
+    def _snap(pos: QPointF) -> tuple[int, int]:
+        return (int(pos.x()) // _BG_TILE) * _BG_TILE, (int(pos.y()) // _BG_TILE) * _BG_TILE
+
+    def _rect(self, pos: QPointF) -> tuple[int, int, int, int]:
+        """(x, y, w, h) en pixels, bornes snappées, largeur/hauteur >= 1 tuile.
+        La tuile SOUS le curseur est incluse — sans le `+ _BG_TILE`, glisser
+        d'une tuile produirait une zone vide."""
+        ax, ay = self._anchor
+        cx, cy = self._snap(pos)
+        x0, y0 = min(ax, cx), min(ay, cy)
+        x1, y1 = max(ax, cx) + _BG_TILE, max(ay, cy) + _BG_TILE
+        return x0, y0, x1 - x0, y1 - y0
+
+    # ── Événements ───────────────────────────────────────────────
+    def on_press(self, pos: QPointF, e) -> bool:
+        if e.button() != Qt.MouseButton.LeftButton:
+            return True
+        self._anchor = self._snap(pos)
+        self._apply_preview(*self._rect(pos))
+        return True
+
+    def on_move(self, pos: QPointF, e) -> bool:
+        if self._anchor is None:
+            return True
+        self._apply_preview(*self._rect(pos))
+        return True
+
+    def on_release(self, pos: QPointF, e) -> bool:
+        if self._anchor is None:
+            return True
+        x, y, w, h = self._rect(pos)
+        if w <= _BG_TILE and h <= _BG_TILE:      # simple clic
+            w, h = self._DEFAULT_W, self._DEFAULT_H
+        self._anchor = None
+        if self._preview:
+            self._preview.setVisible(False)
+        ctrl = self._ctrl()
+        if ctrl is not None:
+            ctrl.create_region(x, y, w, h)
+        return True
+
+    def _apply_preview(self, x, y, w, h):
+        if self._preview:
+            self._preview.setRect(x, y, w, h)
+            self._preview.setVisible(True)
+
+    def on_leave(self):
+        if self._preview and self._anchor is None:
+            self._preview.setVisible(False)
+

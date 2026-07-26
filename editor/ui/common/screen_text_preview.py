@@ -1,17 +1,30 @@
 """
-editor/ui/common/screen_text_preview.py — aperçu du rendu d'une chaîne sur
-l'écran cible.
+editor/ui/common/screen_text_preview.py — jauge de longueur d'une chaîne,
+rapportée à la largeur de l'écran GBA.
 
-Simule un écran de largeur SCREEN_W px avec une police à chasse fixe de CELL px
-par caractère (approximation de `fwf_default`, la police libtonc TTE utilisée
-par le moteur — cf. runtime, tte_init_se + draw_printf qui positionne en
-cellules de 8px). Chaque `\\n` = nouvelle ligne. Ce qui dépasse la largeur de
-l'écran est coupé (clip) et la ligne trop longue est marquée : l'utilisateur
-voit immédiatement si son texte est tronqué.
+CE QUE C'EST : une règle graduée, volontairement grossière. On pose CELL px par
+caractère sur une ligne de SCREEN_W px (l'écran GBA), on dessine avec la police
+monospace de l'éditeur, et on marque la ligne qui dépasse. Chaque `\\n` = une
+nouvelle ligne ; ce qui sort de l'écran est coupé (clip), pas replié. Sert à
+répondre à une seule question : « cette chaîne a-t-elle une chance de tenir ? »
+
+CE QUE ÇA NE PROMET PAS : le rendu de la ROM. Le moteur met en page avec
+`text_layout` (runtime/include/gba_engine.h) — chasse propre à chaque glyphe,
+correspondance au plus long (donc ligatures), coupe au mot. Rien de tout ça ici.
+Sur une police proportionnelle, une police 16×16, ou dès qu'une ligature entre
+en jeu, cet aperçu se trompe, et il se trompe dans les deux sens. La grille de
+CELL px ne décrit AUCUNE police du projet : c'est une unité de mesure, pas une
+police par défaut, et le moteur n'en a plus depuis le retrait de libtonc TTE.
+
+Pour voir le vrai rendu, il faut une police : `FontScreenPreview`
+(ui/text_editor/text_editor_screen.py) rejoue `text_layout` avec la planche de
+glyphes réelle. On ne s'en sert pas ici parce qu'une chaîne exposée par un
+script n'est liée à aucune police — et n'est même pas forcément du texte à
+afficher.
 
 L'écran logique (SCREEN_W) est mis à l'échelle pour remplir la largeur du
-widget — la troncature tombe donc toujours au bord droit, quelle que soit la
-largeur du panneau.
+widget — la marque de dépassement tombe donc toujours au bord droit, quelle que
+soit la largeur du panneau.
 """
 
 from __future__ import annotations
@@ -22,9 +35,9 @@ from PyQt6.QtCore import Qt, QRectF
 
 from ui.common.theme import C, T
 
-SCREEN_W = 260          # largeur écran cible (px logiques)
-CELL = 8                # avance fixe par caractère (px logiques)
-MAX_CELLS = SCREEN_W // CELL   # caractères tenant pleinement sur une ligne (32)
+SCREEN_W = 240          # largeur de l'écran GBA (px) — cf. SCREEN_W du runtime
+CELL = 8                # avance fixe par caractère (px) — l'unité de la jauge
+MAX_CELLS = SCREEN_W // CELL   # caractères tenant pleinement sur une ligne (30)
 
 
 class ScreenTextPreview(QWidget):

@@ -335,10 +335,9 @@ dans les scripts.
 
 #### Polices — décisions verrouillées (2026-07-21)
 
-- **Un glyphe = une tuile** (rendu à chasse fixe, sur la primitive `tilemap.*` de la
-  v0.3.1). Le rendu pixel-dans-la-tuile — chasse proportionnelle, placement au pixel — est
-  reporté ; l'asset stocke déjà `advance` pour que **rien ne soit à réimporter** ce
-  jour-là. Bénéfice caché du choix : un glyphe étant une tuile, `tilemap.set_palette` le
+- **Un glyphe = une tuile** en mono (rendu à chasse fixe, sur la primitive `tilemap.*` de la
+  v0.3.1). Le rendu proportionnel est **livré** depuis (voir plus bas) ; l'asset stockait
+  déjà `advance`, donc rien n'a eu à être réimporté — c'était tout l'intérêt. Bénéfice caché du choix : un glyphe étant une tuile, `tilemap.set_palette` le
   recolore, les windows le découpent, la priorité de layer le place — sans une ligne de
   code spécifique au texte.
 - **Deux points d'entrée, pas plus** : planche **PNG** ou descripteur **BMFont `.fnt`**.
@@ -354,7 +353,8 @@ dans les scripts.
 - **Pas de police par défaut, mais jamais de cul-de-sac** : une étagère de départ de trois
   polices visuellement opposées, présentées comme des exemples à modifier. Le pluriel est
   ce qui fait la différence entre un exemple et un défaut (même règle que les panneaux).
-  `display.print` (TTE) reste disponible entre-temps, donc aucun projet n'est muet.
+  (`display.print`/TTE servait de filet le temps que la police custom existe ; il est
+  **retiré** depuis — voir plus bas.)
 
 #### Livré (asset Font + import)
 
@@ -366,6 +366,146 @@ dans les scripts.
   texte + XML, `import_font_fnt()`.
 - `core/asset_sync.py::sync_font_file` + `project_migrations.reconcile_fonts`
   (dépôts hors ligne, `.fnt` prioritaire sur sa page).
+- **Couleurs-clés** — `Font.bg_color` / `space_color`, désignées à la **pipette** dans
+  l'inspecteur de police. Une planche reprise ailleurs (GB Studio, itch.io) arrive souvent
+  opaque, sur un aplat de fond et avec une seconde couleur qui marque l'espacement ; sans
+  les désigner, l'encodeur prend tout pour de l'encre et les glyphes sortent en pavés
+  pleins. `Font.key_colors()` est lu par l'aperçu (planche trouée sur damier), l'import
+  (`_ink_mask`, donc la chasse mesurée) et `encode_font` — même transparence partout, sinon
+  l'aperçu mentirait sur la ROM. Le fond est **proposé** à l'import (couleur dominante d'une
+  planche opaque), jamais imposé, et le PNG source n'est jamais modifié.
+- **Chasse déclarée, jamais devinée** — trois sources par ordre d'autorité : le `xadvance`
+  d'un `.fnt`, sinon le marqueur d'espacement s'il a été désigné (la couleur dit où finit le
+  caractère), sinon **mono** (chasse = cellule). Pas de repli sur une mesure d'encre : sans
+  flanc déclaré, une chasse proportionnelle colle les lettres et donne un texte irrégulier à
+  rattraper case par case, là où du mono est toujours lisible. Repiquer la couleur
+  d'espacement relit les chasses **sans redécouper** la planche (`measure_advances`) — les
+  caractères corrigés à la main et les cases fusionnées survivent ; `_SetKeyColorCmd` rend
+  couleur ET chasses à l'annulation.
+
+#### Livré (rendu proportionnel)
+
+**Deux chemins, choisis par la donnée.** `font_emit.is_proportional()` est la règle unique
+(partagée par l'émetteur ET l'aperçu de l'éditeur, sinon l'aperçu promettrait un placement
+que la ROM ne tiendrait pas) : une police dont chaque chasse remplit sa cellule garde le
+chemin **mono**, qui ne coûte rien par appel. On ne paie la composition pixel que quand elle
+change quelque chose.
+
+- **Mono** (`proportional == 0`) — inchangé : les tuiles de glyphes vont en VRAM, le tilemap
+  pointe dessus. Écrire du texte, c'est poser des index de tuiles.
+- **Proportionnel** (`proportional == 1`) — une tuile se pose à 8 px près, donc le tilemap ne
+  sait pas placer un glyphe à x=13. Le moteur réserve une **surface** de tuiles vierges, y
+  fait pointer le tilemap une fois, et **compose les glyphes pixel par pixel depuis la ROM**
+  (`text_blit_row`, masque de quartets non nuls pour ne pas effacer le voisin dont on
+  chevauche la tuile). Les tuiles de glyphes ne vont alors jamais en VRAM : elles ne servent
+  que de source, ce qui libère la place que prend la surface.
+- **Adressage de la surface** déterministe depuis la position écran
+  (`base + (ty % 8) * 30 + (tx % 30)`, 240 tuiles = moins de la moitié du charblock). Aucun
+  état d'allocation : redessiner au même endroit réutilise les mêmes tuiles, ce qui rend
+  `text_draw_upto` (machine à écrire) stable et permet à deux boîtes de coexister. **Limite
+  assumée** : deux boîtes distantes d'un multiple exact de 8 rangées partagent leurs tuiles.
+- **Une seule mise en page** pour les deux chemins (`text_layout`, tout en pixels — en mono
+  les chasses valent gw*8, les positions retombent d'elles-mêmes sur des multiples de 8). La
+  passe de mesure et la passe de dessin sont le MÊME code : mesurer autrement que l'on
+  dessine, c'est se garantir un décalage entre la zone préparée et la zone écrite.
+- `text_clear` vide les **pixels** de la surface en proportionnel, pas seulement le tilemap :
+  la composition ne pose que de l'encre, sans effacer.
+- L'origine (`tx`, `ty`) reste en TUILES dans toute l'API Lua — inchangée. C'est le placement
+  des glyphes entre eux qui devient pixellisé.
+
+#### Livré (police riche : composition automatique)
+
+Une police MONO est chargée entière en VRAM (le tilemap pointe ses glyphes). Au-delà de
+512 tuiles elle ne rentre dans aucun charblock — une police CJK était donc simplement
+**impossible**. Or le chemin de composition, lui, ne charge **aucun** glyphe : ils restent en
+ROM et servent de source, le coût se résume à la surface.
+
+- `font_emit.render_composited()` bascule de lui-même dès que les glyphes coûtent plus cher
+  que la surface (240 tuiles) : on prend le moins cher des deux. Une police de 800 glyphes
+  (25 Ko de tuiles) passe ainsi à 240 tuiles ; en dessous du seuil rien ne change, le chemin
+  tilemap ne coûtant rien par appel.
+- Le drapeau `FontInfo.proportional` devient **`composited`** : il désigne le CHEMIN DE RENDU,
+  plus la typographie. Les deux notions avaient divergé en même temps qu'elles se confondaient
+  dans un seul champ.
+- **Chasses, interligne et avance de secours sont émis DÉJÀ RÉSOLUS** (`font_line_px`,
+  `font_fallback_adv_px`). Sans ça, forcer la composition sur une police mono aurait changé son
+  interligne (`line_height` brut au lieu de l'arrondi tuile) — un déplacement de rendu
+  invisible à la relecture. Le runtime et l'aperçu lisent désormais ces valeurs sans brancher
+  sur le mode.
+- Le log de build annonce le chemin et le coût VRAM réel, sinon un basculement automatique
+  serait invisible.
+
+Vérifié sur la cible : une police mono **forcée en composition** rend `###.....#####...###`,
+soit A@0 B@8 A@16 — strictement ce que produit le chemin tilemap. Le basculement ne change
+rien visuellement.
+
+#### Livré (allocateur de charblock par scène)
+
+`codegen/vram_alloc.py` — la VRAM BG n'est plus distribuée par la convention figée
+« CBB = bg_slot, map à la fin de son propre charblock », mais **allouée par scène**.
+
+- **Tout se raisonne en blocs de 2 Ko** (= 1 screenblock = 64 tuiles 4bpp) : c'est la seule
+  unité qui voit à la fois les charblocks (tuiles) et les screenblocks (maps), qui se
+  **recouvrent** dans les mêmes 64 Ko.
+- **L'asymétrie qui dicte tout** : un fond est *rigide* (champ CharBlock de `BGxCNT` sur
+  2 bits, et grit numérote à partir de 0 → collé à la base d'un charblock) ; le texte est
+  *souple* (c'est nous qui écrivons ses entrées de map, en y ajoutant `g_text_tile_base`).
+  Donc c'est le texte qu'on glisse dans les trous, jamais le fond.
+- **Les maps sortent du chemin de croissance.** Posée à la fin de son propre charblock, la map
+  d'un layer murait sa propre croissance — la croissance étant contiguë, il ne peut pas sauter
+  par-dessus. Autoriser le débordement sans déplacer les maps n'aurait rien donné.
+- **Portée 10 bits** : un layer voit 1024 tuiles depuis la base de son charblock, soit deux
+  charblocks. Il déborde sur le suivant si rien ne l'occupe. Cas particulier : au-delà du
+  charblock 3 commence la VRAM des sprites, donc un layer en CBB3 reste plafonné à 512.
+- **Runtime** : `text_set_charblock()` dissocie le charblock du texte de son layer (les 4
+  écritures de tuiles visent le CBB, les écritures de tilemap le LAYER).
+- **Garde-fou** : le placement calculé n'est retenu que s'il donne à CHAQUE layer au moins ce
+  que donnait le placement historique — sinon repli complet. Une allocation plus fine ne doit
+  jamais casser un projet qui passait.
+- `_check_bg_tile_budget` consulte l'allocateur au lieu d'un plafond fixe, et prend le budget
+  le plus serré parmi les scènes qui posent ce fond (les tuiles sont partagées, l'allocation
+  non).
+
+Résultat sur le démo Pong : le décor d'ARENA passe de **448 à 1024 tuiles**. Un fond à map
+64×64 passe de 256 à 960. Vérifié sur la cible (layer BG0 / charblock 3 / base 128 / SBB30 :
+rendu identique, index de tuiles conformes à la base allouée).
+
+Modes bitmap hors périmètre — leur framebuffer occupe la VRAM BG, à traiter avec le rendu
+bitmap.
+
+#### Livré (libtonc TTE retiré)
+
+Deux systèmes de texte coexistaient, dont un contredisait la règle de l'autre. TTE est sorti :
+
+- **La vraie raison est l'i18n**, pas la VRAM : la chaîne de format de `display.print` vivait
+  dans le SCRIPT, donc hors de la table de textes — intraduisible, exactement le trou que la
+  table existe pour fermer. Accessoirement, TTE chargeait sa police **à partir de la tuile 1**
+  du charblock d'UI (mesuré sur la cible), là où `text_set_font` pose la nôtre : les deux
+  s'écrasaient, donc `display.print` rendait des glyphes corrompus dès qu'un projet avait une
+  police.
+- **Remplacements** : `text.draw` pour un libellé (il vit dans la table, donc il se traduit) et
+  **`text.draw_num`** pour une valeur (un nombre ne se traduit pas — seule primitive de texte
+  dont le contenu n'est pas dans la table, et c'est volontaire). `draw_num` passe par le même
+  `text_render_cp` que le reste : mêmes chasses, même surface, même effacement.
+- **Migration automatique** au chargement (`project_migrations.migrate_display_calls`) : un
+  appel à littéral pur crée une entrée de table rangée sous le nom du script et devient
+  `text.draw("clé", col, row)` ; `display.clear(c,r,len)` devient `text.clear(c,r,len,1)`. Les
+  appels **formatés** ne sont pas devinés — décider ce qui est un libellé traduisible et ce
+  qui est une valeur appartient à l'auteur, et `api.REMOVED_API` fait dire au checker quoi
+  écrire au lieu de « fonction inconnue ».
+- **`-ltonc` disparaît du link**, ainsi que `gba_font.h` (police 1bpp dont le consommateur
+  `text_init()` n'existait plus, encore recopiée dans chaque build).
+- `text.draw_fmt` (marqueurs substituables dans une entrée — le remplacement complet de
+  `display.print` avec valeurs interpolées) est **différé** : il demande de choisir une syntaxe
+  de marqueur et de la faire vivre dans l'éditeur.
+
+Vérifié : build complet du démo Pong (migration → codegen → grit → compilation → link sans
+libtonc → ROM), et `text.draw_num` sur la cible.
+
+Vérifié **sur la cible** (ROM de test sous mGBA, résultats relus via le registre de debug) :
+chasses 3/5/3 → 11 px d'encre contigus, translation à la tuile près, coupe au mot avec
+chasses variables, machine à écrire, effacement réel des pixels, et non-régression du chemin
+mono (tilemap pointant les slots de glyphes).
 
 #### Livré (encodeur + API texte)
 
@@ -387,9 +527,20 @@ n premiers caractères, et le rythme appartient au script. Un champ « vitesse d
 dans l'inspecteur choisirait le genre à la place de l'utilisateur — même refus que pour
 les boîtes de dialogue.
 
-Reste à faire côté v0.3.2 : le type d'export `text` branché sur l'inspecteur existant,
-l'écran Textes et l'écran Police. `rename_text_key` ne réécrit pas encore les références
-Lua — à faire avec le type d'export, sur le modèle de `rename_export`.
+#### Livré (propagation d'un renommage de clé)
+
+- `rename_text_key` réécrit les `text.draw/draw_box/draw_upto/length("clé")` des scripts via
+  `DOMAIN_TEXT` — repérage structurel, donc une chaîne sans rapport ou un commentaire qui
+  cite la clé ne bougent pas. Annulable (`RenameTextKeyCmd` repasse par la même fonction en
+  sens inverse), et la barre de statut annonce combien de références ont suivi.
+- `refactor.index_refs_in_project()` — index `{clé: {script: n}}` en **un seul** parcours,
+  qui alimente la section « UTILISÉ PAR » de l'inspecteur de texte. Périmé (donc recalculé
+  paresseusement) sur `scripts_changed`, sur renommage et sur undo.
+- `Project._renaming()` émet `flush_script_edits` avant de commencer : la réécriture lit les
+  scripts sur disque, une frappe encore dans le buffer du Script Editor serait ignorée puis
+  ressauvée par-dessus, cassant le lien en silence.
+
+Reste à faire côté v0.3.2 : le type d'export `text` branché sur l'inspecteur existant.
 
 #### Ouvert
 

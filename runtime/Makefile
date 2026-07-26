@@ -40,14 +40,14 @@ CFLAGS    := $(ARCH) \
              -fomit-frame-pointer \
              $(addprefix -I,$(SRC_DIRS)) \
              -I$(DEVKITPRO)/libgba/include \
-             -isystem $(DEVKITPRO)/libtonc/include \
              -I$(DEVKITPRO)/maxmod/include
 
 # Flags de link
 # gba.specs est built-in dans arm-none-eabi-gcc
 LDFLAGS   := $(ARCH) -specs=gba.specs
-LIBS      := -L$(DEVKITPRO)/libgba/lib -L$(DEVKITPRO)/libtonc/lib \
-             -L$(DEVKITPRO)/maxmod/lib -ltonc -lgba -lmm \
+# libtonc retirée : elle ne servait qu'à TTE (display.print), sorti du workflow.
+LIBS      := -L$(DEVKITPRO)/libgba/lib \
+             -L$(DEVKITPRO)/maxmod/lib -lgba -lmm \
              -Wl,--allow-multiple-definition
 
 TARGET    := rom

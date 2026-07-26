@@ -66,7 +66,7 @@ function on_collision_enter(other, my_box, other_box)
     end
     if x >= 120 then
         self:set_velocity(-math.abs(self:get_vx()), vy)
-    end
+	end
 end
 
 function on_button_r()

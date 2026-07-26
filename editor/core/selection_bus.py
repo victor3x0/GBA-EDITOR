@@ -32,10 +32,25 @@ class CameraSelection:
         self.scene = scene
 
 
+class UIRegionSelection:
+    """Marqueur de sélection : une zone de texte a été cliquée dans le canvas.
+
+    Porte la mise en page en plus de la zone, parce qu'une `UIRegion` ne connaît
+    pas son `UILayout` — et que l'inspecteur en a besoin pour dire « partagée
+    par N scènes » comme pour supprimer la zone de la bonne liste. Même raison
+    d'être que `CameraSelection` : le bus transporte une intention, pas
+    seulement un objet."""
+    __slots__ = ("layout", "region")
+
+    def __init__(self, layout, region):
+        self.layout = layout
+        self.region = region
+
+
 class SelectionBus(QObject):
     """
     Singleton de sélection. Émet changed(obj) à chaque changement.
-    obj peut être : Actor | Scene | Prefab | CameraSelection | None
+    obj : Actor | Scene | Prefab | CameraSelection | UIRegionSelection | None
     """
 
     changed = pyqtSignal(object)

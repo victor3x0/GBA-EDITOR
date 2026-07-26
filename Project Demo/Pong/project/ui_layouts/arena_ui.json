@@ -1,0 +1,20 @@
+{
+  "name": "arena_ui",
+  "regions": [
+    {
+      "name": "bulle_joueur",
+      "anchor": "actor",
+      "anchor_actor": "PADDLE_PL",
+      "x": 14,
+      "y": -12,
+      "w": 32,
+      "h": 8,
+      "font_name": "omelette_8x8_heavy_mono",
+      "align": "left",
+      "target": "",
+      "preview_text": "arena_bulle",
+      "animated_glyphs": 2
+    }
+  ],
+  "notes": "Bulle ancree sur PADDLE_PL. \"GO!\" : G et O passent par le chemin PAR GLYPHE (2 reserves), \"!\" reste dans la BANDE. Si un seul des deux apparait, on sait lequel des deux chemins a lache."
+}

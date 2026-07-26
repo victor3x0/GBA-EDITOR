@@ -25,8 +25,11 @@ from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd, DeleteFileCmd
 from ui.common.icons import get as _ico, COLOR_DEFAULT
-
-PROJECTS_DIR = Path(__file__).parent.parent.parent.parent / "projects"
+# Source unique du dossier de projets par défaut (~/GBAProjects). Ce module
+# et window.py en avaient chacun une copie pointant vers le projects/ du
+# repo : inexistant chez quelqu'un qui lance l'exe, et dans le dossier
+# temporaire une fois figé.
+from ui.home.project_picker import PROJECTS_DIR
 
 # ── Rôles QTreeWidgetItem ─────────────────────────────────────────
 _ROLE_TYPE = Qt.ItemDataRole.UserRole

@@ -1,10 +1,10 @@
 name: Release builds
 
 # Se déclenche quand tu publies une Release sur GitHub (tag + release notes
-# via l'UI ou `gh release create`) : build l'exe Windows onefile (PyInstaller,
-# pas d'installeur) et l'attache directement à cette même release.
+# via l'UI ou `gh release create`) : compile l'éditeur avec Nuitka, en tire
+# un installateur NSIS + un ZIP portable, et les attache à cette release.
 # `workflow_dispatch` permet aussi de lancer un build de test sans publier
-# de release (l'artefact reste alors seulement dans l'onglet Actions).
+# de release (les artefacts restent alors dans l'onglet Actions).
 #
 # Le job Linux (AppImage) est mis en pause (if: false) le temps de tester la
 # build sur une vraie distro — tout le travail (packaging/linux/) reste en
@@ -35,6 +35,9 @@ jobs:
   build-windows:
     needs: version
     runs-on: windows-latest
+    # Nuitka compile en C : nettement plus long que l'ancien build
+    # PyInstaller (qui ne faisait qu'assembler des .pyc).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -42,29 +45,71 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Le cache Nuitka (objets compilés + ccache) fait la différence entre
+      # un build à froid et un build incrémental sur les runs suivants.
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: '~\AppData\Local\Nuitka\Nuitka\Cache'
+          key: nuitka-windows-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-windows-${{ hashFiles('requirements.txt') }}-
+            nuitka-windows-
+
       - name: Installer les dépendances Python
         run: |
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install nuitka
 
-      - name: Build PyInstaller (onefile)
-        run: pyinstaller packaging/gba_editor.spec --noconfirm
+      # Le runner part d'un Python nu : tout import du code que
+      # requirements.txt ne couvre pas échoue ici, avant le build, au lieu
+      # de produire une distribution qui plante à l'usage (cf. luaparser
+      # en 1.0).
+      - name: Vérifier que requirements.txt couvre tous les imports
+        run: python packaging/check_deps.py
 
-      - name: Nommer l'exe avec la version
+      - name: Build Nuitka (standalone)
+        run: python packaging/nuitka_build.py --version "${{ needs.version.outputs.version }}" --output-dir build-out
+
+      - name: ZIP portable
         shell: pwsh
         run: |
           $version = "${{ needs.version.outputs.version }}"
-          Copy-Item "dist\GBA Editor.exe" "dist\GBAEditor-$version-windows.exe"
+          Compress-Archive -Path "build-out\GBAEditor" `
+                           -DestinationPath "GBAEditor-$version-windows-portable.zip"
+
+      - name: Construire l'installateur NSIS
+        shell: pwsh
+        run: |
+          # NSIS est préinstallé sur les runners Windows, mais pas toujours
+          # exposé dans le PATH — on le résout explicitement plutôt que de
+          # dépendre de ça.
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+          if (-not (Test-Path $makensis)) { throw "makensis introuvable : $makensis" }
+
+          $version = "${{ needs.version.outputs.version }}"
+          $src     = (Resolve-Path "build-out\GBAEditor").Path
+          $out     = Join-Path $PWD "GBAEditor-$version-windows-setup.exe"
+          # VIProductVersion exige du numérique 4 champs, VERSION non.
+          $vi = python -c "import sys; sys.path.insert(0, 'packaging'); from nuitka_build import numeric_version; print(numeric_version('$version'))"
+          & $makensis "/DVERSION=$version" "/DVIVERSION=$vi" "/DSRCDIR=$src" "/DOUTFILE=$out" packaging\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis a échoué (code $LASTEXITCODE)" }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
-          path: dist/GBAEditor-*-windows.exe
+          name: windows
+          path: |
+            GBAEditor-*-windows-setup.exe
+            GBAEditor-*-windows-portable.zip
 
   build-linux-appimage:
     if: false   # en pause — repasser à true une fois testé sur une vraie distro Linux
     needs: version
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -72,22 +117,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Dépendances système (Qt6 headless)
+      - name: Dépendances système (Qt6 headless + compilateur)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            patchelf ccache \
             libegl1 libopengl0 libxkbcommon0 libxcb-cursor0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
             libxcb-xinerama0 libnss3 libxdamage1 libfontconfig1
 
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Nuitka
+          key: nuitka-linux-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-linux-${{ hashFiles('requirements.txt') }}-
+            nuitka-linux-
+
       - name: Installer les dépendances Python
         run: |
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install nuitka
 
-      - name: Build PyInstaller (onefile)
-        run: pyinstaller packaging/gba_editor.spec --noconfirm
+      - name: Vérifier que requirements.txt couvre tous les imports
+        run: python packaging/check_deps.py
+
+      - name: Build Nuitka (standalone)
+        run: python packaging/nuitka_build.py --version "${{ needs.version.outputs.version }}" --output-dir build-out
 
       - name: Récupérer appimagetool
         run: |
@@ -98,7 +156,9 @@ jobs:
       - name: Assembler l'AppDir
         run: |
           mkdir -p AppDir/usr/bin
-          cp "dist/GBA Editor" AppDir/usr/bin/
+          # Nuitka produit un dossier (standalone) et non un fichier unique :
+          # on copie tout son contenu, exe + données + libs, dans usr/bin/.
+          cp -r build-out/GBAEditor/. AppDir/usr/bin/
           cp packaging/linux/AppRun AppDir/AppRun
           chmod +x AppDir/AppRun AppDir/usr/bin/"GBA Editor"
           cp packaging/linux/gba-editor.desktop AppDir/gba-editor.desktop
@@ -123,10 +183,10 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: windows-exe
+          name: windows
           path: artifacts
 
-      - name: Attacher l'exe Windows à la release
+      - name: Attacher les artefacts Windows à la release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber --repo "${{ github.repository }}"

@@ -24,7 +24,7 @@ from core.history import get_history
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.project import (
-    Project, Scene, SFX_FILE_EXTS, MUSIC_FILE_EXTS,
+    Project, Scene, SFX_FILE_EXTS, MUSIC_FILE_EXTS, FONT_FILE_EXTS,
 )
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -34,12 +34,11 @@ from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog, Ani
 from ui.scene_manager.inspectors import DynamicInspector
 from ui.sound_mixer.sound_panel import SoundMixerScreen
 from ui.script_editor.script_editor import ScriptEditorScreen
-from ui.home.project_picker import HomeScreen, push_recent
+from ui.home.project_picker import HomeScreen, push_recent, PROJECTS_DIR
 from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
 from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
 from ui.background_editor.background_editor_screen import BackgroundEditorScreen
-
-PROJECTS_DIR = Path(__file__).parent.parent / "projects"
+from ui.text_editor.text_editor_screen import TextEditorScreen
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -71,12 +70,21 @@ class GbaStatusBar(QWidget):
              "Au-delà, les sprites supplémentaires n'apparaissent pas.\n"
              "Chaque actor visible consomme 1 slot OAM par frame.",
              128, 96),
-            ("scanline", "0/10 sprites/ligne",
-             "Limite scanline\n"
-             "Maximum 10 sprites peuvent occuper la même ligne horizontale.\n"
-             "Au-delà, les sprites scintillent ou disparaissent.\n"
-             "Estimé depuis la taille des sprites — valeur approchée.",
-             10, 8),
+            # La GBA n'a PAS de limite « 10 objets par ligne » — c'est celle de
+            # la Game Boy et de la GBC. Elle a un budget de CYCLES par
+            # scanline : 1210 en temps normal (954 si le bit « H-Blank interval
+            # free » est posé), et un objet régulier coûte environ sa largeur en
+            # pixels. Une ligne de 26 glyphes 8×8 en sprites coûte ~208 cycles,
+            # soit un sixième du budget — avec l'ancien compteur elle passait
+            # pour trois fois hors limite.
+            ("scanline", "0/1210 cycles/ligne",
+             "Budget OBJ par scanline (GBA)\n"
+             "Le matériel dispose de 1210 cycles par ligne pour dessiner les\n"
+             "sprites ; un objet régulier en coûte environ sa largeur en pixels\n"
+             "(un objet en rotation/échelle : 2 × largeur + 10).\n"
+             "Au-delà, les objets suivants dans l'ordre OAM ne sont pas dessinés.\n"
+             "Valeur = pire ligne de l'écran, zones de texte en sprites incluses.",
+             1210, 900),
             ("VRAM",     "0/1024 tiles",
              "VRAM sprites — Zone OBJ\n"
              "La zone sprite en VRAM contient 1024 tiles 8×8 (16Ko en mode 16c).\n"
@@ -131,6 +139,10 @@ class GbaStatusBar(QWidget):
         visible_actors = [a for a in scene.actors if a.visible and a.active]
         oam_count = sum(1 for a in visible_actors if a.get_component("sprite"))
 
+        # Rectangles occupant l'écran : (y, hauteur, largeur). Servent à la fois
+        # au coût par scanline et — pour le texte — au compte d'OAM.
+        spans: list[tuple[int, int, int]] = []
+
         # Estimation tiles VRAM
         tiles = 0
         for a in visible_actors:
@@ -141,21 +153,56 @@ class GbaStatusBar(QWidget):
                 tw = max(1, sp.frame_w // 8)
                 th = max(1, sp.frame_h // 8)
                 tiles += tw * th
+                spans.append((a.y, sp.frame_h, sp.frame_w))
+
+        # Zones de texte en cible sprite — leur coût est EXACT, pas estimé :
+        # il ne dépend que de la géométrie authorée (cf. models/ui_region).
+        from core.models.ui_region import strip_geometry, TARGET_OBJ
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        layout = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
+        text_oam = text_tiles = 0
+        for r in (layout.regions if layout else []):
+            if r.resolved_target(rm) != TARGET_OBJ:
+                continue
+            g = strip_geometry(r)
+            text_oam   += g["oam"]
+            text_tiles += g["tiles"]
+            # x/y d'une zone ancrée sur un actor sont un OFFSET : sans résoudre
+            # l'ancre, une bulle atterrissait hors écran et ne coûtait rien.
+            ry = r.y
+            if r.anchor == "actor":
+                ry += next((a.y for a in scene.actors if a.name == r.anchor_actor), 0)
+            # Une bande est un pavage de sprites de 8 px de haut : chaque rangée
+            # pèse la largeur totale de la zone sur les 8 lignes qu'elle couvre.
+            for row in range(g["rows"]):
+                spans.append((ry + row * 8, 8, sum(g["cols"])))
+            # Un glyphe animé est un OBJ 16×16 de plus. Où il tombe dans la zone
+            # dépend du texte, donc du runtime : on les impute tous à la première
+            # rangée, ce qui majore. Les omettre sous-estimerait la pire ligne,
+            # ce qui est le seul sens dans lequel une jauge ne doit pas mentir.
+            if g["anim"]:
+                spans.append((ry, 16, g["anim"] * 16))
+        oam_count += text_oam
+        tiles     += text_tiles
 
         # Palettes OBJ occupées (référencées + palettes propres auto-allouées)
         from codegen.palette_alloc import scene_bank_layout
         obj_banks = scene_bank_layout(project, scene, "obj").bank_count()
 
-        # Estimation sprites par scanline (approx : actors visibles / hauteur en tiles)
-        scanline_est = max(oam_count, sum(
-            1 for a in visible_actors
-            if a.get_component("sprite")
-        ) // max(1, (160 // 16)))
+        # Pire ligne de l'écran : un objet régulier coûte ~sa largeur en pixels,
+        # et seules comptent les lignes qu'il recouvre réellement. Sommer tout
+        # l'écran donnerait un chiffre toujours rouge ; ne rien sommer du tout
+        # laissait passer une ligne de texte en sprites.
+        line_cost = [0] * 160
+        for y, h, w in spans:
+            for ly in range(max(0, y), min(160, y + max(1, h))):
+                line_cost[ly] += w
+        scanline_cost = max(line_cost) if line_cost else 0
 
-        values = [oam_count, scanline_est, tiles, obj_banks]
+        values = [oam_count, scanline_cost, tiles, obj_banks]
         labels = [
             f"{oam_count}/128 sprites",
-            f"~{scanline_est}/10 sprites/ligne",
+            f"{scanline_cost}/1210 cycles/ligne",
             f"{tiles}/1024 tiles",
             f"{obj_banks}/16 palettes",
         ]
@@ -178,9 +225,12 @@ class GbaStatusBar(QWidget):
 #  Fenêtre principale
 # ──────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
+    # L'ordre doit rester synchronisé avec celui d'ajout dans _screen_stack
+    # (l'index dans SCREENS == l'index dans le stack, cf. _switch_screen).
     SCREENS = [
         "Scene Manager", "Tileset Manager", "Background Editor",
-        "Sprite Editor", "Palette Editor", "Sound Mixer", "Script Editor",
+        "Sprite Editor", "Palette Editor", "Text Editor", "Sound Mixer",
+        "Script Editor",
     ]
 
     # Routage assets/<dossier>/*.ext → (méthode sync, méthode remove, label,
@@ -191,6 +241,7 @@ class MainWindow(QMainWindow):
         ("backgrounds", (".png", ".bmp"), "sync_background_png", "remove_background_png", "Background", False),
         ("sfx",         SFX_FILE_EXTS,    "sync_sfx_file",       "remove_sfx_file",       "SFX",        False),
         ("music",       MUSIC_FILE_EXTS,  "sync_music_file",     "remove_music_file",     "Music",      True),
+        ("fonts",       FONT_FILE_EXTS,   "sync_font_file",      "remove_font_file",      "Police",     True),
     ]
 
     def __init__(self, project_path: Path = None):
@@ -252,6 +303,8 @@ class MainWindow(QMainWindow):
         self._screen_stack.addWidget(self._sprite_editor)
         self._palette_editor = PaletteEditorScreen()
         self._screen_stack.addWidget(self._palette_editor)
+        self._text_editor = TextEditorScreen()
+        self._screen_stack.addWidget(self._text_editor)
         self._sound_mixer = SoundMixerScreen()
         self._screen_stack.addWidget(self._sound_mixer)
         self._script_editor = ScriptEditorScreen()
@@ -335,6 +388,9 @@ class MainWindow(QMainWindow):
         # ── Colonne 3 : Inspector (pleine hauteur) ────────────────
         self._inspector = DynamicInspector()
         self._inspector.actor_changed.connect(self._on_inspector_actor_changed)
+        # Une zone éditée dans l'inspecteur doit se redessiner dans le canvas.
+        self._inspector.ui_regions_changed.connect(
+            self.scene_editor._reload_ui_regions)
         self._inspector.set_script_open_fn(self.open_script)
         self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)
@@ -355,8 +411,11 @@ class MainWindow(QMainWindow):
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 6000))
         _d.on("project_tree_changed",  self.assets_finder_panel.refresh)
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
-        # lambda : _palette_editor est construit plus loin dans _setup_ui que
-        # ce bloc d'abonnement — résoudre l'attribut au moment de l'émission.
+        # lambda : _text_editor / _script_editor / _palette_editor sont construits
+        # plus loin dans _setup_ui que ce bloc d'abonnement — résoudre l'attribut
+        # au moment de l'émission, pas ici.
+        _d.on("scripts_changed",       lambda: self._text_editor.invalidate_script_usages())
+        _d.on("flush_script_edits",    lambda: self._script_editor.flush_pending_edits())
         _d.on("palettes_changed",      lambda: self._palette_editor.refresh())
 
         self._h_split.setSizes([220, 820, 240])
@@ -536,7 +595,6 @@ class MainWindow(QMainWindow):
 
     def _load_default_project(self):
         """Au démarrage : ouvre le projet passé en argument, sinon affiche l'accueil."""
-        PROJECTS_DIR.mkdir(exist_ok=True)
         if self._startup_project and self._startup_project.exists():
             self._open_project(self._startup_project)
 
@@ -596,6 +654,7 @@ class MainWindow(QMainWindow):
         self._sprite_editor.load_project(self.project)
         self._palette_editor.load_project(self.project)
         self._bg_editor.load_project(self.project)
+        self._text_editor.load_project(self.project)
         self._inspector.set_project(self.project)
         self._script_editor.set_project(self.project)
         if self.project.active_scene:
@@ -702,7 +761,13 @@ class MainWindow(QMainWindow):
 
     def _flush_after_undo_redo(self):
         """Rafraîchit l'UI après un undo ou redo."""
-        if not self.project or not self.project.active_scene:
+        if not self.project:
+            return
+        # Textes/polices : indépendants de la scène active, donc rafraîchis
+        # AVANT le garde-fou ci-dessous (annuler un renommage de clé doit se
+        # voir même dans un projet sans scène).
+        self._text_editor.refresh()
+        if not self.project.active_scene:
             return
         # Sauvegarder l'état actuel (le modèle en mémoire = vérité après undo)
         with self._watcher.suspended():
@@ -761,9 +826,17 @@ class MainWindow(QMainWindow):
         if not route:
             return
         sync_name, _, label, feminine = route
-        getattr(self.project, sync_name)(p)
+        # Certains sync_* renvoient un avertissement d'import (police sans
+        # glyphe, format illisible…) — le taire laisserait un asset muet à
+        # l'écran sans que l'utilisateur sache pourquoi. D'autres renvoient la
+        # Resource créée (Sfx/Music) : seule une chaîne est un avertissement.
+        result = getattr(self.project, sync_name)(p)
+        warning = result if isinstance(result, str) else None
         self._refresh_ui()
-        self._status.showMessage(f"{label} importé{'e' if feminine else ''} : {p.name}", 3000)
+        if warning:
+            self._status.showMessage(warning, 6000)
+        else:
+            self._status.showMessage(f"{label} importé{'e' if feminine else ''} : {p.name}", 3000)
 
     def _on_asset_removed(self, path: str):
         """Fichier brut supprimé de assets/ — suppression différée du JSON, UI mise à jour."""
@@ -783,6 +856,12 @@ class MainWindow(QMainWindow):
         p = Path(path)
         if p.suffix.lower() in (".png", ".bmp") and p.parent.name == "sprites":
             self._sprite_editor.load_project(self.project)
+        elif p.parent.name == "fonts":
+            # Planche retouchée : les métriques affichées (glyphes, coût en
+            # tuiles) sont dérivées de l'asset, pas du fichier — un refresh
+            # suffit, l'asset lui-même n'est jamais ré-analysé automatiquement
+            # (sinon on écraserait les corrections de l'utilisateur).
+            self._text_editor.refresh()
         self._inspector.actor_inspector._refresh_sprite_preview()
         self._status.showMessage(f"Asset modifié : {Path(path).name}", 2000)
 

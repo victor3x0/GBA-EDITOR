@@ -50,6 +50,16 @@ function on_update()
 end
 
 function on_late_update()
-    display.print(9, 2, "%d", global.get("score_player"))
-    display.print(20, 2, "%d", global.get("score_auto"))
+    -- Un score est une VALEUR, pas un libellé : rien à traduire, donc rien à
+    -- ranger dans la table de textes. text.draw_num le rend avec la police
+    -- courante, à des coordonnées calculées — les zones ne remplacent pas ce
+    -- chemin, elles servent la géométrie AUTHORÉE.
+    text.draw_num(global.get("score_player"), 9, 2)
+    text.draw_num(global.get("score_auto"), 20, 2)
+
+    -- Bulle ancrée sur la raquette du joueur : cible SPRITE, imposée par
+    -- l'ancrage (un actor bouge au pixel, la grille BG avance par 8). Elle
+    -- suit la raquette de haut en bas — c'est ce qu'on regarde pour vérifier
+    -- le rendu en bande de sprites.
+    text.draw_in("arena_bulle", "bulle_joueur")
 end

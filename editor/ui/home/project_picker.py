@@ -25,6 +25,10 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from ui.common.theme import C, T, QSS
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
 
+# Emplacement proposé par défaut pour un nouveau projet — jamais créé au
+# lancement. Il ne sert qu'à préremplir les champs et les dialogues de
+# fichiers ; le dossier n'apparaît que si l'utilisateur crée réellement un
+# projet dedans (Project.create fait le mkdir parents=True).
 PROJECTS_DIR  = Path.home() / "GBAProjects"
 _RECENT_FILE  = Path.home() / ".gba_editor_recent.json"
 _MAX_RECENT   = 12

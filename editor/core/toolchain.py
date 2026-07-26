@@ -1,16 +1,42 @@
 """
 GBA Editor — détection et configuration de la toolchain
 Gère devkitPro (grit + make + devkitARM) et mgba.
-Les chemins sont persistés dans un fichier JSON à côté de l'éditeur.
+Les chemins sont persistés dans un fichier JSON du dossier de config
+utilisateur (voir CONFIG_FILE).
 """
 
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
+
+def _config_dir() -> Path:
+    """
+    Dossier de config utilisateur, par OS.
+
+    Surtout PAS à côté du module : en build onefile, le module vit dans le
+    dossier d'extraction temporaire, détruit à la fermeture — les chemins
+    devkitPro saisis par l'utilisateur étaient donc reperdus à chaque
+    lancement de l'exe.
+    """
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA")
+        if base:
+            return Path(base) / "GBAEditor"
+        return Path.home() / "AppData" / "Roaming" / "GBAEditor"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".config") / "gba-editor"
+
+
 # Fichier de config persistant
-CONFIG_FILE = Path(__file__).parent / "toolchain.json"
+CONFIG_FILE = _config_dir() / "toolchain.json"
+
+# Ancien emplacement (à côté du module). Encore lu une fois, pour ne pas
+# faire reconfigurer devkitPro aux installations lancées depuis les sources
+# avant le déplacement ; la sauvegarde suivante écrit dans CONFIG_FILE.
+_LEGACY_CONFIG_FILE = Path(__file__).parent / "toolchain.json"
 
 # Pages de téléchargement officielles (réutilisées par l'écran d'accueil
 # et la doc — pas de lien direct vers un binaire précis pour éviter les
@@ -51,14 +77,16 @@ class Toolchain:
     # ── Chargement / sauvegarde config ────────────────────────────
 
     def _load_config(self) -> dict:
-        if CONFIG_FILE.exists():
-            try:
-                return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        for path in (CONFIG_FILE, _LEGACY_CONFIG_FILE):
+            if path.exists():
+                try:
+                    return json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         return {}
 
     def save(self):
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(
             json.dumps(self._config, indent=2),
             encoding="utf-8"

@@ -21,6 +21,13 @@ def load_all_plugins():
     plugins_dir = Path(__file__).parent
     loaded = []
     errors = []
+    # main.py appelle cette fonction avant même de créer la QApplication :
+    # une exception ici tuerait l'éditeur au lancement, sans fenêtre ni
+    # message. Le dossier peut manquer dans une distribution compilée (il y
+    # est embarqué comme données, pas comme code) — dans ce cas on démarre
+    # simplement sans plugin.
+    if not plugins_dir.is_dir():
+        return loaded, errors
     for plugin_dir in sorted(plugins_dir.iterdir()):
         if not plugin_dir.is_dir() or plugin_dir.name.startswith("_"):
             continue
