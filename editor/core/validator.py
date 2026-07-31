@@ -83,6 +83,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_bg_text_cbb_conflict(ctx)
     _check_pal_bank_reference(ctx)
     _check_palette_bank_overflow(ctx)
+    _check_api_prototypes(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -95,6 +96,85 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
 
 
 # ── Validateurs built-in ──────────────────────────────────────────────
+
+def _check_api_prototypes(ctx: ValidationContext):
+    """Une fonction du MOTEUR exposée en Lua doit être déclarée DEUX fois.
+
+    `gba_engine.h` porte l'implémentation ; `actor_api_static.h` redéclare la
+    même chose pour les unités de compilation de scène et d'actor, qui n'incluent
+    pas le moteur. Une fonction ajoutée d'un seul côté franchit tout le chemin —
+    checker vert, C émis correct — pour échouer au `make` sur un « implicit
+    declaration of function », message qui pointe la ligne générée et jamais la
+    cause. C'est ce qu'a fait `text_clear_in` : écrite dans le moteur, jamais
+    redéclarée, donc inexposable en Lua sans casser le build.
+
+    La règle est DÉRIVÉE, pas listée : est exigé dans le second en-tête ce qui
+    est déjà présent dans le premier. Les fonctions résolues ailleurs (méthodes
+    d'actor, `scene_switch`, `sfx_play`, helpers de globals — générés dans
+    `actor_api.h` ou déclarés dans `runtime.h`) ne sont donc pas testées, sans
+    qu'on ait à les énumérer ni à maintenir une liste d'exceptions.
+
+    Erreur et non avertissement : le lien est garanti perdu, autant le dire
+    avant de lancer la chaîne C que dans son log."""
+    import re
+    from core.app_paths import RUNTIME_DIR
+    from scripting.api import RUNTIME_API
+
+    engine = RUNTIME_DIR / "include" / "gba_engine.h"
+    facade = RUNTIME_DIR / "include" / "actor_api_static.h"
+    if not (engine.exists() and facade.exists()):
+        ctx.warn(None, "En-têtes du runtime introuvables — prototypes non vérifiés.")
+        return
+    eng = engine.read_text(encoding="utf-8", errors="ignore")
+    fac = facade.read_text(encoding="utf-8", errors="ignore")
+
+    def declared(src: str, fn: str) -> bool:
+        return re.search(r"\b" + re.escape(fn) + r"\s*\(", src) is not None
+
+    missing = sorted({
+        f.c_func for f in RUNTIME_API.values()
+        if f.c_func and declared(eng, f.c_func) and not declared(fac, f.c_func)
+    })
+    if missing:
+        ctx.error(None,
+                  "Fonctions du moteur exposées en Lua mais non déclarées dans "
+                  f"actor_api_static.h : {', '.join(missing)}. Le C généré les "
+                  "appellera sans prototype et le build échouera.")
+
+    # ── Ordre des arguments : Lua ↔ C ─────────────────────────────
+    # `codegen._emit_api_call` mappe les arguments par POSITION. Si l'ordre des
+    # `params` d'api.py et celui du prototype C divergent, chaque valeur atterrit
+    # dans le mauvais paramètre — et comme ils sont tous `int`, le compilateur ne
+    # peut RIEN dire. C'est le seul désaccord de cette chaîne qui compile
+    # proprement et rend faux à l'exécution.
+    #
+    # On ne signale que les PERMUTATIONS (mêmes noms, autre ordre). Un simple
+    # renommage — `layer.show(n, on)` en Lua contre `layer_show(bg, on)` en C, où
+    # « n » parle d'un numéro de layer côté script — est délibéré et sans effet.
+    def c_params(fn: str) -> list[str] | None:
+        m = re.search(r"^\s*(?:void|int)\s+" + re.escape(fn) + r"\s*\(([^)]*)\)\s*;",
+                      eng, re.M)
+        if not m:
+            return None
+        a = m.group(1).strip()
+        if a in ("", "void"):
+            return []
+        return [p.strip().split()[-1].lstrip("*") for p in a.split(",")]
+
+    permuted = []
+    for key, f in RUNTIME_API.items():
+        cp = c_params(f.c_func) if f.c_func else None
+        if cp is None:
+            continue
+        lua = [p.name for p in f.params]
+        if lua != cp and sorted(lua) == sorted(cp):
+            permuted.append(f"{key} : Lua ({', '.join(lua)}) vs C ({', '.join(cp)})")
+    if permuted:
+        ctx.error(None,
+                  "Ordre des arguments incohérent entre api.py et gba_engine.h — "
+                  "les valeurs atterriront dans le mauvais paramètre sans que le "
+                  f"compilateur puisse le voir : {' ; '.join(permuted)}.")
+
 
 def _check_scene(ctx: ValidationContext):
     if not ctx.scene:

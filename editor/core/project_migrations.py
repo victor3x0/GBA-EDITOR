@@ -56,6 +56,38 @@ def migrate_display_calls(project):
     return " ; ".join(parts)
 
 
+def migrate_text_arg_order(project):
+    """Famille `text.*` passée à « position/conteneur → contenu » (2026-07-27).
+
+    Appelée APRÈS load_texts ET le chargement des ui_layouts : la détection
+    interroge les deux namespaces pour départager `draw_in("a", "b")`, dont les
+    deux arguments sont des chaînes dans l'ancien comme dans le nouvel ordre.
+
+    Pourquoi une migration et pas un simple avertissement : l'ancien ordre reste
+    du Lua VALIDE — mêmes noms, mêmes arités — donc ni le checker ni le
+    compilateur C ne peuvent le signaler. Un projet non migré compilerait et
+    rendrait n'importe quoi. C'est la seule migration de cette section dont
+    l'absence est INVISIBLE.
+
+    Rewrite de scripts VERSIONNÉS en git : on le signale, on ne le fait pas en
+    silence. Renvoie un message ou None."""
+    from scripting.refactor import migrate_text_arg_order_in_project
+    r = migrate_text_arg_order_in_project(project)
+    migrated, skipped = r["migrated"], r["skipped"]
+    parts = []
+    if migrated:
+        n = sum(migrated.values())
+        parts.append(f"{n} appel(s) text.* réordonné(s) dans "
+                     f"{len(migrated)} script(s) : "
+                     + ", ".join(sorted(p.name for p in migrated)))
+    if skipped:
+        n = sum(len(v) for v in skipped.values())
+        parts.append(f"{n} appel(s) text.* à vérifier à la main "
+                     f"({', '.join(sorted(p.name for p in skipped))}) — ordre "
+                     f"indécidable, la position vient AVANT le contenu")
+    return " ; ".join(parts) if parts else None
+
+
 def seed_or_migrate_palettes(project):
     """Appelé après project.palettes.load(). Priorité :
     (1) ancien catalogue monolithique project/palettes.json (pré-catalogue-
@@ -292,3 +324,90 @@ def reconcile_fonts(project):
     for f in [x for x in files if x.suffix.lower() != ".fnt"]:
         if f not in pages:
             sync_font_file(project, f)
+
+
+def migrate_var_refs_to_ids(project) -> int:
+    """`{"var": "<nom>"}` → `{"var": <id>}` dans les scènes et prefabs.
+
+    Réécrit les FICHIERS avant leur chargement, et non les objets en mémoire :
+    une référence de variable peut vivre dans n'importe quel champ de n'importe
+    quel composant, présent ou à venir. Un parcours du JSON brut les trouve
+    toutes sans que la migration ait à connaître la liste des champs — celle-ci
+    aurait vieilli au premier composant ajouté.
+
+    Idempotent : une référence déjà en id est un `int`, jamais retouchée. Un nom
+    qui ne désigne plus rien est LAISSÉ tel quel — le convertir en id demanderait
+    d'en inventer un, alors que la référence est déjà cassée et doit se voir.
+    """
+    ids = {("global", g.name): g.id for g in project.globals}
+    ids.update({("const", c.name): c.id for c in project.constants})
+    if not ids:
+        return 0
+
+    def walk(node) -> bool:
+        """True si quelque chose a changé sous ce nœud."""
+        changed = False
+        if isinstance(node, dict):
+            var = node.get("var")
+            if isinstance(var, str) and var:
+                src = node.get("src", "global")
+                vid = ids.get((src if src in ("global", "const") else "global", var))
+                if vid:
+                    node["var"] = vid
+                    changed = True
+            for v in node.values():
+                changed |= walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                changed |= walk(v)
+        return changed
+
+    n = 0
+    for f in list(project.scenes_dir.glob("*.json")) + list(project.prefab_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if walk(data):
+            f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+            n += 1
+    return n
+
+
+def migrate_removed_text_calls(project):
+    """`draw_upto` / `draw_in_upto` / `draw_num` / `draw_num_in` retirés.
+
+    Appelée APRÈS load_texts : la migration crée des entrées de table et en
+    modifie d'autres.
+
+    Ne migre que le MÉCANIQUE — une valeur qui est exactement `global.get("x")`
+    devient une entrée `$x` ; un `draw_in_upto(zone, clé, scene.frame() / K)`
+    devient un `draw_in` avec `[speed=K]` en tête du texte. Le reste est laissé
+    en place et signalé : le checker sait déjà dire quoi écrire (REMOVED_API),
+    et décider ce que devient un tempo calculé appartient à l'auteur.
+
+    Contrairement au réordonnancement d'arguments, l'absence de migration se
+    VOIT ici — les fonctions n'existent plus. On peut donc laisser du travail à
+    l'auteur sans risquer un projet qui rend faux en silence.
+
+    Rewrite de scripts VERSIONNÉS en git : on le signale, on ne le fait pas en
+    silence. Renvoie un message ou None."""
+    from scripting.refactor import migrate_removed_text_in_project
+    r = migrate_removed_text_in_project(project)
+    migrated, skipped = r["migrated"], r["skipped"]
+    if not migrated and not skipped:
+        return None
+    if migrated:
+        project.save_texts()
+    parts = []
+    if migrated:
+        n = sum(migrated.values())
+        parts.append(f"{n} appel(s) text.* retiré(s) migré(s) dans "
+                     f"{len(migrated)} script(s) : "
+                     + ", ".join(sorted(p.name for p in migrated)))
+    if skipped:
+        n = sum(len(v) for v in skipped.values())
+        parts.append(f"{n} appel(s) à reprendre à la main "
+                     f"({', '.join(sorted(p.name for p in skipped))}) — "
+                     f"le tempo s'écrit [speed=n] dans le texte, une valeur $nom")
+    return " ; ".join(parts)

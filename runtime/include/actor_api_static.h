@@ -193,14 +193,24 @@ extern void window_set_blend (int r, int on);
 extern void text_set_font (int f);
 extern int  text_length   (int id);
 extern void text_clear    (int tx, int ty, int w, int h);
-extern void text_draw     (int id, int tx, int ty);
-extern void text_draw_upto(int id, int tx, int ty, int n);
-extern void text_draw_num (int value, int tx, int ty);
+/* GRAMMAIRE : position ou conteneur d'abord, contenu ensuite — même ordre qu'en
+   Lua (cf. api.py, section Texte). */
+extern void text_draw     (int tx, int ty, int id);
 /* Rendu dans une zone dessinée dans le canvas de scène : elle porte position,
    largeur de coupe, alignement et police. Remplace `text_draw_box`, dont la
-   géométrie vivait dans le script (donc invisible dans l'éditeur). */
-extern void text_draw_in     (int id, int region);
-extern void text_draw_in_upto(int id, int region, int n);
+   géométrie vivait dans le script (donc invisible dans l'éditeur).
+
+   ATTENTION — cette liste DOUBLE celle de `gba_engine.h` : les scènes et les
+   actors sont des unités de compilation distinctes qui n'incluent pas le moteur.
+   Une fonction déclarée là-bas et oubliée ici passe le checker, s'émet en C, et
+   échoue au `make` sur un « implicit declaration » qui ne dit rien de la cause.
+   `validate_project` compare donc les deux listes plutôt que de compter sur
+   la vigilance. */
+extern void text_draw_in     (int region, int id);
+extern void text_clear_in    (int region);
+/* Groupe LECTURE — état d'un texte à tempo dans sa zone. */
+extern int  text_reading     (int region);
+extern void text_skip        (int region);
 
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,

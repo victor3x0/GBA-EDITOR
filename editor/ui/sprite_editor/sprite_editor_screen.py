@@ -69,6 +69,10 @@ class SpriteEditorScreen(QWidget):
         self._project = project
         self._left.load_project(project)
 
+    def select_sprite(self, name: str):
+        """Ouvre le sprite `name` — navigation entrante depuis un autre écran."""
+        self._left.select_sprite(name)
+
     def _on_sprite_selected(self, sprite: SpriteAsset):
         self._center.load_sprite(sprite, self._project)
         self._right.load_sprite(sprite, self._project)

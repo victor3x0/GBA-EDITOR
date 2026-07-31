@@ -78,6 +78,26 @@ def _event_tooltip(name: str) -> str:
     return "".join(lines)
 
 
+def _group_label(text: str) -> QLabel:
+    """Intertitre non cliquable À L'INTÉRIEUR d'une sous-section.
+
+    Distinct de `_Section.sub_label` (qui coiffe une sous-section) : sert à
+    séparer des paquets dans une liste déjà repliable — les dossiers de textes,
+    par exemple — sans ajouter un troisième niveau de dépliage dans une colonne
+    de 200 px."""
+    lbl = QLabel(text)
+    f = QFont(T.MONO, T.XS)
+    # Italique et non gras, indenté au-delà du header de sous-section : un
+    # intertitre doit se lire comme une ANNOTATION, pas comme un contrôle. En
+    # gras et aligné sur le header, un dossier de textes passait pour une
+    # sous-section frère de « Textes » au lieu d'une subdivision.
+    f.setItalic(True)
+    lbl.setFont(f)
+    lbl.setStyleSheet(f"color:{_C_SUB};background:{_BG};padding:4px 0 1px 22px;")
+    lbl.setFixedHeight(18)
+    return lbl
+
+
 class _Section(QWidget):
     """Section collapsible avec header cliquable."""
 

@@ -238,6 +238,48 @@ extern const FontInfo g_fonts[];
 extern const unsigned short* const g_texts[];
 extern const unsigned short g_text_len[];
 
+/* ── Balisage des textes ──────────────────────────────────────────
+   Le langage d'écriture (`[speed=4]`, `[wave]…[/wave]`, `$score`) est résolu
+   AU BUILD : le moteur n'embarque aucun parseur. Ce qu'il reçoit est déjà
+   séparé — des codepoints d'un côté, une piste d'événements de l'autre.
+
+   `at`/`end` sont des index dans les codepoints du texte, `end` exclu ; une
+   balise ponctuelle a `end == at`. Les événements d'un texte sont triés par
+   `at`, ce qui permet de les consommer avec un simple curseur pendant qu'on
+   parcourt les codepoints.
+
+   Une valeur interpolée occupe UN codepoint, TEXT_CP_VALUE — un non-caractère
+   Unicode, donc jamais un vrai glyphe. L'événement TEXT_EV_VALUE qui lui
+   correspond porte l'index de sa source dans `g_text_values`, un pointeur sur
+   le global à lire. Les constantes, elles, n'arrivent jamais jusqu'ici : leurs
+   chiffres sont cuits dans les codepoints. */
+#define TEXT_CP_VALUE 0xFFFFu
+
+enum {
+    TEXT_EV_SPEED = 0,  /* value = frames par caractère */
+    TEXT_EV_PAUSE,      /* value = frames d'attente     */
+    TEXT_EV_WAVE,       /* portée                       */
+    TEXT_EV_SHAKE,      /* portée                       */
+    TEXT_EV_COLOR,      /* portée, value = index d'encre */
+    TEXT_EV_VALUE       /* value = index dans g_text_values */
+};
+
+typedef struct TextEvent {
+    unsigned short at, end;
+    short          value;
+    unsigned char  kind;
+    unsigned char  pad;
+} TextEvent;
+
+extern const TextEvent* const g_text_events[];
+extern const unsigned short   g_text_ev_count[];
+/* INDEX de global, pas pointeur : chaque global garde son type C (un `u8` coûte
+   un octet), donc aucun tableau de pointeurs ne peut les contenir tous sans
+   mentir sur l'un d'eux. La lecture passe par l'accesseur généré avec
+   `globals.h`, dont le switch convertit chaque cas. */
+extern const unsigned short   g_text_values[];
+extern int global_read(int i);
+
 /* Une zone de texte AUTHORÉE dans le canvas de scène (cf. models/ui_region.py).
    Elle ne dessine rien : elle dit où le texte se pose, sa largeur de coupe et
    son alignement — ce que `text_draw_box` faisait passer en arguments, en
@@ -275,14 +317,25 @@ void text_set_tile_base(int t);     /* posé par scene_init — cf. allocateur *
 void text_set_font (int f);         /* charge glyphes + palette en VRAM */
 int  text_length   (int id);
 void text_clear    (int tx, int ty, int w, int h);
-void text_draw     (int id, int tx, int ty);
-void text_draw_upto(int id, int tx, int ty, int n);   /* machine à écrire */
-void text_draw_num (int value, int tx, int ty);       /* seul contenu hors table */
+/* GRAMMAIRE : position ou conteneur d'abord, contenu ensuite — le même ordre
+   qu'en Lua, `codegen._emit_api_call` étant positionnel. Une permutation entre
+   les deux couches serait invisible à la relecture des deux côtés. */
+void text_draw     (int tx, int ty, int id);
 /* Rendu dans une zone authorée — remplace text_draw_box, dont la géométrie
-   vivait dans le script. Le couple draw/draw_upto est repris à l'identique. */
-void text_draw_in     (int id, int region);
-void text_draw_in_upto(int id, int region, int n);
-void text_clear_in    (int region);          /* cache la bande d'une zone OBJ */
+   vivait dans le script.
+
+   Toute primitive qui existe en version « libre » doit exister en version
+   « dans une zone », sinon le premier besoin non couvert renvoie l'auteur aux
+   coordonnées en tuiles — et il n'en revient pas, puisqu'il a alors deux
+   géométries à tenir d'accord à la main. */
+void text_draw_in     (int region, int id);
+/* Groupe LECTURE — un texte à tempo introduit un état par zone, donc de quoi
+   savoir où il en est. Ces trois-là ne dessinent rien de nouveau : la règle
+   des deux primitives d'écriture tient. */
+int  text_reading (int region);   /* 1 tant que le texte s'écrit */
+void text_skip    (int region);   /* tout révéler d'un coup */
+void text_update  (void);         /* une fois par frame, avant oam_update */
+void text_clear_in    (int region);             /* vide une zone, BG ou OBJ */
 void text_obj_set_base(int oam, int tile);   /* posé par scene_init */
 void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int));
 
@@ -539,7 +592,7 @@ void window_set_blend(int r, int on) { win_bit_set(r, 5, on); }
    Adressage de la surface : déterministe à partir de la position écran,
    `base + (ty % TEXT_SURF_H) * TEXT_SURF_W + (tx % TEXT_SURF_W)`. Aucun état
    d'allocation, donc redessiner au même endroit réutilise les mêmes tuiles —
-   c'est ce qui rend `text_draw_upto` (machine à écrire) stable, et ce qui
+   c'est ce qui rend la lecture progressive stable, et ce qui
    permet à deux boîtes de coexister sans se marcher dessus. Limite assumée :
    deux boîtes distantes d'un multiple exact de TEXT_SURF_H rangées partagent
    leurs tuiles. 30×8 = 240 tuiles, soit moins de la moitié du charblock. */
@@ -626,14 +679,80 @@ void text_set_font(int f) {
    `h == 0` désigne la surface BG, adressée MODULO (elle est partagée par tout
    l'écran, d'où son aliasing). Une bande OBJ est un bloc privé de w×h tuiles,
    adressé directement. */
-/* Capture : quand `g_cap_max > 0`, la mise en page NE DESSINE PAS ses
-   `g_cap_max` premiers glyphes et note où ils tombaient. Ils sortent ainsi de
+/* Piste d'événements du texte en cours de rendu. Posée par `text_render_region`
+   le temps de l'appel : la mise en page a besoin de savoir, glyphe par glyphe,
+   s'il tombe sous une portée animée, et lui passer un paramètre de plus aurait
+   traversé quatre fonctions qui n'en ont que faire. */
+static const TextEvent *g_ev  = 0;
+static int              g_nev = 0;
+
+/* Encre courante — index de couleur dans la sous-palette de la police.
+   0 = l'encre d'origine du glyphe, c'est-à-dire aucun remappage. */
+static int g_ink = 0;
+
+/* La couleur qui couvre le caractère `i`, ou 0 (encre d'origine). */
+static int text_color_at(int i) {
+    if (!g_ev) return 0;
+    for (int k = 0; k < g_nev; k++) {
+        if (g_ev[k].kind != TEXT_EV_COLOR) continue;
+        if (i >= g_ev[k].at && i < g_ev[k].end) return g_ev[k].value;
+    }
+    return 0;
+}
+
+/* L'effet qui couvre le caractère `i`, ou 0 s'il n'est pas animé. */
+static int text_fx_at(int i) {
+    if (!g_ev) return 0;
+    for (int k = 0; k < g_nev; k++) {
+        int kind = g_ev[k].kind;
+        if (kind != TEXT_EV_WAVE && kind != TEXT_EV_SHAKE) continue;
+        if (i >= g_ev[k].at && i < g_ev[k].end) return kind;
+    }
+    return 0;
+}
+
+/* Capture : quand `g_cap_max > 0`, la mise en page NE DESSINE PAS les glyphes
+   couverts par une portée animée et note où ils tombaient. Ils sortent ainsi de
    la bande (qui garde un trou à leur place) pour recevoir chacun leur sprite —
    c'est ce qui rend un effet par caractère possible sans recomposer toute la
-   zone à chaque frame. */
+   zone à chaque frame.
+
+   Ce sont bien les glyphes ANIMÉS qui sont capturés, pas les premiers venus :
+   le budget `UIRegion.animated_glyphs` réserve de l'OAM pour un effet, pas pour
+   un préfixe. Au-delà du budget la capture s'arrête et les glyphes suivants
+   retombent dans la bande, en statique — l'écrêtage promis par le modèle. */
 static int   g_cap_max = 0;
 static int   g_cap_n   = 0;
 static short g_cap_x[TEXT_ANIM_MAX], g_cap_y[TEXT_ANIM_MAX], g_cap_gi[TEXT_ANIM_MAX];
+static short g_cap_fx[TEXT_ANIM_MAX];   /* TEXT_EV_WAVE | TEXT_EV_SHAKE */
+static short g_cap_i [TEXT_ANIM_MAX];   /* rang du caractère — déphasage */
+static short g_cap_ink[TEXT_ANIM_MAX];  /* encre au moment de la capture */
+
+/* ── Effets par caractère ─────────────────────────────────────────
+   Compteur PROPRE au texte, et non `_g_frame` : l'animation d'un texte ne
+   dépend pas de la scène, et le moteur n'a pas à remonter jusqu'à une variable
+   du code généré pour deux pixels de déplacement. */
+static int g_text_frame = 0;
+
+/* Une sinusoïde de 16 pas, amplitude 2 px. Une table plutôt qu'un calcul : le
+   GBA n'a pas de flottant, et 16 octets valent mieux qu'une approximation. */
+static const signed char g_wave_lut[16] =
+    { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, -1, -1 };
+
+/* Déplacement du glyphe `i` pour l'effet `fx`, à la frame courante.
+   `i` est le RANG DU CARACTÈRE : c'est lui qui déphase, sinon toute la portée
+   monterait et descendrait d'un bloc au lieu d'onduler. */
+static void text_fx_offset(int fx, int i, int *dx, int *dy) {
+    if (fx == TEXT_EV_WAVE) {
+        *dy += g_wave_lut[((g_text_frame >> 1) + i) & 15];
+    } else if (fx == TEXT_EV_SHAKE) {
+        /* Pseudo-aléatoire pauvre mais suffisant : deux multiplicateurs
+           premiers entre eux, donc pas de motif visible sur quelques dizaines
+           de caractères. */
+        *dx += (((g_text_frame * 7 + i * 13) >> 1) & 3) - 1;
+        *dy += (((g_text_frame * 5 + i * 11) >> 1) & 3) - 1;
+    }
+}
 
 static volatile u32 *g_blit_mem = 0;
 static int g_blit_tile0 = 0;
@@ -678,6 +797,26 @@ static inline u32 text_nib_mask(u32 v) {
     u32 m = v | (v >> 1);
     m |= m >> 2;
     return (m & 0x11111111u) * 0xFu;
+}
+
+/* Remappe toute l'encre d'une rangée de 8 pixels vers `g_ink`.
+
+   `text_nib_mask` donne déjà 0xF par pixel NON transparent : la couleur
+   demandée, répétée dans les huit nibbles et masquée, suffit. Le fond reste
+   donc transparent — recolorer ne remplit pas la cellule.
+
+   Conséquence assumée : une police à plusieurs encres (dégradé, contour) est
+   APLATIE sur une seule couleur. `[color]` désigne une couleur, pas une
+   transposition de rampe — supposer un rangement de palette en rampes aurait
+   marché sur les polices qui l'ont et produit n'importe quoi sur les autres. */
+static inline u32 text_recolor(u32 row) {
+    if (!g_ink) return row;
+    /* Borné à 15 : au-delà, `0x11111111 * n` déborde le mot de 32 bits et le
+       dernier nibble sortirait d'une autre couleur que les sept autres. Le
+       build refuse déjà la valeur — cette garde protège une ROM dont les
+       données auraient été produites autrement. */
+    u32 ink = (u32)(g_ink > 15 ? 15 : g_ink);
+    return text_nib_mask(row) & (0x11111111u * ink);
 }
 
 /* Compose une rangée de 8 pixels 4bpp au point ÉCRAN (px, py), en pixels.
@@ -743,7 +882,79 @@ static int text_find(const unsigned short* s, int i, int len, int* consumed) {
     return -1;
 }
 
-int text_length(int id) { return g_text_len[id]; }
+/* ── Matérialisation d'une entrée de la table ─────────────────────
+   Un texte de la table est en ROM et peut porter des valeurs à interpoler
+   (TEXT_CP_VALUE). Les substituer produit une suite de codepoints DIFFÉRENTE —
+   « 0 » et « 128 » ne font pas la même longueur —, qui vit donc en RAM. Même
+   procédé que la mise en forme d'un nombre : un seul chemin de rendu, une
+   seule mise en page, un seul effacement.
+
+   Les positions des ÉVÉNEMENTS se décalent d'autant : les recopier telles
+   quelles ferait glisser un `[wave]` d'autant de caractères que les chiffres
+   ajoutés. La piste est donc recopiée et décalée en même temps que le texte.
+
+   Sans valeur à substituer — le cas courant — rien n'est copié : on rend les
+   tableaux ROM tels quels. */
+#define TEXT_MAT_MAX 192       /* codepoints matérialisés d'un texte */
+#define TEXT_EV_MAX  24        /* événements d'un texte, après décalage */
+#define TEXT_NUM_MAX 12        /* -2147483648 = 11 caractères */
+
+static unsigned short g_mat_cp[TEXT_MAT_MAX];
+static TextEvent      g_mat_ev[TEXT_EV_MAX];
+/* Index source → index matérialisé. Une CARTE plutôt qu'un rattrapage des
+   portées au fil de l'eau : `[wave]` peut couvrir une valeur, commencer avant
+   et finir après, s'imbriquer — recaler ses bornes à la main demanderait de
+   rejouer tous ces cas, alors que la carte les traite tous pareil. */
+static short          g_mat_map[TEXT_MAT_MAX + 1];
+static int text_num_cp(int value, unsigned short *buf);
+
+/* La suite prête à rendre pour `id`. Renvoie sa longueur ; `*out` pointe la
+   ROM ou le tampon, et `*ev`/`*nev` la piste correspondante. */
+static int text_materialize(int id, const unsigned short **out,
+                            const TextEvent **ev, int *nev) {
+    const unsigned short *s = g_texts[id];
+    const TextEvent *e = g_text_events[id];
+    int len = g_text_len[id], ne = g_text_ev_count[id];
+
+    int has_value = 0;
+    for (int k = 0; k < ne; k++)
+        if (e[k].kind == TEXT_EV_VALUE) { has_value = 1; break; }
+    if (!has_value) { *out = s; *ev = e; *nev = ne; return len; }
+
+    int lim = len < TEXT_MAT_MAX ? len : TEXT_MAT_MAX;
+    int o = 0;
+    for (int i = 0; i < lim; i++) {
+        g_mat_map[i] = (short)o;
+        if (s[i] != TEXT_CP_VALUE) {
+            if (o < TEXT_MAT_MAX) g_mat_cp[o++] = s[i];
+            continue;
+        }
+        int src = -1;
+        for (int j = 0; j < ne; j++)
+            if (e[j].kind == TEXT_EV_VALUE && e[j].at == i) { src = e[j].value; break; }
+        unsigned short num[TEXT_NUM_MAX];
+        int n = (src >= 0) ? text_num_cp(global_read(g_text_values[src]), num) : 0;
+        for (int d = 0; d < n && o < TEXT_MAT_MAX; d++) g_mat_cp[o++] = num[d];
+    }
+    g_mat_map[lim] = (short)o;
+
+    int nout = 0;
+    for (int k = 0; k < ne && nout < TEXT_EV_MAX; k++) {
+        if (e[k].kind == TEXT_EV_VALUE) continue;   /* consommé ci-dessus */
+        g_mat_ev[nout] = e[k];
+        g_mat_ev[nout].at  = (unsigned short)(e[k].at  <= lim ? g_mat_map[e[k].at]  : o);
+        g_mat_ev[nout].end = (unsigned short)(e[k].end <= lim ? g_mat_map[e[k].end] : o);
+        nout++;
+    }
+    *out = g_mat_cp; *ev = g_mat_ev; *nev = nout;
+    return o;
+}
+
+/* Longueur AFFICHÉE, valeurs substituées — pas la taille du tableau ROM. */
+int text_length(int id) {
+    const unsigned short *s; const TextEvent *e; int n;
+    return text_materialize(id, &s, &e, &n);
+}
 
 /* Vide la zone. En mono il suffit de remettre le tilemap sur la tuile 0 ; en
    proportionnel les pixels sont DANS les tuiles de surface, c'est donc elles
@@ -791,7 +1002,7 @@ static void text_put_px(int gi, int px, int py) {
         for (int c = 0; c < tw; c++) {
             const unsigned int *tile = src + (r * tw + c) * 8;
             for (int k = 0; k < 8; k++)
-                text_blit_row(px + c * 8, py + r * 8 + k, tile[k]);
+                text_blit_row(px + c * 8, py + r * 8 + k, text_recolor(tile[k]));
         }
 }
 
@@ -935,12 +1146,21 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                codepoints d'un coup. */
             int used, gi = text_find(s, i, len, &used);
             if (!measure && gi >= 0 && (n < 0 || i < n)) {
-                if (g_cap_max && g_cap_n < g_cap_max) {
+                /* `[color]` ne vaut que sur un chemin COMPOSÉ : le chemin
+                   tilemap pose une tuile déjà encrée, partagée par toutes ses
+                   occurrences. Le build le signale plutôt que de laisser la
+                   couleur disparaître en silence. */
+                g_ink = text_color_at(i);
+                int fx = g_cap_max ? text_fx_at(i) : 0;
+                if (fx && g_cap_n < g_cap_max) {
                     /* Réservé au chemin par glyphe : noté, pas dessiné —
                        le dessiner aussi le ferait apparaître deux fois. */
                     g_cap_x[g_cap_n]  = (short)x;
                     g_cap_y[g_cap_n]  = (short)y;
                     g_cap_gi[g_cap_n] = (short)gi;
+                    g_cap_fx[g_cap_n] = (short)fx;
+                    g_cap_i[g_cap_n]  = (short)i;
+                    g_cap_ink[g_cap_n] = (short)g_ink;
                     g_cap_n++;
                 } else if (g_font->composited || g_blit_h) {
                     /* `g_blit_h` non nul = bloc PRIVÉ (bande de sprites). On y
@@ -951,6 +1171,7 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                        modes, il n'y a donc rien de plus à charger. */
                     text_put_px(gi, x, y);
                 } else text_put_tiles(gi, x >> 3, y >> 3);
+                g_ink = 0;
             }
             x += text_adv_px(gi);
             i += used;
@@ -974,7 +1195,7 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
 }
 
 /* Rend une SUITE DE CODEPOINTS. Les entrées de la table de textes n'en sont
-   qu'une source parmi d'autres : `text_draw_num` fabrique la sienne en RAM et
+   qu'une source parmi d'autres : une valeur interpolée fabrique la sienne en RAM et
    passe par le même chemin, donc par les mêmes chasses, la même surface et le
    même effacement. Dupliquer un mini-rendu pour les nombres aurait garanti
    qu'un jour l'un des deux dérive. */
@@ -999,11 +1220,15 @@ static void text_render_cp(const unsigned short *s, int slen,
 }
 
 static void text_render(int id, int tx, int ty, int wrap, int n) {
-    text_render_cp(g_texts[id], g_text_len[id], tx, ty, wrap, n);
+    const unsigned short *s; const TextEvent *e; int ne;
+    int len = text_materialize(id, &s, &e, &ne);
+    /* `draw` ignore le tempo (une tête de lecture doit s'accrocher à quelque
+       chose de NOMMÉ, et un couple (x, y) ne l'est pas) mais pas les valeurs :
+       celles-ci marchent partout. */
+    text_render_cp(s, len, tx, ty, wrap, n);
 }
 
-void text_draw     (int id, int tx, int ty)                 { text_render(id, tx, ty, 0, -1); }
-void text_draw_upto(int id, int tx, int ty, int n)          { text_render(id, tx, ty, 0, n); }
+void text_draw     (int tx, int ty, int id)                 { text_render(id, tx, ty, 0, -1); }
 
 /* ── Rendu dans une zone authorée ─────────────────────────────────
    Remplace `text_draw_box` : la géométrie ne vient plus des arguments mais de
@@ -1012,20 +1237,158 @@ void text_draw_upto(int id, int tx, int ty, int n)          { text_render(id, tx
    La zone peut imposer sa police. Le faire à chaque appel serait ruineux en
    chemin mono (recopie des glyphes en VRAM) si `text_set_font` n'était pas
    idempotent — il l'est, cf. sa garde. */
-static void text_render_obj(int id, const UIRegionInfo *R, int n);
+static void text_render_obj(const unsigned short *s, int slen,
+                            const UIRegionInfo *R, int n);
 
-static void text_render_region(int id, int r, int n) {
+/* Prend une SUITE DE CODEPOINTS et non un id de table, pour la même raison que
+   `text_render_cp` côté libre : la table n'est qu'une source parmi d'autres
+   (une valeur interpolée fabrique la sienne en RAM). Un second chemin de rendu
+   pour les nombres finirait par dériver de celui-ci — mêmes chasses, même
+   alignement, même effacement, ou rien. */
+static void text_render_region_cp(const unsigned short *s, int slen,
+                                  int r, int n) {
     const UIRegionInfo *R = &g_ui_regions[r];
     if (R->font != 255) text_set_font(R->font);
     if (!g_font) return;
-    if (R->target == 1) { text_render_obj(id, R, n); return; }
+    if (R->target == 1) { text_render_obj(s, slen, R, n); return; }
     if (g_text_layer < 0) return;
-    text_render_cp_al(g_texts[id], g_text_len[id],
-                      R->x >> 3, R->y >> 3, R->w >> 3, n, R->align);
+    text_render_cp_al(s, slen, R->x >> 3, R->y >> 3, R->w >> 3, n, R->align);
 }
 
-void text_draw_in     (int id, int r)        { text_render_region(id, r, -1); }
-void text_draw_in_upto(int id, int r, int n) { text_render_region(id, r, n); }
+static void text_render_region(int id, int r, int n) {
+    const unsigned short *s; const TextEvent *e; int ne;
+    int len = text_materialize(id, &s, &e, &ne);
+    /* La piste accompagne le texte le temps du rendu : c'est elle qui dit
+       quels glyphes sont animés. */
+    g_ev = e; g_nev = ne;
+    text_render_region_cp(s, len, r, n);
+    g_ev = 0; g_nev = 0;
+}
+
+/* ── Tête de lecture ──────────────────────────────────────────────
+   Un texte qui porte du TEMPO (`[speed=n]`, `[pause=n]`) ne s'affiche pas d'un
+   coup : il se lit. La tête vit par ZONE et non par appel — c'est la raison
+   pour laquelle le tempo est ignoré par `text_draw` : une tête doit s'accrocher
+   à quelque chose de nommé, et un couple (x, y) ne l'est pas.
+
+   Un texte SANS marqueur de tempo s'affiche entier, immédiatement. Le tempo
+   s'écrit dans le texte, par l'auteur : ne pas en mettre est une décision, pas
+   un oubli à compenser par une vitesse par défaut.
+
+   Le plafond est fixe : le moteur ne connaît pas la taille de `g_ui_regions`,
+   qui est générée. Une zone au-delà s'affiche d'un coup — dégradation visible
+   et inoffensive, plutôt qu'un tableau dimensionné au hasard. */
+#define TEXT_READ_MAX 8
+
+typedef struct TextRead {
+    short id;        /* texte en cours, -1 = aucune lecture */
+    short n;         /* caractères révélés */
+    short len;       /* longueur matérialisée, borne de la lecture */
+    short wait;      /* frames restantes avant le prochain caractère */
+    short speed;     /* frames par caractère, posé par [speed=n] */
+    unsigned char active;
+} TextRead;
+
+static TextRead g_reads[TEXT_READ_MAX];
+static int      g_reads_init = 0;
+
+/* Le texte porte-t-il du tempo ? C'est ce qui décide entre lire et afficher. */
+static int text_has_tempo(const TextEvent *e, int ne) {
+    for (int k = 0; k < ne; k++)
+        if (e[k].kind == TEXT_EV_SPEED || e[k].kind == TEXT_EV_PAUSE) return 1;
+    return 0;
+}
+
+/* Applique les marqueurs de tempo posés EXACTEMENT au caractère `i`.
+   Renvoie l'attente à observer avant de révéler le suivant. */
+static int text_tempo_at(const TextEvent *e, int ne, int i, short *speed) {
+    int wait = -1;
+    for (int k = 0; k < ne; k++) {
+        if (e[k].at != i) continue;
+        if (e[k].kind == TEXT_EV_SPEED) *speed = e[k].value;
+        else if (e[k].kind == TEXT_EV_PAUSE) wait = e[k].value;
+    }
+    /* Une pause s'AJOUTE à la cadence courante : « attends, puis reprends au
+       même rythme ». La remplacer ferait d'un [pause=0] un accélérateur. */
+    return wait < 0 ? *speed : wait + *speed;
+}
+
+static void text_read_reset(int r) {
+    if (!g_reads_init) {
+        for (int k = 0; k < TEXT_READ_MAX; k++) g_reads[k].id = -1;
+        g_reads_init = 1;
+    }
+    if (r >= 0 && r < TEXT_READ_MAX) { g_reads[r].id = -1; g_reads[r].active = 0; }
+}
+
+void text_draw_in(int r, int id) {
+    const unsigned short *s; const TextEvent *e; int ne;
+    int len = text_materialize(id, &s, &e, &ne);
+    /* Une lecture DÉJÀ en cours sur le même texte n'est pas relancée : un
+       script appelle `draw_in` depuis `on_update`, donc à chaque frame. La
+       relancer remettrait la tête à zéro soixante fois par seconde et le texte
+       n'avancerait jamais — c'est la façon la plus naturelle de s'en servir,
+       elle doit être la bonne. Pour recommencer, on vide la zone
+       (`text.clear_in`) ou on y écrit autre chose. */
+    if (r >= 0 && r < TEXT_READ_MAX && g_reads[r].active && g_reads[r].id == id)
+        return;
+    text_read_reset(r);
+    if (r >= TEXT_READ_MAX || !text_has_tempo(e, ne)) {
+        text_render_region(id, r, -1);
+        return;
+    }
+    /* Lecture : la zone part vide et se remplit. La mise en page, elle, se fait
+       sur le texte ENTIER (cf. text_layout) — révéler n'est qu'un masque, donc
+       aucune ligne ne saute pendant que le texte s'écrit. */
+    TextRead *R = &g_reads[r];
+    R->id = (short)id; R->n = 0; R->len = (short)len;
+    R->speed = 1; R->active = 1;
+    R->wait  = (short)text_tempo_at(e, ne, 0, &R->speed);
+    text_render_region(id, r, 0);
+}
+
+/* Lecture en cours dans cette zone ? Ce que le script attend pour enchaîner. */
+int text_reading(int r) {
+    return (r >= 0 && r < TEXT_READ_MAX && g_reads[r].active) ? 1 : 0;
+}
+
+/* Tout révéler d'un coup — le bouton « passer » de tous les jeux. */
+void text_skip(int r) {
+    if (r < 0 || r >= TEXT_READ_MAX || !g_reads[r].active) return;
+    g_reads[r].active = 0;
+    text_render_region(g_reads[r].id, r, -1);
+}
+
+/* Avance les têtes de lecture et rejoue les zones animées. Appelée une fois par
+   frame par le code généré, avant `oam_update`.
+
+   Une zone ANIMÉE est redessinée même quand sa lecture est finie : c'est
+   l'effet qui bouge, pas le texte. Une zone sans effet ni lecture n'est jamais
+   retouchée — le coût est proportionnel à ce qui remue à l'écran. */
+void text_update(void) {
+    g_text_frame++;
+    if (!g_reads_init) return;
+    for (int r = 0; r < TEXT_READ_MAX; r++) {
+        TextRead *R = &g_reads[r];
+        if (R->id < 0) continue;
+        const unsigned short *s; const TextEvent *e; int ne;
+        text_materialize(R->id, &s, &e, &ne);
+        if (R->active) {
+            if (R->wait > 0) R->wait--;
+            /* `while` et non `if` : [speed=0] révèle tout d'un trait, ce qui
+               est exactement ce qu'un auteur écrit pour couper le tempo au
+               milieu d'un texte. */
+            while (R->active && R->wait <= 0) {
+                R->n++;
+                if (R->n >= R->len) { R->n = R->len; R->active = 0; break; }
+                R->wait = (short)text_tempo_at(e, ne, R->n, &R->speed);
+            }
+            text_render_region(R->id, r, R->active ? R->n : -1);
+        } else if (g_ui_regions[r].anim > 0) {
+            text_render_region(R->id, r, -1);
+        }
+    }
+}
 
 /* ── Bande de sprites ─────────────────────────────────────────────
    Une zone en cible OBJ est couverte par des sprites 64×8 (ou moins pour la
@@ -1079,7 +1442,8 @@ static int text_strip_col(int w, int i, int *out_x) {
 static int text_strip_size(int cw) { return cw == 32 ? 1 : 0; }   /* 8x8|16x8:0, 32x8:1 */
 static int text_strip_shape(int cw) { return cw == 8 ? 0 : 1; }   /* 8x8 = carré */
 
-static void text_render_obj(int id, const UIRegionInfo *R, int n) {
+static void text_render_obj(const unsigned short *s, int slen,
+                            const UIRegionInfo *R, int n) {
     if (g_obj_oam_base < 0 || !g_font) return;
 
     /* Origine ÉCRAN. Une zone ancrée sur un acteur ajoute sa position — c'est
@@ -1115,7 +1479,7 @@ static void text_render_obj(int id, const UIRegionInfo *R, int n) {
        retombent dans la bande, en statique. */
     g_cap_max = R->anim > TEXT_ANIM_MAX ? TEXT_ANIM_MAX : R->anim;
     g_cap_n   = 0;
-    text_layout(g_texts[id], g_text_len[id], ox >> 3, oy >> 3,
+    text_layout(s, slen, ox >> 3, oy >> 3,
                 R->w >> 3, n, 0, R->align, 0, 0);
     int captured = g_cap_n;
     g_cap_max = 0;
@@ -1162,6 +1526,11 @@ static void text_render_obj(int id, const UIRegionInfo *R, int n) {
         int gx = g_cap_x[k], gy = g_cap_y[k];
         /* Origine ÉCRAN de la tuile qui porte le glyphe. */
         int bx = (gx & ~7) + sub_x, by = (gy & ~7) + sub_y;
+        /* L'effet déplace le SPRITE, jamais la composition : les 2×2 tuiles
+           sont écrites une fois pour toutes et seuls deux mots d'OAM bougent
+           d'une frame à l'autre. Recomposer aurait coûté le prix d'un rendu
+           complet à chaque frame, pour un déplacement de deux pixels. */
+        text_fx_offset(g_cap_fx[k], g_cap_i[k], &bx, &by);
         int t  = atile + k * 4;              /* 4 tuiles = un OBJ 16×16 */
 
         for (int q = 0; q < 4; q++) {
@@ -1172,7 +1541,12 @@ static void text_render_obj(int id, const UIRegionInfo *R, int n) {
         g_blit_tile0 = t;
         g_blit_w = 2; g_blit_h = 2;
         g_blit_ox = bx >> 3; g_blit_oy = by >> 3;
+        /* Composé APRÈS la bande, donc hors du parcours de mise en page :
+           l'encre doit être reposée depuis la capture, sinon un glyphe animé
+           dans une portée colorée sortirait à l'encre d'origine. */
+        g_ink = g_cap_ink[k];
         text_put_px(g_cap_gi[k], gx, gy);
+        g_ink = 0;
 
         shadow_oam[slot].attr0 = (by & 0xFF) | (0 << 14);      /* carré */
         shadow_oam[slot].attr1 = (bx & 0x1FF) | (1 << 14);     /* taille 1 = 16×16 */
@@ -1188,29 +1562,55 @@ static void text_render_obj(int id, const UIRegionInfo *R, int n) {
     (void)strip_slots;
 }
 
-/* Cache la bande d'une zone — l'équivalent de `text_clear` côté sprites. */
+/* Vide une zone, quelle que soit sa cible — le pendant exact de `text_draw_in`.
+
+   La cible ne doit PAS remonter jusqu'à l'auteur : il a dessiné une zone, il
+   l'efface. Que ce soit une bande de sprites à masquer ou des tuiles de BG à
+   remettre à zéro est une conséquence de l'ancrage qu'il a choisi, et lui faire
+   choisir la primitive selon la cible reviendrait à lui demander de refaire ce
+   calcul à chaque fois qu'il déplace une zone. */
 void text_clear_in(int r) {
+    /* Vider, c'est aussi annuler la lecture : sans ça `text_update` la
+       redessinerait à la frame suivante, et la zone se remplirait toute
+       seule après avoir été effacée. */
+    text_read_reset(r);
     const UIRegionInfo *R = &g_ui_regions[r];
-    if (R->target != 1 || g_obj_oam_base < 0) return;
-    int slot = g_obj_oam_base + R->oam_rel;
-    for (int k = 0; k < R->oam_count; k++)
-        shadow_oam[slot + k].attr0 = 0x0200;   /* bit 9 = objet désactivé */
-    /* oam_count couvre la bande ET la réserve animée : cacher la zone doit
-       tout cacher, sinon un glyphe animé resterait seul à l'écran. */
+
+    /* La zone peut imposer sa police, et l'effacement en DÉPEND : une police
+       composée range ses pixels dans les tuiles de surface, une police mono
+       pose des index dans le tilemap. Effacer avec la police d'à côté vide donc
+       le mauvais des deux et laisse l'encre en place. Même garde que
+       `text_render_region_cp`, et pour la même raison. */
+    if (R->font != 255) text_set_font(R->font);
+
+    if (R->target == 1) {
+        if (g_obj_oam_base < 0) return;
+        int slot = g_obj_oam_base + R->oam_rel;
+        for (int k = 0; k < R->oam_count; k++)
+            shadow_oam[slot + k].attr0 = 0x0200;   /* bit 9 = objet désactivé */
+        /* oam_count couvre la bande ET la réserve animée : cacher la zone doit
+           tout cacher, sinon un glyphe animé resterait seul à l'écran. */
+        return;
+    }
+
+    /* Cible BG : le rectangle de la zone en tuiles. L'émetteur aligne déjà une
+       zone BG sur la grille, donc le décalage est exact ; le plancher à 1 tuile
+       couvre une zone plus étroite qu'un glyphe, qui déborde à l'affichage
+       (cf. text_scan_line) et doit donc s'effacer sur au moins une case. */
+    int w = R->w >> 3, h = R->h >> 3;
+    text_clear(R->x >> 3, R->y >> 3, w > 0 ? w : 1, h > 0 ? h : 1);
 }
 
-/* Affiche un ENTIER avec les glyphes de la police courante.
-
-   Seule primitive de texte dont le contenu n'est pas dans la table — et c'est
-   volontaire : un nombre n'a rien à y faire, il ne se traduit pas. Les libellés
-   qui l'entourent, eux, restent des entrées de table (« Score : » se dessine
-   avec text.draw, la valeur avec celle-ci) — c'est ce qui remplace
-   `display.print("%d", …)` sans réintroduire de littéral dans les scripts.
+/* ── Chiffres ─────────────────────────────────────────────────────
+   Ce qui reste du rendu des nombres, maintenant que `text_draw_num` a disparu :
+   une entrée de table porte sa propre valeur (« Score : $score »), et c'est
+   `text_materialize` qui appelle ceci pour en fabriquer les chiffres.
 
    Un chiffre absent de la police laisse le trou d'une cellule, comme partout
    ailleurs (text_layout) : mieux qu'un nombre silencieusement faux. */
-void text_draw_num(int value, int tx, int ty) {
-    unsigned short buf[12];
+
+/* Entier → codepoints dans `buf` (au moins TEXT_NUM_MAX), longueur retournée. */
+static int text_num_cp(int value, unsigned short *buf) {
     int n = 0;
     unsigned int mag = (value < 0) ? (unsigned int)(-(long)value) : (unsigned int)value;
     /* Chiffres produits à l'envers, puis retournés : pas de division par
@@ -1220,7 +1620,7 @@ void text_draw_num(int value, int tx, int ty) {
     for (int i = 0, j = n - 1; i < j; i++, j--) {
         unsigned short t = buf[i]; buf[i] = buf[j]; buf[j] = t;
     }
-    text_render_cp(buf, n, tx, ty, 0, -1);
+    return n;
 }
 
 /* ── Blending ────────────────────────────────────────────────────── */

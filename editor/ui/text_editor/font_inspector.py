@@ -1,0 +1,366 @@
+"""
+ui/text_editor/font_inspector.py — colonne droite, contexte Police.
+"""
+from __future__ import annotations
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QLineEdit,
+    QPushButton,
+)
+from PyQt6.QtGui import QFont, QPixmap, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal, QRect
+
+from codegen.font_emit import advance_source, glyph_advance_px
+from core.models.font import TILES_PER_CHARBLOCK, rect_tiles
+from ui.common.theme import C, T, QSS
+from ui.common.widgets import W
+from ui.common import icons
+from ui.text_editor.colors import FONT_COLOR
+from ui.text_editor.glyph_paint import key_out
+from ui.text_editor.glyph_sheet import GlyphSheet
+from ui.text_editor.inspector_shell import insp_scroll
+
+
+class FontInspector(QWidget):
+    """Contexte « police » : compteurs, couleurs-clés, charset et case courante.
+
+    Le coût en tuiles est en tête parce que ces tuiles sont en concurrence
+    directe avec le décor.
+    """
+
+    glyph_char_changed = pyqtSignal(object, str, str)   # (glyph, avant, après)
+    pick_asked         = pyqtSignal(str, str)           # (rôle, libellé)
+    key_color_cleared  = pyqtSignal(str)                # rôle
+
+    # (rôle, champ du modèle, libellé, infobulle).
+    _KEY_ROLES = (
+        ("bg", "bg_color", "Fond",
+         "Couleur de FOND de la planche.<br><br>"
+         "Une planche exportée sans canal alpha arrive sur un aplat — vert,<br>"
+         "magenta, blanc. Sans la désigner, l'encodeur la prend pour de l'encre<br>"
+         "et chaque glyphe sort en pavé plein.<br><br>"
+         "Proposée automatiquement à l'import (couleur dominante) ; repique-la<br>"
+         "si la planche est atypique."),
+        ("space", "space_color", "Espacement",
+         "Couleur qui MARQUE L'ESPACEMENT entre les glyphes.<br><br>"
+         "Convention de plusieurs outils, dont GB Studio : une seconde couleur<br>"
+         "remplit la fin de chaque case pour indiquer où s'arrête le caractère.<br>"
+         "Elle doit disparaître au même titre que le fond, sinon elle s'affiche<br>"
+         "en jeu."),
+    )
+
+    # Libellés des sources de chasse nommées par `font_emit.advance_source`.
+    _ADV_ORIGIN = {
+        "fnt":     "descripteur .fnt",
+        "spacing": "déclarée par l'espacement",
+        "mono":    "mono",
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._font = None
+        self._project = None
+        self._glyph = None
+        self._blocking = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        host, lay, self._name_lbl = insp_scroll(FONT_COLOR, "POLICE")
+        root.addWidget(host)
+
+        self._info = QLabel("")
+        self._info.setFont(QFont(T.MONO, T.SM))
+        self._info.setStyleSheet(f"color:{C.TEXT_NORM};")
+        self._info.setWordWrap(True)
+        lay.addWidget(self._info)
+
+        W.separator(lay)
+
+        # ── Transparence ──────────────────────────────────────────
+        # Pipettes plutôt que sélecteur de couleur : la couleur voulue est
+        # sous les yeux, dans la planche.
+        tr_lbl = QLabel("TRANSPARENCE")
+        tr_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        tr_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        lay.addWidget(tr_lbl)
+
+        self._swatches: dict[str, QLabel] = {}
+        for role, _field, label, tip in self._KEY_ROLES:
+            lay.addLayout(self._key_row(role, label, tip))
+
+        self._key_hint = QLabel("")
+        self._key_hint.setFont(QFont(T.MONO, T.XS))
+        self._key_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._key_hint.setWordWrap(True)
+        lay.addWidget(self._key_hint)
+
+        W.separator(lay)
+
+        cs_lbl = QLabel("CHARSET")
+        cs_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        cs_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        lay.addWidget(cs_lbl)
+
+        self._charset = QTextEdit()
+        self._charset.setReadOnly(True)
+        self._charset.setFont(QFont(T.CODE, T.MD))
+        self._charset.setStyleSheet(
+            f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
+            f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}"
+        )
+        self._charset.setFixedHeight(80)
+        self._charset.setToolTip(
+            "Caractères couverts par cette police — dérivé des glyphes,<br>"
+            "jamais stocké tel quel. L'édition glyphe par glyphe viendra<br>"
+            "avec la grille annotée."
+        )
+        lay.addWidget(self._charset)
+
+        W.separator(lay)
+
+        gl_lbl = QLabel("GLYPHE SÉLECTIONNÉ")
+        gl_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        gl_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        lay.addWidget(gl_lbl)
+
+        # La case seule, agrandie : c'est ce qu'on regarde pour décider quel
+        # caractère lui assigner.
+        self._glyph_preview = QLabel()
+        self._glyph_preview.setFixedHeight(72)
+        self._glyph_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._glyph_preview.setStyleSheet(
+            f"background:{C.BG_INPUT}; border:1px solid {C.BORDER_MID};"
+            f"border-radius:3px;")
+        lay.addWidget(self._glyph_preview)
+
+        # Case par case plutôt que le charset entier : corriger celle qu'on a
+        # sous les yeux ne décale pas le reste.
+        self._char_edit = QLineEdit()
+        self._char_edit.setStyleSheet(QSS.lineedit)
+        self._char_edit.setFont(QFont(T.CODE, T.LG))
+        self._char_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._char_edit.setPlaceholderText("caractère")
+        self._char_edit.setToolTip(
+            "<b>Caractère de cette case</b><br><br>"
+            "Plusieurs caractères sont acceptés (ex. « ... ») : la case devient<br>"
+            "alors une <i>ligature</i>, un dessin unique pour une suite de<br>"
+            "caractères."
+        )
+        self._char_edit.editingFinished.connect(self._commit_char)
+        lay.addWidget(self._char_edit)
+
+        self._glyph_info = QLabel("Aucune case sélectionnée")
+        self._glyph_info.setFont(QFont(T.MONO, T.XS))
+        self._glyph_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._glyph_info.setWordWrap(True)
+        lay.addWidget(self._glyph_info)
+
+        self._hint = QLabel(
+            "Le dessin des glyphes se fait dans ton éditeur d'images, comme "
+            "pour un sprite — ici on corrige seulement à quel caractère "
+            "correspond chaque case."
+        )
+        self._hint.setFont(QFont(T.MONO, T.XS))
+        self._hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._hint.setWordWrap(True)
+        lay.addWidget(self._hint)
+
+        lay.addStretch()
+
+    # ── Couleurs-clés ─────────────────────────────────────────────
+
+    def _key_row(self, role: str, label: str, tip: str) -> QHBoxLayout:
+        """Une ligne de couleur-clé : nom, pastille, pipette, effacement."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        name = QLabel(label)
+        name.setFont(QFont(T.MONO, T.SM))
+        name.setStyleSheet(f"color:{C.TEXT_NORM};")
+        name.setToolTip(tip)
+        name.setFixedWidth(84)
+        row.addWidget(name)
+
+        swatch = QLabel()
+        swatch.setFixedSize(28, 20)
+        swatch.setToolTip(tip)
+        self._swatches[role] = swatch
+        row.addWidget(swatch)
+        row.addStretch()
+
+        pick = QPushButton()
+        pick.setIcon(icons.get("eyedropper", C.TEXT_NORM))
+        pick.setFixedSize(24, 22)
+        pick.setToolTip(f"Prélever la couleur « {label} » sur la planche")
+        pick.setStyleSheet(QSS.button_icon)
+        pick.clicked.connect(lambda _=False, r=role, l=label: self.pick_asked.emit(r, l))
+        row.addWidget(pick)
+
+        clear = QPushButton()
+        clear.setIcon(icons.get("clear", C.TEXT_MUTED))
+        clear.setFixedSize(24, 22)
+        clear.setToolTip(f"Ne plus rendre transparente la couleur « {label} »")
+        clear.setStyleSheet(QSS.button_icon)
+        clear.clicked.connect(lambda _=False, r=role: self.key_color_cleared.emit(r))
+        row.addWidget(clear)
+        return row
+
+    def refresh_keys(self):
+        """Relit les pastilles et le libellé de chasse depuis le modèle —
+        après un prélèvement, un effacement ou un undo."""
+        f = self._font
+        for role, field_name, _label, _tip in self._KEY_ROLES:
+            rgb = getattr(f, field_name, None) if f else None
+            sw = self._swatches[role]
+            if rgb is None:
+                sw.setStyleSheet(
+                    f"background:{C.BG_INPUT}; border:1px dashed {C.BORDER_MID};"
+                    f"border-radius:3px;")
+                sw.setText("")
+            else:
+                r, g, b = rgb
+                sw.setStyleSheet(
+                    f"background:rgb({r},{g},{b}); border:1px solid {C.BORDER_MID};"
+                    f"border-radius:3px;")
+                sw.setText("")
+        n = len(f.key_colors()) if f else 0
+        # L'espacement fait DEUX choses : il disparaît, et il déclare la
+        # chasse. La seconde est invisible sur la planche, donc annoncée ici.
+        mode = ""
+        if f and f.source_format == "png":
+            mode = ("\nChasse déclarée par l'espacement (proportionnelle)."
+                    if f.space_color else
+                    "\nChasse en mono — désigner l'espacement la rend proportionnelle.")
+        self._key_hint.setText(
+            ("Aucune couleur transparente — la planche part telle quelle."
+             if n == 0 else
+             f"{n} couleur(s) rendue(s) transparente(s). Le PNG n'est pas modifié.")
+            + mode
+        )
+
+    def load(self, font, project=None):
+        """Affiche `font` (ou l'état vide si None)."""
+        self._font = font
+        if project is not None:
+            self._project = project
+        if not font:
+            self._name_lbl.setText("")
+            self._info.setText("")
+            self._charset.setPlainText("")
+            self.refresh_keys()
+            self.set_glyph(None)
+            return
+        self._name_lbl.setText(font.name)
+        self.refresh_stats()
+        self.refresh_keys()
+        self.set_glyph(None)
+
+    def refresh_stats(self):
+        """Recalcule compteurs et charset — dérivés des glyphes, donc à relire
+        après chaque édition."""
+        f = self._font
+        if not f:
+            return
+        # Le chiffre seul ne parle pas, la limite si : ces tuiles sont en
+        # concurrence directe avec le décor.
+        warn = "  ⚠ dépasse un charblock" if f.exceeds_charblock() else ""
+        self._info.setText(
+            f"{len(f.glyphs)} glyphes\n"
+            f"cellule {f.cell_w}×{f.cell_h} px · interligne {f.line_height}\n"
+            f"{f.tile_count()} tuiles / {TILES_PER_CHARBLOCK} par charblock{warn}\n"
+            f"source : {f.source_format}"
+        )
+        self._charset.setPlainText(f.charset)
+
+    def set_glyph(self, glyph, project=None):
+        """Affiche la case courante : aperçu, caractère, rect et chasse."""
+        if project is not None:
+            self._project = project
+        self._glyph = glyph
+        self._blocking = True
+        if not glyph:
+            self._glyph_info.setText("Aucune case sélectionnée")
+            self._glyph_preview.clear()
+            self._char_edit.clear()
+            self._char_edit.setEnabled(False)
+            self._blocking = False
+            return
+        self._char_edit.setEnabled(True)
+        self._char_edit.setText(glyph.char)
+        self._glyph_preview.setPixmap(self._crop(glyph))
+        extra = "  (ligature)" if len(glyph.char) > 1 else ""
+        # D'OÙ vient la chasse, pas seulement sa valeur : « 5 px » ne dit pas si
+        # c'est une décision de l'auteur ou le mono par défaut. La source est
+        # nommée par l'émetteur, pas re-déduite ici.
+        f = self._font
+        origin = self._ADV_ORIGIN[advance_source(f)] if f else "—"
+        # Chasse EFFECTIVE, pas celle stockée : sans couleur d'espacement la
+        # police est mono quoi que porte le champ (vieux sidecars).
+        adv = glyph_advance_px(glyph, f) if f else glyph.advance
+        self._glyph_info.setText(
+            f"rect {glyph.w}×{glyph.h} à ({glyph.x}, {glyph.y})\n"
+            f"chasse : {adv} px — {origin}{extra}"
+        )
+        self._blocking = False
+
+    def set_selection(self, count: int, rect):
+        """Sélection multiple : l'aperçu montre le rectangle visé, donc le futur
+        glyphe fusionné — pas seulement sa première case."""
+        if count <= 1 or rect is None:
+            return          # cas simple : set_glyph a déjà fait le travail
+        self._glyph_preview.setPixmap(self._crop_rect(rect))
+        self._char_edit.setEnabled(False)
+        tw, th = rect_tiles(rect.width(), rect.height())
+        self._glyph_info.setText(
+            f"{count} cases sélectionnées\n"
+            f"fusion → un glyphe {rect.width()}×{rect.height()} "
+            f"({tw}×{th} tuiles)"
+        )
+
+    def _crop(self, glyph) -> QPixmap:
+        """Aperçu agrandi d'une case."""
+        return self._crop_rect(QRect(glyph.x, glyph.y, glyph.w, glyph.h))
+
+    def _crop_rect(self, r: QRect) -> QPixmap:
+        """Découpe une région de la planche, la troue et l'agrandit au plus
+        grand zoom entier qui tient (8×8 est illisible à taille réelle)."""
+        f, p = self._font, self._project
+        if not (f and p and f.asset):
+            return QPixmap()
+        path = p.asset_abs(f.asset)
+        if not path or not path.exists():
+            return QPixmap()
+        sheet = QPixmap(str(path))
+        if sheet.isNull():
+            return QPixmap()
+        cell = sheet.copy(r)
+        z = max(1, min(64 // max(1, r.height()), 64 // max(1, r.width())))
+        cell = cell.scaled(cell.width() * z, cell.height() * z,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.FastTransformation)
+        # Troué comme la planche : c'est sur une case isolée qu'on juge si
+        # l'espacement a bien été désigné.
+        keys = f.key_colors()
+        if not keys:
+            return cell
+        holed = key_out(cell, keys)
+        out = QPixmap(holed.size())
+        out.fill(Qt.GlobalColor.transparent)
+        q = QPainter(out)
+        q.fillRect(out.rect(), GlyphSheet._checker_brush())
+        q.drawPixmap(0, 0, holed)
+        q.end()
+        return out
+
+    def _commit_char(self):
+        """Valide le caractère saisi — l'écran en fera une commande."""
+        if self._blocking or not self._glyph:
+            return
+        new = self._char_edit.text()
+        if new == self._glyph.char:
+            return
+        if not new:
+            self._char_edit.setText(self._glyph.char)
+            return
+        self.glyph_char_changed.emit(self._glyph, self._glyph.char, new)

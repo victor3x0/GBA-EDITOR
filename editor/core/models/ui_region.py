@@ -37,7 +37,7 @@ acceptent une référence de variable (`{"var": ...}`) ; une région ne le peut
 pas. Tout l'intérêt de déclarer la géométrie est que l'empreinte VRAM devienne
 connue AVANT le build (cf. `font_emit.scene_text_tiles`) : une position qui ne
 se connaît qu'au runtime rendrait ce chiffre faux, c'est-à-dire pire
-qu'absent. Une position calculée reste possible — par `text.draw(id, tx, ty)`,
+qu'absent. Une position calculée reste possible — par `text.draw(tx, ty, id)`,
 qui ne disparaît pas.
 """
 

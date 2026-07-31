@@ -4,12 +4,17 @@ qui peut être, au choix :
 
   • un littéral en PIXELS      → stocké tel quel en `int`   (forme historique)
   • un littéral en TILES       → stocké `{"unit": "t", "n": <int>}`
-  • une RÉFÉRENCE de variable   → stocké `{"var": "<nom>", "src": "global"|"const"}`
+  • une RÉFÉRENCE de variable   → stocké `{"var": <id>, "src": "global"|"const"}`
+
+Une référence cite l'**id opaque** de la variable, pas son nom : c'est un
+fichier de DONNÉES, il doit survivre à un renommage sans que personne ne le
+réécrive (cf. models/ids.py). Le nom, lui, est résolu à la lecture pour
+l'affichage et pour l'expression C.
 
 Rétro-compatibilité : un champ historique (`x: int = 0`) reste un `int` pur ;
-il est simplement interprété comme un littéral pixel. Aucune migration de
-projet n'est nécessaire — seule la sérialisation des formes tile/ref introduit
-un dict.
+il est simplement interprété comme un littéral pixel. Une référence de la forme
+ancienne (`{"var": "<nom>"}`) reste lisible — le nom sert alors de secours — et
+`project_migrations.migrate_var_refs_to_ids` la convertit à l'ouverture.
 
 Ce module ne dépend pas de Qt : il est partagé par l'UI (aperçu pixel),
 le canvas (rendu) et le codegen (expression C). Les noms de symboles C
@@ -34,17 +39,23 @@ class FieldValue:
     volée via `FieldValue.parse(raw)` puis on relit `to_raw()` pour ré-stocker.
     """
 
-    __slots__ = ("mode", "n", "var_name", "var_src")
+    __slots__ = ("mode", "n", "var_name", "var_src", "var_id")
 
-    def __init__(self, mode: str, n: int = 0, var_name: str = "", var_src: str = "global"):
+    def __init__(self, mode: str, n: int = 0, var_name: str = "",
+                 var_src: str = "global", var_id: int = 0):
         self.mode = mode            # "px" | "tile" | "ref"
         self.n = n                  # nombre (px ou tiles) pour px/tile
-        self.var_name = var_name    # nom de la variable pour ref
+        self.var_name = var_name    # nom résolu — affichage et expression C
         self.var_src = var_src      # "global" | "const"
+        self.var_id = var_id        # id opaque — CE QUI EST STOCKÉ
 
     # ── Construction ──────────────────────────────────────────────
     @classmethod
-    def parse(cls, raw: Raw) -> "FieldValue":
+    def parse(cls, raw: Raw, names: Optional[dict] = None) -> "FieldValue":
+        """`names` : `{(src, id): nom}`, cf. `var_names_from_project`. Sans lui,
+        une référence par id reste résoluble comme donnée (l'id est là) mais son
+        NOM est inconnu — `c_expr()` le dit alors dans le C émis plutôt que de
+        rendre un `0` muet."""
         if isinstance(raw, bool):           # bool est un int en Python — normaliser
             return cls("px", int(raw))
         if isinstance(raw, int):
@@ -52,8 +63,15 @@ class FieldValue:
         if isinstance(raw, dict):
             if "var" in raw:
                 src = raw.get("src", "global")
-                return cls("ref", var_name=str(raw.get("var", "")),
-                           var_src=src if src in ("global", "const") else "global")
+                src = src if src in ("global", "const") else "global"
+                var = raw.get("var", "")
+                if isinstance(var, str):
+                    # Forme ancienne : le nom EST la référence. Gardée lisible
+                    # tant que la migration n'est pas passée.
+                    return cls("ref", var_name=var, var_src=src)
+                vid = int(var or 0)
+                return cls("ref", var_src=src, var_id=vid,
+                           var_name=(names or {}).get((src, vid), ""))
             if raw.get("unit") == "t":
                 try:
                     return cls("tile", int(raw.get("n", 0)))
@@ -70,15 +88,19 @@ class FieldValue:
         return cls("tile", int(n))
 
     @classmethod
-    def ref(cls, name: str, src: str) -> "FieldValue":
-        return cls("ref", var_name=name, var_src=src if src in ("global", "const") else "global")
+    def ref(cls, name: str, src: str, var_id: int = 0) -> "FieldValue":
+        return cls("ref", var_name=name, var_id=var_id,
+                   var_src=src if src in ("global", "const") else "global")
 
     # ── Sérialisation ─────────────────────────────────────────────
     def to_raw(self) -> Raw:
         if self.mode == "tile":
             return {"unit": "t", "n": int(self.n)}
         if self.mode == "ref":
-            return {"var": self.var_name, "src": self.var_src}
+            # L'id dès qu'on en a un ; le nom seulement pour une référence
+            # ancienne que la migration n'a pas encore vue — la réécrire en id
+            # sans savoir lequel inventerait un lien.
+            return {"var": self.var_id or self.var_name, "src": self.var_src}
         return int(self.n)          # px → int nu (fichiers propres, rétro-compat)
 
     # ── Interrogation ─────────────────────────────────────────────
@@ -101,7 +123,13 @@ class FieldValue:
             return int(self.n) * TILE_SIZE
         if self.mode == "ref":
             if resolver is not None:
-                v = resolver(self.var_src, self.var_name)
+                # Par NOM d'abord (référence ancienne, ou nom déjà résolu),
+                # par ID ensuite : le résolveur connaît les deux clés, ce qui
+                # évite d'avoir à passer la table de noms aux dizaines
+                # d'endroits qui ne veulent qu'un aperçu en pixels.
+                v = resolver(self.var_src, self.var_name) if self.var_name else None
+                if v is None and self.var_id:
+                    v = resolver(self.var_src, self.var_id)
                 if v is not None:
                     return int(v)
             return fallback
@@ -114,7 +142,10 @@ class FieldValue:
             return str(int(self.n) * TILE_SIZE)
         if self.mode == "ref":
             if not self.var_name:
-                return "0"
+                # Visible dans le C émis plutôt que silencieusement nul : une
+                # référence qui ne se résout plus est une donnée cassée, pas un
+                # zéro légitime.
+                return f"0 /* variable #{self.var_id} introuvable */" if self.var_id else "0"
             if self.var_src == "const":
                 return f"CONST_{self.var_name.upper()}"
             return f"g_{self.var_name}"
@@ -135,24 +166,59 @@ class FieldValue:
 # d'usage (éditeurs de composant → liste ; canvas → résolveur). `project`
 # est duck-typé (.globals / .constants) pour garder ce module sans import.
 
-def variables_from_project(project) -> list[tuple[str, str]]:
-    """Liste ordonnée `(src, name)` prête pour `ValueField(variables=…)`."""
+def var_names_from_project(project) -> dict:
+    """Map `(src, id) -> nom`, la résolution d'une RÉFÉRENCE stockée.
+    C'est l'argument `names` de `FieldValue.parse`."""
+    if not project:
+        return {}
+    d: dict = {}
+    for g in project.globals:
+        d[("global", g.id)] = g.name
+    for c in project.constants:
+        d[("const", c.id)] = c.name
+    return d
+
+
+def var_ids_from_project(project) -> dict:
+    """Map `(src, nom) -> id` — le sens inverse, pour poser une référence
+    depuis un choix fait par nom dans l'interface."""
+    if not project:
+        return {}
+    d: dict = {}
+    for g in project.globals:
+        d[("global", g.name)] = g.id
+    for c in project.constants:
+        d[("const", c.name)] = c.id
+    return d
+
+
+def variables_from_project(project) -> list[tuple[str, str, int]]:
+    """Liste ordonnée `(src, nom, id)` prête pour `ValueField(variables=…)`.
+
+    Le NOM est ce que l'utilisateur choisit dans le menu, l'ID ce qui part dans
+    la donnée — le widget a besoin des deux au même moment."""
     if not project:
         return []
-    return ([("global", g.name) for g in project.globals]
-            + [("const", c.name) for c in project.constants])
+    return ([("global", g.name, g.id) for g in project.globals]
+            + [("const", c.name, c.id) for c in project.constants])
 
 
 def var_defaults_from_project(project) -> dict:
-    """Map `(src, name) -> valeur par défaut` (global.default / const.value),
-    pour résoudre une référence à sa valeur représentative (aperçu canvas)."""
+    """Map `(src, clé) -> valeur par défaut`, où la clé est le NOM **et** l'ID.
+
+    Les deux, parce que les deux circulent : une référence stockée porte l'id,
+    une référence ancienne ou déjà résolue porte le nom. Indexer les deux évite
+    de faire remonter la table de noms jusqu'aux appelants qui ne veulent qu'un
+    aperçu en pixels."""
     if not project:
         return {}
     d: dict = {}
     for g in project.globals:
         d[("global", g.name)] = g.default
+        d[("global", g.id)] = g.default
     for c in project.constants:
         d[("const", c.name)] = c.value
+        d[("const", c.id)] = c.value
     return d
 
 

@@ -798,6 +798,11 @@ class BackgroundEditorScreen(QWidget):
         self._project = project
         self._finder.load_project(project)
 
+    def select_background(self, name: str):
+        """Ouvre le fond `name` — navigation entrante depuis un autre écran
+        (ex. carte « Utilisations » du Palette Editor)."""
+        self._finder.refresh(select=name)
+
     # ── Compression hors-thread ───────────────────────────────────
 
     def _compress_async(self, ba, png_path, mode, method, dither, then=None):

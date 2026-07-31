@@ -244,34 +244,6 @@
       ]
     },
     {
-      "name": "Affichage HUD",
-      "entries": [
-        {
-          "label": "display.print(col, row, fmt, ...)",
-          "snippet": "display.print(1, 1, \"Score: %d\", score)",
-          "description": "Affiche du texte formaté style printf à (col, row) en tiles (1 tile = 8px).",
-          "params": [
-            { "name": "col", "type": "number", "description": "Colonne en tiles (0-29)" },
-            { "name": "row", "type": "number", "description": "Ligne en tiles (0-19)" },
-            { "name": "fmt", "type": "string", "description": "Format printf (ex: \"Score: %d\")" },
-            { "name": "...", "type": "any",    "description": "Arguments du format (optionnels)" }
-          ],
-          "doc_anchor": "display-print"
-        },
-        {
-          "label": "display.clear(col, row, len)",
-          "snippet": "display.clear(0, 0, 30)",
-          "description": "Efface len tiles à partir de (col, row) sur le calque HUD.",
-          "params": [
-            { "name": "col", "type": "number", "description": "Colonne de départ en tiles" },
-            { "name": "row", "type": "number", "description": "Ligne en tiles" },
-            { "name": "len", "type": "number", "description": "Nombre de tiles à effacer" }
-          ],
-          "doc_anchor": "display-clear"
-        }
-      ]
-    },
-    {
       "name": "Communication",
       "entries": [
         {
@@ -538,37 +510,24 @@
       "name": "Texte",
       "entries": [
         {
-          "label": "text.draw(id, tx, ty)",
-          "snippet": "text.draw(\"village_garde_01\", 2, 16)",
-          "description": "Affiche un texte de la table du projet. tx/ty sont en tuiles (1 tuile = 8 px). Le texte se pose sur le layer d'interface de la scène — c'est là que vivent les glyphes de la police, donc il n'y a pas de layer à choisir.",
+          "label": "text.draw(tx, ty, id)",
+          "snippet": "text.draw(2, 16, \"village_garde_01\")",
+          "description": "Affiche un texte de la table du projet. tx/ty sont en tuiles (1 tuile = 8 px). Le texte se pose sur le layer d'interface de la scène — c'est là que vivent les glyphes de la police, donc il n'y a pas de layer à choisir. La position vient avant le contenu : c'est le contenu qui grandira (valeurs interpolées), pas la géométrie.",
           "params": [
-            { "name": "id", "type": "string", "description": "Clé du texte dans la table du projet" },
             { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" }
+            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "id", "type": "string", "description": "Clé du texte dans la table du projet" }
           ],
           "doc_anchor": "text-draw"
         },
         {
-          "label": "text.draw_box(id, tx, ty, w, n)",
-          "snippet": "text.draw_box(\"village_garde_01\", 2, 14, 26, -1)",
-          "description": "Affiche un texte dans une boîte de w tuiles de large, avec retour à la ligne automatique sur les mots (un mot trop long pour la boîte est coupé). n = nombre de caractères révélés, -1 pour tout.",
+          "label": "text.draw_upto(tx, ty, id, n)",
+          "snippet": "text.draw_upto(2, 16, \"village_garde_01\", scene.frame() / 2)",
+          "description": "Affiche les n premiers caractères — l'effet machine à écrire. Le rythme vous appartient entièrement : le moteur ne décide d'aucune vitesse. Faire varier n avec scene.frame() donne un défilement régulier ; un compteur à vous permet de ralentir sur la ponctuation, de jouer un son par lettre, ou de tout révéler d'un coup au bouton. Datée : le langage de marqueurs la remplacera.",
           "params": [
-            { "name": "id", "type": "string", "description": "Clé du texte" },
-            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
-            { "name": "w", "type": "number", "description": "Largeur de la boîte, en tuiles" },
-            { "name": "n", "type": "number", "description": "Caractères révélés (-1 = tout)" }
-          ],
-          "doc_anchor": "text-draw_box"
-        },
-        {
-          "label": "text.draw_upto(id, tx, ty, n)",
-          "snippet": "text.draw_upto(\"village_garde_01\", 2, 16, scene.frame() / 2)",
-          "description": "Affiche les n premiers caractères — l'effet machine à écrire. Le rythme vous appartient entièrement : le moteur ne décide d'aucune vitesse. Faire varier n avec scene.frame() donne un défilement régulier ; un compteur à vous permet de ralentir sur la ponctuation, de jouer un son par lettre, ou de tout révéler d'un coup au bouton.",
-          "params": [
-            { "name": "id", "type": "string", "description": "Clé du texte" },
             { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
             { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
+            { "name": "id", "type": "string", "description": "Clé du texte" },
             { "name": "n", "type": "number", "description": "Nombre de caractères révélés" }
           ],
           "doc_anchor": "text-draw_upto"

@@ -1,13 +1,18 @@
 """ui/script_editor/sidebar_panel.py — panneau gauche : sections EVENTS / API / RÉFÉRENCES."""
+from html import escape
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QToolButton
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from scripting.api import KNOWN_EVENTS, KNOWN_SCENE_EVENTS, EVENT_REGISTRY as _EVENT_META
+from scripting import api_snippets
+from core.models.text import SEP
+from core.text_markup import display_text
 from ui.common.theme import C, T
 from .colors import _BG, _BG_HOVER, _TEXT_DIM, _TEXT_NORM, _C_API, _C_REF, _C_EVENT, _C_BEHAVIOR
 from .sidebar_widgets import (
-    _Section, _EntryButton,
+    _Section, _EntryButton, _group_label,
     _BTN_BASE, _BTN_API, _BTN_REF, _BTN_BEHAVIOR, _BTN_EVENT_DEFINED, _event_tooltip,
 )
 
@@ -86,7 +91,12 @@ class SidebarPanel(QWidget):
     # ── Références (dynamique, depuis le projet) ─────────────────────
 
     def set_project(self, project):
-        """Recharge les sections dynamiques (RÉFÉRENCES) depuis le projet."""
+        """Recharge les sections dynamiques (RÉFÉRENCES) depuis le projet.
+
+        Les snippets viennent d'`api_snippets.call()`, jamais d'une chaîne
+        écrite ici : c'est ce qui empêche un bouton de survivre à la fonction
+        qu'il appelle (`scene_goto`, `instantiate` — deux noms proposés ici
+        pendant des mois alors qu'aucun n'existait dans le catalogue)."""
         self._sec_refs.clear_body()
         if not project:
             return
@@ -102,57 +112,114 @@ class SidebarPanel(QWidget):
                 f"<p style='color:{_TEXT_NORM};margin:4px 0'>{desc}</p>"
             )
 
+        def _api_tip(api_name: str, snippet: str, extra: str = "") -> str:
+            """Tooltip d'un bouton d'asset : l'appel tel qu'il sera inséré, la
+            description de la fonction telle qu'elle vit dans `api.py`, puis ce
+            que l'éditeur seul sait de l'asset."""
+            tip = _tip(snippet, api_snippets.description(api_name))
+            if extra:
+                tip += f"<p style='color:{_TEXT_DIM};margin:2px 0'>{extra}</p>"
+            return tip
+
+        def _add(sub, label: str, api_name: str, extra: str = "", **domains):
+            sn = api_snippets.call(api_name, **domains)
+            sub.add_widget(_ref_btn(label, sn, _api_tip(api_name, sn, extra)))
+
         # Scènes
         scenes = list(project.scenes)
         if scenes:
             sub = self._sec_refs.sub_section("Scènes")
             for s in scenes:
-                sn = f"scene_goto(\"{s.name}\")"
-                sub.add_widget(_ref_btn(s.name, sn, _tip(sn, "Charge et démarre cette scène.")))
+                _add(sub, s.name, "scene.switch", scene=s.name)
 
         # Actors
         actors = list(project.active_scene.actors) if project.active_scene else []
         if actors:
             sub = self._sec_refs.sub_section("Actors")
             for a in actors:
-                sn = f"get_actor(\"{a.name}\")"
-                sub.add_widget(_ref_btn(a.name, sn,
-                    _tip(sn, "Référence à cet actor dans la scène active.")))
+                _add(sub, a.name, "get_actor", "Scène active.", actor=a.name)
 
         # Prefabs
         prefabs = list(project.prefabs)
         if prefabs:
             sub = self._sec_refs.sub_section("Prefabs")
             for p in prefabs:
-                sn = f"instantiate(\"{p.name}\", x, y)"
-                sub.add_widget(_ref_btn(p.name, sn,
-                    _tip(sn, f"Instancie le prefab <i>{p.name}</i> à (x, y).")))
+                _add(sub, p.name, "actor.spawn", prefab=p.name)
 
         # Sprites
         sprites = list(project.sprites)
         if sprites:
             sub = self._sec_refs.sub_section("Sprites")
             for sp in sprites:
-                sn = f"self:play_anim(\"{sp.name}\")"
-                sub.add_widget(_ref_btn(sp.name, sn,
-                    _tip(sn, f"Joue l'animation du sprite <i>{sp.name}</i>.")))
+                _add(sub, sp.name, "self:play_anim", anim=sp.name)
 
-        # Backgrounds
+        # Backgrounds — aucune API ne prend un nom de fond en argument (un fond
+        # se pose dans la scène, pas dans un script) : la référence reste un
+        # commentaire, et le dire évite de chercher la fonction manquante.
         bgs = list(project.backgrounds)
         if bgs:
             sub = self._sec_refs.sub_section("Backgrounds")
             for bg in bgs:
                 sub.add_widget(_ref_btn(bg.name, f"-- BG: {bg.name}",
-                    _tip(bg.name, f"Background <i>{bg.name}</i> — référence éditoriale.")))
+                    _tip(bg.name, "Référence éditoriale — un fond se pose dans "
+                                  "la scène, pas depuis un script.")))
+
+        # ── Textes ─────────────────────────────────────────────────
+        # Rangés par premier niveau de chemin : c'est l'arbre de l'écran Texte,
+        # aplati à un niveau. Aller plus profond ici ferait des sous-sections de
+        # deux entrées dans une colonne de 200 px — la recherche fine reste le
+        # métier de l'écran Texte, la sidebar sert à INSÉRER.
+        texts = list(getattr(project, "texts", []))
+        if texts:
+            sub = self._sec_refs.sub_section("Textes")
+            _UNFILED = "(non rangé)"
+            values = project.text_values()
+            groups: dict[str, list] = {}
+            for t in texts:
+                groups.setdefault(t.path[0] if t.path else _UNFILED, []).append(t)
+            for folder in sorted(groups):
+                if len(groups) > 1:
+                    sub.add_widget(_group_label(folder))
+                for t in groups[folder]:
+                    where = escape(SEP.join(t.path)) if t.path else _UNFILED
+                    excerpt = escape(
+                        display_text(t.content, values).replace("\n", " ⏎ ")[:60])
+                    _add(sub, t.key, "text.draw",
+                         f"<i>{where}</i><br>« {excerpt} »", text=t.key)
+
+        # ── Zones de texte ─────────────────────────────────────────
+        # Celles de la mise en page de la scène active — comme les Actors, et
+        # pour la même raison : une zone d'une autre scène a des coordonnées
+        # réelles mais aucune surface réservée là où on écrirait.
+        layout = (project.scene_ui_layout(project.active_scene)
+                  if project.active_scene and hasattr(project, "scene_ui_layout")
+                  else None)
+        if layout is not None and layout.regions:
+            sub = self._sec_refs.sub_section("Zones de texte")
+            for r in layout.regions:
+                # La zone porte déjà le texte que l'auteur y a mis en aperçu :
+                # c'est celui qu'il veut y afficher neuf fois sur dix.
+                key = getattr(r, "preview_text", "") or ""
+                doms = {"region": r.name}
+                if key:
+                    doms["text"] = key
+                _add(sub, r.name, "text.draw_in",
+                     f"Mise en page <i>{layout.name}</i>"
+                     + (f" — aperçu « {escape(key)} »" if key else ""), **doms)
+
+        # ── Polices ────────────────────────────────────────────────
+        fonts = list(getattr(project, "fonts", []))
+        if fonts:
+            sub = self._sec_refs.sub_section("Polices")
+            for f in fonts:
+                _add(sub, f.name, "text.set_font", font=f.name)
 
         # SFX
         sfx_list = list(project.sfx) if hasattr(project, "sfx") else []
         if sfx_list:
             sub = self._sec_refs.sub_section("SFX")
             for sfx in sfx_list:
-                sn = f"sfx.play(\"{sfx.name}\")"
-                sub.add_widget(_ref_btn(sfx.name, sn,
-                    _tip(sn, f"Joue l'effet sonore <i>{sfx.name}</i>.")))
+                _add(sub, sfx.name, "sfx.play", sfx=sfx.name)
 
         # Scripts behaviors
         behaviors_dir = project.scripts_behaviors_dir

@@ -302,6 +302,7 @@ class MainWindow(QMainWindow):
         self._sprite_editor = SpriteEditorScreen()
         self._screen_stack.addWidget(self._sprite_editor)
         self._palette_editor = PaletteEditorScreen()
+        self._palette_editor.usage_activated.connect(self._open_palette_usage)
         self._screen_stack.addWidget(self._palette_editor)
         self._text_editor = TextEditorScreen()
         self._screen_stack.addWidget(self._text_editor)
@@ -590,6 +591,31 @@ class MainWindow(QMainWindow):
         self._script_editor.set_project(self.project)
         self._script_editor.open_script(Path(path))
         self._switch_screen("Script Editor")
+
+    def _open_palette_usage(self, kind: str, name: str):
+        """Clic sur une ligne de la carte « USAGE » du Palette Editor :
+        ouvrir l'écran qui édite cet élément et l'y sélectionner. La sélection
+        vient APRÈS le changement d'écran — _show_screen vide le bus."""
+        if not self.project:
+            return
+        if kind == "sprite":
+            self._switch_screen("Sprite Editor")
+            self._sprite_editor.select_sprite(name)
+        elif kind == "background":
+            self._switch_screen("Background Editor")
+            self._bg_editor.select_background(name)
+        elif kind == "scene":
+            index = next((i for i, s in enumerate(self.project.scenes) if s.name == name), None)
+            if index is None:
+                return
+            self._switch_screen("Scene Manager")
+            self._on_scene_selected(index)
+        elif kind == "prefab":
+            prefab = self.project.prefabs.get(name)
+            if prefab is None:
+                return
+            self._switch_screen("Scene Manager")
+            self._bus.select(prefab)
 
     # ── Chargement projet ─────────────────────────────────────────
 

@@ -467,40 +467,58 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # Le texte se pose sur LE layer d'UI de la scène (Scene.text_bg) : les
     # glyphes vivent dans le charblock de ce layer. Pas de paramètre `layer`,
     # il serait mensonger. tx/ty en tuiles.
+    #
+    # GRAMMAIRE : position ou conteneur D'ABORD, contenu ENSUITE. Tenue par
+    # toute la famille, y compris les primitives datées ci-dessous — une
+    # grammaire mixte pendant l'intérim coûterait plus cher que de les aligner.
+    # Le contenu finit la liste parce que c'est lui qui grandira (valeurs
+    # interpolées) ; la géométrie, elle, ne bougera plus.
+    #
+    # L'ordre est celui du C : `zip(api.params, lua_args)` dans
+    # `codegen._emit_api_call` est positionnel, donc réordonner ici réordonne
+    # l'appel émis. Les signatures de `gba_engine.h` suivent, plutôt qu'une
+    # permutation invisible entre Lua et C qu'il faudrait ensuite se rappeler.
     "text.draw": ApiFunc(
         lua_name="text.draw", c_func="text_draw",
-        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)],
-        doc='Affiche un texte du projet à (tx, ty), en tuiles. Ex: text.draw("village_garde_01", 2, 16)',
+        params=[Param("tx", PARAM_INT), Param("ty", PARAM_INT),
+                Param("id", PARAM_STR, DOMAIN_TEXT)],
+        doc='Affiche un texte du projet à (tx, ty), en tuiles. Ex: text.draw(2, 16, "village_garde_01")',
     ),
     # ── Rendu dans une RÉGION ──────────────────────────────────────
     # La région porte position, largeur de coupe, alignement et police : ce que
     # `draw_box` faisait passer en arguments, sauf que c'est désormais authoré
-    # dans le canvas de scène et donc VISIBLE. Le couple draw / draw_upto y est
-    # repris à l'identique — une seule grammaire pour les deux placements.
+    # dans le canvas de scène et donc VISIBLE. Une seule grammaire pour les
+    # deux placements.
     "text.draw_in": ApiFunc(
         lua_name="text.draw_in", c_func="text_draw_in",
-        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("region", PARAM_STR, DOMAIN_REGION)],
-        doc='Affiche un texte dans une zone dessinée dans la scène. Ex: text.draw_in("village_garde", "boite_bas")',
+        params=[Param("region", PARAM_STR, DOMAIN_REGION),
+                Param("id", PARAM_STR, DOMAIN_TEXT)],
+        doc='Affiche un texte dans une zone dessinée dans la scène. Ex: text.draw_in("boite_bas", "village_garde")',
     ),
-    "text.draw_in_upto": ApiFunc(
-        lua_name="text.draw_in_upto", c_func="text_draw_in_upto",
-        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("region", PARAM_STR, DOMAIN_REGION),
-                Param("n", PARAM_INT)],
-        doc='Machine à écrire dans une zone : les n premiers caractères. Le rythme t\'appartient. Ex: text.draw_in_upto("intro", "boite_bas", scene.frame() / 2)',
+    # Le pendant de text.clear pour une zone. Sans lui, faire disparaître une
+    # boîte obligeait à recalculer son rectangle en tuiles à la main — donc à
+    # tenir deux géométries d'accord, alors que la zone existe pour n'en avoir
+    # qu'une. La cible (BG ou sprites) ne remonte pas jusqu'ici : c'est une
+    # conséquence de l'ancrage, pas un choix d'appel.
+    "text.clear_in": ApiFunc(
+        lua_name="text.clear_in", c_func="text_clear_in",
+        params=[Param("region", PARAM_STR, DOMAIN_REGION)],
+        doc='Vide une zone de texte. Ex: text.clear_in("boite_bas")',
     ),
-    "text.draw_upto": ApiFunc(
-        lua_name="text.draw_upto", c_func="text_draw_upto",
-        params=[Param("id", PARAM_STR, DOMAIN_TEXT), Param("tx", PARAM_INT), Param("ty", PARAM_INT),
-                Param("n", PARAM_INT)],
-        doc="Affiche les n premiers caractères — la machine à écrire. Le rythme t'appartient : fais varier n. Ex: text.draw_upto(\"intro_01\", 2, 16, scene.frame() / 2)",
+    # ── Lecture ────────────────────────────────────────────────────
+    # Un texte à tempo (`[speed=4]`, `[pause=30]`) introduit un ÉTAT par zone :
+    # il ne s'affiche plus, il se lit. Ces deux-là ne dessinent rien de neuf —
+    # la règle « deux fonctions pour écrire » tient — mais sans elles, un script
+    # n'aurait aucun moyen de savoir quand enchaîner.
+    "text.reading": ApiFunc(
+        lua_name="text.reading", c_func="text_reading",
+        params=[Param("region", PARAM_STR, DOMAIN_REGION)], ret="int",
+        doc='Vrai tant que le texte s\'écrit dans cette zone. Ex: if not text.reading("boite_bas") then scene.goto("SUITE") end',
     ),
-    # Le SEUL texte dont le contenu ne vient pas de la table — un nombre ne se
-    # traduit pas. Les libellés qui l'entourent restent des entrées de table :
-    # « Score : » avec text.draw, la valeur avec celle-ci.
-    "text.draw_num": ApiFunc(
-        lua_name="text.draw_num", c_func="text_draw_num",
-        params=[Param("value", PARAM_INT), Param("tx", PARAM_INT), Param("ty", PARAM_INT)],
-        doc='Affiche un nombre à (tx, ty), en tuiles, avec la police courante. Ex: text.draw_num(global.get("score"), 9, 2)',
+    "text.skip": ApiFunc(
+        lua_name="text.skip", c_func="text_skip",
+        params=[Param("region", PARAM_STR, DOMAIN_REGION)],
+        doc='Révèle tout le texte d\'un coup — le bouton « passer ». Ex: if input.pressed("A") then text.skip("boite_bas") end',
     ),
     "text.clear": ApiFunc(
         lua_name="text.clear", c_func="text_clear",
@@ -648,20 +666,69 @@ REMOVED_API: dict[str, str] = {
     "display.print":
         "display.print a été retiré (libtonc TTE hors du workflow). Sa chaîne de "
         "format vivait dans le script, donc hors de la table de textes : "
-        "intraduisible. Remplace un libellé par une entrée de table affichée "
-        'avec text.draw("clé", tx, ty), et une valeur par '
-        "text.draw_num(valeur, tx, ty).",
+        "intraduisible. Remplace-le par une entrée de table affichée avec "
+        'text.draw(tx, ty, "clé") — une valeur s\'y écrit "$mon_global", '
+        "interpolée au build.",
     "display.clear":
         "display.clear a été retiré (libtonc TTE hors du workflow). Utilise "
         "text.clear(tx, ty, w, h) — même unité (tuiles), mais une HAUTEUR au "
         "lieu d'une longueur de ligne.",
+    # ── Retirés avec les marqueurs de tempo (2026-07-31) ──────────
+    # La machine à écrire et le rendu d'un nombre vivaient dans le SCRIPT. Le
+    # tempo s'écrit désormais dans le texte (`[speed=4]`, `[pause=30]`) et une
+    # valeur s'y interpole (`$score`) : les deux sont retournés à l'auteur du
+    # texte, là où ils se relisent et se traduisent.
+    "text.draw_upto":
+        "text.draw_upto a été retiré : le tempo s'écrit maintenant DANS le texte "
+        "([speed=4], [pause=30]). Une tête de lecture doit s'accrocher à quelque "
+        "chose de nommé, et un couple (x, y) ne l'est pas — dessine une zone de "
+        'texte dans le canvas, puis text.draw_in("nom_de_zone", "clé"). '
+        "text.reading() dit si elle a fini, text.skip() la termine d'un coup.",
+    "text.draw_in_upto":
+        "text.draw_in_upto a été retiré : le tempo s'écrit maintenant DANS le "
+        "texte. Mets [speed=4] en tête de l'entrée et appelle "
+        'text.draw_in("nom_de_zone", "clé") — l\'appeler à chaque frame ne '
+        "relance pas la lecture. text.reading() dit si elle a fini.",
+    "text.draw_num":
+        "text.draw_num a été retiré : une entrée de table sait porter sa valeur. "
+        'Écris "$mon_global" dans le contenu du texte, puis '
+        'text.draw(tx, ty, "clé"). Le nom cité est celui d\'un global ou d\'une '
+        "constante du projet, et il suit les renommages.",
+    "text.draw_num_in":
+        "text.draw_num_in a été retiré : une entrée de table sait porter sa "
+        'valeur. Écris "$mon_global" dans le contenu du texte, puis '
+        'text.draw_in("nom_de_zone", "clé").',
     "text.draw_box":
         "text.draw_box a été retiré : sa géométrie (position, largeur de coupe) "
         "vivait dans le script, donc invisible dans l'éditeur et incalculable "
         "avant le build. Dessine une zone de texte dans le canvas de scène, "
-        'puis appelle text.draw_in("clé", "nom_de_zone") — ou '
-        'text.draw_in_upto("clé", "nom_de_zone", n) pour la machine à écrire. '
-        "L'alignement, lui, n'existait pas et devient un réglage de la zone.",
+        'puis appelle text.draw_in("nom_de_zone", "clé"). La machine à écrire '
+        "s'obtient en mettant [speed=4] en tête du texte. L'alignement, lui, "
+        "n'existait pas et devient un réglage de la zone.",
+}
+
+
+# Réordonnancement du 2026-07-27 : la famille `text.*` est passée à la grammaire
+# « position/conteneur → contenu ». L'ancien ordre reste du Lua VALIDE — mêmes
+# noms, mêmes arités — donc ni le checker ni le compilateur C ne peuvent le
+# repérer : `text.draw("clé", 2, 16)` résoudrait « clé » comme une coordonnée et
+# 16 comme une clé de texte. Un projet non migré rendrait donc n'importe quoi,
+# en silence.
+#
+# D'où la migration automatique au chargement
+# (`project_migrations.migrate_text_arg_order`), et cette table qui en est la
+# source : {nom Lua: (permutation des arguments de l'ANCIEN vers le NOUVEL
+# ordre)}. Une permutation plutôt que du texte à réécrire à la main, pour que la
+# migration et la signature ne puissent pas se contredire.
+TEXT_ARG_REORDER_2026_07: dict[str, tuple[int, ...]] = {
+    # text.draw(id, tx, ty)              → (tx, ty, id)
+    "text.draw":         (1, 2, 0),
+    # text.draw_upto(id, tx, ty, n)      → (tx, ty, id, n)
+    # text.draw_num(value, tx, ty)       → (tx, ty, value)
+    # text.draw_in(id, region)           → (region, id)
+    "text.draw_in":      (1, 0),
+    # text.draw_in_upto(id, region, n)   → (region, id, n)
+    # text.draw_num_in(value, region)    → (region, value)
 }
 
 

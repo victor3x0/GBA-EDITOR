@@ -489,15 +489,17 @@ Deux systèmes de texte coexistaient, dont un contredisait la règle de l'autre.
   `text_render_cp` que le reste : mêmes chasses, même surface, même effacement.
 - **Migration automatique** au chargement (`project_migrations.migrate_display_calls`) : un
   appel à littéral pur crée une entrée de table rangée sous le nom du script et devient
-  `text.draw("clé", col, row)` ; `display.clear(c,r,len)` devient `text.clear(c,r,len,1)`. Les
+  `text.draw(col, row, "clé")` ; `display.clear(c,r,len)` devient `text.clear(c,r,len,1)`. Les
   appels **formatés** ne sont pas devinés — décider ce qui est un libellé traduisible et ce
   qui est une valeur appartient à l'auteur, et `api.REMOVED_API` fait dire au checker quoi
   écrire au lieu de « fonction inconnue ».
 - **`-ltonc` disparaît du link**, ainsi que `gba_font.h` (police 1bpp dont le consommateur
   `text_init()` n'existait plus, encore recopiée dans chaque build).
 - `text.draw_fmt` (marqueurs substituables dans une entrée — le remplacement complet de
-  `display.print` avec valeurs interpolées) est **différé** : il demande de choisir une syntaxe
-  de marqueur et de la faire vivre dans l'éditeur.
+  `display.print` avec valeurs interpolées) était **différé** : il demandait de choisir une
+  syntaxe de marqueur et de la faire vivre dans l'éditeur. La syntaxe est tranchée depuis
+  (voir « décisions verrouillées (2026-07-27) » plus bas) — et le nom ne survit pas :
+  l'interpolation vit dans l'entrée, donc c'est `text.draw` lui-même qui la porte.
 
 Vérifié : build complet du démo Pong (migration → codegen → grit → compilation → link sans
 libtonc → ROM), et `text.draw_num` sur la cible.
@@ -519,6 +521,10 @@ mono (tilemap pointant les slots de glyphes).
 - **Lua `text.*`** — `draw`, `draw_box`, `draw_upto`, `clear`, `length`, `set_font`.
   Nouveaux domaines `DOMAIN_TEXT`/`DOMAIN_FONT` : une clé de texte ou un nom de police
   inconnus sont une **erreur** de checker (le `#define` n'existerait pas).
+
+> État de ce bloc : `draw_box` a été **retiré** depuis, remplacé par les zones de texte
+> (sa géométrie vivait dans le script). `draw_upto` et `draw_num` sont à leur tour datés —
+> voir les décisions verrouillées du 2026-07-27 en fin de section.
 - `main_gen` émet les tables et appelle `text_set_layer` + `text_set_font(0)` à l'init de
   chaque scène. Un projet sans police ni texte émet des tables vides et compile.
 
@@ -527,12 +533,18 @@ n premiers caractères, et le rythme appartient au script. Un champ « vitesse d
 dans l'inspecteur choisirait le genre à la place de l'utilisateur — même refus que pour
 les boîtes de dialogue.
 
+> Affiné le 2026-07-27 : ce que ce refus visait est un réglage **global**, imposant un genre
+> à tous les textes. Un `{P3}` posé à un endroit précis d'une réplique est de l'écriture, pas
+> un réglage — le tempo rejoint donc le contenu, et `draw_upto` disparaît avec lui.
+
 #### Livré (propagation d'un renommage de clé)
 
-- `rename_text_key` réécrit les `text.draw/draw_box/draw_upto/length("clé")` des scripts via
-  `DOMAIN_TEXT` — repérage structurel, donc une chaîne sans rapport ou un commentaire qui
-  cite la clé ne bougent pas. Annulable (`RenameTextKeyCmd` repasse par la même fonction en
-  sens inverse), et la barre de statut annonce combien de références ont suivi.
+- `rename_text_key` réécrit les appels des scripts via `DOMAIN_TEXT` — repérage
+  **structurel** et non par liste de fonctions : toute primitive dont un paramètre porte ce
+  domaine suit d'elle-même, ce qui a fait que `draw_in`/`draw_in_upto` n'ont rien eu à
+  déclarer en arrivant. Une chaîne sans rapport ou un commentaire qui cite la clé ne bougent
+  pas. Annulable (`RenameTextKeyCmd` repasse par la même fonction en sens inverse), et la
+  barre de statut annonce combien de références ont suivi.
 - `refactor.index_refs_in_project()` — index `{clé: {script: n}}` en **un seul** parcours,
   qui alimente la section « UTILISÉ PAR » de l'inspecteur de texte. Périmé (donc recalculé
   paresseusement) sur `scripts_changed`, sur renommage et sur undo.
@@ -540,16 +552,302 @@ les boîtes de dialogue.
   scripts sur disque, une frappe encore dans le buffer du Script Editor serait ignorée puis
   ressauvée par-dessus, cassant le lien en silence.
 
-Reste à faire côté v0.3.2 : le type d'export `text` branché sur l'inspecteur existant.
+#### Livré (zones de texte — `UIRegion` / `UILayout`)
+
+La géométrie du texte sort du script et devient **authorée**. Détail technique dans
+`ARCHITECTURE.md` → « Zones de texte ».
+
+- `core/models/ui_region.py` — `UIRegion` (ancrage écran/monde/actor, rectangle en pixels,
+  alignement, police, `preview_text`, `animated_glyphs`) et `UILayout`, **asset** rangé dans
+  `project/ui_layouts/` et référencé par nom via `Scene.ui_layout` : une boîte dessinée une
+  fois sert quarante scènes. Le badge « partagée — N scènes » fait partie de la feature —
+  éditer une zone depuis une scène modifie un objet commun.
+- **L'ancrage contraint la cible, il ne la suggère pas.** Ancrage sur un actor → OBJ sans
+  alternative : un acteur bouge au pixel, la grille BG avance par 8. Ce n'est pas une
+  préférence de qualité. `forced_target_reason()` rend la contrainte affichable — une
+  contrainte muette se lit comme un bug de l'éditeur.
+- **Cible OBJ = bande de sprites**, composée par le MÊME code que le BG (seul le bloc de
+  destination change). Blocs de 8 px de haut parce que l'interligne vient de la police,
+  qu'un script peut changer. Plafond de 32 px par colonne : un OBJ 64×8 n'existe pas.
+- Table C `g_ui_regions` + constantes `REGION_*`, `DOMAIN_REGION` au checker (un nom de zone
+  inconnu est une erreur). Placement OBJ **relatif** à la mise en page, comme `FontInfo.slot`.
+- Outil « Zone de texte » (T) au canvas, création de la mise en page à la volée, item
+  déplaçable avec snap 8 px en BG / 1 px en OBJ, `MoveUIRegionCmd` annulable, inspecteur
+  contextuel par le `selection_bus`.
+- `text.draw_in` / `draw_in_upto` / **`clear_in`** / **`draw_num_in`**. Les deux derniers
+  comblent le trou qui renvoyait l'auteur aux coordonnées en tuiles : faire disparaître une
+  boîte ou y mettre un score obligeait à tenir une seconde géométrie à la main, ce que la
+  zone existe précisément pour éviter.
+- `text_clear_in` vide **les deux cibles** (elle ne savait masquer qu'une bande OBJ) et
+  applique la police de la zone avant d'effacer — une police composée range ses pixels dans
+  les tuiles de surface, une mono pose des index dans le tilemap ; se tromper laisse l'encre
+  en place.
+- `preview_text` affiche une entrée réelle dans le canvas : le mesureur existait déjà
+  (`FontScreenPreview` rejoue `text_layout`), il lui manquait un rectangle contre quoi se
+  mesurer. Le débordement devient visible **à la conception**.
+
+#### Livré (la boucle éditeur → script)
+
+Le chaînon manquant : une fois la zone dessinée, rien dans l'UI ne menait à
+`text.draw_in(...)`. La sidebar du Script Editor listait scènes, actors, prefabs, sprites,
+fonds et SFX — ni textes, ni zones, ni polices.
+
+- Sections **Textes** (rangés par premier niveau de chemin, tooltip = chemin + extrait),
+  **Zones de texte** (celles de la scène active ; la clé vient du `preview_text`, donc le
+  code inséré marche tel quel) et **Polices**.
+- `scripting/api_snippets.py` — tout snippet inséré **dérive de `RUNTIME_API`**, et remplit
+  ses arguments par DOMAINE et non par position. Écrits en dur, ils pourrissaient en silence :
+  la sidebar proposait encore `scene_goto("X")` et `instantiate("X", x, y)`, deux noms jamais
+  présents dans le catalogue — que le checker laisse passer (un appel inconnu peut être un
+  helper de l'utilisateur), donc l'erreur n'arrivait qu'à la compilation C.
+- `api_reference.json` ne décrit plus que la présentation : `get_categories()` le filtre par
+  le catalogue puis le complète avec lui. Il proposait `display.print`, `display.clear` et
+  `text.draw_box` — retirées — tout en ignorant `text.draw_in` et quatorze autres.
+- **Garde-fou de prototypes** (`validator._check_api_prototypes`) : une fonction du moteur
+  exposée en Lua doit être déclarée dans `gba_engine.h` ET redéclarée dans
+  `actor_api_static.h`, que les TU de scène incluent seules. C'est ce qui a maintenu
+  `text_clear_in` inatteignable — écrite dans le moteur, jamais redéclarée, donc checker
+  vert, C correct, et échec au `make` sur un `implicit declaration` qui ne dit rien de la
+  cause. Règle dérivée de la duplication elle-même, donc sans liste d'exceptions.
+
+#### Texte — décisions verrouillées (2026-07-27)
+
+La forme FINALE de l'API d'écriture, décidée avant d'ouvrir le chantier des marqueurs pour
+ne pas figer des signatures deux fois.
+
+- **Deux fonctions pour écrire, pas plus** : `text.draw(x, y, contenu)` et
+  `text.draw_in(zone, contenu)`. Grammaire **position/conteneur → contenu**, tenue dans les
+  deux. Tout le reste est du paramétrage, déclaré avant le draw ou porté par les marqueurs.
+  **La grammaire est appliquée depuis** (voir « Livré » ci-dessous) : toute la famille `text.*`
+  y est passée, y compris les primitives datées — une grammaire mixte pendant l'intérim
+  coûterait plus cher que de les aligner.
+- **`draw` accepte un littéral autant qu'une clé** — le seul à le permettre. C'est un accès
+  rapide qui ne passe pas par l'interface, au prix assumé de la traduction. À la compilation
+  un littéral devient une **entrée anonyme** de `g_texts` : le runtime ne connaît qu'un
+  chemin, et un futur « extraire vers la table » reste un refactor mécanique.
+  Désambiguïsation : la chaîne résout vers une clé si elle en matche une, sinon littéral ; le
+  checker avertit quand elle a la forme d'un slug sans matcher — aucun vrai littéral ne
+  ressemble à ça, donc la faute de frappe reste visible sans bruit.
+- **`draw_upto` et `draw_num` disparaissent** avec les marqueurs. `draw_num_in` aussi : elle
+  n'existe que pour ne pas laisser le trou ouvert d'ici là, et son retrait est déjà outillé
+  (`api.REMOVED_API` dira quoi écrire à la place).
+- **Le tempo s'écrit dans le texte, par l'auteur.** Ça ne contredit pas le refus de
+  « vitesse du texte » ci-dessus, qui visait un réglage global imposant un genre à tous les
+  textes : une pause posée à un endroit précis est de l'écriture, au même titre qu'une
+  virgule.
+- **Syntaxe à la BBCode**, sur le modèle du `RichTextLabel` de Godot — `[speed=4]`,
+  `[pause=3]`, `[wave]…[/wave]`. Trois raisons : elle est **fermée** (sans borne de fin,
+  `/S12` serait indécidable — vitesse 12, ou vitesse 1 suivie d'un « 2 » ?), les crochets
+  n'apparaissent pas en prose là où `/` le fait (« et/ou », « 12/05 »), et elle a des
+  **balises de portée** — ce dont `UIRegion.animated_glyphs` a besoin, puisqu'un effet par
+  caractère s'applique à un intervalle et pas à un point. Précédent connu de beaucoup
+  d'utilisateurs, donc rien à apprendre.
+- **L'interpolation vit dans l'entrée, pas au site d'appel** : `hud_score` =
+  `"score : $score_player"` → `score : 28`. Donc pas de varargs, donc une signature à trois
+  arguments qui ne peut plus grandir. `$name` désigne un global ou une const (les deux ont
+  déjà un namespace et un domaine de checker). **Porte fermée assumée** : pas de valeur
+  calculée — `self:get_x()` passe par un global intermédiaire. Un score *est* un global dans
+  la quasi-totalité des cas ; l'échange se fait contre une signature définitive.
+- **Résolution au build, aucun parseur au runtime.** L'encodeur sort les codepoints
+  affichables, une piste d'événements de tempo et la table des sources à interpoler. Trois
+  gains : `text.length` reste la longueur *affichée*, le moteur n'embarque pas de parseur, et
+  un littéral de script suit le même chemin puisque le codegen le voit aussi au build.
+- **`draw` ne gagnera jamais largeur, alignement ni police en argument.** Chacun ramènerait
+  `draw_box` : géométrie dans le script, invisible à l'éditeur, incalculable avant le build.
+  La réponse à ces trois besoins est « dessine une zone », et c'est la bonne pédagogie.
+- **Pas de retour à la ligne automatique dans `draw`** — `\n` seulement, comportement
+  attendu d'un `print`. Corollaire à implémenter : un **clip franc** au bord de l'écran (et
+  au rectangle pour `draw_in`), pour que le débordement soit visible et inoffensif au lieu
+  d'aller écrire ailleurs dans le tilemap, ce qu'il fait aujourd'hui.
+- **Les marqueurs de tempo sont ignorés par `draw`** : une tête de lecture doit s'accrocher à
+  quelque chose de nommé, et un couple `(x, y)` ne l'est pas. Les marqueurs de valeur, eux,
+  marchent partout.
+- Conséquence à ne pas oublier : un texte à tempo introduit un **état de lecture** par zone,
+  donc un petit groupe *lecture* (savoir si c'est fini, sauter au bout) à côté des deux
+  primitives. Elles ne dessinent rien, la règle des deux fonctions tient.
+
+#### Livré (grammaire position/conteneur → contenu)
+
+- Toute la famille `text.*` réordonnée, **en Lua comme en C** : `text.draw(tx, ty, id)`,
+  `draw_upto(tx, ty, id, n)`, `draw_num(tx, ty, value)`, `draw_in(region, id)`,
+  `draw_in_upto(region, id, n)`, `draw_num_in(region, value)`. Un seul ordre partout plutôt
+  qu'une permutation invisible entre les deux couches — `codegen._emit_api_call` mappe par
+  position.
+- **Migration automatique au chargement** (`project_migrations.migrate_text_arg_order`).
+  C'est la seule migration du projet dont l'absence serait **invisible** : l'ancien ordre
+  reste du Lua valide (mêmes noms, mêmes arités), donc ni le checker ni le compilateur C ne
+  peuvent le voir — `text.draw("clé", 2, 16)` résoudrait « clé » comme une coordonnée.
+- La détection se fait donc sur la **forme** des arguments, et pour `draw_in` sur le
+  **namespace** de chaque chaîne (l'une nomme une zone, l'autre une clé de texte — les deux
+  sont des chaînes dans les deux ordres). Ce qui reste indécidable — `draw_num` à trois
+  littéraux entiers, ou un nom vivant dans les deux namespaces — est **signalé**, jamais
+  deviné. Corollaire gratuit : la migration est idempotente, sans marqueur de version à
+  poser (un marqueur peut mentir, une forme non).
+- **Garde-fou d'ordre** ajouté à `validator._check_api_prototypes` : un désaccord d'ordre
+  entre `api.py` et `gba_engine.h` est une erreur bloquante. C'est le seul désaccord de la
+  chaîne qui compile proprement et rend faux à l'exécution, tous les paramètres étant des
+  `int`. Seules les *permutations* sont signalées ; un renommage délibéré (`layer.show(n, on)`
+  côté Lua, `layer_show(bg, on)` côté C) ne l'est pas — mesuré : 0 faux positif sur les 39
+  fonctions du moteur.
+- Même règle appliquée à `api_reference.json` : un libellé permuté par rapport au catalogue
+  est régénéré au chargement (`RELABELED`), un paramètre simplement renommé est laissé — sinon
+  on écraserait des exemples choisis à la main (`self:set_frame(0)` valant mieux que
+  `self:set_frame(frame)`).
+- **La sidebar n'a pas été touchée** et suit le nouvel ordre : c'est ce que le palier
+  « snippets dérivés du catalogue » promettait, vérifié plutôt qu'affirmé.
+
+#### Livré (langage de balisage — analyse et éditeur)
+
+- **`core/text_markup.py`** : le parseur, point unique pour l'aperçu de l'éditeur et (à venir)
+  l'encodeur. Une analyse rend trois choses : le texte **affiché** (balises retirées), les
+  **marqueurs** repérés en coordonnées d'affichage — c'est ce que la piste d'événements
+  émettra —, et les **anomalies** repérées en coordonnées de source, pour être soulignées
+  dans l'atelier.
+- **Six balises** : `[speed=n]`, `[pause=n]`, `[icon=nom]` (ponctuelles), `[wave]`, `[shake]`,
+  `[color=n]` (de portée). Plus le marqueur de valeur `$nom`. `[[` échappe un crochet, `$$` un
+  dollar — seuls eux ouvrent quelque chose, un `]` isolé passe toujours.
+- **Un crochet en prose n'est pas une faute.** Une balise inconnue reste du texte, et n'est
+  signalée que si sa forme trahit une TENTATIVE : nom voisin d'une balise connue (`[wav]`),
+  casse fautive (`[Wave]`), valeur portée (`[foo=3]`), ou paire ouverte/fermée. « Touche [A] »
+  s'écrit donc sans rien échapper et sans être signalée — même compromis que le checker de
+  scripts sur les chaînes en forme de clé.
+- **La résolution des références est dans l'éditeur, pas dans le parseur**, qui reste
+  indépendant du projet : `[icon=X]` vérifie que la police porte ce glyphe (et renvoie vers la
+  fusion de cases), `$nom` qu'il existe un global ou une const.
+- **`Font.missing_chars()` est enfin branché** — il existait depuis l'import de police sans
+  qu'aucun écran ne l'appelle. L'inspecteur croise le texte affiché avec la police d'aperçu.
+#### Livré (encodeur — trois pistes, aucun parseur en ROM)
+
+- **`emit_texts_c` résout le balisage au build.** Il sort les codepoints affichables, une
+  piste d'événements par texte (`g_text_events` / `g_text_ev_count`) et la table des sources
+  à interpoler (`g_text_values`). `g_text_len` est désormais la longueur ÉMISE.
+- **Trois sorts pour un `$nom`**, et c'est ce qui rend l'encodeur simple :
+  - **constante** → ses chiffres sont **cuits** dans les codepoints. Elle ne change jamais,
+    la lire au runtime coûterait une indirection pour rien.
+  - **global** → une place réservée (`TEXT_CP_VALUE`, le non-caractère U+FFFF, donc jamais
+    un vrai glyphe) plus un **pointeur** dans `g_text_values`. Pointeur et pas index :
+    `globals.h` déclare des variables C nommées (`g_score`), pas les cases d'une table.
+  - **ni l'un ni l'autre** → écrit **littéralement**, exactement comme l'aperçu de l'éditeur
+    le montre, et signalé dans le log de build. Une faute se voit sur la console au lieu de
+    creuser un trou muet.
+- La substitution passe par une **réécriture de la source** suivie d'une ré-analyse, jamais
+  par un rapiéçage du résultat : une constante vaut « 7 » comme « 100 », donc décale tout ce
+  qui suit — recalculer les positions à la main les ferait diverger au premier oubli.
+- Les événements `icon` ne sont **pas** émis : le glyphe est déjà résolu dans les codepoints,
+  la correspondance au plus long fait le reste. Rien à faire au runtime.
+- **Les anomalies de balisage remontent dans le log de build**, pas seulement dans
+  l'inspecteur — « Balise inconnue « wav » — vouliez-vous « wave » ? » apparaît au `make`.
+- Vérifié : sur des textes **sans balise**, l'encodeur sort **exactement** les mêmes
+  codepoints et longueurs qu'avant, aucun tableau d'événements n'est émis, et la ROM Pong
+  construit (devkitARM, `-Wall` propre) avec les quatre textes de test injectés.
+
+#### Livré (runtime — valeurs, tempo, effets)
+
+- **Matérialisation.** Un texte qui porte des valeurs est recopié en RAM avec les chiffres
+  substitués — même procédé que `text_draw_num`, donc un seul chemin de rendu. Les positions
+  des ÉVÉNEMENTS se décalent d'autant : une **carte index source → index matérialisé** les
+  recale toutes, plutôt qu'un rattrapage au fil de l'eau qui devrait rejouer à la main les
+  cas d'imbrication et de portée à cheval sur une valeur. `text_length` rend donc la longueur
+  AFFICHÉE, valeurs comprises.
+- **Tête de lecture par ZONE** (`TextRead`), et non par appel : c'est la raison pour laquelle
+  le tempo est ignoré par `text_draw` — une tête doit s'accrocher à quelque chose de nommé.
+  Un texte SANS marqueur de tempo s'affiche entier, immédiatement : ne pas en mettre est une
+  décision d'auteur, pas un oubli à compenser par une vitesse par défaut. Une pause
+  s'AJOUTE à la cadence courante, sinon `[pause=0]` deviendrait un accélérateur.
+- **Groupe lecture** : `text.reading(zone)` et `text.skip(zone)`. Ils ne dessinent rien de
+  neuf — la règle « deux fonctions pour écrire » tient — mais sans eux un script n'aurait
+  aucun moyen de savoir quand enchaîner.
+- **Effets par caractère** : la capture vise désormais les glyphes couverts par une portée
+  animée, et non les premiers venus — le budget `UIRegion.animated_glyphs` réserve de l'OAM
+  pour un effet, pas pour un préfixe. L'effet déplace le SPRITE (deux mots d'OAM), jamais la
+  composition : recomposer coûterait un rendu complet par frame pour deux pixels. Le rang du
+  caractère déphase, sinon la portée monterait et descendrait d'un bloc.
+- `text_update()` est appelée une fois par frame par le code généré, avant `oam_update` :
+  une lecture démarrée pendant le tick avance dès cette frame.
+- **Vérifié** : l'algorithme du moteur rejoué sur le C réellement généré rend **exactement**
+  ce que `resolve()` affiche dans l'éditeur, sur 15 cas dont portées à cheval sur une valeur,
+  valeurs multi-chiffres et imbrications. La ROM Pong construit (`-Wall` propre).
+
+**Pas encore fait, et pourquoi** : le retrait de `draw_upto`/`draw_num`/`draw_num_in`. Le
+Pong s'en sert pour son HUD (`text.draw_num(9, 2, global.get("score_player"))`), leur
+remplacement passe par une entrée de table `"$score_player"` — donc par une migration qui
+CRÉE des entrées à partir d'appels de script. Cette migration touche exactement le lien
+global ↔ script que le chantier « index + nom utilisateur » va refaire : la faire maintenant
+obligerait à la refaire après.
+
+#### Livré (couleur — en ROM et dans l'atelier)
+
+- **`[color=n]` au runtime**, sur les chemins COMPOSÉS (surface BG et bande de sprites) :
+  `text_recolor` remappe l'encre d'une rangée de 8 pixels par un masque —
+  `text_nib_mask(row) & (0x11111111 * n)`. La transparence est préservée, l'encre devient
+  uniforme. Une police à plusieurs teintes est donc **aplatie** : `[color]` désigne une
+  couleur, pas une transposition de rampe — supposer un rangement de palette en rampes aurait
+  marché sur les polices qui l'ont et produit n'importe quoi sur les autres.
+- **Le chemin tilemap ne peut pas suivre** : il pose une tuile DÉJÀ encrée, partagée par
+  toutes ses occurrences ; la recolorer recolorerait le texte entier. Signalé aux deux
+  endroits qui peuvent le savoir — le build (si aucune police du projet ne compose) et
+  l'inspecteur (sur la police d'aperçu, qui elle est connue nommément).
+- **1..15 est une contrainte matérielle**, pas un choix : 4bpp, l'index 0 est la transparence.
+  Hors plage, `0x11111111 * n` déborderait son mot de 32 bits et le dernier nibble sortirait
+  d'une autre couleur que les sept autres — d'où `TagSpec.vmin/vmax`, refusé à l'analyse, et
+  une garde défensive au runtime.
+- Un glyphe **animé** garde son encre : composé après la bande, donc hors du parcours de mise
+  en page, il la reprend depuis la capture (`g_cap_ink`).
+
+#### Livré (coloration des balises dans l'atelier)
+
+- `markup_highlighter.py` lit les **spans du parseur** (`ParsedText.tokens`), jamais une
+  seconde grammaire en expressions régulières. Ce qui est peint est donc exactement ce qui
+  disparaîtra du rendu, et un `[wav]` fautif se lit comme du texte — ce qu'il sera.
+- L'analyse porte sur le document ENTIER (une portée enjambe les retours à la ligne), puis
+  les spans sont reprojetés dans chaque bloc, Qt ne colorant que bloc par bloc.
+- Les anomalies **s'ajoutent** en soulignement ondulé sans repeindre : un `[wave]` jamais
+  refermé reste peint en balise ET souligné, parce qu'il est les deux.
+
+#### Livré (retrait des primitives datées)
+
+- **Quatre fonctions retirées** : `text.draw_upto`, `text.draw_in_upto`, `text.draw_num`,
+  `text.draw_num_in` — en Lua, dans `gba_engine.h` et dans `actor_api_static.h`. Il ne reste
+  que `draw` / `draw_in` pour écrire, plus le groupe lecture. `text_num_cp` survit : c'est
+  elle qui fabrique les chiffres d'une valeur interpolée.
+- **Migration du mécanique seulement** (`migrate_removed_text_calls`), la règle déjà suivie
+  pour `display.print` :
+  - `draw_num(tx, ty, global.get("x"))` → une entrée de contenu `$x` + `draw(tx, ty, "clé")`.
+    Un global cité deux fois ne donne qu'une entrée.
+  - `draw_in_upto(zone, clé, scene.frame() / K)` → `draw_in(zone, clé)` + `[speed=K]` en tête
+    du texte. K est exactement le nombre de frames par caractère, et c'est l'idiome que la
+    doc de la fonction enseignait elle-même. Refusé si l'entrée porte déjà du tempo — deux
+    rythmes sur la même entrée n'ont pas de réponse.
+  - Tout le reste (valeur calculée, `draw_upto` qui n'a pas de zone où accrocher une tête de
+    lecture) est **laissé en place et signalé**. Contrairement au réordonnancement
+    d'arguments, l'absence de migration se VOIT ici : les fonctions n'existent plus.
+- **Ordonnée en dernier**, après le réordonnancement d'arguments : elle lit les arguments par
+  position, il lui faut donc le nouvel ordre déjà posé.
+- **Bug de la passe ③ trouvé en écrivant la migration** : `text_draw_in` relançait la tête de
+  lecture à chaque appel. Or un script appelle `draw_in` depuis `on_update`, donc soixante
+  fois par seconde — le texte n'aurait jamais avancé. Il est désormais **idempotent** tant que
+  la lecture court ; pour recommencer, `text.clear_in` (qui annule aussi la lecture) ou un
+  autre texte. La façon la plus naturelle de s'en servir devait être la bonne.
+- Le projet démo Pong est migré et construit : `intro_02` porte `[speed=6]`, et deux entrées
+  `$score_player` / `$score_auto` remplacent les `draw_num`.
+
+Reste à faire côté v0.3.2 : le type d'export `text` branché sur l'inspecteur existant —
+attention, `exports_values` (les overrides par instance) n'est lu par **aucun** codegen
+aujourd'hui, donc un menu de clés dans l'inspecteur serait une fausse feature tant que ce
+câblage n'existe pas.
 
 #### Ouvert
 
-- API texte concrète : effet machine à écrire ? retour à la ligne automatique ? une ou
-  plusieurs polices actives simultanément par scène ?
-- `Font` : glyphes à largeur fixe seulement, ou proportionnelle ? Import spritesheet de
-  glyphes vs éditeur de police dédié ?
 - Le layer BG unique réservé à l'UI (`Scene.text_bg` actuel) suffit-il une fois panneaux
   + texte + police custom ajoutés, ou faut-il en réserver plusieurs ?
+- Indexation des appels à `text.set_font` par scène — sans elle, la réservation VRAM du
+  texte retombe sur le maximum du projet (cf. `font_emit.scene_text_tiles`).
+- Les dix méthodes `self:*` que la réconciliation d'`api_reference.json` regroupe dans une
+  catégorie « Actor » fourre-tout, à ranger à la main dans Mouvement/Animation/Spawn.
+
+Tranchés depuis : l'effet machine à écrire (`draw_upto`, puis les marqueurs), le retour à la
+ligne automatique (dans une zone oui, dans `draw` non), la chasse proportionnelle (livrée),
+et l'import de planche de glyphes sans éditeur de police (livré).
 
 ### v0.3.3 — UI en sprite
 

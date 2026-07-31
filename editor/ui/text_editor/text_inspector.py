@@ -1,0 +1,278 @@
+"""
+ui/text_editor/text_inspector.py — colonne droite, contexte Texte (le défaut).
+"""
+from __future__ import annotations
+
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit
+from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, pyqtSignal
+
+from core.history import get_history, SetFieldCmd
+from core.text_markup import parse, resolve, TAGS
+from ui.common.theme import C, T
+from ui.common.widgets import W
+from ui.text_editor.colors import TEXT_COLOR
+from ui.text_editor.inspector_shell import insp_scroll
+
+
+class TextInspector(QWidget):
+    """Contexte par défaut : ce qui identifie et situe l'entrée sélectionnée.
+
+    Le contenu, lui, s'édite au centre — on édite là où on lit.
+    """
+
+    changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._project = None
+        self._text = None
+        self._blocking = False
+        # {clé: {script: n}}, un seul parcours pour tout le projet : luaparser
+        # est trop lent pour être relancé à chaque clic. None = à reconstruire.
+        self._usage_index = None
+        self._font = None       # police d'aperçu, pour les caractères manquants
+        self._parsed = None
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "TEXTE")
+        root.addWidget(host)
+
+        self._empty = QLabel("Sélectionner un texte\ndans la table")
+        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._empty)
+
+        self._body = QWidget()
+        bl = QVBoxLayout(self._body)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(8)
+
+        # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
+        # traducteur et l'identité machine.
+        note_lbl = QLabel("NOTE POUR LE TRADUCTEUR")
+        note_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        note_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        bl.addWidget(note_lbl)
+        self._note_edit = QTextEdit()
+        self._note_edit.setFont(QFont(T.MONO, T.SM))
+        self._note_edit.setStyleSheet(
+            f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_NORM};"
+            f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}"
+        )
+        self._note_edit.setFixedHeight(64)
+        self._note_edit.setPlaceholderText("Contexte, ton, contrainte de place…")
+        self._note_edit.setToolTip(
+            "Contexte destiné à la traduction (v0.8) — jamais affiché en jeu."
+        )
+        # Commit au focus-out : une commande par frappe noierait l'historique.
+        self._note_edit.focusOutEvent = self._note_focus_out
+        self._note_baseline = ""
+        bl.addWidget(self._note_edit)
+
+        W.separator(bl)
+
+        # ── Balisage ──────────────────────────────────────────────
+        # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
+        # balisage n'ont nulle part ailleurs où apparaître avant le build.
+        mk_lbl = QLabel("BALISAGE")
+        mk_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        mk_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        mk_lbl.setToolTip("<br>".join(
+            f"<b>[{s.name}{'=…' if s.value else ''}]</b> — {s.doc}"
+            for s in TAGS.values()))
+        bl.addWidget(mk_lbl)
+        self._markup = QLabel("")
+        self._markup.setFont(QFont(T.MONO, T.XS))
+        self._markup.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._markup.setWordWrap(True)
+        bl.addWidget(self._markup)
+        self._issues = QLabel("")
+        self._issues.setFont(QFont(T.MONO, T.XS))
+        self._issues.setStyleSheet(f"color:{C.ACCENT_YLW};")
+        self._issues.setWordWrap(True)
+        self._issues.setVisible(False)
+        bl.addWidget(self._issues)
+        # Caractères que la police d'aperçu ne sait pas rendre. C'est l'autre
+        # moitié de la raison d'être de cet écran : croiser la table et la
+        # police, plutôt que de découvrir le trou sur la console.
+        self._missing = QLabel("")
+        self._missing.setFont(QFont(T.MONO, T.XS))
+        self._missing.setStyleSheet(f"color:{C.ACCENT_RED};")
+        self._missing.setWordWrap(True)
+        self._missing.setVisible(False)
+        bl.addWidget(self._missing)
+
+        W.separator(bl)
+
+        # Contrepartie visible du renommage automatique : il réécrit les
+        # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
+        use_lbl = QLabel("UTILISÉ PAR")
+        use_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        use_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        bl.addWidget(use_lbl)
+        self._usage = QLabel("")
+        self._usage.setFont(QFont(T.MONO, T.XS))
+        self._usage.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._usage.setWordWrap(True)
+        bl.addWidget(self._usage)
+
+        W.separator(bl)
+
+        self._meta = QLabel("")
+        self._meta.setFont(QFont(T.MONO, T.XS))
+        self._meta.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._meta.setWordWrap(True)
+        bl.addWidget(self._meta)
+
+        lay.addWidget(self._body)
+        lay.addStretch()
+        self._body.setVisible(False)
+
+    def set_font(self, font):
+        """Police d'aperçu courante — celle contre laquelle se mesure le
+        charset. Ce n'est pas une propriété du texte : il reste indépendant de
+        toute police (c'est ce qui permettra les traductions)."""
+        self._font = font
+        self.set_parsed(self._parsed)
+
+    def set_parsed(self, parsed):
+        """Affiche l'analyse du contenu courant — appelée à chaque frappe."""
+        self._parsed = parsed
+        if parsed is None:
+            self._markup.setText("")
+            self._issues.setVisible(False)
+            self._missing.setVisible(False)
+            return
+        bits = [f"{parsed.length} caractères émis"]
+        effects = parsed.of_kind(*(s.name for s in TAGS.values()))
+        if effects:
+            bits.append(f"{len(effects)} balise(s)")
+        if parsed.animated_glyphs:
+            bits.append(f"{parsed.animated_glyphs} glyphe(s) animé(s)")
+        values = parsed.of_kind("value")
+        if values:
+            bits.append("valeurs : " + ", ".join(f"${m.value}" for m in values))
+        self._markup.setText(" · ".join(bits))
+
+        # Dédoublonnées : une balise mal écrite est signalée à l'ouverture ET à
+        # la fermeture, deux endroits à souligner mais une seule chose à dire.
+        seen, msgs = set(), []
+        for message in ([i.message for i in parsed.issues]
+                        + self._cross_check(parsed)):
+            if message not in seen:
+                seen.add(message)
+                msgs.append("⚠ " + message)
+        self._issues.setText("\n".join(msgs))
+        self._issues.setVisible(bool(msgs))
+
+        # Sur le texte RÉSOLU : les chiffres d'une valeur interpolée demandent
+        # eux aussi des glyphes, et la place réservée n'en est pas un.
+        shown = resolve(parsed, self._project.text_values() if self._project else {})
+        miss = self._font.missing_chars(shown) if self._font else []
+        self._missing.setText(
+            "✕ absents de « {} » : {}".format(
+                self._font.name, " ".join(repr(c)[1:-1] for c in miss))
+            if miss else "")
+        self._missing.setVisible(bool(miss))
+
+    def _cross_check(self, parsed) -> list[str]:
+        """Ce que le parseur ne peut pas savoir seul : une balise peut être
+        bien écrite et désigner quelque chose qui n'existe pas. La résolution
+        des références est ici, le parseur reste indépendant du projet."""
+        out = []
+        for m in parsed.of_kind("icon"):
+            if self._font and self._font.glyph(m.value) is None:
+                out.append(f"« {self._font.name} » n'a pas de glyphe "
+                           f"« {m.value} » — fusionner les cases qui le "
+                           f"dessinent et lui donner ce nom.")
+        if parsed.of_kind("color") and self._font:
+            from codegen.font_emit import render_composited
+            if not render_composited(self._font):
+                out.append(f"« {self._font.name} » est rendue en tuiles : "
+                           f"« [color] » y sera ignoré (il demande une police "
+                           f"composée — proportionnelle, ou trop grosse pour "
+                           f"la VRAM).")
+        if self._project:
+            known = {v.name for v in self._project.globals} \
+                  | {c.name for c in self._project.constants}
+            for m in parsed.of_kind("value"):
+                if m.value not in known:
+                    out.append(f"« ${m.value} » n'est ni un global ni une "
+                               f"constante du projet.")
+        return out
+
+    def load(self, text, project):
+        """Affiche `text` (ou l'état vide si None)."""
+        self._project = project
+        self._text = text
+        self._blocking = True
+        has = text is not None
+        self._body.setVisible(has)
+        self._empty.setVisible(not has)
+        if has:
+            self._note_edit.setPlainText(text.note)
+            self._note_baseline = text.note
+            self._name_lbl.setText(text.key)
+            self._usage.setText(self._usage_text(text.key))
+            self.set_parsed(parse(text.content))
+            self._meta.setText(
+                f"id {text.id}\n"
+                f"rangement : {text.path_str() or '(racine)'}\n"
+                + ("clé dérivée du rangement — la nommer à la main l'en détache"
+                   if text.auto_key else "clé nommée à la main — le rangement ne la touche plus")
+                + (f"\nscène d'origine : {text.scene}" if text.scene else "")
+            )
+        else:
+            self._name_lbl.setText("")
+            self._usage.setText("")
+            self.set_parsed(None)
+        self._blocking = False
+
+    # ── Utilisations dans les scripts ─────────────────────────────
+
+    def invalidate_usages(self):
+        """Périme l'index — dès qu'un script bouge (renommage de clé, création,
+        suppression, édition dans le Script Editor). Recalcul paresseux."""
+        self._usage_index = None
+
+    def _usage_text(self, key: str) -> str:
+        """Résumé « n références dans m scripts » + la liste des fichiers."""
+        if self._usage_index is None:
+            self._usage_index = self._build_usage_index()
+        used_in = self._usage_index.get(key, {})
+        if not used_in:
+            return "aucun script"
+        n = sum(used_in.values())
+        files = "\n".join(f"  {p.name} ×{c}" if c > 1 else f"  {p.name}"
+                          for p, c in sorted(used_in.items()))
+        return f"{n} référence(s) dans {len(used_in)} script(s)\n{files}"
+
+    def _build_usage_index(self) -> dict:
+        """Parcourt les scripts une fois : {clé: {script: n}}."""
+        if not self._project:
+            return {}
+        try:
+            from scripting.refactor import index_refs_in_project
+            from scripting.api import DOMAIN_TEXT
+            return index_refs_in_project(self._project, DOMAIN_TEXT)
+        except Exception:
+            # luaparser absent ou scripts illisibles : l'inspecteur reste
+            # utilisable, il annonce juste qu'il ne sait pas.
+            return {}
+
+    def _note_focus_out(self, e):
+        """Commite la note si elle a changé."""
+        QTextEdit.focusOutEvent(self._note_edit, e)
+        if self._blocking or not self._text:
+            return
+        new = self._note_edit.toPlainText()
+        if new == self._note_baseline:
+            return
+        old, self._note_baseline = self._note_baseline, new
+        get_history().push(SetFieldCmd(
+            self._text, "note", old, new,
+            label=f"Note de {self._text.key}", persist_fn=self.changed.emit,
+        ))

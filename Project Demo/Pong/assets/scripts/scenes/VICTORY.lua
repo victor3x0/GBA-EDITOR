@@ -9,14 +9,14 @@ function on_start()
     -- cas (4 pour « PLAYER WINS! », 5 pour « CPU WINS! »).
     if global.get("winner") == 0 then
         music.play("Claimed DX")
-        text.draw_in("victory", "resultat")
+        text.draw_in("resultat", "victory")
     end
     if global.get("winner") == 1 then
         music.play("Sealed DX")
-        text.draw_in("victory_02", "resultat")
+        text.draw_in("resultat", "victory_02")
     end
     -- Ferré à droite — le troisième alignement.
-    text.draw_in("victory_03", "invite_fin")
+    text.draw_in("invite_fin", "victory_03")
 end
 
 function on_update()

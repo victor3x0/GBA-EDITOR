@@ -528,15 +528,20 @@ class SpriteItem(QGraphicsPixmapItem):
             painter.restore()
         else:
             self._paint_content(painter, clean, widget)
-        # Outline vert propre quand sélectionné
+        # Outline quand sélectionné : périwinkle pour un MEMBRE de la sélection,
+        # blanc pour l'item ACTIF (celui que l'inspecteur détaille) — même
+        # grammaire que la grille du Palette Editor.
         if self.isSelected():
+            sc = self.scene()
+            is_active = getattr(sc, "active_item", None) is self
+            ring = QColor("#ffffff") if is_active else QColor("#9b8cff")
             painter.save()
-            painter.setPen(QPen(QColor("#9b8cff"), 1, Qt.PenStyle.SolidLine))
+            painter.setPen(QPen(ring, 1, Qt.PenStyle.SolidLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             r = self.boundingRect().adjusted(0, 0, -1, -1)
             painter.drawRect(r)
             # Petits coins pour renforcer la visibilité
-            painter.setPen(QPen(QColor("#9b8cff"), 2))
+            painter.setPen(QPen(ring, 2))
             for cx, cy in [
                 (r.left(), r.top()),
                 (r.right(), r.top()),
@@ -1208,6 +1213,10 @@ class GBAScene(QGraphicsScene):
         self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
         self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
         self._ui_region_items: list = []  # zones de texte (UILayout de la scène)
+        # Item ACTIF de la sélection : celui dont l'inspecteur montre le
+        # contenu. Une multi-sélection en a toujours exactement un (le premier
+        # sélectionné), redéfinissable au Ctrl+Shift+clic.
+        self._active_item = None
         self._snap = False
         self._collision_view = False  # toggle "Collisions scène"
         self._setup_border()
@@ -1223,6 +1232,51 @@ class GBAScene(QGraphicsScene):
     @property
     def collision_overlay(self) -> "CollisionOverlay":
         return self._collision_overlay
+
+    # ── Sélection multiple : membres + item ACTIF ─────────────────
+    # Un item sélectionné est « membre » ; parmi eux, un seul est ACTIF —
+    # c'est lui que l'inspecteur détaille et lui que les gestes visant « un »
+    # item prennent pour cible. Les deux états se peignent différemment
+    # (accent = membre, blanc = actif), même grammaire que la grille du
+    # Palette Editor.
+
+    def selectable_items(self) -> list:
+        """Items sélectionnés éligibles à la multi-sélection : acteurs et zones
+        de texte (la caméra est un singleton, elle n'en fait pas partie)."""
+        try:
+            selected = self.selectedItems()
+        except RuntimeError:      # scène Qt détruite en cours de rebuild
+            return []
+        return [it for it in selected if isinstance(it, (SpriteItem, UIRegionItem))]
+
+    @property
+    def active_item(self):
+        return self._active_item
+
+    def set_active_item(self, item) -> bool:
+        """Désigne l'item actif. Retourne True s'il a changé (l'appelant peut
+        alors prévenir le bus). Repeint l'ancien et le nouveau."""
+        if item is self._active_item:
+            return False
+        old, self._active_item = self._active_item, item
+        for it in (old, item):
+            if it is None:
+                continue
+            try:
+                if it.scene() is self:
+                    it.update()
+            except RuntimeError:
+                pass              # item C++ déjà détruit
+        return True
+
+    def reconcile_active(self):
+        """Garde l'item actif cohérent avec la sélection : il doit toujours en
+        être membre. Sinon → le PREMIER membre (règle « le premier item
+        sélectionné est l'actif »), ou aucun si la sélection est vide."""
+        members = self.selectable_items()
+        if self._active_item in members:
+            return False
+        return self.set_active_item(members[0] if members else None)
 
     def update_actor_boxes(self, actors: list, var_defaults: dict | None = None):
         """Met à jour les boîtes de collision acteurs affichées."""
@@ -1511,6 +1565,9 @@ class GBAView(QGraphicsView):
         self._panning = False
         self._pan_last: "Optional[QPointF]" = None
         self._pan_prev_cursor = None
+        # Un Shift+clic (multi-sélection) est traité ici sans passer à Qt : le
+        # relâchement correspondant doit l'être aussi, d'où ce drapeau.
+        self._swallow_left_release = False
         # Position (coords scène) du dernier clic gauche non consommé par l'outil
         # actif — lu par SceneEditor._on_selection_changed pour distinguer un clic
         # dans la zone active du canvas (→ re-sélectionne la scène) d'un clic en
@@ -1619,6 +1676,28 @@ class GBAView(QGraphicsView):
             if self._active_tool.on_press(pos, e):
                 e.accept()
                 return
+        # En mode Sélection, le bouton droit ne sert QU'AU menu contextuel : on
+        # ne le passe pas à QGraphicsView, qui viderait la sélection dès que le
+        # clic tombe à côté d'un actor — or c'est justement cette sélection que
+        # le menu doit pouvoir viser (cf. contextMenuEvent).
+        if _btn == Qt.MouseButton.RightButton and self._is_select_tool():
+            e.accept()
+            return
+        # Multi-sélection au clavier+souris (mode Sélection) : Shift = ajouter /
+        # retirer un item, Ctrl+Shift = redéfinir l'item ACTIF. Traité ICI et pas
+        # par Qt, dont le modificateur natif de multi-sélection est Ctrl et qui
+        # ne connaît pas la notion d'item actif.
+        if (_btn == Qt.MouseButton.LeftButton and self._is_select_tool()
+                and (e.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+            self._multi_select_press(self.mapToScene(e.position().toPoint()),
+                                     e.modifiers())
+            # Le relâchement qui suit doit être avalé lui aussi : un press que Qt
+            # n'a pas vu suivi d'un release qu'il voit laisse sa machinerie de
+            # grab de souris dans un état incohérent (les clics suivants
+            # repartent alors vers le dernier item saisi, où qu'on clique).
+            self._swallow_left_release = True
+            e.accept()
+            return
         if _btn == Qt.MouseButton.LeftButton:
             self._last_click_scene_pos = self.mapToScene(e.position().toPoint())
         super().mousePressEvent(e)
@@ -1667,6 +1746,13 @@ class GBAView(QGraphicsView):
             if self._active_tool.on_release(pos, e):
                 e.accept()
                 return
+        if _btn == Qt.MouseButton.RightButton and self._is_select_tool():
+            e.accept()              # symétrique du press : le droit est au menu
+            return
+        if _btn == Qt.MouseButton.LeftButton and self._swallow_left_release:
+            self._swallow_left_release = False   # pendant du Shift+clic ci-dessus
+            e.accept()
+            return
         super().mouseReleaseEvent(e)
 
     # ── Pan clic-central ──────────────────────────────────────────
@@ -1691,18 +1777,66 @@ class GBAView(QGraphicsView):
                 return it
         return None
 
-    def contextMenuEvent(self, e):
-        """En mode Sélection : clic-droit sur un actor → menu contextuel
-        (Renommer / Dupliquer / Supprimer). Pour les autres outils, le clic-droit
-        sert à peindre ou à l'outil — pas de menu OS."""
+    def _is_select_tool(self) -> bool:
+        # Import local : canvas_tools importe ce module (cycle à l'import).
         from ui.scene_manager.canvas_tools import SelectTool
-        if isinstance(self._active_tool, SelectTool):
+        return isinstance(self._active_tool, SelectTool)
+
+    def _selectable_item_at(self, scene_pos):
+        """Premier item éligible à la multi-sélection sous la position :
+        acteur ou zone de texte."""
+        for it in self.scene().items(scene_pos):
+            if isinstance(it, (SpriteItem, UIRegionItem)):
+                return it
+        return None
+
+    def _multi_select_press(self, scene_pos, modifiers):
+        """Shift+clic = bascule l'appartenance à la sélection ; Ctrl+Shift+clic =
+        désigne l'item ACTIF (et l'ajoute s'il n'était pas encore membre).
+
+        L'item actif n'est PAS déplacé par un simple Shift+clic : on ajoute des
+        items autour de lui sans perdre ce que montre l'inspecteur. C'est le
+        Ctrl+Shift qui sert à changer de point de vue."""
+        sc = self.scene()
+        item = self._selectable_item_at(scene_pos)
+        if item is None:
+            return                       # Shift dans le vide : ne rien casser
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            if not item.isSelected():
+                item.setSelected(True)
+            sc.set_active_item(item)
+        else:
+            item.setSelected(not item.isSelected())
+            if item.isSelected() and sc.active_item is None:
+                sc.set_active_item(item)   # 1er membre = actif
+            sc.reconcile_active()          # actif retiré → premier membre restant
+        # Même signal que tout clic gauche : il porte déjà « la sélection a
+        # peut-être bougé, resynchronise » — indispensable pour le Ctrl+Shift,
+        # qui ne change pas l'appartenance donc n'émet pas selectionChanged.
+        self.left_click_settled.emit()
+
+    def contextMenuEvent(self, e):
+        """En mode Sélection : clic-droit → menu contextuel (Renommer /
+        Dupliquer / Supprimer).
+
+        La cible est, dans l'ordre : l'actor sous le curseur, sinon la SÉLECTION
+        COURANTE — dès qu'un actor est sélectionné, le clic-droit ouvre donc son
+        menu même à côté de lui, sans avoir à viser le sprite. Deux règles de
+        sélection : un actor cliqué HORS sélection la remplace (le menu agit sur
+        ce qu'on montre), un actor cliqué DANS une multi-sélection la préserve
+        (sinon un clic-droit réduirait silencieusement la sélection à un seul).
+        Pour les autres outils, le clic-droit sert à peindre ou à l'outil — pas
+        de menu OS."""
+        if self._is_select_tool():
             item = self._actor_item_at(self.mapToScene(e.pos()))
             if item is not None:
-                # Sélectionner l'actor cliqué pour que le menu agisse dessus
-                # sans ambiguïté visuelle.
-                self.scene().clearSelection()
-                item.setSelected(True)
+                if not item.isSelected():
+                    self.scene().clearSelection()
+                    item.setSelected(True)
+            else:
+                item = next((it for it in self.scene().selectedItems()
+                             if isinstance(it, SpriteItem)), None)
+            if item is not None:
                 self.actor_context_requested.emit(item, e.globalPos())
             e.accept()
             return
@@ -2077,6 +2211,26 @@ class UIRegionItem(QGraphicsRectItem):
             if a.name == r.anchor_actor:
                 return a.x + r.x, a.y + r.y, True
         return r.x, r.y, False
+
+    # ── Peinture ─────────────────────────────────────────────────
+    def paint(self, painter, option, widget=None):
+        """Rectangle + liseré de sélection maison : Qt dessine sinon son cadre
+        pointillé bleu, qui ne distingue pas MEMBRE d'une multi-sélection et
+        item ACTIF (blanc), contrairement aux acteurs."""
+        clean = QStyleOptionGraphicsItem(option)
+        clean.state &= ~QStyle.StateFlag.State_Selected
+        super().paint(painter, clean, widget)
+        if not self.isSelected():
+            return
+        sc = self.scene()
+        is_active = getattr(sc, "active_item", None) is self
+        pen = QPen(QColor("#ffffff") if is_active else self._COLOR, 0)
+        pen.setCosmetic(True)
+        painter.save()
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self.rect())
+        painter.restore()
 
     # ── Interaction ──────────────────────────────────────────────
     def mousePressEvent(self, e):
@@ -2596,23 +2750,36 @@ class SceneEditor(QWidget):
     # ── Menu contextuel actor (clic-droit en mode Sélection) ──────
 
     def _on_actor_context_menu(self, item: "SpriteItem", global_pos):
+        """Le menu agit sur TOUTE la sélection — même règle que Suppr et Ctrl+D,
+        sinon un clic-droit sur 3 actors sélectionnés n'en supprimerait qu'un.
+        `item` sert de repli quand il vient d'un clic hors sélection. Renommer
+        reste réservé à un actor unique (un seul nom à saisir)."""
         from PyQt6.QtWidgets import QMenu
         from core.command_dispatcher import get_dispatcher
-        actor = item.scene_sprite
+        actors = [it.scene_sprite for it in self._selected_sprite_items()]
+        if item.scene_sprite not in actors:
+            actors = [item.scene_sprite]
+        n = len(actors)
+
         menu = QMenu(self)
         menu.setFont(QFont(T.MONO, T.MD))
         menu.setStyleSheet(QSS.menu)
         act_rename = menu.addAction("Renommer…")
-        act_dup = menu.addAction("Dupliquer")
+        act_rename.setEnabled(n == 1)
+        act_dup = menu.addAction("Dupliquer" if n == 1 else f"Dupliquer ({n})")
         menu.addSeparator()
-        act_del = menu.addAction("Supprimer")
+        act_del = menu.addAction("Supprimer" if n == 1 else f"Supprimer ({n})")
         chosen = menu.exec(global_pos)
         if chosen is act_rename:
-            self._rename_actor(actor)
+            self._rename_actor(actors[0])
         elif chosen is act_dup:
-            get_dispatcher().duplicate_actor(actor)
+            disp = get_dispatcher()
+            for actor in actors:
+                disp.duplicate_actor(actor)
         elif chosen is act_del:
-            get_dispatcher().delete_actor(actor)
+            disp = get_dispatcher()
+            for actor in actors:
+                disp.delete_actor(actor)
 
     def _rename_actor(self, actor):
         from PyQt6.QtWidgets import QInputDialog
@@ -2977,6 +3144,10 @@ class SceneEditor(QWidget):
             # signal et le traitement de ce slot (rebuild de la scène en
             # cours) — rien à traiter, elle n'existe déjà plus.
             return
+        # L'item ACTIF doit rester membre de la sélection : un rubber band ou
+        # une suppression peut l'avoir laissé de côté (règle : à défaut, le
+        # premier membre devient actif).
+        self._gba_scene.reconcile_active()
         if not selected:
             # Clic dans la zone active du canvas (sceneRect, cf. GBAScene) sans
             # rien toucher → sélection de la SCÈNE elle-même (SceneInspector,
@@ -2997,19 +3168,49 @@ class SceneEditor(QWidget):
             if not self._show_all_boxes:
                 self._gba_scene.update_actor_boxes([])
             return
-        first = selected[0]
-        if isinstance(first, CameraItem):
+        # Le bus transporte l'item ACTIF (pas « le premier de la liste Qt ») :
+        # c'est lui que l'inspecteur détaille. La caméra n'entre pas dans la
+        # multi-sélection, elle garde son chemin propre.
+        target = self._gba_scene.active_item or selected[0]
+        if isinstance(target, CameraItem):
             if self._project and self._project.active_scene:
                 x, y = self._gba_scene.camera_pos()
                 self._project.active_scene.cam_x = x
                 self._project.active_scene.cam_y = y
                 get_bus().select(CameraSelection(self._project.active_scene))
-        elif isinstance(first, SpriteItem):
-            get_bus().select(first.scene_sprite)
+        elif isinstance(target, SpriteItem):
+            get_bus().select(target.scene_sprite)
+        elif isinstance(target, UIRegionItem):
+            from core.selection_bus import UIRegionSelection
+            get_bus().select(UIRegionSelection(target._layout, target._region))
         self._update_actor_box_overlay()
 
+    def _item_for_selection(self, obj):
+        """Item canvas correspondant à un objet du bus (Actor / zone de texte),
+        ou None. La caméra a son propre chemin (elle n'entre pas dans la
+        multi-sélection)."""
+        from core.selection_bus import UIRegionSelection
+        if isinstance(obj, Actor):
+            return self._find_item(obj)
+        if isinstance(obj, UIRegionSelection):
+            for it in self._gba_scene._ui_region_items:
+                if it._region is obj.region:
+                    return it
+        return None
+
     def on_selection(self, obj):
-        """Reçu du bus — sélectionner/désélectionner l'item canvas sans reboucler."""
+        """Reçu du bus — aligner le canvas sans reboucler.
+
+        Si l'objet reçu est DÉJÀ membre de la sélection courante, la sélection
+        n'est pas touchée : on se contente de le désigner ACTIF. Sans ce cas,
+        n'importe quel aller-retour du bus (clic dans un autre panneau,
+        rafraîchissement d'inspecteur, resynchro d'une multi-sélection) ramenait
+        la sélection à un seul item."""
+        target = self._item_for_selection(obj)
+        if target is not None and target.isSelected():
+            self._gba_scene.set_active_item(target)
+            return
+
         self._gba_scene.blockSignals(True)
         # Désélectionner tout d'abord
         for item in self._gba_scene.selectedItems():
@@ -3043,6 +3244,9 @@ class SceneEditor(QWidget):
                         it.setSelected(True)
                         break
         self._gba_scene.blockSignals(False)
+        # Sélection ramenée à un seul item : c'est lui l'actif (sinon plus
+        # aucun — la caméra et la scène « nue » n'en ont pas).
+        self._gba_scene.set_active_item(self._item_for_selection(obj))
 
     def move_actor_item(self, actor: Actor):
         """Repositionne l'item Qt d'un actor sans recréer la scène (drag ou spinbox)."""

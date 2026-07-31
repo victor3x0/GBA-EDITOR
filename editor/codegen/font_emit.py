@@ -61,6 +61,17 @@ def advances_declared(font) -> bool:
     return getattr(font, "space_color", None) is not None
 
 
+def advance_source(font) -> str:
+    """QUI décide de la chasse : "fnt" | "spacing" | "mono".
+
+    Même règle d'autorité que `advances_declared`, mais elle nomme la source au
+    lieu de répondre oui/non — l'éditeur affiche d'où vient la chasse, et « 5 px »
+    seul ne dit pas si c'est une décision de l'auteur ou le mono par défaut."""
+    if getattr(font, "source_format", "png") == "fnt":
+        return "fnt"
+    return "spacing" if getattr(font, "space_color", None) is not None else "mono"
+
+
 def glyph_advance_px(g, font=None) -> int:
     """Chasse effective d'un glyphe, en pixels.
 
@@ -465,19 +476,140 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
     return L
 
 
-def emit_texts_c(texts: list) -> list[str]:
-    """Table des textes : un tableau de codepoints par entrée, plus les
-    longueurs. Les `#define TEXT_<CLE>` sont émis par le codegen de script (là
-    où vivent déjà SFX_*/MUSIC_*), pas ici."""
+# Correspondance balise → constante C. Une seule table plutôt qu'un `if` par
+# balise : ajouter un effet ne doit toucher que le catalogue et ce dict.
+_EV_KIND = {
+    "speed": "TEXT_EV_SPEED", "pause": "TEXT_EV_PAUSE",
+    "wave":  "TEXT_EV_WAVE",  "shake": "TEXT_EV_SHAKE",
+    "color": "TEXT_EV_COLOR", "value": "TEXT_EV_VALUE",
+}
+
+
+def emit_texts_c(texts: list, globals_=(), constants=(), emit=None,
+                 fonts=()) -> list[str]:
+    """Tables C des textes : codepoints affichables, piste d'événements et
+    sources à interpoler.
+
+    Le balisage est résolu ICI, une fois pour toutes — c'est ce qui dispense le
+    moteur d'un parseur et garde `text_length` sur la longueur AFFICHÉE. Les
+    `#define TEXT_<CLE>` sont émis par le codegen de script (là où vivent déjà
+    SFX_*/MUSIC_*), pas ici.
+
+    Une constante est cuite dans les codepoints : elle ne change jamais, la
+    lire au runtime coûterait une indirection pour rien. Un global, lui, laisse
+    une place réservée et un pointeur dans `g_text_values`."""
+    from core.text_markup import parse, KIND_VALUE
+
+    const_values = {c.name: c.value for c in constants}
+    global_names = {g.name for g in globals_}
+
     L: list[str] = ["/* ── Textes ──────────────────────────────────────── */"]
+    lengths: list[int] = []
+    ev_names: list[str] = []
+    ev_counts: list[int] = []
+    sources: list[str] = []       # symboles C des globals à lire, dans l'ordre
+
     for i, t in enumerate(texts):
-        cps = [ord(c) for c in t.content if ord(c) < 0x10000]
+        parsed = parse(t.content)
+        # Ce qui n'est pas un global se règle AVANT le découpage en codepoints :
+        # une constante vaut « 7 » comme « 100 », donc décale tout ce qui suit.
+        bake = {}
+        for m in parsed.markers:
+            if m.kind != KIND_VALUE or m.value in bake:
+                continue
+            if m.value in const_values:
+                bake[m.value] = str(const_values[m.value])
+            elif m.value not in global_names:
+                # Rendu littéralement, comme dans l'aperçu de l'éditeur : le
+                # nom apparaît sur la console au lieu d'un trou muet. `$$`
+                # l'échappe, sinon la relecture le reprendrait pour un marqueur.
+                bake[m.value] = f"$${m.value}"
+                if emit:
+                    emit("log_line", f"[text] {t.key} : « ${m.value} » n'est ni "
+                                     f"un global ni une constante — écrit tel quel.")
+        if bake:
+            parsed = parse(_bake_values(t.content, bake))
+
+        for iss in parsed.issues:
+            if emit:
+                emit("log_line", f"[text] {t.key} : {iss.message}")
+        # `[color]` repose sur la composition pixel : le chemin tilemap pose une
+        # tuile DÉJÀ encrée, partagée par toutes ses occurrences, donc la
+        # recolorer recolorerait le texte entier. Si aucune police du projet ne
+        # compose, la couleur ne sortira jamais — autant le dire au build plutôt
+        # que de laisser chercher pourquoi rien ne change.
+        if emit and fonts and parsed.of_kind("color") \
+                and not any(render_composited(f) for f in fonts):
+            emit("log_line",
+                 f"[text] {t.key} : « [color] » demande une police composée "
+                 f"(proportionnelle, ou trop grosse pour la VRAM) — aucune "
+                 f"police du projet ne l'est, la couleur sera ignorée.")
+
+        cps = [ord(c) for c in parsed.display if ord(c) < 0x10000]
+        events = []
+        for m in parsed.markers:
+            kind = _EV_KIND.get(m.kind)
+            if kind is None:            # icon : déjà résolu dans les codepoints
+                continue
+            value = m.value
+            if m.kind == KIND_VALUE:
+                # Dédoublonnées : un même global cité par dix textes ne mérite
+                # qu'un pointeur.
+                sym = f"GLOBAL_{m.value.upper()}"
+                if sym not in sources:
+                    sources.append(sym)
+                value = sources.index(sym)
+            events.append(f"    {{ {m.at}, {m.end}, {value or 0}, {kind}, 0 }},")
+
         L.append(f"static const unsigned short g_text_{i}[{max(1, len(cps))}] = {{"
                  + (",".join(str(c) for c in cps) or "0") + "};")
+        lengths.append(len(cps))
+        if events:
+            L.append(f"static const TextEvent g_text_ev_{i}[{len(events)}] = {{")
+            L += events
+            L.append("};")
+            ev_names.append(f"g_text_ev_{i}")
+        else:
+            ev_names.append("0")
+        ev_counts.append(len(events))
+
     L.append(f"const unsigned short* const g_texts[{max(1, len(texts))}] = {{"
              + (",".join(f"g_text_{i}" for i in range(len(texts))) or "0") + "};")
     L.append(f"const unsigned short g_text_len[{max(1, len(texts))}] = {{"
-             + (",".join(str(len([c for c in t.content if ord(c) < 0x10000]))
-                         for t in texts) or "0") + "};")
+             + (",".join(str(n) for n in lengths) or "0") + "};")
+    L.append(f"const TextEvent* const g_text_events[{max(1, len(texts))}] = {{"
+             + (",".join(ev_names) or "0") + "};")
+    L.append(f"const unsigned short g_text_ev_count[{max(1, len(texts))}] = {{"
+             + (",".join(str(n) for n in ev_counts) or "0") + "};")
+    # INDEX, et non pointeurs : les globals gardent chacun leur type C (un `u8`
+    # coûte un octet), donc aucun tableau de pointeurs ne peut les contenir sans
+    # mentir sur l'un d'eux — `const int* const` sur un `&g_vies` en u8 ne
+    # compile même pas. Le moteur lit par `global_read(index)`, dont le switch
+    # généré convertit chaque cas correctement.
+    L.append(f"const unsigned short g_text_values[{max(1, len(sources))}] = {{"
+             + (",".join(sources) or "0") + "};")
     L.append("")
+    if emit and sources:
+        emit("log_line", f"[text] {len(sources)} valeur(s) interpolée(s)")
     return L
+
+
+def _bake_values(source: str, bake: dict) -> str:
+    """Réécrit la SOURCE en remplaçant les `$nom` de `bake`, puis laisse
+    l'analyse repartir de zéro.
+
+    Repasser par la source plutôt que rapiécer le résultat : la substitution
+    décale tout ce qui suit, et recalculer les positions à la main les ferait
+    diverger de l'analyse au premier oubli. Seuls les globals survivent à ce
+    passage — eux gardent leur place réservée."""
+    from core.text_markup import parse, KIND_VALUE
+    parsed = parse(source)
+    out, prev = [], 0
+    for m in parsed.markers:
+        if m.kind != KIND_VALUE or m.value not in bake:
+            continue
+        out.append(source[prev:m.src[0]])
+        out.append(bake[m.value])
+        prev = m.src[1]
+    out.append(source[prev:])
+    return "".join(out)

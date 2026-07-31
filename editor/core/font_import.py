@@ -231,6 +231,22 @@ def measure_advances(png_path: Path, glyphs, space_color=None) -> list[int]:
     return out
 
 
+def remeasure_advances(font: Font, png_path: Optional[Path]) -> bool:
+    """Relit les chasses de `font` sur sa planche, en place. Retourne False si
+    rien n'a été relu.
+
+    Règle d'autorité du modèle : un `.fnt` porte les `xadvance` voulus par son
+    auteur, ils priment sur toute lecture de la planche — seule une police venue
+    d'un PNG nu se laisse remesurer. À appeler après un changement de couleur
+    d'espacement, qui GOUVERNE la chasse."""
+    if font.source_format != "png" or not png_path or not png_path.exists():
+        return False
+    for g, a in zip(font.glyphs,
+                    measure_advances(png_path, font.glyphs, font.space_color)):
+        g.advance = a
+    return True
+
+
 # ── Import BMFont .fnt ────────────────────────────────────────────
 
 _KV = re.compile(r'(\w+)=("[^"]*"|\S+)')

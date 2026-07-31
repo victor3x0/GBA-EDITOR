@@ -14,9 +14,12 @@ gba-editor/
 │   ├── core/
 │   │   ├── project.py               ← classe Project : chemins canoniques, CRUD, orchestration save/load
 │   │   ├── models/                  ← modèle de domaine (dataclasses + sérialisation), un fichier par sous-domaine
+│   │   │   ├── ids.py                   ← id opaque partagé (données) vs nom lisible (code écrit à la main)
 │   │   │   ├── resource.py, settings.py, palette.py, sub_palette.py
 │   │   │   ├── components.py            ← Components ECS (CollisionBox/Sprite/SoundFx/Script) + registre
 │   │   │   ├── sprite.py, background.py, audio.py
+│   │   │   ├── font.py                  ← Font/Glyph : géométrie de planche, coût VRAM, fusion de cases
+│   │   │   ├── text.py                  ← Text + clé dérivée + arbre de rangement (dérivé de la liste plate)
 │   │   │   └── scene.py                 ← Actor, Prefab, Scene, collision map
 │   │   ├── resource_manager.py      ← ResourceManager générique (I/O JSON par collection)
 │   │   ├── project_migrations.py    ← migrations/réconciliations de formats JSON legacy (appelées par Project.load)
@@ -25,6 +28,9 @@ gba-editor/
 │   │   ├── project_watcher.py       ← détection live des assets
 │   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions, peindre des tuiles.
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
+│   │   ├── font_import.py           ← import de police (PNG déduit / BMFont .fnt), mesure des chasses
+│   │   ├── text_layout.py           ← où atterrit chaque glyphe (miroir de `text_layout` du runtime)
+│   │   ├── text_markup.py           ← langage de balisage des textes (BBCode) : analyse → affiché + effets
 │   │   ├── toolchain.py             ← détection devkitPro/mGBA (PATH, config, emplacements connus)
 │   │   └── ...
 │   ├── codegen/
@@ -57,16 +63,38 @@ gba-editor/
 │       │   ├── sprite_center_panel.py     ← assemble playback+canvas+tiles+timeline
 │       │   ├── sprite_right_panel.py      ← propriétés/collision/anim settings/palette
 │       │   └── sprite_editor_screen.py    ← écran complet (assemble les 3 colonnes)
+│       ├── palette_editor/            ← un fichier par sous-zone de l'écran
+│       │   ├── palette_file_io.py           ← lecture/écriture .gpl / .pal / liste hex
+│       │   ├── swatch_button.py             ← case de palette peinte (contour animé)
+│       │   ├── color_wheel.py               ← roue teinte + triangle saturation/luminosité
+│       │   ├── palette_finder_panel.py      ← panneau gauche (catalogue du projet)
+│       │   ├── palette_grid_panel.py        ← centre : grille de swatches, sélection, zoom, écritures
+│       │   ├── color_inspector_panel.py     ← panneau droit : roue/hex/RGB/TSL de la couleur active
+│       │   ├── palette_usage_card.py        ← carte USAGE (bas du panneau droit) : qui utilise la palette
+│       │   └── palette_editor_screen.py     ← écran complet (assemble les 3 colonnes)
 │       ├── sound_mixer/
 │       │   └── sound_panel.py
-│       └── script_editor/             ← un fichier par sous-zone de l'écran
-│           ├── colors.py                  ← proxys couleur partagés par tout l'écran
-│           ├── lua_editor.py               ← coloration syntaxique + widget d'édition
-│           ├── sidebar_widgets.py          ← briques section/sous-section/bouton
-│           ├── var_table_panel.py          ← table GLOBALS/CONSTANTS de la sidebar
-│           ├── sidebar_panel.py            ← sections EVENTS/API/RÉFÉRENCES
-│           ├── script_finder_panel.py      ← arbre de fichiers scripts
-│           └── script_editor.py            ← écran complet (assemble sidebar+éditeur+finder)
+│       ├── script_editor/             ← un fichier par sous-zone de l'écran
+│       │   ├── colors.py                  ← proxys couleur partagés par tout l'écran
+│       │   ├── lua_editor.py               ← coloration syntaxique + widget d'édition
+│       │   ├── sidebar_widgets.py          ← briques section/sous-section/bouton
+│       │   ├── var_table_panel.py          ← table GLOBALS/CONSTANTS de la sidebar
+│       │   ├── sidebar_panel.py            ← sections EVENTS/API/RÉFÉRENCES
+│       │   ├── script_finder_panel.py      ← arbre de fichiers scripts
+│       │   └── script_editor.py            ← écran complet (assemble sidebar+éditeur+finder)
+│       └── text_editor/               ← un fichier par sous-zone de l'écran
+│           ├── colors.py                  ← familles police / texte, partagées par l'écran
+│           ├── glyph_paint.py              ← trouage des couleurs-clés + damier
+│           ├── text_commands.py            ← commandes annulables (clé, rangement, planche)
+│           ├── font_finder_panel.py        ← colonne gauche (liste des polices)
+│           ├── text_tree_panel.py          ← centre, contexte Texte : arbre + atelier
+│           ├── font_screen_preview.py      ← aperçu écran GBA (monté par l'atelier)
+│           ├── glyph_sheet.py              ← planche de glyphes (canvas)
+│           ├── glyph_sheet_panel.py        ← centre, contexte Police : planche + outils
+│           ├── markup_highlighter.py       ← coloration des balises (lit les spans du parseur)
+│           ├── inspector_shell.py          ← coquille commune aux deux inspecteurs
+│           ├── text_inspector.py / font_inspector.py  ← colonne droite, un par contexte
+│           └── text_editor_screen.py       ← écran complet (assemble les 3 colonnes)
 ├── runtime/
 │   └── Makefile                     ← copié dans build/ au moment du build
 ├── packaging/                       ← packaging Nuitka + CI (voir section dédiée)
@@ -163,7 +191,45 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **`api.py`** (`RUNTIME_API`) — source de vérité unique pour toute fonction Lua exposée au runtime : nom Lua, fonction C cible, types de paramètres, domaine de résolution des chaînes (`DOMAIN_ANIM`, `DOMAIN_SFX`, `DOMAIN_SCENE`...). Utilisé à la fois par `checker.py` (valider un appel connu) et `codegen.py` (générer l'appel C générique via `_emit_api_call`).
 - **`checker.py`** — parcourt l'AST et valide les appels contre `RUNTIME_API` (fonction connue, bon nombre d'arguments — y compris les fonctions variadiques comme `display.print`, nom de ressource existant). Ne bloque le build que sur les erreurs (`CheckError.level == "error"`) ; les avertissements (ex. valeur littérale hors plage pour un `global.set` typé) sont journalisés sans empêcher la compilation. Appliqué uniformément aux scripts actor, scène et prefab via `lua_compiler.py::_compile_script` — un prefab avec une erreur bloque désormais le build comme un actor, plutôt que d'être silencieusement sauté. Les behaviors (`require("behaviors/x")`, inlinés par `codegen.py::_emit_inlined_behaviors`) passent par le même checker avec `check_event_names=False` (leurs fonctions top-level sont des noms de méthode arbitraires, pas des handlers d'événement) ; fichier manquant ou erreur de parse y remontent comme avertissement plutôt que de casser silencieusement ou de lever une exception Python brute.
 - **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`global.get`/`set` → accès direct à la variable C, `self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation.
-- **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une seule entrée dans `RUNTIME_API` suffit. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
+- **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
+- **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
+
+### Deux listes de prototypes, et le garde-fou qui les tient d'accord
+
+`gba_engine.h` porte l'implémentation du moteur ; `actor_api_static.h` **redéclare** la même
+chose en `extern`, parce que les scripts d'actor et de scène sont compilés en unités de
+traduction séparées qui n'incluent pas le moteur.
+
+Une fonction ajoutée d'un seul côté franchit donc tout le chemin sans rien signaler —
+checker vert, C émis correct — pour échouer au `make` sur un `implicit declaration of
+function`, message qui pointe la ligne générée et jamais la cause. C'est exactement ce
+qui a maintenu `text_clear_in` inatteignable depuis Lua : écrite dans le moteur, jamais
+redéclarée.
+
+`validator._check_api_prototypes` compare donc les deux listes à chaque build, en **erreur
+bloquante** : le lien est de toute façon perdu, autant le dire avant de lancer la chaîne C.
+La règle est *dérivée* — est exigé dans `actor_api_static.h` ce qui est déjà présent dans
+`gba_engine.h`. Les fonctions résolues ailleurs (méthodes d'actor, `scene_switch`,
+`sfx_play`, helpers de globals — générées dans `actor_api.h` ou déclarées dans
+`runtime.h`) sortent du test d'elles-mêmes, sans liste d'exceptions à maintenir.
+
+### Ce que l'éditeur INSÈRE dérive du catalogue
+
+`scripting/api_snippets.py` fabrique le Lua que la sidebar du Script Editor propose au clic,
+depuis `RUNTIME_API`. Écrits en dur, ces snippets pourrissaient sans que rien ne le signale :
+la sidebar a proposé pendant des mois `scene_goto("X")` et `instantiate("X", x, y)`, deux
+noms qui n'ont jamais existé dans le catalogue — et le checker les laisse passer (un appel
+inconnu peut être un helper de l'utilisateur), donc l'erreur n'arrivait qu'à la compilation C.
+
+`call(name, **by_domain)` remplit les arguments **par domaine** et non par position : c'est
+ce qui fait qu'un réordonnancement de paramètres dans `api.py` n'invalide aucun appelant.
+
+Même logique pour `api_reference.json`, qui ne décrit que la *présentation* (groupes, ordre,
+descriptions rédigées) : `api_reference.get_categories()` le filtre par le catalogue puis le
+complète avec lui. Une fonction retirée disparaît de l'écran, une fonction ajoutée y
+apparaît sans qu'on touche au JSON — les deux dérives que ce fichier avait accumulées
+(`display.print`, `display.clear`, `text.draw_box` encore proposées ; `text.draw_in`
+absente).
 
 ---
 
@@ -194,8 +260,8 @@ priorité (z-order), screenblock affiché.
 
 Ces fonctions sont déclarées dans `gba_engine.h` et définies dans `main.c` (via
 `GBA_ENGINE_IMPL`) ; `actor_api_static.h` les redéclare `extern` pour que les scripts
-d'actor et de scène, compilés en TU séparées, puissent les appeler. Même schéma que les
-wrappers texte TTE.
+d'actor et de scène, compilés en TU séparées, puissent les appeler — avec le garde-fou
+décrit en « Deux listes de prototypes ».
 
 ### Windows — le pochoir, pas la boîte
 
@@ -328,9 +394,12 @@ l'affichage.
   déclarés. `xadvance` prime sur toute mesure d'encre — c'est une décision typographique
   de l'auteur, pas un constat. Formats texte et XML gérés ; le binaire lève une erreur
   explicite plutôt que de produire une police vide.
-- **`advance` est mesuré dès l'import mais ignoré au rendu v1**, qui est à chasse fixe
-  (un glyphe = une tuile). Le jour du rendu proportionnel, aucune police n'est à
-  réimporter.
+- **`advance` était mesuré dès l'import bien avant de servir**, ce qui a permis au rendu
+  proportionnel d'arriver ensuite sans réimporter une seule police. Trois sources par
+  ordre d'autorité : le `xadvance` d'un `.fnt`, sinon le marqueur d'espacement s'il a été
+  désigné à la pipette, sinon **mono** (chasse = cellule). Pas de repli sur une mesure
+  d'encre : sans flanc déclaré, une chasse proportionnelle colle les lettres, là où du mono
+  reste toujours lisible.
 - **`tile_count()`** donne le coût VRAM en tuiles 8×8 : ces tuiles vivent dans le
   charblock du layer d'UI, en concurrence directe avec le décor.
 - **`missing_chars()`** croise une police avec un texte. Couplé à la table de textes, ça
@@ -343,9 +412,21 @@ l'affichage.
 les pose dans `main.c` et charge la police au début de chaque scène.
 
 - **Un glyphe → `tiles_x × tiles_y` tuiles** (une seule pour du 8×8, le cas courant),
-  déposées à la suite dans le charblock du layer d'UI à partir de `FONT_TILE_BASE = 1` —
-  la tuile 0 reste vide, c'est celle que pose `text_clear()`. Palette des glyphes en
-  banque BG **15** (`FONT_PAL_BANK`), convention héritée du chemin TTE.
+  déposées à la suite dans le charblock du texte. Leur base n'est plus une constante :
+  `text_set_tile_base()` la reçoit de l'allocateur de charblock (`codegen/vram_alloc.py`),
+  qui glisse le texte dans les trous que laisse le décor — `FONT_TILE_BASE_DEFAULT = 1`
+  n'est que le repli. La tuile 0 reste vide, c'est celle que pose `text_clear()`. Palette
+  des glyphes en banque **15** (`FONT_PAL_BANK`), en BG comme en OBJ.
+- **Deux chemins de rendu, choisis par la donnée.** `font_emit.is_proportional()` /
+  `render_composited()` décident, et `FontInfo.composited` désigne le CHEMIN, pas la
+  typographie. *Tilemap* : les tuiles de glyphes vont en VRAM, écrire du texte revient à
+  poser des index — coût nul par appel, mais plafonné à un charblock. *Composition* : les
+  glyphes restent en ROM et servent de source, le moteur compose pixel par pixel dans une
+  surface de 240 tuiles. Le second est pris dès qu'il est moins cher (police
+  proportionnelle, ou plus de ~240 tuiles de glyphes — c'est ce qui rend une police CJK
+  possible). Chasses, interligne et avance de secours sont émis **déjà résolus**
+  (`font_line_px`, `font_fallback_adv_px`) : sans ça, basculer de chemin changerait
+  l'interligne en silence.
 - **Un texte est émis en codepoints `u16`, pas en glyphes.** La correspondance
   caractère → tuile se fait au runtime, par dichotomie sur la table triée de la police
   courante. C'est ce qui rend un texte **indépendant de la police** — indispensable en
@@ -371,6 +452,148 @@ introuvable) → aucun asset créé, mieux vaut rien qu'une police vide qui se s
 l'utilisateur corrigera la taille de cellule. `reconcile_fonts()` traite les `.fnt`
 d'abord : quand descripteur et planche sont tous deux présents, le descripteur fait foi
 et sa page ne doit pas créer une seconde police en doublon.
+
+---
+
+## Zones de texte — `UIRegion` / `UILayout`
+
+`core/models/ui_region.py`, stockage dans `project/ui_layouts/<nom>.json`. Une zone
+répond à **où** le texte se pose ; elle remplace les arguments de géométrie que
+`text_draw_box` prenait dans le script, donc invisibles depuis l'éditeur et incalculables
+avant le build.
+
+**Une zone ne dessine rien.** Même contrat que la window matérielle : elle dit où, jamais
+à quoi ça ressemble. C'est pour ça que le mot est « région » et non « frame » — dans
+GB Studio, `frame.png` *est* l'image de bordure 9-slice, le mot promettrait donc un dessin
+que le moteur ne fait pas (et collisionnerait avec les frames d'animation).
+
+**Ce qui reste au script** : la zone porte la géométrie, pas l'enchaînement. Rien ici ne
+dit quel texte s'affiche quand, ni sur quel événement — c'est ce qui empêche l'objet de
+devenir un éditeur de dialogue par accident.
+
+### L'ancrage n'est pas un champ libre : il contraint la mémoire
+
+| Ancrage | Comportement | Cible |
+| --- | --- | --- |
+| `screen` | fixe sur 240×160 (HUD, boîte basse) | BG |
+| `world` | défile avec la caméra (panneau posé dans le décor) | BG |
+| `actor` | suit un acteur à l'offset près (bulle) | **OBJ, sans alternative** |
+
+Un actor bouge au pixel, la grille BG avance par 8 : une bulle en texte BG sauterait par
+crans de 8 px. Ce n'est pas une préférence de qualité, c'est une impossibilité — d'où
+`forced_target()`, et `forced_target_reason()` qui rend la contrainte **affichable** (une
+contrainte muette se lit comme un bug de l'éditeur). Même mécanique pour une scène en mode
+bitmap : plus de tilemap du tout, donc OBJ. `target` ne porte une valeur que lorsque
+l'auteur a fait un choix réel.
+
+Basculer une zone d'une cible à l'autre transfère la charge entre **deux budgets
+disjoints** — VRAM BG (64 Ko, arbitrée par `codegen/vram_alloc.py`) et VRAM OBJ (32 Ko).
+C'est l'échappatoire quand un charblock est plein.
+
+### Tout en pixels, une seule unité
+
+Le BG exige un alignement à la tuile, mais c'est `snap_to_tile()` qui le pose, pas le
+format de stockage — sinon le sens d'un champ dépendrait de la cible. La taille est
+arrondie vers le **haut** : rogner reviendrait à couper du texte pour faire joli.
+`tile_rect()` arrondit vers l'extérieur, parce qu'un glyphe posé à x=13 mord sur la
+tuile 1 et qu'elle fait partie de l'empreinte — exactement comme `text_layout` arrondit la
+sienne avant de préparer la surface.
+
+**Pas de `FieldValue` ici, volontairement.** Les champs numériques de composant acceptent
+une référence de variable ; une zone ne le peut pas. Tout l'intérêt de déclarer la
+géométrie est que l'empreinte VRAM soit connue **avant** le build ; une position qui ne se
+connaîtrait qu'au runtime rendrait ce chiffre faux, c'est-à-dire pire qu'absent. Une
+position calculée reste possible par `text.draw(x, y, …)`, qui ne disparaît pas.
+
+`w` est **aussi** la largeur de coupe. Un champ séparé garantirait qu'un jour les deux
+divergent.
+
+### Une mise en page est un asset, pas une donnée de scène
+
+`UILayout` est rangée dans `project/ui_layouts/` et référencée par nom via
+`Scene.ui_layout` : une boîte dessinée une fois sert les quarante scènes du jeu et se
+corrige en un endroit. Contrepartie à assumer dans l'UI — éditer une zone depuis le canvas
+d'une scène modifie un objet **partagé**, et `ui_layout_users()` alimente le badge
+« partagée — N scènes » : le taire casserait N scènes en croyant en ajuster une.
+
+**Une seule mise en page par scène, contenant N zones.** Passer de 1 à N plus tard est
+additif ; l'inverse ne l'est pas.
+
+### Du canvas à la ROM
+
+`project.all_regions()` donne l'ordre **stable** qui devient l'index dans la table C
+`g_ui_regions` (`font_emit.emit_ui_regions_c`), et `api.region_constant()` les `REGION_*`.
+Un nom de zone inconnu est une **erreur** de checker (`DOMAIN_REGION`), pas un
+avertissement.
+
+Le runtime a deux chemins, choisis par `UIRegionInfo.target` :
+
+- **BG** — `text_render_cp_al()` avec la position, la largeur de coupe et l'alignement de
+  la zone. Rien de spécifique : c'est le chemin libre avec une géométrie qui vient d'une
+  table au lieu des arguments.
+- **OBJ** — la zone est couverte d'une **bande de sprites** de 8 px de haut, et le texte
+  s'y compose par le même code, seul le bloc de destination change. Blocs de 8 px et non
+  un sprite par ligne parce que l'interligne vient de la police, qu'un script peut changer :
+  une allocation qui en dépendrait ne serait pas calculable au build. `strip_columns()`
+  découpe en 32/16/8 px — **un OBJ 64×8 n'existe pas** dans le matériel, d'où le plafond à
+  32. Le moteur (`text_strip_col`) doit reproduire ce découpage à l'identique, sinon les
+  tuiles allouées ne sont pas celles que le sprite lit.
+
+Le placement OBJ (`layout_obj_budget`) est **relatif** à la mise en page : une même mise en
+page sert plusieurs scènes, qui n'ont pas le même nombre d'acteurs donc pas la même base —
+même raisonnement que `FontInfo.slot`. `text_obj_set_base()` reçoit la base absolue à
+l'init de scène ; à −1, les zones OBJ ne s'affichent pas plutôt que d'aller écrire dans les
+sprites des acteurs.
+
+`animated_glyphs` est **déclaré, jamais déduit** : quel texte atterrit dans une zone est une
+décision de script prise au runtime, et une portée d'effet change de longueur avec le
+texte. Le build ne peut que réserver ce que l'auteur annonce ; au-delà, le runtime **écrête**
+et les glyphes en trop rendent en statique dans la bande. Un effet qui dégrade est une perte
+cosmétique, un dépassement d'OAM corrompt les sprites des acteurs.
+
+### API et surface d'édition
+
+| Lua | Effet |
+| --- | --- |
+| `text.draw_in(zone, id)` | le texte de la table dans la zone |
+| `text.draw_in_upto(zone, id, n)` | idem, n premiers caractères (machine à écrire) |
+| `text.draw_num_in(zone, valeur)` | un nombre, aligné et polices héritées — **intérimaire** |
+| `text.clear_in(zone)` | vide la zone, BG **ou** OBJ |
+
+**Grammaire : conteneur (ou position) d'abord, contenu ensuite**, tenue par toute la
+famille `text.*` — c'est le contenu qui grandira avec les valeurs interpolées, la géométrie
+non. L'ordre est le même en Lua et en C, parce que `codegen._emit_api_call` mappe les
+arguments par **position** : une permutation entre les deux couches serait invisible à la
+relecture de chacune, et tous les paramètres étant des `int`, le compilateur ne pourrait
+rien en dire. `validator._check_api_prototypes` compare donc aussi les deux ordres, et ne
+signale que les *permutations* — un renommage délibéré (`layer.show(n, on)` en Lua contre
+`layer_show(bg, on)` en C) reste juste sur le fond.
+
+`text_render_region_cp()` prend une suite de codepoints et non un id de table, pour la même
+raison que `text_render_cp` côté libre : la table n'est qu'une source parmi d'autres. Un
+second chemin de rendu pour les nombres finirait par dériver du premier.
+
+`text_clear_in()` applique **la police de la zone avant d'effacer**. L'effacement en dépend :
+une police composée range ses pixels dans les tuiles de surface, une police mono pose des
+index dans le tilemap. Effacer avec la police d'à côté vide le mauvais des deux et laisse
+l'encre en place.
+
+Côté éditeur : outil « Zone de texte » (T) au canvas de scène, qui crée la mise en page à
+la volée si la scène n'en a pas ; `UIRegionItem` déplaçable avec snap 8 px en BG et 1 px en
+OBJ ; `MoveUIRegionCmd` annulable et fusionnable ; inspecteur contextuel par le
+`selection_bus`. `preview_text` affiche une entrée réelle dans le canvas — le mesureur
+existait déjà (`FontScreenPreview` rejoue `text_layout` avec les vrais glyphes), il ne lui
+manquait qu'un rectangle contre lequel se mesurer, ce qui rend le débordement visible **à la
+conception**.
+
+### Le trou restant
+
+Une mise en page **déclare** les polices que la scène pose (`layout_font_names`), ce qui rend
+la réservation VRAM calculable par scène. Mais un script peut appeler `text.set_font("autre")`
+sans qu'aucune zone ne la nomme, et réserver moins que nécessaire écraserait le décor voisin
+en silence. `scene_text_tiles(fonts, names=None)` garde donc le repli sur tout le projet ; la
+seam existe, il manque l'indexation des appels à `text.set_font` par scène — le pendant de
+`refactor.index_refs_in_project()`, qui fait déjà ça pour les clés de texte.
 
 ---
 

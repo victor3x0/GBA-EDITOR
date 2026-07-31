@@ -21,6 +21,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal
 
 from core.project import Project
+from core.text_markup import display_text
 from core.models.ui_region import (
     ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ,
     forced_target, forced_target_reason, surface_conflicts, unique_region_name,
@@ -264,8 +265,10 @@ class UIRegionInspector(QWidget):
     def _reload_previews(self):
         self._preview.clear()
         self._preview.addItem("(aucun)", "")
+        values = self._project.text_values() if self._project else {}
         for t in (self._project.texts if self._project else []):
-            self._preview.addItem(f"{t.key} — {t.content[:24]}", t.key)
+            self._preview.addItem(
+                f"{t.key} — {display_text(t.content, values)[:24]}", t.key)
         i = self._preview.findData(self._region.preview_text if self._region else "")
         self._preview.setCurrentIndex(i if i >= 0 else 0)
 

@@ -334,8 +334,14 @@ class _Converter:
                 return self._expr_invoke(node)
             case "Call":
                 return self._expr_call(node)
-            case "UMinusOp" | "NotOp" | "LenOp":
-                op = {"UMinusOp": "-", "NotOp": "not", "LenOp": "#"}.get(t, t)
+            # Noms EXACTS de luaparser — `ULNotOp` et `ULengthOP` (capitale
+            # finale comprise), pas `NotOp`/`LenOp`. Écrits de mémoire, ils ne
+            # matchaient rien : `not x` retombait sur la branche binaire et
+            # levait « 'ULNotOp' object has no attribute 'left' », un message
+            # qui ne dit ni le nom de l'opérateur ni la ligne fautive.
+            case "UMinusOp" | "ULNotOp" | "ULengthOP" | "UBNotOp":
+                op = {"UMinusOp": "-", "ULNotOp": "not",
+                      "ULengthOP": "#", "UBNotOp": "~"}.get(t, t)
                 return ExprUnop(op=op, operand=self._expr(node.operand))
             case n if n.endswith("Op"):
                 return self._binop(node, t)

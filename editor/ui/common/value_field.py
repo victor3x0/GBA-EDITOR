@@ -73,11 +73,14 @@ class ValueField(QWidget):
     def __init__(self, raw=0, variables=None, min_px: int = -512, max_px: int = 512,
                  allow_tile: bool = True, parent=None):
         super().__init__(parent)
-        self._variables = list(variables or [])   # [(src, name)] src ∈ {global, const}
+        # [(src, nom, id)] — les paires d'avant l'identité opaque restent
+        # acceptées, elles décrivent alors une variable sans id connu.
+        self._variables = [tuple(v) + ((0,) if len(v) == 2 else ())
+                           for v in (variables or [])]
         self._min_px = min_px
         self._max_px = max_px
         self._allow_tile = allow_tile
-        self._fv = FieldValue.parse(raw)
+        self._fv = FieldValue.parse(raw, self._names())
         self._blocking = False
 
         lay = QHBoxLayout(self)
@@ -118,11 +121,21 @@ class ValueField(QWidget):
         return self._fv.to_raw()
 
     def set_raw(self, raw):
-        self._fv = FieldValue.parse(raw)
+        self._fv = FieldValue.parse(raw, self._names())
         self._refresh_widgets(emit=False)
 
     def set_variables(self, variables):
-        self._variables = list(variables or [])
+        self._variables = [tuple(v) + ((0,) if len(v) == 2 else ())
+                           for v in (variables or [])]
+        # La référence courante peut désigner une variable RENOMMÉE depuis :
+        # relire son nom, sinon la puce garderait l'ancien.
+        if self._fv.is_ref and self._fv.var_id:
+            self._fv.var_name = self._names().get(
+                (self._fv.var_src, self._fv.var_id), self._fv.var_name)
+
+    def _names(self) -> dict:
+        """`{(src, id): nom}` — la résolution d'une référence stockée."""
+        return {(s, i): n for s, n, i in self._variables if i}
 
     # ── Plages ────────────────────────────────────────────────────
     def _tile_range(self) -> tuple[int, int]:
@@ -180,8 +193,10 @@ class ValueField(QWidget):
         self._fv = FieldValue.tiles(round(self._fv.px() / TILE_SIZE))
         self._refresh_widgets(emit=True)
 
-    def _set_mode_ref(self, src: str, name: str):
-        self._fv = FieldValue.ref(name, src)
+    def _set_mode_ref(self, src: str, name: str, var_id: int = 0):
+        # Le nom sert à l'affichage, l'id part dans la donnée : c'est lui qui
+        # tiendra si la variable est renommée demain.
+        self._fv = FieldValue.ref(name, src, var_id)
         self._refresh_widgets(emit=True)
 
     # ── Menu ──────────────────────────────────────────────────────
@@ -198,8 +213,8 @@ class ValueField(QWidget):
             a_t.setChecked(self._fv.is_tile)
             a_t.triggered.connect(self._set_mode_tile)
 
-        globs = [n for s, n in self._variables if s == "global"]
-        consts = [n for s, n in self._variables if s == "const"]
+        globs = [(n, i) for s, n, i in self._variables if s == "global"]
+        consts = [(n, i) for s, n, i in self._variables if s == "const"]
         if globs or consts:
             m.addSeparator()
         for title, src, names in (("GLOBALS", "global", globs),
@@ -208,9 +223,11 @@ class ValueField(QWidget):
                 continue
             hdr = m.addAction(title)
             hdr.setEnabled(False)
-            for name in names:
+            for name, vid in names:
                 act = m.addAction(f"   {name}")
                 act.setCheckable(True)
-                act.setChecked(self._fv.is_ref and self._fv.var_name == name
-                               and self._fv.var_src == src)
-                act.triggered.connect(lambda _=False, s=src, n=name: self._set_mode_ref(s, n))
+                act.setChecked(self._fv.is_ref and self._fv.var_src == src
+                               and (self._fv.var_id == vid if vid
+                                    else self._fv.var_name == name))
+                act.triggered.connect(
+                    lambda _=False, s=src, n=name, i=vid: self._set_mode_ref(s, n, i))

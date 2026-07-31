@@ -38,6 +38,21 @@ from typing import Optional
 from core.models.resource import Resource
 
 
+# Tuiles 4bpp que contient un charblock GBA (16 Ko / 32 o). Plafond matériel :
+# les tuiles d'une police sont en concurrence directe avec celles du décor.
+TILES_PER_CHARBLOCK = 512
+
+TILE = 8
+
+
+def rect_tiles(w: int, h: int) -> tuple[int, int]:
+    """Tuiles 8×8 couvertes par un rectangle de w×h pixels.
+
+    Arrondi vers le HAUT : un glyphe de 9 px de large mord sur une deuxième
+    tuile, qui est occupée pour de bon."""
+    return (max(1, (w + TILE - 1) // TILE), max(1, (h + TILE - 1) // TILE))
+
+
 # ── Couleurs-clés ─────────────────────────────────────────────────
 # Une planche de police venue d'ailleurs (GB Studio, itch.io) est très souvent
 # OPAQUE : pas de canal alpha, un fond plein et parfois une seconde couleur qui
@@ -180,6 +195,50 @@ class Font(Resource):
                 i += len(g.char)
         return out
 
+    # ── Géométrie de la planche ──────────────────────────────────
+
+    def grid_cols(self) -> int:
+        """Nombre de cases sur une ligne de la planche.
+
+        Les planches régulières sont la norme : la première ligne suffit à
+        déduire le pas — c'est ce que suit la navigation aux flèches."""
+        if not self.glyphs:
+            return 1
+        y0 = self.glyphs[0].y
+        return max(1, sum(1 for g in self.glyphs if g.y == y0))
+
+    def glyphs_bounds(self, indices) -> Optional[tuple[int, int, int, int]]:
+        """(x, y, w, h) englobant les cases `indices`, en coordonnées planche.
+
+        Ce rectangle est à la fois ce que la sélection montre et ce que la
+        fusion produira : une seule mesure, sinon l'aperçu et le résultat
+        divergent."""
+        gs = [self.glyphs[i] for i in indices if 0 <= i < len(self.glyphs)]
+        if not gs:
+            return None
+        x0 = min(g.x for g in gs)
+        y0 = min(g.y for g in gs)
+        x1 = max(g.x + g.w for g in gs)
+        y1 = max(g.y + g.h for g in gs)
+        return x0, y0, x1 - x0, y1 - y0
+
+    def merged_glyphs(self, indices, char: str) -> tuple[list["Glyph"], "Glyph"]:
+        """Liste de glyphes où `indices` sont remplacés par un glyphe unique
+        couvrant leur rectangle, plus ce glyphe.
+
+        Sert aux polices plus grandes que la grille (4 cases 8×8 → un glyphe
+        16×16) et aux pictogrammes assignés à un mot. Ne modifie rien : le
+        remplacement est la décision de l'appelant, qui doit pouvoir l'annuler.
+
+        Le glyphe fusionné reprend la PLACE de la première case : l'ordre de la
+        liste est celui de la planche, le perdre désordonnerait l'affichage."""
+        x0, y0, w, h = self.glyphs_bounds(indices)
+        merged = Glyph(char=char, x=x0, y=y0, w=w, h=h, advance=w)
+        drop = set(indices)
+        keep = [g for i, g in enumerate(self.glyphs) if i not in drop]
+        pos = min(indices)
+        return keep[:pos] + [merged] + keep[pos:], merged
+
     # ── Coût VRAM ────────────────────────────────────────────────
 
     def tile_count(self) -> int:
@@ -190,8 +249,14 @@ class Font(Resource):
         concurrence directe avec le décor."""
         total = 0
         for g in self.glyphs:
-            total += max(1, (g.w + 7) // 8) * max(1, (g.h + 7) // 8)
+            tw, th = rect_tiles(g.w, g.h)
+            total += tw * th
         return total
+
+    def exceeds_charblock(self) -> bool:
+        """La police déborde-t-elle d'un charblock ? Au-delà, elle mord sur les
+        tuiles du décor."""
+        return self.tile_count() > TILES_PER_CHARBLOCK
 
     # ── Persistance ──────────────────────────────────────────────
 

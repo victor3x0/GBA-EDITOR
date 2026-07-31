@@ -13,7 +13,8 @@ from typing import Optional
 from core.project import (
     Project, Scene, Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, OWN_PAL_BANK,
 )
-from core.models.field_value import FieldValue as _FV
+from core.models.field_value import (FieldValue as _FV,
+                                     var_names_from_project as _var_names)
 from codegen.palette_alloc import scene_bank_layout
 from codegen.asset_pipeline import (
     count_frames, sprite_unique_frames, _seq_key,
@@ -206,8 +207,9 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         ]
         for bi, cb in enumerate(boxes):
             tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
-            bx, by = _FV.parse(cb.x).c_expr(), _FV.parse(cb.y).c_expr()
-            bw, bh = _FV.parse(cb.w).c_expr(), _FV.parse(cb.h).c_expr()
+            _vn = _var_names(p)
+            bx, by = _FV.parse(cb.x, _vn).c_expr(), _FV.parse(cb.y, _vn).c_expr()
+            bw, bh = _FV.parse(cb.w, _vn).c_expr(), _FV.parse(cb.h, _vn).c_expr()
             L += [
                 f"            g_actors[_i].boxes[{bi}].x=(s8){bx}; g_actors[_i].boxes[{bi}].y=(s8){by};",
                 f"            g_actors[_i].boxes[{bi}].w=(u8){bw};  g_actors[_i].boxes[{bi}].h=(u8){bh};",
@@ -599,7 +601,9 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
         emit("log_line", f"[text] {len(regions)} zone(s) de texte "
                          f"({len(p.ui_layouts)} mise(s) en page)")
     font_names = [f.name for f in project_fonts(p)]
-    return (emit_fonts_c(encoded) + emit_texts_c(texts)
+    return (emit_fonts_c(encoded)
+            + emit_texts_c(texts, p.globals, p.constants, emit,
+                           fonts=project_fonts(p))
             + emit_ui_regions_c(regions, font_names, emit,
                                 obj_place=_obj_text_alloc(p),
                                 actor_index=_region_actor_index(p)))
@@ -790,8 +794,8 @@ def _gen_scene_init(
         own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
         pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
         L += [
-            f"    g_actors[{idx}].x       = {_FV.parse(actor.x).c_expr()};",
-            f"    g_actors[{idx}].y       = {_FV.parse(actor.y).c_expr()};",
+            f"    g_actors[{idx}].x       = {_FV.parse(actor.x, _var_names(p)).c_expr()};",
+            f"    g_actors[{idx}].y       = {_FV.parse(actor.y, _var_names(p)).c_expr()};",
             f"    g_actors[{idx}].active  = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].visible = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].flip_h  = {1 if getattr(_get_sprite_comp(actor),'flip_h',False) else 0};",
@@ -807,8 +811,9 @@ def _gen_scene_init(
         ]
         for bi2, cb in enumerate(boxes):
             tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
-            bx, by = _FV.parse(cb.x).c_expr(), _FV.parse(cb.y).c_expr()
-            bw, bh = _FV.parse(cb.w).c_expr(), _FV.parse(cb.h).c_expr()
+            _vn = _var_names(p)
+            bx, by = _FV.parse(cb.x, _vn).c_expr(), _FV.parse(cb.y, _vn).c_expr()
+            bw, bh = _FV.parse(cb.w, _vn).c_expr(), _FV.parse(cb.h, _vn).c_expr()
             L += [
                 f"    g_actors[{idx}].boxes[{bi2}].x=(s8){bx}; g_actors[{idx}].boxes[{bi2}].y=(s8){by};",
                 f"    g_actors[{idx}].boxes[{bi2}].w=(u8){bw};  g_actors[{idx}].boxes[{bi2}].h=(u8){bh};",
@@ -1137,6 +1142,10 @@ def _gen_scene_tick(
                     f"    }}else{{ shadow_oam[{oam_slot}].attr0=0x0200; }}",
                 ]
 
+    # Après les scripts, avant le flush OAM : une lecture démarrée pendant le
+    # tick avance dès cette frame, et les sprites des glyphes animés sont posés
+    # avant d'être copiés en OAM.
+    L.append("    text_update();")
     L.append("    oam_update();")
     L.append("}")
     L.append("")

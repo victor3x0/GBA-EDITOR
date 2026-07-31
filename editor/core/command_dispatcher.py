@@ -165,10 +165,12 @@ class CommandDispatcher(EventEmitter):
         # La position peut être un littéral px/tile ou une réf de variable :
         # on la résout en pixels avant d'appliquer le décalage (la copie devient
         # un placement littéral distinct).
-        from core.models.field_value import FieldValue, make_resolver
+        from core.models.field_value import (FieldValue, make_resolver,
+                                             var_names_from_project)
         r = make_resolver(self._project)
-        new.x = FieldValue.parse(actor.x).px(r) + dx
-        new.y = FieldValue.parse(actor.y).px(r) + dy
+        _vn = var_names_from_project(self._project)
+        new.x = FieldValue.parse(actor.x, _vn).px(r) + dx
+        new.y = FieldValue.parse(actor.y, _vn).px(r) + dy
 
         def persist():
             self._save_scene()

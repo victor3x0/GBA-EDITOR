@@ -42,16 +42,15 @@ script.
 
 from __future__ import annotations
 
-import random
 import unicodedata
 from dataclasses import dataclass, field
 
+from core.models.ids import new_id as _new_id
 
-# Largeur de l'id opaque. 10^12 laisse la collision à ~1 sur un million
-# d'entrées (paradoxe des anniversaires) — assez pour survivre à la fusion de
-# deux projets ou de deux branches git, là où un compteur monotone casserait.
-_ID_MIN = 100_000_000_000
-_ID_MAX = 999_999_999_999
+
+# L'id opaque et son tirage vivent dans `models/ids.py` : les variables du
+# projet suivent la même règle, et deux tirages séparés auraient fini par
+# diverger sur la largeur ou sur la garde d'unicité.
 
 # Longueur max d'un segment de clé — au-delà on tronque (une clé sert à situer,
 # pas à raconter).
@@ -133,12 +132,44 @@ def norm_path(path) -> list[str]:
     return [s for s in (str(p).strip() for p in (path or [])) if s][:MAX_DEPTH]
 
 
+# ── Arbre de rangement ────────────────────────────────────────────
+# L'arbre est DÉRIVÉ de la liste plate : `texts.json` reste une liste dont
+# chaque entrée porte son chemin. Rien à garbage-collecter, diffs git lisibles,
+# dep-graph inchangé — mais pas de groupe vide, par construction.
+
+def tree_paths(texts) -> list[tuple[str, ...]]:
+    """Nœuds de rangement dérivés des chemins, triés parent avant enfant.
+
+    L'ordre lexicographique suffit à cette garantie (un préfixe précède ce
+    qu'il préfixe) et rend l'arbre stable d'une reconstruction à l'autre."""
+    prefixes = {tuple(t.path[:n + 1]) for t in texts for n in range(len(t.path))}
+    return sorted(prefixes, key=lambda p: tuple(s.casefold() for s in p))
+
+
+def texts_under(texts, path) -> list:
+    """Textes rangés dans `path` ou dans un de ses sous-nœuds."""
+    path = tuple(path)
+    return [t for t in texts if tuple(t.path[:len(path)]) == path]
+
+
+def repath_segment(texts, path, new_seg: str) -> list[tuple]:
+    """Renommage d'un nœud : [(texte, ancien chemin, nouveau chemin)].
+
+    Renommer un rangement le renomme pour TOUT ce qu'il contient — c'est le
+    même geste que déplacer une entrée, à l'échelle près. Ne modifie rien : le
+    déplacement passe par une commande annulable."""
+    depth = len(path) - 1
+    return [
+        (t, list(t.path),
+         list(t.path[:depth]) + [new_seg] + list(t.path[depth + 1:]))
+        for t in texts_under(texts, path)
+    ]
+
+
 def new_id(taken: set[int]) -> int:
-    """Id opaque non encore utilisé."""
-    while True:
-        candidate = random.randint(_ID_MIN, _ID_MAX)
-        if candidate not in taken:
-            return candidate
+    """Id opaque non encore utilisé — ré-exporté depuis `models/ids.py` pour ne
+    pas casser les `from core.models.text import new_id` existants."""
+    return _new_id(taken)
 
 
 def key_from_path(path, *, taken: set[str] | None = None) -> str:

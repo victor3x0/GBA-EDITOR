@@ -179,6 +179,16 @@ class SpriteFinderPanel(QWidget):
         """Recharge l'arbre d'animations depuis le sprite courant (conserve la sélection)."""
         self._refresh_anim_tree(self._current_sprite)
 
+    def select_sprite(self, name: str):
+        """Sélectionne le sprite `name` dans l'arbre (émet sprite_selected via
+        currentItemChanged) — point d'entrée d'une navigation venue d'un autre
+        écran, ex. la carte « Utilisations » du Palette Editor."""
+        sprite = self._project.sprites.get(name) if self._project else None
+        item = self._find_sprite_item(sprite)
+        if item is not None:
+            self._sprite_tree.setCurrentItem(item)
+            self._sprite_tree.scrollToItem(item)
+
     def select_direction(self, state: AnimState, sd: StateDirection):
         """Sélectionne explicitement (state, sd) dans l'arbre — ex: après ajout
         d'une direction depuis le panneau droit, pour que le canvas central

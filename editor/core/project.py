@@ -57,7 +57,8 @@ from core.models.text import (
     Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
     new_id as new_text_id,
 )
-from core.models.palette import PaletteBank, OWN_PAL_BANK
+from core.models.ids import new_id
+from core.models.palette import PaletteBank, PaletteUsage, OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin
 from core.models.components import (
     CollisionBoxComponent, SpriteComponent, SoundFxComponent, ScriptComponent,
@@ -346,7 +347,8 @@ class Project:
     def commit_all_removals(self):
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
-                    self.fonts, self.scenes, self.prefabs, self.ui_layouts):
+                    self.fonts, self.scenes, self.prefabs, self.ui_layouts,
+                    self.palettes):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -441,6 +443,17 @@ class Project:
         # disparaît du fichier à la prochaine sauvegarde.
         self.settings.backdrop_color = d.get("backdrop_color", 0)
 
+    def text_values(self) -> dict:
+        """Valeurs à substituer aux marqueurs `$nom` d'un texte, à l'ÉDITION.
+
+        Un global n'a de valeur courante qu'en jeu : l'éditeur montre sa valeur
+        INITIALE, la seule qu'il connaisse et celle que la ROM affichera avant
+        que quoi que ce soit ne l'ait changée. Une constante, elle, ne bouge
+        jamais — l'aperçu montre exactement ce que l'encodeur cuira."""
+        out = {g.name: g.default for g in self.globals}
+        out.update({c.name: c.value for c in self.constants})
+        return out
+
     # ── I/O variables (globals + constants) ─────────────────────────
     # Assets côté éditeur sans dépendance externe -> project/variables.json,
     # pas project.json (config racine uniquement, cf. ARCHITECTURE.md).
@@ -448,11 +461,13 @@ class Project:
     def save_variables(self):
         data = {
             "globals": [
-                {"name": g.name, "type": g.type, "default": g.default, "desc": g.desc}
+                {"id": g.id, "name": g.name, "type": g.type,
+                 "default": g.default, "desc": g.desc}
                 for g in self.globals
             ],
             "constants": [
-                {"name": c.name, "type": c.type, "value": c.value, "desc": c.desc}
+                {"id": c.id, "name": c.name, "type": c.type,
+                 "value": c.value, "desc": c.desc}
                 for c in self.constants
             ],
         }
@@ -471,6 +486,7 @@ class Project:
                 type    = g.get("type", "int"),
                 default = g.get("default", 0),
                 desc    = g.get("desc", ""),
+                id      = int(g.get("id", 0)),
             )
             for g in d.get("globals", [])
         ]
@@ -480,9 +496,42 @@ class Project:
                 type  = c.get("type", "int"),
                 value = c.get("value", 0),
                 desc  = c.get("desc", ""),
+                id    = int(c.get("id", 0)),
             )
             for c in d.get("constants", [])
         ]
+
+    # ── Identité des variables ──────────────────────────────────────
+
+    def all_variables(self) -> list:
+        """Globals puis constantes — l'ordre d'affichage, pas un ordre de C."""
+        return list(self.globals) + list(self.constants)
+
+    def variable_by_id(self, vid: int):
+        """La variable d'id `vid`, ou None. C'est le chemin que suit une
+        RÉFÉRENCE stockée dans un fichier de données : elle survit au
+        renommage, contrairement à une résolution par nom."""
+        if not vid:
+            return None
+        return next((v for v in self.all_variables() if v.id == vid), None)
+
+    def variable_by_name(self, kind: str, name: str):
+        """La variable nommée `name`, ou None. Sert à résoudre ce qui est écrit
+        À LA MAIN (Lua, `$nom` d'un texte), pas les données."""
+        return next((v for v in self._variable_list(kind) if v.name == name), None)
+
+    def assign_variable_ids(self) -> int:
+        """Donne un id aux variables qui n'en ont pas — projets d'avant
+        l'identité opaque. Idempotent : une variable qui en a un n'y touche
+        pas, donc rejouer la migration ne renumérote rien."""
+        taken = {v.id for v in self.all_variables() if v.id}
+        n = 0
+        for v in self.all_variables():
+            if not v.id:
+                v.id = new_id(taken)
+                taken.add(v.id)
+                n += 1
+        return n
 
     # ── I/O textes (table de chaînes destinées au joueur) ───────────
 
@@ -733,6 +782,91 @@ class Project:
         self._notify_renamed("Musique" if is_music else "SFX",
                              old_name, new_name, refs, feminine=is_music)
 
+    def palette_usages(self, name: str) -> list[PaletteUsage]:
+        """Tout ce qui utilise la banque `name` — alimente la carte « USAGE »
+        du Palette Editor.
+
+        MÊMES référents que `rename_palette` : les deux doivent connaître
+        exactement la même liste, sinon on répare un lien qu'on n'affiche pas
+        (ou l'inverse).
+          - sprites / fonds : override de sous-palette (`palette_overrides`) ;
+          - scènes          : sélection active OBJ/BG (l'index EST la banque
+            hardware, d'où l'affichage du slot) ;
+          - prefabs         : `pal_bank` résolu via la scène d'ancrage (la 1re
+            scène), exactement comme au build (cf. codegen/palette_alloc.py).
+        Les Actors n'ont pas de ligne propre : un actor ne peut viser qu'un slot
+        DÉJÀ dans la sélection active de sa scène — la ligne de la scène couvre
+        le lien."""
+        usages: list[PaletteUsage] = []
+        if not name:
+            return usages
+
+        for assets, kind in ((self.sprites, "sprite"), (self.backgrounds, "background")):
+            for asset in assets:
+                overrides = getattr(asset, "palette_overrides", None) or {}
+                slots = sorted(i for i, n in overrides.items() if n == name)
+                if slots:
+                    usages.append(PaletteUsage(
+                        kind, asset.name,
+                        "sous-palette " + ", ".join(str(i) for i in slots)))
+
+        for scene in self.scenes:
+            slots = []
+            for pool, attr in (("OBJ", "active_obj_palettes"), ("BG", "active_bg_palettes")):
+                for i, n in enumerate(getattr(scene, attr, None) or []):
+                    if n == name:
+                        slots.append(f"{pool} {i}")
+            if slots:
+                usages.append(PaletteUsage("scene", scene.name, "banque " + ", ".join(slots)))
+
+        anchor = self.scenes[0] if len(self.scenes) else None
+        anchor_active = list(getattr(anchor, "active_obj_palettes", None) or []) if anchor else []
+        for prefab in self.prefabs:
+            pb = getattr(prefab, "pal_bank", OWN_PAL_BANK)
+            if pb != OWN_PAL_BANK and 0 <= pb < len(anchor_active) and anchor_active[pb] == name:
+                usages.append(PaletteUsage("prefab", prefab.name,
+                                           f"banque OBJ {pb} via « {anchor.name} »"))
+        return usages
+
+    def rename_palette(self, bank: PaletteBank, new_name: str):
+        """Renomme une PaletteBank du catalogue et répare TOUT ce qui la cite par
+        nom :
+          - la sélection active des scènes (`active_obj_palettes` /
+            `active_bg_palettes`) — remplacement EN PLACE : l'index dans la liste
+            est la banque hardware, il ne doit jamais bouger ;
+          - les overrides de sous-palette des sprites et des fonds
+            (`palette_overrides` = {idx dérivé -> nom de banque}).
+        Sans cette réparation, `palettes.rename()` seul laisse les scènes pointer
+        un nom mort : le slot devient vide au build (garde-fou du validateur) et
+        l'asset s'affiche avec le contenu par défaut de la banque.
+        Aucun domaine Lua : une palette ne se cite pas depuis un script."""
+        new_name = new_name.strip()
+        if not new_name or new_name == bank.name:
+            return
+        old_name = bank.name
+        with self._renaming():
+            self.palettes.rename(bank, new_name)
+            for scene in self.scenes:
+                touched = False
+                for attr in ("active_obj_palettes", "active_bg_palettes"):
+                    names = getattr(scene, attr, None) or []
+                    for i, n in enumerate(names):
+                        if n == old_name:
+                            names[i] = new_name
+                            touched = True
+                if touched:
+                    self.save_scene(scene)
+            for assets, save in ((self.sprites, self.save_sprite),
+                                 (self.backgrounds, self.save_background)):
+                for asset in assets:
+                    overrides = getattr(asset, "palette_overrides", None) or {}
+                    hits = [i for i, n in overrides.items() if n == old_name]
+                    for i in hits:
+                        overrides[i] = new_name
+                    if hits:
+                        save(asset)
+        self._notify_renamed("Palette", old_name, new_name, feminine=True)
+
     def rename_font(self, font, new_name: str):
         new_name = new_name.strip()
         if not new_name or new_name == font.name:
@@ -791,7 +925,7 @@ class Project:
 
     def _notify_renamed(self, label: str, old: str, new: str,
                         refs: Optional[dict] = None,
-                        feminine: bool = False) -> None:
+                        feminine: bool = False, n_texts: int = 0) -> None:
         """Message de statut + rafraîchissement des vues qui affichent le nom.
         Émis pour TOUT renommage, qu'il ait touché des scripts ou non — sinon
         l'utilisateur n'a aucun retour quand rien ne référençait l'élément.
@@ -806,6 +940,8 @@ class Project:
             files   = ", ".join(sorted(p.name for p in refs))
             msg += (f" — {n_refs} référence(s) mise(s) à jour dans "
                     f"{len(refs)} script(s) : {files}")
+        if n_texts:
+            msg += f" — {n_texts} texte(s) mis à jour"
         dispatcher = get_dispatcher()
         dispatcher._emit("project_tree_changed")
         if refs:
@@ -846,11 +982,32 @@ class Project:
         with self._renaming():
             refs = self.rename_lua_refs(
                 DOMAIN_CONST if kind == "const" else DOMAIN_GLOBAL, old_name, new_name)
+            n_texts = self.rename_var_in_texts(old_name, new_name)
             entry.name = new_name
             self.save_variables()
         self._notify_renamed("Constante" if kind == "const" else "Global",
-                             old_name, new_name, refs, feminine=(kind == "const"))
+                             old_name, new_name, refs, feminine=(kind == "const"),
+                             n_texts=n_texts)
         return True
+
+    def rename_var_in_texts(self, old_name: str, new_name: str) -> int:
+        """Réécrit les `$nom` des entrées de texte. Retourne le nombre d'entrées
+        touchées.
+
+        Un `$nom` est du texte ÉCRIT À LA MAIN, comme un script : il cite la
+        variable par son nom, pas par son id, donc c'est au renommage de le
+        suivre. Les références stockées dans des fichiers de données, elles,
+        citent l'id et n'ont rien à faire ici."""
+        from core.text_markup import rename_value
+        n = 0
+        for t in self.texts:
+            content = rename_value(t.content, old_name, new_name)
+            if content != t.content:
+                t.content = content
+                n += 1
+        if n:
+            self.save_texts()
+        return n
 
     # ── Raccourcis de sauvegarde par objet (delegue au ResourceManager) ──
 
@@ -890,6 +1047,11 @@ class Project:
         project_migrations.migrate_on_load(self)
         self.load_settings()
         self.load_variables()
+        # Les ids manquent aux projets d'avant l'identité opaque, et tout ce
+        # qui référence une variable par id a besoin d'eux : attribution AVANT
+        # que quoi que ce soit ne tente de résoudre.
+        if self.assign_variable_ids():
+            self.save_variables()
         self.load_texts()
         self.palettes.load()
         project_migrations.seed_or_migrate_palettes(self)
@@ -898,6 +1060,9 @@ class Project:
         self.sfx.load()
         self.music.load()
         self.fonts.load()
+        # Avant les scènes et prefabs, qui portent les références de champ :
+        # la migration réécrit les FICHIERS, donc doit passer avant leur lecture.
+        project_migrations.migrate_var_refs_to_ids(self)
         # Avant les scènes : une scène référence sa mise en page par nom.
         self.ui_layouts.load()
         project_migrations.migrate_bg_sidecar_location(self)
@@ -908,12 +1073,24 @@ class Project:
         project_migrations.reconcile_fonts(self)
         project_migrations.load_scenes_with_migration(self)
         project_migrations.migrate_scene_backgrounds(self)
-        # En dernier : la migration display.* → text.* crée des entrées de
-        # table et réécrit des scripts. Son message doit rester visible, d'où
-        # le passage par _notify (silencieux hors GUI).
-        msg = project_migrations.migrate_display_calls(self)
-        if msg:
-            self._notify_status(msg)
+        # En dernier : ces deux migrations réécrivent des SCRIPTS (et la
+        # première crée des entrées de table). Leurs messages doivent rester
+        # visibles, d'où le passage par _notify (silencieux hors GUI).
+        #
+        # display.* d'abord : elle ÉMET des appels text.draw, qui doivent sortir
+        # dans le nouvel ordre — c'est le cas, elle est à jour — et n'ont donc
+        # rien à faire dans le lot que réordonne la seconde. L'inverse
+        # (réordonner puis migrer) laisserait la question ouverte à chaque
+        # relecture de savoir lequel produit quoi.
+        # Le retrait des primitives vient EN DERNIER : il lit les arguments par
+        # position (`draw_num(tx, ty, valeur)`), donc il lui faut le nouvel
+        # ordre déjà posé. L'inverse aurait pris une coordonnée pour une valeur.
+        for fn in (project_migrations.migrate_display_calls,
+                   project_migrations.migrate_text_arg_order,
+                   project_migrations.migrate_removed_text_calls):
+            msg = fn(self)
+            if msg:
+                self._notify_status(msg)
 
     # ── Création / ouverture ──────────────────────────────────────
 

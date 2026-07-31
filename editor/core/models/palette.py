@@ -1,8 +1,23 @@
 """PaletteBank — une banque de 16 (ou 256) couleurs GBA (pool illimité, catalogue projet)."""
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from core.models.resource import Resource
+
+
+class PaletteUsage(NamedTuple):
+    """Un usage d'une PaletteBank dans le projet — produit par
+    `Project.palette_usages()`, affiché par la carte « USAGE » du Palette
+    Editor.
+
+    `kind` ∈ {"sprite", "background", "prefab", "scene"} : c'est à la fois le
+    type d'élément et la clé de navigation (quel écran ouvrir au clic).
+    `detail` explique COMMENT la palette est utilisée (slot, banque, scène
+    d'ancrage) — jamais un chemin de fichier."""
+    kind: str
+    name: str
+    detail: str
 
 
 @dataclass

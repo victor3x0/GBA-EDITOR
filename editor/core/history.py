@@ -271,6 +271,32 @@ class DeleteResourceCmd(Command):
             self._refresh()
 
 
+class AddResourceCmd(Command):
+    """
+    Ajout d'une Resource au catalogue depuis l'UI (ex. dupliquer une palette).
+    Strictement symétrique de DeleteResourceCmd — même paire de méthodes du
+    ResourceManager, dans l'autre sens :
+    execute : restore (ajoute à la liste et écrit le JSON)
+    undo    : soft_delete (retire de la liste, JSON effacé à la fermeture)
+    """
+
+    def __init__(self, manager: Any, item: Any, refresh_fn=None):
+        self._mgr     = manager
+        self._item    = item
+        self.label    = f"Ajouter {getattr(item, 'name', str(item))}"
+        self._refresh = refresh_fn
+
+    def execute(self):
+        self._mgr.restore(self._item)
+        if self._refresh:
+            self._refresh()
+
+    def undo(self):
+        self._mgr.soft_delete(self._item)
+        if self._refresh:
+            self._refresh()
+
+
 class SetPaletteColorCmd(Command):
     """
     Édition d'une couleur d'une PaletteBank à un index donné (Palette Editor).

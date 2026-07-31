@@ -17,7 +17,7 @@
       "path": [
         "INTRO"
       ],
-      "content": "PRESS START",
+      "content": "[speed=6]PRESS START",
       "note": "",
       "scene": "",
       "auto_key": true
@@ -65,6 +65,28 @@
       "note": "Bulle ancrée sur la raquette du joueur — test du rendu en sprites.",
       "scene": "",
       "auto_key": false
+    },
+    {
+      "id": 683983662283,
+      "key": "pong",
+      "path": [
+        "PONG"
+      ],
+      "content": "$score_player",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 488993276502,
+      "key": "pong_02",
+      "path": [
+        "PONG"
+      ],
+      "content": "$score_auto",
+      "note": "",
+      "scene": "",
+      "auto_key": true
     }
   ]
 }
