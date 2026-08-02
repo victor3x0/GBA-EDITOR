@@ -578,10 +578,37 @@ une police composée range ses pixels dans les tuiles de surface, une police mon
 index dans le tilemap. Effacer avec la police d'à côté vide le mauvais des deux et laisse
 l'encre en place.
 
-Côté éditeur : outil « Zone de texte » (T) au canvas de scène, qui crée la mise en page à
-la volée si la scène n'en a pas ; `UIRegionItem` déplaçable avec snap 8 px en BG et 1 px en
-OBJ ; `MoveUIRegionCmd` annulable et fusionnable ; inspecteur contextuel par le
-`selection_bus`. `preview_text` affiche une entrée réelle dans le canvas — le mesureur
+Côté éditeur : outil « Widget d'interface » (T) au canvas de scène — un bouton, trois
+types au dropdown (zone / conteneur / texte, comme collision et inpainting), même geste
+rectangle pour les trois, et création de la mise en page à la volée si la scène n'en a
+pas (`UIWidgetTool` + `UIRegionController.create_element`). `UIRegionItem` déplaçable
+avec snap 8 px en BG et 1 px en OBJ, dans la couleur de la famille Interface
+(`icons.COLOR_UI`, le type se lit à la forme d'icône posée à côté du nom) ; les
+descendants d'un conteneur suivent visuellement pendant le drag (leur modèle est relatif
+au parent, rien à réécrire) ; `MoveUIRegionCmd` annulable et fusionnable ; UN inspecteur
+adaptatif (`UIInspector`, grammaire `W`) routé par le `selection_bus`, sections par type.
+
+**L'arbre de la mise en page vit dans l'arbre de SCÈNE** (`_SceneTree`,
+`assets_finder_panel.py`), pas dans un panneau séparé : sous chaque scène, une sous-branche
+« Interface » (marquée « — N scènes » car `UILayout` est un asset partagé, à la façon d'une
+scène instanciée Godot) déploie la hiérarchie des éléments. Objectif : l'arbre montre d'un
+coup d'œil ce qu'un **script Lua peut référencer** — un actor (`get_actor`) et une zone
+(`text.draw_in` / `REGION_*`) s'affichent en clair, un conteneur ou un texte authoré (pas de
+domaine, cf. `api.py`) en grisé. Création / réordonnancement / renommage / suppression des
+éléments s'y font (menu contextuel + drag), et `AssetsFinderPanel.ui_layout_changed`
+déclenche sauvegarde + redessin du canvas. Le renommage passe par `Project.rename_ui_element`
+(unicité `REGION_*` projet-globale, `retarget_parent` des enfants, refactor des scripts pour
+les seules zones).
+
+**Z-order = ordre de `elements`** (frère tardif au-dessus), lu par trois consommateurs :
+l'arbre (`children`), le canvas (`setZValue(120 + index in_tree_order)` — parent sous ses
+enfants) et le codegen (ordre de dessin des fonds). Un réordonnancement — menu contextuel
+Monter/Descendre, ou drop entre deux frères — réécrit `elements` en DFS canonique via
+`UILayout.move_sibling` / `place_child`, sous une commande snapshot `UILayoutOrderCmd`
+(ordre + refs `parent`), pour que les trois s'accordent. Le drop porte à la fois le parent
+visé ET la position, d'où un seul chemin (l'ancien `ReparentUIRegionCmd`, parent seul, a été
+retiré).
+`preview_text` affiche une entrée réelle dans le canvas — le mesureur
 existait déjà (`FontScreenPreview` rejoue `text_layout` avec les vrais glyphes), il ne lui
 manquait qu'un rectangle contre lequel se mesurer, ce qui rend le débordement visible **à la
 conception**.

@@ -11,7 +11,7 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from ui.common.widgets import FinderSection
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from core.project import Project, SpriteAsset, AnimState, StateDirection
 from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd
@@ -20,38 +20,6 @@ from core.command_dispatcher import get_dispatcher
 # ── Helpers styles ─────────────────────────────────────────────────────────────
 
 _PANEL_BG   = f"background:{C.BG_BASE};"
-
-_TREE_STYLE = f"""
-QTreeWidget {{
-    background: {C.BG_BASE};
-    color: {C.TEXT_NORM};
-    border: none;
-    outline: none;
-    font-family: {T.MONO};
-    font-size: {T.SM}px;
-}}
-QTreeWidget::item {{
-    padding: 3px 4px;
-    border: none;
-}}
-QTreeWidget::item:selected {{
-    background: {C.BG_SEL};
-    color: {C.ACCENT};
-    border-left: 2px solid {C.ACCENT};
-}}
-QTreeWidget::item:hover:!selected {{
-    background: {C.BG_HOVER};
-}}
-QTreeWidget::branch {{
-    background: {C.BG_BASE};
-}}
-QTreeWidget::branch:has-children:closed {{
-    image: none;
-}}
-QTreeWidget::branch:has-children:open {{
-    image: none;
-}}
-"""
 
 _DIR_LABELS = {
     0: "All Directions",
@@ -65,13 +33,6 @@ _DIR_ICON_KEYS = {
     5: "dir_s",  6: "dir_sw", 7: "dir_w",  8: "dir_nw",
 }
 
-_CTX_MENU_QSS = (
-    f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
-    f"border:1px solid {C.BORDER_MID};font-family:monospace;"
-    f"font-size:{T.MD}px;padding:2px;}}"
-    f"QMenu::item{{padding:4px 20px 4px 12px;border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
-)
 
 # Sentinelle : "conserver la sélection courante si elle existe encore après
 # rebuild de l'arbre" — distincte de None qui signifie "ne rien sélectionner".
@@ -137,7 +98,7 @@ class SpriteFinderPanel(QWidget):
 
         self._sprite_tree = QTreeWidget()
         self._sprite_tree.setHeaderHidden(True)
-        self._sprite_tree.setStyleSheet(_TREE_STYLE)
+        self._sprite_tree.setStyleSheet(QSS.tree_widget)
         self._sprite_tree.setIndentation(14)
         self._sprite_tree.setIconSize(QSize(14, 14))
         self._sprite_tree.setSizePolicy(
@@ -157,7 +118,7 @@ class SpriteFinderPanel(QWidget):
 
         self._anim_tree = QTreeWidget()
         self._anim_tree.setHeaderHidden(True)
-        self._anim_tree.setStyleSheet(_TREE_STYLE)
+        self._anim_tree.setStyleSheet(QSS.tree_widget)
         self._anim_tree.setIndentation(14)
         self._anim_tree.setIconSize(QSize(14, 14))
         self._anim_tree.setSizePolicy(
@@ -413,7 +374,7 @@ class SpriteFinderPanel(QWidget):
         if not isinstance(sp, SpriteAsset):
             return
         menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
+        menu.setStyleSheet(QSS.menu)
         delete_a = menu.addAction("Supprimer le sprite")
         act = menu.exec(self._sprite_tree.viewport().mapToGlobal(pos))
         if act == delete_a:
@@ -472,7 +433,7 @@ class SpriteFinderPanel(QWidget):
         if sd is not None:
             return  # pas de menu sur une direction (gérée via le panneau DIRECTIONS)
         menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
+        menu.setStyleSheet(QSS.menu)
         delete_a = menu.addAction("Supprimer l'état")
         can_delete = bool(self._current_sprite) and len(self._current_sprite.states) > 1
         delete_a.setEnabled(can_delete)

@@ -121,7 +121,7 @@ class _UsesInspectorBase(QWidget):
     def _add_empty_row(self, text: str):
         empty = QLabel(f"  {text}")
         empty.setFont(QFont(T.MONO, T.MD))
-        empty.setStyleSheet("color:#444; padding:12px;")
+        empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:12px;")
         self._list_layout.addWidget(empty)
 
     def _add_group_row(self, icon: str, label: str, color: str, count: int | None = None):

@@ -68,6 +68,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFrame,
     QGraphicsItem,
+    QGraphicsLineItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsSimpleTextItem,
@@ -83,6 +84,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 from core.selection_bus import get_bus, CameraSelection
+from ui.scene_manager.align_snap import (
+    candidate_lines, collect_targets, snap as _align_snap, SNAP_PX as _ALIGN_SNAP_PX,
+)
 
 # ── Constantes GBA ───────────────────────────────────────────────
 GBA_W = 240
@@ -92,7 +96,7 @@ MAX_CANVAS_H = 512
 
 # Aperçu des windows matérielles — une teinte par région (WIN0, WIN1), reprise
 # du bleu de la carte WINDOWS de l'inspecteur de scène.
-_WIN_COLORS = ("#82aaff", "#c48b3c")
+_WIN_COLORS = (C.ACCENT_BLU, C.ACCENT_ORG)
 
 _PLACEHOLDER_SIZE = 16
 _PLACEHOLDER_ICO = 12
@@ -534,7 +538,7 @@ class SpriteItem(QGraphicsPixmapItem):
         if self.isSelected():
             sc = self.scene()
             is_active = getattr(sc, "active_item", None) is self
-            ring = QColor("#ffffff") if is_active else QColor("#9b8cff")
+            ring = QColor("#ffffff") if is_active else QColor(C.ACCENT)
             painter.save()
             painter.setPen(QPen(ring, 1, Qt.PenStyle.SolidLine))
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -553,11 +557,11 @@ class SpriteItem(QGraphicsPixmapItem):
 
         # Repère d'origine (point d'ancrage) — toujours visible
         painter.save()
-        painter.setPen(QPen(QColor("#e05050"), 1, Qt.PenStyle.SolidLine))
+        painter.setPen(QPen(QColor(C.ACCENT_RED), 1, Qt.PenStyle.SolidLine))
         painter.drawLine(-4, 0, 4, 0)
         painter.drawLine(0, -4, 0, 4)
-        painter.setPen(QPen(QColor("#e05050"), 1))
-        painter.setBrush(QColor("#e05050"))
+        painter.setPen(QPen(QColor(C.ACCENT_RED), 1))
+        painter.setBrush(QColor(C.ACCENT_RED))
         painter.drawEllipse(-2, -2, 4, 4)
         painter.restore()
 
@@ -826,6 +830,23 @@ class FloatingToolbar(QFrame):
         "inpaint_rect": "tool_inpaint_rect",
     }
 
+    # Sous-outils UI — (id, icon_key, label, tooltip). Un seul bouton, le type
+    # se choisit au dropdown (comme collision/inpaint) ; le geste rectangle est
+    # le même pour les trois. Icônes = formes de la famille Interface.
+    _UI_MODES = [
+        ("ui_region", "ui_region", "Zone de texte",
+         "Zone de texte runtime — le script écrit dedans"),
+        ("ui_panel", "ui_panel", "Conteneur",
+         "Conteneur / groupe — racine d'ancrage, peut dessiner un fond"),
+        ("ui_text", "ui_text", "Texte",
+         "Texte authoré — clé de la table de textes"),
+    ]
+    _UI_ICON_KEYS = {
+        "ui_region": "ui_region",
+        "ui_panel": "ui_panel",
+        "ui_text": "ui_text",
+    }
+
     def __init__(self, parent=None):
         super().__init__(parent)
         from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
@@ -836,6 +857,7 @@ class FloatingToolbar(QFrame):
         self._current_tool = "select"
         self._current_collision = "collision_8"
         self._current_inpaint = "inpaint_brush"
+        self._current_ui = "ui_region"
 
         self.setFixedWidth(46)
         self.setStyleSheet(f"""
@@ -925,20 +947,20 @@ class FloatingToolbar(QFrame):
         sep2.setFixedHeight(1)
         layout.addWidget(sep2)
 
-        # Zone de texte. Occupe le slot de l'ancien bouton « Palette couleurs »,
-        # qui appelait `_set_tool("palette")` — un tool_id qu'aucun cas de
-        # `_on_tool_changed` ne reconnaissait, donc un bouton cochable sans
-        # effet, et un raccourci P mort avec lui.
-        btn_region = QToolButton()
-        btn_region.setIcon(_ico("tool_text_region", COLOR_DEFAULT, COLOR_ACTIVE))
-        btn_region.setIconSize(QSize(20, 20))
-        btn_region.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        btn_region.setToolTip("Zone de texte  (T)")
-        btn_region.setCheckable(True)
-        btn_region.setFixedSize(34, 34)
-        btn_region.clicked.connect(lambda: self._set_tool("ui_region"))
-        layout.addWidget(btn_region, 0, Qt.AlignmentFlag.AlignHCenter)
-        self._btns["ui_region"] = btn_region
+        # Widgets d'interface. Un bouton, trois types au dropdown (zone,
+        # conteneur, texte) — l'icône du bouton reflète le type courant, T
+        # reprend le dernier utilisé, comme collision (C) et inpainting (B).
+        self._btn_ui = QToolButton()
+        self._btn_ui.setIcon(
+            _ico(self._UI_ICON_KEYS[self._current_ui], COLOR_DEFAULT, COLOR_ACTIVE))
+        self._btn_ui.setIconSize(QSize(20, 20))
+        self._btn_ui.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_ui.setToolTip("Widget d'interface  (T)")
+        self._btn_ui.setCheckable(True)
+        self._btn_ui.setFixedSize(34, 34)
+        self._btn_ui.clicked.connect(self._on_ui_click)
+        layout.addWidget(self._btn_ui, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._btns["ui_btn"] = self._btn_ui
 
         layout.addStretch()
         self.adjustSize()
@@ -954,17 +976,17 @@ class FloatingToolbar(QFrame):
 
         menu = QMenu(self)
         menu.setFont(QFont(T.MONO, T.MD))
-        menu.setStyleSheet("""
-            QMenu {
-                background: #1e1e1e;
-                color: #ccc;
-                border: 1px solid #3a3a3a;
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background: {C.BG_RAISED};
+                color: {C.TEXT_NORM};
+                border: 1px solid {C.BORDER_MID};
                 border-radius: 4px;
                 padding: 4px;
-            }
-            QMenu::item { padding: 5px 14px 5px 8px; border-radius: 3px; icon-size: 20px; }
-            QMenu::item:selected { background: #241f3a; color: #9b8cff; }
-            QMenu::item:checked  { color: #9b8cff; }
+            }}
+            QMenu::item {{ padding: 5px 14px 5px 8px; border-radius: 3px; icon-size: 20px; }}
+            QMenu::item:selected {{ background: {C.BG_SEL}; color: {C.ACCENT}; }}
+            QMenu::item:checked  {{ color: {C.ACCENT}; }}
         """)
 
         from ui.common.icons import COLOR_DEFAULT
@@ -1002,12 +1024,12 @@ class FloatingToolbar(QFrame):
 
         menu = QMenu(self)
         menu.setFont(QFont(T.MONO, T.MD))
-        menu.setStyleSheet("""
-            QMenu { background:#1e1e1e; color:#ccc; border:1px solid #3a3a3a;
-                    border-radius:4px; padding:4px; }
-            QMenu::item { padding:5px 14px 5px 8px; border-radius:3px; icon-size:20px; }
-            QMenu::item:selected { background:#241f3a; color:#9b8cff; }
-            QMenu::item:checked  { color:#9b8cff; }
+        menu.setStyleSheet(f"""
+            QMenu {{ background:{C.BG_RAISED}; color:{C.TEXT_NORM}; border:1px solid {C.BORDER_MID};
+                    border-radius:4px; padding:4px; }}
+            QMenu::item {{ padding:5px 14px 5px 8px; border-radius:3px; icon-size:20px; }}
+            QMenu::item:selected {{ background:{C.BG_SEL}; color:{C.ACCENT}; }}
+            QMenu::item:checked  {{ color:{C.ACCENT}; }}
         """)
         from ui.common.icons import COLOR_DEFAULT
         from ui.common.icons import get as _ico
@@ -1036,6 +1058,49 @@ class FloatingToolbar(QFrame):
         )
         self._set_tool(mode)
 
+    # ── Widgets d'interface dropdown ──────────────────────────────
+
+    def _on_ui_click(self):
+        self._show_ui_menu()
+
+    def _show_ui_menu(self):
+        from PyQt6.QtGui import QAction
+        from PyQt6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setStyleSheet(f"""
+            QMenu {{ background:{C.BG_RAISED}; color:{C.TEXT_NORM}; border:1px solid {C.BORDER_MID};
+                    border-radius:4px; padding:4px; }}
+            QMenu::item {{ padding:5px 14px 5px 8px; border-radius:3px; icon-size:20px; }}
+            QMenu::item:selected {{ background:{C.BG_SEL}; color:{C.ACCENT}; }}
+            QMenu::item:checked  {{ color:{C.ACCENT}; }}
+        """)
+        from ui.common.icons import COLOR_UI
+        from ui.common.icons import get as _ico
+
+        for mode_id, icon_key, label, tip in self._UI_MODES:
+            act = QAction(label, self)
+            act.setIcon(_ico(icon_key, COLOR_UI))
+            act.setToolTip(tip)
+            act.setCheckable(True)
+            act.setChecked(self._current_ui == mode_id)
+            act.triggered.connect(lambda _, m=mode_id: self._select_ui_mode(m))
+            menu.addAction(act)
+
+        btn_pos = self._btn_ui.mapToGlobal(QPoint(self._btn_ui.width() + 4, 0))
+        menu.exec(btn_pos)
+
+    def _select_ui_mode(self, mode: str):
+        self._current_ui = mode
+        from ui.common.icons import COLOR_ACTIVE, COLOR_DEFAULT
+        from ui.common.icons import get as _ico
+
+        self._btn_ui.setIcon(
+            _ico(self._UI_ICON_KEYS[mode], COLOR_DEFAULT, COLOR_ACTIVE)
+        )
+        self._set_tool(mode)
+
     # ── Outil actif ───────────────────────────────────────────────
 
     def _set_tool(self, tool: str):
@@ -1046,6 +1111,7 @@ class FloatingToolbar(QFrame):
                 tid == tool
                 or (tid == "collision" and tool.startswith("collision"))
                 or (tid == "inpaint_btn" and tool.startswith("inpaint"))
+                or (tid == "ui_btn" and tool.startswith("ui_"))
             )
             btn.setChecked(is_active)
         self.tool_changed.emit(tool)
@@ -1062,6 +1128,8 @@ class FloatingToolbar(QFrame):
             self._set_tool(self._current_collision)
         elif group == "inpaint":
             self._set_tool(self._current_inpaint)
+        elif group == "ui":
+            self._set_tool(self._current_ui)
         else:
             self._set_tool(group)
 
@@ -1213,6 +1281,10 @@ class GBAScene(QGraphicsScene):
         self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
         self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
         self._ui_region_items: list = []  # zones de texte (UILayout de la scène)
+        # Guides d'alignement : deux lignes (une verticale, une horizontale)
+        # créées à la demande, affichées le temps d'un drag/resize de zone.
+        self._align_guide_v: Optional[QGraphicsLineItem] = None
+        self._align_guide_h: Optional[QGraphicsLineItem] = None
         # Item ACTIF de la sélection : celui dont l'inspecteur montre le
         # contenu. Une multi-sélection en a toujours exactement un (le premier
         # sélectionné), redéfinissable au Ctrl+Shift+clic.
@@ -1277,6 +1349,63 @@ class GBAScene(QGraphicsScene):
         if self._active_item in members:
             return False
         return self.set_active_item(members[0] if members else None)
+
+    # ── Guides d'alignement des zones de texte ────────────────────
+    def ui_align_segments(self, exclude_item):
+        """Segments-cibles (start, size) des AUTRES zones, par axe, en
+        coordonnées scène — lus tels qu'ils sont dessinés (offset d'actor
+        compris). Retourne (xs, ys) où chaque élément est un (start, size)."""
+        xs, ys = [], []
+        for it in self._ui_region_items:
+            if it is exclude_item:
+                continue
+            try:
+                r, p = it.rect(), it.pos()
+            except RuntimeError:
+                continue
+            xs.append((p.x() + r.left(), r.width()))
+            ys.append((p.y() + r.top(),  r.height()))
+        return xs, ys
+
+    def _guide_pen(self) -> "QPen":
+        pen = QPen(QColor("#ff45d0"))   # magenta, même rôle que les guides Figma
+        pen.setCosmetic(True)           # 1 px écran quel que soit le zoom
+        pen.setWidth(0)
+        return pen
+
+    def show_align_guides(self, gx, gy):
+        """Trace une ligne verticale à x=`gx` et/ou horizontale à y=`gy` (None =
+        masquée). Les lignes courent sur toute l'étendue de la scène : un guide
+        qui s'arrêterait au bord de la zone n'aiderait pas à viser une cible
+        lointaine."""
+        w, h = self._canvas_w, self._canvas_h
+        if gx is not None:
+            if self._align_guide_v is None:
+                self._align_guide_v = QGraphicsLineItem()
+                self._align_guide_v.setPen(self._guide_pen())
+                self._align_guide_v.setZValue(130)   # au-dessus des zones (120)
+                self._align_guide_v.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+                self.addItem(self._align_guide_v)
+            self._align_guide_v.setLine(gx, 0, gx, h)
+            self._align_guide_v.setVisible(True)
+        elif self._align_guide_v:
+            self._align_guide_v.setVisible(False)
+        if gy is not None:
+            if self._align_guide_h is None:
+                self._align_guide_h = QGraphicsLineItem()
+                self._align_guide_h.setPen(self._guide_pen())
+                self._align_guide_h.setZValue(130)
+                self._align_guide_h.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+                self.addItem(self._align_guide_h)
+            self._align_guide_h.setLine(0, gy, w, gy)
+            self._align_guide_h.setVisible(True)
+        elif self._align_guide_h:
+            self._align_guide_h.setVisible(False)
+
+    def clear_align_guides(self):
+        for g in (self._align_guide_v, self._align_guide_h):
+            if g:
+                g.setVisible(False)
 
     def update_actor_boxes(self, actors: list, var_defaults: dict | None = None):
         """Met à jour les boîtes de collision acteurs affichées."""
@@ -1483,8 +1612,18 @@ class GBAScene(QGraphicsScene):
             self._ui_region_items = []
             if layout_asset is None:
                 return
-            for r in layout_asset.regions:
+            # TOUS les éléments (zones, conteneurs, textes), pas seulement les
+            # zones : chacun a une géométrie à dessiner et à manipuler.
+            #
+            # Le z-order suit l'ORDRE D'ARBRE (DFS) : un parent sous ses enfants
+            # (le texte au-dessus du fond de son conteneur), un frère tardif
+            # au-dessus du précédent. On le pose explicitement — sans ça tous les
+            # items partageraient un z constant et l'empilement dépendrait du seul
+            # ordre d'insertion, invisible à réordonner.
+            z_of = {r.name: i for i, (_d, r) in enumerate(layout_asset.in_tree_order())}
+            for r in layout_asset.elements:
                 item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
+                item.setZValue(120 + z_of.get(r.name, 0))
                 self.addItem(item)
                 self._ui_region_items.append(item)
                 if any(r is k for k in kept):
@@ -2145,22 +2284,55 @@ def _layer_png_path(project: Project, layer):
 # ──────────────────────────────────────────────────────────────────
 #  Contrôleur de peinture par palette BG (SE_PALBANK par tuile)
 # ──────────────────────────────────────────────────────────────────
+# Poignées de redimensionnement — chaque nom porte les bords qu'il déplace
+# (left, top, right, bottom). Les coins bougent deux bords, les milieux un seul.
+_HANDLE_EDGES = {
+    "nw": (True,  True,  False, False),
+    "n":  (False, True,  False, False),
+    "ne": (False, True,  True,  False),
+    "e":  (False, False, True,  False),
+    "se": (False, False, True,  True),
+    "s":  (False, False, False, True),
+    "sw": (True,  False, False, True),
+    "w":  (True,  False, False, False),
+}
+_HANDLE_CURSORS = {
+    "nw": Qt.CursorShape.SizeFDiagCursor, "se": Qt.CursorShape.SizeFDiagCursor,
+    "ne": Qt.CursorShape.SizeBDiagCursor, "sw": Qt.CursorShape.SizeBDiagCursor,
+    "n":  Qt.CursorShape.SizeVerCursor,   "s":  Qt.CursorShape.SizeVerCursor,
+    "e":  Qt.CursorShape.SizeHorCursor,   "w":  Qt.CursorShape.SizeHorCursor,
+}
+# Demi-côté du carré de poignée dessiné, et tolérance de préhension, en pixels
+# ÉCRAN : convertis en unités scène via le zoom courant pour rester constants à
+# l'affichage quel que soit le niveau de zoom.
+_HANDLE_HALF_PX = 3.5
+_HANDLE_GRAB_PX = 6.0
+
+
 class UIRegionItem(QGraphicsRectItem):
-    """Une zone de texte dessinée dans le canvas — sélectionnable, déplaçable.
+    """Une zone de texte dessinée dans le canvas — sélectionnable, déplaçable,
+    redimensionnable par ses poignées.
 
     Le rectangle est en coordonnées LOCALES (0,0,w,h) et la position porte x/y :
     sans ça, déplacer l'item ne changerait pas `pos()` et il n'y aurait rien à
     relire au relâchement.
 
-    Le déplacement est validé au RELÂCHEMENT, pas à chaque pixel : pousser une
-    commande d'historique par événement de souris remplirait la pile de cent
-    entrées pour un seul geste. Même raison que pour le drag d'un actor.
+    Déplacement ET redimensionnement sont validés au RELÂCHEMENT, pas à chaque
+    pixel : pousser une commande d'historique par événement de souris remplirait
+    la pile de cent entrées pour un seul geste. Même raison que pour le drag d'un
+    actor. Le geste vit en flottant dans le canvas ; le snap à la tuile (cible
+    BG) et l'arrondi de taille ne tombent qu'à la fin, exactement comme le move.
 
     Une zone ancrée sur un actor est dessinée à l'offset près de son acteur si
     on le trouve — sinon à l'origine de l'écran, avec un liseré discontinu qui
     dit que la position affichée n'est pas celle du jeu."""
 
-    _COLOR = QColor(150, 140, 255)
+    # UNE couleur pour tous les éléments d'UI : celle de la famille Interface
+    # (icons.COLOR_UI) — le type se lit à la FORME de l'icône posée à côté du
+    # nom, comme dans l'arbre et les finders. Trois teintes ad hoc (l'état
+    # d'avant) contredisaient la règle du thème et divergeaient de l'arbre.
+    _COLOR = QColor("#4f8ff7")
+    _KIND_ICONS = {"region": "ui_region", "panel": "ui_panel", "text": "ui_text"}
 
     def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
         super().__init__(0, 0, max(8, region.w), max(8, region.h), parent)
@@ -2168,6 +2340,23 @@ class UIRegionItem(QGraphicsRectItem):
         self._project, self._scene = project, scene
         self._save = save_fn
         self._press_pos = None
+        from ui.common import icons as _icons
+        self._COLOR = QColor(_icons.COLOR_UI)
+        # Poignée en cours de traction (None = déplacement/simple sélection) et
+        # géométrie de départ du geste, figée au press pour que chaque mouvement
+        # se calcule depuis l'origine et non depuis l'image précédente.
+        self._resize_handle: "str | None" = None
+        self._resize_start: "tuple | None" = None
+        # Vrai le temps d'un déplacement à la souris — le seul cas où l'on veut
+        # aimanter la position et tracer des guides. Sans ce drapeau, les setPos
+        # internes (rebuild, snap au relâchement, commit d'un resize) passeraient
+        # aussi dans le chemin d'aimantation d'`itemChange`.
+        self._moving = False
+        # Dernière position vue pendant le geste — sert à calculer le delta à
+        # rejouer sur les DESCENDANTS (leur x/y modèle est relatif au parent :
+        # rien à réécrire chez eux, mais l'écran doit les faire suivre).
+        self._last_pos = None
+        self.setAcceptHoverEvents(True)
 
         ox, oy, anchored = self._origin()
         self.setPos(ox, oy)
@@ -2178,7 +2367,33 @@ class UIRegionItem(QGraphicsRectItem):
         if not anchored:
             pen.setStyle(Qt.PenStyle.DotLine)
         self.setPen(pen)
-        self.setBrush(QBrush(QColor(150, 140, 255, 38)))
+        fill = QColor(self._COLOR)
+        fill.setAlpha(38)
+        self.setBrush(QBrush(fill))
+        # Aperçu du fond d'un conteneur (couleur de palette résolue, ou hachures
+        # pour un fond d'asset pas encore rendu) — sinon le pinceau translucide.
+        fb = self._fill_brush()
+        if fb is not None:
+            self.setBrush(fb)
+        # Nine-slice : si l'image source charge, elle est peinte dans `paint`
+        # (coins fixes / bords tuilés) et REMPLACE le pinceau ; sinon on garde les
+        # hachures de `_fill_brush` comme repli.
+        self._ns_pixmap = None
+        self._ns = None
+        self._bg_pixmap = None
+        from core.models.ui_region import FILL_NINE, FILL_BG
+        _fk = getattr(region, "fill_kind", "")
+        if getattr(region, "kind", "") == "panel":
+            if _fk == FILL_NINE:
+                pix, ns = self._load_nine_slice()
+                if pix is not None and not pix.isNull():
+                    self._ns_pixmap, self._ns = pix, ns
+                    self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            elif _fk == FILL_BG:
+                pix = self._load_bg_fill()
+                if pix is not None and not pix.isNull():
+                    self._bg_pixmap = pix
+                    self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.setZValue(120)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -2186,37 +2401,145 @@ class UIRegionItem(QGraphicsRectItem):
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
         rm = int(getattr(scene, "render_mode", 0) or 0)
-        tx, ty, tw, th = region.tile_rect()
-        target = "sprite (OBJ)" if region.resolved_target(rm) == "obj" else "fond (BG)"
-        self.setToolTip(f"Zone « {region.name} » — {self._layout.name}\n"
-                        f"{tw}×{th} tuiles · cible {target}\n"
-                        f"Glisser pour déplacer")
+        target = "sprite (OBJ)" if self._layout.resolved_target(region, rm) == "obj" else "fond (BG)"
+        # L'empreinte en tuiles n'a de sens que pour une zone de texte ; un
+        # conteneur ou un texte authoré n'expose pas `tile_rect`.
+        tiles = ""
+        if hasattr(region, "tile_rect"):
+            _, _, tw, th = region.tile_rect()
+            tiles = f"{tw}×{th} tuiles · "
+        self.setToolTip(f"« {region.name} » — {self._layout.name}\n"
+                        f"{tiles}cible {target}\n"
+                        f"Glisser pour déplacer · poignées pour redimensionner")
 
-        # Étiquette : le nom est ce que cite le script, il doit être lisible
-        # sans passer par l'inspecteur.
+        # Étiquette : icône de TYPE (la forme dit zone/conteneur/texte, la
+        # couleur reste celle de la famille) + le nom, qui est ce que cite le
+        # script — les deux lisibles sans passer par l'inspecteur.
+        icon = _icons.get(self._KIND_ICONS.get(getattr(region, "kind", "region"),
+                                               "ui_region"), _icons.COLOR_UI)
+        self._kind_icon = QGraphicsPixmapItem(icon.pixmap(32, 32), self)
+        self._kind_icon.setScale(6.0 / 32.0)      # ≈ 6 px GBA, net à tout zoom
+        self._kind_icon.setPos(1, 1)
         self._label = QGraphicsSimpleTextItem(region.name, self)
         self._label.setBrush(QBrush(self._COLOR))
         fnt = self._label.font()
         fnt.setPointSizeF(5.0)
         self._label.setFont(fnt)
-        self._label.setPos(1, 1)
+        self._label.setPos(8.5, 1)
         self._label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, False)
 
-    def _origin(self) -> tuple[int, int, bool]:
-        """Position à l'écran + « l'ancre a-t-elle été résolue ? »."""
-        r = self._region
-        if r.anchor != "actor":
-            return r.x, r.y, True
+    def _actor_pos(self, name: str):
+        """(x, y) de l'acteur nommé, ou None. Passé aux helpers d'ancrage du
+        modèle qui, eux, ne connaissent pas la scène."""
         for a in getattr(self._scene, "actors", []):
-            if a.name == r.anchor_actor:
-                return a.x + r.x, a.y + r.y, True
-        return r.x, r.y, False
+            if a.name == name:
+                return (a.x, a.y)
+        return None
+
+    def _origin(self) -> tuple[int, int, bool]:
+        """Position ÉCRAN de l'origine + « l'ancre du root est-elle résolue ? ».
+        Délègue au modèle : la position d'un élément se lit en remontant à son
+        root (offsets cumulés + socle du frame), plus seulement de son ancrage
+        propre — un enfant est pixel-relatif à son parent."""
+        return self._layout.absolute_origin(self._region, self._actor_pos)
+
+    def _fill_brush(self):
+        """Pinceau d'aperçu du fond d'un conteneur, ou None (autre type / sans
+        fond). Une couleur = une entrée de PALETTE, résolue en RGB pour l'écran ;
+        un fond d'asset (nine-slice / background) est hachuré en attendant son
+        vrai rendu."""
+        el = self._region
+        if getattr(el, "kind", "") != "panel":
+            return None
+        from core.models.ui_region import FILL_NONE, FILL_COLOR
+        fk = getattr(el, "fill_kind", FILL_NONE)
+        if fk == FILL_NONE:
+            return None
+        if fk == FILL_COLOR and self._project is not None:
+            bank = self._project.get_palette(getattr(el, "fill_palette", ""))
+            idx = int(getattr(el, "fill_index", 0) or 0)
+            if bank and 0 <= idx < len(bank.colors):
+                from core.color_utils import bgr555_to_rgb888
+                r, g, b = bgr555_to_rgb888(bank.colors[idx])
+                c = QColor(r, g, b)
+                c.setAlpha(180)
+                return QBrush(c)
+        # Fond d'asset (ou couleur non résolue) : hachures dans la couleur du type.
+        return QBrush(QColor(self._COLOR), Qt.BrushStyle.BDiagPattern)
+
+    def _load_nine_slice(self):
+        """(QPixmap, NineSlice) du cadre référencé, ou (None, ns/None). Le PNG
+        vient du background source déjà importé (interim)."""
+        get_ns = getattr(self._project, "get_nine_slice", None)
+        get_bg = getattr(self._project, "get_background", None)
+        if not get_ns or not get_bg:
+            return None, None
+        ns = get_ns(getattr(self._region, "fill_asset", ""))
+        if ns is None:
+            return None, None
+        bg = get_bg(getattr(ns, "source", ""))
+        if bg is None or not getattr(bg, "asset", ""):
+            return None, ns
+        path = self._project.background_images_dir / bg.asset
+        return QPixmap(str(path)), ns
+
+    def _load_bg_fill(self):
+        """QPixmap du background référencé par un fond `background`, ou None."""
+        get_bg = getattr(self._project, "get_background", None)
+        if not get_bg:
+            return None
+        bg = get_bg(getattr(self._region, "fill_asset", ""))
+        if bg is None or not getattr(bg, "asset", ""):
+            return None
+        return QPixmap(str(self._project.background_images_dir / bg.asset))
+
+    def _paint_background(self, painter):
+        """Peint le background à taille NATURELLE, calé en haut-gauche, ROGNÉ en
+        bas/à droite si la zone est plus petite que l'image (pas d'étirement —
+        c'est une fenêtre sur le fond)."""
+        if self._bg_pixmap is None:
+            return
+        pix = self._bg_pixmap
+        r = self.rect()
+        w = min(int(r.width()), pix.width())
+        h = min(int(r.height()), pix.height())
+        if w <= 0 or h <= 0:
+            return
+        painter.save()
+        painter.drawPixmap(QRectF(r.left(), r.top(), w, h), pix, QRectF(0, 0, w, h))
+        painter.restore()
+
+    def _paint_nine_slice(self, painter):
+        """Peint le cadre : chaque case via `nine_slice_rects` — coins 1:1,
+        bords/centre TUILÉS pour remplir sans déformer."""
+        if self._ns_pixmap is None or self._ns is None:
+            return
+        from core.nine_slice import nine_slice_rects
+        pix, ns = self._ns_pixmap, self._ns
+        r = self.rect()
+        cells = nine_slice_rects(pix.width(), pix.height(),
+                                 ns.left, ns.right, ns.top, ns.bottom,
+                                 int(r.width()), int(r.height()))
+        painter.save()
+        for c in cells:
+            sx, sy, sw, sh = c["src"]
+            dx, dy, dw, dh = c["dst"]
+            dst = QRectF(r.left() + dx, r.top() + dy, dw, dh)
+            if c["tile"]:
+                painter.drawTiledPixmap(dst, pix.copy(sx, sy, sw, sh))
+            else:
+                painter.drawPixmap(dst, pix, QRectF(sx, sy, sw, sh))
+        painter.restore()
 
     # ── Peinture ─────────────────────────────────────────────────
     def paint(self, painter, option, widget=None):
         """Rectangle + liseré de sélection maison : Qt dessine sinon son cadre
         pointillé bleu, qui ne distingue pas MEMBRE d'une multi-sélection et
         item ACTIF (blanc), contrairement aux acteurs."""
+        # Les fonds image (nine-slice, background) se peignent SOUS le liseré
+        # (pinceau = NoBrush alors).
+        self._paint_nine_slice(painter)
+        self._paint_background(painter)
         clean = QStyleOptionGraphicsItem(option)
         clean.state &= ~QStyle.StateFlag.State_Selected
         super().paint(painter, clean, widget)
@@ -2230,41 +2553,267 @@ class UIRegionItem(QGraphicsRectItem):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.rect())
+        # Poignées : carrés pleins aux 4 coins + 4 milieux de bord. Taille en
+        # pixels écran (convertie via le zoom) pour rester préhensibles à tout
+        # niveau de zoom, sans quoi elles disparaîtraient en dézoomant.
+        half = _HANDLE_HALF_PX / self._view_scale()
+        painter.setPen(QPen(QColor("#ffffff"), 0))
+        painter.setBrush(QBrush(self._COLOR))
+        for hx, hy in self._handle_points().values():
+            painter.drawRect(QRectF(hx - half, hy - half, 2 * half, 2 * half))
         painter.restore()
 
+    # ── Poignées ─────────────────────────────────────────────────
+    def _view_scale(self) -> float:
+        """Facteur de zoom de la vue (m11), 1.0 s'il n'y a pas encore de vue."""
+        sc = self.scene()
+        views = sc.views() if sc else []
+        return views[0].transform().m11() if views else 1.0
+
+    def _handle_points(self) -> dict:
+        """Centre de chaque poignée en coordonnées LOCALES.
+
+        Rentrées d'un demi-côté vers l'INTÉRIEUR (bord extérieur du carré flush
+        contre le bord de la zone) : centrées sur le bord, elles déborderaient du
+        `boundingRect` et Qt laisserait des rémanences au déplacement. Ici tout
+        est peint dans les limites — aucun override d'indexation à gérer."""
+        r = self.rect()
+        d = _HANDLE_HALF_PX / self._view_scale()
+        l, t, rt, b = r.left() + d, r.top() + d, r.right() - d, r.bottom() - d
+        mx, my = (r.left() + r.right()) / 2, (r.top() + r.bottom()) / 2
+        return {
+            "nw": (l, t), "n": (mx, t), "ne": (rt, t), "e": (rt, my),
+            "se": (rt, b), "s": (mx, b), "sw": (l, b), "w": (l, my),
+        }
+
+    def _handle_at(self, local_pos) -> "str | None":
+        """Nom de la poignée sous `local_pos`, ou None. La tolérance est en
+        pixels écran : une poignée reste attrapable même très dézoomée."""
+        tol = _HANDLE_GRAB_PX / self._view_scale()
+        for name, (hx, hy) in self._handle_points().items():
+            if abs(local_pos.x() - hx) <= tol and abs(local_pos.y() - hy) <= tol:
+                return name
+        return None
+
+    # ── Aimantation d'alignement ─────────────────────────────────
+    def _axis_snap(self, moving_vals, is_x: bool):
+        """(delta, ligne-guide) pour aimanter `moving_vals` (positions scène sur
+        un axe) aux bords/centres des autres zones et au cadre écran. Le seuil
+        est en pixels écran, converti via le zoom courant."""
+        sc = self.scene()
+        if sc is None or not hasattr(sc, "ui_align_segments"):
+            return 0.0, None
+        xs, ys = sc.ui_align_segments(self)
+        targets = collect_targets(xs if is_x else ys, GBA_W if is_x else GBA_H)
+        thr = _ALIGN_SNAP_PX / self._view_scale()
+        return _align_snap(moving_vals, targets, thr)
+
+    def _descendant_items(self) -> list:
+        """Items du canvas portant les DESCENDANTS de cet élément (tout le
+        sous-arbre). Sert au suivi visuel pendant un drag de conteneur."""
+        sc = self.scene()
+        if sc is None or not hasattr(sc, "_ui_region_items"):
+            return []
+        names = {d.name for d in self._layout.descendants(self._region.name)}
+        return [it for it in sc._ui_region_items
+                if it is not self and it._region.name in names]
+
+    def _move_descendants(self, dx: float, dy: float):
+        if dx or dy:
+            for it in self._descendant_items():
+                it.moveBy(dx, dy)
+
+    def itemChange(self, change, value):
+        # Aimante la position PROPOSÉE pendant un déplacement souris (et trace
+        # les guides). Uniquement en sélection simple : en groupe, Qt translate
+        # tous les items du même delta, dévier celui-ci désynchroniserait le lot.
+        sc = self.scene()
+        single = (sc is not None and hasattr(sc, "selectable_items")
+                  and len(sc.selectable_items()) == 1)
+        if (change == QGraphicsItem.GraphicsItemChange.ItemPositionChange
+                and self._moving and single):
+            nx, ny = value.x(), value.y()
+            w, h = self.rect().width(), self.rect().height()
+            dx, gx = self._axis_snap(candidate_lines(nx, w), True)
+            dy, gy = self._axis_snap(candidate_lines(ny, h), False)
+            sc.show_align_guides(gx, gy)
+            return QPointF(nx + dx, ny + dy)
+        # Position APPLIQUÉE pendant le geste : les enfants suivent du même
+        # delta. Leur modèle est relatif au parent, il n'y a donc rien à
+        # committer chez eux — c'est un suivi d'écran, pas une écriture.
+        # Sélection simple seulement : en groupe, Qt déplace déjà chaque item.
+        if (change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+                and self._moving and single):
+            if self._last_pos is not None:
+                self._move_descendants(value.x() - self._last_pos.x(),
+                                       value.y() - self._last_pos.y())
+            self._last_pos = QPointF(value)
+        return super().itemChange(change, value)
+
     # ── Interaction ──────────────────────────────────────────────
+    def hoverMoveEvent(self, e):
+        name = self._handle_at(e.pos()) if self.isSelected() else None
+        if name:
+            self.setCursor(_HANDLE_CURSORS[name])
+        elif self.isSelected():
+            self.setCursor(Qt.CursorShape.SizeAllCursor)   # rappel : déplaçable
+        else:
+            self.unsetCursor()
+        super().hoverMoveEvent(e)
+
+    def hoverLeaveEvent(self, e):
+        self.unsetCursor()
+        super().hoverLeaveEvent(e)
+
     def mousePressEvent(self, e):
         self._press_pos = self.pos()
+        # Figé AVANT le select : le bus resélectionne synchroniquement, donc
+        # `isSelected()` serait déjà vrai juste après. Une poignée n'est dessinée
+        # que sur une zone sélectionnée — le premier clic doit donc sélectionner,
+        # et seul le geste SUIVANT sur une poignée redimensionne.
+        was_selected = self.isSelected()
         from core.selection_bus import get_bus, UIRegionSelection
         get_bus().select(UIRegionSelection(self._layout, self._region))
+        if (e.button() == Qt.MouseButton.LeftButton and was_selected):
+            handle = self._handle_at(e.pos())
+            if handle:
+                self._resize_handle = handle
+                self._resize_start = (QPointF(self.pos()), QRectF(self.rect()))
+                e.accept()   # on ne passe PAS à Qt : sinon l'item se déplacerait
+                return
+        # Pas une poignée → déplacement : autoriser l'aimantation d'`itemChange`
+        # et armer le suivi des descendants (delta depuis la position de départ).
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._moving = True
+            self._last_pos = QPointF(self.pos())
         super().mousePressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        if self._resize_handle:
+            self._drag_resize(e.scenePos())
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
     def mouseReleaseEvent(self, e):
+        if self._resize_handle:
+            self._resize_handle = None
+            self._resize_start = None
+            self._press_pos = None
+            self._commit_resize()
+            sc = self.scene()
+            if sc is not None and hasattr(sc, "clear_align_guides"):
+                sc.clear_align_guides()
+            e.accept()
+            return
         super().mouseReleaseEvent(e)
+        # Fin du déplacement : couper l'aimantation AVANT le snap tuile ci-dessous
+        # (un setPos passerait sinon de nouveau par `itemChange`) et retirer les
+        # guides.
+        self._moving = False
+        sc = self.scene()
+        if sc is not None and hasattr(sc, "clear_align_guides"):
+            sc.clear_align_guides()
         if self._press_pos is None:
             return
         start, self._press_pos = self._press_pos, None
         # Snap tuile pour une cible BG — le moteur y écrit des entrées de
         # tilemap, l'origine ne peut pas tomber entre deux tuiles.
         rm = int(getattr(self._scene, "render_mode", 0) or 0)
-        step = 8 if self._region.resolved_target(rm) == "bg" else 1
-        nx = int(self.pos().x()) // step * step
-        ny = int(self.pos().y()) // step * step
+        step = 8 if self._layout.resolved_target(self._region, rm) == "bg" else 1
+        pre = self.pos()
+        nx = int(pre.x()) // step * step
+        ny = int(pre.y()) // step * step
         self.setPos(nx, ny)
+        # Le snap final doit aussi emporter les descendants — `_moving` est déjà
+        # retombé, le suivi d'`itemChange` ne le fait plus. Sélection simple
+        # seulement, comme le suivi lui-même (en groupe, chaque item gère le sien).
+        if (sc is not None and hasattr(sc, "selectable_items")
+                and len(sc.selectable_items()) == 1):
+            self._move_descendants(nx - pre.x(), ny - pre.y())
+        self._last_pos = None
         if (nx, ny) == (int(start.x()), int(start.y())):
             return
         # Un ancrage actor stocke un OFFSET : c'est lui qu'il faut réécrire,
         # pas la position absolue lue dans le canvas.
-        ax = ay = 0
-        if self._region.anchor == "actor":
-            for a in getattr(self._scene, "actors", []):
-                if a.name == self._region.anchor_actor:
-                    ax, ay = a.x, a.y
-                    break
+        ax, ay = self._parent_origin()
         from core.history import get_history, MoveUIRegionCmd
         get_history().push(MoveUIRegionCmd(
             self._region, self._region.x, self._region.y,
             nx - ax, ny - ay, persist_fn=self._save))
+
+    # ── Redimensionnement ────────────────────────────────────────
+    def _parent_origin(self) -> tuple[int, int]:
+        """Origine ÉCRAN du PARENT (ou socle du frame si root). Sert à
+        retrancher pour restocker x/y RELATIFS au parent : un enfant est
+        pixel-relatif à son conteneur, un root à son socle d'ancrage."""
+        return self._layout.parent_origin(self._region, self._actor_pos)
+
+    def _drag_resize(self, scene_pos):
+        """Déplace le(s) bord(s) de la poignée tirée vers la souris, en vivant
+        en flottant : le snap n'intervient qu'au relâchement (`_commit_resize`),
+        comme pour le déplacement."""
+        start_pos, start_rect = self._resize_start
+        l = start_pos.x() + start_rect.left()
+        t = start_pos.y() + start_rect.top()
+        rt = start_pos.x() + start_rect.right()
+        b = start_pos.y() + start_rect.bottom()
+        ml, mt, mr, mb = _HANDLE_EDGES[self._resize_handle]
+        if ml: l = scene_pos.x()
+        if mt: t = scene_pos.y()
+        if mr: rt = scene_pos.x()
+        if mb: b = scene_pos.y()
+        # Aimantation d'alignement sur le(s) SEUL(S) bord(s) que la poignée
+        # déplace — un coin bouge un bord par axe, un milieu un seul.
+        gx = gy = None
+        if ml:
+            dx, gx = self._axis_snap([l], True);  l += dx
+        elif mr:
+            dx, gx = self._axis_snap([rt], True); rt += dx
+        if mt:
+            dy, gy = self._axis_snap([t], False); t += dy
+        elif mb:
+            dy, gy = self._axis_snap([b], False); b += dy
+        sc = self.scene()
+        if sc is not None and hasattr(sc, "show_align_guides"):
+            sc.show_align_guides(gx, gy)
+        # Plancher de 8 px : le bord tiré s'arrête, le bord opposé ne bouge pas.
+        if rt - l < 8:
+            if ml: l = rt - 8
+            else:  rt = l + 8
+        if b - t < 8:
+            if mt: t = b - 8
+            else:  b = t + 8
+        self.setPos(l, t)
+        self.setRect(0, 0, rt - l, b - t)
+
+    def _commit_resize(self):
+        """Fige le geste : snap tuile (cible BG), bornes, puis une seule
+        commande d'historique. L'origine snappe vers l'extérieur (bas/droite
+        arrondis vers le HAUT) — rogner reviendrait à couper du texte pour
+        faire joli, comme `UIRegion.snap_to_tile`."""
+        rm = int(getattr(self._scene, "render_mode", 0) or 0)
+        step = 8 if self._layout.resolved_target(self._region, rm) == "bg" else 1
+        l = int(self.pos().x())
+        t = int(self.pos().y())
+        rt = l + int(self.rect().width())
+        b = t + int(self.rect().height())
+        l = (l // step) * step
+        t = (t // step) * step
+        rt = ((rt + step - 1) // step) * step
+        b = ((b + step - 1) // step) * step
+        w = max(8, min(512, rt - l))
+        h = max(8, min(512, b - t))
+        self.setPos(l, t)
+        self.setRect(0, 0, w, h)
+        ax, ay = self._parent_origin()
+        old = (self._region.x, self._region.y, self._region.w, self._region.h)
+        new = (l - ax, t - ay, w, h)
+        if old == new:
+            return
+        from core.history import get_history, ResizeUIRegionCmd
+        get_history().push(ResizeUIRegionCmd(
+            self._region, old, new, persist_fn=self._save))
 
 
 class UIRegionController(QObject):
@@ -2315,23 +2864,48 @@ class UIRegionController(QObject):
         self._scene.ui_layout = name
         return lay
 
-    def create_region(self, x: int, y: int, w: int, h: int):
-        from core.models.ui_region import UIRegion, unique_region_name
+    def create_element(self, kind: str, x: int, y: int, w: int, h: int):
+        """Crée un élément du `kind` demandé (zone, conteneur, texte) au
+        rectangle dessiné — même flux pour les trois types, seule la fabrique
+        change. L'unicité du nom d'une ZONE se cherche sur tout le projet
+        (espace des constantes REGION_*) ; celle des autres sur la mise en
+        page, élargie aux zones du projet."""
+        from core.models.ui_region import (
+            UIRegion, UIPanel, UIText, KIND_PANEL, KIND_TEXT,
+            unique_region_name, unique_element_name,
+        )
         from core.history import get_history, AddListItemCmd
         if not self.ready:
             return None
         lay = self._ensure_layout()
-        r = UIRegion(name=unique_region_name(self._project.region_names(), "zone"),
-                     x=int(x), y=int(y), w=int(w), h=int(h))
-        # Par l'historique : dessiner une zone est une modification comme une
+        x, y, w, h = int(x), int(y), int(w), int(h)
+        taken = set(lay.element_names()) | set(self._project.region_names())
+        if kind == KIND_PANEL:
+            el = UIPanel(name=unique_element_name(taken, "conteneur"),
+                         x=x, y=y, w=w, h=h)
+            label = "conteneur"
+        elif kind == KIND_TEXT:
+            el = UIText(name=unique_element_name(taken, "texte"),
+                        x=x, y=y, w=w, h=h)
+            label = "texte"
+        else:
+            el = UIRegion(name=unique_region_name(self._project.region_names(), "zone"),
+                          x=x, y=y, w=w, h=h)
+            label = "zone"
+        # Par l'historique : dessiner un élément est une modification comme une
         # autre, elle doit s'annuler. `_ensure_layout` reste hors historique —
         # une mise en page vide et non référencée ne gêne personne, alors qu'un
-        # undo qui la retire casserait les zones créées ensuite.
+        # undo qui la retire casserait les éléments créés ensuite.
         get_history().push(AddListItemCmd(
-            lay.regions, r, persist_fn=self.regions_changed.emit,
-            label=f"Ajouter zone {r.name}"))
-        self.region_created.emit(lay, r)
-        return r
+            lay.elements, el, persist_fn=self.regions_changed.emit,
+            label=f"Ajouter {label} {el.name}"))
+        self.region_created.emit(lay, el)
+        return el
+
+    def create_region(self, x: int, y: int, w: int, h: int):
+        """Alias historique — une zone de texte runtime."""
+        from core.models.ui_region import KIND_REGION
+        return self.create_element(KIND_REGION, x, y, w, h)
 
 
 class SceneInpaintingController:
@@ -2727,7 +3301,7 @@ class SceneEditor(QWidget):
         mk("E", lambda: self._shortcut_tool("erase"))
         mk("C", lambda: self._shortcut_tool("collision"))
         mk("B", lambda: self._shortcut_tool("inpaint"))
-        mk("T", lambda: self._shortcut_tool("ui_region"))
+        mk("T", lambda: self._shortcut_tool("ui"))
         # Vue
         mk("F", self._fit)
         # Sélection / édition
@@ -2918,10 +3492,11 @@ class SceneEditor(QWidget):
                 self._gba_view.set_tool(AddActorTool(self._gba_view))
             case "erase":
                 self._gba_view.set_tool(EraseTool(self._gba_view))
-            case "ui_region":
-                from ui.scene_manager.canvas_tools import UIRegionTool
+            case t if t.startswith("ui_"):
+                from ui.scene_manager.canvas_tools import UIWidgetTool
 
-                self._gba_view.set_tool(UIRegionTool(self._gba_view))
+                # "ui_region" | "ui_panel" | "ui_text" → kind du modèle
+                self._gba_view.set_tool(UIWidgetTool(self._gba_view, t[3:]))
             case _:
                 self._gba_view.set_tool(SelectTool(self._gba_view))
         # Bandeau de palette visible seulement pour les outils de peinture BG.
@@ -2962,10 +3537,17 @@ class SceneEditor(QWidget):
         get_bus().select(UIRegionSelection(layout, region))
         users = self._project.ui_layout_users(layout.name)
         shared = f" — partagée par {len(users)} scènes" if len(users) > 1 else ""
-        tw, th = region.tile_rect()[2:]
+        kind_label = {"panel": "Conteneur", "text": "Texte"}.get(
+            getattr(region, "kind", "region"), "Zone")
+        # L'empreinte en tuiles n'a de sens que pour une zone (seule à exposer
+        # tile_rect) ; un conteneur ou un texte n'en annoncent pas.
+        tiles = ""
+        if hasattr(region, "tile_rect"):
+            tw, th = region.tile_rect()[2:]
+            tiles = f" · {tw}×{th} tuiles"
         get_dispatcher().status(
-            f"Zone « {region.name} » créée dans « {layout.name} »"
-            f"{shared} · {tw}×{th} tuiles")
+            f"{kind_label} « {region.name} » créé(e) dans « {layout.name} »"
+            f"{shared}{tiles}")
 
     def _on_collision_painted(self):
         """Persiste la collision_map après chaque stroke."""

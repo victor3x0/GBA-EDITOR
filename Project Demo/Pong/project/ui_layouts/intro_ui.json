@@ -1,8 +1,10 @@
 {
   "name": "intro_ui",
-  "regions": [
+  "elements": [
     {
+      "kind": "region",
       "name": "titre",
+      "parent": "",
       "anchor": "screen",
       "anchor_actor": "",
       "x": 0,
@@ -16,7 +18,9 @@
       "animated_glyphs": 0
     },
     {
+      "kind": "region",
       "name": "invite",
+      "parent": "",
       "anchor": "screen",
       "anchor_actor": "",
       "x": 0,

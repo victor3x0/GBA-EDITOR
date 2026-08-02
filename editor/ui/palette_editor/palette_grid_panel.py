@@ -148,8 +148,7 @@ class PaletteGridPanel(QWidget):
         self._scroll.setWidgetResizable(False)      # le conteneur garde sa taille naturelle
         self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setStyleSheet(
-            "QScrollArea{background:transparent;border:none;}" + QSS.scrollbar)
+        self._scroll.setStyleSheet(QSS.scroll_area + QSS.scrollbar)
         self._scroll.setWidget(self._swatch_container)
         self._scroll.viewport().installEventFilter(self)   # molette = zoom, clic-central = pan
 

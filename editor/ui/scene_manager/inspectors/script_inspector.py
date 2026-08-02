@@ -79,11 +79,7 @@ class ScriptInspector(QWidget):
         def _card(accent: str = "") -> tuple:
             f = QFrame()
             f.setObjectName("sc_card")
-            f.setStyleSheet(
-                f"QFrame#sc_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-                f"QFrame#sc_card QFrame{{background:transparent;border:none;}}"
-                f"QFrame#sc_card QLabel{{background:transparent;border:none;}}"
-            )
+            f.setStyleSheet(QSS.card("sc_card"))
             card_inner = QVBoxLayout(f)
             card_inner.setContentsMargins(10, 8, 10, 10)
             card_inner.setSpacing(6)

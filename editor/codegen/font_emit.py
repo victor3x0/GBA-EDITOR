@@ -419,7 +419,8 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
 
 def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                       obj_place: dict | None = None,
-                      actor_index: dict | None = None) -> list[str]:
+                      actor_index: dict | None = None,
+                      bg_fill: dict | None = None) -> list[str]:
     """Table des zones de texte — `regions` est [(UILayout, UIRegion)] dans
     l'ordre de `Project.all_regions()`, qui fait l'index.
 
@@ -435,9 +436,16 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
     L: list[str] = ["/* ── Zones de texte (UILayout) ─────────────────── */"]
     rows: list[str] = []
     for _lay, r in regions:
-        target_obj = (r.resolved_target() == TARGET_OBJ)
+        # Cible et ancrage EFFECTIFS (hérités du root) : une zone imbriquée sous
+        # un panel n'a plus d'ancrage propre.
+        target_obj = (_lay.resolved_target(r) == TARGET_OBJ)
+        eff_anchor, eff_actor = _lay.effective_anchor(r)
         x, y, w, h = r.x, r.y, r.w, r.h
         if not target_obj:
+            # Position ÉCRAN absolue : x/y d'un enfant sont RELATIFS à son
+            # parent, mais le runtime lit des cases écran. Pour un root, la
+            # somme se réduit à x/y — comportement d'avant inchangé.
+            x, y, _res = _lay.absolute_origin(r, None)
             # Copie alignée — le modèle de l'auteur n'est pas modifié.
             x -= x % 8
             y -= y % 8
@@ -450,10 +458,11 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"{sum(c // 8 for c in pl['cols'])}, {pl['rows']}, {pl['anim']}, "
                  f"0, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
+        bgf = (bg_fill or {}).get(r.name, -1)
         rows.append(
             f"    {{ {x}, {y}, {w}, {h}, {ALIGNS.index(r.align)}, "
-            f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(r.anchor)}, "
-            f"{alloc} }},  /* {r.name} */"
+            f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(eff_anchor)}, "
+            f"{alloc}, {bgf} }},  /* {r.name} */"
         )
         if target_obj and emit and pl:
             extra = (f" (dont {pl['anim']} glyphe(s) animé(s) réservé(s))"
@@ -461,16 +470,16 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
             emit("log_line",
                  f"[text] zone '{r.name}' en sprites : {pl['oam']} OAM, "
                  f"{pl['tiles']} tuiles OBJ{extra}")
-        if target_obj and emit and ai < 0 and r.anchor == "actor":
+        if target_obj and emit and ai < 0 and eff_anchor == "actor":
             # Sans acteur résolu, la bande se pose à l'origine de l'écran — ce
             # qui ressemble à un bug de placement plutôt qu'à une référence
             # cassée. Le dire ici évite la chasse.
             emit("log_line",
                  f"[warn] zone '{r.name}' : ancrée sur l'actor "
-                 f"'{r.anchor_actor or '(aucun)'}', introuvable — elle se posera "
+                 f"'{eff_actor or '(aucun)'}', introuvable — elle se posera "
                  f"à l'origine de l'écran.")
     L.append(f"const UIRegionInfo g_ui_regions[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0 },   /* aucune zone */"]
+    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1 },   /* aucune zone */"]
     L.append("};")
     L.append("")
     return L

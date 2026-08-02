@@ -19,20 +19,13 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, Q
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from core.project import Project
 
 from .palette_finder_panel import PaletteFinderPanel
 from .palette_grid_panel import PaletteGridPanel
 from .color_inspector_panel import ColorInspectorPanel
 from .palette_usage_card import PaletteUsageCard
-
-SPLITTER_STYLE = (
-    f"QSplitter::handle{{background:{C.BORDER};}}"
-    "QSplitter::handle:horizontal{width:3px;}"
-    "QSplitter::handle:vertical{height:3px;}"
-    f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
-)
 
 
 class PaletteEditorScreen(QWidget):
@@ -66,7 +59,7 @@ class PaletteEditorScreen(QWidget):
         root.addWidget(hdr)
 
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.setStyleSheet(SPLITTER_STYLE)
+        split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)
 
         self._finder    = PaletteFinderPanel()
@@ -81,7 +74,7 @@ class PaletteEditorScreen(QWidget):
         # longue, c'est à l'utilisateur de choisir combien il en voit d'un coup.
         # Non repliable des deux côtés — l'entête USAGE reste toujours atteignable.
         right = QSplitter(Qt.Orientation.Vertical)
-        right.setStyleSheet(SPLITTER_STYLE)
+        right.setStyleSheet(QSS.splitter)
         right.setChildrenCollapsible(False)
         right.setMinimumWidth(300)
         right.setMaximumWidth(480)

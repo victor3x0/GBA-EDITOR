@@ -161,11 +161,7 @@ class ProjectInspector(QWidget):
         élévation, identité par la couleur du titre)."""
         f = QFrame()
         f.setObjectName("pj_card")
-        f.setStyleSheet(
-            f"QFrame#pj_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-            f"QFrame#pj_card QFrame{{background:transparent;border:none;}}"
-            f"QFrame#pj_card QLabel{{background:transparent;border:none;}}"
-        )
+        f.setStyleSheet(QSS.card("pj_card"))
         inner = QVBoxLayout(f)
         inner.setContentsMargins(10, 8, 10, 10)
         inner.setSpacing(6)

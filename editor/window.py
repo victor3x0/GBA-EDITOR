@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 
 from codegen import BuildWorker
 from ui.scene_manager.scene_canvas import SceneEditor
@@ -161,17 +161,18 @@ class GbaStatusBar(QWidget):
         rm = int(getattr(scene, "render_mode", 0) or 0)
         layout = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
         text_oam = text_tiles = 0
+        def _actor_pos(name):
+            return next(((a.x, a.y) for a in scene.actors if a.name == name), None)
         for r in (layout.regions if layout else []):
-            if r.resolved_target(rm) != TARGET_OBJ:
+            if layout.resolved_target(r, rm) != TARGET_OBJ:
                 continue
             g = strip_geometry(r)
             text_oam   += g["oam"]
             text_tiles += g["tiles"]
-            # x/y d'une zone ancrée sur un actor sont un OFFSET : sans résoudre
-            # l'ancre, une bulle atterrissait hors écran et ne coûtait rien.
-            ry = r.y
-            if r.anchor == "actor":
-                ry += next((a.y for a in scene.actors if a.name == r.anchor_actor), 0)
+            # y ÉCRAN résolu par le modèle : offsets cumulés jusqu'au root +
+            # socle du frame (l'acteur pour un root actor). Sans ça une bulle
+            # atterrissait hors écran et ne coûtait rien.
+            _, ry, _ = layout.absolute_origin(r, _actor_pos)
             # Une bande est un pavage de sprites de 8 px de haut : chaque rangée
             # pèse la largeur totale de la zone sur les 8 lignes qu'elle couvre.
             for row in range(g["rows"]):
@@ -334,13 +335,6 @@ class MainWindow(QMainWindow):
         return w
 
     def _build_scene_manager_screen(self):
-        _splitter_style = (
-            f"QSplitter::handle{{background:{C.BORDER};}}"
-            "QSplitter::handle:horizontal{width:3px;}"
-            "QSplitter::handle:vertical{height:3px;}"
-            f"QSplitter::handle:hover{{background:{C.ACCENT};}}"
-        )
-
         screen = QWidget()
         screen_layout = QVBoxLayout(screen)
         screen_layout.setContentsMargins(0, 0, 0, 0)
@@ -348,7 +342,7 @@ class MainWindow(QMainWindow):
 
         # Splitter horizontal principal : 3 colonnes
         self._h_split = QSplitter(Qt.Orientation.Horizontal)
-        self._h_split.setStyleSheet(_splitter_style)
+        self._h_split.setStyleSheet(QSS.splitter)
 
         # ── Colonne 1 : Project Panel (pleine hauteur) ────────────
         self.assets_finder_panel = AssetsFinderPanel()
@@ -366,11 +360,16 @@ class MainWindow(QMainWindow):
             lambda path: self._inspector.show_script_uses(path))
         self.assets_finder_panel.variable_uses_requested.connect(
             lambda kind, name: self._inspector.show_variable_uses(kind, name))
+
+        # La mise en page UI vit désormais DANS l'arbre de scène (sous chaque
+        # scène, sous-branche « Interface »), à la façon du Scene dock de Godot :
+        # l'arbre montre d'un coup d'œil ce qu'un script peut référencer. Plus de
+        # panneau d'UI séparé.
         self._h_split.addWidget(self.assets_finder_panel)
 
         # ── Colonne 2 : Canvas (haut) + Console (bas) ────────────
         self._center_v_split = QSplitter(Qt.Orientation.Vertical)
-        self._center_v_split.setStyleSheet(_splitter_style)
+        self._center_v_split.setStyleSheet(QSS.splitter)
 
         self.scene_editor = SceneEditor()
         self.scene_editor.scene_changed.connect(self._on_scene_changed)
@@ -395,6 +394,19 @@ class MainWindow(QMainWindow):
         self._inspector.set_script_open_fn(self.open_script)
         self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)
+
+        # Mise en page UI éditée depuis l'arbre de scène (ajout/suppression/
+        # reparentage/réordonnancement/renommage) → sauver ET redessiner le
+        # canvas, même contrat que le contrôleur de zones. À l'inverse, une
+        # édition venue de l'inspecteur ou du canvas reconstruit l'arbre.
+        self.assets_finder_panel.ui_layout_changed.connect(
+            self.scene_editor._save_ui_regions)
+        self.assets_finder_panel.ui_layout_changed.connect(
+            self.scene_editor._reload_ui_regions)
+        self._inspector.ui_regions_changed.connect(
+            self.assets_finder_panel._refresh_scenes)
+        self.scene_editor.scene_changed.connect(
+            self.assets_finder_panel._refresh_scenes)
 
         # Bus de sélection — vider sur changement de scène/écran
         self._bus = get_bus()

@@ -213,6 +213,34 @@ def _bg_encoded_sources(p: Project, scene: Scene) -> list:
     return out
 
 
+def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
+    """BackgroundAsset compressés servant de FOND à un conteneur d'UI de la
+    scène (`UIPanel.fill_kind` nine-slice ou background).
+
+    Un fond d'UI s'affiche exactement comme un layer : ses tuiles citent des
+    sous-palettes, il lui faut donc son bloc de banques. Sans cette collecte,
+    une image utilisée UNIQUEMENT comme remplissage n'obtiendrait aucune banque
+    et sortirait avec les couleurs du voisin."""
+    from core.models.ui_region import KIND_PANEL, FILL_NINE, FILL_BG
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    out = []
+    for el in (lay.elements if lay else []):
+        if getattr(el, "kind", "") != KIND_PANEL:
+            continue
+        fk = getattr(el, "fill_kind", "")
+        name = ""
+        if fk == FILL_BG:
+            name = getattr(el, "fill_asset", "")
+        elif fk == FILL_NINE:
+            ns = p.get_nine_slice(getattr(el, "fill_asset", "")) \
+                if hasattr(p, "get_nine_slice") else None
+            name = getattr(ns, "source", "") if ns else ""
+        ba = p.get_background(name) if name else None
+        if ba is not None and getattr(ba, "tileset", None):
+            out.append(ba)
+    return out
+
+
 def _bg_palettes_key(ba) -> tuple:
     """Clé de dédup d'un fond compressé = contenu exact de ses sous-palettes
     (deux fonds avec les mêmes couleurs partagent le même bloc de banques)."""
@@ -256,7 +284,9 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
         own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
         pf_slots = {}
-        encoded_assets = _bg_encoded_sources(p, scene)      # BG encodé: métadonnées
+        # Layers + fonds de conteneurs d'UI : les deux affichent des tuiles qui
+        # citent des sous-palettes, les deux ont donc besoin de leur bloc.
+        encoded_assets = _bg_encoded_sources(p, scene) + ui_fill_encoded_sources(p, scene)
 
     slots: list[Optional[list[int]]] = [None] * 16
     for i, name in enumerate(active):

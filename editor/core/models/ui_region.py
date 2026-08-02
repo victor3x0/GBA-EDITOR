@@ -68,6 +68,47 @@ TARGETS = (TARGET_BG, TARGET_OBJ)
 
 ALIGNS = ("left", "center", "right")
 
+# ── Types d'élément ───────────────────────────────────────────────
+# Une mise en page contient désormais PLUSIEURS types dans une seule liste
+# ordonnée (`UILayout.elements`) — l'ordre fixe l'empilement (z-order) et l'ordre
+# des frères dans l'arbre. Chaque type porte un `kind` (sérialisé) et une
+# capacité `can_contain` : seul un conteneur accueille des enfants, une feuille
+# (texte, zone) jamais. Le « root » n'est pas un type : c'est le RÔLE d'un
+# élément de premier niveau, qui porte alors l'ancrage de son sous-arbre.
+KIND_REGION = "region"   # zone de texte RUNTIME (script écrit dedans) — feuille
+KIND_PANEL  = "panel"    # conteneur qui peut dessiner un FOND ; racine = ancrage
+KIND_TEXT   = "text"     # texte AUTHORÉ (clé de table) — feuille
+
+# ── Fonds de conteneur ────────────────────────────────────────────
+# Le fond d'un `UIPanel` est un champ polymorphe (« à quoi ressemble la zone »),
+# séparé de la géométrie (« où »). Un panel sans fond est un groupe invisible.
+#   couleur     : une ENTRÉE DE PALETTE (nom + index), pas du RGB libre — c'est
+#                 le hardware qui l'impose (cf. project_palette_system_design).
+#   nine-slice  : un cadre tuilé (coins fixes, bords/centre répétés) — quasi
+#                 gratuit sur GBA. L'asset dédié reste à créer.
+#   background  : un fond tuilé référencé, rogné en bas/à droite si la zone est
+#                 plus petite que l'asset.
+FILL_NONE  = "none"
+FILL_COLOR = "color"
+FILL_NINE  = "nine_slice"
+FILL_BG    = "background"
+FILL_KINDS = (FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG)
+
+# Fonds permis selon la CIBLE de rendu (dérivée du root). Un background n'est pas
+# un sprite : interdit sur OBJ. Le reste passe partout (le nine-slice sur OBJ est
+# possible mais cher — permis, l'éditeur pourra prévenir).
+_FILL_TARGETS = {
+    FILL_NONE:  (TARGET_BG, TARGET_OBJ),
+    FILL_COLOR: (TARGET_BG, TARGET_OBJ),
+    FILL_NINE:  (TARGET_BG, TARGET_OBJ),
+    FILL_BG:    (TARGET_BG,),
+}
+
+
+def fill_allowed(fill_kind: str, target: str) -> bool:
+    """Ce mode de fond est-il compatible avec cette cible de rendu ?"""
+    return target in _FILL_TARGETS.get(fill_kind, ())
+
 # Modes vidéo bitmap : la VRAM BG est un framebuffer, il n'y a plus de tilemap
 # où écrire des glyphes. Le texte BG y est impossible — le texte sprite n'est
 # pas une option, c'est le seul chemin (et l'espace OBJ y tombe à 512 tuiles).
@@ -107,7 +148,17 @@ class UIRegion:
     `w` est aussi la largeur de coupe : `text_draw_box` prend un `wrap`, et le
     dupliquer dans un champ séparé garantirait qu'un jour les deux divergent.
     """
+    kind = KIND_REGION       # attribut de classe (pas un champ dataclass)
+    can_contain = False      # feuille : n'accueille jamais d'enfants
     name:   str = "region"
+    # Nom de l'élément PARENT dans la même mise en page ("" = racine). L'arbre
+    # d'UI se DÉRIVE de ces refs, il ne se stocke pas : la liste `regions` reste
+    # plate, exactement comme la table de textes reste plate et l'arbre se
+    # reconstruit des chemins (cf. TextTreePanel). Une ref pendante (parent
+    # supprimé) est traitée comme racine, jamais comme une erreur. Le parent est
+    # cité par NOM et non par index : renommer une zone doit donc retargetter les
+    # enfants (`UILayout.retarget_parent`), comme un renommage de clé de texte.
+    parent: str = ""
     anchor: str = ANCHOR_SCREEN
     anchor_actor: str = ""   # nom de l'Actor suivi — seulement si anchor == actor
     # Géométrie en PIXELS. Pour un ancrage actor, x/y sont un OFFSET par rapport
@@ -181,7 +232,8 @@ class UIRegion:
 
     def to_dict(self) -> dict:
         return {
-            "name": self.name, "anchor": self.anchor,
+            "kind": KIND_REGION,
+            "name": self.name, "parent": self.parent, "anchor": self.anchor,
             "anchor_actor": self.anchor_actor,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "font_name": self.font_name, "align": self.align,
@@ -196,6 +248,7 @@ class UIRegion:
         target = d.get("target", "")
         return cls(
             name         = str(d.get("name", "region")),
+            parent       = str(d.get("parent", "")),
             anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor = str(d.get("anchor_actor", "")),
             x = int(d.get("x", 0)),   y = int(d.get("y", 0)),
@@ -329,7 +382,7 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
     `FontInfo.slot`, relatif au bloc alloué au texte."""
     place, oam, tiles = {}, 0, 0
     for r in layout.regions:
-        if r.resolved_target(render_mode) != TARGET_OBJ:
+        if layout.resolved_target(r, render_mode) != TARGET_OBJ:
             continue
         g = strip_geometry(r)
         place[r.name] = {"oam_rel": oam, "tile_rel": tiles, **g}
@@ -339,6 +392,120 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
 
 
 # ── Mise en page ──────────────────────────────────────────────────
+
+@dataclass
+class UIPanel:
+    """Conteneur, et seul type à pouvoir dessiner un FOND. Au premier niveau il
+    joue le RÔLE de root et porte l'ancrage du sous-arbre. Sans fond
+    (`fill_kind == FILL_NONE`), c'est un simple groupe invisible.
+
+    **Le fond est un champ polymorphe**, séparé de la géométrie :
+      couleur     → une ENTRÉE de palette : `fill_palette` (nom de PaletteBank) +
+                    `fill_index` (0-15). Pas de RGB libre — le hardware l'impose.
+      nine-slice  → `fill_asset` = un asset de cadre tuilé (à créer).
+      background  → `fill_asset` = un fond tuilé, rogné bas/droite si la zone est
+                    plus petite ; interdit sur cible OBJ (cf. `fill_allowed`).
+
+    Géométrie en pixels comme la zone. `anchor`/`anchor_actor` ne comptent que
+    lorsque le panel est racine."""
+    kind = KIND_PANEL
+    can_contain = True
+    name: str = "panel"
+    parent: str = ""
+    x: int = 0
+    y: int = 0
+    w: int = 64
+    h: int = 32
+    anchor: str = ANCHOR_SCREEN
+    anchor_actor: str = ""
+    # ── Fond (polymorphe selon fill_kind) ─────────────────────────
+    fill_kind: str = FILL_NONE
+    fill_palette: str = ""   # nom de PaletteBank (fond couleur)
+    fill_index: int = 0      # index 0-15 dans la palette (fond couleur)
+    fill_asset: str = ""     # nom d'asset (nine-slice / background)
+
+    def to_dict(self) -> dict:
+        return {"kind": KIND_PANEL, "name": self.name, "parent": self.parent,
+                "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+                "anchor": self.anchor, "anchor_actor": self.anchor_actor,
+                "fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
+                "fill_index": self.fill_index, "fill_asset": self.fill_asset}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "UIPanel":
+        anchor = d.get("anchor", ANCHOR_SCREEN)
+        fk = d.get("fill_kind", FILL_NONE)
+        return cls(
+            name=str(d.get("name", "panel")), parent=str(d.get("parent", "")),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 64)), h=int(d.get("h", 32)),
+            anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
+            anchor_actor=str(d.get("anchor_actor", "")),
+            fill_kind=fk if fk in FILL_KINDS else FILL_NONE,
+            fill_palette=str(d.get("fill_palette", "")),
+            fill_index=int(d.get("fill_index", 0) or 0),
+            fill_asset=str(d.get("fill_asset", "")))
+
+
+@dataclass
+class UIText:
+    """Texte AUTHORÉ — feuille (jamais parent). Le contenu ne vit pas dans
+    l'élément : `text_key` pointe la table de textes (auto-enregistrée), pour ne
+    pas dupliquer un littéral qui échapperait à l'édition centralisée
+    ([[project-text-table]]). `wrap` bascule en multiligne ; c'est le même widget
+    que le cas court, avec plus de champs exposés — pas un type séparé."""
+    kind = KIND_TEXT
+    can_contain = False
+    name: str = "text"
+    parent: str = ""
+    x: int = 0
+    y: int = 0
+    w: int = 64
+    h: int = 16
+    anchor: str = ANCHOR_SCREEN
+    anchor_actor: str = ""
+    text_key: str = ""
+    font_name: str = ""
+    align: str = "left"
+    wrap: bool = False
+
+    def to_dict(self) -> dict:
+        return {"kind": KIND_TEXT, "name": self.name, "parent": self.parent,
+                "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+                "anchor": self.anchor, "anchor_actor": self.anchor_actor,
+                "text_key": self.text_key, "font_name": self.font_name,
+                "align": self.align, "wrap": self.wrap}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "UIText":
+        anchor = d.get("anchor", ANCHOR_SCREEN)
+        align = d.get("align", "left")
+        return cls(
+            name=str(d.get("name", "text")), parent=str(d.get("parent", "")),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 64)), h=int(d.get("h", 16)),
+            anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
+            anchor_actor=str(d.get("anchor_actor", "")),
+            text_key=str(d.get("text_key", "")),
+            font_name=str(d.get("font_name", "")),
+            align=align if align in ALIGNS else "left",
+            wrap=bool(d.get("wrap", False)))
+
+
+# Registre kind → constructeur. Un dict sans `kind` = région (format hérité,
+# d'avant la généralisation multi-types).
+_ELEMENT_FROM_DICT = {
+    KIND_REGION: UIRegion.from_dict,
+    KIND_PANEL:  UIPanel.from_dict,
+    KIND_TEXT:   UIText.from_dict,
+}
+
+
+def element_from_dict(d: dict):
+    """Désérialise un élément selon son `kind` (région par défaut, format hérité)."""
+    return _ELEMENT_FROM_DICT.get(d.get("kind", KIND_REGION),
+                                  UIRegion.from_dict)(d)
+
 
 @dataclass
 class UILayout(Resource):
@@ -362,22 +529,311 @@ class UILayout(Resource):
     (`<asset>_name`), donc ce qui entre dans le graphe de dépendances.
     """
     name:    str = "ui_layout"
-    regions: list = field(default_factory=list)   # list[UIRegion]
+    # Liste ordonnée de TOUS les éléments (régions, panels, textes…) — l'ordre
+    # fixe l'empilement et l'ordre des frères. `regions` reste exposé (propriété)
+    # pour les consommateurs qui ne veulent que les zones (codegen, VRAM).
+    elements: list = field(default_factory=list)
     notes:   str = ""
 
-    def get(self, region_name: str) -> UIRegion | None:
-        return next((r for r in self.regions if r.name == region_name), None)
+    @property
+    def regions(self) -> list:
+        """Sous-ensemble des éléments de type ZONE de texte, en lecture seule.
+        Le codegen et le budget VRAM n'émettent que ces éléments-là ; les mutations
+        (ajout/suppression/reparentage) passent, elles, par `elements`."""
+        return [e for e in self.elements if getattr(e, "kind", KIND_REGION) == KIND_REGION]
+
+    def get(self, name: str):
+        """N'importe quel élément par son nom (tous types confondus)."""
+        return next((e for e in self.elements if e.name == name), None)
+
+    def can_contain(self, name: str) -> bool:
+        """Un élément existant et conteneur peut-il accueillir un enfant ?"""
+        e = self.get(name)
+        return e is not None and getattr(e, "can_contain", False)
 
     def region_names(self) -> list[str]:
-        return [r.name for r in self.regions]
+        return [e.name for e in self.regions]
+
+    def element_names(self) -> list[str]:
+        """Noms de TOUS les éléments — l'espace de nommage à garder unique pour
+        que les refs `parent` soient sans ambiguïté (un panel et une zone ne
+        peuvent pas partager un nom)."""
+        return [e.name for e in self.elements]
+
+    # ── Hiérarchie (dérivée des refs `parent`) ────────────────────
+    # L'arbre n'est jamais stocké : `elements` reste une liste plate et ces
+    # helpers le reconstruisent, TOUS types confondus. L'ORDRE de la liste fixe
+    # l'ordre des frères (et le z-order entre éléments qui dessinent). Une ref
+    # `parent` pendante est traitée comme racine — supprimer un parent ne casse
+    # rien, ses enfants remontent d'un cran à l'affichage.
+
+    def children(self, name: str) -> list:
+        """Enfants directs de `name`, dans l'ordre de la liste."""
+        return [e for e in self.elements if e.parent == name]
+
+    def roots(self) -> list:
+        """Éléments de premier niveau : sans parent, ou parent pendant."""
+        names = {e.name for e in self.elements}
+        return [e for e in self.elements if not e.parent or e.parent not in names]
+
+    def ancestors(self, name: str) -> list[str]:
+        """Chaîne des parents en remontant, garde-fou anti-boucle inclus (des
+        données corrompues ne doivent pas faire tourner l'éditeur à l'infini)."""
+        out: list[str] = []
+        seen: set[str] = {name}
+        cur = self.get(name)
+        while cur is not None and cur.parent and cur.parent not in seen:
+            out.append(cur.parent)
+            seen.add(cur.parent)
+            cur = self.get(cur.parent)
+        return out
+
+    def would_cycle(self, name: str, new_parent: str) -> bool:
+        """Vrai si parenter `name` sous `new_parent` fermerait une boucle : soit
+        on se prend soi-même, soit la nouvelle cible est déjà un descendant."""
+        if not new_parent or new_parent == name:
+            return new_parent == name
+        # boucle ⟺ `name` figure parmi les ancêtres de `new_parent`
+        return name in self.ancestors(new_parent)
+
+    def descendants(self, name: str) -> list:
+        """Tout le sous-arbre sous `name` (DFS, ordre de liste), `name` exclu."""
+        out: list = []
+        for child in self.children(name):
+            out.append(child)
+            out.extend(self.descendants(child.name))
+        return out
+
+    def in_tree_order(self):
+        """(profondeur, élément) en parcours préfixe, l'ordre de liste faisant foi
+        entre frères — ce que consomme la vue arbre. Défensif contre les refs
+        pendantes (racines) et les cycles (chaque nœud visité une fois)."""
+        seen: set[str] = set()
+        out: list = []
+
+        def walk(node, depth: int) -> None:
+            if node.name in seen:
+                return
+            seen.add(node.name)
+            out.append((depth, node))
+            for child in self.children(node.name):
+                walk(child, depth + 1)
+
+        for e in self.roots():
+            walk(e, 0)
+        # Nœuds jamais atteints (cycle pur entre eux) : rattachés en racine, pour
+        # qu'aucun élément ne disparaisse de l'arbre.
+        for e in self.elements:
+            if e.name not in seen:
+                walk(e, 0)
+        return out
+
+    # ── Ordre / z-order (réordonnancement des frères) ─────────────
+    # L'ordre de `elements` EST le z-order (frère tardif = au-dessus) et l'ordre
+    # des frères dans l'arbre. Trois consommateurs le lisent : l'arbre (via
+    # `children`), le canvas (empilement) et le codegen (ordre de dessin des
+    # fonds). Pour qu'ils s'accordent, un réordonnancement RÉÉCRIT `elements` en
+    # DFS canonique — parent avant ses enfants, frères dans l'ordre voulu — via
+    # `_flatten`. Une liste non canonique (héritée d'un reparentage qui ne
+    # déplaçait pas dans la liste) est ainsi normalisée au passage.
+
+    def _flatten(self, order_override: dict | None = None) -> list:
+        """`elements` réordonné en DFS canonique. `order_override` :
+        {nom_parent: [noms de frères...]} force l'ordre des enfants de ce parent
+        ("" = racines) ; les frères non cités gardent leur ordre courant, à la
+        suite. Défensif : cycles purs rattachés en fin, aucun élément perdu."""
+        override = order_override or {}
+        out: list = []
+        seen: set[str] = set()
+
+        def ordered(children_list, key):
+            if key not in override:
+                return children_list
+            by_name = {c.name: c for c in children_list}
+            forced = [by_name[n] for n in override[key] if n in by_name]
+            rest = [c for c in children_list if c.name not in set(override[key])]
+            return forced + rest
+
+        def emit(node) -> None:
+            if node.name in seen:
+                return
+            seen.add(node.name)
+            out.append(node)
+            for child in ordered(self.children(node.name), node.name):
+                emit(child)
+
+        for root in ordered(self.roots(), ""):
+            emit(root)
+        for e in self.elements:            # cycles purs : ne rien perdre
+            if e.name not in seen:
+                out.append(e)
+                seen.add(e.name)
+        return out
+
+    def _parent_key(self, element) -> str:
+        """Clé du parent pour `_flatten`/`children` : "" si racine (sans parent
+        ou parent pendant), sinon le nom du parent."""
+        p = getattr(element, "parent", "")
+        return p if (p and self.get(p) is not None) else ""
+
+    def _siblings(self, parent_key: str) -> list:
+        """Frères sous `parent_key` dans l'ordre courant ("" = racines)."""
+        return self.roots() if parent_key == "" else self.children(parent_key)
+
+    def move_sibling(self, name: str, direction: str) -> bool:
+        """Déplace `name` parmi ses frères : "up"/"down" d'un cran, "top"/"bottom"
+        à une extrémité. Réécrit `elements` (DFS canonique) et renvoie True si ça
+        a bougé, False sinon (introuvable, déjà en bout, direction inconnue)."""
+        e = self.get(name)
+        if e is None:
+            return False
+        key = self._parent_key(e)
+        names = [s.name for s in self._siblings(key)]
+        if name not in names:
+            return False
+        i, n = names.index(name), len(names)
+        order = names[:]
+        order.pop(i)
+        if direction == "up":
+            if i == 0:
+                return False
+            order.insert(i - 1, name)
+        elif direction == "down":
+            if i >= n - 1:
+                return False
+            order.insert(i + 1, name)
+        elif direction == "top":
+            if i == 0:
+                return False
+            order.insert(0, name)
+        elif direction == "bottom":
+            if i >= n - 1:
+                return False
+            order.append(name)
+        else:
+            return False
+        self.elements[:] = self._flatten({key: order})
+        return True
+
+    def place_child(self, name: str, new_parent: str,
+                    before_name: str | None = None) -> bool:
+        """Rattache `name` à `new_parent` ("" = racine) et le pose JUSTE AVANT
+        `before_name` parmi ses (nouveaux) frères, ou en dernier si `before_name`
+        est None/absent. Refuse feuille-comme-parent et cycle (`can_contain`,
+        `would_cycle`). Réécrit `elements` en DFS canonique. True si un changement
+        a bien eu lieu — reparentage, repositionnement, ou les deux."""
+        e = self.get(name)
+        if e is None:
+            return False
+        if new_parent and not self.can_contain(new_parent):
+            return False
+        if self.would_cycle(name, new_parent):
+            return False
+        key = new_parent if (new_parent and self.get(new_parent) is not None) else ""
+        before = [x.name for x in self.elements]      # pour détecter un no-op
+        old_parent = e.parent
+        e.parent = key
+        names = [s.name for s in self._siblings(key) if s.name != name]
+        if before_name and before_name in names and before_name != name:
+            names.insert(names.index(before_name), name)
+        else:
+            names.append(name)
+        new_flat = self._flatten({key: names})
+        if [x.name for x in new_flat] == before and key == old_parent:
+            e.parent = old_parent      # rien n'a changé : ne pas salir l'historique
+            return False
+        self.elements[:] = new_flat
+        return True
+
+    def retarget_parent(self, old: str, new: str) -> int:
+        """Rebranche les enfants d'un élément renommé (`old` → `new`) et renvoie
+        le nombre de refs mises à jour. À appeler par le flux de renommage, comme
+        on met à jour les scripts qui citent une clé — sinon renommer un élément
+        orphelinerait ses enfants (leur `parent` pointant l'ancien nom)."""
+        n = 0
+        for e in self.elements:
+            if e.parent == old:
+                e.parent = new
+                n += 1
+        return n
+
+    # ── Ancrage & origine : remontée au ROOT ──────────────────────
+    # L'ancrage n'est plus une propriété de chaque élément mais du ROOT (élément
+    # top-level de la branche) : un enfant hérite du frame de son root et se
+    # positionne en pixels RELATIFS à son parent. Ces helpers font la remontée ;
+    # un élément sans parent est son propre root, donc le comportement d'avant
+    # (tout est root) est un cas particulier — rien ne change pour les données
+    # plates existantes.
+
+    def root_of(self, name: str):
+        """Élément top-level de la branche de `name` (remontée des parents, sûre
+        face aux cycles et aux refs pendantes). C'est lui qui porte l'ancrage."""
+        cur = self.get(name)
+        seen: set[str] = set()
+        while cur is not None and cur.parent and cur.name not in seen:
+            seen.add(cur.name)
+            nxt = self.get(cur.parent)
+            if nxt is None:        # parent pendant → `cur` est le root effectif
+                break
+            cur = nxt
+        return cur
+
+    def effective_anchor(self, element) -> tuple[str, str]:
+        """(anchor, anchor_actor) hérités du root de `element`."""
+        r = self.root_of(element.name) or element
+        return getattr(r, "anchor", ANCHOR_SCREEN), getattr(r, "anchor_actor", "")
+
+    def resolved_target(self, element, render_mode: int = 0) -> str:
+        """Cible BG/OBJ dérivée de l'ancrage du ROOT — plus de l'élément
+        lui-même : un enfant hérite du frame de son root."""
+        r = self.root_of(element.name) or element
+        forced = forced_target(getattr(r, "anchor", ANCHOR_SCREEN), render_mode)
+        if forced:
+            return forced
+        t = getattr(r, "target", "")
+        return t if t in TARGETS else TARGET_BG
+
+    def absolute_origin(self, element, actor_pos) -> tuple[int, int, bool]:
+        """(x, y, resolved) : position ÉCRAN de l'origine de `element`, en sommant
+        les offsets jusqu'au root, puis en ajoutant le socle du frame — (0,0) en
+        écran/monde, la position de l'acteur en ancrage actor. `actor_pos` =
+        callable nom→(x,y) ou None. `resolved` est faux si l'acteur du root est
+        introuvable (la position affichée n'est alors pas celle du jeu)."""
+        chain = [element] + [self.get(a) for a in self.ancestors(element.name)]
+        chain = [e for e in chain if e is not None]
+        ox = sum(int(e.x) for e in chain)
+        oy = sum(int(e.y) for e in chain)
+        root = chain[-1] if chain else element
+        resolved = True
+        if getattr(root, "anchor", "") == ANCHOR_ACTOR:
+            ap = actor_pos(getattr(root, "anchor_actor", "")) if actor_pos else None
+            if ap is None:
+                resolved = False
+            else:
+                ox += ap[0]
+                oy += ap[1]
+        return ox, oy, resolved
+
+    def parent_origin(self, element, actor_pos) -> tuple[int, int]:
+        """(x, y) écran de l'origine du PARENT de `element` — ou le socle du
+        frame si `element` est un root. Sert à reconvertir une position absolue
+        du canvas en coordonnées RELATIVES au parent, au relâchement d'un geste."""
+        parent = self.get(element.parent) if element.parent else None
+        if parent is None:
+            if getattr(element, "anchor", "") == ANCHOR_ACTOR:
+                ap = actor_pos(getattr(element, "anchor_actor", "")) if actor_pos else None
+                return (ap[0], ap[1]) if ap else (0, 0)
+            return (0, 0)
+        ax, ay, _ = self.absolute_origin(parent, actor_pos)
+        return ax, ay
 
     def bg_regions(self, render_mode: int = 0) -> list[UIRegion]:
         return [r for r in self.regions
-                if r.resolved_target(render_mode) == TARGET_BG]
+                if self.resolved_target(r, render_mode) == TARGET_BG]
 
     def obj_regions(self, render_mode: int = 0) -> list[UIRegion]:
         return [r for r in self.regions
-                if r.resolved_target(render_mode) == TARGET_OBJ]
+                if self.resolved_target(r, render_mode) == TARGET_OBJ]
 
     def font_names(self) -> set[str]:
         """Polices explicitement nommées par les régions. Une région qui hérite
@@ -388,17 +844,28 @@ class UILayout(Resource):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
-            "regions": [r.to_dict() for r in self.regions],
+            "elements": [e.to_dict() for e in self.elements],
             "notes": self.notes,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "UILayout":
+        # `elements` (nouveau, multi-types) ou `regions` (hérité : que des zones,
+        # sans `kind`). `element_from_dict` retombe sur la région par défaut.
+        raw = d.get("elements")
+        if raw is None:
+            raw = d.get("regions", [])
         return cls(
-            name    = str(d.get("name", "ui_layout")),
-            regions = [UIRegion.from_dict(r) for r in d.get("regions", [])],
-            notes   = str(d.get("notes", "")),
+            name     = str(d.get("name", "ui_layout")),
+            elements = [element_from_dict(e) for e in raw],
+            notes    = str(d.get("notes", "")),
         )
+
+
+def unique_element_name(taken, base: str = "element") -> str:
+    """Nom d'élément libre mais unique dans `taken` — générique, tous types
+    (alias de `unique_region_name`, dont la logique ne dépend pas du type)."""
+    return unique_region_name(taken, base)
 
 
 def unique_region_name(taken, base: str = "region") -> str:

@@ -11,7 +11,7 @@ from .scene_inspector import SceneInspector
 from .camera_inspector import CameraInspector
 from .project_inspector import ProjectInspector
 from .script_inspector import ScriptInspector
-from .ui_region_inspector import UIRegionInspector
+from .ui_inspector import UIInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector, VariableUsesInspector
 
 
@@ -41,7 +41,7 @@ class DynamicInspector(QWidget):
     _MODE_VARIABLE_USES = 6
     _MODE_PROJECT     = 7
     _MODE_SCRIPT      = 8
-    _MODE_UI_REGION   = 9
+    _MODE_UI          = 9
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,11 +116,11 @@ class DynamicInspector(QWidget):
         self._stack.addWidget(self._script_insp)
         self._current_script_path = None   # utilisé par _on_header_rename
 
-        # 9 — zone de texte (UIRegion sélectionnée dans le canvas)
-        self._region_insp = UIRegionInspector()
-        self._region_insp.changed.connect(self.changed)
-        self._region_insp.changed.connect(self.ui_regions_changed)
-        self._stack.addWidget(self._region_insp)
+        # 9 — élément d'UI (zone, conteneur ou texte) — UN inspecteur adaptatif
+        self._ui_insp = UIInspector()
+        self._ui_insp.changed.connect(self.changed)
+        self._ui_insp.changed.connect(self.ui_regions_changed)
+        self._stack.addWidget(self._ui_insp)
 
         self._stack.setCurrentIndex(self._MODE_EMPTY)
 
@@ -202,7 +202,7 @@ class DynamicInspector(QWidget):
             # cf. clic hors de la zone active du canvas.
             self.show_project()
         elif isinstance(obj, UIRegionSelection):
-            self.show_ui_region(obj.layout, obj.region, self._project)
+            self.show_ui_element(obj.layout, obj.element, self._project)
         elif isinstance(obj, CameraSelection):
             # Clic sur l'ICÔNE caméra spécifiquement (cf. CameraItem.shape() —
             # le rectangle de vue 240×160 n'est qu'un retour visuel, il ne
@@ -222,13 +222,25 @@ class DynamicInspector(QWidget):
             # Resource dédiée, un simple chemin de fichier sur le bus.
             self.show_script(obj, self._project)
 
-    def show_ui_region(self, layout_asset, region, project):
-        """Zone de texte — la mise en page est un asset, d'où son nom dans le
-        bandeau plutôt que celui de la scène."""
+    def show_ui_element(self, layout_asset, element, project):
+        """Élément d'UI (zone, conteneur, texte) → l'inspecteur adaptatif. Le
+        bandeau prend le kind exact (même famille bleue Interface, titre par
+        type) — la mise en page est un asset, l'inspecteur affiche son nom."""
+        from core.models.ui_region import KIND_REGION, KIND_PANEL, KIND_TEXT
+        kind = getattr(element, "kind", KIND_REGION)
         scene = project.active_scene if project else None
-        self._region_insp.load(layout_asset, region, project, scene)
-        self._set_header("ui_region", "ZONE DE TEXTE", region.name)
-        self._stack.setCurrentIndex(self._MODE_UI_REGION)
+        self._ui_insp.load(layout_asset, element, project, scene)
+        header_kind, title = {
+            KIND_REGION: ("ui_region", "ZONE DE TEXTE"),
+            KIND_PANEL:  ("ui_panel",  "CONTENEUR"),
+            KIND_TEXT:   ("ui_text",   "TEXTE"),
+        }.get(kind, ("ui_element", "ÉLÉMENT UI"))
+        self._set_header(header_kind, title, element.name)
+        self._stack.setCurrentIndex(self._MODE_UI)
+
+    def show_ui_region(self, layout_asset, region, project):
+        """Alias historique — même route que tout élément d'UI."""
+        self.show_ui_element(layout_asset, region, project)
 
     def refresh_current(self):
         """Recharge le panneau courant depuis les données projet — capte les

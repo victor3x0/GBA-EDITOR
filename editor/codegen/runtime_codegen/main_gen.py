@@ -134,11 +134,34 @@ def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
     text_bg = getattr(scene, "text_bg", -1)
     # names=None : réservation à l'échelle du projet. Restreindre à la mise en
     # page de la scène demande d'abord d'indexer text.set_font (cf. font_emit).
-    text_tiles = scene_text_tiles(project_fonts(p), None)
+    # Les tuiles PLEINES des fonds couleur vivent dans le même charblock UI que
+    # les glyphes, AVANT eux (le texte se décale d'autant) — donc réservées ici.
+    fills, fill_indices = scene_color_fills(p, scene)
+    mono_tiles = scene_text_tiles(project_fonts(p), None)
+    # Scène avec au moins une zone à fond : la SURFACE composée a besoin de son
+    # PROPRE bloc de 240 tuiles, en plus des glyphes mono (jamais à la même
+    # adresse — cf. runtime `g_surf_tile_base`, sinon la composition d'une zone
+    # écraserait les glyphes statiques que ses voisines mono lisent encore).
+    by_name, _ = _region_bg_fills(p)
+    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    needs_surface = any(r.name in by_name for r in (lay_ui.regions if lay_ui else []))
+    from codegen.font_emit import TEXT_SURF_TILES
+    surf_tiles = TEXT_SURF_TILES if needs_surface else 0
+    # Fonds IMAGE : les tuiles de chaque asset source sont copiées dans le
+    # charblock d'UI, entre les tuiles pleines et les glyphes.
+    img_fills, img_assets = scene_image_fills(p, scene)
+    img_tiles = sum(a["tiles"] for a in img_assets)
+    text_tiles = len(fill_indices) + img_tiles + mono_tiles + surf_tiles
     lay = scene_layout(slots, maps, text_bg, text_tiles)
     for bi in bgi:
         bi["sbb"] = lay.map_sbb[bi["bg"]]
     scene._vram_layout = lay   # consommé par _gen_scene_init
+    scene._ui_fills = fills
+    scene._ui_fill_indices = fill_indices
+    scene._ui_mono_tiles = mono_tiles
+    scene._ui_needs_surface = needs_surface
+    scene._ui_img_fills = img_fills
+    scene._ui_img_assets = img_assets
 
 
 def _pool_info(prefabs, pool_start: int) -> list[dict]:
@@ -606,7 +629,8 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
                            fonts=project_fonts(p))
             + emit_ui_regions_c(regions, font_names, emit,
                                 obj_place=_obj_text_alloc(p),
-                                actor_index=_region_actor_index(p)))
+                                actor_index=_region_actor_index(p),
+                                bg_fill=_region_bg_fills(p)[0]))
 
 
 def _region_actor_index(p: Project) -> dict:
@@ -625,10 +649,196 @@ def _region_actor_index(p: Project) -> dict:
         if lay is not None:
             names = {a.name: offset + i for i, a in enumerate(actors)}
             for r in lay.regions:
-                if r.anchor == "actor" and r.name not in out:
-                    out[r.name] = names.get(r.anchor_actor, -1)
+                # L'ancrage vient du ROOT (un enfant en hérite), plus de la zone
+                # elle-même — cohérent avec l'éditeur.
+                eff_anchor, eff_actor = lay.effective_anchor(r)
+                if eff_anchor == "actor" and r.name not in out:
+                    out[r.name] = names.get(eff_actor, -1)
         offset += len(actors)
     return out
+
+
+def _region_bg_fills(p: Project) -> tuple[dict, dict]:
+    """({nom de zone: index dans FONT_PAL_BANK}, {index: couleur BGR555}) pour
+    les zones de texte dont un panel ANCÊTRE porte un fond couleur.
+
+    Le texte se compose alors sur cette couleur (cf. runtime g_ui_fill_bg). Les
+    index sont réservés PROJET-GLOBAL, depuis le haut de la banque de police (15,
+    14, …) : `g_ui_regions` est une table partagée entre scènes, donc l'index
+    d'une zone doit être le même partout. La couleur, elle, est réécrite par
+    chaque scène à l'init."""
+    from core.models.ui_region import KIND_PANEL, FILL_COLOR
+    by_name: dict = {}
+    color_index: dict = {}      # couleur BGR555 -> index
+    nxt = 15
+    for lay, r in (p.all_regions() if hasattr(p, "all_regions") else []):
+        col = None
+        for anc_name in lay.ancestors(r.name):
+            anc = lay.get(anc_name)
+            if (getattr(anc, "kind", "") == KIND_PANEL
+                    and getattr(anc, "fill_kind", "") == FILL_COLOR):
+                bank = p.get_palette(getattr(anc, "fill_palette", ""))
+                idx = int(getattr(anc, "fill_index", 0) or 0)
+                if bank and 0 <= idx < len(bank.colors):
+                    col = bank.colors[idx]
+                break
+        if col is None:
+            continue
+        if col not in color_index:
+            if nxt < 1:            # banque de police pleine : on ne réserve plus
+                continue
+            color_index[col] = nxt
+            nxt -= 1
+        by_name[r.name] = color_index[col]
+    return by_name, {i: c for c, i in color_index.items()}
+
+
+def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
+    """Fonds COULEUR des conteneurs d'une scène → (fills, indices).
+
+    1re tranche : uniquement les panels à fond `color`, cible BG, root ancré
+    ÉCRAN (position fixe — le monde défile, l'OBJ n'a pas de tilemap). Chaque
+    fond : rectangle en TUILES (résolu écran), index de couleur, banque de
+    palette (= sa place dans `scene.active_bg_palettes`). `indices` = index
+    distincts, un par tuile pleine à graver dans le charblock UI."""
+    from core.models.ui_region import (
+        KIND_PANEL, FILL_COLOR, ANCHOR_SCREEN, TARGET_BG)
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None or getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+        return [], []
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    active = list(getattr(scene, "active_bg_palettes", []) or [])
+    fills: list[dict] = []
+    indices: list[int] = []
+    for el in lay.elements:
+        if getattr(el, "kind", "") != KIND_PANEL:            continue
+        if getattr(el, "fill_kind", "") != FILL_COLOR:       continue
+        if lay.resolved_target(el, rm) != TARGET_BG:         continue
+        if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
+        pal = getattr(el, "fill_palette", "")
+        if pal not in active:                                continue  # non active
+        x, y, _ = lay.absolute_origin(el, lambda _n: None)
+        tx, ty = x // 8, y // 8
+        tw = max(1, (x - tx * 8 + el.w + 7) // 8)
+        th = max(1, (y - ty * 8 + el.h + 7) // 8)
+        idx = int(getattr(el, "fill_index", 0) or 0) & 0xF
+        if idx not in indices:
+            indices.append(idx)
+        fills.append({"name": el.name, "tx": tx, "ty": ty, "w": tw, "h": th,
+                      "index": idx, "bank": active.index(pal)})
+    return fills, indices
+
+
+# Cellule « rien à dessiner » d'un fond image. Doit rester égale à UI_SE_EMPTY
+# de gba_engine.h : le runtime y reconnaît la sentinelle AVANT d'ajouter la base
+# de tuiles, et pose une case vide.
+UI_SE_EMPTY = 0xFFFF
+
+
+def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
+    """Fonds IMAGE (nine-slice, background) des conteneurs d'une scène.
+
+    Renvoie (fills, assets) :
+      fills  — un par panneau : rectangle en TUILES + la liste des screen
+               entries à écrire (palette déjà rebasée sur les banques HW).
+      assets — les BackgroundAsset sources, dédupliqués et ORDONNÉS ; le codegen
+               leur attribue une base de tuiles dans le charblock d'UI, dans cet
+               ordre, et les `se` citent des index LOCAUX que le runtime décale
+               de cette base.
+
+    Même périmètre que `scene_color_fills` (cible BG, root écran) : le monde
+    défile et l'OBJ n'a pas de tilemap. Les marges d'un nine-slice sont ramenées
+    à la TUILE — une tilemap ne sait pas couper un cadre à 3 px."""
+    from core.models.ui_region import (
+        KIND_PANEL, FILL_NINE, FILL_BG, ANCHOR_SCREEN, TARGET_BG)
+    from core.nine_slice import nine_slice_rects
+    from core.bg_import import unpack_se, pack_se
+    from codegen.palette_alloc import scene_bank_layout
+
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None or getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+        return [], []
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    bank_layout = scene_bank_layout(p, scene, "bg")
+    fills: list[dict] = []
+    assets: list[dict] = []
+    by_name: dict[str, int] = {}      # nom d'asset -> index dans `assets`
+
+    for el in lay.elements:
+        if getattr(el, "kind", "") != KIND_PANEL:            continue
+        fk = getattr(el, "fill_kind", "")
+        if fk not in (FILL_NINE, FILL_BG):                   continue
+        if lay.resolved_target(el, rm) != TARGET_BG:         continue
+        if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
+
+        # Source : directement l'image (background) ou via le cadre (nine-slice).
+        ns = None
+        if fk == FILL_BG:
+            src_name = getattr(el, "fill_asset", "")
+        else:
+            ns = p.get_nine_slice(getattr(el, "fill_asset", "")) \
+                if hasattr(p, "get_nine_slice") else None
+            src_name = getattr(ns, "source", "") if ns else ""
+        ba = p.get_background(src_name) if src_name else None
+        if ba is None or not getattr(ba, "tileset", None):    continue
+        if getattr(ba, "bpp", 4) == 8:                        continue  # cf. layers 8bpp
+        pal_offset = bank_layout.bg_block_offset(ba)
+        if pal_offset is None:                                continue  # pas de banques
+
+        x, y, _ = lay.absolute_origin(el, lambda _n: None)
+        tx, ty = x // 8, y // 8
+        w = max(1, (x - tx * 8 + el.w + 7) // 8)
+        h = max(1, (y - ty * 8 + el.h + 7) // 8)
+        sw, sh = max(1, ba.tiles_w), max(1, ba.tiles_h)
+        src_map = ba.effective_tilemap()
+
+        def src_se(sc: int, sr: int) -> int:
+            """SE source rebasée sur les banques HW, ou UI_SE_EMPTY hors image.
+
+            Sentinelle plutôt que 0 : le runtime AJOUTE la base de tuiles de
+            l'asset, donc un 0 y désignerait sa PREMIÈRE tuile au lieu de
+            « rien à dessiner »."""
+            if not (0 <= sc < sw and 0 <= sr < sh):
+                return UI_SE_EMPTY
+            cell = sr * sw + sc
+            if cell >= len(src_map):
+                return UI_SE_EMPTY
+            tid, pb, fh, fv = unpack_se(src_map[cell])
+            return pack_se(tid, pb + pal_offset, fh, fv)
+
+        se = [UI_SE_EMPTY] * (w * h)
+        if fk == FILL_BG:
+            # Image posée en haut-gauche, ROGNÉE bas/droite — une fenêtre sur le
+            # fond, jamais un étirement (même règle que l'aperçu éditeur).
+            for r in range(h):
+                for c in range(w):
+                    se[r * w + c] = src_se(c, r)
+        else:
+            # Coins fixes, bords/centre RÉPÉTÉS. La géométrie est celle de
+            # `core.nine_slice`, en unités de TUILE plutôt qu'en pixels.
+            for z in nine_slice_rects(sw, sh,
+                                      int(getattr(ns, "left", 0)) // 8,
+                                      int(getattr(ns, "right", 0)) // 8,
+                                      int(getattr(ns, "top", 0)) // 8,
+                                      int(getattr(ns, "bottom", 0)) // 8,
+                                      w, h):
+                sx, sy, s_w, s_h = z["src"]
+                dx, dy, d_w, d_h = z["dst"]
+                for r in range(d_h):
+                    for c in range(d_w):
+                        cc = (c % s_w) if z["tile"] else min(c, s_w - 1)
+                        rr = (r % s_h) if z["tile"] else min(r, s_h - 1)
+                        se[(dy + r) * w + (dx + c)] = src_se(sx + cc, sy + rr)
+
+        if ba.name not in by_name:
+            from codegen.bg_emit import tileset_words
+            words = tileset_words(ba.tileset, 4)   # 8 mots u32 = 1 tuile 4bpp
+            by_name[ba.name] = len(assets)
+            assets.append({"name": ba.name, "sym": f"ui_bg_{_sym(ba.name)}",
+                           "words": words, "tiles": len(words) // 8})
+        fills.append({"name": el.name, "tx": tx, "ty": ty, "w": w, "h": h,
+                      "asset": by_name[ba.name], "se": se})
+    return fills, assets
 
 
 def _gen_scene_init(
@@ -651,11 +861,38 @@ def _gen_scene_init(
     sym = _sym(scene.name)
     obj_layout = scene_bank_layout(p, scene, "obj")
     bg_layout  = scene_bank_layout(p, scene, "bg")
-    L = [f"static void scene_init_{sym}(void) {{"]
+    L: list[str] = []
+    # ── Données des fonds IMAGE, en amont de la fonction ───────────
+    # Les tuiles de l'asset source et la carte de screen entries de chaque
+    # panneau sont des CONSTANTES : calculées par l'éditeur (cf.
+    # `scene_image_fills`), elles n'ont aucune raison d'être reconstruites au
+    # runtime. `scene_init` ne fait plus qu'une copie et une écriture de map.
+    for _a in (getattr(scene, "_ui_img_assets", []) or []):
+        _w = _a["words"]
+        L.append(f"static const unsigned int {sym}_{_a['sym']}[] = {{"
+                 f"   /* fond '{_a['name']}' : {_a['tiles']} tuiles */")
+        for i in range(0, len(_w), 8):
+            L.append("    " + " ".join(f"0x{v:08X}," for v in _w[i:i + 8]))
+        L.append("};")
+    for _f in (getattr(scene, "_ui_img_fills", []) or []):
+        _se = _f["se"]
+        L.append(f"static const unsigned short {sym}_uimap_{_sym(_f['name'])}[] = {{"
+                 f"   /* {_f['w']}x{_f['h']} cases */")
+        for i in range(0, len(_se), 12):
+            L.append("    " + " ".join(f"0x{v:04X}," for v in _se[i:i + 12]))
+        L.append("};")
+    if L:
+        L.append("")
+    L.append(f"static void scene_init_{sym}(void) {{")
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
     L.append("    bg_maps_clear();")
     L.append("    display_reset();")
+    # Ferme les lectures de la scène PRÉCÉDENTE. `g_reads` est global et ses
+    # index sont projet-globaux : sans ce reset, `text_update` continue de
+    # rendre — chaque frame — une zone appartenant à la mise en page d'une
+    # autre scène (son texte réapparaît, son tempo se rejoue).
+    L.append("    text_read_reset_all();")
     # Caméra — position de départ + bornes de monde (0 = axe illimité côté
     # C). Réinitialisées à chaque scène : cam_x/cam_y ne doivent pas hériter
     # de la scène précédente (cf. project_camera_abstraction).
@@ -735,6 +972,10 @@ def _gen_scene_init(
     # seul occupant du charblock (cf. gba_engine.h, section TTE retiré).
     text_bg = getattr(scene, "text_bg", -1)
     lay = getattr(scene, "_vram_layout", None)
+    text_cbb = (lay.text_cbb if lay else text_bg) if text_bg in {0, 1, 2, 3} else -1
+    text_base = lay.text_base if lay else 1
+    fills = getattr(scene, "_ui_fills", []) or []
+    fill_indices = getattr(scene, "_ui_fill_indices", []) or []
     if text_bg in {0, 1, 2, 3}:
         # BGxCNT du layer d'UI. Il n'a pas d'image, donc la boucle des fonds
         # ci-dessus ne l'a pas configuré — et c'est `tte_init_se` qui s'en
@@ -744,18 +985,80 @@ def _gen_scene_init(
         #
         # CBB et SBB viennent de l'allocateur : le charblock du texte n'est plus
         # forcément le sien, c'est tout l'intérêt (cf. codegen/vram_alloc.py).
-        text_cbb = lay.text_cbb if lay else text_bg
         text_sbb = lay.text_sbb if lay else text_bg * 8 + 7
         text_cnt = (text_bg & 3) | (text_cbb & 3) << 2 | (text_sbb & 0x1F) << 8
         L.append(f"    bg_cnt_set({text_bg}, 0x{text_cnt:04X});"
                  f"   /* layer UI BG{text_bg} : CBB{text_cbb}, SBB{text_sbb} */")
+        # PAS besoin de purger le screenblock ici : `bg_maps_clear()`, tout en
+        # haut de `scene_init` (avant même les fonds), vide déjà les 32
+        # screenblocks en entier — donc CE SBB aussi, quelle que soit la scène
+        # précédente qui l'occupait. Une tentative de purge locale à cet
+        # endroit serait redondante (et, historiquement, n'était PAS la cause
+        # d'un texte qui persiste d'une scène à l'autre).
     L.append(f"    text_set_layer({text_bg if text_bg in {0,1,2,3} else -1});")
+    # Remis à 0 (= pas de surface dédiée) à CHAQUE scène : `g_surf_tile_base`
+    # est un global qui, sans ce reset, garderait la valeur de la scène
+    # précédente pour une scène qui n'a elle-même aucune zone à fond.
+    L.append("    text_set_surf_base(0);")
+    # Fonds COULEUR des conteneurs : les tuiles pleines occupent le DÉBUT du
+    # bloc UI (le texte se décale de `len(indices)`), puis on les repose sur le
+    # rectangle de chaque panel. Statique : posé une fois, avant le texte.
+    for i, idx in enumerate(fill_indices):
+        L.append(f"    ui_fill_load_solid({text_cbb}, {text_base + i}, {idx});"
+                 f"   /* tuile pleine, index {idx} */")
+    # Fonds IMAGE (nine-slice, background) : les tuiles de chaque asset source
+    # sont copiées dans le charblock d'UI, JUSTE APRÈS les tuiles pleines et
+    # AVANT les glyphes — chaque bloc a son adresse propre, aucun ne recouvre
+    # l'autre. `ui_fill_map` recale ensuite les index de la carte sur cette base.
+    img_fills = getattr(scene, "_ui_img_fills", []) or []
+    img_assets = getattr(scene, "_ui_img_assets", []) or []
+    img_base = text_base + len(fill_indices)
+    asset_base: list[int] = []
+    _cur = img_base
+    for a in img_assets:
+        asset_base.append(_cur)
+        L.append(f"    copy16(TILE_RAM({text_cbb}) + {_cur} * 16, "
+                 f"{sym}_{a['sym']}, {a['tiles'] * 32});"
+                 f"   /* tuiles du fond '{a['name']}' */")
+        _cur += a["tiles"]
+    glyph_base = _cur
     if project_fonts(p):
         # APRÈS text_set_layer (qui repose le charblock par défaut) et AVANT
-        # text_set_font (qui copie les glyphes à cette adresse).
-        L.append(f"    text_set_charblock({lay.text_cbb if lay else text_bg});")
-        L.append(f"    text_set_tile_base({lay.text_base if lay else 1});")
+        # text_set_font (qui copie les glyphes à cette adresse) ; décalé après
+        # les tuiles pleines des fonds.
+        L.append(f"    text_set_charblock({text_cbb if text_cbb >= 0 else text_bg});")
+        L.append(f"    text_set_tile_base({glyph_base});")
         L.append("    text_set_font(0);")
+    for f in fills:
+        L.append(
+            f"    ui_fill_rect({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
+            f"{text_base + fill_indices.index(f['index'])}, {f['bank']});"
+            f"   /* fond couleur '{f['name']}' */")
+    for f in img_fills:
+        L.append(
+            f"    ui_fill_map({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
+            f"{sym}_uimap_{_sym(f['name'])}, {asset_base[f['asset']]});"
+            f"   /* fond image '{f['name']}' */")
+    # Texte SUR un fond couleur : les zones enfants d'un panel couleur se
+    # composent sur cette couleur (décision PAR ZONE au runtime, cf.
+    # UIRegionInfo.bg_fill). La surface composée a besoin de son PROPRE bloc de
+    # tuiles, APRÈS les glyphes mono (jamais la même adresse — sinon composer
+    # une zone écraserait les glyphes que ses voisines mono lisent encore) ;
+    # les couleurs de fond sont réécrites dans la palette de police, APRÈS
+    # text_set_font qui l'a chargée.
+    from codegen.font_emit import FONT_PAL_BANK
+    by_name, idx_color = _region_bg_fills(p)
+    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    scene_bg_idx = sorted({by_name[r.name] for r in (lay_ui.regions if lay_ui else [])
+                           if r.name in by_name})
+    if scene_bg_idx and text_bg in {0, 1, 2, 3}:
+        mono_tiles = getattr(scene, "_ui_mono_tiles", 0)
+        surf_base = glyph_base + mono_tiles
+        L.append(f"    text_set_surf_base({surf_base});"
+                 f"   /* surface composée, bloc dédié après les glyphes mono */")
+        for idx in scene_bg_idx:
+            L.append(f"    PAL_BG_RAM[{FONT_PAL_BANK} * 16 + {idx}] = "
+                     f"0x{idx_color[idx]:04X};   /* couleur de fond de zone */")
     # Bande de sprites du texte : après les sprites d'acteurs (tuiles) et après
     # tous les slots d'acteurs et de pools (OAM). -1 = aucune zone en cible OBJ.
     if obj_text_oam >= 0:

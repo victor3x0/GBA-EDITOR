@@ -56,10 +56,4 @@ function on_late_update()
     -- chemin, elles servent la géométrie AUTHORÉE.
     text.draw(9, 2, "pong")
     text.draw(20, 2, "pong_02")
-
-    -- Bulle ancrée sur la raquette du joueur : cible SPRITE, imposée par
-    -- l'ancrage (un actor bouge au pixel, la grille BG avance par 8). Elle
-    -- suit la raquette de haut en bas — c'est ce qu'on regarde pour vérifier
-    -- le rendu en bande de sprites.
-    text.draw_in("bulle_joueur", "arena_bulle")
 end

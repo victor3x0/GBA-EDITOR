@@ -143,10 +143,7 @@ class ActorInspector(QWidget):
         # ── NOTE card — partagée Actor/Prefab ────────────────────
         notes_card = QFrame()
         notes_card.setObjectName("notes_card")
-        notes_card.setStyleSheet(
-            f"QFrame#notes_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-            f"QLabel{{background:transparent;border:none;}}"
-        )
+        notes_card.setStyleSheet(QSS.card("notes_card"))
         nl = QVBoxLayout(notes_card)
         nl.setContentsMargins(8, 6, 8, 8)
         nl.setSpacing(5)
@@ -246,13 +243,9 @@ class ActorInspector(QWidget):
         # ── TRANSFORM card ───────────────────────────────────────────
         self._transform_group = QFrame()
         self._transform_group.setObjectName("transform_card")
-        self._transform_group.setStyleSheet(
-            f"QFrame#transform_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-            # Section à plat par élévation (cf scene_inspector) ; l'identité de
-            # famille passe par la couleur du titre, plus par un liseré.
-            f"QFrame#transform_card QFrame{{background:transparent;border:none;}}"
-            f"QLabel{{background:transparent;border:none;}}"
-        )
+        # Section à plat par élévation (cf scene_inspector) ; l'identité de
+        # famille passe par la couleur du titre, plus par un liseré.
+        self._transform_group.setStyleSheet(QSS.card("transform_card"))
         tl = QVBoxLayout(self._transform_group)
         tl.setContentsMargins(8, 6, 8, 8)
         tl.setSpacing(7)
@@ -331,11 +324,7 @@ class ActorInspector(QWidget):
         # ── COMPONENTS card ──────────────────────────────────────────
         _comp_card = QFrame()
         _comp_card.setObjectName("comp_card")
-        _comp_card.setStyleSheet(
-            f"QFrame#comp_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-            f"QFrame#comp_card QFrame{{background:transparent;border:none;}}"
-            f"QFrame#comp_card QLabel{{background:transparent;border:none;}}"
-        )
+        _comp_card.setStyleSheet(QSS.card("comp_card"))
         _comp_card_l = QVBoxLayout(_comp_card)
         _comp_card_l.setContentsMargins(0, 0, 0, 0)
         _comp_card_l.setSpacing(0)
@@ -402,11 +391,7 @@ class ActorInspector(QWidget):
         # ── ÉDITEUR card ─────────────────────────────────────────────
         self._editor_card = QFrame()
         self._editor_card.setObjectName("editor_card")
-        self._editor_card.setStyleSheet(
-            f"QFrame#editor_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-            f"QFrame#editor_card QFrame{{background:transparent;border:none;}}"
-            f"QFrame#editor_card QLabel{{background:transparent;border:none;}}"
-        )
+        self._editor_card.setStyleSheet(QSS.card("editor_card"))
         _editor_card_l = QVBoxLayout(self._editor_card)
         _editor_card_l.setContentsMargins(0, 0, 0, 0)
         _editor_card_l.setSpacing(0)
@@ -458,9 +443,7 @@ class ActorInspector(QWidget):
         self._comp_toggle.setStyleSheet(tpl.replace("{c}", color))
         # Carte ÉDITEUR à plat (élévation) — l'identité passe par la couleur du
         # toggle (self._ctx_color), plus par un liseré.
-        self._editor_card.setStyleSheet(
-            f"QFrame#editor_card{{background:{C.BG_RAISED};border:none;border-radius:6px;}}"
-        )
+        self._editor_card.setStyleSheet(QSS.card("editor_card"))
         self._comp_list.setStyleSheet(
             f"QListWidget{{background:{C.BG_DEEP};color:{C.TEXT_NORM};"
             f"border:none;border-radius:0;}}"
@@ -603,12 +586,7 @@ class ActorInspector(QWidget):
             return
 
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
-            f"border:1px solid {C.BORDER_MID};font-family:monospace;font-size:10pt;padding:2px;}}"
-            f"QMenu::item{{padding:5px 20px 5px 12px;border-radius:2px;}}"
-            f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
-        )
+        menu.setStyleSheet(QSS.menu)
         for png in pngs:
             action = menu.addAction(png.stem)
             action.setData(str(png))
@@ -722,10 +700,7 @@ class ActorInspector(QWidget):
     def _show_add_menu(self):
         if not self._actor: return
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};border:1px solid {C.BORDER};}}"
-            f"QMenu::item:selected{{background:{C.BG_SEL};}}"
-        )
+        menu.setStyleSheet(QSS.menu)
         existing_script = self._actor.get_component("script")
         has_active_script = existing_script is not None and existing_script.active
         for type_name, label in COMPONENT_LABELS.items():

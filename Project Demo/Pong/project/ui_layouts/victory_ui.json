@@ -1,8 +1,10 @@
 {
   "name": "victory_ui",
-  "regions": [
+  "elements": [
     {
+      "kind": "region",
       "name": "resultat",
+      "parent": "",
       "anchor": "screen",
       "anchor_actor": "",
       "x": 0,
@@ -16,7 +18,9 @@
       "animated_glyphs": 0
     },
     {
+      "kind": "region",
       "name": "invite_fin",
+      "parent": "",
       "anchor": "screen",
       "anchor_actor": "",
       "x": 0,

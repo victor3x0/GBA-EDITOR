@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButt
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPixmap
 from PyQt6.QtCore import Qt, pyqtSignal, QRect
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 
 # ── Viewer du spritesheet source (tile picker) ─────────────────────────────────
 
@@ -220,7 +220,7 @@ class _SpritesheetViewer(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(False)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        scroll.setStyleSheet(QSS.scroll_area)
         # Le canvas gère lui-même la molette (zoom) et le middle-drag (pan) ;
         # on neutralise le scroll natif de la molette sur le QScrollArea.
         scroll.wheelEvent = lambda e: None

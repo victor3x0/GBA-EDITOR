@@ -308,12 +308,20 @@ typedef struct UIRegionInfo {
     short anim;             /* budget de glyphes animés (0 = bande seule) */
     unsigned char priority; /* priorité OBJ (0 = devant) */
     unsigned char pal_bank; /* banque de palette OBJ */
+    /* Fond de la zone : index dans la palette de la police (FONT_PAL_BANK) que
+       la surface composée reçoit en fond, ou -1 = transparent (défaut). Posé par
+       le codegen quand la zone est enfant d'un panel à fond couleur — le texte
+       se COMPOSE alors (même en police mono) sur cette couleur, cf. g_ui_fill_bg. */
+    signed char bg_fill;
 } UIRegionInfo;
 
 extern const UIRegionInfo g_ui_regions[];
 
 void text_set_layer(int bg);        /* posé par scene_init depuis Scene.text_bg */
 void text_set_tile_base(int t);     /* posé par scene_init — cf. allocateur */
+void text_set_surf_base(int t);     /* posé par scene_init SI la scène a un
+                                        fond de zone — bloc dédié à la surface
+                                        composée, distinct des glyphes mono */
 void text_set_font (int f);         /* charge glyphes + palette en VRAM */
 int  text_length   (int id);
 void text_clear    (int tx, int ty, int w, int h);
@@ -334,6 +342,8 @@ void text_draw_in     (int region, int id);
    des deux primitives d'écriture tient. */
 int  text_reading (int region);   /* 1 tant que le texte s'écrit */
 void text_skip    (int region);   /* tout révéler d'un coup */
+void text_read_reset_all(void);   /* posé par scene_init — ferme les lectures
+                                      de la scène précédente */
 void text_update  (void);         /* une fois par frame, avant oam_update */
 void text_clear_in    (int region);             /* vide une zone, BG ou OBJ */
 void text_obj_set_base(int oam, int tile);   /* posé par scene_init */
@@ -344,6 +354,23 @@ int  tilemap_get        (int bg, int tx, int ty);
 void tilemap_set_palette(int bg, int tx, int ty, int bank);
 void tilemap_set_flip   (int bg, int tx, int ty, int fh, int fv);
 void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
+
+/* Fond de conteneur d'UI (UIPanel) — statique, posé par scene_init sur le calque
+   UI, AVANT que les scripts ne posent le texte par-dessus.
+   `ui_fill_load_solid` grave une tuile PLEINE (64 px d'un même index de palette)
+   dans le charblock UI ; `ui_fill_rect` la repose sur un rectangle de tuiles avec
+   la banque de palette voulue. La couleur vient donc de (banque, index), pas de
+   la tuile — d'où une tuile pleine par index distinct. */
+void ui_fill_load_solid(int cbb, int tile, int index);
+void ui_fill_rect      (int bg, int tx, int ty, int w, int h, int tile, int bank);
+/* Fond IMAGE (nine-slice, background) : `se` est une carte w×h de screen
+   entries préparée par le codegen — palette déjà rebasée sur les banques
+   matérielles, index de tuile LOCAL à l'asset. `tile_base` est l'endroit où ses
+   tuiles ont été copiées dans le charblock d'UI. `UI_SE_EMPTY` = case à laisser
+   vide (hors de l'image source, ou centre d'un cadre ajouré). */
+#define UI_SE_EMPTY 0xFFFF
+void ui_fill_map       (int bg, int tx, int ty, int w, int h,
+                        const unsigned short *se, int tile_base);
 
 #ifdef GBA_ENGINE_IMPL
 
@@ -471,6 +498,35 @@ void tilemap_fill(int bg, int tx, int ty, int w, int h, int tile) {
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++)
             tilemap_set(bg, tx + c, ty + r, tile);
+}
+
+/* Tuile pleine : chaque nibble = index → un mot u16 = l'index répété 4 fois. */
+void ui_fill_load_solid(int cbb, int tile, int index) {
+    u16 w = (u16)((index & 0xF) * 0x1111);
+    vu16 *dst = TILE_RAM(cbb) + tile * 16;
+    for (int i = 0; i < 16; i++) dst[i] = w;
+}
+
+void ui_fill_rect(int bg, int tx, int ty, int w, int h, int tile, int bank) {
+    for (int r = 0; r < h; r++)
+        for (int c = 0; c < w; c++) {
+            tilemap_set(bg, tx + c, ty + r, tile);
+            tilemap_set_palette(bg, tx + c, ty + r, bank);
+        }
+}
+
+void ui_fill_map(int bg, int tx, int ty, int w, int h,
+                 const unsigned short *se, int tile_base) {
+    for (int r = 0; r < h; r++)
+        for (int c = 0; c < w; c++) {
+            u16 e = se[r * w + c];
+            vu16 *d = bg_se_addr(bg, tx + c, ty + r);
+            /* La SE porte déjà sa banque de palette et ses drapeaux de miroir ;
+               seul l'index de tuile est local à l'asset, d'où la rebase. */
+            *d = (e == UI_SE_EMPTY)
+               ? 0
+               : (u16)((e & 0xFC00) | (((e & 0x03FF) + tile_base) & 0x03FF));
+        }
 }
 
 /* ── Windows ─────────────────────────────────────────────────────── */
@@ -760,12 +816,36 @@ static int g_blit_w  = TEXT_SURF_W;
 static int g_blit_h  = 0;          /* 0 = surface BG (modulo) */
 static int g_blit_ox = 0, g_blit_oy = 0;   /* origine du bloc, en TUILES */
 
+/* Base VRAM de la SURFACE composée — SÉPARÉE de `g_text_tile_base` (glyphes
+   statiques mono). Les deux ne peuvent PAS partager une adresse : la surface
+   se réécrit en pixels à chaque composition, ce qui corromprait des glyphes
+   mono résidents lus par une AUTRE zone de la même scène. 0 = pas de surface
+   réservée (scène sans aucune zone à fond) → repli sur `g_text_tile_base`,
+   comportement d'avant pour une police proportionnelle seule. Posée par
+   scene_init via `text_set_surf_base`, à appeler APRÈS text_set_tile_base. */
+static int g_surf_tile_base = 0;
+void text_set_surf_base(int t) { g_surf_tile_base = (t > 0 && t < 1024) ? t : 0; }
+
 static void blit_use_bg_surface(void) {
     g_blit_mem   = (volatile u32*)(TILE_RAM(g_text_cbb));
-    g_blit_tile0 = g_text_tile_base;
+    g_blit_tile0 = g_surf_tile_base ? g_surf_tile_base : g_text_tile_base;
     g_blit_w     = TEXT_SURF_W;
     g_blit_h     = 0;
     g_blit_ox    = g_blit_oy = 0;
+}
+
+/* Fond de la ZONE en cours de rendu : index dans FONT_PAL_BANK que la surface
+   composée reçoit en fond (-1 = transparent). Posé par `text_render_region_cp`
+   depuis `UIRegionInfo.bg_fill`, remis à -1 après. */
+static int g_ui_fill_bg = -1;
+
+/* Vrai quand la zone courante doit se COMPOSER plutôt que poser des tuiles :
+   police proportionnelle, bloc privé (bande OBJ), ou CETTE zone a un fond
+   (`g_ui_fill_bg >= 0`, posé par `text_render_region_cp`). PAR ZONE et non par
+   scène : une zone sans fond garde le tilemap, moins cher et sans conflit
+   d'adresse avec la surface de ses voisines. */
+static int text_is_composited(void) {
+    return (g_font && g_font->composited) || g_blit_h || g_ui_fill_bg >= 0;
 }
 
 /* Tuile du bloc courant couvrant la case écran (tx, ty), ou -1 si la case est
@@ -962,14 +1042,17 @@ int text_length(int id) {
    l'ancien, la composition ne faisant que poser de l'encre. */
 void text_clear(int tx, int ty, int w, int h) {
     if (g_text_layer < 0) return;
-    int prop = g_font && g_font->composited;
+    int prop = text_is_composited();
     blit_use_bg_surface();          /* text_clear ne vide QUE la surface BG */
     volatile u32 *base = g_blit_mem;
+    /* Vider = revenir au fond : transparent, ou la couleur du panel si la zone
+       en a une (sinon effacer le texte ferait aussi disparaître son fond). */
+    u32 bg = (g_ui_fill_bg >= 0) ? (u32)(g_ui_fill_bg & 0xF) * 0x11111111u : 0u;
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++) {
             if (prop) {
                 volatile u32 *t = base + text_surf_tile(tx + c, ty + r) * 8;
-                for (int k = 0; k < 8; k++) t[k] = 0;
+                for (int k = 0; k < 8; k++) t[k] = bg;
             } else {
                 tilemap_set(g_text_layer, tx + c, ty + r, 0);
             }
@@ -981,13 +1064,17 @@ void text_clear(int tx, int ty, int w, int h) {
    composition précédente, ou n'importe quel index laissé par le décor. */
 static void text_surf_prepare(int tx, int ty, int w, int h) {
     volatile u32 *base = g_blit_mem;
+    /* Fond de la surface : transparent (0), ou la couleur du panel répétée sur
+       les 8 pixels du mot u32 quand la zone a un fond (`g_ui_fill_bg`). L'encre
+       des glyphes se compose ensuite PAR-DESSUS. */
+    u32 bg = (g_ui_fill_bg >= 0) ? (u32)(g_ui_fill_bg & 0xF) * 0x11111111u : 0u;
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++) {
             int t = text_surf_tile(tx + c, ty + r);
             tilemap_set(g_text_layer, tx + c, ty + r, t);
             tilemap_set_palette(g_text_layer, tx + c, ty + r, FONT_PAL_BANK);
             volatile u32 *p = base + t * 8;
-            for (int k = 0; k < 8; k++) p[k] = 0;
+            for (int k = 0; k < 8; k++) p[k] = bg;
         }
 }
 
@@ -1111,9 +1198,9 @@ static int text_align_off(int align, int wrap_px, int line_w) {
        76 px y deviendrait 72 en silence — et deux glyphes voisins pourraient
        viser la même case. On cale donc sur la grille, ce qui centre à la tuile
        près : sans effet visible pour une police mono, qui vit déjà sur cette
-       grille. Les chemins composés (proportionnel, bande de sprites) gardent
-       le pixel. */
-    if (!g_font->composited && !g_blit_h) off &= ~7;
+       grille. Les chemins composés (proportionnel, bande de sprites, zone à
+       fond) gardent le pixel. */
+    if (!text_is_composited()) off &= ~7;
     return off;
 }
 
@@ -1162,13 +1249,12 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                     g_cap_i[g_cap_n]  = (short)i;
                     g_cap_ink[g_cap_n] = (short)g_ink;
                     g_cap_n++;
-                } else if (g_font->composited || g_blit_h) {
-                    /* `g_blit_h` non nul = bloc PRIVÉ (bande de sprites). On y
-                       compose toujours, même avec une police mono : poser des
-                       tuiles irait écrire dans la tilemap du layer d'UI, qui
-                       n'a rien à voir avec le sprite qu'on est en train de
-                       remplir. Les glyphes se lisent en ROM dans les deux
-                       modes, il n'y a donc rien de plus à charger. */
+                } else if (text_is_composited()) {
+                    /* Compose (pixel) plutôt que poser une tuile : police
+                       proportionnelle, bloc PRIVÉ (bande de sprites, `g_blit_h`),
+                       ou CETTE zone a un fond (`g_ui_fill_bg`) — dans tous ces
+                       cas poser une tuile serait faux ou impossible. Les glyphes
+                       se lisent en ROM, rien de plus à charger. */
                     text_put_px(gi, x, y);
                 } else text_put_tiles(gi, x >> 3, y >> 3);
                 g_ink = 0;
@@ -1203,10 +1289,11 @@ static void text_render_cp_al(const unsigned short *s, int slen,
                               int tx, int ty, int wrap, int n, int align) {
     if (g_text_layer < 0 || !g_font) return;
     blit_use_bg_surface();
-    if (g_font->composited) {
+    if (text_is_composited()) {
         /* Préparer AVANT de composer : la composition ne pose que de l'encre,
            elle n'efface pas ce qui était là. La zone préparée doit couvrir le
-           texte ALIGNÉ, d'où le même `align` dans les deux passes. */
+           texte ALIGNÉ, d'où le même `align` dans les deux passes. Zone à
+           fond, on prépare même en police mono (le texte s'y compose). */
         int w = 1, h = 1;
         text_layout(s, slen, tx, ty, wrap, n, 1, align, &w, &h);
         text_surf_prepare(tx, ty, w, h);
@@ -1252,7 +1339,11 @@ static void text_render_region_cp(const unsigned short *s, int slen,
     if (!g_font) return;
     if (R->target == 1) { text_render_obj(s, slen, R, n); return; }
     if (g_text_layer < 0) return;
+    /* Fond de la zone le temps du rendu : la surface se compose sur cette
+       couleur (cf. text_surf_prepare/text_clear), puis on la remet à -1. */
+    g_ui_fill_bg = R->bg_fill;
     text_render_cp_al(s, slen, R->x >> 3, R->y >> 3, R->w >> 3, n, R->align);
+    g_ui_fill_bg = -1;
 }
 
 static void text_render_region(int id, int r, int n) {
@@ -1319,6 +1410,20 @@ static void text_read_reset(int r) {
         g_reads_init = 1;
     }
     if (r >= 0 && r < TEXT_READ_MAX) { g_reads[r].id = -1; g_reads[r].active = 0; }
+}
+
+/* Ferme TOUTES les têtes de lecture — posé par `scene_init`, au même titre que
+   `bg_maps_clear` ou `oam_hide_all`.
+
+   Sans lui, une zone lue dans la scène PRÉCÉDENTE garde son slot ouvert
+   (`id >= 0`), et `text_update` — qui balaie les slots sans savoir à quelle
+   mise en page ils appartiennent — continue de la rendre dans la nouvelle
+   scène : le texte de l'écran d'avant réapparaît, et son tempo se rejoue.
+   Les index de zone sont PROJET-GLOBAUX (g_ui_regions est une table plate),
+   donc le slot reste parfaitement « valide » — rien ne signalait l'erreur. */
+void text_read_reset_all(void) {
+    for (int k = 0; k < TEXT_READ_MAX; k++) { g_reads[k].id = -1; g_reads[k].active = 0; }
+    g_reads_init = 1;
 }
 
 void text_draw_in(int r, int id) {
@@ -1597,8 +1702,13 @@ void text_clear_in(int r) {
        zone BG sur la grille, donc le décalage est exact ; le plancher à 1 tuile
        couvre une zone plus étroite qu'un glyphe, qui déborde à l'affichage
        (cf. text_scan_line) et doit donc s'effacer sur au moins une case. */
+    /* Fond de la zone le temps de l'effacement : sans lui, `text_clear`
+       remettrait du transparent au lieu de la couleur du panel — même garde
+       que `text_render_region_cp`. */
     int w = R->w >> 3, h = R->h >> 3;
+    g_ui_fill_bg = R->bg_fill;
     text_clear(R->x >> 3, R->y >> 3, w > 0 ? w : 1, h > 0 ? h : 1);
+    g_ui_fill_bg = -1;
 }
 
 /* ── Chiffres ─────────────────────────────────────────────────────

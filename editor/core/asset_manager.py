@@ -74,7 +74,7 @@ class AssignSlot(QFrame):
         # Nom du fichier
         self._name_lbl = QLabel("Déposer ou cliquer")
         self._name_lbl.setFont(QFont(T.MONO, T.SM))
-        self._name_lbl.setStyleSheet("color:#444;")
+        self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         layout.addWidget(self._name_lbl, 1)
 
         # Bouton import
@@ -83,8 +83,8 @@ class AssignSlot(QFrame):
         btn_import.setToolTip("Importer un PNG")
         btn_import.setFixedSize(20, 20)
         btn_import.setStyleSheet(
-            "QToolButton{color:#666;border:none;background:none;font-size:12px;}"
-            "QToolButton:hover{color:#9b8cff;}"
+            f"QToolButton{{color:{C.TEXT_DIM};border:none;background:none;font-size:12px;}}"
+            f"QToolButton:hover{{color:{C.ACCENT};}}"
         )
         btn_import.clicked.connect(self._open_dialog)
         layout.addWidget(btn_import)
@@ -145,7 +145,7 @@ class AssignSlot(QFrame):
         self._path = ""
         self._thumb.setPixmap(QPixmap())
         self._name_lbl.setText("Déposer ou cliquer")
-        self._name_lbl.setStyleSheet("color:#444;")
+        self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._btn_clear.setVisible(False)
 
     def _clear(self):
@@ -319,7 +319,7 @@ class BgLayerRow(QFrame):
         self._inpaint_layer_btn.setToolTip("Inpainter ce layer (repeindre ses palettes)")
         self._inpaint_layer_btn.setStyleSheet(
             "QToolButton{background:transparent;border:none;padding:0;}"
-            f"QToolButton:checked{{background:#241f3a;border:1px solid {self._color};"
+            f"QToolButton:checked{{background:{C.BG_SEL};border:1px solid {self._color};"
             "border-radius:3px;}"
         )
         self._inpaint_layer_btn.clicked.connect(

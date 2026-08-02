@@ -176,6 +176,91 @@ class MoveUIRegionCmd(Command):
         return False
 
 
+class ResizeUIRegionCmd(Command):
+    """Redimensionnement d'une zone de texte par les poignées du canvas.
+
+    Distincte de `MoveUIRegionCmd` parce qu'elle réécrit les QUATRE champs
+    géométriques d'un coup : tirer une poignée haut/gauche déplace l'origine ET
+    change la taille, un déplacement pur n'y touche pas. Les tuples sont
+    (x, y, w, h) ; comme pour le move, x/y sont un OFFSET quand la zone est
+    ancrée sur un actor, et c'est à l'appelant d'avoir déjà retranché l'origine
+    de l'acteur."""
+
+    def __init__(self, region, old, new, persist_fn=None):
+        self._region = region
+        self._old = tuple(old)   # (x, y, w, h)
+        self._new = tuple(new)
+        self.label = f"Redimensionner zone {region.name}"
+        self._persist = persist_fn
+
+    def _apply(self, g):
+        self._region.x, self._region.y, self._region.w, self._region.h = g
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._apply(self._new)
+
+    def undo(self):
+        self._apply(self._old)
+
+    def merge(self, newer: "Command") -> bool:
+        if isinstance(newer, ResizeUIRegionCmd) and self._region is newer._region:
+            self._new = newer._new
+            self._persist = newer._persist
+            return True
+        return False
+
+
+class UILayoutOrderCmd(Command):
+    """Mutation undoable de l'ORDRE et de la HIÉRARCHIE des éléments d'une
+    `UILayout` — réordonnancement de frères (z-order) OU reparentage avec
+    position, deux gestes qui touchent l'un l'ordre de `elements`, l'autre une
+    ref `parent`, souvent les deux à la fois (drop dans l'arbre). Remplace
+    l'ancien `ReparentUIRegionCmd` (parent seul) : le drop porte désormais aussi
+    la position, et un snapshot couvre les deux uniformément.
+
+    Snapshot COMPLET (liste `elements` + `parent` de chaque élément), même
+    patron que `_ScenePaletteCmd` : le `mutate_fn` applique la nouvelle
+    configuration (via `UILayout.move_sibling`/`place_child`), et l'avant (pris à
+    la construction) et l'après (pris au 1er execute) suffisent à rejouer sans
+    ré-exécuter la logique — un `move_sibling` n'est pas idempotent, le rejouer
+    en boucle dériverait."""
+
+    def __init__(self, layout, mutate_fn, label: str, persist_fn=None):
+        self._layout = layout
+        self._mutate = mutate_fn
+        self.label = label
+        self._persist = persist_fn
+        self._before = self._snapshot()
+        self._after = None
+
+    def _snapshot(self):
+        return (list(self._layout.elements),
+                {e.name: e.parent for e in self._layout.elements})
+
+    def _restore(self, snap):
+        elems, parents = snap
+        self._layout.elements[:] = elems
+        for e in self._layout.elements:
+            if e.name in parents:
+                e.parent = parents[e.name]
+
+    def execute(self):
+        if self._after is None:
+            self._mutate()
+            self._after = self._snapshot()
+        else:
+            self._restore(self._after)   # redo
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        self._restore(self._before)
+        if self._persist:
+            self._persist()
+
+
 class AddActorCmd(Command):
     def __init__(self, scene: "Scene", actor: "Actor", persist_fn=None):
         self._scene = scene

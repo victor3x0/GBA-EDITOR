@@ -1,20 +1,83 @@
 {
   "name": "arena_ui",
-  "regions": [
+  "elements": [
     {
-      "name": "bulle_joueur",
-      "anchor": "actor",
-      "anchor_actor": "PADDLE_PL",
-      "x": 25,
-      "y": -42,
-      "w": 32,
-      "h": 8,
-      "font_name": "omelette_8x8_heavy_mono",
-      "align": "left",
+      "kind": "panel",
+      "name": "conteneur",
+      "parent": "",
+      "x": 72,
+      "y": 40,
+      "w": 104,
+      "h": 48,
+      "anchor": "screen",
+      "anchor_actor": "",
+      "fill_kind": "color",
+      "fill_palette": "DMG (GB Default) (BG)",
+      "fill_index": 4,
+      "fill_asset": ""
+    },
+    {
+      "kind": "region",
+      "name": "texte",
+      "parent": "conteneur",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": 0,
+      "y": 32,
+      "w": 104,
+      "h": 16,
+      "font_name": "",
+      "align": "center",
       "target": "",
       "preview_text": "arena_bulle",
-      "animated_glyphs": 2
+      "animated_glyphs": 0
+    },
+    {
+      "kind": "region",
+      "name": "zone",
+      "parent": "conteneur",
+      "anchor": "screen",
+      "anchor_actor": "",
+      "x": -48,
+      "y": 56,
+      "w": 104,
+      "h": 32,
+      "font_name": "",
+      "align": "left",
+      "target": "",
+      "preview_text": "",
+      "animated_glyphs": 0
+    },
+    {
+      "kind": "panel",
+      "name": "conteneur_02",
+      "parent": "",
+      "x": 144,
+      "y": 96,
+      "w": 88,
+      "h": 48,
+      "anchor": "actor",
+      "anchor_actor": "",
+      "fill_kind": "none",
+      "fill_palette": "",
+      "fill_index": 0,
+      "fill_asset": ""
+    },
+    {
+      "kind": "text",
+      "name": "texte_02",
+      "parent": "conteneur_02",
+      "x": 0,
+      "y": 16,
+      "w": 88,
+      "h": 32,
+      "anchor": "screen",
+      "anchor_actor": "",
+      "text_key": "",
+      "font_name": "",
+      "align": "left",
+      "wrap": false
     }
   ],
-  "notes": "Bulle ancree sur PADDLE_PL. \"GO!\" : G et O passent par le chemin PAR GLYPHE (2 reserves), \"!\" reste dans la BANDE. Si un seul des deux apparait, on sait lequel des deux chemins a lache."
+  "notes": "Panneau ecran a fond couleur (DMG index 2) + zone 'texte' ENFANT du panneau : le script PONG.lua ecrit dedans (text.draw_in), le texte doit se COMPOSER sur la couleur du panneau (bg_fill), pas l'ecraser. Banc d'essai du texte-sur-fond."
 }

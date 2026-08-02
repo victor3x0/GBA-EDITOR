@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, QObject, QRunnable, QThreadPool, pyqtSignal
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, FinderSection, AssetHeaderBar
 from ui.common.icons import COLOR_BACKGROUND
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
@@ -30,14 +30,6 @@ from core.bg_import import bg_fits_vram
 from .bg_inpaint_canvas import BgInpaintCanvas
 
 _BG_COLOR = COLOR_BACKGROUND
-
-_CTX_MENU_QSS = (
-    f"QMenu{{background:{C.BG_RAISED}; color:{C.TEXT_NORM};"
-    f"border:1px solid {C.BORDER_MID}; font-family:{T.MONO};"
-    f"font-size:{T.MD}px; padding:2px;}}"
-    f"QMenu::item{{padding:4px 20px 4px 12px; border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL}; color:{C.ACCENT};}}"
-)
 
 
 # ── Compression hors-thread ─────────────────────────────────────────────────
@@ -188,7 +180,7 @@ class BgFinderPanel(QWidget):
         if not ba:
             return
         menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
+        menu.setStyleSheet(QSS.menu)
         act_rename = menu.addAction("Renommer")
         menu.addSeparator()
         act_del = menu.addAction("Supprimer le fond")

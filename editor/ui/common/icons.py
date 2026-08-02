@@ -25,6 +25,7 @@ _FAM_ENTITY = "#f75c3c"   # Entités : actor, prefab, sprite  (rouge vermillon)
 _FAM_WORLD  = "#f5a623"   # Monde   : scene, camera, background  (ambre-orange)
 _FAM_LOGIC  = "#ec4a9a"   # Logique : script  (magenta)
 _FAM_AUDIO  = "#15c9b2"   # Audio   : sfx, music  (teal vif)
+_FAM_UI     = "#4f8ff7"   # Interface : layout, conteneur, texte, zone  (bleu franc)
 
 COLOR_DEFAULT = "#8a8aa0"   # neutre légèrement teinté indigo
 COLOR_ACTIVE  = "#5be08b"   # = C.POWER — état actif / live
@@ -47,6 +48,14 @@ COLOR_EVENT    = COLOR_SCRIPT
 COLOR_BEHAVIOR = COLOR_SCRIPT
 COLOR_GLOBAL   = COLOR_SCRIPT
 COLOR_CONST    = COLOR_SCRIPT
+# Interface — mise en page UI et ses trois types d'éléments. UNE couleur pour
+# la famille ; zone / conteneur / texte se distinguent par la FORME de l'icône,
+# comme partout ailleurs (règle « forme, pas teinte »).
+COLOR_UI        = _FAM_UI
+COLOR_UI_LAYOUT = _FAM_UI
+COLOR_UI_PANEL  = _FAM_UI
+COLOR_UI_TEXT   = _FAM_UI
+COLOR_UI_REGION = _FAM_UI
 
 # ── Registre : nom logique → (qta_key, unicode_fallback) ──────────
 # Pour swapper l'icon set : remplacer les qta_key par les nouveaux.
@@ -63,6 +72,12 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Zone de texte : un rectangle qui contient du texte — l'outil délimite une
     # surface, il ne saisit pas de texte (celui-ci vient de la table).
     "tool_text_region":      ("mdi.format-text-variant-outline", "⌸"),
+    # Interface — types d'éléments d'une mise en page (arbre, toolbar, canvas).
+    # Un type = une FORME : la couleur est celle de la famille (COLOR_UI).
+    "ui_layout":             ("mdi.view-dashboard-outline",  "⊞"),
+    "ui_panel":              ("mdi.card-outline",            "▭"),
+    "ui_text":               ("mdi.format-text",             "T"),
+    "ui_region":             ("mdi.form-textbox",            "⌸"),
     "tool_inpaint_brush":         ("mdi.brush",                   "🖌"),
     "tool_inpaint_rect":          ("mdi.select-drag",             "▭"),
     "tool_fill":                  ("mdi.format-color-fill",       "🪣"),

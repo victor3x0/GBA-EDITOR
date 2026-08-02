@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 
 
 # ── Constantes de style ───────────────────────────────────────────────
@@ -39,34 +39,12 @@ _FONT_MONO_AX  = QFont(T.MONO, T.MD, QFont.Weight.Bold)   # axes X/Y/W/H
 _LBL_STY    = f"color:{C.TEXT_DIM}; background:transparent; border:none;"
 _LBL_AX_STY = "color:{c}; background:transparent; border:none;"
 
-BTN_GHOST = (
-    f"QPushButton{{color:{C.TEXT_DIM};background:transparent;"
-    f"border:1px solid {C.BORDER};border-radius:3px;"
-    f"font-family:{T.MONO};font-size:{T.SM}px;padding:2px 6px;}}"
-    f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};border-color:#555;}}"
-    f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER_DARK};}}"
-)
-BTN_ACCENT = (
-    f"QPushButton{{color:{C.ACCENT};background:transparent;"
-    f"border:1px solid {C.ACCENT};border-radius:3px;"
-    f"font-family:{T.MONO};font-size:{T.SM}px;padding:2px 6px;}}"
-    f"QPushButton:hover{{color:{C.BG_DEEP};background:{C.ACCENT};}}"
-    f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER_DARK};}}"
-)
-BTN_DANGER = (
-    f"QToolButton{{color:{C.TEXT_NORM};background:transparent;border:none;"
-    f"font-family:{T.MONO};font-size:{T.XL}px;padding:0;}}"
-    f"QToolButton:hover{{color:{C.ACCENT_RED};}}"
-    f"QToolButton:pressed{{color:#ff3030;}}"
-)
-
-# Bouton icône sans bordure (+ ajout, ⌕ recherche) — même style que project panel
-BTN_ICON = (
-    f"QToolButton{{color:{C.TEXT_DIM};background:transparent;border:none;"
-    f"font-size:{T.XXL}px;padding:0 3px;}}"
-    f"QToolButton:hover{{color:{C.ACCENT};}}"
-    f"QToolButton:pressed{{color:{C.ACCENT};opacity:0.7;}}"
-)
+# Alias vers les fragments centralisés de theme.py — gardés ici pour ne pas
+# casser les call sites existants (W.btn_ghost, W.btn_accent, ...).
+BTN_GHOST  = QSS.button_ghost
+BTN_ACCENT = QSS.button_accent_outline
+BTN_DANGER = QSS.toolbutton_danger
+BTN_ICON   = QSS.toolbutton_icon
 
 
 # ── Factory class (namespace) ─────────────────────────────────────────
@@ -600,7 +578,7 @@ class ScriptPickerPopup(QFrame):
         scroll.setWidgetResizable(True)
         scroll.setMaximumHeight(180)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        scroll.setStyleSheet(QSS.scroll_area)
 
         self._list_widget = QWidget()
         self._list_widget.setStyleSheet("background:transparent;")
@@ -918,6 +896,13 @@ class AssetHeaderBar(QWidget):
                 "music":  _kind_colors(icons.COLOR_MUSIC),
                 "uses":   _kind_colors(icons.COLOR_PREFAB),
                 "project": _kind_colors(C.ACCENT),
+                # Interface — un kind par type d'élément (même famille bleue) ;
+                # "ui_element" reste en repli pour les appels génériques.
+                "ui_region":  _kind_colors(icons.COLOR_UI),
+                "ui_panel":   _kind_colors(icons.COLOR_UI),
+                "ui_text":    _kind_colors(icons.COLOR_UI),
+                "ui_element": _kind_colors(icons.COLOR_UI),
+                "ui_layout":  _kind_colors(icons.COLOR_UI),
                 "empty":  ("#161616", "#333333", "#555555"),
             }
         return cls._PALETTE

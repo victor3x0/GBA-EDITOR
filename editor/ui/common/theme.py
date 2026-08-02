@@ -34,7 +34,7 @@ class _Typography:
     # Tailles (points pour QFont / pixels pour QSS — traitées identiquement)
     XS  = 9    # hints, sous-labels très discrets
     SM  = 10   # labels dim, boutons secondaires
-    MD  = 11   # texte courant, menus, inputs
+    MD  = 12   # texte courant, menus, inputs
     MD2 = 12   # inputs légèrement plus grands (spinbox)
     LG  = 13   # titres section, sidebar éditeur
     XL  = 14   # titre projet, icônes larges
@@ -100,15 +100,15 @@ C = _Colors()
 
 # ──────────────────────────────────────────────────────────────────
 #  Petites flèches ▲▼ des QSpinBox / QComboBox — comme le reste de
-#  l'application, elles viennent de l'icon set (ui.common.icons), pas
-#  d'assets PNG versionnés. icons.qss_image() les matérialise dans un
-#  cache disque parce que le loader url() des QSS ne sait lire qu'un
+#  l'application, elles viennent de l'icon set (ui.common.icons).
+#  icons.qss_image() les matérialise dans un cache disque
+#  parce que le loader url() des QSS ne sait lire qu'un
 #  fichier : ni police d'icônes, ni data-URI.
 #  Rendues en 2× puis affichées à _ARROW_PX pour rester nettes en HiDPI.
 # ──────────────────────────────────────────────────────────────────
 
 _ARROW_PX = 9
-_ARROW_SCALE = 1.9   # remplit la boîte MDI, sinon le triangle est minuscule
+_ARROW_SCALE = 2.5   # remplit la boîte MDI, sinon le triangle est minuscule
 
 
 def _arrow_rule(selectors: str, name: str, color: str) -> str:
@@ -125,10 +125,17 @@ def _arrow_rule(selectors: str, name: str, color: str) -> str:
 
 # ──────────────────────────────────────────────────────────────────
 #  Fragments QSS réutilisables widget par widget
+#
+#  Anatomie d'un fragment (mêmes 4 leviers partout) :
+#    background  → fond du widget       border      → cadre (souvent BORDER_MID)
+#    color       → couleur du texte     :focus/:hover→ état actif = bascule ACCENT
+#  Pour reteinter tout l'app, change les constantes C.* plus haut ;
+#  pour retoucher UN widget, édite son fragment ci-dessous.
 # ──────────────────────────────────────────────────────────────────
 
 class _QSS:
 
+    # Champs numériques ▲▼ (position, taille, offsets inspecteur)
     @property
     def spinbox(self) -> str:
         return f"""
@@ -168,6 +175,7 @@ QSpinBox:focus, QDoubleSpinBox:focus {{
 }}
 """
 
+    # Champs texte (noms d'assets, chemins, valeurs éditables)
     @property
     def lineedit(self) -> str:
         return f"""
@@ -189,6 +197,7 @@ QLineEdit:read-only {{
 }}
 """
 
+    # Cases à cocher (options booléennes) — la coche remplie prend ACCENT
     @property
     def checkbox(self) -> str:
         return f"""
@@ -214,6 +223,7 @@ QCheckBox::indicator:hover {{
 }}
 """
 
+    # Menus déroulants (choix de mode, sélecteurs) + leur liste ouverte
     @property
     def combobox(self) -> str:
         return f"""
@@ -249,6 +259,7 @@ QComboBox QAbstractItemView {{
 }}
 """
 
+    # Bouton d'action mis en avant, plein périwinkle (Ouvrir, Créer, Valider)
     @property
     def button_primary(self) -> str:
         # Action primaire « ordinaire » (Ouvrir, Créer…) → périwinkle.
@@ -269,6 +280,7 @@ QPushButton:pressed {{ background: #2c2350; }}
 QPushButton:disabled {{ background: #241f3a; color: #555; }}
 """
 
+    # Bouton discret transparent, texte seul + cadre (actions secondaires)
     @property
     def button_ghost(self) -> str:
         return f"""
@@ -282,8 +294,28 @@ QPushButton {{
     font-size: {T.SM}px;
 }}
 QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: #444; }}
+QPushButton:disabled {{ color: {C.TEXT_MUTED}; border-color: {C.BORDER_DARK}; }}
 """
 
+    # Variante accent du bouton discret : contour périwinkle, se remplit au survol
+    # (Ouvrir/Choisir secondaire — entre button_ghost et button_primary)
+    @property
+    def button_accent_outline(self) -> str:
+        return f"""
+QPushButton {{
+    color: {C.ACCENT};
+    background: transparent;
+    border: 1px solid {C.ACCENT};
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-family: monospace;
+    font-size: {T.SM}px;
+}}
+QPushButton:hover {{ color: {C.BG_DEEP}; background: {C.ACCENT}; }}
+QPushButton:disabled {{ color: {C.TEXT_MUTED}; border-color: {C.BORDER_DARK}; }}
+"""
+
+    # Petit bouton carré à icône (toolbar compacte, +/-, actions rapides)
     @property
     def button_icon(self) -> str:
         return f"""
@@ -298,6 +330,38 @@ QPushButton {{
 QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: #555; }}
 """
 
+    # Bouton icône SANS cadre (QToolButton) — + ajout, ⌕ recherche : survol = ACCENT
+    @property
+    def toolbutton_icon(self) -> str:
+        return f"""
+QToolButton {{
+    color: {C.TEXT_DIM};
+    background: transparent;
+    border: none;
+    font-size: {T.XXL}px;
+    padding: 0 3px;
+}}
+QToolButton:hover {{ color: {C.ACCENT}; }}
+QToolButton:pressed {{ color: {C.ACCENT}; opacity: 0.7; }}
+"""
+
+    # Bouton icône SANS cadre pour action destructive (× supprimer) : survol = rouge
+    @property
+    def toolbutton_danger(self) -> str:
+        return f"""
+QToolButton {{
+    color: {C.TEXT_NORM};
+    background: transparent;
+    border: none;
+    font-family: monospace;
+    font-size: {T.XL}px;
+    padding: 0;
+}}
+QToolButton:hover {{ color: {C.ACCENT_RED}; }}
+QToolButton:pressed {{ color: #ff3030; }}
+"""
+
+    # Listes (assets, scènes, palettes) — ligne sélectionnée = barre ACCENT à gauche
     @property
     def list_widget(self) -> str:
         return f"""
@@ -319,6 +383,48 @@ QListWidget::item:selected {{
 }}
 QListWidget::item:hover:!selected {{
     background: {C.BG_HOVER};
+}}
+"""
+
+    # Barres de défilement fines (verticale + horizontale), poignée grise
+    # Arborescences (finder projet, palettes, sons, textes, sprites)
+    @property
+    def tree_widget(self) -> str:
+        return f"""
+QTreeWidget {{
+    background: {C.BG_BASE};
+    color: {C.TEXT_NORM};
+    border: none;
+    font-family: monospace;
+    font-size: {T.MD}px;
+    outline: none;
+    show-decoration-selected: 1;
+}}
+QTreeWidget::item {{
+    height: 22px;
+    padding-left: 2px;
+    border: none;
+}}
+QTreeWidget::item:selected {{
+    background: {C.BG_SEL};
+    color: {C.ACCENT};
+    border-left: 2px solid {C.ACCENT};
+}}
+QTreeWidget::item:hover:!selected {{
+    background: {C.BG_HOVER};
+}}
+QTreeWidget::branch {{
+    background: {C.BG_BASE};
+}}
+QTreeWidget::branch:has-children:!has-siblings:closed,
+QTreeWidget::branch:closed:has-children:has-siblings {{
+    border-image: none;
+    image: none;
+}}
+QTreeWidget::branch:open:has-children:!has-siblings,
+QTreeWidget::branch:open:has-children:has-siblings {{
+    border-image: none;
+    image: none;
 }}
 """
 
@@ -356,6 +462,36 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 """
 
+    # Zone défilante sans cadre propre (contenu qui doit se fondre dans son parent)
+    @property
+    def scroll_area(self) -> str:
+        return "QScrollArea { border: none; background: transparent; }"
+
+    # Carte élevée d'un inspecteur (fond BG_RAISED, coins arrondis) — l'object_name
+    # isole chaque carte pour ne pas teinter les QFrame/QLabel enfants transparents
+    def card(self, object_name: str) -> str:
+        return f"""
+QFrame#{object_name} {{
+    background: {C.BG_RAISED};
+    border: none;
+    border-radius: 6px;
+}}
+QFrame#{object_name} QFrame {{
+    background: transparent;
+    border: none;
+}}
+QFrame#{object_name} QLabel {{
+    background: transparent;
+    border: none;
+}}
+"""
+
+    # Fond de fenêtre modale (project picker, dialogues de confirmation)
+    @property
+    def dialog(self) -> str:
+        return f"QDialog {{ background: {C.BG_BASE}; }}"
+
+    # Poignée entre panneaux redimensionnables (survol = ACCENT)
     @property
     def splitter(self) -> str:
         return f"""
@@ -373,6 +509,7 @@ QSplitter::handle:hover {{
 }}
 """
 
+    # Bulles d'aide au survol
     @property
     def tooltip(self) -> str:
         return f"""
@@ -387,6 +524,7 @@ QToolTip {{
 }}
 """
 
+    # Menus contextuels et déroulants (clic droit, menus de la barre)
     @property
     def menu(self) -> str:
         return f"""
@@ -413,6 +551,7 @@ QMenu::separator {{
 }}
 """
 
+    # Barre d'outils sous le menu (boutons ; actif coché = fond ACCENT)
     @property
     def toolbar(self) -> str:
         return f"""
@@ -440,6 +579,7 @@ QToolButton:checked {{
 }}
 """
 
+    # Barre de menus tout en haut (Fichier, Édition…)
     @property
     def menubar(self) -> str:
         return f"""
@@ -454,6 +594,7 @@ QMenuBar::item:selected {{ background: {C.BG_HOVER}; }}
 QMenuBar::item:pressed  {{ background: {C.BG_SEL}; color: {C.ACCENT}; }}
 """
 
+    # Barre d'état tout en bas (fond le plus sombre, texte discret)
     @property
     def statusbar(self) -> str:
         return f"""
@@ -466,6 +607,7 @@ QStatusBar {{
 }}
 """
 
+    # Onglets (bascule entre vues) — onglet actif = liseré ACCENT en haut
     @property
     def tab(self) -> str:
         return f"""

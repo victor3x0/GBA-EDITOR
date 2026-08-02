@@ -21,10 +21,14 @@ from core.project import (
     Project, Actor, Prefab, Scene,
     MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
 )
-from core.selection_bus import get_bus
+from core.selection_bus import get_bus, UIElementSelection
 from core.command_dispatcher import get_dispatcher
-from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd, DeleteFileCmd
-from ui.common.icons import get as _ico, COLOR_DEFAULT
+from core.history import (
+    get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd,
+    DeleteFileCmd, AddListItemCmd, UILayoutOrderCmd,
+)
+from core.models.ui_region import KIND_REGION, KIND_PANEL, KIND_TEXT
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 # Source unique du dossier de projets par défaut (~/GBAProjects). Ce module
 # et window.py en avaient chacun une copie pointant vers le projects/ du
 # repo : inexistant chez quelqu'un qui lance l'exe, et dans le dossier
@@ -41,6 +45,28 @@ T_ACTOR  = "actor"
 T_PREFAB = "prefab"
 T_SCRIPT = "script"
 T_FOLDER = "folder"
+T_UI_LAYOUT = "ui_layout"    # nœud « Interface » d'une scène (asset partagé)
+T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/texte)
+
+# Icône par type d'élément UI (la couleur reste celle de la famille Interface —
+# le type se lit à la FORME, cf. project_theme_gba_redesign).
+_UI_ELEM_ICON = {KIND_REGION: "ui_region", KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text"}
+_UI_ELEM_LABEL = {KIND_REGION: "zone", KIND_PANEL: "conteneur", KIND_TEXT: "texte"}
+
+
+def _lua_handle(node_type: str, obj) -> str:
+    """Poignée d'un nœud RÉFÉRENÇABLE en Lua, ou "" si authoring-only.
+
+    C'est le cœur de l'idée « l'arbre montre ce qu'un script peut nommer » : un
+    actor (`get_actor`) et une zone de texte (`REGION_*` / `text.draw_in`) le
+    sont ; un conteneur ou un texte authoré ne le sont pas (pas de domaine, cf.
+    api.py). Sert au tooltip ET à décider si le nœud s'affiche en clair
+    (référençable) ou grisé (authoring)."""
+    if node_type == T_ACTOR:
+        return f'get_actor("{obj.name}")'
+    if node_type == T_UI_ELEM and getattr(obj, "kind", "") == KIND_REGION:
+        return f'text.draw_in("{obj.name}", …)'
+    return ""
 
 # ── Thème ─── surfaces indigo centralisées (cf. project_theme_gba_redesign) ──
 _BG      = C.BG_BASE      # fond de l'arbre / panneaux (indigo profond)
@@ -59,43 +85,6 @@ _C_PREFAB = _TEXT
 _C_SCRIPT = _TEXT
 _C_FOLDER = _DIM
 
-_TREE_QSS = f"""
-QTreeWidget {{
-    background: {_BG};
-    color: {_TEXT};
-    border: none;
-    font-family: monospace;
-    font-size: {T.MD}px;
-    outline: none;
-    show-decoration-selected: 1;
-}}
-QTreeWidget::item {{
-    height: 22px;
-    padding-left: 2px;
-    border: none;
-}}
-QTreeWidget::item:selected {{
-    background: {_SEL_BG};
-    color: {_SEL_FG};
-    border-left: 2px solid {_SEL_FG};
-}}
-QTreeWidget::item:hover:!selected {{
-    background: {_HOVER};
-}}
-QTreeWidget::branch {{
-    background: {_BG};
-}}
-QTreeWidget::branch:has-children:!has-siblings:closed,
-QTreeWidget::branch:closed:has-children:has-siblings {{
-    border-image: none;
-    image: none;
-}}
-QTreeWidget::branch:open:has-children:!has-siblings,
-QTreeWidget::branch:open:has-children:has-siblings {{
-    border-image: none;
-    image: none;
-}}
-"""
 
 
 
@@ -121,7 +110,7 @@ class _Tree(QTreeWidget):
             QAbstractItemView.EditTrigger.SelectedClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
-        self.setStyleSheet(_TREE_QSS)
+        self.setStyleSheet(QSS.tree_widget)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         # Ajuster la hauteur au contenu
@@ -197,19 +186,80 @@ class _SceneTree(_Tree):
                 a_item.setData(0, _ROLE_OBJ, actor)
                 self._update_actor_item(a_item, actor)
 
+            # Mise en page UI de la scène — sous-branche « Interface ». C'est un
+            # asset PARTAGÉ (une boîte de dialogue sert N scènes), d'où le badge
+            # « — N scènes » : l'imbriquer sous la scène suit la convention
+            # « scène instanciée » de Godot (visible, mais marquée partagée).
+            self._populate_ui_branch(s_item, scene, project)
+
             if is_active:
                 s_item.setExpanded(True)
 
         self.blockSignals(False)
         self._fit()
 
+    def _populate_ui_branch(self, scene_item: QTreeWidgetItem, scene, project: Project):
+        """Ajoute, sous un nœud de scène, la mise en page UI (si la scène en
+        référence une) : un nœud racine « Interface » puis la hiérarchie des
+        éléments dérivée des refs `parent` (`in_tree_order`)."""
+        lay = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
+        if lay is None:
+            return
+        users = project.ui_layout_users(lay.name) if hasattr(project, "ui_layout_users") else []
+        shared = len(users) > 1
+        root_item = QTreeWidgetItem(scene_item)
+        root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
+        root_item.setData(0, _ROLE_OBJ, lay)
+        root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
+        root_item.setText(0, f"Interface  ·  {len(users)} scènes" if shared else "Interface")
+        root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
+        root_item.setFont(0, QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        root_item.setToolTip(
+            0, f"Mise en page « {lay.name} »"
+               + (f"\nPARTAGÉE par {len(users)} scènes — l'éditer les touche toutes."
+                  if shared else ""))
+        # Éléments : arbre dérivé des refs parent (liste plate → hiérarchie).
+        items: dict[str, QTreeWidgetItem] = {}
+        for _depth, el in lay.in_tree_order():
+            parent_item = items.get(el.parent, root_item)
+            e_item = QTreeWidgetItem(parent_item)
+            self._update_ui_elem_item(e_item, el, lay)
+            e_item.setExpanded(True)
+            items[el.name] = e_item
+        root_item.setExpanded(True)
+
+    def _update_ui_elem_item(self, item: QTreeWidgetItem, el, layout):
+        """Peuple la ligne d'un élément UI : icône de type (forme), nom éditable,
+        et — signal central — couleur selon la RÉFÉRENÇABILITÉ Lua (clair =
+        nommable dans un script, grisé = authoring-only)."""
+        kind = getattr(el, "kind", KIND_REGION)
+        item.setData(0, _ROLE_TYPE, T_UI_ELEM)
+        item.setData(0, _ROLE_OBJ, el)
+        item.setData(0, _ROLE_PATH, layout)     # la layout porteuse (pour le bus/cmd)
+        item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_region"), COLOR_UI))
+        item.setText(0, el.name)
+        item.setFont(0, QFont(T.MONO, T.MD))
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        handle = _lua_handle(T_UI_ELEM, el)
+        if handle:
+            item.setForeground(0, QColor(_TEXT))
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · référençable : {handle}")
+        else:
+            item.setForeground(0, QColor(_DIM))
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · authoring — non "
+                               f"référençable en script")
+
     def _update_actor_item(self, item: QTreeWidgetItem, actor: Actor):
+        # Un actor est TOUJOURS référençable (`get_actor`) — le tooltip le dit,
+        # comme pour les zones de texte, pour que l'arbre réponde d'un coup d'œil
+        # à « qu'est-ce que je peux nommer dans mon script ? ».
+        handle = _lua_handle(T_ACTOR, actor)
         if actor.prefab_name:
             item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
-            item.setToolTip(0, f"Instance de prefab : {actor.prefab_name}")
+            item.setToolTip(0, f"Instance de prefab : {actor.prefab_name}\nréférençable : {handle}")
         else:
             item.setIcon(0, _ico("actor", COLOR_DEFAULT))
-            item.setToolTip(0, "")
+            item.setToolTip(0, f"référençable : {handle}")
 
         # Le texte de l'item EST le texte édité en place (QTreeWidgetItem ne
         # permet pas de distinguer DisplayRole/EditRole) : on n'y met donc que
@@ -220,12 +270,20 @@ class _SceneTree(_Tree):
 
     def highlight_actor(self, actor: Actor):
         """Met en évidence l'actor correspondant dans l'arbre."""
+        self._highlight(T_ACTOR, actor)
+
+    def highlight_ui_element(self, element):
+        """Met en évidence l'élément d'UI correspondant (sélection venue du
+        canvas ou de l'inspecteur) — l'arbre suit la même sélection."""
+        self._highlight(T_UI_ELEM, element)
+
+    def _highlight(self, node_type: str, obj):
         self.blockSignals(True)
         self.clearSelection()
         it = QTreeWidgetItemIterator(self)
         while it.value():
             node = it.value()
-            if node.data(0, _ROLE_TYPE) == T_ACTOR and node.data(0, _ROLE_OBJ) is actor:
+            if node.data(0, _ROLE_TYPE) == node_type and node.data(0, _ROLE_OBJ) is obj:
                 node.setSelected(True)
                 self.scrollToItem(node)
                 break
@@ -241,37 +299,105 @@ class _SceneTree(_Tree):
             self._panel.scene_selected.emit(idx)
         elif typ == T_ACTOR:
             get_bus().select(item.data(0, _ROLE_OBJ))
+        elif typ == T_UI_ELEM:
+            # Clic sur un élément d'UI → même bus que le canvas, donc même
+            # inspecteur : l'arbre et le canvas restent deux vues d'une sélection.
+            get_bus().select(UIElementSelection(item.data(0, _ROLE_PATH),
+                                                item.data(0, _ROLE_OBJ)))
+        elif typ == T_UI_LAYOUT:
+            # Le nœud « Interface » n'a pas d'inspecteur propre : sélectionner la
+            # scène porteuse (nœud parent) est le geste le moins surprenant.
+            parent = item.parent()
+            if parent is not None:
+                self._panel.scene_selected.emit(parent.data(0, _ROLE_PATH))
 
-    # ── Drag & drop réordonnancement acteurs ──────────────────────
+    # ── Drag & drop : acteurs OU éléments d'UI ────────────────────
 
     def dropEvent(self, event):
-        target = self.itemAt(event.position().toPoint())
         dragged = self.currentItem()
-        if (not dragged or not target
-                or dragged.data(0, _ROLE_TYPE) != T_ACTOR):
+        target = self.itemAt(event.position().toPoint())
+        if dragged is None:
             event.ignore()
             return
+        dtype = dragged.data(0, _ROLE_TYPE)
 
-        # Accepter seulement si on reste dans la même scène
-        src_parent = dragged.parent()
-        dst_parent = target.parent() or target
-        if dst_parent.data(0, _ROLE_TYPE) == T_ACTOR:
-            dst_parent = dst_parent.parent()
-        if src_parent is not dst_parent:
-            event.ignore()
+        # Élément d'UI : reparentage + repositionnement (z-order) dans SA mise en
+        # page. Rebâti depuis le modèle (pas de manipulation d'item par Qt) — donc
+        # pas de super(), et push différé (le refresh détruit l'item en plein drop).
+        if dtype == T_UI_ELEM:
+            indicator = self.dropIndicatorPosition()
+            event.accept()
+            self._handle_ui_drop(dragged, target, indicator)
             return
 
-        super().dropEvent(event)  # Qt réordonne visuellement
+        # Acteur : réordonnancement DANS la même scène (comportement historique).
+        if dtype == T_ACTOR:
+            if target is None:
+                event.ignore()
+                return
+            src_parent = dragged.parent()
+            dst_parent = target.parent() or target
+            if dst_parent.data(0, _ROLE_TYPE) in (T_ACTOR, T_UI_LAYOUT, T_UI_ELEM):
+                dst_parent = dst_parent.parent()
+            if src_parent is not dst_parent:
+                event.ignore()
+                return
+            super().dropEvent(event)   # Qt réordonne visuellement
+            scene: Scene = src_parent.data(0, _ROLE_OBJ)
+            # Ne garder QUE les items acteurs : la sous-branche « Interface » est
+            # aussi un enfant du nœud de scène, elle ne va pas dans scene.actors.
+            new_order = [
+                src_parent.child(i).data(0, _ROLE_OBJ)
+                for i in range(src_parent.childCount())
+                if src_parent.child(i).data(0, _ROLE_TYPE) == T_ACTOR
+            ]
+            scene.actors[:] = new_order
+            get_dispatcher().save_scene()
+            self._panel.project_panel_actors_reordered()
+            return
 
-        # Synchroniser scene.actors avec l'ordre visuel
-        scene: Scene = src_parent.data(0, _ROLE_OBJ)
-        new_order = [
-            src_parent.child(i).data(0, _ROLE_OBJ)
-            for i in range(src_parent.childCount())
-        ]
-        scene.actors[:] = new_order
-        get_dispatcher().save_scene()
-        self._panel.project_panel_actors_reordered()
+        event.ignore()
+
+    def _handle_ui_drop(self, dragged_item, target_item, indicator):
+        """Reparente + repositionne un élément d'UI d'après la cible et
+        l'indicateur (ON = dernier enfant ; AU-DESSUS = avant la cible ;
+        EN DESSOUS = après). Refuse de sortir de la mise en page d'origine."""
+        Pos = QAbstractItemView.DropIndicatorPosition
+        dragged = dragged_item.data(0, _ROLE_OBJ)
+        layout = dragged_item.data(0, _ROLE_PATH)
+        if target_item is None or layout is None:
+            return
+        ttype = target_item.data(0, _ROLE_TYPE)
+        if ttype == T_UI_LAYOUT:
+            if target_item.data(0, _ROLE_OBJ) is not layout:
+                return                         # autre mise en page → refus
+            new_parent, before = "", None      # lâché sur « Interface » = racine
+        elif ttype == T_UI_ELEM:
+            target = target_item.data(0, _ROLE_OBJ)
+            if target is dragged or target_item.data(0, _ROLE_PATH) is not layout:
+                return
+            if indicator == Pos.OnItem:
+                new_parent, before = target.name, None
+            else:
+                new_parent = layout._parent_key(target)
+                sibs = [s.name for s in layout._siblings(new_parent)
+                        if s.name != dragged.name]
+                if target.name in sibs and indicator == Pos.AboveItem:
+                    before = target.name
+                elif target.name in sibs:      # BelowItem → devant le suivant
+                    ti = sibs.index(target.name)
+                    before = sibs[ti + 1] if ti + 1 < len(sibs) else None
+                else:
+                    before = None
+        else:
+            return
+
+        def mutate(name=dragged.name, parent=new_parent, before=before):
+            layout.place_child(name, parent, before)
+
+        cmd = UILayoutOrderCmd(layout, mutate, f"Déplacer {dragged.name}",
+                               persist_fn=self._panel._after_ui_change)
+        QTimer.singleShot(0, lambda: get_history().push(cmd))
 
     # ── Menu contextuel ───────────────────────────────────────────
 
@@ -309,7 +435,81 @@ class _SceneTree(_Tree):
             menu.addAction("Supprimer l'actor").triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
 
+        elif typ == T_UI_LAYOUT:
+            layout = item.data(0, _ROLE_OBJ)
+            add = menu.addMenu("Ajouter un widget")
+            add.setFont(QFont(T.MONO, T.MD))
+            for kind, label in ((KIND_PANEL, "Conteneur"), (KIND_TEXT, "Texte"),
+                                (KIND_REGION, "Zone de texte")):
+                act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+                act.triggered.connect(
+                    lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
+
+        elif typ == T_UI_ELEM:
+            el = item.data(0, _ROLE_OBJ)
+            layout = item.data(0, _ROLE_PATH)
+            sibs = [s.name for s in layout._siblings(layout._parent_key(el))]
+            i, n = sibs.index(el.name), len(sibs)
+            for label, direction, on in (
+                ("Monter tout en haut", "top", i > 0),
+                ("Monter", "up", i > 0),
+                ("Descendre", "down", i < n - 1),
+                ("Descendre tout en bas", "bottom", i < n - 1),
+            ):
+                a = menu.addAction(label)
+                a.setEnabled(on)
+                a.triggered.connect(
+                    lambda _, d=direction, e=el, lay=layout: self._move_ui_elem(lay, e, d))
+            if getattr(el, "can_contain", False):
+                menu.addSeparator()
+                sub = menu.addMenu("Ajouter un enfant")
+                sub.setFont(QFont(T.MONO, T.MD))
+                for kind, label in ((KIND_PANEL, "Conteneur"), (KIND_TEXT, "Texte"),
+                                    (KIND_REGION, "Zone de texte")):
+                    act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+                    act.triggered.connect(
+                        lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
+            menu.addSeparator()
+            self.add_rename_action(menu, item, "Renommer")
+            menu.addAction("Supprimer").triggered.connect(
+                lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
+
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    # ── Éléments d'UI : création / réordonnancement / suppression ─
+    def _create_ui_elem(self, layout, kind: str, parent_name: str):
+        proj = self._panel._project
+        if proj is None:
+            return
+        from core.models.ui_region import (
+            UIRegion, UIPanel, UIText, unique_element_name)
+        taken = set(layout.element_names()) | set(proj.region_names())
+        if kind == KIND_PANEL:
+            el = UIPanel(name=unique_element_name(taken, "conteneur"),
+                         parent=parent_name, x=8, y=8, w=96, h=48)
+        elif kind == KIND_TEXT:
+            el = UIText(name=unique_element_name(taken, "texte"),
+                        parent=parent_name, x=8, y=8, w=80, h=8)
+        else:
+            el = UIRegion(name=unique_element_name(taken, "zone"),
+                          parent=parent_name, x=8, y=8, w=64, h=16)
+        get_history().push(AddListItemCmd(
+            layout.elements, el, persist_fn=self._panel._after_ui_change,
+            label=f"Nouveau {_UI_ELEM_LABEL.get(kind, kind)} {el.name}"))
+        get_bus().select(UIElementSelection(layout, el))
+
+    def _move_ui_elem(self, layout, element, direction: str):
+        def mutate(name=element.name, d=direction):
+            layout.move_sibling(name, d)
+        get_history().push(UILayoutOrderCmd(
+            layout, mutate, f"Réordonner {element.name}",
+            persist_fn=self._panel._after_ui_change))
+
+    def _delete_ui_elem(self, layout, element):
+        get_history().push(RemoveListItemCmd(
+            layout.elements, element, persist_fn=self._panel._after_ui_change,
+            label=f"Supprimer {element.name}"))
+        get_bus().clear()
 
     # ── Actions ───────────────────────────────────────────────────
 
@@ -319,6 +519,27 @@ class _SceneTree(_Tree):
             self._commit_rename_scene(item)
         elif typ == T_ACTOR:
             self._commit_rename_actor(item)
+        elif typ == T_UI_ELEM:
+            self._commit_rename_ui_elem(item)
+
+    def _commit_rename_ui_elem(self, item: QTreeWidgetItem):
+        el = item.data(0, _ROLE_OBJ)
+        layout = item.data(0, _ROLE_PATH)
+        proj = self._panel._project
+        new_name = item.text(0).strip()
+        if not proj or not new_name or new_name == el.name:
+            self.blockSignals(True)
+            item.setText(0, el.name)
+            self.blockSignals(False)
+            return
+        # Par le projet : gère l'unicité (REGION_* projet-global pour une zone),
+        # rebranche les enfants et réécrit les scripts qui citent une zone.
+        applied = proj.rename_ui_element(layout, el, new_name)
+        self.blockSignals(True)
+        item.setText(0, applied)
+        self.blockSignals(False)
+        # Rafraîchir canvas + arbre (le nom change une constante et l'affichage).
+        self._panel._after_ui_change()
 
     def _commit_rename_scene(self, item: QTreeWidgetItem):
         scene: Scene = item.data(0, _ROLE_OBJ)
@@ -921,6 +1142,9 @@ class AssetsFinderPanel(QWidget):
     prefab_uses_requested = pyqtSignal(object)   # Prefab
     script_uses_requested = pyqtSignal(str)      # chemin absolu du script
     variable_uses_requested = pyqtSignal(str, str)   # (kind: "global"|"const", name)
+    # Un élément d'UI a été créé / déplacé / renommé / supprimé depuis l'arbre :
+    # le scene_editor sauve et redessine le canvas (câblé dans window.py).
+    ui_layout_changed     = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1082,9 +1306,23 @@ class AssetsFinderPanel(QWidget):
     def on_selection(self, obj):
         if isinstance(obj, Actor) and QTreeWidgetItemIterator:
             self._tree_scenes.highlight_actor(obj)
+        elif isinstance(obj, UIElementSelection) and QTreeWidgetItemIterator:
+            self._tree_scenes.highlight_ui_element(obj.element)
 
     def project_panel_actors_reordered(self):
         self._refresh_scenes()
+
+    def _after_ui_change(self):
+        """Après une mutation d'UI depuis l'arbre (créer/déplacer/renommer/
+        supprimer) : prévenir le scene_editor (sauve + redessine le canvas),
+        reconstruire l'arbre de scènes, puis re-cibler la sélection courante du
+        bus — `populate` reconstruit des items neufs, mais les objets modèle
+        persistent, donc on retrouve l'élément par identité."""
+        self.ui_layout_changed.emit()
+        self._refresh_scenes()
+        cur = get_bus().current
+        if isinstance(cur, UIElementSelection) and QTreeWidgetItemIterator:
+            self._tree_scenes.highlight_ui_element(cur.element)
 
     # ── Projets ───────────────────────────────────────────────────
 

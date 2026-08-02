@@ -32,19 +32,32 @@ class CameraSelection:
         self.scene = scene
 
 
-class UIRegionSelection:
-    """Marqueur de sélection : une zone de texte a été cliquée dans le canvas.
+class UIElementSelection:
+    """Marqueur de sélection : un ÉLÉMENT d'UI (zone, panel, texte…) a été
+    sélectionné dans le canvas ou l'arbre.
 
-    Porte la mise en page en plus de la zone, parce qu'une `UIRegion` ne connaît
+    Porte la mise en page en plus de l'élément, parce qu'un élément ne connaît
     pas son `UILayout` — et que l'inspecteur en a besoin pour dire « partagée
-    par N scènes » comme pour supprimer la zone de la bonne liste. Même raison
-    d'être que `CameraSelection` : le bus transporte une intention, pas
-    seulement un objet."""
-    __slots__ = ("layout", "region")
+    par N scènes » comme pour le supprimer de la bonne liste. Même raison d'être
+    que `CameraSelection` : le bus transporte une intention, pas seulement un
+    objet.
 
-    def __init__(self, layout, region):
+    `region` est un alias rétro-compat de `element` : le bus portait autrefois
+    des zones seules, et de nombreux sites lisent encore `.region`."""
+    __slots__ = ("layout", "element")
+
+    def __init__(self, layout, element):
         self.layout = layout
-        self.region = region
+        self.element = element
+
+    @property
+    def region(self):
+        return self.element
+
+
+# Alias historique : `UIRegionSelection(layout, region)` construit toujours, et
+# `isinstance(obj, UIRegionSelection)` reste vrai pour tout élément.
+UIRegionSelection = UIElementSelection
 
 
 class SelectionBus(QObject):

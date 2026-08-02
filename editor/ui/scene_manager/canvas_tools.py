@@ -420,28 +420,38 @@ class SceneInpaintingTool(BaseTool):
 # ──────────────────────────────────────────────────────────────────
 
 
-class UIRegionTool(BaseTool):
-    """Dessine une zone de texte (`UIRegion`) au rectangle.
+class UIWidgetTool(BaseTool):
+    """Dessine un élément d'UI (zone, conteneur ou texte) au rectangle — UN
+    outil paramétré par `kind`, choisi dans le dropdown de la toolbar (même
+    modèle que collision et inpainting).
 
     Le geste est celui de `SceneInpaintingTool` en mode rect — ancre au press,
     aperçu au move, création au release — parce que c'est déjà le geste
     « délimiter une surface » du canvas, et qu'en inventer un second pour la
     même intention rendrait l'outil étranger au reste.
 
-    Snap à la tuile PENDANT le tracé et pas seulement au moment d'écrire : une
-    zone en cible BG ne peut pas commencer entre deux tuiles, et l'aperçu doit
-    montrer ce qui sera réellement posé. Un rectangle qui rétrécirait au
+    Snap à la tuile PENDANT le tracé et pas seulement au moment d'écrire : un
+    élément en cible BG ne peut pas commencer entre deux tuiles, et l'aperçu
+    doit montrer ce qui sera réellement posé. Un rectangle qui rétrécirait au
     relâchement ferait douter du clic.
 
-    Clic sans glisser = zone de taille par défaut : c'est le geste de qui sait
-    déjà où il la veut et la redimensionnera dans l'inspecteur."""
+    Clic sans glisser = taille par défaut du type : c'est le geste de qui sait
+    déjà où il le veut et le redimensionnera dans l'inspecteur."""
 
-    _FILL   = QColor(150, 140, 255, 55)
-    _BORDER = QColor(150, 140, 255, 230)
-    _DEFAULT_W, _DEFAULT_H = 128, 32     # px, multiples de 8
+    # Aperçu dans la couleur de la famille Interface (icons.COLOR_UI) — le
+    # type se lit à l'icône de la toolbar, pas à une teinte dédiée.
+    _FILL   = QColor(79, 143, 247, 50)
+    _BORDER = QColor(79, 143, 247, 230)
+    # Taille au simple clic, par type — multiples de 8.
+    _DEFAULTS = {
+        "region": (128, 32),   # une boîte de dialogue basse plausible
+        "panel":  (96, 48),    # un cadre de menu
+        "text":   (80, 16),    # une ligne de libellé
+    }
 
-    def __init__(self, view: GBAView):
+    def __init__(self, view: GBAView, kind: str = "region"):
         super().__init__(view)
+        self._kind = kind
         self._anchor: Optional[tuple[int, int]] = None   # (x, y) px snappés
         self._preview: QGraphicsRectItem | None = None
 
@@ -500,13 +510,13 @@ class UIRegionTool(BaseTool):
             return True
         x, y, w, h = self._rect(pos)
         if w <= _BG_TILE and h <= _BG_TILE:      # simple clic
-            w, h = self._DEFAULT_W, self._DEFAULT_H
+            w, h = self._DEFAULTS.get(self._kind, self._DEFAULTS["region"])
         self._anchor = None
         if self._preview:
             self._preview.setVisible(False)
         ctrl = self._ctrl()
         if ctrl is not None:
-            ctrl.create_region(x, y, w, h)
+            ctrl.create_element(self._kind, x, y, w, h)
         return True
 
     def _apply_preview(self, x, y, w, h):

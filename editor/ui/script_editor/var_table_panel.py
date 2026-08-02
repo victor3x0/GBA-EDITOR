@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from core.project import GlobalVar, Constant
 from .colors import _C_GLOBAL, _C_CONST
 
@@ -187,10 +187,7 @@ class VarTablePanel(QWidget):
             return
         name = name_item.text()
         menu = QMenu(self)
-        menu.setStyleSheet(
-            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_HI};border:1px solid {C.BORDER};}}"
-            f"QMenu::item:selected{{background:{C.BG_SEL};}}"
-        )
+        menu.setStyleSheet(QSS.menu)
         a_get = menu.addAction(self._snippet_get(name))
         a_set = menu.addAction(f'global.set("{name}", ...)') if self._kind == "global" else None
         menu.addSeparator()

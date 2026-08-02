@@ -6,13 +6,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QDrag
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 
-from ui.common.theme import T
+from ui.common.theme import T, C
 
 
 class CollapsibleSection(QWidget):
     """Section avec header cliquable et contenu depliable."""
 
-    def __init__(self, title: str, color: str = "#aaa", parent=None):
+    def __init__(self, title: str, color: str = C.TEXT_NORM, parent=None):
         super().__init__(parent)
         self._collapsed = False
         layout = QVBoxLayout(self)
@@ -44,7 +44,7 @@ class CollapsibleSection(QWidget):
         self._btn_add.setText("+")
         self._btn_add.setFixedSize(20, 20)
         self._btn_add.setStyleSheet(
-            "QToolButton{color:#aaa;border:none;background:none;font-size:14px;}"
+            f"QToolButton{{color:{C.TEXT_NORM};border:none;background:none;font-size:14px;}}"
             "QToolButton:hover{color:#fff;}"
         )
         h_layout.addWidget(self._btn_add)
@@ -97,7 +97,7 @@ class SectionItem(QFrame):
 
         ico = QLabel(icon)
         ico.setFont(QFont(T.MONO, T.MD))
-        ico.setStyleSheet("color:#666;")
+        ico.setStyleSheet(f"color:{C.TEXT_DIM};")
         ico.setFixedWidth(12)
         layout.addWidget(ico)
 
@@ -107,14 +107,14 @@ class SectionItem(QFrame):
 
     def _update_style(self):
         if self._active:
-            self.setStyleSheet("background:#241f3a; border-left:2px solid #9b8cff;")
+            self.setStyleSheet(f"background:{C.BG_SEL}; border-left:2px solid {C.ACCENT};")
         else:
             self.setStyleSheet("background:transparent; border-left:2px solid transparent;")
 
     def set_active(self, active: bool):
         self._active = active
         self._update_style()
-        self._lbl.setStyleSheet("color:#fff;" if active else "color:#aaa;")
+        self._lbl.setStyleSheet("color:#fff;" if active else f"color:{C.TEXT_NORM};")
 
     def mousePressEvent(self, e):
         self._press_pos = e.position().toPoint()

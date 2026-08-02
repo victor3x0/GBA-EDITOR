@@ -93,7 +93,7 @@ class ColorInspectorPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}" + QSS.scrollbar)
+        scroll.setStyleSheet(QSS.scroll_area + QSS.scrollbar)
         root.addWidget(scroll, 1)
 
         editor = QWidget()

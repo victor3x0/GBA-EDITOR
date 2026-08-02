@@ -47,6 +47,7 @@ from core.resource_manager import ResourceManager, safe_filename, _atomic_write
 from scripting.api import (
     DOMAIN_SCENE, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
     DOMAIN_TEXT, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_ACTOR, DOMAIN_ANIM,
+    DOMAIN_REGION,
 )
 
 # ── Ré-export du modèle de domaine (compat des ~27 fichiers qui font
@@ -69,6 +70,7 @@ from core.models.background import BackgroundLayer, BackgroundAsset, Tileset
 from core.models.audio import Sfx, Music, SFX_FILE_EXTS, MUSIC_FILE_EXTS
 from core.models.font import Font, Glyph, FONT_FILE_EXTS
 from core.models.ui_region import UILayout, UIRegion
+from core.models.nine_slice import NineSlice
 from core.models.scene import (
     TILE_EMPTY, TILE_SOLID,
     TILE_SLOPE_L, TILE_SLOPE_R, TILE_SLOPE_L_LO, TILE_SLOPE_L_HI,
@@ -105,6 +107,7 @@ class Project:
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
         self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceManager[UILayout] = ResourceManager(self.ui_layouts_dir, UILayout)
+        self.nine_slices: ResourceManager[NineSlice] = ResourceManager(self.nine_slices_dir, NineSlice)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -160,6 +163,12 @@ class Project:
         une mise en page est un objet qu'on renomme, duplique et partage entre
         scènes, donc qui mérite une identité de fichier — comme une palette."""
         return self.project_dir / "ui_layouts"
+
+    @property
+    def nine_slices_dir(self) -> Path:
+        """Cadres nine-slice — project/nine_slices/*.json (un fichier par cadre,
+        réutilisable et renommable, comme une mise en page ou une palette)."""
+        return self.project_dir / "nine_slices"
 
     @property
     def legacy_palettes_file(self) -> Path:
@@ -348,7 +357,7 @@ class Project:
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
-                    self.palettes):
+                    self.palettes, self.nine_slices):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -367,6 +376,9 @@ class Project:
 
     def get_ui_layout(self, name: str) -> Optional[UILayout]:
         return self.ui_layouts.get(name)
+
+    def get_nine_slice(self, name: str) -> Optional[NineSlice]:
+        return self.nine_slices.get(name)
 
     def scene_ui_layout(self, scene) -> Optional[UILayout]:
         """Mise en page d'une scène, ou None si elle n'en référence aucune (ou
@@ -768,6 +780,41 @@ class Project:
                 self.save_scene(scene)
         self._notify_renamed("Actor", old_name, new_name, refs)
 
+    def rename_ui_element(self, layout, element, new_name: str) -> str:
+        """Renomme un élément d'une mise en page UI (zone, conteneur, texte).
+
+        Espace de nommage : une ZONE se résout en `REGION_*`, une constante C
+        PROJET-globale, d'où l'unicité cherchée sur tout le projet ; les autres
+        types n'ont pas de constante mais partagent l'espace des refs `parent`,
+        donc unicité dans la layout élargie aux zones. Les enfants pointant le
+        parent par NOM, on les rebranche (`retarget_parent`) AVANT de figer le
+        nouveau nom. Seule une zone est référençable en Lua (`DOMAIN_REGION`) —
+        pour elle seule on réécrit les scripts. Retourne le nom RÉELLEMENT
+        appliqué (peut différer si collision)."""
+        from core.models.ui_region import (
+            KIND_REGION, unique_region_name, unique_element_name)
+        new_name = new_name.strip()
+        if not new_name or new_name == element.name:
+            return element.name
+        is_region = getattr(element, "kind", KIND_REGION) == KIND_REGION
+        if is_region:
+            taken = set(self.region_names()) - {element.name}
+            if new_name in taken:
+                new_name = unique_region_name(taken, new_name)
+        else:
+            taken = (set(layout.element_names()) | set(self.region_names())) - {element.name}
+            if new_name in taken:
+                new_name = unique_element_name(taken, new_name)
+        old_name = element.name
+        with self._renaming():
+            layout.retarget_parent(old_name, new_name)
+            element.name = new_name
+            refs = self.rename_lua_refs(DOMAIN_REGION, old_name, new_name) if is_region else {}
+            self.ui_layouts.save_all()
+        self._notify_renamed("Zone" if is_region else "Élément UI",
+                             old_name, new_name, refs)
+        return new_name
+
     def rename_sound(self, asset, new_name: str):
         """Sfx ou Music — même chemin, seul le domaine Lua diffère."""
         new_name = new_name.strip()
@@ -1030,6 +1077,7 @@ class Project:
         self.music.save_all()
         self.fonts.save_all()
         self.ui_layouts.save_all()
+        self.nine_slices.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()
@@ -1037,7 +1085,7 @@ class Project:
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
-                    "project/palettes", "project/ui_layouts",
+                    "project/palettes", "project/ui_layouts", "project/nine_slices",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1065,6 +1113,7 @@ class Project:
         project_migrations.migrate_var_refs_to_ids(self)
         # Avant les scènes : une scène référence sa mise en page par nom.
         self.ui_layouts.load()
+        self.nine_slices.load()
         project_migrations.migrate_bg_sidecar_location(self)
         self.backgrounds.load()
         project_migrations.reconcile_backgrounds(self)

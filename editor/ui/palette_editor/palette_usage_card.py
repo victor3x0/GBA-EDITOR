@@ -83,8 +83,7 @@ class PaletteUsageCard(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setStyleSheet(
-            "QScrollArea{background:transparent;border:none;}" + QSS.scrollbar)
+        self._scroll.setStyleSheet(QSS.scroll_area + QSS.scrollbar)
         body = QWidget()
         body.setStyleSheet("background:transparent;")
         self._list = QVBoxLayout(body)

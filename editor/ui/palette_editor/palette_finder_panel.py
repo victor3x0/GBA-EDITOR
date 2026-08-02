@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.palette_swatch import bank_icon as _bank_icon
 
@@ -71,11 +71,7 @@ class PaletteFinderPanel(QWidget):
         self._tree.setHeaderHidden(True)
         self._tree.setFont(QFont(T.MONO, T.MD))
         self._tree.setIconSize(QSize(16, 16))
-        self._tree.setStyleSheet(
-            f"QTreeWidget{{background:{C.BG_BASE};color:{C.TEXT_NORM};border:none;}}"
-            f"QTreeWidget::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
-            f"QTreeWidget::item:hover{{background:{C.BG_HOVER};}}"
-        )
+        self._tree.setStyleSheet(QSS.tree_widget)
         self._tree.setItemDelegate(_PaletteNameDelegate(self._tree))
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)

@@ -16,20 +16,12 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico
 from ui.common.palette_bank_strip import PaletteBankStrip
 from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
-
-_CTX_MENU_QSS = (
-    f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};"
-    f"border:1px solid {C.BORDER_MID};font-family:monospace;"
-    f"font-size:{T.MD}px;padding:2px;}}"
-    f"QMenu::item{{padding:4px 20px 4px 12px;border-radius:2px;}}"
-    f"QMenu::item:selected{{background:{C.BG_SEL};color:{C.ACCENT};}}"
-)
 
 # ── Frame timeline ─────────────────────────────────────────────────────────────
 
@@ -221,8 +213,8 @@ class _FrameTimeline(QWidget):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setWidgetResizable(False)
         self._scroll.setStyleSheet(
-            "QScrollArea{border:none;background:transparent;}"
-            "QScrollBar:horizontal{height:6px;}"
+            QSS.scroll_area
+            + "QScrollBar:horizontal{height:6px;}"
         )
 
         self._content = QWidget()
@@ -375,7 +367,7 @@ class _FrameTimeline(QWidget):
         if not self._sd or self._read_only:
             return
         menu = QMenu(self)
-        menu.setStyleSheet(_CTX_MENU_QSS)
+        menu.setStyleSheet(QSS.menu)
         copy_a  = menu.addAction("Copier              Ctrl+D")
         clone_a = menu.addAction("Cloner")
         clear_a = menu.addAction("Vider la frame")

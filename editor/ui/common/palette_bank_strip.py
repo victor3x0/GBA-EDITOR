@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import QSize, pyqtSignal
 
-from ui.common.theme import T
+from ui.common.theme import T, C
 from ui.common.palette_swatch import swatch_icon
 
 
@@ -37,20 +37,20 @@ class PaletteBankStrip(QFrame):
         self._active = None
         self._btns: dict = {}
         self._colors: dict = {}   # id -> couleurs, pour le repérage par contenu
-        self.setStyleSheet("""
-            PaletteBankStrip { background:#1c1c1c; border:1px solid #333;
-                                border-radius:8px; }
-            QToolButton { border:1px solid #2a2a2a; background:transparent;
-                          border-radius:4px; padding:1px; }
-            QToolButton:hover   { border-color:#4a4a4a; }
-            QToolButton:checked { border:2px solid #9b8cff; }
+        self.setStyleSheet(f"""
+            PaletteBankStrip {{ background:#1c1c1c; border:1px solid #333;
+                                border-radius:8px; }}
+            QToolButton {{ border:1px solid #2a2a2a; background:transparent;
+                          border-radius:4px; padding:1px; }}
+            QToolButton:hover   {{ border-color:#4a4a4a; }}
+            QToolButton:checked {{ border:2px solid {C.ACCENT}; }}
         """)
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(6, 5, 6, 5)
         self._layout.setSpacing(4)
         self._hint = QLabel(empty_hint)
         self._hint.setFont(QFont(T.MONO, T.SM))
-        self._hint.setStyleSheet("color:#666;background:transparent;")
+        self._hint.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
         self._layout.addWidget(self._hint)
         self.setVisible(False)
 
