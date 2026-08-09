@@ -61,7 +61,7 @@ class ReorderableButtonBar(QWidget):
             btn = QToolButton()
             btn.setText(name)
             btn.setCheckable(True)
-            btn.setFont(QFont(T.MONO, T.MD))
+            btn.setFont(QFont(T.UI, T.MD))
             btn.setStyleSheet(_BTN_NORMAL)
             btn.setCursor(Qt.CursorShape.OpenHandCursor)
             btn.clicked.connect(lambda _=False, idx=i: self.screen_requested.emit(idx))
@@ -73,7 +73,7 @@ class ReorderableButtonBar(QWidget):
 
         # ── Fantôme flottant ──────────────────────────────────────────
         self._ghost = QToolButton(self)
-        self._ghost.setFont(QFont(T.MONO, T.MD))
+        self._ghost.setFont(QFont(T.UI, T.MD))
         self._ghost.setStyleSheet(_BTN_GHOST)
         self._ghost.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._ghost.hide()

@@ -63,6 +63,12 @@ class Param:
     name: str
     ptype: str                        # PARAM_*
     domain: Optional[str] = None      # DOMAIN_* (seulement si ptype == PARAM_STR)
+    # Une chaîne qui ne résout PAS dans le domaine est-elle acceptable ?
+    # Faux partout sauf `text.draw` : un nom de scène ou de sfx inconnu est une
+    # faute, un texte peut s'écrire au vol dans le script (ROADMAP v0.3.2,
+    # 2026-07-27). Déclaré ici plutôt que testé sur le nom de la fonction — la
+    # même table pilote checker, codegen et refactor.
+    literal_ok: bool = False
 
 
 @dataclass
@@ -481,8 +487,10 @@ RUNTIME_API: dict[str, ApiFunc] = {
     "text.draw": ApiFunc(
         lua_name="text.draw", c_func="text_draw",
         params=[Param("tx", PARAM_INT), Param("ty", PARAM_INT),
-                Param("id", PARAM_STR, DOMAIN_TEXT)],
-        doc='Affiche un texte du projet à (tx, ty), en tuiles. Ex: text.draw(2, 16, "village_garde_01")',
+                Param("id", PARAM_STR, DOMAIN_TEXT, literal_ok=True)],
+        doc='Affiche un texte du projet à (tx, ty), en tuiles — une clé de la '
+            'table, ou un littéral écrit sur place (qui ne se traduira pas). '
+            'Ex: text.draw(2, 16, "village_garde_01")',
     ),
     # ── Rendu dans une RÉGION ──────────────────────────────────────
     # La région porte position, largeur de coupe, alignement et police : ce que
@@ -956,6 +964,31 @@ def scene_constant(scene_name: str) -> str:
 def text_constant(text_key: str) -> str:
     """'village_garde_01' → 'TEXT_VILLAGE_GARDE_01'"""
     return f"TEXT_{_c_ident(text_key)}"
+
+
+# Primitives qui acceptent un littéral à la place d'une clé — DÉDUIT du
+# catalogue, jamais listé à la main : marquer un `Param.literal_ok` suffit à
+# faire suivre le checker, le codegen et la collecte de littéraux.
+LITERAL_TEXT_CALLS: frozenset = frozenset(
+    k for k, f in RUNTIME_API.items()
+    for prm in f.params if prm.domain == DOMAIN_TEXT and prm.literal_ok
+)
+
+
+def anon_text_key(literal: str) -> str:
+    """Clé de l'entrée ANONYME que fabrique un littéral passé à `text.draw`.
+
+    Dérivée du CONTENU : la même phrase écrite dans deux scripts partage une
+    seule entrée, et la clé ne bouge pas d'un build à l'autre. Un compteur, lui,
+    se décalerait au premier littéral ajouté plus haut, décalant des index C
+    sans que rien n'ait changé côté auteur.
+
+    Le préfixe la range hors du chemin de l'utilisateur. Si une vraie clé
+    s'appelait pareil, c'est elle qui gagnerait — la résolution essaie la table
+    d'abord — donc le pire cas reste un texte affiché à la place d'un autre,
+    jamais une table incohérente."""
+    import hashlib
+    return "_lit_" + hashlib.sha1(literal.encode("utf-8")).hexdigest()[:8]
 
 
 def font_constant(font_name: str) -> str:

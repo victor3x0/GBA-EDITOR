@@ -240,6 +240,14 @@ class Scene(Resource):
     # la géométrie authorée des zones de texte. "" = aucune, le script place
     # alors tout lui-même via text.draw(id, tx, ty). cf. models/ui_region.py
     ui_layout: str = ""
+    # Banque de palette où le texte lit ses couleurs — un SLOT de la sélection
+    # de la scène (`active_bg_palettes` en cible BG, `active_obj_palettes` en
+    # OBJ), donc les couleurs de l'UI sont celles que la scène a choisies.
+    #
+    # -1 = automatique : la police charge sa PROPRE palette dans la banque 15,
+    # comportement historique. C'est le défaut, le retirer d'office changerait
+    # en silence la couleur du texte de tout projet existant.
+    ui_pal_bank: int = -1
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
@@ -292,6 +300,7 @@ class Scene(Resource):
             "script": self.script,
             "text_bg": self.text_bg,
             "ui_layout": self.ui_layout,
+            "ui_pal_bank": self.ui_pal_bank,
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
             "active_obj_palettes": self.active_obj_palettes,
@@ -380,6 +389,7 @@ class Scene(Resource):
             script=d.get("script", ""),
             text_bg=d.get("text_bg", 1),
             ui_layout=d.get("ui_layout", ""),
+            ui_pal_bank=int(d.get("ui_pal_bank", -1)),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),
             active_obj_palettes=d.get("active_obj_palettes", []),

@@ -1,7 +1,7 @@
 {
   "name": "Pong",
   "start_scene": "INTRO",
-  "last_scene": "ARENA",
+  "last_scene": "Arena",
   "author": "",
   "version": "0.1",
   "backdrop_color": 32416

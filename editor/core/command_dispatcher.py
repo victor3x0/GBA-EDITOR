@@ -35,7 +35,7 @@ import copy
 
 from core.events import EventEmitter
 from core.project import Actor, Scene, Prefab
-from core.history import get_history, AddActorCmd, RemoveActorCmd
+from core.history import get_history, AddActorCmd
 from core.selection_bus import get_bus
 
 if TYPE_CHECKING:
@@ -54,6 +54,18 @@ def unique_name(base: str, existing) -> str:
     while f"{base}_{i}" in existing:
         i += 1
     return f"{base}_{i}"
+
+
+def _copy_name(base: str, taken) -> str:
+    """`base_copy`, puis `base_copy2`, `base_copy3`… — nommage des duplicatas
+    d'actor. Distinct de `unique_name` (suffixe `_2`), qui sert à la CRÉATION :
+    le suffixe dit lequel des deux gestes a produit l'objet."""
+    name = f"{base}_copy"
+    i = 1
+    while name in taken:
+        i += 1
+        name = f"{base}_copy{i}"
+    return name
 
 
 class CommandDispatcher(EventEmitter):
@@ -89,16 +101,19 @@ class CommandDispatcher(EventEmitter):
 
     # ── Helpers ───────────────────────────────────────────────────
 
+    # `self.suspended()` et non `self._watcher.suspended()` : sans watcher
+    # (build headless, test), l'accès direct lève une AttributeError au fond
+    # d'un slot Qt, donc un abandon de processus sans trace.
     def _save_scene(self):
         if not self._project or not self._project.active_scene:
             return
-        with self._watcher.suspended():
+        with self.suspended():
             self._project.save_scene(self._project.active_scene)
 
     def _save_all(self):
         if not self._project:
             return
-        with self._watcher.suspended():
+        with self.suspended():
             self._project.save()
 
     # ── Actor ─────────────────────────────────────────────────────
@@ -130,12 +145,19 @@ class CommandDispatcher(EventEmitter):
 
     def delete_actor(self, actor: Actor):
         """Supprime un actor de la scène active (avec historique)."""
+        self.delete_actors([actor])
+
+    def delete_actors(self, actors: list):
+        """Supprime un LOT d'actors de la scène active en UNE entrée
+        d'historique — supprimer une sélection est un seul geste, l'annuler
+        doit l'être aussi (même règle que `duplicate_actors`)."""
+        from core.history import RemoveListItemsCmd
         if not self._project or not self._project.active_scene:
             return
         scene = self._project.active_scene
-        if actor not in scene.actors:
+        victims = [a for a in actors if any(x is a for x in scene.actors)]
+        if not victims:
             return
-        index = scene.actors.index(actor)
 
         def persist():
             get_bus().clear()
@@ -143,25 +165,47 @@ class CommandDispatcher(EventEmitter):
             self._emit("actors_list_changed")
             self._emit("scene_sprites_changed")
 
-        get_history().push(RemoveActorCmd(scene, actor, index, persist_fn=persist))
-        self._emit("status_message", f"Actor supprimé : {actor.name}")
+        n = len(victims)
+        get_history().push(RemoveListItemsCmd(
+            scene.actors, victims, persist_fn=persist,
+            label=f"Deleted {n} actor{'s' if n > 1 else ''}"))
+        self._emit("status_message",
+                   f"Deleted actor: {victims[0].name}" if n == 1
+                   else f"Deleted {n} actors")
 
     def duplicate_actor(self, actor: Actor, dx: int = 8, dy: int = 8) -> Optional[Actor]:
         """Duplique un actor (copie profonde des composants) dans la scène active,
         décalé de (dx, dy) et renommé de façon unique. Undoable."""
+        new = self.duplicate_actors([actor], dx, dy)
+        return new[0] if new else None
+
+    def duplicate_actors(self, actors: list, dx: int = 8, dy: int = 8) -> list:
+        """Duplique un LOT d'actors de la scène active en UNE entrée d'historique.
+
+        Les sources doivent appartenir à la scène — c'est ce qui distingue le
+        dupliquer du coller, dont les sources viennent du presse-papier (et
+        peut-être d'une autre scène)."""
         if not self._project or not self._project.active_scene:
-            return None
+            return []
         scene = self._project.active_scene
-        if actor not in scene.actors:
-            return None
-        existing = {a.name for a in scene.actors}
-        name = f"{actor.name}_copy"
-        i = 1
-        while name in existing:
-            i += 1
-            name = f"{actor.name}_copy{i}"
-        new = copy.deepcopy(actor)
-        new.name = name
+        sources = [a for a in actors if any(x is a for x in scene.actors)]
+        return self._add_actor_copies(sources, dx, dy, "Duplicated")
+
+    def paste_actors(self, actors: list, dx: int = 0, dy: int = 0) -> list:
+        """Colle des actors venus du presse-papier du canvas dans la scène active.
+
+        Mêmes copies et même unicité de nom que `duplicate_actors` ; seule
+        l'appartenance à la scène n'est pas exigée, la source ayant pu être
+        copiée ailleurs (voire supprimée depuis)."""
+        return self._add_actor_copies(list(actors), dx, dy, "Pasted")
+
+    def _add_actor_copies(self, sources: list, dx: int, dy: int, verb: str) -> list:
+        """Cœur commun du dupliquer / coller : copie profonde, nom unique,
+        position résolue puis décalée, et UNE commande d'historique pour le lot."""
+        from core.history import AddListItemsCmd
+        if not self._project or not self._project.active_scene or not sources:
+            return []
+        scene = self._project.active_scene
         # La position peut être un littéral px/tile ou une réf de variable :
         # on la résout en pixels avant d'appliquer le décalage (la copie devient
         # un placement littéral distinct).
@@ -169,18 +213,30 @@ class CommandDispatcher(EventEmitter):
                                              var_names_from_project)
         r = make_resolver(self._project)
         _vn = var_names_from_project(self._project)
-        new.x = FieldValue.parse(actor.x, _vn).px(r) + dx
-        new.y = FieldValue.parse(actor.y, _vn).px(r) + dy
+        taken = {a.name for a in scene.actors}
+        copies: list[Actor] = []
+        for src in sources:
+            new = copy.deepcopy(src)
+            new.name = _copy_name(src.name, taken)
+            taken.add(new.name)
+            new.x = FieldValue.parse(src.x, _vn).px(r) + dx
+            new.y = FieldValue.parse(src.y, _vn).px(r) + dy
+            copies.append(new)
 
         def persist():
             self._save_scene()
             self._emit("actors_list_changed")
             self._emit("scene_sprites_changed")
 
-        get_history().push(AddActorCmd(scene, new, persist_fn=persist))
-        get_bus().select(new)
-        self._emit("status_message", f"Actor dupliqué : {name}")
-        return new
+        n = len(copies)
+        get_history().push(AddListItemsCmd(
+            scene.actors, copies, persist_fn=persist,
+            label=f"{verb} {n} actor{'s' if n > 1 else ''}"))
+        get_bus().select(copies[0])
+        self._emit("status_message",
+                   f"{verb} actor: {copies[0].name}" if n == 1
+                   else f"{verb} {n} actors")
+        return copies
 
     def instantiate_prefab(self, prefab_name: str, x: int, y: int) -> Optional[Actor]:
         """Instancie un prefab dans la scène active aux coordonnées données."""

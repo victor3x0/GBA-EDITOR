@@ -5,7 +5,7 @@ exports = {
 function on_start()
     music.play("Admin Rights - Full DX FAST")
     global.set("score_player", 0)
-    global.set("score_auto", 0)
+    global.set("score_cpu", 0)
     global.set("ball_y", 76)
     global.set("point_side", -1)
     actor.spawn("Ball", 116, 76)
@@ -23,7 +23,7 @@ function on_update()
     end
     if side == 1 then
         sfx.play("GoalTaken")
-        global.set("score_auto", global.get("score_auto") + 1)
+        global.set("score_cpu", global.get("score_cpu") + 1)
     end
 
     if side >= 0 then
@@ -35,7 +35,7 @@ function on_update()
             scene.switch("VICTORY")
             return
         end
-        if global.get("score_auto") >= 5 then
+        if global.get("score_cpu") >= 5 then
             sfx.play("GAMEOVER")
             global.set("winner", 1)
             scene.switch("VICTORY")
@@ -54,6 +54,6 @@ function on_late_update()
     -- ranger dans la table de textes. text.draw_num le rend avec la police
     -- courante, à des coordonnées calculées — les zones ne remplacent pas ce
     -- chemin, elles servent la géométrie AUTHORÉE.
-    text.draw(9, 2, "pong")
-    text.draw(20, 2, "pong_02")
+    text.draw(9, 2, "arena")
+    text.draw(20, 2, "arena_02")
 end

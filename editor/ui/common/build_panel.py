@@ -174,12 +174,12 @@ class BuildPanel(QWidget):
         hl = QHBoxLayout(header)
         hl.setContentsMargins(8, 0, 8, 0)
         lbl = QLabel("BUILD / DEBUG")
-        lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color:{C.TEXT_NORM};")
         hl.addWidget(lbl)
         hl.addStretch()
-        btn_clear = QPushButton("Effacer")
-        btn_clear.setFont(QFont(T.MONO, T.SM))
+        btn_clear = QPushButton("Clear")
+        btn_clear.setFont(QFont(T.UI, T.SM))
         btn_clear.setFixedHeight(20)
         btn_clear.clicked.connect(lambda: self.console.clear())
         hl.addWidget(btn_clear)
@@ -212,7 +212,7 @@ class BuildPanel(QWidget):
 
     def set_building(self, b):
         self.btn_build.setEnabled(not b)
-        self.btn_build.setText("⏳  Build en cours…" if b else "▶  Build & Run")
+        self.btn_build.setText("⏳  Building…" if b else "▶  Build & Run")
 
 
 class ToolchainBar(QFrame):
@@ -226,9 +226,9 @@ class ToolchainBar(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 10, 0)
         layout.setSpacing(12)
-        font = QFont(T.MONO, T.SM)
+        font = QFont(T.UI, T.SM)
 
-        lbl = QLabel("Toolchain :")
+        lbl = QLabel("Toolchain:")
         lbl.setFont(font); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         layout.addWidget(lbl)
 
@@ -238,7 +238,7 @@ class ToolchainBar(QFrame):
         layout.addWidget(self._mgba)
         layout.addStretch()
 
-        btn = QPushButton("⚙ Configurer")
+        btn = QPushButton("⚙ Configure")
         btn.setFixedHeight(20); btn.setFont(font)
         btn.setStyleSheet(
             f"background:{C.BORDER}; color:{C.TEXT_NORM}; border:1px solid {C.TEXT_MUTED};"
@@ -261,40 +261,40 @@ class ToolchainDialog(QDialog):
     def __init__(self, toolchain: Toolchain, parent=None):
         super().__init__(parent)
         self.toolchain = toolchain
-        self.setWindowTitle("Configuration toolchain")
+        self.setWindowTitle("Toolchain Configuration")
         self.setMinimumWidth(540)
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
         grp = QGroupBox("devkitPro")
-        grp.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        grp.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         grp.setStyleSheet(
             f"QGroupBox{{color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};border-radius:4px;"
             "margin-top:6px;padding:8px;}"
             "QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;}"
         )
         gl = QHBoxLayout(grp)
-        n = QLabel("devkitPro"); n.setFont(QFont(T.MONO, T.MD)); n.setFixedWidth(160)
+        n = QLabel("devkitPro"); n.setFont(QFont(T.UI, T.MD)); n.setFixedWidth(160)
         self._dkp_edit = QLineEdit(str(toolchain.devkitpro_path or ""))
         self._dkp_edit.setFont(QFont(T.MONO, T.MD))
         self._dkp_edit.setStyleSheet(
             f"background:{C.BG_INPUT};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};"
             "border-radius:3px;padding:3px;"
         )
-        btn = QPushButton("Parcourir…"); btn.setFixedWidth(90)
+        btn = QPushButton("Browse…"); btn.setFixedWidth(90)
         btn.clicked.connect(self._browse_dkp)
         gl.addWidget(n); gl.addWidget(self._dkp_edit, 1); gl.addWidget(btn)
         layout.addWidget(grp)
 
         grp2 = QGroupBox("mgba")
-        grp2.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        grp2.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         grp2.setStyleSheet(grp.styleSheet())
         gl2 = QHBoxLayout(grp2)
-        mn = QLabel("mgba"); mn.setFixedWidth(160); mn.setFont(QFont(T.MONO, T.MD))
+        mn = QLabel("mgba"); mn.setFixedWidth(160); mn.setFont(QFont(T.UI, T.MD))
         self._mgba_edit = QLineEdit(str(toolchain.mgba_path or ""))
         self._mgba_edit.setFont(QFont(T.MONO, T.MD))
         self._mgba_edit.setStyleSheet(self._dkp_edit.styleSheet())
-        btn2 = QPushButton("Parcourir…"); btn2.setFixedWidth(90)
+        btn2 = QPushButton("Browse…"); btn2.setFixedWidth(90)
         btn2.clicked.connect(self._browse_mgba)
         gl2.addWidget(mn); gl2.addWidget(self._mgba_edit, 1); gl2.addWidget(btn2)
         layout.addWidget(grp2)

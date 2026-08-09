@@ -74,7 +74,7 @@ def _event_tooltip(name: str) -> str:
                 f"</tr>"
             )
         lines.append("</table>")
-    lines.append(f"<p style='color:{_C_SUB};margin-top:6px;font-size:9px'>? doc (bientôt disponible)</p>")
+    lines.append(f"<p style='color:{_C_SUB};margin-top:6px;font-size:9px'>? doc (coming soon)</p>")
     return "".join(lines)
 
 
@@ -86,7 +86,7 @@ def _group_label(text: str) -> QLabel:
     par exemple — sans ajouter un troisième niveau de dépliage dans une colonne
     de 200 px."""
     lbl = QLabel(text)
-    f = QFont(T.MONO, T.XS)
+    f = QFont(T.UI, T.XS)
     # Italique et non gras, indenté au-delà du header de sous-section : un
     # intertitre doit se lire comme une ANNOTATION, pas comme un contrôle. En
     # gras et aligné sur le header, un dossier de textes passait pour une
@@ -121,7 +121,7 @@ class _Section(QWidget):
         self._toggle = QPushButton()
         self._toggle.setStyleSheet(
             f"QPushButton{{color:{color};border:none;background:transparent;"
-            f"font-family:{T.MONO};font-size:{T.SM}pt;font-weight:bold;"
+            f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
             f"text-align:left;padding:0 4px 0 4px;}}"
             f"QPushButton:hover{{background:{_BG_HOVER};}}"
         )
@@ -161,7 +161,7 @@ class _Section(QWidget):
     def sub_label(self, text: str) -> QLabel:
         """Sous-label statique (utilisé pour RÉFÉRENCES)."""
         lbl = QLabel(f"  {text}")
-        lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         lbl.setStyleSheet(
             f"color:{_C_SUB};background:{_BG_HDR};"
             f"border-bottom:1px solid {_BORDER};padding:3px 0;"
@@ -191,7 +191,7 @@ class _SubSection(QWidget):
         self._toggle = QPushButton()
         self._toggle.setStyleSheet(
             f"QPushButton{{color:{_C_SUB};border:none;background:{_BG_HDR};"
-            f"font-family:{T.MONO};font-size:{T.SM}pt;font-weight:bold;"
+            f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
             f"text-align:left;padding:2px 4px 2px 8px;}}"
             f"QPushButton:hover{{color:{_TEXT_NORM};background:{_BG_HOVER};}}"
         )

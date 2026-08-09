@@ -66,7 +66,7 @@ class SidebarPanel(QWidget):
         self._cl.addWidget(self._sec_api)
 
         # ── Section RÉFÉRENCES ──────────────────────────────────────
-        self._sec_refs = _Section("RÉFÉRENCES", _C_REF, expanded=False)
+        self._sec_refs = _Section("REFERENCES", _C_REF, expanded=False)
         self._cl.addWidget(self._sec_refs)
 
         self._cl.addStretch()
@@ -128,7 +128,7 @@ class SidebarPanel(QWidget):
         # Scènes
         scenes = list(project.scenes)
         if scenes:
-            sub = self._sec_refs.sub_section("Scènes")
+            sub = self._sec_refs.sub_section("Scenes")
             for s in scenes:
                 _add(sub, s.name, "scene.switch", scene=s.name)
 
@@ -137,7 +137,7 @@ class SidebarPanel(QWidget):
         if actors:
             sub = self._sec_refs.sub_section("Actors")
             for a in actors:
-                _add(sub, a.name, "get_actor", "Scène active.", actor=a.name)
+                _add(sub, a.name, "get_actor", "Active scene.", actor=a.name)
 
         # Prefabs
         prefabs = list(project.prefabs)
@@ -161,8 +161,8 @@ class SidebarPanel(QWidget):
             sub = self._sec_refs.sub_section("Backgrounds")
             for bg in bgs:
                 sub.add_widget(_ref_btn(bg.name, f"-- BG: {bg.name}",
-                    _tip(bg.name, "Référence éditoriale — un fond se pose dans "
-                                  "la scène, pas depuis un script.")))
+                    _tip(bg.name, "Editorial reference — a background is placed in "
+                                  "the scene, not from a script.")))
 
         # ── Textes ─────────────────────────────────────────────────
         # Rangés par premier niveau de chemin : c'est l'arbre de l'écran Texte,
@@ -171,8 +171,8 @@ class SidebarPanel(QWidget):
         # métier de l'écran Texte, la sidebar sert à INSÉRER.
         texts = list(getattr(project, "texts", []))
         if texts:
-            sub = self._sec_refs.sub_section("Textes")
-            _UNFILED = "(non rangé)"
+            sub = self._sec_refs.sub_section("Texts")
+            _UNFILED = "(unfiled)"
             values = project.text_values()
             groups: dict[str, list] = {}
             for t in texts:
@@ -194,23 +194,24 @@ class SidebarPanel(QWidget):
         layout = (project.scene_ui_layout(project.active_scene)
                   if project.active_scene and hasattr(project, "scene_ui_layout")
                   else None)
-        if layout is not None and layout.regions:
-            sub = self._sec_refs.sub_section("Zones de texte")
-            for r in layout.regions:
-                # La zone porte déjà le texte que l'auteur y a mis en aperçu :
-                # c'est celui qu'il veut y afficher neuf fois sur dix.
-                key = getattr(r, "preview_text", "") or ""
+        if layout is not None and layout.slots:
+            sub = self._sec_refs.sub_section("Text zones")
+            for r in layout.slots:
+                # Une zone propose son texte d'aperçu ; un texte AUTHORÉ porte
+                # directement sa clé, et reste adressable (cf. KIND_SLOTS) pour
+                # être remplacé en cours de jeu.
+                key = getattr(r, "preview_text", "") or getattr(r, "text_key", "") or ""
                 doms = {"region": r.name}
                 if key:
                     doms["text"] = key
                 _add(sub, r.name, "text.draw_in",
-                     f"Mise en page <i>{layout.name}</i>"
-                     + (f" — aperçu « {escape(key)} »" if key else ""), **doms)
+                     f"Layout <i>{layout.name}</i>"
+                     + (f" — preview “{escape(key)}”" if key else ""), **doms)
 
         # ── Polices ────────────────────────────────────────────────
         fonts = list(getattr(project, "fonts", []))
         if fonts:
-            sub = self._sec_refs.sub_section("Polices")
+            sub = self._sec_refs.sub_section("Fonts")
             for f in fonts:
                 _add(sub, f.name, "text.set_font", font=f.name)
 
@@ -230,7 +231,7 @@ class SidebarPanel(QWidget):
                 rel = f"behaviors/{sp.stem}"
                 sn  = f"local {sp.stem} = require(\"{rel}\")"
                 sub.add_widget(_ref_btn(sp.name, sn,
-                    _tip(f"require(\"{rel}\")", f"Importe le module behavior <i>{sp.stem}</i>.")))
+                    _tip(f"require(\"{rel}\")", f"Imports the behavior module <i>{sp.stem}</i>.")))
 
     # ── Mise à jour état events ───────────────────────────────────────
 
@@ -257,25 +258,25 @@ class SidebarPanel(QWidget):
             self._sec_events._color = _C_BEHAVIOR
             self._sec_events._toggle.setStyleSheet(
                 f"QToolButton{{color:{_C_BEHAVIOR};border:none;background:transparent;"
-                f"font-family:{T.MONO};font-size:{T.SM}pt;font-weight:bold;"
+                f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
                 f"text-align:left;padding:0 4px 0 6px;}}"
                 f"QToolButton:hover{{background:{_BG_HOVER};}}"
             )
             self._sec_events._toggle.setText(f"▾  MODULE")
 
-            hint = QLabel("  Pas de handlers — appelé via require()")
-            hint.setFont(QFont(T.MONO, T.XS))
+            hint = QLabel("  No handlers — called via require()")
+            hint.setFont(QFont(T.UI, T.XS))
             hint.setStyleSheet(f"color:{_TEXT_DIM};background:{_BG};padding:4px 8px;")
             hint.setWordWrap(True)
             self._sec_events.add_widget(hint)
 
-            stub_text = "function M.nom(actor, ...)"
+            stub_text = "function M.name(actor, ...)"
             stub_btn = _EntryButton(f"  {stub_text}", _BTN_BEHAVIOR,
-                "<b style='font-family:Consolas,monospace'>function M.nom(actor, ...)</b>"
-                f"<p style='color:{_TEXT_NORM}'>Stub de fonction exportée par ce module behavior.</p>",
+                "<b style='font-family:Consolas,monospace'>function M.name(actor, ...)</b>"
+                f"<p style='color:{_TEXT_NORM}'>Function stub exported by this behavior module.</p>",
                 icon_key="behavior_stub", icon_color=_C_BEHAVIOR)
             stub_btn.clicked.connect(
-                lambda: self.snippet_requested.emit("function M.nom(actor, ...)\n    \nend\n"))
+                lambda: self.snippet_requested.emit("function M.name(actor, ...)\n    \nend\n"))
             self._sec_events.add_widget(stub_btn)
 
             self._sec_refs.setVisible(False)
@@ -285,7 +286,7 @@ class SidebarPanel(QWidget):
             self._sec_events._color = _C_EVENT
             self._sec_events._toggle.setStyleSheet(
                 f"QToolButton{{color:{_C_EVENT};border:none;background:transparent;"
-                f"font-family:{T.MONO};font-size:{T.SM}pt;font-weight:bold;"
+                f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
                 f"text-align:left;padding:0 4px 0 6px;}}"
                 f"QToolButton:hover{{background:{_BG_HOVER};}}"
             )

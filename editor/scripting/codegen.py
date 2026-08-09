@@ -31,7 +31,7 @@ from .api import (
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
-    text_constant, font_constant, region_constant,
+    text_constant, font_constant, region_constant, anon_text_key,
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
@@ -610,7 +610,12 @@ class CodeGen:
             case d if d == DOMAIN_KEY:    return key_constant(name)
             case d if d == DOMAIN_TAG:    return tag_constant(name)
             case d if d == DOMAIN_SCENE:  return scene_constant(name)
-            case d if d == DOMAIN_TEXT:   return text_constant(name)
+            # Une chaîne qui ne matche aucune clé est un LITTÉRAL (`text.draw`
+            # seul le permet, cf. Param.literal_ok) : il a sa propre entrée de
+            # table, donc le C ne voit qu'un index comme pour tout texte.
+            case d if d == DOMAIN_TEXT:
+                return text_constant(name if name in self.ctx.text_keys
+                                     else anon_text_key(name))
             case d if d == DOMAIN_FONT:   return font_constant(name)
             case d if d == DOMAIN_REGION: return region_constant(name)
             case _:                        return f'"{name}"'

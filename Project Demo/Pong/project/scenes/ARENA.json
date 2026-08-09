@@ -1,5 +1,5 @@
 {
-  "name": "ARENA",
+  "name": "Arena",
   "background_layers": [
     {
       "background_name": "",
@@ -54,8 +54,8 @@
           "exports_values": {}
         }
       ],
-      "x": 20,
-      "y": 65,
+      "x": 16,
+      "y": 64,
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
@@ -105,8 +105,8 @@
           "exports_values": {}
         }
       ],
-      "x": 213,
-      "y": 65,
+      "x": 216,
+      "y": 64,
       "flip_h": false,
       "flip_v": false,
       "priority": 0,
@@ -131,7 +131,7 @@
       "region": 0,
       "x": 0,
       "y": 0,
-      "w": 240,
+      "w": 238,
       "h": 160,
       "visible": false,
       "layers_shown": [
@@ -149,6 +149,7 @@
   "script": "assets/scripts/scenes/PONG.lua",
   "text_bg": 0,
   "ui_layout": "arena_ui",
+  "ui_pal_bank": -1,
   "collision_layer": 0,
   "collision_map": [
     [
@@ -804,6 +805,6 @@
     "DMG (GB Default) (BG)",
     "pal_Ball"
   ],
-  "backdrop_color": null,
+  "backdrop_color": 3044,
   "notes": ""
 }

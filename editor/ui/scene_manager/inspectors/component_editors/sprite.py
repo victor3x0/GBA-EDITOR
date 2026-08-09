@@ -38,7 +38,7 @@ class SpriteEditor(BaseComponentEditor):
         slot = sprite_picker_slot(
             [s.name for s in proj.sprites], sprite.name if sprite else None,
             COLOR_SPRITE, on_picked=_on_sprite_picked, on_cleared=_on_sprite_cleared,
-            add_label="Choisir un sprite", parent=self.insp,
+            add_label="Choose a sprite", parent=self.insp,
         )
         W.row("Sprite", slot, layout)
 
@@ -74,20 +74,19 @@ class SpriteEditor(BaseComponentEditor):
         pal_slot = palette_picker_slot(
             active_banks, current_pal_name,
             COLOR_SPRITE, on_picked=_on_pal_picked,
-            add_label="Choisir une palette", parent=self.insp,
+            add_label="Choose a palette", parent=self.insp,
         )
         pal_slot.setToolTip(
-            "« Sans palette » = couleurs d'origine du PNG (par défaut). "
-            "Sinon, choisir une palette active de la scène (carte "
-            "\"Palettes actives\" de l'inspecteur de scène)."
+            "“No palette” = original PNG colors (default). "
+            "Otherwise, choose one of the scene's active palettes (\"Active "
+            "palettes\" card in the scene inspector)."
         )
         W.row("Palette", pal_slot, layout)
 
         # ── État initial : même bouton+popup filtrable que "Sprite" ──
         state_slot = ScriptSlot(
-            add_label="Choisir un état",
+            add_label="Choose a state",
             accent_color=COLOR_SPRITE,
-            edit_label="Changer",
             show_clear=False,   # un state initial est toujours requis, rien à "vider"
         )
         state_slot.set_script(comp.initial_state or "Idle")
@@ -127,11 +126,11 @@ class SpriteEditor(BaseComponentEditor):
         speed = W.spinbox(_init_state.speed if _init_state else 8, min_v=1, max_v=120)
         speed.setEnabled(sprite is not None)
         speed.setToolTip(
-            "<b style='color:#7ecfff'>Vitesse animation</b><br><br>"
-            "Ticks GBA (60 fps) entre deux frames, pour l'état initial "
-            f"(<b>{comp.initial_state}</b>) uniquement.<br>"
+            "<b style='color:#7ecfff'>Animation speed</b><br><br>"
+            "GBA ticks (60 fps) between two frames, for the initial state "
+            f"(<b>{comp.initial_state}</b>) only.<br>"
             "8 ticks ≈ 7.5 fps  |  4 = 15 fps  |  2 = 30 fps<br><br>"
-            "Les autres états gardent leur propre vitesse — réglable dans le Sprite Editor."
+            "Other states keep their own speed — adjustable in the Sprite Editor."
         )
         speed.valueChanged.connect(lambda v: self._set_anim_speed(comp, v))
         W.row("Anim speed", speed, layout)
@@ -139,8 +138,8 @@ class SpriteEditor(BaseComponentEditor):
         # ── Scale ─────────────────────────────────────────────────
         sx = W.double_spinbox(getattr(comp, "scale_x", 1.0), min_v=0.1, max_v=4.0, step=0.1)
         sy = W.double_spinbox(getattr(comp, "scale_y", 1.0), min_v=0.1, max_v=4.0, step=0.1)
-        sx.setToolTip("Échelle X — OAM affine (1.0 = normal, GBA uniquement)")
-        sy.setToolTip("Échelle Y — OAM affine")
+        sx.setToolTip("X scale — affine OAM (1.0 = normal, GBA only)")
+        sy.setToolTip("Y scale — affine OAM")
         sx.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_x", v))
         sy.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_y", v))
         W.pair("Scale", "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
@@ -149,7 +148,7 @@ class SpriteEditor(BaseComponentEditor):
         rot = W.spinbox(int(getattr(comp, "rotation", 0)), min_v=0, max_v=359)
         rot.setSuffix("°")
         rot.setWrapping(True)
-        rot.setToolTip("Rotation en degrés — OAM affine (GBA uniquement)")
+        rot.setToolTip("Rotation in degrees — affine OAM (GBA only)")
         rot.valueChanged.connect(lambda v: self._set_comp_field(comp, "rotation", v))
         W.row("Rotation", rot, layout)
 

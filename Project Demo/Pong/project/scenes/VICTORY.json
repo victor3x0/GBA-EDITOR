@@ -17,6 +17,7 @@
   "script": "assets/scripts/scenes/VICTORY.lua",
   "text_bg": 0,
   "ui_layout": "victory_ui",
+  "ui_pal_bank": -1,
   "collision_layer": 0,
   "collision_map": [
     [

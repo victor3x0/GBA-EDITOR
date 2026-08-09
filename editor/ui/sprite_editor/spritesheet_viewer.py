@@ -189,14 +189,14 @@ class _SpritesheetViewer(QWidget):
         hdr_lay.setSpacing(4)
 
         lbl_tiles = QLabel("TILES")
-        lbl_tiles.setFont(QFont(T.MONO, T.XS))
-        lbl_tiles.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
+        lbl_tiles.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        lbl_tiles.setStyleSheet(QSS.title_panel)
         hdr_lay.addWidget(lbl_tiles)
 
         hdr_lay.addStretch()
 
-        self._brush_lbl = QLabel("Aucune brosse")
-        self._brush_lbl.setFont(QFont(T.MONO, T.XS))
+        self._brush_lbl = QLabel("No brush")
+        self._brush_lbl.setFont(QFont(T.UI, T.XS))
         self._brush_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
         hdr_lay.addWidget(self._brush_lbl)
 
@@ -244,7 +244,7 @@ class _SpritesheetViewer(QWidget):
 
     def set_brush_label(self, n: int):
         if n == 0:
-            self._brush_lbl.setText("Aucune brosse")
+            self._brush_lbl.setText("No brush")
             self._brush_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
         else:
             self._brush_lbl.setText(f"Brosse : {n} tuile{'s' if n > 1 else ''}")

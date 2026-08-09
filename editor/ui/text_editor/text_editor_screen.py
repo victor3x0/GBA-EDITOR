@@ -30,6 +30,7 @@ contexte actif :
   font_finder_panel.py    colonne gauche — liste des polices
   text_tree_panel.py      colonne centre, contexte Texte — arbre + atelier
   font_screen_preview.py  aperçu écran GBA (monté par l'atelier)
+  markup_toolbar.py       boutons de balisage de l'atelier (dérivés de TAGS)
   glyph_sheet.py          planche de glyphes (canvas)
   glyph_sheet_panel.py    colonne centre, contexte Police — planche + outils
   inspector_shell.py      coquille commune aux deux inspecteurs
@@ -251,8 +252,8 @@ class TextEditorScreen(QWidget):
             return
         get_history().push(SetKeyColorCmd(
             self._project, font, field_name, old, new,
-            label=(f"Couleur {label} de {font.name}" if new
-                   else f"Retirer la couleur {label} de {font.name}"),
+            label=(f"{label} color of {font.name}" if new
+                   else f"Remove {label} color of {font.name}"),
             persist_fn=lambda: self._after_key_color(font),
         ))
 
@@ -296,14 +297,14 @@ class TextEditorScreen(QWidget):
             return
         png = self._project.asset_abs(font.asset)
         if not png or not png.exists():
-            QMessageBox.warning(self, "Re-découpe",
-                                f"Planche introuvable : {font.asset}")
+            QMessageBox.warning(self, "Re-slice",
+                                f"Sheet not found: {font.asset}")
             return
         if QMessageBox.question(
-            self, "Re-découper la planche",
-            f"Redécouper « {font.name} » en cellules de {cw}×{ch} ?\n\n"
-            "Les caractères assignés sont reproposés depuis zéro — les "
-            "corrections manuelles seront perdues.",
+            self, "Re-slice sheet",
+            f"Re-slice “{font.name}” into {cw}×{ch} cells?\n\n"
+            "Assigned characters are reset from scratch — manual "
+            "corrections will be lost.",
         ) != QMessageBox.StandardButton.Yes:
             return
         from core import font_import
@@ -314,7 +315,7 @@ class TextEditorScreen(QWidget):
                                                  keys=font.key_colors(),
                                                  space_color=font.space_color)
         except Exception as exc:
-            QMessageBox.warning(self, "Re-découpe", f"Import impossible : {exc}")
+            QMessageBox.warning(self, "Re-slice", f"Import failed: {exc}")
             return
         get_history().push(ResliceFontCmd(
             self._project, font, fields,

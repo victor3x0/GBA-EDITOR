@@ -5,6 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QFileDialog, QInputDialog, QLineEdit,
 )
+from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot
@@ -20,7 +21,7 @@ class ScriptEditor(BaseComponentEditor):
         sp   = proj.asset_abs(comp.script) if comp.script else None
 
         slot = ScriptSlot(
-            add_label    = "Ajouter un script",
+            add_label    = "Add a script",
             accent_color = icons.COLOR_SCRIPT,
             hint         = "on_start · on_update · on_collide · …",
         )
@@ -49,7 +50,7 @@ class ScriptEditor(BaseComponentEditor):
             return
 
         W.separator(layout)
-        W.section("VARIABLES EXPOSÉES", layout)
+        W.section("EXPOSED VARIABLES", layout)
 
         for var in variables:
             self._build_var_row(comp, var, layout)
@@ -92,7 +93,7 @@ class ScriptEditor(BaseComponentEditor):
         # ── string ────────────────────────────────────────────────
         elif typ == "string":
             le = QLineEdit(str(current))
-            le.setFont(QFont(T.MONO, T.MD))
+            le.setFont(QFont(T.UI, T.MD))
             le.setStyleSheet(QSS.lineedit)
             W.row(label, le, layout)
             le.editingFinished.connect(lambda w=le: save(w.text()))
@@ -167,7 +168,7 @@ class ScriptEditor(BaseComponentEditor):
     def _new_script(self, comp, slot: ScriptSlot):
         from core.command_dispatcher import get_dispatcher
         proj = self.insp._project
-        name, ok = QInputDialog.getText(self.insp, "Nouveau script actor", "Nom (sans .lua) :")
+        name, ok = QInputDialog.getText(self.insp, "New actor script", "Name (without .lua):")
         if not ok or not name.strip(): return
         actors_dir = proj.scripts_actors_dir
         actors_dir.mkdir(parents=True, exist_ok=True)

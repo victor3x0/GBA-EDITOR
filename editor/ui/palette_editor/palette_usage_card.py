@@ -30,9 +30,9 @@ from ui.common import icons
 # L'ordre de ce tableau EST l'ordre d'affichage des groupes.
 _KINDS = (
     ("sprite",     "sprite",     icons.COLOR_SPRITE,     "Sprite",     "Sprites"),
-    ("background", "background", icons.COLOR_BACKGROUND, "Fond",       "Fonds"),
+    ("background", "background", icons.COLOR_BACKGROUND, "Background", "Backgrounds"),
     ("prefab",     "prefab",     icons.COLOR_PREFAB,     "Prefab",     "Prefabs"),
-    ("scene",      "scene",      icons.COLOR_SCENE,      "Scène",      "Scènes"),
+    ("scene",      "scene",      icons.COLOR_SCENE,      "Scene",      "Scenes"),
 )
 
 _HDR_H = 28
@@ -69,8 +69,8 @@ class PaletteUsageCard(QWidget):
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(12, 0, 12, 0)
         title = QLabel("USAGE")
-        title.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        title.setStyleSheet(f"color:{C.TEXT_MUTED}; letter-spacing:1px;")
+        title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        title.setStyleSheet(QSS.title_panel)
         hl.addWidget(title)
         hl.addStretch()
         self._count = QLabel("")
@@ -101,14 +101,14 @@ class PaletteUsageCard(QWidget):
         self._clear()
         if not (project and bank_name):
             self._count.setText("")
-            self._add_empty("Aucune palette sélectionnée.")
+            self._add_empty("No palette selected.")
             self._list.addStretch()
             return
 
         usages = project.palette_usages(bank_name)
         self._count.setText(str(len(usages)) if usages else "")
         if not usages:
-            self._add_empty("Aucun usage dans le projet.")
+            self._add_empty("No use in the project.")
             self._list.addStretch()
             return
 
@@ -145,7 +145,7 @@ class PaletteUsageCard(QWidget):
 
     def _add_empty(self, text: str):
         lbl = QLabel(text)
-        lbl.setFont(QFont(T.MONO, T.SM))
+        lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:10px 12px;")
         lbl.setWordWrap(True)
         self._list.addWidget(lbl)
@@ -162,7 +162,7 @@ class PaletteUsageCard(QWidget):
         ico.setPixmap(icons.get(icon_name, color).pixmap(QSize(13, 13)))
         rl.addWidget(ico)
         lbl = QLabel(label)
-        lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color:{color};")
         rl.addWidget(lbl, 1)
         cnt = QLabel(f"×{count}")
@@ -179,16 +179,16 @@ class PaletteUsageCard(QWidget):
             f"QFrame{{background:transparent;}}"
             f"QFrame:hover{{background:{C.BG_HOVER};}}"
         )
-        row.setToolTip(f"{usage.detail} — ouvrir dans son éditeur")
+        row.setToolTip(f"{usage.detail} — open in its editor")
         rl = QHBoxLayout(row)
         rl.setContentsMargins(26, 0, 10, 0)
         rl.setSpacing(6)
         name = QLabel(usage.name)
-        name.setFont(QFont(T.MONO, T.SM))
+        name.setFont(QFont(T.UI, T.SM))
         name.setStyleSheet(f"color:{C.TEXT_NORM};")
         rl.addWidget(name)
         detail = QLabel(usage.detail)
-        detail.setFont(QFont(T.MONO, T.XS))
+        detail.setFont(QFont(T.UI, T.XS))
         detail.setStyleSheet(f"color:{C.TEXT_MUTED};")
         detail.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         rl.addWidget(detail, 1)

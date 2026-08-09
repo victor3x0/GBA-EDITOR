@@ -6,33 +6,39 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
-from ui.common.theme import C, T, QSS
+from ui.common.theme import C, T, S, QSS
 from core.project import GlobalVar, Constant
 from .colors import _C_GLOBAL, _C_CONST
 
 
+# Même grammaire que les autres viewers : fond du panneau, retrait de contenu,
+# sélection périwinkle, en-tête de colonnes en intertitre discret.
 _TBL_SS = f"""
 QTableWidget {{
-    background:{C.BG_PANEL}; color:{C.TEXT_HI};
-    border:none; gridline-color:{C.BORDER};
+    background:{C.BG_BASE}; color:{C.TEXT_HI};
+    border:none; gridline-color:transparent;
     font-family:{T.CODE}; font-size:{T.MD}px;
-    selection-background-color:#264f78; selection-color:#ffffff;
+    outline:none;
+    padding-left:{S.LG}px; padding-right:{S.SM}px;
+    selection-background-color:{C.BG_SEL}; selection-color:{C.ACCENT};
 }}
 QHeaderView::section {{
-    background:{C.BG_PANEL}; color:{C.TEXT_DIM};
-    border:none; border-bottom:1px solid {C.BORDER};
-    font-family:{T.MONO}; font-size:{T.XS}px;
-    padding:2px 4px;
+    background:transparent; color:{C.TEXT_MUTED};
+    border:none; border-bottom:1px solid {C.BORDER_DARK};
+    font-family:{T.UI_STACK}; font-size:{T.XS}px;
+    font-weight:700; letter-spacing:1px;
+    padding:3px 4px;
 }}
 QTableWidget::item {{ padding:1px 4px; }}
+QTableWidget::item:hover {{ background:{C.BG_PANEL}; }}
 QComboBox {{
-    background:{C.BG_PANEL}; color:{C.TEXT_HI};
+    background:{C.BG_INPUT}; color:{C.TEXT_HI};
     border:1px solid {C.BORDER};
     font-family:{T.CODE}; font-size:{T.MD}px;
 }}
 QComboBox QAbstractItemView {{
     background:{C.BG_RAISED}; color:{C.TEXT_HI};
-    selection-background-color:#264f78;
+    selection-background-color:{C.BG_SEL}; selection-color:{C.ACCENT};
 }}
 """
 
@@ -57,8 +63,8 @@ class VarTablePanel(QWidget):
         self._updating = False
         self._label = "GLOBALS" if kind == "global" else "CONSTANTS"
         self._color = _C_GLOBAL if kind == "global" else _C_CONST
-        value_col = "défaut" if kind == "global" else "valeur"
-        self._cols = ["nom", "type", value_col]
+        value_col = "default" if kind == "global" else "value"
+        self._cols = ["name", "type", value_col]
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -106,7 +112,7 @@ class VarTablePanel(QWidget):
         from PyQt6.QtWidgets import QComboBox
         row = self._tbl.rowCount()
         self._tbl.insertRow(row)
-        self._tbl.setRowHeight(row, 20)
+        self._tbl.setRowHeight(row, S.ROW)
 
         name_item = QTableWidgetItem(name)
         name_item.setForeground(QColor(self._color))
@@ -126,12 +132,12 @@ class VarTablePanel(QWidget):
     def _add_var(self):
         if not self._project:
             return
-        title = "Nouvelle variable globale" if self._kind == "global" else "Nouvelle constante"
-        name, ok = QInputDialog.getText(self, title, "Nom :")
+        title = "New global variable" if self._kind == "global" else "New constant"
+        name, ok = QInputDialog.getText(self, title, "Name:")
         if not ok or not name.strip():
             return
         if self._project.add_variable(self._kind, name) is None:
-            QMessageBox.warning(self, "Doublon", f"« {name.strip()} » existe déjà.")
+            QMessageBox.warning(self, "Duplicate", f"“{name.strip()}” already exists.")
             return
         self._updating = True
         self._append_row(name.strip())
@@ -191,7 +197,7 @@ class VarTablePanel(QWidget):
         a_get = menu.addAction(self._snippet_get(name))
         a_set = menu.addAction(f'global.set("{name}", ...)') if self._kind == "global" else None
         menu.addSeparator()
-        a_del = menu.addAction("Supprimer")
+        a_del = menu.addAction("Delete")
         action = menu.exec(self._tbl.viewport().mapToGlobal(pos))
         if action == a_get:
             self.snippet_requested.emit(self._snippet_get(name))

@@ -199,7 +199,7 @@ class _FrameTimeline(QWidget):
 
         # Label section
         hdr = QLabel("  FRAMES")
-        hdr.setFont(QFont(T.MONO, T.XS))
+        hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         hdr.setFixedHeight(18)
         hdr.setStyleSheet(
             f"color:{C.TEXT_DIM};background:{C.BG_RAISED};"
@@ -240,7 +240,7 @@ class _FrameTimeline(QWidget):
             f"font-size:{T.LG}px;}}"
             f"QToolButton:hover{{color:{C.ACCENT};border-color:{C.ACCENT};}}"
         )
-        self._add_btn.setToolTip("Ajouter une frame")
+        self._add_btn.setToolTip("Add a frame")
         self._add_btn.clicked.connect(self._on_add)
 
         self._scroll.setWidget(self._content)
@@ -368,11 +368,11 @@ class _FrameTimeline(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        copy_a  = menu.addAction("Copier              Ctrl+D")
-        clone_a = menu.addAction("Cloner")
-        clear_a = menu.addAction("Vider la frame")
+        copy_a  = menu.addAction("Copy                Ctrl+D")
+        clone_a = menu.addAction("Clone")
+        clear_a = menu.addAction("Clear frame")
         menu.addSeparator()
-        del_a   = menu.addAction("Supprimer           Suppr")
+        del_a   = menu.addAction("Delete              Del")
         del_a.setEnabled(len(self._sd.frames) > 1)
 
         act = menu.exec(pos)
@@ -824,9 +824,9 @@ class _FrameCanvas(QWidget):
 
         if not self._frame or not self._sprite:
             painter.setPen(QColor(C.TEXT_MUTED))
-            painter.setFont(QFont(T.MONO, T.MD))
+            painter.setFont(QFont(T.UI, T.MD))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "Sélectionnez une frame")
+                             "Select a frame")
             painter.end()
             return
 
@@ -989,9 +989,9 @@ class _CanvasFloatingToolbar(QFrame):
             f"border:1px solid {C.ACCENT};border-radius:4px;}}"
         )
         self.btn_original = QToolButton(); self.btn_original.setText("PNG")
-        self.btn_original.setToolTip("Preview : résultat compressé du sprite (own_palette)")
-        self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexé")
-        self.btn_indexed.setToolTip("Preview : recolorée par la palette active de la bande PALETTE (rendu in-game)")
+        self.btn_original.setToolTip("Preview: sprite's compressed result (own_palette)")
+        self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexed")
+        self.btn_indexed.setToolTip("Preview: recolored by the PALETTE strip's active palette (in-game render)")
         for b in (self.btn_original, self.btn_indexed):
             b.setStyleSheet(_MODE_BTN)
             b.setCheckable(True)
@@ -1001,8 +1001,8 @@ class _CanvasFloatingToolbar(QFrame):
         self.btn_original.clicked.connect(lambda: self._set_preview_indexed(False))
         self.btn_indexed.clicked.connect(lambda: self._set_preview_indexed(True))
         _sep()
-        self.btn_flip_x = _icon_btn("mirror_h", "Flip horizontal de la brosse active (Shift+X)")
-        self.btn_flip_y = _icon_btn("mirror_v", "Flip vertical de la brosse active (Shift+Y)")
+        self.btn_flip_x = _icon_btn("mirror_h", "Horizontal flip of the active brush (Shift+X)")
+        self.btn_flip_y = _icon_btn("mirror_v", "Vertical flip of the active brush (Shift+Y)")
         _sep()
 
         _TXT_BTN = (
@@ -1016,7 +1016,7 @@ class _CanvasFloatingToolbar(QFrame):
         for b in (self.btn_fit, self.btn_zm, self.btn_zp):
             b.setStyleSheet(_TXT_BTN)
             b.setFixedHeight(36)
-            b.setToolTip("Réinitialiser le zoom (ajustement automatique)" if b is self.btn_fit else "")
+            b.setToolTip("Reset zoom (auto-fit)" if b is self.btn_fit else "")
             layout.addWidget(b)
 
         # Grille + flip/zoom pilotent directement le canvas (pas d'état
@@ -1094,7 +1094,7 @@ class _FrameCanvasPanel(QWidget):
 
         _FLOAT_STY = f"color:{C.TEXT_MUTED};background:transparent;"
         self._tag_lbl = QLabel("CANVAS", self)
-        self._tag_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        self._tag_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._tag_lbl.setStyleSheet(_FLOAT_STY + "letter-spacing:1px;")
         self._tag_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._tag_lbl.adjustSize()
@@ -1112,7 +1112,7 @@ class _FrameCanvasPanel(QWidget):
         # Bandeau miroir / lecture seule — visible seulement pour une direction
         # miroir (mirror_of défini) : signale que le contenu n'est pas éditable.
         self._ro_lbl = QLabel("", self)
-        self._ro_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        self._ro_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._ro_lbl.setStyleSheet(
             f"color:{C.ACCENT_BLU};background:#0e1f2e;"
             f"border:1px solid {C.ACCENT_BLU};border-radius:4px;padding:3px 8px;"

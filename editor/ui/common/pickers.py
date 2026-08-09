@@ -14,7 +14,7 @@ from core.project import PaletteBank
 # Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —
 # l'appelant le mappe vers OWN_PAL_BANK (l'asset garde ses couleurs d'origine).
 PALETTE_NONE = "__none__"
-_NONE_LABEL = "Sans palette (couleurs du PNG)"
+_NONE_LABEL = "No palette (PNG colors)"
 
 
 def palette_picker_slot(
@@ -23,7 +23,7 @@ def palette_picker_slot(
     accent: str,
     on_picked: Callable[[str], None],
     on_cleared: Optional[Callable[[], None]] = None,
-    add_label: str = "Choisir une palette",
+    add_label: str = "Choose a palette",
     parent=None,
     allow_none: bool = True,
 ) -> ScriptSlot:
@@ -32,7 +32,7 @@ def palette_picker_slot(
     revenir aux couleurs d'origine du PNG — on_picked reçoit alors le jeton
     PALETTE_NONE. `current_name` None + allow_none => affiche « Sans palette »."""
     slot = ScriptSlot(
-        add_label=add_label, accent_color=accent, edit_label="Changer",
+        add_label=add_label, accent_color=accent,
         show_clear=on_cleared is not None,
     )
 
@@ -71,13 +71,13 @@ def sprite_picker_slot(
     accent: str,
     on_picked: Callable[[str], None],
     on_cleared: Optional[Callable[[], None]] = None,
-    add_label: str = "Choisir un sprite",
+    add_label: str = "Choose a sprite",
     parent=None,
 ) -> ScriptSlot:
     """Slot pour choisir un SpriteAsset par nom — même modèle que
     `palette_picker_slot`, sans icône (pas d'aperçu bon marché pour un sprite)."""
     slot = ScriptSlot(
-        add_label=add_label, accent_color=accent, edit_label="Changer",
+        add_label=add_label, accent_color=accent,
         show_clear=on_cleared is not None,
     )
     if current_name:

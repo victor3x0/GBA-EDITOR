@@ -1,0 +1,248 @@
+"""
+ui/text_editor/markup_toolbar.py — barre de balisage de l'atelier d'écriture.
+
+Écrire `[wave]…[/wave]` à la main marche, mais demande de connaître le
+catalogue par cœur et de ne pas se tromper de fermeture. Cette barre pose les
+balises sur la SÉLECTION, comme n'importe quel éditeur BBCode.
+
+Elle ne redit pas la grammaire : les boutons sont dérivés de
+`core.text_markup.TAGS` — une balise ajoutée au catalogue apparaît ici sans
+qu'on y touche (avec une icône de repli si personne ne lui en a choisi une).
+Seule la PRÉSENTATION (icône, valeur pré-remplie) vit dans ce module.
+
+Deux règles, qui suivent la nature de la balise :
+  • de PORTÉE (`wave`, `shake`, `color`) → elle enveloppe la sélection, et
+    re-cliquer sur une sélection déjà enveloppée la déshabille ;
+  • PONCTUELLE (`speed`, `pause`, `icon`) → elle marque un instant, donc elle
+    se pose DEVANT la sélection sans jamais la remplacer.
+
+Quand la balise attend une valeur, la valeur insérée est laissée SÉLECTIONNÉE :
+on la corrige en tapant, sans boîte de dialogue ni aller-retour à la souris.
+Quand cette valeur désigne quelque chose que le projet connaît déjà (un glyphe
+nommé de la police, un global ou une constante), le bouton propose la liste —
+mieux vaut choisir que retaper un nom que l'inspecteur signalera ensuite.
+"""
+from __future__ import annotations
+
+import re
+from typing import Optional
+
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QMenu
+from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtCore import Qt, QSize
+
+from core.text_markup import TAGS, KIND_VALUE, VALUE_NONE
+from ui.common import icons
+from ui.common.theme import C, T, QSS
+
+
+# Présentation d'une balise : (icône, valeur pré-remplie). Les valeurs par
+# défaut sont des points de départ PLAUSIBLES, pas des neutres : `[pause=0]` ou
+# `[color=]` obligerait à taper avant de pouvoir juger du rendu.
+_LOOK: dict[str, tuple[str, str]] = {
+    "speed": ("mk_speed", "2"),
+    "pause": ("mk_pause", "30"),
+    "icon":  ("mk_icon",  "name"),
+    "wave":  ("mk_wave",  ""),
+    "shake": ("mk_shake", ""),
+    "color": ("mk_color", "1"),
+}
+_FALLBACK_ICON = "mk_tag"
+
+
+class MarkupToolbar(QFrame):
+    """Boutons de balisage agissant sur un `QTextEdit` de contenu."""
+
+    def __init__(self, edit, parent=None):
+        super().__init__(parent)
+        self._edit = edit
+        self._project = None
+        self._font = None
+        self.setFixedHeight(32)
+        self.setStyleSheet(
+            f"QFrame{{background:{C.BG_PANEL}; "
+            f"border-top:1px solid {C.BORDER_DARK};}}")
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 0, 6, 0)
+        lay.setSpacing(3)
+
+        for name, spec in TAGS.items():
+            icon, default = _LOOK.get(name, (_FALLBACK_ICON, ""))
+            syntax = (f"[{name}{'=…' if spec.value else ''}]"
+                      + (f"…[/{name}]" if spec.scoped else ""))
+            lay.addWidget(self._button(
+                icon,
+                f"<b>{syntax}</b><br>{spec.doc}<br><br>"
+                + ("Wraps the selection — click again to remove it."
+                   if spec.scoped else
+                   "Dropped in front of the selection, which is left intact."),
+                lambda _c=False, n=name, d=default: self._on_click(n, d),
+            ))
+
+        sep = QFrame()
+        sep.setFixedWidth(1)
+        sep.setStyleSheet(f"background:{C.BORDER};")
+        lay.addSpacing(4)
+        lay.addWidget(sep)
+        lay.addSpacing(4)
+
+        # Le marqueur de valeur n'est PAS une balise (il ne met rien en forme,
+        # il substitue) — d'où le séparateur, et sa place en bout de barre.
+        lay.addWidget(self._button(
+            "mk_value",
+            "<b>$name</b><br>Inserts the value of a project global or "
+            "constant, read at display time.",
+            lambda _c=False: self._on_click(KIND_VALUE, "name"),
+        ))
+        lay.addStretch()
+
+    def _button(self, icon: str, tooltip: str, slot) -> QToolButton:
+        # Même bouton que les barres de canvas (28×24, icône 18, cadre discret) :
+        # une barre d'outils se reconnaît d'un écran à l'autre.
+        b = QToolButton(self)
+        b.setFixedSize(28, 24)
+        b.setIconSize(QSize(18, 18))
+        b.setIcon(icons.get(icon, C.TEXT_NORM))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER}; background:{C.BG_INPUT};"
+            f"border-radius:4px; padding:0px;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER}; border-color:{C.ACCENT};}}"
+            f"QToolButton:disabled{{background:transparent; border-color:{C.BORDER_DARK};}}"
+        )
+        b.setToolTip(tooltip)
+        # Sans focus : cliquer un bouton ne doit ni voler le curseur au texte,
+        # ni défaire la sélection sur laquelle on vient d'appuyer.
+        b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        b.clicked.connect(slot)
+        return b
+
+    # ── Contexte projet ───────────────────────────────────────────
+
+    def set_project(self, project):
+        self._project = project
+
+    def set_font(self, font):
+        """Police d'aperçu — la seule qui puisse dire quels glyphes NOMMÉS
+        existent, donc ce que `[icon=…]` peut désigner."""
+        self._font = font
+
+    # ── Application ───────────────────────────────────────────────
+
+    def _on_click(self, name: str, default: str):
+        """Un clic : soit la liste de ce que la valeur peut désigner, soit la
+        balise posée directement."""
+        choices = self._choices(name)
+        if not choices:
+            self._insert(name, default or None, preselect=bool(default))
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        menu.setFont(QFont(T.UI, T.MD))
+        for label in choices:
+            menu.addAction(label, lambda _c=False, v=label:
+                           self._insert(name, v, preselect=False))
+        # Soupape : la liste dit ce que le projet connaît AUJOURD'HUI. Écrire
+        # un texte avant le global qu'il affiche est un ordre légitime.
+        menu.addSeparator()
+        menu.addAction("Type it by hand…", lambda _c=False:
+                       self._insert(name, default or None, preselect=bool(default)))
+        btn = self.sender()
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _choices(self, name: str) -> list[str]:
+        """Ce que la valeur peut désigner, quand le projet le sait. Vide = rien
+        à proposer, on insère alors un gabarit à corriger sur place."""
+        if name == KIND_VALUE and self._project:
+            return sorted({v.name for v in self._project.globals}
+                          | {c.name for c in self._project.constants})
+        if name == "icon" and self._font:
+            # Les glyphes MULTI-caractères seuls : une case qui porte « A » se
+            # tape au clavier, `[icon=…]` n'existe que pour les cases fusionnées
+            # (pictogrammes, ligatures) qu'aucune touche ne produit.
+            # Un nom à crochets est écarté : la valeur d'une balise s'arrête au
+            # premier « ] », `[icon=[X]]` ne voudrait pas dire ce qu'il montre.
+            return sorted({g.char for g in self._font.glyphs
+                           if len(g.char) > 1 and "[" not in g.char
+                           and "]" not in g.char})
+        return []
+
+    def _insert(self, name: str, value: Optional[str], *, preselect: bool):
+        """Pose la balise et laisse le curseur là où l'écriture continue."""
+        cur = self._edit.textCursor()
+        a, b = cur.selectionStart(), cur.selectionEnd()
+        src = self._edit.toPlainText()
+
+        if name == KIND_VALUE:
+            token = "$" + (value or "name")
+            self._apply([(a, a, token)],
+                        (a + 1, len(token) - 1) if preselect else (a + len(token), 0))
+            return
+
+        spec = TAGS[name]
+        open_tag = f"[{name}]" if spec.value == VALUE_NONE else f"[{name}={value}]"
+        val_at = a + len(name) + 2      # après « [nom= »
+        val_len = len(value or "")
+
+        if not spec.scoped:
+            # Ponctuelle : elle marque un instant, elle ne recouvre rien. Posée
+            # au DÉBUT de la sélection — « à partir d'ici », pas « après ».
+            self._apply([(a, a, open_tag)],
+                        (val_at, val_len) if preselect and val_len
+                        else (a + len(open_tag), 0))
+            return
+
+        already = self._wrapping(src, a, b, name)
+        if already:
+            # Déjà enveloppée : le bouton la retire. Sans ça, re-cliquer
+            # empilerait `[wave][wave]…` sans que rien ne change à l'écran.
+            (o0, o1), (c0, c1) = already
+            self._apply([(o0, o1, ""), (c0, c1, "")], (o0, c0 - o1))
+            return
+
+        close_tag = f"[/{name}]"
+        # La sélection reste sélectionnée : on peut enchaîner une seconde
+        # balise dessus (`[wave]` puis `[color=3]`) sans la reprendre.
+        self._apply([(b, b, close_tag), (a, a, open_tag)],
+                    (val_at, val_len) if preselect and val_len
+                    else (a + len(open_tag), b - a))
+
+    @staticmethod
+    def _wrapping(src: str, a: int, b: int, name: str):
+        """Les deux bornes de la balise `name` qui enveloppe déjà [a, b[, ou
+        None. La paire est reconnue qu'elle soit JUSTE AUTOUR de la sélection ou
+        DEDANS : on a sélectionné le texte, ou le texte et ses balises."""
+        close = f"[/{name}]"
+        opener = re.compile(rf"\[{name}(?:=[^\]]*)?\]")
+
+        m = re.search(opener.pattern + r"$", src[:a])
+        if m and src[b:].startswith(close):
+            return (m.start(), a), (b, b + len(close))
+
+        inner = src[a:b]
+        m = opener.match(inner)
+        if m and inner.endswith(close) and b - len(close) >= a + m.end():
+            return (a, a + m.end()), (b - len(close), b)
+        return None
+
+    def _apply(self, edits: list[tuple[int, int, str]],
+               select: tuple[int, int]):
+        """Applique les remplacements en UN pas d'annulation, puis pose la
+        sélection (`(début, longueur)`) demandée.
+
+        De la fin vers le début : chaque remplacement décale ce qui le suit,
+        pas ce qui le précède — les positions calculées restent donc justes."""
+        cur = self._edit.textCursor()
+        cur.beginEditBlock()
+        for a, b, text in sorted(edits, reverse=True):
+            cur.setPosition(a)
+            cur.setPosition(b, QTextCursor.MoveMode.KeepAnchor)
+            cur.insertText(text)
+        cur.endEditBlock()
+        start, length = select
+        cur.setPosition(start)
+        if length:
+            cur.setPosition(start + length, QTextCursor.MoveMode.KeepAnchor)
+        self._edit.setTextCursor(cur)
+        self._edit.setFocus()

@@ -127,10 +127,60 @@ TEXT_SURF_W, TEXT_SURF_H = 30, 8
 TEXT_SURF_TILES = TEXT_SURF_W * TEXT_SURF_H
 
 
-def mono_vram_tiles(font) -> int:
-    """Tuiles de glyphes à charger en VRAM pour le chemin tilemap."""
+def glyph_seq(g) -> tuple:
+    """Séquence de codepoints d'un glyphe — plusieurs pour une ligature.
+    Hors BMP écarté, comme pour les textes : la table runtime est en u16."""
+    return tuple(ord(c) for c in getattr(g, "char", "") if ord(c) < 0x10000)
+
+
+def seq_displayable(seq, codepoints) -> bool:
+    """Ce glyphe peut-il servir à une scène qui affiche `codepoints` ?
+
+    `codepoints=None` = ensemble inconnu, donc tout est retenu. Une ligature
+    n'est retenue que si TOUS ses codepoints sont affichables — elle n'est pas
+    atteignable autrement. Règle écrite une fois : le compteur de tuiles et
+    l'émetteur du sous-ensemble doivent retenir exactement les mêmes glyphes,
+    sinon la place réservée et la copie ne coïncident plus."""
+    return codepoints is None or all(c in codepoints for c in seq)
+
+
+def effective_glyphs(font) -> list:
+    """Glyphes RÉELLEMENT encodés : un par séquence de codepoints, le premier
+    de la planche gagnant.
+
+    Une planche découpée à la grille déclare toutes ses cases vides sur le même
+    caractère — 130 des 224 du démo valent « espace ». Le runtime n'en atteint
+    jamais qu'un (`text_find` prend la première correspondance du groupe), les
+    autres sont de la VRAM payée pour rien.
+
+    Règle UNIQUE, partagée par l'encodeur et par tout ce qui compte des tuiles :
+    les laisser diverger, c'est réserver une place que l'encodeur n'occupe pas
+    (ou l'inverse, ce qui écrase le décor)."""
+    seen: set = set()
+    out: list = []
+    for g in getattr(font, "glyphs", []):
+        if not g.char:
+            continue
+        key = glyph_seq(g)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(g)
+    return out
+
+
+def subset_glyphs(font, codepoints=None) -> list:
+    """Glyphes chargés en VRAM pour une scène affichant `codepoints`."""
+    return [g for g in effective_glyphs(font)
+            if seq_displayable(glyph_seq(g), codepoints)]
+
+
+def mono_vram_tiles(font, codepoints=None) -> int:
+    """Tuiles de glyphes à charger en VRAM pour le chemin tilemap.
+
+    `codepoints=None` = la police entière (ensemble d'affichage inconnu)."""
     return sum(glyph_tiles_w(g) * max(1, (g.h + 7) // 8)
-               for g in getattr(font, "glyphs", []) if g.char)
+               for g in subset_glyphs(font, codepoints))
 
 
 def render_composited(font) -> bool:
@@ -144,60 +194,58 @@ def render_composited(font) -> bool:
 
     2. La police **ne tient pas** en VRAM. Composer ne charge AUCUN glyphe (ils
        restent en ROM et servent de source) : le coût devient la surface, donc
-       indépendant de la taille de la police. Une police de 2000 glyphes coûte
-       alors autant qu'une de 60. C'est ce qui rend une police riche possible
-       tout court — un charblock ne fait que 512 tuiles.
+       indépendant de la taille de la police — 2000 glyphes coûtent autant que
+       60. C'est ce qui rend une police riche possible dans 512 tuiles.
 
-    Le seuil est la surface elle-même : on prend simplement le moins cher des
-    deux. En dessous, le chemin tilemap gagne — il ne coûte rien par appel."""
+    Le seuil est la surface elle-même : le moins cher des deux gagne. En
+    dessous, le chemin tilemap, qui ne coûte rien par appel."""
     if is_proportional(font):
         return True
     return mono_vram_tiles(font) > TEXT_SURF_TILES
 
 
-def font_vram_tiles(font) -> int:
-    """Tuiles que cette police occupe en VRAM une fois chargée."""
-    return TEXT_SURF_TILES if render_composited(font) else mono_vram_tiles(font)
+def font_vram_tiles(font, codepoints=None) -> int:
+    """Tuiles que cette police occupe en VRAM une fois chargée.
+
+    Une police COMPOSÉE ne charge aucun glyphe : son coût est la surface, que
+    le sous-ensemble ne change donc pas. Le chemin tilemap, lui, ne charge que
+    ce que la scène peut afficher."""
+    return (TEXT_SURF_TILES if render_composited(font)
+            else mono_vram_tiles(font, codepoints))
 
 
-def text_vram_tiles(fonts) -> int:
+def text_vram_tiles(fonts, codepoints=None) -> int:
     """Réservation à faire pour le texte dans le charblock du layer d'UI.
 
     Le MAXIMUM sur toutes les polices du projet, pas la police initiale :
-    `text.set_font()` peut en charger une autre à n'importe quel moment, et la
-    place doit déjà être là — la découvrir trop petite au runtime écraserait le
-    voisin sans rien signaler."""
-    return max((font_vram_tiles(f) for f in fonts), default=0)
+    `text.set_font()` peut en charger une autre à tout moment, et la place doit
+    déjà être là — trop petite, elle écraserait le voisin en silence."""
+    return max((font_vram_tiles(f, codepoints) for f in fonts), default=0)
 
 
 # ── Contrat avec l'allocateur (codegen/vram_alloc) ────────────────
-# `scene_layout()` réclame un nombre de tuiles à réserver au texte. Aujourd'hui
-# il reçoit le maximum sur TOUT le projet, pour toutes les scènes : la seule
-# valeur sûre tant que la géométrie du texte n'existe que dans le Lua, où
-# l'éditeur ne peut pas la lire. C'est aussi la raison pour laquelle la jauge
-# VRAM affichée à l'utilisateur ne pouvait être qu'une estimation.
+# `scene_layout()` réclame un nombre de tuiles à réserver au texte, calculé PAR
+# SCÈNE (`scene_font_names`) à partir de deux sources : ce que la mise en page
+# DÉCLARE (`UIRegion.font_name`) et ce que les scripts de la scène CHARGENT
+# (`text.set_font("…")`, repéré par domaine).
 #
-# Une mise en page (`Scene.ui_layout`, cf. models/ui_region.py) DÉCLARE les
-# polices que la scène pose — ce qui rend la réservation calculable par scène.
-# La narrower n'est pourtant pas encore sûre : un script peut appeler
-# `text.set_font("autre")` sans qu'aucune région ne la nomme, et réserver moins
-# que nécessaire écraserait le décor voisin en silence. Il manque donc
-# l'indexation des appels à `text.set_font` par scène (le pendant de
-# `refactor.index_refs_in_project()`, qui fait déjà ça pour les clés de texte).
-#
-# D'où la forme ci-dessous : la seam existe, et `names=None` — le seul appel
-# effectué aujourd'hui — garde très exactement le comportement d'avant.
+# La règle de sûreté est asymétrique : réserver trop coûte des tuiles au décor,
+# réserver trop peu fait écrire le texte DANS le décor, sans un signe avant
+# l'exécution. Tout ce qui n'est pas établi retombe donc sur le projet entier
+# (police choisie au runtime, script illisible, luaparser absent). D'où le
+# `set | None` : `None` veut dire « je ne sais pas », jamais « rien ».
 
-def scene_text_tiles(fonts, names: set[str] | None = None) -> int:
+def scene_text_tiles(fonts, names: set[str] | None = None,
+                     codepoints: set | None = None) -> int:
     """Réservation pour UNE scène, restreinte aux polices `names`.
 
     `names=None` = ensemble indécidable → repli sur tout le projet. Ne jamais
-    faire retourner 0 à un ensemble vide *déduit* : « aucune police déclarée »
-    et « aucune police possible » sont deux choses différentes, et les confondre
-    donnerait au décor une place que le texte occupe quand même."""
+    faire rendre 0 à un ensemble vide *déduit* : « aucune police déclarée » et
+    « aucune police possible » sont deux choses différentes."""
     if names is None:
-        return text_vram_tiles(fonts)
-    return text_vram_tiles([f for f in fonts if getattr(f, "name", "") in names])
+        return text_vram_tiles(fonts, codepoints)
+    return text_vram_tiles([f for f in fonts if getattr(f, "name", "") in names],
+                           codepoints)
 
 
 def layout_font_names(layout, default_font: str = "") -> set[str]:
@@ -205,13 +253,187 @@ def layout_font_names(layout, default_font: str = "") -> set[str]:
 
     `UILayout.font_names()` ne rend que les polices explicitement nommées ; une
     région qui hérite de la scène est complétée ici, ce module étant le premier
-    à connaître le défaut. Le résultat n'est pas encore une réponse complète —
-    voir le commentaire ci-dessus."""
+    à connaître le défaut. Réponse partielle — cf. le commentaire ci-dessus."""
     names = set(layout.font_names()) if layout is not None else set()
     if default_font and (layout is None or
-                         any(not r.font_name for r in layout.regions)):
+                         any(not r.font_name for r in layout.slots)):
         names.add(default_font)
     return names
+
+
+def scene_codepoints(p, scene) -> "set | None":
+    """Codepoints qu'une scène peut afficher, ou None si c'est indécidable.
+
+    Décidable parce qu'une clé de texte est TOUJOURS littérale (le checker le
+    garantit, `DOMAIN_TEXT`) : on lit les textes que les scripts de la scène
+    citent, on résout leur balisage, on prend les caractères. Un littéral passé
+    à `text.draw` est déjà une entrée anonyme et suit le même chemin.
+
+    DEUX sources, exactement comme `scene_font_names` : les scripts ET les
+    textes AUTHORÉS de la mise en page, que `_gen_ui_texts` écrit à l'init sans
+    qu'aucune ligne de script les cite. Les oublier ne fait pas tomber le texte
+    d'un bloc — les glyphes absents du sous-ensemble sont sautés un à un
+    (`text_glyph_slot` rend -1), et la zone rend un texte troué.
+
+    Les chiffres sont ajoutés d'office : une valeur interpolée (`$score`) ne
+    montre son écriture qu'en jeu. Les constantes, elles, sont cuites au build,
+    donc déjà dans le texte résolu.
+
+    Rend None dès qu'un script échappe à l'analyse — même règle et même raison
+    que `scene_font_names`."""
+    if not hasattr(p, "scene_scripts") or not hasattr(p, "build_texts"):
+        return None
+    from core.text_markup import parse, resolve
+    from scripting.api import DOMAIN_TEXT, anon_text_key
+
+    paths, opaque = p.scene_scripts(scene)
+    if opaque:
+        return None
+    by_key = {t.key: t for t in p.build_texts()}
+    consts = {c.name: c.value for c in getattr(p, "constants", [])}
+
+    cited: set = set()
+    for path in paths:
+        names, dynamic = _script_text_keys(path)
+        if dynamic:
+            return None
+        cited |= names
+
+    out: set = set(ord(c) for c in "0123456789")
+    for name in cited:
+        # Une chaîne résout vers une entrée de la table, sinon c'est un littéral
+        # — lequel a sa propre entrée, sous une clé dérivée de son contenu.
+        t = by_key.get(name) or by_key.get(anon_text_key(name))
+        if t is None:
+            return None      # entrée introuvable : on ne parie pas
+        out |= set(ord(c) for c in resolve(parse(t.content or ""), consts))
+    for t in layout_texts(p, scene):
+        out |= set(ord(c) for c in resolve(parse(t.content or ""), consts))
+    return out
+
+
+def layout_texts(p, scene) -> list:
+    """Entrées de la table écrites par la mise en page d'une scène, à l'init.
+
+    Le même parcours que `_gen_ui_texts` côté émission : un slot de type texte
+    portant une clé RÉSOLUE. Une clé introuvable n'est pas une inconnue mais un
+    non-événement — l'émetteur la signale et n'écrit rien —, d'où l'omission
+    plutôt qu'un `None` qui ferait charger la police entière."""
+    from core.models.ui_region import KIND_TEXT
+    if not hasattr(p, "build_texts"):
+        return []
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None:
+        return []
+    by_key = {t.key: t for t in p.build_texts()}
+    out = []
+    for el in lay.slots:
+        if getattr(el, "kind", "") != KIND_TEXT:
+            continue
+        t = by_key.get(getattr(el, "text_key", "") or "")
+        if t is not None:
+            out.append(t)
+    return out
+
+
+def _script_text_keys(path) -> tuple[set, bool]:
+    """({textes cités}, indécidable ?) pour UN script — même mémo que les polices."""
+    from scripting.api import DOMAIN_TEXT
+    return _script_domain_args(path, DOMAIN_TEXT)
+
+
+def build_font_subset(e: dict, codepoints: "set | None") -> "dict | None":
+    """Sous-ensemble à charger pour une police ENCODÉE (cf. encode_font).
+
+    Rend {slot, load} : `slot` est indexé par glyphe encodé (0xFFFF = pas
+    chargé), `load` liste les tuiles ROM dans l'ordre où elles atterrissent en
+    VRAM. None quand il n'y a rien à restreindre — police composée (elle ne
+    charge aucun glyphe) ou ensemble d'affichage inconnu."""
+    if codepoints is None or e.get("composited"):
+        return None
+    seq, off, ln = e["seq"], e["seq_off"], e["seq_len"]
+    slots, gw, gh = e["slots"], e["gw"], e["gh"]
+    out_slot = [0xFFFF] * len(slots)
+    load: list[int] = []
+    for gi in range(len(slots)):
+        s = seq[off[gi]: off[gi] + ln[gi]]
+        if not seq_displayable(s, codepoints):
+            continue
+        out_slot[gi] = len(load)
+        load += [slots[gi] + t for t in range(gw[gi] * gh[gi])]
+    return {"slot": out_slot, "load": load}
+
+
+def scene_font_names(p, scene, default_font: str = "") -> "set | None":
+    """Polices qu'une scène peut avoir en VRAM, ou None si c'est indécidable.
+
+    Trois sources :
+    - la police par défaut, TOUJOURS — `scene_init` émet `text_set_font(0)`,
+      donc elle est chargée même dans une scène sans une ligne de texte ;
+    - les polices nommées par les zones de la mise en page ;
+    - celles que chargent les scripts de la scène (`text.set_font`), repérées
+      par DOMAINE — une zone n'a pas besoin de les nommer pour qu'elles
+      arrivent en VRAM.
+
+    Rend None dès qu'un script choisit sa police au runtime ou n'est pas
+    analysable : mieux vaut réserver pour tout le projet que trop peu."""
+    names = layout_font_names(
+        p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None,
+        default_font)
+    if default_font:
+        names.add(default_font)
+    if not hasattr(p, "scene_scripts"):
+        return None
+    paths, opaque = p.scene_scripts(scene)
+    if opaque:
+        return None            # script introuvable ou C natif : on ne sait pas
+    for path in paths:
+        cited, dynamic = _script_font_names(path)
+        if dynamic:
+            return None
+        names |= cited
+    return names
+
+
+# Les scripts des prefabs reviennent dans CHAQUE scène (spawnables de partout)
+# et le calcul tourne deux fois, placement et garde-fou de budget : sans mémo,
+# vingt scènes reparsent vingt fois les mêmes fichiers. Clé sur l'empreinte
+# disque, pour qu'un script réécrit ne rende pas une réponse périmée.
+_FONT_SCAN_CACHE: dict = {}
+
+
+def clear_font_scan_cache() -> None:
+    """Vidé en tête de build. L'empreinte disque de la clé laisse une fenêtre :
+    un script réécrit à taille identique dans le même tick d'horloge rendrait
+    une réponse périmée, donc une réservation trop PETITE. Un cache qui ne vit
+    qu'un build ferme la question."""
+    _FONT_SCAN_CACHE.clear()
+
+
+def _script_domain_args(path, domain: str) -> tuple[set, bool]:
+    """({noms cités dans ce domaine}, indécidable ?) pour UN script.
+
+    Mémoïsé par (fichier, domaine) — cf. `_FONT_SCAN_CACHE`."""
+    from scripting.refactor import domain_args_in_text
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size, domain)
+    except OSError:
+        return set(), True
+    hit = _FONT_SCAN_CACHE.get(key)
+    if hit is None:
+        try:
+            src = path.read_text(encoding="utf-8")
+        except OSError:
+            return set(), True
+        hit = domain_args_in_text(src, domain)
+        _FONT_SCAN_CACHE[key] = hit
+    return hit
+
+
+def _script_font_names(path) -> tuple[set, bool]:
+    from scripting.api import DOMAIN_FONT
+    return _script_domain_args(path, DOMAIN_FONT)
 
 
 def _bgr555(rgb: tuple[int, int, int]) -> int:
@@ -293,10 +515,14 @@ def encode_font(font, png_path: Path) -> dict:
     tiles: list[int] = []
     entries: list[dict] = []
     h_img, w_img = ink.shape
-
-    for g in font.glyphs:
-        if not g.char:
-            continue
+    # Un glyphe par SÉQUENCE de codepoints (cf. `effective_glyphs`) : encoder
+    # les 130 cases vides d'une planche de 224, c'est payer 58 % de sa VRAM
+    # pour des tuiles que rien n'atteint.
+    #
+    # Le premier rencontré gagne, comme `text_find` au runtime qui prend la
+    # première correspondance du groupe (le tri ci-dessous est stable, donc
+    # l'ordre de la planche départage). Dédupliquer ne change aucun rendu.
+    for g in effective_glyphs(font):
         gtx = max(1, (g.w + 7) // 8)
         gty = max(1, (g.h + 7) // 8)
         # Cellule vierge, puis dépôt du bitmap du glyphe à son offset. Le
@@ -413,6 +639,9 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
     else:
         L.append("    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 8, 8, 0 },")
     L.append("};")
+    # `g_fonts` étant générée, le moteur ne peut borner `text_set_font` sans ce
+    # compte — et un index hors table lirait un pointeur de tuiles au hasard.
+    L.append(f"const int g_font_count = {max(1, len(encoded))};")
     L.append("")
     return L
 
@@ -421,19 +650,22 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                       obj_place: dict | None = None,
                       actor_index: dict | None = None,
                       bg_fill: dict | None = None) -> list[str]:
-    """Table des zones de texte — `regions` est [(UILayout, UIRegion)] dans
+    """Table des slots de texte — `regions` est [(UILayout, élément)] dans
     l'ordre de `Project.all_regions()`, qui fait l'index.
 
-    Les coordonnées sont émises **déjà alignées** pour une cible BG : le moteur
-    y écrit des entrées de tilemap, une origine entre deux tuiles n'existe pas.
-    Aligner ici plutôt qu'au runtime évite d'avoir à se demander, en lisant le
-    C, si le `>> 3` tronque quelque chose.
+    Zones RUNTIME et textes AUTHORÉS y cohabitent : même géométrie, seul
+    l'écrivain diffère (le script pour l'une, `scene_init` pour l'autre, cf.
+    `_gen_ui_texts`). Les distinguer ici dupliquerait la table, donc
+    l'alignement, l'ancrage et l'allocation OBJ.
 
-    La police est résolue en index (255 = « garder la police courante ») pour
+    Coordonnées émises **déjà alignées** pour une cible BG : le moteur y écrit
+    des entrées de tilemap, une origine entre deux tuiles n'existe pas.
+
+    La police est résolue en index (255 = « garder la police courante »), pour
     que le runtime n'ait aucun nom à chercher."""
-    from core.models.ui_region import TARGET_OBJ, ALIGNS, ANCHORS
+    from core.models.ui_region import TARGET_OBJ, ALIGNS, ANCHORS, KIND_TEXT
 
-    L: list[str] = ["/* ── Zones de texte (UILayout) ─────────────────── */"]
+    L: list[str] = ["/* ── Slots de texte (UILayout) ─────────────────── */"]
     rows: list[str] = []
     for _lay, r in regions:
         # Cible et ancrage EFFECTIFS (hérités du root) : une zone imbriquée sous
@@ -459,10 +691,14 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"0, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
         bgf = (bg_fill or {}).get(r.name, -1)
+        # Le kind en commentaire : la table seule ne dit pas qui écrit dans ce
+        # slot, et c'est la première question en relisant le C.
+        kind = "texte authoré" if getattr(r, "kind", "") == KIND_TEXT else "zone"
         rows.append(
             f"    {{ {x}, {y}, {w}, {h}, {ALIGNS.index(r.align)}, "
             f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(eff_anchor)}, "
-            f"{alloc}, {bgf} }},  /* {r.name} */"
+            f"{alloc}, {bgf}, {int(getattr(r, 'text_color', 0) or 0) & 0xF} }},"
+            f"  /* {r.name} — {kind} */"
         )
         if target_obj and emit and pl:
             extra = (f" (dont {pl['anim']} glyphe(s) animé(s) réservé(s))"

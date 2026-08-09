@@ -9,7 +9,7 @@
     },
     {
       "id": 567508507717,
-      "name": "score_auto",
+      "name": "score_cpu",
       "type": "int",
       "default": 0,
       "desc": "Score de l'IA"

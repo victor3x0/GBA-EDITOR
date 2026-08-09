@@ -79,6 +79,18 @@ KIND_REGION = "region"   # zone de texte RUNTIME (script écrit dedans) — feui
 KIND_PANEL  = "panel"    # conteneur qui peut dessiner un FOND ; racine = ancrage
 KIND_TEXT   = "text"     # texte AUTHORÉ (clé de table) — feuille
 
+# Types qui occupent une entrée de `g_ui_regions`, c'est-à-dire qui ont une
+# géométrie où du texte se pose. Zone et texte authoré ne diffèrent QUE par
+# l'écrivain : le script pour l'une, le build pour l'autre (`scene_init` émet le
+# `text_draw_in` que le script aurait écrit). Le runtime n'a aucune raison de
+# les distinguer — deux structures dupliqueraient rendu, alignement, ancrage et
+# allocation OBJ.
+#
+# Conséquence assumée et voulue : un texte authoré est ADRESSABLE depuis un
+# script (son nom entre donc dans l'espace `REGION_*`), donc remplaçable en
+# cours de jeu sans le convertir en zone.
+KIND_SLOTS = (KIND_REGION, KIND_TEXT)
+
 # ── Fonds de conteneur ────────────────────────────────────────────
 # Le fond d'un `UIPanel` est un champ polymorphe (« à quoi ressemble la zone »),
 # séparé de la géométrie (« où »). Un panel sans fond est un groupe invisible.
@@ -141,8 +153,67 @@ def forced_target_reason(anchor: str, render_mode: int = 0) -> str:
     return ""
 
 
+class RectGeometryMixin:
+    """Géométrie en pixels d'un élément — pure arithmétique sur x/y/w/h.
+
+    Un mixin plutôt qu'une méthode par type : les trois kinds portent le MÊME
+    rectangle, et trois copies de l'arrondi à la tuile finiraient par diverger.
+    Aucun champ ici — les dataclasses restent seules à déclarer les leurs."""
+
+    def snap_to_tile(self) -> None:
+        """Aligne sur la grille 8×8. À appeler quand la cible résolue est BG :
+        le moteur y écrit des entrées de tilemap, l'origine ne peut pas tomber
+        entre deux tuiles. Taille arrondie vers le HAUT — rogner couperait du
+        texte pour faire joli."""
+        self.x -= self.x % TILE
+        self.y -= self.y % TILE
+        self.w = max(TILE, _ceil_tile(self.w) * TILE)
+        self.h = max(TILE, _ceil_tile(self.h) * TILE)
+
+    def tile_rect(self) -> tuple[int, int, int, int]:
+        """(tx, ty, w, h) en TUILES, bornes arrondies vers l'extérieur.
+
+        Un glyphe posé à x=13 mord sur la tuile 1 : elle fait partie de
+        l'empreinte, exactement comme `text_layout` arrondit la sienne avant de
+        préparer la surface."""
+        tx = self.x // TILE
+        ty = self.y // TILE
+        tw = _ceil_tile(self.x % TILE + self.w)
+        th = _ceil_tile(self.y % TILE + self.h)
+        return tx, ty, max(1, tw), max(1, th)
+
+    def footprint_tiles(self) -> int:
+        _, _, tw, th = self.tile_rect()
+        return tw * th
+
+
+# Couleur d'un slot de texte : un INDEX dans la banque d'UI de la scène
+# (`Scene.ui_pal_bank`), pas un RGB — le matériel n'offre que des index.
+#
+# 0 = encre d'ORIGINE : le glyphe garde les teintes de sa police, seul moyen de
+# ne pas perdre une police à plusieurs encres. 1..15 aplatit toute l'encre sur
+# cette couleur, comme la balise `[color=n]`.
+#
+# Le coût est en VRAM, pas en palette : chaque couleur employée charge sa propre
+# copie des glyphes de la scène, recolorée au chargement (cf.
+# main_gen.scene_text_reservation). Abordable grâce au sous-ensemble par scène.
+TEXT_COLOR_INK = 0     # encre d'origine de la police
+TEXT_COLOR_MAX = 15    # 4bpp : l'index 0 est la transparence
+
+
+def _clamp_color(v) -> int:
+    """Hors plage = encre d'origine. 1..15 est une contrainte MATÉRIELLE
+    (4bpp, index 0 transparent), pas un choix — au-delà, le remappage de
+    `text_recolor` déborderait son mot de 32 bits."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return TEXT_COLOR_INK
+    return n if 0 <= n <= TEXT_COLOR_MAX else TEXT_COLOR_INK
+
+
 @dataclass
-class UIRegion:
+class UIRegion(RectGeometryMixin):
     """Une zone de texte de la mise en page.
 
     `w` est aussi la largeur de coupe : `text_draw_box` prend un `wrap`, et le
@@ -179,6 +250,8 @@ class UIRegion:
     # (FontScreenPreview rejoue text_layout avec les vrais glyphes), il ne lui
     # manquait qu'un rectangle contre lequel se mesurer.
     preview_text: str = ""
+    # Couleur du texte posé ici — cf. TEXT_COLOR_INK.
+    text_color: int = TEXT_COLOR_INK
     # Budget de glyphes ANIMÉS — combien de caractères, au plus, cette zone peut
     # sortir de la bande pour recevoir un effet par caractère.
     #
@@ -204,36 +277,13 @@ class UIRegion:
         return forced_target(self.anchor, render_mode) is not None
 
     # ── Géométrie ─────────────────────────────────────────────────
-    def snap_to_tile(self) -> None:
-        """Aligne la région sur la grille 8×8. À appeler quand la cible résolue
-        est BG : le moteur y écrit des entrées de tilemap, l'origine ne peut pas
-        tomber entre deux tuiles. La taille est arrondie vers le HAUT — rogner
-        reviendrait à couper du texte pour faire joli."""
-        self.x -= self.x % TILE
-        self.y -= self.y % TILE
-        self.w = max(TILE, _ceil_tile(self.w) * TILE)
-        self.h = max(TILE, _ceil_tile(self.h) * TILE)
-
-    def tile_rect(self) -> tuple[int, int, int, int]:
-        """(tx, ty, w, h) en TUILES, bornes arrondies vers l'extérieur.
-
-        Un glyphe posé à x=13 mord sur la tuile 1 : elle fait partie de
-        l'empreinte, exactement comme `text_layout` arrondit la sienne avant de
-        préparer la surface."""
-        tx = self.x // TILE
-        ty = self.y // TILE
-        tw = _ceil_tile(self.x % TILE + self.w)
-        th = _ceil_tile(self.y % TILE + self.h)
-        return tx, ty, max(1, tw), max(1, th)
-
-    def footprint_tiles(self) -> int:
-        _, _, tw, th = self.tile_rect()
-        return tw * th
+    # snap_to_tile / tile_rect / footprint_tiles viennent de RectGeometryMixin.
 
     def to_dict(self) -> dict:
         return {
             "kind": KIND_REGION,
             "name": self.name, "parent": self.parent, "anchor": self.anchor,
+            "text_color": self.text_color,
             "anchor_actor": self.anchor_actor,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "font_name": self.font_name, "align": self.align,
@@ -251,6 +301,7 @@ class UIRegion:
             parent       = str(d.get("parent", "")),
             anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor = str(d.get("anchor_actor", "")),
+            text_color   = _clamp_color(d.get("text_color", TEXT_COLOR_INK)),
             x = int(d.get("x", 0)),   y = int(d.get("y", 0)),
             w = int(d.get("w", 240)), h = int(d.get("h", 32)),
             font_name    = str(d.get("font_name", "")),
@@ -381,7 +432,7 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
     interne est intrinsèque à la mise en page — exactement le raisonnement de
     `FontInfo.slot`, relatif au bloc alloué au texte."""
     place, oam, tiles = {}, 0, 0
-    for r in layout.regions:
+    for r in layout.slots:
         if layout.resolved_target(r, render_mode) != TARGET_OBJ:
             continue
         g = strip_geometry(r)
@@ -394,7 +445,7 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
 # ── Mise en page ──────────────────────────────────────────────────
 
 @dataclass
-class UIPanel:
+class UIPanel(RectGeometryMixin):
     """Conteneur, et seul type à pouvoir dessiner un FOND. Au premier niveau il
     joue le RÔLE de root et porte l'ancrage du sous-arbre. Sans fond
     (`fill_kind == FILL_NONE`), c'est un simple groupe invisible.
@@ -448,12 +499,23 @@ class UIPanel:
 
 
 @dataclass
-class UIText:
+class UIText(RectGeometryMixin):
     """Texte AUTHORÉ — feuille (jamais parent). Le contenu ne vit pas dans
     l'élément : `text_key` pointe la table de textes (auto-enregistrée), pour ne
     pas dupliquer un littéral qui échapperait à l'édition centralisée
-    ([[project-text-table]]). `wrap` bascule en multiligne ; c'est le même widget
-    que le cas court, avec plus de champs exposés — pas un type séparé."""
+    ([[project-text-table]]).
+
+    **Le rectangle EST la largeur de coupe**, comme pour `UIRegion` — un champ
+    « multiligne » séparé a existé ici et a été retiré : il ne changeait que la
+    façon de TRONQUER un texte trop long (au mot plutôt qu'au pixel), pour le
+    prix d'un champ de plus dans `UIRegionInfo` et d'un second chemin de rendu.
+    Le débordement, lui, est signalé par le validateur, ce qui vaut mieux que
+    deux manières de le subir. C'est le même argument qui avait déjà refusé un
+    `wrap` distinct de `w` sur la zone.
+
+    Le contenu est écrit par le BUILD (`scene_init` émet le `text_draw_in`),
+    alors qu'une zone attend son script. C'est la seule différence entre les
+    deux types — d'où leur place commune dans `KIND_SLOTS`."""
     kind = KIND_TEXT
     can_contain = False
     name: str = "text"
@@ -467,19 +529,21 @@ class UIText:
     text_key: str = ""
     font_name: str = ""
     align: str = "left"
-    wrap: bool = False
+    text_color: int = TEXT_COLOR_INK
 
     def to_dict(self) -> dict:
         return {"kind": KIND_TEXT, "name": self.name, "parent": self.parent,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "anchor": self.anchor, "anchor_actor": self.anchor_actor,
                 "text_key": self.text_key, "font_name": self.font_name,
-                "align": self.align, "wrap": self.wrap}
+                "align": self.align, "text_color": self.text_color}
 
     @classmethod
     def from_dict(cls, d: dict) -> "UIText":
         anchor = d.get("anchor", ANCHOR_SCREEN)
         align = d.get("align", "left")
+        # `wrap` d'un fichier ancien est simplement ignoré (cf. docstring) : la
+        # relecture ne le rend pas, la prochaine sauvegarde ne le réécrit pas.
         return cls(
             name=str(d.get("name", "text")), parent=str(d.get("parent", "")),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
@@ -489,7 +553,7 @@ class UIText:
             text_key=str(d.get("text_key", "")),
             font_name=str(d.get("font_name", "")),
             align=align if align in ALIGNS else "left",
-            wrap=bool(d.get("wrap", False)))
+            text_color=_clamp_color(d.get("text_color", TEXT_COLOR_INK)))
 
 
 # Registre kind → constructeur. Un dict sans `kind` = région (format hérité,
@@ -538,9 +602,22 @@ class UILayout(Resource):
     @property
     def regions(self) -> list:
         """Sous-ensemble des éléments de type ZONE de texte, en lecture seule.
-        Le codegen et le budget VRAM n'émettent que ces éléments-là ; les mutations
-        (ajout/suppression/reparentage) passent, elles, par `elements`."""
+
+        À n'utiliser que là où la distinction avec un texte AUTHORÉ compte
+        vraiment (le script n'écrit que dans des zones). Pour tout ce qui touche
+        au RENDU — table C, budget VRAM/OBJ, polices à charger — c'est `slots`
+        qu'il faut : un texte authoré occupe la même place qu'une zone."""
         return [e for e in self.elements if getattr(e, "kind", KIND_REGION) == KIND_REGION]
+
+    @property
+    def slots(self) -> list:
+        """Éléments qui occupent une entrée de `g_ui_regions` (cf. KIND_SLOTS) :
+        zones de texte ET textes authorés, dans l'ordre de `elements`.
+
+        C'est cet ordre-là qui devient l'index dans la table C. Un conteneur en
+        est exclu : il dessine un fond, il n'accueille pas de glyphes."""
+        return [e for e in self.elements
+                if getattr(e, "kind", KIND_REGION) in KIND_SLOTS]
 
     def get(self, name: str):
         """N'importe quel élément par son nom (tous types confondus)."""
@@ -827,19 +904,33 @@ class UILayout(Resource):
         ax, ay, _ = self.absolute_origin(parent, actor_pos)
         return ax, ay
 
-    def bg_regions(self, render_mode: int = 0) -> list[UIRegion]:
-        return [r for r in self.regions
+    def frame_size(self, element) -> tuple[int, int]:
+        """Cadre dans lequel un preset place `element` : son PARENT, ou l'écran
+        s'il est racine. C'est le repère dans lequel son x/y vit déjà."""
+        parent = self.get(getattr(element, "parent", "")) if element.parent else None
+        if parent is not None:
+            return int(parent.w), int(parent.h)
+        return SCREEN_W, SCREEN_H
+
+    def bg_regions(self, render_mode: int = 0) -> list:
+        """Slots rendus sur le BG — cible de rendu, donc `slots` et non
+        `regions` : un texte authoré consomme la même tilemap."""
+        return [r for r in self.slots
                 if self.resolved_target(r, render_mode) == TARGET_BG]
 
-    def obj_regions(self, render_mode: int = 0) -> list[UIRegion]:
-        return [r for r in self.regions
+    def obj_regions(self, render_mode: int = 0) -> list:
+        return [r for r in self.slots
                 if self.resolved_target(r, render_mode) == TARGET_OBJ]
 
     def font_names(self) -> set[str]:
-        """Polices explicitement nommées par les régions. Une région qui hérite
-        de la scène n'apparaît PAS ici : c'est à l'appelant d'ajouter le défaut,
-        lui seul connaît la scène."""
-        return {r.font_name for r in self.regions if r.font_name}
+        """Polices explicitement nommées par les slots. Un slot qui hérite de la
+        scène n'apparaît PAS ici : c'est à l'appelant d'ajouter le défaut, lui
+        seul connaît la scène.
+
+        `slots` et non `regions` : une police nommée par un texte authoré arrive
+        en VRAM tout autant, et l'oublier ici ferait sous-réserver le bloc de
+        glyphes — le texte s'écrirait alors dans les tuiles du décor."""
+        return {r.font_name for r in self.slots if r.font_name}
 
     def to_dict(self) -> dict:
         return {
@@ -860,6 +951,56 @@ class UILayout(Resource):
             elements = [element_from_dict(e) for e in raw],
             notes    = str(d.get("notes", "")),
         )
+
+
+# ── Presets de placement ──────────────────────────────────────────
+# Le bouton « Layout » de Godot et sa grille, ramenés à ce que le matériel
+# permet : poser une boîte de dialogue basse sans taper x=0 y=120 w=240 h=40.
+#
+# Le CADRE de référence est le parent, ou l'écran pour un élément racine — le
+# repère dans lequel x/y sont déjà stockés (cf. `absolute_origin`), donc le
+# preset n'a aucune conversion à faire.
+SCREEN_W, SCREEN_H = 240, 160
+
+H_LEFT, H_CENTER, H_RIGHT = "left", "center", "right"
+V_TOP, V_MIDDLE, V_BOTTOM = "top", "middle", "bottom"
+
+
+def preset_rect(w: int, h: int, frame_w: int, frame_h: int,
+                hpos: str, vpos: str,
+                stretch_h: bool = False, stretch_v: bool = False,
+                tile: bool = True) -> tuple[int, int, int, int]:
+    """(x, y, w, h) d'un élément posé dans un cadre `frame_w × frame_h`.
+
+    **Placer ne redimensionne pas.** Sans `stretch_*`, w/h ressortent tels
+    quels : arrondir la taille au passage surprendrait (« j'ai cliqué en bas à
+    gauche et ma boîte a grandi »). L'émetteur arrondit de toute façon vers le
+    haut pour une cible BG.
+
+    `tile` cale l'origine sur la grille 8×8 : le moteur écrit des entrées de
+    tilemap, une origine entre deux tuiles n'existe pas. On cale vers le BAS
+    (donc vers l'intérieur du cadre) — arrondir vers le haut pousserait un
+    élément ferré à droite hors du cadre. Avec une taille déjà multiple de 8 et
+    un cadre qui l'est aussi (240×160), le calage ne change rien : le cas
+    courant tombe juste."""
+    if stretch_h:
+        x, w = 0, max(TILE, int(frame_w))
+    else:
+        w = max(TILE, int(w))
+        x = {H_LEFT: 0, H_CENTER: (frame_w - w) // 2}.get(hpos, frame_w - w)
+    if stretch_v:
+        y, h = 0, max(TILE, int(frame_h))
+    else:
+        h = max(TILE, int(h))
+        y = {V_TOP: 0, V_MIDDLE: (frame_h - h) // 2}.get(vpos, frame_h - h)
+    if tile:
+        x -= x % TILE
+        y -= y % TILE
+        if stretch_h:
+            w = _ceil_tile(w) * TILE
+        if stretch_v:
+            h = _ceil_tile(h) * TILE
+    return int(x), int(y), int(w), int(h)
 
 
 def unique_element_name(taken, base: str = "element") -> str:

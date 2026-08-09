@@ -128,8 +128,8 @@ class ActorInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Selectionne un actor\ndans le panneau gauche")
-        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty = QLabel("Select an actor\nfrom the left panel")
+        self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._empty)
@@ -148,8 +148,8 @@ class ActorInspector(QWidget):
         nl.setContentsMargins(8, 6, 8, 8)
         nl.setSpacing(5)
         notes_lbl = QLabel("NOTE")
-        notes_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
-        notes_lbl.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
+        notes_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+        notes_lbl.setStyleSheet(QSS.title_section())
         nl.addWidget(notes_lbl)
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set("notes", text))
@@ -173,9 +173,9 @@ class ActorInspector(QWidget):
         )
         self._sprite_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sprite_preview.setToolTip(
-            f"<b style='color:{C.ACCENT_BLU}'>Sprite de départ</b><br><br>"
-            "Cliquer pour assigner un sprite depuis le projet.<br>"
-            "Première frame de l'AnimState initial."
+            f"<b style='color:{C.ACCENT_BLU}'>Starting sprite</b><br><br>"
+            "Click to assign a sprite from the project.<br>"
+            "First frame of the initial AnimState."
         )
         self._sprite_preview.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sprite_preview.mousePressEvent = lambda e: self._pick_sprite()
@@ -184,8 +184,8 @@ class ActorInspector(QWidget):
         name_col = QVBoxLayout()
         name_col.setSpacing(3)
 
-        self._tag_lbl = QLabel("Index : —")
-        self._tag_lbl.setFont(QFont(T.MONO, T.SM))
+        self._tag_lbl = QLabel("Index: —")
+        self._tag_lbl.setFont(QFont(T.UI, T.SM))
         self._tag_lbl.setStyleSheet(f"color:{icons.COLOR_ACTOR};")
         self._tag_lbl.setToolTip(
             "Position de l'actor dans la scène (ordre de traitement et de rendu)."
@@ -204,11 +204,11 @@ class ActorInspector(QWidget):
         pb_layout.setContentsMargins(8, 0, 6, 0)
         pb_layout.setSpacing(6)
         self._prefab_badge_lbl = QLabel()
-        self._prefab_badge_lbl.setFont(QFont(T.MONO, T.SM))
+        self._prefab_badge_lbl.setFont(QFont(T.UI, T.SM))
         self._prefab_badge_lbl.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
         pb_layout.addWidget(self._prefab_badge_lbl, 1)
-        btn_open_prefab = QPushButton("Ouvrir prefab")
-        btn_open_prefab.setFont(QFont(T.MONO, T.XS))
+        btn_open_prefab = QPushButton("Open prefab")
+        btn_open_prefab.setFont(QFont(T.UI, T.XS))
         btn_open_prefab.setFixedHeight(18)
         btn_open_prefab.setStyleSheet(
             f"QPushButton{{color:{icons.COLOR_PREFAB};background:transparent;border:1px solid {icons.COLOR_PREFAB};"
@@ -218,9 +218,9 @@ class ActorInspector(QWidget):
         btn_open_prefab.clicked.connect(self._open_prefab)
         pb_layout.addWidget(btn_open_prefab)
         btn_unlink = QPushButton("×")
-        btn_unlink.setFont(QFont(T.MONO, T.MD))
+        btn_unlink.setFont(QFont(T.UI, T.MD))
         btn_unlink.setFixedSize(18, 18)
-        btn_unlink.setToolTip("Casser le lien avec le prefab\n(l'actor devient indépendant)")
+        btn_unlink.setToolTip("Break the link with the prefab\n(the actor becomes independent)")
         btn_unlink.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_MUTED};background:transparent;border:none;}}"
             f"QPushButton:hover{{color:{C.ACCENT_RED};}}"
@@ -230,8 +230,8 @@ class ActorInspector(QWidget):
         self._prefab_badge.setVisible(False)
         cl.addWidget(self._prefab_badge)
 
-        self._active = QCheckBox("Actif au démarrage")
-        self._active.setFont(QFont(T.MONO, T.MD))
+        self._active = QCheckBox("Active on start")
+        self._active.setFont(QFont(T.UI, T.MD))
         self._active.setStyleSheet(
             f"color:{C.TEXT_NORM}; padding:4px 6px;"
             f"background:{C.BG_BASE}; border-radius:3px;"
@@ -253,8 +253,8 @@ class ActorInspector(QWidget):
         # En-tête section avec barre colorée
         tg_hdr = QHBoxLayout()
         tg_lbl = QLabel("TRANSFORM")
-        tg_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
-        tg_lbl.setStyleSheet(f"color:{icons.COLOR_ACTOR}; letter-spacing:1px;")
+        tg_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+        tg_lbl.setStyleSheet(QSS.title_section())
         tg_hdr.addWidget(tg_lbl); tg_hdr.addStretch()
         tl.addLayout(tg_hdr)
 
@@ -273,7 +273,7 @@ class ActorInspector(QWidget):
         # « Mode window » ici et pas là.
         from PyQt6.QtGui import QFontMetrics
         _lbl_w = max(
-            QFontMetrics(QFont(T.MONO, T.SM)).horizontalAdvance(t)
+            QFontMetrics(QFont(T.UI, T.SM)).horizontalAdvance(t)
             for t in ("Position", "Priority", "Mode window")
         ) + 4
 
@@ -283,7 +283,7 @@ class ActorInspector(QWidget):
         # ── Direction initiale : sélecteur 3×3 ───────────────────
         dir_row = QHBoxLayout(); dir_row.setSpacing(8)
         dir_row.setContentsMargins(0, 2, 0, 2)
-        dir_lbl = QLabel("Direction"); dir_lbl.setFont(QFont(T.MONO, T.MD))
+        dir_lbl = QLabel("Direction"); dir_lbl.setFont(QFont(T.UI, T.MD))
         dir_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
         dir_lbl.setFixedWidth(58)
         dir_row.addWidget(dir_lbl)
@@ -333,13 +333,13 @@ class ActorInspector(QWidget):
         _ico_btn = (
             f"QPushButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER_MID};border-radius:3px;"
-            f"font-family:{T.MONO};font-size:{T.XL}px;}}"
-            f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};border-color:#555;}}"
+            f"font-family:{T.UI_STACK};font-size:{T.XL}px;}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
         )
         # Template avec slot {c} pour la couleur d'accent
         _toggle_style = (
             "QToolButton{color:" + "{c}" + ";border:none;background:transparent;"
-            "font-family:monospace;font-size:8pt;font-weight:bold;"
+            f"font-family:{T.UI_STACK};font-size:8pt;font-weight:600;"
             f"text-align:left;padding:4px 8px;letter-spacing:1px;}}"
             f"QToolButton:hover{{background:{C.BG_HOVER};}}"
         )
@@ -372,7 +372,7 @@ class ActorInspector(QWidget):
 
         self._comp_list = ComponentListWidget()
         self._comp_list.setFixedHeight(100)
-        self._comp_list.setFont(QFont(T.MONO, T.MD))
+        self._comp_list.setFont(QFont(T.UI, T.MD))
         self._comp_list.setStyleSheet(
             f"QListWidget{{background:{C.BG_DEEP};color:{C.TEXT_NORM};"
             f"border:none;border-radius:0;}}"
@@ -398,8 +398,8 @@ class ActorInspector(QWidget):
         cl.addWidget(self._editor_card)
 
         self._editor_toggle = QToolButton()
-        self._editor_toggle.setText("▾  ÉDITEUR")
-        self._editor_toggle.setStyleSheet(_toggle_style.replace("{c}", C.ACCENT_ORG))
+        self._editor_toggle.setText("▾  EDITOR")
+        self._editor_toggle.setStyleSheet(_toggle_style.replace("{c}", icons.COLOR_ACTOR))
         self._editor_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._editor_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._editor_toggle.setFixedHeight(26)
@@ -417,7 +417,7 @@ class ActorInspector(QWidget):
         _editor_card_l.addWidget(self._editor_container)
 
         self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "ÉDITEUR", self._ctx_color))
+            self._editor_toggle, self._editor_container, "EDITOR", self._ctx_color))
 
         self._ctx_color = icons.COLOR_ACTOR   # couleur courante du contexte (actor par défaut)
         self._editor_section_visible = True   # état mémorisé du toggle ÉDITEUR
@@ -437,10 +437,12 @@ class ActorInspector(QWidget):
     _COLOR_SEL_BG_PREFAB = f"{icons.COLOR_PREFAB}15"
 
     def _apply_context_color(self, color: str, sel_bg: str):
-        """Met à jour les toggles COMPONENTS / ÉDITEUR, la bordure de carte et la sélection de liste."""
+        """Met à jour les toggles COMPONENTS / EDITOR, la bordure de carte et la sélection de liste."""
         self._ctx_color = color
         tpl = self._toggle_style_tpl
         self._comp_toggle.setStyleSheet(tpl.replace("{c}", color))
+        # Le toggle EDITOR suit la même couleur de famille que COMPONENTS.
+        self._editor_toggle.setStyleSheet(tpl.replace("{c}", color))
         # Carte ÉDITEUR à plat (élévation) — l'identité passe par la couleur du
         # toggle (self._ctx_color), plus par un liseré.
         self._editor_card.setStyleSheet(QSS.card("editor_card"))
@@ -490,11 +492,11 @@ class ActorInspector(QWidget):
         if scene:
             try:
                 idx = scene.actors.index(actor)
-                self._tag_lbl.setText(f"Index : {idx}")
+                self._tag_lbl.setText(f"Index: {idx}")
             except ValueError:
-                self._tag_lbl.setText("Index : —")
+                self._tag_lbl.setText("Index: —")
         else:
-            self._tag_lbl.setText("Index : (prefab)")
+            self._tag_lbl.setText("Index: (prefab)")
         self._active.setChecked(actor.active)
         # Badge prefab
         if actor.prefab_name:
@@ -836,7 +838,7 @@ class ActorInspector(QWidget):
         # Restaurer l'état du toggle (replié/déplié) sur le nouveau container
         new_container.setVisible(self._editor_section_visible)
         arrow = "▾" if self._editor_section_visible else "▸"
-        self._editor_toggle.setText(f"{arrow}  ÉDITEUR")
+        self._editor_toggle.setText(f"{arrow}  EDITOR")
 
         # Rebrancher le toggle sur le nouveau container
         try:
@@ -844,7 +846,7 @@ class ActorInspector(QWidget):
         except RuntimeError:
             pass
         self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "ÉDITEUR", self._ctx_color))
+            self._editor_toggle, self._editor_container, "EDITOR", self._ctx_color))
 
         # Supprimer l'ancien (schedules deleteLater pour éviter crash de signal en cours)
         old.hide()
@@ -858,8 +860,8 @@ class ActorInspector(QWidget):
         self._field_syncers: dict[str, callable] = {}
 
         if not comp:
-            lbl = QLabel("Sélectionne un component ci-dessus")
-            lbl.setFont(QFont(T.MONO, T.MD))
+            lbl = QLabel("Select a component above")
+            lbl.setFont(QFont(T.UI, T.MD))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:10px 6px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._editor_layout.addWidget(lbl); return
@@ -879,8 +881,8 @@ class ActorInspector(QWidget):
         if EditorCls:
             EditorCls(self).build(comp, row, self._editor_layout)
         else:
-            lbl = QLabel(f"{type_name} — pas d'éditeur enregistré")
-            lbl.setFont(QFont(T.MONO, T.SM)); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            lbl = QLabel(f"{type_name} — no editor registered")
+            lbl.setFont(QFont(T.UI, T.SM)); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
             self._editor_layout.addWidget(lbl)
 
     def _set_comp(self, comp, field, value):

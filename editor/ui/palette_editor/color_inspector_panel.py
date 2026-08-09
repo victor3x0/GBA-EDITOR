@@ -81,9 +81,9 @@ class ColorInspectorPanel(QWidget):
         card_hdr.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         chl = QHBoxLayout(card_hdr)
         chl.setContentsMargins(12, 0, 12, 0)
-        self._color_hdr = QLabel("COULEUR")
-        self._color_hdr.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        self._color_hdr.setStyleSheet(f"color:{C.ACCENT}; letter-spacing:1px;")
+        self._color_hdr = QLabel("COLOR")
+        self._color_hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        self._color_hdr.setStyleSheet(QSS.title_section())
         chl.addWidget(self._color_hdr)
         root.addWidget(card_hdr)
 
@@ -129,7 +129,7 @@ class ColorInspectorPanel(QWidget):
         _LBL_W = 64                       # large assez pour « BGR555 » non tronqué
         hex_lab = QLabel("HEX")
         hex_lab.setFixedWidth(_LBL_W)
-        hex_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        hex_lab.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         hex_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
         hex_row.addWidget(hex_lab)
         self._hex = QLineEdit()
@@ -140,8 +140,8 @@ class ColorInspectorPanel(QWidget):
         # Entrée valide ET rend le focus à la grille → les flèches reprennent.
         self._hex.returnPressed.connect(self.grid_focus_requested.emit)
         hex_row.addWidget(self._hex, 1)
-        btn_copy = W.btn_ghost("Copier")   # libellé explicite (⧉ était incompris)
-        btn_copy.setToolTip("Copier le HEX dans le presse-papier (Ctrl+C)")
+        btn_copy = W.btn_ghost("Copy")   # libellé explicite (⧉ était incompris)
+        btn_copy.setToolTip("Copy HEX to clipboard (Ctrl+C)")
         btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_copy.clicked.connect(self._copy_color)
         hex_row.addWidget(btn_copy)
@@ -152,7 +152,7 @@ class ColorInspectorPanel(QWidget):
         bgr_row.setSpacing(6)
         bgr_lab = QLabel("BGR555")
         bgr_lab.setFixedWidth(_LBL_W)
-        bgr_lab.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        bgr_lab.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         bgr_lab.setStyleSheet(f"color:{C.TEXT_DIM};")
         bgr_row.addWidget(bgr_lab)
         self._bgr = QLabel("—")
@@ -162,7 +162,7 @@ class ColorInspectorPanel(QWidget):
         self._snap = QLabel("")
         self._snap.setFont(QFont(T.MONO, T.SM))
         self._snap.setStyleSheet(f"color:{C.AXIS_X};")
-        self._snap.setToolTip("Couleur ajustée à la grille 15 bits du GBA (5 bits/canal)")
+        self._snap.setToolTip("Color snapped to the GBA's 15-bit grid (5 bits/channel)")
         self._snap.setVisible(False)
         bgr_row.addWidget(self._snap)
         bgr_row.addStretch(1)
@@ -190,7 +190,7 @@ class ColorInspectorPanel(QWidget):
         el.addLayout(rgb_box)
 
         # ── 4. TSL (dérivé) — repliable : HEX + RGB suffisent le plus souvent ──
-        self._hsb_toggle = QPushButton("▸  TSL")
+        self._hsb_toggle = QPushButton("▸  HSB")
         self._hsb_toggle.setCheckable(True)
         self._hsb_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._hsb_toggle.setStyleSheet(
@@ -255,7 +255,7 @@ class ColorInspectorPanel(QWidget):
     def _toggle_hsb(self):
         on = self._hsb_toggle.isChecked()
         self._hsb_box.setVisible(on)
-        self._hsb_toggle.setText(("▾  TSL" if on else "▸  TSL"))
+        self._hsb_toggle.setText(("▾  HSB" if on else "▸  HSB"))
 
     # ── API panneau ───────────────────────────────────────────────
 

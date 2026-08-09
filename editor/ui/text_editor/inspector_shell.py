@@ -29,7 +29,7 @@ def insp_scroll(color: str, title: str) -> tuple[QWidget, QVBoxLayout, QLabel]:
     hl = QHBoxLayout(hdr)
     hl.setContentsMargins(8, 0, 8, 0)
     lbl = QLabel(title)
-    lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+    lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
     lbl.setStyleSheet(f"color:{color}; letter-spacing:1px;")
     hl.addWidget(lbl)
     hl.addStretch()

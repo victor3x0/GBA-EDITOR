@@ -26,7 +26,7 @@ class RenameTextKeyCmd(Command):
         # Passé par l'appelant : le renommage a déjà eu lieu et a mis auto_key
         # à False, le lire ici restaurerait la nouvelle valeur.
         self._old_auto = old_auto
-        self.label = f"Renommer texte → {new_key}"
+        self.label = f"Rename text → {new_key}"
         self._persist = persist_fn
         self._first = True   # le renommage a déjà été appliqué par l'appelant
 
@@ -45,23 +45,96 @@ class RenameTextKeyCmd(Command):
             self._persist()
 
 
+class CreateTextForElementCmd(Command):
+    """Crée une entrée de table ET l'accroche à un élément d'UI, d'un seul geste.
+
+    Écrire dans un élément de texte sans entrée est UNE intention, pas deux :
+    la commande porte les deux effets, une seule annulation les défait.
+
+    Le chemin de rangement est PROPOSÉ par l'appelant, jamais imposé : la clé
+    qui en dérive reste `auto_key`, donc ranger l'entrée ailleurs la recalera
+    (contrat de `models/text.py`).
+    """
+
+    def __init__(self, project, element, content: str, path,
+                 scene: str = "", persist_fn=None):
+        self._project = project
+        self._element = element
+        self._content = content
+        self._path = list(path)
+        self._scene = scene
+        self._text = None                       # créé au premier execute()
+        self._old_key = getattr(element, "text_key", "")
+        self.label = "New text"
+        self._persist = persist_fn
+
+    def execute(self):
+        if self._text is None:
+            self._text = self._project.new_text(
+                self._content, scene=self._scene, path=self._path)
+        elif self._text not in self._project.texts:
+            self._project.texts.append(self._text)   # redo : on rend la MÊME entrée
+        self._text.content = self._content
+        self._element.text_key = self._text.key
+        self.label = f"New text {self._text.key}"
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        if self._text is not None and self._text in self._project.texts:
+            self._project.texts.remove(self._text)
+        self._element.text_key = self._old_key
+        if self._persist:
+            self._persist()
+
+    def merge(self, newer: "Command") -> bool:
+        """Absorbe la frappe qui SUIT la création.
+
+        Sans ça, écrire « PRESS START » dans un élément neuf laisserait deux
+        entrées d'historique — créer le texte, puis l'écrire — pour un seul
+        geste. On lit les champs internes de `SetFieldCmd` comme elle-même le
+        fait dans sa propre fusion."""
+        from core.history import SetFieldCmd
+        if (self._text is not None
+                and isinstance(newer, SetFieldCmd)
+                and newer._obj is self._text
+                and newer._field == "content"):
+            self._content = newer._new
+            return True
+        return False
+
+
 class SetTextPathCmd(Command):
     """Range un ou plusieurs textes (déplacer une entrée = renommer un nœud, à
     l'échelle près).
 
     Les clés AUTO se recalent derrière — donc les scripts sont réécrits ; les
     clés nommées à la main ne bougent pas (contrat de `auto_key`).
+
+    `order` : la liste plate telle qu'elle doit être APRÈS le geste. Un
+    glisser-déposer range ET place — lâcher une entrée entre deux autres dit
+    aussi où elle va. Deux commandes auraient demandé deux annulations pour un
+    seul geste, d'où le paramètre plutôt qu'une commande de plus.
     """
 
-    def __init__(self, project, entries, label: str, persist_fn=None):
+    def __init__(self, project, entries, label: str, persist_fn=None, order=None):
         self._project = project
         # (texte, ancien chemin, nouveau chemin, ancienne clé) — la clé est
         # capturée MAINTENANT, avant le premier execute().
         self._entries = [(t, list(old), list(new), t.key) for t, old, new in entries]
+        self._order_after = list(order) if order is not None else None
+        self._order_before = list(project.texts) if order is not None else None
         self.label = label
         self._persist = persist_fn
 
+    def _set_order(self, order):
+        # En place : `AddListItemCmd` et le projet gardent une référence sur
+        # CETTE liste, la remplacer les laisserait sur l'ancienne.
+        if order is not None:
+            self._project.texts[:] = order
+
     def execute(self):
+        self._set_order(self._order_after)
         for t, _old, new, _key in self._entries:
             t.path = list(new)
             self._project.resync_text_key(t)
@@ -69,6 +142,7 @@ class SetTextPathCmd(Command):
             self._persist()
 
     def undo(self):
+        self._set_order(self._order_before)
         for t, old, _new, key in self._entries:
             t.path = list(old)
             # `restore` et non `resync` : le rang `_NN` d'une clé dérivée dépend

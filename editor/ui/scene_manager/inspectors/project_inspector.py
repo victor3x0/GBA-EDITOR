@@ -32,12 +32,12 @@ from ui.common import icons
 
 # Compteurs affichés dans la carte CONTENU : (attribut projet, icône, singulier, pluriel)
 _COUNTERS: tuple[tuple[str, str, str, str], ...] = (
-    ("scenes",      "scene",      "scène",   "scènes"),
-    ("prefabs",     "prefab",     "prefab",  "prefabs"),
-    ("sprites",     "sprite",     "sprite",  "sprites"),
-    ("backgrounds", "background", "fond",    "fonds"),
-    ("palettes",    "palette",    "palette", "palettes"),
-    ("fonts",       "font",       "police", "polices"),
+    ("scenes",      "scene",      "scene",      "scenes"),
+    ("prefabs",     "prefab",     "prefab",     "prefabs"),
+    ("sprites",     "sprite",     "sprite",     "sprites"),
+    ("backgrounds", "background", "background", "backgrounds"),
+    ("palettes",    "palette",    "palette",    "palettes"),
+    ("fonts",       "font",       "font",       "fonts"),
 )
 
 
@@ -68,13 +68,13 @@ class ProjectInspector(QWidget):
 
         # ── Carte Identité ────────────────────────────────────────
         id_card, id_inner = self._card()
-        id_inner.addWidget(self._card_title("IDENTITÉ", C.ACCENT))
+        id_inner.addWidget(self._card_title("IDENTITY"))
 
         self._ed_author = QLineEdit()
-        self._ed_author.setPlaceholderText("Anonyme")
+        self._ed_author.setPlaceholderText("Anonymous")
         self._ed_author.editingFinished.connect(
             lambda: self._set_setting("author", self._ed_author.text().strip()))
-        self._row("Auteur", self._ed_author, id_inner)
+        self._row("Author", self._ed_author, id_inner)
 
         self._ed_version = QLineEdit()
         self._ed_version.setPlaceholderText("0.1")
@@ -84,15 +84,15 @@ class ProjectInspector(QWidget):
         self._row("Version", self._ed_version, id_inner, stretch=False)
 
         self._combo_start = QComboBox()
-        self._combo_start.setFont(QFont(T.MONO, T.MD))
+        self._combo_start.setFont(QFont(T.UI, T.MD))
         self._combo_start.setStyleSheet(QSS.combobox)
         self._combo_start.setToolTip(
-            "<b>Scène de démarrage</b><br><br>"
-            "Première scène chargée au lancement de la ROM.<br>"
-            "Indépendante de la scène ouverte dans l'éditeur."
+            "<b>Start scene</b><br><br>"
+            "First scene loaded when the ROM boots.<br>"
+            "Independent of the scene open in the editor."
         )
         self._combo_start.currentIndexChanged.connect(self._on_start_scene_changed)
-        self._row("Démarrage", self._combo_start, id_inner)
+        self._row("Start", self._combo_start, id_inner)
 
         # ── Backdrop (défaut projet) ──────────────────────────────
         # Couleur de PAL_BG_RAM[0] : ce que le hardware affiche là où aucun
@@ -106,11 +106,11 @@ class ProjectInspector(QWidget):
         self._btn_backdrop.setFixedSize(40, 22)
         self._btn_backdrop.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_backdrop.setToolTip(
-            "<b>Couleur de fond (backdrop) du projet</b><br><br>"
-            "Index 0 de la palette BG — affiché partout où aucun calque ni<br>"
-            "sprite ne dessine, y compris à travers une window qui masque tout.<br><br>"
-            "Défaut hérité par toutes les scènes qui ne définissent pas le leur.<br>"
-            "Quantifiée en BGR555 (5 bits par canal) comme sur console."
+            "<b>Project backdrop color</b><br><br>"
+            "Index 0 of the BG palette — shown wherever no layer or<br>"
+            "sprite draws, including through a window that masks everything.<br><br>"
+            "Default inherited by every scene that doesn't set its own.<br>"
+            "Quantized to BGR555 (5 bits per channel) like on hardware."
         )
         self._btn_backdrop.clicked.connect(self._pick_backdrop)
         self._lbl_backdrop = QLabel()
@@ -125,7 +125,7 @@ class ProjectInspector(QWidget):
 
         # ── Carte Contenu ─────────────────────────────────────────
         content_card, content_inner = self._card()
-        content_inner.addWidget(self._card_title("CONTENU", C.TEXT_NORM))
+        content_inner.addWidget(self._card_title("CONTENT"))
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 2, 0, 0)
@@ -143,10 +143,10 @@ class ProjectInspector(QWidget):
         layout.addWidget(content_card)
 
         self._hint = QLabel(
-            "Sélectionnez une scène ou un actor dans le panneau de gauche "
-            "pour afficher ses propriétés."
+            "Select a scene or an actor in the left panel "
+            "to show its properties."
         )
-        self._hint.setFont(QFont(T.MONO, T.XS))
+        self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:2px 4px;")
         self._hint.setWordWrap(True)
         layout.addWidget(self._hint)
@@ -167,12 +167,14 @@ class ProjectInspector(QWidget):
         inner.setSpacing(6)
         return f, inner
 
-    def _card_title(self, text: str, accent: str) -> QLabel:
+    def _card_title(self, text: str, accent: str = None) -> QLabel:
+        # Titre de section unifié périwinkle (brique QSS.title_section) ;
+        # `accent` conservé pour compat mais ignoré.
         lbl = QLabel(text)
-        lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         lbl.setStyleSheet(
-            f"color:{accent};letter-spacing:1px;"
-            f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
+            QSS.title_section()
+            + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
         )
         return lbl
 
@@ -185,7 +187,7 @@ class ProjectInspector(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
         lbl = QLabel(label)
-        lbl.setFont(QFont(T.MONO, T.SM))
+        lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl.setFixedWidth(self._LABEL_W)
         row.addWidget(lbl)
@@ -205,7 +207,7 @@ class ProjectInspector(QWidget):
         ico.setPixmap(icons.get(icon_key, icons.COLOR_DEFAULT).pixmap(QSize(14, 14)))
         ico.setFixedWidth(16)
         value = QLabel("—")
-        value.setFont(QFont(T.MONO, T.SM))
+        value.setFont(QFont(T.UI, T.SM))
         value.setStyleSheet(f"color:{C.TEXT_NORM};")
         h.addWidget(ico)
         h.addWidget(value, 1)
@@ -241,7 +243,7 @@ class ProjectInspector(QWidget):
             if start and start not in names:
                 # Scène de démarrage disparue (supprimée hors éditeur) : on la
                 # garde visible plutôt que de la réécrire silencieusement.
-                self._combo_start.addItem(f"{start}  (introuvable)", start)
+                self._combo_start.addItem(f"{start}  (not found)", start)
                 names = [start] + names
             for name in names:
                 if self._combo_start.findData(name) < 0:

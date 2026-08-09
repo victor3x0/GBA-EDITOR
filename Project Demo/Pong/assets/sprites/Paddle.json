@@ -52,7 +52,7 @@
   "states": [
     {
       "name": "Idle",
-      "speed": 4,
+      "speed": 1,
       "loop": true,
       "directions": [
         {
@@ -85,6 +85,37 @@
                   "dst_row": 1
                 }
               ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Run",
+      "speed": 8,
+      "loop": true,
+      "directions": [
+        {
+          "dir": 7,
+          "frames": [
+            {
+              "tiles": []
+            }
+          ]
+        },
+        {
+          "dir": 0,
+          "frames": [
+            {
+              "tiles": []
+            }
+          ]
+        },
+        {
+          "dir": 3,
+          "frames": [
+            {
+              "tiles": []
             }
           ]
         }

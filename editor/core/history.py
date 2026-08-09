@@ -640,6 +640,81 @@ class AddListItemCmd(Command):
             self._persist()
 
 
+class RemoveListItemsCmd(Command):
+    """
+    Suppression d'un LOT d'éléments d'une liste arbitraire, en UNE entrée
+    d'historique. Symétrique d'AddListItemsCmd, mêmes raisons.
+
+    Les positions sont mémorisées et l'annulation réinsère en ordre croissant :
+    la disposition d'origine est restituée à l'identique, et pas seulement le
+    contenu — pour une mise en page d'interface, l'ordre de la liste EST le
+    z-order et l'ordre des frères.
+    """
+
+    def __init__(self, container: list, items: list, persist_fn=None,
+                 label: str = "Supprimer"):
+        self._container = container
+        at = {id(x): i for i, x in enumerate(container)}
+        self._removed = sorted((at[id(it)], it) for it in items if id(it) in at)
+        self.label = label
+        self._persist = persist_fn
+
+    def execute(self):
+        for _i, item in self._removed:
+            for i, x in enumerate(self._container):
+                if x is item:
+                    del self._container[i]
+                    break
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        for i, item in self._removed:          # indices croissants
+            self._container.insert(min(i, len(self._container)), item)
+        if self._persist:
+            self._persist()
+
+
+class AddListItemsCmd(Command):
+    """
+    Ajout d'un LOT d'éléments à une liste arbitraire, en UNE entrée d'historique
+    (ex: les copies d'un Ctrl+V, d'un Ctrl+D ou d'un Alt+glisser).
+
+    Pluriel d'AddListItemCmd, et pas une boucle dessus : coller trois éléments
+    est un seul geste, l'annuler doit l'être aussi — sinon il faudrait trois
+    Ctrl+Z pour défaire un Ctrl+V, et la sauvegarde s'exécuterait trois fois.
+
+    Appartenance testée par IDENTITÉ (`is`) et non par `in` : les items sont des
+    dataclasses, deux copies aux champs identiques seraient confondues par `==`.
+    """
+
+    def __init__(self, container: list, items: list, persist_fn=None,
+                 label: str = "Ajouter"):
+        self._container = container
+        self._items = list(items)
+        self.label = label
+        self._persist = persist_fn
+
+    def _holds(self, item) -> bool:
+        return any(x is item for x in self._container)
+
+    def execute(self):
+        for item in self._items:
+            if not self._holds(item):
+                self._container.append(item)
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        for item in self._items:
+            for i, x in enumerate(self._container):
+                if x is item:
+                    del self._container[i]
+                    break
+        if self._persist:
+            self._persist()
+
+
 class RenameFileCmd(Command):
     """
     Renommage d'un fichier arbitraire sur disque (scripts assets/ — pas un

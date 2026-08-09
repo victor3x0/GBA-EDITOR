@@ -3,14 +3,14 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QFrame, QSizePolicy,
+    QWidget, QVBoxLayout, QSizePolicy,
     QMenu, QMessageBox, QAbstractItemView,
     QTreeWidget, QTreeWidgetItem,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
-from ui.common.widgets import FinderSection
+from ui.common.widgets import W, FinderSection
 from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from core.project import Project, SpriteAsset, AnimState, StateDirection
@@ -80,16 +80,7 @@ class SpriteFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Assets finder / Script finder / Sound finder) ──
-        finder_hdr = QFrame()
-        finder_hdr.setFixedHeight(20)
-        finder_hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER_DARK};")
-        fl = QHBoxLayout(finder_hdr)
-        fl.setContentsMargins(8, 0, 0, 0)
-        finder_lbl = QLabel("SPRITE FINDER")
-        finder_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        finder_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
-        fl.addWidget(finder_lbl)
-        root.addWidget(finder_hdr)
+        root.addWidget(W.finder_bar("SPRITE FINDER"))
 
         # ── Sprites ───────────────────────────────────────────────
         sec_sprites = FinderSection("SPRITES")
@@ -129,6 +120,10 @@ class SpriteFinderPanel(QWidget):
         self._anim_tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._anim_tree.itemChanged.connect(self._on_anim_item_text_changed)
         sec_anim.set_widget(self._anim_tree)
+
+        # Ressort de queue : sections repliées, rien n'absorbe la hauteur du
+        # panneau et QVBoxLayout centrerait le tout.
+        root.addStretch()
 
     # ── API publique ──────────────────────────────────────────────
 
@@ -209,7 +204,7 @@ class SpriteFinderPanel(QWidget):
                 self._make_sprite_item(self._sprite_tree.invisibleRootItem(), members[0])
                 continue
             grp_item = QTreeWidgetItem([f"  {grp_name}"])
-            grp_item.setFont(0, QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            grp_item.setFont(0, QFont(T.UI, T.SM, QFont.Weight.Bold))
             grp_item.setForeground(0, QColor(C.TEXT_DIM))
             grp_item.setData(0, Qt.ItemDataRole.UserRole, None)
             self._sprite_tree.invisibleRootItem().addChild(grp_item)
@@ -230,7 +225,7 @@ class SpriteFinderPanel(QWidget):
 
     def _make_sprite_item(self, parent: QTreeWidgetItem, sp: SpriteAsset):
         item = QTreeWidgetItem([sp.name])
-        item.setFont(0, QFont(T.MONO, T.SM))
+        item.setFont(0, QFont(T.UI, T.SM))
         item.setForeground(0, QColor(C.TEXT_NORM))
         item.setIcon(0, _ico("sprite", COLOR_DEFAULT))
         item.setData(0, Qt.ItemDataRole.UserRole, sp)
@@ -262,7 +257,7 @@ class SpriteFinderPanel(QWidget):
 
         for state in sprite.states:
             state_item = QTreeWidgetItem([state.name])
-            state_item.setFont(0, QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            state_item.setFont(0, QFont(T.UI, T.SM, QFont.Weight.Bold))
             state_item.setForeground(0, QColor(C.TEXT_HI))
             state_item.setIcon(0, _ico("anim_state", COLOR_DEFAULT))
             state_item.setData(0, Qt.ItemDataRole.UserRole, (state, None))
@@ -273,7 +268,7 @@ class SpriteFinderPanel(QWidget):
             for sd in state.directions:
                 lbl = _dir_label(sd)
                 sd_item = QTreeWidgetItem([f"    {lbl}"])
-                sd_item.setFont(0, QFont(T.MONO, T.SM))
+                sd_item.setFont(0, QFont(T.UI, T.SM))
                 mirrored = sd.mirror_of is not None
                 fg = C.TEXT_DIM if mirrored else C.TEXT_NORM
                 sd_item.setForeground(0, QColor(fg))
@@ -375,7 +370,7 @@ class SpriteFinderPanel(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        delete_a = menu.addAction("Supprimer le sprite")
+        delete_a = menu.addAction("Delete sprite")
         act = menu.exec(self._sprite_tree.viewport().mapToGlobal(pos))
         if act == delete_a:
             self._delete_sprite(sp)
@@ -391,8 +386,8 @@ class SpriteFinderPanel(QWidget):
             self._sprite_tree.blockSignals(False)
             return
         if not self._project or self._project.sprites.get(new_name):
-            QMessageBox.warning(self, "Nom déjà utilisé",
-                                f"Un sprite nommé « {new_name} » existe déjà.")
+            QMessageBox.warning(self, "Name already used",
+                                f"A sprite named “{new_name}” already exists.")
             self._sprite_tree.blockSignals(True)
             item.setText(0, sp.name)
             self._sprite_tree.blockSignals(False)
@@ -410,8 +405,8 @@ class SpriteFinderPanel(QWidget):
         if not self._project:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer le sprite « {sp.name} » ?\n(Ctrl+Z pour annuler)",
+            self, "Delete",
+            f"Delete sprite “{sp.name}”?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -434,7 +429,7 @@ class SpriteFinderPanel(QWidget):
             return  # pas de menu sur une direction (gérée via le panneau DIRECTIONS)
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        delete_a = menu.addAction("Supprimer l'état")
+        delete_a = menu.addAction("Delete state")
         can_delete = bool(self._current_sprite) and len(self._current_sprite.states) > 1
         delete_a.setEnabled(can_delete)
         act = menu.exec(self._anim_tree.viewport().mapToGlobal(pos))
@@ -460,8 +455,7 @@ class SpriteFinderPanel(QWidget):
             state.name = new_name
             if self._current_sprite:
                 get_dispatcher().save_sprite(self._current_sprite)
-            self._project._notify_renamed("Animation", old_name, new_name, refs,
-                                          feminine=True)
+            self._project._notify_renamed("Animation", old_name, new_name, refs)
         else:
             state.name = new_name
         self._anim_tree.blockSignals(True)
@@ -472,8 +466,8 @@ class SpriteFinderPanel(QWidget):
         if not self._current_sprite or len(self._current_sprite.states) <= 1:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer l'état « {state.name} » ?\n(Ctrl+Z pour annuler)",
+            self, "Delete",
+            f"Delete state “{state.name}”?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -482,7 +476,7 @@ class SpriteFinderPanel(QWidget):
         get_history().push(RemoveListItemCmd(
             sprite.states, state,
             persist_fn=(lambda: get_dispatcher().save_sprite(sprite)) if project else None,
-            label=f"Supprimer état {state.name}",
+            label=f"Delete state {state.name}",
         ))
         self._refresh_anim_tree(self._current_sprite)
 

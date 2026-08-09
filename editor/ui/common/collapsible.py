@@ -30,13 +30,13 @@ class CollapsibleSection(QWidget):
         h_layout.setSpacing(4)
 
         self._arrow = QLabel("▼")
-        self._arrow.setFont(QFont(T.MONO, T.SM))
+        self._arrow.setFont(QFont(T.UI, T.SM))
         self._arrow.setStyleSheet(f"color:{color};")
         self._arrow.setFixedWidth(12)
         h_layout.addWidget(self._arrow)
 
         lbl = QLabel(title)
-        lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color:{color};")
         h_layout.addWidget(lbl, 1)
 
@@ -96,13 +96,13 @@ class SectionItem(QFrame):
         layout.setSpacing(6)
 
         ico = QLabel(icon)
-        ico.setFont(QFont(T.MONO, T.MD))
+        ico.setFont(QFont(T.UI, T.MD))
         ico.setStyleSheet(f"color:{C.TEXT_DIM};")
         ico.setFixedWidth(12)
         layout.addWidget(ico)
 
         self._lbl = QLabel(label)
-        self._lbl.setFont(QFont(T.MONO, T.MD))
+        self._lbl.setFont(QFont(T.UI, T.MD))
         layout.addWidget(self._lbl, 1)
 
     def _update_style(self):

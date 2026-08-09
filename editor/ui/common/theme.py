@@ -7,14 +7,26 @@ Usage :
 Couleurs via C :
     C.ACCENT   C.POWER   C.BG_INPUT   C.TEXT_DIM ...
 
-Typographie via T :
-    QFont(T.MONO, T.MD)   →  QFont("monospace", 9)
-    QFont(T.CODE, T.LG)   →  QFont("Consolas",  11)
-    f"font-size: {T.SM}px"  →  "font-size: 8px"
+Typographie via T — 3 familles, 3 rôles :
+    T.UI    Inter (fallback Segoe UI)  → labels, menus, titres, boutons
+    T.MONO  monospace                  → valeurs numériques, compteurs, chemins
+    T.CODE  Consolas                   → éditeur de code, callbacks Lua
+    QFont(T.UI, T.MD)      f"font-family:{T.UI_STACK}; font-size:{T.SM}px"
+
+Espacement via S (marges/paddings standard) :
+    layout.setSpacing(S.SM)   layout.setContentsMargins(S.MD, S.SM, S.MD, S.SM)
 
 Fragments QSS via QSS :
     widget.setStyleSheet(QSS.spinbox)
     widget.setStyleSheet(QSS.checkbox)
+
+Hiérarchie de titres (une seule grammaire pour toute l'app) :
+    QSS.title_panel        en-tête de panneau/finder  (dim, uppercase par l'appelant)
+    QSS.title_finder()     titre de section d'un viewer (SCENES, PREFABS…)
+    QSS.title_group        intertitre dans une section de viewer (ACTORS…)
+    QSS.title_section()    titre de section d'inspecteur (périwinkle par défaut)
+    QSS.label_field        label de champ dans une ligne de formulaire
+    QSS.empty_state        message central des écrans/panneaux vides
 
 Stylesheet globale à appliquer une seule fois dans main.py :
     app.setStyleSheet(GLOBAL_QSS)
@@ -27,21 +39,86 @@ from ui.common import icons as _icons
 # ──────────────────────────────────────────────────────────────────
 
 class _Typography:
-    # Familles
-    MONO = "monospace"   # labels, menus, inspector
+    # Familles — voir install_app_fonts() pour la résolution d'Inter
+    UI   = "Inter"       # labels, menus, titres, boutons — police interface
+    MONO = "monospace"   # valeurs numériques, compteurs, chemins
     CODE = "Consolas"    # éditeur de code, callbacks Lua
+
+    # Pile CSS pour les QSS : Inter n'existe parfois qu'en variantes
+    # optiques (« Inter 18pt ») ou pas du tout → fallbacks explicites.
+    UI_STACK = "'Inter','Inter 18pt','Segoe UI Variable Text','Segoe UI',sans-serif"
 
     # Tailles (points pour QFont / pixels pour QSS — traitées identiquement)
     XS  = 9    # hints, sous-labels très discrets
     SM  = 10   # labels dim, boutons secondaires
     MD  = 12   # texte courant, menus, inputs
-    MD2 = 12   # inputs légèrement plus grands (spinbox)
     LG  = 13   # titres section, sidebar éditeur
     XL  = 14   # titre projet, icônes larges
     XXL = 16   # très grands titres / icônes header
 
 
 T = _Typography()
+
+
+def ui_font(size: int = T.MD, *, bold: bool = False, family: str | None = None):
+    """QFont dont la taille est en PIXELS — la même unité que les fragments QSS.
+
+    `QFont(T.UI, T.MD)` crée un 12 *points* (≈16 px à 96 dpi) : posé sur une
+    ligne d'arbre stylée `font-size:12px`, il donne deux corps différents pour
+    un même niveau de hiérarchie. ui_font() garde les deux mondes d'accord."""
+    from PyQt6.QtGui import QFont
+    f = QFont(family or T.UI)
+    f.setPixelSize(size)
+    if bold:
+        f.setWeight(QFont.Weight.DemiBold)
+    return f
+
+
+def install_app_fonts():
+    """Charge les fontes embarquées (ui/common/fonts/*.ttf) et déclare les
+    substituts d'Inter pour les QFont programmatiques. À appeler une fois
+    dans main.py, après la création de la QApplication et avant GLOBAL_QSS."""
+    from pathlib import Path
+    from PyQt6.QtGui import QFont, QFontDatabase
+    fonts_dir = Path(__file__).parent / "fonts"
+    if fonts_dir.is_dir():
+        for f in sorted(fonts_dir.glob("*.ttf")) + sorted(fonts_dir.glob("*.otf")):
+            QFontDatabase.addApplicationFont(str(f))
+    # Si « Inter » n'est pas résolue telle quelle, QFont bascule sur ces familles.
+    QFont.insertSubstitutions(T.UI, [
+        "Inter 18pt", "Inter 24pt", "Segoe UI Variable Text", "Segoe UI",
+    ])
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Espacement — échelle unique pour marges, paddings et spacing
+# ──────────────────────────────────────────────────────────────────
+
+class _Spacing:
+    XS  = 2    # interlignes serrés (rangées de formulaire)
+    SM  = 4    # spacing par défaut d'un layout dense
+    MD  = 8    # marge interne de panneau, écart label/widget
+    LG  = 12   # marge de section, gouttières de panneau
+    XL  = 16   # respiration entre sections d'inspecteur
+    XXL = 24   # marges d'écran / d'état vide
+
+    # Gouttière gauche commune à TOUS les viewers : titre de panneau, titre de
+    # section et première colonne d'arbre s'alignent dessus — c'est la ligne
+    # verticale unique qu'on lit du haut en bas d'un finder.
+    GUTTER = 10
+
+    # Retrait du CONTENU d'une section (intertitres, lignes de variables) :
+    # gouttière + chevron + colonne d'icône, soit là où un QTreeWidget de finder
+    # pose ses items de premier niveau. Sans lui, les listes qui ne sont pas des
+    # arbres décrochent de deux ou trois pixels.
+    CONTENT = GUTTER + LG + MD
+
+    # Hauteur d'une ligne d'arbre / de liste dans les finders. Centralisée parce
+    # que certains arbres la calculent à la main (assets_finder_panel._Tree._fit).
+    ROW = 24
+
+
+S = _Spacing()
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -79,18 +156,19 @@ class _Colors:
     ACCENT_ORG = "#c48b3c"
     ACCENT_PRP = "#9b7bd5"
 
-    # Textes
-    TEXT_HI    = "#eeeeee"  # titre, valeurs importantes
-    TEXT_NORM  = "#aaaaaa"  # texte courant
-    TEXT_DIM   = "#666666"  # labels, hints
-    TEXT_MUTED = "#444444"  # très discret
+    # Textes — gris légèrement teintés indigo, comme la ramp de fonds
+    TEXT_HI    = "#e9e9f2"  # titre, valeurs importantes
+    TEXT_NORM  = "#a9a9bd"  # texte courant
+    TEXT_DIM   = "#6a6a80"  # labels, hints
+    TEXT_MUTED = "#48485c"  # très discret
 
     # Axes vecteurs
     AXIS_X = "#c07070"   # rouge doux — axe X
     AXIS_Y = "#7090c0"   # bleu doux  — axe Y
 
-    # Sélection panel (périwinkle)
-    SEL_BG     = "#1e1a33"
+    # Sélection panel (périwinkle) — SEL_BG aligné sur BG_SEL : un seul
+    # fond de sélection dans toute l'app (les deux noms restent pour compat).
+    SEL_BG     = "#241f3a"
     SEL_BORDER = "#9b8cff"
     SEL_TEXT   = "#ddd6ff"
 
@@ -146,7 +224,7 @@ QSpinBox, QDoubleSpinBox {{
     border-radius: 4px;
     padding: 3px 6px;
     font-family: monospace;
-    font-size: {T.MD2}px;
+    font-size: {T.MD}px;
 }}
 QSpinBox::up-button, QDoubleSpinBox::up-button {{
     subcontrol-origin: border; subcontrol-position: top right;
@@ -203,14 +281,14 @@ QLineEdit:read-only {{
         return f"""
 QCheckBox {{
     color: {C.TEXT_NORM};
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
     spacing: 5px;
 }}
 QCheckBox::indicator {{
     width: 13px;
     height: 13px;
-    border: 1px solid #444;
+    border: 1px solid {C.BORDER_MID};
     border-radius: 2px;
     background: {C.BG_INPUT};
 }}
@@ -233,7 +311,7 @@ QComboBox {{
     border: 1px solid {C.BORDER_MID};
     border-radius: 4px;
     padding: 3px 8px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
 }}
 QComboBox:focus {{
@@ -271,9 +349,9 @@ QPushButton {{
     border: none;
     border-radius: 3px;
     padding: 4px 12px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
-    font-weight: bold;
+    font-weight: 600;
 }}
 QPushButton:hover  {{ background: #4a3d85; }}
 QPushButton:pressed {{ background: #2c2350; }}
@@ -290,10 +368,10 @@ QPushButton {{
     border: 1px solid {C.BORDER};
     border-radius: 3px;
     padding: 2px 8px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.SM}px;
 }}
-QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: #444; }}
+QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: {C.BORDER_MID}; }}
 QPushButton:disabled {{ color: {C.TEXT_MUTED}; border-color: {C.BORDER_DARK}; }}
 """
 
@@ -308,7 +386,7 @@ QPushButton {{
     border: 1px solid {C.ACCENT};
     border-radius: 3px;
     padding: 2px 6px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.SM}px;
 }}
 QPushButton:hover {{ color: {C.BG_DEEP}; background: {C.ACCENT}; }}
@@ -327,7 +405,7 @@ QPushButton {{
     font-family: monospace;
     font-size: {T.XL}px;
 }}
-QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: #555; }}
+QPushButton:hover {{ color: {C.TEXT_HI}; background: {C.BG_HOVER}; border-color: {C.BORDER_MID}; }}
 """
 
     # Bouton icône SANS cadre (QToolButton) — + ajout, ⌕ recherche : survol = ACCENT
@@ -366,15 +444,19 @@ QToolButton:pressed {{ color: #ff3030; }}
     def list_widget(self) -> str:
         return f"""
 QListWidget {{
-    background: #181818;
+    background: {C.BG_BASE};
     color: {C.TEXT_NORM};
     border: 1px solid {C.BORDER};
     border-radius: 3px;
     outline: none;
 }}
 QListWidget::item {{
-    padding: 3px 6px;
-    border-bottom: 1px solid {C.BORDER_DARK};
+    /* Pas de filet entre les lignes : à 20+ items ça fait une grille. La
+       hauteur de ligne suffit à les séparer (cf. QSS.tree_widget). */
+    padding: 4px 6px;
+    min-height: {S.XL}px;
+    border: none;
+    border-left: 2px solid transparent;
 }}
 QListWidget::item:selected {{
     background: {C.BG_SEL};
@@ -382,7 +464,40 @@ QListWidget::item:selected {{
     border-left: 2px solid {C.ACCENT};
 }}
 QListWidget::item:hover:!selected {{
-    background: {C.BG_HOVER};
+    background: {C.BG_PANEL};
+}}
+"""
+
+    # Liste plate d'un viewer (polices, fonds) — pendant de tree_widget pour
+    # les finders sans hiérarchie : même retrait gauche, même hauteur de ligne,
+    # même sélection. `accent` teinte la ligne sélectionnée à la couleur de la
+    # famille d'asset (COLOR_BACKGROUND, FONT_COLOR…).
+    def finder_list(self, accent: str | None = None) -> str:
+        accent = accent or C.ACCENT
+        return f"""
+QListWidget {{
+    background: {C.BG_BASE};
+    color: {C.TEXT_NORM};
+    border: none;
+    outline: none;
+    font-family: {T.UI_STACK};
+    font-size: {T.LG}px;
+    padding-left: {S.LG}px;
+    padding-right: {S.SM}px;
+}}
+QListWidget::item {{
+    padding: 3px 6px;
+    min-height: {S.XL}px;
+    border: none;
+    border-left: 2px solid transparent;
+}}
+QListWidget::item:selected {{
+    background: {C.BG_SEL};
+    color: {accent};
+    border-left: 2px solid {accent};
+}}
+QListWidget::item:hover:!selected {{
+    background: {C.BG_PANEL};
 }}
 """
 
@@ -395,15 +510,25 @@ QTreeWidget {{
     background: {C.BG_BASE};
     color: {C.TEXT_NORM};
     border: none;
-    font-family: monospace;
-    font-size: {T.MD}px;
+    font-family: {T.UI_STACK};
+    /* T.LG = corps « sidebar » : les viewers sont des colonnes qu'on balaie
+       du regard, 12 px y sont trop serrés. Les items qui posent leur propre
+       QFont doivent utiliser ui_font(T.LG) pour rester d'accord. */
+    font-size: {T.LG}px;
     outline: none;
     show-decoration-selected: 1;
+    /* Retrait gauche : les lignes se rangent SOUS le titre de section, et la
+       surbrillance de sélection démarre en retrait, ce qui l'allège. */
+    padding-left: {S.LG}px;
+    padding-right: {S.SM}px;
 }}
 QTreeWidget::item {{
-    height: 22px;
+    height: {S.ROW}px;
     padding-left: 2px;
     border: none;
+    /* liseré transparent au repos : la ligne ne se décale pas de 2 px
+       quand elle passe en sélection */
+    border-left: 2px solid transparent;
 }}
 QTreeWidget::item:selected {{
     background: {C.BG_SEL};
@@ -411,7 +536,7 @@ QTreeWidget::item:selected {{
     border-left: 2px solid {C.ACCENT};
 }}
 QTreeWidget::item:hover:!selected {{
-    background: {C.BG_HOVER};
+    background: {C.BG_PANEL};
 }}
 QTreeWidget::branch {{
     background: {C.BG_BASE};
@@ -438,11 +563,11 @@ QScrollBar:vertical {{
     margin: 0;
 }}
 QScrollBar::handle:vertical {{
-    background: #383838;
+    background: #3a3a4c;
     border-radius: 4px;
     min-height: 24px;
 }}
-QScrollBar::handle:vertical:hover {{ background: #484848; }}
+QScrollBar::handle:vertical:hover {{ background: #4a4a5e; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 
@@ -453,11 +578,11 @@ QScrollBar:horizontal {{
     margin: 0;
 }}
 QScrollBar::handle:horizontal {{
-    background: #383838;
+    background: #3a3a4c;
     border-radius: 4px;
     min-width: 24px;
 }}
-QScrollBar::handle:horizontal:hover {{ background: #484848; }}
+QScrollBar::handle:horizontal:hover {{ background: #4a4a5e; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 """
@@ -514,12 +639,12 @@ QSplitter::handle:hover {{
     def tooltip(self) -> str:
         return f"""
 QToolTip {{
-    background: #1c1c1c;
+    background: {C.BG_RAISED};
     color: {C.TEXT_NORM};
     border: 1px solid {C.BORDER_MID};
     padding: 5px 8px;
     border-radius: 4px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
 }}
 """
@@ -532,7 +657,7 @@ QMenu {{
     background: {C.BG_RAISED};
     color: {C.TEXT_NORM};
     border: 1px solid {C.BORDER_MID};
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
     padding: 2px;
 }}
@@ -565,7 +690,7 @@ QToolButton {{
     color: {C.TEXT_NORM};
     border: none;
     padding: 4px 8px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
     border-radius: 3px;
 }}
@@ -586,7 +711,7 @@ QToolButton:checked {{
 QMenuBar {{
     background: {C.BG_RAISED};
     color: {C.TEXT_NORM};
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
     border-bottom: 1px solid {C.BORDER};
 }}
@@ -601,7 +726,7 @@ QMenuBar::item:pressed  {{ background: {C.BG_SEL}; color: {C.ACCENT}; }}
 QStatusBar {{
     background: {C.BG_DEEP};
     color: {C.TEXT_DIM};
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.SM}px;
     border-top: 1px solid {C.BORDER};
 }}
@@ -621,7 +746,7 @@ QTabBar::tab {{
     border: 1px solid {C.BORDER};
     border-bottom: none;
     padding: 4px 12px;
-    font-family: monospace;
+    font-family: {T.UI_STACK};
     font-size: {T.MD}px;
 }}
 QTabBar::tab:selected {{
@@ -634,6 +759,57 @@ QTabBar::tab:hover:!selected {{
     color: {C.TEXT_NORM};
 }}
 """
+
+    # ──────────────────────────────────────────────────────────────
+    #  Hiérarchie de titres — LA grammaire commune à toute l'app.
+    #  3 niveaux + l'état vide ; aucun panneau ne définit son propre
+    #  style de titre en dehors de ces briques.
+    # ──────────────────────────────────────────────────────────────
+
+    # Niveau 1 — en-tête de panneau/finder (« PROJECT VIEWER », « SFX »).
+    # Discret : le contenu prime, l'en-tête ne fait que ranger.
+    @property
+    def title_panel(self) -> str:
+        return (f"color: {C.TEXT_DIM}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.SM}px;"
+                f"font-weight: 600; letter-spacing: 1px;")
+
+    # Niveau 1b — titre de section d'un finder (« SCENES », « PREFABS »).
+    # Un cran au-dessus de title_panel : dans un viewer, ce sont les sections
+    # qui portent la structure. Ni fond ni cadre — la hiérarchie tient à
+    # l'espace et à la casse, pas à des bandeaux empilés.
+    def title_finder(self, color: str | None = None) -> str:
+        return (f"color: {color or C.TEXT_NORM}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.LG}px;"
+                f"font-weight: 600; letter-spacing: 1.2px;")
+
+    # Niveau 1c — intertitre DANS une section de finder (« ACTORS » sous
+    # SCRIPTS). Le plus discret : il range, il ne s'annonce pas.
+    @property
+    def title_group(self) -> str:
+        return (f"color: {C.TEXT_MUTED}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.XS}px;"
+                f"font-weight: 700; letter-spacing: 1.2px;")
+
+    # Niveau 2 — titre de section d'inspecteur (« SCENE MODE », « PALETTE »).
+    # Périwinkle par défaut ; `color` ne sert qu'aux en-têtes pilotés par la
+    # famille d'asset (AssetHeaderBar), pas de couleur libre par panneau.
+    def title_section(self, color: str | None = None) -> str:
+        return (f"color: {color or C.ACCENT}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.SM}px;"
+                f"font-weight: 600; letter-spacing: 1px;")
+
+    # Niveau 3 — label de champ d'une ligne de formulaire (« Frame », « Speed »)
+    @property
+    def label_field(self) -> str:
+        return (f"color: {C.TEXT_DIM}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.SM}px;")
+
+    # Message central d'un écran/panneau vide (sélection absente, à venir…)
+    @property
+    def empty_state(self) -> str:
+        return (f"color: {C.TEXT_MUTED}; background: transparent; border: none;"
+                f"font-family: {T.UI_STACK}; font-size: {T.LG}px;")
 
 
 QSS = _QSS()

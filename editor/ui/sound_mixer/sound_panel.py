@@ -67,7 +67,7 @@ class AudioPlayer(QWidget):
         layout.setSpacing(6)
 
         self._lbl = QLabel("—")
-        self._lbl.setFont(QFont(T.MONO, T.SM))
+        self._lbl.setFont(QFont(T.UI, T.SM))
         self._lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         layout.addWidget(self._lbl, 1)
 
@@ -135,7 +135,7 @@ class AudioPlayer(QWidget):
                 pcm = render_mod(load_mod(path))
                 self._mod_cache[path] = pcm
             if pcm.shape[0] == 0:
-                self._lbl.setText(f"{path.name}  (vide / illisible)")
+                self._lbl.setText(f"{path.name}  (empty / unreadable)")
                 return
             fmt = QAudioFormat()
             fmt.setSampleRate(GBA_MIX_RATE)
@@ -205,7 +205,7 @@ class AudioPlayer(QWidget):
     def _on_player_error(self, error, error_string: str):
         if self._is_mod or error == QMediaPlayer.Error.NoError:
             return
-        self._lbl.setText(f"{self._current.name if self._current else '—'}  (aperçu indisponible : {error_string})")
+        self._lbl.setText(f"{self._current.name if self._current else '—'}  (preview unavailable: {error_string})")
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -238,7 +238,7 @@ class _AssetInspectorBase(QWidget):
         layout.setSpacing(8)
 
         self._empty = QLabel(self._EMPTY_TEXT)
-        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._empty)
@@ -250,7 +250,7 @@ class _AssetInspectorBase(QWidget):
 
         def row(label, widget):
             r = QHBoxLayout()
-            l = QLabel(label); l.setFont(QFont(T.MONO, T.SM))
+            l = QLabel(label); l.setFont(QFont(T.UI, T.SM))
             l.setStyleSheet(f"color:{C.TEXT_DIM};"); l.setFixedWidth(70)
             r.addWidget(l); r.addWidget(widget, 1); cl.addLayout(r); return widget
 
@@ -259,19 +259,19 @@ class _AssetInspectorBase(QWidget):
         self._header.renamed.connect(self._on_renamed)
         cl.addWidget(self._header)
 
-        self._file_lbl = QLabel("Aucun")
-        self._file_lbl.setFont(QFont(T.MONO, T.SM))
+        self._file_lbl = QLabel("None")
+        self._file_lbl.setFont(QFont(T.UI, T.SM))
         self._file_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         cl.addWidget(self._file_lbl)
 
         btn_import = QPushButton(self._IMPORT_BTN_TEXT)
-        btn_import.setFont(QFont(T.MONO, T.MD))
+        btn_import.setFont(QFont(T.UI, T.MD))
         btn_import.clicked.connect(self._import)
         cl.addWidget(btn_import)
 
         if self._HAS_LOOP:
-            self._loop = QCheckBox("Boucle")
-            self._loop.setFont(QFont(T.MONO, T.MD))
+            self._loop = QCheckBox("Loop")
+            self._loop.setFont(QFont(T.UI, T.MD))
             self._loop.setStyleSheet(f"color:{C.TEXT_NORM};")
             self._loop.toggled.connect(self._on_loop)
             cl.addWidget(self._loop)
@@ -346,7 +346,7 @@ class _AssetInspectorBase(QWidget):
 
 
 class SfxInspector(_AssetInspectorBase):
-    _EMPTY_TEXT = "Selectionne un SFX"
+    _EMPTY_TEXT = "Select an SFX"
     _HEADER_KIND = "sfx"
     _HEADER_LABEL = "SFX"
     _IMPORT_BTN_TEXT = "Importer WAV…"
@@ -365,7 +365,7 @@ class SfxInspector(_AssetInspectorBase):
 #  Inspector d'une Music
 # ──────────────────────────────────────────────────────────────────
 class MusicInspector(_AssetInspectorBase):
-    _EMPTY_TEXT = "Selectionne une piste"
+    _EMPTY_TEXT = "Select a track"
     _HEADER_KIND = "music"
     _HEADER_LABEL = "MUSIC"
     _IMPORT_BTN_TEXT = "Importer MOD/WAV…"
@@ -412,25 +412,16 @@ class SoundFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Assets finder / Sprite finder / Script finder) ──
-        finder_hdr = QFrame()
-        finder_hdr.setFixedHeight(20)
-        finder_hdr.setStyleSheet(f"background:{C.BG_BASE}; border-bottom:1px solid {C.BORDER_DARK};")
-        fl = QHBoxLayout(finder_hdr)
-        fl.setContentsMargins(8, 0, 0, 0)
-        finder_lbl = QLabel("SOUND FINDER")
-        finder_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        finder_lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; letter-spacing:1px;")
-        fl.addWidget(finder_lbl)
-        root.addWidget(finder_hdr)
+        root.addWidget(W.finder_bar("SOUND FINDER"))
 
         # SFX section — add/supprimer remontés dans le header (style asset finder)
         self._sfx_section = self._make_section(
-            "SFX", C.TEXT_NORM, lambda: self._add(Sfx), "Ajouter un SFX",
-            lambda: self._del(Sfx), "Supprimer le SFX sélectionné")
+            "SFX", C.TEXT_NORM, lambda: self._add(Sfx), "Add an SFX",
+            lambda: self._del(Sfx), "Delete selected SFX")
         root.addWidget(self._sfx_section)
         self._sfx_list = QTreeWidget()
         self._sfx_list.setHeaderHidden(True)
-        self._sfx_list.setFont(QFont(T.MONO, T.MD))
+        self._sfx_list.setFont(QFont(T.UI, T.MD))
         self._sfx_list.setStyleSheet(QSS.tree_widget)
         self._sfx_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._sfx_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -449,12 +440,12 @@ class SoundFinderPanel(QWidget):
 
         # Music section
         self._music_section = self._make_section(
-            "MUSIC", C.TEXT_NORM, lambda: self._add(Music), "Ajouter une Music",
-            lambda: self._del(Music), "Supprimer la Music sélectionnée")
+            "MUSIC", C.TEXT_NORM, lambda: self._add(Music), "Add a track",
+            lambda: self._del(Music), "Delete selected track")
         root.addWidget(self._music_section)
         self._music_list = QTreeWidget()
         self._music_list.setHeaderHidden(True)
-        self._music_list.setFont(QFont(T.MONO, T.MD))
+        self._music_list.setFont(QFont(T.UI, T.MD))
         self._music_list.setStyleSheet(QSS.tree_widget)
         self._music_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._music_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -474,16 +465,8 @@ class SoundFinderPanel(QWidget):
                        on_del, del_tooltip: str) -> QFrame:
         """En-tête de section — titre + boutons Ajouter/Supprimer intégrés,
         même emplacement/style que les autres asset finders (assets_finder_panel.py)."""
-        f = QFrame()
-        f.setFixedHeight(28)
-        f.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
-        hl = QHBoxLayout(f)
-        hl.setContentsMargins(8, 0, 4, 0)
-        hl.setSpacing(2)
-        lbl = QLabel(title)
-        lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{color};")
-        hl.addWidget(lbl, 1)
+        f = W.section_bar(title, color)
+        hl = f.layout()
 
         btn_add = W.btn_add(add_tooltip)
         btn_add.clicked.connect(on_add)
@@ -519,7 +502,7 @@ class SoundFinderPanel(QWidget):
                 icon_key="sfx", icon_color=COLOR_DEFAULT,
                 selected=self.sfx_selected, play_requested=self.sfx_play_requested,
                 deleted=self.sfx_deleted,
-                add_title="Nouveau SFX", del_label="le SFX",
+                add_title="New SFX", del_label="the SFX",
                 save=self._project.save_sfx if self._project else None,
             )
         return dict(
@@ -528,7 +511,7 @@ class SoundFinderPanel(QWidget):
             icon_key="music", icon_color=COLOR_DEFAULT,
             selected=self.music_selected, play_requested=self.music_play_requested,
             deleted=self.music_deleted,
-            add_title="Nouvelle piste", del_label="la piste",
+            add_title="New track", del_label="the track",
             save=self._project.save_music if self._project else None,
         )
 
@@ -600,7 +583,7 @@ class SoundFinderPanel(QWidget):
             return
         lst.setCurrentItem(item)
         menu = QMenu(self)
-        delete_a = menu.addAction("Supprimer")
+        delete_a = menu.addAction("Delete")
         if menu.exec(lst.viewport().mapToGlobal(pos)) == delete_a:
             self._del(kind)
 
@@ -609,7 +592,7 @@ class SoundFinderPanel(QWidget):
     def _add(self, kind: type):
         if not self._project: return
         info = self._kind_info(kind)
-        name, ok = QInputDialog.getText(self, info["add_title"], "Nom :")
+        name, ok = QInputDialog.getText(self, info["add_title"], "Name:")
         if ok and name.strip():
             asset = kind(name=name.strip())
             info["manager"].append(asset)
@@ -627,8 +610,8 @@ class SoundFinderPanel(QWidget):
         if not self._project or not isinstance(asset, kind):
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer {info['del_label']} « {asset.name} » ?\n(Ctrl+Z pour annuler)",
+            self, "Delete",
+            f"Delete {info['del_label']} “{asset.name}”?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -655,18 +638,8 @@ class SoundMixerScreen(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header
-        hdr = QFrame()
-        hdr.setFixedHeight(32)
-        hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER};")
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(12, 0, 12, 0)
-        lbl = QLabel("SOUND MIXER")
-        lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{C.ACCENT_ORG};")
-        hl.addWidget(lbl)
-        hl.addStretch()
-        root.addWidget(hdr)
+        # Pas de bandeau-titre d'écran : la nav du haut indique déjà où on est
+        # (décision refonte thème 2026-08).
 
         # Player bar
         self._player = AudioPlayer()
@@ -696,8 +669,8 @@ class SoundMixerScreen(QWidget):
 
         empty_w = QWidget(); empty_w.setStyleSheet(f"background:{C.BG_PANEL};")
         el = QVBoxLayout(empty_w)
-        hint = QLabel("Selectionne ou cree\nun SFX ou une piste\npour editer ses proprietes")
-        hint.setFont(QFont(T.MONO, T.MD))
+        hint = QLabel("Select or create\nan SFX or a track\nto edit its properties")
+        hint.setFont(QFont(T.UI, T.MD))
         hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el.addStretch(); el.addWidget(hint); el.addStretch()

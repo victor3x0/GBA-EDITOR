@@ -49,7 +49,10 @@ class GbaStatusBar(QWidget):
     Barre fixe en bas de la fenêtre affichant les compteurs GBA en temps réel.
     Inspiré de GB Studio : les limites hardware sont visibles, pas cachées.
     """
-    _STYLE_OK   = f"color:{C.POWER};"
+    # Compteurs neutres par défaut : la couleur n'apparaît qu'en alerte (jaune
+    # = proche du budget, rouge = dépassé). Le vert POWER reste réservé aux
+    # signaux « live » (Build, process actif).
+    _STYLE_OK   = f"color:{C.TEXT_NORM};"
     _STYLE_WARN = f"color:{C.ACCENT_YLW};"
     _STYLE_CRIT = f"color:{C.ACCENT_RED};"
 
@@ -77,7 +80,7 @@ class GbaStatusBar(QWidget):
             # pixels. Une ligne de 26 glyphes 8×8 en sprites coûte ~208 cycles,
             # soit un sixième du budget — avec l'ancien compteur elle passait
             # pour trois fois hors limite.
-            ("scanline", "0/1210 cycles/ligne",
+            ("scanline", "0/1210 cycles/line",
              "Budget OBJ par scanline (GBA)\n"
              "Le matériel dispose de 1210 cycles par ligne pour dessiner les\n"
              "sprites ; un objet régulier en coûte environ sa largeur en pixels\n"
@@ -163,7 +166,7 @@ class GbaStatusBar(QWidget):
         text_oam = text_tiles = 0
         def _actor_pos(name):
             return next(((a.x, a.y) for a in scene.actors if a.name == name), None)
-        for r in (layout.regions if layout else []):
+        for r in (layout.slots if layout else []):
             if layout.resolved_target(r, rm) != TARGET_OBJ:
                 continue
             g = strip_geometry(r)
@@ -203,7 +206,7 @@ class GbaStatusBar(QWidget):
         values = [oam_count, scanline_cost, tiles, obj_banks]
         labels = [
             f"{oam_count}/128 sprites",
-            f"{scanline_cost}/1210 cycles/ligne",
+            f"{scanline_cost}/1210 cycles/line",
             f"{tiles}/1024 tiles",
             f"{obj_banks}/16 palettes",
         ]
@@ -238,11 +241,11 @@ class MainWindow(QMainWindow):
     # accord féminin) — une seule table pour _on_asset_appeared/_removed,
     # qui n'était avant dupliquée qu'avec "sync_"/"remove_" échangés.
     _ASSET_ROUTES = [
-        ("sprites",     (".png", ".bmp"), "sync_sprite_png",     "remove_sprite_png",     "Sprite",     False),
-        ("backgrounds", (".png", ".bmp"), "sync_background_png", "remove_background_png", "Background", False),
-        ("sfx",         SFX_FILE_EXTS,    "sync_sfx_file",       "remove_sfx_file",       "SFX",        False),
-        ("music",       MUSIC_FILE_EXTS,  "sync_music_file",     "remove_music_file",     "Music",      True),
-        ("fonts",       FONT_FILE_EXTS,   "sync_font_file",      "remove_font_file",      "Police",     True),
+        ("sprites",     (".png", ".bmp"), "sync_sprite_png",     "remove_sprite_png",     "Sprite"),
+        ("backgrounds", (".png", ".bmp"), "sync_background_png", "remove_background_png", "Background"),
+        ("sfx",         SFX_FILE_EXTS,    "sync_sfx_file",       "remove_sfx_file",       "SFX"),
+        ("music",       MUSIC_FILE_EXTS,  "sync_music_file",     "remove_music_file",     "Music"),
+        ("fonts",       FONT_FILE_EXTS,   "sync_font_file",      "remove_font_file",      "Font"),
     ]
 
     def __init__(self, project_path: Path = None):
@@ -326,10 +329,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status)
 
     def _make_placeholder_screen(self, title: str) -> QWidget:
-        w = QWidget(); w.setStyleSheet("background:#181818;")
-        lbl = QLabel(f"{title}\n\n(bientôt disponible)")
-        lbl.setFont(QFont(T.MONO, T.XL)); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        from ui.common.widgets import W
+        w = QWidget(); w.setStyleSheet(f"background:{C.BG_BASE};")
+        lbl = W.empty_state(f"{title}\n\n(coming soon)")
         from PyQt6.QtWidgets import QVBoxLayout as _VL
         l = _VL(w); l.addWidget(lbl)
         return w
@@ -472,19 +474,19 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
         mb.setMinimumHeight(32)
         mb.setStyleSheet(
-            f"QMenuBar{{background:{C.BG_PANEL};color:{C.TEXT_NORM};font-family:{T.MONO};font-size:{T.MD}px;padding:4px 4px;}}"
+            f"QMenuBar{{background:{C.BG_PANEL};color:{C.TEXT_NORM};font-family:{T.UI_STACK};font-size:{T.MD}px;padding:4px 4px;}}"
             "QMenuBar::item{padding:4px 10px;border-radius:3px;}"
             f"QMenuBar::item:selected{{background:{C.BG_HOVER};}}"
-            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};font-family:{T.MONO};font-size:{T.MD}px;}}"
+            f"QMenu{{background:{C.BG_RAISED};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};font-family:{T.UI_STACK};font-size:{T.MD}px;}}"
             "QMenu::item{padding:5px 20px 5px 12px;}"
             f"QMenu::item:selected{{background:{C.BG_SEL};}}"
         )
         m_file = mb.addMenu("File")
-        a_new  = QAction("Nouveau projet", self); a_new.setShortcut("Ctrl+N")
-        a_open = QAction("Ouvrir projet",  self); a_open.setShortcut("Ctrl+O")
-        a_save = QAction("Sauvegarder",    self); a_save.setShortcut("Ctrl+S")
+        a_new  = QAction("New project",  self); a_new.setShortcut("Ctrl+N")
+        a_open = QAction("Open project", self); a_open.setShortcut("Ctrl+O")
+        a_save = QAction("Save",         self); a_save.setShortcut("Ctrl+S")
         a_save.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        a_quit = QAction("Quitter",        self); a_quit.setShortcut("Ctrl+Q")
+        a_quit = QAction("Quit",         self); a_quit.setShortcut("Ctrl+Q")
         a_new.triggered.connect(self.assets_finder_panel._prompt_new)
         a_open.triggered.connect(self.assets_finder_panel._prompt_open)
         a_save.triggered.connect(self._save_project)
@@ -498,7 +500,7 @@ class MainWindow(QMainWindow):
         m_game.addAction(a_build)
         mb.addMenu("View")
         m_help = mb.addMenu("Help")
-        a_about = QAction("A propos", self)
+        a_about = QAction("About", self)
         a_about.triggered.connect(lambda: QMessageBox.information(
             self, "GBA Editor", "GBA Editor - homebrew Game Boy Advance"))
         m_help.addAction(a_about)
@@ -511,12 +513,12 @@ class MainWindow(QMainWindow):
         tb.setMinimumHeight(48)
         tb.setStyleSheet(
             f"QToolBar{{background:{C.BG_RAISED};border-bottom:1px solid {C.BORDER};spacing:4px;padding:4px 12px;}}"
-            f"QToolButton{{color:{C.TEXT_NORM};border:none;padding:4px 12px;font-family:{T.MONO};font-size:{T.MD}px;}}"
+            f"QToolButton{{color:{C.TEXT_NORM};border:none;padding:4px 12px;font-family:{T.UI_STACK};font-size:{T.MD}px;}}"
             f"QToolButton:hover{{background:{C.BG_HOVER};border-radius:4px;}}"
         )
         self.addToolBar(tb)
         self._tb_project_lbl = QPushButton("GBA Editor")
-        self._tb_project_lbl.setFont(QFont(T.MONO, T.XL, QFont.Weight.Bold))
+        self._tb_project_lbl.setFont(QFont(T.UI, T.XL, QFont.Weight.DemiBold))
         self._tb_project_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
         self._tb_project_lbl.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_MUTED};background:none;border:none;padding:0 12px;}}"
@@ -534,13 +536,13 @@ class MainWindow(QMainWindow):
         # Boutons Undo / Redo
         _undo_redo_style = (
             f"QToolButton{{color:{C.TEXT_DIM};border:none;padding:4px 10px;"
-            f"font-family:{T.MONO};font-size:{T.MD}px;border-radius:4px;}}"
+            f"font-family:{T.UI_STACK};font-size:{T.MD}px;border-radius:4px;}}"
             f"QToolButton:hover:enabled{{background:{C.BG_HOVER};color:{C.TEXT_NORM};}}"
             f"QToolButton:disabled{{color:{C.TEXT_MUTED};}}"
         )
         self._btn_undo = QToolButton()
         self._btn_undo.setText("↩ Undo")
-        self._btn_undo.setFont(QFont(T.MONO, T.MD))
+        self._btn_undo.setFont(QFont(T.UI, T.MD))
         self._btn_undo.setStyleSheet(_undo_redo_style)
         self._btn_undo.setEnabled(False)
         self._btn_undo.clicked.connect(self._do_undo)
@@ -548,7 +550,7 @@ class MainWindow(QMainWindow):
 
         self._btn_redo = QToolButton()
         self._btn_redo.setText("↪ Redo")
-        self._btn_redo.setFont(QFont(T.MONO, T.MD))
+        self._btn_redo.setFont(QFont(T.UI, T.MD))
         self._btn_redo.setStyleSheet(_undo_redo_style)
         self._btn_redo.setEnabled(False)
         self._btn_redo.clicked.connect(self._do_redo)
@@ -648,7 +650,7 @@ class MainWindow(QMainWindow):
         push_recent(path)
         self._enter_editor()
         self._refresh_ui()
-        self._status.showMessage(f"Nouveau projet : {name}")
+        self._status.showMessage(f"New project: {name}")
 
     def _open_project(self, path: Path):
         self.project = Project.open(path)
@@ -658,7 +660,7 @@ class MainWindow(QMainWindow):
         push_recent(path)
         self._enter_editor()
         self._refresh_ui()
-        self._status.showMessage(f"Projet : {self.project.settings.name}")
+        self._status.showMessage(f"Project: {self.project.settings.name}")
 
     def _enter_editor(self):
         """Affiche l'éditeur (nav visible) sur le Scene Manager."""
@@ -712,7 +714,7 @@ class MainWindow(QMainWindow):
         self._inspector.show_scene(self.project.active_scene, self.project)
         self.assets_finder_panel.refresh()
         self._update_gba_bar()
-        self._status.showMessage(f"Scene active : {self.project.active_scene.name}")
+        self._status.showMessage(f"Active scene: {self.project.active_scene.name}")
 
     def _add_scene(self):
         if not self.project: return
@@ -768,7 +770,7 @@ class MainWindow(QMainWindow):
         self.scene_editor.flush_camera_pos()
         self._script_editor.flush_pending_edits()
         self.project.save()
-        self._status.showMessage("Projet sauvegardé", 2000)
+        self._status.showMessage("Project saved", 2000)
 
     def _update_gba_bar(self):
         """Met à jour les compteurs hardware GBA (OAM, VRAM, PAL, scanline)."""
@@ -782,19 +784,19 @@ class MainWindow(QMainWindow):
         self._btn_redo.setEnabled(self._history.can_redo)
         ul = self._history.undo_label
         rl = self._history.redo_label
-        self._btn_undo.setToolTip(f"Annuler : {ul}" if ul else "Rien à annuler")
-        self._btn_redo.setToolTip(f"Refaire : {rl}" if rl else "Rien à refaire")
+        self._btn_undo.setToolTip(f"Undo: {ul}" if ul else "Nothing to undo")
+        self._btn_redo.setToolTip(f"Redo: {rl}" if rl else "Nothing to redo")
 
     def _do_undo(self):
         label = self._history.undo()
         if label:
-            self._status.showMessage(f"Annulé : {label}", 2000)
+            self._status.showMessage(f"Undone: {label}", 2000)
             self._flush_after_undo_redo()
 
     def _do_redo(self):
         label = self._history.redo()
         if label:
-            self._status.showMessage(f"Refait : {label}", 2000)
+            self._status.showMessage(f"Redone: {label}", 2000)
             self._flush_after_undo_redo()
 
     def _flush_after_undo_redo(self):
@@ -850,9 +852,9 @@ class MainWindow(QMainWindow):
     def _match_asset_route(self, p: Path):
         """Trouve la route (sync/remove/label) pour un fichier assets/<dossier>/*.ext."""
         suffix, parent = p.suffix.lower(), p.parent.name
-        for folder, exts, sync_name, remove_name, label, feminine in self._ASSET_ROUTES:
+        for folder, exts, sync_name, remove_name, label in self._ASSET_ROUTES:
             if parent == folder and suffix in exts:
-                return sync_name, remove_name, label, feminine
+                return sync_name, remove_name, label
         return None
 
     def _on_asset_appeared(self, path: str):
@@ -863,7 +865,7 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        sync_name, _, label, feminine = route
+        sync_name, _, label = route
         # Certains sync_* renvoient un avertissement d'import (police sans
         # glyphe, format illisible…) — le taire laisserait un asset muet à
         # l'écran sans que l'utilisateur sache pourquoi. D'autres renvoient la
@@ -874,7 +876,7 @@ class MainWindow(QMainWindow):
         if warning:
             self._status.showMessage(warning, 6000)
         else:
-            self._status.showMessage(f"{label} importé{'e' if feminine else ''} : {p.name}", 3000)
+            self._status.showMessage(f"{label} imported: {p.name}", 3000)
 
     def _on_asset_removed(self, path: str):
         """Fichier brut supprimé de assets/ — suppression différée du JSON, UI mise à jour."""
@@ -884,10 +886,10 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        _, remove_name, label, feminine = route
+        _, remove_name, label = route
         getattr(self.project, remove_name)(p)
         self._refresh_ui()
-        self._status.showMessage(f"{label} retiré{'e' if feminine else ''} : {p.name}", 3000)
+        self._status.showMessage(f"{label} removed: {p.name}", 3000)
 
     def _on_asset_modified(self, path: str):
         """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""
@@ -901,12 +903,12 @@ class MainWindow(QMainWindow):
             # (sinon on écraserait les corrections de l'utilisateur).
             self._text_editor.refresh()
         self._inspector.actor_inspector._refresh_sprite_preview()
-        self._status.showMessage(f"Asset modifié : {Path(path).name}", 2000)
+        self._status.showMessage(f"Asset modified: {Path(path).name}", 2000)
 
     def _on_lua_changed(self, path: str):
         """Un .lua a changé (éditeur externe)."""
         self._inspector.actor_inspector.notify_lua_changed(path)
-        self._status.showMessage(f"Script modifié : {Path(path).name}", 2000)
+        self._status.showMessage(f"Script modified: {Path(path).name}", 2000)
 
     def _on_scene_file_changed(self, path: str):
         """Un .json de scène a changé depuis un éditeur externe — recharger la scène active."""
@@ -920,7 +922,7 @@ class MainWindow(QMainWindow):
             self.project.scenes.load_one(active.name)
             self.scene_editor.load_project(self.project)
             self._inspector.show_scene(self.project.active_scene, self.project)
-            self._status.showMessage(f"Scène rechargée : {active.name}", 2000)
+            self._status.showMessage(f"Scene reloaded: {active.name}", 2000)
 
     def _open_toolchain_dialog(self):
         dlg = ToolchainDialog(self.toolchain, self)
@@ -995,10 +997,10 @@ class MainWindow(QMainWindow):
         self.build_panel.set_building(False)
         self._tb_build_btn.build_finished.emit(success)
         if success:
-            self.build_panel.log_info("[build] ROM generee — mgba lance")
-            self._script_editor.build_panel.log_info("[build] ROM generee — mgba lance")
+            self.build_panel.log_info("[build] ROM generated — mgba launched")
+            self._script_editor.build_panel.log_info("[build] ROM generated — mgba launched")
             self._status.showMessage("Build OK")
         else:
-            self.build_panel.log_error("[build] Echec — voir console")
-            self._script_editor.build_panel.log_error("[build] Echec — voir console")
-            self._status.showMessage("Erreur de build")
+            self.build_panel.log_error("[build] Failed — see console")
+            self._script_editor.build_panel.log_error("[build] Failed — see console")
+            self._status.showMessage("Build error")

@@ -18,7 +18,7 @@ if _EDITOR_DIR not in sys.path:
 from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
-from ui.common.theme import GLOBAL_QSS, C
+from ui.common.theme import GLOBAL_QSS, C, install_app_fonts
 from ui.common import icons
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
 
@@ -30,7 +30,7 @@ def dark_palette() -> QPalette:
     bg      = QColor(C.BG_PANEL)
     surface = QColor(C.BG_INPUT)
     border  = QColor(C.BORDER_MID)
-    text    = QColor("#d4d4d4")
+    text    = QColor("#d2d2e0")
     muted   = QColor(C.TEXT_DIM)
     accent  = QColor(C.ACCENT)
 
@@ -64,6 +64,7 @@ if __name__ == "__main__":
     app.setApplicationName("GBA Editor")
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
+    install_app_fonts()
     # Les QSS référencent quelques icônes par chemin de fichier : il faut les
     # rendre maintenant (la QApplication existe) avant d'appliquer la feuille.
     icons.ensure_qss_assets()
@@ -96,9 +97,9 @@ if __name__ == "__main__":
         from PyQt6.QtWidgets import QMessageBox
         lines = "\n".join(f"• {name} : {exc}" for name, exc in plugin_errors)
         box = QMessageBox(win)
-        box.setWindowTitle("Erreurs de plugins")
+        box.setWindowTitle("Plugin Errors")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"{len(plugin_errors)} plugin(s) n'ont pas pu être chargés :")
+        box.setText(f"{len(plugin_errors)} plugin(s) could not be loaded:")
         box.setDetailedText(lines)
         box.exec()
     sys.exit(app.exec())

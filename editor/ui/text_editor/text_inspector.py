@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.history import get_history, SetFieldCmd
 from core.text_markup import parse, resolve, TAGS
-from ui.common.theme import C, T
+from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.inspector_shell import insp_scroll
@@ -36,11 +36,11 @@ class TextInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "TEXTE")
+        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "TEXT")
         root.addWidget(host)
 
-        self._empty = QLabel("Sélectionner un texte\ndans la table")
-        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty = QLabel("Select a text entry\nfrom the table")
+        self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._empty)
@@ -52,20 +52,20 @@ class TextInspector(QWidget):
 
         # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
         # traducteur et l'identité machine.
-        note_lbl = QLabel("NOTE POUR LE TRADUCTEUR")
-        note_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        note_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        note_lbl = QLabel("NOTE FOR TRANSLATOR")
+        note_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        note_lbl.setStyleSheet(QSS.title_panel)
         bl.addWidget(note_lbl)
         self._note_edit = QTextEdit()
-        self._note_edit.setFont(QFont(T.MONO, T.SM))
+        self._note_edit.setFont(QFont(T.UI, T.SM))
         self._note_edit.setStyleSheet(
             f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_NORM};"
             f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}"
         )
         self._note_edit.setFixedHeight(64)
-        self._note_edit.setPlaceholderText("Contexte, ton, contrainte de place…")
+        self._note_edit.setPlaceholderText("Context, tone, space constraint…")
         self._note_edit.setToolTip(
-            "Contexte destiné à la traduction (v0.8) — jamais affiché en jeu."
+            "Context intended for translation (v0.8) — never shown in-game."
         )
         # Commit au focus-out : une commande par frappe noierait l'historique.
         self._note_edit.focusOutEvent = self._note_focus_out
@@ -77,20 +77,20 @@ class TextInspector(QWidget):
         # ── Balisage ──────────────────────────────────────────────
         # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
         # balisage n'ont nulle part ailleurs où apparaître avant le build.
-        mk_lbl = QLabel("BALISAGE")
-        mk_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        mk_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        mk_lbl = QLabel("MARKUP")
+        mk_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        mk_lbl.setStyleSheet(QSS.title_panel)
         mk_lbl.setToolTip("<br>".join(
             f"<b>[{s.name}{'=…' if s.value else ''}]</b> — {s.doc}"
             for s in TAGS.values()))
         bl.addWidget(mk_lbl)
         self._markup = QLabel("")
-        self._markup.setFont(QFont(T.MONO, T.XS))
+        self._markup.setFont(QFont(T.UI, T.XS))
         self._markup.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._markup.setWordWrap(True)
         bl.addWidget(self._markup)
         self._issues = QLabel("")
-        self._issues.setFont(QFont(T.MONO, T.XS))
+        self._issues.setFont(QFont(T.UI, T.XS))
         self._issues.setStyleSheet(f"color:{C.ACCENT_YLW};")
         self._issues.setWordWrap(True)
         self._issues.setVisible(False)
@@ -99,7 +99,7 @@ class TextInspector(QWidget):
         # moitié de la raison d'être de cet écran : croiser la table et la
         # police, plutôt que de découvrir le trou sur la console.
         self._missing = QLabel("")
-        self._missing.setFont(QFont(T.MONO, T.XS))
+        self._missing.setFont(QFont(T.UI, T.XS))
         self._missing.setStyleSheet(f"color:{C.ACCENT_RED};")
         self._missing.setWordWrap(True)
         self._missing.setVisible(False)
@@ -109,12 +109,12 @@ class TextInspector(QWidget):
 
         # Contrepartie visible du renommage automatique : il réécrit les
         # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
-        use_lbl = QLabel("UTILISÉ PAR")
-        use_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        use_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        use_lbl = QLabel("USED BY")
+        use_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        use_lbl.setStyleSheet(QSS.title_panel)
         bl.addWidget(use_lbl)
         self._usage = QLabel("")
-        self._usage.setFont(QFont(T.MONO, T.XS))
+        self._usage.setFont(QFont(T.UI, T.XS))
         self._usage.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._usage.setWordWrap(True)
         bl.addWidget(self._usage)
@@ -122,7 +122,7 @@ class TextInspector(QWidget):
         W.separator(bl)
 
         self._meta = QLabel("")
-        self._meta.setFont(QFont(T.MONO, T.XS))
+        self._meta.setFont(QFont(T.UI, T.XS))
         self._meta.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._meta.setWordWrap(True)
         bl.addWidget(self._meta)
@@ -146,15 +146,15 @@ class TextInspector(QWidget):
             self._issues.setVisible(False)
             self._missing.setVisible(False)
             return
-        bits = [f"{parsed.length} caractères émis"]
+        bits = [f"{parsed.length} characters emitted"]
         effects = parsed.of_kind(*(s.name for s in TAGS.values()))
         if effects:
-            bits.append(f"{len(effects)} balise(s)")
+            bits.append(f"{len(effects)} tag(s)")
         if parsed.animated_glyphs:
-            bits.append(f"{parsed.animated_glyphs} glyphe(s) animé(s)")
+            bits.append(f"{parsed.animated_glyphs} animated glyph(s)")
         values = parsed.of_kind("value")
         if values:
-            bits.append("valeurs : " + ", ".join(f"${m.value}" for m in values))
+            bits.append("values: " + ", ".join(f"${m.value}" for m in values))
         self._markup.setText(" · ".join(bits))
 
         # Dédoublonnées : une balise mal écrite est signalée à l'ouverture ET à
@@ -173,7 +173,7 @@ class TextInspector(QWidget):
         shown = resolve(parsed, self._project.text_values() if self._project else {})
         miss = self._font.missing_chars(shown) if self._font else []
         self._missing.setText(
-            "✕ absents de « {} » : {}".format(
+            "✕ missing from “{}”: {}".format(
                 self._font.name, " ".join(repr(c)[1:-1] for c in miss))
             if miss else "")
         self._missing.setVisible(bool(miss))
@@ -185,23 +185,23 @@ class TextInspector(QWidget):
         out = []
         for m in parsed.of_kind("icon"):
             if self._font and self._font.glyph(m.value) is None:
-                out.append(f"« {self._font.name} » n'a pas de glyphe "
-                           f"« {m.value} » — fusionner les cases qui le "
-                           f"dessinent et lui donner ce nom.")
+                out.append(f"“{self._font.name}” has no glyph "
+                           f"“{m.value}” — merge the cells that draw "
+                           f"it and give it that name.")
         if parsed.of_kind("color") and self._font:
             from codegen.font_emit import render_composited
             if not render_composited(self._font):
-                out.append(f"« {self._font.name} » est rendue en tuiles : "
-                           f"« [color] » y sera ignoré (il demande une police "
-                           f"composée — proportionnelle, ou trop grosse pour "
-                           f"la VRAM).")
+                out.append(f"“{self._font.name}” is rendered in tiles: "
+                           f"“[color]” will be ignored there (it requires a "
+                           f"composed font — proportional, or too large for "
+                           f"VRAM).")
         if self._project:
             known = {v.name for v in self._project.globals} \
                   | {c.name for c in self._project.constants}
             for m in parsed.of_kind("value"):
                 if m.value not in known:
-                    out.append(f"« ${m.value} » n'est ni un global ni une "
-                               f"constante du projet.")
+                    out.append(f"“${m.value}” is neither a project global "
+                               f"nor a constant.")
         return out
 
     def load(self, text, project):
@@ -220,10 +220,10 @@ class TextInspector(QWidget):
             self.set_parsed(parse(text.content))
             self._meta.setText(
                 f"id {text.id}\n"
-                f"rangement : {text.path_str() or '(racine)'}\n"
-                + ("clé dérivée du rangement — la nommer à la main l'en détache"
-                   if text.auto_key else "clé nommée à la main — le rangement ne la touche plus")
-                + (f"\nscène d'origine : {text.scene}" if text.scene else "")
+                f"folder: {text.path_str() or '(root)'}\n"
+                + ("key derived from the folder — naming it by hand detaches it"
+                   if text.auto_key else "key named by hand — the folder no longer affects it")
+                + (f"\noriginating scene: {text.scene}" if text.scene else "")
             )
         else:
             self._name_lbl.setText("")
@@ -244,11 +244,11 @@ class TextInspector(QWidget):
             self._usage_index = self._build_usage_index()
         used_in = self._usage_index.get(key, {})
         if not used_in:
-            return "aucun script"
+            return "no script"
         n = sum(used_in.values())
         files = "\n".join(f"  {p.name} ×{c}" if c > 1 else f"  {p.name}"
                           for p, c in sorted(used_in.items()))
-        return f"{n} référence(s) dans {len(used_in)} script(s)\n{files}"
+        return f"{n} reference(s) in {len(used_in)} script(s)\n{files}"
 
     def _build_usage_index(self) -> dict:
         """Parcourt les scripts une fois : {clé: {script: n}}."""
