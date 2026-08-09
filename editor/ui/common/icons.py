@@ -77,10 +77,18 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "ui_layout":             ("mdi.view-dashboard-outline",  "⊞"),
     "ui_panel":              ("mdi.card-outline",            "▭"),
     "ui_text":               ("mdi.format-text",             "T"),
-    "ui_region":             ("mdi.form-textbox",            "⌸"),
+    # Image : le pictogramme d'image, pas celui de sprite — c'est un ÉLÉMENT
+    # d'interface qui affiche un sprite, pas le sprite lui-même (qui garde son
+    # icône et sa famille de couleur dans le Project Viewer).
+    "ui_image":              ("mdi.image-outline",           "▣"),
     "tool_inpaint_brush":         ("mdi.brush",                   "🖌"),
     "tool_inpaint_rect":          ("mdi.select-drag",             "▭"),
     "tool_fill":                  ("mdi.format-color-fill",       "🪣"),
+    # Rôle d'un layer dans le mélange de couleurs — la FORME dit le rôle :
+    # hors du mélange, au-dessus (ce qui est mélangé), en dessous (ce avec quoi).
+    "blend_off":             ("mdi.circle-outline",          "○"),
+    "blend_top":             ("mdi.arrow-up-bold-circle-outline",   "▲"),
+    "blend_bottom":          ("mdi.arrow-down-bold-circle-outline", "▼"),
     "eye":                   ("mdi.eye-outline",             "◉"),
     "eye_off":               ("mdi.eye-off-outline",         "◎"),
     # Toggles d'affichage du canvas (toolbar Scene Manager)

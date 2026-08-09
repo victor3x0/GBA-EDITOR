@@ -378,6 +378,66 @@ typedef struct UIRegionInfo {
 
 extern const UIRegionInfo g_ui_regions[];
 
+/* ── Images d'interface ───────────────────────────────────────────
+   Un SPRITE À ÉTAT posé sur la mise en page. L'élément DÉSIGNE un sprite et
+   l'un de ses états ; il ne redéfinit ni la vitesse ni les frames, d'où les
+   POINTEURS vers les tables d'animation du sprite — exactement celles que la
+   boucle des acteurs consomme (`sprite_X_anim_dirs`, `_state_start`,
+   `_state_speed`, `_state_loop`). Deux jeux de tables pour un même dessin
+   auraient fini par ne plus dire la même chose.
+
+   La DIRECTION n'entre pas ici : un élément d'interface n'a pas de cap. Le
+   runtime prend la direction 0 (omnidirectionnelle), celle-là même que la
+   boucle des acteurs prend en repli.
+
+   `dirs` == 0 signale une image sans sprite résoluble : elle garde son index
+   (sinon `IMAGE_*` désignerait l'élément d'à côté) et ne dessine rien. */
+typedef struct UIImageInfo {
+    short x, y;             /* origine, déjà alignée si la cible est BG */
+    unsigned char w, h;     /* taille de la frame, en pixels */
+    unsigned char target;   /* 0 = BG (tilemap), 1 = OBJ (sprite) */
+    unsigned char anchor;   /* 0 écran, 1 monde, 2 acteur */
+    short actor;            /* index dans g_actors, -1 = aucun */
+    /* Tables d'animation du sprite — cf. ci-dessus. */
+    const unsigned char (*dirs)[3];    /* {dir, frame_start, frame_count}, 255 = fin */
+    const unsigned char *state_start;  /* 1re entrée de `dirs` par état */
+    const unsigned char *state_speed;  /* ticks entre deux frames */
+    const unsigned char *state_loop;   /* 1 = boucle */
+    unsigned char n_states;
+    unsigned char state0;   /* état posé par scene_init */
+    unsigned char playing;  /* 0 = figée sur la 1re frame de l'état */
+    /* Placement VRAM. `tile_base` est la base OBJ du sprite, valable en cible
+       OBJ ; une image BG en reçoit une AUTRE, posée par scene_init
+       (`ui_image_set_bg_base`) — elle dépend du charblock alloué à la scène,
+       alors que cette table est partagée par toutes les scènes. */
+    short tile_base;
+    unsigned char tiles_per_frame;
+    short oam_rel;          /* cible OBJ : slot OAM relatif à la base de la scène */
+    unsigned char priority;
+} UIImageInfo;
+
+extern const UIImageInfo g_ui_images[];
+extern const int g_ui_image_count;
+
+/* Posés par scene_init, AVANT le premier ui_image_update. Les trois dépendent
+   de la SCÈNE (charblock alloué, sélection de palettes) alors que `g_ui_images`
+   est partagée par toutes — d'où le réglage au runtime plutôt qu'en table. */
+void ui_images_reset(void);              /* ferme les images de la scène précédente */
+void ui_image_set_bg_base(int img, int tile);   /* cible BG : base dans le charblock d'UI */
+/* Banque de palette PAR IMAGE, et non par scène : deux images peuvent afficher
+   des sprites aux palettes distinctes, et une banque commune les repeindrait
+   l'une avec les couleurs de l'autre. */
+void ui_image_set_bank(int img, int bank);
+
+/* Groupe ÉCRITURE — le pendant exact de `text_draw_in` pour un sprite. Aucune
+   fonction ne crée ni ne déplace une image : la géométrie est authorée, et la
+   rouvrir au runtime reprendrait ce que la mise en page existe pour fermer. */
+void ui_image_set_state(int img, int state);
+void ui_image_play(int img, int on);
+void ui_image_show(int img, int on);
+int  ui_image_state(int img);
+void ui_image_update(void);   /* une fois par frame, avant oam_update */
+
 void text_set_layer(int bg);        /* posé par scene_init depuis Scene.text_bg */
 void text_set_tile_base(int t);     /* posé par scene_init — cf. allocateur */
 void text_set_surf_base(int t);     /* posé par scene_init SI la scène a un
@@ -2052,6 +2112,236 @@ static int text_num_cp(int value, unsigned short *buf) {
         unsigned short t = buf[i]; buf[i] = buf[j]; buf[j] = t;
     }
     return n;
+}
+
+/* ── Images d'interface ───────────────────────────────────────────
+   Le pendant, pour un sprite, de ce que `text_draw_in` fait pour du texte : la
+   géométrie est AUTHORÉE (`g_ui_images`), le script ne change que l'état.
+
+   Deux chemins de rendu, choisis par la CIBLE dérivée du root — le même
+   partage que pour le texte :
+
+   • OBJ — un slot OAM, reposé à chaque frame. Les tuiles sont déjà en VRAM OBJ
+     (le sprite y est chargé au démarrage comme pour un acteur), donc changer de
+     frame ne coûte qu'un index dans attr2 : rien à recopier.
+
+   • BG — la frame est ÉCRITE dans la tilemap. Les tuiles vivent alors dans le
+     charblock d'UI, recopiées là par `scene_init` (toutes les frames, cf.
+     `ui_image_set_bg_base`), et changer de frame réécrit `w/8 × h/8` entrées.
+     Zéro OAM, mais une origine calée sur la grille de 8 px.
+
+   L'état RAM est un tableau à plafond fixe, comme les têtes de lecture du
+   texte : le moteur ne connaît pas la taille de `g_ui_images`, qui est générée.
+   Au-delà, l'image ne s'anime pas — dégradation visible, jamais un rendu faux. */
+#define UI_IMAGE_MAX 16
+
+typedef struct UIImageState {
+    unsigned char state;    /* index d'AnimState courant */
+    unsigned char frame;    /* index ABSOLU de frame dans le sheet */
+    unsigned char timer;    /* ticks depuis la dernière frame */
+    unsigned char playing;
+    unsigned char visible;
+    short         bg_base;  /* cible BG : 1re tuile dans le charblock d'UI */
+    short         sx, sy;   /* dernière origine écran dessinée (cible BG) */
+    unsigned char drawn;    /* 1 = des tuiles sont posées à (sx, sy) */
+    unsigned char last;     /* dernière frame POSÉE — évite de réécrire pour rien */
+    unsigned char bank;     /* banque de palette, posée par scene_init */
+} UIImageState;
+
+static UIImageState g_ui_img[UI_IMAGE_MAX];
+
+void ui_image_set_bank(int img, int bank) {
+    if (img < 0 || img >= UI_IMAGE_MAX) return;
+    g_ui_img[img].bank = (unsigned char)((bank >= 0 && bank < 16) ? bank : 0);
+    g_ui_img[img].last = 255;    /* la couleur change : reposer la carte */
+}
+
+/* 1re frame et longueur de la séquence d'un état, direction 0 (omni) ou, à
+   défaut, la première déclarée. Reproduit le repli de la boucle des acteurs :
+   les deux lisent la MÊME table, elles doivent la lire pareil. */
+static void ui_image_seq(const UIImageInfo *I, int state, int *fs, int *fc) {
+    *fs = 0; *fc = 1;
+    if (!I->dirs || !I->state_start || state < 0 || state >= I->n_states) return;
+    int b = I->state_start[state];
+    int fb = -1, fbc = 1;
+    for (int e = b; I->dirs[e][0] != 255; e++) {
+        if (I->dirs[e][0] == 0) { fb = I->dirs[e][1]; fbc = I->dirs[e][2]; break; }
+        if (fb < 0) { fb = I->dirs[e][1]; fbc = I->dirs[e][2]; }
+    }
+    if (fb >= 0) { *fs = fb; *fc = fbc; }
+}
+
+void ui_images_reset(void) {
+    for (int i = 0; i < UI_IMAGE_MAX; i++) {
+        const UIImageInfo *I = (i < g_ui_image_count) ? &g_ui_images[i] : 0;
+        int fs = 0, fc = 1;
+        int st = I ? I->state0 : 0;
+        if (I) ui_image_seq(I, st, &fs, &fc);
+        g_ui_img[i].state   = (unsigned char)st;
+        g_ui_img[i].frame   = (unsigned char)fs;
+        g_ui_img[i].timer   = 0;
+        g_ui_img[i].playing = I ? I->playing : 0;
+        g_ui_img[i].visible = 1;
+        g_ui_img[i].bg_base = 0;
+        g_ui_img[i].bank = 0;
+        g_ui_img[i].sx = g_ui_img[i].sy = 0;
+        g_ui_img[i].drawn = 0;
+        /* 255 et non `fs` : « aucune frame posée ». Sans ça, revenir dans une
+           scène retrouverait `last == frame` et sauterait le premier dessin. */
+        g_ui_img[i].last = 255;
+    }
+}
+
+void ui_image_set_bg_base(int img, int tile) {
+    if (img < 0 || img >= UI_IMAGE_MAX) return;
+    g_ui_img[img].bg_base = (short)tile;
+    g_ui_img[img].last = 255;     /* la géographie change : tout est à reposer */
+}
+
+void ui_image_set_state(int img, int state) {
+    if (img < 0 || img >= UI_IMAGE_MAX || img >= g_ui_image_count) return;
+    const UIImageInfo *I = &g_ui_images[img];
+    if (state < 0 || state >= I->n_states || g_ui_img[img].state == state) return;
+    int fs = 0, fc = 1;
+    ui_image_seq(I, state, &fs, &fc);
+    g_ui_img[img].state = (unsigned char)state;
+    g_ui_img[img].frame = (unsigned char)fs;   /* un état commence à sa 1re frame */
+    g_ui_img[img].timer = 0;
+}
+
+void ui_image_play(int img, int on) {
+    if (img >= 0 && img < UI_IMAGE_MAX) g_ui_img[img].playing = on ? 1 : 0;
+}
+
+int ui_image_state(int img) {
+    return (img >= 0 && img < UI_IMAGE_MAX) ? g_ui_img[img].state : 0;
+}
+
+/* Origine ÉCRAN — même règle que `text_region_origin`, et pour la même raison :
+   monde = décalé de la caméra, acteur = suivi au pixel. */
+static void ui_image_origin(const UIImageInfo *I, int *ox, int *oy) {
+    *ox = I->x; *oy = I->y;
+    if (I->anchor == 1) { *ox -= cam_x; *oy -= cam_y; }
+    else if (I->anchor == 2 && I->actor >= 0 && g_actor_x_fn) {
+        *ox += g_actor_x_fn(I->actor);
+        *oy += g_actor_y_fn(I->actor);
+    }
+}
+
+/* Efface les tuiles d'une image BG à une origine donnée. Nécessaire avant tout
+   déplacement : la tilemap ne s'efface pas seule, et une image ancrée au monde
+   laisserait sa traînée derrière elle. */
+static void ui_image_clear_bg(const UIImageInfo *I, int sx, int sy) {
+    if (g_text_layer < 0) return;
+    int tw = (I->w + 7) >> 3, th = (I->h + 7) >> 3;
+    int tx = sx >> 3, ty = sy >> 3;
+    for (int r = 0; r < th; r++)
+        for (int c = 0; c < tw; c++)
+            tilemap_set(g_text_layer, tx + c, ty + r, 0);
+}
+
+static void ui_image_draw_bg(const UIImageInfo *I, UIImageState *S, int sx, int sy) {
+    if (g_text_layer < 0) return;
+    int tw = (I->w + 7) >> 3, th = (I->h + 7) >> 3;
+    int tx = sx >> 3, ty = sy >> 3;
+    /* Les tuiles d'une frame se suivent dans l'ordre du sheet, ligne par ligne
+       — c'est le découpage que `grit` produit et que l'OBJ lit en mode 1D. */
+    int t0 = S->bg_base + S->frame * I->tiles_per_frame;
+    for (int r = 0; r < th; r++) {
+        for (int c = 0; c < tw; c++) {
+            tilemap_set(g_text_layer, tx + c, ty + r, t0 + r * tw + c);
+            tilemap_set_palette(g_text_layer, tx + c, ty + r, S->bank);
+        }
+    }
+}
+
+/* Forme/taille OAM d'une frame w×h. Les couples légaux sont ceux de
+   VALID_FRAME_SIZES (models/sprite.py), que le Sprite Editor impose déjà : une
+   frame est donc toujours affichable, et le défaut ne sert qu'à une donnée
+   produite autrement. */
+static int ui_image_shape(int w, int h) {
+    if (w == h) return 0;            /* carré */
+    return (w > h) ? 1 : 2;          /* large / haut */
+}
+
+static int ui_image_size(int w, int h) {
+    int m = (w > h) ? w : h;
+    return m >= 64 ? 3 : m >= 32 ? 2 : m >= 16 ? 1 : 0;
+}
+
+void ui_image_update(void) {
+    int n = g_ui_image_count < UI_IMAGE_MAX ? g_ui_image_count : UI_IMAGE_MAX;
+    for (int i = 0; i < n; i++) {
+        const UIImageInfo *I = &g_ui_images[i];
+        UIImageState *S = &g_ui_img[i];
+        if (!I->dirs) continue;              /* image sans sprite : rien à poser */
+
+        /* 1. Tick d'animation — la même arithmétique que la boucle des acteurs.
+              `fc > 1` : un état d'une seule frame ne consomme pas de timer. */
+        int fs = 0, fc = 1;
+        ui_image_seq(I, S->state, &fs, &fc);
+        if (S->playing && fc > 1 && I->state_speed) {
+            if (++S->timer >= I->state_speed[S->state]) {
+                S->timer = 0;
+                int fi = S->frame - fs;
+                if (I->state_loop && I->state_loop[S->state])
+                    S->frame = (unsigned char)(fs + (fi + 1) % fc);
+                else if (fi < fc - 1)
+                    S->frame = (unsigned char)(fs + fi + 1);
+            }
+        }
+
+        int sx, sy;
+        ui_image_origin(I, &sx, &sy);
+
+        if (I->target == 0) {
+            /* Cible BG : n'écrire que si quelque chose a CHANGÉ. Une icône de
+               HUD figée ne coûte alors pas une seule écriture par frame. */
+            if (!S->visible) {
+                if (S->drawn) { ui_image_clear_bg(I, S->sx, S->sy); S->drawn = 0; }
+                continue;
+            }
+            sx -= sx % 8;      /* la tilemap ne se pose pas entre deux tuiles */
+            sy -= sy % 8;
+            int moved = S->drawn && (sx != S->sx || sy != S->sy);
+            if (moved) ui_image_clear_bg(I, S->sx, S->sy);
+            if (moved || !S->drawn || S->last != S->frame) {
+                S->sx = (short)sx; S->sy = (short)sy;
+                ui_image_draw_bg(I, S, sx, sy);
+                S->drawn = 1;
+                S->last = S->frame;
+            }
+        } else {
+            /* Cible OBJ : un slot, reposé à chaque frame. `g_obj_oam_base` est
+               la base que scene_init réserve à l'interface — la même que la
+               bande de texte, dont l'allocation chaîne les deux. */
+            if (g_obj_oam_base < 0) continue;
+            int slot = g_obj_oam_base + I->oam_rel;
+            if (slot < 0 || slot >= 128) continue;
+            if (!S->visible) { shadow_oam[slot].attr0 = 0x0200; continue; }
+            u16 ti = (u16)(I->tile_base + S->frame * I->tiles_per_frame);
+            shadow_oam[slot].attr0 = (u16)((sy & 0xFF)
+                                           | (ui_image_shape(I->w, I->h) << 14));
+            shadow_oam[slot].attr1 = (u16)((sx & 0x1FF)
+                                           | (ui_image_size(I->w, I->h) << 14));
+            shadow_oam[slot].attr2 = (u16)((ti & 0x3FF)
+                                           | ((I->priority & 3) << 10)
+                                           | ((S->bank & 15) << 12));
+        }
+    }
+}
+
+void ui_image_show(int img, int on) {
+    if (img < 0 || img >= UI_IMAGE_MAX) return;
+    g_ui_img[img].visible = on ? 1 : 0;
+    /* Le masquage OBJ tombe au prochain `ui_image_update` ; en BG il faut
+       effacer, et le faire ICI plutôt qu'au tick évite qu'une image cachée
+       reste à l'écran une frame de plus. */
+    if (img < g_ui_image_count && g_ui_images[img].target == 0
+        && !on && g_ui_img[img].drawn) {
+        ui_image_clear_bg(&g_ui_images[img], g_ui_img[img].sx, g_ui_img[img].sy);
+        g_ui_img[img].drawn = 0;
+    }
 }
 
 /* ── Blending ────────────────────────────────────────────────────── */

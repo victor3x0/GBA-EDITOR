@@ -1,21 +1,27 @@
 """UIInspector — édition de N'IMPORTE QUEL élément d'une mise en page UI
-(zone de texte runtime, conteneur, texte authoré), sélectionné dans l'arbre ou
-le canvas.
+(texte, conteneur, image), sélectionné dans l'arbre ou le canvas.
 
-UN inspecteur adaptatif, pas un par type : nom, ancrage et géométrie sont les
-mêmes champs pour les trois kinds — les dupliquer dans deux classes (l'état
-d'avant) garantissait leur divergence. Les sections spécifiques (bande/glyphes
-d'une zone, fond d'un conteneur, clé de texte d'un texte) se montrent ou se
+UN inspecteur adaptatif, pas un par type : ancrage et géométrie sont les mêmes
+champs pour les trois kinds — les dupliquer dans deux classes (l'état d'avant)
+garantissait leur divergence. Les sections spécifiques (contenu et police d'un
+texte, fond d'un conteneur, sprite et état d'une image) se montrent ou se
 cachent au chargement, comme les MODE_INFO du SceneInspector.
+
+**Le nom se change dans l'EN-TÊTE**, pas dans un champ. C'est là qu'il est déjà
+affiché en gros, et c'est là que scène, acteur, prefab et script se renomment
+(`AssetHeaderBar`, cf. DynamicInspector) : un champ « Name » de plus faisait de
+l'interface le seul écran à en avoir deux, l'un montrant le nom et l'autre
+seul capable de le changer.
 
 Écrit dans la grammaire `W` (labels à gauche, paires d'axes colorées) — la même
 que tous les autres inspecteurs, pour que l'UI ne soit pas un écran étranger.
 
 Les invariants métier restent ceux des modèles (models/ui_region.py) :
-  • la zone porte la GÉOMÉTRIE, jamais l'enchaînement (pas d'éditeur de dialogue) ;
+  • l'élément porte la GÉOMÉTRIE, jamais l'enchaînement (pas d'éditeur de dialogue) ;
   • l'ancrage n'est éditable que sur un ROOT — un enfant l'hérite ;
   • la cible n'est pas un menu quand elle est contrainte (actor → OBJ, bitmap →
-    OBJ) : le champ affiche la valeur ET sa raison.
+    OBJ) : le champ affiche la valeur ET sa raison ;
+  • la taille d'une image n'est pas libre — c'est la frame de son sprite.
 """
 from __future__ import annotations
 from typing import Optional
@@ -32,10 +38,10 @@ from core.text_markup import display_text
 from core.color_utils import bgr555_to_rgb888
 from core.models.ui_region import (
     ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ,
-    KIND_REGION, KIND_PANEL, KIND_TEXT,
+    KIND_PANEL, KIND_TEXT, KIND_IMAGE,
     FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, fill_allowed,
     forced_target, forced_target_reason, surface_conflicts,
-    unique_region_name, unique_element_name,
+    image_geometry,
     preset_rect, H_LEFT, H_CENTER, H_RIGHT, V_TOP, V_MIDDLE, V_BOTTOM,
 )
 from ui.common import icons
@@ -102,6 +108,10 @@ def _preset_icon(hpos: str, vpos: str, sh: bool, sv: bool) -> QIcon:
 
 class UIInspector(QWidget):
     changed = pyqtSignal()
+    # Le nom a changé sous nos pieds (collision d'unicité résolue par le
+    # modèle) : l'en-tête, qui l'affiche, doit se remettre d'accord. Émis par
+    # `rename` — la seule porte d'entrée du renommage, cf. la docstring.
+    renamed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,16 +137,6 @@ class UIInspector(QWidget):
         # La mise en page est un ASSET partagé : modifier ici touche N scènes,
         # et ça se dit en couleur, pas en silence.
         self._layout_lbl = W.hint("", L)
-
-        # ── Identité ──────────────────────────────────────────────
-        self._name = QLineEdit()
-        self._name.setFont(QFont(T.UI, T.MD))
-        self._name.setStyleSheet(QSS.lineedit)
-        self._name.setToolTip("Name referenced by the script (REGION_* constant for a zone)")
-        self._name.editingFinished.connect(self._on_name)
-        W.row("Name", self._name, L)
-
-        W.separator(L)
 
         # ── Ancrage (root uniquement — un enfant hérite) ──────────
         W.section("ANCHOR", L)
@@ -349,22 +349,20 @@ class UIInspector(QWidget):
         self._fill_asset.currentIndexChanged.connect(self._on_fill_asset)
         self._fill_asset_row = W.row("Asset", self._fill_asset, L).parentWidget()
 
-        # Sous-éditeur du cadre nine-slice sélectionné : image source + 4 marges
-        # de coupe. Édite l'ASSET partagé (répercuté sur tous les panels qui le
-        # référencent), d'où le persist projet.
-        self._ns_source = QComboBox()
-        self._ns_source.setFont(QFont(T.UI, T.SM))
-        self._ns_source.setStyleSheet(QSS.combobox)
-        self._ns_source.currentIndexChanged.connect(self._on_ns_source)
-        self._ns_source_row = W.row("Source", self._ns_source, L).parentWidget()
-
+        # Marges de coupe du cadre sélectionné. Elles vivent sur le FOND
+        # D'INTERFACE lui-même (`BackgroundAsset.slice_*`), asset PARTAGÉ entre
+        # tous les panels qui le citent — d'où le persist projet. Pas de champ
+        # « source » ici : le fond cité EST l'image. Pas de bouton « créer un
+        # cadre » non plus — un cadre s'importe dans le Background Editor, comme
+        # toute autre image, et c'est là que le canvas montre où passe la coupe.
         ns_margins = QWidget()
         ns_margins.setStyleSheet("background:transparent;")
         mrow = QHBoxLayout(ns_margins)
         mrow.setContentsMargins(0, 0, 0, 0)
         mrow.setSpacing(4)
         self._ns_m = {}
-        for key, lab in (("left", "L"), ("right", "R"), ("top", "T"), ("bottom", "B")):
+        for key, lab in (("slice_left", "L"), ("slice_right", "R"),
+                         ("slice_top", "T"), ("slice_bottom", "B")):
             t = QLabel(lab)
             t.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
             t.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
@@ -380,12 +378,56 @@ class UIInspector(QWidget):
             self._ns_m[key] = sp
         self._ns_margins_row = W.row("Margins", ns_margins, L).parentWidget()
 
-        self._ns_create = W.btn_ghost("Create a frame from a background…")
-        self._ns_create.setFont(QFont(T.UI, T.XS))
-        self._ns_create.clicked.connect(self._on_ns_create)
-        L.addWidget(self._ns_create)
-
         self._fill_why = W.hint("", L)
+
+        # ── Section IMAGE (sprite à état) ─────────────────────────
+        # L'élément DÉSIGNE, il ne redéfinit pas : ni vitesse, ni liste de
+        # frames, ni direction ici — tout ça vit dans le SpriteAsset et s'édite
+        # dans le Sprite Editor. Recopier une vitesse donnerait deux vérités
+        # pour un même dessin (cf. models/ui_region.UIImage).
+        self._img_sep = W.separator(L)
+        self._img_title = W.section("IMAGE", L)
+
+        self._img_sprite = QComboBox()
+        self._img_sprite.setFont(QFont(T.UI, T.MD))
+        self._img_sprite.setStyleSheet(QSS.combobox)
+        self._img_sprite.setToolTip(
+            "Sprite asset drawn here. Picking one resizes the element to its "
+            "frame — the hardware cannot stretch a sprite.")
+        self._img_sprite.currentIndexChanged.connect(self._on_img_sprite)
+        self._img_sprite_row = W.row("Sprite", self._img_sprite, L).parentWidget()
+
+        self._img_state = QComboBox()
+        self._img_state.setFont(QFont(T.UI, T.MD))
+        self._img_state.setStyleSheet(QSS.combobox)
+        self._img_state.setToolTip(
+            "State shown when the scene starts. A script can switch to any "
+            "other state of this sprite — ui.image_set(\"name\", \"state\").")
+        self._img_state.currentIndexChanged.connect(self._on_img_state)
+        self._img_state_row = W.row("State", self._img_state, L).parentWidget()
+
+        self._img_play = QComboBox()
+        self._img_play.setFont(QFont(T.UI, T.MD))
+        self._img_play.setStyleSheet(QSS.combobox)
+        self._img_play.addItem("Playing", True)
+        self._img_play.addItem("Frozen on frame 1", False)
+        self._img_play.setToolTip(
+            "A frozen image costs no per-frame work and never rewrites the "
+            "tilemap — the right default for a static HUD icon.")
+        self._img_play.currentIndexChanged.connect(self._on_img_play)
+        self._img_play_row = W.row("Frames", self._img_play, L).parentWidget()
+
+        self._img_prio = QSpinBox()
+        self._img_prio.setFont(QFont(T.MONO, T.MD))
+        self._img_prio.setStyleSheet(QSS.spinbox)
+        self._img_prio.setRange(0, 3)
+        self._img_prio.setKeyboardTracking(False)
+        self._img_prio.setToolTip("0 = frontmost. Carried by the element, not "
+                                  "inherited: a gauge and its frame overlap on purpose.")
+        self._img_prio.valueChanged.connect(self._on_img_prio)
+        self._img_prio_row = W.row("Priority", self._img_prio, L).parentWidget()
+
+        self._img_why = W.hint("", L)
 
         # ── Diagnostic + suppression ──────────────────────────────
         self._warn = W.hint("", L, color=C.ACCENT_YLW)
@@ -445,7 +487,6 @@ class UIInspector(QWidget):
         self._blocking = True
         try:
             kind = self._kind()
-            self._name.setText(element.name)
 
             users = project.ui_layout_users(layout_asset.name) if project else []
             shared = (f"  ·  shared by {len(users)} scenes" if len(users) > 1 else "")
@@ -458,39 +499,46 @@ class UIInspector(QWidget):
                 self._sp[k].setValue(int(getattr(element, k, 0)))
 
             # Sections par type — tout se montre/cache ICI, une seule fois.
-            is_region, is_text, is_panel = (
-                kind == KIND_REGION, kind == KIND_TEXT, kind == KIND_PANEL)
-            self._target_row.setVisible(is_region)
-            self._text_sep.setVisible(is_region or is_text)
-            self._text_title.setVisible(is_region or is_text)
-            self._content.setVisible(is_text)
-            self._key_lbl.setVisible(is_text)
-            self._text_key_row.setVisible(is_text)
-            self._preview_row.setVisible(is_region)
-            self._font_row.setVisible(is_region or is_text)
-            self._align_row.setVisible(is_region or is_text)
-            self._color_row.setVisible(is_region or is_text)
-            self._anim_row.setVisible(is_region)
+            is_text  = kind == KIND_TEXT
+            is_panel = kind == KIND_PANEL
+            is_image = kind == KIND_IMAGE
+            # La cible est un choix de l'auteur pour tout ce qui DESSINE ; un
+            # conteneur, lui, la tient de son root comme le reste de sa branche.
+            self._target_row.setVisible(is_text or is_image)
+            for w in (self._text_sep, self._text_title, self._content,
+                      self._key_lbl, self._text_key_row, self._preview_row,
+                      self._font_row, self._align_row, self._color_row,
+                      self._anim_row):
+                w.setVisible(is_text)
             for w in (self._fill_sep, self._fill_title, self._fill_kind_row,
                       self._fill_color_row, self._fill_asset_row,
-                      self._ns_source_row, self._ns_margins_row,
-                      self._ns_create, self._fill_why):
+                      self._ns_margins_row, self._fill_why):
                 w.setVisible(is_panel)
-            self._del.setText("Delete zone" if is_region else "Delete element")
+            for w in (self._img_sep, self._img_title, self._img_sprite_row,
+                      self._img_state_row, self._img_play_row,
+                      self._img_prio_row, self._img_why):
+                w.setVisible(is_image)
+            # La taille d'une image est celle de la frame de son sprite : la
+            # laisser éditable inviterait à un étirement que le matériel ne sait
+            # pas faire. Les presets de PLACEMENT restent actifs (ils ne
+            # redimensionnent pas sans `stretch_*`).
+            for k in ("w", "h"):
+                self._sp[k].setEnabled(not is_image)
+            self._del.setText("Delete element")
 
-            if is_region or is_text:
+            if is_text:
                 self._reload_fonts()
                 self._align.setCurrentIndex(
                     ALIGNS.index(element.align) if element.align in ALIGNS else 0)
                 self._reload_color()
-            if is_region:
                 self._reload_previews()
                 self._anim.setValue(int(getattr(element, "animated_glyphs", 0) or 0))
-            if is_text:
                 self._reload_text_key()
                 self._reload_content()
             if is_panel:
                 self._reload_fill()
+            if is_image:
+                self._reload_image()
 
             self._sync_frame()
             self._refresh_diagnostics()
@@ -499,7 +547,7 @@ class UIInspector(QWidget):
 
     # ── Contexte ──────────────────────────────────────────────────
     def _kind(self) -> str:
-        return getattr(self._element, "kind", KIND_REGION)
+        return getattr(self._element, "kind", KIND_TEXT)
 
     def _render_mode(self) -> int:
         return int(getattr(self._scene, "render_mode", 0) or 0)
@@ -548,6 +596,133 @@ class UIInspector(QWidget):
             self._text_key.addItem(t.key, t.key)
         i = self._text_key.findData(getattr(self._element, "text_key", "") or "")
         self._text_key.setCurrentIndex(i if i >= 0 else 0)
+
+    # ── Image (désigne un sprite et l'un de ses états) ────────────
+    def _current_sprite(self):
+        """Le SpriteAsset que cette image affiche, ou None (nom vide/cassé)."""
+        name = getattr(self._element, "sprite_name", "") or ""
+        if not (self._project and name):
+            return None
+        return next((s for s in getattr(self._project, "sprites", [])
+                     if s.name == name), None)
+
+    def _reload_image(self):
+        prev, self._blocking = self._blocking, True
+        try:
+            self._img_sprite.clear()
+            self._img_sprite.addItem("(no sprite)", "")
+            for s in (getattr(self._project, "sprites", []) if self._project else []):
+                self._img_sprite.addItem(s.name, s.name)
+            i = self._img_sprite.findData(getattr(self._element, "sprite_name", "") or "")
+            self._img_sprite.setCurrentIndex(i if i >= 0 else 0)
+            self._reload_image_states()
+            j = self._img_play.findData(bool(getattr(self._element, "playing", True)))
+            self._img_play.setCurrentIndex(j if j >= 0 else 0)
+            self._img_prio.setValue(int(getattr(self._element, "priority", 0) or 0))
+        finally:
+            self._blocking = prev
+        self._sync_image_note()
+
+    def _reload_image_states(self):
+        """Les états du sprite courant. « (first state) » plutôt qu'un premier
+        état nommé en dur : un `state_name` vide suit le sprite quand on en
+        réordonne les états, un nom figé désignerait l'ancien."""
+        self._img_state.blockSignals(True)
+        self._img_state.clear()
+        sprite = self._current_sprite()
+        self._img_state.addItem("(first state)", "")
+        for st in (getattr(sprite, "states", []) if sprite else []):
+            self._img_state.addItem(st.name, st.name)
+        self._img_state.setEnabled(sprite is not None)
+        k = self._img_state.findData(getattr(self._element, "state_name", "") or "")
+        self._img_state.setCurrentIndex(k if k >= 0 else 0)
+        self._img_state.blockSignals(False)
+
+    def _sprite_frame_count(self, sprite) -> int:
+        """Frames que le build chargera pour ce sprite.
+
+        `count_frames`, celle du build, et pas un comptage maison : elle DÉDUPLIQUE
+        (deux états qui partagent une pose ne coûtent qu'une frame), et annoncer
+        ici un chiffre plus gros que celui réservé ferait douter de la jauge à
+        chaque fois que les deux ne tombent pas d'accord."""
+        if sprite is None or self._project is None:
+            return 1
+        from codegen.asset_pipeline import count_frames
+        return count_frames(self._project, sprite)
+
+    def _sync_image_note(self):
+        """Ce que l'image coûte, dit avant le build. Un sprite manquant est un
+        trou visible à l'écran, pas une erreur de compilation : on le nomme."""
+        el = self._element
+        if el is None or self._kind() != KIND_IMAGE:
+            return
+        sprite = self._current_sprite()
+        if sprite is None:
+            self._img_why.setText(
+                "No sprite bound — nothing will be drawn here."
+                if not getattr(el, "sprite_name", "") else
+                f"Sprite “{el.sprite_name}” not found in the project.")
+            self._img_why.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            return
+        frames = self._sprite_frame_count(sprite)
+        g = image_geometry(el, frames)
+        target = self._layout_asset.resolved_target(el, self._render_mode())
+        n = g["tiles"]
+        tiles = f"{n} tile" + ("s" if n > 1 else "")
+        # Une image OBJ ne réserve RIEN : ses tuiles sont celles du sprite, déjà
+        # résidentes. Annoncer un coût VRAM là serait compter deux fois le même
+        # dessin (cf. models/ui_region.layout_obj_budget).
+        where = (f"1 OAM slot, sharing the sprite's {tiles} already in OBJ VRAM"
+                 if target == TARGET_OBJ
+                 else f"{tiles} in the UI charblock")
+        self._img_why.setText(
+            f"{el.w}×{el.h} px  ·  {frames} frame(s) across all states  ·  {where}. "
+            f"Every state stays resident: a script may switch at any frame.")
+        self._img_why.setStyleSheet(f"color:{C.TEXT_MUTED};")
+
+    def _on_img_sprite(self, i):
+        """Choisir un sprite REDIMENSIONNE l'élément sur sa frame — une seule
+        entrée d'historique pour les deux, sinon annuler laisserait un rectangle
+        qui ne correspond à aucun dessin."""
+        if self._blocking or not self._element or i < 0:
+            return
+        name = self._img_sprite.currentData() or ""
+        self._set("sprite_name", name, "Image sprite")
+        # `state_name` pointe un état de l'ANCIEN sprite : le remettre au défaut
+        # plutôt que de garder une ref qui ne résout plus (elle retomberait
+        # silencieusement sur l'état 0 au build).
+        self._set("state_name", "", "Image state")
+        sprite = self._current_sprite()
+        if sprite is not None and self._element.sync_size_from(sprite):
+            self._blocking = True
+            try:
+                for k in ("w", "h"):
+                    self._sp[k].setValue(int(getattr(self._element, k)))
+            finally:
+                self._blocking = False
+        self._blocking = True
+        try:
+            self._reload_image_states()
+        finally:
+            self._blocking = False
+        self._persist()
+        self._sync_image_note()
+
+    def _on_img_state(self, i):
+        if self._blocking or not self._element or i < 0:
+            return
+        self._set("state_name", self._img_state.currentData() or "", "Image state")
+
+    def _on_img_play(self, i):
+        if self._blocking or not self._element or i < 0:
+            return
+        self._set("playing", bool(self._img_play.currentData()), "Image playback")
+        self._sync_image_note()
+
+    def _on_img_prio(self, v):
+        if self._blocking or not self._element:
+            return
+        self._set("priority", int(v), "Image priority")
 
     # ── Contenu (édite l'entrée de table, pas l'élément) ──────────
     def _current_text(self):
@@ -668,7 +843,7 @@ class UIInspector(QWidget):
 
         self._anchor.setEnabled(is_root)
         self._actor.setEnabled(is_root)
-        if self._kind() == KIND_REGION:
+        if self._kind() in (KIND_TEXT, KIND_IMAGE):
             self._target.setCurrentIndex(
                 next((i for i, (t, _) in enumerate(_TARGETS) if t == eff), 0))
             self._target.setEnabled(is_root and forced is None)
@@ -695,11 +870,16 @@ class UIInspector(QWidget):
             else "GEOMETRY (PX)")
 
     def _refresh_diagnostics(self):
-        """Empreinte + avertissements des éléments qui accueillent du texte.
+        """Empreinte + avertissements d'un élément de TEXTE.
 
-        Zone ET texte authoré : tous deux occupent une entrée de `g_ui_regions`
-        et la même VRAM (cf. KIND_SLOTS). Un conteneur, non."""
-        if self._kind() not in (KIND_REGION, KIND_TEXT):
+        Une image a sa propre note (`_sync_image_note`) : son empreinte se lit
+        dans le sprite, pas dans le rectangle. Un conteneur n'en a aucune."""
+        if self._kind() == KIND_IMAGE:
+            self._size_lbl.setText("")
+            self._warn.setText("")
+            self._sync_image_note()
+            return
+        if self._kind() != KIND_TEXT:
             self._size_lbl.setText("")
             self._warn.setText("")
             return
@@ -720,7 +900,7 @@ class UIInspector(QWidget):
 
         if target == TARGET_OBJ and eff_anchor == ANCHOR_ACTOR and not eff_actor:
             msgs.append("Anchored on an actor (via its root), but no actor "
-                        "chosen: the zone will land at the screen origin.")
+                        "chosen: the element will land at the screen origin.")
         # Aliasing de surface entre slots BG de la MÊME mise en page. `slots` et
         # non `regions` : un texte authoré compose sur la même surface.
         others = [o for o in lay.slots
@@ -759,15 +939,23 @@ class UIInspector(QWidget):
         self._sync_fill()
 
     def _reload_fill_asset(self):
-        """Peuple le combo d'asset selon le mode : cadres nine-slice, ou fonds
-        (backgrounds). blockSignals pour ne pas écraser `fill_asset` pendant le
-        repeuplement."""
+        """Peuple le combo d'asset selon le mode. blockSignals pour ne pas
+        écraser `fill_asset` pendant le repeuplement.
+
+        En nine-slice, seuls les fonds d'INTERFACE de rôle « nine-slice » sont
+        proposés : eux seuls portent des marges de coupe, et citer une image qui
+        n'en a pas donnerait un cadre sans coins. En mode background, toute
+        image reste citable — poser un décor derrière un panneau est légitime,
+        et rien dans les données ne s'y oppose."""
         fk = self._fill_kind.currentData()
         self._fill_asset.blockSignals(True)
         self._fill_asset.clear()
         self._fill_asset.addItem("(asset)", "")
         if fk == FILL_NINE:
-            for n in (self._project.nine_slices if self._project else []):
+            from core.models.background import UI_ROLE_NINE
+            ui_bgs = (self._project.ui_backgrounds(UI_ROLE_NINE)
+                      if self._project else [])
+            for n in ui_bgs:
                 self._fill_asset.addItem(n.name, n.name)
         elif fk == FILL_BG:
             for b in (getattr(self._project, "backgrounds", []) if self._project else []):
@@ -783,13 +971,14 @@ class UIInspector(QWidget):
         fk = self._fill_kind.currentData()
         self._fill_color_row.setVisible(fk == FILL_COLOR)
         self._fill_asset_row.setVisible(fk in (FILL_NINE, FILL_BG))
-        for w in (self._ns_source_row, self._ns_margins_row, self._ns_create):
-            w.setVisible(fk == FILL_NINE)
+        self._ns_margins_row.setVisible(fk == FILL_NINE)
         if fk == FILL_NINE:
             self._reload_ns()
         note = {
             FILL_COLOR: "A palette entry (index 0 = transparent on hardware).",
-            FILL_NINE:  "Stretchable frame: fixed corners, repeated edges/center.",
+            FILL_NINE:  "Stretchable frame: fixed corners, repeated edges/center. "
+                        "Margins belong to the UI background — editing them here "
+                        "changes every panel using it.",
             FILL_BG:    "Tiled background, cropped on bottom/right if the zone is "
                         "smaller. Not allowed on OBJ target.",
         }.get(fk, "")
@@ -797,25 +986,21 @@ class UIInspector(QWidget):
         self._update_swatch()
 
     def _current_ns(self):
+        """Le fond d'interface cité comme cadre — c'est lui qui porte l'image
+        ET les marges."""
         if not self._project:
             return None
-        return self._project.get_nine_slice(getattr(self._element, "fill_asset", "") or "")
+        return self._project.get_background(getattr(self._element, "fill_asset", "") or "")
 
     def _reload_ns(self):
-        """Charge source + marges du cadre sélectionné ; grise si aucun."""
+        """Charge les marges du cadre sélectionné ; grise si aucun."""
         prev, self._blocking = self._blocking, True
         try:
-            self._ns_source.clear()
-            self._ns_source.addItem("(source background)", "")
-            for b in (getattr(self._project, "backgrounds", []) if self._project else []):
-                self._ns_source.addItem(b.name, b.name)
             ns = self._current_ns()
             has = ns is not None
-            for w in (self._ns_source, *self._ns_m.values()):
-                w.setEnabled(has)
+            for sp in self._ns_m.values():
+                sp.setEnabled(has)
             if has:
-                si = self._ns_source.findData(ns.source or "")
-                self._ns_source.setCurrentIndex(si if si >= 0 else 0)
                 for k, sp in self._ns_m.items():
                     sp.setValue(int(getattr(ns, k, 0)))
         finally:
@@ -851,46 +1036,25 @@ class UIInspector(QWidget):
         get_history().push(SetFieldCmd(self._element, field, old, value,
                                        label=label, persist_fn=self._persist))
 
-    def _on_name(self):
-        if self._blocking or not self._element:
-            return
-        new = self._name.text().strip()
-        if not new or new == self._element.name:
-            self._name.setText(self._element.name)
-            return
-        is_region = self._kind() == KIND_REGION
-        # Unicité : l'espace des constantes REGION_* est le PROJET pour une
-        # zone ; pour les autres, la mise en page élargie aux zones du projet.
-        if is_region:
-            taken = set(self._project.region_names()) - {self._element.name}
-            if new in taken:
-                new = unique_region_name(taken, new)
-        else:
-            taken = (set(self._layout_asset.element_names())
-                     | set(self._project.region_names())) - {self._element.name}
-            if new in taken:
-                new = unique_element_name(taken, new)
-        old = self._element.name
-        # Les enfants pointent le parent par NOM : les rebrancher AVANT le
-        # changement de nom, pour que la commande qui suit (et son persist) les
-        # sauve dans la foulée.
-        self._layout_asset.retarget_parent(old, new)
-        self._set("name", new, f"Rename {old}")
-        if is_region:
-            # Le nom se résout en REGION_* : le renommer doit réécrire les
-            # scripts qui le citent, comme pour une clé de texte.
-            try:
-                from scripting.refactor import rename_in_project
-                from scripting.api import DOMAIN_REGION
-                hits = rename_in_project(self._project, DOMAIN_REGION, old, new)
-                total = sum(hits.values())
-                if total:
-                    from core.command_dispatcher import get_dispatcher
-                    get_dispatcher().status(
-                        f"{total} reference(s) updated in {len(hits)} script(s)")
-            except Exception:
-                pass   # le renommage du modèle reste valable même sans réécriture
-        self._name.setText(self._element.name)
+    def rename(self, new_name: str) -> str:
+        """Renomme l'élément courant — appelé par l'EN-TÊTE, seule porte d'entrée.
+
+        Tout le travail (unicité projet, rebranchement des enfants sur le
+        nouveau nom, réécriture des scripts qui citent la constante) est déjà
+        dans `Project.rename_ui_element` : le refaire ici en donnerait une
+        seconde version, et c'est toujours la seconde qui oublie un cas.
+
+        Retourne le nom RÉELLEMENT appliqué — il peut différer de la demande si
+        une collision a été résolue, et l'en-tête doit afficher celui-là."""
+        el, lay = self._element, self._layout_asset
+        if el is None or lay is None or not self._project:
+            return ""
+        old = el.name
+        applied = self._project.rename_ui_element(lay, el, new_name)
+        if applied != old:
+            self._persist()
+            self.renamed.emit(applied)
+        return applied
 
     def _on_anchor(self, i):
         if self._blocking or not self._element:
@@ -1044,34 +1208,12 @@ class UIInspector(QWidget):
         get_history().push(SetFieldCmd(ns, field, old, value,
                                        label=label, persist_fn=self._persist_ns))
 
-    def _on_ns_source(self, i):
-        if self._blocking or i < 0:
-            return
-        ns = self._current_ns()
-        if ns is not None:
-            self._set_ns(ns, "source", self._ns_source.currentData() or "", "Frame source")
-
     def _on_ns_margin(self, key, v):
         if self._blocking:
             return
         ns = self._current_ns()
         if ns is not None:
             self._set_ns(ns, key, int(v), "Frame margin")
-
-    def _on_ns_create(self):
-        """Crée un cadre depuis le premier background disponible, le sélectionne."""
-        if not self._project or not self._fill_editable():
-            return
-        from core.models.nine_slice import NineSlice
-        taken = {n.name for n in self._project.nine_slices}
-        bgs = list(getattr(self._project, "backgrounds", []))
-        ns = NineSlice(name=unique_element_name(taken, "frame"),
-                       source=bgs[0].name if bgs else "")
-        self._project.nine_slices.items.append(ns)
-        self._project.nine_slices.save(ns)
-        self._set("fill_asset", ns.name, "Background frame")
-        self._reload_fill_asset()
-        self._reload_ns()
 
     # ── Suppression ───────────────────────────────────────────────
     def _on_delete(self):

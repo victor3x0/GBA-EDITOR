@@ -12,24 +12,45 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QListWidget,
-    QListWidgetItem, QFileDialog,
+    QListWidgetItem, QFileDialog, QLabel, QSpinBox,
     QMenu, QMessageBox, QAbstractItemView, QPushButton, QGridLayout, QCheckBox,
 )
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt, QSize, QObject, QRunnable, QThreadPool, pyqtSignal
+from PyQt6.QtGui import QFont, QDrag
+from PyQt6.QtCore import (
+    Qt, QSize, QMimeData, QObject, QRunnable, QThreadPool, pyqtSignal,
+)
 
 from ui.common.theme import C, T, QSS, ui_font
 from ui.common.widgets import W, FinderSection, AssetHeaderBar
-from ui.common.icons import COLOR_BACKGROUND
+from ui.common.icons import COLOR_BACKGROUND, COLOR_UI
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from ui.common.asset_palette_view import background_palette_view
 from core.project import PaletteBank
+from core.models.resource import MIME_ANIMATED_BG
+from core.models.background import (
+    KIND_SCENE, KIND_UI, KIND_ANIMATED, BG_KINDS, BG_KIND_LABELS,
+    UI_ROLE_NINE, UI_ROLE_BG,
+)
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd
 from core.bg_import import bg_fits_vram
 from .bg_inpaint_canvas import BgInpaintCanvas
 
 _BG_COLOR = COLOR_BACKGROUND
+
+# Un fond d'interface appartient à la famille INTERFACE, pas à la famille monde :
+# la teinte dit à quoi sert l'asset, et c'est la seule chose qui distingue à
+# l'œil un cadre de dialogue d'un décor dans la même liste (règle « une famille,
+# une couleur » — cf. ui/common/icons.py).
+_KIND_COLOR = {KIND_SCENE: COLOR_BACKGROUND, KIND_UI: COLOR_UI,
+               KIND_ANIMATED: COLOR_BACKGROUND}
+
+# Titre de section + libellé du bouton « + », par type.
+_KIND_SECTION = {
+    KIND_SCENE:    ("BACKGROUNDS",    "Import a PNG"),
+    KIND_UI:       ("UI BACKGROUNDS", "Import a UI frame or panel PNG"),
+    KIND_ANIMATED: ("ANIMATED",       "Import an animation sheet PNG"),
+}
 
 
 # ── Compression hors-thread ─────────────────────────────────────────────────
@@ -65,9 +86,61 @@ class _EncodeTask(QRunnable):
 
 # ── Finder (gauche) ─────────────────────────────────────────────────────────
 
+class _BgList(QListWidget):
+    """Liste d'UNE section du finder.
+
+    Sous-classe seulement pour le DRAG : les fonds animés se posent sur le
+    canvas d'un fond hôte, et Qt ne démarre un drag qu'à partir du widget
+    source. Tout le reste (renommage, menu contextuel) est piloté par le
+    panneau, qui seul connaît le projet."""
+
+    def __init__(self, color: str, draggable: bool, parent=None):
+        super().__init__(parent)
+        self._draggable = draggable
+        self.setStyleSheet(
+            QSS.finder_list(color)
+            # Éditeur de renommage en place : mêmes police/taille que la ligne,
+            # sinon le QLineEdit s'ouvre avec la police par défaut (plus grande)
+            # et le texte est rogné verticalement.
+            + f"QListWidget QLineEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
+              f"border:1px solid {color}; padding:0 4px; margin:0;"
+              f"font-family:{T.MONO}; font-size:{T.MD}px;}}"
+        )
+        # Renommage en place : clic sur un item déjà sélectionné (même mécanisme
+        # que les autres finders — sprite/scene/prefab).
+        self.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        if draggable:
+            self.setDragEnabled(True)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, actions):
+        if not self._draggable:
+            return
+        item = self.currentItem()
+        ba = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if ba is None:
+            return
+        mime = QMimeData()
+        mime.setData(MIME_ANIMATED_BG, ba.name.encode("utf-8"))
+        # Le texte accompagne le mime maison : un drop hors canvas (barre de
+        # recherche, éditeur externe) écrit alors le NOM, jamais un binaire.
+        mime.setText(ba.name)
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+
+
 class BgFinderPanel(QWidget):
+    """Trois sections, un asset par section — décors, fonds d'interface, fonds
+    animés. Trois LISTES et pas une colonne « type » : le type gouverne ce que
+    l'inspecteur propose et ce que le canvas montre, donc le trouver demande de
+    savoir où regarder, pas de lire une colonne.
+
+    La sélection est exclusive entre les trois : l'écran n'a qu'un canvas."""
+
     bg_selected  = pyqtSignal(object)   # BackgroundAsset | None
-    import_asked = pyqtSignal()
+    import_asked = pyqtSignal(str)      # kind à donner à l'image importée
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,31 +152,25 @@ class BgFinderPanel(QWidget):
 
         root.addWidget(W.finder_bar("BACKGROUND FINDER"))
 
-        sec = FinderSection("BACKGROUNDS", _BG_COLOR)
-        sec.set_add_tooltip("Import a PNG")
-        sec.add_clicked.connect(self.import_asked)
-        root.addWidget(sec, 1)
+        self._lists: dict[str, _BgList] = {}
+        for kind in BG_KINDS:
+            title, add_tip = _KIND_SECTION[kind]
+            color = _KIND_COLOR[kind]
+            sec = FinderSection(title, color)
+            sec.set_add_tooltip(add_tip)
+            sec.add_clicked.connect(lambda k=kind: self.import_asked.emit(k))
+            root.addWidget(sec, 1)
 
-        self._list = QListWidget()
-        self._list.setStyleSheet(
-            QSS.finder_list(_BG_COLOR)
-            # Éditeur de renommage en place : mêmes police/taille que la ligne,
-            # sinon le QLineEdit s'ouvre avec la police par défaut (plus grande)
-            # et le texte est rogné verticalement.
-            + f"QListWidget QLineEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
-              f"border:1px solid {_BG_COLOR}; padding:0 4px; margin:0;"
-              f"font-family:{T.MONO}; font-size:{T.MD}px;}}"
-        )
-        self._list.currentItemChanged.connect(self._on_sel)
-        # Renommage en place : clic sur un item déjà sélectionné (même mécanisme
-        # que les autres finders — sprite/scene/prefab).
-        self._list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-        self._list.itemChanged.connect(self._on_item_renamed)
-        self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._list.customContextMenuRequested.connect(self._ctx_menu)
-        sec.set_widget(self._list)
+            lst = _BgList(color, draggable=(kind == KIND_ANIMATED))
+            lst.currentItemChanged.connect(
+                lambda cur, _prev, k=kind: self._on_sel(k, cur))
+            lst.itemChanged.connect(self._on_item_renamed)
+            lst.customContextMenuRequested.connect(
+                lambda pos, k=kind: self._ctx_menu(k, pos))
+            sec.set_widget(lst)
+            self._lists[kind] = lst
 
-        # Ressort de queue : section repliée, rien n'absorbe la hauteur du
+        # Ressort de queue : sections repliées, rien n'absorbe la hauteur du
         # panneau et QVBoxLayout centrerait le tout.
         root.addStretch()
 
@@ -111,31 +178,68 @@ class BgFinderPanel(QWidget):
         self._project = project
         self.refresh()
 
-    def refresh(self, select: str = None):
-        self._blocking = True
-        self._list.blockSignals(True)
-        self._list.clear()
-        for ba in (list(self._project.backgrounds) if self._project else []):
-            it = QListWidgetItem(ba.name)
-            it.setFont(ui_font(T.LG))   # même corps que les lignes d'arbre
-            it.setData(Qt.ItemDataRole.UserRole, ba)
-            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
-            self._list.addItem(it)
-        self._list.blockSignals(False)
-        self._blocking = False
-        target = select or (self._list.item(0).text() if self._list.count() else None)
-        for i in range(self._list.count()):
-            if self._list.item(i).text() == target:
-                self._list.setCurrentRow(i)
-                return
-        # Plus rien à sélectionner (liste vide ou cible introuvable) : notifier
-        # pour que la preview / l'inspecteur se vident.
-        self.bg_selected.emit(None)
+    # ── Peuplement ────────────────────────────────────────────────
 
-    def _on_sel(self, cur, _prev):
+    def _assets(self, kind: str) -> list:
+        return [b for b in (self._project.backgrounds if self._project else [])
+                if b.kind == kind]
+
+    def refresh(self, select: str = None):
+        """Repeuple les trois listes et sélectionne `select` (dans quelque
+        section qu'il soit), sinon le premier asset trouvé, en parcourant les
+        sections dans l'ordre. Rien à sélectionner = notifier None, pour que le
+        canvas et l'inspecteur se vident."""
+        self._blocking = True
+        for kind, lst in self._lists.items():
+            lst.blockSignals(True)
+            lst.clear()
+            for ba in self._assets(kind):
+                it = QListWidgetItem(ba.name)
+                it.setFont(ui_font(T.LG))   # même corps que les lignes d'arbre
+                it.setData(Qt.ItemDataRole.UserRole, ba)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
+                if kind == KIND_ANIMATED:
+                    it.setToolTip("Drag onto a background canvas to place it")
+                lst.addItem(it)
+            lst.blockSignals(False)
+
+        target = select or next((b.name for k in BG_KINDS
+                                 for b in self._assets(k)), None)
+        found = next(((kind, i) for kind, lst in self._lists.items()
+                      for i in range(lst.count())
+                      if lst.item(i).text() == target), None)
+        # Les sélections des AUTRES listes sont vidées avant de poser la bonne :
+        # sans ça, deux sections resteraient surlignées et le surlignage ne
+        # dirait plus ce que le canvas montre.
+        for kind, lst in self._lists.items():
+            lst.blockSignals(True)
+            if found is None or kind != found[0]:
+                lst.setCurrentItem(None)
+            lst.blockSignals(False)
+        self._blocking = False
+        if found is None:
+            self.bg_selected.emit(None)
+            return
+        kind, row = found
+        lst = self._lists[kind]
+        if lst.currentRow() == row:
+            # Déjà courant : setCurrentRow ne réémettrait rien, alors que
+            # l'appelant attend un rafraîchissement (recompression, renommage).
+            self.bg_selected.emit(lst.item(row).data(Qt.ItemDataRole.UserRole))
+        else:
+            lst.setCurrentRow(row)
+
+    def _on_sel(self, kind: str, cur):
         if self._blocking:
             return
-        self.bg_selected.emit(cur.data(Qt.ItemDataRole.UserRole) if cur else None)
+        if cur is None:
+            return          # désélection provoquée par une autre section
+        for k, lst in self._lists.items():
+            if k != kind:
+                lst.blockSignals(True)
+                lst.setCurrentItem(None)
+                lst.blockSignals(False)
+        self.bg_selected.emit(cur.data(Qt.ItemDataRole.UserRole))
 
     # ── Renommage en place ────────────────────────────────────────
 
@@ -157,17 +261,35 @@ class BgFinderPanel(QWidget):
                                 f"A background named “{new_name}” already exists.")
             self._reset_item_text(item, ba)
             return
+        old_name = ba.name
         with get_dispatcher().suspended():
             self._project.rename_background(ba, new_name)
+            self._retarget_placements(old_name, ba.name)
         self._reset_item_text(item, ba)
         # setCurrentRow ne réémet pas la sélection si l'item était déjà courant :
         # forcer le rafraîchissement de l'inspecteur pour refléter le nouveau nom.
         self.bg_selected.emit(ba)
 
+    def _retarget_placements(self, old: str, new: str):
+        """Un fond animé renommé est encore POSÉ sur ses hôtes, qui le citent par
+        nom : sans ce rebranchement, chaque placement pointerait dans le vide.
+        Même geste que `UILayout.retarget_parent` après un renommage d'élément."""
+        if not self._project or old == new:
+            return
+        for host in self._project.backgrounds:
+            touched = False
+            for pl in host.animations:
+                if pl.animated_name == old:
+                    pl.animated_name = new
+                    touched = True
+            if touched:
+                self._project.backgrounds.save(host)
+
     # ── Menu contextuel ───────────────────────────────────────────
 
-    def _ctx_menu(self, pos):
-        item = self._list.itemAt(pos)
+    def _ctx_menu(self, kind: str, pos):
+        lst = self._lists[kind]
+        item = lst.itemAt(pos)
         if not item:
             return
         ba = item.data(Qt.ItemDataRole.UserRole)
@@ -177,12 +299,31 @@ class BgFinderPanel(QWidget):
         menu.setStyleSheet(QSS.menu)
         act_rename = menu.addAction("Rename")
         menu.addSeparator()
+        # Convertir = déplacer l'asset d'une section à l'autre. Un décor qu'on
+        # décide d'employer en cadre n'a pas à être réimporté : c'est le même
+        # PNG, la même compression, seul son EMPLOI change.
+        conv = menu.addMenu("Convert to")
+        conv.setStyleSheet(QSS.menu)
+        acts = {conv.addAction(BG_KIND_LABELS[k]): k
+                for k in BG_KINDS if k != kind}
+        menu.addSeparator()
         act_del = menu.addAction("Delete background")
-        chosen = menu.exec(self._list.viewport().mapToGlobal(pos))
+        chosen = menu.exec(lst.viewport().mapToGlobal(pos))
         if chosen == act_rename:
-            self._list.editItem(item)
+            lst.editItem(item)
         elif chosen == act_del:
             self._delete_bg(ba)
+        elif chosen in acts:
+            self.convert_kind(ba, acts[chosen])
+
+    def convert_kind(self, ba, kind: str):
+        if not self._project or ba.kind == kind:
+            return
+        ba.kind = kind
+        with get_dispatcher().suspended():
+            self._project.backgrounds.save(ba)
+        get_dispatcher().notify_background_changed(ba)
+        self.refresh(select=ba.name)
 
     def _delete_bg(self, ba):
         if not self._project:
@@ -209,7 +350,9 @@ class BgFinderPanel(QWidget):
 class BgPropertiesPanel(QWidget):
     changed = pyqtSignal()          # compression recalculée → re-render du canvas
     renamed = pyqtSignal()          # fond renommé depuis l'en-tête → rafraîchir le finder
+    kind_changed = pyqtSignal()     # type du fond changé → re-trier le finder
     palettes_changed = pyqtSignal()     # liste des palettes mutée → re-render du canvas
+    geometry_changed = pyqtSignal()  # marges de coupe / découpe de frames → canvas
     recompress_requested = pyqtSignal(object, object, str, bool)  # (ba, png, mode_token, dither) → hors-thread
     overlays_changed = pyqtSignal(list, list)  # (info_lines, warning_lines) → overlays du canvas
 
@@ -231,6 +374,25 @@ class BgPropertiesPanel(QWidget):
         body = QWidget(); body.setStyleSheet(f"background:{C.BG_PANEL};")
         outer.addWidget(body, 1)
         root = QVBoxLayout(body); root.setContentsMargins(10, 8, 10, 8); root.setSpacing(2)
+
+        # ── TYPE : à quoi sert l'image. Trois emplois d'un même asset (cf.
+        #    core/models/background.BG_KINDS) — le type gouverne les sections
+        #    ci-dessous et ce que le canvas superpose. Convertible sur place :
+        #    un décor qu'on décide d'employer en cadre est le même PNG.
+        kind_row = QHBoxLayout(); kind_row.setContentsMargins(0, 2, 0, 2); kind_row.setSpacing(6)
+        self._kind_btns: dict[str, QPushButton] = {}
+        for k, tip in ((KIND_SCENE, "Scene decor — placed as a layer, repainted per tile"),
+                       (KIND_UI, "Interface — fills a UI panel as a stretchable frame "
+                                 "or a plain image"),
+                       (KIND_ANIMATED, "Animation sheet — cut into frames and dropped "
+                                       "onto another background")):
+            b = self._mode_btn({KIND_SCENE: "Scene", KIND_UI: "UI",
+                                KIND_ANIMATED: "Animated"}[k], tip)
+            b.clicked.connect(lambda _=False, kk=k: self._set_kind(kk))
+            kind_row.addWidget(b, 1)
+            self._kind_btns[k] = b
+        root.addLayout(kind_row)
+        W.separator(root)
 
         # ── MODE COULEUR : deux axes ORTHOGONAUX. Layout (tuilé/bitmap) ×
         #    profondeur (4/8/16 bpp) ; certaines combinaisons n'existent pas sur
@@ -266,6 +428,89 @@ class BgPropertiesPanel(QWidget):
         # _validation_lines. Le PNG source n'est jamais modifié : ces messages
         # décrivent seulement la représentation GBA.
         W.separator(root)
+
+        # ── UI ROLE (kind == ui) : comment le panneau étale l'image ──
+        #    Deux façons, et une seule paire de valeurs pour les deux côtés :
+        #    ce champ EST `UIPanel.fill_kind` (cf. UI_ROLES). Les marges ne
+        #    comptent qu'en cadre étirable, et se règlent aussi au canvas — les
+        #    champs et les guides écrivent le même modèle.
+        self._ui_widgets: list = []
+        self._ui_sep = W.separator(root)
+        self._ui_title = W.section("UI ROLE", root)
+        role_row = QHBoxLayout(); role_row.setContentsMargins(0, 2, 0, 2); role_row.setSpacing(6)
+        self._btn_nine = self._mode_btn(
+            "Nine-slice", "Stretchable frame: fixed corners, repeated edges and center")
+        self._btn_plain = self._mode_btn(
+            "Background", "Plain image, laid top-left and cropped to the panel")
+        self._btn_nine.clicked.connect(lambda: self._set_ui_role(UI_ROLE_NINE))
+        self._btn_plain.clicked.connect(lambda: self._set_ui_role(UI_ROLE_BG))
+        role_row.addWidget(self._btn_nine, 1); role_row.addWidget(self._btn_plain, 1)
+        root.addLayout(role_row)
+
+        self._slice_spins: dict[str, QSpinBox] = {}
+        slice_host = QWidget(); slice_host.setStyleSheet("background:transparent;")
+        srow = QHBoxLayout(slice_host); srow.setContentsMargins(0, 0, 0, 0); srow.setSpacing(4)
+        for field_name, lab in (("slice_left", "L"), ("slice_right", "R"),
+                                ("slice_top", "T"), ("slice_bottom", "B")):
+            t = QLabel(lab)
+            t.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+            t.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
+            t.setFixedWidth(14)
+            sp = QSpinBox()
+            sp.setFont(QFont(T.MONO, T.SM))
+            sp.setStyleSheet(QSS.spinbox)
+            sp.setRange(0, 512)
+            sp.setSingleStep(8)      # une tuile : le pas où la coupe existe vraiment
+            sp.setKeyboardTracking(False)
+            sp.valueChanged.connect(lambda v, f=field_name: self._on_slice(f, v))
+            srow.addWidget(t); srow.addWidget(sp, 1)
+            self._slice_spins[field_name] = sp
+        self._slice_row = W.row("Margins", slice_host, root).parentWidget()
+        self._ui_widgets = [self._ui_sep, self._ui_title, self._slice_row]
+
+        # ── ANIMATION (kind == animated) ─────────────────────────────
+        #    Découpe en GRILLE + vitesse en ticks 60 Hz (l'unité de
+        #    `AnimState.speed` — animer un décor se lit comme animer un sprite).
+        self._anim_sep = W.separator(root)
+        self._anim_title = W.section("ANIMATION", root)
+        frame_host = QWidget(); frame_host.setStyleSheet("background:transparent;")
+        frow = QHBoxLayout(frame_host); frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(4)
+        self._frame_spins: dict[str, QSpinBox] = {}
+        for field_name, lab in (("frame_w", "W"), ("frame_h", "H")):
+            t = QLabel(lab)
+            t.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+            t.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
+            t.setFixedWidth(14)
+            sp = QSpinBox()
+            sp.setFont(QFont(T.MONO, T.SM))
+            sp.setStyleSheet(QSS.spinbox)
+            sp.setRange(0, 1024)
+            sp.setSingleStep(8)
+            sp.setSpecialValueText("full")   # 0 = pas de découpe : une seule frame
+            sp.setKeyboardTracking(False)
+            sp.valueChanged.connect(lambda v, f=field_name: self._on_frame_size(f, v))
+            frow.addWidget(t); frow.addWidget(sp, 1)
+            self._frame_spins[field_name] = sp
+        self._frame_row = W.row("Frame", frame_host, root).parentWidget()
+
+        self._speed = QSpinBox()
+        self._speed.setFont(QFont(T.MONO, T.SM))
+        self._speed.setStyleSheet(QSS.spinbox)
+        self._speed.setRange(1, 255)
+        self._speed.setSuffix(" ticks")
+        self._speed.setToolTip("Ticks (1/60 s) between two frames — same unit as a "
+                               "sprite animation speed.")
+        self._speed.setKeyboardTracking(False)
+        self._speed.valueChanged.connect(self._on_speed)
+        self._speed_row = W.row("Speed", self._speed, root).parentWidget()
+
+        self._chk_loop = QCheckBox("Loop")
+        self._chk_loop.setFont(QFont(T.UI, T.SM))
+        self._chk_loop.setStyleSheet(f"color:{C.TEXT_NORM};")
+        self._chk_loop.toggled.connect(self._on_loop)
+        root.addWidget(self._chk_loop)
+        self._anim_widgets = [self._anim_sep, self._anim_title, self._frame_row,
+                              self._speed_row, self._chk_loop]
 
         # ── PALETTES : grille unifiée (modèle Scene Inspector). Palettes dérivées
         #    du PNG grisées + overridables (clic = pointer une banque du catalogue,
@@ -419,14 +664,121 @@ class BgPropertiesPanel(QWidget):
         self._ba.dither = on
         self.recompress_requested.emit(self._ba, ap, tok, on)
 
+    # ── Type de fond & sections dépendantes ───────────────────────
+
+    def _set_kind(self, kind: str):
+        """Convertit l'asset — même PNG, même compression, autre emploi. Le
+        finder re-trie (l'asset change de section) et le canvas change ce qu'il
+        superpose."""
+        if self._blocking or not self._ba or not self._project:
+            self._refresh_kind_buttons(); return
+        if self._ba.kind == kind:
+            self._refresh_kind_buttons(); return
+        self._ba.kind = kind
+        self._persist_bg()
+        self.kind_changed.emit()
+
+    def _refresh_kind_buttons(self):
+        kind = self._ba.kind if self._ba else KIND_SCENE
+        self._blocking = True
+        for k, b in self._kind_btns.items():
+            b.setChecked(k == kind)
+            b.setEnabled(self._ba is not None)
+        self._blocking = False
+
+    def _refresh_kind_sections(self):
+        """Montre la section propre au type courant. Un fond n'a qu'un emploi :
+        empiler les trois panneaux ferait chercher lequel s'applique."""
+        kind = self._ba.kind if self._ba else KIND_SCENE
+        is_ui = self._ba is not None and kind == KIND_UI
+        is_anim = self._ba is not None and kind == KIND_ANIMATED
+        for w in self._ui_widgets:
+            w.setVisible(is_ui)
+        # Les marges ne veulent rien dire pour une image simplement posée.
+        self._slice_row.setVisible(is_ui and self._ba.ui_role == UI_ROLE_NINE)
+        for w in self._anim_widgets:
+            w.setVisible(is_anim)
+        self._blocking = True
+        if is_ui:
+            self._btn_nine.setChecked(self._ba.ui_role == UI_ROLE_NINE)
+            self._btn_plain.setChecked(self._ba.ui_role == UI_ROLE_BG)
+            for f, sp in self._slice_spins.items():
+                sp.setValue(int(getattr(self._ba, f, 0)))
+        if is_anim:
+            for f, sp in self._frame_spins.items():
+                sp.setValue(int(getattr(self._ba, f, 0)))
+            self._speed.setValue(max(1, int(self._ba.speed)))
+            self._chk_loop.setChecked(bool(self._ba.loop))
+        self._blocking = False
+
+    # ── kind == ui ────────────────────────────────────────────────
+
+    def _set_ui_role(self, role: str):
+        if self._blocking or not self._ba:
+            self._refresh_kind_sections(); return
+        if self._ba.ui_role != role:
+            self._ba.ui_role = role
+            self._persist_bg()
+        self._refresh_kind_sections()
+        self._emit_overlays()
+        self.geometry_changed.emit()
+
+    def _on_slice(self, field_name: str, value: int):
+        if self._blocking or not self._ba:
+            return
+        setattr(self._ba, field_name, int(value))
+        self._persist_bg()
+        self._emit_overlays()
+        self.geometry_changed.emit()
+
+    def set_slice_margins(self, margins: dict):
+        """Marges posées depuis le CANVAS (glissement d'un guide). Le canvas a
+        déjà écrit le modèle : on ne fait que réaligner les champs, sans
+        repersister ni réémettre — sinon chaque pixel de glissement rebouclerait
+        sur le canvas qui l'a produit."""
+        self._blocking = True
+        for f, v in margins.items():
+            sp = self._slice_spins.get(f)
+            if sp is not None:
+                sp.setValue(int(v))
+        self._blocking = False
+        self._emit_overlays()
+
+    # ── kind == animated ──────────────────────────────────────────
+
+    def _on_frame_size(self, field_name: str, value: int):
+        if self._blocking or not self._ba:
+            return
+        setattr(self._ba, field_name, max(0, int(value)))
+        self._persist_bg()
+        self._emit_overlays()
+        self.geometry_changed.emit()
+
+    def _on_speed(self, value: int):
+        if self._blocking or not self._ba:
+            return
+        self._ba.speed = max(1, int(value))
+        self._persist_bg()
+        self._emit_overlays()
+        self.geometry_changed.emit()
+
+    def _on_loop(self, on: bool):
+        if self._blocking or not self._ba:
+            return
+        self._ba.loop = bool(on)
+        self._persist_bg()
+        self.geometry_changed.emit()
+
     def load(self, ba, project):
         self._project, self._ba = project, ba
         self._blocking = True
         if ba:
-            self._header.set_header("background", "BACKGROUND", ba.name)
+            self._header.set_header("background", ba.kind_label().upper(), ba.name)
         else:
             self._header.set_header("empty", "", "")
         self._blocking = False
+        self._refresh_kind_buttons()
+        self._refresh_kind_sections()
         self._refresh_mode_buttons()
         self._reload_palettes()   # émet aussi les overlays (infos + warnings)
 
@@ -459,7 +811,33 @@ class BgPropertiesPanel(QWidget):
             lines.append(f"Unique tiles: {len(ba.tileset)} / {budget}  ({ba.bpp}bpp)")
             lines.append("Palette: 256 colors (1)" if ba.bpp == 8
                          else f"Palettes: {len(ba.palettes)} / 16")
+        lines += self._kind_info_lines(ba)
         return lines
+
+    def _kind_info_lines(self, ba) -> list:
+        """Ce que le TYPE ajoute à la description. Les grandeurs dérivées vivent
+        ici plutôt que dans un champ grisé de l'inspecteur : elles se recalculent
+        à chaque frappe, et un champ qu'on ne peut pas éditer n'a rien à faire
+        au milieu de ceux qu'on édite."""
+        if ba.kind == KIND_UI:
+            if ba.ui_role != UI_ROLE_NINE:
+                return ["UI: plain background — laid top-left, cropped to the panel"]
+            l, r, t, b = ba.slice_margins()
+            tl, tr, tt, tb = ba.slice_margins_tiles()
+            return [f"UI: nine-slice — margins {l}/{r}/{t}/{b} px",
+                    f"At build: {tl}/{tr}/{tt}/{tb} tiles"]
+        if ba.kind == KIND_ANIMATED:
+            cols, rows = ba.frame_grid()
+            fw, fh = ba.frame_size()
+            n = ba.frame_count()
+            secs = ba.duration_frames() / 60.0
+            return [f"Frames: {n}  ({cols}×{rows} grid of {fw}×{fh} px)",
+                    f"Cycle: {ba.speed} ticks/frame · {secs:.2f}s"
+                    + ("" if ba.loop else " · once")]
+        if ba.animations:
+            n = len(ba.animations)
+            return [f"Animations placed: {n}"]
+        return []
 
     def _source_info(self, ba) -> tuple[bool, int, bool]:
         """(indexed, n_colors, capped) du PNG source — mis en cache dans
@@ -498,10 +876,41 @@ class BgPropertiesPanel(QWidget):
                 ba.diagnostics = {}
         return ba.diagnostics or {}
 
+    def _kind_validation_lines(self, ba) -> list:
+        """Alertes que le TYPE ajoute — toutes non bloquantes, et toutes portant
+        sur un écart entre ce que l'auteur a réglé et ce que le matériel rendra."""
+        warn, err = C.ACCENT_YLW, C.ACCENT_RED
+        out: list = []
+        if ba.kind in (KIND_UI, KIND_ANIMATED) and ba.mode == "bitmap":
+            out.append((f"⚠ Bitmap (Mode 4) — a {ba.kind_label().lower()} needs "
+                        "tiles; switch to Tiled.", err))
+            return out
+        if ba.kind == KIND_UI and ba.ui_role == UI_ROLE_NINE:
+            odd = [n for n, m in zip("LRTB", ba.slice_margins()) if m % 8]
+            if odd:
+                out.append(("⚠ Margin " + "/".join(odd) + " is not a multiple of 8 — "
+                            "rounded down to the tile at build.", warn))
+            l, r, t, b = ba.slice_margins()
+            iw, ih = ba.pixel_size()
+            if iw and (l + r > iw or t + b > ih):
+                out.append(("⚠ Opposite margins overlap — corners will be "
+                            "squeezed on small panels.", warn))
+        if ba.kind == KIND_ANIMATED:
+            if ba.frame_count() <= 0:
+                out.append(("⚠ Frame larger than the sheet — no frame to play.", err))
+            elif not ba.frame_grid_is_exact():
+                cols, rows = ba.frame_grid()
+                fw, fh = ba.frame_size()
+                iw, ih = ba.pixel_size()
+                out.append((f"⚠ {iw}×{ih} not divisible by {fw}×{fh} — "
+                            f"{iw - cols * fw}×{ih - rows * fh} px left out.", warn))
+        return out
+
     def _validation_lines(self, ba) -> list:
         if not ba or not (ba.tileset or ba.bitmap):
             return [("⚠ Compression impossible — unreadable or empty image.", C.ACCENT_RED)]
         warn, err, ok = C.ACCENT_YLW, C.ACCENT_RED, C.POWER
+        kind_lines = self._kind_validation_lines(ba)
         if ba.mode == "bitmap":
             diag = self._diag_for(ba)
             lines: list = []
@@ -510,9 +919,9 @@ class BgPropertiesPanel(QWidget):
             tc = diag.get("total_colors", 0)
             if tc == -1 or tc > 255:
                 lines.append(("⚠ &gt; 256 colors — reduced to 256 (lossy).", warn))
-            if not lines:
+            if not lines and not kind_lines:
                 lines.append(("✓ GBA bitmap (Mode 4) — full screen, no tile loss.", ok))
-            return lines
+            return kind_lines + lines
         diag = self._diag_for(ba)
         lines: list = []
         if diag and not diag.get("multiple_of_8", True):
@@ -537,9 +946,11 @@ class BgPropertiesPanel(QWidget):
         fits, bud = bg_fits_vram(ba.tileset, budget=budget)
         if not fits:
             lines.append((f"⚠ {len(ba.tileset)} unique tiles &gt; {bud} — exceeds VRAM ({ba.bpp}bpp).", err))
-        if not lines:
+        if not lines and not kind_lines:
             lines.append((f"✓ GBA-compatible ({ba.bpp}bpp) — compressed losslessly.", ok))
-        return lines
+        # Les alertes du TYPE d'abord : elles portent sur un réglage que l'auteur
+        # vient de poser, celles de la compression sur ce que le PNG impose.
+        return kind_lines + lines
 
     # ── Section PALETTES ──────────────────────────────────────────
 
@@ -769,6 +1180,16 @@ class BackgroundEditorScreen(QWidget):
         # Mutation de la liste des palettes → re-render du canvas (sa bande de
         # peinture en tête se reconstruit alors depuis ba.palettes).
         self._props.palettes_changed.connect(self._canvas.reload)
+        # Type changé : l'asset passe d'une section du finder à l'autre, et le
+        # canvas change ce qu'il superpose (guides de coupe / grille de frames).
+        self._props.kind_changed.connect(self._on_kind_changed)
+        # Découpe (marges de coupe, taille de frame, vitesse) → le canvas
+        # redessine ses guides et rejoue l'animation au nouveau rythme.
+        self._props.geometry_changed.connect(self._canvas.reload_geometry)
+        # Chemin INVERSE : un guide glissé au canvas écrit le modèle, l'inspecteur
+        # ne fait que réaligner ses champs (cf. set_slice_margins).
+        self._canvas.slices_dragged.connect(self._props.set_slice_margins)
+        self._canvas.placements_changed.connect(self._on_placements_changed)
         # Infos read-only + warnings → overlays du canvas (bas-gauche / haut-droite).
         self._props.overlays_changed.connect(self._canvas.set_overlays)
         # (Re)compression demandée par l'inspecteur (algo / remplacer / restaurer)
@@ -846,11 +1267,23 @@ class BackgroundEditorScreen(QWidget):
         if ba:
             self._finder.refresh(select=ba.name)
 
-    def _on_import(self):
+    def _on_kind_changed(self):
+        ba = self._props._ba
+        if ba:
+            self._finder.refresh(select=ba.name)
+
+    def _on_placements_changed(self):
+        """Un fond animé posé, déplacé ou retiré : l'inspecteur n'en montre que
+        le compte, mais c'est ce compte qui dit à l'auteur que son geste a pris."""
+        self._props._emit_overlays()
+
+    def _on_import(self, kind: str = KIND_SCENE):
         if not self._project:
             return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Importer un fond", "", "Images (*.png *.bmp)")
+        title = {KIND_SCENE: "Import a background",
+                 KIND_UI: "Import a UI background",
+                 KIND_ANIMATED: "Import an animation sheet"}.get(kind, "Import a background")
+        path, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png *.bmp)")
         if not path:
             return
         dst = self._project.import_asset(Path(path), "backgrounds")
@@ -860,6 +1293,10 @@ class BackgroundEditorScreen(QWidget):
             from core.project import BackgroundAsset
             ba = BackgroundAsset(name=name, asset=dst.name)
             self._project.backgrounds.append(ba)
+        # Le type vient du « + » sur lequel on a cliqué : la section où l'auteur
+        # range l'image dit son emploi mieux que n'importe quelle heuristique
+        # (rien dans les pixels ne distingue un cadre de dialogue d'un décor).
+        ba.kind = kind
         # Auto-détection unifiée (pivot indexé/non-indexé) : profondeur ← couleurs,
         # layout tuilé/bitmap ← unicité des tuiles.
         from core.bg_import import detect_import_mode
@@ -870,9 +1307,25 @@ class BackgroundEditorScreen(QWidget):
                 QMessageBox.information(self, "Import", d["warning"])
         except Exception:
             token = "tiled4"
+        if kind != KIND_SCENE and token.startswith("bitmap"):
+            # Un cadre et une planche de frames sont des TUILES : le Mode 4 n'a
+            # pas de tilemap où répéter un bord ni où poser une frame. On garde
+            # la profondeur détectée et on retombe sur le layout tuilé, plutôt
+            # que d'importer un asset que rien ne saura dessiner.
+            token = "tiled8"
         # Sélectionner immédiatement (canvas vide + « Compression… ») puis
         # compresser hors-thread — l'éditeur n'est jamais bloqué.
         self._finder.refresh(select=ba.name)
         self._compress_async(
             ba, dst, token, ba.quantize_method, ba.dither,
-            then=lambda: self._on_selected(ba))
+            then=lambda: self._after_import(ba))
+
+    def _after_import(self, ba):
+        """Réglages qui ne peuvent se poser qu'une fois la taille CONNUE — donc
+        après la compression, qui est ce qui la fixe."""
+        if ba.kind == KIND_ANIMATED and not (ba.frame_w or ba.frame_h):
+            from core.models.background import guess_frame_size
+            ba.frame_w, ba.frame_h = guess_frame_size(*ba.pixel_size())
+            with get_dispatcher().suspended():
+                self._project.backgrounds.save(ba)
+        self._on_selected(ba)

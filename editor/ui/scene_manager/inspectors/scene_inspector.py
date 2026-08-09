@@ -11,6 +11,12 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 
 from core.project import Project, Scene, OWN_PAL_BANK, WindowSlot
+from core.models.scene import (
+    BLEND_NONE, BLEND_ALPHA, BLEND_BRIGHTEN, BLEND_DARKEN,
+    BLEND_TOP, BLEND_BOTTOM, BLEND_NEEDS_BOTTOM, blend_role_of,
+    EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE, EFFECT_TRANSLUCENT,
+    EFFECT_CUSTOM, blend_effect_of, blend_amount_of, apply_blend_effect,
+)
 from core.asset_manager import BgLayerRow
 from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
@@ -21,6 +27,53 @@ from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup, NotesEdit
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from ui.common import icons
+
+
+# ── Blending — libellés ───────────────────────────────────────────
+# Les QUATRE modes du matériel, pas un de plus : `BLDCNT` bits 6-7 n'en code
+# que quatre. Pas de « multiply » ni d'« overlay » — les proposer promettrait
+# un rendu que la GBA ne sait pas produire.
+_BLEND_LABELS = [
+    (BLEND_NONE,     "Normal (no blending)"),
+    (BLEND_ALPHA,    "Alpha (mix with what is behind)"),
+    (BLEND_BRIGHTEN, "Brighten (fade to white)"),
+    (BLEND_DARKEN,   "Darken (fade to black)"),
+]
+_BLEND_ROLE_LABELS = [
+    ("",           "—"),
+    (BLEND_TOP,    "Top (blended)"),
+    (BLEND_BOTTOM, "Bottom (behind)"),
+]
+
+# Ce à quoi on PENSE, par-dessus les registres. « Custom » n'est jamais choisi :
+# c'est ce que l'inspecteur affiche quand le réglage a été composé à la main,
+# et le sélectionner ne réécrit rien (cf. models/scene.apply_blend_effect).
+_EFFECT_LABELS = [
+    (EFFECT_NONE,        "None"),
+    (EFFECT_FADE_BLACK,  "Fade to black (whole screen)"),
+    (EFFECT_FADE_WHITE,  "Fade to white (whole screen)"),
+    (EFFECT_TRANSLUCENT, "Translucent layer"),
+    (EFFECT_CUSTOM,      "Custom (set in Hardware)"),
+]
+# Ce que le pourcentage veut dire, par effet — le libellé change avec lui :
+# « 100 % » ne dit pas la même chose d'un fondu et d'une opacité.
+_AMOUNT_LABELS = {
+    EFFECT_FADE_BLACK:  ("Darkness:", "0 = untouched, 100 = fully black"),
+    EFFECT_FADE_WHITE:  ("Whiteness:", "0 = untouched, 100 = fully white"),
+    EFFECT_TRANSLUCENT: ("Opacity:", "Opacity of the marked layer — 100 = opaque, "
+                                     "so nothing shows through"),
+}
+# Le matériel ne connaît que 17 crans (0-16) : un pourcentage tapé se recale sur
+# le plus proche. Le dire, sinon « 40 » qui devient « 38 » passe pour un bug.
+_AMOUNT_QUANTIZED = ("<br><br>Snaps to the hardware's 17 steps (0-16), so the "
+                     "value may shift by a percent or two.")
+# Où un effet FRAÎCHEMENT choisi se pose. À mi-course : assez pour se voir dans
+# le canvas, jamais au point d'éteindre l'écran au moment du clic.
+_EFFECT_DEFAULT_AMOUNT = {
+    EFFECT_FADE_BLACK: 50,
+    EFFECT_FADE_WHITE: 50,
+    EFFECT_TRANSLUCENT: 50,
+}
 
 
 class _ScenePaletteCmd(Command):
@@ -214,6 +267,9 @@ class _WindowSlotRow(QFrame):
 class SceneInspector(QWidget):
     changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
+    # Le mélange a changé — le canvas doit RECOMPOSER ses pixmaps, pas
+    # seulement se redessiner. Distinct de `changed`, cf. `_emit_blend_changed`.
+    blend_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -463,6 +519,148 @@ class SceneInspector(QWidget):
 
         cl.addWidget(win_card)
 
+        # ── Carte Blending ─────────────────────────────────────────
+        # DEUX niveaux, et le premier suffit presque toujours.
+        #
+        # Devant : un EFFET (fondu au noir, fondu au blanc, layer translucide)
+        # et un pourcentage. C'est ce à quoi les gens pensent, et ça pose les
+        # cibles d'office — y compris le backdrop, dont l'oubli est la panne
+        # n°1 du blending GBA.
+        #
+        # Derrière, replié : les registres eux-mêmes (BLDCNT/BLDALPHA/BLDY),
+        # pour composer ce que les trois effets ne couvrent pas — cibles
+        # partielles, EVA+EVB > 16 pour un halo saturé. Un réglage fait là
+        # ressort en « Custom » et n'est jamais réécrit par l'effet.
+        blend_card, blend_inner = _card(C.ACCENT_BLU)
+        blend_inner.addWidget(_card_title("BLENDING", C.ACCENT_BLU))
+
+        eff_row = QHBoxLayout(); eff_row.setContentsMargins(0, 0, 0, 0); eff_row.setSpacing(8)
+        lbl_eff = self._dim_label("Effect:")
+        lbl_eff.setFixedWidth(70)
+        self._combo_effect = QComboBox()
+        self._combo_effect.setFont(QFont(T.UI, T.MD))
+        self._combo_effect.setStyleSheet(QSS.combobox)
+        for eff, lab in _EFFECT_LABELS:
+            self._combo_effect.addItem(lab, eff)
+        self._combo_effect.setToolTip(
+            "<b>Fade to black / white</b> — the whole screen, for a transition.<br>"
+            "<b>Translucent layer</b> — one layer mixed with what is behind it;<br>"
+            "mark which one with the ▲ button on its row.<br><br>"
+            "The hardware has one blend mode for the entire screen, so these<br>"
+            "are exclusive. Open <i>Hardware</i> below to compose something else."
+        )
+        self._combo_effect.currentIndexChanged.connect(self._on_blend_effect)
+        eff_row.addWidget(lbl_eff)
+        eff_row.addWidget(self._combo_effect, 1)
+        blend_inner.addLayout(eff_row)
+
+        amt_row = QHBoxLayout(); amt_row.setContentsMargins(0, 0, 0, 0); amt_row.setSpacing(8)
+        self._lbl_amount = self._dim_label("Amount:")
+        self._lbl_amount.setFixedWidth(70)
+        self._blend_amount = QSpinBox()
+        self._blend_amount.setRange(0, 100)
+        self._blend_amount.setSingleStep(5)
+        self._blend_amount.setSuffix(" %")
+        self._blend_amount.setFont(QFont(T.MONO, T.SM))
+        self._blend_amount.setStyleSheet(QSS.spinbox)
+        self._blend_amount.setKeyboardTracking(False)
+        self._blend_amount.valueChanged.connect(self._on_blend_amount)
+        amt_row.addWidget(self._lbl_amount)
+        amt_row.addWidget(self._blend_amount)
+        amt_row.addStretch(1)
+        self._amount_row = QWidget(); self._amount_row.setLayout(amt_row)
+        self._amount_row.setStyleSheet("background:transparent;")
+        blend_inner.addWidget(self._amount_row)
+
+        self._blend_hint = QLabel("")
+        self._blend_hint.setFont(QFont(T.UI, T.XS))
+        self._blend_hint.setWordWrap(True)
+        self._blend_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
+        blend_inner.addWidget(self._blend_hint)
+
+        # ── Repli « Hardware » : les registres tels quels ──────────
+        self._btn_blend_adv = W.btn_ghost("Hardware ▸")
+        self._btn_blend_adv.setFont(QFont(T.UI, T.XS))
+        self._btn_blend_adv.setToolTip(
+            "The BLDCNT / BLDALPHA / BLDY registers as they are — for what the "
+            "three effects above do not cover.")
+        self._btn_blend_adv.clicked.connect(self._toggle_blend_adv)
+        blend_inner.addWidget(self._btn_blend_adv)
+
+        self._blend_adv = QWidget()
+        self._blend_adv.setStyleSheet("background:transparent;")
+        adv = QVBoxLayout(self._blend_adv)
+        adv.setContentsMargins(0, 2, 0, 0); adv.setSpacing(4)
+        self._blend_adv.setVisible(False)
+        blend_inner.addWidget(self._blend_adv)
+
+        bl_row = QHBoxLayout(); bl_row.setContentsMargins(0, 0, 0, 0); bl_row.setSpacing(8)
+        lbl_bl = self._dim_label("Mode:")
+        lbl_bl.setFixedWidth(70)
+        self._combo_blend = QComboBox()
+        self._combo_blend.setFont(QFont(T.UI, T.SM))
+        self._combo_blend.setStyleSheet(QSS.combobox)
+        for m, lab in _BLEND_LABELS:
+            self._combo_blend.addItem(lab, m)
+        self._combo_blend.setToolTip("BLDCNT bits 6-7 — one mode for the whole screen.")
+        self._combo_blend.currentIndexChanged.connect(self._on_blend_mode)
+        bl_row.addWidget(lbl_bl)
+        bl_row.addWidget(self._combo_blend, 1)
+        adv.addLayout(bl_row)
+
+        # Coefficients bruts — EVA/EVB pour l'alpha, EVY pour les fondus. Les
+        # trois existent toujours, seuls ceux qui AGISSENT se montrent.
+        self._blend_ev = {}
+        for key, lab, tip in (
+            ("eva", "EVA", "Weight of the top layer, 0-16 (16 = full)"),
+            ("evb", "EVB", "Weight of the layer behind, 0-16"),
+            ("evy", "EVY", "Fade intensity toward white or black, 0-16"),
+        ):
+            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
+            t = self._dim_label(lab + ":")
+            t.setFixedWidth(70)
+            sp = QSpinBox()
+            sp.setRange(0, 16)          # borne MATÉRIELLE : 5 bits, >16 vaut 16
+            sp.setFont(QFont(T.MONO, T.SM))
+            sp.setStyleSheet(QSS.spinbox)
+            sp.setKeyboardTracking(False)
+            sp.setToolTip(tip)
+            sp.valueChanged.connect(lambda v, k=key: self._on_blend_ev(k, v))
+            r.addWidget(t); r.addWidget(sp); r.addStretch(1)
+            holder = QWidget(); holder.setLayout(r)
+            holder.setStyleSheet("background:transparent;")
+            self._blend_ev[key] = (holder, sp)
+            adv.addWidget(holder)
+
+        # Sprites et backdrop sont deux cibles comme les layers, mais n'ont pas
+        # de ligne dans la liste des layers : leur rôle vit donc ici.
+        self._blend_extra = {}
+        for attr, lab, tip in (
+            ("blend_obj_role", "Sprites",
+             "Actors as a blend target — a sprite in semi-transparent OBJ mode "
+             "is a separate door and blends regardless of this."),
+            ("blend_backdrop_role", "Backdrop",
+             "The backdrop as the layer behind. This is what makes a blend "
+             "work over an empty area — with nothing behind, nothing blends."),
+        ):
+            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
+            t = self._dim_label(lab + ":")
+            t.setFixedWidth(70)
+            cb = QComboBox()
+            cb.setFont(QFont(T.UI, T.SM))
+            cb.setStyleSheet(QSS.combobox)
+            for role, rlab in _BLEND_ROLE_LABELS:
+                cb.addItem(rlab, role)
+            cb.setToolTip(tip)
+            cb.currentIndexChanged.connect(lambda _i, a=attr: self._on_blend_extra(a))
+            r.addWidget(t); r.addWidget(cb, 1)
+            holder = QWidget(); holder.setLayout(r)
+            holder.setStyleSheet("background:transparent;")
+            self._blend_extra[attr] = (holder, cb)
+            adv.addWidget(holder)
+
+        cl.addWidget(blend_card)
+
         # ── Carte Background Asset ────────────────────────────────
         bg_card, bg_inner = _card(C.ACCENT)
         self._bg_card = bg_card
@@ -558,7 +756,10 @@ class SceneInspector(QWidget):
         self._reload_ui_pal()
         self._rebuild_window_rows()
         self._refresh_backdrop()
+        # Après `_rebuild_bg_layers` (via _apply_mode_ui) : `_refresh_blend`
+        # pilote la visibilité du rôle sur chaque ligne, qui doit exister.
         self._apply_mode_ui()
+        self._refresh_blend()
         self._blocking = False
 
     def _mk_scroll_toggle(self, icon_key: str, tip: str) -> QToolButton:
@@ -765,6 +966,9 @@ class SceneInspector(QWidget):
             row.layer_swap_requested.connect(self._on_layer_swap)
             row.visibility_toggled.connect(self._on_layer_visibility)
             row.inpaint_layer_selected.connect(self._on_inpaint_layer)
+            row.blend_role_changed.connect(
+                lambda _, r, l=layer: self._on_layer_blend_role(l, r))
+            row.set_blend_role(blend_role_of(layer))
             row.set_visible_state(getattr(layer, "visible", True))
             row.set_inpaint_layer(layer.bg_slot == self._inpaint_layer_slot)
             self._bg_layers_container.addWidget(row)
@@ -772,7 +976,207 @@ class SceneInspector(QWidget):
 
         self._refresh_bound_rows()
         self._refresh_ui_layer_marks()
+        self._sync_layer_blend_rows()
         self._btn_bg_add.setEnabled(len(self._scene.background_layers) < 4)
+
+    # ── Blending ──────────────────────────────────────────────────
+    def _refresh_blend(self):
+        """Repose la carte BLENDING et n'y montre que ce qui AGIT.
+
+        Les modes 2 et 3 n'emploient que le dessus et lisent BLDY : afficher
+        EVA/EVB à côté laisserait composer un réglage sans effet, et chercher
+        ensuite pourquoi il n'en a pas."""
+        sc = self._scene
+        if sc is None:
+            return
+        mode = int(getattr(sc, "blend_mode", BLEND_NONE) or BLEND_NONE)
+        prev, self._blocking = self._blocking, True
+        try:
+            i = self._combo_blend.findData(mode)
+            self._combo_blend.setCurrentIndex(i if i >= 0 else 0)
+            for key, (holder, sp) in self._blend_ev.items():
+                sp.setValue(int(getattr(sc, f"blend_{key}", 0) or 0))
+            on = mode != BLEND_NONE
+            self._blend_ev["eva"][0].setVisible(mode == BLEND_ALPHA)
+            self._blend_ev["evb"][0].setVisible(mode == BLEND_ALPHA)
+            self._blend_ev["evy"][0].setVisible(mode in (BLEND_BRIGHTEN, BLEND_DARKEN))
+            for attr, (holder, cb) in self._blend_extra.items():
+                holder.setVisible(on)
+                j = cb.findData(getattr(sc, attr, "") or "")
+                cb.setCurrentIndex(j if j >= 0 else 0)
+                # « Dessous » n'a de sens qu'en alpha : le griser plutôt que de
+                # le retirer garde un choix déjà posé visible.
+                item = cb.model().item(2)
+                if item is not None:
+                    item.setEnabled(mode in BLEND_NEEDS_BOTTOM)
+            # ── Devant : l'effet et son pourcentage ────────────────
+            eff = blend_effect_of(sc)
+            k = self._combo_effect.findData(eff)
+            self._combo_effect.setCurrentIndex(k if k >= 0 else 0)
+            # « Custom » n'est proposé que lorsqu'on Y EST : c'est un constat,
+            # pas un choix — le sélectionner ne saurait pas quoi écrire.
+            item = self._combo_effect.model().item(len(_EFFECT_LABELS) - 1)
+            if item is not None:
+                item.setEnabled(eff == EFFECT_CUSTOM)
+            lab, tip = _AMOUNT_LABELS.get(eff, ("Amount:", ""))
+            self._lbl_amount.setText(lab)
+            self._blend_amount.setToolTip(tip + _AMOUNT_QUANTIZED if tip else "")
+            self._blend_amount.setValue(blend_amount_of(sc))
+            self._amount_row.setVisible(eff in _AMOUNT_LABELS)
+        finally:
+            self._blocking = prev
+        self._sync_layer_blend_rows()
+        self._refresh_blend_hint()
+
+    def _toggle_blend_adv(self):
+        """Déplie les registres. Le repli n'est pas un état de la scène : c'est
+        une préférence d'affichage, elle ne se sauvegarde pas."""
+        show = not self._blend_adv.isVisible()
+        self._blend_adv.setVisible(show)
+        self._btn_blend_adv.setText("Hardware ▾" if show else "Hardware ▸")
+
+    def _on_blend_effect(self, _i):
+        """Un effet POSE les cibles, pas seulement le mode — c'est tout
+        l'intérêt : le backdrop en seconde cible, qu'on oublie toujours, arrive
+        avec le reste."""
+        if self._blocking or not self._scene:
+            return
+        eff = self._combo_effect.currentData() or EFFECT_NONE
+        if eff == EFFECT_CUSTOM:
+            return
+        # Le pourcentage n'est repris QUE si l'effet ne change pas : les
+        # échelles ne sont pas comparables (100 % d'opacité = rien à voir, 100 %
+        # de fondu = écran noir). Sans ça, passer de l'alpha au fondu éteignait
+        # l'écran au moment même où on choisissait l'effet.
+        amount = (self._blend_amount.value() if blend_effect_of(self._scene) == eff
+                  else _EFFECT_DEFAULT_AMOUNT.get(eff, 50))
+        from core.history import get_history, SceneBlendCmd
+        get_history().push(SceneBlendCmd(
+            self._scene, eff, amount,
+            label=f"Blending — {self._combo_effect.currentText()}",
+            persist_fn=self._persist))
+        self._refresh_blend()
+        self._rebuild_layer_rows()      # les rôles ont changé sous les lignes
+        self._sync_layer_blend_rows()
+        self._emit_blend_changed()
+
+    def _on_blend_amount(self, pct: int):
+        if self._blocking or not self._scene:
+            return
+        eff = blend_effect_of(self._scene)
+        if eff not in _AMOUNT_LABELS:
+            return
+        from core.history import get_history, SceneBlendCmd
+        get_history().push(SceneBlendCmd(
+            self._scene, eff, int(pct),
+            label="Blending amount", persist_fn=self._persist))
+        self._emit_blend_changed()
+
+    def _sync_layer_blend_rows(self):
+        """État de mélange des lignes de layer. Appelé et par `_refresh_blend`
+        et par la reconstruction des lignes : une seule fonction, sinon les deux
+        chemins divergent au premier ajout de layer."""
+        sc = self._scene
+        if sc is None:
+            return
+        # Ce que la ligne propose découle de l'EFFET, pas du mode brut :
+        #   aucun effet        → rien à choisir ;
+        #   fondu d'écran      → tout est pris, rien à choisir non plus ;
+        #   layer translucide  → devant ↔ derrière, deux états ;
+        #   composé à la main  → les trois rôles du registre.
+        eff = blend_effect_of(sc)
+        ui_mode = {EFFECT_NONE: "hidden",
+                   EFFECT_FADE_BLACK: "hidden",
+                   EFFECT_FADE_WHITE: "hidden",
+                   EFFECT_TRANSLUCENT: "toggle"}.get(eff, "full")
+        for row, layer in zip(self._bg_layer_rows, sc.background_layers):
+            row.set_blend_role(blend_role_of(layer))
+            row.set_blend_ui(ui_mode)
+
+    def _refresh_blend_hint(self):
+        """Dit ce que la scène fera, ou pourquoi elle ne fera rien.
+
+        Les deux pannes muettes du blending GBA : un mode sans DESSUS (rien
+        n'est désigné comme mélangé) et un alpha sans DESSOUS (le mélange n'a
+        lieu que là où un pixel du dessus a un pixel du dessous derrière lui).
+        Les taire, c'est laisser chercher dans le mauvais registre."""
+        sc = self._scene
+        mode = int(getattr(sc, "blend_mode", BLEND_NONE) or BLEND_NONE)
+        if mode == BLEND_NONE:
+            self._blend_hint.setText("")
+            return
+        msgs = []
+        if not sc.blend_has_target(BLEND_TOP):
+            # Deux formulations pour la même panne : celle de l'effet dit le
+            # geste à faire, celle des registres dit ce qui manque. Un auteur
+            # qui n'a pas ouvert « Hardware » n'a pas à connaître le mot
+            # « cible » pour comprendre qu'il lui manque un clic.
+            if blend_effect_of(sc) == EFFECT_TRANSLUCENT:
+                msgs.append("Nothing is translucent yet — click the ▲ button on "
+                            "the layer you want to see through.")
+            else:
+                msgs.append("No <b>top</b> target: nothing is being blended, so "
+                            "this mode does nothing. Set a layer (or the "
+                            "sprites) to Top.")
+        elif mode in BLEND_NEEDS_BOTTOM and not sc.blend_has_target(BLEND_BOTTOM):
+            msgs.append("No <b>bottom</b> target: alpha only happens where a top "
+                        "pixel has a bottom pixel behind it. Set the layer behind "
+                        "— or the backdrop — to Bottom.")
+        self._blend_hint.setText("<br>".join(msgs))
+        self._blend_hint.setStyleSheet(
+            f"color:{C.ACCENT_YLW}; margin-top:2px;" if msgs
+            else f"color:{C.TEXT_DIM}; margin-top:2px;")
+
+    def _on_blend_mode(self, _i):
+        if self._blocking or not self._scene:
+            return
+        self._set_scene_field("blend_mode", int(self._combo_blend.currentData() or 0))
+        self._refresh_blend()
+        self._emit_blend_changed()
+
+    def _on_blend_ev(self, key: str, value: int):
+        if self._blocking or not self._scene:
+            return
+        self._set_scene_field(f"blend_{key}", int(value))
+        self._emit_blend_changed()
+
+    def _on_blend_extra(self, attr: str):
+        if self._blocking or not self._scene:
+            return
+        _holder, cb = self._blend_extra[attr]
+        self._set_scene_field(attr, cb.currentData() or "")
+        self._refresh_blend_hint()
+        self._emit_blend_changed()
+
+    def _on_layer_blend_role(self, layer, role: str):
+        if self._blocking or not self._scene:
+            return
+        from core.history import get_history, SetFieldCmd
+        old = blend_role_of(layer)
+        if old == role:
+            return
+        get_history().push(SetFieldCmd(
+            layer, "blend_role", old, role,
+            label=f"BG{layer.bg_slot} blend role", persist_fn=self._persist))
+        self._refresh_blend_hint()
+        self._emit_blend_changed()
+
+    def _emit_blend_changed(self):
+        """Le mélange change des PIXELS : le canvas doit recomposer.
+
+        Un signal DÉDIÉ et non `changed` : ce dernier part à chaque champ de
+        scène, et recomposer à chaque fois ferait payer la composition pour un
+        renommage. Le canvas y répond par `refresh_blend()`, qui ne relit aucun
+        fichier — c'est ce qui rend le curseur suivable."""
+        self.blend_changed.emit()
+
+    def _dim_label(self, text: str) -> QLabel:
+        """Libellé de champ en ton atténué — le pendant SceneInspector de celui
+        de `_WindowSlotRow`, qui appartient à cette autre classe."""
+        lbl = QLabel(text)
+        lbl.setFont(QFont(T.UI, T.XS))
+        lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+        return lbl
 
     def _persist_scene(self):
         if self._project and self._scene:

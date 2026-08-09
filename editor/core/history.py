@@ -80,6 +80,68 @@ class SetFieldCmd(Command):
         return False
 
 
+class SceneBlendCmd(Command):
+    """Applique un EFFET de mélange à une scène — mode, coefficients ET rôles
+    de tous ses layers d'un seul geste.
+
+    Une commande à part plutôt qu'une pile de `SetFieldCmd` : un effet touche
+    jusqu'à huit champs répartis sur la scène et ses layers, et huit entrées
+    d'historique pour un choix dans un menu rendraient l'annulation
+    incompréhensible. Le snapshot est pris AVANT application, ce qui couvre
+    uniformément le passage d'un effet à un autre et le retour à « aucun ».
+
+    Les réglages consécutifs du POURCENTAGE fusionnent (`merge`), comme les
+    frappes dans un champ de texte : tirer sur un pourcentage est un geste."""
+
+    _FIELDS = ("blend_mode", "blend_eva", "blend_evb", "blend_evy",
+               "blend_obj_role", "blend_backdrop_role")
+
+    def __init__(self, scene: Any, effect: str, amount: int,
+                 label: str = "", persist_fn=None):
+        self._scene = scene
+        self._effect = effect
+        self._amount = amount
+        self.label = label or "Blending"
+        self._persist = persist_fn
+        self._before = self._snapshot()
+
+    def _snapshot(self) -> tuple:
+        return (
+            {f: getattr(self._scene, f, None) for f in self._FIELDS},
+            [getattr(L, "blend_role", "") for L in self._scene.background_layers],
+        )
+
+    def _restore(self, snap: tuple):
+        fields, roles = snap
+        for f, v in fields.items():
+            setattr(self._scene, f, v)
+        for L, r in zip(self._scene.background_layers, roles):
+            L.blend_role = r
+
+    def execute(self):
+        from core.models.scene import apply_blend_effect
+        apply_blend_effect(self._scene, self._effect, self._amount)
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        self._restore(self._before)
+        if self._persist:
+            self._persist()
+
+    def merge(self, newer: "Command") -> bool:
+        # Même scène ET même effet : seul le pourcentage bouge. Un CHANGEMENT
+        # d'effet reste une entrée distincte — c'est une décision, pas un
+        # ajustement.
+        if not isinstance(newer, SceneBlendCmd):
+            return False
+        if self._scene is newer._scene and self._effect == newer._effect:
+            self._amount = newer._amount
+            self._persist = newer._persist
+            return True
+        return False
+
+
 class SwapFieldCmd(Command):
     """
     Échange la valeur d'un même champ entre deux objets (ex: bg_slot de deux

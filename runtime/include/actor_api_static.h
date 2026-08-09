@@ -212,6 +212,13 @@ extern void text_clear_in    (int region);
 extern int  text_reading     (int region);
 extern void text_skip        (int region);
 
+/* Images d'interface — un sprite à état posé sur la mise en page. Rien pour
+   créer ni déplacer : la géométrie est authorée, seul l'ÉTAT est au script. */
+extern void ui_image_set_state(int img, int state);
+extern void ui_image_play     (int img, int on);
+extern void ui_image_show     (int img, int on);
+extern int  ui_image_state    (int img);
+
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,
    3 vers le noir. */

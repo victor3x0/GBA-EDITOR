@@ -1,19 +1,31 @@
-"""UIRegion / UILayout — géométrie AUTHORÉE des zones de texte d'une scène.
+"""UILayout — géométrie AUTHORÉE des éléments d'interface d'une scène.
 
-**Une région ne dessine rien.** Elle dit *où* le texte se pose, jamais à quoi
-il ressemble — même contrat que la window matérielle (`WindowSlot`), qui est un
-pochoir et pas un cadre. C'est pour ça que le mot est « région » et non
+**Trois types, pas quatre.** Un `UIText` (là où du texte se pose), un `UIPanel`
+(le conteneur, seul à dessiner un fond) et un `UIImage` (un sprite à état).
+
+Le type « zone de texte » a existé à côté de `UIText` et a été RETIRÉ : les deux
+portaient la même géométrie, le même ancrage, la même allocation OBJ et la même
+entrée de `g_ui_regions`, et ne différaient que par l'écrivain — le script pour
+l'une, `scene_init` pour l'autre. Ce n'était pas deux types mais un type et un
+champ vide : un `UIText` sans `text_key` EST une zone que le script remplit.
+Deux widgets pour ça obligeaient à choisir avant de savoir, et à convertir
+ensuite. Cf. `UIText`.
+
+**Un élément de texte ne dessine rien.** Il dit *où* le texte se pose, jamais à
+quoi il ressemble — même contrat que la window matérielle (`WindowSlot`), qui
+est un pochoir et pas un cadre. C'est pour ça que le mot était « région » et non
 « frame » : dans GB Studio, `frame.png` EST l'image de bordure 9-slice, et le
 mot promettrait donc un dessin que le moteur ne fait pas. Le vocabulaire est
 celui que fixe ROADMAP v0.3.2 (« région, layer, tilemap — jamais dialogue,
 message, textbox ») ; `frame` collisionnerait de surcroît avec les frames
 d'animation (`Sprite.frame_w`) et la frame vidéo.
 
-**Ce qui reste au script.** La région porte la GÉOMÉTRIE, pas l'enchaînement :
-rien ici ne dit quel texte s'affiche quand, ni sur quel événement. Le Lua
-continue de décider (`text.draw("village_garde", "boite_bas")`) — c'est ce qui
-empêche cet objet de devenir un éditeur de dialogue par accident, refus tenu
-depuis ROADMAP v0.3.2.
+**Ce qui reste au script.** L'élément porte la GÉOMÉTRIE, pas l'enchaînement :
+rien ici ne dit quel texte s'affiche quand, ni sur quel événement. Un contenu
+authoré est posé une fois à l'init ; tout ce qui CHANGE reste au Lua
+(`text.draw_in("boite_bas", "village_garde")`) — c'est ce qui empêche cet objet
+de devenir un éditeur de dialogue par accident, refus tenu depuis ROADMAP
+v0.3.2.
 
 **L'ancrage n'est pas un champ libre : il contraint la mémoire.**
 
@@ -69,27 +81,27 @@ TARGETS = (TARGET_BG, TARGET_OBJ)
 ALIGNS = ("left", "center", "right")
 
 # ── Types d'élément ───────────────────────────────────────────────
-# Une mise en page contient désormais PLUSIEURS types dans une seule liste
-# ordonnée (`UILayout.elements`) — l'ordre fixe l'empilement (z-order) et l'ordre
-# des frères dans l'arbre. Chaque type porte un `kind` (sérialisé) et une
-# capacité `can_contain` : seul un conteneur accueille des enfants, une feuille
-# (texte, zone) jamais. Le « root » n'est pas un type : c'est le RÔLE d'un
-# élément de premier niveau, qui porte alors l'ancrage de son sous-arbre.
-KIND_REGION = "region"   # zone de texte RUNTIME (script écrit dedans) — feuille
+# Une mise en page contient PLUSIEURS types dans une seule liste ordonnée
+# (`UILayout.elements`) — l'ordre fixe l'empilement (z-order) et l'ordre des
+# frères dans l'arbre. Chaque type porte un `kind` (sérialisé) et une capacité
+# `can_contain` : seul un conteneur accueille des enfants, une feuille (texte,
+# image) jamais. Le « root » n'est pas un type : c'est le RÔLE d'un élément de
+# premier niveau, qui porte alors l'ancrage de son sous-arbre.
 KIND_PANEL  = "panel"    # conteneur qui peut dessiner un FOND ; racine = ancrage
-KIND_TEXT   = "text"     # texte AUTHORÉ (clé de table) — feuille
+KIND_TEXT   = "text"     # texte (authoré ET/OU écrit par un script) — feuille
+KIND_IMAGE  = "image"    # sprite à état posé sur l'interface — feuille
+
+# `kind` HÉRITÉ de l'ancienne « zone de texte », gardé pour la seule relecture
+# des fichiers d'avant la fusion : il se désérialise en `UIText` (cf.
+# `_ELEMENT_FROM_DICT`) et n'est jamais réécrit. Aucun code neuf ne doit le
+# tester — un élément lu depuis un vieux JSON ressort avec `kind == KIND_TEXT`.
+KIND_REGION = "region"
 
 # Types qui occupent une entrée de `g_ui_regions`, c'est-à-dire qui ont une
-# géométrie où du texte se pose. Zone et texte authoré ne diffèrent QUE par
-# l'écrivain : le script pour l'une, le build pour l'autre (`scene_init` émet le
-# `text_draw_in` que le script aurait écrit). Le runtime n'a aucune raison de
-# les distinguer — deux structures dupliqueraient rendu, alignement, ancrage et
-# allocation OBJ.
-#
-# Conséquence assumée et voulue : un texte authoré est ADRESSABLE depuis un
-# script (son nom entre donc dans l'espace `REGION_*`), donc remplaçable en
-# cours de jeu sans le convertir en zone.
-KIND_SLOTS = (KIND_REGION, KIND_TEXT)
+# géométrie où du TEXTE se pose. Un seul depuis la fusion — le tuple reste
+# parce que les appelants disent « est-ce un slot de texte ? » et non « est-ce
+# un UIText ? », et qu'une image, elle, occupe sa propre table.
+KIND_SLOTS = (KIND_TEXT,)
 
 # ── Fonds de conteneur ────────────────────────────────────────────
 # Le fond d'un `UIPanel` est un champ polymorphe (« à quoi ressemble la zone »),
@@ -213,22 +225,41 @@ def _clamp_color(v) -> int:
 
 
 @dataclass
-class UIRegion(RectGeometryMixin):
-    """Une zone de texte de la mise en page.
+class UIText(RectGeometryMixin):
+    """Un emplacement de TEXTE de la mise en page — feuille (jamais parent).
 
-    `w` est aussi la largeur de coupe : `text_draw_box` prend un `wrap`, et le
-    dupliquer dans un champ séparé garantirait qu'un jour les deux divergent.
+    **Un seul type pour les deux façons d'y écrire.** `text_key` pointe une
+    entrée de la table : renseignée, le build pose le contenu à l'init
+    (`scene_init` émet le `text_draw_in`) ; vide, l'élément est un emplacement
+    que le script remplit quand il veut (`text.draw_in`). Rien n'interdit les
+    deux — le dernier écrivain gagne, et c'est exactement ce qu'on veut pour un
+    libellé par défaut qu'un script remplace.
+
+    C'est ce qui a fait disparaître le type « zone de texte » : il n'apportait
+    que « ce champ est vide », au prix d'un widget de plus, d'un inspecteur de
+    plus, et d'une conversion à faire dès qu'on changeait d'avis.
+
+    Le contenu ne vit pas dans l'élément : il est dans la table, pour ne pas
+    dupliquer un littéral qui échapperait à l'édition centralisée, donc à la
+    traduction et à l'interpolation `$nom` ([[project-text-table]]).
+
+    **Le rectangle EST la largeur de coupe** — `text_draw_box` prenait un
+    `wrap`, et le dupliquer dans un champ séparé garantirait qu'un jour les deux
+    divergent. Un champ « multiligne » a existé ici et a été retiré pour la même
+    raison : il ne changeait que la façon de TRONQUER un texte trop long (au mot
+    plutôt qu'au pixel), pour le prix d'un second chemin de rendu. Le
+    débordement, lui, est signalé par le validateur.
     """
-    kind = KIND_REGION       # attribut de classe (pas un champ dataclass)
+    kind = KIND_TEXT         # attribut de classe (pas un champ dataclass)
     can_contain = False      # feuille : n'accueille jamais d'enfants
-    name:   str = "region"
+    name:   str = "text"
     # Nom de l'élément PARENT dans la même mise en page ("" = racine). L'arbre
-    # d'UI se DÉRIVE de ces refs, il ne se stocke pas : la liste `regions` reste
+    # d'UI se DÉRIVE de ces refs, il ne se stocke pas : la liste `elements` reste
     # plate, exactement comme la table de textes reste plate et l'arbre se
     # reconstruit des chemins (cf. TextTreePanel). Une ref pendante (parent
     # supprimé) est traitée comme racine, jamais comme une erreur. Le parent est
-    # cité par NOM et non par index : renommer une zone doit donc retargetter les
-    # enfants (`UILayout.retarget_parent`), comme un renommage de clé de texte.
+    # cité par NOM et non par index : renommer un élément doit donc retargetter
+    # les enfants (`UILayout.retarget_parent`), comme un renommage de clé.
     parent: str = ""
     anchor: str = ANCHOR_SCREEN
     anchor_actor: str = ""   # nom de l'Actor suivi — seulement si anchor == actor
@@ -236,8 +267,11 @@ class UIRegion(RectGeometryMixin):
     # à l'origine de l'acteur (donc signés) ; sinon une position absolue.
     x: int = 0
     y: int = 0
-    w: int = 240
-    h: int = 32
+    w: int = 96
+    h: int = 16
+    # Entrée de la table affichée ici. Renseignée = contenu AUTHORÉ, posé à
+    # l'init ; vide = emplacement que le script remplit. Cf. la docstring.
+    text_key: str = ""
     # "" = police par défaut de la scène. Nommer une police ici est ce qui rend
     # l'empreinte VRAM de la scène calculable (cf. font_emit.scene_text_tiles).
     font_name: str = ""
@@ -245,18 +279,20 @@ class UIRegion(RectGeometryMixin):
     # "" = cible dérivée de l'ancrage. Ne porte une valeur que lorsque l'auteur
     # a fait un choix RÉEL — donc jamais quand `forced_target()` tranche.
     target: str = ""
-    # Clé d'une entrée de la table, affichée dans le canvas à la place du vide.
-    # Sert à voir le débordement À LA CONCEPTION : le mesureur existe déjà
-    # (FontScreenPreview rejoue text_layout avec les vrais glyphes), il ne lui
-    # manquait qu'un rectangle contre lequel se mesurer.
+    # Texte de MESURE, éditeur seulement, jamais compilé : ce que le canvas pose
+    # dans le rectangle quand `text_key` est vide, pour voir le débordement à la
+    # conception. Le mesureur existe déjà (FontScreenPreview rejoue text_layout
+    # avec les vrais glyphes), il ne lui manquait qu'un rectangle contre lequel
+    # se mesurer. Sans objet dès qu'un contenu authoré est là — c'est lui qu'on
+    # mesure alors, et il est vrai.
     preview_text: str = ""
     # Couleur du texte posé ici — cf. TEXT_COLOR_INK.
     text_color: int = TEXT_COLOR_INK
-    # Budget de glyphes ANIMÉS — combien de caractères, au plus, cette zone peut
+    # Budget de glyphes ANIMÉS — combien de caractères, au plus, cet élément peut
     # sortir de la bande pour recevoir un effet par caractère.
     #
-    # DÉCLARÉ, jamais déduit : quel texte atterrit dans une zone est une décision
-    # de script, prise au runtime, et une portée d'effet (`{wave}…{/wave}`) change
+    # DÉCLARÉ, jamais déduit : quel texte y atterrit peut être une décision de
+    # script, prise au runtime, et une portée d'effet (`[wave]…[/wave]`) change
     # de longueur avec le texte. Le build ne peut donc pas les compter — il peut
     # seulement réserver ce que l'auteur annonce, et le runtime ÉCRÊTE au-delà
     # (les glyphes en trop rendent en statique dans la bande). Un effet qui
@@ -281,29 +317,42 @@ class UIRegion(RectGeometryMixin):
 
     def to_dict(self) -> dict:
         return {
-            "kind": KIND_REGION,
+            "kind": KIND_TEXT,
             "name": self.name, "parent": self.parent, "anchor": self.anchor,
             "text_color": self.text_color,
             "anchor_actor": self.anchor_actor,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+            "text_key": self.text_key,
             "font_name": self.font_name, "align": self.align,
             "target": self.target, "preview_text": self.preview_text,
             "animated_glyphs": self.animated_glyphs,
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "UIRegion":
+    def from_dict(cls, d: dict) -> "UIText":
+        """Relit AUSSI un `kind: "region"` d'avant la fusion — mêmes champs, le
+        `text_key` manquant valant "" (c'est précisément ce qui faisait d'une
+        zone une zone). `wrap` d'un fichier ancien est ignoré (cf. docstring) :
+        la relecture ne le rend pas, la prochaine sauvegarde ne le réécrit pas.
+
+        Les défauts de taille suivent le `kind` LU et non la classe : une zone
+        d'avant la fusion vaut 240×32 (une boîte basse), un texte 96×16 (une
+        ligne de libellé). Prendre un seul défaut redimensionnerait en silence
+        les éléments d'un fichier qui ne portait pas le champ."""
         anchor = d.get("anchor", ANCHOR_SCREEN)
         align  = d.get("align", "left")
         target = d.get("target", "")
+        was_region = d.get("kind") == KIND_REGION
         return cls(
-            name         = str(d.get("name", "region")),
+            name         = str(d.get("name", "region" if was_region else "text")),
             parent       = str(d.get("parent", "")),
             anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor = str(d.get("anchor_actor", "")),
             text_color   = _clamp_color(d.get("text_color", TEXT_COLOR_INK)),
-            x = int(d.get("x", 0)),   y = int(d.get("y", 0)),
-            w = int(d.get("w", 240)), h = int(d.get("h", 32)),
+            x = int(d.get("x", 0)), y = int(d.get("y", 0)),
+            w = int(d.get("w", 240 if was_region else 96)),
+            h = int(d.get("h", 32 if was_region else 16)),
+            text_key     = str(d.get("text_key", "")),
             font_name    = str(d.get("font_name", "")),
             align        = align if align in ALIGNS else "left",
             target       = target if target in TARGETS else "",
@@ -331,21 +380,21 @@ SURF_W = 30   # doit rester égal à TEXT_SURF_W (gba_engine.h)
 SURF_H = 8    # doit rester égal à TEXT_SURF_H
 
 
-def surface_cells(region: UIRegion) -> set[tuple[int, int]]:
+def surface_cells(region: "UIText") -> set[tuple[int, int]]:
     """Cases de la surface de composition qu'occupe la région."""
     tx, ty, tw, th = region.tile_rect()
     return {((tx + c) % SURF_W, (ty + r) % SURF_H)
             for r in range(th) for c in range(tw)}
 
 
-def surface_conflicts(regions) -> list[tuple[UIRegion, UIRegion]]:
+def surface_conflicts(regions) -> list[tuple["UIText", "UIText"]]:
     """Paires de régions BG qui se disputeraient les mêmes tuiles de surface.
 
     Ne filtre pas sur le mode de rendu de la police : l'appelant sait quelles
     régions sont compositées (`font_emit.render_composited`) et lui passe
     celles-là. Une région sans police nommée hérite de celle de la scène, que
     ce module ne connaît pas."""
-    out: list[tuple[UIRegion, UIRegion]] = []
+    out: list[tuple["UIText", "UIText"]] = []
     cells = [(r, surface_cells(r)) for r in regions]
     for i in range(len(cells)):
         for j in range(i + 1, len(cells)):
@@ -402,7 +451,7 @@ def strip_columns(w: int) -> list[int]:
     return out
 
 
-def strip_geometry(region: "UIRegion") -> dict:
+def strip_geometry(region: "UIText") -> dict:
     """Ce qu'une zone en cible OBJ consomme.
 
     `oam` = nombre de slots OAM, `tiles` = tuiles de VRAM OBJ. Les deux sont
@@ -423,14 +472,49 @@ def strip_geometry(region: "UIRegion") -> dict:
     }
 
 
-def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
+# ── Images : géométrie d'allocation ───────────────────────────────
+# Une image est UN sprite, pas une bande : sa frame a déjà une forme OAM légale
+# (VALID_FRAME_SIZES l'impose au Sprite Editor), donc un seul slot suffit et il
+# n'y a rien à paver.
+#
+# **Toutes les frames de toutes les directions sont résidentes**, pas seulement
+# celles de l'état déclaré. Un script peut basculer d'état à n'importe quelle
+# frame (c'est la raison d'être du widget) ; recopier des tuiles depuis la ROM
+# à cet instant-là, hors VBlank, ferait clignoter l'image. On paie en VRAM ce
+# qu'on refuse de payer en déchirure — et le sprite est déjà tout entier en
+# VRAM pour un acteur qui l'emploie, donc le coût est connu de l'auteur.
+
+
+def image_geometry(el: "UIImage", n_frames: int = 1) -> dict:
+    """Ce qu'une image consomme. `n_frames` = total des frames du sprite, que
+    seul l'appelant connaît (le modèle ne résout pas les noms d'asset).
+
+    `oam` vaut 1 en cible OBJ et 0 en BG — mais `tiles` compte pareil dans les
+    deux cas : le chemin BG copie les mêmes tuiles dans le charblock d'UI, il ne
+    change que l'endroit et le fait d'écrire une carte par-dessus (`map_tiles`
+    entrées de tilemap)."""
+    per = max(1, _ceil_tile(el.w)) * max(1, _ceil_tile(el.h))
+    frames = max(1, int(n_frames))
+    return {"tiles_per_frame": per, "frames": frames,
+            "tiles": per * frames, "map_tiles": per}
+
+
+def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
+                      image_frames: dict | None = None) -> dict:
     """Budget OBJ d'une mise en page entière, et le placement RELATIF de chaque
-    zone dedans.
+    élément dedans.
 
     Relatif et non absolu : une même mise en page sert plusieurs scènes, qui
     n'ont pas le même nombre d'acteurs donc pas la même base. Seul le décalage
     interne est intrinsèque à la mise en page — exactement le raisonnement de
-    `FontInfo.slot`, relatif au bloc alloué au texte."""
+    `FontInfo.slot`, relatif au bloc alloué au texte.
+
+    Les bandes de texte d'abord, les images ensuite, dans une seule numérotation
+    continue : deux allocations séparées se recouvriraient au premier oubli de
+    chaîner leurs bases. `image_frames` = {nom d'image: nombre de frames} ;
+    absent, une image compte pour une frame — c'est à l'appelant qui connaît les
+    sprites (le codegen) de le fournir, et sous-réserver n'est pas anodin."""
+    frames_by_name = image_frames or {}
     place, oam, tiles = {}, 0, 0
     for r in layout.slots:
         if layout.resolved_target(r, render_mode) != TARGET_OBJ:
@@ -439,6 +523,17 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0) -> dict:
         place[r.name] = {"oam_rel": oam, "tile_rel": tiles, **g}
         oam += g["oam"]
         tiles += g["tiles"]
+    for im in layout.images:
+        if layout.resolved_target(im, render_mode) != TARGET_OBJ:
+            continue
+        g = image_geometry(im, frames_by_name.get(im.name, 1))
+        # Une image OBJ consomme un slot OAM et AUCUNE tuile de ce budget : ses
+        # pixels sont déjà en VRAM OBJ, chargés avec le sprite comme pour un
+        # acteur (cf. main_gen.ui_image_sprites). Sa base de tuiles est celle du
+        # sprite, pas une allocation d'interface — en réserver une seconde
+        # doublerait le coût du même dessin.
+        place[im.name] = {"oam_rel": oam, "tile_rel": 0, "oam": 1, **g}
+        oam += 1
     return {"place": place, "oam": oam, "tiles": tiles}
 
 
@@ -499,76 +594,118 @@ class UIPanel(RectGeometryMixin):
 
 
 @dataclass
-class UIText(RectGeometryMixin):
-    """Texte AUTHORÉ — feuille (jamais parent). Le contenu ne vit pas dans
-    l'élément : `text_key` pointe la table de textes (auto-enregistrée), pour ne
-    pas dupliquer un littéral qui échapperait à l'édition centralisée
-    ([[project-text-table]]).
+class UIImage(RectGeometryMixin):
+    """Un SPRITE À ÉTAT posé sur l'interface — feuille (jamais parent).
 
-    **Le rectangle EST la largeur de coupe**, comme pour `UIRegion` — un champ
-    « multiligne » séparé a existé ici et a été retiré : il ne changeait que la
-    façon de TRONQUER un texte trop long (au mot plutôt qu'au pixel), pour le
-    prix d'un champ de plus dans `UIRegionInfo` et d'un second chemin de rendu.
-    Le débordement, lui, est signalé par le validateur, ce qui vaut mieux que
-    deux manières de le subir. C'est le même argument qui avait déjà refusé un
-    `wrap` distinct de `w` sur la zone.
+    **Rien de neuf côté données d'animation.** L'élément ne fait que DÉSIGNER un
+    `SpriteAsset` et l'un de ses `AnimState` : états, directions, frames, vitesse
+    et bouclage restent dans le sprite, édités dans le Sprite Editor. Recopier
+    ici une vitesse ou une liste de frames donnerait deux vérités pour un même
+    dessin — c'est le même refus que le contenu d'un texte, qui reste dans la
+    table.
 
-    Le contenu est écrit par le BUILD (`scene_init` émet le `text_draw_in`),
-    alors qu'une zone attend son script. C'est la seule différence entre les
-    deux types — d'où leur place commune dans `KIND_SLOTS`."""
-    kind = KIND_TEXT
+    **La taille n'est pas libre** : `w`/`h` valent la frame du sprite, resynchro-
+    nisées quand on en choisit un autre (`sync_size_from`). Le matériel ne sait
+    pas étirer un OBJ sans mode affine, et une image BG est un pavage de tuiles :
+    un rectangle plus grand que la frame ne dirait rien de ce qui s'affichera.
+
+    **La direction n'entre pas ici.** Un élément d'interface n'a pas de cap ; le
+    runtime lit la direction 0 (omnidirectionnelle) de l'état, celle-là même que
+    la boucle des acteurs prend en repli. Ajouter un champ « direction »
+    exposerait au HUD une notion qui n'a de sens que dans le monde.
+
+    Cible BG ou OBJ, dérivée du root comme pour un texte (cf. `UILayout.
+    resolved_target`) : sous un conteneur ancré à l'écran l'image est écrite dans
+    la tilemap et ne coûte aucun OAM ; sous un root ancré sur un acteur elle
+    passe en sprite, seule façon de se poser au pixel."""
+    kind = KIND_IMAGE
     can_contain = False
-    name: str = "text"
+    name: str = "image"
     parent: str = ""
     x: int = 0
     y: int = 0
-    w: int = 64
+    # Renseignés depuis le sprite (cf. `sync_size_from`) ; les défauts ne servent
+    # qu'à l'élément fraîchement dessiné, avant qu'un sprite soit choisi.
+    w: int = 16
     h: int = 16
     anchor: str = ANCHOR_SCREEN
     anchor_actor: str = ""
-    text_key: str = ""
-    font_name: str = ""
-    align: str = "left"
-    text_color: int = TEXT_COLOR_INK
+    sprite_name: str = ""    # nom d'un SpriteAsset du projet
+    state_name: str = ""     # "" = premier état du sprite
+    # 0 = l'image se fige sur la première frame de l'état. Un HUD est plein
+    # d'icônes qui ne bougent pas, et les faire tourner coûterait un tick et une
+    # réécriture de tilemap par image et par frame.
+    playing: bool = True
+    # Priorité OBJ / BG (0 = devant). Portée par l'élément et non héritée : deux
+    # images du même conteneur se recouvrent souvent à dessein (jauge + cadre).
+    priority: int = 0
 
     def to_dict(self) -> dict:
-        return {"kind": KIND_TEXT, "name": self.name, "parent": self.parent,
+        return {"kind": KIND_IMAGE, "name": self.name, "parent": self.parent,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "anchor": self.anchor, "anchor_actor": self.anchor_actor,
-                "text_key": self.text_key, "font_name": self.font_name,
-                "align": self.align, "text_color": self.text_color}
+                "sprite_name": self.sprite_name, "state_name": self.state_name,
+                "playing": bool(self.playing), "priority": self.priority}
 
     @classmethod
-    def from_dict(cls, d: dict) -> "UIText":
+    def from_dict(cls, d: dict) -> "UIImage":
         anchor = d.get("anchor", ANCHOR_SCREEN)
-        align = d.get("align", "left")
-        # `wrap` d'un fichier ancien est simplement ignoré (cf. docstring) : la
-        # relecture ne le rend pas, la prochaine sauvegarde ne le réécrit pas.
         return cls(
-            name=str(d.get("name", "text")), parent=str(d.get("parent", "")),
+            name=str(d.get("name", "image")), parent=str(d.get("parent", "")),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
-            w=int(d.get("w", 64)), h=int(d.get("h", 16)),
+            w=int(d.get("w", 16)), h=int(d.get("h", 16)),
             anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor=str(d.get("anchor_actor", "")),
-            text_key=str(d.get("text_key", "")),
-            font_name=str(d.get("font_name", "")),
-            align=align if align in ALIGNS else "left",
-            text_color=_clamp_color(d.get("text_color", TEXT_COLOR_INK)))
+            sprite_name=str(d.get("sprite_name", "")),
+            state_name=str(d.get("state_name", "")),
+            playing=bool(d.get("playing", True)),
+            priority=max(0, min(3, int(d.get("priority", 0) or 0))))
+
+    # ── Taille asservie au sprite ─────────────────────────────────
+    def sync_size_from(self, sprite) -> bool:
+        """Repose `w`/`h` sur la frame de `sprite`. True si ça a bougé.
+
+        Appelé au choix du sprite plutôt que calculé à la lecture : le canvas,
+        le codegen et le validateur lisent tous `w`/`h` sans avoir à résoudre un
+        nom d'asset, et une référence cassée garde la dernière taille connue au
+        lieu de faire disparaître l'élément."""
+        if sprite is None:
+            return False
+        w = max(TILE, int(getattr(sprite, "frame_w", TILE) or TILE))
+        h = max(TILE, int(getattr(sprite, "frame_h", TILE) or TILE))
+        if (w, h) == (self.w, self.h):
+            return False
+        self.w, self.h = w, h
+        return True
+
+    def state_index(self, sprite) -> int:
+        """Index de l'état nommé dans `sprite.states`, 0 par défaut.
+
+        Par NOM dans les données et par INDEX à l'exécution : renommer un état
+        du sprite ne doit pas déplacer silencieusement l'image sur un autre, et
+        le runtime ne peut pas comparer des chaînes."""
+        states = list(getattr(sprite, "states", []) or [])
+        if not self.state_name:
+            return 0
+        return next((i for i, s in enumerate(states)
+                     if s.name == self.state_name), 0)
 
 
-# Registre kind → constructeur. Un dict sans `kind` = région (format hérité,
-# d'avant la généralisation multi-types).
+# Registre kind → constructeur. Un dict sans `kind` est un fichier d'avant la
+# généralisation multi-types : que des zones de texte, donc `UIText`. Même
+# entrée que `KIND_REGION`, pour la même raison.
 _ELEMENT_FROM_DICT = {
-    KIND_REGION: UIRegion.from_dict,
+    KIND_REGION: UIText.from_dict,     # hérité — cf. KIND_REGION
     KIND_PANEL:  UIPanel.from_dict,
     KIND_TEXT:   UIText.from_dict,
+    KIND_IMAGE:  UIImage.from_dict,
 }
 
 
 def element_from_dict(d: dict):
-    """Désérialise un élément selon son `kind` (région par défaut, format hérité)."""
+    """Désérialise un élément selon son `kind` (texte par défaut, format hérité)."""
     return _ELEMENT_FROM_DICT.get(d.get("kind", KIND_REGION),
-                                  UIRegion.from_dict)(d)
+                                  UIText.from_dict)(d)
 
 
 @dataclass
@@ -593,31 +730,33 @@ class UILayout(Resource):
     (`<asset>_name`), donc ce qui entre dans le graphe de dépendances.
     """
     name:    str = "ui_layout"
-    # Liste ordonnée de TOUS les éléments (régions, panels, textes…) — l'ordre
-    # fixe l'empilement et l'ordre des frères. `regions` reste exposé (propriété)
-    # pour les consommateurs qui ne veulent que les zones (codegen, VRAM).
+    # Liste ordonnée de TOUS les éléments (textes, conteneurs, images) — l'ordre
+    # fixe l'empilement et l'ordre des frères. `slots` et `images` en exposent
+    # les vues par type, chacune faisant l'index d'une table C.
     elements: list = field(default_factory=list)
     notes:   str = ""
 
     @property
-    def regions(self) -> list:
-        """Sous-ensemble des éléments de type ZONE de texte, en lecture seule.
-
-        À n'utiliser que là où la distinction avec un texte AUTHORÉ compte
-        vraiment (le script n'écrit que dans des zones). Pour tout ce qui touche
-        au RENDU — table C, budget VRAM/OBJ, polices à charger — c'est `slots`
-        qu'il faut : un texte authoré occupe la même place qu'une zone."""
-        return [e for e in self.elements if getattr(e, "kind", KIND_REGION) == KIND_REGION]
-
-    @property
     def slots(self) -> list:
         """Éléments qui occupent une entrée de `g_ui_regions` (cf. KIND_SLOTS) :
-        zones de texte ET textes authorés, dans l'ordre de `elements`.
+        les emplacements de TEXTE, dans l'ordre de `elements`.
 
         C'est cet ordre-là qui devient l'index dans la table C. Un conteneur en
-        est exclu : il dessine un fond, il n'accueille pas de glyphes."""
+        est exclu (il dessine un fond, il n'accueille pas de glyphes), une image
+        aussi — elle a sa propre table, `g_ui_images`."""
         return [e for e in self.elements
-                if getattr(e, "kind", KIND_REGION) in KIND_SLOTS]
+                if getattr(e, "kind", KIND_TEXT) in KIND_SLOTS]
+
+    @property
+    def images(self) -> list:
+        """Éléments IMAGE, dans l'ordre de `elements` — l'index de `g_ui_images`.
+
+        Une table à part et non une colonne de plus dans `g_ui_regions` : les
+        deux ne partagent que le rectangle et l'ancrage. Fusionner leur aurait
+        donné une structure dont la moitié des champs est morte selon le type,
+        et un runtime qui teste le kind à chaque frame."""
+        return [e for e in self.elements
+                if getattr(e, "kind", "") == KIND_IMAGE]
 
     def get(self, name: str):
         """N'importe quel élément par son nom (tous types confondus)."""
@@ -629,11 +768,16 @@ class UILayout(Resource):
         return e is not None and getattr(e, "can_contain", False)
 
     def region_names(self) -> list[str]:
-        return [e.name for e in self.regions]
+        """Noms des emplacements de texte — ceux qui se résolvent en `REGION_*`."""
+        return [e.name for e in self.slots]
+
+    def image_names(self) -> list[str]:
+        """Noms des images — ceux qui se résolvent en `IMAGE_*`."""
+        return [e.name for e in self.images]
 
     def element_names(self) -> list[str]:
         """Noms de TOUS les éléments — l'espace de nommage à garder unique pour
-        que les refs `parent` soient sans ambiguïté (un panel et une zone ne
+        que les refs `parent` soient sans ambiguïté (un conteneur et un texte ne
         peuvent pas partager un nom)."""
         return [e.name for e in self.elements]
 
@@ -913,8 +1057,7 @@ class UILayout(Resource):
         return SCREEN_W, SCREEN_H
 
     def bg_regions(self, render_mode: int = 0) -> list:
-        """Slots rendus sur le BG — cible de rendu, donc `slots` et non
-        `regions` : un texte authoré consomme la même tilemap."""
+        """Slots de texte rendus sur le BG."""
         return [r for r in self.slots
                 if self.resolved_target(r, render_mode) == TARGET_BG]
 
@@ -922,14 +1065,25 @@ class UILayout(Resource):
         return [r for r in self.slots
                 if self.resolved_target(r, render_mode) == TARGET_OBJ]
 
+    def bg_images(self, render_mode: int = 0) -> list:
+        """Images écrites dans la tilemap — celles qui pèsent sur le charblock
+        d'UI plutôt que sur l'OAM."""
+        return [im for im in self.images
+                if self.resolved_target(im, render_mode) == TARGET_BG]
+
+    def sprite_names(self) -> set[str]:
+        """Sprites que les images de cette mise en page réclament en VRAM.
+
+        Le pendant exact de `font_names` : ce que la mise en page DÉCLARE, à
+        charge de l'appelant d'y ajouter ce que les scripts font venir. Un nom
+        vide (image pas encore reliée) n'entre pas — il ne coûte rien."""
+        return {im.sprite_name for im in self.images if im.sprite_name}
+
     def font_names(self) -> set[str]:
         """Polices explicitement nommées par les slots. Un slot qui hérite de la
         scène n'apparaît PAS ici : c'est à l'appelant d'ajouter le défaut, lui
-        seul connaît la scène.
-
-        `slots` et non `regions` : une police nommée par un texte authoré arrive
-        en VRAM tout autant, et l'oublier ici ferait sous-réserver le bloc de
-        glyphes — le texte s'écrirait alors dans les tuiles du décor."""
+        seul connaît la scène. L'oublier ferait sous-réserver le bloc de glyphes
+        — le texte s'écrirait alors dans les tuiles du décor."""
         return {r.font_name for r in self.slots if r.font_name}
 
     def to_dict(self) -> dict:

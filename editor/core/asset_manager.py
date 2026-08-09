@@ -201,6 +201,7 @@ class BgLayerRow(QFrame):
     layer_swap_requested = pyqtSignal(int, int)  # (bg_slot source, bg_slot cible)
     visibility_toggled   = pyqtSignal(int, bool)  # (bg_slot, visible)
     inpaint_layer_selected = pyqtSignal(int)       # bg_slot du layer peint
+    blend_role_changed   = pyqtSignal(int, str)    # (bg_slot, "" | "top" | "bottom")
 
     _SPEED_DEFAULTS = [4.0, 3.0, 1.0, 0.5]
 
@@ -266,8 +267,9 @@ class BgLayerRow(QFrame):
         row.addWidget(thumb_container)
 
         # Badge BG0 / BG1… — aussi poignée de glisser-déposer pour réordonner
-        # les layers (échange de bg_slot, donc de priorité d'affichage : cf.
-        # `pri = 3 - bg` dans main_gen._gen_scene_init).
+        # les layers (échange de bg_slot, donc de priorité d'affichage : le
+        # codegen émet `pri = bg` dans BGxCNT, et 0 est DEVANT sur GBA — BG0 est
+        # donc au premier plan, BG3 au fond).
         badge = QLabel(LAYER_NAMES[slot_index])
         badge.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         badge.setStyleSheet(f"color:{self._color};background:transparent;")
@@ -307,6 +309,24 @@ class BgLayerRow(QFrame):
         self._pal_btn.clicked.connect(self._open_pal_picker)
         row.addWidget(self._pal_btn)
 
+        # Rôle dans le mélange de couleurs — CYCLIQUE (aucun → dessus → dessous)
+        # plutôt qu'un combo : la rangée fait 40 px et trois états se cliquent
+        # plus vite qu'ils ne se déroulent. Caché tant que la scène n'a pas de
+        # mode : un rôle sans mode ne veut rien dire (cf. models/scene.py).
+        self._blend_role = ""
+        self._blend_ui = "hidden"
+        self._blend_btn = QToolButton()
+        self._blend_btn.setFixedSize(24, 24)
+        self._blend_btn.setIconSize(QSize(16, 16))
+        self._blend_btn.setStyleSheet(
+            "QToolButton{background:transparent;border:none;padding:0;}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-radius:3px;}}"
+        )
+        self._blend_btn.clicked.connect(self._cycle_blend_role)
+        self._blend_btn.setVisible(False)
+        self._sync_blend_btn()
+        row.addWidget(self._blend_btn)
+
         row.addStretch()
 
         # Sélecteur du layer peint par l'outil de peinture par palette (pinceau).
@@ -345,6 +365,62 @@ class BgLayerRow(QFrame):
         btn_remove.setToolTip("Retirer ce layer")
         btn_remove.clicked.connect(lambda: self.layer_removed.emit(self.slot_index))
         row.addWidget(btn_remove)
+
+    # ── Apparence ─────────────────────────────────────────────────
+
+    _BLEND_ICONS = {"": "blend_off", "top": "blend_top", "bottom": "blend_bottom"}
+    # Deux vocabulaires pour le même champ : celui de l'INTENTION quand la
+    # scène est réglée par un effet, celui du REGISTRE quand elle est composée à
+    # la main. Le mot « cible » n'a pas à remonter jusqu'à qui a juste choisi
+    # « layer translucide » dans un menu.
+    _BLEND_TIPS_SIMPLE = {
+        "top":    "This is the layer you see through — click to put it behind instead",
+        "bottom": "Behind the translucent layer — click to make it the translucent one",
+    }
+    _BLEND_TIPS_FULL = {
+        "": "Not part of the blend — click to make it the top layer",
+        "top": "Top: this layer is what gets blended",
+        "bottom": "Bottom: this layer is what the top blends with, behind it",
+    }
+
+    # Ce que le bouton propose, piloté par l'effet de la scène :
+    #   "hidden" — rien à choisir (aucun effet, ou fondu d'écran qui prend tout)
+    #   "toggle" — devant ↔ derrière, DEUX états : en translucidité, un layer
+    #              est soit celui qu'on voit à travers, soit ce qu'il y a
+    #              derrière. Un troisième état « hors du mélange » n'existe pas
+    #              dans cette intention, et le traverser au clic donnait un cran
+    #              mort au milieu du geste.
+    #   "full"   — les trois rôles du registre, pour un réglage composé à la main.
+    def _sync_blend_btn(self):
+        from ui.common.icons import get as _ico
+        key = self._BLEND_ICONS.get(self._blend_role, "blend_off")
+        active = self._blend_role != ""
+        self._blend_btn.setIcon(_ico(key, self._color if active else C.TEXT_DIM,
+                                     self._color))
+        tips = (self._BLEND_TIPS_SIMPLE if self._blend_ui == "toggle"
+                else self._BLEND_TIPS_FULL)
+        self._blend_btn.setToolTip(tips.get(self._blend_role, ""))
+
+    def _cycle_blend_role(self):
+        order = (["top", "bottom"] if self._blend_ui == "toggle"
+                 else ["", "top", "bottom"])
+        try:
+            nxt = order[(order.index(self._blend_role) + 1) % len(order)]
+        except ValueError:
+            nxt = order[0]      # rôle hors du cycle courant : on y rentre
+        self._blend_role = nxt
+        self._sync_blend_btn()
+        self.blend_role_changed.emit(self.slot_index, nxt)
+
+    def set_blend_role(self, role: str):
+        self._blend_role = role if role in ("", "top", "bottom") else ""
+        self._sync_blend_btn()
+
+    def set_blend_ui(self, ui_mode: str):
+        """« hidden » | « toggle » | « full » — cf. le commentaire ci-dessus."""
+        self._blend_ui = ui_mode if ui_mode in ("hidden", "toggle", "full") else "hidden"
+        self._blend_btn.setVisible(self._blend_ui != "hidden")
+        self._sync_blend_btn()
 
     # ── Apparence ─────────────────────────────────────────────────
 

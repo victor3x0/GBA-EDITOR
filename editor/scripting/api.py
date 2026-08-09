@@ -49,7 +49,8 @@ DOMAIN_TAG    = "tag"     # TAG_{name}
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
 DOMAIN_FONT   = "font"    # FONT_{name}
-DOMAIN_REGION = "region"  # REGION_{name} — zone de texte authorée (UILayout)
+DOMAIN_REGION = "region"  # REGION_{name} — emplacement de texte (UILayout)
+DOMAIN_IMAGE  = "image"   # IMAGE_{name}  — image d'interface (UILayout)
 DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
 # Domaines résolus par un _emit_* dédié du codegen (pas de constante C
 # générique) : ils n'en restent pas moins des références nommées.
@@ -545,6 +546,41 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc='Charge une police en mémoire vidéo. Une seule à la fois. Ex: text.set_font("Pixelia")',
     ),
 
+    # ── Images d'interface ─────────────────────────────────────────
+    # Le pendant exact des zones de texte, pour un sprite : l'élément est
+    # AUTHORÉ dans le canvas (position, sprite, état de départ) et le script ne
+    # fait que changer d'état. Aucune fonction ne crée ni ne déplace une image —
+    # ce serait rouvrir la géométrie au runtime, que la mise en page existe
+    # justement pour fermer (cf. models/ui_region.py, « Pas de FieldValue »).
+    #
+    # `image_set` est le seul appel à ne pas se traduire terme à terme : l'état
+    # est nommé dans le SPRITE de cette image-là, donc sa résolution en index a
+    # besoin des deux arguments à la fois (cf. codegen._emit_ui_image_set).
+    "ui.image_set": ApiFunc(
+        lua_name="ui.image_set", c_func="ui_image_set_state",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE),
+                Param("state", PARAM_STR)],
+        doc='Change l\'état affiché par une image de l\'interface. '
+            'Ex: ui.image_set("coeur_2", "vide")',
+    ),
+    "ui.image_play": ApiFunc(
+        lua_name="ui.image_play", c_func="ui_image_play",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE), Param("on", PARAM_BOOL)],
+        doc='Lance (true) ou fige (false) le défilement des frames. '
+            'Ex: ui.image_play("curseur", false)',
+    ),
+    "ui.image_show": ApiFunc(
+        lua_name="ui.image_show", c_func="ui_image_show",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE), Param("on", PARAM_BOOL)],
+        doc='Affiche ou cache une image. Ex: ui.image_show("alerte", true)',
+    ),
+    "ui.image_state": ApiFunc(
+        lua_name="ui.image_state", c_func="ui_image_state",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE)], ret="int",
+        doc='Index de l\'état affiché — de quoi enchaîner sans mémoriser. '
+            'Ex: if ui.image_state("coeur_1") == 0 then ... end',
+    ),
+
     # ── Window ─────────────────────────────────────────────────────
     # Une window ne dessine rien : c'est un pochoir. Elle dit, par région
     # de l'écran, qui a le droit de s'afficher. L'apparence vient de ce
@@ -999,6 +1035,22 @@ def font_constant(font_name: str) -> str:
 def region_constant(region_name: str) -> str:
     """'boite_bas' → 'REGION_BOITE_BAS'"""
     return f"REGION_{_c_ident(region_name)}"
+
+
+def image_constant(image_name: str) -> str:
+    """'coeur_2' → 'IMAGE_COEUR_2' — index dans `g_ui_images`."""
+    return f"IMAGE_{_c_ident(image_name)}"
+
+
+def image_state_constant(image_name: str, state_name: str) -> str:
+    """('coeur_2', 'vide') → 'IMGST_COEUR_2_VIDE'.
+
+    Indexé par IMAGE et non par sprite : c'est l'image que le script nomme, et
+    deux images du même sprite doivent pouvoir citer le même état sans que
+    l'auteur ait à savoir quel asset est derrière. Le build émet une constante
+    par (image, état de son sprite) — quelques `#define`, contre une résolution
+    de chaîne au runtime que le moteur ne fait pas."""
+    return f"IMGST_{_c_ident(image_name)}_{_c_ident(state_name)}"
 
 
 # ─── Événements de scène ───────────────────────────────────────────

@@ -154,13 +154,18 @@ def scene_text_reservation(p, scene) -> dict:
     le garde-fou de budget (`pipeline._scene_tile_budgets`). Les laisser diverger
     validerait un budget que le placement ne tient pas.
 
-    Trois postes, dans l'ordre où ils occupent le charblock :
+    Quatre postes, dans l'ordre où ils occupent le charblock :
     - les fonds COULEUR puis les fonds IMAGE (nine-slice, background) — ils
       précèdent les glyphes, qui se décalent d'autant ;
     - les GLYPHES, restreints aux polices que cette scène peut charger
       (`font_emit.scene_font_names`) ;
     - la SURFACE composée quand une zone a un fond : bloc propre de 240 tuiles,
-      jamais à l'adresse des glyphes (cf. runtime `g_surf_tile_base`)."""
+      jamais à l'adresse des glyphes (cf. runtime `g_surf_tile_base`) ;
+    - les SPRITES des images en cible BG, TOUTES frames comprises : un script
+      peut changer d'état à n'importe quelle frame, et recopier depuis la ROM à
+      cet instant-là ferait clignoter l'image. En dernier parce que c'est le
+      poste le plus récent, donc celui dont l'absence ne doit rien décaler dans
+      un projet qui n'emploie pas d'image."""
     from codegen.font_emit import (scene_text_tiles, scene_font_names,
                                    scene_codepoints, mono_vram_tiles,
                                    TEXT_SURF_TILES)
@@ -212,12 +217,33 @@ def scene_text_reservation(p, scene) -> dict:
 
     img_tiles  = sum(a["tiles"] for a in img_assets)
     surf_tiles = TEXT_SURF_TILES if needs_surface else 0
+
+    # Images en cible BG : chacune sa base RELATIVE au bloc, dans l'ordre de la
+    # mise en page. Relative comme le reste (glyphes, surface) — la base absolue
+    # est celle que l'allocateur donne à la scène, et une même mise en page sert
+    # plusieurs scènes qui ne l'ont pas au même endroit.
+    ui_images = scene_ui_images(p, scene)
+    img_layout: list[dict] = []
+    base = 0
+    for info in ui_images:
+        if not info["bg"]:
+            continue
+        img_layout.append({"index": info["index"], "name": info["el"].name,
+                           "base": base, "tiles": info["tiles"],
+                           "sprite": info["sprite"].name,
+                           "tiles_per_frame": info["tiles_per_frame"]})
+        base += info["tiles"]
+    sprite_tiles = base
+
     return {
         "fills": fills, "fill_indices": fill_indices,
         "img_fills": img_fills, "img_assets": img_assets,
         "mono_tiles": mono_tiles, "needs_surface": needs_surface,
         "font_names": names, "codepoints": cps, "font_layout": font_layout,
-        "total": len(fill_indices) + img_tiles + mono_tiles + surf_tiles,
+        "ui_images": ui_images, "img_layout": img_layout,
+        "sprite_tiles": sprite_tiles,
+        "total": (len(fill_indices) + img_tiles + mono_tiles + surf_tiles
+                  + sprite_tiles),
     }
 
 
@@ -242,6 +268,8 @@ def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
     scene._ui_needs_surface = res["needs_surface"]
     scene._ui_img_fills = res["img_fills"]
     scene._ui_img_assets = res["img_assets"]
+    scene._ui_images = res["ui_images"]
+    scene._ui_image_layout = res["img_layout"]
     scene._ui_reservation = res   # relu par le log de build
 
 
@@ -395,6 +423,66 @@ def _obj_tiles_used(p: Project, sprites: list) -> int:
     return total
 
 
+def ui_image_sprites(p: Project) -> list:
+    """[(None, SpriteAsset)] des sprites que les IMAGES d'UI réclament.
+
+    Rendu sous la forme de paires `(actor, sprite)` pour se verser tel quel dans
+    `all_sprite_pairs` : les tuiles d'un sprite d'interface arrivent alors en
+    VRAM OBJ par le même chemin que celles d'un acteur, et `_sprite_offsets_for`
+    lui donne une base dans la même numérotation. Un chemin de chargement à part
+    aurait dupliqué le packing — donc, tôt ou tard, l'aurait fait diverger.
+
+    Vaut aussi pour une image en cible BG : ses tuiles sont recopiées dans le
+    charblock d'UI, mais le sprite reste résident en OBJ. Le doublon est assumé
+    — il n'y a pas de « désallouer une plage OBJ » dans ce packing, et une image
+    de HUD partage presque toujours son sprite avec un acteur."""
+    out, seen = [], set()
+    for _lay, im in (p.all_images() if hasattr(p, "all_images") else []):
+        name = getattr(im, "sprite_name", "") or ""
+        if not name or name in seen:
+            continue
+        sprite = p.get_sprite(name)
+        if sprite is None or not sprite.asset:
+            continue
+        seen.add(name)
+        out.append((None, sprite))
+    return out
+
+
+def scene_ui_images(p: Project, scene) -> list[dict]:
+    """Ce que chaque image de la mise en page d'une scène demande au build.
+
+    Un dict par image RÉSOLUE (sprite existant) : index global dans
+    `g_ui_images`, sprite, nombre de frames, cible, et le nombre de tuiles à
+    réserver dans le charblock d'UI si elle s'écrit dans la tilemap.
+
+    Les images NON résolues (aucun sprite, ou nom cassé) sont omises et non pas
+    réservées à zéro : elles n'existent pas à l'écran, et le validateur le dit
+    déjà. Réserver pour elles décalerait la base des suivantes à chaque frappe
+    dans le champ « Sprite »."""
+    from core.models.ui_region import TARGET_BG, image_geometry
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None:
+        return []
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    index = {im.name: i for i, (_l, im) in enumerate(p.all_images())}
+    out: list[dict] = []
+    for im in lay.images:
+        sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
+        if sprite is None or not sprite.asset or im.name not in index:
+            continue
+        frames = count_frames(p, sprite)
+        g = image_geometry(im, frames)
+        out.append({
+            "el": im, "index": index[im.name], "sprite": sprite,
+            "frames": frames, "tiles": g["tiles"],
+            "tiles_per_frame": sprite.tiles_per_frame,
+            "map_tiles": g["map_tiles"],
+            "bg": lay.resolved_target(im, rm) == TARGET_BG,
+        })
+    return out
+
+
 def _obj_text_alloc(p: Project) -> dict:
     """Placement OBJ de chaque zone : {nom: {oam_rel, tile_rel, ...}}.
 
@@ -405,7 +493,15 @@ def _obj_text_alloc(p: Project) -> dict:
     from core.models.ui_region import layout_obj_budget
     out = {}
     for lay in getattr(p, "ui_layouts", []):
-        bud = layout_obj_budget(lay)
+        # Les frames par image : `layout_obj_budget` ne résout pas les noms
+        # d'asset, et sous-réserver ferait écrire une image dans les tuiles de
+        # la suivante.
+        frames = {}
+        for im in lay.images:
+            sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
+            if sprite is not None and sprite.asset:
+                frames[im.name] = count_frames(p, sprite)
+        bud = layout_obj_budget(lay, image_frames=frames)
         for name, place in bud["place"].items():
             out[name] = place
     return out
@@ -810,6 +906,89 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
                                 bg_fill=_region_bg_fills(p)[0]))
 
 
+def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
+    """Table des images + leurs constantes. Séparée de `_fonts_and_texts_lines`
+    parce qu'elle a besoin de `sprite_offsets`, qui n'est connu qu'une fois
+    l'union des sprites faite — donc bien plus tard dans le pipeline."""
+    images = p.all_images() if hasattr(p, "all_images") else []
+    if emit and images:
+        n_bound = sum(1 for _l, im in images if getattr(im, "sprite_name", ""))
+        emit("log_line", f"[ui] {len(images)} image(s) d'interface, "
+                         f"{n_bound} reliée(s) à un sprite")
+    return emit_ui_images_c(p, sprite_offsets, _obj_text_alloc(p),
+                            actor_index=_region_actor_index(p), emit=emit)
+
+
+def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
+                     actor_index: dict | None = None, emit=None) -> list[str]:
+    """Table `g_ui_images` — une entrée par image du projet, dans l'ordre de
+    `Project.all_images()`, qui fait l'index (donc la constante `IMAGE_*`).
+
+    Ce que l'entrée porte, et ce qu'elle NE porte pas : la géométrie, la cible,
+    l'état de départ, et des POINTEURS vers les tables d'animation du sprite —
+    les mêmes que celles des acteurs (`sprite_X_anim_dirs`, `_state_start`,
+    `_state_speed`, `_state_loop`). Ni vitesse ni liste de frames recopiées :
+    l'image désigne un sprite, elle ne le redéfinit pas.
+
+    La base de tuiles est celle de l'OBJ VRAM (`sprite_offsets`), valable pour
+    une image en cible OBJ. Une image BG lit une AUTRE base, posée par
+    `scene_init` (`ui_image_set_bg_base`) : elle dépend du charblock alloué à la
+    scène, et la table, elle, est partagée par toutes les scènes.
+
+    Une image sans sprite résoluble sort une entrée NEUTRE plutôt que d'être
+    omise : l'index doit rester celui de `all_images()`, sinon `IMAGE_*` désigne
+    l'élément d'à côté. Le runtime la voit `n_states == 0` et ne dessine rien."""
+    rows: list[str] = []
+    images = p.all_images() if hasattr(p, "all_images") else []
+    for lay, im in images:
+        sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
+        eff_anchor, eff_actor = lay.effective_anchor(im)
+        from core.models.ui_region import ANCHORS, TARGET_OBJ
+        target_obj = lay.resolved_target(im) == TARGET_OBJ
+        x, y = im.x, im.y
+        if not target_obj:
+            x, y, _res = lay.absolute_origin(im, None)
+            x -= x % 8
+            y -= y % 8
+        if sprite is None or not sprite.asset:
+            rows.append(f"    {{ {x}, {y}, {im.w}, {im.h}, 0, 0, -1, "
+                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }},"
+                        f"  /* {im.name} — aucun sprite */")
+            if emit:
+                emit("log_line", f"[ui] image '{im.name}' : aucun sprite — "
+                                 f"rien ne sera dessiné à cet endroit.")
+            continue
+        ss = f"sprite_{_sym(sprite.name)}"
+        n_states = max(1, len(getattr(sprite, "states", []) or []))
+        st0 = im.state_index(sprite)
+        base = sprite_offsets.get(sprite.name, 0)
+        pl = obj_place.get(im.name) if target_obj else None
+        oam_rel = pl["oam_rel"] if pl else 0
+        rows.append(
+            f"    {{ {x}, {y}, {im.w}, {im.h}, {1 if target_obj else 0}, "
+            f"{ANCHORS.index(eff_anchor)}, {(actor_index or {}).get(im.name, -1)}, "
+            f"{ss}_anim_dirs, {ss}_state_start, {ss}_state_speed, {ss}_state_loop, "
+            f"{n_states}, {st0}, {1 if im.playing else 0}, "
+            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {im.priority} }},"
+            f"  /* {im.name} — {sprite.name} */")
+        if emit and eff_anchor == "actor" and (actor_index or {}).get(im.name, -1) < 0:
+            # Même angle mort que pour une zone de texte : sans acteur résolu,
+            # l'image se pose à l'origine de l'écran, ce qui ressemble à un bug
+            # de placement plutôt qu'à une référence introuvable.
+            emit("log_line",
+                 f"[warn] image '{im.name}' : ancrée sur l'actor "
+                 f"'{eff_actor or '(aucun)'}', introuvable dans la scène — elle "
+                 f"se posera à l'origine de l'écran.")
+    L = ["/* ── Images d'interface (UILayout) ─────────────── */"]
+    L.append(f"const UIImageInfo g_ui_images[{max(1, len(rows))}] = {{")
+    L += rows or ["    { 0, 0, 8, 8, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },"
+                  "   /* aucune image */"]
+    L.append("};")
+    L.append(f"const int g_ui_image_count = {len(rows)};")
+    L.append("")
+    return L
+
+
 def _region_actor_index(p: Project) -> dict:
     """{nom de zone: index global dans g_actors} pour les zones ancrées actor.
 
@@ -825,9 +1004,11 @@ def _region_actor_index(p: Project) -> dict:
         actors = [a for a in getattr(scene, "actors", [])]
         if lay is not None:
             names = {a.name: offset + i for i, a in enumerate(actors)}
-            for r in lay.slots:
-                # L'ancrage vient du ROOT (un enfant en hérite), plus de la zone
-                # elle-même — cohérent avec l'éditeur.
+            # Textes ET images : toutes deux se posent au pixel quand elles
+            # suivent un acteur, et un second index les ferait diverger.
+            for r in lay.slots + lay.images:
+                # L'ancrage vient du ROOT (un enfant en hérite), plus de
+                # l'élément lui-même — cohérent avec l'éditeur.
                 eff_anchor, eff_actor = lay.effective_anchor(r)
                 if eff_anchor == "actor" and r.name not in out:
                     out[r.name] = names.get(eff_actor, -1)
@@ -930,6 +1111,132 @@ def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
     return L
 
 
+def _gen_scene_blend(scene, emit=None) -> list[str]:
+    """Configuration du mélange de couleurs d'une scène.
+
+    Les mêmes fonctions que l'API Lua `blend.*` : un script peut reconfigurer
+    ensuite, dernier écrivain gagne — pas de second mécanisme.
+
+    L'ordre suit le matériel : les CIBLES d'abord (BLDCNT bits 0-5 et 8-13),
+    le MODE ensuite (bits 6-7), les coefficients en dernier. `blend_set_mode`
+    n'écrase que son champ, donc l'ordre n'est pas critique — mais le lire dans
+    l'ordre du registre évite de se demander s'il l'est.
+
+    Rien n'est émis en mode « aucun » : `display_reset()` a déjà tout remis à
+    zéro. Une scène sans mélange ne paie donc pas une instruction."""
+    from core.models.scene import (BLEND_NONE, BLEND_ALPHA, BLEND_TOP,
+                                   BLEND_BOTTOM, BLEND_NEEDS_BOTTOM,
+                                   blend_role_of)
+    mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
+    if mode == BLEND_NONE:
+        return []
+    L: list[str] = []
+    sides = {BLEND_TOP: 0, BLEND_BOTTOM: 1}
+    for layer in getattr(scene, "background_layers", []):
+        role = blend_role_of(layer)
+        if role:
+            L.append(f"    blend_set_layer({sides[role]}, {layer.bg_slot}, 1);"
+                     f"   /* BG{layer.bg_slot} — {'dessus' if role == BLEND_TOP else 'dessous'} */")
+    for attr, fn in (("blend_obj_role", "blend_set_obj"),
+                     ("blend_backdrop_role", "blend_set_backdrop")):
+        role = getattr(scene, attr, "")
+        if role in sides:
+            L.append(f"    {fn}({sides[role]}, 1);")
+    L.append(f"    blend_set_mode({mode});")
+    if mode == BLEND_ALPHA:
+        L.append(f"    blend_set_alpha({int(scene.blend_eva)}, {int(scene.blend_evb)});")
+    else:
+        # Les modes 2 et 3 n'emploient QUE le dessus, et leur intensité vient de
+        # BLDY — écrire BLDALPHA ici ne ferait rien du tout.
+        L.append(f"    blend_set_fade({int(scene.blend_evy)});")
+    if emit:
+        names = {1: "alpha", 2: "éclaircir", 3: "assombrir"}
+        tops = [f"BG{l.bg_slot}" for l in scene.blend_layers(BLEND_TOP)]
+        bots = [f"BG{l.bg_slot}" for l in scene.blend_layers(BLEND_BOTTOM)]
+        if getattr(scene, "blend_obj_role", "") == BLEND_TOP: tops.append("OBJ")
+        if getattr(scene, "blend_obj_role", "") == BLEND_BOTTOM: bots.append("OBJ")
+        if getattr(scene, "blend_backdrop_role", "") == BLEND_TOP: tops.append("backdrop")
+        if getattr(scene, "blend_backdrop_role", "") == BLEND_BOTTOM: bots.append("backdrop")
+        detail = f"dessus {', '.join(tops) or '(aucun)'}"
+        if mode in BLEND_NEEDS_BOTTOM:
+            detail += f", dessous {', '.join(bots) or '(aucun)'}"
+        emit("log_line", f"[blend] scène '{scene.name}' : {names.get(mode, mode)} "
+                         f"— {detail}")
+    return L
+
+
+def _gen_ui_images(p: Project, scene, text_cbb: int, sprite_offsets: dict,
+                   emit=None) -> list[str]:
+    """Init des images d'interface d'une scène.
+
+    Trois choses, et rien de plus : remettre l'état des images à leur état
+    DÉCLARÉ (une scène quittée laisse ses animations où elles en étaient),
+    désigner la banque de palette de chacune, et — pour les images en cible BG
+    seulement — recopier les tuiles du sprite dans le charblock d'UI.
+
+    La recopie est ici et pas au démarrage parce que la base dépend du charblock
+    alloué à CETTE scène : la même mise en page servie par deux scènes n'a pas
+    la même adresse. C'est le raisonnement de `text_set_font_base`, appliqué à
+    des tuiles de sprite.
+
+    TOUTES les frames sont copiées, pas seulement celles de l'état déclaré : un
+    script peut basculer d'état à n'importe quelle frame, et recopier depuis la
+    ROM à cet instant-là ferait clignoter l'image."""
+    images = getattr(scene, "_ui_images", None)
+    if images is None:
+        images = scene_ui_images(p, scene)
+    L: list[str] = ["    ui_images_reset();"]
+    # Banques : la même que le texte côté BG (les images d'UI partagent la
+    # palette de l'interface), et le slot OBJ de la scène côté sprites.
+    layout = {d["index"]: d for d in (getattr(scene, "_ui_image_layout", []) or [])}
+    text_base = getattr(scene, "_vram_layout", None)
+    base0 = getattr(text_base, "text_base", 0) if text_base is not None else 0
+    res = getattr(scene, "_ui_reservation", {}) or {}
+    # Les images viennent APRÈS tous les autres postes du bloc de texte — cf.
+    # `scene_text_reservation`, dont l'ordre fait foi.
+    from codegen.font_emit import TEXT_SURF_TILES
+    head = (len(res.get("fill_indices", []))
+            + sum(a["tiles"] for a in res.get("img_assets", []))
+            + res.get("mono_tiles", 0)
+            + (TEXT_SURF_TILES if res.get("needs_surface") else 0))
+    # Banque de palette par image, résolue par l'allocateur du POOL de sa cible
+    # — les deux pools sont disjoints sur GBA. Sans ça l'image lisait la banque
+    # d'interface, celle de la POLICE : une silhouette aux couleurs du texte.
+    from codegen.palette_alloc import scene_bank_layout
+    from core.models.palette import OWN_PAL_BANK
+    bg_layout = obj_layout = None
+    for info in images:
+        sprite = info["sprite"]
+        if info["bg"]:
+            bg_layout = bg_layout or scene_bank_layout(p, scene, "bg")
+            bank_layout = bg_layout
+        else:
+            obj_layout = obj_layout or scene_bank_layout(p, scene, "obj")
+            bank_layout = obj_layout
+        bank = bank_layout.bank_index(
+            int(getattr(sprite, "pal_bank", OWN_PAL_BANK)),
+            list(getattr(sprite, "own_palette", None) or []))
+        L.append(f"    ui_image_set_bank({info['index']}, {bank if bank is not None else 0});"
+                 f"   /* '{info['el'].name}' : palette de {sprite.name} */")
+        if bank is None and emit:
+            emit("log_line",
+                 f"[warn] image '{info['el'].name}' : aucune banque libre pour la "
+                 f"palette de '{sprite.name}' — elle s'affichera avec les "
+                 f"couleurs de la banque 0.")
+        if not info["bg"]:
+            continue
+        pl = layout.get(info["index"])
+        if pl is None:
+            continue
+        base = base0 + head + pl["base"]
+        ss = f"sprite_{_sym(sprite.name)}"
+        L.append(f"    ui_image_set_bg_base({info['index']}, {base});")
+        L.append(f"    copy16(TILE_RAM({text_cbb}) + {base} * 16, "
+                 f"{ss}Tiles, {ss}TilesLen);"
+                 f"   /* image '{info['el'].name}' : {info['frames']} frame(s) */")
+    return L
+
+
 def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
     """Fonds COULEUR des conteneurs d'une scène → (fills, indices).
 
@@ -1008,14 +1315,10 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
         if lay.resolved_target(el, rm) != TARGET_BG:         continue
         if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
 
-        # Source : directement l'image (background) ou via le cadre (nine-slice).
-        ns = None
-        if fk == FILL_BG:
-            src_name = getattr(el, "fill_asset", "")
-        else:
-            ns = p.get_nine_slice(getattr(el, "fill_asset", "")) \
-                if hasattr(p, "get_nine_slice") else None
-            src_name = getattr(ns, "source", "") if ns else ""
+        # Source : le fond cité, dans les deux modes. Un cadre étirable est un
+        # BackgroundAsset de kind `ui` qui porte ses propres marges de découpe —
+        # il n'y a plus d'asset de cadre à déréférencer entre les deux.
+        src_name = getattr(el, "fill_asset", "")
         ba = p.get_background(src_name) if src_name else None
         if ba is None or not getattr(ba, "tileset", None):    continue
         if getattr(ba, "bpp", 4) == 8:                        continue  # cf. layers 8bpp
@@ -1053,12 +1356,8 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
         else:
             # Coins fixes, bords/centre RÉPÉTÉS. La géométrie est celle de
             # `core.nine_slice`, en unités de TUILE plutôt qu'en pixels.
-            for z in nine_slice_rects(sw, sh,
-                                      int(getattr(ns, "left", 0)) // 8,
-                                      int(getattr(ns, "right", 0)) // 8,
-                                      int(getattr(ns, "top", 0)) // 8,
-                                      int(getattr(ns, "bottom", 0)) // 8,
-                                      w, h):
+            ml, mr, mt, mb = ba.slice_margins_tiles()
+            for z in nine_slice_rects(sw, sh, ml, mr, mt, mb, w, h):
                 sx, sy, s_w, s_h = z["src"]
                 dx, dy, d_w, d_h = z["dst"]
                 for r in range(d_h):
@@ -1330,8 +1629,16 @@ def _gen_scene_init(
     # de fond et la base OBJ — tout ce qui précède. Avant dispcnt_set, qui
     # n'écrit que des registres d'affichage.
     L += _gen_ui_texts(p, scene, text_bg, emit)
+    # Images de l'interface, APRÈS les postes de texte : elles réutilisent la
+    # même base OAM (`text_obj_set_base`, dont l'allocation chaîne les deux) et
+    # se logent après les glyphes dans le charblock d'UI.
+    L += _gen_ui_images(p, scene, text_cbb, sprite_offsets, emit)
     # DISPCNT
     L.append(f"    dispcnt_set(0x{dispcnt:04X});")
+    # Mélange de couleurs (BLDCNT/BLDALPHA/BLDY) — rien d'émis en mode « aucun » :
+    # `display_reset()` a déjà remis les trois registres à zéro, et le défaut
+    # doit rester littéralement gratuit.
+    L += _gen_scene_blend(scene, emit)
     # Windows (WIN0/WIN1/fenêtre-objet) — mêmes fonctions runtime que l'API Lua
     # window.* : un script peut reconfigurer/désactiver ensuite (dernier écrivain
     # gagne, pas de mécanisme séparé). Rien n'est émis si la scène n'a aucune
@@ -1714,6 +2021,7 @@ def _gen_scene_tick(
     # Après les scripts, avant le flush OAM : une lecture démarrée pendant le
     # tick avance dès cette frame, et les sprites des glyphes animés sont posés
     # avant d'être copiés en OAM.
+    L.append("    ui_image_update();")
     L.append("    text_update();")
     L.append("    oam_update();")
     L.append("}")
@@ -1766,6 +2074,9 @@ def generate_main(
     for d in all_scene_data:
         all_sprite_pairs += d["scene_actors"]
     all_sprite_pairs += prefab_actor_sprites
+    # Un sprite qui ne sert QU'à une image d'interface n'est porté par aucun
+    # acteur : sans ceci, ses tuiles ne partiraient jamais en VRAM.
+    all_sprite_pairs += ui_image_sprites(p)
 
     sprite_offsets, sprite_nframes = _sprite_offsets_for(p, all_sprite_pairs)
 
@@ -1868,17 +2179,22 @@ def generate_main(
     L += _fonts_and_texts_lines(p, emit)
 
     # ── Tables d'animation par SpriteAsset (dédupliquées) ────────
+    # Les sprites des IMAGES d'interface en font partie : `g_ui_images` pointe
+    # ces tables-là, donc elles doivent exister — et être émises AVANT.
     _all_sprites_flat = [
         pair
         for d in all_scene_data
         for pair in d["scene_actors"]
-    ] + (prefab_actor_sprites or [])
+    ] + (prefab_actor_sprites or []) + ui_image_sprites(p)
     done_anim: set[str] = set()
     for _, sprite in _all_sprites_flat:
         if sprite and sprite.asset and sprite.name not in done_anim:
             done_anim.add(sprite.name)
             L += _anim_tables_for(p, sprite)
             L.append("")
+
+    # ── Images d'interface ────────────────────────────────────────
+    L += _ui_images_lines(p, sprite_offsets, emit)
 
     # ── Tile helpers (dispatch via pointeur) ──────────────────────
     L += _gen_tile_helpers()

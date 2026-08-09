@@ -123,6 +123,35 @@ def _sprite_own_palette(sp) -> list[int]:
     return list(getattr(sp, "own_palette", None) or []) if sp else []
 
 
+def ui_image_own_palettes(p: Project, scene: Scene, pool: str) -> list[list[int]]:
+    """Palettes propres des sprites affichés par les IMAGES d'interface.
+
+    Le pendant de `ui_fill_encoded_sources` pour un sprite : une image dessine
+    des tuiles qui citent une sous-palette, il lui faut donc une banque. Sans
+    cette collecte, elle sortait avec les couleurs de son voisin — en pratique
+    celles de la POLICE, seule occupante connue de la banque d'interface, donc
+    une silhouette monochrome au mieux, invisible au pire.
+
+    Le pool compte : une image en cible BG lit `PAL_BG_RAM`, une image en cible
+    OBJ lit `PAL_OBJ_RAM`. Les deux pools sont disjoints sur GBA, réclamer dans
+    le mauvais laisserait le trou exactement où il était."""
+    from core.models.ui_region import TARGET_BG
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None:
+        return []
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    want_bg = (pool == "bg")
+    out: list[list[int]] = []
+    for im in lay.images:
+        if (lay.resolved_target(im, rm) == TARGET_BG) != want_bg:
+            continue
+        sp = p.get_sprite(getattr(im, "sprite_name", "") or "")
+        cols = _sprite_own_palette(sp)
+        if cols:
+            out.append(cols)
+    return out
+
+
 def _actor_own_palettes(p: Project, scene: Scene) -> list[list[int]]:
     """Palettes propres des ACTEURS de la scène en mode OWN (métadonnées
     sprite.own_palette ; pas les prefabs — alloués globalement, cf.
@@ -228,13 +257,12 @@ def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
         if getattr(el, "kind", "") != KIND_PANEL:
             continue
         fk = getattr(el, "fill_kind", "")
-        name = ""
-        if fk == FILL_BG:
-            name = getattr(el, "fill_asset", "")
-        elif fk == FILL_NINE:
-            ns = p.get_nine_slice(getattr(el, "fill_asset", "")) \
-                if hasattr(p, "get_nine_slice") else None
-            name = getattr(ns, "source", "") if ns else ""
+        if fk not in (FILL_BG, FILL_NINE):
+            continue
+        # Les deux modes citent DIRECTEMENT un BackgroundAsset : un cadre
+        # étirable est un fond d'interface qui porte ses marges (kind `ui`),
+        # plus un asset intermédiaire à déréférencer.
+        name = getattr(el, "fill_asset", "")
         ba = p.get_background(name) if name else None
         if ba is not None and getattr(ba, "tileset", None):
             out.append(ba)
@@ -277,12 +305,14 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     scène dans les slots restants (dédup par couleurs)."""
     if pool == "obj":
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
-        own_color_lists = _actor_own_palettes(p, scene)          # métadonnées sprite
+        own_color_lists = (_actor_own_palettes(p, scene)          # métadonnées sprite
+                           + ui_image_own_palettes(p, scene, "obj"))
         pf_slots = prefab_own_slots(p)
         encoded_assets = []
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
-        own_color_lists = [own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
+        own_color_lists = ([own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
+                           + ui_image_own_palettes(p, scene, "bg"))
         pf_slots = {}
         # Layers + fonds de conteneurs d'UI : les deux affichent des tuiles qui
         # citent des sous-palettes, les deux ont donc besoin de leur bloc.

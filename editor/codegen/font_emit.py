@@ -650,20 +650,20 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                       obj_place: dict | None = None,
                       actor_index: dict | None = None,
                       bg_fill: dict | None = None) -> list[str]:
-    """Table des slots de texte — `regions` est [(UILayout, élément)] dans
-    l'ordre de `Project.all_regions()`, qui fait l'index.
+    """Table des emplacements de texte — `regions` est [(UILayout, UIText)]
+    dans l'ordre de `Project.all_regions()`, qui fait l'index.
 
-    Zones RUNTIME et textes AUTHORÉS y cohabitent : même géométrie, seul
-    l'écrivain diffère (le script pour l'une, `scene_init` pour l'autre, cf.
-    `_gen_ui_texts`). Les distinguer ici dupliquerait la table, donc
-    l'alignement, l'ancrage et l'allocation OBJ.
+    Contenu AUTHORÉ et contenu écrit par un script partagent la même entrée :
+    ce n'était déjà que l'écrivain qui différait (`scene_init` pour l'un, le Lua
+    pour l'autre, cf. `_gen_ui_texts`), et c'est ce constat qui a fait fusionner
+    les deux types côté modèle.
 
     Coordonnées émises **déjà alignées** pour une cible BG : le moteur y écrit
     des entrées de tilemap, une origine entre deux tuiles n'existe pas.
 
     La police est résolue en index (255 = « garder la police courante »), pour
     que le runtime n'ait aucun nom à chercher."""
-    from core.models.ui_region import TARGET_OBJ, ALIGNS, ANCHORS, KIND_TEXT
+    from core.models.ui_region import TARGET_OBJ, ALIGNS, ANCHORS
 
     L: list[str] = ["/* ── Slots de texte (UILayout) ─────────────────── */"]
     rows: list[str] = []
@@ -691,31 +691,31 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"0, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
         bgf = (bg_fill or {}).get(r.name, -1)
-        # Le kind en commentaire : la table seule ne dit pas qui écrit dans ce
-        # slot, et c'est la première question en relisant le C.
-        kind = "texte authoré" if getattr(r, "kind", "") == KIND_TEXT else "zone"
+        # En commentaire : d'où vient le contenu. La table seule ne le dit pas,
+        # et c'est la première question en relisant le C.
+        origin = "authoré" if getattr(r, "text_key", "") else "écrit par script"
         rows.append(
             f"    {{ {x}, {y}, {w}, {h}, {ALIGNS.index(r.align)}, "
             f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(eff_anchor)}, "
             f"{alloc}, {bgf}, {int(getattr(r, 'text_color', 0) or 0) & 0xF} }},"
-            f"  /* {r.name} — {kind} */"
+            f"  /* {r.name} — {origin} */"
         )
         if target_obj and emit and pl:
             extra = (f" (dont {pl['anim']} glyphe(s) animé(s) réservé(s))"
                      if pl["anim"] else "")
             emit("log_line",
-                 f"[text] zone '{r.name}' en sprites : {pl['oam']} OAM, "
+                 f"[text] '{r.name}' en sprites : {pl['oam']} OAM, "
                  f"{pl['tiles']} tuiles OBJ{extra}")
         if target_obj and emit and ai < 0 and eff_anchor == "actor":
             # Sans acteur résolu, la bande se pose à l'origine de l'écran — ce
             # qui ressemble à un bug de placement plutôt qu'à une référence
             # cassée. Le dire ici évite la chasse.
             emit("log_line",
-                 f"[warn] zone '{r.name}' : ancrée sur l'actor "
-                 f"'{eff_actor or '(aucun)'}', introuvable — elle se posera "
+                 f"[warn] texte '{r.name}' : ancré sur l'actor "
+                 f"'{eff_actor or '(aucun)'}', introuvable — il se posera "
                  f"à l'origine de l'écran.")
     L.append(f"const UIRegionInfo g_ui_regions[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1 },   /* aucune zone */"]
+    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0 },   /* aucun texte */"]
     L.append("};")
     L.append("")
     return L

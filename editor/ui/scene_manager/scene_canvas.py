@@ -854,17 +854,17 @@ class FloatingToolbar(QFrame):
     # se choisit au dropdown (comme collision/inpaint) ; le geste rectangle est
     # le même pour les trois. Icônes = formes de la famille Interface.
     _UI_MODES = [
-        ("ui_region", "ui_region", "Text zone",
-         "Runtime text zone — the script writes into it"),
+        ("ui_text", "ui_text", "Text",
+         "Text — authored here, or left empty for a script to write into"),
         ("ui_panel", "ui_panel", "Container",
          "Container / group — anchor root, can draw a background"),
-        ("ui_text", "ui_text", "Text",
-         "Authored text — key into the text table"),
+        ("ui_image", "ui_image", "Image",
+         "Image — a sprite whose state a script can switch"),
     ]
     _UI_ICON_KEYS = {
-        "ui_region": "ui_region",
-        "ui_panel": "ui_panel",
         "ui_text": "ui_text",
+        "ui_panel": "ui_panel",
+        "ui_image": "ui_image",
     }
 
     def __init__(self, parent=None):
@@ -877,7 +877,7 @@ class FloatingToolbar(QFrame):
         self._current_tool = "select"
         self._current_collision = "collision_8"
         self._current_inpaint = "inpaint_brush"
-        self._current_ui = "ui_region"
+        self._current_ui = "ui_text"
 
         self.setFixedWidth(46)
         self.setStyleSheet(f"""
@@ -1630,7 +1630,16 @@ class GBAScene(QGraphicsScene):
         if pixmap:
             item = _MaskablePixmapItem(pixmap)
             item.setZValue(z)
-            item.setOpacity(0.9 if bg_index > 0 else 1.0)
+            # OPACITÉ PLEINE, toujours. Les layers derrière BG0 étaient dessinés
+            # à 90 % — une commodité d'édition (voir les couches empilées) qui
+            # n'existe pas sur la console : le backdrop, et tout ce qui est
+            # derrière, transparaissaient donc EN PERMANENCE à travers un décor
+            # que la ROM affiche plein. Un fond uni un peu vif teintait tout
+            # l'écran, et l'aperçu ne pouvait plus servir à juger une couleur.
+            #
+            # Pour regarder dessous, l'œil de la ligne de layer masque
+            # franchement ce qu'on veut, sans mentir sur le reste du temps.
+            item.setOpacity(1.0)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
             self.addItem(item)
@@ -2504,11 +2513,11 @@ class UIRegionItem(QGraphicsRectItem):
     # pendant un drag, la couleur se lit plus vite qu'une icône de 6 px.
     # Ailleurs (arbre, finders) le type reste porté par la FORME.
     _KIND_COLORS = {
-        "region": "#4f8ff7",   # zone (bleu, famille Interface — inchangé)
-        "text":   "#ff6f91",   # texte authoré (corail — « bulle de dialogue »)
+        "text":   "#4f8ff7",   # texte (bleu, famille Interface)
         "panel":  "#b388ff",   # conteneur (lavande — structure/groupe)
+        "image":  "#ffb454",   # image (ambre — un dessin, pas une structure)
     }
-    _KIND_ICONS = {"region": "ui_region", "panel": "ui_panel", "text": "ui_text"}
+    _KIND_ICONS = {"panel": "ui_panel", "text": "ui_text", "image": "ui_image"}
 
     def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
         super().__init__(0, 0, max(8, region.w), max(8, region.h), parent)
@@ -2554,6 +2563,11 @@ class UIRegionItem(QGraphicsRectItem):
         self._ns_pixmap = None
         self._ns = None
         self._bg_pixmap = None
+        # Image : la frame RÉELLE du sprite, peinte comme le sera la ROM. Un
+        # rectangle nommé ne dirait pas si l'icône est la bonne ni si elle
+        # déborde du conteneur — or c'est exactement pour ça qu'on la pose dans
+        # un canvas plutôt que dans un formulaire.
+        self._img_pixmap = None
         from core.models.ui_region import FILL_NINE, FILL_BG
         _fk = getattr(region, "fill_kind", "")
         if getattr(region, "kind", "") == "panel":
@@ -2567,6 +2581,11 @@ class UIRegionItem(QGraphicsRectItem):
                 if pix is not None and not pix.isNull():
                     self._bg_pixmap = pix
                     self._content_brush = None
+        elif getattr(region, "kind", "") == "image":
+            pix = self._load_image_frame()
+            if pix is not None and not pix.isNull():
+                self._img_pixmap = pix
+                self._content_brush = None
         self.setZValue(120)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -2587,8 +2606,8 @@ class UIRegionItem(QGraphicsRectItem):
 
         # Étiquette : icône de type + le nom que cite le script, lisibles sans
         # passer par l'inspecteur.
-        icon = _icons.get(self._KIND_ICONS.get(getattr(region, "kind", "region"),
-                                               "ui_region"), self._COLOR.name())
+        icon = _icons.get(self._KIND_ICONS.get(getattr(region, "kind", "text"),
+                                               "ui_text"), self._COLOR.name())
         self._kind_icon = QGraphicsPixmapItem(icon.pixmap(32, 32), self)
         self._kind_icon.setScale(6.0 / 32.0)      # ≈ 6 px GBA, net à tout zoom
         self._label = QGraphicsSimpleTextItem(region.name, self)
@@ -2639,20 +2658,62 @@ class UIRegionItem(QGraphicsRectItem):
         return QBrush(QColor(self._COLOR), Qt.BrushStyle.BDiagPattern)
 
     def _load_nine_slice(self):
-        """(QPixmap, NineSlice) du cadre référencé, ou (None, ns/None). Le PNG
-        vient du background source déjà importé (interim)."""
-        get_ns = getattr(self._project, "get_nine_slice", None)
+        """(QPixmap, BackgroundAsset) du cadre référencé, ou (None, bg/None).
+
+        Le cadre EST un fond d'interface (`kind == "ui"`) : il porte son image
+        et ses marges de découpe, il n'y a rien à déréférencer entre les deux."""
         get_bg = getattr(self._project, "get_background", None)
-        if not get_ns or not get_bg:
+        if not get_bg:
             return None, None
-        ns = get_ns(getattr(self._region, "fill_asset", ""))
-        if ns is None:
-            return None, None
-        bg = get_bg(getattr(ns, "source", ""))
+        bg = get_bg(getattr(self._region, "fill_asset", ""))
         if bg is None or not getattr(bg, "asset", ""):
-            return None, ns
+            return None, bg
         path = self._project.background_images_dir / bg.asset
-        return QPixmap(str(path)), ns
+        return QPixmap(str(path)), bg
+
+    def _load_image_frame(self):
+        """QPixmap de la 1re frame de l'état déclaré par un `UIImage`, ou None.
+
+        La PREMIÈRE frame et pas une animation vivante : le canvas est un plan,
+        pas un aperçu de jeu. Faire tourner les images ferait bouger le décor
+        sous la souris pendant qu'on le compose — et masquerait le seul défaut
+        qu'on cherche ici, un cadrage faux.
+
+        Même chaîne que les acteurs (`compose_frame_image`), pour que ce que
+        montre le canvas soit ce que le build assemblera : une seconde façon de
+        composer une frame divergerait au premier flip."""
+        el = self._region
+        name = getattr(el, "sprite_name", "") or ""
+        if not (self._project and name):
+            return None
+        sprite = self._project.get_sprite(name)
+        if sprite is None or not getattr(sprite, "asset", ""):
+            return None
+        states = list(getattr(sprite, "states", []) or [])
+        if not states:
+            return None
+        st = states[el.state_index(sprite)]
+        # Direction 0 (omni) si elle existe, sinon la première déclarée — la
+        # même règle de repli que la boucle d'animation du runtime.
+        dirs = list(getattr(st, "directions", []) or [])
+        if not dirs:
+            return None
+        d = next((x for x in dirs if getattr(x, "dir", 0) == 0), dirs[0])
+        frames = list(getattr(d, "frames", []) or [])
+        if not frames:
+            return None
+        ap = self._project.asset_abs(sprite.asset)
+        if ap is None or not ap.exists():
+            return None
+        try:
+            img = compose_frame_image(ap, frames[0], sprite.frame_w, sprite.frame_h)
+            if img.width <= 0 or img.height <= 0:
+                return None
+            data = bytes(img.tobytes("raw", "RGBA"))
+            qi = QImage(data, img.width, img.height, QImage.Format.Format_RGBA8888)
+            return QPixmap.fromImage(qi)
+        except Exception:
+            return None      # un asset illisible se dessine en hachures, pas en trace
 
     def _load_bg_fill(self):
         """QPixmap du background référencé par un fond `background`, ou None."""
@@ -2680,6 +2741,21 @@ class UIRegionItem(QGraphicsRectItem):
         painter.drawPixmap(QRectF(r.left(), r.top(), w, h), pix, QRectF(0, 0, w, h))
         painter.restore()
 
+    def _paint_image(self, painter):
+        """Peint la frame du sprite, à taille NATURELLE et jamais étirée.
+
+        Le rectangle vaut déjà la frame (`UIImage.sync_size_from`), donc les
+        deux coïncident dans le cas normal ; dessiner à taille naturelle plutôt
+        qu'au rectangle est ce qui rend VISIBLE le cas anormal — un sprite
+        échangé hors de l'éditeur, dont la frame a changé de taille."""
+        if self._img_pixmap is None:
+            return
+        pix, r = self._img_pixmap, self.rect()
+        painter.save()
+        painter.drawPixmap(QRectF(r.left(), r.top(), pix.width(), pix.height()),
+                           pix, QRectF(0, 0, pix.width(), pix.height()))
+        painter.restore()
+
     def _paint_nine_slice(self, painter):
         """Peint le cadre : chaque case via `nine_slice_rects` — coins 1:1,
         bords/centre TUILÉS pour remplir sans déformer."""
@@ -2688,8 +2764,9 @@ class UIRegionItem(QGraphicsRectItem):
         from core.nine_slice import nine_slice_rects
         pix, ns = self._ns_pixmap, self._ns
         r = self.rect()
+        left, right, top, bottom = ns.slice_margins()
         cells = nine_slice_rects(pix.width(), pix.height(),
-                                 ns.left, ns.right, ns.top, ns.bottom,
+                                 left, right, top, bottom,
                                  int(r.width()), int(r.height()))
         painter.save()
         for c in cells:
@@ -2863,11 +2940,13 @@ class UIRegionItem(QGraphicsRectItem):
         # 1. Contenu réel, ou à défaut la bulle blanche : quasi-transparente au
         #    repos, pleine au survol/sélection. Clip aux coins arrondis.
         has_real_content = (self._ns_pixmap is not None or self._bg_pixmap is not None
+                            or self._img_pixmap is not None
                             or self._content_brush is not None)
         painter.save()
         painter.setClipPath(path)
         self._paint_nine_slice(painter)
         self._paint_background(painter)
+        self._paint_image(painter)
         if self._content_brush is not None:
             painter.setPen(QPen(Qt.PenStyle.NoPen))
             painter.setBrush(self._content_brush)
@@ -3230,33 +3309,36 @@ class UIRegionController(QObject):
         return lay
 
     def create_element(self, kind: str, x: int, y: int, w: int, h: int):
-        """Crée un élément du `kind` demandé (zone, conteneur, texte) au
+        """Crée un élément du `kind` demandé (texte, conteneur, image) au
         rectangle dessiné — même flux pour les trois types, seule la fabrique
-        change. L'unicité du nom d'une ZONE se cherche sur tout le projet
-        (espace des constantes REGION_*) ; celle des autres sur la mise en
-        page, élargie aux zones du projet."""
+        change. L'unicité se cherche sur TOUT le projet, quel que soit le type
+        (cf. `Project.ui_element_names`).
+
+        Une image neuve n'a pas de sprite : elle garde le rectangle dessiné
+        jusqu'à ce qu'on lui en donne un, et l'inspecteur la redimensionnera
+        alors sur sa frame. Lui en attribuer un d'office (« le premier du
+        projet ») poserait un dessin que personne n'a demandé."""
         from core.models.ui_region import (
-            UIRegion, UIPanel, UIText, KIND_PANEL, KIND_TEXT,
-            unique_region_name, unique_element_name,
+            UIPanel, UIText, UIImage, KIND_PANEL, KIND_IMAGE, unique_element_name,
         )
         from core.history import get_history, AddListItemCmd
         if not self.ready:
             return None
         lay = self._ensure_layout()
         x, y, w, h = int(x), int(y), int(w), int(h)
-        taken = set(lay.element_names()) | set(self._project.region_names())
+        taken = set(lay.element_names()) | set(self._project.ui_element_names())
         if kind == KIND_PANEL:
             el = UIPanel(name=unique_element_name(taken, "container"),
                          x=x, y=y, w=w, h=h)
             label = "container"
-        elif kind == KIND_TEXT:
+        elif kind == KIND_IMAGE:
+            el = UIImage(name=unique_element_name(taken, "image"),
+                         x=x, y=y, w=w, h=h)
+            label = "image"
+        else:
             el = UIText(name=unique_element_name(taken, "text"),
                         x=x, y=y, w=w, h=h)
             label = "text"
-        else:
-            el = UIRegion(name=unique_region_name(self._project.region_names(), "zone"),
-                          x=x, y=y, w=w, h=h)
-            label = "zone"
         # Par l'historique : dessiner un élément est une modification comme une
         # autre, elle doit s'annuler. `_ensure_layout` reste hors historique —
         # une mise en page vide et non référencée ne gêne personne, alors qu'un
@@ -3268,9 +3350,9 @@ class UIRegionController(QObject):
         return el
 
     def create_region(self, x: int, y: int, w: int, h: int):
-        """Alias historique — une zone de texte runtime."""
-        from core.models.ui_region import KIND_REGION
-        return self.create_element(KIND_REGION, x, y, w, h)
+        """Alias historique — un emplacement de texte."""
+        from core.models.ui_region import KIND_TEXT
+        return self.create_element(KIND_TEXT, x, y, w, h)
 
     # ── Dupliquer / coller ────────────────────────────────────────
 
@@ -3341,10 +3423,9 @@ class UIRegionController(QObject):
         refs `parent` réécrites vers les copies, décalage sur la seule RACINE
         (les enfants sont positionnés relativement à leur parent, les décaler
         aussi les ferait glisser deux fois)."""
-        from core.models.ui_region import (KIND_REGION, unique_element_name,
-                                           unique_region_name)
+        from core.models.ui_region import unique_element_name
         from core.history import get_history, AddListItemsCmd
-        taken = set(lay.element_names()) | set(self._project.region_names())
+        taken = set(lay.element_names()) | set(self._project.ui_element_names())
         copies: list = []
         roots: list = []
         for group in groups:
@@ -3354,14 +3435,10 @@ class UIRegionController(QObject):
             pairs: list = []
             for src in group:
                 new = copy.deepcopy(src)
-                # Espace de noms : le projet entier pour une ZONE (constantes
-                # REGION_*), la mise en page pour les autres types. On cherche
-                # dans l'union, pour que les refs `parent` restent sans
-                # ambiguïté (cf. UILayout.element_names).
-                if getattr(src, "kind", KIND_REGION) == KIND_REGION:
-                    new.name = unique_region_name(taken, src.name)
-                else:
-                    new.name = unique_element_name(taken, src.name)
+                # Espace de noms : le projet entier, tous types confondus (cf.
+                # Project.ui_element_names) — les refs `parent` restent ainsi
+                # sans ambiguïté et les constantes C ne collisionnent pas.
+                new.name = unique_element_name(taken, src.name)
                 taken.add(new.name)
                 rename[src.name] = new.name
                 pairs.append((src, new))
@@ -3692,6 +3769,13 @@ class SceneEditor(QWidget):
         super().__init__(parent)
         self._project: Optional[Project] = None
         self._sprite_pixmaps: dict[int, QPixmap] = {}
+        # Frames AVANT mélange — cf. `refresh_blend`.
+        self._raw_sprite: dict[int, QPixmap] = {}
+        # Layers AVANT mélange — idem.
+        self._raw_bg: dict[int, QPixmap] = {}
+        # Ce qui est derrière les sprites — un BottomLayer
+        # (couleurs + masque des secondes cibles), cf. blend_preview.
+        self._blend_bottom = None
         self._canvas_w = GBA_W
         self._canvas_h = GBA_H
         self._show_all_boxes = False
@@ -4149,7 +4233,7 @@ class SceneEditor(QWidget):
             case t if t.startswith("ui_"):
                 from ui.scene_manager.canvas_tools import UIWidgetTool
 
-                # "ui_region" | "ui_panel" | "ui_text" → kind du modèle
+                # "ui_text" | "ui_panel" | "ui_image" → kind du modèle
                 self._gba_view.set_tool(UIWidgetTool(self._gba_view, t[3:]))
             case _:
                 self._gba_view.set_tool(SelectTool(self._gba_view))
@@ -4191,12 +4275,12 @@ class SceneEditor(QWidget):
         get_bus().select(UIRegionSelection(layout, region))
         users = self._project.ui_layout_users(layout.name)
         shared = f" — shared by {len(users)} scenes" if len(users) > 1 else ""
-        kind_label = {"panel": "Container", "text": "Text"}.get(
-            getattr(region, "kind", "region"), "Zone")
-        # L'empreinte en tuiles n'a de sens que pour une zone (seule à exposer
-        # tile_rect) ; un conteneur ou un texte n'en annoncent pas.
+        kind_label = {"panel": "Container", "image": "Image"}.get(
+            getattr(region, "kind", "text"), "Text")
+        # L'empreinte en tuiles ne se dit que pour ce qui occupe la tilemap ;
+        # une image l'annonce dans son inspecteur, d'après son sprite.
         tiles = ""
-        if hasattr(region, "tile_rect"):
+        if getattr(region, "kind", "") != "image" and hasattr(region, "tile_rect"):
             tw, th = region.tile_rect()[2:]
             tiles = f" · {tw}×{th} tiles"
         get_dispatcher().status(
@@ -4218,6 +4302,7 @@ class SceneEditor(QWidget):
     def load_project(self, project: Project):
         self._project = project
         self._sprite_pixmaps.clear()
+        self._raw_sprite.clear()
 
         scene = project.active_scene
 
@@ -4256,15 +4341,21 @@ class SceneEditor(QWidget):
 
         # BG layers (sans rescale — taille native)
         shown = set()
+        raw_layers: dict[int, QPixmap] = {}
         for layer in (scene.background_layers if scene else []):
             if not layer.background_name:
                 continue
             ba = project.get_background(layer.background_name)
             png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
             ap = project.background_images_dir / png
-            self._gba_scene.set_bg(layer.bg_slot, _bg_pixmap(project, scene, layer, ap))
-            self._gba_scene.set_bg_visible(layer.bg_slot, getattr(layer, "visible", True))
+            raw_layers[layer.bg_slot] = _bg_pixmap(project, scene, layer, ap)
             shown.add(layer.bg_slot)
+        # Pixmaps BRUTS, avant tout mélange : c'est eux que `refresh_blend()`
+        # recompose quand on tire sur un réglage. Les garder évite de relire les
+        # PNG et de requantifier à chaque cran du curseur — la différence entre
+        # un aperçu qui suit la souris et un aperçu qui la subit.
+        self._raw_bg = dict(raw_layers)
+        self._apply_blend_to_canvas()
         for i in range(4):
             if i not in shown:
                 self._gba_scene.set_bg(i, None)
@@ -4280,6 +4371,138 @@ class SceneEditor(QWidget):
         self._canvas_container.refresh_inpaint_banks()
 
         self._reload_sprites()
+
+    def _apply_blend_to_canvas(self):
+        """Recompose les layers depuis les pixmaps BRUTS et les repose.
+
+        Séparé du chargement pour être rappelable seul : c'est ce qui rend
+        l'aperçu vivant. Rien ici ne touche le disque — le coût est celui de la
+        composition, pas celui de la lecture d'un PNG."""
+        scene = self._project.active_scene if self._project else None
+        raw = dict(getattr(self, "_raw_bg", {}) or {})
+        self._blend_bottom = self._apply_layer_blend(scene, raw)
+        for slot, px in raw.items():
+            self._gba_scene.set_bg(slot, px)
+            layer = next((L for L in (scene.background_layers if scene else [])
+                          if L.bg_slot == slot), None)
+            self._gba_scene.set_bg_visible(slot, getattr(layer, "visible", True))
+
+    def refresh_blend(self):
+        """Rejoue le mélange sur les layers ET les sprites, sans rien relire.
+
+        Appelée quand un réglage de mélange change (effet, pourcentage, rôle
+        d'un layer). Les items ne sont pas reconstruits : seuls leurs pixmaps
+        changent, donc la sélection, le drag en cours et les poignées survivent
+        — ce qui compte quand on tire sur un curseur en regardant le résultat.
+
+        Les windows sont réappliquées après coup : `set_bg` recrée les items de
+        layer, et leur masquage vit sur l'item, pas sur la scène."""
+        if not self._project or not self._project.active_scene:
+            return
+        self._apply_blend_to_canvas()
+        for item in self._gba_scene._sprite_items:
+            raw = self._raw_sprite.get(id(item.scene_sprite))
+            if raw is not None:
+                item.setPixmap(self._blend_sprite(item.scene_sprite, raw))
+        scene = self._project.active_scene
+        self._gba_scene.set_windows(getattr(scene, "windows", []))
+
+    def _apply_layer_blend(self, scene, raw_layers: dict) -> Optional[QPixmap]:
+        """Remplace SUR PLACE les pixmaps des layers « dessus » par leur version
+        mélangée, et rend ce qui se trouve derrière les SPRITES.
+
+        Le dessous d'une couche, c'est la **première couche visible derrière
+        elle, quelle qu'elle soit** — pas la première seconde cible. Une couche
+        opaque hors du set occulte quand même ce qui est derrière et empêche
+        donc le mélange à cet endroit (« le blending ne saute pas une couche »).
+        Ne collecter que les secondes cibles faisait traverser le backdrop à
+        travers un décor plein, et teintait tout l'écran en permanence.
+
+        L'ordre de priorité GBA suit le numéro de BG : le codegen émet
+        `pri = bg` et 0 est DEVANT, donc « derrière BG_n » = les slots de numéro
+        SUPÉRIEUR, puis le backdrop.
+
+        Rend None quand la scène ne mélange rien : l'appelant saute alors tout
+        le chemin, et le canvas se comporte exactement comme avant."""
+        from core.blend_preview import blend_images, resolve_bottom, scene_blend_plan
+        from core.models.scene import BLEND_BOTTOM
+        if scene is None:
+            return None
+        plan = scene_blend_plan(scene)
+        if plan is None:
+            return None
+        w, h = self._canvas_w, self._canvas_h
+        bd = self._backdrop_qcolor()
+        bd_rgb = (bd.red(), bd.green(), bd.blue())
+        bd_target = plan["backdrop_role"] == BLEND_BOTTOM
+
+        source = dict(raw_layers)
+
+        def bottom_of(behind_of: Optional[int]):
+            """Ce qui est immédiatement derrière `behind_of`, du plus AVANT au
+            plus arrière. `None` = derrière les sprites, qui passent devant
+            tous les layers — leur dessous est donc la pile entière."""
+            slots = sorted(s for s in source
+                           if behind_of is None or s > behind_of)
+            entries = [(source[s].toImage(),
+                        s in plan["bottom_slots"]) for s in slots]
+            return resolve_bottom(entries, w, h, bd_rgb, bd_target)
+
+        for slot in plan["top_slots"]:
+            px = raw_layers.get(slot)
+            if px is None or px.isNull():
+                continue
+            raw_layers[slot] = QPixmap.fromImage(blend_images(
+                px.toImage(), bottom_of(slot),
+                plan["mode"], plan["eva"], plan["evb"], plan["evy"]))
+        return bottom_of(None)
+
+    def _blend_sprite(self, actor, px: QPixmap) -> QPixmap:
+        """Frame d'un acteur, mélangée si elle est une première cible.
+
+        **Deux portes distinctes**, et c'est la source de confusion la plus
+        commune du blending GBA :
+          • `Scene.blend_obj_role == "top"` met TOUS les sprites dans la
+            première cible, via BLDCNT comme un layer ;
+          • `Actor.obj_mode == 1` (semi-transparent) force l'alpha pour CE
+            sprite seul, quelles que soient les cibles de BLDCNT — mais il
+            emploie quand même EVA/EVB, et il ne fait rien sans seconde cible.
+        Un sprite peut donc être mélangé alors qu'aucun layer ne l'est.
+
+        Le « dessous » est le composite des secondes cibles calculé au chargement
+        des layers : un sprite est devant tous les layers, il n'y a donc pas de
+        sous-ensemble à choisir selon sa position. Le découpage à sa POSITION
+        n'est pas fait — le mélange est calculé contre le dessous entier, ce qui
+        est exact tant que le dessous est uniforme sous le sprite. Un dessous
+        qui varie sous le sprite demanderait de recomposer à chaque déplacement ;
+        c'est la limite assumée de l'aperçu, pas du moteur."""
+        from core.blend_preview import blend_images, scene_blend_plan
+        from core.models.scene import BLEND_TOP, BLEND_ALPHA
+        scene = self._project.active_scene if self._project else None
+        plan = scene_blend_plan(scene) if scene else None
+        obj_semi = int(getattr(actor, "obj_mode", 0) or 0) == 1
+        if plan is None and not obj_semi:
+            return px
+        if plan is None:
+            return px          # obj_mode 1 sans mode de scène : rien à mélanger
+        if plan["obj_role"] != BLEND_TOP and not obj_semi:
+            return px
+        # Un sprite semi-transparent est en ALPHA par construction, même si la
+        # scène est réglée sur un fondu : le mode OAM ne lit pas BLDCNT.
+        mode = BLEND_ALPHA if obj_semi else plan["mode"]
+        return QPixmap.fromImage(blend_images(
+            px.toImage(), getattr(self, "_blend_bottom", None),
+            mode, plan["eva"], plan["evb"], plan["evy"]))
+
+    def _backdrop_qcolor(self) -> QColor:
+        """Couleur du backdrop de la scène, résolue comme le canvas la peint."""
+        scene = self._project.active_scene if self._project else None
+        raw = getattr(scene, "backdrop_color", None)
+        if raw is None and self._project:
+            raw = getattr(self._project.settings, "backdrop_color", 0)
+        from core.color_utils import bgr555_to_rgb888
+        r, g, b = bgr555_to_rgb888(int(raw or 0))
+        return QColor(r, g, b)
 
     def _reload_sprites(self):
         if not self._project:
@@ -4328,6 +4551,12 @@ class SceneEditor(QWidget):
                 if _placeholder is None:
                     _placeholder = _make_placeholder_pixmap()
                 frame_px = _placeholder
+            else:
+                # La frame BRUTE est gardée à part : `refresh_blend()` rejoue le
+                # mélange dessus sans recomposer la frame depuis son PNG. Un
+                # placeholder n'y entre pas — il ne représente aucun pixel réel.
+                self._raw_sprite[id(actor)] = frame_px
+                frame_px = self._blend_sprite(actor, frame_px)
             self._sprite_pixmaps[id(actor)] = frame_px
             save_fn = lambda _s=self: _s.scene_changed.emit()
             ox  = getattr(sprite_comp, "origin_x", 0)   if sprite_comp else 0

@@ -421,7 +421,7 @@ class SceneInpaintingTool(BaseTool):
 
 
 class UIWidgetTool(BaseTool):
-    """Dessine un élément d'UI (zone, conteneur ou texte) au rectangle — UN
+    """Dessine un élément d'UI (texte, conteneur ou image) au rectangle — UN
     outil paramétré par `kind`, choisi dans le dropdown de la toolbar (même
     modèle que collision et inpainting).
 
@@ -444,12 +444,12 @@ class UIWidgetTool(BaseTool):
     _BORDER = QColor(79, 143, 247, 230)
     # Taille au simple clic, par type — multiples de 8.
     _DEFAULTS = {
-        "region": (128, 32),   # une boîte de dialogue basse plausible
-        "panel":  (96, 48),    # un cadre de menu
-        "text":   (80, 16),    # une ligne de libellé
+        "text":  (128, 32),    # une boîte de dialogue basse plausible
+        "panel": (96, 48),     # un cadre de menu
+        "image": (16, 16),     # une icône de HUD ; le sprite choisi la recalera
     }
 
-    def __init__(self, view: GBAView, kind: str = "region"):
+    def __init__(self, view: GBAView, kind: str = "text"):
         super().__init__(view)
         self._kind = kind
         self._anchor: Optional[tuple[int, int]] = None   # (x, y) px snappés
@@ -510,7 +510,7 @@ class UIWidgetTool(BaseTool):
             return True
         x, y, w, h = self._rect(pos)
         if w <= _BG_TILE and h <= _BG_TILE:      # simple clic
-            w, h = self._DEFAULTS.get(self._kind, self._DEFAULTS["region"])
+            w, h = self._DEFAULTS.get(self._kind, self._DEFAULTS["text"])
         self._anchor = None
         if self._preview:
             self._preview.setVisible(False)

@@ -32,3 +32,4 @@ T = TypeVar("T", bound=Resource)
 # et scene_editor.py — définis ici pour éviter un import circulaire entre eux).
 MIME_PREFAB_TEMPLATE = "application/x-gba-prefab-template"  # drag Prefab → instancier + placer dans scène
 MIME_SCRIPT          = "application/x-gba-script"
+MIME_ANIMATED_BG     = "application/x-gba-animated-background"  # drag fond animé → poser sur un fond hôte

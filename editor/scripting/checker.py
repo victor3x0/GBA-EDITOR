@@ -28,7 +28,7 @@ from .parser import (
 )
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
-                  DOMAIN_REGION)
+                  DOMAIN_REGION, DOMAIN_IMAGE)
 
 
 # Ce à quoi ressemble une CLÉ et pas un libellé : minuscules, chiffres, au
@@ -64,7 +64,8 @@ class BuildContext:
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     text_keys:    list[str]  = None    # clés de la table de textes du projet
     font_names:   list[str]  = None    # noms des polices encodables
-    region_names: list[str]  = None    # zones de texte authorées (toutes mises en page)
+    region_names: list[str]  = None    # emplacements de texte (toutes mises en page)
+    image_names:  list[str]  = None    # images d'interface (toutes mises en page)
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
 
@@ -229,6 +230,8 @@ class Checker:
                 self._check_font(key, val)
             elif param.domain == DOMAIN_REGION:
                 self._check_region(key, val)
+            elif param.domain == DOMAIN_IMAGE:
+                self._check_image(key, val)
 
     def _check_anim(self, call_key: str, name: str):
         if self.ctx.anim_names is not None and name not in self.ctx.anim_names:
@@ -300,6 +303,22 @@ class Checker:
             self.errors.append(CheckError(
                 "error",
                 f"{call_key}('{name}') : zone de texte '{name}' introuvable ({near}).",
+            ))
+
+    def _check_image(self, call_key: str, name: str):
+        """Même sévérité et même raison que `_check_region` : sans l'élément, le
+        `#define IMAGE_*` n'existe pas et la faute ne remonte qu'en « implicit
+        declaration » à la compilation C.
+
+        L'ÉTAT, lui, n'est pas vérifié ici : il se lit dans le sprite de cette
+        image-là, que le contexte de build ne porte pas. Le codegen émet une
+        constante par état existant, donc un état inconnu échoue quand même au
+        link — plus tard, mais jamais en silence."""
+        if self.ctx.image_names is not None and name not in self.ctx.image_names:
+            near = ", ".join(sorted(self.ctx.image_names)[:5]) or                 "aucune image dans le projet — dessines-en une dans le canvas de scène"
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : image d'interface '{name}' introuvable ({near}).",
             ))
 
     def _check_global_name(self, call_key: str, args: list):

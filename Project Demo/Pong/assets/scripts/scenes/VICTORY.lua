@@ -16,7 +16,7 @@ function on_start()
         text.draw_in("resultat", "victory_02")
     end
     -- Ferré à droite — le troisième alignement.
-    text.draw_in("invite_fin", "victory_03")
+    text.draw_in("press_start", "victory_03")
 end
 
 function on_update()

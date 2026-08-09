@@ -6,23 +6,33 @@ Repeindre, AU NIVEAU ÉDITEUR (partagé entre toutes les scènes), la palette
 (cf. BackgroundAsset.effective_tilemap). Analogue au SceneInpaintingController,
 mais côté asset — d'où la nomenclature « BackgroundInpainting ».
 
+Le canvas sert AUSSI les deux autres emplois d'un fond (cf. `BG_KINDS`), parce
+que ce sont trois emplois de la même image et qu'un second canvas aurait dupliqué
+le zoom, le pan, la grille et le rendu :
+  · fond d'INTERFACE en cadre étirable → guides de coupe glissables (les mêmes
+    marges que règlent les champs de l'inspecteur) ;
+  · fond ANIMÉ → grille de frames et lecture à la vitesse déclarée ;
+  · n'importe quel fond → fonds animés POSÉS dessus, déposés depuis le finder,
+    déplaçables et supprimables, stockés dans le .json de l'hôte.
+
 Composants :
 - BgInpaintController : état + peinture (brosse/fill/rect/gomme) + rendu
   incrémental + persistance + undo.
 - BgInpaintView       : QGraphicsView (zoom molette, pan clic-central, grille 8×8)
   déléguant la souris à l'outil actif.
 - BgInpaintToolbar    : barre d'outils flottante déplaçable (4 outils).
+- _SliceOverlay / _FrameOverlay / _PlacementOverlay : superpositions par type.
 - BgInpaintCanvas     : wrapper vue + toolbar.
 """
 from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton,
+    QWidget, QFrame, QVBoxLayout, QLabel, QToolButton, QMenu,
     QGraphicsOpacityEffect,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsItem,
 )
-from PyQt6.QtGui import QColor, QPainter, QPixmap, QImage, QTransform, QPen
+from PyQt6.QtGui import QColor, QPainter, QPixmap, QImage, QTransform, QPen, QBrush
 from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, QPropertyAnimation, pyqtSignal
 
 from core.bg_import import (
@@ -30,10 +40,24 @@ from core.bg_import import (
     render_bitmap_preview,
 )
 from core.color_utils import bgr555_to_rgb888
-from ui.common.theme import C, T
+from core.models.resource import MIME_ANIMATED_BG
+from core.models.background import (
+    KIND_UI, KIND_ANIMATED, UI_ROLE_NINE, BackgroundAnimation,
+)
+from ui.common.theme import C, T, QSS
 from ui.common.palette_bank_strip import PaletteBankStrip
 from ui.common.canvas_top_bar import CanvasTopBar, BAR_HEIGHT
-from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE, COLOR_UI
+
+
+def _snap8(v) -> int:
+    """Cale une coordonnée sur la grille 8×8, vers le bas.
+
+    Ce que le matériel écrira pour un fond posé est une entrée de tilemap : une
+    origine entre deux tuiles n'existe pas (même règle que
+    `UIRegion.snap_to_tile`, et pour la même raison)."""
+    n = int(v)
+    return n - n % 8
 
 
 def _pil_to_qimage(img) -> QImage:
@@ -341,11 +365,281 @@ class _GridOverlay(QGraphicsItem):
 
 
 # ──────────────────────────────────────────────────────────────────
+#  Aperçu d'un fond en pixmap (cache partagé)
+# ──────────────────────────────────────────────────────────────────
+def asset_pixmap(ba) -> Optional[QPixmap]:
+    """Rendu complet d'un BackgroundAsset compressé, ou None s'il n'a rien à
+    montrer. Même chaîne que l'aperçu du canvas (`render_bg_preview`) : un
+    second rendu divergerait au premier flip, comme il a divergé pour les
+    frames de sprite."""
+    if ba is None:
+        return None
+    if getattr(ba, "mode", "tiled") == "bitmap":
+        if not ba.bitmap:
+            return None
+        img = render_bitmap_preview({"out_w": ba.out_w, "out_h": ba.out_h,
+                                     "palettes": ba.palettes, "bitmap": ba.bitmap})
+    else:
+        if not ba.tileset:
+            return None
+        img = render_bg_preview({
+            "tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
+            "tileset": ba.tileset, "palettes": ba.palettes,
+            "tilemap": ba.effective_tilemap(), "bpp": getattr(ba, "bpp", 4),
+        })
+    return QPixmap.fromImage(_pil_to_qimage(img))
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Overlay : guides de coupe d'un cadre nine-slice
+# ──────────────────────────────────────────────────────────────────
+class _SliceOverlay(QGraphicsItem):
+    """Les 4 lignes de coupe d'un fond d'interface, glissables.
+
+    Le vrai sujet d'un cadre étirable n'est pas « combien de pixels » mais « où
+    passe la coupe » : quatre nombres dans un formulaire obligent à compter les
+    pixels dans un autre logiciel, alors que la réponse se voit. Les champs de
+    l'inspecteur restent (on veut aussi taper 8), et écrivent le même modèle.
+
+    Les coins — les seules cases qui ne se répètent pas — sont assombris, parce
+    que c'est ce que la coupe DÉCIDE : tout le reste sera étiré ou tuilé."""
+
+    GRAB = 4        # tolérance de saisie, en pixels d'IMAGE (indépendante du zoom)
+
+    _KEYS = ("slice_left", "slice_right", "slice_top", "slice_bottom")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._w = self._h = 0
+        self._m = {k: 0 for k in self._KEYS}
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def set_image_size(self, w: int, h: int):
+        self.prepareGeometryChange()
+        self._w, self._h = w, h
+
+    def set_margins(self, margins: dict):
+        self._m.update({k: int(v) for k, v in margins.items() if k in self._m})
+        self.update()
+
+    def margins(self) -> dict:
+        return dict(self._m)
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self._w, self._h)
+
+    # Position (en px image) de chaque guide. Droite/bas comptent depuis leur
+    # bord — c'est la sémantique d'une MARGE, pas d'une coordonnée.
+    def _positions(self) -> dict:
+        return {"slice_left": self._m["slice_left"],
+                "slice_right": self._w - self._m["slice_right"],
+                "slice_top": self._m["slice_top"],
+                "slice_bottom": self._h - self._m["slice_bottom"]}
+
+    def guide_at(self, x: float, y: float) -> Optional[str]:
+        """Guide sous le curseur, le plus proche d'abord. None = zone libre, et
+        le canvas rend alors la main à l'outil de peinture."""
+        pos = self._positions()
+        best, best_d = None, self.GRAB + 1
+        for key in ("slice_left", "slice_right"):
+            d = abs(x - pos[key])
+            if d < best_d and 0 <= y <= self._h:
+                best, best_d = key, d
+        for key in ("slice_top", "slice_bottom"):
+            d = abs(y - pos[key])
+            if d < best_d and 0 <= x <= self._w:
+                best, best_d = key, d
+        return best
+
+    def margin_for(self, key: str, x: float, y: float) -> int:
+        """Marge que vaudrait `key` si son guide était lâché en (x, y). Bornée à
+        l'image et au guide opposé : deux marges qui se croisent donneraient un
+        cadre retourné, que `nine_slice_rects` devrait rattraper au rendu."""
+        if key == "slice_left":
+            return int(max(0, min(x, self._w - self._m["slice_right"])))
+        if key == "slice_right":
+            return int(max(0, min(self._w - x, self._w - self._m["slice_left"])))
+        if key == "slice_top":
+            return int(max(0, min(y, self._h - self._m["slice_bottom"])))
+        return int(max(0, min(self._h - y, self._h - self._m["slice_top"])))
+
+    def paint(self, painter: QPainter, option, widget=None):
+        if not (self._w and self._h):
+            return
+        pos = self._positions()
+        l, r = pos["slice_left"], pos["slice_right"]
+        t, b = pos["slice_top"], pos["slice_bottom"]
+        col = QColor(COLOR_UI)
+        # Coins : ce que la coupe fige.
+        shade = QColor(col); shade.setAlpha(48)
+        for cx, cw in ((0, l), (r, self._w - r)):
+            for cy, ch in ((0, t), (b, self._h - b)):
+                if cw > 0 and ch > 0:
+                    painter.fillRect(QRectF(cx, cy, cw, ch), QBrush(shade))
+        pen = QPen(col)
+        pen.setWidth(0)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawLine(int(l), 0, int(l), self._h)
+        painter.drawLine(int(r), 0, int(r), self._h)
+        painter.drawLine(0, int(t), self._w, int(t))
+        painter.drawLine(0, int(b), self._w, int(b))
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Overlay : grille de frames d'une planche animée
+# ──────────────────────────────────────────────────────────────────
+class _FrameOverlay(QGraphicsItem):
+    """La découpe d'une planche, et la frame en cours de lecture.
+
+    Le voile sur TOUT sauf la frame courante plutôt qu'un cadre autour d'elle :
+    c'est ce qui montre du premier coup d'œil qu'une planche mal découpée joue
+    à cheval sur deux dessins."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._w = self._h = 0
+        self._fw = self._fh = 0
+        self._cols = self._rows = 0
+        self._cur = 0
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def set_grid(self, img_w: int, img_h: int, fw: int, fh: int,
+                 cols: int, rows: int):
+        self.prepareGeometryChange()
+        self._w, self._h = img_w, img_h
+        self._fw, self._fh = max(1, fw), max(1, fh)
+        self._cols, self._rows = cols, rows
+        self.update()
+
+    def set_current(self, index: int):
+        if index != self._cur:
+            self._cur = index
+            self.update()
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self._w, self._h)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        if not (self._cols and self._rows):
+            return
+        cur_c, cur_r = self._cur % self._cols, self._cur // self._cols
+        veil = QColor(0, 0, 0, 120)
+        for r in range(self._rows):
+            for c in range(self._cols):
+                if (c, r) == (cur_c, cur_r):
+                    continue
+                painter.fillRect(QRectF(c * self._fw, r * self._fh,
+                                        self._fw, self._fh), QBrush(veil))
+        # Les pixels hors grille n'appartiennent à aucune frame : même voile,
+        # pour que la bande morte se VOIE (l'inspecteur, lui, la chiffre).
+        gw, gh = self._cols * self._fw, self._rows * self._fh
+        if gw < self._w:
+            painter.fillRect(QRectF(gw, 0, self._w - gw, self._h), QBrush(veil))
+        if gh < self._h:
+            painter.fillRect(QRectF(0, gh, self._w, self._h - gh), QBrush(veil))
+        pen = QPen(QColor(COLOR_ACTIVE))
+        pen.setWidth(0)
+        painter.setPen(pen)
+        for c in range(self._cols + 1):
+            painter.drawLine(c * self._fw, 0, c * self._fw, gh)
+        for r in range(self._rows + 1):
+            painter.drawLine(0, r * self._fh, gw, r * self._fh)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Overlay : fonds animés POSÉS sur l'hôte
+# ──────────────────────────────────────────────────────────────────
+class _PlacementOverlay(QGraphicsItem):
+    """Les fonds animés déposés sur ce fond, JOUÉS sur place.
+
+    Joués et pas figés sur leur première frame — contrairement aux images du
+    canvas de scène, qui restent immobiles pour ne pas faire bouger le décor
+    sous la souris. Ici l'animation EST l'objet qu'on pose : voir sa cadence et
+    son raccord avec le décor est la seule raison de la poser dans un canvas
+    plutôt que de taper deux coordonnées."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._w = self._h = 0
+        self._items: list = []     # {pl, pix, w, h, fw, fh, cols, n, speed, loop}
+        self._tick = 0
+        self._selected = None      # BackgroundAnimation | None
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def set_image_size(self, w: int, h: int):
+        self.prepareGeometryChange()
+        self._w, self._h = w, h
+
+    def set_items(self, items: list):
+        self._items = items
+        self.update()
+
+    def set_tick(self, tick: int):
+        self._tick = tick
+        self.update()
+
+    def set_selected(self, pl):
+        self._selected = pl
+        self.update()
+
+    def selected(self):
+        return self._selected
+
+    def boundingRect(self) -> QRectF:
+        return QRectF(0, 0, self._w, self._h)
+
+    def hit(self, x: float, y: float):
+        """Placement sous le point, le DERNIER posé d'abord (il est au-dessus)."""
+        for it in reversed(self._items):
+            pl = it["pl"]
+            if pl.x <= x < pl.x + it["w"] and pl.y <= y < pl.y + it["h"]:
+                return pl
+        return None
+
+    def _frame_index(self, it) -> int:
+        n = max(1, it["n"])
+        step = self._tick // max(1, it["speed"])
+        return step % n if it["loop"] else min(step, n - 1)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        for it in self._items:
+            pl = it["pl"]
+            rect = QRectF(pl.x, pl.y, it["w"], it["h"])
+            pix = it["pix"]
+            if pix is None:
+                # Référence pendante (animé supprimé/renommé hors éditeur) :
+                # une croix à la place, jamais un trou — un placement invisible
+                # se retrouverait dans le .json sans qu'on sache pourquoi.
+                pen = QPen(QColor(C.ACCENT_RED)); pen.setWidth(0)
+                painter.setPen(pen)
+                painter.drawRect(rect)
+                painter.drawLine(rect.topLeft().toPoint(), rect.bottomRight().toPoint())
+                painter.drawLine(rect.topRight().toPoint(), rect.bottomLeft().toPoint())
+                continue
+            i = self._frame_index(it)
+            cols = max(1, it["cols"])
+            src = QRectF((i % cols) * it["fw"], (i // cols) * it["fh"],
+                         it["fw"], it["fh"])
+            painter.drawPixmap(rect, pix, src)
+            if pl is self._selected:
+                pen = QPen(QColor(COLOR_ACTIVE)); pen.setWidth(0)
+                painter.setPen(pen)
+                painter.drawRect(rect)
+
+
+# ──────────────────────────────────────────────────────────────────
 #  Vue zoomable / pan / peinture
 # ──────────────────────────────────────────────────────────────────
 class BgInpaintView(QGraphicsView):
     zoom_changed = pyqtSignal(float)
     cursor_moved = pyqtSignal(int, int)   # px dans l'image ; (-1,-1) = hors image
+    slice_dragged = pyqtSignal(str, int)  # (clé de marge, valeur px)
+    slice_released = pyqtSignal()         # fin de glissement → persistance
+    anim_dropped = pyqtSignal(str, int, int)   # (nom du fond animé, x, y)
+    placement_moved = pyqtSignal(object, int, int)  # (placement, x, y)
+    placement_selected = pyqtSignal(object)         # placement | None
+    placement_deleted = pyqtSignal(object)
 
     _ZOOM_LEVELS = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0]
 
@@ -367,6 +661,30 @@ class BgInpaintView(QGraphicsView):
         self._grid.setZValue(10)
         self._scene.addItem(self._grid)
         self._grid_on = True     # préférence utilisateur (toggle de la barre)
+
+        # Superpositions par type. Les placements passent SOUS les guides et la
+        # grille : ceux-ci se règlent, un placement se regarde.
+        self.placements = _PlacementOverlay()
+        self.placements.setZValue(20)
+        self._scene.addItem(self.placements)
+        self.slices = _SliceOverlay()
+        self.slices.setZValue(30)
+        self.slices.setVisible(False)
+        self._scene.addItem(self.slices)
+        self.frames = _FrameOverlay()
+        self.frames.setZValue(30)
+        self.frames.setVisible(False)
+        self._scene.addItem(self.frames)
+
+        # Dépôt d'un fond animé venu du finder.
+        self.setAcceptDrops(True)
+        # Suppr sur un fond posé : sans focus clavier, la touche n'arriverait
+        # jamais jusqu'ici.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+        self._drag_guide: Optional[str] = None
+        self._drag_pl = None                 # placement en cours de déplacement
+        self._drag_pl_grab = (0, 0)          # accroche dans le placement
 
         self._zoom = 2.0
         self._apply_zoom()
@@ -400,6 +718,8 @@ class BgInpaintView(QGraphicsView):
         self._pix_item.setPixmap(self._ctrl.pixmap())
         w, h = self._ctrl.image_size()
         self._grid.resize(w, h)
+        self.slices.set_image_size(w, h)
+        self.placements.set_image_size(w, h)
         self._sync_grid()
         self._scene.setSceneRect(0, 0, max(w, 1), max(h, 1))
         self._zoom = self._DEFAULT_ZOOM
@@ -468,6 +788,16 @@ class BgInpaintView(QGraphicsView):
         super().leaveEvent(e)
 
     # ── Souris ───────────────────────────────────────────────────
+    # PRÉCÉDENCE, du plus spécifique au plus général : un guide de coupe (il
+    # faut être à quelques pixels de la ligne), puis un fond animé posé, puis
+    # l'outil de peinture. L'inverse aurait obligé à changer d'outil pour
+    # déplacer ce qu'on vient de déposer, alors que les deux premiers cas sont
+    # rares et bornés dans l'espace.
+
+    def _scene_pos(self, e) -> tuple[float, float]:
+        p = self.mapToScene(e.position().toPoint())
+        return p.x(), p.y()
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
@@ -475,10 +805,31 @@ class BgInpaintView(QGraphicsView):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             e.accept()
             return
-        if e.button() == Qt.MouseButton.LeftButton and self._ctrl.paintable:
-            self._handle_press(e)
-            e.accept()
-            return
+        if e.button() == Qt.MouseButton.LeftButton:
+            x, y = self._scene_pos(e)
+            if self.slices.isVisible():
+                guide = self.slices.guide_at(x, y)
+                if guide:
+                    self._drag_guide = guide
+                    e.accept()
+                    return
+            pl = self.placements.hit(x, y)
+            if pl is not None:
+                self._drag_pl = pl
+                self._drag_pl_grab = (x - pl.x, y - pl.y)
+                self.placements.set_selected(pl)
+                self.placement_selected.emit(pl)
+                e.accept()
+                return
+            # Clic dans le vide : on désélectionne avant de peindre, sinon le
+            # contour resterait sur un objet qu'on ne vise plus.
+            if self.placements.selected() is not None:
+                self.placements.set_selected(None)
+                self.placement_selected.emit(None)
+            if self._ctrl.paintable:
+                self._handle_press(e)
+                e.accept()
+                return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -491,17 +842,48 @@ class BgInpaintView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - d.y())
             e.accept()
             return
+        if self._drag_guide:
+            x, y = self._scene_pos(e)
+            self.slice_dragged.emit(self._drag_guide,
+                                    self.slices.margin_for(self._drag_guide, x, y))
+            e.accept()
+            return
+        if self._drag_pl is not None:
+            x, y = self._scene_pos(e)
+            nx, ny = _snap8(x - self._drag_pl_grab[0]), _snap8(y - self._drag_pl_grab[1])
+            self.placement_moved.emit(self._drag_pl, nx, ny)
+            e.accept()
+            return
         if self._painting and self._tool in ("brush", "eraser"):
             c, r = self._cell_at(e)
             self._ctrl.set_tile(c, r, erase=(self._tool == "eraser"))
             e.accept()
             return
+        # Curseur de redimensionnement au survol d'un guide : sans ça, rien ne
+        # dit que la ligne se prend.
+        if self.slices.isVisible():
+            g = self.slices.guide_at(*self._scene_pos(e))
+            if g:
+                self.setCursor(Qt.CursorShape.SizeHorCursor if "left" in g or "right" in g
+                               else Qt.CursorShape.SizeVerCursor)
+            else:
+                self.unsetCursor()
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._panning = False
             self.unsetCursor()
+            e.accept()
+            return
+        if self._drag_guide and e.button() == Qt.MouseButton.LeftButton:
+            self._drag_guide = None
+            self.slice_released.emit()
+            e.accept()
+            return
+        if self._drag_pl is not None and e.button() == Qt.MouseButton.LeftButton:
+            self._drag_pl = None
+            self.slice_released.emit()   # même signal : « le geste est fini, persiste »
             e.accept()
             return
         if self._painting and e.button() == Qt.MouseButton.LeftButton:
@@ -517,7 +899,52 @@ class BgInpaintView(QGraphicsView):
         super().mouseReleaseEvent(e)
 
     def contextMenuEvent(self, e):
-        e.accept()  # clic-droit réservé (pas de menu contextuel sur le canvas)
+        """Un seul menu, et seulement sur un fond animé posé : le reste du canvas
+        appartient aux outils de peinture (clic droit réservé)."""
+        pos = self.mapToScene(e.pos())
+        pl = self.placements.hit(pos.x(), pos.y())
+        e.accept()
+        if pl is None:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        act_del = menu.addAction("Remove this animation")
+        if menu.exec(e.globalPos()) == act_del:
+            self.placement_deleted.emit(pl)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            pl = self.placements.selected()
+            if pl is not None:
+                self.placement_deleted.emit(pl)
+                e.accept()
+                return
+        super().keyPressEvent(e)
+
+    # ── Dépôt d'un fond animé ────────────────────────────────────
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasFormat(MIME_ANIMATED_BG):
+            e.acceptProposedAction()
+            return
+        super().dragEnterEvent(e)
+
+    def dragMoveEvent(self, e):
+        if e.mimeData().hasFormat(MIME_ANIMATED_BG):
+            e.acceptProposedAction()
+            return
+        super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        if not e.mimeData().hasFormat(MIME_ANIMATED_BG):
+            super().dropEvent(e)
+            return
+        name = bytes(e.mimeData().data(MIME_ANIMATED_BG)).decode("utf-8")
+        p = self.mapToScene(e.position().toPoint())
+        # Point BRUT du curseur : c'est le canvas qui centre la frame dessus et
+        # cale le résultat sur la grille — lui seul connaît la taille de ce
+        # qu'on dépose, et centrer après calage décalerait d'une demi-tuile.
+        self.anim_dropped.emit(name, int(p.x()), int(p.y()))
+        e.acceptProposedAction()
 
     def _handle_press(self, e):
         c, r = self._cell_at(e)
@@ -638,11 +1065,22 @@ class BgInpaintToolbar(QFrame):
 class BgInpaintCanvas(QWidget):
     """Panneau central du Background Editor : bande de peinture + canvas + toolbar."""
 
+    slices_dragged = pyqtSignal(dict)      # marges posées au canvas → inspecteur
+    placements_changed = pyqtSignal()      # fond animé posé/déplacé/retiré
+
+    # Cadence de la lecture : un tick GBA (60 Hz), l'unité dans laquelle les
+    # vitesses sont DÉCLARÉES. Rejouer à l'unité près est ce qui rend l'aperçu
+    # comparable à la ROM ; un timer arrondi à 30 Hz ferait mentir la moitié des
+    # vitesses paires.
+    _TICK_MS = 16
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._ctrl = BgInpaintController()
         self._view = BgInpaintView(self._ctrl, self)
         self._ba = None
+        self._project = None
+        self._tick = 0
 
         # Barre d'état au-dessus du canvas — même composant que le Scene Manager.
         self._bar = CanvasTopBar("Fit background to view")
@@ -688,6 +1126,20 @@ class BgInpaintCanvas(QWidget):
         # set_overlays() ; repositionnés au resize.
         self._info_ov = self._make_overlay(Qt.AlignmentFlag.AlignLeft)
         self._warn_ov = self._make_overlay(Qt.AlignmentFlag.AlignRight)
+
+        # ── Superpositions par type : géométrie éditée au canvas ──
+        self._view.slice_dragged.connect(self._on_slice_dragged)
+        self._view.slice_released.connect(self._persist_host)
+        self._view.anim_dropped.connect(self._on_anim_dropped)
+        self._view.placement_moved.connect(self._on_placement_moved)
+        self._view.placement_deleted.connect(self._on_placement_deleted)
+
+        # Horloge de lecture. Un seul timer pour tout le canvas : la planche en
+        # cours d'édition et les fonds posés avancent sur la MÊME base de temps,
+        # sans quoi deux aperçus de la même animation se décaleraient.
+        self._clock = QTimer(self)
+        self._clock.setInterval(self._TICK_MS)
+        self._clock.timeout.connect(self._on_tick)
 
     def _make_overlay(self, halign) -> QLabel:
         l = _HoverOverlay(self)
@@ -755,8 +1207,129 @@ class BgInpaintCanvas(QWidget):
     def _palette_entries(palettes: list) -> list:
         return [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
 
+    # ── Superpositions par type ──────────────────────────────────
+
+    def reload_geometry(self):
+        """Réaligne guides, grille de frames et placements sur le modèle. Appelé
+        chaque fois qu'un réglage de découpe change, d'où qu'il vienne."""
+        ba = self._ba
+        v = self._view
+        is_nine = bool(ba and ba.kind == KIND_UI and ba.ui_role == UI_ROLE_NINE)
+        v.slices.setVisible(is_nine)
+        if is_nine:
+            v.slices.set_margins({k: getattr(ba, k) for k in
+                                  ("slice_left", "slice_right",
+                                   "slice_top", "slice_bottom")})
+        is_anim = bool(ba and ba.kind == KIND_ANIMATED)
+        v.frames.setVisible(is_anim)
+        if is_anim:
+            cols, rows = ba.frame_grid()
+            v.frames.set_grid(*ba.pixel_size(), *ba.frame_size(), cols, rows)
+        v.placements.set_items(self._placement_items())
+        self._sync_clock()
+
+    def _placement_items(self) -> list:
+        """Ce qu'il faut pour DESSINER chaque fond posé : la planche rendue une
+        fois, sa découpe et sa cadence. Résolu ici et pas dans l'overlay — un
+        item graphique n'a pas à connaître le projet, et la planche ne se rend
+        qu'au (re)chargement plutôt qu'à chaque frame."""
+        ba, p = self._ba, self._project
+        if ba is None or p is None:
+            return []
+        cache: dict = {}
+        out: list = []
+        for pl in ba.animations:
+            src = p.get_background(pl.animated_name)
+            if src is None:
+                out.append({"pl": pl, "pix": None, "w": 8, "h": 8,
+                            "fw": 8, "fh": 8, "cols": 1, "n": 1,
+                            "speed": 8, "loop": True})
+                continue
+            if pl.animated_name not in cache:
+                cache[pl.animated_name] = asset_pixmap(src)
+            fw, fh = src.frame_size()
+            cols, _rows = src.frame_grid()
+            out.append({"pl": pl, "pix": cache[pl.animated_name],
+                        "w": fw, "h": fh, "fw": fw, "fh": fh,
+                        "cols": max(1, cols), "n": max(1, src.frame_count()),
+                        "speed": max(1, src.speed), "loop": bool(src.loop)})
+        return out
+
+    def _sync_clock(self):
+        """L'horloge ne tourne que s'il y a quelque chose à animer. Un timer à
+        60 Hz qui repeint un décor immobile brûlerait un cœur pour rien."""
+        ba = self._ba
+        playing = bool(ba and (
+            (ba.kind == KIND_ANIMATED and ba.frame_count() > 1)
+            or ba.animations))
+        if playing and not self._clock.isActive():
+            self._clock.start()
+        elif not playing and self._clock.isActive():
+            self._clock.stop()
+
+    def _on_tick(self):
+        self._tick += 1
+        self._view.placements.set_tick(self._tick)
+        ba = self._ba
+        if ba is not None and ba.kind == KIND_ANIMATED:
+            n = max(1, ba.frame_count())
+            step = self._tick // max(1, ba.speed)
+            self._view.frames.set_current(step % n if ba.loop else min(step, n - 1))
+
+    # ── Écriture du modèle depuis le canvas ──────────────────────
+
+    def _on_slice_dragged(self, key: str, value: int):
+        """Guide glissé : on écrit le modèle EN CONTINU (le rendu doit suivre le
+        curseur) mais on ne persiste qu'au relâchement — un fichier réécrit à
+        chaque pixel ferait tourner le watcher en boucle."""
+        if self._ba is None:
+            return
+        setattr(self._ba, key, int(value))
+        self._view.slices.set_margins({key: int(value)})
+        self.slices_dragged.emit({key: int(value)})
+
+    def _persist_host(self):
+        if not (self._project and self._ba):
+            return
+        from core.command_dispatcher import get_dispatcher
+        with get_dispatcher().suspended():
+            self._project.backgrounds.save(self._ba)
+        get_dispatcher().notify_background_changed(self._ba)
+
+    def _on_anim_dropped(self, name: str, x: int, y: int):
+        if not (self._project and self._ba):
+            return
+        src = self._project.get_background(name)
+        if src is None or src.kind != KIND_ANIMATED:
+            return
+        if src is self._ba:
+            return          # se poser sur soi-même : la lecture boucle sur elle-même
+        fw, fh = src.frame_size()
+        pl = BackgroundAnimation(animated_name=name,
+                                 x=_snap8(x - fw // 2), y=_snap8(y - fh // 2))
+        self._ba.animations.append(pl)
+        self._persist_host()
+        self.reload_geometry()
+        self._view.placements.set_selected(pl)
+        self.placements_changed.emit()
+
+    def _on_placement_moved(self, pl, x: int, y: int):
+        pl.x, pl.y = int(x), int(y)
+        self._view.placements.update()
+
+    def _on_placement_deleted(self, pl):
+        if self._ba is None or pl not in self._ba.animations:
+            return
+        self._ba.animations.remove(pl)
+        self._persist_host()
+        self._view.placements.set_selected(None)
+        self.reload_geometry()
+        self.placements_changed.emit()
+
     def load(self, project, ba):
         self._ba = ba
+        self._project = project
+        self._view.placements.set_selected(None)
         self._ctrl.set_context(project, ba)
         # Inpainting = tuilé 4bpp uniquement. En 8bpp (une palette 256) et en
         # bitmap (Mode 4) : peinture désactivée, toolbar + bande masquées (aperçu seul).
@@ -773,6 +1346,7 @@ class BgInpaintCanvas(QWidget):
         else:
             self._paint_strip.setVisible(False)
         self._view.load_background()
+        self.reload_geometry()
         self._bar.set_canvas_size(*self._ctrl.image_size())
         self._bar.set_cursor_px(None, None)
 
@@ -789,6 +1363,7 @@ class BgInpaintCanvas(QWidget):
             self._position_paint_strip()
             self._ctrl.set_active_palette(self._paint_strip.active())
         self._ctrl.reload_render()
+        self.reload_geometry()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)

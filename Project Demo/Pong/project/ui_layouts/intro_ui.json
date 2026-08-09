@@ -2,7 +2,7 @@
   "name": "intro_ui",
   "elements": [
     {
-      "kind": "region",
+      "kind": "text",
       "name": "titre",
       "parent": "",
       "anchor": "screen",
@@ -12,6 +12,7 @@
       "y": 56,
       "w": 104,
       "h": 16,
+      "text_key": "",
       "font_name": "omelette_8x8_heavy_mono",
       "align": "center",
       "target": "",
@@ -19,7 +20,7 @@
       "animated_glyphs": 0
     },
     {
-      "kind": "region",
+      "kind": "text",
       "name": "invite",
       "parent": "",
       "anchor": "screen",
@@ -29,6 +30,7 @@
       "y": 88,
       "w": 104,
       "h": 16,
+      "text_key": "",
       "font_name": "omelette_8x8_heavy_mono",
       "align": "center",
       "target": "",

@@ -86,6 +86,8 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_api_prototypes(ctx)
     _check_text_overflow(ctx)
     _check_ui_text_key(ctx)
+    _check_ui_image(ctx)
+    _check_blend(ctx)
     _check_ui_panel_fill(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
@@ -356,26 +358,92 @@ def _check_text_overflow(ctx: ValidationContext):
 
 
 def _check_ui_text_key(ctx: ValidationContext):
-    """Un texte AUTHORÉ sans clé résolvable ne dessine rien.
+    """Un texte qui pointe une clé DISPARUE ne dessine rien.
 
     Erreur silencieuse par excellence : l'élément reste visible dans le canvas,
-    le build n'émet aucun appel, et la ROM affiche une zone vide sans que rien
-    n'ait échoué."""
+    le build n'émet aucun appel, et la ROM affiche un vide sans que rien n'ait
+    échoué.
+
+    Une clé VIDE, elle, ne se signale plus : depuis la fusion des deux types de
+    texte, c'est un choix d'authoring normal — l'élément est un emplacement
+    qu'un script remplira (`text.draw_in`). Le signaler ferait crier le
+    validateur sur chaque boîte de dialogue d'un projet qui pilote son texte au
+    script, c'est-à-dire sur le cas le plus courant."""
     p = ctx.project
-    from core.models.ui_region import KIND_TEXT
     for lay, el in p.all_regions():
-        if getattr(el, "kind", "") != KIND_TEXT:
-            continue
         key = getattr(el, "text_key", "") or ""
-        if not key:
-            ctx.warn(None,
-                f"Le texte '{el.name}' (mise en page '{lay.name}') n'a aucun "
-                f"contenu : il n'affichera rien. Écris-le dans l'inspecteur, ou "
-                f"supprime l'élément.")
-        elif p.get_text(key) is None:
+        if key and p.get_text(key) is None:
             ctx.error(None,
                 f"Le texte '{el.name}' (mise en page '{lay.name}') pointe la clé "
                 f"'{key}', qui n'existe plus dans la table de textes.")
+
+
+def _check_blend(ctx: ValidationContext):
+    """Les deux pannes MUETTES du mélange de couleurs.
+
+    Le matériel n'échoue pas : il n'applique simplement rien, et rien ne le dit.
+    Les deux cas se ressemblent à l'écran (« mon effet ne marche pas ») et se
+    diagnostiquent dans deux registres différents.
+
+    Avertissement et non erreur : la ROM tourne, elle est juste moins jolie que
+    prévu — et un auteur peut très bien régler le mode d'abord et les cibles
+    ensuite sans qu'on lui bloque un build entre les deux."""
+    from core.models.scene import (BLEND_NONE, BLEND_TOP, BLEND_BOTTOM,
+                                   BLEND_NEEDS_BOTTOM, blend_role_of)
+    for scene in ctx.project.scenes:
+        mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
+        if mode == BLEND_NONE:
+            continue
+        if not scene.blend_has_target(BLEND_TOP):
+            ctx.warn(None,
+                f"Scène '{scene.name}' : un mode de fusion est réglé mais aucune "
+                f"première cible n'est désignée — rien n'est mélangé, l'effet "
+                f"n'aura aucun effet. Passe un layer (ou les sprites) en « dessus ».")
+        elif mode in BLEND_NEEDS_BOTTOM and not scene.blend_has_target(BLEND_BOTTOM):
+            ctx.warn(None,
+                f"Scène '{scene.name}' : alpha sans seconde cible — le mélange "
+                f"n'a lieu que là où un pixel du dessus a un pixel du dessous "
+                f"derrière lui. Passe le layer de derrière, ou le backdrop, en "
+                f"« dessous ».")
+        # Un rôle « dessous » sous un mode qui ne l'emploie pas ne fait rien.
+        if mode not in BLEND_NEEDS_BOTTOM:
+            idle = [f"BG{L.bg_slot}" for L in scene.background_layers
+                    if blend_role_of(L) == BLEND_BOTTOM]
+            if idle:
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : {', '.join(idle)} en « dessous », "
+                    f"mais ce mode n'emploie que le dessus — ce rôle ne fait rien.")
+
+
+def _check_ui_image(ctx: ValidationContext):
+    """Une image sans sprite résoluble ne dessine rien.
+
+    Même famille de panne silencieuse que la clé de texte disparue : l'élément
+    est bien là dans le canvas, la table est bien émise, et la ROM ne montre
+    rien à cet endroit. La distinction vide / cassé est reprise telle quelle —
+    on ne réclame pas un sprite à une image fraîchement dessinée, on signale
+    seulement une référence qui ne résout plus.
+
+    L'état, lui, n'a pas besoin d'être vérifié : un `state_name` qui ne résout
+    plus retombe sur l'état 0 (`UIImage.state_index`), ce qui affiche quelque
+    chose plutôt que rien."""
+    p = ctx.project
+    if not hasattr(p, "all_images"):
+        return
+    for lay, im in p.all_images():
+        name = getattr(im, "sprite_name", "") or ""
+        if not name:
+            continue
+        if p.get_sprite(name) is None:
+            ctx.error(None,
+                f"L'image '{im.name}' (mise en page '{lay.name}') pointe le "
+                f"sprite '{name}', qui n'existe plus dans le projet.")
+        elif im.state_name and not any(
+                s.name == im.state_name
+                for s in getattr(p.get_sprite(name), "states", []) or []):
+            ctx.warn(None,
+                f"L'image '{im.name}' demande l'état '{im.state_name}', absent "
+                f"du sprite '{name}' — elle affichera le premier état.")
 
 
 def _check_ui_panel_fill(ctx: ValidationContext):

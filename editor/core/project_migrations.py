@@ -247,6 +247,68 @@ def migrate_bg_sidecar_location(project):
         pass
 
 
+def migrate_nine_slices_to_ui_backgrounds(project):
+    """Asset `NineSlice` → fond d'INTERFACE (`BackgroundAsset.kind == "ui"`).
+
+    Un NineSlice ne portait qu'un `source` (le nom d'un BackgroundAsset déjà
+    importé) et 4 marges : c'était un cadre SANS image à lui, dépendant d'un
+    fond pour exister. Le fond d'interface EST ce cadre, marges comprises — une
+    seule identité, un seul endroit où découper (le canvas du Background
+    Editor), et plus de couple d'assets à garder cohérent.
+
+    Trois gestes, dans cet ordre : reporter les marges sur le fond source,
+    repointer les `UIPanel` qui citaient le cadre vers ce fond, puis retirer le
+    fichier du cadre. Lit les JSON BRUTS de `project/nine_slices/` — le registre
+    a disparu avec le modèle, et une migration ne peut pas dépendre de ce
+    qu'elle supprime. Idempotente (dossier absent = rien à faire) ; un cadre
+    dont le fond source est introuvable est LAISSÉ EN PLACE plutôt que perdu."""
+    ns_dir = project.project_dir / "nine_slices"
+    if not ns_dir.exists():
+        return
+    from core.models.background import KIND_UI, UI_ROLE_NINE
+
+    retarget: dict[str, str] = {}      # nom du cadre -> nom du fond
+    for f in sorted(ns_dir.glob("*.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        ba = project.get_background(str(d.get("source", "")))
+        if ba is None:
+            continue                    # source cassée : on ne jette rien
+        ba.kind = KIND_UI
+        ba.ui_role = UI_ROLE_NINE
+        ba.slice_left = int(d.get("left", 4) or 0)
+        ba.slice_right = int(d.get("right", 4) or 0)
+        ba.slice_top = int(d.get("top", 4) or 0)
+        ba.slice_bottom = int(d.get("bottom", 4) or 0)
+        project.backgrounds.save(ba)
+        retarget[str(d.get("name", f.stem))] = ba.name
+        f.unlink()
+    try:
+        ns_dir.rmdir()                  # échoue si des cadres orphelins restent
+    except OSError:
+        pass
+    if not retarget:
+        return
+
+    # Les panneaux citaient le CADRE ; ils citent désormais le fond directement.
+    from core.models.ui_region import KIND_PANEL, FILL_NINE
+    for lay in project.ui_layouts:
+        touched = False
+        for el in lay.elements:
+            if getattr(el, "kind", "") != KIND_PANEL:
+                continue
+            if getattr(el, "fill_kind", "") != FILL_NINE:
+                continue
+            new = retarget.get(getattr(el, "fill_asset", ""))
+            if new:
+                el.fill_asset = new
+                touched = True
+        if touched:
+            project.ui_layouts.save(lay)
+
+
 def reconcile_backgrounds(project):
     """(1) PNG déposés hors éditeur dans assets/backgrounds/ → crée le
     BackgroundAsset + sa compression (comme sync_background_png). (2) Fonds

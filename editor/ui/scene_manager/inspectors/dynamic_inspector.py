@@ -30,6 +30,9 @@ class DynamicInspector(QWidget):
     # Une zone éditée ou supprimée doit être redessinée dans le canvas : `changed`
     # est trop général (il est aussi émis par la scène et les actors).
     ui_regions_changed = pyqtSignal()
+    # Relayé depuis SceneInspector : un réglage de mélange demande au canvas de
+    # recomposer ses pixmaps (cf. SceneEditor.refresh_blend).
+    blend_changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
 
     _MODE_EMPTY       = 0
@@ -79,6 +82,7 @@ class DynamicInspector(QWidget):
         self._scene_insp = SceneInspector()
         self._scene_insp.changed.connect(self.changed)
         self._scene_insp.slot_assigned.connect(self.slot_assigned)
+        self._scene_insp.blend_changed.connect(self.blend_changed)
         self._stack.addWidget(self._scene_insp)
 
         # 2 — actor / prefab
@@ -116,10 +120,13 @@ class DynamicInspector(QWidget):
         self._stack.addWidget(self._script_insp)
         self._current_script_path = None   # utilisé par _on_header_rename
 
-        # 9 — élément d'UI (zone, conteneur ou texte) — UN inspecteur adaptatif
+        # 9 — élément d'UI (texte, conteneur ou image) — UN inspecteur adaptatif
         self._ui_insp = UIInspector()
         self._ui_insp.changed.connect(self.changed)
         self._ui_insp.changed.connect(self.ui_regions_changed)
+        # Un renommage venu d'AILLEURS que l'en-tête (arbre, canvas) doit s'y
+        # refléter : l'en-tête est désormais le seul endroit qui montre le nom.
+        self._ui_insp.renamed.connect(self._header.set_name)
         self._stack.addWidget(self._ui_insp)
 
         self._stack.setCurrentIndex(self._MODE_EMPTY)
@@ -134,9 +141,15 @@ class DynamicInspector(QWidget):
 
     # ── Helpers header ───────────────────────────────────────────
 
+    # Kinds dont le NOM se change dans l'en-tête. Les éléments d'interface en
+    # font partie depuis que leur inspecteur n'a plus de champ « Name » : le nom
+    # se change là où il s'affiche, comme pour une scène ou un acteur.
+    _RENAMABLE = ("scene", "actor", "prefab", "script_asset",
+                  "ui_text", "ui_panel", "ui_image", "ui_element")
+
     def _set_header(self, kind: str, type_text: str, name_text: str):
-        editable = kind in ("scene", "actor", "prefab", "script_asset")
-        self._header.set_header(kind, type_text, name_text, editable=editable)
+        self._header.set_header(kind, type_text, name_text,
+                                editable=kind in self._RENAMABLE)
         self._header_mode = kind
 
     def _on_header_rename(self, new_name: str):
@@ -162,6 +175,13 @@ class DynamicInspector(QWidget):
                     from core.command_dispatcher import get_dispatcher
                     get_dispatcher()._emit("actors_list_changed")
                 self._header.set_name(actor.name)
+        elif self._header_mode.startswith("ui_"):
+            # `rename` rend le nom RÉELLEMENT appliqué : une collision d'unicité
+            # est résolue par le modèle, et l'en-tête doit montrer ce qui a été
+            # écrit, pas ce qui a été tapé.
+            applied = self._ui_insp.rename(new_name)
+            if applied:
+                self._header.set_name(applied)
         elif self._header_mode == "script_asset":
             path = self._current_script_path
             if not path or not path.exists():
@@ -223,18 +243,18 @@ class DynamicInspector(QWidget):
             self.show_script(obj, self._project)
 
     def show_ui_element(self, layout_asset, element, project):
-        """Élément d'UI (zone, conteneur, texte) → l'inspecteur adaptatif. Le
+        """Élément d'UI (texte, conteneur, image) → l'inspecteur adaptatif. Le
         bandeau prend le kind exact (même famille bleue Interface, titre par
-        type) — la mise en page est un asset, l'inspecteur affiche son nom."""
-        from core.models.ui_region import KIND_REGION, KIND_PANEL, KIND_TEXT
-        kind = getattr(element, "kind", KIND_REGION)
+        type) et devient l'endroit où le nom se change."""
+        from core.models.ui_region import KIND_PANEL, KIND_TEXT, KIND_IMAGE
+        kind = getattr(element, "kind", KIND_TEXT)
         scene = project.active_scene if project else None
         self._ui_insp.load(layout_asset, element, project, scene)
         header_kind, title = {
-            KIND_REGION: ("ui_region", "ZONE DE TEXTE"),
-            KIND_PANEL:  ("ui_panel",  "CONTENEUR"),
-            KIND_TEXT:   ("ui_text",   "TEXTE"),
-        }.get(kind, ("ui_element", "ÉLÉMENT UI"))
+            KIND_PANEL: ("ui_panel", "CONTAINER"),
+            KIND_TEXT:  ("ui_text",  "TEXT"),
+            KIND_IMAGE: ("ui_image", "IMAGE"),
+        }.get(kind, ("ui_element", "UI ELEMENT"))
         self._set_header(header_kind, title, element.name)
         self._stack.setCurrentIndex(self._MODE_UI)
 

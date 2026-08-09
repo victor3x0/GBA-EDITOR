@@ -22,7 +22,7 @@ from typing import Callable, Any
 from PyQt6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QCheckBox, QLineEdit, QSpinBox,
     QDoubleSpinBox, QComboBox, QScrollArea, QApplication, QTreeWidget, QTreeWidgetItem,
-    QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy, QPlainTextEdit,
+    QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy, QSpacerItem, QPlainTextEdit,
 )
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
@@ -776,6 +776,9 @@ class FinderSection(QFrame):
         # Le paramètre reste pour un usage ponctuel hors finder si besoin.
         super().__init__(parent)
         self._expanded = True
+        # Le contenu sait-il occuper plus que sa hauteur naturelle ? Renseigné
+        # par set_widget ; pilote la politique de taille de la section.
+        self._content_grows = False
         self.setStyleSheet(f"background:{C.BG_BASE};")
 
         root = QVBoxLayout(self)
@@ -867,11 +870,16 @@ class FinderSection(QFrame):
         self._body_layout.setContentsMargins(0, S.XS, 0, 0)
         self._body_layout.setSpacing(0)
 
-        # Ressort de queue : repliée, la section n'a que son en-tête et rien
-        # n'absorbe la hauteur donnée par le parent. Le ressort la prend, donc
-        # le titre reste ferré en haut.
+        # Cale de queue de la section : repliée, la section n'a que son en-tête
+        # et rien n'absorbe la hauteur donnée par le parent — la cale la prend,
+        # donc le titre reste ferré en haut. Dépliée elle est inerte
+        # (Minimum) : une cale expansible rendrait la section elle-même
+        # expansible, elle réclamerait de la hauteur au ressort de queue du
+        # panneau et se retrouverait avec du vide à meubler.
         self._tail_index = root.count()
-        root.addStretch(0)
+        self._tail = QSpacerItem(0, 0, QSizePolicy.Policy.Minimum,
+                                 QSizePolicy.Policy.Minimum)
+        root.addSpacerItem(self._tail)
 
     def set_add_tooltip(self, tooltip: str):
         self._btn_add.setToolTip(tooltip)
@@ -890,15 +898,26 @@ class FinderSection(QFrame):
         m = lay.contentsMargins()
         lay.setContentsMargins(
             m.left(), m.top(), m.right(), self._PAD_BOTTOM if self._expanded else 0)
-        # Dépliée, l'espace va au contenu ; repliée, au ressort de queue.
+        # Dépliée, l'espace va au contenu ; repliée, à la cale de queue —
+        # qui ne devient expansible qu'à ce moment-là (cf. __init__).
         lay.setStretch(self._body_index, 1 if self._expanded else 0)
         lay.setStretch(self._tail_index, 0 if self._expanded else 1)
-        # Repliée, la section ne vaut que son en-tête : politique Fixed, sinon
-        # le facteur d'étirement du parent (3/2 dans le Sprite Finder) reste
-        # appliqué et la hauteur reste en blanc sous le titre.
+        self._tail.changeSize(
+            0, 0, QSizePolicy.Policy.Minimum,
+            QSizePolicy.Policy.Minimum if self._expanded else QSizePolicy.Policy.Expanding)
+        lay.invalidate()
+        self._apply_size_policy()
+
+    def _apply_size_policy(self):
+        """Repliée, la section ne vaut que son en-tête ; dépliée sur un contenu
+        à hauteur fixe, elle ne vaut que ce contenu. Dans les deux cas politique
+        Fixed : sinon le facteur d'étirement du parent (3/2 dans le Sprite
+        Finder) ou le rab d'un panneau plus haut que ses sections reste
+        appliqué, et la hauteur reste en blanc sous le titre."""
+        grow = self._expanded and self._content_grows
         self.setSizePolicy(
             QSizePolicy.Policy.Preferred,
-            QSizePolicy.Policy.Preferred if self._expanded else QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Preferred if grow else QSizePolicy.Policy.Fixed,
         )
 
     def _on_search_toggled(self, checked: bool):
@@ -925,7 +944,19 @@ class FinderSection(QFrame):
                 old.hide()
                 old.setParent(None)
                 old.deleteLater()
-        self._body_layout.addWidget(w)
+        # Un contenu qui sait grandir (Expanding : listes des finders sprite /
+        # fond / police) remplit la section. Un contenu à hauteur fixe (arbres
+        # du finder projet, tables de variables) est ferré en haut, et la
+        # section se cale sur lui (_apply_size_policy) : sans ça, QBoxLayout
+        # répartit le rab autour du contenu et la liste flotte au milieu de la
+        # section au lieu de commencer sous son titre.
+        self._content_grows = bool(
+            w.sizePolicy().expandingDirections() & Qt.Orientation.Vertical)
+        if self._content_grows:
+            self._body_layout.addWidget(w, 1)
+        else:
+            self._body_layout.addWidget(w, 1, Qt.AlignmentFlag.AlignTop)
+        self._apply_size_policy()
         if self._search_box.text():
             self._apply_filter(self._search_box.text())
 
@@ -1010,9 +1041,9 @@ class AssetHeaderBar(QWidget):
                 "project": _kind_colors(C.ACCENT),
                 # Interface — un kind par type d'élément (même famille bleue) ;
                 # "ui_element" reste en repli pour les appels génériques.
-                "ui_region":  _kind_colors(icons.COLOR_UI),
                 "ui_panel":   _kind_colors(icons.COLOR_UI),
                 "ui_text":    _kind_colors(icons.COLOR_UI),
+                "ui_image":   _kind_colors(icons.COLOR_UI),
                 "ui_element": _kind_colors(icons.COLOR_UI),
                 "ui_layout":  _kind_colors(icons.COLOR_UI),
                 "empty":  ("#161616", "#333333", "#555555"),

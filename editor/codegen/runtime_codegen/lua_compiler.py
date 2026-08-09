@@ -86,6 +86,13 @@ def transpile_all(
     # Zones de texte : l'ordre de `all_regions()` devient l'index dans
     # g_ui_regions, comme pour les textes et les polices.
     region_names = (p.region_names() if hasattr(p, "region_names") else [])
+    image_names  = (p.image_names()  if hasattr(p, "image_names")  else [])
+    # Les états que chaque image peut prendre, lus dans SON sprite : c'est le
+    # seul endroit du build qui tienne les deux bouts (l'élément et l'asset).
+    image_states = {}
+    for _lay, _im in (p.all_images() if hasattr(p, "all_images") else []):
+        _spr = p.get_sprite(getattr(_im, "sprite_name", "") or "")
+        image_states[_im.name] = [st.name for st in (getattr(_spr, "states", []) or [])]
     all_syms    = [_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
@@ -140,6 +147,7 @@ def transpile_all(
             text_keys    = text_keys,
             font_names   = font_names,
             region_names = region_names,
+            image_names  = image_names,
         )
         script, ok = _compile_script(sp, ctx_check, emit, sp.name)
         if not ok:
@@ -169,6 +177,7 @@ def transpile_all(
                 text_keys    = text_keys,
                 font_names   = font_names,
                 region_names = region_names,
+            image_names  = image_names,
             )
             scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)
             if not ok:
@@ -198,6 +207,8 @@ def transpile_all(
             text_keys     = text_keys,
             font_names    = font_names,
             region_names  = region_names,
+            image_names   = image_names,
+            image_states  = image_states,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -237,6 +248,7 @@ def transpile_all(
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = pf_sfx_comp_name,
             region_names = region_names,
+            image_names  = image_names,
         )
         pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
         if not ok:
@@ -260,6 +272,8 @@ def transpile_all(
             text_keys     = text_keys,
             font_names    = font_names,
             region_names  = region_names,
+            image_names   = image_names,
+            image_states  = image_states,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
         pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -288,6 +302,8 @@ def transpile_all(
             text_keys     = text_keys,
             font_names    = font_names,
             region_names  = region_names,
+            image_names   = image_names,
+            image_states  = image_states,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')

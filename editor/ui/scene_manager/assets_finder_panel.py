@@ -27,7 +27,7 @@ from core.history import (
     get_history, DeleteResourceCmd, RemoveListItemCmd, RenameFileCmd,
     DeleteFileCmd, AddListItemCmd, UILayoutOrderCmd,
 )
-from core.models.ui_region import KIND_REGION, KIND_PANEL, KIND_TEXT
+from core.models.ui_region import KIND_PANEL, KIND_TEXT, KIND_IMAGE
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 # Source unique du dossier de projets par défaut (~/GBAProjects). Ce module
 # et window.py en avaient chacun une copie pointant vers le projects/ du
@@ -50,22 +50,26 @@ T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/t
 
 # Icône par type d'élément UI (la couleur reste celle de la famille Interface —
 # le type se lit à la FORME, cf. project_theme_gba_redesign).
-_UI_ELEM_ICON = {KIND_REGION: "ui_region", KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text"}
-_UI_ELEM_LABEL = {KIND_REGION: "zone", KIND_PANEL: "container", KIND_TEXT: "text"}
+_UI_ELEM_ICON = {KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text", KIND_IMAGE: "ui_image"}
+_UI_ELEM_LABEL = {KIND_PANEL: "container", KIND_TEXT: "text", KIND_IMAGE: "image"}
 
 
 def _lua_handle(node_type: str, obj) -> str:
     """Poignée d'un nœud RÉFÉRENÇABLE en Lua, ou "" si authoring-only.
 
     C'est le cœur de l'idée « l'arbre montre ce qu'un script peut nommer » : un
-    actor (`get_actor`) et une zone de texte (`REGION_*` / `text.draw_in`) le
-    sont ; un conteneur ou un texte authoré ne le sont pas (pas de domaine, cf.
-    api.py). Sert au tooltip ET à décider si le nœud s'affiche en clair
-    (référençable) ou grisé (authoring)."""
+    actor (`get_actor`), un texte (`REGION_*` / `text.draw_in`) et une image
+    (`IMAGE_*` / `ui.image_set`) le sont ; un conteneur ne l'est pas — il n'a
+    pas de domaine (cf. api.py). Sert au tooltip ET à décider si le nœud
+    s'affiche en clair (référençable) ou grisé (authoring)."""
     if node_type == T_ACTOR:
         return f'get_actor("{obj.name}")'
-    if node_type == T_UI_ELEM and getattr(obj, "kind", "") == KIND_REGION:
-        return f'text.draw_in("{obj.name}", …)'
+    if node_type == T_UI_ELEM:
+        kind = getattr(obj, "kind", "")
+        if kind == KIND_TEXT:
+            return f'text.draw_in("{obj.name}", …)'
+        if kind == KIND_IMAGE:
+            return f'ui.image_set("{obj.name}", …)'
     return ""
 
 # ── Thème ─── surfaces indigo centralisées (cf. project_theme_gba_redesign) ──
@@ -236,11 +240,11 @@ class _SceneTree(_Tree):
         """Peuple la ligne d'un élément UI : icône de type (forme), nom éditable,
         et — signal central — couleur selon la RÉFÉRENÇABILITÉ Lua (clair =
         nommable dans un script, grisé = authoring-only)."""
-        kind = getattr(el, "kind", KIND_REGION)
+        kind = getattr(el, "kind", KIND_TEXT)
         item.setData(0, _ROLE_TYPE, T_UI_ELEM)
         item.setData(0, _ROLE_OBJ, el)
         item.setData(0, _ROLE_PATH, layout)     # la layout porteuse (pour le bus/cmd)
-        item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_region"), COLOR_UI))
+        item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_text"), COLOR_UI))
         item.setText(0, el.name)
         item.setFont(0, ui_font(T.LG))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -443,8 +447,8 @@ class _SceneTree(_Tree):
             layout = item.data(0, _ROLE_OBJ)
             add = menu.addMenu("Add a widget")
             add.setFont(QFont(T.UI, T.MD))
-            for kind, label in ((KIND_PANEL, "Container"), (KIND_TEXT, "Text"),
-                                (KIND_REGION, "Text zone")):
+            for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
+                                (KIND_IMAGE, "Image")):
                 act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                 act.triggered.connect(
                     lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
@@ -468,8 +472,8 @@ class _SceneTree(_Tree):
                 menu.addSeparator()
                 sub = menu.addMenu("Add a child")
                 sub.setFont(QFont(T.UI, T.MD))
-                for kind, label in ((KIND_PANEL, "Container"), (KIND_TEXT, "Text"),
-                                    (KIND_REGION, "Text zone")):
+                for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
+                                    (KIND_IMAGE, "Image")):
                     act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                     act.triggered.connect(
                         lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
@@ -486,17 +490,17 @@ class _SceneTree(_Tree):
         if proj is None:
             return
         from core.models.ui_region import (
-            UIRegion, UIPanel, UIText, unique_element_name)
-        taken = set(layout.element_names()) | set(proj.region_names())
+            UIPanel, UIText, UIImage, unique_element_name)
+        taken = set(layout.element_names()) | set(proj.ui_element_names())
         if kind == KIND_PANEL:
             el = UIPanel(name=unique_element_name(taken, "container"),
                          parent=parent_name, x=8, y=8, w=96, h=48)
-        elif kind == KIND_TEXT:
-            el = UIText(name=unique_element_name(taken, "text"),
-                        parent=parent_name, x=8, y=8, w=80, h=8)
+        elif kind == KIND_IMAGE:
+            el = UIImage(name=unique_element_name(taken, "image"),
+                         parent=parent_name, x=8, y=8, w=16, h=16)
         else:
-            el = UIRegion(name=unique_element_name(taken, "zone"),
-                          parent=parent_name, x=8, y=8, w=64, h=16)
+            el = UIText(name=unique_element_name(taken, "text"),
+                        parent=parent_name, x=8, y=8, w=80, h=16)
         get_history().push(AddListItemCmd(
             layout.elements, el, persist_fn=self._panel._after_ui_change,
             label=f"New {_UI_ELEM_LABEL.get(kind, kind)} {el.name}"))

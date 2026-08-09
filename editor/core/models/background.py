@@ -10,6 +10,43 @@ from core.models.palette import OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin, _decode_palette_overrides
 
 
+# ── Types de fond ─────────────────────────────────────────────────
+# Un DISCRIMINANT sur l'asset, pas trois classes. Les trois types sont la même
+# chose sur le disque — un PNG et son sidecar de compression — et empruntent le
+# même chemin complet : détection du mode à l'import, encodage 4bpp/8bpp/bitmap,
+# grille de sous-palettes, validateur VRAM, réconciliation des PNG déposés à la
+# main. Trois `Resource` distincts auraient recopié ce chemin trois fois pour ne
+# faire varier que ce qu'on FAIT de l'image en aval.
+#
+# Ce qui change n'est donc pas la nature de l'asset mais son EMPLOI :
+#   scene    — décor : posé en layer par une scène, repeint par tuile (inpainting).
+#   ui       — interface : sert de fond à un `UIPanel`, soit en cadre étirable
+#              (nine-slice), soit en image posée. Cf. `ui_role`.
+#   animated — planche de frames : découpée en grille et jouée en boucle, puis
+#              POSÉE sur un fond hôte (cf. `BackgroundAnimation`).
+KIND_SCENE    = "scene"
+KIND_UI       = "ui"
+KIND_ANIMATED = "animated"
+
+BG_KINDS = (KIND_SCENE, KIND_UI, KIND_ANIMATED)
+
+BG_KIND_LABELS = {
+    KIND_SCENE:    "Background",
+    KIND_UI:       "UI background",
+    KIND_ANIMATED: "Animated background",
+}
+
+# ── Rôle d'un fond d'INTERFACE ────────────────────────────────────
+# Les valeurs sont volontairement CELLES de `UIPanel.fill_kind` (FILL_NINE /
+# FILL_BG, cf. core/models/ui_region.py) : l'inspecteur d'UI filtre son menu
+# d'assets sur ce champ, et une seconde nomenclature obligerait à traduire
+# dans les deux sens à chaque lecture.
+UI_ROLE_NINE = "nine_slice"   # cadre étirable : coins fixes, bords/centre répétés
+UI_ROLE_BG   = "background"   # image posée en haut-gauche, rognée bas/droite
+
+UI_ROLES = (UI_ROLE_NINE, UI_ROLE_BG)
+
+
 @dataclass
 class BackgroundLayer:
     """Une couche de fond d'une scène : référence un BackgroundAsset (par nom) +
@@ -30,6 +67,16 @@ class BackgroundLayer:
     tile_palette_overrides: dict = field(default_factory=dict)  # dict[tuple[int,int], int]
     visible:      bool  = True   # visibilité VIEWPORT éditeur seule — le codegen
                                # l'ignore (le layer est toujours compilé).
+    # Rôle de ce layer dans le mélange de couleurs de la scène — "" (aucun),
+    # BLEND_TOP ou BLEND_BOTTOM (cf. models/scene.py).
+    #
+    # **Un layer ne porte PAS de mode.** `BLDCNT` n'a qu'un seul champ mode
+    # (bits 6-7) pour tout l'écran : deux layers ne peuvent pas mélanger
+    # différemment. Ce qui est par layer, c'est uniquement l'appartenance à
+    # l'ensemble du DESSUS (bits 0-5) ou du DESSOUS (bits 8-13). Le mode et ses
+    # coefficients vivent donc sur la scène — un champ « mode » ici promettrait
+    # un réglage que le matériel ne sait pas tenir.
+    blend_role:   str   = ""
 
 
 def _decode_tile_palette_overrides(raw) -> dict:
@@ -45,6 +92,62 @@ def _decode_tile_palette_overrides(raw) -> dict:
         except (ValueError, AttributeError):
             continue
     return out
+
+
+def guess_frame_size(img_w: int, img_h: int) -> tuple[int, int]:
+    """Découpe PROBABLE d'une planche d'animation, ou (0, 0) si rien d'évident.
+
+    Une seule règle, celle qui couvre la planche que les gens dessinent : une
+    BANDE de frames carrées, horizontale ou verticale. Le côté court donne alors
+    la taille de la frame, et le long doit en être un multiple exact — sinon on
+    ne devine rien plutôt que de deviner faux, et l'auteur pose ses deux nombres.
+
+    Deviner à l'import et non à la lecture : la découpe est un CHAMP, que
+    l'auteur corrige et qui ne doit pas se remettre à bouger derrière lui."""
+    if img_w <= 0 or img_h <= 0 or img_w == img_h:
+        return (0, 0)
+    short, long_ = min(img_w, img_h), max(img_w, img_h)
+    if long_ % short:
+        return (0, 0)
+    return (short, short)
+
+
+def _read_kind(raw) -> str:
+    """`kind` du JSON, ramené à une valeur connue. Un type inconnu (fichier
+    d'une version plus récente, faute de frappe) se relit en DÉCOR plutôt qu'en
+    erreur : le fond reste visible et réparable depuis l'éditeur."""
+    return raw if raw in BG_KINDS else KIND_SCENE
+
+
+def _read_ui_role(raw) -> str:
+    return raw if raw in UI_ROLES else UI_ROLE_NINE
+
+
+@dataclass
+class BackgroundAnimation:
+    """Un fond ANIMÉ posé à une position d'un fond hôte.
+
+    **Le placement vit chez l'hôte, pas chez l'animé.** Une cascade dessinée une
+    fois se pose dans trois décors : stocker les positions dans l'animé
+    obligerait à y citer les fonds qui l'emploient, c'est-à-dire à inverser le
+    sens de la référence (`<asset>_name` va toujours du consommateur vers
+    l'asset). L'hôte porte donc sa liste, exactement comme une scène porte ses
+    `background_layers` plutôt que le fond ses scènes.
+
+    Position en PIXELS de l'image hôte, comme tout le reste de l'éditeur ; le
+    calage sur la grille 8×8 est un geste du canvas, pas un format de stockage
+    (même parti pris que `UIRegion`)."""
+    animated_name: str = ""   # nom d'un BackgroundAsset de kind `animated`
+    x: int = 0
+    y: int = 0
+
+    def to_dict(self) -> dict:
+        return {"animated_name": self.animated_name, "x": self.x, "y": self.y}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BackgroundAnimation":
+        return cls(animated_name=str(d.get("animated_name", "")),
+                   x=int(d.get("x", 0) or 0), y=int(d.get("y", 0) or 0))
 
 
 @dataclass
@@ -90,8 +193,125 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
     source_palettes: list = field(default_factory=list)    # list[list[int]] BGR555
     palette_overrides: dict = field(default_factory=dict)  # dict[int, str]
 
+    # ── Emploi de l'image (cf. BG_KINDS en tête de module) ─────────
+    kind: str = KIND_SCENE
+
+    # ── kind == ui : fond d'interface ─────────────────────────────
+    # `ui_role` dit COMMENT le `UIPanel` étale l'image ; les marges ne comptent
+    # qu'en nine-slice. En pixels, comme la géométrie d'UI — mais le build les
+    # ramène à la TUILE (une tilemap ne coupe pas un cadre à 3 px, cf.
+    # main_gen.scene_ui_fills), d'où le défaut à 8 : une marge d'une tuile est
+    # la plus petite qui survive au passage.
+    ui_role: str = UI_ROLE_NINE
+    slice_left:   int = 8
+    slice_right:  int = 8
+    slice_top:    int = 8
+    slice_bottom: int = 8
+
+    # ── kind == animated : planche de frames ──────────────────────
+    # Découpe en GRILLE (frame_w × frame_h balayée de gauche à droite puis de
+    # haut en bas), et non « nombre de frames + sens » : une grille couvre la
+    # bande horizontale (une seule rangée) comme la planche carrée, alors qu'un
+    # compteur ne dit rien de la disposition. 0 = pas encore découpé, l'image
+    # entière valant une frame — un fond animé sans découpe reste affichable.
+    frame_w: int = 0
+    frame_h: int = 0
+    # Ticks GBA (60 Hz) entre deux frames — MÊME unité que `AnimState.speed`,
+    # pour qu'une vitesse se lise pareil qu'on anime un sprite ou un décor.
+    speed: int = 8
+    loop: bool = True
+
+    # ── Fonds animés POSÉS sur celui-ci (cf. BackgroundAnimation) ─
+    # N'a de sens que sur un hôte ; un animé peut en porter (une planche reste
+    # une image), mais rien dans l'éditeur ne le propose.
+    animations: list = field(default_factory=list)   # list[BackgroundAnimation]
+
     def image_name(self) -> str:
         return self.asset
+
+    # ── Type ──────────────────────────────────────────────────────
+    @property
+    def is_ui(self) -> bool:
+        return self.kind == KIND_UI
+
+    @property
+    def is_animated(self) -> bool:
+        return self.kind == KIND_ANIMATED
+
+    def kind_label(self) -> str:
+        return BG_KIND_LABELS.get(self.kind, BG_KIND_LABELS[KIND_SCENE])
+
+    # ── Géométrie de l'image compressée ───────────────────────────
+    def pixel_size(self) -> tuple[int, int]:
+        """(w, h) en pixels de la représentation GBA — tuiles×8 en tuilé, le
+        buffer ajusté en bitmap. 0×0 tant que rien n'est compressé."""
+        if self.mode == "bitmap":
+            return (self.out_w, self.out_h)
+        return (self.tiles_w * 8, self.tiles_h * 8)
+
+    # ── kind == ui ────────────────────────────────────────────────
+    def slice_margins(self) -> tuple[int, int, int, int]:
+        """(left, right, top, bottom) en pixels. Un point d'accès unique plutôt
+        que quatre `getattr` chez chaque consommateur (canvas de scène, codegen
+        des fonds d'UI) — c'est ce qui avait fini par diverger du temps où les
+        marges vivaient dans un asset `NineSlice` séparé."""
+        return (self.slice_left, self.slice_right, self.slice_top, self.slice_bottom)
+
+    def slice_margins_tiles(self) -> tuple[int, int, int, int]:
+        """Les mêmes marges en TUILES, telles que le build les verra. Affichées
+        par l'éditeur : une marge de 4 px vaut 0 tuile à l'arrivée, et le seul
+        endroit où l'auteur peut s'en apercevoir est là où il la règle."""
+        return tuple(m // 8 for m in self.slice_margins())  # type: ignore[return-value]
+
+    # ── kind == animated ──────────────────────────────────────────
+    def frame_size(self) -> tuple[int, int]:
+        """(w, h) RÉSOLUE d'une frame : la découpe déclarée, ou l'image entière
+        si elle ne l'est pas encore. Jamais 0 — les appelants divisent par."""
+        iw, ih = self.pixel_size()
+        return (self.frame_w or iw or 1, self.frame_h or ih or 1)
+
+    def frame_grid(self) -> tuple[int, int]:
+        """(colonnes, rangées) de la planche. Tronqué : une frame partielle en
+        bord d'image n'en est pas une, elle sortirait rognée à l'écran."""
+        iw, ih = self.pixel_size()
+        fw, fh = self.frame_size()
+        return (max(0, iw // fw), max(0, ih // fh))
+
+    def frame_count(self) -> int:
+        cols, rows = self.frame_grid()
+        return cols * rows
+
+    def frame_rect(self, index: int) -> tuple[int, int, int, int]:
+        """(x, y, w, h) en pixels de la frame `index` dans la planche. Balayage
+        de gauche à droite puis de haut en bas. Rect vide si hors planche."""
+        cols, rows = self.frame_grid()
+        fw, fh = self.frame_size()
+        if cols <= 0 or not (0 <= index < cols * rows):
+            return (0, 0, 0, 0)
+        return ((index % cols) * fw, (index // cols) * fh, fw, fh)
+
+    def frame_grid_is_exact(self) -> bool:
+        """La découpe tombe-t-elle juste sur l'image ? Faux = des pixels de la
+        planche n'appartiennent à aucune frame (bande morte à droite/en bas)."""
+        iw, ih = self.pixel_size()
+        fw, fh = self.frame_size()
+        return bool(iw and ih) and iw % fw == 0 and ih % fh == 0
+
+    def duration_frames(self) -> int:
+        """Durée d'un cycle en ticks 60 Hz — ce que l'auteur lit comme « une
+        seconde », pas comme « 8 »."""
+        return max(1, self.speed) * max(1, self.frame_count())
+
+    # ── Fonds animés posés ────────────────────────────────────────
+    def animation_at(self, x: int, y: int, sizes) -> Optional["BackgroundAnimation"]:
+        """Placement dont la frame couvre le pixel (x, y), le DERNIER posé
+        d'abord (il est au-dessus). `sizes` = callable nom→(w, h) : le modèle ne
+        résout pas les noms d'asset, c'est le projet qui les connaît."""
+        for pl in reversed(self.animations):
+            w, h = sizes(pl.animated_name) or (0, 0)
+            if w and h and pl.x <= x < pl.x + w and pl.y <= y < pl.y + h:
+                return pl
+        return None
 
     def effective_tilemap(self) -> list[int]:
         """Tilemap avec les overrides d'inpainting asset appliqués (pal_bank par
@@ -111,6 +331,20 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
 
     def to_dict(self) -> dict:
         d = {"name": self.name}
+        # Le kind sort AVANT le bloc de compression et sans condition sur celui-ci :
+        # un fond dont le PNG est devenu illisible garde son type, sans quoi il
+        # se relirait en décor et quitterait la section où l'auteur l'a rangé.
+        if self.kind != KIND_SCENE:
+            d["kind"] = self.kind
+        if self.kind == KIND_UI:
+            d.update({"ui_role": self.ui_role,
+                      "slice_left": self.slice_left, "slice_right": self.slice_right,
+                      "slice_top": self.slice_top, "slice_bottom": self.slice_bottom})
+        if self.kind == KIND_ANIMATED:
+            d.update({"frame_w": self.frame_w, "frame_h": self.frame_h,
+                      "speed": self.speed, "loop": self.loop})
+        if self.animations:
+            d["animations"] = [a.to_dict() for a in self.animations]
         if self.asset:
             d["asset"] = self.asset
         if self.tileset:
@@ -165,6 +399,18 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             out_w=int(d.get("out_w", 0)), out_h=int(d.get("out_h", 0)),
             source_palettes=list(d.get("source_palettes", [])),
             palette_overrides=_decode_palette_overrides(d.get("palette_overrides")),
+            kind=_read_kind(d.get("kind")),
+            ui_role=_read_ui_role(d.get("ui_role")),
+            slice_left=int(d.get("slice_left", 8) or 0),
+            slice_right=int(d.get("slice_right", 8) or 0),
+            slice_top=int(d.get("slice_top", 8) or 0),
+            slice_bottom=int(d.get("slice_bottom", 8) or 0),
+            frame_w=max(0, int(d.get("frame_w", 0) or 0)),
+            frame_h=max(0, int(d.get("frame_h", 0) or 0)),
+            speed=max(1, int(d.get("speed", 8) or 8)),
+            loop=bool(d.get("loop", True)),
+            animations=[BackgroundAnimation.from_dict(a)
+                        for a in (d.get("animations") or [])],
         )
         # Migration : un fond tuilé sans `source_palettes` (antérieur à l'origine
         # des palettes) prend ses palettes courantes comme baseline dérivée —

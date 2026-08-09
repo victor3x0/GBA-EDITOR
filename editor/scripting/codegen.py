@@ -29,9 +29,10 @@ from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
-    DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION,
+    DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     text_constant, font_constant, region_constant, anon_text_key,
+    image_constant, image_state_constant,
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
@@ -85,7 +86,11 @@ class CodegenContext:
     music_info: dict = field(default_factory=dict)  # {nom Music: (loop, volume)} — music_play(id, loop, volume)
     text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
-    region_names: list[str] = field(default_factory=list)  # zones de texte (ordre = index dans g_ui_regions)
+    region_names: list[str] = field(default_factory=list)  # emplacements de texte (ordre = index dans g_ui_regions)
+    image_names:  list[str] = field(default_factory=list)  # images d'interface (ordre = index dans g_ui_images)
+    # {nom d'image: [noms d'état de SON sprite]} — un état n'a de sens que dans
+    # un sprite, et c'est l'image que le script nomme (cf. api.image_state_constant).
+    image_states: dict = field(default_factory=dict)
 
 
 # ─── Générateur ───────────────────────────────────────────────────
@@ -260,9 +265,19 @@ class CodeGen:
         # ce qui permet à cette table d'être plate, comme celle des textes.
         if self.ctx.region_names:
             self._w("")
-            self._w("/* Zones de texte */")
+            self._w("/* Emplacements de texte */")
             for i, name in enumerate(self.ctx.region_names):
                 self._w(f"#define {region_constant(name)} {i}")
+        # Constantes Image — index dans g_ui_images, même espace de noms projet
+        # et même raison. Les ÉTATS suivent, indexés par IMAGE : un nom d'état
+        # n'existe que dans un sprite, et c'est l'image que le script nomme.
+        if self.ctx.image_names:
+            self._w("")
+            self._w("/* Images d'interface */")
+            for i, name in enumerate(self.ctx.image_names):
+                self._w(f"#define {image_constant(name)} {i}")
+                for k, st in enumerate(self.ctx.image_states.get(name, [])):
+                    self._w(f"#define {image_state_constant(name, st)} {k}")
         self._w("")
 
     # ── Variables locales top-level (static = scope fichier) ──────
@@ -618,6 +633,7 @@ class CodeGen:
                                      else anon_text_key(name))
             case d if d == DOMAIN_FONT:   return font_constant(name)
             case d if d == DOMAIN_REGION: return region_constant(name)
+            case d if d == DOMAIN_IMAGE:  return image_constant(name)
             case _:                        return f'"{name}"'
 
     # ── Cas spéciaux ──────────────────────────────────────────────
@@ -650,6 +666,20 @@ class CodeGen:
         name = args[0].value
         loop, volume = self.ctx.music_info.get(name, (True, 255))
         return f"music_play({music_constant(name)}, {1 if loop else 0}, {volume})"
+
+    def _emit_ui_image_set(self, args: list) -> str:
+        """ui.image_set("coeur_2", "vide") → ui_image_set_state(IMAGE_COEUR_2,
+        IMGST_COEUR_2_VIDE).
+
+        Le seul appel d'image qui ne se traduit pas terme à terme : un nom
+        d'état n'a de sens que DANS un sprite, donc sa constante est indexée par
+        l'image, et il faut les deux arguments à la fois pour la construire — ce
+        que `_map_arg`, qui voit un argument isolé, ne peut pas faire."""
+        if len(args) < 2 or not all(isinstance(a, ExprString) for a in args[:2]):
+            return "/* ui.image_set() : les deux arguments doivent être littéraux */"
+        image, state = args[0].value, args[1].value
+        return (f"ui_image_set_state({image_constant(image)}, "
+                f"{image_state_constant(image, state)})")
 
     def _emit_get_actor(self, args: list) -> str:
         """
@@ -747,6 +777,7 @@ _CALL_CUSTOM: dict = {
     "actor.spawn": CodeGen._emit_actor_spawn,
     "sfx.play":    CodeGen._emit_sfx_play,
     "music.play":  CodeGen._emit_music_play,
+    "ui.image_set": CodeGen._emit_ui_image_set,
 }
 
 

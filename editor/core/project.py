@@ -47,7 +47,7 @@ from core.resource_manager import ResourceManager, safe_filename, _atomic_write
 from scripting.api import (
     DOMAIN_SCENE, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
     DOMAIN_TEXT, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_ACTOR, DOMAIN_ANIM,
-    DOMAIN_REGION,
+    DOMAIN_REGION, DOMAIN_IMAGE,
 )
 
 # ── Ré-export du modèle de domaine (compat des ~27 fichiers qui font
@@ -69,8 +69,7 @@ from core.models.sprite import TilePlacement, AnimFrame, StateDirection, AnimSta
 from core.models.background import BackgroundLayer, BackgroundAsset, Tileset
 from core.models.audio import Sfx, Music, SFX_FILE_EXTS, MUSIC_FILE_EXTS
 from core.models.font import Font, Glyph, FONT_FILE_EXTS
-from core.models.ui_region import UILayout, UIRegion
-from core.models.nine_slice import NineSlice
+from core.models.ui_region import UILayout
 from core.models.scene import (
     TILE_EMPTY, TILE_SOLID,
     TILE_SLOPE_L, TILE_SLOPE_R, TILE_SLOPE_L_LO, TILE_SLOPE_L_HI,
@@ -107,7 +106,6 @@ class Project:
         self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
         self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceManager[UILayout] = ResourceManager(self.ui_layouts_dir, UILayout)
-        self.nine_slices: ResourceManager[NineSlice] = ResourceManager(self.nine_slices_dir, NineSlice)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -163,12 +161,6 @@ class Project:
         une mise en page est un objet qu'on renomme, duplique et partage entre
         scènes, donc qui mérite une identité de fichier — comme une palette."""
         return self.project_dir / "ui_layouts"
-
-    @property
-    def nine_slices_dir(self) -> Path:
-        """Cadres nine-slice — project/nine_slices/*.json (un fichier par cadre,
-        réutilisable et renommable, comme une mise en page ou une palette)."""
-        return self.project_dir / "nine_slices"
 
     @property
     def legacy_palettes_file(self) -> Path:
@@ -357,7 +349,7 @@ class Project:
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
-                    self.palettes, self.nine_slices):
+                    self.palettes):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -377,8 +369,19 @@ class Project:
     def get_ui_layout(self, name: str) -> Optional[UILayout]:
         return self.ui_layouts.get(name)
 
-    def get_nine_slice(self, name: str) -> Optional[NineSlice]:
-        return self.nine_slices.get(name)
+    def ui_backgrounds(self, role: str = "") -> list[BackgroundAsset]:
+        """Fonds d'INTERFACE du projet, éventuellement filtrés sur leur rôle
+        (`UI_ROLE_NINE` / `UI_ROLE_BG`). C'est ce que propose le menu de fond
+        d'un `UIPanel` — d'où le filtre : un cadre étirable et une image posée
+        ne s'étalent pas pareil, les mélanger dans une liste unique laisserait
+        choisir un cadre sans marges."""
+        from core.models.background import KIND_UI
+        return [b for b in self.backgrounds
+                if b.kind == KIND_UI and (not role or b.ui_role == role)]
+
+    def animated_backgrounds(self) -> list[BackgroundAsset]:
+        from core.models.background import KIND_ANIMATED
+        return [b for b in self.backgrounds if b.kind == KIND_ANIMATED]
 
     def scene_ui_layout(self, scene) -> Optional[UILayout]:
         """Mise en page d'une scène, ou None si elle n'en référence aucune (ou
@@ -388,21 +391,38 @@ class Project:
         return self.ui_layouts.get(name) if name else None
 
     def all_regions(self) -> list:
-        """[(UILayout, élément)] de tout le projet, dans un ordre STABLE.
+        """[(UILayout, élément de texte)] de tout le projet, ordre STABLE.
 
         C'est cet ordre qui devient l'index dans la table C `g_ui_regions` —
         même convention que les textes et les polices. Ordre des mises en page,
-        puis des slots dans chacune.
-
-        « Slots » et non « zones » : un texte AUTHORÉ occupe une entrée de la
-        même table (cf. `UILayout.slots`), donc son nom entre lui aussi dans
-        l'espace `REGION_*`."""
+        puis des slots dans chacune."""
         return [(lay, r) for lay in self.ui_layouts for r in lay.slots]
 
+    def all_images(self) -> list:
+        """[(UILayout, UIImage)] de tout le projet — l'index de `g_ui_images`.
+
+        Table séparée de `all_regions`, exactement comme les deux propriétés du
+        modèle : un script qui vise une image et un script qui vise un texte ne
+        parlent pas de la même chose, et un index partagé obligerait le runtime
+        à trier."""
+        return [(lay, im) for lay in self.ui_layouts for im in lay.images]
+
     def region_names(self) -> list[str]:
-        """Noms de slot du projet entier — l'espace de nommage des constantes
-        `REGION_*`, donc ce contre quoi vérifier l'unicité."""
+        """Noms de slot de texte du projet entier — l'espace de nommage des
+        constantes `REGION_*`, donc ce contre quoi vérifier l'unicité."""
         return [r.name for _, r in self.all_regions()]
+
+    def image_names(self) -> list[str]:
+        """Noms d'image du projet entier — l'espace des constantes `IMAGE_*`."""
+        return [im.name for _, im in self.all_images()]
+
+    def ui_element_names(self) -> list[str]:
+        """TOUS les noms d'élément d'UI du projet. L'unicité se cherche ici et
+        pas par type : les deux espaces de constantes (`REGION_*`, `IMAGE_*`)
+        sont distincts côté C, mais l'auteur, lui, ne devrait jamais avoir à
+        savoir que deux éléments homonymes de types différents sont légaux —
+        il les verrait côte à côte dans l'arbre sans pouvoir les distinguer."""
+        return [e.name for lay in self.ui_layouts for e in lay.elements]
 
     def ui_layout_users(self, name: str) -> list:
         """Scènes qui référencent cette mise en page. Alimente le badge
@@ -858,38 +878,36 @@ class Project:
         self._notify_renamed("Actor", old_name, new_name, refs)
 
     def rename_ui_element(self, layout, element, new_name: str) -> str:
-        """Renomme un élément d'une mise en page UI (zone, conteneur, texte).
+        """Renomme un élément d'une mise en page UI (texte, conteneur, image).
 
-        Espace de nommage : une ZONE se résout en `REGION_*`, une constante C
-        PROJET-globale, d'où l'unicité cherchée sur tout le projet ; les autres
-        types n'ont pas de constante mais partagent l'espace des refs `parent`,
-        donc unicité dans la layout élargie aux zones. Les enfants pointant le
-        parent par NOM, on les rebranche (`retarget_parent`) AVANT de figer le
-        nouveau nom. Seule une zone est référençable en Lua (`DOMAIN_REGION`) —
-        pour elle seule on réécrit les scripts. Retourne le nom RÉELLEMENT
-        appliqué (peut différer si collision)."""
+        **Unicité sur TOUT le projet, quel que soit le type** (cf.
+        `ui_element_names`) : un texte se résout en `REGION_*` et une image en
+        `IMAGE_*`, deux constantes C projet-globales, et le conteneur partage
+        l'espace des refs `parent`. Chercher au plus large évite d'avoir à
+        expliquer pourquoi deux éléments homonymes coexistent parfois.
+
+        Les enfants pointant le parent par NOM, on les rebranche
+        (`retarget_parent`) AVANT de figer le nouveau nom. Le domaine Lua suit
+        le type — un conteneur n'en a pas, rien à réécrire. Retourne le nom
+        RÉELLEMENT appliqué (peut différer si collision)."""
         from core.models.ui_region import (
-            KIND_REGION, unique_region_name, unique_element_name)
+            KIND_TEXT, KIND_IMAGE, unique_element_name)
         new_name = new_name.strip()
         if not new_name or new_name == element.name:
             return element.name
-        is_region = getattr(element, "kind", KIND_REGION) == KIND_REGION
-        if is_region:
-            taken = set(self.region_names()) - {element.name}
-            if new_name in taken:
-                new_name = unique_region_name(taken, new_name)
-        else:
-            taken = (set(layout.element_names()) | set(self.region_names())) - {element.name}
-            if new_name in taken:
-                new_name = unique_element_name(taken, new_name)
+        taken = set(self.ui_element_names()) - {element.name}
+        if new_name in taken:
+            new_name = unique_element_name(taken, new_name)
+        kind = getattr(element, "kind", KIND_TEXT)
+        domain = {KIND_TEXT: DOMAIN_REGION, KIND_IMAGE: DOMAIN_IMAGE}.get(kind)
+        label = {KIND_TEXT: "Text", KIND_IMAGE: "Image"}.get(kind, "UI element")
         old_name = element.name
         with self._renaming():
             layout.retarget_parent(old_name, new_name)
             element.name = new_name
-            refs = self.rename_lua_refs(DOMAIN_REGION, old_name, new_name) if is_region else {}
+            refs = self.rename_lua_refs(domain, old_name, new_name) if domain else {}
             self.ui_layouts.save_all()
-        self._notify_renamed("Zone" if is_region else "UI element",
-                             old_name, new_name, refs)
+        self._notify_renamed(label, old_name, new_name, refs)
         return new_name
 
     def rename_sound(self, asset, new_name: str):
@@ -1153,7 +1171,6 @@ class Project:
         self.music.save_all()
         self.fonts.save_all()
         self.ui_layouts.save_all()
-        self.nine_slices.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()
@@ -1161,7 +1178,7 @@ class Project:
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
-                    "project/palettes", "project/ui_layouts", "project/nine_slices",
+                    "project/palettes", "project/ui_layouts",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -1189,10 +1206,13 @@ class Project:
         project_migrations.migrate_var_refs_to_ids(self)
         # Avant les scènes : une scène référence sa mise en page par nom.
         self.ui_layouts.load()
-        self.nine_slices.load()
         project_migrations.migrate_bg_sidecar_location(self)
         self.backgrounds.load()
         project_migrations.reconcile_backgrounds(self)
+        # Après les fonds ET les mises en page : la migration reporte les marges
+        # d'un cadre sur son fond source, puis repointe les panneaux qui le
+        # citaient. Il lui faut donc les deux déjà chargés.
+        project_migrations.migrate_nine_slices_to_ui_backgrounds(self)
         self.prefabs.load()
         project_migrations.reconcile_sfx_and_music(self)
         project_migrations.reconcile_fonts(self)

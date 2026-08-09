@@ -393,6 +393,10 @@ class MainWindow(QMainWindow):
         # Une zone éditée dans l'inspecteur doit se redessiner dans le canvas.
         self._inspector.ui_regions_changed.connect(
             self.scene_editor._reload_ui_regions)
+        # Mélange de couleurs : recomposition des pixmaps du canvas, en direct.
+        # `refresh_blend` ne relit aucun fichier, on peut donc la brancher sur
+        # chaque cran du curseur sans le rendre poussif.
+        self._inspector.blend_changed.connect(self.scene_editor.refresh_blend)
         self._inspector.set_script_open_fn(self.open_script)
         self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)

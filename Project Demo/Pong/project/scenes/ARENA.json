@@ -131,7 +131,7 @@
       "region": 0,
       "x": 0,
       "y": 0,
-      "w": 238,
+      "w": 226,
       "h": 160,
       "visible": false,
       "layers_shown": [
@@ -805,6 +805,6 @@
     "DMG (GB Default) (BG)",
     "pal_Ball"
   ],
-  "backdrop_color": 3044,
+  "backdrop_color": 31744,
   "notes": ""
 }

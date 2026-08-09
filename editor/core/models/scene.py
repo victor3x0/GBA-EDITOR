@@ -41,6 +41,154 @@ TILE_SLOPE_L_STEEP_LO_INV = 21  # ~63° plafond montant  L→R, tile haut (grand
 
 COLLISION_TILE_SIZE = 8   # pixels par tile de collision
 
+# ── Mélange de couleurs (BLDCNT / BLDALPHA / BLDY) ────────────────
+# **Le mode est GLOBAL à l'écran**, pas par layer : `BLDCNT` n'a qu'un champ
+# mode (bits 6-7). Ce qui est par layer est son appartenance à l'ensemble du
+# DESSUS (bits 0-5, ce qui est mélangé) ou du DESSOUS (bits 8-13, ce avec quoi,
+# situé derrière selon les priorités). D'où le partage : le mode et les
+# coefficients sur la Scene, le rôle sur le BackgroundLayer.
+#
+# Le mélange ne se produit QUE là où un pixel du dessus a effectivement un pixel
+# du dessous derrière lui — c'est la cause n°1 des « alpha qui ne font rien »,
+# et ce que le validateur doit dire.
+BLEND_NONE     = 0   # aucun mélange — le défaut, et le comportement d'avant
+BLEND_ALPHA    = 1   # dessus×EVA + dessous×EVB, saturé à 31 par canal
+BLEND_BRIGHTEN = 2   # le dessus fond vers le BLANC, intensité EVY
+BLEND_DARKEN   = 3   # le dessus fond vers le NOIR, intensité EVY
+BLEND_MODES = (BLEND_NONE, BLEND_ALPHA, BLEND_BRIGHTEN, BLEND_DARKEN)
+
+# Les modes 2 et 3 n'emploient QUE le dessus : désigner un dessous n'y change
+# rien. L'inspecteur s'en sert pour griser le rôle « dessous » plutôt que de
+# laisser composer un réglage sans effet.
+BLEND_NEEDS_BOTTOM = (BLEND_ALPHA,)
+
+BLEND_TOP    = "top"      # première cible — ce qui est mélangé
+BLEND_BOTTOM = "bottom"   # seconde cible — ce avec quoi, situé DERRIÈRE
+BLEND_ROLES  = ("", BLEND_TOP, BLEND_BOTTOM)
+
+# Coefficients 0-16, bornes MATÉRIELLES (5 bits, valeurs >16 se comportent
+# comme 16). 16 = « en entier », 0 = « rien ».
+BLEND_EV_MAX = 16
+
+
+def clamp_ev(v) -> int:
+    try:
+        return max(0, min(BLEND_EV_MAX, int(v)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def blend_role_of(layer) -> str:
+    """Rôle d'un layer, normalisé — une valeur inconnue vaut « aucun »."""
+    r = getattr(layer, "blend_role", "")
+    return r if r in BLEND_ROLES else ""
+
+
+# ── Effets : l'INTENTION, au-dessus des registres ─────────────────
+# `BLDCNT` se règle en six bits de cible + un mode + deux ou trois
+# coefficients ; c'est le matériel, et c'est ce que la scène stocke. Mais
+# personne ne pense « première cible » : on pense « fondu au noir » ou « ce
+# layer est translucide ». Ces trois effets sont la traduction, et ils couvrent
+# ce pour quoi le blending GBA sert réellement.
+#
+# Rien n'est perdu : l'effet ÉCRIT les mêmes champs, et un réglage composé à la
+# main (cibles partielles, EVA+EVB > 16 pour un halo) reste lisible et
+# modifiable — il ressort simplement en « personnalisé ».
+EFFECT_NONE        = "none"
+EFFECT_FADE_BLACK  = "fade_black"    # mode 3, tout l'écran
+EFFECT_FADE_WHITE  = "fade_white"    # mode 2, tout l'écran
+EFFECT_TRANSLUCENT = "translucent"   # mode 1, un layer par-dessus ce qu'il y a derrière
+EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
+
+_FADE_EFFECTS = {EFFECT_FADE_BLACK: BLEND_DARKEN, EFFECT_FADE_WHITE: BLEND_BRIGHTEN}
+
+
+def blend_effect_of(scene) -> str:
+    """L'effet que ce réglage REPRÉSENTE, ou « personnalisé ».
+
+    Reconnaissance et non mémorisation : l'effet n'est pas un champ stocké de
+    plus (qui pourrait mentir sur les registres), il se relit des registres.
+    Un réglage fait à la main reste donc éditable sans qu'un champ caché
+    prétende le contraire."""
+    mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
+    if mode == BLEND_NONE:
+        return EFFECT_NONE
+    layers = list(getattr(scene, "background_layers", []))
+    tops = [L for L in layers if blend_role_of(L) == BLEND_TOP]
+    bottoms = [L for L in layers if blend_role_of(L) == BLEND_BOTTOM]
+    obj = getattr(scene, "blend_obj_role", "")
+    bd = getattr(scene, "blend_backdrop_role", "")
+    if mode in (BLEND_DARKEN, BLEND_BRIGHTEN):
+        # Fondu d'écran = TOUT est première cible, rien n'est seconde.
+        whole = (len(tops) == len(layers) and not bottoms
+                 and obj == BLEND_TOP and bd == BLEND_TOP)
+        if whole:
+            return EFFECT_FADE_BLACK if mode == BLEND_DARKEN else EFFECT_FADE_WHITE
+        return EFFECT_CUSTOM
+    # Alpha : un ou plusieurs layers devant, tout le reste derrière, et les
+    # deux coefficients complémentaires (ce que « X % opaque » veut dire).
+    #
+    # `tops` VIDE compte quand même comme translucidité : c'est l'état d'un
+    # réglage commencé mais pas fini — on a choisi l'effet, on n'a pas encore
+    # marqué le layer. Le renvoyer en « personnalisé » ferait sauter le
+    # sélecteur sur autre chose entre deux clics, alors que l'avertissement dit
+    # déjà quoi faire.
+    rest_ok = all(blend_role_of(L) == BLEND_BOTTOM for L in layers if L not in tops)
+    if (rest_ok and bd == BLEND_BOTTOM and not obj
+            and int(scene.blend_eva) + int(scene.blend_evb) == BLEND_EV_MAX):
+        return EFFECT_TRANSLUCENT
+    return EFFECT_CUSTOM
+
+
+def blend_amount_of(scene) -> int:
+    """L'effet en POURCENTAGE, tel que l'inspecteur le montre.
+
+    Fondu : 0 = rien, 100 = noir (ou blanc) plein. Translucidité : c'est
+    l'opacité du layer de devant, 100 = opaque."""
+    mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
+    ev = int(scene.blend_eva) if mode == BLEND_ALPHA else int(scene.blend_evy)
+    return round(ev * 100 / BLEND_EV_MAX)
+
+
+def apply_blend_effect(scene, effect: str, amount_pct: int) -> None:
+    """Écrit les registres d'un effet. Les CIBLES sont posées d'office :
+
+    - fondu → tout l'écran est première cible (layers, sprites, backdrop). C'est
+      ce qu'on veut d'une transition, et oublier le backdrop laisserait les
+      zones vides allumées pendant que le reste s'éteint — la panne classique ;
+    - translucidité → les layers marqués restent devant, TOUT le reste passe
+      derrière. Le matériel ne mélange qu'avec la couche immédiatement
+      inférieure : marquer largement garantit qu'elle en fasse partie, quelle
+      qu'elle soit (cf. la règle du « pas de saut de couche »).
+
+    `EFFECT_CUSTOM` ne touche à rien : c'est le réglage composé à la main."""
+    if effect == EFFECT_CUSTOM:
+        return
+    ev = max(0, min(BLEND_EV_MAX, round(int(amount_pct) * BLEND_EV_MAX / 100)))
+    layers = list(getattr(scene, "background_layers", []))
+    if effect == EFFECT_NONE:
+        scene.blend_mode = BLEND_NONE
+        for L in layers:
+            L.blend_role = ""
+        scene.blend_obj_role = scene.blend_backdrop_role = ""
+        return
+    if effect in _FADE_EFFECTS:
+        scene.blend_mode = _FADE_EFFECTS[effect]
+        scene.blend_evy = ev
+        for L in layers:
+            L.blend_role = BLEND_TOP
+        scene.blend_obj_role = scene.blend_backdrop_role = BLEND_TOP
+        return
+    if effect == EFFECT_TRANSLUCENT:
+        scene.blend_mode = BLEND_ALPHA
+        scene.blend_eva = ev
+        scene.blend_evb = BLEND_EV_MAX - ev
+        for L in layers:
+            if blend_role_of(L) != BLEND_TOP:
+                L.blend_role = BLEND_BOTTOM
+        scene.blend_obj_role = ""
+        scene.blend_backdrop_role = BLEND_BOTTOM
+
 def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
     """Crée une grille vide (TILE_EMPTY) aux dimensions de la scène en pixels."""
     cols = max(1, (width_px  + COLLISION_TILE_SIZE - 1) // COLLISION_TILE_SIZE)
@@ -260,7 +408,35 @@ class Scene(Resource):
     # Override de ProjectSettings.backdrop_color pour cette scène (BGR555) ;
     # None = hérite du défaut projet.
     backdrop_color: Optional[int] = None
+    # ── Mélange de couleurs (cf. BLEND_* en tête de module) ───────
+    # Le MODE est ici et pas sur les layers : le matériel n'en a qu'un pour tout
+    # l'écran. Les layers ne portent que leur rôle (`BackgroundLayer.blend_role`).
+    blend_mode: int = BLEND_NONE
+    blend_eva: int = BLEND_EV_MAX   # poids du dessus (mode alpha)
+    blend_evb: int = 0              # poids du dessous (mode alpha)
+    blend_evy: int = BLEND_EV_MAX // 2   # intensité du fondu (modes 2 et 3)
+    # Les sprites et le backdrop sont deux cibles comme les layers (BLDCNT bits
+    # 4/5 et 12/13), mais ils n'ont pas de ligne dans la liste des layers : leur
+    # rôle vit donc ici. Le backdrop en DESSOUS est le réglage qui fait marcher
+    # un alpha au-dessus d'une zone vide — sans lui, rien derrière, donc rien à
+    # mélanger.
+    blend_obj_role: str = ""
+    blend_backdrop_role: str = ""
     notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
+
+    # ── Mélange : lectures dérivées ───────────────────────────────
+    def blend_layers(self, role: str) -> list:
+        """Layers tenant `role` dans le mélange, dans l'ordre de la scène."""
+        return [L for L in self.background_layers if blend_role_of(L) == role]
+
+    def blend_has_target(self, role: str) -> bool:
+        """Y a-t-il au moins une cible dans ce rôle — layer, sprites ou backdrop ?
+
+        C'est la question que pose le validateur : un mode sans DESSUS ne fait
+        rien du tout, et un alpha sans DESSOUS ne fait rien non plus."""
+        if self.blend_layers(role):
+            return True
+        return role in (self.blend_obj_role, self.blend_backdrop_role)
 
     def ensure_collision_map(self, width_px: int = 240, height_px: int = 160):
         """Initialise ou redimensionne la collision_map si vide."""
@@ -276,6 +452,7 @@ class Scene(Resource):
                  **({"tile_palette_overrides": {f"{c},{r}": s
                                        for (c, r), s in L.tile_palette_overrides.items()}}
                     if L.tile_palette_overrides else {}),
+                 **({"blend_role": L.blend_role} if L.blend_role else {}),
                  **({} if L.visible else {"visible": False})}
                 for L in self.background_layers
             ],
@@ -306,6 +483,14 @@ class Scene(Resource):
             "active_obj_palettes": self.active_obj_palettes,
             "active_bg_palettes": self.active_bg_palettes,
             "backdrop_color": self.backdrop_color,
+            # Écrits seulement si un mélange est réglé : sans ça, tous les JSON
+            # de scène du projet gagneraient cinq clés inertes.
+            **({"blend_mode": self.blend_mode,
+                "blend_eva": self.blend_eva, "blend_evb": self.blend_evb,
+                "blend_evy": self.blend_evy,
+                "blend_obj_role": self.blend_obj_role,
+                "blend_backdrop_role": self.blend_backdrop_role}
+               if self.blend_mode != BLEND_NONE else {}),
             "notes": self.notes,
         }
 
@@ -329,6 +514,8 @@ class Scene(Resource):
                 tile_palette_overrides= _decode_tile_palette_overrides(
                     L.get("tile_palette_overrides") or L.get("tile_palettes")),
                 visible      = L.get("visible", True),
+                blend_role   = (L.get("blend_role", "")
+                                if L.get("blend_role", "") in BLEND_ROLES else ""),
             )
             for i, L in enumerate(d.get("background_layers", []))
         ]
@@ -395,6 +582,16 @@ class Scene(Resource):
             active_obj_palettes=d.get("active_obj_palettes", []),
             active_bg_palettes=d.get("active_bg_palettes", []),
             backdrop_color=d.get("backdrop_color"),
+            blend_mode=(int(d.get("blend_mode", BLEND_NONE))
+                        if int(d.get("blend_mode", BLEND_NONE)) in BLEND_MODES
+                        else BLEND_NONE),
+            blend_eva=clamp_ev(d.get("blend_eva", BLEND_EV_MAX)),
+            blend_evb=clamp_ev(d.get("blend_evb", 0)),
+            blend_evy=clamp_ev(d.get("blend_evy", BLEND_EV_MAX // 2)),
+            blend_obj_role=(d.get("blend_obj_role", "")
+                            if d.get("blend_obj_role", "") in BLEND_ROLES else ""),
+            blend_backdrop_role=(d.get("blend_backdrop_role", "")
+                                 if d.get("blend_backdrop_role", "") in BLEND_ROLES else ""),
             notes=d.get("notes", ""),
         )
         # Ancien nom de BackgroundAsset (migré au load si background_layers vide).
