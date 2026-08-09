@@ -414,6 +414,14 @@ typedef struct UIImageInfo {
     unsigned char tiles_per_frame;
     short oam_rel;          /* cible OBJ : slot OAM relatif à la base de la scène */
     unsigned char priority;
+    /* PAVAGE — un fond de panneau répète la même frame pour couvrir un
+       rectangle plus grand qu'elle (un OBJ ne s'étire pas sans mode affine).
+       Une image vaut toujours 1×1. Les N sprites pointent la MÊME frame : le
+       pavage coûte des slots OAM, pas une tuile de plus. */
+    unsigned char cols, rows;
+    /* Surcharge de `state_speed[state]`, en ticks entre deux frames. 0 = la
+       vitesse du sprite, qui reste la source de vérité. */
+    unsigned char speed;
 } UIImageInfo;
 
 extern const UIImageInfo g_ui_images[];
@@ -2281,7 +2289,9 @@ void ui_image_update(void) {
         int fs = 0, fc = 1;
         ui_image_seq(I, S->state, &fs, &fc);
         if (S->playing && fc > 1 && I->state_speed) {
-            if (++S->timer >= I->state_speed[S->state]) {
+            /* `speed` surcharge la vitesse de l'état ; 0 = celle du sprite. */
+            int sp = I->speed ? I->speed : I->state_speed[S->state];
+            if (++S->timer >= sp) {
                 S->timer = 0;
                 int fi = S->frame - fs;
                 if (I->state_loop && I->state_loop[S->state])
@@ -2312,21 +2322,33 @@ void ui_image_update(void) {
                 S->last = S->frame;
             }
         } else {
-            /* Cible OBJ : un slot, reposé à chaque frame. `g_obj_oam_base` est
-               la base que scene_init réserve à l'interface — la même que la
-               bande de texte, dont l'allocation chaîne les deux. */
+            /* Cible OBJ : un slot PAR CASE du pavage (1×1 pour une image),
+               reposés à chaque frame. `g_obj_oam_base` est la base que
+               scene_init réserve à l'interface — la même que la bande de texte,
+               dont l'allocation chaîne les deux.
+
+               Tous les slots lisent la MÊME frame : le fond d'un panneau est un
+               motif répété, pas N animations indépendantes. Une case décalée
+               d'une frame donnerait une vague, ce que personne n'a demandé. */
             if (g_obj_oam_base < 0) continue;
-            int slot = g_obj_oam_base + I->oam_rel;
-            if (slot < 0 || slot >= 128) continue;
-            if (!S->visible) { shadow_oam[slot].attr0 = 0x0200; continue; }
+            int cols = I->cols ? I->cols : 1;
+            int rows = I->rows ? I->rows : 1;
             u16 ti = (u16)(I->tile_base + S->frame * I->tiles_per_frame);
-            shadow_oam[slot].attr0 = (u16)((sy & 0xFF)
+            for (int cy = 0; cy < rows; cy++) {
+                for (int cx = 0; cx < cols; cx++) {
+                    int slot = g_obj_oam_base + I->oam_rel + cy * cols + cx;
+                    if (slot < 0 || slot >= 128) continue;
+                    if (!S->visible) { shadow_oam[slot].attr0 = 0x0200; continue; }
+                    int px = sx + cx * I->w, py = sy + cy * I->h;
+                    shadow_oam[slot].attr0 = (u16)((py & 0xFF)
                                            | (ui_image_shape(I->w, I->h) << 14));
-            shadow_oam[slot].attr1 = (u16)((sx & 0x1FF)
+                    shadow_oam[slot].attr1 = (u16)((px & 0x1FF)
                                            | (ui_image_size(I->w, I->h) << 14));
-            shadow_oam[slot].attr2 = (u16)((ti & 0x3FF)
+                    shadow_oam[slot].attr2 = (u16)((ti & 0x3FF)
                                            | ((I->priority & 3) << 10)
                                            | ((S->bank & 15) << 12));
+                }
+            }
         }
     }
 }

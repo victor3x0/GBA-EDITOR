@@ -112,20 +112,32 @@ KIND_SLOTS = (KIND_TEXT,)
 #                 gratuit sur GBA. L'asset dédié reste à créer.
 #   background  : un fond tuilé référencé, rogné en bas/à droite si la zone est
 #                 plus petite que l'asset.
-FILL_NONE  = "none"
-FILL_COLOR = "color"
-FILL_NINE  = "nine_slice"
-FILL_BG    = "background"
-FILL_KINDS = (FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG)
+#   sprite      : un SpriteAsset PAVÉ sur le rectangle — le seul fond possible
+#                 en cible OBJ, où il n'y a pas de tilemap où poser des tuiles.
+FILL_NONE   = "none"
+FILL_COLOR  = "color"
+FILL_NINE   = "nine_slice"
+FILL_BG     = "background"
+FILL_SPRITE = "sprite"
+FILL_KINDS = (FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, FILL_SPRITE)
 
-# Fonds permis selon la CIBLE de rendu (dérivée du root). Un background n'est pas
-# un sprite : interdit sur OBJ. Le reste passe partout (le nine-slice sur OBJ est
-# possible mais cher — permis, l'éditeur pourra prévenir).
+# Fonds permis selon la CIBLE de rendu (dérivée du root).
+#
+# La table dit ce que le BUILD ÉMET, pas ce qui serait concevable. Couleur,
+# nine-slice et background posent des TUILES et écrivent une carte : ça n'existe
+# que sur BG. Sur OBJ il n'y a pas de tilemap, donc un seul fond possible — un
+# sprite, pavé sur le rectangle. Inversement un sprite sur BG n'apporterait rien
+# que `background` ne fasse déjà mieux (vraies tuiles, zéro slot OAM).
+#
+# Elle a longtemps promis couleur et nine-slice sur OBJ, que rien n'émettait :
+# le canvas dessinait un fond absent de la ROM. Un mode permis mais jamais émis
+# est pire qu'un mode absent — on ne cherche pas ce qui n'est pas proposé.
 _FILL_TARGETS = {
-    FILL_NONE:  (TARGET_BG, TARGET_OBJ),
-    FILL_COLOR: (TARGET_BG, TARGET_OBJ),
-    FILL_NINE:  (TARGET_BG, TARGET_OBJ),
-    FILL_BG:    (TARGET_BG,),
+    FILL_NONE:   (TARGET_BG, TARGET_OBJ),
+    FILL_COLOR:  (TARGET_BG,),
+    FILL_NINE:   (TARGET_BG,),
+    FILL_BG:     (TARGET_BG,),
+    FILL_SPRITE: (TARGET_OBJ,),
 }
 
 
@@ -485,22 +497,49 @@ def strip_geometry(region: "UIText") -> dict:
 # VRAM pour un acteur qui l'emploie, donc le coût est connu de l'auteur.
 
 
-def image_geometry(el: "UIImage", n_frames: int = 1) -> dict:
-    """Ce qu'une image consomme. `n_frames` = total des frames du sprite, que
-    seul l'appelant connaît (le modèle ne résout pas les noms d'asset).
+def sprite_grid(el, frame_w: int, frame_h: int) -> tuple[int, int]:
+    """(colonnes, rangées) de frames pour couvrir `el`.
 
-    `oam` vaut 1 en cible OBJ et 0 en BG — mais `tiles` compte pareil dans les
-    deux cas : le chemin BG copie les mêmes tuiles dans le charblock d'UI, il ne
-    change que l'endroit et le fait d'écrire une carte par-dessus (`map_tiles`
-    entrées de tilemap)."""
-    per = max(1, _ceil_tile(el.w)) * max(1, _ceil_tile(el.h))
+    Un `UIImage` fait toujours (1, 1) : sa taille EST celle de la frame
+    (`sync_size_from`). Un `UIPanel` à fond sprite, lui, garde son rectangle de
+    conteneur — le fond le PAVE, parce qu'un OBJ ne s'étire pas sans mode
+    affine et qu'un panneau dont la taille serait dictée par son fond ne serait
+    plus un conteneur. La dernière colonne/rangée déborde plutôt que d'être
+    rognée : le matériel ne sait pas couper un sprite, et un fond qui s'arrête
+    3 px trop tôt se voit plus qu'un fond qui dépasse sous ses voisins."""
+    fw = max(1, int(frame_w or 1))
+    fh = max(1, int(frame_h or 1))
+    if getattr(el, "kind", "") != KIND_PANEL:
+        return 1, 1
+    return (max(1, -(-int(el.w) // fw)), max(1, -(-int(el.h) // fh)))
+
+
+def image_geometry(el, n_frames: int = 1,
+                   frame_w: int = 0, frame_h: int = 0) -> dict:
+    """Ce qu'une image (ou un fond sprite de panneau) consomme. `n_frames` =
+    total des frames du sprite, que seul l'appelant connaît (le modèle ne résout
+    pas les noms d'asset) ; `frame_w`/`frame_h` = taille de la frame, à donner
+    pour un panneau dont le rectangle n'est pas celui de la frame.
+
+    `oam` vaut 0 en cible BG et `cols * rows` en OBJ — mais `tiles` compte
+    pareil dans les deux cas : le chemin BG copie les mêmes tuiles dans le
+    charblock d'UI, il ne change que l'endroit et le fait d'écrire une carte
+    par-dessus (`map_tiles` entrées de tilemap). Un pavage ne coûte AUCUNE tuile
+    de plus — les N sprites pointent tous la même frame."""
+    fw = int(frame_w) or int(el.w)
+    fh = int(frame_h) or int(el.h)
+    cols, rows = sprite_grid(el, fw, fh)
+    per = max(1, _ceil_tile(fw)) * max(1, _ceil_tile(fh))
     frames = max(1, int(n_frames))
     return {"tiles_per_frame": per, "frames": frames,
-            "tiles": per * frames, "map_tiles": per}
+            "tiles": per * frames, "map_tiles": per * cols * rows,
+            "frame_w": fw, "frame_h": fh,
+            "cols": cols, "rows": rows, "oam": cols * rows}
 
 
 def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
-                      image_frames: dict | None = None) -> dict:
+                      image_frames: dict | None = None,
+                      image_frame_size: dict | None = None) -> dict:
     """Budget OBJ d'une mise en page entière, et le placement RELATIF de chaque
     élément dedans.
 
@@ -509,12 +548,20 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
     interne est intrinsèque à la mise en page — exactement le raisonnement de
     `FontInfo.slot`, relatif au bloc alloué au texte.
 
-    Les bandes de texte d'abord, les images ensuite, dans une seule numérotation
-    continue : deux allocations séparées se recouvriraient au premier oubli de
-    chaîner leurs bases. `image_frames` = {nom d'image: nombre de frames} ;
-    absent, une image compte pour une frame — c'est à l'appelant qui connaît les
-    sprites (le codegen) de le fournir, et sous-réserver n'est pas anodin."""
+    **L'ordre d'allocation EST l'ordre de profondeur.** Un slot OAM bas passe
+    devant un slot haut, donc : les bandes de texte d'abord, les images ensuite,
+    les FONDS de panneau en dernier — un fond doit être derrière ce que son
+    panneau contient, et la priorité OBJ seule n'y suffirait pas (elle ne
+    départage pas deux OBJ de même priorité). Une seule numérotation continue :
+    deux allocations séparées se recouvriraient au premier oubli de chaîner
+    leurs bases.
+
+    `image_frames` = {nom: nombre de frames}, `image_frame_size` = {nom: (w, h)}
+    — le modèle ne résout pas les noms d'asset, c'est à l'appelant qui connaît
+    les sprites (le codegen) de les fournir. Absents, une image compte pour une
+    frame et un panneau pour un seul sprite : sous-réserver n'est pas anodin."""
     frames_by_name = image_frames or {}
+    size_by_name = image_frame_size or {}
     place, oam, tiles = {}, 0, 0
     for r in layout.slots:
         if layout.resolved_target(r, render_mode) != TARGET_OBJ:
@@ -523,17 +570,20 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
         place[r.name] = {"oam_rel": oam, "tile_rel": tiles, **g}
         oam += g["oam"]
         tiles += g["tiles"]
-    for im in layout.images:
+    # Images puis fonds de panneau — cf. l'ordre de profondeur ci-dessus.
+    for im in sorted(layout.images,
+                     key=lambda e: getattr(e, "kind", "") == KIND_PANEL):
         if layout.resolved_target(im, render_mode) != TARGET_OBJ:
             continue
-        g = image_geometry(im, frames_by_name.get(im.name, 1))
-        # Une image OBJ consomme un slot OAM et AUCUNE tuile de ce budget : ses
-        # pixels sont déjà en VRAM OBJ, chargés avec le sprite comme pour un
-        # acteur (cf. main_gen.ui_image_sprites). Sa base de tuiles est celle du
-        # sprite, pas une allocation d'interface — en réserver une seconde
-        # doublerait le coût du même dessin.
-        place[im.name] = {"oam_rel": oam, "tile_rel": 0, "oam": 1, **g}
-        oam += 1
+        fw, fh = size_by_name.get(im.name, (0, 0))
+        g = image_geometry(im, frames_by_name.get(im.name, 1), fw, fh)
+        # Un sprite d'interface consomme des slots OAM et AUCUNE tuile de ce
+        # budget : ses pixels sont déjà en VRAM OBJ, chargés avec le sprite
+        # comme pour un acteur (cf. main_gen.ui_image_sprites). Sa base de
+        # tuiles est celle du sprite, pas une allocation d'interface — en
+        # réserver une seconde doublerait le coût du même dessin.
+        place[im.name] = {"oam_rel": oam, "tile_rel": 0, **g}
+        oam += g["oam"]
     return {"place": place, "oam": oam, "tiles": tiles}
 
 
@@ -550,7 +600,19 @@ class UIPanel(RectGeometryMixin):
                     `fill_index` (0-15). Pas de RGB libre — le hardware l'impose.
       nine-slice  → `fill_asset` = un asset de cadre tuilé (à créer).
       background  → `fill_asset` = un fond tuilé, rogné bas/droite si la zone est
-                    plus petite ; interdit sur cible OBJ (cf. `fill_allowed`).
+                    plus petite ; cible BG seulement (cf. `fill_allowed`).
+      sprite      → `fill_sprite` (+ `fill_state`, `fill_speed`) = un SpriteAsset
+                    PAVÉ sur le rectangle. Cible OBJ seulement — c'est le seul
+                    fond qui existe là où il n'y a pas de tilemap.
+
+    **Le fond sprite est une image de plus dans `g_ui_images`.** Il n'a pas sa
+    propre table : un panneau à fond sprite et un `UIImage` demandent la même
+    chose au moteur (un sprite, un état, une animation, une banque de palette),
+    à la répétition près. D'où la surface d'accès commune ci-dessous
+    (`sprite_name`, `state_name`, `playing`, `priority`, `state_index`) : le
+    codegen n'a pas à savoir lequel des deux types il tient. Bénéfice non
+    cherché mais réel : un script peut changer l'état du fond d'un panneau comme
+    celui d'une image, `IMAGE_<nom du panneau>` existant lui aussi.
 
     Géométrie en pixels comme la zone. `anchor`/`anchor_actor` ne comptent que
     lorsque le panel est racine."""
@@ -569,13 +631,23 @@ class UIPanel(RectGeometryMixin):
     fill_palette: str = ""   # nom de PaletteBank (fond couleur)
     fill_index: int = 0      # index 0-15 dans la palette (fond couleur)
     fill_asset: str = ""     # nom d'asset (nine-slice / background)
+    fill_sprite: str = ""    # nom d'un SpriteAsset (fond sprite)
+    fill_state: str = ""     # "" = premier état du sprite
+    # SURCHARGE de la vitesse d'animation de l'état, en ticks entre deux frames.
+    # 0 = celle du sprite (`AnimState.speed`), qui reste la source de vérité :
+    # sans ce zéro, corriger une vitesse dans le Sprite Editor cesserait d'avoir
+    # effet ici sans que rien ne le dise. Cf. `UIImage`, qui refuse pour la même
+    # raison de recopier frames et vitesses.
+    fill_speed: int = 0
 
     def to_dict(self) -> dict:
         return {"kind": KIND_PANEL, "name": self.name, "parent": self.parent,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "anchor": self.anchor, "anchor_actor": self.anchor_actor,
                 "fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
-                "fill_index": self.fill_index, "fill_asset": self.fill_asset}
+                "fill_index": self.fill_index, "fill_asset": self.fill_asset,
+                "fill_sprite": self.fill_sprite, "fill_state": self.fill_state,
+                "fill_speed": self.fill_speed}
 
     @classmethod
     def from_dict(cls, d: dict) -> "UIPanel":
@@ -590,7 +662,48 @@ class UIPanel(RectGeometryMixin):
             fill_kind=fk if fk in FILL_KINDS else FILL_NONE,
             fill_palette=str(d.get("fill_palette", "")),
             fill_index=int(d.get("fill_index", 0) or 0),
-            fill_asset=str(d.get("fill_asset", "")))
+            fill_asset=str(d.get("fill_asset", "")),
+            fill_sprite=str(d.get("fill_sprite", "")),
+            fill_state=str(d.get("fill_state", "")),
+            fill_speed=max(0, min(255, int(d.get("fill_speed", 0) or 0))))
+
+    # ── Surface commune avec UIImage (cf. docstring) ──────────────
+    # Des propriétés et non des champs : la donnée reste `fill_*`, il n'y a
+    # jamais deux valeurs à tenir d'accord. Vides quand le fond n'est pas un
+    # sprite, donc l'élément sort du chemin d'émission de lui-même.
+    @property
+    def sprite_name(self) -> str:
+        return self.fill_sprite if self.fill_kind == FILL_SPRITE else ""
+
+    @property
+    def state_name(self) -> str:
+        return self.fill_state
+
+    @property
+    def anim_speed(self) -> int:
+        return int(self.fill_speed or 0)
+
+    @property
+    def playing(self) -> bool:
+        # Un fond animé joue ; le figer se fait en choisissant un état d'une
+        # seule frame, ou depuis un script (`ui.image_play`). Un champ de plus
+        # ici doublerait ce que l'état dit déjà.
+        return True
+
+    @property
+    def priority(self) -> int:
+        # Derrière ce qu'il contient. La priorité OBJ ne suffirait pas à elle
+        # seule (l'ordre OAM tranche à priorité égale) : c'est
+        # `layout_obj_budget` qui met les fonds en DERNIER, donc au fond.
+        return 3
+
+    def state_index(self, sprite) -> int:
+        """Index de l'état nommé — même règle que `UIImage.state_index`."""
+        states = list(getattr(sprite, "states", []) or [])
+        if not self.fill_state:
+            return 0
+        return next((i for i, s in enumerate(states)
+                     if s.name == self.fill_state), 0)
 
 
 @dataclass
@@ -632,6 +745,10 @@ class UIImage(RectGeometryMixin):
     anchor_actor: str = ""
     sprite_name: str = ""    # nom d'un SpriteAsset du projet
     state_name: str = ""     # "" = premier état du sprite
+    # Pendant de `UIPanel.fill_speed` : une image ne surcharge pas la vitesse de
+    # l'état, elle DÉSIGNE un sprite. Propriété constante plutôt que champ, pour
+    # que le codegen lise la même chose sur les deux types.
+    anim_speed = 0
     # 0 = l'image se fige sur la première frame de l'état. Un HUD est plein
     # d'icônes qui ne bougent pas, et les faire tourner coûterait un tick et une
     # réécriture de tilemap par image et par frame.
@@ -749,14 +866,24 @@ class UILayout(Resource):
 
     @property
     def images(self) -> list:
-        """Éléments IMAGE, dans l'ordre de `elements` — l'index de `g_ui_images`.
+        """Éléments qui posent un SPRITE, dans l'ordre de `elements` — l'index de
+        `g_ui_images`, donc des constantes `IMAGE_*`.
 
-        Une table à part et non une colonne de plus dans `g_ui_regions` : les
-        deux ne partagent que le rectangle et l'ancrage. Fusionner leur aurait
-        donné une structure dont la moitié des champs est morte selon le type,
-        et un runtime qui teste le kind à chaque frame."""
+        Deux types y entrent : un `UIImage`, et un `UIPanel` dont le fond est un
+        sprite. Ce n'est pas un raccourci d'implémentation — ils demandent au
+        moteur exactement la même chose (un sprite, un état, une animation, une
+        banque de palette), à la répétition près, que `UIPanel` expose par la
+        même surface d'accès. Une seconde table aurait dupliqué `ui_image_update`
+        pour en changer deux lignes.
+
+        Une table à part de `g_ui_regions` en revanche, parce que là les deux ne
+        partagent que le rectangle et l'ancrage : fusionner aurait donné une
+        structure dont la moitié des champs est morte selon le type, et un
+        runtime qui teste le kind à chaque frame."""
         return [e for e in self.elements
-                if getattr(e, "kind", "") == KIND_IMAGE]
+                if getattr(e, "kind", "") == KIND_IMAGE
+                or (getattr(e, "kind", "") == KIND_PANEL
+                    and getattr(e, "fill_kind", "") == FILL_SPRITE)]
 
     def get(self, name: str):
         """N'importe quel élément par son nom (tous types confondus)."""

@@ -29,7 +29,8 @@ FONT_PAL_BANK = 15
 # Les `slot` émis sont RELATIFS (0 = première tuile du bloc alloué au texte).
 # La base absolue dans le charblock est décidée par scène et posée au runtime
 # par `text_set_tile_base` — cuire une base ici interdirait au texte de
-# partager un charblock avec un fond (cf. ROADMAP, allocateur de charblock).
+# partager un charblock avec un fond (cf. ARCHITECTURE.md, « Allocation de la
+# VRAM BG »).
 
 _MAX_INK_COLORS = 15   # index 0 = transparent, restent 1..15
 
@@ -246,6 +247,37 @@ def scene_text_tiles(fonts, names: set[str] | None = None,
         return text_vram_tiles(fonts, codepoints)
     return text_vram_tiles([f for f in fonts if getattr(f, "name", "") in names],
                            codepoints)
+
+
+def scene_default_font(p, scene) -> tuple[int, str]:
+    """(index dans `project_fonts`, nom) de la police que `scene_init` charge.
+
+    POINT UNIQUE — l'émission (`text_set_font(i)`), la réservation VRAM, les
+    sous-ensembles de glyphes, le validateur de débordement et l'aperçu de
+    l'éditeur lisent tous ceci. Ils divergeaient déjà une fois dans ce module
+    (cf. `scene_text_reservation`) : une scène qui réserve pour une police et en
+    charge une autre écrit son texte DANS le décor, sans erreur avant
+    l'exécution.
+
+    Deux replis vers la première police encodable, et ils veulent dire deux
+    choses différentes :
+    - `Scene.font_name` vide — l'auteur n'a pas choisi, c'est le comportement
+      historique et il est légitime ;
+    - nom introuvable ou police non encodable — l'auteur a choisi et se trompe.
+      Le rendu ne peut pas tomber pour autant (le moteur doit bien charger
+      QUELQUE chose), donc c'est `validator._check_scene_font` qui le dit.
+
+    (-1, "") quand le projet n'a aucune police encodable : `scene_init` n'émet
+    alors aucun `text_set_font`, et un projet sans texte compile toujours."""
+    from codegen.runtime_codegen.main_gen import project_fonts
+    fonts = project_fonts(p)
+    if not fonts:
+        return -1, ""
+    want = getattr(scene, "font_name", "") or ""
+    for i, f in enumerate(fonts):
+        if f.name == want:
+            return i, f.name
+    return 0, fonts[0].name
 
 
 def layout_font_names(layout, default_font: str = "") -> set[str]:

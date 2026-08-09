@@ -68,9 +68,9 @@ Première version stable de **GBA Editor**.
 
 ## Roadmap vers la v1.0
 
-- **v0.2** : Gestion des palettes de couleurs 
-- **v0.3** : Fondations runtime "background vivant" + Texte & UI in-game
-- **v0.4** : Éditeur de Background (dessin sur tilesets) & animation de tuiles
+- **v0.2** ✅ : Gestion des palettes de couleurs
+- **v0.3** ✅ : Fondations runtime "background vivant" (layers, fenêtres, fondus) + Texte & UI in-game (polices custom, table de textes balisée, interface dessinée au canvas)
+- **v0.4** : Éditeur de Background & animation de tuiles
 - **v0.5** : Sauvegarde (SRAM/Flash)
 - **v0.6** : Polish de la boucle de jeu (caméra, transitions, pentes)
 - **v0.7** : Son enrichi & écran de mixage (SFX/musique, pitch, volume par canal)

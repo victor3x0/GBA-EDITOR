@@ -39,7 +39,8 @@ from core.color_utils import bgr555_to_rgb888
 from core.models.ui_region import (
     ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ,
     KIND_PANEL, KIND_TEXT, KIND_IMAGE,
-    FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, fill_allowed,
+    FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, FILL_SPRITE, fill_allowed,
+    sprite_grid,
     forced_target, forced_target_reason, surface_conflicts,
     image_geometry,
     preset_rect, H_LEFT, H_CENTER, H_RIGHT, V_TOP, V_MIDDLE, V_BOTTOM,
@@ -56,10 +57,11 @@ _ANCHORS = [
 _ALIGN_LABELS = ["Left", "Centered", "Right"]
 _TARGETS = [(TARGET_BG, "Background (BG)"), (TARGET_OBJ, "Sprite (OBJ)")]
 _FILL_LABELS = [
-    (FILL_NONE,  "None (invisible group)"),
-    (FILL_COLOR, "Color (palette)"),
-    (FILL_NINE,  "Nine-slice"),
-    (FILL_BG,    "Background"),
+    (FILL_NONE,   "None (invisible group)"),
+    (FILL_COLOR,  "Color (palette)"),
+    (FILL_NINE,   "Nine-slice"),
+    (FILL_BG,     "Background"),
+    (FILL_SPRITE, "Sprite (tiled)"),
 ]
 
 # ── Presets de placement ──────────────────────────────────────────
@@ -349,6 +351,44 @@ class UIInspector(QWidget):
         self._fill_asset.currentIndexChanged.connect(self._on_fill_asset)
         self._fill_asset_row = W.row("Asset", self._fill_asset, L).parentWidget()
 
+        # ── Fond SPRITE (cible OBJ) ───────────────────────────────
+        # Mêmes trois questions que pour une image — quel sprite, quel état —
+        # plus la seule chose qu'un fond ajoute : sa cadence propre.
+        self._fill_sprite = QComboBox()
+        self._fill_sprite.setFont(QFont(T.UI, T.SM))
+        self._fill_sprite.setStyleSheet(QSS.combobox)
+        self._fill_sprite.setToolTip(
+            "Sprite tiled across the panel. Unlike an image, the panel keeps "
+            "its own size: the sprite repeats to cover it, one OAM slot per "
+            "cell (the hardware cannot stretch an OBJ without affine mode).")
+        self._fill_sprite.currentIndexChanged.connect(self._on_fill_sprite)
+        self._fill_sprite_row = W.row("Sprite", self._fill_sprite, L).parentWidget()
+
+        self._fill_state = QComboBox()
+        self._fill_state.setFont(QFont(T.UI, T.SM))
+        self._fill_state.setStyleSheet(QSS.combobox)
+        self._fill_state.setToolTip(
+            "Initial animation state. A script can change it later with "
+            "ui.image_set — a panel background gets an IMAGE_* constant of its "
+            "own, like any image.")
+        self._fill_state.currentIndexChanged.connect(self._on_fill_state)
+        self._fill_state_row = W.row("State", self._fill_state, L).parentWidget()
+
+        self._fill_speed = QSpinBox()
+        self._fill_speed.setFont(QFont(T.MONO, T.MD))
+        self._fill_speed.setStyleSheet(QSS.spinbox)
+        self._fill_speed.setRange(0, 255)
+        self._fill_speed.setSpecialValueText("From sprite")
+        self._fill_speed.setSuffix(" frames")
+        self._fill_speed.setKeyboardTracking(False)
+        self._fill_speed.setToolTip(
+            "Frames between two animation frames, overriding the state's own "
+            "speed.\n\n0 (= From sprite) keeps the value edited in the Sprite "
+            "Editor, which stays the single source of truth — otherwise fixing "
+            "a speed there would silently stop having any effect here.")
+        self._fill_speed.valueChanged.connect(self._on_fill_speed)
+        self._fill_speed_row = W.row("Speed", self._fill_speed, L).parentWidget()
+
         # Marges de coupe du cadre sélectionné. Elles vivent sur le FOND
         # D'INTERFACE lui-même (`BackgroundAsset.slice_*`), asset PARTAGÉ entre
         # tous les panels qui le citent — d'où le persist projet. Pas de champ
@@ -512,7 +552,9 @@ class UIInspector(QWidget):
                 w.setVisible(is_text)
             for w in (self._fill_sep, self._fill_title, self._fill_kind_row,
                       self._fill_color_row, self._fill_asset_row,
-                      self._ns_margins_row, self._fill_why):
+                      self._fill_sprite_row, self._fill_state_row,
+                      self._fill_speed_row, self._ns_margins_row,
+                      self._fill_why):
                 w.setVisible(is_panel)
             for w in (self._img_sep, self._img_title, self._img_sprite_row,
                       self._img_state_row, self._img_play_row,
@@ -936,7 +978,41 @@ class UIInspector(QWidget):
         self._fill_palette.setCurrentIndex(pi if pi >= 0 else 0)
         self._fill_index.setValue(int(getattr(el, "fill_index", 0) or 0))
         self._reload_fill_asset()
+        self._reload_fill_sprite()
         self._sync_fill()
+
+    def _reload_fill_sprite(self):
+        """Peuple sprite/état/vitesse du fond sprite. blockSignals : repeupler
+        un combo émet `currentIndexChanged`, qui écrirait dans le modèle."""
+        el = self._element
+        self._fill_sprite.blockSignals(True)
+        self._fill_sprite.clear()
+        self._fill_sprite.addItem("(no sprite)", "")
+        for s in (getattr(self._project, "sprites", []) if self._project else []):
+            self._fill_sprite.addItem(s.name, s.name)
+        i = self._fill_sprite.findData(getattr(el, "fill_sprite", "") or "")
+        self._fill_sprite.setCurrentIndex(i if i >= 0 else 0)
+        self._fill_sprite.blockSignals(False)
+        self._reload_fill_states()
+        self._fill_speed.blockSignals(True)
+        self._fill_speed.setValue(int(getattr(el, "fill_speed", 0) or 0))
+        self._fill_speed.blockSignals(False)
+
+    def _reload_fill_states(self):
+        """États du sprite de fond. « (first state) » plutôt qu'un premier état
+        nommé en dur — même raison que pour une image : un nom vide suit le
+        sprite quand on en réordonne les états, un nom figé désigne l'ancien."""
+        self._fill_state.blockSignals(True)
+        self._fill_state.clear()
+        sprite = (self._project.get_sprite(getattr(self._element, "fill_sprite", "") or "")
+                  if self._project else None)
+        self._fill_state.addItem("(first state)", "")
+        for st in (getattr(sprite, "states", []) if sprite else []):
+            self._fill_state.addItem(st.name, st.name)
+        self._fill_state.setEnabled(sprite is not None)
+        k = self._fill_state.findData(getattr(self._element, "fill_state", "") or "")
+        self._fill_state.setCurrentIndex(k if k >= 0 else 0)
+        self._fill_state.blockSignals(False)
 
     def _reload_fill_asset(self):
         """Peuple le combo d'asset selon le mode. blockSignals pour ne pas
@@ -972,6 +1048,9 @@ class UIInspector(QWidget):
         self._fill_color_row.setVisible(fk == FILL_COLOR)
         self._fill_asset_row.setVisible(fk in (FILL_NINE, FILL_BG))
         self._ns_margins_row.setVisible(fk == FILL_NINE)
+        for w in (self._fill_sprite_row, self._fill_state_row,
+                  self._fill_speed_row):
+            w.setVisible(fk == FILL_SPRITE)
         if fk == FILL_NINE:
             self._reload_ns()
         note = {
@@ -980,10 +1059,36 @@ class UIInspector(QWidget):
                         "Margins belong to the UI background — editing them here "
                         "changes every panel using it.",
             FILL_BG:    "Tiled background, cropped on bottom/right if the zone is "
-                        "smaller. Not allowed on OBJ target.",
+                        "smaller. BG target only.",
+            FILL_SPRITE: self._sprite_fill_note(),
         }.get(fk, "")
         self._fill_why.setText(note)
         self._update_swatch()
+
+    def _sprite_fill_note(self) -> str:
+        """Ce que le pavage coûte VRAIMENT, chiffré sur le sprite choisi.
+
+        Le nombre de slots OAM est la seule information que l'auteur ne peut pas
+        deviner en regardant le canvas, et c'est celle qui fait échouer un build
+        (128 slots pour toute la scène, acteurs compris)."""
+        sprite = (self._project.get_sprite(getattr(self._element, "fill_sprite", "") or "")
+                  if self._project else None)
+        if sprite is None:
+            return ("Sprite tiled across the panel — the only background that "
+                    "exists on OBJ target, where there is no tilemap.")
+        fw = int(getattr(sprite, "frame_w", 0) or 0)
+        fh = int(getattr(sprite, "frame_h", 0) or 0)
+        cols, rows = sprite_grid(self._element, fw, fh)
+        n = cols * rows
+        over = (cols * fw - int(self._element.w), rows * fh - int(self._element.h))
+        txt = (f"{fw}×{fh} tiled {cols}×{rows} = {n} OAM slot"
+               f"{'s' if n > 1 else ''} of the 128 the hardware has, actors "
+               f"included. Tiles cost nothing extra: every cell points at the "
+               f"same frame.")
+        if over[0] or over[1]:
+            txt += (f"\nThe last column/row overflows by {over[0]}×{over[1]} px: "
+                    f"the hardware cannot crop a sprite.")
+        return txt
 
     def _current_ns(self):
         """Le fond d'interface cité comme cadre — c'est lui qui porte l'image
@@ -1191,6 +1296,32 @@ class UIInspector(QWidget):
             return
         self._set("fill_asset", self._fill_asset.currentData() or "", "Background asset")
         self._reload_ns()
+
+    # ── Fond sprite (cible OBJ) ───────────────────────────────────
+    def _on_fill_sprite(self, i):
+        """Changer de sprite REMET l'état au défaut — `fill_state` pointe un état
+        de l'ANCIEN sprite, et le garder retomberait silencieusement sur l'état 0
+        au build. Même règle que pour une image.
+
+        Le panneau, lui, n'est PAS redimensionné : sa taille est celle du
+        conteneur, c'est le fond qui s'y adapte en se pavant."""
+        if self._blocking or not self._fill_editable() or i < 0:
+            return
+        self._set("fill_sprite", self._fill_sprite.currentData() or "", "Panel sprite")
+        self._set("fill_state", "", "Panel sprite state")
+        self._reload_fill_states()
+        self._sync_fill()
+
+    def _on_fill_state(self, i):
+        if self._blocking or not self._fill_editable() or i < 0:
+            return
+        self._set("fill_state", self._fill_state.currentData() or "",
+                  "Panel sprite state")
+
+    def _on_fill_speed(self, v):
+        if self._blocking or not self._fill_editable():
+            return
+        self._set("fill_speed", int(v), "Panel sprite speed")
 
     # ── Nine-slice (asset partagé) ────────────────────────────────
     def _persist_ns(self):

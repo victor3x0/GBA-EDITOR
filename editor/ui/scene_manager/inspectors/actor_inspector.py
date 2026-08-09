@@ -46,6 +46,21 @@ _TOOLTIPS = {
                           "Ordre d'affichage sur les BG layers.\n"
                           "0 = devant tous les backgrounds,  3 = derrière tous.\n"
                           "GBA : OAM attribute 2, bits 10–11."),
+    "actor.screen_space": ("(authoré — aucun équivalent Lua)",
+                          "Ancre l'actor à l'ÉCRAN au lieu du monde : il ne défile\n"
+                          "plus avec la caméra. C'est l'UI en sprite — score, cœurs,\n"
+                          "curseur — avec tout le SpriteComponent habituel (états,\n"
+                          "animations, éditeur de sprite).\n"
+                          "\n"
+                          "X et Y deviennent des pixels d'ÉCRAN (0–239, 0–159), le\n"
+                          "même repère que les éléments d'interface ancrés à l'écran.\n"
+                          "\n"
+                          "Ordre d'affichage face à l'interface en background : c'est\n"
+                          "Priority qui tranche, comparé à la priorité du calque UI de\n"
+                          "la scène. À priorité ÉGALE, le sprite passe devant — règle\n"
+                          "matérielle du GBA, pas un choix de l'éditeur.\n"
+                          "\n"
+                          "Résolu à la compilation : pas de bascule au runtime."),
     "actor.visible":     ("self:set_visible(true/false)",
                           "Masque l'actor sans le désactiver.\n"
                           "Le slot OAM reste réservé mais avec bit OBJ_DISABLE."),
@@ -314,6 +329,14 @@ class ActorInspector(QWidget):
         _tip(self._tobj_mode, "actor.obj_mode")
         _W.row("Mode window", self._tobj_mode, tl, label_width=_lbl_w)
 
+        # ── Ancrage écran (UI en sprite) ──────────────────────────
+        # Juste sous Position : c'est le sens de X/Y qu'il change (monde →
+        # écran), pas une propriété de rendu.
+        self._tscreen = QCheckBox("Screen space"); self._tscreen.setStyleSheet(QSS.checkbox)
+        self._tscreen.toggled.connect(lambda v: self._set("screen_space", v))
+        _tip(self._tscreen, "actor.screen_space")
+        tl.addWidget(self._tscreen)
+
         # ── Visible ───────────────────────────────────────────────
         self._tvisible = QCheckBox("Visible"); self._tvisible.setStyleSheet(QSS.checkbox)
         self._tvisible.toggled.connect(lambda v: self._set("visible", v))
@@ -512,6 +535,7 @@ class ActorInspector(QWidget):
         self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
         self._tpriority.setValue(actor.priority)
         self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
+        self._tscreen.setChecked(bool(getattr(actor, "screen_space", False)))
         self._tvisible.setChecked(actor.visible)
         self._blocking = False
         self._refresh_component_list()

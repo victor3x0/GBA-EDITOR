@@ -267,6 +267,16 @@ class Actor(ComponentOwnerMixin):
     # window.OBJ (forme libre, animable). Mode 1 (semi-transparent) suppose le
     # blending, pas encore câblé. Modifiable au runtime par self:set_obj_mode().
     obj_mode: int = 0
+    # Ancrage ÉCRAN : x/y ne sont plus des coordonnées de monde mais des pixels
+    # d'écran, et l'émission OAM ne retranche pas la caméra — l'acteur ne
+    # défile pas. C'est l'UI en sprite (score, cœurs, curseur) avec tout le
+    # SpriteComponent existant : états, animations, éditeur de sprite.
+    #
+    # Résolu au BUILD, pas au runtime : aucun champ dans `g_actors`, aucun
+    # setter Lua. Un acteur est de l'UI ou du monde pour toute sa vie, et le
+    # défaut doit rester littéralement gratuit (le C émis est mot pour mot
+    # celui d'avant pour un acteur de monde).
+    screen_space: bool = False
     # Direction initiale discrète (-1|0|1 × -1|0|1) : oriente le sprite affiché
     # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
     dir_x: int = 0
@@ -287,6 +297,7 @@ class Actor(ComponentOwnerMixin):
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
             "obj_mode":    self.obj_mode,
+            "screen_space": self.screen_space,
             "dir_x":       self.dir_x,
             "dir_y":       self.dir_y,
             "notes":       self.notes,
@@ -307,6 +318,7 @@ class Actor(ComponentOwnerMixin):
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
             obj_mode    = d.get("obj_mode", 0),
+            screen_space = d.get("screen_space", False),
             dir_x       = d.get("dir_x", 0),
             dir_y       = d.get("dir_y", 0),
             notes       = d.get("notes", ""),
@@ -388,6 +400,16 @@ class Scene(Resource):
     # la géométrie authorée des zones de texte. "" = aucune, le script place
     # alors tout lui-même via text.draw(id, tx, ty). cf. models/ui_region.py
     ui_layout: str = ""
+    # Police chargée par `scene_init`, celle qu'obtient tout texte qui n'en
+    # nomme pas (zone sans `font_name`, `text.draw` sans `text.set_font`).
+    # Référencée par NOM comme tout asset.
+    #
+    # "" = la première police encodable du projet — le comportement historique
+    # (`text_set_font(0)` en dur), et le seul défaut qui ne soit pas un choix :
+    # une police par défaut livrée avec le moteur imposerait un style, ce que la
+    # v0.3.2 refuse explicitement. Un nom introuvable retombe sur la même
+    # première police, et le validateur le dit.
+    font_name: str = ""
     # Banque de palette où le texte lit ses couleurs — un SLOT de la sélection
     # de la scène (`active_bg_palettes` en cible BG, `active_obj_palettes` en
     # OBJ), donc les couleurs de l'UI sont celles que la scène a choisies.
@@ -477,6 +499,7 @@ class Scene(Resource):
             "script": self.script,
             "text_bg": self.text_bg,
             "ui_layout": self.ui_layout,
+            "font_name": self.font_name,
             "ui_pal_bank": self.ui_pal_bank,
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
@@ -576,6 +599,7 @@ class Scene(Resource):
             script=d.get("script", ""),
             text_bg=d.get("text_bg", 1),
             ui_layout=d.get("ui_layout", ""),
+            font_name=d.get("font_name", ""),
             ui_pal_bank=int(d.get("ui_pal_bank", -1)),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),

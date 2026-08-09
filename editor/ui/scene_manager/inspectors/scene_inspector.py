@@ -427,6 +427,30 @@ class SceneInspector(QWidget):
         pal_row.addWidget(self._combo_ui_pal, 1)
         param_inner.addLayout(pal_row)
 
+        # ── Police par défaut de la scène ─────────────────────────
+        # Celle que `scene_init` charge, donc celle qu'obtient tout texte qui
+        # n'en nomme pas — un élément d'UI réglé sur « (scene font) », ou un
+        # `text.draw` sans `text.set_font`.
+        font_row = QHBoxLayout(); font_row.setSpacing(6)
+        lbl_font = QLabel("UI font:")
+        lbl_font.setFont(QFont(T.UI, T.SM)); lbl_font.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_font.setFixedWidth(70)
+        self._combo_font = QComboBox()
+        self._combo_font.setFont(QFont(T.UI, T.SM))
+        self._combo_font.setStyleSheet(QSS.combobox)
+        self._combo_font.currentIndexChanged.connect(self._on_scene_font_changed)
+        self._combo_font.setToolTip(
+            "<b>Font this scene loads at init</b><br><br>"
+            "What any text without a font of its own gets: a UI element set to "
+            "<i>(scene font)</i>, or a <code>text.draw</code> with no "
+            "<code>text.set_font</code> before it.<br><br>"
+            "<b>Automatic</b>: the first font of the project. There is no "
+            "engine-provided default font — that would be a style choice."
+        )
+        font_row.addWidget(lbl_font)
+        font_row.addWidget(self._combo_font, 1)
+        param_inner.addLayout(font_row)
+
         # ── Backdrop ──────────────────────────────────────────────
         # Couleur de l'index 0 de PAL_BG_RAM : ce que le hardware affiche là où
         # AUCUN layer ni sprite ne dessine — donc aussi ce qui apparaît dans une
@@ -754,6 +778,7 @@ class SceneInspector(QWidget):
         # Après `_rebuild_palette_slots` : la liste des banques d'UI se lit dans
         # la sélection BG, que ce dernier vient de rafraîchir.
         self._reload_ui_pal()
+        self._reload_scene_font()
         self._rebuild_window_rows()
         self._refresh_backdrop()
         # Après `_rebuild_bg_layers` (via _apply_mode_ui) : `_refresh_blend`
@@ -1618,6 +1643,47 @@ class SceneInspector(QWidget):
         if not self._scene:
             return
         self._set_scene_field("ui_pal_bank", int(self._combo_ui_pal.currentData()))
+
+    def _reload_scene_font(self):
+        """Remplit la liste des polices du projet.
+
+        Une police SANS planche exploitable est listée mais dite telle quelle :
+        elle n'est pas compilée (`project_fonts` la saute), la choisir ferait
+        retomber la scène sur la première du projet. La masquer ferait
+        disparaître un choix déjà posé dans le JSON — même règle que les slots
+        de palette vides juste au-dessus."""
+        if not self._scene:
+            return
+        p = self._project
+        try:
+            from codegen.runtime_codegen.main_gen import project_fonts
+            usable = {f.name for f in project_fonts(p)} if p else set()
+        except Exception:
+            usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()
+        self._combo_font.blockSignals(True)
+        self._combo_font.clear()
+        first = sorted(usable)[0] if len(usable) == 1 else ""
+        self._combo_font.addItem(
+            f"Automatic — {first}" if first else "Automatic (first font)", "")
+        for f in (getattr(p, "fonts", []) or []):
+            self._combo_font.addItem(
+                f.name if f.name in usable else f"{f.name} (no usable sheet)", f.name)
+        cur = getattr(self._scene, "font_name", "") or ""
+        j = self._combo_font.findData(cur)
+        if j < 0 and cur:
+            # Police disparue du projet : garder le nom visible plutôt que de
+            # retomber en silence sur « Automatic », ce qui EFFACERAIT le choix
+            # au premier changement d'un autre champ.
+            self._combo_font.addItem(f"{cur} (missing)", cur)
+            j = self._combo_font.count() - 1
+        self._combo_font.setCurrentIndex(j if j >= 0 else 0)
+        self._combo_font.blockSignals(False)
+
+    def _on_scene_font_changed(self):
+        if self._blocking or not self._scene:
+            return
+        self._set_scene_field("font_name", self._combo_font.currentData() or "")
+        self.changed.emit()
 
     def _on_text_bg_changed(self):
         if self._blocking or not self._scene: return

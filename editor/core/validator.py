@@ -89,6 +89,8 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_ui_image(ctx)
     _check_blend(ctx)
     _check_ui_panel_fill(ctx)
+    _check_scene_font(ctx)
+    _check_screen_space(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -303,11 +305,30 @@ def _check_text_overflow(ctx: ValidationContext):
 
     regions = {r.name: r for _lay, r in p.all_regions()}
     fonts   = {f.name: f for f in p.fonts}
-    # Aucune police nommée par la zone = celle que `scene_init` charge, soit
-    # toujours l'index 0 (cf. main_gen : `text_set_font(0)`).
-    default_font = p.fonts[0]
     globals_names = {g.name for g in getattr(p, "globals", [])}
     consts = {c.name: c.value for c in getattr(p, "constants", [])}
+
+    # Une zone qui ne nomme pas sa police prend celle de la scène (cf.
+    # font_emit.scene_default_font). Or une mise en page est PARTAGÉE : deux
+    # scènes peuvent l'afficher avec deux polices par défaut différentes, donc
+    # deux largeurs. On mesure contre chacune plutôt que d'en élire une —
+    # choisir, ici, ce serait taire un débordement réel dans l'autre scène.
+    from codegen.font_emit import scene_default_font
+    first = p.fonts[0]
+    lay_defaults: dict[str, list] = {}
+    for _scene in p.scenes:
+        _f = fonts.get(scene_default_font(p, _scene)[1]) or first
+        _seen_f = lay_defaults.setdefault(getattr(_scene, "ui_layout", "") or "", [])
+        if not any(x is _f for x in _seen_f):
+            _seen_f.append(_f)
+    region_layout = {r.name: lay.name for lay, r in p.all_regions()}
+
+    def _fonts_for(el) -> list:
+        """Polices contre lesquelles mesurer `el` : la sienne si elle est
+        nommée, sinon tous les défauts de scène qui peuvent lui échoir."""
+        if getattr(el, "font_name", "") in fonts:
+            return [fonts[el.font_name]]
+        return lay_defaults.get(region_layout.get(el.name, ""), None) or [first]
 
     seen: set = set()
     for site in find_call_sites_in_project(p, DOMAIN_REGION, DOMAIN_TEXT):
@@ -315,23 +336,25 @@ def _check_text_overflow(ctx: ValidationContext):
         text   = p.get_text(site.values[DOMAIN_TEXT])
         if region is None or text is None:
             continue          # le checker le dit déjà, et mieux
-        pair = (region.name, text.key)
-        if pair in seen:
-            continue          # la même paire dans dix scripts, un seul message
-        seen.add(pair)
         parsed = parse(text.content or "")
         if any(m.kind == KIND_VALUE and m.value in globals_names
                for m in parsed.markers):
             continue          # largeur connue en jeu seulement
-        font = fonts.get(region.font_name) or default_font
-        _placed, over = layout_text(font, resolve(parsed, consts),
-                                    region.w, region.h)
-        if over:
-            ctx.warn(None,
-                f"Le texte '{text.key}' déborde de la zone '{region.name}' "
-                f"({region.w}×{region.h} px, police '{font.name}') — il sera "
-                f"tronqué au dernier glyphe qui tient. Agrandis la zone, "
-                f"raccourcis le texte, ou coupe-le en deux entrées.")
+        for font in _fonts_for(region):
+            # La police entre dans la clé de dédup : la même paire mesurée
+            # contre deux défauts de scène donne deux verdicts distincts.
+            trio = (region.name, text.key, font.name)
+            if trio in seen:
+                continue      # la même paire dans dix scripts, un seul message
+            seen.add(trio)
+            _placed, over = layout_text(font, resolve(parsed, consts),
+                                        region.w, region.h)
+            if over:
+                ctx.warn(None,
+                    f"Le texte '{text.key}' déborde de la zone '{region.name}' "
+                    f"({region.w}×{region.h} px, police '{font.name}') — il sera "
+                    f"tronqué au dernier glyphe qui tient. Agrandis la zone, "
+                    f"raccourcis le texte, ou coupe-le en deux entrées.")
 
     # Textes AUTHORÉS : le couple (élément, contenu) est connu sans lire un
     # script, et plus sûr que le cas script — c'est `scene_init` qui l'écrit,
@@ -347,14 +370,14 @@ def _check_text_overflow(ctx: ValidationContext):
         if any(m.kind == KIND_VALUE and m.value in globals_names
                for m in parsed.markers):
             continue
-        font = fonts.get(el.font_name) or default_font
-        _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
-        if over:
-            ctx.warn(None,
-                f"Le texte '{text.key}' déborde de l'élément '{el.name}' "
-                f"({el.w}×{el.h} px, police '{font.name}') — il sera tronqué au "
-                f"dernier glyphe qui tient. Agrandis l'élément dans le canvas, "
-                f"ou raccourcis le texte.")
+        for font in _fonts_for(el):
+            _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
+            if over:
+                ctx.warn(None,
+                    f"Le texte '{text.key}' déborde de l'élément '{el.name}' "
+                    f"({el.w}×{el.h} px, police '{font.name}') — il sera tronqué au "
+                    f"dernier glyphe qui tient. Agrandis l'élément dans le canvas, "
+                    f"ou raccourcis le texte.")
 
 
 def _check_ui_text_key(ctx: ValidationContext):
@@ -430,34 +453,46 @@ def _check_ui_image(ctx: ValidationContext):
     p = ctx.project
     if not hasattr(p, "all_images"):
         return
+    from core.models.ui_region import KIND_PANEL
     for lay, im in p.all_images():
+        # `all_images` porte aussi les panneaux à fond sprite : même table, même
+        # panne, seul le mot change pour que le message désigne le bon objet.
+        what = ("le fond du conteneur" if getattr(im, "kind", "") == KIND_PANEL
+                else "l'image")
         name = getattr(im, "sprite_name", "") or ""
         if not name:
             continue
         if p.get_sprite(name) is None:
             ctx.error(None,
-                f"L'image '{im.name}' (mise en page '{lay.name}') pointe le "
-                f"sprite '{name}', qui n'existe plus dans le projet.")
+                f"{what.capitalize()} '{im.name}' (mise en page '{lay.name}') "
+                f"pointe le sprite '{name}', qui n'existe plus dans le projet.")
         elif im.state_name and not any(
                 s.name == im.state_name
                 for s in getattr(p.get_sprite(name), "states", []) or []):
             ctx.warn(None,
-                f"L'image '{im.name}' demande l'état '{im.state_name}', absent "
-                f"du sprite '{name}' — elle affichera le premier état.")
+                f"{what.capitalize()} '{im.name}' demande l'état "
+                f"'{im.state_name}', absent du sprite '{name}' — il affichera "
+                f"le premier état.")
 
 
 def _check_ui_panel_fill(ctx: ValidationContext):
     """Le canvas peint le fond d'un conteneur d'UI quoi qu'il arrive ; le build,
-    lui, n'en émet qu'une partie (cf. main_gen.scene_color_fills /
-    scene_image_fills : conteneur + cible BG + root ancré ÉCRAN, et palette
-    active pour un fond couleur). Un panneau hors de ce cadre disparaît entre
+    lui, n'en émet qu'une partie. Un panneau hors de ce cadre disparaît entre
     l'éditeur et la ROM, sans une ligne de log.
 
+    Deux chemins depuis que les fonds OBJ existent, et le mode DIT lequel :
+    couleur / nine-slice / background posent des tuiles et une carte, donc BG
+    (`scene_color_fills` / `scene_image_fills`, root ancré ÉCRAN) ; sprite pave
+    des OBJ, donc OBJ (`g_ui_images`). `fill_allowed` interdit les croisements —
+    ce qui reste ici, ce sont les cas qui PASSENT le modèle et tombent quand
+    même au build.
+
     Avertissement et non erreur : le texte de la zone s'affiche quand même, il
-    lui manque son fond (la sortie OBJ des fonds reste à écrire)."""
+    lui manque son fond."""
     p = ctx.project
     from core.models.ui_region import (KIND_PANEL, FILL_NONE, FILL_COLOR,
-                                       ANCHOR_SCREEN, TARGET_BG)
+                                       FILL_SPRITE, ANCHOR_SCREEN, TARGET_BG,
+                                       fill_allowed)
     for scene in p.scenes:
         lay = p.scene_ui_layout(scene)
         if lay is None:
@@ -470,23 +505,127 @@ def _check_ui_panel_fill(ctx: ValidationContext):
             fk = getattr(el, "fill_kind", FILL_NONE)
             if fk == FILL_NONE:
                 continue
+            target = lay.resolved_target(el, rm)
+            # ① Mode incompatible avec la cible. Le cas le plus courant est un
+            # fond posé quand le root était ancré à l'écran, puis le root est
+            # passé sur un acteur — la cible bascule en OBJ et emporte tout le
+            # sous-arbre, sans que le fond ait été retouché.
+            if not fill_allowed(fk, target):
+                quoi = ("un fond sprite" if target != TARGET_BG
+                        else "une couleur, un nine-slice ou un background")
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : le fond du conteneur '{el.name}' "
+                    f"est en mode « {fk} », qui n'existe pas en cible "
+                    f"{target.upper()} — rien ne sera dessiné. Sur cette cible, "
+                    f"choisir {quoi}.")
+                continue
             why = []
-            if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
-                why.append("la scène n'a pas de calque UI (text_bg)")
-            if lay.resolved_target(el, rm) != TARGET_BG:
-                why.append("sa cible est OBJ (fond en sprites non émis)")
-            anchor = lay.effective_anchor(el)[0]
-            if anchor != ANCHOR_SCREEN:
-                why.append(f"son ancrage est « {anchor} » (seul l'écran est émis)")
-            if fk == FILL_COLOR and getattr(el, "fill_palette", "") not in active:
-                why.append(f"sa palette « {getattr(el, 'fill_palette', '') or '(aucune)'} » "
-                           f"n'est pas dans les palettes BG actives de la scène")
+            if fk == FILL_SPRITE:
+                # ② Chemin OBJ. La résolution du sprite est dite par
+                # `_check_ui_image` (même table) : ici, ce qui lui est propre.
+                if not getattr(el, "fill_sprite", ""):
+                    why.append("aucun sprite n'est choisi")
+            else:
+                # ③ Chemin BG.
+                if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+                    why.append("la scène n'a pas de calque UI (text_bg)")
+                anchor = lay.effective_anchor(el)[0]
+                if anchor != ANCHOR_SCREEN:
+                    why.append(f"son ancrage est « {anchor} » (seul l'écran est émis)")
+                if fk == FILL_COLOR and getattr(el, "fill_palette", "") not in active:
+                    why.append(f"sa palette « {getattr(el, 'fill_palette', '') or '(aucune)'} » "
+                               f"n'est pas dans les palettes BG actives de la scène")
             if why:
                 ctx.warn(None,
                     f"Scène '{scene.name}' : le fond du conteneur "
                     f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
                     f"Le canvas le montre quand même : c'est l'éditeur qui "
                     f"promet plus que le build ne tient.")
+
+
+def _check_scene_font(ctx: ValidationContext):
+    """`Scene.font_name` désigne la police que `scene_init` charge. Un nom qui
+    ne répond pas retombe sur la première police encodable du projet — il FAUT
+    charger quelque chose, sinon la scène n'affiche plus une lettre.
+
+    Deux causes, deux messages : la police n'existe plus (renommée, supprimée),
+    ou elle existe mais n'est pas encodable — sa planche manque, donc
+    `project_fonts` la saute et le `#define FONT_*` n'existe pas non plus.
+    Distinguer les deux évite de faire chercher un fichier pour un nom mort."""
+    p = ctx.project
+    from codegen.runtime_codegen.main_gen import project_fonts
+    encodable = {f.name for f in project_fonts(p)}
+    known = {f.name for f in getattr(p, "fonts", [])}
+    fallback = sorted(encodable)[0] if len(encodable) == 1 else None
+    for scene in p.scenes:
+        want = getattr(scene, "font_name", "") or ""
+        if not want or want in encodable:
+            continue           # vide = premier du projet, choix légitime
+        repli = (f" — la scène retombe sur « {fallback} »" if fallback
+                 else " — la scène retombe sur la première police du projet")
+        if want in known:
+            ctx.warn(None,
+                f"Scène '{scene.name}' : la police par défaut « {want} » n'a pas "
+                f"de planche exploitable (PNG manquant ou aucun glyphe), elle "
+                f"n'est donc pas compilée{repli}.")
+        else:
+            ctx.warn(None,
+                f"Scène '{scene.name}' : la police par défaut « {want} » "
+                f"n'existe pas dans le projet{repli}.")
+
+
+def _check_screen_space(ctx: ValidationContext):
+    """Un acteur ancré à l'écran (`Actor.screen_space`) lit ses x/y en pixels
+    d'ÉCRAN. Trois systèmes continuent, eux, de les lire comme des coordonnées
+    de MONDE — sans rien casser au build, donc sans rien dire.
+
+    On n'avertit que sur ces trois-là : chacun a une correction évidente, ce qui
+    est la seule raison d'écrire un avertissement (cf. la règle de verbosité —
+    l'éditeur rend le matériel, il ne le commente pas).
+
+    Toutes les scènes, pas seulement l'active : le build les compile toutes."""
+    p = ctx.project
+    for scene in p.scenes:
+        ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+        for actor in getattr(scene, "actors", []) or []:
+            if not getattr(actor, "screen_space", False):
+                continue
+            # ① Collision — la carte de collision est en pixels de monde. Une
+            # hitbox posée à des coordonnées d'écran teste donc la mauvaise case.
+            if any(type(c).__name__ == "CollisionBoxComponent"
+                   for c in getattr(actor, "components", []) or []):
+                ctx.warn(actor,
+                    f"Scène '{scene.name}' : '{actor.name}' est ancré à l'écran "
+                    f"mais porte une CollisionBox — la carte de collision est en "
+                    f"pixels de MONDE, la hitbox testera donc une autre case que "
+                    f"celle qu'on voit. Retirer la CollisionBox, ou l'ancrage écran.")
+            # ② Caméra — suivre une position d'écran fige la caméra sur place.
+            if (getattr(scene, "cam_mode", "") == "follow"
+                    and getattr(scene, "cam_follow", "") == actor.name):
+                ctx.warn(actor,
+                    f"Scène '{scene.name}' : la caméra suit '{actor.name}', qui est "
+                    f"ancré à l'écran — sa position ne bouge pas avec le monde, la "
+                    f"caméra restera donc immobile. Cibler un acteur de monde.")
+            # ③ Zone d'UI ancrée SUR cet acteur — `text_region_origin()` retranche
+            # la caméra pour une ancre acteur (elle la suppose dans le monde) ;
+            # sur un acteur d'écran ça décale la zone du scroll courant.
+            if ui is None:
+                continue
+            from core.models.ui_region import ANCHOR_ACTOR
+            for el in getattr(ui, "elements", []) or []:
+                # Sur les ROOTS seulement : un enfant hérite de l'ancrage de son
+                # root (cf. effective_anchor), le signaler pour tout un
+                # sous-arbre répéterait le même défaut autant de fois.
+                if getattr(el, "parent", ""):
+                    continue
+                if (getattr(el, "anchor", "") == ANCHOR_ACTOR
+                        and getattr(el, "anchor_actor", "") == actor.name):
+                    ctx.warn(actor,
+                        f"Scène '{scene.name}' : l'élément d'interface '{el.name}' "
+                        f"est ancré sur '{actor.name}', lui-même ancré à l'écran — "
+                        f"l'ancrage acteur suppose une position de monde et "
+                        f"retranchera le scroll une seconde fois. Ancrer l'élément "
+                        f"à l'ÉCRAN : les deux sont déjà dans le même repère.")
 
 
 def _check_pal_bank_reference(ctx: ValidationContext):

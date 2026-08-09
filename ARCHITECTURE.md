@@ -264,7 +264,7 @@ Ces fonctions sont déclarées dans `gba_engine.h` et définies dans `main.c` (v
 d'actor et de scène, compilés en TU séparées, puissent les appeler — avec le garde-fou
 décrit en « Deux listes de prototypes ».
 
-### Windows — le pochoir, pas la boîte
+### Windows — le pochoir
 
 Une window GBA **ne dessine rien**. C'est un pochoir : par région de l'écran, elle dit
 quels layers et sprites ont le droit de s'afficher, et si le blending s'y applique.
@@ -368,6 +368,48 @@ renumérote. `Text.from_dict` migre au passage l'ancien champ plat `label` en `p
 Un `Text` est destiné au **joueur**, donc traduisible — c'est ce qui le distingue d'un
 `string` technique (nom de fichier, code interne), qui reste un littéral dans le script.
 
+### Le balisage est résolu au BUILD — aucun parseur en ROM
+
+Une entrée peut porter des balises à la BBCode (`core/text_markup.py`) : ponctuelles
+(`[speed=n]`, `[pause=n]`, `[icon=nom]`), de portée (`[wave]`, `[shake]`, `[color=n]`), plus
+le marqueur de valeur `$nom`. Tout est résolu par `emit_texts_c`, qui sort **trois pistes** :
+les codepoints affichables, une piste d'événements de tempo et d'effets, et la table des
+sources à interpoler.
+
+Trois gains, et c'est ce qui justifie de tout faire au build : `text.length` reste la
+longueur *affichée*, le moteur n'embarque pas de parseur, et un littéral écrit dans un
+script suit exactement le même chemin puisque le codegen le voit aussi.
+
+**Un `$nom` a trois sorts, et c'est ce qui garde l'encodeur simple :**
+
+| Ce que `$nom` désigne | Ce qui est émis |
+| --- | --- |
+| une **constante** | ses chiffres sont **cuits** dans les codepoints — elle ne change jamais, la lire au runtime coûterait une indirection pour rien |
+| un **global** | une place réservée (le non-caractère U+FFFF, donc jamais un vrai glyphe) + un **pointeur** vers la variable C. Un pointeur et pas un index : `globals.h` déclare des variables nommées, pas les cases d'une table |
+| **ni l'un ni l'autre** | écrit littéralement, exactement comme l'aperçu de l'éditeur le montre, et signalé dans le log de build |
+
+La substitution passe par une **réécriture de la source suivie d'une ré-analyse**, jamais
+par un rapiéçage du résultat : une constante vaut « 7 » comme « 100 », donc décale tout ce
+qui suit — recalculer les positions à la main les ferait diverger au premier oubli.
+
+**Au runtime**, un texte porteur de valeurs est recopié en RAM avec les chiffres substitués
+(même procédé que l'affichage d'un nombre, donc un seul chemin de rendu). Les positions des
+événements se décalent d'autant : une **carte index source → index matérialisé** les recale
+toutes en une fois, plutôt qu'un rattrapage au fil de l'eau qui devrait rejouer à la main
+les portées à cheval sur une valeur.
+
+**La tête de lecture appartient à la ZONE, pas à l'appel** — c'est la raison pour laquelle
+le tempo est ignoré par un `text.draw` à coordonnées libres : une tête doit s'accrocher à
+quelque chose de nommé. Un texte sans marqueur de tempo s'affiche entier, immédiatement : ne
+pas en mettre est une décision d'auteur, pas un oubli à compenser par une vitesse par
+défaut. Et `text.draw_in` est **idempotent** tant que la lecture court, sinon un appel depuis
+`on_update` la relancerait soixante fois par seconde et le texte n'avancerait jamais.
+
+`[color=n]` ne fonctionne que sur les chemins COMPOSÉS : le chemin tilemap pose une tuile
+déjà encrée et partagée par toutes ses occurrences, la recolorer recolorerait le texte
+entier. Signalé aux deux endroits qui peuvent le savoir, le build et l'inspecteur. La plage
+1..15 est une contrainte matérielle (4bpp, l'index 0 est la transparence), pas un choix.
+
 ---
 
 ## Polices — un asset, deux points d'entrée
@@ -438,6 +480,13 @@ les pose dans `main.c` et charge la police au début de chaque scène.
   charblock appartient à un layer. Un paramètre `layer` serait mensonger.
 - **Une seule police résidente** à la fois : `text_set_font()` recopie glyphes et palette
   en VRAM. C'est un appel délibéré, pas un coût par frame.
+- **Celle que `scene_init` charge est `Scene.font_name`**, et `font_emit.scene_default_font()`
+  est le point UNIQUE qui la résout — l'émission, la réservation VRAM, les sous-ensembles de
+  glyphes, le validateur de débordement et l'aperçu du canvas passent tous par lui. Réserver
+  pour une police et en charger une autre écrit le texte DANS le décor, sans erreur avant
+  l'exécution : c'est la seule raison d'être de cette fonction. `""` (et un nom introuvable)
+  retombent sur la première police encodable — il faut bien charger quelque chose ; le second
+  cas est un avertissement du validateur, pas le premier.
 - L'ordre des tables fait foi : `project_fonts()` (dans `main_gen`) est la source unique
   dont `lua_compiler` dérive les `#define FONT_*`, et l'ordre de `project.texts` donne les
   `TEXT_*`. Les deux côtés doivent voir la même liste, sinon un script pointerait sur la
@@ -456,12 +505,21 @@ et sa page ne doit pas créer une seconde police en doublon.
 
 ---
 
-## Zones de texte — `UIRegion` / `UILayout`
+## Éléments d'interface — `UIText` / `UIPanel` / `UIImage` dans un `UILayout`
 
-`core/models/ui_region.py`, stockage dans `project/ui_layouts/<nom>.json`. Une zone
-répond à **où** le texte se pose ; elle remplace les arguments de géométrie que
+`core/models/ui_region.py`, stockage dans `project/ui_layouts/<nom>.json`. Un élément de
+texte répond à **où** le texte se pose ; il remplace les arguments de géométrie que
 `text_draw_box` prenait dans le script, donc invisibles depuis l'éditeur et incalculables
 avant le build.
+
+**Trois types, pas quatre.** `UIText` (là où du texte se pose), `UIPanel` (le conteneur,
+seul à dessiner un fond) et `UIImage` (un sprite à état). Le type « zone de texte » a
+existé à côté de `UIText` et a été RETIRÉ : les deux portaient la même géométrie, le même
+ancrage, la même allocation OBJ et la même entrée de `g_ui_regions`, et ne différaient que
+par l'écrivain — le script pour l'une, `scene_init` pour l'autre. Ce n'était pas deux types
+mais un type et un champ vide : **un `UIText` sans `text_key` EST une zone qu'un script
+remplit**. `KIND_REGION` ne survit que comme alias de désérialisation ; l'espace de
+constantes reste `REGION_*`.
 
 **Une zone ne dessine rien.** Même contrat que la window matérielle : elle dit où, jamais
 à quoi ça ressemble. C'est pour ça que le mot est « région » et non « frame » — dans
@@ -614,14 +672,109 @@ existait déjà (`FontScreenPreview` rejoue `text_layout` avec les vrais glyphes
 manquait qu'un rectangle contre lequel se mesurer, ce qui rend le débordement visible **à la
 conception**.
 
-### Le trou restant
+### Réservation VRAM du texte — pourquoi tout retombe sur `None`
 
-Une mise en page **déclare** les polices que la scène pose (`layout_font_names`), ce qui rend
-la réservation VRAM calculable par scène. Mais un script peut appeler `text.set_font("autre")`
-sans qu'aucune zone ne la nomme, et réserver moins que nécessaire écraserait le décor voisin
-en silence. `scene_text_tiles(fonts, names=None)` garde donc le repli sur tout le projet ; la
-seam existe, il manque l'indexation des appels à `text.set_font` par scène — le pendant de
-`refactor.index_refs_in_project()`, qui fait déjà ça pour les clés de texte.
+Une mise en page **déclare** les polices que la scène pose (`layout_font_names`) et un script
+peut en charger d'autres (`text.set_font`, repéré par DOMAINE) : `scene_font_names` croise les
+deux, ce qui rend la réservation calculable **par scène** au lieu du maximum du projet.
+
+La règle de sûreté qui explique tous les `None` du code est **asymétrique** : réserver trop
+coûte des tuiles au décor, réserver trop peu fait écrire le texte DANS le décor sans une
+erreur avant l'exécution. `scene_font_names` rend donc `None` dès qu'une police est choisie au
+runtime, qu'un script est introuvable ou en C natif, ou que luaparser manque. **`None` veut
+dire « je ne sais pas », jamais « rien »** — et `scene_text_tiles(fonts, names=None)` retombe
+alors sur le projet entier. Un ensemble vide DÉDUIT (« aucune police déclarée ») et un
+ensemble inconnu sont deux choses différentes ; les confondre ferait réserver zéro.
+
+Même raisonnement pour `scene_codepoints`, qui restreint le sous-ensemble de glyphes chargé.
+
+### UI en sprite — `Actor.screen_space`
+
+L'autre moitié de l'interface : un `UIImage` est un dessin posé dans une mise en page, un
+acteur d'écran est un **acteur de jeu** (script, composants, logique) qui ne défile pas.
+
+- **Un seul effet, au bon endroit** : l'émission OAM ne retranche pas la caméra. `x`/`y`
+  cessent d'être des coordonnées de monde pour devenir des pixels d'écran — le même repère
+  que les éléments d'UI ancrés à l'ÉCRAN. Trois sites suivent (acteur simple, acteur
+  affine, et `_affine_oam_lines(..., screen_space=)`) ; le **pool de prefabs reste en
+  monde**, un prefab n'ayant pas de scène propriétaire unique où authorer ce choix.
+- **Résolu au build.** Pas de champ dans `g_actors`, pas de setter Lua : un acteur est de
+  l'UI ou du monde pour toute sa vie. Conséquence à préserver — le C émis pour un acteur
+  de monde est **mot pour mot** celui d'avant l'existence du drapeau.
+- **Canvas : enfant de l'item caméra**, comme les windows (`CameraItem.set_windows`). La
+  position locale de l'item EST sa position dans l'écran GBA : il suit la vue sans
+  recalcul, et `itemChange` lit une position déjà relative au parent, donc le drag rend
+  directement la valeur à écrire dans le modèle. `GBAScene.sync_sprite_space()` est le
+  point unique et idempotent (création, changement de caméra, bascule de la case).
+- **Z-order face à l'UI de fond : le matériel répond.** `Actor.priority` (OAM attr2, bits
+  10-11) se compare à la priorité du calque d'UI, qui vaut son `bg_slot` (`Scene.text_bg`)
+  — la convention « priorité = index de layer » du projet. À priorité égale l'OBJ passe
+  devant. Aucune règle implicite ajoutée par-dessus.
+- **Ce qui continue de lire le monde**, et que `validator._check_screen_space` signale :
+  une CollisionBox (carte de collision en pixels de monde), une caméra qui suit cet acteur
+  (elle resterait immobile), un élément d'UI ancré sur lui (`text_region_origin()`
+  retrancherait le scroll une seconde fois). Trois cas, trois corrections évidentes.
+
+### Fond d'un conteneur — deux chemins que la CIBLE choisit
+
+`UIPanel.fill_kind` est polymorphe, et `_FILL_TARGETS` dit ce que le build ÉMET, pas ce qui
+serait concevable : couleur / nine-slice / background posent des tuiles et écrivent une
+carte, donc **BG seulement** (`scene_color_fills`, `scene_image_fills`) ; sprite pave des
+OBJ, donc **OBJ seulement**. La table promettait autrefois couleur et nine-slice sur OBJ,
+que rien n'émettait — un mode permis mais jamais émis est pire qu'un mode absent.
+
+- **Un fond OBJ se PAVE** (`sprite_grid`) : `⌈w/fw⌉ × ⌈h/fh⌉` cases, parce qu'un OBJ ne
+  s'étire pas sans mode affine et qu'un panneau dont la taille serait dictée par son fond ne
+  serait plus un conteneur. La dernière colonne/rangée déborde plutôt que d'être rognée — le
+  matériel ne sait pas couper un sprite. Coût : des slots OAM, **aucune tuile de plus**
+  (toutes les cases pointent la même frame).
+- **Aucune table de plus** : le panneau entre dans `g_ui_images` avec les `UIImage`, et
+  `UIPanel` expose la surface commune (`sprite_name`, `state_name`, `playing`, `priority`,
+  `state_index`) en propriétés dérivées de ses champs `fill_*`. Les deux types demandent la
+  même chose au moteur à la répétition près ; `UIImageInfo` ne gagne que `cols`/`rows` et
+  `speed`. Corollaire : `IMAGE_<nom du panneau>` existe, un script anime le fond comme une
+  image.
+- **`fill_speed` est une surcharge** (0 = la vitesse de l'état du sprite, qui reste la source
+  de vérité). Le sprite garde ses frames, ses vitesses et son bouclage — même refus de
+  duplication que pour les frames d'un `UIImage`.
+- **L'ordre d'allocation OAM est l'ordre de profondeur** (`layout_obj_budget`) : bandes de
+  texte, puis images, puis fonds de conteneur. Un slot bas passe devant, et la priorité OBJ
+  ne départage pas deux OBJ de même priorité — c'est donc l'ordre qui met le fond au fond.
+- **Le débordement OAM bloque le build.** Les deux dépassements OBJ n'étaient que
+  journalisés, `generate_main` rendant `True` quoi qu'il arrive : la ROM se construisait avec
+  des slots hors des 128 du matériel, donc rien à l'écran et aucune erreur.
+
+---
+
+## Allocation de la VRAM BG — `codegen/vram_alloc.py`
+
+Les 64 Ko de VRAM BG portent DEUX choses qui se recouvrent : les tuiles (rangées en quatre
+charblocks de 16 Ko) et les cartes (rangées en trente-deux screenblocks de 2 Ko). La
+convention historique — « le charblock d'un layer est son index, sa carte va à la fin de ce
+même charblock » — était simple mais gâchait beaucoup. L'allocateur la remplace, **par
+scène**.
+
+- **Tout se raisonne en blocs de 2 Ko** (= 1 screenblock = 64 tuiles 4bpp) : c'est la seule
+  unité qui voit à la fois les tuiles et les cartes.
+- **L'asymétrie qui dicte tout** : un fond est *rigide* (le champ CharBlock de son registre
+  fait 2 bits, et les tuiles sont numérotées à partir de 0 — il est collé à la base d'un
+  charblock) ; le texte est *souple* (c'est nous qui écrivons ses entrées de carte, en y
+  ajoutant une base). **C'est donc le texte qu'on glisse dans les trous, jamais le fond.**
+- **Les cartes sortent du chemin de croissance.** Posée à la fin de son propre charblock, la
+  carte d'un layer murait sa propre croissance — la croissance étant contiguë, elle ne peut
+  pas sauter par-dessus. Autoriser le débordement sans déplacer les cartes n'aurait rien
+  donné.
+- **Portée 10 bits** : un layer voit 1024 tuiles depuis la base de son charblock, soit deux
+  charblocks — il déborde sur le suivant si rien ne l'occupe. Cas particulier : au-delà du
+  charblock 3 commence la VRAM des sprites, donc un layer en CBB3 reste plafonné à 512.
+- **Garde-fou** : le placement calculé n'est retenu que s'il donne à CHAQUE layer au moins ce
+  que donnait le placement historique — sinon repli complet. Une allocation plus fine ne doit
+  jamais casser un projet qui passait. Et le budget est vérifié au build, en erreur bloquante
+  et non en avertissement : ici c'est de la mémoire écrasée, pas une mauvaise couleur.
+
+Effet mesuré sur le démo : le décor d'une scène passe de 448 à 1024 tuiles. Les modes bitmap
+restent hors périmètre — leur framebuffer occupe la VRAM BG et se traite avec le rendu
+bitmap. Le pendant OBJ (128 slots OAM, 1024 tuiles) est arbitré séparément, dans `main_gen`.
 
 ---
 

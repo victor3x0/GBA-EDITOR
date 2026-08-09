@@ -168,11 +168,11 @@ def scene_text_reservation(p, scene) -> dict:
       un projet qui n'emploie pas d'image."""
     from codegen.font_emit import (scene_text_tiles, scene_font_names,
                                    scene_codepoints, mono_vram_tiles,
-                                   TEXT_SURF_TILES)
+                                   scene_default_font, TEXT_SURF_TILES)
     fonts = project_fonts(p)
-    # `scene_init` émet toujours `text_set_font(0)` : la première police est en
-    # VRAM même dans une scène qui n'écrit pas une lettre.
-    default_font = fonts[0].name if fonts else ""
+    # `scene_init` émet toujours un `text_set_font` : la police par défaut de la
+    # scène est en VRAM même si la scène n'écrit pas une lettre.
+    _, default_font = scene_default_font(p, scene)
     names = scene_font_names(p, scene, default_font)
 
     fills, fill_indices = scene_color_fills(p, scene)
@@ -240,6 +240,7 @@ def scene_text_reservation(p, scene) -> dict:
         "img_fills": img_fills, "img_assets": img_assets,
         "mono_tiles": mono_tiles, "needs_surface": needs_surface,
         "font_names": names, "codepoints": cps, "font_layout": font_layout,
+        "default_font": default_font,
         "ui_images": ui_images, "img_layout": img_layout,
         "sprite_tiles": sprite_tiles,
         "total": (len(fill_indices) + img_tiles + mono_tiles + surf_tiles
@@ -299,9 +300,15 @@ def _log_vram_layout(scene, emit) -> None:
                "être analysé")
     else:
         why = "polices " + (", ".join(sorted(names)) if names else "(aucune)")
+    # Nommer la police par défaut : c'est elle qui est chargée même dans une
+    # scène sans une ligne de texte, et un `Scene.font_name` introuvable retombe
+    # en silence sur la première du projet. Relue depuis la réservation, pas
+    # recalculée — le log doit dire ce qui a RÉELLEMENT servi à réserver.
+    _dn = res.get("default_font") or ""
     emit("log_line",
          f"[vram] scène '{scene.name}' : {res['total']} tuile(s) réservée(s) au "
-         f"texte ({res['mono_tiles']} de glyphes — {why})")
+         f"texte ({res['mono_tiles']} de glyphes — {why}"
+         + (f" — défaut {_dn}" if _dn else "") + ")")
 
 
 def _pool_info(prefabs, pool_start: int) -> list[dict]:
@@ -460,7 +467,7 @@ def scene_ui_images(p: Project, scene) -> list[dict]:
     réservées à zéro : elles n'existent pas à l'écran, et le validateur le dit
     déjà. Réserver pour elles décalerait la base des suivantes à chaque frappe
     dans le champ « Sprite »."""
-    from core.models.ui_region import TARGET_BG, image_geometry
+    from core.models.ui_region import TARGET_BG
     lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
     if lay is None:
         return []
@@ -472,15 +479,29 @@ def scene_ui_images(p: Project, scene) -> list[dict]:
         if sprite is None or not sprite.asset or im.name not in index:
             continue
         frames = count_frames(p, sprite)
-        g = image_geometry(im, frames)
+        g = ui_item_geometry(im, sprite, frames)
         out.append({
             "el": im, "index": index[im.name], "sprite": sprite,
             "frames": frames, "tiles": g["tiles"],
             "tiles_per_frame": sprite.tiles_per_frame,
             "map_tiles": g["map_tiles"],
+            "cols": g["cols"], "rows": g["rows"],
+            "frame_w": g["frame_w"], "frame_h": g["frame_h"],
             "bg": lay.resolved_target(im, rm) == TARGET_BG,
         })
     return out
+
+
+def ui_item_geometry(el, sprite, frames: int = 1) -> dict:
+    """Géométrie d'un élément qui pose un sprite, image ou fond de panneau.
+
+    Le modèle ne résout pas les noms d'asset : c'est ici qu'on lui donne la
+    taille de frame, seule inconnue qui sépare un `UIImage` (dont le rectangle
+    EST la frame) d'un `UIPanel` à fond sprite (dont le rectangle se pave)."""
+    from core.models.ui_region import image_geometry
+    return image_geometry(el, frames,
+                          int(getattr(sprite, "frame_w", 0) or 0),
+                          int(getattr(sprite, "frame_h", 0) or 0))
 
 
 def _obj_text_alloc(p: Project) -> dict:
@@ -493,15 +514,18 @@ def _obj_text_alloc(p: Project) -> dict:
     from core.models.ui_region import layout_obj_budget
     out = {}
     for lay in getattr(p, "ui_layouts", []):
-        # Les frames par image : `layout_obj_budget` ne résout pas les noms
-        # d'asset, et sous-réserver ferait écrire une image dans les tuiles de
-        # la suivante.
-        frames = {}
+        # Les frames ET la taille de frame par image : `layout_obj_budget` ne
+        # résout pas les noms d'asset, et sous-réserver ferait écrire une image
+        # dans les tuiles de la suivante. La taille de frame commande en plus le
+        # PAVAGE d'un fond de panneau, donc son nombre de slots OAM.
+        frames, sizes = {}, {}
         for im in lay.images:
             sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
             if sprite is not None and sprite.asset:
                 frames[im.name] = count_frames(p, sprite)
-        bud = layout_obj_budget(lay, image_frames=frames)
+                sizes[im.name] = (int(getattr(sprite, "frame_w", 0) or 0),
+                                  int(getattr(sprite, "frame_h", 0) or 0))
+        bud = layout_obj_budget(lay, image_frames=frames, image_frame_size=sizes)
         for name, place in bud["place"].items():
             out[name] = place
     return out
@@ -807,12 +831,11 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
     Pas de sous-ensemble pour une police composée (elle ne charge aucun glyphe)
     ni pour une scène indécidable (police entière, déjà réservée)."""
     from codegen.font_emit import (build_font_subset, scene_codepoints,
-                                   scene_font_names)
+                                   scene_font_names, scene_default_font)
     from codegen.font_emit import _c_ident
     fonts = project_fonts(p)
     if not fonts or not encoded:
         return []
-    default_font = fonts[0].name
     by_name = {name: (i, e) for i, (name, e) in enumerate(encoded)}
 
     L: list[str] = ["/* ── Sous-ensembles de glyphes (par scène) ───────── */"]
@@ -826,7 +849,7 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
                      f"[font] scène '{scene.name}' : polices chargées ENTIÈRES "
                      f"— ce qu'elle affiche n'est pas déterminable au build")
             continue
-        names = scene_font_names(p, scene, default_font)
+        names = scene_font_names(p, scene, scene_default_font(p, scene)[1])
         for fname in sorted(names or [f.name for f in fonts]):
             if fname not in by_name:
                 continue
@@ -912,9 +935,13 @@ def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
     l'union des sprites faite — donc bien plus tard dans le pipeline."""
     images = p.all_images() if hasattr(p, "all_images") else []
     if emit and images:
+        from core.models.ui_region import KIND_PANEL
         n_bound = sum(1 for _l, im in images if getattr(im, "sprite_name", ""))
-        emit("log_line", f"[ui] {len(images)} image(s) d'interface, "
-                         f"{n_bound} reliée(s) à un sprite")
+        n_fill = sum(1 for _l, im in images
+                     if getattr(im, "kind", "") == KIND_PANEL)
+        emit("log_line", f"[ui] {len(images)} sprite(s) d'interface "
+                         f"(dont {n_fill} fond(s) de conteneur), "
+                         f"{n_bound} relié(s) à un sprite")
     return emit_ui_images_c(p, sprite_offsets, _obj_text_alloc(p),
                             actor_index=_region_actor_index(p), emit=emit)
 
@@ -952,7 +979,7 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
             y -= y % 8
         if sprite is None or not sprite.asset:
             rows.append(f"    {{ {x}, {y}, {im.w}, {im.h}, 0, 0, -1, "
-                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }},"
+                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0 }},"
                         f"  /* {im.name} — aucun sprite */")
             if emit:
                 emit("log_line", f"[ui] image '{im.name}' : aucun sprite — "
@@ -964,13 +991,21 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
         base = sprite_offsets.get(sprite.name, 0)
         pl = obj_place.get(im.name) if target_obj else None
         oam_rel = pl["oam_rel"] if pl else 0
+        # `w`/`h` de la table sont ceux de la FRAME, pas du rectangle : c'est ce
+        # que le matériel dessine, et le pavage se dit en `cols`/`rows`. Pour un
+        # UIImage les deux coïncident (cf. sync_size_from) ; pour un panneau non.
+        g = ui_item_geometry(im, sprite, 1)
         rows.append(
-            f"    {{ {x}, {y}, {im.w}, {im.h}, {1 if target_obj else 0}, "
+            f"    {{ {x}, {y}, {g['frame_w']}, {g['frame_h']}, "
+            f"{1 if target_obj else 0}, "
             f"{ANCHORS.index(eff_anchor)}, {(actor_index or {}).get(im.name, -1)}, "
             f"{ss}_anim_dirs, {ss}_state_start, {ss}_state_speed, {ss}_state_loop, "
             f"{n_states}, {st0}, {1 if im.playing else 0}, "
-            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {im.priority} }},"
-            f"  /* {im.name} — {sprite.name} */")
+            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {im.priority}, "
+            f"{g['cols']}, {g['rows']}, {int(getattr(im, 'anim_speed', 0) or 0)} }},"
+            f"  /* {im.name} — {sprite.name}"
+            + (f", pavage {g['cols']}×{g['rows']}"
+               if g['cols'] * g['rows'] > 1 else "") + " */")
         if emit and eff_anchor == "actor" and (actor_index or {}).get(im.name, -1) < 0:
             # Même angle mort que pour une zone de texte : sans acteur résolu,
             # l'image se pose à l'origine de l'écran, ce qui ressemble à un bug
@@ -981,8 +1016,8 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
                  f"se posera à l'origine de l'écran.")
     L = ["/* ── Images d'interface (UILayout) ─────────────── */"]
     L.append(f"const UIImageInfo g_ui_images[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 8, 8, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },"
-                  "   /* aucune image */"]
+    L += rows or ["    { 0, 0, 8, 8, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,"
+                  " 1, 1, 0 },   /* aucune image */"]
     L.append("};")
     L.append(f"const int g_ui_image_count = {len(rows)};")
     L.append("")
@@ -1583,7 +1618,14 @@ def _gen_scene_init(
         L.append("    text_clear_subsets();")
         for _fi, _sub_sym in sorted(getattr(scene, "_ui_font_subsets", {}).items()):
             L.append(f"    text_set_subset({_fi}, &{_sub_sym});")
-        L.append("    text_set_font(0);")
+        # Police par défaut de la SCÈNE — le même calcul que la réservation
+        # VRAM et les sous-ensembles (cf. font_emit.scene_default_font).
+        # Réserver pour une police et en charger une autre écrirait le texte
+        # dans le décor sans une erreur avant l'exécution.
+        from codegen.font_emit import scene_default_font as _sdf
+        _fi_def, _fn_def = _sdf(p, scene)
+        L.append(f"    text_set_font({max(0, _fi_def)});"
+                 + (f"   /* {_fn_def} */" if _fn_def else ""))
     for f in fills:
         L.append(
             f"    ui_fill_rect({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
@@ -1726,8 +1768,13 @@ def _signed(n: int) -> str:
     return f"+{n}" if n > 0 else str(n)
 
 
-def _affine_oam_lines(idx: int, aff: dict, sprite, bt: int, priority_expr: str) -> list[str]:
-    """Lignes C (intérieur du if actif) pour un sprite affine : rotation+scale+flip runtime."""
+def _affine_oam_lines(idx: int, aff: dict, sprite, bt: int, priority_expr: str,
+                      screen_space: bool = False) -> list[str]:
+    """Lignes C (intérieur du if actif) pour un sprite affine : rotation+scale+flip runtime.
+
+    `screen_space` retire la soustraction de caméra (cf. Actor.screen_space) :
+    x/y sont alors des pixels d'écran. Le reste du calcul est identique — les
+    ajustements affines sont relatifs à l'ancrage, pas à l'espace."""
     aslot = aff["slot"]
     pa, pb, pc, pd = aff["pa"], aff["pb"], aff["pc"], aff["pd"]
     adj_fn = aff["_oam_adj"]
@@ -1749,8 +1796,10 @@ def _affine_oam_lines(idx: int, aff: dict, sprite, bt: int, priority_expr: str) 
             f":(g_actors[{idx}].flip_v?({nfv}):({n0})))"
         )
 
-    sx_expr = _pos(f"g_actors[{idx}].x-cam_x", x00, xfh, xfv, xhv)
-    sy_expr = _pos(f"g_actors[{idx}].y-cam_y", y00, yfh, yfv, yhv)
+    sx_expr = _pos(f"g_actors[{idx}].x" + ("" if screen_space else "-cam_x"),
+                   x00, xfh, xfv, xhv)
+    sy_expr = _pos(f"g_actors[{idx}].y" + ("" if screen_space else "-cam_y"),
+                   y00, yfh, yfv, yhv)
 
     return [
         f"        int sx={sx_expr}; int sy={sy_expr};",
@@ -1963,8 +2012,15 @@ def _gen_scene_tick(
             oy  = getattr(sc, "origin_y", 0) if sc else 0
             ox_s = (f"-{ox}" if ox > 0 else f"+{-ox}") if ox else ""
             oy_s = (f"-{oy}" if oy > 0 else f"+{-oy}") if oy else ""
+            # UI en sprite : x/y SONT déjà des pixels d'écran, la caméra ne les
+            # touche pas. Décidé ici, au build — un acteur de monde émet
+            # exactement le C qu'il émettait avant (cf. Actor.screen_space).
+            _ss = bool(getattr(actor, "screen_space", False))
+            _cx = "" if _ss else "-cam_x"
+            _cy = "" if _ss else "-cam_y"
             if idx in _aff:
-                inner = _affine_oam_lines(idx, _aff[idx], sprite, bt, str(actor.priority))
+                inner = _affine_oam_lines(idx, _aff[idx], sprite, bt,
+                                          str(actor.priority), screen_space=_ss)
                 L += [
                     f"    if(g_actors[{idx}].active && g_actors[{idx}].visible){{",
                     *inner,
@@ -1973,7 +2029,7 @@ def _gen_scene_tick(
             else:
                 L += [
                     f"    if(g_actors[{idx}].active && g_actors[{idx}].visible){{",
-                    f"        int sx=g_actors[{idx}].x-cam_x{ox_s}; int sy=g_actors[{idx}].y-cam_y{oy_s};",
+                    f"        int sx=g_actors[{idx}].x{_cx}{ox_s}; int sy=g_actors[{idx}].y{_cy}{oy_s};",
                     f"        u16 ti=(u16)({bt}+g_actors[{idx}].frame*{sprite.tiles_per_frame});",
                     f"        int fh=g_actors[{idx}].flip_h; int fv=g_actors[{idx}].flip_v;",
                     f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
@@ -2086,15 +2142,27 @@ def generate_main(
                      default=0)
     obj_text_oam  = n_actors if _obj_need else -1
     obj_text_tile = _obj_tiles_used(p, all_sprite_pairs)
-    if _obj_need and emit:
-        emit("log_line",
-             f"[text] bande OBJ : OAM {obj_text_oam}..{obj_text_oam + _obj_need - 1} "
-             f"(sur 128), tuiles depuis {obj_text_tile}")
+    # Débordement OBJ : BLOQUANT, et calculé même sans `emit`.
+    #
+    # Ces deux dépassements n'étaient que journalisés — `generate_main` rendait
+    # `True` quoi qu'il arrive, donc la ROM se construisait avec des slots hors
+    # des 128 du matériel : rien à l'écran, aucune erreur. Le fond de panneau en
+    # sprites rend le cas trivial à atteindre (un panneau de 224×48 pavé d'une
+    # frame 8×8 réclame 168 slots à lui seul), d'où le passage en erreur — même
+    # règle que le budget de tuiles BG, qui bloque déjà.
+    _fatal: list[str] = []
+    if _obj_need:
+        if emit:
+            emit("log_line",
+                 f"[text] bande OBJ : OAM {obj_text_oam}..{obj_text_oam + _obj_need - 1} "
+                 f"(sur 128), tuiles depuis {obj_text_tile}")
         if obj_text_oam + _obj_need > 128:
-            emit("error_line",
-                 f"[error] les zones de texte en sprites demandent "
-                 f"{_obj_need} slots OAM après {n_actors} d'acteurs — "
-                 f"le matériel n'en a que 128.")
+            _fatal.append(
+                f"[error] l'interface en sprites (zones de texte, images, fonds "
+                f"de conteneur) demande {_obj_need} slots OAM après {n_actors} "
+                f"d'acteurs — le matériel n'en a que 128. Réduire un pavage de "
+                f"fond, passer une zone en cible BG, ou diminuer le pool de "
+                f"prefabs.")
         # Les tuiles OBJ tombent à 512 en mode bitmap (la VRAM BG y empiète sur
         # l'espace sprite) : c'est la scène la plus contrainte qui commande.
         _tiles_need = max((pl["tile_rel"] + pl["tiles"] for pl in _obj_alloc.values()),
@@ -2102,10 +2170,15 @@ def generate_main(
         _cap = 512 if any(getattr(sc, "render_mode", 0) in (3, 4, 5)
                           for sc in p.scenes) else 1024
         if obj_text_tile + _tiles_need > _cap:
-            emit("error_line",
-                 f"[error] les zones de texte en sprites demandent "
-                 f"{_tiles_need} tuiles OBJ après {obj_text_tile} de sprites, "
-                 f"soit plus que les {_cap} disponibles.")
+            _fatal.append(
+                f"[error] les zones de texte en sprites demandent "
+                f"{_tiles_need} tuiles OBJ après {obj_text_tile} de sprites, "
+                f"soit plus que les {_cap} disponibles.")
+    if _fatal:
+        for _m in _fatal:
+            if emit:
+                emit("error_line", _m)
+        return False
 
     # ── Génération des includes (union de toutes les scènes) ──────
     L: list[str] = []

@@ -1554,9 +1554,18 @@ class GBAScene(QGraphicsScene):
 
     def setup_camera(self, cam_x: int = 0, cam_y: int = 0):
         if self._camera:
+            # Détacher d'abord les sprites d'écran : retirer la caméra de la
+            # scène emporterait ses enfants avec elle.
+            for it in self._sprite_items:
+                if it.parentItem() is self._camera:
+                    it.setParentItem(None)
+                    if it.scene() is None:
+                        self.addItem(it)
             self.removeItem(self._camera)
         self._camera = CameraItem(self._canvas_w, self._canvas_h, cam_x, cam_y)
         self.addItem(self._camera)
+        for it in self._sprite_items:
+            self.sync_sprite_space(it)
 
     def camera_pos(self) -> tuple[int, int]:
         if self._camera:
@@ -1672,11 +1681,35 @@ class GBAScene(QGraphicsScene):
         )
         self.addItem(item)
         self._sprite_items.append(item)
+        self.sync_sprite_space(item)
         # Sprite créé après le calcul des masques (rechargement de scène) :
         # lui appliquer la découpe courante sans attendre le prochain recalcul.
         if self._obj_mask_rects:
             item.set_mask_rects(self._obj_mask_rects)
         return item
+
+    def sync_sprite_space(self, item: SpriteItem):
+        """Range l'item dans le bon repère selon `Actor.screen_space`.
+
+        Un acteur ancré à l'écran devient ENFANT de la caméra — exactement ce
+        que font déjà les windows (cf. CameraItem.set_windows) : sa position
+        locale EST sa position dans l'écran GBA, elle suit la vue sans le
+        moindre recalcul, et un déplacement à la souris rend directement des
+        coordonnées d'écran à écrire dans le modèle (`itemChange` lit une
+        position relative au parent).
+
+        Idempotent : appelé à la création, au changement de caméra et à chaque
+        modification de l'inspecteur, sans avoir à savoir ce qui a changé."""
+        want = self._camera if getattr(item.scene_sprite, "screen_space", False) else None
+        if item.parentItem() is not want:
+            item.setParentItem(want)
+            if want is None and item.scene() is None:
+                # Détaché d'un parent qui n'était plus dans la scène : Qt l'a
+                # sorti avec lui, il faut le remettre pour qu'il reste dessinable.
+                self.addItem(item)
+        # Toujours repositionner : c'est aussi le chemin d'un simple déplacement
+        # (spinbox de l'inspecteur), où le repère n'a pas bougé.
+        item.sync_pos()
 
     def clear_sprites(self):
         for item in self._sprite_items:
@@ -2568,7 +2601,11 @@ class UIRegionItem(QGraphicsRectItem):
         # déborde du conteneur — or c'est exactement pour ça qu'on la pose dans
         # un canvas plutôt que dans un formulaire.
         self._img_pixmap = None
-        from core.models.ui_region import FILL_NINE, FILL_BG
+        # Fond sprite d'un conteneur : la MÊME frame que `_img_pixmap`, mais
+        # répétée sur le rectangle (cf. `_paint_sprite_fill`). Le drapeau tient
+        # la différence, la source du dessin étant identique.
+        self._tile_fill = False
+        from core.models.ui_region import FILL_NINE, FILL_BG, FILL_SPRITE
         _fk = getattr(region, "fill_kind", "")
         if getattr(region, "kind", "") == "panel":
             if _fk == FILL_NINE:
@@ -2580,6 +2617,14 @@ class UIRegionItem(QGraphicsRectItem):
                 pix = self._load_bg_fill()
                 if pix is not None and not pix.isNull():
                     self._bg_pixmap = pix
+                    self._content_brush = None
+            elif _fk == FILL_SPRITE:
+                # `_load_image_frame` lit `sprite_name`/`state_index`, que
+                # `UIPanel` expose comme `UIImage` — rien à dupliquer.
+                pix = self._load_image_frame()
+                if pix is not None and not pix.isNull():
+                    self._img_pixmap = pix
+                    self._tile_fill = True
                     self._content_brush = None
         elif getattr(region, "kind", "") == "image":
             pix = self._load_image_frame()
@@ -2752,8 +2797,23 @@ class UIRegionItem(QGraphicsRectItem):
             return
         pix, r = self._img_pixmap, self.rect()
         painter.save()
-        painter.drawPixmap(QRectF(r.left(), r.top(), pix.width(), pix.height()),
-                           pix, QRectF(0, 0, pix.width(), pix.height()))
+        if self._tile_fill:
+            # Fond de conteneur : la frame se RÉPÈTE, exactement comme le
+            # runtime pose un OBJ par case (cf. `sprite_grid`). La dernière
+            # colonne/rangée déborde plutôt que d'être rognée — le matériel ne
+            # sait pas couper un sprite, et l'aperçu doit le montrer plutôt que
+            # de laisser croire à un cadrage propre.
+            fw, fh = max(1, pix.width()), max(1, pix.height())
+            cols = max(1, -(-int(r.width()) // fw))
+            rows = max(1, -(-int(r.height()) // fh))
+            for cy in range(rows):
+                for cx in range(cols):
+                    painter.drawPixmap(
+                        QRectF(r.left() + cx * fw, r.top() + cy * fh, fw, fh),
+                        pix, QRectF(0, 0, fw, fh))
+        else:
+            painter.drawPixmap(QRectF(r.left(), r.top(), pix.width(), pix.height()),
+                               pix, QRectF(0, 0, pix.width(), pix.height()))
         painter.restore()
 
     def _paint_nine_slice(self, painter):
@@ -2805,21 +2865,24 @@ class UIRegionItem(QGraphicsRectItem):
         return display_text(t.content or "", values)
 
     def _text_font(self):
-        """Police de l'élément, ou celle que la scène charge par défaut.
+        """Police de l'élément, ou celle que la SCÈNE charge par défaut.
 
-        Le défaut est le premier de `project_fonts`, pas `fonts[0]` : c'est cette
-        liste qui devient `g_fonts`, et `scene_init` émet `text_set_font(0)`."""
+        Le défaut passe par `font_emit.scene_default_font` — le même calcul que
+        l'émission, la réservation VRAM et le validateur. Mesurer l'aperçu avec
+        une autre police que celle du build ferait mentir le débordement montré
+        au canvas, qui est tout l'intérêt du `preview_text`."""
         p = self._project
         named = getattr(self._region, "font_name", "") or ""
         fonts = list(getattr(p, "fonts", []) or []) if p else []
         if named:
             return next((f for f in fonts if f.name == named), None)
         try:
-            from codegen.runtime_codegen.main_gen import project_fonts
-            usable = project_fonts(p)
+            from codegen.font_emit import scene_default_font
+            name = scene_default_font(p, self._scene)[1]
+            return next((f for f in fonts if f.name == name), None)
         except Exception:
-            usable = fonts        # stub de test, ou chaîne codegen indisponible
-        return usable[0] if usable else None
+            # Stub de test, ou chaîne codegen indisponible.
+            return fonts[0] if fonts else None
 
     def _composited(self) -> bool:
         """Le texte se COMPOSE-t-il (pixel) plutôt que de se poser à la tuile ?
@@ -4717,7 +4780,9 @@ class SceneEditor(QWidget):
         """Repositionne l'item Qt d'un actor sans recréer la scène (drag ou spinbox)."""
         item = self._find_item(actor)
         if item:
-            item.sync_pos()
+            # Bascule de `screen_space` : le repère change, pas seulement la
+            # position — sync_sprite_space repositionne aussi.
+            self._gba_scene.sync_sprite_space(item)
 
     def _find_item(self, actor: Actor) -> Optional[SpriteItem]:
         for item in self._gba_scene._sprite_items:
