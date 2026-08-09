@@ -27,11 +27,14 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
 
-from ui.common.theme import C, T, QSS
+from ui.common.theme import C, T, S, QSS
 
 
 # ── Constantes de style ───────────────────────────────────────────────
+#  UI (Inter) pour les labels/boutons, MONO réservé aux valeurs et axes.
 
+_FONT_UI_SM    = QFont(T.UI, T.SM)
+_FONT_UI_XS    = QFont(T.UI, T.XS)
 _FONT_MONO_SM  = QFont(T.MONO, T.SM)
 _FONT_MONO_XS  = QFont(T.MONO, T.XS)
 _FONT_MONO_AX  = QFont(T.MONO, T.MD, QFont.Weight.Bold)   # axes X/Y/W/H
@@ -41,6 +44,10 @@ _LBL_AX_STY = "color:{c}; background:transparent; border:none;"
 
 # Alias vers les fragments centralisés de theme.py — gardés ici pour ne pas
 # casser les call sites existants (W.btn_ghost, W.btn_accent, ...).
+# Hauteur commune des en-têtes de section de viewer — FinderSection et
+# W.section_bar (repliable ou non, une section se lit à la même hauteur).
+FINDER_HEADER_H = 26
+
 BTN_GHOST  = QSS.button_ghost
 BTN_ACCENT = QSS.button_accent_outline
 BTN_DANGER = QSS.toolbutton_danger
@@ -72,7 +79,7 @@ class _W:
             b.setToolTip(tooltip)
         return b
 
-    def btn_add(self, tooltip: str = "Ajouter") -> QToolButton:
+    def btn_add(self, tooltip: str = "Add") -> QToolButton:
         """Bouton + sans bordure, survol vert — style project panel."""
         b = QToolButton()
         b.setText("+")
@@ -81,7 +88,7 @@ class _W:
         b.setToolTip(tooltip)
         return b
 
-    def btn_search(self, tooltip: str = "Rechercher") -> QToolButton:
+    def btn_search(self, tooltip: str = "Search") -> QToolButton:
         """Bouton ⌕ sans bordure, survol vert — style project panel."""
         b = QToolButton()
         b.setText("⌕")
@@ -90,16 +97,16 @@ class _W:
         b.setToolTip(tooltip)
         return b
 
-    def search_box(self, placeholder: str = "Filtrer par nom…") -> QLineEdit:
+    def search_box(self, placeholder: str = "Filter by name…") -> QLineEdit:
         """Champ de filtre par nom — apparaît sous un header au clic sur btn_search()."""
         e = QLineEdit()
         e.setPlaceholderText(placeholder)
         e.setFixedHeight(24)
-        e.setFont(_FONT_MONO_SM)
+        e.setFont(_FONT_UI_SM)
         e.setStyleSheet(
             f"QLineEdit{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER};border-radius:3px;"
-            f"font-family:{T.MONO};font-size:{T.SM}px;padding:2px 6px;}}"
+            f"font-family:{T.UI_STACK};font-size:{T.SM}px;padding:2px 6px;}}"
             f"QLineEdit:focus{{border-color:{C.ACCENT};}}"
         )
         return e
@@ -152,7 +159,7 @@ class _W:
         container.setStyleSheet("background:transparent;")
         r = QHBoxLayout(container)
         r.setSpacing(8); r.setContentsMargins(0, 2, 0, 2)
-        lbl = QLabel(label); lbl.setFont(_FONT_MONO_SM)
+        lbl = QLabel(label); lbl.setFont(_FONT_UI_SM)
         lbl.setStyleSheet(_LBL_STY); lbl.setFixedWidth(label_width)
         r.addWidget(lbl); r.addWidget(widget, 1)
         layout.addWidget(container)
@@ -189,7 +196,7 @@ class _W:
         Retourne le QCheckBox.
         """
         chk = QCheckBox(check_label)
-        chk.setFont(_FONT_MONO_SM)
+        chk.setFont(_FONT_UI_SM)
         chk.setStyleSheet(f"color:{C.TEXT_NORM}; background:transparent;")
         self.row(row_label, chk, layout)
         return chk
@@ -210,12 +217,82 @@ class _W:
 
     def section(self, text: str, layout: QVBoxLayout) -> QLabel:
         """Petit titre de sous-section (ex: 'CALLBACKS SOLID')."""
-        lbl = QLabel(text); lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        lbl.setStyleSheet(
-            f"color:{C.TEXT_DIM}; letter-spacing:1px;"
-            f"background:transparent; border:none;"
-        )
+        lbl = QLabel(text); lbl.setFont(_FONT_UI_XS)
+        lbl.setStyleSheet(QSS.title_panel)
         layout.addWidget(lbl)
+        return lbl
+
+    # ── Hiérarchie de titres (briques theme.py — voir QSS.title_*) ────
+
+    def title_panel(self, text: str) -> QLabel:
+        """En-tête de panneau/finder (niveau 1) — discret, uppercase conseillé."""
+        lbl = QLabel(text); lbl.setFont(_FONT_UI_SM)
+        lbl.setStyleSheet(QSS.title_panel)
+        return lbl
+
+    def title_group(self, text: str) -> QLabel:
+        """Intertitre d'un groupe DANS une section de viewer (« ACTORS »,
+        « BEHAVIORS »). Pas de bandeau : un simple label aligné sur la gouttière
+        du panneau, avec de l'air au-dessus — c'est l'espace qui sépare."""
+        lbl = QLabel(text)
+        lbl.setFont(_FONT_UI_XS)
+        lbl.setStyleSheet(
+            f"{QSS.title_group} padding-left:{S.CONTENT}px;"
+            f"padding-top:{S.MD}px; padding-bottom:{S.XS}px;"
+        )
+        return lbl
+
+    def finder_bar(self, text: str) -> QFrame:
+        """Bandeau d'identité d'un viewer (« PROJECT VIEWER », « SPRITE
+        FINDER »). Sans fond ni filet : il nomme le panneau, les sections
+        portent la structure. Le layout est accessible via `.layout()` pour y
+        ajouter un compteur, un filtre ou des boutons."""
+        bar = QFrame()
+        bar.setFixedHeight(26)
+        bar.setStyleSheet("background:transparent; border:none;")
+        hl = QHBoxLayout(bar)
+        hl.setContentsMargins(S.GUTTER, 0, S.SM, 0)
+        hl.setSpacing(S.MD)
+        lbl = QLabel(text)
+        lbl.setFont(_FONT_UI_SM)
+        lbl.setStyleSheet(QSS.title_panel)
+        hl.addWidget(lbl)
+        return bar
+
+    def section_bar(self, text: str, color: str | None = None) -> QFrame:
+        """En-tête de section NON repliable d'un viewer (Palette finder, Sound
+        mixer). Même grammaire que FinderSection — titre aligné sur la gouttière,
+        pas de bandeau coloré — pour que toutes les listes se ressemblent.
+        Ajouter les boutons d'action directement dans `.layout()`."""
+        f = QFrame()
+        # Hauteur = en-tête + l'air au-dessus (même respiration qu'une
+        # FinderSection, qui le prend en marge de layout).
+        f.setFixedHeight(FINDER_HEADER_H + S.MD)
+        f.setStyleSheet("background:transparent; border:none;")
+        hl = QHBoxLayout(f)
+        # Décalage à gauche = gouttière + la largeur du chevron d'une
+        # FinderSection, pour que les titres repliables ou non s'alignent.
+        hl.setContentsMargins(S.GUTTER + S.LG + S.SM, S.MD, S.SM, 0)
+        hl.setSpacing(S.XS)
+        lbl = QLabel(text)
+        lbl.setStyleSheet(QSS.title_finder(color))
+        hl.addWidget(lbl, 1)
+        return f
+
+    def title_section(self, text: str, color: str | None = None) -> QLabel:
+        """Titre de section d'inspecteur (niveau 2) — périwinkle par défaut,
+        `color` réservé aux en-têtes pilotés par la famille d'asset."""
+        lbl = QLabel(text); lbl.setFont(_FONT_UI_SM)
+        lbl.setStyleSheet(QSS.title_section(color))
+        return lbl
+
+    def empty_state(self, text: str) -> QLabel:
+        """Message central d'un écran/panneau vide — style unique app-wide."""
+        lbl = QLabel(text)
+        lbl.setFont(QFont(T.UI, T.LG))
+        lbl.setStyleSheet(QSS.empty_state)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setWordWrap(True)
         return lbl
 
     # ── Ligne callback Lua ────────────────────────────────────────────
@@ -244,7 +321,7 @@ class _W:
         container = QWidget(); container.setStyleSheet("background:transparent;")
         r = QHBoxLayout(container)
         r.setContentsMargins(0, 1, 0, 1); r.setSpacing(8)
-        lbl = QLabel(display_label); lbl.setFont(_FONT_MONO_SM)
+        lbl = QLabel(display_label); lbl.setFont(_FONT_UI_SM)
         lbl.setStyleSheet(_LBL_STY); lbl.setFixedWidth(76)
         r.addWidget(lbl); r.addWidget(le, 1)
         layout.addWidget(container)
@@ -267,7 +344,7 @@ class _W:
         )
         ml = QHBoxLayout(meta); ml.setContentsMargins(8, 4, 8, 4); ml.setSpacing(10)
 
-        id_lbl = QLabel("id"); id_lbl.setFont(_FONT_MONO_SM)
+        id_lbl = QLabel("id"); id_lbl.setFont(_FONT_UI_SM)
         id_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
 
         id_edit = QLineEdit(comp.id); id_edit.setFont(_FONT_MONO_SM)
@@ -276,7 +353,7 @@ class _W:
         field_syncers["id"] = lambda v, w=id_edit: (
             w.blockSignals(True), w.setText(str(v)), w.blockSignals(False))
 
-        active_cb = QCheckBox("Active"); active_cb.setFont(_FONT_MONO_SM)
+        active_cb = QCheckBox("Active"); active_cb.setFont(_FONT_UI_SM)
         active_cb.setChecked(comp.active)
         active_cb.toggled.connect(lambda v: set_comp_fn(comp, "active", v))
         field_syncers["active"] = lambda v, w=active_cb: (
@@ -291,7 +368,7 @@ class _W:
     def hint(self, text: str, layout: QVBoxLayout,
              color: str = C.TEXT_MUTED) -> QLabel:
         """Label informatif discret."""
-        lbl = QLabel(text); lbl.setFont(_FONT_MONO_SM)
+        lbl = QLabel(text); lbl.setFont(_FONT_UI_SM)
         lbl.setStyleSheet(f"color:{color}; background:transparent; border:none;")
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
@@ -320,7 +397,7 @@ class _W:
         cb.addItems(items)
         if current in items:
             cb.setCurrentIndex(items.index(current))
-        cb.setFont(QFont(T.MONO, T.MD))
+        cb.setFont(QFont(T.UI, T.MD))
         cb.setStyleSheet(_QSS.combobox)
         return cb
 
@@ -369,8 +446,8 @@ class NotesEdit(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._baseline = ""
-        self.setPlaceholderText("Notes libres…")
-        self.setFont(QFont(T.MONO, T.SM))
+        self.setPlaceholderText("Notes…")
+        self.setFont(QFont(T.UI, T.SM))
         self.setFixedHeight(60)
         # Hauteur fixe : politique verticale Fixed, sinon (Expanding par défaut
         # d'un QPlainTextEdit) le layout parent croit la carte extensible et
@@ -407,19 +484,19 @@ class ScriptSlot(QWidget):
 
     États :
       - vide  → bouton "＋ <add_label>" dashed, cliquable
-      - actif → label nom + btn "Éditer" + btn "×"
+      - actif → bouton nommé (nom de l'asset assigné) + btn "×"
+                le nom EST le bouton d'édition — pas de "Change" séparé.
 
     Signaux émis via callbacks :
       on_add()    → l'utilisateur clique "＋"
-      on_open()   → l'utilisateur clique "Éditer"
+      on_open()   → l'utilisateur clique sur le nom
       on_clear()  → l'utilisateur clique "×"
 
     Appeler set_script(name) / clear_script() pour changer l'état.
     """
 
     def __init__(self, add_label: str, accent_color: str,
-                 hint: str = "", edit_label: str = "Éditer",
-                 show_clear: bool = True, parent=None):
+                 hint: str = "", show_clear: bool = True, parent=None):
         super().__init__(parent)
         self._color = accent_color
 
@@ -429,7 +506,7 @@ class ScriptSlot(QWidget):
 
         # ── Bouton "+" ────────────────────────────────────────────
         self._btn_add = QPushButton(f"＋  {add_label}")
-        self._btn_add.setFont(QFont(T.MONO, T.MD))
+        self._btn_add.setFont(QFont(T.UI, T.MD))
         self._btn_add.setFixedHeight(36)
         self._btn_add.setStyleSheet(
             f"QPushButton{{background:{C.BG_DEEP};color:{C.TEXT_DIM};"
@@ -444,27 +521,26 @@ class ScriptSlot(QWidget):
         hl.setContentsMargins(0, 0, 0, 0)
         hl.setSpacing(4)
 
-        self._icon_lbl = QLabel("")
-        self._icon_lbl.setFixedSize(16, 16)
-        self._icon_lbl.setVisible(False)
-
-        self._lbl = QLabel("")
+        # Le nom assigné EST le bouton d'édition : cliquer dessus rouvre le
+        # picker, comme le "＋" de l'état vide. L'icône de l'asset, quand il y
+        # en a une, vit DANS le bouton.
+        self._lbl = QPushButton("")
+        self._lbl.setIconSize(QSize(16, 16))
         self._lbl.setFont(QFont(T.MONO, T.SM))
-        self._lbl.setStyleSheet(f"color:{accent_color}; background:transparent; border:none;")
-
-        self._btn_edit = QPushButton(edit_label)
-        self._btn_edit.setFont(QFont(T.MONO, T.SM))
-        self._btn_edit.setFixedHeight(22)
-        self._btn_edit.setStyleSheet(BTN_ACCENT)
+        self._lbl.setFixedHeight(22)
+        self._lbl.setStyleSheet(
+            f"QPushButton{{color:{accent_color};background:{C.BG_DEEP};"
+            f"border:1px solid {accent_color};border-radius:4px;padding:0 8px;"
+            f"text-align:left;}}"
+            f"QPushButton:hover{{background:{C.BG_HOVER};}}"
+        )
 
         self._btn_clear = QToolButton()
         self._btn_clear.setText("×")
         self._btn_clear.setFont(QFont(T.MONO, T.XL))
         self._btn_clear.setStyleSheet(BTN_DANGER)
 
-        hl.addWidget(self._icon_lbl)
         hl.addWidget(self._lbl, 1)
-        hl.addWidget(self._btn_edit)
         hl.addWidget(self._btn_clear)
         root.addWidget(self._active_w)
         # setVisible() APRÈS avoir été ajouté au layout (donc parenté) :
@@ -477,7 +553,7 @@ class ScriptSlot(QWidget):
         # ── Hint ──────────────────────────────────────────────────
         if hint:
             lbl_hint = QLabel(hint)
-            lbl_hint.setFont(QFont(T.MONO, T.XS))
+            lbl_hint.setFont(_FONT_UI_XS)
             lbl_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
             root.addWidget(lbl_hint)
 
@@ -486,7 +562,7 @@ class ScriptSlot(QWidget):
         self._on_open  = None
         self._on_clear = None
         self._btn_add.clicked.connect(self._click_add)
-        self._btn_edit.clicked.connect(self._click_open)
+        self._lbl.clicked.connect(self._click_open)
         self._btn_clear.clicked.connect(self._click_clear)
 
     def set_callbacks(self, on_add=None, on_open=None, on_clear=None):
@@ -496,17 +572,13 @@ class ScriptSlot(QWidget):
 
     def set_script(self, name: str, icon: QIcon | None = None):
         self._lbl.setText(name)
-        if icon is not None:
-            self._icon_lbl.setPixmap(icon.pixmap(16, 16))
-            self._icon_lbl.setVisible(True)
-        else:
-            self._icon_lbl.setVisible(False)
+        self._lbl.setIcon(icon if icon is not None else QIcon())
         self._btn_add.setVisible(False)
         self._active_w.setVisible(True)
 
     def clear_script(self):
         self._lbl.setText("")
-        self._icon_lbl.setVisible(False)
+        self._lbl.setIcon(QIcon())
         self._btn_add.setVisible(True)
         self._active_w.setVisible(False)
 
@@ -535,7 +607,7 @@ class ScriptPickerPopup(QFrame):
     new_requested = pyqtSignal()
 
     def __init__(self, scripts: list[tuple], accent: str, parent=None,
-                 new_label: str | None = "＋  Nouveau script"):
+                 new_label: str | None = "＋  New script"):
         """
         scripts   : liste de (nom_affichage, valeur) ou (nom_affichage, valeur, QIcon)
                     — le 3e élément (icône par ligne) est optionnel, pour les
@@ -564,8 +636,8 @@ class ScriptPickerPopup(QFrame):
 
         # ── Barre de recherche ─────────────────────────────────────
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Filtrer…")
-        self._search.setFont(QFont(T.MONO, T.SM))
+        self._search.setPlaceholderText("Filter…")
+        self._search.setFont(QFont(T.UI, T.SM))
         self._search.setStyleSheet(
             f"QLineEdit{{background:{C.BG_DEEP};color:{C.TEXT_NORM};border:1px solid {C.BORDER};"
             f"border-radius:3px;padding:3px 6px;}}"
@@ -596,7 +668,7 @@ class ScriptPickerPopup(QFrame):
             root.addWidget(sep)
 
             btn_new = QPushButton(new_label)
-            btn_new.setFont(QFont(T.MONO, T.SM))
+            btn_new.setFont(QFont(T.UI, T.SM))
             btn_new.setFixedHeight(28)
             btn_new.setStyleSheet(
                 f"QPushButton{{background:{C.BG_DEEP};color:{accent};"
@@ -623,8 +695,8 @@ class ScriptPickerPopup(QFrame):
         matches = [(d, r, i) for d, r, i in self._scripts if query in d.lower()]
 
         if not matches:
-            lbl = QLabel("Aucun résultat")
-            lbl.setFont(QFont(T.MONO, T.XS))
+            lbl = QLabel("No results")
+            lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED};padding:4px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._list_layout.addWidget(lbl)
@@ -678,16 +750,25 @@ class ScriptPickerPopup(QFrame):
 
 class FinderSection(QFrame):
     """
-    Section collapsible standard : flèche ▾/▸ + titre coloré en gras,
+    Section collapsible standard : chevron ▾/▸ + titre en capitales espacées,
     boutons "+" et "recherche" à droite, champ de filtre masqué par défaut.
     Le filtre s'applique automatiquement à tout QTreeWidget posé via
     set_widget() (recherche par nom sur les colonnes de l'arbre).
 
     Utilisée par les 4 finders pour une apparence et un comportement
     identiques — voir assets_finder_panel.py pour l'exemple de référence.
+
+    Parti pris visuel : l'en-tête n'est PAS un bandeau — empilées, des sections
+    à fond plein donnent un panneau rayé. La séparation vient de l'espace et de
+    la casse, le fond ne s'allume qu'au survol pour dire « ça se clique ».
     """
 
     add_clicked = pyqtSignal()
+
+    # Air au-dessus du titre et sous le corps. Le bas ne compte que déplié :
+    # replié, doubler la marge ferait flotter des sections vides.
+    _PAD_TOP    = S.MD
+    _PAD_BOTTOM = S.MD
 
     def __init__(self, title: str, color: str = C.TEXT_NORM, parent=None):
         # `color` par défaut neutre : les finders n'utilisent plus de code
@@ -698,37 +779,44 @@ class FinderSection(QFrame):
         self.setStyleSheet(f"background:{C.BG_BASE};")
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(0, self._PAD_TOP, 0, self._PAD_BOTTOM)
         root.setSpacing(0)
 
-        # Header — le clic sur la zone texte/flèche toggle, les boutons sont indépendants
+        # Header — le clic sur la zone texte/chevron toggle, les boutons sont
+        # indépendants. Transparent : c'est le fond du panneau qui passe.
         hdr = QFrame()
-        hdr.setFixedHeight(28)
-        hdr.setStyleSheet(
-            f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};"
-            f"border-bottom:1px solid {C.BORDER_DARK};"
-        )
+        hdr.setFixedHeight(FINDER_HEADER_H)
+        hdr.setStyleSheet("background:transparent; border:none;")
         hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(0, 0, 6, 0)
+        hl.setContentsMargins(0, 0, S.SM, 0)
+        hl.setSpacing(0)
 
-        # Zone cliquable pour toggle (flèche fixe + titre)
+        # Zone cliquable pour toggle (chevron + titre) ; le survol l'éclaire.
         toggle_area = QWidget()
+        toggle_area.setObjectName("finderToggle")
         toggle_area.setCursor(Qt.CursorShape.PointingHandCursor)
         toggle_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toggle_area.setStyleSheet(
+            f"QWidget#finderToggle {{ background:transparent; border:none; }}"
+            f"QWidget#finderToggle:hover {{ background:{C.BG_PANEL}; }}"
+        )
         ta_layout = QHBoxLayout(toggle_area)
-        ta_layout.setContentsMargins(6, 0, 0, 0)
-        ta_layout.setSpacing(6)
+        ta_layout.setContentsMargins(S.GUTTER, 0, 0, 0)
+        ta_layout.setSpacing(S.SM)
 
         self._arrow_lbl = QLabel("▾")
-        self._arrow_lbl.setFixedWidth(12)
+        self._arrow_lbl.setFixedWidth(S.LG)
         self._arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._arrow_lbl.setStyleSheet(f"color:{color}; font-size:{T.SM}pt; font-weight:bold; background:transparent;")
+        self._arrow_lbl.setStyleSheet(
+            f"color:{C.TEXT_DIM}; font-size:{T.MD}px; background:transparent;")
 
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(
-            f"color:{color}; font-family:{T.MONO}; font-size:{T.SM}pt;"
-            f"font-weight:bold; letter-spacing:1px; background:transparent;"
-        )
+        title_lbl.setStyleSheet(QSS.title_finder(color))
+
+        # Sans ça, survoler le titre enverrait un Leave à la zone cliquable :
+        # survol clignotant, et clic inopérant sur le texte lui-même.
+        for lbl in (self._arrow_lbl, title_lbl):
+            lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         ta_layout.addWidget(self._arrow_lbl)
         ta_layout.addWidget(title_lbl, 1)
@@ -737,10 +825,10 @@ class FinderSection(QFrame):
         self._color = color
         self._title = title
 
-        self._btn_add = W.btn_add("Ajouter un élément")
+        self._btn_add = W.btn_add("Add item")
         self._btn_add.clicked.connect(self.add_clicked)
 
-        self._btn_search = W.btn_search("Filtrer par nom")
+        self._btn_search = W.btn_search("Filter by name")
         self._btn_search.setCheckable(True)
         self._btn_search.toggled.connect(self._on_search_toggled)
 
@@ -750,7 +838,7 @@ class FinderSection(QFrame):
         root.addWidget(hdr)
 
         # Champ de filtre — masqué par défaut, révélé par btn_search
-        self._search_box = W.search_box(f"Filtrer {title.lower()}…")
+        self._search_box = W.search_box(f"Filter {title.lower()}…")
         self._search_box.textChanged.connect(self._apply_filter)
         _orig_keypress = self._search_box.keyPressEvent
         def _search_key_press(e, _orig=_orig_keypress):
@@ -762,7 +850,7 @@ class FinderSection(QFrame):
         search_row = QWidget()
         search_row.setStyleSheet(f"background:{C.BG_BASE};")
         sr_layout = QHBoxLayout(search_row)
-        sr_layout.setContentsMargins(6, 4, 6, 4)
+        sr_layout.setContentsMargins(S.GUTTER, S.SM, S.MD, S.SM)
         sr_layout.addWidget(self._search_box)
         self._search_row = search_row
         self._search_row.setVisible(False)
@@ -770,10 +858,20 @@ class FinderSection(QFrame):
 
         self._body = QWidget()
         self._body.setStyleSheet(f"background:{C.BG_BASE};")
-        root.addWidget(self._body)
+        # Le corps porte le stretch : sinon, pour une section dont le contenu ne
+        # peut pas grandir, QBoxLayout répartit la place à parts égales et
+        # l'en-tête descend vers le centre.
+        self._body_index = root.count()
+        root.addWidget(self._body, 1)
         self._body_layout = QVBoxLayout(self._body)
-        self._body_layout.setContentsMargins(0, 0, 0, 0)
+        self._body_layout.setContentsMargins(0, S.XS, 0, 0)
         self._body_layout.setSpacing(0)
+
+        # Ressort de queue : repliée, la section n'a que son en-tête et rien
+        # n'absorbe la hauteur donnée par le parent. Le ressort la prend, donc
+        # le titre reste ferré en haut.
+        self._tail_index = root.count()
+        root.addStretch(0)
 
     def set_add_tooltip(self, tooltip: str):
         self._btn_add.setToolTip(tooltip)
@@ -788,6 +886,20 @@ class FinderSection(QFrame):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
         self._arrow_lbl.setText("▾" if self._expanded else "▸")
+        lay = self.layout()
+        m = lay.contentsMargins()
+        lay.setContentsMargins(
+            m.left(), m.top(), m.right(), self._PAD_BOTTOM if self._expanded else 0)
+        # Dépliée, l'espace va au contenu ; repliée, au ressort de queue.
+        lay.setStretch(self._body_index, 1 if self._expanded else 0)
+        lay.setStretch(self._tail_index, 0 if self._expanded else 1)
+        # Repliée, la section ne vaut que son en-tête : politique Fixed, sinon
+        # le facteur d'étirement du parent (3/2 dans le Sprite Finder) reste
+        # appliqué et la hauteur reste en blanc sous le titre.
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred if self._expanded else QSizePolicy.Policy.Fixed,
+        )
 
     def _on_search_toggled(self, checked: bool):
         self._search_row.setVisible(checked)
@@ -864,10 +976,10 @@ class AssetHeaderBar(QWidget):
         self.setFixedHeight(44)
 
         self._type_lbl = QLabel("")
-        self._type_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        self._type_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
 
         self._name_edit = QLineEdit("")
-        self._name_edit.setFont(QFont(T.MONO, T.XXL, QFont.Weight.Bold))
+        self._name_edit.setFont(QFont(T.UI, T.XXL, QFont.Weight.DemiBold))
         self._name_edit.setFrame(False)
         self._name_edit.setReadOnly(True)
         self._name_edit.editingFinished.connect(self._on_editing_finished)

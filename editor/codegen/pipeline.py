@@ -102,6 +102,10 @@ class BuildWorker(EventEmitter, threading.Thread):
             self._emit("log_line", f"[build] {len(all_scenes)} scène(s) : {', '.join(scene_names)}")
 
             p.prepare_build()
+            # Le scan des `text.set_font` est mémoïsé pour la durée d'un build
+            # seulement (cf. font_emit) : les scripts changent entre deux builds.
+            from codegen.font_emit import clear_font_scan_cache
+            clear_font_scan_cache()
             sound_assets = self._resolve_sound_assets(p)
 
             # ── Résolution par scène ───────────────────────────────
@@ -459,11 +463,9 @@ class BuildWorker(EventEmitter, threading.Thread):
         différents donc des budgets différents. Ses tuiles, elles, sont générées
         une fois : c'est la scène la plus contrainte qui commande."""
         from codegen.vram_alloc import scene_layout
-        from codegen.font_emit import scene_text_tiles
-        from codegen.runtime_codegen.main_gen import project_fonts
-        # names=None : cf. font_emit.scene_text_tiles — même valeur qu'avant,
-        # la restriction par mise en page attend l'indexation de text.set_font.
-        text_tiles = scene_text_tiles(project_fonts(p), None)
+        from codegen.runtime_codegen.main_gen import scene_text_reservation
+        # Réservation prise au MÊME calcul que le placement réel, sinon le
+        # budget validé ici n'est plus celui que la scène tient.
         out: dict = {}
         for scene in p.scenes:
             slots, maps, names = {}, {}, {}
@@ -485,6 +487,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 names[layer.bg_slot] = layer.background_name
             if not slots:
                 continue
+            text_tiles = scene_text_reservation(p, scene)["total"]
             lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), text_tiles)
             for slot, name in names.items():
                 key = (name, slot)

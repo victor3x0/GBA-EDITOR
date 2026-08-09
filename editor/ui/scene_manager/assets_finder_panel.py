@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor, QDrag, QAction
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray, QTimer
 
-from ui.common.theme import T, C, QSS
+from ui.common.theme import T, C, S, QSS, ui_font
 from ui.common.widgets import W, FinderSection
 
 from core.project import (
@@ -51,7 +51,7 @@ T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/t
 # Icône par type d'élément UI (la couleur reste celle de la famille Interface —
 # le type se lit à la FORME, cf. project_theme_gba_redesign).
 _UI_ELEM_ICON = {KIND_REGION: "ui_region", KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text"}
-_UI_ELEM_LABEL = {KIND_REGION: "zone", KIND_PANEL: "conteneur", KIND_TEXT: "texte"}
+_UI_ELEM_LABEL = {KIND_REGION: "zone", KIND_PANEL: "container", KIND_TEXT: "text"}
 
 
 def _lua_handle(node_type: str, obj) -> str:
@@ -80,7 +80,7 @@ _DIM     = C.TEXT_DIM
 # thème, icônes en neutre (COLOR_DEFAULT), distinction par forme d'icône.
 # Le code couleur ne subsiste qu'aux niveaux locaux (scene canvas) et dans
 # l'en-tête d'inspecteur (AssetHeaderBar).
-_C_SCENE  = _TEXT
+_C_SCENE  = C.TEXT_HI     # parent de l'arbre : plus clair que ses enfants
 _C_PREFAB = _TEXT
 _C_SCRIPT = _TEXT
 _C_FOLDER = _DIM
@@ -141,7 +141,9 @@ class _Tree(QTreeWidget):
             total += 1
             if item.isExpanded():
                 stack.extend(item.child(n) for n in range(item.childCount()))
-        self.setFixedHeight(max(total * 22, 4))
+        # S.ROW = hauteur d'une ligne dans QSS.tree_widget : les deux doivent
+        # rester d'accord, sinon l'arbre se coupe ou traîne du vide.
+        self.setFixedHeight(max(total * S.ROW, 4))
 
     def sizeHint(self):
         return QSize(self.width(), self.minimumHeight())
@@ -175,8 +177,10 @@ class _SceneTree(_Tree):
             s_item.setData(0, _ROLE_TYPE, T_SCENE)
             s_item.setData(0, _ROLE_OBJ, scene)
             s_item.setData(0, _ROLE_PATH, i)
+            # La scène est le parent : distinguée par le CONTRASTE, pas par une
+            # taille à part — à corps variable, l'arbre gondole.
             s_item.setForeground(0, QColor(_C_SCENE))
-            s_item.setFont(0, QFont(T.MONO, T.MD, QFont.Weight.Normal))
+            s_item.setFont(0, ui_font(T.LG, bold=True))
             if is_active:
                 s_item.setBackground(0, QColor(C.BG_SEL))
 
@@ -211,12 +215,12 @@ class _SceneTree(_Tree):
         root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
         root_item.setData(0, _ROLE_OBJ, lay)
         root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
-        root_item.setText(0, f"Interface  ·  {len(users)} scènes" if shared else "Interface")
+        root_item.setText(0, f"Interface  ·  {len(users)} scenes" if shared else "Interface")
         root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
-        root_item.setFont(0, QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        root_item.setFont(0, ui_font(T.MD, bold=True))
         root_item.setToolTip(
-            0, f"Mise en page « {lay.name} »"
-               + (f"\nPARTAGÉE par {len(users)} scènes — l'éditer les touche toutes."
+            0, f"Layout “{lay.name}”"
+               + (f"\nSHARED by {len(users)} scenes — editing it affects all of them."
                   if shared else ""))
         # Éléments : arbre dérivé des refs parent (liste plate → hiérarchie).
         items: dict[str, QTreeWidgetItem] = {}
@@ -238,16 +242,16 @@ class _SceneTree(_Tree):
         item.setData(0, _ROLE_PATH, layout)     # la layout porteuse (pour le bus/cmd)
         item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_region"), COLOR_UI))
         item.setText(0, el.name)
-        item.setFont(0, QFont(T.MONO, T.MD))
+        item.setFont(0, ui_font(T.LG))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         handle = _lua_handle(T_UI_ELEM, el)
         if handle:
             item.setForeground(0, QColor(_TEXT))
-            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · référençable : {handle}")
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · referenceable: {handle}")
         else:
             item.setForeground(0, QColor(_DIM))
-            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · authoring — non "
-                               f"référençable en script")
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · authoring — not "
+                               f"referenceable in script")
 
     def _update_actor_item(self, item: QTreeWidgetItem, actor: Actor):
         # Un actor est TOUJOURS référençable (`get_actor`) — le tooltip le dit,
@@ -256,10 +260,10 @@ class _SceneTree(_Tree):
         handle = _lua_handle(T_ACTOR, actor)
         if actor.prefab_name:
             item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
-            item.setToolTip(0, f"Instance de prefab : {actor.prefab_name}\nréférençable : {handle}")
+            item.setToolTip(0, f"Prefab instance: {actor.prefab_name}\nreferenceable: {handle}")
         else:
             item.setIcon(0, _ico("actor", COLOR_DEFAULT))
-            item.setToolTip(0, f"référençable : {handle}")
+            item.setToolTip(0, f"referenceable: {handle}")
 
         # Le texte de l'item EST le texte édité en place (QTreeWidgetItem ne
         # permet pas de distinguer DisplayRole/EditRole) : on n'y met donc que
@@ -407,40 +411,40 @@ class _SceneTree(_Tree):
             return
         typ = item.data(0, _ROLE_TYPE)
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
 
         if typ == T_SCENE:
             scene: Scene = item.data(0, _ROLE_OBJ)
-            menu.addAction("Ajouter un actor").triggered.connect(
+            menu.addAction("Add an actor").triggered.connect(
                 self._panel.actor_add_requested)
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Renommer la scène")
-            menu.addAction("Supprimer la scène").triggered.connect(
+            self.add_rename_action(menu, item, "Rename scene")
+            menu.addAction("Delete scene").triggered.connect(
                 lambda: self._delete_scene(scene))
 
         elif typ == T_ACTOR:
             actor: Actor = item.data(0, _ROLE_OBJ)
             parent = item.parent()
             scene: Scene = parent.data(0, _ROLE_OBJ)
-            menu.addAction("Monter tout en haut").triggered.connect(
+            menu.addAction("Move to top").triggered.connect(
                 lambda: self._move_actor(scene, actor, "top"))
-            menu.addAction("Monter").triggered.connect(
+            menu.addAction("Move up").triggered.connect(
                 lambda: self._move_actor(scene, actor, "up"))
-            menu.addAction("Descendre").triggered.connect(
+            menu.addAction("Move down").triggered.connect(
                 lambda: self._move_actor(scene, actor, "down"))
-            menu.addAction("Descendre tout en bas").triggered.connect(
+            menu.addAction("Move to bottom").triggered.connect(
                 lambda: self._move_actor(scene, actor, "bottom"))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Renommer l'actor")
-            menu.addAction("Supprimer l'actor").triggered.connect(
+            self.add_rename_action(menu, item, "Rename actor")
+            menu.addAction("Delete actor").triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
 
         elif typ == T_UI_LAYOUT:
             layout = item.data(0, _ROLE_OBJ)
-            add = menu.addMenu("Ajouter un widget")
-            add.setFont(QFont(T.MONO, T.MD))
-            for kind, label in ((KIND_PANEL, "Conteneur"), (KIND_TEXT, "Texte"),
-                                (KIND_REGION, "Zone de texte")):
+            add = menu.addMenu("Add a widget")
+            add.setFont(QFont(T.UI, T.MD))
+            for kind, label in ((KIND_PANEL, "Container"), (KIND_TEXT, "Text"),
+                                (KIND_REGION, "Text zone")):
                 act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                 act.triggered.connect(
                     lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
@@ -451,10 +455,10 @@ class _SceneTree(_Tree):
             sibs = [s.name for s in layout._siblings(layout._parent_key(el))]
             i, n = sibs.index(el.name), len(sibs)
             for label, direction, on in (
-                ("Monter tout en haut", "top", i > 0),
-                ("Monter", "up", i > 0),
-                ("Descendre", "down", i < n - 1),
-                ("Descendre tout en bas", "bottom", i < n - 1),
+                ("Move to top", "top", i > 0),
+                ("Move up", "up", i > 0),
+                ("Move down", "down", i < n - 1),
+                ("Move to bottom", "bottom", i < n - 1),
             ):
                 a = menu.addAction(label)
                 a.setEnabled(on)
@@ -462,16 +466,16 @@ class _SceneTree(_Tree):
                     lambda _, d=direction, e=el, lay=layout: self._move_ui_elem(lay, e, d))
             if getattr(el, "can_contain", False):
                 menu.addSeparator()
-                sub = menu.addMenu("Ajouter un enfant")
-                sub.setFont(QFont(T.MONO, T.MD))
-                for kind, label in ((KIND_PANEL, "Conteneur"), (KIND_TEXT, "Texte"),
-                                    (KIND_REGION, "Zone de texte")):
+                sub = menu.addMenu("Add a child")
+                sub.setFont(QFont(T.UI, T.MD))
+                for kind, label in ((KIND_PANEL, "Container"), (KIND_TEXT, "Text"),
+                                    (KIND_REGION, "Text zone")):
                     act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                     act.triggered.connect(
                         lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Renommer")
-            menu.addAction("Supprimer").triggered.connect(
+            self.add_rename_action(menu, item, "Rename")
+            menu.addAction("Delete").triggered.connect(
                 lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
 
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -485,30 +489,30 @@ class _SceneTree(_Tree):
             UIRegion, UIPanel, UIText, unique_element_name)
         taken = set(layout.element_names()) | set(proj.region_names())
         if kind == KIND_PANEL:
-            el = UIPanel(name=unique_element_name(taken, "conteneur"),
+            el = UIPanel(name=unique_element_name(taken, "container"),
                          parent=parent_name, x=8, y=8, w=96, h=48)
         elif kind == KIND_TEXT:
-            el = UIText(name=unique_element_name(taken, "texte"),
+            el = UIText(name=unique_element_name(taken, "text"),
                         parent=parent_name, x=8, y=8, w=80, h=8)
         else:
             el = UIRegion(name=unique_element_name(taken, "zone"),
                           parent=parent_name, x=8, y=8, w=64, h=16)
         get_history().push(AddListItemCmd(
             layout.elements, el, persist_fn=self._panel._after_ui_change,
-            label=f"Nouveau {_UI_ELEM_LABEL.get(kind, kind)} {el.name}"))
+            label=f"New {_UI_ELEM_LABEL.get(kind, kind)} {el.name}"))
         get_bus().select(UIElementSelection(layout, el))
 
     def _move_ui_elem(self, layout, element, direction: str):
         def mutate(name=element.name, d=direction):
             layout.move_sibling(name, d)
         get_history().push(UILayoutOrderCmd(
-            layout, mutate, f"Réordonner {element.name}",
+            layout, mutate, f"Reorder {element.name}",
             persist_fn=self._panel._after_ui_change))
 
     def _delete_ui_elem(self, layout, element):
         get_history().push(RemoveListItemCmd(
             layout.elements, element, persist_fn=self._panel._after_ui_change,
-            label=f"Supprimer {element.name}"))
+            label=f"Delete {element.name}"))
         get_bus().clear()
 
     # ── Actions ───────────────────────────────────────────────────
@@ -582,7 +586,7 @@ class _SceneTree(_Tree):
 
     def _delete_scene(self, scene: Scene):
         if QMessageBox.question(
-            self, "Supprimer", f"Supprimer la scène '{scene.name}' ?\n(Ctrl+Z pour annuler)",
+            self, "Delete", f"Delete scene '{scene.name}'?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -668,7 +672,7 @@ class _AssetTree(_Tree):
                 folder.setData(0, _ROLE_TYPE, T_FOLDER)
                 folder.setData(0, _ROLE_PATH, entry)
                 folder.setForeground(0, QColor(_C_FOLDER))
-                folder.setFont(0, QFont(T.MONO, T.MD))
+                folder.setFont(0, ui_font(T.LG))
                 self._fill(folder, entry, project)
                 folder.setExpanded(True)
             elif entry.suffix in suffixes:
@@ -692,7 +696,7 @@ class _AssetTree(_Tree):
                     item.setData(0, _ROLE_OBJ, entry)
                     item.setForeground(0, QColor(_C_SCRIPT))
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-                item.setFont(0, QFont(T.MONO, T.MD))
+                item.setFont(0, ui_font(T.LG))
 
     # ── Drag MIME ─────────────────────────────────────────────────
 
@@ -735,36 +739,36 @@ class _AssetTree(_Tree):
             return
         typ  = item.data(0, _ROLE_TYPE)
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
 
         if typ == T_PREFAB:
             prefab: Prefab = item.data(0, _ROLE_OBJ)
-            a_inst = menu.addAction("Instancier le prefab")
+            a_inst = menu.addAction("Instantiate prefab")
             a_inst.triggered.connect(
                 lambda: get_dispatcher().instantiate_prefab(prefab.name, 60, 60))
-            menu.addAction("Éditer le prefab").triggered.connect(
+            menu.addAction("Edit prefab").triggered.connect(
                 lambda: get_bus().select(prefab))
-            menu.addAction("Voir les instances").triggered.connect(
+            menu.addAction("View instances").triggered.connect(
                 lambda: self._panel.prefab_uses_requested.emit(prefab))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Renommer le prefab")
-            menu.addAction("Supprimer le prefab").triggered.connect(
+            self.add_rename_action(menu, item, "Rename prefab")
+            menu.addAction("Delete prefab").triggered.connect(
                 lambda: self._delete_prefab(prefab))
 
         elif typ == T_SCRIPT:
             path: Path = item.data(0, _ROLE_OBJ)
-            menu.addAction("Éditer le script").triggered.connect(
+            menu.addAction("Edit script").triggered.connect(
                 lambda: self._panel.script_opened.emit(str(path)))
-            menu.addAction("Voir les utilisations").triggered.connect(
+            menu.addAction("View uses").triggered.connect(
                 lambda: self._panel.script_uses_requested.emit(str(path)))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Renommer le script")
-            menu.addAction("Supprimer le script").triggered.connect(
+            self.add_rename_action(menu, item, "Rename script")
+            menu.addAction("Delete script").triggered.connect(
                 lambda: self._delete_script(path))
 
         elif typ == T_FOLDER:
             folder: Path = item.data(0, _ROLE_PATH)
-            menu.addAction("Nouveau sous-dossier").triggered.connect(
+            menu.addAction("New subfolder").triggered.connect(
                 lambda: self._new_subfolder(item, folder))
 
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -831,7 +835,7 @@ class _AssetTree(_Tree):
 
     def _delete_prefab(self, prefab: Prefab):
         if QMessageBox.question(
-            self, "Supprimer", f"Supprimer le prefab '{prefab.name}' ?\n(Ctrl+Z pour annuler)",
+            self, "Delete", f"Delete prefab '{prefab.name}'?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -843,14 +847,14 @@ class _AssetTree(_Tree):
 
     def _delete_script(self, path: Path):
         if QMessageBox.question(
-            self, "Supprimer", f"Supprimer '{path.name}' ?\n(Ctrl+Z pour annuler)",
+            self, "Delete", f"Delete '{path.name}'?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
         get_history().push(DeleteFileCmd(path, lambda: self._panel.refresh()))
 
     def _new_subfolder(self, parent_item, parent_dir: Path):
-        name, ok = QInputDialog.getText(self, "Nouveau dossier", "Nom :")
+        name, ok = QInputDialog.getText(self, "New folder", "Name:")
         if ok and name.strip():
             new_dir = parent_dir / name.strip()
             new_dir.mkdir(exist_ok=True)
@@ -900,7 +904,7 @@ class _VarRow(QWidget):
     """Une variable = une ligne. Le champ valeur est reconstruit quand le type
     change (bool ↔ numérique), d'où l'aspect « réactif »."""
 
-    _ROW_H = 26
+    _ROW_H = S.ROW + S.SM      # un peu plus qu'une ligne d'arbre : elle a des champs
 
     def __init__(self, owner: "_ValuesList", entry):
         super().__init__()
@@ -909,12 +913,14 @@ class _VarRow(QWidget):
         self.setFixedHeight(self._ROW_H)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 1, 6, 1)
-        row.setSpacing(4)
+        # Aligné sur le retrait des lignes d'arbre (QSS.tree_widget) pour que
+        # variables et assets forment une seule colonne dans le panneau.
+        row.setContentsMargins(S.CONTENT, 1, S.MD, 1)
+        row.setSpacing(S.SM)
 
         # Nom — édition en place, sans cadre (pas d'aspect champ de formulaire)
         self._name = QLineEdit(entry.name)
-        self._name.setFont(QFont(T.MONO, T.MD))
+        self._name.setFont(ui_font(T.LG))
         self._name.setFrame(False)
         self._name.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
         self._name.setStyleSheet(
@@ -932,12 +938,12 @@ class _VarRow(QWidget):
         self._type_btn.setStyleSheet(
             f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER};border-radius:3px;padding:1px 4px;"
-            f"font-family:{T.MONO};font-size:{T.SM}px;}}"
+            f"font-family:{T.UI_STACK};font-size:{T.MD}px;}}"
             f"QToolButton:hover{{color:{C.TEXT_HI};border-color:{C.ACCENT};}}"
             f"QToolButton::menu-indicator{{image:none;width:0;}}"
         )
         menu = QMenu(self._type_btn)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
         for t in _VAR_TYPES:
             menu.addAction(t, lambda tt=t: self._on_type_selected(tt))
         self._type_btn.setMenu(menu)
@@ -973,7 +979,7 @@ class _VarRow(QWidget):
             w.setStyleSheet(
                 f"QSpinBox{{color:{_TEXT};background:{C.BG_INPUT};"
                 f"border:1px solid {C.BORDER};border-radius:3px;padding:1px 4px;"
-                f"font-family:{T.MONO};font-size:{T.SM}px;}}"
+                f"font-family:{T.UI_STACK};font-size:{T.MD}px;}}"
                 f"QSpinBox:focus{{border-color:{C.ACCENT};}}"
             )
             w.valueChanged.connect(self._commit_value)  # après setValue : pas de faux commit
@@ -984,8 +990,8 @@ class _VarRow(QWidget):
         # true = accent périwinkle (chrome), false = neutre discret
         return (
             f"QToolButton{{background:{C.BG_INPUT};border:1px solid {C.BORDER};"
-            f"border-radius:3px;color:{C.TEXT_DIM};font-family:{T.MONO};"
-            f"font-size:{T.SM}px;padding:1px 4px;}}"
+            f"border-radius:3px;color:{C.TEXT_DIM};font-family:{T.UI_STACK};"
+            f"font-size:{T.MD}px;padding:1px 4px;}}"
             f"QToolButton:checked{{color:{C.ACCENT};border-color:{C.ACCENT};}}"
         )
 
@@ -1018,15 +1024,15 @@ class _VarRow(QWidget):
         if new_name == self._entry.name:
             return
         if not self._owner.rename(self._entry, new_name):
-            QMessageBox.warning(self, "Nom déjà utilisé", f"« {new_name} » existe déjà.")
+            QMessageBox.warning(self, "Name already used", f"“{new_name}” already exists.")
             self._name.setText(self._entry.name)
 
     def contextMenuEvent(self, e):
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
-        a_uses = menu.addAction("Voir les utilisations")
+        menu.setFont(QFont(T.UI, T.MD))
+        a_uses = menu.addAction("View uses")
         menu.addSeparator()
-        a_del = menu.addAction("Supprimer")
+        a_del = menu.addAction("Delete")
         action = menu.exec(e.globalPos())
         if action == a_del:
             self._owner.delete(self._entry)
@@ -1053,9 +1059,11 @@ class _ValuesList(QWidget):
         self._root.setContentsMargins(0, 2, 0, 4)
         self._root.setSpacing(0)
 
-        self._empty = QLabel("  aucune variable")
-        self._empty.setFont(QFont(T.MONO, T.SM))
-        self._empty.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
+        self._empty = QLabel("no variable")
+        self._empty.setFont(QFont(T.UI, T.SM))
+        self._empty.setStyleSheet(
+            f"color:{C.TEXT_MUTED};background:transparent;"
+            f"padding-left:{S.CONTENT}px;")   # aligné sur les lignes d'assets
         self._root.addWidget(self._empty)
 
     def set_project(self, project: Project):
@@ -1093,7 +1101,7 @@ class _ValuesList(QWidget):
             return
         get_history().push(RemoveListItemCmd(
             self._entries(), entry, persist_fn=self.persist,
-            label=f"Supprimer {entry.name}",
+            label=f"Delete {entry.name}",
         ))
         self.reload()
 
@@ -1162,22 +1170,23 @@ class AssetsFinderPanel(QWidget):
 
         # ── Header projet ──────────────────────────────────────────
         hdr = QFrame()
-        hdr.setFixedHeight(36)
+        hdr.setFixedHeight(40)
         hdr.setStyleSheet(
             f"background:{_HEADER}; border-bottom:1px solid {C.BORDER};")
         hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(8, 0, 8, 0)
-        self._project_lbl = QLabel("Aucun projet")
-        self._project_lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
+        hl.setContentsMargins(S.GUTTER, 0, S.MD, 0)
+        hl.setSpacing(S.SM)
+        self._project_lbl = QLabel("No project")
+        self._project_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._project_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
         hl.addWidget(self._project_lbl, 1)
         _btn_qss = (
             f"QPushButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};"
-            f"border-radius:3px;padding:0 7px;font-family:{T.MONO};font-size:{T.SM}px;}}"
+            f"border-radius:3px;padding:0 7px;font-family:{T.UI_STACK};font-size:{T.SM}px;}}"
             f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
         )
-        btn_new  = QPushButton("Nouveau"); btn_new.setFixedHeight(22)
-        btn_open = QPushButton("Ouvrir");  btn_open.setFixedHeight(22)
+        btn_new  = QPushButton("New");  btn_new.setFixedHeight(22)
+        btn_open = QPushButton("Open"); btn_open.setFixedHeight(22)
         for b in (btn_new, btn_open):
             b.setStyleSheet(_btn_qss)
         btn_new.clicked.connect(self._prompt_new)
@@ -1187,16 +1196,7 @@ class AssetsFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Sprite finder / Script finder / Sound finder) ──
-        finder_hdr = QFrame()
-        finder_hdr.setFixedHeight(20)
-        finder_hdr.setStyleSheet(f"background:{_BG}; border-bottom:1px solid {C.BORDER_DARK};")
-        fl = QHBoxLayout(finder_hdr)
-        fl.setContentsMargins(8, 0, 0, 0)
-        finder_lbl = QLabel("Project Viewer")
-        finder_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        finder_lbl.setStyleSheet(f"color:{_DIM}; letter-spacing:1px;")
-        fl.addWidget(finder_lbl)
-        layout.addWidget(finder_hdr)
+        layout.addWidget(W.finder_bar("PROJECT VIEWER"))
 
         # ── Scroll area ────────────────────────────────────────────
         scroll = QScrollArea()
@@ -1237,19 +1237,13 @@ class AssetsFinderPanel(QWidget):
         sb_layout.setContentsMargins(0, 0, 0, 0)
         sb_layout.setSpacing(0)
 
-        def _sub_label(text):
-            lbl = QLabel(f"  {text}")
-            lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-            lbl.setStyleSheet(f"color:{_DIM}; background:{_HEADER};"
-                              f"border-bottom:1px solid {C.BORDER_DARK}; padding:3px 0;")
-            lbl.setFixedHeight(18)
-            return lbl
-
-        sb_layout.addWidget(_sub_label("ACTORS"))
+        # Intertitres ACTORS / SCENES / BEHAVIORS : de simples labels, sinon on
+        # empile deux niveaux de bandes sans distinguer section et groupe.
+        sb_layout.addWidget(W.title_group("ACTORS"))
         sb_layout.addWidget(self._tree_scripts_a)
-        sb_layout.addWidget(_sub_label("SCENES"))
+        sb_layout.addWidget(W.title_group("SCENES"))
         sb_layout.addWidget(self._tree_scripts_s)
-        sb_layout.addWidget(_sub_label("BEHAVIORS"))
+        sb_layout.addWidget(W.title_group("BEHAVIORS"))
         sb_layout.addWidget(self._tree_scripts_b)
         self._sec_scripts.set_widget(scripts_body)
 

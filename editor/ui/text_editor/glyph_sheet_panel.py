@@ -31,8 +31,8 @@ class GlyphSheetPanel(QWidget):
     color_picked       = pyqtSignal(str, object)
     pick_ended         = pyqtSignal()
 
-    _HINT_DEFAULT = ("Cliquer une case puis taper le caractère qu'elle représente — "
-                     "la sélection avance toute seule. Flèches pour naviguer.")
+    _HINT_DEFAULT = ("Click a cell then type the character it represents — "
+                     "the selection advances on its own. Arrows to navigate.")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,19 +51,19 @@ class GlyphSheetPanel(QWidget):
         bl.setContentsMargins(8, 0, 8, 0)
         bl.setSpacing(6)
 
-        self._title = QLabel("PLANCHE DE GLYPHES")
-        self._title.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        self._title.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        self._title = QLabel("GLYPH SHEET")
+        self._title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        self._title.setStyleSheet(QSS.title_panel)
         bl.addWidget(self._title)
         bl.addStretch()
 
-        self._btn_merge = W.btn_ghost("Fusionner")
-        self._btn_merge.setFont(QFont(T.MONO, T.XS))
+        self._btn_merge = W.btn_ghost("Merge")
+        self._btn_merge.setFont(QFont(T.UI, T.XS))
         self._btn_merge.setToolTip(
-            "Réunit les cases sélectionnées en UN glyphe couvrant leur\n"
-            "rectangle — une police 16×16 dans une planche 8×8, ou un\n"
-            "pictogramme large pour un mot entier.\n\n"
-            "Maj+clic sur une seconde case pour étendre la sélection."
+            "Merges the selected cells into ONE glyph covering their\n"
+            "rectangle — a 16×16 font in an 8×8 sheet, or a\n"
+            "wide pictogram for an entire word.\n\n"
+            "Shift+click a second cell to extend the selection."
         )
         self._btn_merge.setEnabled(False)
         self._btn_merge.clicked.connect(self._ask_merge)
@@ -71,8 +71,8 @@ class GlyphSheetPanel(QWidget):
 
         # Correctif quand la cellule proposée à l'import est fausse (planche
         # irrégulière, marge) — cf. l'avertissement « vérifie la cellule ».
-        lbl_cell = QLabel("Cellule")
-        lbl_cell.setFont(QFont(T.MONO, T.XS))
+        lbl_cell = QLabel("Cell")
+        lbl_cell.setFont(QFont(T.UI, T.XS))
         lbl_cell.setStyleSheet(f"color:{C.TEXT_DIM};")
         bl.addWidget(lbl_cell)
         self._cw = QSpinBox(); self._ch = QSpinBox()
@@ -80,19 +80,19 @@ class GlyphSheetPanel(QWidget):
             s.setRange(1, 64); s.setFixedWidth(48)
             s.setFont(QFont(T.MONO, T.SM)); s.setStyleSheet(QSS.spinbox)
             bl.addWidget(s)
-        self._btn_reslice = W.btn_ghost("Re-découper")
-        self._btn_reslice.setFont(QFont(T.MONO, T.XS))
+        self._btn_reslice = W.btn_ghost("Re-slice")
+        self._btn_reslice.setFont(QFont(T.UI, T.XS))
         self._btn_reslice.setToolTip(
-            "Redécoupe la planche à cette taille de cellule.\n"
-            "Les caractères assignés sont reproposés depuis zéro — à utiliser\n"
-            "quand la grille détectée est fausse, pas pour un ajustement fin."
+            "Re-slices the sheet at this cell size.\n"
+            "Assigned characters are reset from scratch — use this\n"
+            "when the detected grid is wrong, not for fine adjustment."
         )
         self._btn_reslice.clicked.connect(
             lambda: self.reslice_asked.emit(self._cw.value(), self._ch.value()))
         bl.addWidget(self._btn_reslice)
 
         lbl_zoom = QLabel("Zoom")
-        lbl_zoom.setFont(QFont(T.MONO, T.XS))
+        lbl_zoom.setFont(QFont(T.UI, T.XS))
         lbl_zoom.setStyleSheet(f"color:{C.TEXT_DIM};")
         bl.addWidget(lbl_zoom)
         self._zoom = QSpinBox()
@@ -112,7 +112,7 @@ class GlyphSheetPanel(QWidget):
         root.addWidget(self._scroll, 1)
 
         self._hint = QLabel(self._HINT_DEFAULT)
-        self._hint.setFont(QFont(T.MONO, T.XS))
+        self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(
             f"color:{C.TEXT_MUTED}; background:{C.BG_PANEL}; padding:4px 8px;"
             f"border-top:1px solid {C.BORDER_DARK};")
@@ -136,7 +136,7 @@ class GlyphSheetPanel(QWidget):
     def begin_pick(self, role: str, label: str):
         """Arme la pipette et l'annonce dans le bandeau d'aide."""
         self._sheet.begin_pick(role)
-        self._set_hint(f"Clique la couleur {label} sur la planche — Échap pour annuler.")
+        self._set_hint(f"Click the {label} color on the sheet — Escape to cancel.")
 
     def refresh_keying(self):
         """Reconstruit la planche trouée (une couleur-clé a bougé)."""
@@ -153,9 +153,9 @@ class GlyphSheetPanel(QWidget):
         if font:
             self._cw.setValue(max(1, font.cell_w))
             self._ch.setValue(max(1, font.cell_h))
-            self._title.setText(f"PLANCHE — {font.name}")
+            self._title.setText(f"SHEET — {font.name}")
         else:
-            self._title.setText("PLANCHE DE GLYPHES")
+            self._title.setText("GLYPH SHEET")
         self._blocking = False
         self._sheet.load(font, project)
 

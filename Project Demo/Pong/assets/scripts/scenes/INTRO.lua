@@ -15,6 +15,6 @@ function on_update()
     text.draw_in("invite", "intro_02")
 
     if input.pressed("start") then
-        scene.switch("ARENA")
+        scene.switch("Arena")
     end
 end

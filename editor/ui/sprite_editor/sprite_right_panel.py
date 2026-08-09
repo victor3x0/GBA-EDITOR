@@ -123,18 +123,18 @@ class SpriteRightPanel(QWidget):
         self._pal_grid.asset_restore.connect(self._on_pal_restore)
         lay.addWidget(self._pal_grid)
 
-        self._btn_import = W.btn_accent("⟐  Importer / remplacer l'image…")
+        self._btn_import = W.btn_accent("⟐  Import / replace image…")
         self._btn_import.setToolTip(
-            "Choisit une image, la valide et l'encode (GBA, non-destructif) et "
-            "l'attache au sprite courant."
+            "Choose an image, validate and encode it (GBA, non-destructive) and "
+            "attach it to the current sprite."
         )
         self._btn_import.clicked.connect(self._on_replace_image)
         lay.addWidget(self._btn_import)
 
-        self._btn_extract = W.btn_accent("⟐  Extraire du PNG")
+        self._btn_extract = W.btn_accent("⟐  Extract from PNG")
         self._btn_extract.setToolTip(
-            "Crée une palette « pal_<nom> » du catalogue depuis les couleurs du PNG "
-            "(index 0 = transparence, puis du plus sombre au plus lumineux)."
+            "Creates a catalog palette “pal_<name>” from the PNG's colors "
+            "(index 0 = transparency, then darkest to lightest)."
         )
         self._btn_extract.clicked.connect(self._on_extract_palette)
         lay.addWidget(self._btn_extract)

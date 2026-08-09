@@ -78,7 +78,10 @@ def transpile_all(
     # Textes et polices : l'ORDRE fait foi (il devient l'index dans les tables C
     # émises par main_gen). project_fonts() est la source unique côté polices.
     from codegen.runtime_codegen.main_gen import project_fonts
-    text_keys   = [t.key for t in getattr(p, "texts", [])]
+    # `build_texts()` et non `texts` : les littéraux de `text.draw` deviennent
+    # des entrées anonymes, et leurs `#define TEXT_*` doivent exister aussi.
+    text_keys   = ([t.key for t in p.build_texts()] if hasattr(p, "build_texts")
+                   else [t.key for t in getattr(p, "texts", [])])
     font_names  = [f.name for f in project_fonts(p)]
     # Zones de texte : l'ordre de `all_regions()` devient l'index dans
     # g_ui_regions, comme pour les textes et les polices.
@@ -160,6 +163,11 @@ def transpile_all(
                 global_names = list(global_names) if global_names else None,
                 global_types = {g.name: g.type for g in p.globals},
                 const_names  = list(const_names) if const_names else None,
+                # Un script de SCÈNE cite textes et polices autant qu'un script
+                # d'actor : sans ces deux-là le checker se tait, et une clé
+                # inconnue n'échoue qu'au `make`, sur un `TEXT_*` indéfini.
+                text_keys    = text_keys,
+                font_names   = font_names,
                 region_names = region_names,
             )
             scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)

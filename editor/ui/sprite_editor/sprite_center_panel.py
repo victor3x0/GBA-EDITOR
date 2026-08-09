@@ -168,7 +168,7 @@ class SpriteCenterPanel(QWidget):
         self._tiles.setEnabled(not self._read_only)
         from ui.sprite_editor.sprite_finder_panel import _dir_label
         self._canvas_panel.set_read_only_banner(
-            f"MIROIR · {_dir_label(sd)} · lecture seule" if self._read_only else None)
+            f"MIRROR · {_dir_label(sd)} · read-only" if self._read_only else None)
         self._refresh_canvas()
 
     def _active_frames(self) -> list:

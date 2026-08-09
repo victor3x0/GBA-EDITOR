@@ -8,7 +8,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSplitter,
-    QTextEdit, QLineEdit, QComboBox, QToolButton, QScrollArea,
+    QTextEdit, QLineEdit, QComboBox, QToolButton,
     QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView,
     QMessageBox, QApplication,
 )
@@ -16,18 +16,19 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
 from core.models.text import (
-    MAX_DEPTH, SEP, norm_path, tree_paths, repath_segment,
+    MAX_DEPTH, SEP, norm_path, tree_paths, repath_segment, texts_under,
 )
 from core.text_markup import parse, resolve
 from core.history import (
     get_history, SetFieldCmd, AddListItemCmd, RemoveListItemCmd,
 )
-from ui.common.theme import C, T, QSS
+from ui.common.theme import C, T, S, QSS
 from ui.common.widgets import W, BTN_ICON
 from ui.common import icons
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.font_screen_preview import FontScreenPreview
 from ui.text_editor.markup_highlighter import MarkupHighlighter
+from ui.text_editor.markup_toolbar import MarkupToolbar
 from ui.text_editor.text_commands import (
     RenameTextKeyCmd, SetTextPathCmd, RelinkTextKeyCmd,
 )
@@ -66,6 +67,84 @@ class _ContentEdit(QTextEdit):
     def focusOutEvent(self, e):
         super().focusOutEvent(e)
         self.commit()
+
+
+# Rôles portés par les items — au module, parce que l'arbre et le panneau les
+# lisent tous les deux (la classe les ré-expose sous ses anciens noms).
+_ROLE_TEXT = Qt.ItemDataRole.UserRole        # Text, sur une feuille
+_ROLE_PATH = Qt.ItemDataRole.UserRole + 1    # tuple(str), sur un nœud
+
+# Où l'item lâché a atterri, vu de la cible.
+DROP_ON, DROP_ABOVE, DROP_BELOW = "on", "above", "below"
+
+
+class _TextTree(QTreeWidget):
+    """L'arbre des textes, augmenté du glisser-déposer.
+
+    Il ne déplace RIEN lui-même : l'arbre est dérivé de la liste plate, et
+    laisser Qt bouger des lignes le ferait mentir hors historique. Il dit ce qui
+    a été lâché et où ; le panneau en tire une commande annulable.
+    """
+
+    drop_asked = pyqtSignal(object, object, str)   # (source, cible|None, DROP_*)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDropIndicatorShown(True)
+        # Le curseur doit dire « déplacer », pas « copier » : un texte n'existe
+        # qu'à un endroit. Le retrait de ligne par Qt est neutralisé dans
+        # `dropEvent`.
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    @staticmethod
+    def _path_of(item) -> Optional[tuple]:
+        """Chemin du nœud, ou du rangement qui contient la feuille."""
+        if item is None:
+            return None
+        t = item.data(0, _ROLE_TEXT)
+        return tuple(t.path) if t is not None else item.data(0, _ROLE_PATH)
+
+    def _refuses(self, src, dst) -> bool:
+        """Cibles impossibles — un nœud ne se range ni dans lui-même ni dans ce
+        qu'il contient : le chemin qu'on obtiendrait n'existerait plus."""
+        if src is None or src is dst:
+            return True
+        node = src.data(0, _ROLE_PATH)
+        if node is None:
+            return False
+        target = self._path_of(dst)
+        return target is not None and target[:len(node)] == node
+
+    def dragMoveEvent(self, e):
+        """Refuse à la SOURCE plutôt qu'à l'arrivée : le curseur barré dit non
+        pendant le geste, une erreur après coup arriverait trop tard."""
+        dst = self.itemAt(e.position().toPoint())
+        if self._refuses(self.currentItem(), dst):
+            e.ignore()
+            return
+        super().dragMoveEvent(e)
+
+    def dropEvent(self, e):
+        src = self.currentItem()
+        dst = self.itemAt(e.position().toPoint())
+        if self._refuses(src, dst):
+            e.ignore()
+            return
+        pos = self.dropIndicatorPosition()
+        where = (DROP_ABOVE if pos == QAbstractItemView.DropIndicatorPosition.AboveItem
+                 else DROP_BELOW if pos == QAbstractItemView.DropIndicatorPosition.BelowItem
+                 else DROP_ON)
+        # `IgnoreAction` : accepté en MoveAction, Qt retirerait de lui-même la
+        # ligne déplacée — l'arbre perdrait une entrée que le modèle a encore.
+        e.setDropAction(Qt.DropAction.IgnoreAction)
+        e.accept()
+        # Cible None = le vide sous l'arbre, c'est-à-dire la racine.
+        self.drop_asked.emit(src, dst, where)
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Arbre des textes + atelier d'écriture
 # ──────────────────────────────────────────────────────────────────
@@ -84,9 +163,11 @@ class TextTreePanel(QWidget):
     parsed           = pyqtSignal(object)   # ParsedText de l'entrée courante
     preview_font_changed = pyqtSignal(object)   # Font | None
 
-    _COLS = ("Rangement / Contenu", "Clé")
-    _ROLE_TEXT = Qt.ItemDataRole.UserRole        # Text, sur une feuille
-    _ROLE_PATH = Qt.ItemDataRole.UserRole + 1    # tuple(str), sur un nœud
+    _COLS = ("Folder / Content", "Key")
+    # Les rôles vivent au module (l'arbre les lit aussi) ; ces alias gardent le
+    # `self._ROLE_*` du reste de la classe.
+    _ROLE_TEXT = globals()["_ROLE_TEXT"]      # Text, sur une feuille
+    _ROLE_PATH = globals()["_ROLE_PATH"]      # tuple(str), sur un nœud
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,16 +187,10 @@ class TextTreePanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        hdr = QFrame()
-        hdr.setFixedHeight(26)
-        hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER_DARK};")
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(8, 0, 4, 0)
-        hl.setSpacing(6)
-        lbl = QLabel("TEXTES")
-        lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
-        hl.addWidget(lbl)
+        # Même bandeau d'identité que les autres viewers, augmenté du compteur,
+        # du filtre et des actions — ce panneau n'a pas de section repliable.
+        hdr = W.finder_bar("TEXTS")
+        hl = hdr.layout()
         self._count = QLabel("")
         self._count.setFont(QFont(T.MONO, T.XS))
         self._count.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -123,35 +198,39 @@ class TextTreePanel(QWidget):
         hl.addStretch()
         # Filtre TOUJOURS visible : dès qu'on peut replier, on peut se cacher
         # son propre contenu — la recherche est la contrepartie du pliage.
-        self._search = W.search_box("Filtrer : clé, rangement ou contenu…")
+        self._search = W.search_box("Filter: key, folder or content…")
         self._search.setFixedWidth(240)
         self._search.textChanged.connect(lambda _q: self._apply_filter())
         hl.addWidget(self._search)
-        self._btn_add = W.btn_add("Nouveau texte (rangé là où est la sélection)")
+        self._btn_add = W.btn_add("New text (filed where the selection is)")
         self._btn_add.clicked.connect(self._add_text)
         hl.addWidget(self._btn_add)
-        self._btn_del = W.btn_danger("Supprimer le texte sélectionné")
+        self._btn_del = W.btn_danger("Delete selected text")
         self._btn_del.clicked.connect(self._delete_text)
         hl.addWidget(self._btn_del)
         root.addWidget(hdr)
 
-        self._tree = QTreeWidget()
+        self._tree = _TextTree()
         self._tree.setColumnCount(len(self._COLS))
         self._tree.setHeaderLabels(self._COLS)
         self._tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         # Aucun déclencheur automatique : le double-clic est routé à la main
-        # vers la colonne 0 d'un NŒUD, jamais vers une feuille ou une clé.
+        # vers le libellé d'un NŒUD ou la CLÉ d'une feuille — jamais vers le
+        # contenu, qui est un rendu (balises résolues) et non la source.
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._tree.setUniformRowHeights(True)
+        # Corps, hauteur de ligne et survol communs aux viewers ; seule la
+        # couleur de sélection reste celle des textes.
         self._tree.setStyleSheet(
             f"QTreeWidget{{background:{C.BG_BASE}; color:{C.TEXT_NORM}; border:none;"
-            f"font-family:{T.MONO}; font-size:{T.SM}px;}}"
-            f"QTreeWidget::item{{padding:2px 4px;}}"
+            f"font-family:{T.UI_STACK}; font-size:{T.MD}px; outline:none;}}"
+            f"QTreeWidget::item{{padding:2px 4px; height:{S.ROW}px;}}"
             f"QTreeWidget::item:selected{{background:{C.BG_SEL}; color:{TEXT_COLOR};}}"
-            f"QTreeWidget::item:hover{{background:{C.BG_HOVER};}}"
-            f"QHeaderView::section{{background:{C.BG_PANEL}; color:{C.TEXT_DIM};"
-            f"border:none; border-bottom:1px solid {C.BORDER}; padding:4px 6px;"
-            f"font-family:{T.MONO}; font-size:{T.XS}px;}}"
+            f"QTreeWidget::item:hover:!selected{{background:{C.BG_PANEL};}}"
+            f"QHeaderView::section{{background:transparent; color:{C.TEXT_MUTED};"
+            f"border:none; border-bottom:1px solid {C.BORDER_DARK}; padding:4px 6px;"
+            f"font-family:{T.UI_STACK}; font-size:{T.XS}px; font-weight:700;"
+            f"letter-spacing:1px;}}"
         )
         th = self._tree.header()
         th.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -161,6 +240,7 @@ class TextTreePanel(QWidget):
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.itemExpanded.connect(self._on_expanded)
         self._tree.itemCollapsed.connect(self._on_collapsed)
+        self._tree.drop_asked.connect(self._on_drop)
 
         # ── Découpage : la liste en haut, l'atelier en bas ─────────
         # Écriture et rendu CÔTE À CÔTE : empilés, l'aperçu repoussait
@@ -192,7 +272,7 @@ class TextTreePanel(QWidget):
         self._key_edit = QLineEdit()
         self._key_edit.setFont(QFont(T.CODE, T.SM))
         self._key_edit.setFixedWidth(180)
-        self._key_edit.setPlaceholderText("clé")
+        self._key_edit.setPlaceholderText("key")
         self._key_edit.editingFinished.connect(self._commit_key)
         el.addWidget(self._key_edit)
 
@@ -208,7 +288,7 @@ class TextTreePanel(QWidget):
         self._btn_copy.setFixedSize(22, 22)
         self._btn_copy.setStyleSheet(BTN_ICON)
         self._btn_copy.setIcon(icons.get("copy", C.TEXT_DIM))
-        self._btn_copy.setToolTip("Copier la clé — à coller dans un script Lua")
+        self._btn_copy.setToolTip("Copy the key — paste into a Lua script")
         self._btn_copy.clicked.connect(self._copy_key)
         el.addWidget(self._btn_copy)
 
@@ -225,17 +305,17 @@ class TextTreePanel(QWidget):
         for lvl in range(MAX_DEPTH):
             if lvl:
                 arrow = QLabel(SEP.strip())
-                arrow.setFont(QFont(T.MONO, T.SM))
+                arrow.setFont(QFont(T.UI, T.SM))
                 arrow.setStyleSheet(f"color:{C.TEXT_MUTED};")
                 el.addWidget(arrow)
             e = QLineEdit()
             e.setFont(QFont(T.MONO, T.SM))
             e.setStyleSheet(QSS.lineedit)
-            e.setPlaceholderText(f"niveau {lvl + 1}")
+            e.setPlaceholderText(f"level {lvl + 1}")
             e.setToolTip(
-                "<b>Rangement</b> — accents, espaces et doublons autorisés.<br>"
-                "Jamais résolu, jamais référencé : il organise l'arbre et<br>"
-                "propose la clé, sans jamais la posséder."
+                "<b>Filing</b> — accents, spaces and duplicates allowed.<br>"
+                "Never resolved, never referenced: it organizes the tree and<br>"
+                "suggests the key, without ever owning it."
             )
             e.editingFinished.connect(self._commit_path)
             el.addWidget(e, 1)
@@ -248,12 +328,16 @@ class TextTreePanel(QWidget):
             f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI}; border:none;"
             f"padding:6px;}}"
         )
-        self._editor.setPlaceholderText("Sélectionner un texte pour éditer son contenu…")
+        self._editor.setPlaceholderText("Select a text entry to edit its content…")
         # Les balises se voient pendant qu'on écrit, et ce qui cloche se
         # souligne — même analyse que l'aperçu et que l'inspecteur.
         self._highlighter = MarkupHighlighter(self._editor.document())
         self._editor.edited.connect(self._on_content_edited)
         self._editor.committed.connect(self._on_content_committed)
+        # Barre de balisage ENTRE l'identité et le texte : elle agit sur ce qui
+        # est juste dessous.
+        self._markup_bar = MarkupToolbar(self._editor)
+        root_edit.addWidget(self._markup_bar)
         root_edit.addWidget(self._editor, 1)
         workbench.addWidget(edit_pane)
 
@@ -270,33 +354,24 @@ class TextTreePanel(QWidget):
         prev_hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};")
         pl = QHBoxLayout(prev_hdr)
         pl.setContentsMargins(8, 0, 8, 0)
-        pv = QLabel("APERÇU ÉCRAN")
-        pv.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        pv.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
+        pv = QLabel("SCREEN PREVIEW")
+        pv.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+        pv.setStyleSheet(QSS.title_panel)
         pl.addWidget(pv)
         pl.addStretch()
         self._preview_font = QComboBox()
-        self._preview_font.setFont(QFont(T.MONO, T.XS))
+        self._preview_font.setFont(QFont(T.UI, T.XS))
         self._preview_font.setStyleSheet(QSS.combobox)
-        self._preview_font.setToolTip("Police utilisée pour l'aperçu (n'affecte pas le texte)")
+        self._preview_font.setToolTip("Font used for the preview (doesn't affect the text)")
         self._preview_font.currentIndexChanged.connect(self._on_preview_font)
         pl.addWidget(self._preview_font)
         root_prev.addWidget(prev_hdr)
 
-        # Scroll : l'écran simulé garde une échelle ENTIÈRE (×1 à ×3), donc une
-        # hauteur qui ne suit pas le volet — sans lui, le bas serait rogné.
-        prev_scroll = QScrollArea()
-        prev_scroll.setWidgetResizable(True)
-        prev_scroll.setStyleSheet(f"background:{C.BG_DEEP}; border:none;")
-        wrap = QWidget()
-        wrap.setStyleSheet(f"background:{C.BG_DEEP};")
-        wl = QVBoxLayout(wrap)
-        wl.setContentsMargins(6, 6, 6, 6)
+        # Pas de QScrollArea : l'aperçu est son PROPRE viewport (molette = zoom,
+        # clic-central = pan), deux défilements superposés se voleraient la
+        # molette.
         self._preview = FontScreenPreview()
-        wl.addWidget(self._preview)
-        wl.addStretch()
-        prev_scroll.setWidget(wrap)
-        root_prev.addWidget(prev_scroll, 1)
+        root_prev.addWidget(self._preview, 1)
         workbench.addWidget(prev_pane)
 
         # L'écriture prime : l'aperçu n'a besoin que de ses 240 px logiques.
@@ -319,6 +394,7 @@ class TextTreePanel(QWidget):
         # Valeurs initiales des globals et constantes, relues à l'ouverture :
         # l'aperçu montre des chiffres, pas des places réservées.
         self._values = project.text_values() if project else {}
+        self._markup_bar.set_project(project)
         self._reload_preview_fonts()
         self.refresh()
 
@@ -341,6 +417,9 @@ class TextTreePanel(QWidget):
         texte (l'inspecteur, pour les caractères manquants)."""
         f = self._preview_font.currentData()
         self._preview.set_font_asset(f, self._project)
+        # La même police décide de ce que `[icon=…]` peut désigner : les cases
+        # fusionnées n'existent que dans une planche précise.
+        self._markup_bar.set_font(f)
         self.preview_font_changed.emit(f)
 
     def preview_font(self):
@@ -376,8 +455,9 @@ class TextTreePanel(QWidget):
             it.setData(0, self._ROLE_PATH, path)
             it.setForeground(0, QColor(C.TEXT_DIM))
             it.setIcon(0, icons.get("folder", icons.COLOR_FOLDER))
-            it.setToolTip(0, "Double-clic pour renommer ce rangement "
-                             "(et tout ce qu'il contient)")
+            it.setToolTip(0, "Double-click to rename this folder "
+                             "(and everything it contains).\n"
+                             "Drag it to file it elsewhere.")
             it.setExpanded(path not in self._collapsed)
             nodes[path] = it
 
@@ -409,15 +489,17 @@ class TextTreePanel(QWidget):
         # Le texte tel qu'on le LIT : balises retirées, valeurs substituées.
         # Le balisage, lui, s'édite dans l'atelier.
         preview = resolve(parse(t.content), self._values).replace("\n", " ⏎ ")
-        item.setText(0, preview or "(vide)")
+        item.setText(0, preview or "(empty)")
         item.setForeground(0, QColor(C.TEXT_NORM if preview else C.TEXT_MUTED))
         item.setData(0, self._ROLE_TEXT, t)
         item.setText(1, t.key)
         # Clé dérivée = jetable, en retrait ; clé nommée à la main = un
         # contrat posé par quelqu'un, elle mérite l'accent.
         item.setForeground(1, QColor(C.TEXT_MUTED if t.auto_key else TEXT_COLOR))
-        item.setToolTip(1, "Clé automatique — suit le rangement"
-                        if t.auto_key else "Clé nommée à la main — indépendante du rangement")
+        item.setToolTip(1, ("Automatic key — follows the folder"
+                            if t.auto_key else
+                            "Named by hand — independent of the folder")
+                        + "\nDouble-click to name it by hand.")
 
     @staticmethod
     def _leaf_count(item: QTreeWidgetItem) -> int:
@@ -554,26 +636,27 @@ class TextTreePanel(QWidget):
             QSS.lineedit + f"QLineEdit{{color:{C.TEXT_MUTED}; background:{C.BG_PANEL};}}"
         )
         self._key_edit.setToolTip(
-            "<b>Clé</b> — la poignée qu'écrivent les scripts Lua, résolue au build.<br><br>"
-            + ("Elle DÉRIVE du rangement et le suivra. Déverrouiller pour la<br>"
-               "nommer à la main : elle s'en détachera définitivement."
+            "<b>Key</b> — the handle Lua scripts write, resolved at build time.<br><br>"
+            + ("It DERIVES from the folder and will follow it. Unlock to<br>"
+               "name it by hand: it will detach from it permanently."
                if auto else
-               "Nommée à la main : le rangement ne la touche plus.<br>"
-               "La renommer met à jour les scripts qui la citent.")
+               "Named by hand: the folder no longer affects it.<br>"
+               "Renaming it updates the scripts that reference it.")
         )
         self._btn_lock.setIcon(icons.get(
             "key_auto" if auto else "key_manual",
             C.TEXT_DIM if auto else TEXT_COLOR))
         self._btn_lock.setToolTip(
-            ("Clé accrochée au rangement — cliquer pour la nommer à la main"
+            ("Key attached to the folder — click to name it by hand"
              if not self._key_unlocked else
-             "Cliquer pour la ré-accrocher au rangement")
+             "Click to re-attach it to the folder")
             if auto else
-            "Clé nommée à la main — cliquer pour la ré-accrocher au rangement")
+            "Named by hand — click to re-attach it to the folder")
 
     def _set_enabled(self, on: bool):
         """Active l'atelier — il n'a de sens qu'avec une entrée sélectionnée."""
         self._editor.setEnabled(on)
+        self._markup_bar.setEnabled(on)
         self._key_edit.setEnabled(on)
         self._btn_lock.setEnabled(on)
         self._btn_copy.setEnabled(on)
@@ -616,26 +699,36 @@ class TextTreePanel(QWidget):
             900, lambda: self._btn_copy.setIcon(icons.get("copy", C.TEXT_DIM)))
 
     def _commit_key(self):
-        """Valide la clé saisie — refuse le vide et les doublons."""
+        """Valide la clé saisie dans l'atelier."""
         t = self._current
-        if self._blocking or not t or not self._project:
+        if self._blocking or not t:
             return
-        new = self._key_edit.text().strip()
-        if not new or new == t.key:
+        if not self._rename_key(t, self._key_edit.text()):
             self._key_edit.setText(t.key)
-            return
+
+    def _rename_key(self, t, raw: str) -> bool:
+        """Renomme la clé de `t` — refuse le vide et les doublons.
+
+        Point unique du renommage MANUEL : le champ de l'atelier et la colonne
+        « Key » de l'arbre écrivent la même chose (la clé se détache du
+        rangement), il ne doit pas y avoir deux versions de cette règle.
+        Retourne False si rien n'a été renommé, à charge de l'appelant de
+        remettre l'ancienne valeur dans son champ."""
+        new = (raw or "").strip()
+        if not self._project or not new or new == t.key:
+            return False
         old, old_auto = t.key, t.auto_key
         if not self._project.rename_text_key(t, new):
             QMessageBox.warning(
-                self, "Clé invalide",
-                f"« {new} » est vide ou déjà utilisée par un autre texte.")
-            self._key_edit.setText(t.key)
-            return
+                self, "Invalid key",
+                f"“{new}” is empty or already used by another text.")
+            return False
         self._key_unlocked = False      # la clé est désormais nommée à la main
         get_history().push(RenameTextKeyCmd(
             self._project, t, old, new, old_auto,
             persist_fn=self._after_identity_change,
         ))
+        return True
 
     def _commit_path(self):
         """Valide le rangement saisi dans les champs de niveau."""
@@ -651,22 +744,28 @@ class TextTreePanel(QWidget):
             persist_fn=self._after_identity_change,
         ))
 
-    def _on_double_click(self, item: QTreeWidgetItem, _col: int):
-        """Ouvre l'édition sur place d'un nœud (jamais de boîte de dialogue) —
-        le renommer renomme le segment pour tout ce qu'il contient."""
-        if item.data(0, self._ROLE_PATH) is None:
+    def _on_double_click(self, item: QTreeWidgetItem, col: int):
+        """Édition sur place (jamais de boîte de dialogue) : le libellé d'un
+        NŒUD, qui renomme le segment pour tout ce qu'il contient, ou la CLÉ
+        d'une feuille, qui la détache du rangement."""
+        is_node = item.data(0, self._ROLE_PATH) is not None
+        if not (is_node and col == 0) and not (not is_node and col == 1):
             return
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        self._tree.editItem(item, 0)
+        self._tree.editItem(item, col)
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
     def _on_item_changed(self, item: QTreeWidgetItem, col: int):
-        """Fin d'édition d'un nœud : range tous les textes qu'il contient."""
-        if self._blocking or col != 0 or not self._project:
+        """Fin d'édition : clé d'une feuille, ou libellé d'un nœud (qui range
+        alors tous les textes qu'il contient)."""
+        if self._blocking or not self._project:
             return
         path = item.data(0, self._ROLE_PATH)
-        if path is None:
+        if col == 1 and path is None:
+            self._commit_tree_key(item)
+            return
+        if col != 0 or path is None:
             return
         new_seg = item.text(0).strip()
         # Refermer l'édition ré-émet `itemChanged` : sans ce garde le handler
@@ -683,19 +782,125 @@ class TextTreePanel(QWidget):
             return
         # Le nœud replié l'était sous son ancien nom : sans report, le
         # renommer le rouvrirait.
-        renamed = path[:depth] + (new_seg,)
+        renamed = path[:-1] + (new_seg,)
         if path in self._collapsed:
             self._collapsed.discard(path)
             self._collapsed.add(renamed)
         cmd = SetTextPathCmd(
             self._project, entries,
-            label=f"Renommer le rangement {path[-1]} → {new_seg}",
+            label=f"Rename folder {path[-1]} → {new_seg}",
             persist_fn=self._after_identity_change,
         )
         # Différé d'un tour de boucle : la commande reconstruit l'arbre, donc
         # DÉTRUIT l'item dont on traite le signal — le C++ reviendrait dans un
         # objet libéré.
         QTimer.singleShot(0, lambda: get_history().push(cmd))
+
+    def _commit_tree_key(self, item: QTreeWidgetItem):
+        """Fin d'édition de la colonne « Key » : même renommage que le champ de
+        l'atelier, refus compris."""
+        t = item.data(0, self._ROLE_TEXT)
+        self._blocking = True
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self._blocking = False
+        if t is None:
+            return
+        typed = item.text(1)
+
+        def _commit():
+            # Différé pour la même raison que le renommage de nœud : le succès
+            # reconstruit l'arbre sous l'item qu'on est en train de traiter.
+            if not self._rename_key(t, typed):
+                self._blocking = True
+                item.setText(1, t.key)
+                self._blocking = False
+
+        QTimer.singleShot(0, _commit)
+
+    # ── Glisser-déposer ───────────────────────────────────────────
+
+    def _on_drop(self, src: QTreeWidgetItem, dst: Optional[QTreeWidgetItem],
+                 where: str):
+        """Déplace ce qu'on a lâché.
+
+        Ranger, c'est changer un chemin : les clés AUTO des textes concernés
+        sont recalculées EN BLOC derrière (et les `text.draw` des scripts
+        réécrits), les clés nommées à la main ne bougent pas. Un dossier
+        emporte tout son contenu, comme son renommage."""
+        if not self._project or src is None:
+            return
+        target, anchor = self._drop_target(dst, where)
+        t = src.data(0, self._ROLE_TEXT)
+        entries, order, label = (
+            self._move_text(t, target, anchor, where) if t is not None
+            else self._move_node(src.data(0, self._ROLE_PATH), target))
+        if not entries and order is None:
+            return
+        cmd = SetTextPathCmd(self._project, entries, label=label,
+                             persist_fn=self._after_identity_change, order=order)
+        QTimer.singleShot(0, lambda: get_history().push(cmd))
+
+    def _drop_target(self, dst: Optional[QTreeWidgetItem], where: str):
+        """(rangement visé, texte d'ancrage) — l'ancrage dit à quelle PLACE
+        dans la liste, le rangement dit dans quel dossier.
+
+        Lâcher SUR un texte vise son dossier, un texte ne contenant rien ;
+        lâcher ENTRE deux lignes vise le niveau de la ligne visée."""
+        if dst is None:
+            return [], None
+        t = dst.data(0, self._ROLE_TEXT)
+        if t is not None:
+            return list(t.path), t
+        path = dst.data(0, self._ROLE_PATH) or ()
+        # Un nœud ne s'ordonne pas (les rangements sont triés par nom) : au-
+        # dessus ou en dessous de lui, on vise donc son PARENT.
+        return (list(path) if where == DROP_ON else list(path[:-1])), None
+
+    def _move_text(self, t, target: list, anchor, where: str):
+        """Une entrée : elle change de rangement, de place dans la liste, ou
+        des deux."""
+        same_path = list(t.path) == target
+        order = list(self._project.texts)
+        order.remove(t)
+        if anchor is not None and anchor is not t:
+            i = order.index(anchor)
+            order.insert(i if where == DROP_ABOVE else i + 1, t)
+        else:
+            order.append(t)
+        if same_path and order == list(self._project.texts):
+            return [], None, ""
+        return ([] if same_path else [(t, list(t.path), target)],
+                order,
+                f"Reorder {t.key}" if same_path else
+                f"Move {t.key} to {SEP.join(target) or '(root)'}")
+
+    def _move_node(self, node: Optional[tuple], target: list):
+        """Un dossier : il emporte son contenu, et sa profondeur doit tenir."""
+        if not node:
+            return [], None, ""
+        new_parent = list(target)
+        if new_parent == list(node[:-1]):        # déjà là
+            return [], None, ""
+        under = texts_under(self._project.texts, node)
+        deepest = max((len(t.path) for t in under), default=len(node))
+        if len(new_parent) + 1 + (deepest - len(node)) > MAX_DEPTH:
+            # Refus EXPLIQUÉ : le geste est légitime, seul le plafond de
+            # profondeur ne suit pas — sinon l'arbre refuse sans raison visible.
+            QMessageBox.warning(
+                self, "Too deep",
+                f"“{node[-1]}” cannot be filed there: filing goes "
+                f"{MAX_DEPTH} levels deep at most.")
+            return [], None, ""
+        prefix = new_parent + [node[-1]]
+        entries = [(t, list(t.path), prefix + list(t.path[len(node):]))
+                   for t in under]
+        # Le nœud replié l'était sous son ancien chemin, et ses descendants
+        # aussi : sans report, le déplacer rouvrirait toute la branche.
+        for path in [p for p in self._collapsed if p[:len(node)] == tuple(node)]:
+            self._collapsed.discard(path)
+            self._collapsed.add(tuple(prefix) + path[len(node):])
+        return entries, None, \
+            f"Move folder {node[-1]} to {SEP.join(new_parent) or '(root)'}"
 
     def _after_identity_change(self):
         """Persiste, reconstruit l'arbre et prévient l'inspecteur."""
@@ -713,7 +918,7 @@ class TextTreePanel(QWidget):
         if item is not None and item.data(0, self._ROLE_TEXT) is not None:
             self._blocking = True
             preview = parsed.display.replace("\n", " ⏎ ")
-            item.setText(0, preview or "(vide)")
+            item.setText(0, preview or "(empty)")
             item.setForeground(0, QColor(C.TEXT_NORM if preview else C.TEXT_MUTED))
             self._blocking = False
 
@@ -755,7 +960,7 @@ class TextTreePanel(QWidget):
         # passage, undo la retire, redo la remet.
         get_history().push(AddListItemCmd(
             self._project.texts, t, persist_fn=_after,
-            label=f"Nouveau texte {t.key}",
+            label=f"New text {t.key}",
         ))
 
     def _delete_text(self):
@@ -764,8 +969,8 @@ class TextTreePanel(QWidget):
         if not t or not self._project:
             return
         if QMessageBox.question(
-            self, "Supprimer le texte",
-            f"Supprimer « {t.key} » ?\n\nLes scripts qui l'utilisent ne compileront plus.",
+            self, "Delete text",
+            f"Delete “{t.key}”?\n\nScripts that use it will no longer compile.",
         ) != QMessageBox.StandardButton.Yes:
             return
         def _after():
@@ -779,5 +984,5 @@ class TextTreePanel(QWidget):
 
         get_history().push(RemoveListItemCmd(
             self._project.texts, t, persist_fn=_after,
-            label=f"Supprimer texte {t.key}",
+            label=f"Delete text {t.key}",
         ))

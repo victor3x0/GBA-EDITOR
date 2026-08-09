@@ -86,17 +86,17 @@ class _ScenePaletteCmd(Command):
 # bg_palettes : la scène sélectionne-t-elle des banques de palette BG ? (non en 3/5).
 MODE_INFO: dict[int, dict] = {
     0: {"kind": "tiled",  "bg_slots": (0, 1, 2, 3), "affine": (),     "bg_palettes": True,
-        "res": (240, 160), "tip": "4 fonds tuilés réguliers (BG0-3) · 4/8bpp"},
+        "res": (240, 160), "tip": "4 regular tiled backgrounds (BG0-3) · 4/8bpp"},
     1: {"kind": "tiled",  "bg_slots": (0, 1, 2),    "affine": (2,),   "bg_palettes": True,
-        "res": (240, 160), "tip": "BG0-1 réguliers + BG2 affine (rotation/échelle)"},
+        "res": (240, 160), "tip": "BG0-1 regular + BG2 affine (rotation/scale)"},
     2: {"kind": "tiled",  "bg_slots": (2, 3),       "affine": (2, 3), "bg_palettes": True,
-        "res": (240, 160), "tip": "BG2-3 affines"},
+        "res": (240, 160), "tip": "BG2-3 affine"},
     3: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
-        "res": (240, 160), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 240×160 (sans palette)"},
+        "res": (240, 160), "bpp": 16, "tip": "Bitmap BG2 · 16bpp direct color · 240×160 (no palette)"},
     4: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": True,
-        "res": (240, 160), "bpp": 8,  "tip": "Bitmap BG2 · 8bpp paletté (256 couleurs) · 240×160"},
+        "res": (240, 160), "bpp": 8,  "tip": "Bitmap BG2 · 8bpp paletted (256 colors) · 240×160"},
     5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
-        "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · couleur directe 16bpp · 160×128"},
+        "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · 16bpp direct color · 160×128"},
 }
 
 
@@ -125,8 +125,8 @@ class _WindowSlotRow(QFrame):
         is_obj = int(slot.region) == 2
         hdr = QHBoxLayout(); hdr.setSpacing(6)
         title = QLabel("WINDOW OBJ" if is_obj else f"WIN{slot.region}")
-        title.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
-        title.setStyleSheet(f"color:{C.ACCENT_ORG if is_obj else C.ACCENT_BLU};")
+        title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+        title.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
         hdr.addWidget(title)
         self._chk_visible = QCheckBox("Active")
         self._chk_visible.setStyleSheet(QSS.checkbox)
@@ -148,9 +148,9 @@ class _WindowSlotRow(QFrame):
         # opaques des sprites en mode « fenêtre-objet » (Actor.obj_mode).
         self._spins = {}
         if is_obj:
-            note = QLabel("Pas de rectangle : la forme vient des sprites réglés sur\n"
-                          "« Masque (window OBJ) » dans l'inspecteur d'Actor.")
-            note.setFont(QFont(T.MONO, T.XS))
+            note = QLabel("No rectangle: the shape comes from sprites set to\n"
+                          "“Mask (OBJ window)” in the Actor inspector.")
+            note.setFont(QFont(T.UI, T.XS))
             note.setStyleSheet(f"color:{C.TEXT_MUTED};")
             note.setWordWrap(True)
             outer.addWidget(note)
@@ -159,7 +159,7 @@ class _WindowSlotRow(QFrame):
             for label, attr, maxv in (("X", "x", 240), ("Y", "y", 160), ("L", "w", 240), ("H", "h", 160)):
                 col = QVBoxLayout()
                 lbl = QLabel(label)
-                lbl.setFont(QFont(T.MONO, T.XS)); lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+                lbl.setFont(QFont(T.UI, T.XS)); lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
                 col.addWidget(lbl)
                 spin = QSpinBox()
                 spin.setFont(QFont(T.MONO, T.SM))
@@ -175,7 +175,7 @@ class _WindowSlotRow(QFrame):
             outer.addLayout(rect_row)
 
         layers_row = QHBoxLayout(); layers_row.setSpacing(6)
-        layers_row.addWidget(self._mk_dim_label("Traverse :"))
+        layers_row.addWidget(self._mk_dim_label("Show through:"))
         self._chk_bg = []
         for i in range(4):
             c = QCheckBox(f"BG{i}")
@@ -194,7 +194,7 @@ class _WindowSlotRow(QFrame):
 
     def _mk_dim_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setFont(QFont(T.MONO, T.XS))
+        lbl.setFont(QFont(T.UI, T.XS))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         return lbl
 
@@ -235,8 +235,8 @@ class SceneInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Selectionne une scene")
-        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty = QLabel("Select a scene")
+        self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._empty)
@@ -259,12 +259,14 @@ class SceneInspector(QWidget):
             inner.setSpacing(6)
             return f, inner
 
-        def _card_title(text: str, accent: str) -> QLabel:
+        def _card_title(text: str, accent: str = None) -> QLabel:
+            # Titre de section unifié périwinkle (brique QSS.title_section),
+            # plus un filet bas. `accent` conservé pour compat mais ignoré.
             lbl = QLabel(text)
-            lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
             lbl.setStyleSheet(
-                f"color:{accent};letter-spacing:1px;"
-                f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
+                QSS.title_section()
+                + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
             )
             return lbl
 
@@ -287,7 +289,7 @@ class SceneInspector(QWidget):
 
         mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(12)
         self._btn_mode = QPushButton("MODE 0")
-        self._btn_mode.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        self._btn_mode.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._btn_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_mode.setFixedSize(84, 44)
         self._btn_mode.setStyleSheet(
@@ -295,7 +297,7 @@ class SceneInspector(QWidget):
             f"border:2px solid {C.ACCENT}; border-radius:5px;}}"
             f"QPushButton:hover{{background:{C.BG_HOVER};}}"
         )
-        self._btn_mode.setToolTip("Changer le mode vidéo de la scène")
+        self._btn_mode.setToolTip("Change the scene's video mode")
         self._btn_mode.clicked.connect(self._show_mode_menu)
         mode_row.addWidget(self._btn_mode)
 
@@ -307,12 +309,12 @@ class SceneInspector(QWidget):
         param_inner.setSpacing(4)
 
         scroll_row = QHBoxLayout(); scroll_row.setSpacing(6)
-        lbl_scroll = QLabel("Scrolling :")
-        lbl_scroll.setFont(QFont(T.MONO, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_scroll = QLabel("Scrolling:")
+        lbl_scroll.setFont(QFont(T.UI, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_scroll.setFixedWidth(70)
         scroll_row.addWidget(lbl_scroll)
-        self._chk_scroll_h = self._mk_scroll_toggle("scroll_h", "Défilement horizontal")
-        self._chk_scroll_v = self._mk_scroll_toggle("scroll_v", "Défilement vertical")
+        self._chk_scroll_h = self._mk_scroll_toggle("scroll_h", "Horizontal scrolling")
+        self._chk_scroll_v = self._mk_scroll_toggle("scroll_v", "Vertical scrolling")
         scroll_row.addWidget(self._chk_scroll_h)
         scroll_row.addWidget(self._chk_scroll_v)
         scroll_row.addStretch()
@@ -321,21 +323,21 @@ class SceneInspector(QWidget):
         param_inner.addLayout(scroll_row)
 
         ui_row = QHBoxLayout(); ui_row.setSpacing(6)
-        lbl_ui = QLabel("Layer UI :")
-        lbl_ui.setFont(QFont(T.MONO, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_ui = QLabel("UI layer:")
+        lbl_ui.setFont(QFont(T.UI, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_ui.setFixedWidth(70)
         self._combo_text_bg = QComboBox()
-        self._combo_text_bg.setFont(QFont(T.MONO, T.SM))
+        self._combo_text_bg.setFont(QFont(T.UI, T.SM))
         self._combo_text_bg.setStyleSheet(QSS.combobox)
         for i in range(4):
-            self._combo_text_bg.addItem(f"BG{i}" + (" (défaut)" if i == 1 else ""), i)
+            self._combo_text_bg.addItem(f"BG{i}" + (" (default)" if i == 1 else ""), i)
         self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
         self._combo_text_bg.setToolTip(
-            "<b>Calque réservé au texte HUD (TTE)</b><br><br>"
-            "Le texte affiché en jeu (score, dialogue…) occupe un calque BG entier.<br>"
-            "Choisir un BG qui n'est pas utilisé par un décor.<br><br>"
-            "<b>Conflit ⚠</b> : si ce BG est déjà assigné à un background,<br>"
-            "les deux se superposent et le résultat est indéfini."
+            "<b>Layer reserved for HUD text (TTE)</b><br><br>"
+            "In-game text (score, dialogue…) takes up a whole BG layer.<br>"
+            "Pick a BG that isn't used by a background.<br><br>"
+            "<b>Conflict ⚠</b>: if this BG is already assigned to a background,<br>"
+            "the two overlap and the result is undefined."
         )
         self._lbl_text_bg_warn = QLabel()
         self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
@@ -346,13 +348,36 @@ class SceneInspector(QWidget):
         ui_row.addStretch(1)
         param_inner.addLayout(ui_row)
 
+        # ── Banque de couleurs de l'UI ────────────────────────────
+        # Où le texte lit ses couleurs : un SLOT de la sélection BG de la scène.
+        # « Automatic » (le défaut) garde le comportement historique, la police
+        # imposant sa propre palette.
+        pal_row = QHBoxLayout(); pal_row.setSpacing(6)
+        lbl_pal = QLabel("UI colors:")
+        lbl_pal.setFont(QFont(T.UI, T.SM)); lbl_pal.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_pal.setFixedWidth(70)
+        self._combo_ui_pal = QComboBox()
+        self._combo_ui_pal.setFont(QFont(T.UI, T.SM))
+        self._combo_ui_pal.setStyleSheet(QSS.combobox)
+        self._combo_ui_pal.currentIndexChanged.connect(self._on_ui_pal_changed)
+        self._combo_ui_pal.setToolTip(
+            "<b>Palette bank the UI text reads its colors from</b><br><br>"
+            "A slot of this scene's BG selection. Each text slot then picks one "
+            "color in it.<br><br>"
+            "<b>Automatic</b>: the font loads its own palette instead — its "
+            "shades are kept, but two fonts can't have different colors at once."
+        )
+        pal_row.addWidget(lbl_pal)
+        pal_row.addWidget(self._combo_ui_pal, 1)
+        param_inner.addLayout(pal_row)
+
         # ── Backdrop ──────────────────────────────────────────────
         # Couleur de l'index 0 de PAL_BG_RAM : ce que le hardware affiche là où
         # AUCUN layer ni sprite ne dessine — donc aussi ce qui apparaît dans une
         # window qui masque tout.
         bd_row = QHBoxLayout(); bd_row.setSpacing(6)
-        lbl_bd = QLabel("Backdrop :")
-        lbl_bd.setFont(QFont(T.MONO, T.SM)); lbl_bd.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_bd = QLabel("Backdrop:")
+        lbl_bd.setFont(QFont(T.UI, T.SM)); lbl_bd.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_bd.setFixedWidth(70)
         self._btn_backdrop = QPushButton()
         self._btn_backdrop.setFixedSize(40, 22)
@@ -360,17 +385,17 @@ class SceneInspector(QWidget):
         self._btn_backdrop.clicked.connect(self._pick_backdrop)
         self._btn_backdrop.setToolTip(
             "<b>Couleur de fond (backdrop)</b><br><br>"
-            "Index 0 de la palette BG — affiché partout où aucun calque ni<br>"
-            "sprite ne dessine, y compris à travers une window qui masque tout.<br><br>"
-            "Quantifiée en BGR555 (5 bits par canal) comme sur console."
+            "Index 0 of the BG palette — shown wherever no layer or<br>"
+            "sprite draws, including through a window that masks everything.<br><br>"
+            "Quantized to BGR555 (5 bits per channel) like on hardware."
         )
         self._lbl_backdrop = QLabel()
         self._lbl_backdrop.setFont(QFont(T.MONO, T.XS))
         self._lbl_backdrop.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        self._btn_backdrop_reset = W.btn_ghost("Défaut projet")
-        self._btn_backdrop_reset.setFont(QFont(T.MONO, T.XS))
+        self._btn_backdrop_reset = W.btn_ghost("Project default")
+        self._btn_backdrop_reset.setFont(QFont(T.UI, T.XS))
         self._btn_backdrop_reset.setToolTip(
-            "Réutiliser la couleur de backdrop définie au niveau du projet")
+            "Reuse the backdrop color defined at project level")
         self._btn_backdrop_reset.clicked.connect(self._reset_backdrop)
         bd_row.addWidget(lbl_bd)
         bd_row.addWidget(self._btn_backdrop)
@@ -383,7 +408,7 @@ class SceneInspector(QWidget):
         mode_inner.addLayout(mode_row)
 
         self._mode_hint = QLabel("")
-        self._mode_hint.setFont(QFont(T.MONO, T.XS)); self._mode_hint.setWordWrap(True)
+        self._mode_hint.setFont(QFont(T.UI, T.XS)); self._mode_hint.setWordWrap(True)
         self._mode_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
         mode_inner.addWidget(self._mode_hint)
 
@@ -391,7 +416,7 @@ class SceneInspector(QWidget):
 
         from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
         self._scene_script_slot = ScriptSlot(
-            add_label    = "Ajouter un script de scène",
+            add_label    = "Add a scene script",
             accent_color = C.ACCENT_ORG,
             hint         = "on_start · on_update · on_late_update",
         )
@@ -410,9 +435,9 @@ class SceneInspector(QWidget):
         win_hdr.addWidget(_card_title("WINDOWS", C.ACCENT_BLU), 1)
         self._btn_win_add = {}
         for region, tip in (
-            (0, "Ajouter WIN0"),
-            (1, "Ajouter WIN1"),
-            (2, "Ajouter la window OBJ (forme libre, donnée par les sprites)"),
+            (0, "Add WIN0"),
+            (1, "Add WIN1"),
+            (2, "Add the OBJ window (free-form, defined by sprites)"),
         ):
             btn = W.btn_add(tip)
             btn.clicked.connect(lambda _c=False, r=region: self._add_window(r))
@@ -421,11 +446,11 @@ class SceneInspector(QWidget):
         win_inner.addLayout(win_hdr)
 
         win_info = QLabel(
-            "Masques d'écran : WIN0/WIN1 rectangulaires, window OBJ de forme "
-            "libre. Cadrent où un layer ou un sprite s'affiche — ils ne "
-            "dessinent rien. Scriptables aussi (window.*)."
+            "Screen masks: WIN0/WIN1 are rectangular, the OBJ window is "
+            "free-form. They frame where a layer or sprite shows — they draw "
+            "nothing themselves. Scriptable too (window.*)."
         )
-        win_info.setFont(QFont(T.MONO, T.XS))
+        win_info.setFont(QFont(T.UI, T.XS))
         win_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         win_info.setWordWrap(True)
         win_inner.addWidget(win_info)
@@ -444,7 +469,7 @@ class SceneInspector(QWidget):
 
         bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
         bg_hdr.addWidget(_card_title("BACKGROUND LAYERS", C.ACCENT), 1)
-        self._btn_bg_add = W.btn_add("Ajouter un calque BG (max 4)")
+        self._btn_bg_add = W.btn_add("Add a BG layer (max 4)")
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
         bg_hdr.addWidget(self._btn_bg_add)
         bg_inner.addLayout(bg_hdr)
@@ -461,8 +486,8 @@ class SceneInspector(QWidget):
         self._bitmap_box = QWidget()
         bmp_l = QVBoxLayout(self._bitmap_box)
         bmp_l.setContentsMargins(0, 2, 0, 0); bmp_l.setSpacing(3)
-        self._btn_bitmap_pick = QPushButton("Choisir un fond bitmap…")
-        self._btn_bitmap_pick.setFont(QFont(T.MONO, T.SM))
+        self._btn_bitmap_pick = QPushButton("Choose a bitmap background…")
+        self._btn_bitmap_pick.setFont(QFont(T.UI, T.SM))
         self._btn_bitmap_pick.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_bitmap_pick.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
@@ -472,7 +497,7 @@ class SceneInspector(QWidget):
         self._btn_bitmap_pick.clicked.connect(self._pick_bitmap_bg)
         bmp_l.addWidget(self._btn_bitmap_pick)
         self._bitmap_note = QLabel("")
-        self._bitmap_note.setFont(QFont(T.MONO, T.XS)); self._bitmap_note.setWordWrap(True)
+        self._bitmap_note.setFont(QFont(T.UI, T.XS)); self._bitmap_note.setWordWrap(True)
         self._bitmap_note.setStyleSheet(f"color:{C.TEXT_DIM};")
         bmp_l.addWidget(self._bitmap_note)
         bg_inner.addWidget(self._bitmap_box)
@@ -493,8 +518,8 @@ class SceneInspector(QWidget):
         for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
                                     ("bg", C.ACCENT_BLU, "BCK (backgrounds)")):
             sub_lbl = QLabel(title)
-            sub_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-            sub_lbl.setStyleSheet(f"color:{color}; letter-spacing:1px; margin-top:4px;")
+            sub_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+            sub_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px; margin-top:4px;")
             pal_inner.addWidget(sub_lbl)
             grid = PaletteSlotGridAsset(color)
             grid.scene_replace.connect(lambda slot, name, pool=pool: self._on_scene_replace(pool, slot, name))
@@ -528,6 +553,9 @@ class SceneInspector(QWidget):
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
         self._rebuild_palette_slots()
+        # Après `_rebuild_palette_slots` : la liste des banques d'UI se lit dans
+        # la sélection BG, que ce dernier vient de rafraîchir.
+        self._reload_ui_pal()
         self._rebuild_window_rows()
         self._refresh_backdrop()
         self._apply_mode_ui()
@@ -570,7 +598,7 @@ class SceneInspector(QWidget):
                 act.setToolTip(MODE_INFO[0]["tip"])
             else:
                 act.setEnabled(False)
-                act.setToolTip(f"{MODE_INFO[m]['tip']}\n(rendu non encore implémenté — bientôt)")
+                act.setToolTip(f"{MODE_INFO[m]['tip']}\n(rendering not implemented yet — coming soon)")
             act.triggered.connect(lambda _c=False, m=m: self._on_set_mode(m))
         menu.exec(self._btn_mode.mapToGlobal(QPoint(0, self._btn_mode.height())))
 
@@ -589,16 +617,16 @@ class SceneInspector(QWidget):
         if info["kind"] == "bitmap":
             for L in self._scene.background_layers:
                 if not self._is_bitmap_layer(L):
-                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.background_name})" if L.background_name else " (vide)"))
+                    out.append(f"BG{L.bg_slot} layer" + (f" ({L.background_name})" if L.background_name else " (empty)"))
         else:
             valid = set(info["bg_slots"])
             for L in self._scene.background_layers:
                 if L.bg_slot not in valid or self._is_bitmap_layer(L):
-                    out.append(f"calque BG{L.bg_slot}" + (f" ({L.background_name})" if L.background_name else " (vide)"))
+                    out.append(f"BG{L.bg_slot} layer" + (f" ({L.background_name})" if L.background_name else " (empty)"))
         if not info["bg_palettes"]:
             n = sum(1 for name in self._scene.active_bg_palettes if name)
             if n:
-                out.append(f"{n} palette(s) BG active(s)")
+                out.append(f"{n} active BG palette(s)")
         return out
 
     def _on_set_mode(self, m: int):
@@ -608,10 +636,10 @@ class SceneInspector(QWidget):
             self._refresh_mode_buttons(); return
         pruned = self._pruned_by_mode(m)
         if pruned:
-            msg = (f"Passer en Mode {m} supprimera :\n• " + "\n• ".join(pruned)
-                   + "\n\nContinuer ? (Ctrl+Z pour annuler)")
+            msg = (f"Switching to Mode {m} will remove:\n• " + "\n• ".join(pruned)
+                   + "\n\nContinue? (Ctrl+Z to undo)")
             if QMessageBox.question(
-                self, "Changer de mode de scène", msg,
+                self, "Change scene mode", msg,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             ) != QMessageBox.StandardButton.Yes:
                 self._refresh_mode_buttons()
@@ -643,12 +671,12 @@ class SceneInspector(QWidget):
         layer = next((L for L in self._scene.background_layers
                       if self._is_bitmap_layer(L)), None)
         name = layer.background_name if layer else None
-        self._btn_bitmap_pick.setText(name or "Choisir un fond bitmap…")
+        self._btn_bitmap_pick.setText(name or "Choose a bitmap background…")
         rw, rh = info.get("res", (240, 160))
         bpp = info.get("bpp", 8)
-        depth = "8bpp paletté (256)" if bpp == 8 else "16bpp couleur directe"
+        depth = "8bpp paletted (256)" if bpp == 8 else "16bpp direct color"
         self._bitmap_note.setText(f"BG2 · {rw}×{rh} · {depth}"
-                                  + ("" if name else " — aucun fond sélectionné"))
+                                  + ("" if name else " — no background selected"))
 
     def _pick_bitmap_bg(self):
         if not self._project or not self._scene:
@@ -855,7 +883,7 @@ class SceneInspector(QWidget):
 
         get_history().push(RemoveListItemCmd(
             self._scene.background_layers, layer, persist_fn=_refresh,
-            label=f"Retirer layer BG{layer.bg_slot}",
+            label=f"Remove layer BG{layer.bg_slot}",
         ))
         self.changed.emit()
 
@@ -1041,7 +1069,7 @@ class SceneInspector(QWidget):
                     o.pal_bank = OWN_PAL_BANK
                 elif pb > s:
                     o.pal_bank = pb - 1
-        self._push_palette_cmd(pool, mutate, f"Retirer palette scène [{slot}]")
+        self._push_palette_cmd(pool, mutate, f"Remove scene palette [{slot}]")
 
     def _on_asset_override(self, pool: str, entry, name: str):
         """Override la palette propre d'un groupe d'assets vers une palette du
@@ -1162,6 +1190,31 @@ class SceneInspector(QWidget):
         self._refresh_backdrop()
         get_dispatcher()._emit("backdrop_changed")
 
+    def _reload_ui_pal(self):
+        """Remplit la liste des banques d'UI depuis la sélection BG de la scène.
+
+        Les slots VIDES sont listés quand même, mais dits comme tels : la
+        sélection peut être remplie après coup, et masquer le slot ferait
+        disparaître un choix déjà fait dans le JSON."""
+        if not self._scene:
+            return
+        self._combo_ui_pal.blockSignals(True)
+        self._combo_ui_pal.clear()
+        self._combo_ui_pal.addItem("Automatic (font palette)", -1)
+        active = list(getattr(self._scene, "active_bg_palettes", []) or [])
+        for i in range(16):
+            name = active[i] if i < len(active) else ""
+            self._combo_ui_pal.addItem(f"{i} — {name or '(empty)'}", i)
+        cur = int(getattr(self._scene, "ui_pal_bank", -1))
+        j = self._combo_ui_pal.findData(cur)
+        self._combo_ui_pal.setCurrentIndex(j if j >= 0 else 0)
+        self._combo_ui_pal.blockSignals(False)
+
+    def _on_ui_pal_changed(self):
+        if not self._scene:
+            return
+        self._set_scene_field("ui_pal_bank", int(self._combo_ui_pal.currentData()))
+
     def _on_text_bg_changed(self):
         if self._blocking or not self._scene: return
         self._set_scene_field(
@@ -1250,7 +1303,7 @@ class SceneInspector(QWidget):
         """Dialogue de création d'un nouveau script de scène."""
         if not self._scene or not self._project: return
         from PyQt6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "Nouveau script de scène", "Nom (sans .lua) :")
+        name, ok = QInputDialog.getText(self, "New scene script", "Name (without .lua):")
         if not ok or not name.strip(): return
         from scripting.script_templates import ScriptTemplateContext, generate_script_template
         d = self._project.scripts_scenes_dir

@@ -388,22 +388,26 @@ class Project:
         return self.ui_layouts.get(name) if name else None
 
     def all_regions(self) -> list:
-        """[(UILayout, UIRegion)] de tout le projet, dans un ordre STABLE.
+        """[(UILayout, élément)] de tout le projet, dans un ordre STABLE.
 
         C'est cet ordre qui devient l'index dans la table C `g_ui_regions` —
-        même convention que les textes et les polices (« l'ORDRE fait foi »).
-        Ordre des mises en page, puis des régions dans chacune."""
-        return [(lay, r) for lay in self.ui_layouts for r in lay.regions]
+        même convention que les textes et les polices. Ordre des mises en page,
+        puis des slots dans chacune.
+
+        « Slots » et non « zones » : un texte AUTHORÉ occupe une entrée de la
+        même table (cf. `UILayout.slots`), donc son nom entre lui aussi dans
+        l'espace `REGION_*`."""
+        return [(lay, r) for lay in self.ui_layouts for r in lay.slots]
 
     def region_names(self) -> list[str]:
-        """Noms de région du projet entier — l'espace de nommage des
-        constantes `REGION_*`, donc ce contre quoi vérifier l'unicité."""
+        """Noms de slot du projet entier — l'espace de nommage des constantes
+        `REGION_*`, donc ce contre quoi vérifier l'unicité."""
         return [r.name for _, r in self.all_regions()]
 
     def ui_layout_users(self, name: str) -> list:
         """Scènes qui référencent cette mise en page. Alimente le badge
         « partagée — N scènes » : éditer une région depuis le canvas modifie un
-        objet commun, et le taire casserait N scènes d'un geste."""
+        objet commun, et le taire casserait N scènes en un geste."""
         return [s for s in self.scenes if getattr(s, "ui_layout", "") == name]
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
@@ -425,6 +429,79 @@ class Project:
                 shutil.rmtree(d)
             d.mkdir(parents=True, exist_ok=True)
         self.obj_dir.mkdir(parents=True, exist_ok=True)
+        self._anon_texts = self.collect_literal_texts()
+
+    # ── Littéraux de script → entrées anonymes ────────────────────
+    # `text.draw` est la seule primitive à accepter un littéral en plus d'une
+    # clé (ROADMAP v0.3.2, 2026-07-27) : un accès rapide hors interface, au prix
+    # assumé de la traduction. À la compilation il devient une entrée ANONYME de
+    # la table, donc le runtime ne connaît qu'un seul chemin (mêmes codepoints,
+    # même balisage, mêmes valeurs interpolées).
+
+    def collect_literal_texts(self) -> list:
+        """Entrées anonymes à ajouter à la table pour ce build.
+
+        Le repérage est celui du renommage (`iter_refs`, par DOMAINE) : une
+        chaîne qui matche une clé existante n'en est pas un, c'est la référence
+        à cette entrée."""
+        from core.models.text import Text
+        from scripting.refactor import iter_refs, script_paths
+        from scripting.api import DOMAIN_TEXT, LITERAL_TEXT_CALLS, anon_text_key
+        keys = {t.key for t in self.texts}
+        found: dict[str, str] = {}
+        for path in script_paths(self):
+            try:
+                src = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for ref in iter_refs(src, path=path, domain=DOMAIN_TEXT):
+                if ref.api_key in LITERAL_TEXT_CALLS and ref.value not in keys:
+                    found.setdefault(anon_text_key(ref.value), ref.value)
+        return [Text(key=k, content=v) for k, v in sorted(found.items())]
+
+    def scene_scripts(self, scene) -> tuple[list, bool]:
+        """(scripts Lua qu'une scène peut exécuter, en reste-t-il d'opaques ?).
+
+        Le script de la scène, celui de chacun de ses actors, et ceux de TOUS
+        les prefabs : un prefab est poolé au niveau projet et `actor.spawn()`
+        s'appelle de n'importe où, donc rien ne dit qu'il ne tournera pas ici.
+
+        Le second booléen dit qu'un script échappe à l'analyse : introuvable sur
+        disque, ou écrit en C natif (lequel peut appeler n'importe quelle
+        fonction du moteur hors catalogue Lua). L'appelant doit en tirer « je ne
+        sais pas », jamais « il n'y a rien »."""
+        out, opaque = [], False
+
+        def add(rel):
+            nonlocal opaque
+            if not rel:
+                return
+            ap = self.asset_abs(rel)
+            if ap is None:
+                return
+            if ap.suffix.lower() == ".lua":
+                if ap.exists():
+                    out.append(ap)
+                else:
+                    opaque = True
+            else:
+                opaque = True      # .c natif : hors de portée de l'analyse
+
+        add(getattr(scene, "script", ""))
+        owners = list(getattr(scene, "actors", [])) + list(getattr(self, "prefabs", []))
+        for owner in owners:
+            comp = owner.get_component("script") if hasattr(owner, "get_component") else None
+            if comp and getattr(comp, "active", True):
+                add(getattr(comp, "script", ""))
+        return out, opaque
+
+    def build_texts(self) -> list:
+        """La table de textes VUE PAR LE BUILD : les entrées du projet, puis les
+        littéraux des scripts.
+
+        Les entrées réelles gardent leur rang — c'est lui qui fait l'index dans
+        `g_texts`, et un littéral ajouté ne doit décaler aucune clé."""
+        return list(self.texts) + list(getattr(self, "_anon_texts", []))
 
     # ── I/O settings globaux ──────────────────────────────────────
 
@@ -654,7 +731,7 @@ class Project:
             text.key = new_key
             if manual:
                 text.auto_key = False
-        self._notify_renamed("Texte", old_key, new_key, refs)
+        self._notify_renamed("Text", old_key, new_key, refs)
         return True
 
     def delete_text(self, text: Text):
@@ -689,7 +766,7 @@ class Project:
                     touched = True
             if touched:
                 self.save_scene(scene)
-        self._notify_renamed("Fond", old_name, new_name)
+        self._notify_renamed("Background", old_name, new_name)
 
     def rename_sprite(self, sprite: SpriteAsset, new_name: str):
         new_name = new_name.strip()
@@ -745,7 +822,7 @@ class Project:
             if touched:
                 self.save_settings()
             refs = self.rename_lua_refs(DOMAIN_SCENE, old_name, new_name)
-        self._notify_renamed("Scène", old_name, new_name, refs, feminine=True)
+        self._notify_renamed("Scene", old_name, new_name, refs)
 
     def rename_prefab(self, prefab, new_name: str):
         new_name = new_name.strip()
@@ -811,7 +888,7 @@ class Project:
             element.name = new_name
             refs = self.rename_lua_refs(DOMAIN_REGION, old_name, new_name) if is_region else {}
             self.ui_layouts.save_all()
-        self._notify_renamed("Zone" if is_region else "Élément UI",
+        self._notify_renamed("Zone" if is_region else "UI element",
                              old_name, new_name, refs)
         return new_name
 
@@ -826,8 +903,8 @@ class Project:
             (self.music if is_music else self.sfx).rename(asset, new_name)
             refs = self.rename_lua_refs(DOMAIN_MUSIC if is_music else DOMAIN_SFX,
                                         old_name, new_name)
-        self._notify_renamed("Musique" if is_music else "SFX",
-                             old_name, new_name, refs, feminine=is_music)
+        self._notify_renamed("Music" if is_music else "SFX",
+                             old_name, new_name, refs)
 
     def palette_usages(self, name: str) -> list[PaletteUsage]:
         """Tout ce qui utilise la banque `name` — alimente la carte « USAGE »
@@ -912,7 +989,7 @@ class Project:
                         overrides[i] = new_name
                     if hits:
                         save(asset)
-        self._notify_renamed("Palette", old_name, new_name, feminine=True)
+        self._notify_renamed("Palette", old_name, new_name)
 
     def rename_font(self, font, new_name: str):
         new_name = new_name.strip()
@@ -922,7 +999,7 @@ class Project:
         with self._renaming():
             self.fonts.rename(font, new_name)
             refs = self.rename_lua_refs(DOMAIN_FONT, old_name, new_name)
-        self._notify_renamed("Police", old_name, new_name, refs, feminine=True)
+        self._notify_renamed("Font", old_name, new_name, refs)
 
     # ── Références Lua ───────────────────────────────────────────────
     # Un script cite un élément du projet par son NOM, mais ce nom n'est
@@ -971,8 +1048,7 @@ class Project:
         get_dispatcher()._emit("status_message", msg)
 
     def _notify_renamed(self, label: str, old: str, new: str,
-                        refs: Optional[dict] = None,
-                        feminine: bool = False, n_texts: int = 0) -> None:
+                        refs: Optional[dict] = None, n_texts: int = 0) -> None:
         """Message de statut + rafraîchissement des vues qui affichent le nom.
         Émis pour TOUT renommage, qu'il ait touché des scripts ou non — sinon
         l'utilisateur n'a aucun retour quand rien ne référençait l'élément.
@@ -981,14 +1057,14 @@ class Project:
             from core.command_dispatcher import get_dispatcher
         except ImportError:
             return
-        msg = f"{label} renommé{'e' if feminine else ''} : « {old} » → « {new} »"
+        msg = f"{label} renamed: “{old}” → “{new}”"
         if refs:
             n_refs  = sum(refs.values())
             files   = ", ".join(sorted(p.name for p in refs))
-            msg += (f" — {n_refs} référence(s) mise(s) à jour dans "
-                    f"{len(refs)} script(s) : {files}")
+            msg += (f" — {n_refs} reference(s) updated in "
+                    f"{len(refs)} script(s): {files}")
         if n_texts:
-            msg += f" — {n_texts} texte(s) mis à jour"
+            msg += f" — {n_texts} text(s) updated"
         dispatcher = get_dispatcher()
         dispatcher._emit("project_tree_changed")
         if refs:
@@ -1032,8 +1108,8 @@ class Project:
             n_texts = self.rename_var_in_texts(old_name, new_name)
             entry.name = new_name
             self.save_variables()
-        self._notify_renamed("Constante" if kind == "const" else "Global",
-                             old_name, new_name, refs, feminine=(kind == "const"),
+        self._notify_renamed("Constant" if kind == "const" else "Global",
+                             old_name, new_name, refs,
                              n_texts=n_texts)
         return True
 

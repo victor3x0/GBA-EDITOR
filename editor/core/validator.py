@@ -84,6 +84,9 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_pal_bank_reference(ctx)
     _check_palette_bank_overflow(ctx)
     _check_api_prototypes(ctx)
+    _check_text_overflow(ctx)
+    _check_ui_text_key(ctx)
+    _check_ui_panel_fill(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -275,6 +278,147 @@ def _check_bg_text_cbb_conflict(ctx: ValidationContext):
                     f"partage son bg_slot avec le Layer UI (text_bg={text_bg}) — "
                     f"son charblock est écrasé par les tuiles de police au build. "
                     f"Change le Layer UI de slot ou vide l'image de ce layer.")
+
+
+def _check_text_overflow(ctx: ValidationContext):
+    """Un texte qui ne tient pas dans sa zone est TRONQUÉ au dernier glyphe qui
+    tient (cf. runtime `text_glyph_fits`), sans un mot en jeu.
+
+    Ne juge que le DÉCIDABLE : la paire (zone, clé) doit être littérale dans le
+    script — repérage par DOMAINE (`iter_call_sites`), donc toute future
+    primitive « zone + contenu » est couverte sans rien déclarer — et le texte
+    ne doit citer aucun global, `$score` faisant 1 ou 3 caractères selon la
+    partie. Une constante, cuite au build, reste mesurable après substitution.
+    Le reste appartient à la coupe au runtime : avertir sur une supposition
+    apprendrait à ignorer les avertissements."""
+    p = ctx.project
+    if not getattr(p, "texts", None) or not getattr(p, "fonts", None):
+        return
+    from scripting.refactor import find_call_sites_in_project
+    from scripting.api import DOMAIN_REGION, DOMAIN_TEXT
+    from core.text_markup import parse, resolve, KIND_VALUE
+    from core.text_layout import layout_text
+
+    regions = {r.name: r for _lay, r in p.all_regions()}
+    fonts   = {f.name: f for f in p.fonts}
+    # Aucune police nommée par la zone = celle que `scene_init` charge, soit
+    # toujours l'index 0 (cf. main_gen : `text_set_font(0)`).
+    default_font = p.fonts[0]
+    globals_names = {g.name for g in getattr(p, "globals", [])}
+    consts = {c.name: c.value for c in getattr(p, "constants", [])}
+
+    seen: set = set()
+    for site in find_call_sites_in_project(p, DOMAIN_REGION, DOMAIN_TEXT):
+        region = regions.get(site.values[DOMAIN_REGION])
+        text   = p.get_text(site.values[DOMAIN_TEXT])
+        if region is None or text is None:
+            continue          # le checker le dit déjà, et mieux
+        pair = (region.name, text.key)
+        if pair in seen:
+            continue          # la même paire dans dix scripts, un seul message
+        seen.add(pair)
+        parsed = parse(text.content or "")
+        if any(m.kind == KIND_VALUE and m.value in globals_names
+               for m in parsed.markers):
+            continue          # largeur connue en jeu seulement
+        font = fonts.get(region.font_name) or default_font
+        _placed, over = layout_text(font, resolve(parsed, consts),
+                                    region.w, region.h)
+        if over:
+            ctx.warn(None,
+                f"Le texte '{text.key}' déborde de la zone '{region.name}' "
+                f"({region.w}×{region.h} px, police '{font.name}') — il sera "
+                f"tronqué au dernier glyphe qui tient. Agrandis la zone, "
+                f"raccourcis le texte, ou coupe-le en deux entrées.")
+
+    # Textes AUTHORÉS : le couple (élément, contenu) est connu sans lire un
+    # script, et plus sûr que le cas script — c'est `scene_init` qui l'écrit,
+    # rien ne peut changer le texte avant l'affichage.
+    from core.models.ui_region import KIND_TEXT
+    for _lay, el in p.all_regions():
+        if getattr(el, "kind", "") != KIND_TEXT:
+            continue
+        text = p.get_text(getattr(el, "text_key", "") or "")
+        if text is None:
+            continue          # clé vide ou cassée : _check_ui_text_key le dit
+        parsed = parse(text.content or "")
+        if any(m.kind == KIND_VALUE and m.value in globals_names
+               for m in parsed.markers):
+            continue
+        font = fonts.get(el.font_name) or default_font
+        _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
+        if over:
+            ctx.warn(None,
+                f"Le texte '{text.key}' déborde de l'élément '{el.name}' "
+                f"({el.w}×{el.h} px, police '{font.name}') — il sera tronqué au "
+                f"dernier glyphe qui tient. Agrandis l'élément dans le canvas, "
+                f"ou raccourcis le texte.")
+
+
+def _check_ui_text_key(ctx: ValidationContext):
+    """Un texte AUTHORÉ sans clé résolvable ne dessine rien.
+
+    Erreur silencieuse par excellence : l'élément reste visible dans le canvas,
+    le build n'émet aucun appel, et la ROM affiche une zone vide sans que rien
+    n'ait échoué."""
+    p = ctx.project
+    from core.models.ui_region import KIND_TEXT
+    for lay, el in p.all_regions():
+        if getattr(el, "kind", "") != KIND_TEXT:
+            continue
+        key = getattr(el, "text_key", "") or ""
+        if not key:
+            ctx.warn(None,
+                f"Le texte '{el.name}' (mise en page '{lay.name}') n'a aucun "
+                f"contenu : il n'affichera rien. Écris-le dans l'inspecteur, ou "
+                f"supprime l'élément.")
+        elif p.get_text(key) is None:
+            ctx.error(None,
+                f"Le texte '{el.name}' (mise en page '{lay.name}') pointe la clé "
+                f"'{key}', qui n'existe plus dans la table de textes.")
+
+
+def _check_ui_panel_fill(ctx: ValidationContext):
+    """Le canvas peint le fond d'un conteneur d'UI quoi qu'il arrive ; le build,
+    lui, n'en émet qu'une partie (cf. main_gen.scene_color_fills /
+    scene_image_fills : conteneur + cible BG + root ancré ÉCRAN, et palette
+    active pour un fond couleur). Un panneau hors de ce cadre disparaît entre
+    l'éditeur et la ROM, sans une ligne de log.
+
+    Avertissement et non erreur : le texte de la zone s'affiche quand même, il
+    lui manque son fond (la sortie OBJ des fonds reste à écrire)."""
+    p = ctx.project
+    from core.models.ui_region import (KIND_PANEL, FILL_NONE, FILL_COLOR,
+                                       ANCHOR_SCREEN, TARGET_BG)
+    for scene in p.scenes:
+        lay = p.scene_ui_layout(scene)
+        if lay is None:
+            continue
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        active = list(getattr(scene, "active_bg_palettes", []) or [])
+        for el in lay.elements:
+            if getattr(el, "kind", "") != KIND_PANEL:
+                continue
+            fk = getattr(el, "fill_kind", FILL_NONE)
+            if fk == FILL_NONE:
+                continue
+            why = []
+            if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+                why.append("la scène n'a pas de calque UI (text_bg)")
+            if lay.resolved_target(el, rm) != TARGET_BG:
+                why.append("sa cible est OBJ (fond en sprites non émis)")
+            anchor = lay.effective_anchor(el)[0]
+            if anchor != ANCHOR_SCREEN:
+                why.append(f"son ancrage est « {anchor} » (seul l'écran est émis)")
+            if fk == FILL_COLOR and getattr(el, "fill_palette", "") not in active:
+                why.append(f"sa palette « {getattr(el, 'fill_palette', '') or '(aucune)'} » "
+                           f"n'est pas dans les palettes BG actives de la scène")
+            if why:
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : le fond du conteneur "
+                    f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
+                    f"Le canvas le montre quand même : c'est l'éditeur qui "
+                    f"promet plus que le build ne tient.")
 
 
 def _check_pal_bank_reference(ctx: ValidationContext):

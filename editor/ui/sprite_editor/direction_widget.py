@@ -41,7 +41,7 @@ class DirectionWidget(QWidget):
         _MIRROR_BTN = (
             f"QToolButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER};border-radius:4px;"
-            f"font-family:{T.MONO};font-size:{T.XS}px;padding:4px 8px;}}"
+            f"font-family:{T.UI_STACK};font-size:{T.XS}px;padding:4px 8px;}}"
             f"QToolButton:checked{{color:{C.ACCENT_BLU};border-color:{C.ACCENT_BLU};"
             f"background:#0e1a22;}}"
             f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
@@ -59,7 +59,7 @@ class DirectionWidget(QWidget):
         self._btn_h.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._btn_h.setCheckable(True); self._btn_h.setStyleSheet(_MIRROR_BTN)
         self._btn_h.setFixedHeight(28)
-        self._btn_h.setToolTip("Miroir horizontal : génère W, NW, SW depuis E, NE, SE")
+        self._btn_h.setToolTip("Horizontal mirror: generates W, NW, SW from E, NE, SE")
         self._btn_h.toggled.connect(self._on_h_mirror)
 
         self._btn_v = QToolButton(); self._btn_v.setText("  V-Mirror")
@@ -68,7 +68,7 @@ class DirectionWidget(QWidget):
         self._btn_v.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._btn_v.setCheckable(True); self._btn_v.setStyleSheet(_MIRROR_BTN)
         self._btn_v.setFixedHeight(28)
-        self._btn_v.setToolTip("Miroir vertical : génère S, SE, SW depuis N, NE, NW")
+        self._btn_v.setToolTip("Vertical mirror: generates S, SE, SW from N, NE, NW")
         self._btn_v.toggled.connect(self._on_v_mirror)
 
         mirror_row.addWidget(self._btn_h, 1)

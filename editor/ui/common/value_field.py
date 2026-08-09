@@ -109,7 +109,7 @@ class ValueField(QWidget):
             f"QToolButton::menu-indicator{{image:none;width:0;}}"
         )
         self._menu = QMenu(self._btn)
-        self._menu.setFont(QFont(T.MONO, T.MD))
+        self._menu.setFont(QFont(T.UI, T.MD))
         self._menu.aboutToShow.connect(self._rebuild_menu)
         self._btn.setMenu(self._menu)
         lay.addWidget(self._btn)

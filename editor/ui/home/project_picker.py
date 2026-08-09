@@ -73,8 +73,8 @@ class ToolchainStatus(QWidget):
     configure_requested = pyqtSignal()
 
     _EXPLAIN = {
-        "devkitPro": "la chaîne de compilation (ARM + grit) qui transforme ton projet en ROM .gba jouable",
-        "mGBA":      "l'émulateur utilisé pour lancer et tester ta ROM directement depuis l'éditeur",
+        "devkitPro": "the compilation toolchain (ARM + grit) that turns your project into a playable .gba ROM",
+        "mGBA":      "the emulator used to launch and test your ROM directly from the editor",
     }
 
     def __init__(self, toolchain: Toolchain, parent=None):
@@ -106,15 +106,15 @@ class ToolchainStatus(QWidget):
         row_l.setSpacing(16)
         for name, ok, _ in checks:
             lbl = QLabel(f"{'✓' if ok else '✗'} {name}")
-            lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+            lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
             lbl.setStyleSheet(
                 f"color:{'#5be08b' if ok else '#a05050'};background:transparent;"
             )
             row_l.addWidget(lbl)
         row_l.addStretch()
 
-        cfg = QLabel('<a href="#" style="color:#555;text-decoration:none;">⚙ Configurer manuellement</a>')
-        cfg.setFont(QFont(T.MONO, T.XS))
+        cfg = QLabel('<a href="#" style="color:#555;text-decoration:none;">⚙ Configure manually</a>')
+        cfg.setFont(QFont(T.UI, T.XS))
         cfg.setStyleSheet("background:transparent;")
         cfg.linkActivated.connect(lambda _: self.configure_requested.emit())
         row_l.addWidget(cfg)
@@ -124,9 +124,9 @@ class ToolchainStatus(QWidget):
         for name, ok, url in missing:
             expl = QLabel(
                 f'<span style="color:#666;">{name} — {self._EXPLAIN[name]}. '
-                f'<a href="{url}" style="color:#4c8caf;">Télécharger →</a></span>'
+                f'<a href="{url}" style="color:#4c8caf;">Download →</a></span>'
             )
-            expl.setFont(QFont(T.MONO, T.XS))
+            expl.setFont(QFont(T.UI, T.XS))
             expl.setStyleSheet("background:transparent;")
             expl.setOpenExternalLinks(True)
             expl.setWordWrap(True)
@@ -147,7 +147,7 @@ class _ProjectItem(QWidget):
 
         # Icône dossier
         icon = QLabel("📁" if not dead else "⚠")
-        icon.setFont(QFont(T.MONO, 16))
+        icon.setFont(QFont(T.UI, 16))
         icon.setFixedWidth(28)
         icon.setStyleSheet("background:transparent;")
         hl.addWidget(icon)
@@ -156,7 +156,7 @@ class _ProjectItem(QWidget):
         col.setSpacing(2)
 
         name_lbl = QLabel(path.name)
-        name_lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        name_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         name_lbl.setStyleSheet(
             f"color:{'#888' if dead else C.TEXT_HI};background:transparent;"
         )
@@ -173,8 +173,8 @@ class _ProjectItem(QWidget):
         hl.addLayout(col, 1)
 
         if dead:
-            dead_badge = QLabel("introuvable")
-            dead_badge.setFont(QFont(T.MONO, T.XS))
+            dead_badge = QLabel("not found")
+            dead_badge.setFont(QFont(T.UI, T.XS))
             dead_badge.setStyleSheet(
                 "color:#e05555;background:#2a1a1a;border:1px solid #e05555;"
                 "border-radius:3px;padding:1px 5px;"
@@ -228,10 +228,10 @@ class HomeScreen(QDialog):
         hl.setContentsMargins(20, 0, 20, 0)
 
         title_lbl = QLabel("GBA Editor")
-        title_lbl.setFont(QFont(T.MONO, 16, QFont.Weight.Bold))
+        title_lbl.setFont(QFont(T.UI, 16, QFont.Weight.DemiBold))
         title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
-        sub_lbl = QLabel("Sélectionner un projet")
-        sub_lbl.setFont(QFont(T.MONO, T.SM))
+        sub_lbl = QLabel("Select a project")
+        sub_lbl.setFont(QFont(T.UI, T.SM))
         sub_lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
 
         hc = QVBoxLayout()
@@ -258,9 +258,9 @@ class HomeScreen(QDialog):
 
         # ── Message si liste vide ─────────────────────────────────
         self._empty_lbl = QLabel(
-            "Aucun projet récent.\nCréez un nouveau projet ou ouvrez un dossier existant."
+            "No recent project.\nCreate a new project or open an existing folder."
         )
-        self._empty_lbl.setFont(QFont(T.MONO, T.MD))
+        self._empty_lbl.setFont(QFont(T.UI, T.MD))
         self._empty_lbl.setStyleSheet(
             f"color:{C.TEXT_MUTED};background:{C.BG_BASE};"
         )
@@ -291,7 +291,7 @@ class HomeScreen(QDialog):
         fl.setSpacing(8)
 
         btn_clear = QPushButton("🗑  Clear list")
-        btn_clear.setFont(QFont(T.MONO, T.SM))
+        btn_clear.setFont(QFont(T.UI, T.SM))
         btn_clear.setFixedHeight(30)
         btn_clear.setStyleSheet(
             f"QPushButton{{color:#e05555;background:{C.BG_INPUT};"
@@ -299,14 +299,14 @@ class HomeScreen(QDialog):
             f"QPushButton:hover{{background:#2a1a1a;border-color:#e05555;}}"
             f"QPushButton:pressed{{background:#1e1010;}}"
         )
-        btn_clear.setToolTip("Supprime les entrées qui pointent vers des projets introuvables")
+        btn_clear.setToolTip("Removes entries pointing to projects that can't be found")
         btn_clear.clicked.connect(self._clear_dead)
         fl.addWidget(btn_clear)
 
         fl.addStretch()
 
-        btn_open = QPushButton("Ouvrir un dossier…")
-        btn_open.setFont(QFont(T.MONO, T.SM))
+        btn_open = QPushButton("Open a folder…")
+        btn_open.setFont(QFont(T.UI, T.SM))
         btn_open.setFixedHeight(30)
         btn_open.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
@@ -316,8 +316,8 @@ class HomeScreen(QDialog):
         btn_open.clicked.connect(self._browse)
         fl.addWidget(btn_open)
 
-        btn_new = QPushButton("+ Nouveau projet")
-        btn_new.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        btn_new = QPushButton("+ New project")
+        btn_new.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         btn_new.setFixedHeight(30)
         btn_new.setStyleSheet(
             f"QPushButton{{color:#000;background:{C.ACCENT};"
@@ -374,7 +374,7 @@ class HomeScreen(QDialog):
 
     def _browse(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Ouvrir un projet existant", str(self._projects_dir)
+            self, "Open an existing project", str(self._projects_dir)
         )
         if path:
             self._accept(Path(path), is_new=False)
@@ -419,7 +419,7 @@ class _NewProjectDialog(QDialog):
     def __init__(self, projects_dir: Path, parent=None):
         super().__init__(parent)
         self._projects_dir = projects_dir
-        self.setWindowTitle("Nouveau projet")
+        self.setWindowTitle("New project")
         self.setFixedSize(480, 260)
         self.setModal(True)
         self.setStyleSheet(f"QDialog{{background:{C.BG_BASE};}}")
@@ -438,11 +438,11 @@ class _NewProjectDialog(QDialog):
         hl.setContentsMargins(20, 0, 20, 0)
         hl.setSpacing(10)
         icon_lbl = QLabel("📁")
-        icon_lbl.setFont(QFont(T.MONO, T.XXL))
+        icon_lbl.setFont(QFont(T.UI, T.XXL))
         icon_lbl.setStyleSheet("background:transparent;")
         hl.addWidget(icon_lbl)
-        title_lbl = QLabel("Nouveau projet")
-        title_lbl.setFont(QFont(T.MONO, T.LG, QFont.Weight.Bold))
+        title_lbl = QLabel("New project")
+        title_lbl.setFont(QFont(T.UI, T.LG, QFont.Weight.DemiBold))
         title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
         hl.addWidget(title_lbl)
         hl.addStretch()
@@ -457,29 +457,29 @@ class _NewProjectDialog(QDialog):
 
         def _field_label(text: str) -> QLabel:
             lbl = QLabel(text)
-            lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+            lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
             lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
             return lbl
 
         # Nom du projet
-        bl.addWidget(_field_label("NOM DU PROJET"))
+        bl.addWidget(_field_label("PROJECT NAME"))
         self._name_edit = QLineEdit()
         self._name_edit.setFont(QFont(T.MONO, T.MD))
         self._name_edit.setStyleSheet(QSS.lineedit)
         self._name_edit.setFixedHeight(32)
-        self._name_edit.setPlaceholderText("MonJeu")
+        self._name_edit.setPlaceholderText("MyGame")
         bl.addWidget(self._name_edit)
 
         # Dossier parent
-        bl.addWidget(_field_label("EMPLACEMENT"))
+        bl.addWidget(_field_label("LOCATION"))
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         self._dir_edit = QLineEdit(str(projects_dir))
         self._dir_edit.setFont(QFont(T.MONO, T.MD))
         self._dir_edit.setStyleSheet(QSS.lineedit)
         self._dir_edit.setFixedHeight(32)
-        btn_dir = QPushButton("Parcourir…")
-        btn_dir.setFont(QFont(T.MONO, T.SM))
+        btn_dir = QPushButton("Browse…")
+        btn_dir.setFont(QFont(T.UI, T.SM))
         btn_dir.setFixedHeight(32)
         btn_dir.setStyleSheet(QSS.button_ghost)
         btn_dir.clicked.connect(self._pick_dir)
@@ -506,13 +506,13 @@ class _NewProjectDialog(QDialog):
         fl.setContentsMargins(16, 10, 16, 10)
         fl.setSpacing(8)
         fl.addStretch()
-        btn_cancel = QPushButton("Annuler")
-        btn_cancel.setFont(QFont(T.MONO, T.SM))
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setFont(QFont(T.UI, T.SM))
         btn_cancel.setFixedHeight(30)
         btn_cancel.setStyleSheet(QSS.button_ghost)
         btn_cancel.clicked.connect(self.reject)
-        btn_ok = QPushButton("Créer")
-        btn_ok.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        btn_ok = QPushButton("Create")
+        btn_ok.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         btn_ok.setFixedHeight(30)
         btn_ok.setStyleSheet(
             f"QPushButton{{color:#000;background:{C.ACCENT};"
@@ -542,7 +542,7 @@ class _NewProjectDialog(QDialog):
 
     def _pick_dir(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Choisir le dossier parent", self._dir_edit.text().strip() or str(self._projects_dir)
+            self, "Choose the parent folder", self._dir_edit.text().strip() or str(self._projects_dir)
         )
         if path:
             self._dir_edit.setText(path)
@@ -558,7 +558,7 @@ class _NewProjectDialog(QDialog):
             return
         path = Path(dir_) / name
         if path.exists():
-            QMessageBox.warning(self, "Erreur", f"'{name}' existe déjà dans ce dossier.")
+            QMessageBox.warning(self, "Error", f"'{name}' already exists in this folder.")
             return
         path.mkdir(parents=True, exist_ok=True)
         self.result_path = path

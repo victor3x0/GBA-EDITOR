@@ -24,7 +24,7 @@ class CanvasTopBar(QFrame):
     zoom_step_asked = pyqtSignal(int)   # -1 = dézoomer, +1 = zoomer
     fit_asked = pyqtSignal()
 
-    def __init__(self, fit_tip: str = "Ajuster à la vue  (F)", parent=None):
+    def __init__(self, fit_tip: str = "Fit to view  (F)", parent=None):
         super().__init__(parent)
         self.setFixedHeight(BAR_HEIGHT)
         self.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
@@ -36,7 +36,7 @@ class CanvasTopBar(QFrame):
         self._lay = lay
 
         self._btn_zoom_out = self._icon_btn("zoom_out", 16, (24, 24),
-                                            "Dézoomer  (molette bas)")
+                                            "Zoom out  (wheel down)")
         self._btn_zoom_out.clicked.connect(lambda: self.zoom_step_asked.emit(-1))
         lay.addWidget(self._btn_zoom_out)
 
@@ -48,7 +48,7 @@ class CanvasTopBar(QFrame):
         lay.addWidget(self._zoom_label)
 
         self._btn_zoom_in = self._icon_btn("zoom_in", 16, (24, 24),
-                                           "Zoomer  (molette haut)")
+                                           "Zoom in  (wheel up)")
         self._btn_zoom_in.clicked.connect(lambda: self.zoom_step_asked.emit(+1))
         lay.addWidget(self._btn_zoom_in)
 

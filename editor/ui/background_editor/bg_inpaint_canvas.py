@@ -543,10 +543,10 @@ class BgInpaintToolbar(QFrame):
     tool_changed = pyqtSignal(str)
 
     _TOOLS = [
-        ("brush",  "tool_inpaint_brush", "Pinceau — repeindre la palette (8×8)"),
-        ("fill",   "tool_fill",          "Pot de peinture — remplir par contiguïté"),
-        ("rect",   "tool_inpaint_rect",  "Rectangle — repeindre une zone"),
-        ("eraser", "tool_erase",         "Gomme — restaurer la palette d'origine"),
+        ("brush",  "tool_inpaint_brush", "Brush — repaint the palette (8×8)"),
+        ("fill",   "tool_fill",          "Paint bucket — fill contiguous area"),
+        ("rect",   "tool_inpaint_rect",  "Rectangle — repaint an area"),
+        ("eraser", "tool_erase",         "Eraser — restore the original palette"),
     ]
 
     def __init__(self, parent=None):
@@ -645,7 +645,7 @@ class BgInpaintCanvas(QWidget):
         self._ba = None
 
         # Barre d'état au-dessus du canvas — même composant que le Scene Manager.
-        self._bar = CanvasTopBar("Ajuster le fond à la vue")
+        self._bar = CanvasTopBar("Fit background to view")
         self._bar.zoom_step_asked.connect(self._view.zoom_step)
         self._bar.fit_asked.connect(self._view.fit)
         self._chk_grid = self._bar.add_toggle(
@@ -675,10 +675,10 @@ class BgInpaintCanvas(QWidget):
         self._toolbar.raise_()
 
         # Overlay « Compression… » (compression hors-thread — voir screen).
-        self._busy = QLabel("Compression…", self)
+        self._busy = QLabel("Compressing…", self)
         self._busy.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._busy.setStyleSheet(
-            "background:rgba(0,0,0,160); color:#eeeeee; font-family:monospace;"
+            f"background:rgba(0,0,0,160); color:#eeeeee; font-family:{T.UI_STACK};"
             "font-size:13px; border-radius:6px; padding:10px 20px;"
         )
         self._busy.hide()
@@ -694,7 +694,7 @@ class BgInpaintCanvas(QWidget):
         l.setTextFormat(Qt.TextFormat.RichText)
         l.setAlignment(halign | Qt.AlignmentFlag.AlignTop)
         l.setStyleSheet(
-            "background:rgba(12,12,15,215); color:#e6e6e6; font-family:monospace;"
+            f"background:rgba(12,12,15,215); color:#e6e6e6; font-family:{T.UI_STACK};"
             "font-size:11px; border-radius:5px; padding:5px 8px;"
         )
         l.hide()
@@ -725,7 +725,7 @@ class BgInpaintCanvas(QWidget):
         self._warn_ov.move(max(m, self.width() - self._warn_ov.width() - m), top)
         self._info_ov.raise_(); self._warn_ov.raise_()
 
-    def set_busy(self, on: bool, text: str = "Compression…"):
+    def set_busy(self, on: bool, text: str = "Compressing…"):
         self._busy.setText(text)
         self._busy.setVisible(on)
         if on:

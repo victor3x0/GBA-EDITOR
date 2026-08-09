@@ -20,9 +20,9 @@ from core.project import Project, Scene
 from ui.common.theme import C, T, QSS
 
 _MODES = [
-    ("fixed",  "Fixe"),
-    ("follow", "Suivi d'un Actor"),
-    ("script", "Piloté par script"),
+    ("fixed",  "Fixed"),
+    ("follow", "Follow an Actor"),
+    ("script", "Script-driven"),
 ]
 
 
@@ -49,7 +49,7 @@ class CameraInspector(QWidget):
         layout.setSpacing(10)
         scroll.setWidget(inner)
 
-        f = QFont(T.MONO, T.SM)
+        f = QFont(T.UI, T.SM)
         fs = f"color:{C.TEXT_DIM};"
 
         def _section_label(text: str) -> QLabel:
@@ -59,9 +59,9 @@ class CameraInspector(QWidget):
             return lbl
 
         # ── Mode ──────────────────────────────────────────────────
-        layout.addWidget(_section_label("Mode :"))
+        layout.addWidget(_section_label("Mode:"))
         self._mode_combo = QComboBox()
-        self._mode_combo.setFont(QFont(T.MONO, T.MD))
+        self._mode_combo.setFont(QFont(T.UI, T.MD))
         self._mode_combo.setStyleSheet(QSS.combobox)
         for _, label in _MODES:
             self._mode_combo.addItem(label)
@@ -69,11 +69,11 @@ class CameraInspector(QWidget):
         layout.addWidget(self._mode_combo)
 
         mode_info = QLabel(
-            "Fixe : reste à la position ci-dessous.\n"
-            "Suivi : camera_follow() sur l'Actor choisi (deadzone).\n"
-            "Script : le codegen ne touche plus à la caméra."
+            "Fixed: stays at the position below.\n"
+            "Follow: camera_follow() on the chosen Actor (deadzone).\n"
+            "Script: codegen no longer touches the camera."
         )
-        mode_info.setFont(QFont(T.MONO, T.XS))
+        mode_info.setFont(QFont(T.UI, T.XS))
         mode_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         mode_info.setWordWrap(True)
         layout.addWidget(mode_info)
@@ -84,10 +84,10 @@ class CameraInspector(QWidget):
         layout.addWidget(sep0)
 
         # ── Position de départ (lecture seule, déplacer dans le canvas) ──
-        layout.addWidget(_section_label("Position de départ :"))
+        layout.addWidget(_section_label("Start position:"))
         row = QHBoxLayout()
-        self._x_lbl = QLabel("X : 0")
-        self._y_lbl = QLabel("Y : 0")
+        self._x_lbl = QLabel("X: 0")
+        self._y_lbl = QLabel("Y: 0")
         for l in (self._x_lbl, self._y_lbl):
             l.setFont(QFont(T.MONO, T.MD))
             l.setStyleSheet(f"color:{C.TEXT_NORM};")
@@ -95,8 +95,8 @@ class CameraInspector(QWidget):
         row.addStretch()
         layout.addLayout(row)
 
-        info = QLabel("(Déplacer le rectangle jaune dans le canvas)")
-        info.setFont(QFont(T.MONO, T.XS))
+        info = QLabel("(Move the yellow rectangle in the canvas)")
+        info.setFont(QFont(T.UI, T.XS))
         info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -112,19 +112,19 @@ class CameraInspector(QWidget):
         fg.setContentsMargins(0, 0, 0, 0)
         fg.setSpacing(8)
 
-        fg.addWidget(_section_label("Suivre un Actor :"))
+        fg.addWidget(_section_label("Follow an Actor:"))
         self._follow_combo = QComboBox()
-        self._follow_combo.setFont(QFont(T.MONO, T.MD))
+        self._follow_combo.setFont(QFont(T.UI, T.MD))
         self._follow_combo.setStyleSheet(QSS.combobox)
         self._follow_combo.currentTextChanged.connect(self._on_follow_changed)
         fg.addWidget(self._follow_combo)
 
         margin_row = QHBoxLayout()
         margin_row.setSpacing(10)
-        for label, attr in (("Marge X :", "_margin_x"), ("Marge Y :", "_margin_y")):
+        for label, attr in (("Margin X:", "_margin_x"), ("Margin Y:", "_margin_y")):
             col = QVBoxLayout()
             lbl = QLabel(label)
-            lbl.setFont(QFont(T.MONO, T.XS))
+            lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
             col.addWidget(lbl)
             spin = QSpinBox()
@@ -140,10 +140,10 @@ class CameraInspector(QWidget):
         self._margin_y.valueChanged.connect(self._on_margins_changed)
 
         follow_info = QLabel(
-            "Zone morte (deadzone) : la caméra ne bouge que si l'Actor\n"
-            "s'éloigne de plus de Marge X/Y du centre de l'écran."
+            "Deadzone: the camera only moves once the Actor\n"
+            "gets further than Margin X/Y from the screen center."
         )
-        follow_info.setFont(QFont(T.MONO, T.XS))
+        follow_info.setFont(QFont(T.UI, T.XS))
         follow_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         follow_info.setWordWrap(True)
         fg.addWidget(follow_info)
@@ -156,13 +156,13 @@ class CameraInspector(QWidget):
         layout.addWidget(sep2)
 
         # ── Bornes du monde ───────────────────────────────────────
-        layout.addWidget(_section_label("Bornes du monde (0 = illimité) :"))
+        layout.addWidget(_section_label("World bounds (0 = unlimited):"))
         bounds_row = QHBoxLayout()
         bounds_row.setSpacing(10)
-        for label, attr in (("Largeur :", "_bounds_w"), ("Hauteur :", "_bounds_h")):
+        for label, attr in (("Width:", "_bounds_w"), ("Height:", "_bounds_h")):
             col = QVBoxLayout()
             lbl = QLabel(label)
-            lbl.setFont(QFont(T.MONO, T.XS))
+            lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
             col.addWidget(lbl)
             spin = QSpinBox()
@@ -178,12 +178,12 @@ class CameraInspector(QWidget):
         self._bounds_w.valueChanged.connect(self._on_bounds_changed)
         self._bounds_h.valueChanged.connect(self._on_bounds_changed)
 
-        btn_recalc = QPushButton("Recalculer depuis les fonds")
-        btn_recalc.setFont(QFont(T.MONO, T.SM))
+        btn_recalc = QPushButton("Recompute from backgrounds")
+        btn_recalc.setFont(QFont(T.UI, T.SM))
         btn_recalc.setStyleSheet(QSS.button_ghost)
         btn_recalc.setToolTip(
-            "Pré-remplit largeur/hauteur depuis le fond de la scène le plus\n"
-            "proche d'une vitesse de parallax de 1.0 — reste éditable ensuite."
+            "Prefills width/height from the scene background closest to\n"
+            "a parallax speed of 1.0 — stays editable afterwards."
         )
         btn_recalc.clicked.connect(self._recalc_bounds)
         layout.addWidget(btn_recalc)
@@ -225,13 +225,13 @@ class CameraInspector(QWidget):
         if self._scene:
             self._scene.cam_x = x
             self._scene.cam_y = y
-        self._x_lbl.setText(f"X : {x}")
-        self._y_lbl.setText(f"Y : {y}")
+        self._x_lbl.setText(f"X: {x}")
+        self._y_lbl.setText(f"Y: {y}")
 
     def _update_position_labels(self):
         if self._scene:
-            self._x_lbl.setText(f"X : {self._scene.cam_x}")
-            self._y_lbl.setText(f"Y : {self._scene.cam_y}")
+            self._x_lbl.setText(f"X: {self._scene.cam_x}")
+            self._y_lbl.setText(f"Y: {self._scene.cam_y}")
 
     # ── Callbacks ─────────────────────────────────────────────────
 
@@ -268,12 +268,12 @@ class CameraInspector(QWidget):
             return
         layers = [L for L in self._scene.background_layers if L.background_name]
         if not layers:
-            QMessageBox.information(self, "Bornes du monde", "Cette scène n'a aucun fond posé.")
+            QMessageBox.information(self, "World bounds", "This scene has no background placed.")
             return
         ref = min(layers, key=lambda L: abs(L.scroll_speed - 1.0))
         size = self._bg_pixel_size(ref)
         if size is None:
-            QMessageBox.warning(self, "Bornes du monde", f"Impossible de lire les dimensions de '{ref.background_name}'.")
+            QMessageBox.warning(self, "World bounds", f"Could not read dimensions of '{ref.background_name}'.")
             return
         w, h = size
         self._bounds_w.setValue(w)

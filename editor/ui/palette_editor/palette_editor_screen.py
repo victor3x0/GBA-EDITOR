@@ -46,18 +46,8 @@ class PaletteEditorScreen(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        hdr = QFrame()
-        hdr.setFixedHeight(32)
-        hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER};")
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(12, 0, 12, 0)
-        lbl = QLabel("PALETTE EDITOR")
-        lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{C.ACCENT};")
-        hl.addWidget(lbl)
-        hl.addStretch()
-        root.addWidget(hdr)
-
+        # Pas de bandeau-titre d'écran : la nav du haut indique déjà où on est
+        # (décision refonte thème 2026-08).
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)

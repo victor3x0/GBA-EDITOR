@@ -82,8 +82,8 @@ class ScriptEditorScreen(QWidget):
         bar_l.setContentsMargins(8, 0, 8, 0)
         bar_l.setSpacing(8)
 
-        btn_back = QPushButton("← Retour")
-        btn_back.setFont(QFont(T.MONO, T.MD))
+        btn_back = QPushButton("← Back")
+        btn_back.setFont(QFont(T.UI, T.MD))
         btn_back.setFixedHeight(24)
         btn_back.setStyleSheet(
             f"QPushButton{{color:{_TEXT_NORM};background:none;border:1px solid {C.BORDER};"
@@ -97,13 +97,13 @@ class ScriptEditorScreen(QWidget):
         # même source que AssetHeaderBar utilisé dans Scene Manager / Sprite Editor / Sound Mixer).
         # Pas de bandeau dédié ici : ce titre partage la barre d'outils avec Retour/Enregistrer.
         self._title_lbl = QLabel("—")
-        self._title_lbl.setFont(QFont(T.MONO, T.MD2, QFont.Weight.Bold))
+        self._title_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._title_lbl.setStyleSheet(f"color:{COLOR_SCRIPT};")
         bar_l.addWidget(self._title_lbl, 1)
 
         from ui.common.widgets import _kind_colors as _badge_bg
         self._ctx_badge = QLabel("")
-        self._ctx_badge.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
+        self._ctx_badge.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._ctx_badge.setStyleSheet(
             f"color:{_C_API};background:{_badge_bg(_C_API)[0]};border:1px solid {_C_API};"
             "border-radius:3px;padding:1px 6px;"
@@ -111,8 +111,8 @@ class ScriptEditorScreen(QWidget):
         self._ctx_badge.setVisible(False)
         bar_l.addWidget(self._ctx_badge)
 
-        self._save_btn = QPushButton("Enregistrer")
-        self._save_btn.setFont(QFont(T.MONO, T.MD))
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setFont(QFont(T.UI, T.MD))
         self._save_btn.setFixedHeight(24)
         self._save_btn.setStyleSheet(
             f"QPushButton{{color:{_C_EVENT};background:none;border:1px solid {_C_EVENT};"
@@ -132,7 +132,7 @@ class ScriptEditorScreen(QWidget):
 
         for label, subdir in [("+ Script", ""), ("+ Actor", "actors"), ("+ Scene", "scenes")]:
             btn = QPushButton(label)
-            btn.setFont(QFont(T.MONO, T.SM))
+            btn.setFont(QFont(T.UI, T.SM))
             btn.setFixedHeight(24)
             btn.setStyleSheet(
                 f"QPushButton{{color:{C.TEXT_NORM};background:none;border:1px solid {C.BORDER};"
@@ -252,7 +252,7 @@ class ScriptEditorScreen(QWidget):
         from ui.common.widgets import _kind_colors
         _BADGE = {
             "actor":    ("ACTOR",    _C_EVENT),
-            "scene":    ("SCÈNE",    _C_API),
+            "scene":    ("SCENE",    _C_API),
             "behavior": ("BEHAVIOR", _C_BEHAVIOR),
         }
         if ctx in _BADGE:
@@ -333,9 +333,9 @@ class ScriptEditorScreen(QWidget):
 
     def _create_script(self, subdir: str):
         if not self._root_scripts_dir:
-            QMessageBox.warning(self, "Projet", "Aucun projet chargé.")
+            QMessageBox.warning(self, "Project", "No project loaded.")
             return
-        name, ok = QInputDialog.getText(self, "Nouveau script", "Nom du script :")
+        name, ok = QInputDialog.getText(self, "New script", "Script name:")
         if not ok or not name.strip():
             return
         name = name.strip()
@@ -345,7 +345,7 @@ class ScriptEditorScreen(QWidget):
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / name
         if path.exists():
-            QMessageBox.warning(self, "Fichier existant", f"{name} existe déjà.")
+            QMessageBox.warning(self, "File already exists", f"{name} already exists.")
             return
         from scripting.script_templates import ScriptTemplateContext, generate_script_template
         ctx = ScriptTemplateContext(kind="empty", name=name[:-4] if name.endswith(".lua") else name)

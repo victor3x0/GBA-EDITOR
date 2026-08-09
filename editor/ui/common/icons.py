@@ -154,6 +154,16 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Text Editor — couleurs-clés d'une planche de police
     "eyedropper":            ("mdi.eyedropper",              "⚲"),
     "clear":                 ("mdi.close",                   "✕"),
+    # Text Editor — barre de balisage (une par balise de core.text_markup.TAGS,
+    # plus le marqueur de valeur ; « mk_ » comme markup)
+    "mk_speed":              ("mdi.speedometer",             "»"),
+    "mk_pause":              ("mdi.timer-sand",              "⏸"),
+    "mk_icon":               ("mdi.sticker-emoji",           "☺"),
+    "mk_wave":               ("mdi.waves",                   "∿"),
+    "mk_shake":              ("mdi.vibrate",                 "⚡"),
+    "mk_color":              ("mdi.palette-outline",         "◐"),
+    "mk_value":              ("mdi.variable",                "$"),
+    "mk_tag":                ("mdi.tag-outline",             "⌗"),
     # Text Editor — clé d'un texte : accrochée au rangement ou nommée à la main
     "key_auto":              ("mdi.link-variant",            "⚯"),
     "key_manual":            ("mdi.link-variant-off",        "⚮"),

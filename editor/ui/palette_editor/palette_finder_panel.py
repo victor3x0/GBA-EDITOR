@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QTreeWidget, QTreeWidgetItem,
+    QWidget, QVBoxLayout, QFrame, QTreeWidget, QTreeWidgetItem,
     QAbstractItemView, QInputDialog, QMessageBox, QMenu, QStyledItemDelegate,
     QFileDialog,
 )
@@ -55,21 +55,12 @@ class PaletteFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        finder_hdr = QFrame()
-        finder_hdr.setFixedHeight(20)
-        finder_hdr.setStyleSheet(f"background:{C.BG_BASE}; border-bottom:1px solid {C.BORDER_DARK};")
-        fl = QHBoxLayout(finder_hdr)
-        fl.setContentsMargins(8, 0, 0, 0)
-        finder_lbl = QLabel("PALETTE FINDER")
-        finder_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        finder_lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; letter-spacing:1px;")
-        fl.addWidget(finder_lbl)
-        root.addWidget(finder_hdr)
+        root.addWidget(W.finder_bar("PALETTE FINDER"))
 
         root.addWidget(self._make_section("PALETTES", C.ACCENT))
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setFont(QFont(T.MONO, T.MD))
+        self._tree.setFont(QFont(T.UI, T.MD))
         self._tree.setIconSize(QSize(16, 16))
         self._tree.setStyleSheet(QSS.tree_widget)
         self._tree.setItemDelegate(_PaletteNameDelegate(self._tree))
@@ -81,22 +72,16 @@ class PaletteFinderPanel(QWidget):
         root.addWidget(self._tree, 1)
 
     def _make_section(self, title: str, color: str) -> QFrame:
-        f = QFrame()
-        f.setFixedHeight(28)
-        f.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
-        hl = QHBoxLayout(f)
-        hl.setContentsMargins(8, 0, 4, 0)
-        hl.setSpacing(2)
-        lbl = QLabel(title)
-        lbl.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{color};")
-        hl.addWidget(lbl, 1)
+        # Même en-tête que les sections repliables des autres viewers
+        # (W.section_bar) : titre sur la gouttière, pas de bandeau.
+        f = W.section_bar(title, color)
+        hl = f.layout()
 
-        self._btn_add = W.btn_add("Ajouter une palette (créer / importer)")
+        self._btn_add = W.btn_add("Add a palette (create / import)")
         self._btn_add.clicked.connect(self._on_add_menu)
         hl.addWidget(self._btn_add)
 
-        btn_del = W.btn_danger("Supprimer la palette sélectionnée")
+        btn_del = W.btn_danger("Delete selected palette")
         btn_del.clicked.connect(self._del)
         hl.addWidget(btn_del)
 
@@ -177,9 +162,9 @@ class PaletteFinderPanel(QWidget):
             return
         self._tree.setCurrentItem(item)
         menu = QMenu(self)
-        dup_a = menu.addAction("Dupliquer")
+        dup_a = menu.addAction("Duplicate")
         menu.addSeparator()
-        delete_a = menu.addAction("Supprimer")
+        delete_a = menu.addAction("Delete")
         act = menu.exec(self._tree.viewport().mapToGlobal(pos))
         if act == dup_a:
             self._duplicate()
@@ -192,8 +177,8 @@ class PaletteFinderPanel(QWidget):
         """Le « + » propose deux entrées : créer une palette vide, ou en importer
         une depuis un fichier (.gpl / .pal / liste hex)."""
         menu = QMenu(self)
-        a_new = menu.addAction("Créer une palette vide")
-        a_imp = menu.addAction("Importer…")
+        a_new = menu.addAction("Create an empty palette")
+        a_imp = menu.addAction("Import…")
         act = menu.exec(self._btn_add.mapToGlobal(self._btn_add.rect().bottomLeft()))
         if act == a_new:
             self._add()
@@ -212,15 +197,15 @@ class PaletteFinderPanel(QWidget):
     def _add(self):
         if not self._project:
             return
-        name, ok = QInputDialog.getText(self, "Nouvelle palette", "Nom :")
+        name, ok = QInputDialog.getText(self, "New palette", "Name:")
         if not (ok and name.strip()):
             return
         name = name.strip()
         if self._project.palettes.get(name):
             return
         kind, ok = QInputDialog.getItem(
-            self, "Type de palette", "Taille :",
-            ["16 couleurs (4bpp)", "256 couleurs (8bpp)"], 0, False)
+            self, "Palette type", "Size:",
+            ["16 colors (4bpp)", "256 colors (8bpp)"], 0, False)
         if not ok:
             return
         size = 256 if kind.startswith("256") else 16
@@ -238,17 +223,17 @@ class PaletteFinderPanel(QWidget):
         if not self._project:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Importer une palette", "",
-            "Palettes (*.gpl *.pal *.txt *.hex);;Tous les fichiers (*)")
+            self, "Import a palette", "",
+            "Palettes (*.gpl *.pal *.txt *.hex);;All files (*)")
         if not path:
             return
         try:
             colors = parse_palette_file(Path(path))
         except OSError as e:
-            QMessageBox.warning(self, "Importer", f"Fichier illisible : {e}")
+            QMessageBox.warning(self, "Import", f"Unreadable file: {e}")
             return
         if not colors:
-            QMessageBox.warning(self, "Importer", "Aucune couleur reconnue dans ce fichier.")
+            QMessageBox.warning(self, "Import", "No color recognized in this file.")
             return
         size = 256 if len(colors) > 16 else 16
         bgr = [rgb888_to_bgr555(*c) for c in colors[:size]]
@@ -271,7 +256,7 @@ class PaletteFinderPanel(QWidget):
         src = self._project.palettes.get(item.data(0, Qt.ItemDataRole.UserRole))
         if not src:
             return
-        copy = PaletteBank(name=self._unique_name(f"{src.name} copie"),
+        copy = PaletteBank(name=self._unique_name(f"{src.name} copy"),
                            colors=list(src.colors), size=src.size)
 
         def _refresh():
@@ -292,8 +277,8 @@ class PaletteFinderPanel(QWidget):
         if not bank:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer la palette « {bank.name} » ?\n(Ctrl+Z pour annuler)",
+            self, "Delete",
+            f"Delete palette “{bank.name}”?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return

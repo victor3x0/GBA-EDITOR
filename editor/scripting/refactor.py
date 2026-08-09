@@ -172,6 +172,112 @@ def find_refs_in_project(project, domain: str, name: str) -> dict[Path, list[Lua
     return found
 
 
+@dataclass(frozen=True)
+class LuaCallSite:
+    """Un appel d'API et les littéraux qu'il pose, RANGÉS PAR DOMAINE.
+
+    `iter_refs` rend les références une par une : de quoi renommer, pas de quoi
+    confronter deux arguments du même appel — or « ce texte tient-il dans cette
+    zone ? » est exactement une question sur la PAIRE."""
+    path:    Path
+    api_key: str
+    line:    int
+    values:  dict     # domaine → littéral (le premier de ce domaine)
+
+
+def iter_call_sites(text: str, path: Path | None = None,
+                    *domains: str) -> Iterator[LuaCallSite]:
+    """Appels dont les littéraux couvrent TOUS les `domains` demandés.
+
+    Le repérage reste structurel, comme `iter_refs` : la position des arguments
+    vient de `RUNTIME_API`, jamais d'un ordre écrit ici. C'est ce qui a fait que
+    le réordonnancement de la famille `text.*` n'a rien eu à déclarer, et ce qui
+    fera qu'une future primitive « zone + clé » sera couverte sans y toucher."""
+    if not _LUAPARSER_OK:
+        return
+    try:
+        tree = _lua_ast.parse(text)
+    except Exception:
+        return
+
+    for node in _lua_ast.walk(tree):
+        if not isinstance(node, (_nodes.Call, _nodes.Invoke)):
+            continue
+        key = _call_key(node)
+        arg_domains = _SITES.get(key or "")
+        if not arg_domains:
+            continue
+        values: dict = {}
+        first_at = None
+        for i, arg in enumerate(node.args or []):
+            dom = arg_domains.get(i)
+            if dom is None or not isinstance(arg, _nodes.String):
+                continue
+            values.setdefault(dom, arg.raw)
+            if first_at is None:
+                first_at = arg.start_char
+        if domains and not all(d in values for d in domains):
+            continue
+        yield LuaCallSite(
+            path=path or Path(""), api_key=key or "",
+            line=text.count("\n", 0, first_at) + 1 if first_at is not None else 0,
+            values=values,
+        )
+
+
+def domain_args_in_text(text: str, domain: str) -> tuple[set[str], bool]:
+    """({noms littéralement cités dans ce domaine}, y a-t-il un argument CALCULÉ ?)
+
+    Le second booléen est ce qui manque à `iter_refs`, qui ne voit que les
+    chaînes littérales : « ce script ne cite aucune police » et « ce script
+    choisit sa police au runtime » y sont indiscernables. Pour un renommage
+    l'amalgame est sans conséquence — il n'y a rien à réécrire dans les deux cas.
+    Pour une RÉSERVATION de VRAM il est dangereux : on réserverait trop peu, et
+    le texte irait écrire dans les tuiles du décor sans que rien ne le dise.
+
+    Un script illisible ou non analysable rend `True` pour la même raison :
+    l'ignorance doit se propager, jamais se confondre avec une réponse vide.
+    C'est aussi le comportement quand luaparser est absent."""
+    if not _LUAPARSER_OK:
+        return set(), True
+    try:
+        tree = _lua_ast.parse(text)
+    except Exception:
+        return set(), True
+
+    names: set[str] = set()
+    dynamic = False
+    for node in _lua_ast.walk(tree):
+        if not isinstance(node, (_nodes.Call, _nodes.Invoke)):
+            continue
+        arg_domains = _SITES.get(_call_key(node) or "")
+        if not arg_domains:
+            continue
+        args = node.args or []
+        for i, dom in arg_domains.items():
+            if dom != domain:
+                continue
+            if i >= len(args):
+                dynamic = True          # appel mal formé : on ne conclut rien
+            elif isinstance(args[i], _nodes.String):
+                names.add(args[i].raw)
+            else:
+                dynamic = True
+    return names, dynamic
+
+
+def find_call_sites_in_project(project, *domains: str) -> list[LuaCallSite]:
+    """Tous les appels du projet couvrant `domains`, en un seul parcours."""
+    out: list[LuaCallSite] = []
+    for p in script_paths(project):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        out += list(iter_call_sites(text, p, *domains))
+    return out
+
+
 def index_refs_in_project(project, domain: str) -> dict[str, dict[Path, int]]:
     """{valeur référencée: {script: nombre d'occurrences}} pour tout un domaine.
 

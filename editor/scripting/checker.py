@@ -16,6 +16,7 @@ Vérifications en v1 :
 """
 
 from __future__ import annotations
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -28,6 +29,13 @@ from .parser import (
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_REGION)
+
+
+# Ce à quoi ressemble une CLÉ et pas un libellé : minuscules, chiffres, au
+# moins un tiret bas, ni espace ni accent. « village_garde_01 » oui, « Appuyez
+# sur A » non — de quoi voir la faute de frappe sans suspecter chaque littéral
+# (cf. Checker._check_text).
+_KEY_SHAPED = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)+$")
 
 
 # ─── Résultat ─────────────────────────────────────────────────────
@@ -216,7 +224,7 @@ class Checker:
             elif param.domain == DOMAIN_KEY:
                 self._check_key(key, val)
             elif param.domain == DOMAIN_TEXT:
-                self._check_text(key, val)
+                self._check_text(key, val, param.literal_ok)
             elif param.domain == DOMAIN_FONT:
                 self._check_font(key, val)
             elif param.domain == DOMAIN_REGION:
@@ -244,17 +252,35 @@ class Checker:
                 f"{call_key}('{name}') : music '{name}' introuvable dans le projet.",
             ))
 
-    def _check_text(self, call_key: str, key: str):
+    def _check_text(self, call_key: str, key: str, literal_ok: bool = False):
         """Une clé de texte inconnue est une ERREUR, pas un avertissement : le
         #define n'existerait pas et la compilation C échouerait de toute façon,
-        avec un message bien moins clair."""
-        if self.ctx.text_keys is not None and key not in self.ctx.text_keys:
-            near = ", ".join(sorted(self.ctx.text_keys)[:5]) or "aucun texte dans le projet"
-            self.errors.append(CheckError(
-                "error",
-                f"{call_key}('{key}') : texte '{key}' introuvable dans la table du "
-                f"projet ({near}).",
-            ))
+        avec un message bien moins clair.
+
+        Sauf là où un littéral est permis (`text.draw`) : la chaîne résout vers
+        une clé si elle en matche une, sinon elle EST le texte. Reste le piège
+        de la faute de frappe — `villag_garde_01` s'afficherait tel quel au
+        joueur. On ne le signale que si la chaîne a la FORME d'une clé : aucun
+        vrai libellé ne ressemble à ça, donc la faute se voit sans faire de
+        bruit sur les littéraux légitimes. Même compromis que le silence sur
+        les crochets en prose, côté balisage."""
+        if self.ctx.text_keys is None or key in self.ctx.text_keys:
+            return
+        if literal_ok:
+            if _KEY_SHAPED.match(key):
+                self.errors.append(CheckError(
+                    "warning",
+                    f"{call_key}('{key}') : aucune entrée de ce nom dans la "
+                    f"table — le texte « {key} » sera affiché tel quel. Faute "
+                    f"de frappe sur une clé, ou littéral volontaire ?",
+                ))
+            return
+        near = ", ".join(sorted(self.ctx.text_keys)[:5]) or "aucun texte dans le projet"
+        self.errors.append(CheckError(
+            "error",
+            f"{call_key}('{key}') : texte '{key}' introuvable dans la table du "
+            f"projet ({near}).",
+        ))
 
     def _check_font(self, call_key: str, name: str):
         if self.ctx.font_names is not None and name not in self.ctx.font_names:

@@ -23,17 +23,6 @@
       "auto_key": true
     },
     {
-      "id": 208987591065,
-      "key": "victory",
-      "path": [
-        "VICTORY"
-      ],
-      "content": "PLAYER WINS!",
-      "note": "",
-      "scene": "",
-      "auto_key": true
-    },
-    {
       "id": 553680334419,
       "key": "victory_02",
       "path": [
@@ -67,10 +56,21 @@
       "auto_key": false
     },
     {
-      "id": 683983662283,
-      "key": "pong",
+      "id": 208987591065,
+      "key": "victory",
       "path": [
-        "PONG"
+        "VICTORY"
+      ],
+      "content": "PLAYER WINS!",
+      "note": "",
+      "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 683983662283,
+      "key": "arena",
+      "path": [
+        "ARENA"
       ],
       "content": "$score_player",
       "note": "",
@@ -79,13 +79,61 @@
     },
     {
       "id": 488993276502,
-      "key": "pong_02",
+      "key": "arena_02",
       "path": [
-        "PONG"
+        "ARENA"
       ],
-      "content": "$score_auto",
+      "content": "$score_cpu",
       "note": "",
       "scene": "",
+      "auto_key": true
+    },
+    {
+      "id": 666445536826,
+      "key": "arena_ui_text",
+      "path": [
+        "arena_ui",
+        "text"
+      ],
+      "content": "Blop the next time ",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
+    },
+    {
+      "id": 305800134452,
+      "key": "arena_ui_text_02",
+      "path": [
+        "arena_ui",
+        "text"
+      ],
+      "content": "Blop The next time",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
+    },
+    {
+      "id": 531227580056,
+      "key": "arena_ui_score_player",
+      "path": [
+        "arena_ui",
+        "Score_Player"
+      ],
+      "content": "$score_player",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
+    },
+    {
+      "id": 601507724365,
+      "key": "arena_ui_score_cpu",
+      "path": [
+        "arena_ui",
+        "Score_CPU"
+      ],
+      "content": "$score_cpu",
+      "note": "",
+      "scene": "Arena",
       "auto_key": true
     }
   ]

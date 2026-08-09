@@ -120,6 +120,107 @@ def _layer_tiles_used(p, bi: dict) -> int:
     return 512
 
 
+def scene_text_colors(p, scene, font_name: str) -> list:
+    """Couleurs à charger pour cette police dans cette scène, variante 0 d'abord.
+
+    La variante 0 est l'encre d'ORIGINE : une police à plusieurs teintes garde
+    les siennes tant qu'aucun slot ne demande de couleur. Les autres sont les
+    index réclamés par les slots, chacun coûtant une copie des glyphes — d'où le
+    tri, pour que l'ordre ne dépende pas de l'itération.
+
+    Un slot qui ne DÉCLARE pas de police écrit avec la police courante, que le
+    build ne connaît pas : sa couleur compte alors pour toutes les polices de la
+    scène. Une copie de trop coûte des tuiles ; une de moins ferait tomber la
+    couleur en silence."""
+    from core.models.ui_region import KIND_SLOTS
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    colors: set = set()
+    for el in (lay.elements if lay is not None else []):
+        if getattr(el, "kind", "") not in KIND_SLOTS:
+            continue
+        c = int(getattr(el, "text_color", 0) or 0)
+        if not 1 <= c <= 15:
+            continue
+        declared = getattr(el, "font_name", "")
+        if not declared or declared == font_name:
+            colors.add(c)
+    return [0] + sorted(colors)
+
+
+def scene_text_reservation(p, scene) -> dict:
+    """Tuiles à réserver au texte dans le charblock d'UI de CETTE scène.
+
+    Un seul calcul pour deux lecteurs : le placement (`_apply_vram_layout`) et
+    le garde-fou de budget (`pipeline._scene_tile_budgets`). Les laisser diverger
+    validerait un budget que le placement ne tient pas.
+
+    Trois postes, dans l'ordre où ils occupent le charblock :
+    - les fonds COULEUR puis les fonds IMAGE (nine-slice, background) — ils
+      précèdent les glyphes, qui se décalent d'autant ;
+    - les GLYPHES, restreints aux polices que cette scène peut charger
+      (`font_emit.scene_font_names`) ;
+    - la SURFACE composée quand une zone a un fond : bloc propre de 240 tuiles,
+      jamais à l'adresse des glyphes (cf. runtime `g_surf_tile_base`)."""
+    from codegen.font_emit import (scene_text_tiles, scene_font_names,
+                                   scene_codepoints, mono_vram_tiles,
+                                   TEXT_SURF_TILES)
+    fonts = project_fonts(p)
+    # `scene_init` émet toujours `text_set_font(0)` : la première police est en
+    # VRAM même dans une scène qui n'écrit pas une lettre.
+    default_font = fonts[0].name if fonts else ""
+    names = scene_font_names(p, scene, default_font)
+
+    fills, fill_indices = scene_color_fills(p, scene)
+    img_fills, img_assets = scene_image_fills(p, scene)
+    by_name, _ = _region_bg_fills(p)
+    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    needs_surface = any(r.name in by_name for r in (lay_ui.slots if lay_ui else []))
+
+    # Ce que la scène AFFICHE borne ce qu'elle charge. `None` = indécidable,
+    # donc la police entière (et pas de sous-ensemble émis non plus).
+    cps = scene_codepoints(p, scene)
+
+    # ── Où chaque police se charge ────────────────────────────────
+    # Chacune a SA base : un titre et un corps de texte coexistent à l'écran, et
+    # la réservation devient une SOMME (abordable grâce au sous-ensemble).
+    #
+    # Si l'ensemble des polices est indécidable, on ne sait pas lesquelles
+    # coexistent et sommer tout le projet réserverait un charblock pour rien :
+    # repli sur le modèle « une seule résidente, base 0 », donc le MAXIMUM.
+    from codegen.font_emit import render_composited
+    scene_fonts = [(i, f) for i, f in enumerate(fonts)
+                   if names is None or f.name in names]
+    font_layout: list[dict] = []
+    if names is not None:
+        base = 0
+        for i, f in scene_fonts:
+            if render_composited(f):
+                continue          # ne charge aucun glyphe : c'est la surface qui coûte
+            n = mono_vram_tiles(f, cps)
+            colors = scene_text_colors(p, scene, f.name)
+            font_layout.append({"index": i, "name": f.name, "base": base,
+                                "tiles": n * len(colors), "colors": colors})
+            base += n * len(colors)
+        mono_tiles = base
+    else:
+        mono_tiles = scene_text_tiles(fonts, names, cps)
+
+    # Une police COMPOSÉE range ses pixels dans la surface, comme une zone à
+    # fond : sans ça `blit_use_bg_surface` retombe sur la base des glyphes et
+    # écrase la police mono voisine.
+    needs_surface = needs_surface or any(render_composited(f) for _i, f in scene_fonts)
+
+    img_tiles  = sum(a["tiles"] for a in img_assets)
+    surf_tiles = TEXT_SURF_TILES if needs_surface else 0
+    return {
+        "fills": fills, "fill_indices": fill_indices,
+        "img_fills": img_fills, "img_assets": img_assets,
+        "mono_tiles": mono_tiles, "needs_surface": needs_surface,
+        "font_names": names, "codepoints": cps, "font_layout": font_layout,
+        "total": len(fill_indices) + img_tiles + mono_tiles + surf_tiles,
+    }
+
+
 def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
     """Remplace le placement historique des maps par celui de l'allocateur.
 
@@ -128,40 +229,51 @@ def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
     allocation, sinon les tuiles et la map du texte partent à des adresses qui
     ne se correspondent plus."""
     from codegen.vram_alloc import scene_layout
-    from codegen.font_emit import scene_text_tiles
     slots = {bi["bg"]: _layer_tiles_used(p, bi) for bi in bgi}
     maps  = {bi["bg"]: bi["map_sbb_count"] for bi in bgi}
-    text_bg = getattr(scene, "text_bg", -1)
-    # names=None : réservation à l'échelle du projet. Restreindre à la mise en
-    # page de la scène demande d'abord d'indexer text.set_font (cf. font_emit).
-    # Les tuiles PLEINES des fonds couleur vivent dans le même charblock UI que
-    # les glyphes, AVANT eux (le texte se décale d'autant) — donc réservées ici.
-    fills, fill_indices = scene_color_fills(p, scene)
-    mono_tiles = scene_text_tiles(project_fonts(p), None)
-    # Scène avec au moins une zone à fond : la SURFACE composée a besoin de son
-    # PROPRE bloc de 240 tuiles, en plus des glyphes mono (jamais à la même
-    # adresse — cf. runtime `g_surf_tile_base`, sinon la composition d'une zone
-    # écraserait les glyphes statiques que ses voisines mono lisent encore).
-    by_name, _ = _region_bg_fills(p)
-    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    needs_surface = any(r.name in by_name for r in (lay_ui.regions if lay_ui else []))
-    from codegen.font_emit import TEXT_SURF_TILES
-    surf_tiles = TEXT_SURF_TILES if needs_surface else 0
-    # Fonds IMAGE : les tuiles de chaque asset source sont copiées dans le
-    # charblock d'UI, entre les tuiles pleines et les glyphes.
-    img_fills, img_assets = scene_image_fills(p, scene)
-    img_tiles = sum(a["tiles"] for a in img_assets)
-    text_tiles = len(fill_indices) + img_tiles + mono_tiles + surf_tiles
-    lay = scene_layout(slots, maps, text_bg, text_tiles)
+    res = scene_text_reservation(p, scene)
+    lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), res["total"])
     for bi in bgi:
         bi["sbb"] = lay.map_sbb[bi["bg"]]
     scene._vram_layout = lay   # consommé par _gen_scene_init
-    scene._ui_fills = fills
-    scene._ui_fill_indices = fill_indices
-    scene._ui_mono_tiles = mono_tiles
-    scene._ui_needs_surface = needs_surface
-    scene._ui_img_fills = img_fills
-    scene._ui_img_assets = img_assets
+    scene._ui_fills = res["fills"]
+    scene._ui_fill_indices = res["fill_indices"]
+    scene._ui_mono_tiles = res["mono_tiles"]
+    scene._ui_needs_surface = res["needs_surface"]
+    scene._ui_img_fills = res["img_fills"]
+    scene._ui_img_assets = res["img_assets"]
+    scene._ui_reservation = res   # relu par le log de build
+
+
+def _log_vram_layout(scene, emit) -> None:
+    """Dit où l'allocateur a posé le bloc du texte, et pourquoi le cas échéant.
+
+    Émis à CHAQUE build et pas seulement en repli : c'est la première chose
+    qu'on cherche quand un fond ne rentre plus."""
+    lay = getattr(scene, "_vram_layout", None)
+    if lay is None or emit is None:
+        return
+    budget = ", ".join(f"BG{s}:{n}" for s, n in sorted(lay.budget.items()))
+    emit("log_line",
+         f"[vram] scène '{scene.name}' : texte en CBB{lay.text_cbb} "
+         f"base {lay.text_base}, map SBB{lay.text_sbb} — {lay.note}"
+         + (f" — budget tuiles {budget}" if budget else ""))
+
+    # Sur quelle base la place a été réservée : un repli sur tout le projet est
+    # un choix de l'outil, sinon on cherche pourquoi le décor a moins de tuiles.
+    res = getattr(scene, "_ui_reservation", None)
+    if not res:
+        return
+    names = res.get("font_names")
+    if names is None:
+        why = ("toutes les polices du projet — une police est choisie au "
+               "runtime (text.set_font non littéral) ou un script n'a pas pu "
+               "être analysé")
+    else:
+        why = "polices " + (", ".join(sorted(names)) if names else "(aucune)")
+    emit("log_line",
+         f"[vram] scène '{scene.name}' : {res['total']} tuile(s) réservée(s) au "
+         f"texte ({res['mono_tiles']} de glyphes — {why})")
 
 
 def _pool_info(prefabs, pool_start: int) -> list[dict]:
@@ -588,6 +700,65 @@ def project_fonts(p) -> list:
     return out
 
 
+def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
+    """Tableaux C des sous-ensembles de glyphes, une entrée par (scène, police).
+
+    Émis ici parce que c'est le seul endroit qui tient les polices ENCODÉES : un
+    sous-ensemble parle en index de glyphe encodé, pas en glyphe de la planche.
+    Le nom des descripteurs est mémorisé sur la scène, relu par
+    `_gen_scene_init` pour poser les `text_set_subset`.
+
+    Pas de sous-ensemble pour une police composée (elle ne charge aucun glyphe)
+    ni pour une scène indécidable (police entière, déjà réservée)."""
+    from codegen.font_emit import (build_font_subset, scene_codepoints,
+                                   scene_font_names)
+    from codegen.font_emit import _c_ident
+    fonts = project_fonts(p)
+    if not fonts or not encoded:
+        return []
+    default_font = fonts[0].name
+    by_name = {name: (i, e) for i, (name, e) in enumerate(encoded)}
+
+    L: list[str] = ["/* ── Sous-ensembles de glyphes (par scène) ───────── */"]
+    any_line = False
+    for scene in p.scenes:
+        scene._ui_font_subsets = {}
+        cps = scene_codepoints(p, scene)
+        if cps is None:
+            if emit:
+                emit("log_line",
+                     f"[font] scène '{scene.name}' : polices chargées ENTIÈRES "
+                     f"— ce qu'elle affiche n'est pas déterminable au build")
+            continue
+        names = scene_font_names(p, scene, default_font)
+        for fname in sorted(names or [f.name for f in fonts]):
+            if fname not in by_name:
+                continue
+            fi, e = by_name[fname]
+            sub = build_font_subset(e, cps)
+            if sub is None or not sub["load"]:
+                continue
+            colors = scene_text_colors(p, scene, fname)
+            sym = f"g_fsub_{_c_ident(scene.name)}_{_c_ident(fname)}"
+            L.append(f"static const unsigned short {sym}_slot[{len(sub['slot'])}] = {{"
+                     + ",".join(str(v) for v in sub["slot"]) + "};")
+            L.append(f"static const unsigned short {sym}_load[{len(sub['load'])}] = {{"
+                     + ",".join(str(v) for v in sub["load"]) + "};")
+            L.append(f"static const unsigned char {sym}_var[{len(colors)}] = {{"
+                     + ",".join(str(c) for c in colors) + "};")
+            L.append(f"static const FontSubset {sym} = {{ {sym}_slot, {sym}_load, "
+                     f"{len(sub['load'])}, {len(colors)}, {sym}_var }};")
+            scene._ui_font_subsets[fi] = sym
+            any_line = True
+            if emit:
+                extra = ("" if len(colors) == 1 else
+                         f", ×{len(colors)} couleurs {colors[1:]}")
+                emit("log_line",
+                     f"[font] scène '{scene.name}' : '{fname}' réduite à "
+                     f"{len(sub['load'])} tuile(s) sur {e['n_tiles']}{extra}")
+    return L + [""] if any_line else []
+
+
 def _fonts_and_texts_lines(p, emit=None) -> list[str]:
     """Tables C des polices, des textes et des zones (cf. codegen/font_emit)."""
     from codegen.font_emit import (encode_font, emit_fonts_c, emit_texts_c,
@@ -604,10 +775,9 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
         if e.get("warning") and emit:
             emit("log_line", f"[font] {e['warning']}")
         if emit:
-            # Le CHEMIN de rendu et le coût VRAM réel, pas seulement le nombre
-            # de tuiles : une police composée n'en charge aucune, c'est la
-            # surface qui coûte. Sans ça, un basculement automatique (police
-            # trop grosse) serait invisible dans le log.
+            # Le CHEMIN de rendu autant que le coût VRAM : une police composée
+            # ne charge aucune tuile, c'est la surface qui coûte. Sans ça un
+            # basculement automatique (police trop grosse) passe inaperçu.
             from codegen.font_emit import render_composited, font_vram_tiles
             mode = "composition" if render_composited(f) else "tilemap"
             emit("log_line", f"[font] {f.name} -> {e['n_tiles']} tuiles, "
@@ -615,16 +785,23 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
                              f"{font_vram_tiles(f)} tuiles VRAM")
         encoded.append((f.name, e))
 
-    texts = list(getattr(p, "texts", []))
+    # Même liste que celle dont `lua_compiler` dérive les `#define` : l'ordre
+    # fait l'index.
+    texts = list(p.build_texts() if hasattr(p, "build_texts")
+                 else getattr(p, "texts", []))
     if emit and texts:
         emit("log_line", f"[text] {len(texts)} entrée(s) de texte")
 
     regions = p.all_regions() if hasattr(p, "all_regions") else []
     if emit and regions:
-        emit("log_line", f"[text] {len(regions)} zone(s) de texte "
+        from core.models.ui_region import KIND_TEXT
+        n_auth = sum(1 for _l, r in regions if getattr(r, "kind", "") == KIND_TEXT)
+        detail = f", dont {n_auth} texte(s) authoré(s)" if n_auth else ""
+        emit("log_line", f"[text] {len(regions)} slot(s) de texte{detail} "
                          f"({len(p.ui_layouts)} mise(s) en page)")
     font_names = [f.name for f in project_fonts(p)]
-    return (emit_fonts_c(encoded)
+    subset_lines = _emit_font_subsets(p, encoded, emit)
+    return (emit_fonts_c(encoded) + subset_lines
             + emit_texts_c(texts, p.globals, p.constants, emit,
                            fonts=project_fonts(p))
             + emit_ui_regions_c(regions, font_names, emit,
@@ -648,7 +825,7 @@ def _region_actor_index(p: Project) -> dict:
         actors = [a for a in getattr(scene, "actors", [])]
         if lay is not None:
             names = {a.name: offset + i for i, a in enumerate(actors)}
-            for r in lay.regions:
+            for r in lay.slots:
                 # L'ancrage vient du ROOT (un enfant en hérite), plus de la zone
                 # elle-même — cohérent avec l'éditeur.
                 eff_anchor, eff_actor = lay.effective_anchor(r)
@@ -691,6 +868,66 @@ def _region_bg_fills(p: Project) -> tuple[dict, dict]:
             nxt -= 1
         by_name[r.name] = color_index[col]
     return by_name, {i: c for c, i in color_index.items()}
+
+
+def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
+    """Appels `text_draw_in` des textes AUTHORÉS de la mise en page d'une scène.
+
+    Le build émet exactement l'appel que l'auteur aurait tapé — même fonction,
+    même table, même index. Pas de chemin de rendu « statique » séparé : un
+    script peut réécrire le même slot ensuite (`text.draw_in`), dernier
+    écrivain gagne.
+
+    Posé une seule fois, à l'init : un texte qui doit CHANGER est le travail
+    d'un script.
+    """
+    from core.models.ui_region import KIND_TEXT, ANCHOR_ACTOR, TARGET_OBJ
+
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None:
+        return []
+    # Index PROJET-GLOBAUX : `g_ui_regions` suit l'ordre de `all_regions()`,
+    # `g_texts` celui de `build_texts()`. Recalculés ici plutôt que reçus, pour
+    # lire les mêmes listes que les émetteurs de tables — deux vues divergentes
+    # écriraient le bon texte dans la mauvaise zone, sans casser le link.
+    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
+    text_idx = {t.key: i for i, t in enumerate(
+        p.build_texts() if hasattr(p, "build_texts") else getattr(p, "texts", []))}
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+
+    L: list[str] = []
+    for el in lay.slots:
+        if getattr(el, "kind", "") != KIND_TEXT:
+            continue
+        key = getattr(el, "text_key", "") or ""
+        if not key:
+            continue          # le validateur le signale déjà, et mieux
+        if key not in text_idx or el.name not in slot_idx:
+            if emit:
+                emit("log_line", f"[warn] texte '{el.name}' : clé '{key}' "
+                                 f"introuvable dans la table — rien ne sera écrit.")
+            continue
+        target = lay.resolved_target(el, rm)
+        # Cible BG sans layer de texte : `text_set_layer(-1)` fait sortir le
+        # rendu sans un mot, et l'élément disparaît entre le canvas et la ROM.
+        if target != TARGET_OBJ and text_bg not in (0, 1, 2, 3):
+            if emit:
+                emit("log_line",
+                     f"[warn] texte '{el.name}' : la scène '{scene.name}' n'a "
+                     f"aucun layer de texte (Text BG), il ne s'affichera pas.")
+            continue
+        if lay.effective_anchor(el)[0] == ANCHOR_ACTOR:
+            if emit:
+                emit("log_line",
+                     f"[warn] texte '{el.name}' : ancré sur un acteur mais posé "
+                     f"une seule fois à l'init — il ne suivra pas l'acteur. "
+                     f"Utilise une zone et un script pour ça.")
+        L.append(f"    text_draw_in({slot_idx[el.name]}, {text_idx[key]});"
+                 f"   /* texte authoré '{el.name}' = '{key}' */")
+    if L and emit:
+        emit("log_line", f"[text] scène '{scene.name}' : {len(L)} texte(s) "
+                         f"authoré(s) écrit(s) à l'init")
+    return L
 
 
 def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
@@ -856,6 +1093,7 @@ def _gen_scene_init(
     actor_defined_events: dict[str, set[str]] | None = None,
     obj_text_oam: int = -1,
     obj_text_tile: int = 0,
+    emit=None,
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = _sym(scene.name)
@@ -1028,6 +1266,24 @@ def _gen_scene_init(
         # les tuiles pleines des fonds.
         L.append(f"    text_set_charblock({text_cbb if text_cbb >= 0 else text_bg});")
         L.append(f"    text_set_tile_base({glyph_base});")
+        # Chaque police à SA base : charger la seconde n'écrase plus la
+        # première. Rien d'émis = tout à la base 0, une seule résidente.
+        for _fl in getattr(scene, "_ui_reservation", {}).get("font_layout", []):
+            L.append(f"    text_set_font_base({_fl['index']}, {_fl['base']});"
+                     f"   /* {_fl['name']} : {_fl['tiles']} tuile(s) */")
+        # Banque de couleurs de l'UI. -1 = automatique (la police impose sa
+        # palette dans FONT_PAL_BANK) ; sinon un slot de la sélection de la
+        # scène, et deux polices ne se repeignent plus l'une l'autre.
+        _uib = int(getattr(scene, "ui_pal_bank", -1))
+        _uib_obj = _uib if _uib < 0 or _uib < len(
+            getattr(scene, "active_obj_palettes", []) or []) else -1
+        L.append(f"    text_set_pal_bank({_uib}, {_uib_obj});")
+        # Sous-ensembles AVANT text_set_font : c'est lui qui copie les glyphes,
+        # il doit déjà savoir lesquels. Une police sans sous-ensemble déclaré se
+        # charge entière.
+        L.append("    text_clear_subsets();")
+        for _fi, _sub_sym in sorted(getattr(scene, "_ui_font_subsets", {}).items()):
+            L.append(f"    text_set_subset({_fi}, &{_sub_sym});")
         L.append("    text_set_font(0);")
     for f in fills:
         L.append(
@@ -1041,29 +1297,39 @@ def _gen_scene_init(
             f"   /* fond image '{f['name']}' */")
     # Texte SUR un fond couleur : les zones enfants d'un panel couleur se
     # composent sur cette couleur (décision PAR ZONE au runtime, cf.
-    # UIRegionInfo.bg_fill). La surface composée a besoin de son PROPRE bloc de
-    # tuiles, APRÈS les glyphes mono (jamais la même adresse — sinon composer
-    # une zone écraserait les glyphes que ses voisines mono lisent encore) ;
-    # les couleurs de fond sont réécrites dans la palette de police, APRÈS
-    # text_set_font qui l'a chargée.
+    # UIRegionInfo.bg_fill). La surface composée a son PROPRE bloc de tuiles,
+    # APRÈS les glyphes mono — à la même adresse, composer une zone écraserait
+    # les glyphes que ses voisines mono lisent encore. Les couleurs de fond sont
+    # réécrites dans la palette de police, donc après text_set_font.
     from codegen.font_emit import FONT_PAL_BANK
     by_name, idx_color = _region_bg_fills(p)
     lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    scene_bg_idx = sorted({by_name[r.name] for r in (lay_ui.regions if lay_ui else [])
+    scene_bg_idx = sorted({by_name[r.name] for r in (lay_ui.slots if lay_ui else [])
                            if r.name in by_name})
     if scene_bg_idx and text_bg in {0, 1, 2, 3}:
         mono_tiles = getattr(scene, "_ui_mono_tiles", 0)
         surf_base = glyph_base + mono_tiles
         L.append(f"    text_set_surf_base({surf_base});"
                  f"   /* surface composée, bloc dédié après les glyphes mono */")
-        for idx in scene_bg_idx:
-            L.append(f"    PAL_BG_RAM[{FONT_PAL_BANK} * 16 + {idx}] = "
-                     f"0x{idx_color[idx]:04X};   /* couleur de fond de zone */")
+        if int(getattr(scene, "ui_pal_bank", -1)) < 0:
+            # Mode automatique : la banque de police n'appartient qu'au texte,
+            # on peut y graver les couleurs de fond des zones.
+            for idx in scene_bg_idx:
+                L.append(f"    PAL_BG_RAM[{FONT_PAL_BANK} * 16 + {idx}] = "
+                         f"0x{idx_color[idx]:04X};   /* couleur de fond de zone */")
+        # Banque DÉSIGNÉE : on n'y écrit rien, ce serait remplacer en douce les
+        # couleurs choisies par la scène. Un fond de zone doit alors prendre une
+        # couleur qui s'y trouve déjà.
     # Bande de sprites du texte : après les sprites d'acteurs (tuiles) et après
     # tous les slots d'acteurs et de pools (OAM). -1 = aucune zone en cible OBJ.
     if obj_text_oam >= 0:
         L.append(f"    text_obj_set_actor_fn(_txt_actor_x, _txt_actor_y);")
         L.append(f"    text_obj_set_base({obj_text_oam}, {obj_text_tile});")
+    # Textes AUTHORÉS de la mise en page. En DERNIER des postes de texte : le
+    # rendu lit la police, la base de tuiles, la surface composée, les couleurs
+    # de fond et la base OBJ — tout ce qui précède. Avant dispcnt_set, qui
+    # n'écrit que des registres d'affichage.
+    L += _gen_ui_texts(p, scene, text_bg, emit)
     # DISPCNT
     L.append(f"    dispcnt_set(0x{dispcnt:04X});")
     # Windows (WIN0/WIN1/fenêtre-objet) — mêmes fonctions runtime que l'API Lua
@@ -1551,6 +1817,7 @@ def generate_main(
 
     for d in all_scene_data:
         bgi_d = _bg_info(p, d["scene"])
+        _log_vram_layout(d["scene"], emit)
         for bi in bgi_d:
             _add_inc(f'#include "{bi["sym"]}.h"')
         for _, sprite in d["scene_actors"]:
@@ -1734,6 +2001,7 @@ def generate_main(
             sprite_offsets, dispcnt, has_sound, sound_assets,
             actor_defined_events=actor_defined_events,
             obj_text_oam=obj_text_oam, obj_text_tile=obj_text_tile,
+            emit=emit,
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────

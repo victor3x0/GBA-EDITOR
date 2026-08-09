@@ -66,8 +66,8 @@ class ScriptInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Sélectionne un script\ndans le panneau gauche")
-        self._empty.setFont(QFont(T.MONO, T.MD))
+        self._empty = QLabel("Select a script\nfrom the left panel")
+        self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         layout.addWidget(self._empty)
 
@@ -85,12 +85,14 @@ class ScriptInspector(QWidget):
             card_inner.setSpacing(6)
             return f, card_inner
 
-        def _card_title(text: str, accent: str, size: int = T.SM) -> QLabel:
+        def _card_title(text: str, accent: str = None, size: int = T.SM) -> QLabel:
+            # Titre de section unifié périwinkle (brique QSS.title_section) ;
+            # `accent` conservé pour compat mais ignoré.
             lbl = QLabel(text)
-            lbl.setFont(QFont(T.MONO, size, QFont.Weight.Bold))
+            lbl.setFont(QFont(T.UI, size, QFont.Weight.DemiBold))
             lbl.setStyleSheet(
-                f"color:{accent};letter-spacing:1px;"
-                f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
+                QSS.title_section()
+                + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
             )
             return lbl
 
@@ -105,8 +107,8 @@ class ScriptInspector(QWidget):
         # ── Carte Variables exposées ──────────────────────────────
         vars_card, vars_inner = _card()
         vars_hdr = QHBoxLayout(); vars_hdr.setContentsMargins(0, 0, 0, 0); vars_hdr.setSpacing(4)
-        vars_hdr.addWidget(_card_title("VARIABLES EXPOSÉES", icons.COLOR_SCRIPT), 1)
-        self._btn_add_var = W.btn_add("Ajouter une variable exposée")
+        vars_hdr.addWidget(_card_title("EXPOSED VARIABLES"), 1)
+        self._btn_add_var = W.btn_add("Add an exposed variable")
         self._btn_add_var.clicked.connect(self._on_add_var)
         vars_hdr.addWidget(self._btn_add_var)
         vars_inner.addLayout(vars_hdr)
@@ -116,8 +118,8 @@ class ScriptInspector(QWidget):
         self._vars_list.setSpacing(3)
         vars_inner.addLayout(self._vars_list)
 
-        self._vars_empty_hint = QLabel("Aucune variable exposée.")
-        self._vars_empty_hint.setFont(QFont(T.MONO, T.XS))
+        self._vars_empty_hint = QLabel("No exposed variable.")
+        self._vars_empty_hint.setFont(QFont(T.UI, T.XS))
         self._vars_empty_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         vars_inner.addWidget(self._vars_empty_hint)
 
@@ -175,7 +177,7 @@ class ScriptInspector(QWidget):
             lambda t, n=name: self._commit_type(n, t))
         hdr.addWidget(type_cb)
 
-        btn_del = W.btn_danger(f"Retirer '{name}'")
+        btn_del = W.btn_danger(f"Remove '{name}'")
         btn_del.clicked.connect(lambda _c=False, n=name: self._on_remove_var(n))
         hdr.addWidget(btn_del)
         cv.addLayout(hdr)
@@ -251,7 +253,7 @@ class ScriptInspector(QWidget):
             )
             preview = ScreenTextPreview()
             cap = QLabel()
-            cap.setFont(QFont(T.MONO, T.XS))
+            cap.setFont(QFont(T.UI, T.XS))
 
             # Jauge, pas aperçu : une chaîne exposée n'est liée à aucune police
             # (et n'est pas forcément du texte à afficher). Le libellé annonce
@@ -259,10 +261,10 @@ class ScriptInspector(QWidget):
             def sync_preview(_=None):
                 preview.set_text(edit.toPlainText())
                 if preview.truncated:
-                    cap.setText(f"⚠ dépasse l'écran — au-delà de {MAX_CELLS} caractères de 8px")
+                    cap.setText(f"⚠ exceeds the screen — past {MAX_CELLS} chars of 8px")
                     cap.setStyleSheet(f"color:{C.ACCENT_RED}; background:transparent;")
                 else:
-                    cap.setText("jauge · écran 240px, 8px/caractère")
+                    cap.setText("gauge · 240px screen, 8px/char")
                     cap.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
             edit.textChanged.connect(sync_preview)
             edit.committed.connect(
@@ -300,7 +302,7 @@ class ScriptInspector(QWidget):
             sp_w = W.spinbox(int(vals[2]), 0, 9999)
             sp_h = W.spinbox(int(vals[3]), 0, 9999)
             W.pair("Offset", "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, vbox)
-            W.pair("Taille", "W", C.TEXT_DIM, sp_w, "H", C.TEXT_DIM, sp_h, vbox)
+            W.pair("Size", "W", C.TEXT_DIM, sp_w, "H", C.TEXT_DIM, sp_h, vbox)
 
             def save_rect(_v=None):
                 var["default"] = [sp_x.value(), sp_y.value(), sp_w.value(), sp_h.value()]; save()
@@ -311,7 +313,7 @@ class ScriptInspector(QWidget):
             values = list(var.get("values") or [])
             vals_edit = QLineEdit(", ".join(values))
             vals_edit.setFont(QFont(T.MONO, T.MD)); vals_edit.setStyleSheet(QSS.lineedit)
-            vals_edit.setPlaceholderText("valeurs, séparées par des virgules")
+            vals_edit.setPlaceholderText("values, comma-separated")
 
             def commit_values():
                 new_vals = [s.strip() for s in vals_edit.text().split(",") if s.strip()]
@@ -320,25 +322,25 @@ class ScriptInspector(QWidget):
                     var["default"] = new_vals[0] if new_vals else ""
                 save(); self._refresh_vars()
             vals_edit.editingFinished.connect(commit_values)
-            W.row("Valeurs", vals_edit, vbox)
+            W.row("Values", vals_edit, vbox)
             if values:
                 cb = W.combobox(values, str(var.get("default") or values[0]))
                 cb.currentTextChanged.connect(
                     lambda t: (var.__setitem__("default", t), save()))
-                W.row("Défaut", cb, vbox)
+                W.row("Default", cb, vbox)
 
         else:  # actor_ref / scene_ref / sfx_ref — pas de contexte projet ici
             le = QLineEdit(str(var.get("default") or ""))
             le.setFont(QFont(T.MONO, T.MD)); le.setStyleSheet(QSS.lineedit)
-            le.setPlaceholderText(f"nom ({typ})")
+            le.setPlaceholderText(f"name ({typ})")
             le.editingFinished.connect(lambda: (var.__setitem__("default", le.text()), save()))
-            W.row("Réf", le, vbox)
+            W.row("Ref", le, vbox)
 
     def _labeled_field(self, label: str, widget: QWidget) -> QWidget:
         """Colonne : label (mot complet) au-dessus de son champ."""
         col = QWidget(); v = QVBoxLayout(col)
         v.setContentsMargins(0, 0, 0, 0); v.setSpacing(1)
-        lbl = QLabel(label); lbl.setFont(QFont(T.MONO, T.XS))
+        lbl = QLabel(label); lbl.setFont(QFont(T.UI, T.XS))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent;")
         v.addWidget(lbl); v.addWidget(widget)
         return col
@@ -464,8 +466,8 @@ class ScriptInspector(QWidget):
         if not self._path:
             return
         if QMessageBox.question(
-            self, "Retirer la variable",
-            f"Retirer la variable exposée '{name}' du script ?",
+            self, "Remove variable",
+            f"Remove the exposed variable '{name}' from the script?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return

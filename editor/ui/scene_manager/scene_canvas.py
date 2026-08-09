@@ -10,6 +10,7 @@ Layers (z-order) :
   z=200    → bordure canvas
 """
 
+import copy
 from typing import Optional
 
 from core.command_dispatcher import get_dispatcher
@@ -629,7 +630,9 @@ class CameraItem(QGraphicsItem):
         )
         self.setZValue(150)
         self.setPos(cam_x, cam_y)
-        self.setToolTip("Caméra GBA — 240×160 px\nGlisser pour déplacer la vue")
+        self.setToolTip("GBA Camera — 240×160 px\nDrag to move the view")
+        self.setAcceptHoverEvents(True)
+        self._hovered = False
 
         # Zone de vision — enfant non-interactif
         pen = QPen(QColor("#ffdd44"))
@@ -693,15 +696,12 @@ class CameraItem(QGraphicsItem):
             rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             rect.setAcceptHoverEvents(False)
             rect.setToolTip(
-                f"WIN{ws.region} — {x1 - x0}×{y1 - y0} px à ({x0}, {y0})"
-                + ("" if ws.visible else "\n(inactive — window_show à 0)")
+                f"WIN{ws.region} — {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
+                + ("" if ws.visible else "\n(inactive — window_show at 0)")
             )
             self._window_items.append(rect)
 
-        # Le cadre écran sert de contexte à l'aperçu : sans lui, des rectangles
-        # flottent sans repère. On le force donc dès qu'une window existe, même
-        # caméra non sélectionnée.
-        self._view.setVisible(bool(self._window_items) or self.isSelected())
+        self._sync_view_visibility()
 
     # ── QGraphicsItem interface ───────────────────────────────────
 
@@ -722,7 +722,13 @@ class CameraItem(QGraphicsItem):
         # sans affecter le nearest-neighbor des sprites/BG ailleurs sur le canvas.
         from ui.common.icons import scaled_pixmap
 
-        color = "#ffdd44" if self.isSelected() else "#666666"
+        # Sélectionnée / survolée / au repos.
+        if self.isSelected():
+            color = "#ffdd44"
+        elif self._hovered:
+            color = "#f5f0d8"
+        else:
+            color = "#666666"
         px = scaled_pixmap("camera", color, _CAM_ICO_SIZE,
                            _screen_scale(painter, widget))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
@@ -755,10 +761,24 @@ class CameraItem(QGraphicsItem):
             # prepareGeometryChange() notifie Qt que la zone de dessin
             # effective change (icon seul → icon + viewport 240×160).
             self.prepareGeometryChange()
-            # Le cadre reste affiché à la désélection s'il sert de contexte à
-            # l'aperçu des windows (cf. set_windows).
-            self._view.setVisible(bool(value) or bool(self._window_items))
+            self._sync_view_visibility()
         return super().itemChange(change, value)
+
+    def _sync_view_visibility(self):
+        """Aperçu 240×160 visible seulement sélectionnée ou survolée."""
+        self._view.setVisible(self.isSelected() or self._hovered)
+
+    def hoverEnterEvent(self, e):
+        self._hovered = True
+        self._sync_view_visibility()
+        self.update()
+        super().hoverEnterEvent(e)
+
+    def hoverLeaveEvent(self, e):
+        self._hovered = False
+        self._sync_view_visibility()
+        self.update()
+        super().hoverLeaveEvent(e)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -785,9 +805,9 @@ class FloatingToolbar(QFrame):
 
     # Outils principaux — (id, icon_key, tooltip)
     _MAIN_TOOLS = [
-        ("select", "tool_select", "Sélection  (S)"),
-        ("add", "tool_add", "Ajouter actor  (A)"),
-        ("erase", "tool_erase", "Gomme  (E)"),
+        ("select", "tool_select", "Select  (S)"),
+        ("add", "tool_add", "Add actor  (A)"),
+        ("erase", "tool_erase", "Eraser  (E)"),
     ]
 
     # Sous-outils collision — (id, icon_key, label, tooltip)
@@ -795,35 +815,35 @@ class FloatingToolbar(QFrame):
         (
             "collision_8",
             "tool_collision_8",
-            "Pinceau 8×8 px",
-            "Pinceau de collision  8×8 px",
+            "8×8 px brush",
+            "Collision brush  8×8 px",
         ),
         (
             "collision_16",
             "tool_collision_16",
-            "Pinceau 16×16 px",
-            "Pinceau de collision 16×16 px",
+            "16×16 px brush",
+            "Collision brush 16×16 px",
         ),
         (
             "collision_slope",
             "tool_collision_slope",
-            "Slope sol",
-            "Slope sol (triangle, Bresenham)",
+            "Floor slope",
+            "Floor slope (triangle, Bresenham)",
         ),
         (
             "collision_slope_inv",
             "tool_collision_slope_inv",
-            "Slope plafond",
-            "Slope sol inversé (triangle, Bresenham)",
+            "Ceiling slope",
+            "Inverted floor slope (triangle, Bresenham)",
         ),
     ]
 
     # Sous-outils inpainting de scène — (id, icon_key, label, tooltip)
     _INPAINT_MODES = [
-        ("inpaint_brush", "tool_inpaint_brush", "Pinceau",
-         "Inpainting : repeindre la palette d'une tuile (pinceau 8×8)"),
+        ("inpaint_brush", "tool_inpaint_brush", "Brush",
+         "Inpainting: repaint a tile's palette (8×8 brush)"),
         ("inpaint_rect", "tool_inpaint_rect", "Rectangle",
-         "Inpainting : repeindre la palette sur une zone rectangulaire"),
+         "Inpainting: repaint the palette over a rectangular area"),
     ]
     _INPAINT_ICON_KEYS = {
         "inpaint_brush": "tool_inpaint_brush",
@@ -834,12 +854,12 @@ class FloatingToolbar(QFrame):
     # se choisit au dropdown (comme collision/inpaint) ; le geste rectangle est
     # le même pour les trois. Icônes = formes de la famille Interface.
     _UI_MODES = [
-        ("ui_region", "ui_region", "Zone de texte",
-         "Zone de texte runtime — le script écrit dedans"),
-        ("ui_panel", "ui_panel", "Conteneur",
-         "Conteneur / groupe — racine d'ancrage, peut dessiner un fond"),
-        ("ui_text", "ui_text", "Texte",
-         "Texte authoré — clé de la table de textes"),
+        ("ui_region", "ui_region", "Text zone",
+         "Runtime text zone — the script writes into it"),
+        ("ui_panel", "ui_panel", "Container",
+         "Container / group — anchor root, can draw a background"),
+        ("ui_text", "ui_text", "Text",
+         "Authored text — key into the text table"),
     ]
     _UI_ICON_KEYS = {
         "ui_region": "ui_region",
@@ -933,7 +953,7 @@ class FloatingToolbar(QFrame):
         )
         self._btn_inpaint.setIconSize(QSize(24, 24))
         self._btn_inpaint.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._btn_inpaint.setToolTip("Inpainting de scène  (B)")
+        self._btn_inpaint.setToolTip("Scene inpainting  (B)")
         self._btn_inpaint.setCheckable(True)
         self._btn_inpaint.setFixedSize(36, 36)
         self._btn_inpaint.clicked.connect(self._on_inpaint_click)
@@ -975,7 +995,7 @@ class FloatingToolbar(QFrame):
         from PyQt6.QtWidgets import QMenu
 
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
         menu.setStyleSheet(f"""
             QMenu {{
                 background: {C.BG_RAISED};
@@ -1023,7 +1043,7 @@ class FloatingToolbar(QFrame):
         from PyQt6.QtWidgets import QMenu
 
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
         menu.setStyleSheet(f"""
             QMenu {{ background:{C.BG_RAISED}; color:{C.TEXT_NORM}; border:1px solid {C.BORDER_MID};
                     border-radius:4px; padding:4px; }}
@@ -1068,7 +1088,7 @@ class FloatingToolbar(QFrame):
         from PyQt6.QtWidgets import QMenu
 
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
         menu.setStyleSheet(f"""
             QMenu {{ background:{C.BG_RAISED}; color:{C.TEXT_NORM}; border:1px solid {C.BORDER_MID};
                     border-radius:4px; padding:4px; }}
@@ -1152,6 +1172,56 @@ class FloatingToolbar(QFrame):
     def mouseReleaseEvent(self, e):
         self._dragging = False
         super().mouseReleaseEvent(e)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Bezel d'écran — cadre de l'espace authorable : trait périwinkle + lueur,
+#  pour marquer l'écran sans se lire comme une erreur. AA activée localement
+#  (la vue la désactive globalement pour le pixel art), sinon les coins
+#  arrondis crénèlent.
+# ──────────────────────────────────────────────────────────────────
+class ScreenBezelItem(QGraphicsItem):
+    _RADIUS = 5.0
+    _COLOR = QColor(C.ACCENT)
+
+    def __init__(self, w: int, h: int, parent=None):
+        super().__init__(parent)
+        self._w = w
+        self._h = h
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    def resize(self, w: int, h: int):
+        self.prepareGeometryChange()
+        self._w = w
+        self._h = h
+
+    def boundingRect(self) -> QRectF:
+        m = 5.0   # marge pour le trait + halo peint (sinon Qt rogne au bord)
+        return QRectF(-m, -m, self._w + 2 * m, self._h + 2 * m)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        r = QRectF(0, 0, self._w, self._h)
+        # Halo peint à la main : QGraphicsDropShadowEffect plante sous le
+        # backend offscreen (crash natif en capture headless, 0xC0000409).
+        for i, alpha in ((3, 18), (2, 34), (1, 55)):
+            glow_pen = QPen(self._COLOR)
+            glow_pen.setWidthF(1.4 + i * 1.3)
+            glow_pen.setCosmetic(True)
+            c = QColor(self._COLOR)
+            c.setAlpha(alpha)
+            glow_pen.setColor(c)
+            painter.setPen(glow_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRoundedRect(r, self._RADIUS, self._RADIUS)
+        pen = QPen(self._COLOR)
+        pen.setWidthF(1.4)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(r, self._RADIUS, self._RADIUS)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -1264,6 +1334,17 @@ class ActorBoxOverlay(QGraphicsItem):
 # ──────────────────────────────────────────────────────────────────
 #  Scène GBA
 # ──────────────────────────────────────────────────────────────────
+class _GuideLine(QGraphicsLineItem):
+    """Guide d'alignement, élargi de la marge de repeinte que Qt ne calcule pas.
+
+    Trait cosmétique (largeur 0) : Qt efface une zone de largeur nulle, donc le
+    guide laisse une traînée en se déplaçant. Même piège que
+    `UIRegionItem.boundingRect`."""
+
+    def boundingRect(self) -> QRectF:
+        return super().boundingRect().adjusted(-6.0, -6.0, 6.0, 6.0)
+
+
 class GBAScene(QGraphicsScene):
     sprite_moved = pyqtSignal()
     camera_moved = pyqtSignal(int, int)  # cam_x, cam_y
@@ -1275,12 +1356,13 @@ class GBAScene(QGraphicsScene):
         self._bg_items: list[Optional[QGraphicsPixmapItem]] = [None] * 4
         self._sprite_items: list[SpriteItem] = []
         self._grid_item: Optional[GridItem] = None
-        self._border: Optional[QGraphicsRectItem] = None
+        self._border: Optional[ScreenBezelItem] = None
         self._backdrop: Optional[QGraphicsRectItem] = None
         self._camera: Optional[CameraItem] = None
         self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
         self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
         self._ui_region_items: list = []  # zones de texte (UILayout de la scène)
+        self._ui_elements_visible = True  # toggle "Interface elements" (top bar)
         # Guides d'alignement : deux lignes (une verticale, une horizontale)
         # créées à la demande, affichées le temps d'un drag/resize de zone.
         self._align_guide_v: Optional[QGraphicsLineItem] = None
@@ -1368,9 +1450,14 @@ class GBAScene(QGraphicsScene):
         return xs, ys
 
     def _guide_pen(self) -> "QPen":
-        pen = QPen(QColor("#ff45d0"))   # magenta, même rôle que les guides Figma
+        """Guide d'alignement : semi-transparent et en tirets, pour se lire
+        comme un repère et non comme une alarme."""
+        c = QColor("#ff45d0")
+        c.setAlpha(150)
+        pen = QPen(c)
         pen.setCosmetic(True)           # 1 px écran quel que soit le zoom
         pen.setWidth(0)
+        pen.setStyle(Qt.PenStyle.DashLine)
         return pen
 
     def show_align_guides(self, gx, gy):
@@ -1381,7 +1468,7 @@ class GBAScene(QGraphicsScene):
         w, h = self._canvas_w, self._canvas_h
         if gx is not None:
             if self._align_guide_v is None:
-                self._align_guide_v = QGraphicsLineItem()
+                self._align_guide_v = _GuideLine()
                 self._align_guide_v.setPen(self._guide_pen())
                 self._align_guide_v.setZValue(130)   # au-dessus des zones (120)
                 self._align_guide_v.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -1392,7 +1479,7 @@ class GBAScene(QGraphicsScene):
             self._align_guide_v.setVisible(False)
         if gy is not None:
             if self._align_guide_h is None:
-                self._align_guide_h = QGraphicsLineItem()
+                self._align_guide_h = _GuideLine()
                 self._align_guide_h.setPen(self._guide_pen())
                 self._align_guide_h.setZValue(130)
                 self._align_guide_h.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
@@ -1417,12 +1504,20 @@ class GBAScene(QGraphicsScene):
         self._collision_overlay.setVisible(visible)
         self._collision_overlay.update()
 
+    def set_ui_elements_view(self, visible: bool):
+        """Toggle 'Interface elements' — zones/conteneurs/textes de la mise en
+        page. Mémorisé pour s'appliquer aussi aux items recréés par un futur
+        set_ui_regions (rebuild sur chaque édition de la mise en page)."""
+        self._ui_elements_visible = visible
+        for it in self._ui_region_items:
+            it.setVisible(visible)
+
     def resize_canvas(self, w: int, h: int):
         self._canvas_w = w
         self._canvas_h = h
         self.setSceneRect(0, 0, w, h)
         if self._border:
-            self._border.setRect(0, 0, w, h)
+            self._border.resize(w, h)
         if self._backdrop:
             self._backdrop.setRect(0, 0, w, h)
         if self._camera:
@@ -1451,14 +1546,8 @@ class GBAScene(QGraphicsScene):
         self._backdrop.setBrush(QBrush(QColor(r, g, b)))
 
     def _setup_border(self):
-        pen = QPen(QColor("#ff6b6b"))
-        pen.setWidth(0)
-        self._border = QGraphicsRectItem(0, 0, self._canvas_w, self._canvas_h)
-        self._border.setPen(pen)
-        self._border.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._border = ScreenBezelItem(self._canvas_w, self._canvas_h)
         self._border.setZValue(200)
-        self._border.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self._border.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
         self.addItem(self._border)
 
     # ── Caméra ────────────────────────────────────────────────────
@@ -1624,6 +1713,7 @@ class GBAScene(QGraphicsScene):
             for r in layout_asset.elements:
                 item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
                 item.setZValue(120 + z_of.get(r.name, 0))
+                item.setVisible(self._ui_elements_visible)
                 self.addItem(item)
                 self._ui_region_items.append(item)
                 if any(r is k for k in kept):
@@ -1715,6 +1805,9 @@ class GBAView(QGraphicsView):
         # évite qu'une valeur périmée soit relue par un _on_selection_changed
         # déclenché plus tard pour une tout autre raison (Échap, clic droit…).
         self._last_click_scene_pos: "Optional[QPointF]" = None
+        # Alt+glisser = dupliquer : instantané des items glissés, pris au press
+        # (cf. _arm_alt_duplicate). None = geste ordinaire.
+        self._alt_drag: "Optional[list]" = None
 
     def leaveEvent(self, e):
         if self._snap_preview:
@@ -1770,6 +1863,9 @@ class GBAView(QGraphicsView):
     collision_painted = pyqtSignal()
     # Clic-droit sur un actor en mode Sélection → (SpriteItem, QPoint global).
     actor_context_requested = pyqtSignal(object, object)
+    # Alt+glisser relâché → (dx, dy) du geste, en px de scène. Les originaux
+    # ont déjà été remis en place ; il reste à créer les copies à ce décalage.
+    duplicate_drag_finished = pyqtSignal(int, int)
 
     @property
     def collision_overlay(self) -> Optional["CollisionOverlay"]:
@@ -1841,6 +1937,11 @@ class GBAView(QGraphicsView):
             self._last_click_scene_pos = self.mapToScene(e.position().toPoint())
         super().mousePressEvent(e)
         if _btn == Qt.MouseButton.LeftButton:
+            # APRÈS Qt : c'est lui qui vient d'arrêter la sélection que le geste
+            # va déplacer (un clic sur un item hors sélection la remplace).
+            if (self._is_select_tool()
+                    and (e.modifiers() & Qt.KeyboardModifier.AltModifier)):
+                self._arm_alt_duplicate(self._last_click_scene_pos)
             self.left_click_settled.emit()
         self._last_click_scene_pos = None
 
@@ -1873,6 +1974,9 @@ class GBAView(QGraphicsView):
 
     def mouseReleaseEvent(self, e):
         _btn = e.button()
+        # Repris ici quoi qu'il arrive : un geste avorté (pan, outil qui prend
+        # la main) ne doit pas laisser un instantané périmé armer le prochain.
+        alt_drag, self._alt_drag = self._alt_drag, None
         if _btn == Qt.MouseButton.MiddleButton and self._panning:
             self._end_pan()
             e.accept()
@@ -1892,7 +1996,71 @@ class GBAView(QGraphicsView):
             self._swallow_left_release = False   # pendant du Shift+clic ci-dessus
             e.accept()
             return
+        if alt_drag is not None and _btn == Qt.MouseButton.LeftButton:
+            # Neutraliser AVANT que Qt ne distribue le relâchement aux items :
+            # c'est là qu'ils poussent leur commande de déplacement. En
+            # Alt+glisser l'original ne bouge pas — seule la copie naît.
+            for it, _origin, _model in alt_drag:
+                if isinstance(it, SpriteItem):
+                    it._drag_origin = None
+                else:
+                    it._press_pos = None
+            super().mouseReleaseEvent(e)
+            self._commit_alt_duplicate(alt_drag)
+            return
         super().mouseReleaseEvent(e)
+
+    # ── Alt+glisser = dupliquer ───────────────────────────────────
+
+    # En deçà (px scène) c'est un clic Alt, pas un glisser : sinon un
+    # frémissement de souris crée une copie invisible sous l'original.
+    # Même seuil que SpriteItem._CLICK_THRESHOLD.
+    _ALT_DRAG_THRESHOLD = 2
+
+    def _arm_alt_duplicate(self, scene_pos):
+        """Mémorise les items que le glisser va emporter, pour les remettre en
+        place au relâchement et ne garder que la copie.
+
+        Position Qt (le geste s'y mesure) ET position MODÈLE d'un acteur : le
+        drag réécrit `actor.x/y` à chaque frame et perdrait l'expression
+        d'origine (« 4t », une réf de variable)."""
+        sc = self.scene()
+        if scene_pos is None or not hasattr(sc, "selectable_items"):
+            return
+        if self._selectable_item_at(scene_pos) is None:
+            return          # Alt dans le vide : rubber band, rien à dupliquer
+        entries = []
+        for it in sc.selectable_items():
+            actor = getattr(it, "scene_sprite", None)
+            model = (actor.x, actor.y) if actor is not None else None
+            entries.append((it, QPointF(it.pos()), model))
+        self._alt_drag = entries or None
+
+    def _commit_alt_duplicate(self, entries: list):
+        """Remet les originaux en place et annonce le décalage du geste — la
+        duplication elle-même appartient au SceneEditor, qui traite acteurs et
+        éléments d'interface d'un même mouvement."""
+        dx = dy = 0
+        for it, origin, model in entries:
+            try:
+                cur = it.pos()
+            except RuntimeError:
+                continue                      # item C++ détruit entre-temps
+            if not dx and not dy:
+                dx = int(round(cur.x() - origin.x()))
+                dy = int(round(cur.y() - origin.y()))
+            if model is not None:
+                it.scene_sprite.x, it.scene_sprite.y = model
+                it.sync_pos()
+            else:
+                # Un conteneur a emmené ses descendants à l'écran (leur modèle
+                # est relatif au parent, il n'a pas bougé) : même delta retour.
+                if hasattr(it, "_move_descendants"):
+                    it._move_descendants(origin.x() - cur.x(), origin.y() - cur.y())
+                it.setPos(origin)
+        if abs(dx) < self._ALT_DRAG_THRESHOLD and abs(dy) < self._ALT_DRAG_THRESHOLD:
+            return
+        self.duplicate_drag_finished.emit(dx, dy)
 
     # ── Pan clic-central ──────────────────────────────────────────
 
@@ -2308,6 +2476,11 @@ _HANDLE_CURSORS = {
 _HANDLE_HALF_PX = 3.5
 _HANDLE_GRAB_PX = 6.0
 
+# Planches de glyphes trouées : {(chemin, mtime, taille): QPixmap | None}.
+# Au niveau du module, pas de l'item — les items sont reconstruits à chaque
+# sauvegarde et retrouer une planche (numpy) à ce rythme se sentirait.
+_TEXT_SHEETS: dict = {}
+
 
 class UIRegionItem(QGraphicsRectItem):
     """Une zone de texte dessinée dans le canvas — sélectionnable, déplaçable,
@@ -2327,11 +2500,14 @@ class UIRegionItem(QGraphicsRectItem):
     on le trouve — sinon à l'origine de l'écran, avec un liseré discontinu qui
     dit que la position affichée n'est pas celle du jeu."""
 
-    # UNE couleur pour tous les éléments d'UI : celle de la famille Interface
-    # (icons.COLOR_UI) — le type se lit à la FORME de l'icône posée à côté du
-    # nom, comme dans l'arbre et les finders. Trois teintes ad hoc (l'état
-    # d'avant) contredisaient la règle du thème et divergeaient de l'arbre.
-    _COLOR = QColor("#4f8ff7")
+    # Exception canvas-only à la règle « forme, pas teinte » (icons.py) :
+    # pendant un drag, la couleur se lit plus vite qu'une icône de 6 px.
+    # Ailleurs (arbre, finders) le type reste porté par la FORME.
+    _KIND_COLORS = {
+        "region": "#4f8ff7",   # zone (bleu, famille Interface — inchangé)
+        "text":   "#ff6f91",   # texte authoré (corail — « bulle de dialogue »)
+        "panel":  "#b388ff",   # conteneur (lavande — structure/groupe)
+    }
     _KIND_ICONS = {"region": "ui_region", "panel": "ui_panel", "text": "ui_text"}
 
     def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
@@ -2341,7 +2517,8 @@ class UIRegionItem(QGraphicsRectItem):
         self._save = save_fn
         self._press_pos = None
         from ui.common import icons as _icons
-        self._COLOR = QColor(_icons.COLOR_UI)
+        self._COLOR = QColor(self._KIND_COLORS.get(getattr(region, "kind", "region"),
+                                                    _icons.COLOR_UI))
         # Poignée en cours de traction (None = déplacement/simple sélection) et
         # géométrie de départ du geste, figée au press pour que chaque mouvement
         # se calcule depuis l'origine et non depuis l'image précédente.
@@ -2361,23 +2538,19 @@ class UIRegionItem(QGraphicsRectItem):
         ox, oy, anchored = self._origin()
         self.setPos(ox, oy)
 
-        pen = QPen(self._COLOR)
-        pen.setWidth(0)
-        pen.setCosmetic(True)
-        if not anchored:
-            pen.setStyle(Qt.PenStyle.DotLine)
-        self.setPen(pen)
-        fill = QColor(self._COLOR)
-        fill.setAlpha(38)
-        self.setBrush(QBrush(fill))
-        # Aperçu du fond d'un conteneur (couleur de palette résolue, ou hachures
-        # pour un fond d'asset pas encore rendu) — sinon le pinceau translucide.
-        fb = self._fill_brush()
-        if fb is not None:
-            self.setBrush(fb)
-        # Nine-slice : si l'image source charge, elle est peinte dans `paint`
-        # (coins fixes / bords tuilés) et REMPLACE le pinceau ; sinon on garde les
-        # hachures de `_fill_brush` comme repli.
+        # Tout le dessin passe par `paint` : l'item lui-même ne porte ni trait ni
+        # remplissage. Sans ça `super().paint()` reposerait le style de repos
+        # par-dessus l'état (survol, sélection) que `paint` vient de calculer.
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self._anchored = anchored
+        self._hovered = False
+        # CONTENU (ce que la GBA affichera : couleur de palette, hachures d'un
+        # asset pas encore rendu) — à distinguer du CHROME d'édition (voile,
+        # contour, poignées), qui lui dépend de l'état.
+        self._content_brush = self._fill_brush()
+        # Nine-slice / background : si l'image source charge, elle est peinte
+        # dans `paint` et REMPLACE le pinceau ; sinon on garde les hachures.
         self._ns_pixmap = None
         self._ns = None
         self._bg_pixmap = None
@@ -2388,12 +2561,12 @@ class UIRegionItem(QGraphicsRectItem):
                 pix, ns = self._load_nine_slice()
                 if pix is not None and not pix.isNull():
                     self._ns_pixmap, self._ns = pix, ns
-                    self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    self._content_brush = None
             elif _fk == FILL_BG:
                 pix = self._load_bg_fill()
                 if pix is not None and not pix.isNull():
                     self._bg_pixmap = pix
-                    self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+                    self._content_brush = None
         self.setZValue(120)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -2407,26 +2580,24 @@ class UIRegionItem(QGraphicsRectItem):
         tiles = ""
         if hasattr(region, "tile_rect"):
             _, _, tw, th = region.tile_rect()
-            tiles = f"{tw}×{th} tuiles · "
-        self.setToolTip(f"« {region.name} » — {self._layout.name}\n"
-                        f"{tiles}cible {target}\n"
-                        f"Glisser pour déplacer · poignées pour redimensionner")
+            tiles = f"{tw}×{th} tiles · "
+        self.setToolTip(f"“{region.name}” — {self._layout.name}\n"
+                        f"{tiles}target {target}\n"
+                        f"Drag to move · handles to resize · Alt-drag to duplicate")
 
-        # Étiquette : icône de TYPE (la forme dit zone/conteneur/texte, la
-        # couleur reste celle de la famille) + le nom, qui est ce que cite le
-        # script — les deux lisibles sans passer par l'inspecteur.
+        # Étiquette : icône de type + le nom que cite le script, lisibles sans
+        # passer par l'inspecteur.
         icon = _icons.get(self._KIND_ICONS.get(getattr(region, "kind", "region"),
-                                               "ui_region"), _icons.COLOR_UI)
+                                               "ui_region"), self._COLOR.name())
         self._kind_icon = QGraphicsPixmapItem(icon.pixmap(32, 32), self)
         self._kind_icon.setScale(6.0 / 32.0)      # ≈ 6 px GBA, net à tout zoom
-        self._kind_icon.setPos(1, 1)
         self._label = QGraphicsSimpleTextItem(region.name, self)
         self._label.setBrush(QBrush(self._COLOR))
         fnt = self._label.font()
         fnt.setPointSizeF(5.0)
         self._label.setFont(fnt)
-        self._label.setPos(8.5, 1)
         self._label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, False)
+        self._sync_chrome()
 
     def _actor_pos(self, name: str):
         """(x, y) de l'acteur nommé, ou None. Passé aux helpers d'ancrage du
@@ -2531,36 +2702,220 @@ class UIRegionItem(QGraphicsRectItem):
                 painter.drawPixmap(dst, pix, QRectF(sx, sy, sw, sh))
         painter.restore()
 
+    # ── Texte réel ───────────────────────────────────────────────
+    # Aperçu des vrais glyphes dans la boîte : `text_layout` les place comme le
+    # moteur, `display_text` résout balises et `$valeurs`.
+
+    def _text_content(self) -> str:
+        """Ce que cet élément AFFICHE, balisage résolu.
+
+        Un texte authoré montre SON contenu (celui que la ROM écrira) ; une zone
+        montre son `preview_text`, simple étalon d'éditeur — le script décidera.
+        Les deux passent par `display_text`, sinon l'aperçu montrerait les
+        crochets d'un `[speed=6]` que le joueur ne verra jamais."""
+        el, p = self._region, self._project
+        if p is None:
+            return ""
+        kind = getattr(el, "kind", "region")
+        key = (getattr(el, "text_key", "") if kind == "text"
+               else getattr(el, "preview_text", "")) or ""
+        get_text = getattr(p, "get_text", None)
+        t = get_text(key) if (key and get_text) else None
+        if t is None:
+            return ""
+        from core.text_markup import display_text
+        values = p.text_values() if hasattr(p, "text_values") else {}
+        return display_text(t.content or "", values)
+
+    def _text_font(self):
+        """Police de l'élément, ou celle que la scène charge par défaut.
+
+        Le défaut est le premier de `project_fonts`, pas `fonts[0]` : c'est cette
+        liste qui devient `g_fonts`, et `scene_init` émet `text_set_font(0)`."""
+        p = self._project
+        named = getattr(self._region, "font_name", "") or ""
+        fonts = list(getattr(p, "fonts", []) or []) if p else []
+        if named:
+            return next((f for f in fonts if f.name == named), None)
+        try:
+            from codegen.runtime_codegen.main_gen import project_fonts
+            usable = project_fonts(p)
+        except Exception:
+            usable = fonts        # stub de test, ou chaîne codegen indisponible
+        return usable[0] if usable else None
+
+    def _composited(self) -> bool:
+        """Le texte se COMPOSE-t-il (pixel) plutôt que de se poser à la tuile ?
+
+        La police décide, sauf si un conteneur ANCÊTRE porte un fond couleur :
+        le moteur compose alors même en mono, pour poser le texte SUR la couleur
+        (cf. `g_ui_fill_bg`). Seul l'offset de ferrage change, mais 7 px de
+        décalage sur un titre centré se voient."""
+        from core.models.ui_region import KIND_PANEL, FILL_COLOR
+        lay = self._layout
+        for name in lay.ancestors(self._region.name):
+            a = lay.get(name)
+            if (a is not None and getattr(a, "kind", "") == KIND_PANEL
+                    and getattr(a, "fill_kind", "") == FILL_COLOR):
+                return True
+        from codegen.font_emit import render_composited
+        f = self._text_font()
+        return bool(f) and render_composited(f)
+
+    def _load_text_sheet(self, font):
+        """Planche de glyphes TROUÉE, mise en cache par (chemin, empreinte).
+
+        Cache au niveau du MODULE (cf. `_TEXT_SHEETS`). La clé porte l'empreinte
+        disque, pour qu'une planche retouchée dans l'éditeur de police
+        apparaisse quand même."""
+        p = self._project
+        if not font or not getattr(font, "asset", "") or p is None:
+            return None
+        path = p.asset_abs(font.asset)
+        if not path or not path.exists():
+            return None
+        try:
+            st = path.stat()
+            key = (str(path), st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+        if key in _TEXT_SHEETS:
+            return _TEXT_SHEETS[key]
+        px = QPixmap(str(path))
+        from ui.text_editor.glyph_paint import key_out
+        sheet = None if px.isNull() else key_out(px, font.key_colors())
+        if len(_TEXT_SHEETS) > 16:      # une poignée de polices suffit
+            _TEXT_SHEETS.clear()
+        _TEXT_SHEETS[key] = sheet
+        return sheet
+
+    def _paint_text(self, painter) -> bool:
+        """Dessine les VRAIS glyphes dans le rectangle. Retourne True si le texte
+        déborde (tronqué par le moteur au dernier glyphe qui tient).
+
+        Pas de repli « faux texte » si la police manque : une approximation Qt
+        donnerait une idée fausse de l'encombrement."""
+        text = self._text_content()
+        if not text:
+            return False
+        font = self._text_font()
+        sheet = self._load_text_sheet(font)
+        if sheet is None:
+            return False
+        from core.text_layout import layout_text
+        r = self.rect()
+        placed, over = layout_text(font, text, int(r.width()), int(r.height()),
+                                   align=getattr(self._region, "align", "left"),
+                                   composited=self._composited())
+        if not placed:
+            return over
+        painter.save()
+        # Pixel art : jamais d'interpolation, à aucun zoom.
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        for g, gx, gy in placed:
+            painter.drawPixmap(QRectF(r.left() + gx, r.top() + gy, g.w, g.h),
+                               sheet, QRectF(g.x, g.y, g.w, g.h))
+        painter.restore()
+        return over
+
     # ── Peinture ─────────────────────────────────────────────────
+    def boundingRect(self) -> QRectF:
+        """Rectangle ÉLARGI d'une marge.
+
+        Contour et poignées sont au pinceau COSMÉTIQUE (largeur 0), or Qt calcule
+        sa zone à repeindre depuis `pen().widthF()` : le trait déborde de ce que
+        Qt efface et le déplacement laisse des traînées. Marge en unités de
+        SCÈNE, dimensionnée sur le pire cas (zoom 0.5). Fixe et non dérivée du
+        zoom : Qt met `boundingRect` en cache."""
+        m = 6.0
+        return self.rect().adjusted(-m, -m, m, m)
+
+    def _sync_chrome(self):
+        """Visibilité et position du libellé selon l'état.
+
+        Le NOM ne s'affiche qu'au survol ou à la sélection, sinon cinq zones
+        imbriquées recouvrent le jeu (l'arbre donne déjà l'inventaire). L'icône
+        de type, elle, reste toujours visible.
+
+        Le libellé se pose AU-DESSUS du rectangle, et retombe à l'intérieur
+        quand la zone touche le haut de l'écran."""
+        show = self.isSelected() or self._hovered
+        self._label.setVisible(show)
+        y = -7.5 if self.pos().y() >= 9 else 1.0
+        self._kind_icon.setPos(1, y)
+        self._label.setPos(8.5, y)
+
     def paint(self, painter, option, widget=None):
-        """Rectangle + liseré de sélection maison : Qt dessine sinon son cadre
-        pointillé bleu, qui ne distingue pas MEMBRE d'une multi-sélection et
-        item ACTIF (blanc), contrairement aux acteurs."""
-        # Les fonds image (nine-slice, background) se peignent SOUS le liseré
-        # (pinceau = NoBrush alors).
+        """Bulle réactive — repos / survol / sélection, coins arrondis.
+
+        Le CONTENU réel (couleur de palette, nine-slice, background) prime : la
+        bulle blanche ne se peint que s'il n'y en a pas."""
+        r = self.rect()
+        sel = self.isSelected()
+        active = getattr(self.scene(), "active_item", None) is self
+        radius = min(3.0, r.width() / 2.0, r.height() / 2.0)
+        path = QPainterPath()
+        path.addRoundedRect(r, radius, radius)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.save()
+
+        # 1. Contenu réel, ou à défaut la bulle blanche : quasi-transparente au
+        #    repos, pleine au survol/sélection. Clip aux coins arrondis.
+        has_real_content = (self._ns_pixmap is not None or self._bg_pixmap is not None
+                            or self._content_brush is not None)
+        painter.save()
+        painter.setClipPath(path)
         self._paint_nine_slice(painter)
         self._paint_background(painter)
-        clean = QStyleOptionGraphicsItem(option)
-        clean.state &= ~QStyle.StateFlag.State_Selected
-        super().paint(painter, clean, widget)
-        if not self.isSelected():
-            return
-        sc = self.scene()
-        is_active = getattr(sc, "active_item", None) is self
-        pen = QPen(QColor("#ffffff") if is_active else self._COLOR, 0)
+        if self._content_brush is not None:
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            painter.setBrush(self._content_brush)
+            painter.drawRect(r)
+        if not has_real_content:
+            alpha = 205 if sel else (150 if self._hovered else 46)
+            painter.setPen(QPen(Qt.PenStyle.NoPen))
+            painter.setBrush(QBrush(QColor(255, 255, 255, alpha)))
+            painter.drawRect(r)
+        # Le TEXTE en dernier, et sous le clip : le moteur borne le rendu au
+        # rectangle (`text_clip_set`), l'aperçu doit couper au même endroit.
+        overflows = self._paint_text(painter)
+        painter.restore()   # lève le clip avant le contour (sinon la moitié du trait est rognée)
+
+        # Débordement : liseré ambre en bas. Le moteur tronque au dernier glyphe
+        # qui tient sans rien dire, et c'est ici qu'on peut encore agrandir.
+        if overflows:
+            warn = QPen(QColor(C.ACCENT_YLW))
+            warn.setWidthF(2.0)
+            warn.setCosmetic(True)
+            painter.setPen(warn)
+            painter.drawLine(QPointF(r.left(), r.bottom()),
+                             QPointF(r.right(), r.bottom()))
+
+        # 2. Contour arrondi — la COULEUR porte le type (cf. _KIND_COLORS). Un
+        #    CONTENEUR est un cadre : tirets au repos. Une ancre non résolue
+        #    reste en pointillés (position affichée ≠ position du jeu), et ce
+        #    signal prime sur le reste.
+        col = QColor("#ffffff") if (sel and active) else QColor(self._COLOR)
+        col.setAlpha(255 if sel else (230 if self._hovered else 150))
+        pen = QPen(col)
+        pen.setWidthF(1.4)
         pen.setCosmetic(True)
-        painter.save()
+        if not self._anchored:
+            pen.setStyle(Qt.PenStyle.DotLine)
+        elif getattr(self._region, "can_contain", False) and not sel:
+            pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(self.rect())
-        # Poignées : carrés pleins aux 4 coins + 4 milieux de bord. Taille en
-        # pixels écran (convertie via le zoom) pour rester préhensibles à tout
-        # niveau de zoom, sans quoi elles disparaîtraient en dézoomant.
-        half = _HANDLE_HALF_PX / self._view_scale()
-        painter.setPen(QPen(QColor("#ffffff"), 0))
-        painter.setBrush(QBrush(self._COLOR))
-        for hx, hy in self._handle_points().values():
-            painter.drawRect(QRectF(hx - half, hy - half, 2 * half, 2 * half))
+        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        painter.drawPath(path)
+
+        # 3. Poignées — sélection seule.
+        if sel:
+            half = _HANDLE_HALF_PX / self._view_scale()
+            painter.setPen(QPen(QColor("#ffffff"), 0))
+            painter.setBrush(QBrush(self._COLOR))
+            for hx, hy in self._handle_points().values():
+                painter.drawRect(QRectF(hx - half, hy - half, 2 * half, 2 * half))
         painter.restore()
 
     # ── Poignées ─────────────────────────────────────────────────
@@ -2573,10 +2928,8 @@ class UIRegionItem(QGraphicsRectItem):
     def _handle_points(self) -> dict:
         """Centre de chaque poignée en coordonnées LOCALES.
 
-        Rentrées d'un demi-côté vers l'INTÉRIEUR (bord extérieur du carré flush
-        contre le bord de la zone) : centrées sur le bord, elles déborderaient du
-        `boundingRect` et Qt laisserait des rémanences au déplacement. Ici tout
-        est peint dans les limites — aucun override d'indexation à gérer."""
+        Rentrées d'un demi-côté vers l'INTÉRIEUR : centrées sur le bord, elles
+        déborderaient du `boundingRect` et laisseraient des rémanences."""
         r = self.rect()
         d = _HANDLE_HALF_PX / self._view_scale()
         l, t, rt, b = r.left() + d, r.top() + d, r.right() - d, r.bottom() - d
@@ -2648,10 +3001,19 @@ class UIRegionItem(QGraphicsRectItem):
                 self._move_descendants(value.x() - self._last_pos.x(),
                                        value.y() - self._last_pos.y())
             self._last_pos = QPointF(value)
+        # Le libellé passe au-dessus ou à l'intérieur selon la place disponible,
+        # et le chrome change avec la sélection : les deux se resynchronisent ici.
+        if change in (QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged,
+                      QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged):
+            self._sync_chrome()
         return super().itemChange(change, value)
 
     # ── Interaction ──────────────────────────────────────────────
     def hoverMoveEvent(self, e):
+        if not self._hovered:
+            self._hovered = True
+            self._sync_chrome()
+            self.update()
         name = self._handle_at(e.pos()) if self.isSelected() else None
         if name:
             self.setCursor(_HANDLE_CURSORS[name])
@@ -2663,6 +3025,9 @@ class UIRegionItem(QGraphicsRectItem):
 
     def hoverLeaveEvent(self, e):
         self.unsetCursor()
+        self._hovered = False
+        self._sync_chrome()
+        self.update()
         super().hoverLeaveEvent(e)
 
     def mousePressEvent(self, e):
@@ -2881,13 +3246,13 @@ class UIRegionController(QObject):
         x, y, w, h = int(x), int(y), int(w), int(h)
         taken = set(lay.element_names()) | set(self._project.region_names())
         if kind == KIND_PANEL:
-            el = UIPanel(name=unique_element_name(taken, "conteneur"),
+            el = UIPanel(name=unique_element_name(taken, "container"),
                          x=x, y=y, w=w, h=h)
-            label = "conteneur"
+            label = "container"
         elif kind == KIND_TEXT:
-            el = UIText(name=unique_element_name(taken, "texte"),
+            el = UIText(name=unique_element_name(taken, "text"),
                         x=x, y=y, w=w, h=h)
-            label = "texte"
+            label = "text"
         else:
             el = UIRegion(name=unique_region_name(self._project.region_names(), "zone"),
                           x=x, y=y, w=w, h=h)
@@ -2898,7 +3263,7 @@ class UIRegionController(QObject):
         # undo qui la retire casserait les éléments créés ensuite.
         get_history().push(AddListItemCmd(
             lay.elements, el, persist_fn=self.regions_changed.emit,
-            label=f"Ajouter {label} {el.name}"))
+            label=f"Add {label} {el.name}"))
         self.region_created.emit(lay, el)
         return el
 
@@ -2906,6 +3271,123 @@ class UIRegionController(QObject):
         """Alias historique — une zone de texte runtime."""
         from core.models.ui_region import KIND_REGION
         return self.create_element(KIND_REGION, x, y, w, h)
+
+    # ── Dupliquer / coller ────────────────────────────────────────
+
+    def subtree_of(self, element) -> list:
+        """L'élément et TOUT son sous-arbre, racine en tête — l'unité que
+        copient le presse-papier et le dupliquer."""
+        lay = self._project.scene_ui_layout(self._scene) if self.ready else None
+        if lay is None:
+            return [element]
+        return [element] + lay.descendants(element.name)
+
+    def duplicate_elements(self, elements: list, dx: int = 8, dy: int = 8) -> list:
+        """Duplique des éléments de la mise en page de la scène, sous-arbres
+        compris, décalés de (dx, dy). Une seule entrée d'historique.
+
+        Un élément dont un ANCÊTRE est du lot est ignoré : son sous-arbre est
+        déjà emporté par la copie de cet ancêtre."""
+        if not self.ready or not elements:
+            return []
+        lay = self._project.scene_ui_layout(self._scene)
+        if lay is None:
+            return []
+        picked = {e.name for e in elements}
+        roots = [e for e in elements if not (set(lay.ancestors(e.name)) & picked)]
+        groups = [self.subtree_of(e) for e in roots]
+        return self._add_element_copies(lay, groups, dx, dy, "Duplicated")
+
+    def paste_elements(self, groups: list, dx: int = 0, dy: int = 0) -> list:
+        """Colle des sous-arbres venus du presse-papier du canvas (chacun sa
+        racine en tête). Crée la mise en page de la scène si elle n'en a pas :
+        coller dans une scène vierge est le cas d'usage principal."""
+        if not self.ready or not groups:
+            return []
+        return self._add_element_copies(self._ensure_layout(), groups, dx, dy,
+                                        "Pasted")
+
+    def delete_elements(self, elements: list) -> list:
+        """Supprime des éléments d'interface et TOUT leur sous-arbre, en une
+        seule entrée d'historique.
+
+        Le sous-arbre part avec le parent, comme il le suit à la duplication —
+        et pour une raison plus dure qu'une symétrie : la position d'un enfant
+        est RELATIVE à son conteneur. Laisser les orphelins derrière ne les
+        laisserait pas en place, ça les ferait sauter ailleurs à l'écran (leur
+        origine redevient celle du socle d'ancrage)."""
+        from core.history import get_history, RemoveListItemsCmd
+        if not self.ready or not elements:
+            return []
+        lay = self._project.scene_ui_layout(self._scene)
+        if lay is None:
+            return []
+        victims: list = []
+        for el in elements:
+            for e in [el] + lay.descendants(el.name):
+                if not any(v is e for v in victims):
+                    victims.append(e)
+        if not victims:
+            return []
+        n = len(elements)
+        get_history().push(RemoveListItemsCmd(
+            lay.elements, victims, persist_fn=self.regions_changed.emit,
+            label=f"Deleted {n} interface element{'s' if n > 1 else ''}"))
+        return victims
+
+    def _add_element_copies(self, lay, groups: list, dx: int, dy: int,
+                            verb: str) -> list:
+        """Cœur commun : copie profonde de chaque sous-arbre, noms uniques,
+        refs `parent` réécrites vers les copies, décalage sur la seule RACINE
+        (les enfants sont positionnés relativement à leur parent, les décaler
+        aussi les ferait glisser deux fois)."""
+        from core.models.ui_region import (KIND_REGION, unique_element_name,
+                                           unique_region_name)
+        from core.history import get_history, AddListItemsCmd
+        taken = set(lay.element_names()) | set(self._project.region_names())
+        copies: list = []
+        roots: list = []
+        for group in groups:
+            if not group:
+                continue
+            rename: dict[str, str] = {}
+            pairs: list = []
+            for src in group:
+                new = copy.deepcopy(src)
+                # Espace de noms : le projet entier pour une ZONE (constantes
+                # REGION_*), la mise en page pour les autres types. On cherche
+                # dans l'union, pour que les refs `parent` restent sans
+                # ambiguïté (cf. UILayout.element_names).
+                if getattr(src, "kind", KIND_REGION) == KIND_REGION:
+                    new.name = unique_region_name(taken, src.name)
+                else:
+                    new.name = unique_element_name(taken, src.name)
+                taken.add(new.name)
+                rename[src.name] = new.name
+                pairs.append((src, new))
+            for src, new in pairs:
+                if src.parent in rename:
+                    # Parent copié avec le lot : l'enfant suit SA copie, sinon
+                    # le sous-arbre se rebrancherait sur le conteneur d'origine.
+                    new.parent = rename[src.parent]
+                elif lay.get(src.parent) is not None:
+                    new.parent = src.parent      # parent resté en place
+                else:
+                    # Collée dans une mise en page qui ne connaît pas son parent
+                    # (autre scène) : redevient racine, pas de ref pendante.
+                    new.parent = ""
+            root = pairs[0][1]
+            root.x = int(root.x) + int(dx)
+            root.y = int(root.y) + int(dy)
+            roots.append(root)
+            copies.extend(new for _s, new in pairs)
+        if not copies:
+            return []
+        n = len(roots)
+        get_history().push(AddListItemsCmd(
+            lay.elements, copies, persist_fn=self.regions_changed.emit,
+            label=f"{verb} {n} interface element{'s' if n > 1 else ''}"))
+        return roots
 
 
 class SceneInpaintingController:
@@ -3153,6 +3635,56 @@ class CanvasContainer(QWidget):
 # ──────────────────────────────────────────────────────────────────
 #  Widget éditeur de scène complet
 # ──────────────────────────────────────────────────────────────────
+def _tile_snap(v: int) -> int:
+    """Décalage aimanté à la tuile 8 px — appliqué aux copies d'éléments
+    d'interface : une zone en cible BG occupe des entrées de tilemap, son
+    origine ne peut pas tomber entre deux tuiles (cf. UIRegionItem)."""
+    return int(round(v / 8.0)) * 8
+
+
+class _CanvasClipboard:
+    """Presse-papier INTERNE du canvas (Ctrl+C / Ctrl+V).
+
+    Interne et pas le presse-papier système : ce qu'on copie est un graphe
+    d'objets du projet (composants, sous-arbre d'interface), pas du texte.
+
+    Au niveau du MODULE et pas de l'écran : changer de scène reconstruit
+    l'éditeur, or coller dans une AUTRE scène est tout l'intérêt face au Ctrl+D.
+
+    Le contenu est une copie profonde : modifier ou supprimer la source après
+    la copie ne change pas ce qui sera collé."""
+
+    def __init__(self):
+        self.actors: list = []
+        self.ui_groups: list = []   # sous-arbres d'interface, racine en tête
+        self.scene_name: str = ""   # scène d'origine (cf. paste_offset)
+        self.pastes: int = 0
+
+    @property
+    def empty(self) -> bool:
+        return not self.actors and not self.ui_groups
+
+    def take(self, actors: list, ui_groups: list, scene_name: str):
+        self.actors = copy.deepcopy(actors)
+        self.ui_groups = copy.deepcopy(ui_groups)
+        self.scene_name = scene_name
+        self.pastes = 0
+
+    def paste_offset(self, scene_name: str) -> int:
+        """Décalage du prochain collage, en px.
+
+        Dans la scène d'origine on décale de 8 px de plus à chaque collage,
+        sinon la copie se cache sous l'original. Dans une AUTRE scène, le
+        premier collage garde la position exacte : c'est « reproduire cette
+        mise en place ailleurs »."""
+        self.pastes += 1
+        n = self.pastes if scene_name == self.scene_name else self.pastes - 1
+        return 8 * n
+
+
+_clipboard = _CanvasClipboard()
+
+
 class SceneEditor(QWidget):
     scene_changed = pyqtSignal()  # fin de drag / déplacement caméra → sauvegarder
 
@@ -3184,26 +3716,37 @@ class SceneEditor(QWidget):
         layout.setSpacing(0)
 
         # ── Barre haut — composant partagé (cf. ui/common/canvas_top_bar) ──
-        self._bar = CanvasTopBar("Ajuster la scène à la vue  (F)")
+        self._bar = CanvasTopBar("Fit scene to view  (F)")
         self._bar.zoom_step_asked.connect(self._zoom_step)
         self._bar.fit_asked.connect(self._fit)
         self._bar.set_canvas_size(GBA_W, GBA_H)
 
         # ── Toggles d'affichage iconifiés (remplacent les cases texte) ──
         self._chk_grid8 = self._bar.add_toggle(
-            "view_grid", "Grille 8 px (tuile GBA)", self._on_grid8_toggle)
+            "view_grid", "8 px grid (GBA tile)", self._on_grid8_toggle)
         self._chk_grid16 = self._bar.add_toggle(
-            "view_grid_large", "Grille 16 px", self._on_grid16_toggle)
+            "view_grid_large", "16 px grid", self._on_grid16_toggle)
         self._chk_snap = self._bar.add_toggle(
-            "view_snap", "Snap — aligner les acteurs sur la grille au déplacement",
+            "view_snap", "Snap — align actors to the grid while moving",
             self._on_snap_toggle)
         self._bar.add_spacing(10)
         self._chk_boxes_actors = self._bar.add_toggle(
-            "view_boxes", "Boxes acteurs — boîtes de collision de tous les acteurs",
+            "view_boxes", "Actor boxes — collision boxes of all actors",
             self._on_boxes_actors_toggle)
         self._chk_collision_view = self._bar.add_toggle(
-            "view_collision", "Collisions scène — carte de collisions peinte",
+            "view_collision", "Scene collisions — painted collision map",
             self._on_collision_view_toggle)
+        self._bar.add_spacing(10)
+        self._chk_ui_elements = self._bar.add_toggle(
+            "ui_layout", "Interface elements — text zones, containers, texts",
+            self._on_ui_elements_toggle)
+        # blockSignals : self._gba_scene est créé plus bas, et le `toggled`
+        # SYNCHRONE de setChecked ferait planter _on_ui_elements_toggle dessus
+        # (AttributeError dans un slot appelé depuis C++ = plantage natif). Le
+        # défaut True est déjà celui de GBAScene._ui_elements_visible.
+        self._chk_ui_elements.blockSignals(True)
+        self._chk_ui_elements.setChecked(True)
+        self._chk_ui_elements.blockSignals(False)
 
         layout.addWidget(self._bar)
 
@@ -3236,6 +3779,7 @@ class SceneEditor(QWidget):
         self._canvas_container.tool_changed.connect(self._on_tool_changed)
         self._gba_view.collision_painted.connect(self._on_collision_painted)
         self._gba_view.actor_context_requested.connect(self._on_actor_context_menu)
+        self._gba_view.duplicate_drag_finished.connect(self._on_duplicate_drag)
 
         self._setup_shortcuts()
 
@@ -3309,6 +3853,8 @@ class SceneEditor(QWidget):
         mk("Del", self._shortcut_delete)
         mk("Backspace", self._shortcut_delete)
         mk("Ctrl+D", self._shortcut_duplicate)
+        mk("Ctrl+C", self._shortcut_copy)
+        mk("Ctrl+V", self._shortcut_paste)
         # Nudge de la sélection : 1 px, Shift = 8 px (cran de grille)
         for seq, (dx, dy) in {
             "Left": (-1, 0), "Right": (1, 0), "Up": (0, -1), "Down": (0, 1),
@@ -3320,6 +3866,10 @@ class SceneEditor(QWidget):
     def _selected_sprite_items(self) -> list:
         return [it for it in self._gba_scene.selectedItems()
                 if isinstance(it, SpriteItem)]
+
+    def _selected_ui_items(self) -> list:
+        return [it for it in self._gba_scene.selectedItems()
+                if isinstance(it, UIRegionItem)]
 
     # ── Menu contextuel actor (clic-droit en mode Sélection) ──────
 
@@ -3336,29 +3886,28 @@ class SceneEditor(QWidget):
         n = len(actors)
 
         menu = QMenu(self)
-        menu.setFont(QFont(T.MONO, T.MD))
+        menu.setFont(QFont(T.UI, T.MD))
         menu.setStyleSheet(QSS.menu)
-        act_rename = menu.addAction("Renommer…")
+        act_rename = menu.addAction("Rename…")
         act_rename.setEnabled(n == 1)
-        act_dup = menu.addAction("Dupliquer" if n == 1 else f"Dupliquer ({n})")
+        act_dup = menu.addAction("Duplicate" if n == 1 else f"Duplicate ({n})")
         menu.addSeparator()
-        act_del = menu.addAction("Supprimer" if n == 1 else f"Supprimer ({n})")
+        act_del = menu.addAction("Delete" if n == 1 else f"Delete ({n})")
         chosen = menu.exec(global_pos)
         if chosen is act_rename:
             self._rename_actor(actors[0])
         elif chosen is act_dup:
-            disp = get_dispatcher()
-            for actor in actors:
-                disp.duplicate_actor(actor)
+            # Par la sélection : le menu vise déjà tout le lot, et les copies
+            # doivent hériter de la sélection comme après un Ctrl+D.
+            self._select_copies(get_dispatcher().duplicate_actors(actors),
+                                [], "Duplicated")
         elif chosen is act_del:
-            disp = get_dispatcher()
-            for actor in actors:
-                disp.delete_actor(actor)
+            get_dispatcher().delete_actors(actors)
 
     def _rename_actor(self, actor):
         from PyQt6.QtWidgets import QInputDialog
         new_name, ok = QInputDialog.getText(
-            self, "Renommer l'acteur", "Nom :", text=actor.name)
+            self, "Rename actor", "Name:", text=actor.name)
         if not ok:
             return
         new_name = new_name.strip()
@@ -3385,22 +3934,124 @@ class SceneEditor(QWidget):
         self._canvas_container.activate_tool_shortcut("select")
 
     def _shortcut_delete(self):
+        """Suppr — sur TOUTE la sélection, acteurs et éléments d'interface
+        confondus (même portée que Ctrl+D, Alt+glisser et Ctrl+C/V)."""
         actors = [it.scene_sprite for it in self._selected_sprite_items()]
-        if not actors:
+        elements = [it._region for it in self._selected_ui_items()]
+        if not actors and not elements:
             return
-        from core.command_dispatcher import get_dispatcher
-        disp = get_dispatcher()
-        for a in actors:
-            disp.delete_actor(a)
+        # Vider le bus AVANT la suppression : la persistance des zones réémet
+        # la sélection courante vers l'inspecteur, qui rechargerait un élément
+        # déjà retiré de la mise en page.
+        get_bus().clear()
+        get_dispatcher().delete_actors(actors)
+        gone = self._ui_region_ctrl.delete_elements(elements)
+        n = len(actors) + len(elements)
+        if gone or actors:
+            get_dispatcher().status(f"Deleted {n} element{'s' if n > 1 else ''}")
 
     def _shortcut_duplicate(self):
-        items = self._selected_sprite_items()
-        if not items:
+        self._duplicate_selection(8, 8)
+
+    # ── Dupliquer / copier / coller ───────────────────────────────
+    # Ctrl+D, Alt+glisser et Ctrl+V passent par le même chemin, seule l'origine
+    # du décalage change. Acteurs ET éléments d'interface.
+
+    def _duplicate_selection(self, dx: int, dy: int):
+        """Duplique la sélection courante, décalée de (dx, dy)."""
+        actors = [it.scene_sprite for it in self._selected_sprite_items()]
+        elements = [it._region for it in self._selected_ui_items()]
+        if not actors and not elements:
             return
-        from core.command_dispatcher import get_dispatcher
-        disp = get_dispatcher()
-        for it in items:
-            disp.duplicate_actor(it.scene_sprite)
+        new_actors = get_dispatcher().duplicate_actors(actors, dx, dy)
+        # Une zone en cible BG s'écrit dans une tilemap : son origine ne peut
+        # pas tomber entre deux tuiles, donc décalage aimanté.
+        edx, edy = _tile_snap(dx), _tile_snap(dy)
+        if elements and not edx and not edy:
+            # Geste plus court qu'une demi-tuile : la copie tomberait pile sur
+            # l'original, donc invisible. Un cran de grille, comme au Ctrl+D.
+            edx = edy = 8
+        new_elements = self._ui_region_ctrl.duplicate_elements(elements, edx, edy)
+        self._select_copies(new_actors, new_elements, "Duplicated")
+
+    def _on_duplicate_drag(self, dx: int, dy: int):
+        """Alt+glisser relâché : la vue a déjà remis les originaux en place."""
+        self._duplicate_selection(dx, dy)
+
+    def _shortcut_copy(self):
+        """Ctrl+C — met la sélection dans le presse-papier du canvas.
+
+        Une sélection vide ne VIDE pas le presse-papier : un Ctrl+C manqué (clic
+        à côté puis raccourci) perdrait sinon ce qu'on s'apprêtait à coller."""
+        actors = [it.scene_sprite for it in self._selected_sprite_items()]
+        elements = [it._region for it in self._selected_ui_items()]
+        if not actors and not elements:
+            return
+        # Même règle qu'à la duplication : un élément dont un ancêtre est du
+        # lot voyage dans le sous-arbre de celui-ci, pas en double.
+        lay = (self._project.scene_ui_layout(self._project.active_scene)
+               if self._project else None)
+        groups = []
+        if lay is not None and elements:
+            picked = {e.name for e in elements}
+            for e in elements:
+                if set(lay.ancestors(e.name)) & picked:
+                    continue
+                groups.append([e] + lay.descendants(e.name))
+        scene = self._project.active_scene if self._project else None
+        _clipboard.take(actors, groups, getattr(scene, "name", ""))
+        n = len(actors) + len(groups)
+        get_dispatcher().status(
+            f"Copied {n} element{'s' if n > 1 else ''}")
+
+    def _shortcut_paste(self):
+        """Ctrl+V — colle le presse-papier dans la scène ACTIVE (pas forcément
+        celle où la copie a été faite : c'est tout l'intérêt du geste)."""
+        if _clipboard.empty or not self._project or not self._project.active_scene:
+            return
+        scene = self._project.active_scene
+        d = _clipboard.paste_offset(getattr(scene, "name", ""))
+        new_actors = get_dispatcher().paste_actors(_clipboard.actors, d, d)
+        new_elements = self._ui_region_ctrl.paste_elements(
+            _clipboard.ui_groups, _tile_snap(d), _tile_snap(d))
+        self._select_copies(new_actors, new_elements, "Pasted")
+
+    def _select_copies(self, actors: list, elements: list, verb: str):
+        """Donne la sélection aux copies fraîches : c'est sur elles que porte le
+        geste suivant, jamais sur les originaux.
+
+        Signaux tus pendant la bascule — chaque setSelected() ferait transiter
+        le bus par un état « plus rien de sélectionné » que l'inspecteur
+        traduirait par un retour à l'aperçu."""
+        if not actors and not elements:
+            return
+        self._gba_scene.blockSignals(True)
+        for item in self._gba_scene.selectedItems():
+            item.setSelected(False)
+        first = None
+        for a in actors:
+            it = self._find_item(a)
+            if it is not None:
+                it.setSelected(True)
+                first = first or it
+        for el in elements:
+            for it in self._gba_scene._ui_region_items:
+                if it._region is el:
+                    it.setSelected(True)
+                    first = first or it
+                    break
+        self._gba_scene.blockSignals(False)
+        self._gba_scene.set_active_item(first)
+        # L'inspecteur suit l'item ACTIF : on l'annonce sur le bus, qui sait ne
+        # pas réduire la sélection quand l'objet en est déjà membre.
+        if first is not None:
+            if isinstance(first, SpriteItem):
+                get_bus().select(first.scene_sprite)
+            else:
+                from core.selection_bus import UIRegionSelection
+                get_bus().select(UIRegionSelection(first._layout, first._region))
+        n = len(actors) + len(elements)
+        get_dispatcher().status(f"{verb} {n} element{'s' if n > 1 else ''}")
 
     def _shortcut_nudge(self, dx: int, dy: int):
         items = self._selected_sprite_items()
@@ -3455,6 +4106,9 @@ class SceneEditor(QWidget):
 
     def _on_collision_view_toggle(self, checked: bool):
         self._gba_scene.set_collision_view(checked)
+
+    def _on_ui_elements_toggle(self, checked: bool):
+        self._gba_scene.set_ui_elements_view(checked)
 
     def _update_actor_box_overlay(self):
         if not self._project:
@@ -3536,17 +4190,17 @@ class SceneEditor(QWidget):
         from core.selection_bus import get_bus, UIRegionSelection
         get_bus().select(UIRegionSelection(layout, region))
         users = self._project.ui_layout_users(layout.name)
-        shared = f" — partagée par {len(users)} scènes" if len(users) > 1 else ""
-        kind_label = {"panel": "Conteneur", "text": "Texte"}.get(
+        shared = f" — shared by {len(users)} scenes" if len(users) > 1 else ""
+        kind_label = {"panel": "Container", "text": "Text"}.get(
             getattr(region, "kind", "region"), "Zone")
         # L'empreinte en tuiles n'a de sens que pour une zone (seule à exposer
         # tile_rect) ; un conteneur ou un texte n'en annoncent pas.
         tiles = ""
         if hasattr(region, "tile_rect"):
             tw, th = region.tile_rect()[2:]
-            tiles = f" · {tw}×{th} tuiles"
+            tiles = f" · {tw}×{th} tiles"
         get_dispatcher().status(
-            f"{kind_label} « {region.name} » créé(e) dans « {layout.name} »"
+            f"{kind_label} “{region.name}” created in “{layout.name}”"
             f"{shared}{tiles}")
 
     def _on_collision_painted(self):

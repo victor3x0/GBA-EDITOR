@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QLabel, QListWidget,
-    QListWidgetItem, QFileDialog, QFrame,
+    QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QListWidget,
+    QListWidgetItem, QFileDialog,
     QMenu, QMessageBox, QAbstractItemView, QPushButton, QGridLayout, QCheckBox,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, QObject, QRunnable, QThreadPool, pyqtSignal
 
-from ui.common.theme import C, T, QSS
+from ui.common.theme import C, T, QSS, ui_font
 from ui.common.widgets import W, FinderSection, AssetHeaderBar
 from ui.common.icons import COLOR_BACKGROUND
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
@@ -77,32 +77,22 @@ class BgFinderPanel(QWidget):
         self._blocking = False
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        hdr = QFrame(); hdr.setFixedHeight(20)
-        hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-bottom:1px solid {C.BORDER_DARK};")
-        hl = QHBoxLayout(hdr); hl.setContentsMargins(8, 0, 0, 0)
-        lbl = QLabel("BACKGROUND FINDER")
-        lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px;")
-        hl.addWidget(lbl); root.addWidget(hdr)
+        root.addWidget(W.finder_bar("BACKGROUND FINDER"))
 
         sec = FinderSection("BACKGROUNDS", _BG_COLOR)
-        sec.set_add_tooltip("Importer un PNG")
+        sec.set_add_tooltip("Import a PNG")
         sec.add_clicked.connect(self.import_asked)
         root.addWidget(sec, 1)
 
         self._list = QListWidget()
         self._list.setStyleSheet(
-            f"QListWidget{{background:{C.BG_BASE}; color:{C.TEXT_NORM}; border:none;"
-            f"font-family:{T.MONO}; font-size:{T.SM}px;}}"
-            f"QListWidget::item{{padding:4px 6px;}}"
-            f"QListWidget::item:selected{{background:{C.BG_SEL}; color:{_BG_COLOR};"
-            f"border-left:2px solid {_BG_COLOR};}}"
+            QSS.finder_list(_BG_COLOR)
             # Éditeur de renommage en place : mêmes police/taille que la ligne,
             # sinon le QLineEdit s'ouvre avec la police par défaut (plus grande)
             # et le texte est rogné verticalement.
-            f"QListWidget QLineEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
-            f"border:1px solid {_BG_COLOR}; padding:0 4px; margin:0;"
-            f"font-family:{T.MONO}; font-size:{T.SM}px;}}"
+            + f"QListWidget QLineEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
+              f"border:1px solid {_BG_COLOR}; padding:0 4px; margin:0;"
+              f"font-family:{T.MONO}; font-size:{T.MD}px;}}"
         )
         self._list.currentItemChanged.connect(self._on_sel)
         # Renommage en place : clic sur un item déjà sélectionné (même mécanisme
@@ -112,6 +102,10 @@ class BgFinderPanel(QWidget):
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._ctx_menu)
         sec.set_widget(self._list)
+
+        # Ressort de queue : section repliée, rien n'absorbe la hauteur du
+        # panneau et QVBoxLayout centrerait le tout.
+        root.addStretch()
 
     def load_project(self, project):
         self._project = project
@@ -123,7 +117,7 @@ class BgFinderPanel(QWidget):
         self._list.clear()
         for ba in (list(self._project.backgrounds) if self._project else []):
             it = QListWidgetItem(ba.name)
-            it.setFont(QFont(T.MONO, T.SM))
+            it.setFont(ui_font(T.LG))   # même corps que les lignes d'arbre
             it.setData(Qt.ItemDataRole.UserRole, ba)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
             self._list.addItem(it)
@@ -159,8 +153,8 @@ class BgFinderPanel(QWidget):
             self._reset_item_text(item, ba)
             return
         if self._project.get_background(new_name):
-            QMessageBox.warning(self, "Nom déjà utilisé",
-                                f"Un fond nommé « {new_name} » existe déjà.")
+            QMessageBox.warning(self, "Name already used",
+                                f"A background named “{new_name}” already exists.")
             self._reset_item_text(item, ba)
             return
         with get_dispatcher().suspended():
@@ -181,9 +175,9 @@ class BgFinderPanel(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        act_rename = menu.addAction("Renommer")
+        act_rename = menu.addAction("Rename")
         menu.addSeparator()
-        act_del = menu.addAction("Supprimer le fond")
+        act_del = menu.addAction("Delete background")
         chosen = menu.exec(self._list.viewport().mapToGlobal(pos))
         if chosen == act_rename:
             self._list.editItem(item)
@@ -194,8 +188,8 @@ class BgFinderPanel(QWidget):
         if not self._project:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer le fond « {ba.name} » ?\n(Ctrl+Z pour annuler)",
+            self, "Delete",
+            f"Delete background “{ba.name}”?\n(Ctrl+Z to undo)",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -243,24 +237,24 @@ class BgPropertiesPanel(QWidget):
         #    GBA → boutons profondeur filtrés selon le layout (cf. _refresh_mode_buttons).
         #    Changer d'axe recompresse le fond (hors-thread).
         lay_row = QHBoxLayout(); lay_row.setContentsMargins(0, 2, 0, 0); lay_row.setSpacing(6)
-        self._btn_tiled = self._mode_btn("Tuilé", "Fond tuilé (Mode 0) — tileset + tilemap, scroll, inpainting")
-        self._btn_bitmap = self._mode_btn("Bitmap", "Bitmap plein écran ≤240×160, sans tuiles (photos / écrans-titre)")
+        self._btn_tiled = self._mode_btn("Tiled", "Tiled background (Mode 0) — tileset + tilemap, scroll, inpainting")
+        self._btn_bitmap = self._mode_btn("Bitmap", "Full-screen bitmap ≤240×160, no tiles (photos / title screens)")
         self._btn_tiled.clicked.connect(lambda: self._set_layout("tiled"))
         self._btn_bitmap.clicked.connect(lambda: self._set_layout("bitmap"))
         lay_row.addWidget(self._btn_tiled, 1); lay_row.addWidget(self._btn_bitmap, 1)
         root.addLayout(lay_row)
 
         dep_row = QHBoxLayout(); dep_row.setContentsMargins(0, 2, 0, 2); dep_row.setSpacing(6)
-        self._d4 = self._mode_btn("4bpp", "16 couleurs × 16 palettes · inpainting (pixel-art) — tuilé uniquement")
-        self._d8 = self._mode_btn("8bpp", "256 couleurs, une palette (pixel-art riche / bitmap Mode 4)")
-        self._d16 = self._mode_btn("16bpp", "Couleur directe 15-bit (photos true-color) — à venir, repli Mode 4")
+        self._d4 = self._mode_btn("4bpp", "16 colors × 16 palettes · inpainting (pixel-art) — tiled only")
+        self._d8 = self._mode_btn("8bpp", "256 colors, one palette (rich pixel-art / bitmap Mode 4)")
+        self._d16 = self._mode_btn("16bpp", "15-bit direct color (true-color photos) — coming soon, falls back to Mode 4")
         self._d4.clicked.connect(lambda: self._set_depth(4))
         self._d8.clicked.connect(lambda: self._set_depth(8))
         self._d16.clicked.connect(lambda: self._set_depth(16))
         dep_row.addWidget(self._d4, 1); dep_row.addWidget(self._d8, 1); dep_row.addWidget(self._d16, 1)
         root.addLayout(dep_row)
         self._chk_dither = QCheckBox("Dithering")
-        self._chk_dither.setFont(QFont(T.MONO, T.SM))
+        self._chk_dither.setFont(QFont(T.UI, T.SM))
         self._chk_dither.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_dither.toggled.connect(self._on_dither_toggled)
         root.addWidget(self._chk_dither)
@@ -287,14 +281,14 @@ class BgPropertiesPanel(QWidget):
         self._pal_grid.asset_restore.connect(self._on_pal_restore)
         root.addWidget(self._pal_grid)
 
-        self._btn = W.btn_accent("⟐  Importer / remplacer l'image…")
+        self._btn = W.btn_accent("⟐  Import / replace image…")
         self._btn.clicked.connect(self._on_replace)
         root.addWidget(self._btn)
 
         self._btn_restore = self._mini_btn(
-            "↺  Restaurer l'original…",
-            "Réinitialise le fond comme au premier import (recompression du PNG) — "
-            "les palettes ajoutées et la peinture seront perdues.")
+            "↺  Restore original…",
+            "Resets the background to its first import (PNG re-compression) — "
+            "added palettes and painting will be lost.")
         self._btn_restore.clicked.connect(self._on_restore)
         root.addWidget(self._btn_restore)
         root.addStretch()
@@ -304,10 +298,10 @@ class BgPropertiesPanel(QWidget):
         #    (visibles/éditables depuis le Palette Editor) et les assigne à ce fond.
         self._btn_extract = QPushButton("⤓  EXTRACT PALETTE")
         self._btn_extract.setToolTip(
-            "Promeut les palettes déduites du PNG en palettes partagées du "
-            "catalogue (visibles et éditables depuis le Palette Editor). Les "
-            "palettes créées sont assignées à ce fond.")
-        self._btn_extract.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+            "Promotes palettes deduced from the PNG into shared catalog "
+            "palettes (visible and editable from the Palette Editor). "
+            "Created palettes are assigned to this background.")
+        self._btn_extract.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._btn_extract.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_extract.setFixedHeight(38)
         self._btn_extract.setStyleSheet(
@@ -323,7 +317,7 @@ class BgPropertiesPanel(QWidget):
 
     def _mini_btn(self, text: str, tip: str = "") -> QPushButton:
         b = QPushButton(text); b.setToolTip(tip)
-        b.setFont(QFont(T.MONO, T.SM))
+        b.setFont(QFont(T.UI, T.SM))
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
@@ -336,7 +330,7 @@ class BgPropertiesPanel(QWidget):
     def _mode_btn(self, text: str, tip: str) -> QPushButton:
         b = QPushButton(text); b.setToolTip(tip)
         b.setCheckable(True)
-        b.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        b.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.setFixedHeight(30)
         b.setStyleSheet(
@@ -454,17 +448,17 @@ class BgPropertiesPanel(QWidget):
         elif ba.tileset:
             lines.append(f"{ba.tiles_w*8}×{ba.tiles_h*8} px  ·  {ba.tiles_w}×{ba.tiles_h} tuiles")
         indexed, ncol, capped = self._source_info(ba)
-        origin = "indexé (palette d'origine)" if indexed else "déduit"
+        origin = "indexed (original palette)" if indexed else "inferred"
         ncol_s = "256+" if capped else str(ncol)
-        lines.append(f"Source : {origin} · {ncol_s} couleurs")
+        lines.append(f"Source: {origin} · {ncol_s} colors")
         if ba.mode == "bitmap":
-            lines.append("Mode 4 — plein écran, sans tuiles")
-            lines.append("Palette : 256 couleurs (1)")
+            lines.append("Mode 4 — full screen, no tiles")
+            lines.append("Palette: 256 colors (1)")
         else:
             budget = 256 if ba.bpp == 8 else 512
-            lines.append(f"Tuiles uniques : {len(ba.tileset)} / {budget}  ({ba.bpp}bpp)")
-            lines.append("Palette : 256 couleurs (1)" if ba.bpp == 8
-                         else f"Palettes : {len(ba.palettes)} / 16")
+            lines.append(f"Unique tiles: {len(ba.tileset)} / {budget}  ({ba.bpp}bpp)")
+            lines.append("Palette: 256 colors (1)" if ba.bpp == 8
+                         else f"Palettes: {len(ba.palettes)} / 16")
         return lines
 
     def _source_info(self, ba) -> tuple[bool, int, bool]:
@@ -506,45 +500,45 @@ class BgPropertiesPanel(QWidget):
 
     def _validation_lines(self, ba) -> list:
         if not ba or not (ba.tileset or ba.bitmap):
-            return [("⚠ Compression impossible — image illisible ou vide.", C.ACCENT_RED)]
+            return [("⚠ Compression impossible — unreadable or empty image.", C.ACCENT_RED)]
         warn, err, ok = C.ACCENT_YLW, C.ACCENT_RED, C.POWER
         if ba.mode == "bitmap":
             diag = self._diag_for(ba)
             lines: list = []
             if diag.get("scaled"):
-                lines.append((f"⚠ Image mise à l'échelle → {ba.out_w}×{ba.out_h} (≤ 240×160).", warn))
+                lines.append((f"⚠ Image scaled → {ba.out_w}×{ba.out_h} (≤ 240×160).", warn))
             tc = diag.get("total_colors", 0)
             if tc == -1 or tc > 255:
-                lines.append(("⚠ &gt; 256 couleurs — réduites à 256 (perte).", warn))
+                lines.append(("⚠ &gt; 256 colors — reduced to 256 (lossy).", warn))
             if not lines:
-                lines.append(("✓ Bitmap GBA (Mode 4) — plein écran, sans perte de tuiles.", ok))
+                lines.append(("✓ GBA bitmap (Mode 4) — full screen, no tile loss.", ok))
             return lines
         diag = self._diag_for(ba)
         lines: list = []
         if diag and not diag.get("multiple_of_8", True):
             w, h = diag.get("src_w"), diag.get("src_h")
-            lines.append((f"⚠ {w}×{h} px non multiple de 8 — complété par transparence "
+            lines.append((f"⚠ {w}×{h} px not a multiple of 8 — padded with transparency "
                           f"({ba.tiles_w*8}×{ba.tiles_h*8}).", warn))
         if ba.bpp == 8:
             # 8bpp : une seule palette de 256 ; perte si le source en avait plus.
             tc = diag.get("total_colors", 0)
             if tc == -1 or tc > 255:
-                lines.append(("⚠ &gt; 256 couleurs — réduites à 256 (perte, mode 8bpp).", warn))
+                lines.append(("⚠ &gt; 256 colors — reduced to 256 (lossy, 8bpp mode).", warn))
             budget = 256
         else:
             mtc = diag.get("max_tile_colors", 0)
             if mtc > 15:
                 n = diag.get("tiles_reduced", 0)
-                lines.append((f"⚠ {n} tuile(s) &gt; 15 couleurs (max {mtc}) — couleurs réduites (perte).", warn))
+                lines.append((f"⚠ {n} tile(s) &gt; 15 colors (max {mtc}) — colors reduced (lossy).", warn))
             pre = diag.get("pre_merge_palettes")
             if pre and pre > 16:
-                lines.append((f"⚠ {pre} palettes nécessaires &gt; 16 — fusionnées en {len(ba.palettes)} (perte).", warn))
+                lines.append((f"⚠ {pre} palettes needed &gt; 16 — merged into {len(ba.palettes)} (lossy).", warn))
             budget = 512
         fits, bud = bg_fits_vram(ba.tileset, budget=budget)
         if not fits:
-            lines.append((f"⚠ {len(ba.tileset)} tuiles uniques &gt; {bud} — dépasse la VRAM ({ba.bpp}bpp).", err))
+            lines.append((f"⚠ {len(ba.tileset)} unique tiles &gt; {bud} — exceeds VRAM ({ba.bpp}bpp).", err))
         if not lines:
-            lines.append((f"✓ Compatible GBA ({ba.bpp}bpp) — compressé sans perte.", ok))
+            lines.append((f"✓ GBA-compatible ({ba.bpp}bpp) — compressed losslessly.", ok))
         return lines
 
     # ── Section PALETTES ──────────────────────────────────────────
@@ -643,16 +637,16 @@ class BgPropertiesPanel(QWidget):
         if not self._project or not self._ba:
             return
         if QMessageBox.question(
-            self, "Restaurer l'original",
-            "Réinitialiser ce fond comme au tout premier import ?\n"
-            "Les palettes ajoutées et la peinture (inpainting) seront perdues.",
+            self, "Restore original",
+            "Reset this background to its very first import?\n"
+            "Added palettes and painting (inpainting) will be lost.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
         png = self._png_path()
         if not png or not png.exists():
-            QMessageBox.warning(self, "Impossible",
-                                "PNG source introuvable — restauration impossible.")
+            QMessageBox.warning(self, "Not possible",
+                                "Source PNG not found — restoration impossible.")
             return
         # Purge l'inpainting ; palettes/tileset/tilemap sont régénérés par la
         # recompression (hors-thread) depuis le PNG, dans le mode courant.
@@ -666,8 +660,8 @@ class BgPropertiesPanel(QWidget):
         if not new_name or new_name == self._ba.name:
             return
         if self._project.get_background(new_name):
-            QMessageBox.warning(self, "Nom déjà utilisé",
-                                f"Un fond nommé « {new_name} » existe déjà.")
+            QMessageBox.warning(self, "Name already used",
+                                f"A background named “{new_name}” already exists.")
             self._header.set_name(self._ba.name)
             return
         with get_dispatcher().suspended():
@@ -692,9 +686,9 @@ class BgPropertiesPanel(QWidget):
         pals = [list(p) for p in ba.palettes]
         if not pals:
             QMessageBox.information(
-                self, "Extraction impossible",
-                "Ce fond n'a pas encore de palette à extraire "
-                "(image non compressée ou illisible).")
+                self, "Extraction not possible",
+                "This background doesn't have a palette to extract yet "
+                "(uncompressed or unreadable image).")
             return
         # 256 couleurs (une banque unique) en 8bpp / bitmap ; 16 en 4bpp tuilé.
         size = 256 if (ba.mode == "bitmap" or ba.bpp == 8) else 16
@@ -717,16 +711,16 @@ class BgPropertiesPanel(QWidget):
             created.append(bank.name)
         noun = "palette" if single else "palettes"
         QMessageBox.information(
-            self, "Palette extraite",
-            f"{len(created)} {noun} ajoutée(s) au catalogue et assignée(s) à "
-            f"« {ba.name} » :\n  " + "\n  ".join(created) + "\n\n"
-            "Elles sont maintenant visibles et éditables depuis le Palette Editor.")
+            self, "Palette extracted",
+            f"{len(created)} {noun} added to the catalog and assigned to "
+            f"“{ba.name}”:\n  " + "\n  ".join(created) + "\n\n"
+            "They are now visible and editable from the Palette Editor.")
 
     def _on_replace(self):
         if not self._project or not self._ba:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choisir une image", "", "Images (*.png *.bmp)")
+            self, "Choose an image", "", "Images (*.png *.bmp)")
         if not path:
             return
         import shutil
@@ -826,8 +820,8 @@ class BackgroundEditorScreen(QWidget):
             if tok != self._compress_token:
                 return
             self._canvas.set_busy(False)
-            QMessageBox.warning(self, "Compression échouée",
-                                f"Impossible de compresser le fond :\n{msg}")
+            QMessageBox.warning(self, "Compression failed",
+                                f"Could not compress the background:\n{msg}")
 
         task.signals.done.connect(_done)
         task.signals.failed.connect(_failed)

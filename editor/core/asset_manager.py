@@ -54,7 +54,7 @@ class AssignSlot(QFrame):
 
         # Badge nom du layer
         badge = QLabel(LAYER_NAMES[slot_index])
-        badge.setFont(QFont(T.MONO, T.MD, QFont.Weight.Bold))
+        badge.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         badge.setStyleSheet(f"color:{self._color};")
         badge.setFixedWidth(38)
         layout.addWidget(badge)
@@ -66,21 +66,21 @@ class AssignSlot(QFrame):
         self._thumb.setStyleSheet(
             "background:#111; border:1px solid #2a2a2a; border-radius:2px;"
         )
-        self._thumb.setToolTip("Cliquer pour importer un PNG")
+        self._thumb.setToolTip("Click to import a PNG")
         self._thumb.setCursor(Qt.CursorShape.PointingHandCursor)
         self._thumb.mousePressEvent = lambda e: self._open_dialog()
         layout.addWidget(self._thumb)
 
         # Nom du fichier
-        self._name_lbl = QLabel("Déposer ou cliquer")
-        self._name_lbl.setFont(QFont(T.MONO, T.SM))
+        self._name_lbl = QLabel("Drop or click")
+        self._name_lbl.setFont(QFont(T.UI, T.SM))
         self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         layout.addWidget(self._name_lbl, 1)
 
         # Bouton import
         btn_import = QToolButton()
         btn_import.setText("⊕")
-        btn_import.setToolTip("Importer un PNG")
+        btn_import.setToolTip("Import a PNG")
         btn_import.setFixedSize(20, 20)
         btn_import.setStyleSheet(
             f"QToolButton{{color:{C.TEXT_DIM};border:none;background:none;font-size:12px;}}"
@@ -144,7 +144,7 @@ class AssignSlot(QFrame):
     def clear_asset(self):
         self._path = ""
         self._thumb.setPixmap(QPixmap())
-        self._name_lbl.setText("Déposer ou cliquer")
+        self._name_lbl.setText("Drop or click")
         self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._btn_clear.setVisible(False)
 
@@ -226,12 +226,12 @@ class BgLayerRow(QFrame):
         self._radio = QPushButton("○")
         self._radio.setFixedSize(22, 22)
         self._radio.setCheckable(False)
-        self._radio.setFont(QFont(T.MONO, 11))
+        self._radio.setFont(QFont(T.UI, 11))
         self._radio.setStyleSheet(
             f"QPushButton{{color:#3a3a3a;background:transparent;border:none;padding:0;}}"
             f"QPushButton:hover{{color:{self._color};}}"
         )
-        self._radio.setToolTip("Définir comme layer de collision")
+        self._radio.setToolTip("Set as the collision layer")
         self._radio.clicked.connect(lambda: self.bound_toggled.emit(self.slot_index))
         row.addWidget(self._radio)
 
@@ -248,18 +248,18 @@ class BgLayerRow(QFrame):
             f"color:#555;font-size:14px;"
         )
         self._thumb.setText("🖼")
-        self._thumb.setToolTip("Cliquer ou déposer un PNG")
+        self._thumb.setToolTip("Click or drop a PNG")
         self._thumb.setCursor(Qt.CursorShape.PointingHandCursor)
         self._thumb.mousePressEvent = lambda e: self._open_dialog()
 
         self._btn_clear = QPushButton("×", thumb_container)
         self._btn_clear.setGeometry(32, 0, 16, 16)
-        self._btn_clear.setFont(QFont(T.MONO, 7, QFont.Weight.Bold))
+        self._btn_clear.setFont(QFont(T.UI, 7, QFont.Weight.DemiBold))
         self._btn_clear.setStyleSheet(
             "QPushButton{background:#3a1a1a;color:#cc5555;border:none;border-radius:2px;}"
             "QPushButton:hover{background:#cc3333;color:#fff;}"
         )
-        self._btn_clear.setToolTip("Retirer ce background")
+        self._btn_clear.setToolTip("Remove this background")
         self._btn_clear.setVisible(False)
         self._btn_clear.clicked.connect(self._clear)
 
@@ -269,11 +269,11 @@ class BgLayerRow(QFrame):
         # les layers (échange de bg_slot, donc de priorité d'affichage : cf.
         # `pri = 3 - bg` dans main_gen._gen_scene_init).
         badge = QLabel(LAYER_NAMES[slot_index])
-        badge.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        badge.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         badge.setStyleSheet(f"color:{self._color};background:transparent;")
         badge.setFixedWidth(34)
         badge.setCursor(Qt.CursorShape.OpenHandCursor)
-        badge.setToolTip("Glisser pour échanger la priorité d'affichage avec un autre layer")
+        badge.setToolTip("Drag to swap display priority with another layer")
         badge.mousePressEvent = self._badge_press
         badge.mouseMoveEvent = self._badge_move
         row.addWidget(badge)

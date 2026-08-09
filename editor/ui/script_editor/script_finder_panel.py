@@ -261,6 +261,10 @@ class ScriptFinderPanel(QWidget):
         sec_globals.add_clicked.connect(self._globals_panel._add_var)
         tree_l.addWidget(sec_globals)
 
+        # Ressort de queue : sections repliées, rien n'absorbe la hauteur du
+        # panneau et QVBoxLayout centrerait le tout.
+        tree_l.addStretch()
+
         layout.addWidget(self._tree_panel, 1)   # remplit la largeur de la colonne
         self._tree_panel.setVisible(False)
         self._apply_column_width()

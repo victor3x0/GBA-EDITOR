@@ -54,16 +54,16 @@ class _UsesInspectorBase(QWidget):
         tl = QHBoxLayout(self._top)
         tl.setContentsMargins(12, 0, 8, 0)
         self._name_lbl = QLabel("")
-        self._name_lbl.setFont(QFont(T.MONO, T.LG, QFont.Weight.Bold))
+        self._name_lbl.setFont(QFont(T.UI, T.LG, QFont.Weight.Bold))
         self._name_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
         btn_close = QPushButton("v")
         btn_close.setFixedSize(24, 24)
         btn_close.setStyleSheet(
             f"QPushButton{{color:{self._HEADER_COLOR};background:transparent;border:none;"
-            "font-family:monospace;font-size:10px;}"
+            f"font-family:{T.UI_STACK};font-size:10px;}}"
             f"QPushButton:hover{{color:{C.TEXT_HI};}}"
         )
-        btn_close.setToolTip("Fermer cette vue")
+        btn_close.setToolTip("Close this view")
         btn_close.clicked.connect(self._on_close)
         tl.addWidget(self._name_lbl, 1)
         tl.addWidget(btn_close)
@@ -76,16 +76,16 @@ class _UsesInspectorBase(QWidget):
         sl = QHBoxLayout(sec_bar)
         sl.setContentsMargins(10, 0, 8, 0)
         self._sec_lbl = QLabel(self._SECTION_TITLE)
-        self._sec_lbl.setFont(QFont(T.MONO, T.SM, QFont.Weight.Bold))
+        self._sec_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.Bold))
         self._sec_lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; letter-spacing:1px;")
         sl.addWidget(self._sec_lbl, 1)
         if self._ACTION_BTN_TEXT:
             self._action_btn = QPushButton(self._ACTION_BTN_TEXT)
-            self._action_btn.setFont(QFont(T.MONO, T.SM))
+            self._action_btn.setFont(QFont(T.UI, T.SM))
             self._action_btn.setFixedHeight(20)
             self._action_btn.setStyleSheet(
                 f"QPushButton{{color:{self._ACTION_BTN_COLOR};background:transparent;border:none;"
-                "font-family:monospace;font-size:8px;}"
+                f"font-family:{T.UI_STACK};font-size:8px;}}"
                 f"QPushButton:hover{{color:{C.TEXT_HI};}}"
             )
             self._action_btn.clicked.connect(self._on_action)
@@ -120,7 +120,7 @@ class _UsesInspectorBase(QWidget):
 
     def _add_empty_row(self, text: str):
         empty = QLabel(f"  {text}")
-        empty.setFont(QFont(T.MONO, T.MD))
+        empty.setFont(QFont(T.UI, T.MD))
         empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:12px;")
         self._list_layout.addWidget(empty)
 
@@ -131,17 +131,17 @@ class _UsesInspectorBase(QWidget):
         rl = QHBoxLayout(row)
         rl.setContentsMargins(10, 0, 8, 0)
         icon_lbl = QLabel(icon)
-        icon_lbl.setFont(QFont(T.MONO, T.MD))
+        icon_lbl.setFont(QFont(T.UI, T.MD))
         icon_lbl.setStyleSheet(f"color:{color};")
         icon_lbl.setFixedWidth(16)
         name_lbl = QLabel(label)
-        name_lbl.setFont(QFont(T.MONO, T.MD))
+        name_lbl.setFont(QFont(T.UI, T.MD))
         name_lbl.setStyleSheet(f"color:{color};")
         rl.addWidget(icon_lbl)
         rl.addWidget(name_lbl, 1)
         if count is not None:
             count_lbl = QLabel(f"×{count}")
-            count_lbl.setFont(QFont(T.MONO, T.SM))
+            count_lbl.setFont(QFont(T.UI, T.SM))
             count_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
             rl.addWidget(count_lbl)
         self._list_layout.addWidget(row)
@@ -154,11 +154,11 @@ class _UsesInspectorBase(QWidget):
         ll = QHBoxLayout(leaf)
         ll.setContentsMargins(28, 0, 8, 0)
         icon_lbl = QLabel("·")
-        icon_lbl.setFont(QFont(T.MONO, T.MD2))
+        icon_lbl.setFont(QFont(T.UI, T.MD))
         icon_lbl.setStyleSheet(f"color:{C.BORDER_MID};")
         icon_lbl.setFixedWidth(12)
         name_lbl = QLabel(label)
-        name_lbl.setFont(QFont(T.MONO, T.MD))
+        name_lbl.setFont(QFont(T.UI, T.MD))
         name_lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         ll.addWidget(icon_lbl)
         ll.addWidget(name_lbl, 1)
@@ -197,7 +197,7 @@ class PrefabUsesInspector(_UsesInspectorBase):
     _HEADER_BG_ALPHA = "30"
     _HEADER_BORDER_ALPHA = "50"
     _SECTION_TITLE = "PREFAB USES"
-    _ACTION_BTN_TEXT = "Éditer le prefab"
+    _ACTION_BTN_TEXT = "Edit prefab"
     _ACTION_BTN_COLOR = icons.COLOR_PREFAB
 
     def __init__(self, parent=None):
@@ -226,7 +226,7 @@ class PrefabUsesInspector(_UsesInspectorBase):
                 self._add_leaf_row(actor.name, lambda a=actor: get_bus().select(a))
 
         if not found_any:
-            self._add_empty_row("Aucune instance dans le projet.")
+            self._add_empty_row("No instance in the project.")
 
         self._list_layout.addStretch()
 
@@ -263,7 +263,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
     _SECTION_TITLE = "SCRIPT USES"
-    _ACTION_BTN_TEXT = "Éditer le script"
+    _ACTION_BTN_TEXT = "Edit script"
     _ACTION_BTN_COLOR = icons.COLOR_SCRIPT
 
     def __init__(self, parent=None):
@@ -319,7 +319,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
                 self._add_leaf_row(scene.name, lambda s=scene: get_bus().select(s))
 
         if not found_any:
-            self._add_empty_row("Aucun actor n'utilise ce script.")
+            self._add_empty_row("No actor uses this script.")
 
         self._list_layout.addStretch()
 
@@ -396,7 +396,7 @@ class VariableUsesInspector(_UsesInspectorBase):
                 self._add_row(script_path, count)
 
         if not found_any:
-            self._add_empty_row(f"Aucun script n'utilise « {name} ».")
+            self._add_empty_row(f"No script uses “{name}”.")
 
         self._list_layout.addStretch()
 
@@ -408,14 +408,14 @@ class VariableUsesInspector(_UsesInspectorBase):
         rl = QHBoxLayout(row)
         rl.setContentsMargins(10, 0, 8, 0)
         icon_lbl = QLabel("λ")
-        icon_lbl.setFont(QFont(T.MONO, T.MD))
+        icon_lbl.setFont(QFont(T.UI, T.MD))
         icon_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
         icon_lbl.setFixedWidth(16)
         name_lbl = QLabel(script_path.name)
-        name_lbl.setFont(QFont(T.MONO, T.MD))
+        name_lbl.setFont(QFont(T.UI, T.MD))
         name_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
         count_lbl = QLabel(f"×{count}")
-        count_lbl.setFont(QFont(T.MONO, T.SM))
+        count_lbl.setFont(QFont(T.UI, T.SM))
         count_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         rl.addWidget(icon_lbl)
         rl.addWidget(name_lbl, 1)

@@ -85,11 +85,11 @@ class PaletteGridPanel(QWidget):
         chl.setContentsMargins(14, 0, 8, 0)
         chl.setSpacing(10)
         self._title = QLabel("")
-        self._title.setFont(QFont(T.MONO, T.LG, QFont.Weight.Bold))
+        self._title.setFont(QFont(T.UI, T.LG, QFont.Weight.DemiBold))
         self._title.setStyleSheet(f"color:{C.TEXT_HI};")
         chl.addWidget(self._title)
         self._size_lbl = QLabel("")
-        self._size_lbl.setFont(QFont(T.MONO, T.SM))
+        self._size_lbl.setFont(QFont(T.UI, T.SM))
         self._size_lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         chl.addWidget(self._size_lbl)
         chl.addStretch()
@@ -102,7 +102,7 @@ class PaletteGridPanel(QWidget):
         tl.setSpacing(6)
 
         # Zoom : mêmes contrôles et mêmes libellés que CanvasTopBar (−/%/+/ajuster).
-        tl.addWidget(self._zoom_btn("zoom_out", "Dézoomer  (molette bas)",
+        tl.addWidget(self._zoom_btn("zoom_out", "Zoom out  (wheel down)",
                                     lambda: self.zoom_step(-1)))
         self._zoom_lbl = QLabel("100%")
         self._zoom_lbl.setFont(QFont(T.MONO, T.SM))
@@ -110,13 +110,13 @@ class PaletteGridPanel(QWidget):
         self._zoom_lbl.setFixedWidth(42)
         self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tl.addWidget(self._zoom_lbl)
-        tl.addWidget(self._zoom_btn("zoom_in", "Zoomer  (molette haut)",
+        tl.addWidget(self._zoom_btn("zoom_in", "Zoom in  (wheel up)",
                                     lambda: self.zoom_step(+1)))
-        tl.addWidget(self._zoom_btn("fit_page", "Ajuster à la vue  (F)", self.fit))
+        tl.addWidget(self._zoom_btn("fit_page", "Fit to view  (F)", self.fit))
         tl.addSpacing(10)
 
-        self._btn_export = W.btn_ghost("Exporter")
-        self._btn_export.setToolTip("Exporter en .gpl (GIMP) / .pal (JASC) / liste hex")
+        self._btn_export = W.btn_ghost("Export")
+        self._btn_export.setToolTip("Export as .gpl (GIMP) / .pal (JASC) / hex list")
         self._btn_export.clicked.connect(self._export_palette)
         tl.addWidget(self._btn_export)
         chl.addWidget(self._tools)
@@ -127,8 +127,8 @@ class PaletteGridPanel(QWidget):
         il.setContentsMargins(16, 16, 16, 16)
         il.setSpacing(14)
 
-        self._empty_lbl = QLabel("Sélectionne une palette dans le panneau de gauche")
-        self._empty_lbl.setFont(QFont(T.MONO, T.MD))
+        self._empty_lbl = QLabel("Select a palette from the left panel")
+        self._empty_lbl.setFont(QFont(T.UI, T.MD))
         self._empty_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -310,18 +310,18 @@ class PaletteGridPanel(QWidget):
         if not bank:
             return
         path, sel = QFileDialog.getSaveFileName(
-            self, "Exporter la palette", bank.name,
-            "Palette GIMP (*.gpl);;Palette JASC (*.pal);;Liste hexadécimale (*.txt)")
+            self, "Export palette", bank.name,
+            "GIMP palette (*.gpl);;JASC palette (*.pal);;Hex list (*.txt)")
         if not path:
             return
         low = path.lower()
         fmt = ("pal" if low.endswith(".pal") or "JASC" in sel else
-               "hex" if low.endswith(".txt") or "hexad" in sel else "gpl")
+               "hex" if low.endswith(".txt") or "Hex" in sel else "gpl")
         rgb = [bgr555_to_rgb888(c) for c in bank.colors]
         try:
             Path(path).write_text(serialize_palette(bank.name, rgb, fmt), encoding="utf-8")
         except OSError as e:
-            QMessageBox.warning(self, "Exporter", f"Échec de l'écriture : {e}")
+            QMessageBox.warning(self, "Export", f"Write failed: {e}")
 
     def _make_ramp(self):
         """Interpole un dégradé entre deux index (inclus) — les extrémités
@@ -334,15 +334,15 @@ class PaletteGridPanel(QWidget):
         n = len(bank.colors)
         lo, hi = self._sel_range
         dlg = QDialog(self)
-        dlg.setWindowTitle("Générer une rampe")
+        dlg.setWindowTitle("Generate a ramp")
         v = QVBoxLayout(dlg)
         row = QHBoxLayout()
         sa = QSpinBox(); sa.setRange(1, n - 1); sa.setValue(lo)
         sb = QSpinBox(); sb.setRange(1, n - 1); sb.setValue(hi)
-        row.addWidget(QLabel("De l'index")); row.addWidget(sa)
-        row.addWidget(QLabel("à")); row.addWidget(sb)
+        row.addWidget(QLabel("From index")); row.addWidget(sa)
+        row.addWidget(QLabel("to")); row.addWidget(sb)
         v.addLayout(row)
-        space = QComboBox(); space.addItems(["RVB (linéaire)", "TSL (teinte)"])
+        space = QComboBox(); space.addItems(["RGB (linear)", "HSL (hue)"])
         v.addWidget(space)
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -376,7 +376,7 @@ class PaletteGridPanel(QWidget):
         if not delta:
             return
         get_history().push(
-            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Générer une rampe"))
+            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Generate a ramp"))
 
     # ── Swatches ──────────────────────────────────────────────────
 
@@ -433,7 +433,7 @@ class PaletteGridPanel(QWidget):
             if i == 0:
                 btn.set_checker()              # damier transparence (hardware GBA)
                 btn.setEnabled(False)
-                btn.setToolTip("Réservé — toujours transparent (hardware GBA)")
+                btn.setToolTip("Reserved — always transparent (GBA hardware)")
             else:
                 # La case active (couleur éditée) porte le contour blanc.
                 is_active = bool(selectable and i == self._active_index)
@@ -669,14 +669,14 @@ class PaletteGridPanel(QWidget):
         if not self._selected_set:
             return
         menu = QMenu(self)
-        a_ramp = menu.addAction("Créer une rampe")
+        a_ramp = menu.addAction("Create a ramp")
         # Rampe = interpolation le long d'index CONTIGUS → uniquement en mode
         # plage (Shift+drag / Shift+flèches), pas sur une sélection rectangle.
         a_ramp.setEnabled(self._sel_range is not None
                           and self._sel_range[1] - self._sel_range[0] >= 2)
         menu.addSeparator()
-        a_clear = menu.addAction("Vider")
-        a_del = menu.addAction("Supprimer (décale les swatchs)")
+        a_clear = menu.addAction("Clear")
+        a_del = menu.addAction("Delete (shifts swatches)")
         act = menu.exec(gpos)
         if act == a_ramp:
             self._make_ramp()
@@ -696,7 +696,7 @@ class PaletteGridPanel(QWidget):
         if not delta:
             return
         get_history().push(
-            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Vider les couleurs"))
+            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Clear colors"))
 
     def _delete_selected(self):
         """Supprime les slots sélectionnés et DÉCALE les suivants vers la gauche ;
@@ -719,7 +719,7 @@ class PaletteGridPanel(QWidget):
         self._active_index = min(lo, len(bank.colors) - 1)
         self._anchor_index = self._active_index
         get_history().push(
-            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Supprimer des couleurs"))
+            SetPaletteColorsCmd(bank, delta, self._persist_bank, "Delete colors"))
 
     def _apply_selection(self, bank: PaletteBank, new_set: set[int],
                          leader: Optional[int], animate: bool = True):

@@ -68,8 +68,8 @@ class DynamicInspector(QWidget):
         empty_w = QWidget()
         empty_w.setStyleSheet(f"background:{C.BG_PANEL};")
         el = QVBoxLayout(empty_w)
-        hint = QLabel("Selectionnez une scene\nou un actor pour\nafficher ses proprietes")
-        hint.setFont(QFont(T.MONO, T.MD))
+        hint = QLabel("Select a scene\nor an actor to\nshow its properties")
+        hint.setFont(QFont(T.UI, T.MD))
         hint.setStyleSheet(f"color:{C.BORDER_MID};")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         el.addStretch(); el.addWidget(hint); el.addStretch()
@@ -264,12 +264,12 @@ class DynamicInspector(QWidget):
         canvas, Échap, suppression du dernier actor sélectionné…)."""
         self._project_insp.load(self._project)
         name = self._project.settings.name if self._project else ""
-        self._set_header("project", "PROJET", name)
+        self._set_header("project", "PROJECT", name)
         self._stack.setCurrentIndex(self._MODE_PROJECT)
 
     def show_scene(self, scene, project):
         self._scene_insp.load(scene, project)
-        self._set_header("scene", "SCÈNE", scene.name if scene else "")
+        self._set_header("scene", "SCENE", scene.name if scene else "")
         self._stack.setCurrentIndex(self._MODE_SCENE)
         # Sync si l'inspector SceneInspector émet changed après un rename interne
         self._scene_insp.changed.connect(
@@ -291,7 +291,7 @@ class DynamicInspector(QWidget):
 
     def show_camera(self, scene, project):
         self._camera_insp.load(scene, project)
-        self._set_header("camera", "CAMÉRA", "240 × 160")
+        self._set_header("camera", "CAMERA", "240 × 160")
         self._stack.setCurrentIndex(self._MODE_CAMERA)
 
     def show_script(self, path, project=None):

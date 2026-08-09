@@ -17,6 +17,7 @@
   "script": "assets/scripts/scenes/INTRO.lua",
   "text_bg": 1,
   "ui_layout": "intro_ui",
+  "ui_pal_bank": -1,
   "collision_layer": 0,
   "collision_map": [
     [

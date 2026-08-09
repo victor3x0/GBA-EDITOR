@@ -49,7 +49,7 @@ class PaletteBankStrip(QFrame):
         self._layout.setContentsMargins(6, 5, 6, 5)
         self._layout.setSpacing(4)
         self._hint = QLabel(empty_hint)
-        self._hint.setFont(QFont(T.MONO, T.SM))
+        self._hint.setFont(QFont(T.UI, T.SM))
         self._hint.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
         self._layout.addWidget(self._hint)
         self.setVisible(False)

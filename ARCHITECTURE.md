@@ -92,6 +92,7 @@ gba-editor/
 │           ├── glyph_sheet.py              ← planche de glyphes (canvas)
 │           ├── glyph_sheet_panel.py        ← centre, contexte Police : planche + outils
 │           ├── markup_highlighter.py       ← coloration des balises (lit les spans du parseur)
+│           ├── markup_toolbar.py           ← boutons de balisage (dérivés de TAGS, agissent sur la sélection)
 │           ├── inspector_shell.py          ← coquille commune aux deux inspecteurs
 │           ├── text_inspector.py / font_inspector.py  ← colonne droite, un par contexte
 │           └── text_editor_screen.py       ← écran complet (assemble les 3 colonnes)
