@@ -64,21 +64,27 @@ class VarTablePanel(QWidget):
         self._label = "GLOBALS" if kind == "global" else "CONSTANTS"
         self._color = _C_GLOBAL if kind == "global" else _C_CONST
         value_col = "default" if kind == "global" else "value"
+        # Colonne « persist » aux globals seulement : une constante ne change
+        # jamais, rien n'a donc à en survivre à l'extinction de la console.
         self._cols = ["name", "type", value_col]
+        if kind == "global":
+            self._cols.append("persist")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Table (3 colonnes : nom / type / défaut ou valeur)
-        self._tbl = QTableWidget(0, 3)
+        # Table : nom / type / défaut ou valeur (+ persist pour les globals)
+        self._tbl = QTableWidget(0, len(self._cols))
         self._tbl.setStyleSheet(_TBL_SS)
         self._tbl.setHorizontalHeaderLabels(self._cols)
         self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self._tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        for c in range(1, len(self._cols)):
+            self._tbl.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.Fixed)
         self._tbl.setColumnWidth(1, 46)
         self._tbl.setColumnWidth(2, 46)
+        if kind == "global":
+            self._tbl.setColumnWidth(3, 52)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
@@ -105,10 +111,12 @@ class VarTablePanel(QWidget):
         self._tbl.setRowCount(0)
         for e in self._entries():
             value = e.value if self._kind == "const" else e.default
-            self._append_row(e.name, e.type, str(value))
+            self._append_row(e.name, e.type, str(value),
+                             persist=getattr(e, "persist", False), entry=e)
         self._updating = False
 
-    def _append_row(self, name="var", typ="int", default="0"):
+    def _append_row(self, name="var", typ="int", default="0", persist=False,
+                    entry=None):
         from PyQt6.QtWidgets import QComboBox
         row = self._tbl.rowCount()
         self._tbl.insertRow(row)
@@ -116,6 +124,10 @@ class VarTablePanel(QWidget):
 
         name_item = QTableWidgetItem(name)
         name_item.setForeground(QColor(self._color))
+        # La ligne retient l'entrée dont elle vient, et non son rang : supprimer
+        # une ligne décale toutes les suivantes, et un rang décalé ferait écrire
+        # les valeurs d'une variable dans une autre.
+        name_item.setData(Qt.ItemDataRole.UserRole, entry)
         self._tbl.setItem(row, 0, name_item)
 
         combo = QComboBox()
@@ -129,6 +141,17 @@ class VarTablePanel(QWidget):
         default_item.setForeground(QColor("#b5cea8"))
         self._tbl.setItem(row, 2, default_item)
 
+        # Persistance : la variable est-elle écrite en SRAM par save.write() ?
+        # Une case à cocher sans texte — la colonne dit déjà ce qu'elle coche.
+        if self._kind == "global":
+            p_item = QTableWidgetItem()
+            p_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                            | Qt.ItemFlag.ItemIsSelectable)
+            p_item.setCheckState(Qt.CheckState.Checked if persist
+                                 else Qt.CheckState.Unchecked)
+            p_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._tbl.setItem(row, 3, p_item)
+
     def _add_var(self):
         if not self._project:
             return
@@ -136,20 +159,68 @@ class VarTablePanel(QWidget):
         name, ok = QInputDialog.getText(self, title, "Name:")
         if not ok or not name.strip():
             return
-        if self._project.add_variable(self._kind, name) is None:
+        entry = self._project.add_variable(self._kind, name)
+        if entry is None:
             QMessageBox.warning(self, "Duplicate", f"“{name.strip()}” already exists.")
             return
         self._updating = True
-        self._append_row(name.strip())
+        self._append_row(name.strip(), entry=entry)
         self._updating = False
         self.changed.emit()
 
     def _on_item_changed(self, item):
         if self._updating:
             return
+        # Le NOM ne se recopie pas, il se renomme : c'est la seule colonne dont
+        # la valeur est citée ailleurs (appels Lua, `$nom` dans un texte).
+        if item.column() == 0:
+            self._rename_from_cell(item)
+            return
         self._sync_to_project()
 
+    def _rename_from_cell(self, item):
+        """Renomme via le projet, seul chemin qui suit les CITATIONS du nom.
+
+        Écrire `entry.name` directement laisserait derrière chaque appel
+        `global.get("ancien")` et chaque `$ancien` d'un texte — le build
+        échouerait bien plus tard sur un `g_ancien` indéfini, sans rien qui
+        ramène au renommage. `Project.rename_variable` réécrit les deux, refuse
+        un doublon et dit combien de références il a touchées.
+
+        (L'id, lui, ne bouge pas : les fichiers de DONNÉES citent la variable
+        par id justement pour ne pas dépendre de son nom, cf. `_sync_to_project`.)"""
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if entry is None:
+            # Ligne neuve, pas encore adossée à une entrée : rien à renommer.
+            self._sync_to_project()
+            return
+        old, new = entry.name, item.text().strip()
+        if new == old:
+            return
+        if self._project and self._project.rename_variable(self._kind, entry, new):
+            self._updating = True
+            item.setText(entry.name)   # normalisé par le projet (espaces retirés)
+            self._updating = False
+            self.changed.emit()
+            return
+        # Refusé : la cellule doit revenir au nom réel, sinon la table affiche
+        # une variable qui n'existe sous ce nom nulle part.
+        self._updating = True
+        item.setText(old)
+        self._updating = False
+        if new and self._project and self._project.variable_name_taken(
+                self._kind, new, exclude=entry):
+            QMessageBox.warning(self, "Duplicate", f"“{new}” already exists.")
+
     def _sync_to_project(self):
+        """Reporte la table dans le projet, en MODIFIANT les entrées existantes.
+
+        Reconstruire des `GlobalVar` neufs à chaque édition perdrait tout ce que
+        la table n'affiche pas — `id` en tête. Or l'id est l'identité opaque que
+        citent les références de champ et les fichiers de sauvegarde : le
+        régénérer à la volée casserait le lien de chaque référence stockée, sans
+        rien qui le signale. Chaque ligne porte l'entrée dont elle vient ; une
+        ligne qui n'en a pas est une ligne neuve."""
         if not self._project or self._updating:
             return
         from core.project import GlobalVar, Constant
@@ -165,10 +236,23 @@ class VarTablePanel(QWidget):
             value = int(val_item.text() or "0") if val_item else 0
             if not name:
                 continue
+            entry = name_item.data(Qt.ItemDataRole.UserRole)
+            if entry is None:
+                entry = (Constant(name=name) if self._kind == "const"
+                         else GlobalVar(name=name))
+                name_item.setData(Qt.ItemDataRole.UserRole, entry)
+            # Le nom n'est PAS recopié ici : il appartient à `_rename_from_cell`,
+            # qui seul sait réécrire ce qui le cite. Une entrée neuve, elle, l'a
+            # déjà reçu de son constructeur.
+            entry.type = typ
             if self._kind == "const":
-                entries.append(Constant(name=name, type=typ, value=value))
+                entry.value = value
             else:
-                entries.append(GlobalVar(name=name, type=typ, default=value))
+                entry.default = value
+                p_item = self._tbl.item(row, 3)
+                entry.persist = (p_item is not None
+                                 and p_item.checkState() == Qt.CheckState.Checked)
+            entries.append(entry)
         if self._kind == "const":
             self._project.constants = entries
         else:

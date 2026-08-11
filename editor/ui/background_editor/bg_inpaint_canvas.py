@@ -598,8 +598,11 @@ class _PlacementOverlay(QGraphicsItem):
         return None
 
     def _frame_index(self, it) -> int:
+        """Image courante de CETTE copie — sa cadence et son image de départ, pas
+        celles de la planche. Deux copies de la même planche peuvent donc être à
+        des moments différents, exactement comme la ROM les jouera."""
         n = max(1, it["n"])
-        step = self._tick // max(1, it["speed"])
+        step = self._tick // max(1, it["speed"]) + max(0, it["start_frame"])
         return step % n if it["loop"] else min(step, n - 1)
 
     def paint(self, painter: QPainter, option, widget=None):
@@ -1067,6 +1070,7 @@ class BgInpaintCanvas(QWidget):
 
     slices_dragged = pyqtSignal(dict)      # marges posées au canvas → inspecteur
     placements_changed = pyqtSignal()      # fond animé posé/déplacé/retiré
+    placement_selected = pyqtSignal(object)  # placement | None (relayé du view)
 
     # Cadence de la lecture : un tick GBA (60 Hz), l'unité dans laquelle les
     # vitesses sont DÉCLARÉES. Rejouer à l'unité près est ce qui rend l'aperçu
@@ -1133,6 +1137,7 @@ class BgInpaintCanvas(QWidget):
         self._view.anim_dropped.connect(self._on_anim_dropped)
         self._view.placement_moved.connect(self._on_placement_moved)
         self._view.placement_deleted.connect(self._on_placement_deleted)
+        self._view.placement_selected.connect(self.placement_selected)
 
         # Horloge de lecture. Un seul timer pour tout le canvas : la planche en
         # cours d'édition et les fonds posés avancent sur la MÊME base de temps,
@@ -1243,7 +1248,7 @@ class BgInpaintCanvas(QWidget):
             if src is None:
                 out.append({"pl": pl, "pix": None, "w": 8, "h": 8,
                             "fw": 8, "fh": 8, "cols": 1, "n": 1,
-                            "speed": 8, "loop": True})
+                            "speed": 8, "start_frame": 0, "loop": True})
                 continue
             if pl.animated_name not in cache:
                 cache[pl.animated_name] = asset_pixmap(src)
@@ -1252,7 +1257,11 @@ class BgInpaintCanvas(QWidget):
             out.append({"pl": pl, "pix": cache[pl.animated_name],
                         "w": fw, "h": fh, "fw": fw, "fh": fh,
                         "cols": max(1, cols), "n": max(1, src.frame_count()),
-                        "speed": max(1, src.speed), "loop": bool(src.loop)})
+                        # Cadence et départ PROPRES À LA COPIE — mêmes lectures
+                        # que le build (cf. BackgroundAnimation.effective_speed).
+                        "speed": pl.effective_speed(src),
+                        "start_frame": max(0, int(getattr(pl, "start_frame", 0) or 0)),
+                        "loop": bool(src.loop)})
         return out
 
     def _sync_clock(self):
@@ -1311,6 +1320,7 @@ class BgInpaintCanvas(QWidget):
         self._persist_host()
         self.reload_geometry()
         self._view.placements.set_selected(pl)
+        self.placement_selected.emit(pl)
         self.placements_changed.emit()
 
     def _on_placement_moved(self, pl, x: int, y: int):
@@ -1323,6 +1333,7 @@ class BgInpaintCanvas(QWidget):
         self._ba.animations.remove(pl)
         self._persist_host()
         self._view.placements.set_selected(None)
+        self.placement_selected.emit(None)
         self.reload_geometry()
         self.placements_changed.emit()
 
@@ -1330,6 +1341,7 @@ class BgInpaintCanvas(QWidget):
         self._ba = ba
         self._project = project
         self._view.placements.set_selected(None)
+        self.placement_selected.emit(None)   # referme la section PLACEMENT
         self._ctrl.set_context(project, ba)
         # Inpainting = tuilé 4bpp uniquement. En 8bpp (une palette 256) et en
         # bitmap (Mode 4) : peinture désactivée, toolbar + bande masquées (aperçu seul).

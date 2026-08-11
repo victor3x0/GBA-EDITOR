@@ -281,7 +281,9 @@ def build_bg_raster(p: Project, scene, layer, ap) -> Optional["BgLayerRaster"]:
         return None
     ba = p.get_background(layer.background_name)
     from core.bg_import import compiled_background
-    compiled = compiled_background(ba, ap)
+    # `p` transmis : le canvas montre aussi les fonds animés posés sur ce fond
+    # dans le Background Editor, figés sur leur première image.
+    compiled = compiled_background(ba, ap, p)
     if not compiled or not compiled.get("tilemap"):
         return None
 

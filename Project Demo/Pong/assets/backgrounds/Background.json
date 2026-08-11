@@ -1,5 +1,19 @@
 {
   "name": "Background",
+  "animations": [
+    {
+      "animated_name": "Tree-AnimatedBackground",
+      "x": 56,
+      "y": 88
+    },
+    {
+      "animated_name": "Tree-AnimatedBackground",
+      "x": 120,
+      "y": 64,
+      "start_frame": 2,
+      "speed": 8
+    }
+  ],
   "asset": "Background.png",
   "palettes": [
     [

@@ -29,7 +29,7 @@ from core.project import PaletteBank
 from core.models.resource import MIME_ANIMATED_BG
 from core.models.background import (
     KIND_SCENE, KIND_UI, KIND_ANIMATED, BG_KINDS, BG_KIND_LABELS,
-    UI_ROLE_NINE, UI_ROLE_BG,
+    UI_ROLE_NINE, UI_ROLE_BG, ANIM_INSTANCE, ANIM_SHARED,
 )
 from core.command_dispatcher import get_dispatcher
 from core.history import get_history, DeleteResourceCmd
@@ -92,11 +92,25 @@ class _BgList(QListWidget):
     Sous-classe seulement pour le DRAG : les fonds animés se posent sur le
     canvas d'un fond hôte, et Qt ne démarre un drag qu'à partir du widget
     source. Tout le reste (renommage, menu contextuel) est piloté par le
-    panneau, qui seul connaît le projet."""
+    panneau, qui seul connaît le projet.
+
+    **Le choix d'un asset attend le relâchement**, il ne suit pas
+    `currentItemChanged`. Qt fixe l'item courant dès l'APPUI, or un appui sur une
+    liste glissable peut devenir un glissement : charger l'asset à ce moment-là
+    faisait changer le canvas sous le curseur, et le fond hôte qu'on visait
+    disparaissait avant même d'avoir bougé la souris. Le geste était donc
+    impossible à terminer. D'où `chosen`, émis seulement quand l'utilisateur a
+    vraiment choisi — au clavier, par programme, ou au relâchement d'un clic qui
+    n'a pas tourné en glissement."""
+
+    chosen = pyqtSignal(object)   # QListWidgetItem | None
 
     def __init__(self, color: str, draggable: bool, parent=None):
         super().__init__(parent)
         self._draggable = draggable
+        self._mouse_select = False   # l'item courant change sous un appui souris
+        self._drag_started = False
+        self.currentItemChanged.connect(self._on_current)
         self.setStyleSheet(
             QSS.finder_list(color)
             # Éditeur de renommage en place : mêmes police/taille que la ligne,
@@ -114,9 +128,30 @@ class _BgList(QListWidget):
             self.setDragEnabled(True)
             self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
 
+    def _on_current(self, cur, _prev=None):
+        # Sous un appui souris, on ne tranche pas : le relâchement dira si
+        # c'était un clic (donc un choix) ou le début d'un glissement.
+        if not self._mouse_select:
+            self.chosen.emit(cur)
+
+    def mousePressEvent(self, e):
+        self._mouse_select = self._draggable
+        self._drag_started = False
+        super().mousePressEvent(e)
+        self._mouse_select = False
+
+    def mouseReleaseEvent(self, e):
+        super().mouseReleaseEvent(e)
+        # Après un glissement, Qt ne livre pas toujours le relâchement — et s'il
+        # le livre, l'asset ne doit pas changer pour autant : le geste visait le
+        # canvas, pas la liste.
+        if self._draggable and not self._drag_started:
+            self.chosen.emit(self.currentItem())
+
     def startDrag(self, actions):
         if not self._draggable:
             return
+        self._drag_started = True
         item = self.currentItem()
         ba = item.data(Qt.ItemDataRole.UserRole) if item else None
         if ba is None:
@@ -129,6 +164,42 @@ class _BgList(QListWidget):
         drag = QDrag(self)
         drag.setMimeData(mime)
         drag.exec(Qt.DropAction.CopyAction)
+
+
+class _AnimatedSourceList(_BgList):
+    """Les animés du projet, à glisser sur le canvas du fond courant.
+
+    Doublon apparent avec la section ANIMATED du finder, mais celle-ci ne peut
+    pas servir de source : y presser un item change l'asset ÉDITÉ (elle pilote la
+    sélection), si bien qu'au relâchement le canvas n'affiche plus le fond hôte
+    mais l'animé qu'on croyait déposer. Une source qui ne possède aucune
+    sélection n'a pas ce problème.
+
+    Hérite de `_BgList` pour que `startDrag` — et donc le format d'échange —
+    reste écrit à un seul endroit."""
+
+    ROW_H = 22
+
+    def __init__(self, parent=None):
+        super().__init__(COLOR_BACKGROUND, draggable=True, parent=parent)
+        # Ni renommage ni menu : ce n'est pas un finder, c'est une réserve.
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.setFont(QFont(T.MONO, T.SM))
+
+    def set_assets(self, assets: list):
+        self.clear()
+        for ba in assets:
+            it = QListWidgetItem(ba.name)
+            it.setData(Qt.ItemDataRole.UserRole, ba)
+            n = ba.frame_count()
+            it.setToolTip(f"{ba.name} — {n} frame{'s' if n > 1 else ''}. "
+                          f"Drag onto the canvas to place it.")
+            self.addItem(it)
+        # Assez haute pour montrer jusqu'à quatre entrées, puis on défile : la
+        # réserve ne doit pas repousser les palettes hors de l'écran.
+        rows = min(max(len(assets), 1), 4)
+        self.setFixedHeight(rows * self.ROW_H + 8)
 
 
 class BgFinderPanel(QWidget):
@@ -162,8 +233,7 @@ class BgFinderPanel(QWidget):
             root.addWidget(sec, 1)
 
             lst = _BgList(color, draggable=(kind == KIND_ANIMATED))
-            lst.currentItemChanged.connect(
-                lambda cur, _prev, k=kind: self._on_sel(k, cur))
+            lst.chosen.connect(lambda cur, k=kind: self._on_sel(k, cur))
             lst.itemChanged.connect(self._on_item_renamed)
             lst.customContextMenuRequested.connect(
                 lambda pos, k=kind: self._ctx_menu(k, pos))
@@ -355,6 +425,7 @@ class BgPropertiesPanel(QWidget):
     geometry_changed = pyqtSignal()  # marges de coupe / découpe de frames → canvas
     recompress_requested = pyqtSignal(object, object, str, bool)  # (ba, png, mode_token, dither) → hors-thread
     overlays_changed = pyqtSignal(list, list)  # (info_lines, warning_lines) → overlays du canvas
+    placement_changed = pyqtSignal()  # cadence / image de départ d'une copie → rejouer le canvas
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -445,7 +516,14 @@ class BgPropertiesPanel(QWidget):
         self._btn_nine.clicked.connect(lambda: self._set_ui_role(UI_ROLE_NINE))
         self._btn_plain.clicked.connect(lambda: self._set_ui_role(UI_ROLE_BG))
         role_row.addWidget(self._btn_nine, 1); role_row.addWidget(self._btn_plain, 1)
-        root.addLayout(role_row)
+        # Dans un conteneur et non posée en layout nu : `_refresh_kind_sections`
+        # ne sait masquer que des widgets, et une ligne posée en layout restait
+        # donc visible sur un décor — deux boutons de rôle d'interface offerts
+        # sur une image qui n'en a pas.
+        role_host = QWidget(); role_host.setStyleSheet("background:transparent;")
+        role_host.setLayout(role_row)
+        root.addWidget(role_host)
+        self._ui_role_row = role_host
 
         self._slice_spins: dict[str, QSpinBox] = {}
         slice_host = QWidget(); slice_host.setStyleSheet("background:transparent;")
@@ -466,7 +544,8 @@ class BgPropertiesPanel(QWidget):
             srow.addWidget(t); srow.addWidget(sp, 1)
             self._slice_spins[field_name] = sp
         self._slice_row = W.row("Margins", slice_host, root).parentWidget()
-        self._ui_widgets = [self._ui_sep, self._ui_title, self._slice_row]
+        self._ui_widgets = [self._ui_sep, self._ui_title, self._ui_role_row,
+                            self._slice_row]
 
         # ── ANIMATION (kind == animated) ─────────────────────────────
         #    Découpe en GRILLE + vitesse en ticks 60 Hz (l'unité de
@@ -509,8 +588,80 @@ class BgPropertiesPanel(QWidget):
         self._chk_loop.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_loop.toggled.connect(self._on_loop)
         root.addWidget(self._chk_loop)
+
+        # Mode de lecture — nommé par ce que l'auteur VOIT (les copies bougent
+        # chacune pour soi, ou toutes ensemble), jamais par le procédé.
+        mode_host = QWidget(); mode_host.setStyleSheet("background:transparent;")
+        mrow = QHBoxLayout(mode_host); mrow.setContentsMargins(0, 0, 0, 0); mrow.setSpacing(6)
+        self._anim_mode_btns: dict[str, QPushButton] = {}
+        for mode, label, tip in (
+            (ANIM_INSTANCE, "Per instance",
+             "Each copy placed on a background animates on its own."),
+            (ANIM_SHARED, "Shared",
+             "Every copy animates together, in step."),
+        ):
+            b = self._mode_btn(label, tip)
+            b.clicked.connect(lambda _=False, m=mode: self._set_animation_mode(m))
+            mrow.addWidget(b, 1)
+            self._anim_mode_btns[mode] = b
+        self._anim_mode_row = W.row("Playback", mode_host, root).parentWidget()
+
         self._anim_widgets = [self._anim_sep, self._anim_title, self._frame_row,
-                              self._speed_row, self._chk_loop]
+                              self._speed_row, self._chk_loop, self._anim_mode_row]
+
+        # ── ANIMATIONS À POSER ────────────────────────────────────────
+        #    Réserve de glissement vers le canvas. Dans l'inspecteur et non dans
+        #    le finder : celui-ci pilote l'asset édité, y presser un item ferait
+        #    changer le canvas sous le drag (cf. _AnimatedSourceList).
+        self._src_sep = W.separator(root)
+        self._src_title = W.section("ANIMATIONS", root)
+        self._src_hint = QLabel("Drag onto the canvas to place")
+        self._src_hint.setFont(QFont(T.UI, T.SM))
+        self._src_hint.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
+        root.addWidget(self._src_hint)
+        self._src_list = _AnimatedSourceList()
+        root.addWidget(self._src_list)
+        self._src_widgets = [self._src_sep, self._src_title, self._src_hint,
+                             self._src_list]
+
+        # ── PLACEMENT (un animé sélectionné sur le canvas) ────────────
+        #    Section pilotée par la SÉLECTION et non par le type de l'asset :
+        #    elle décrit une copie posée, pas l'image courante.
+        self._pl_sep = W.separator(root)
+        self._pl_title = W.section("PLACEMENT", root)
+        self._pl_name = QLabel("")
+        self._pl_name.setFont(QFont(T.MONO, T.SM))
+        self._pl_name.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent;")
+        root.addWidget(self._pl_name)
+        self._pl_start = QSpinBox()
+        self._pl_start.setFont(QFont(T.MONO, T.SM))
+        self._pl_start.setStyleSheet(QSS.spinbox)
+        self._pl_start.setRange(0, 255)
+        self._pl_start.setToolTip(
+            "Which frame this copy starts on. Lets two copies of the same "
+            "animation sit at different points of the loop.")
+        self._pl_start.setKeyboardTracking(False)
+        self._pl_start.valueChanged.connect(self._on_placement_start)
+        self._pl_start_row = W.row("Start frame", self._pl_start, root).parentWidget()
+
+        self._pl_speed = QSpinBox()
+        self._pl_speed.setFont(QFont(T.MONO, T.SM))
+        self._pl_speed.setStyleSheet(QSS.spinbox)
+        self._pl_speed.setRange(0, 255)
+        self._pl_speed.setSuffix(" ticks")
+        self._pl_speed.setSpecialValueText("default")   # 0 = cadence de l'animé
+        self._pl_speed.setToolTip(
+            "Ticks between two frames for this copy only. Leave at default to "
+            "follow the animation's own speed.")
+        self._pl_speed.setKeyboardTracking(False)
+        self._pl_speed.valueChanged.connect(self._on_placement_speed)
+        self._pl_speed_row = W.row("Speed", self._pl_speed, root).parentWidget()
+
+        self._pl_widgets = [self._pl_sep, self._pl_title, self._pl_name,
+                            self._pl_start_row, self._pl_speed_row]
+        self._placement = None
+        for w in self._pl_widgets:
+            w.setVisible(False)
 
         # ── PALETTES : grille unifiée (modèle Scene Inspector). Palettes dérivées
         #    du PNG grisées + overridables (clic = pointer une banque du catalogue,
@@ -710,6 +861,25 @@ class BgPropertiesPanel(QWidget):
             self._speed.setValue(max(1, int(self._ba.speed)))
             self._chk_loop.setChecked(bool(self._ba.loop))
         self._blocking = False
+        if is_anim:
+            self._refresh_anim_mode_buttons()
+        self._refresh_animation_sources()
+
+    def _refresh_animation_sources(self):
+        """Réserve d'animés à poser — cachée quand elle ne mènerait à rien.
+
+        Absente sur un animé lui-même : le modèle permet d'en poser un sur un
+        autre (une planche reste une image), mais l'éditeur ne le propose pas,
+        et une réserve visible là inviterait à un montage que rien ne réclame.
+        Absente aussi tant que le projet n'a aucun animé — une liste vide ne
+        s'explique pas toute seule."""
+        assets = [b for b in (self._project.backgrounds if self._project else [])
+                  if b.kind == KIND_ANIMATED]
+        show = bool(assets) and self._ba is not None and self._ba.kind != KIND_ANIMATED
+        for w in self._src_widgets:
+            w.setVisible(show)
+        if show:
+            self._src_list.set_assets(assets)
 
     # ── kind == ui ────────────────────────────────────────────────
 
@@ -768,6 +938,64 @@ class BgPropertiesPanel(QWidget):
         self._ba.loop = bool(on)
         self._persist_bg()
         self.geometry_changed.emit()
+
+    def _set_animation_mode(self, mode: str):
+        """Le mode vit sur l'ANIMÉ : le changer ici le change pour tous les fonds
+        qui posent cette animation. Rien à réémettre côté canvas — les deux modes
+        se jouent pareil dans l'éditeur, ils ne divergent qu'en ROM."""
+        if self._blocking or not self._ba:
+            self._refresh_anim_mode_buttons(); return
+        if self._ba.animation_mode != mode:
+            self._ba.animation_mode = mode
+            self._persist_bg()
+        self._refresh_anim_mode_buttons()
+
+    def set_placement(self, pl):
+        """Copie posée sélectionnée au canvas — None pour refermer la section.
+
+        Masquée en mode `shared` plutôt que grisée : là-bas toutes les copies
+        partagent un unique compteur, un décalage par copie n'y décrit rien. Un
+        champ sans effet vaut moins qu'un champ absent."""
+        ba = None
+        if pl is not None and self._project is not None:
+            ba = self._project.get_background(getattr(pl, "animated_name", ""))
+        show = (pl is not None and ba is not None
+                and getattr(ba, "animation_mode", ANIM_INSTANCE) != ANIM_SHARED)
+        self._placement = pl if show else None
+        for w in self._pl_widgets:
+            w.setVisible(show)
+        if not show:
+            return
+        self._blocking = True
+        self._pl_name.setText(ba.name)
+        # Plafond = la dernière image de la planche : au-delà ça reboucle, et un
+        # nombre sans effet visible ne se règle pas.
+        self._pl_start.setMaximum(max(0, ba.frame_count() - 1))
+        self._pl_start.setValue(int(getattr(pl, "start_frame", 0) or 0))
+        self._pl_speed.setValue(int(getattr(pl, "speed", 0) or 0))
+        self._blocking = False
+
+    def _on_placement_start(self, value: int):
+        if self._blocking or self._placement is None:
+            return
+        self._placement.start_frame = max(0, int(value))
+        self._persist_bg()
+        self.placement_changed.emit()
+
+    def _on_placement_speed(self, value: int):
+        if self._blocking or self._placement is None:
+            return
+        self._placement.speed = max(0, int(value))
+        self._persist_bg()
+        self.placement_changed.emit()
+
+    def _refresh_anim_mode_buttons(self):
+        mode = getattr(self._ba, "animation_mode", ANIM_INSTANCE) if self._ba else ANIM_INSTANCE
+        self._blocking = True
+        for m, b in self._anim_mode_btns.items():
+            b.setChecked(m == mode)
+            b.setEnabled(self._ba is not None)
+        self._blocking = False
 
     def load(self, ba, project):
         self._project, self._ba = project, ba
@@ -1190,6 +1418,13 @@ class BackgroundEditorScreen(QWidget):
         # ne fait que réaligner ses champs (cf. set_slice_margins).
         self._canvas.slices_dragged.connect(self._props.set_slice_margins)
         self._canvas.placements_changed.connect(self._on_placements_changed)
+        # Sélection d'une copie posée → section PLACEMENT de l'inspecteur (même
+        # bus que le reste : c'est la sélection qui décide du contexte).
+        self._canvas.placement_selected.connect(self._props.set_placement)
+        # Chemin inverse : régler la cadence ou l'image de départ d'une copie
+        # doit se voir tout de suite — c'est la seule raison de la régler ici
+        # plutôt que dans un fichier.
+        self._props.placement_changed.connect(self._canvas.reload_geometry)
         # Infos read-only + warnings → overlays du canvas (bas-gauche / haut-droite).
         self._props.overlays_changed.connect(self._canvas.set_overlays)
         # (Re)compression demandée par l'inspecteur (algo / remplacer / restaurer)

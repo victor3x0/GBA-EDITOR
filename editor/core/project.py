@@ -533,6 +533,7 @@ class Project:
             "author":      self.settings.author,
             "version":     self.settings.version,
             "backdrop_color": self.settings.backdrop_color,
+            "save_slots":  self.settings.save_slots,
         }
         _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -551,6 +552,10 @@ class Project:
         # le réservoir auto-import est abandonné (cf. ROADMAP.md v0.2), la clé
         # disparaît du fichier à la prochaine sauvegarde.
         self.settings.backdrop_color = d.get("backdrop_color", 0)
+        # Un projet antérieur à la v0.5 n'a pas d'emplacement déclaré : il en
+        # reçoit un, comme un projet neuf. Sans variable persistante, aucun ne
+        # sera émis de toute façon.
+        self.settings.save_slots = max(1, int(d.get("save_slots", 1)))
 
     def text_values(self) -> dict:
         """Valeurs à substituer aux marqueurs `$nom` d'un texte, à l'ÉDITION.
@@ -571,7 +576,7 @@ class Project:
         data = {
             "globals": [
                 {"id": g.id, "name": g.name, "type": g.type,
-                 "default": g.default, "desc": g.desc}
+                 "default": g.default, "desc": g.desc, "persist": g.persist}
                 for g in self.globals
             ],
             "constants": [
@@ -596,6 +601,7 @@ class Project:
                 default = g.get("default", 0),
                 desc    = g.get("desc", ""),
                 id      = int(g.get("id", 0)),
+                persist = bool(g.get("persist", False)),
             )
             for g in d.get("globals", [])
         ]
@@ -1108,6 +1114,11 @@ class Project:
         if not name or self.variable_name_taken(kind, name):
             return None
         entry = Constant(name=name) if kind == "const" else GlobalVar(name=name)
+        # Id tout de suite, et pas au prochain chargement du projet : c'est lui
+        # qui identifie la variable dans une référence de champ comme dans un
+        # fichier de sauvegarde. Une variable sans id est une variable sans
+        # identité, y compris pendant la session qui vient de la créer.
+        entry.id = new_id({v.id for v in self.all_variables() if v.id})
         self._variable_list(kind).append(entry)
         self.save_variables()
         return entry

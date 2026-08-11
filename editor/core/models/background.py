@@ -46,6 +46,33 @@ UI_ROLE_BG   = "background"   # image posée en haut-gauche, rognée bas/droite
 
 UI_ROLES = (UI_ROLE_NINE, UI_ROLE_BG)
 
+# ── Mode d'animation d'un fond ANIMÉ ──────────────────────────────
+# Deux façons de faire bouger un décor, et l'auteur choisit sur ce qu'il VOIT :
+#   instance — chaque copie posée a sa propre animation. Les entrées de carte du
+#              rectangle sont réécrites ; toutes les frames restent résidentes.
+#   shared   — toutes les copies bougent ensemble. Les pixels de la tuile sont
+#              réécrits ; une seule frame est résidente, et TOUTE case qui
+#              utilise la tuile change avec elle — c'est la définition du
+#              procédé, pas un effet de bord.
+#
+# Nommés par leur effet observable et non par un cas d'usage : « cascade » et
+# « objet unique » sont des exemples, et un libellé qui est un exemple laisse
+# l'auteur chercher lequel des deux ressemble le plus à son tapis d'herbe.
+#
+# `instance` est le défaut : c'est l'attente quand on pose un objet à une
+# position précise, et c'est ce que le pipeline sait déjà produire — la planche
+# est encodée en un tileset dédupliqué dont chaque frame est un sous-rectangle.
+# `shared` demande au contraire de DÉSACTIVER la déduplication pour l'asset.
+ANIM_INSTANCE = "instance"
+ANIM_SHARED   = "shared"
+
+ANIM_MODES = (ANIM_INSTANCE, ANIM_SHARED)
+
+ANIM_MODE_LABELS = {
+    ANIM_INSTANCE: "Per instance",
+    ANIM_SHARED:   "Shared",
+}
+
 
 @dataclass
 class BackgroundLayer:
@@ -123,6 +150,13 @@ def _read_ui_role(raw) -> str:
     return raw if raw in UI_ROLES else UI_ROLE_NINE
 
 
+def _read_animation_mode(raw) -> str:
+    """Même parti pris que `_read_kind` : un mode inconnu se relit au DÉFAUT
+    plutôt qu'en erreur. Un fichier écrit par une version plus récente reste
+    ouvrable, et l'auteur voit dans l'inspecteur ce que le build fera."""
+    return raw if raw in ANIM_MODES else ANIM_INSTANCE
+
+
 @dataclass
 class BackgroundAnimation:
     """Un fond ANIMÉ posé à une position d'un fond hôte.
@@ -140,14 +174,40 @@ class BackgroundAnimation:
     animated_name: str = ""   # nom d'un BackgroundAsset de kind `animated`
     x: int = 0
     y: int = 0
+    # Ce qui distingue CETTE copie des autres copies de la même planche. Le reste
+    # — découpe, boucle, mode — appartient à l'animé : une cascade est une
+    # cascade partout où on la pose.
+    #
+    # Les deux n'ont de sens qu'en mode `instance`, où chaque copie a son propre
+    # compteur (c'est même sa raison d'être). En `shared` toutes les copies
+    # partagent un unique compteur ; l'éditeur ne propose donc pas ces champs.
+    start_frame: int = 0
+    # SURCHARGE de la cadence de l'animé, en ticks 60 Hz. 0 = celle de l'animé —
+    # même convention que `UIPanel.fill_speed` vis-à-vis du sprite qu'il pave.
+    # Deux copies à des vitesses différentes se désynchronisent durablement, là
+    # où deux images de départ distinctes gardent le même rythme.
+    speed: int = 0
 
     def to_dict(self) -> dict:
-        return {"animated_name": self.animated_name, "x": self.x, "y": self.y}
+        d = {"animated_name": self.animated_name, "x": self.x, "y": self.y}
+        if self.start_frame:
+            d["start_frame"] = self.start_frame
+        if self.speed:
+            d["speed"] = self.speed
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "BackgroundAnimation":
         return cls(animated_name=str(d.get("animated_name", "")),
-                   x=int(d.get("x", 0) or 0), y=int(d.get("y", 0) or 0))
+                   x=int(d.get("x", 0) or 0), y=int(d.get("y", 0) or 0),
+                   start_frame=max(0, int(d.get("start_frame", 0) or 0)),
+                   speed=max(0, int(d.get("speed", 0) or 0)))
+
+    def effective_speed(self, ba) -> int:
+        """Cadence réellement appliquée : la surcharge, ou celle de l'animé.
+        Point d'accès unique — l'aperçu du canvas et le build doivent lire la
+        même, sinon l'éditeur ment sur ce que la ROM fera."""
+        return max(1, self.speed or int(getattr(ba, "speed", 8) or 8))
 
 
 @dataclass
@@ -220,6 +280,12 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
     # pour qu'une vitesse se lise pareil qu'on anime un sprite ou un décor.
     speed: int = 8
     loop: bool = True
+    # Comment l'animation est jouée (cf. ANIM_MODES en tête de module). Vit sur
+    # l'ANIMÉ et non sur le placement : une cascade est une cascade partout où
+    # on la pose, et un mode par placement forcerait deux encodages du même
+    # asset dans une même scène. Symétrique de la règle de placement — la
+    # position vit chez l'hôte, la nature de l'animation chez l'animé.
+    animation_mode: str = ANIM_INSTANCE
 
     # ── Fonds animés POSÉS sur celui-ci (cf. BackgroundAnimation) ─
     # N'a de sens que sur un hôte ; un animé peut en porter (une planche reste
@@ -342,7 +408,8 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
                       "slice_top": self.slice_top, "slice_bottom": self.slice_bottom})
         if self.kind == KIND_ANIMATED:
             d.update({"frame_w": self.frame_w, "frame_h": self.frame_h,
-                      "speed": self.speed, "loop": self.loop})
+                      "speed": self.speed, "loop": self.loop,
+                      "animation_mode": self.animation_mode})
         if self.animations:
             d["animations"] = [a.to_dict() for a in self.animations]
         if self.asset:
@@ -409,6 +476,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             frame_h=max(0, int(d.get("frame_h", 0) or 0)),
             speed=max(1, int(d.get("speed", 8) or 8)),
             loop=bool(d.get("loop", True)),
+            animation_mode=_read_animation_mode(d.get("animation_mode")),
             animations=[BackgroundAnimation.from_dict(a)
                         for a in (d.get("animations") or [])],
         )

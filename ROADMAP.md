@@ -25,7 +25,7 @@ suppositions faites à l'avance.
 | --- | --- | --- |
 | v0.2 | Palettes de couleurs | **Livrée**, quelques finitions |
 | v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé |
-| v0.4 | Éditeur de background & animation de tuiles | Partiellement entamée par ricochet |
+| v0.4 | Animation de décor | **Livrée** |
 | v0.5 | Sauvegarde | Non commencée |
 | v0.6 | Polish de la boucle de jeu | Non commencée |
 | v0.7 | Son enrichi | Non commencée |
@@ -116,8 +116,8 @@ parallaxe, eux, fonctionnaient déjà.
 
 Le texte est un **cas particulier de la primitive manquante** : afficher du texte sur un
 fond, c'est écrire des index de tuiles dans une carte, image par image. Cette fondation sert
-donc à la fois le texte (v0.3.2) et, plus tard, l'éditeur de background — les deux chantiers
-ne se recouvrent pas.
+donc à la fois le texte (v0.3.2) et, plus tard, les fonds animés de la v0.4 — les deux
+chantiers ne se recouvrent pas.
 
 #### Ce que ça donne
 
@@ -307,13 +307,17 @@ qui porte un script et des composants.
 
 ---
 
-## v0.4 — Éditeur de background & animation de tuiles
+## v0.4 — Animation de décor
 
-### v0.4.1 — Éditeur de background
+Le jalon s'appelait « Éditeur de background & animation de tuiles » et devait livrer un
+éditeur de carte : composer un décor en posant des tuiles importées. **Ce périmètre est
+retiré**, pas reporté — voir « Ce que la v0.4 ne fera pas » plus bas. Restait le décor qui
+bouge : les fonds animés jusqu'en ROM, puis les couleurs d'une scène pilotables au script. Les
+deux sont livrés.
 
-#### Déjà là, par ricochet de la v0.2 et de la v0.3
+### Ce qui est déjà là, par ricochet de la v0.2 et de la v0.3
 
-L'écran existe, mais uniquement dans sa dimension **couleur** : importer une image, laisser
+L'écran Background Editor existe dans sa dimension **couleur** : importer une image, laisser
 l'éditeur détecter son mode et l'encoder, repeindre la palette tuile par tuile.
 
 S'y est ajoutée la notion de **sorte de fond** — décor, interface, animé — portée par un
@@ -322,53 +326,304 @@ d'import, d'encodage et de palettes, et trois classes auraient triplé ça pour 
 différence. Le cadre nine-slice n'est donc plus un asset séparé, c'est un fond marqué
 « interface ».
 
-Pour les fonds animés, une règle à retenir : **le placement vit chez l'hôte, pas chez
-l'animé**. Une cascade dessinée une fois se pose dans trois décors ; stocker les positions
-dans l'animé obligerait à y citer les fonds qui l'emploient, c'est-à-dire à inverser le sens
-de la référence. L'éditeur est livré ; **le support ROM des fonds animés reste à écrire**, et
-c'est le voisin naturel de la v0.4.2.
+Côté animé, l'authoring était livré avant ce jalon — découpe de la planche en grille, vitesse
+en ticks, dépôt d'un animé sur un fond hôte, joué sur place au canvas — mais rien n'en sortait
+en ROM. C'est ce que la v0.4.1 est venue fermer.
 
-Ce qui reste donc **entièrement** à faire, c'est la *peinture de tuiles* : composer une carte
-en posant des tuiles, au lieu de recolorer une image importée.
+### Ce que la v0.4 ne fera pas
+
+**Pas de peinture de tuiles, pas d'éditeur de carte, pas de tileset importé.** Ce logiciel
+n'est pas un outil de pixel art ni de dessin — d'excellents outils existent déjà pour ça, et
+l'import non destructif est fait pour les accueillir. La seule part de « dessin » assumée est
+le glisser-déposer d'assets animés sur un fond qui existe déjà.
+
+Tombent avec ce périmètre : le tileset comme asset de premier rang, et l'indicateur de budget
+mémoire vidéo dans l'éditeur (il n'avait de raison d'être que si plusieurs tilesets pouvaient
+coexister par la volonté de l'utilisateur).
+
+Le **calque d'interface réutilisable** entre scènes sort aussi de la v0.4 — mais par absence
+d'usage démontré, pas par décision. Partager un calque d'interface reste un problème de
+référencement et d'allocation, indépendant de l'authoring qui vient de disparaître ; la
+question tiendra donc toujours le jour où un projet réel réclamera le même HUD dans douze
+scènes. Elle n'est pas tranchée, elle attend son cas.
+
+### v0.4.1 — Fonds animés en ROM — **LIVRÉE**
+
+C'est aussi là que se joue l'« animation de tuiles » du titre d'origine : animer une tuile de
+décor et jouer un fond animé posé sur un hôte, ce sont deux formulations du même mécanisme.
 
 #### Décisions verrouillées
 
-- Dessiner directement sur les calques de fond avec des **tilesets importés par
-  l'utilisateur**, jamais compilés tels quels. Le résultat s'ajoute à une scène.
-- Le même écran sert à créer des **calques d'interface réutilisables** entre scènes, sans
-  redéfinition.
+- **Le placement vit chez l'hôte, la nature de l'animation vit chez l'animé.** Une cascade
+  dessinée une fois se pose dans trois décors ; stocker les positions dans l'animé obligerait
+  à y citer les fonds qui l'emploient, c'est-à-dire à inverser le sens de la référence.
+  Symétriquement, découpe, vitesse, boucle et mode d'animation appartiennent à l'asset : une
+  cascade est une cascade partout où on la pose.
+- **Deux modes d'animation exposés à l'auteur**, `shared` et `instance`, portés par
+  `BackgroundAsset.animation_mode` :
+  - `instance` — chaque copie posée a sa propre animation. Techniquement, on réécrit les
+    index de la carte ; toutes les images restent résidentes en mémoire vidéo.
+  - `shared` — toutes les copies bougent ensemble. Techniquement, on réécrit les pixels de la
+    tuile ; une seule image est résidente, et toute case qui l'utilise change avec elle.
+- **Nommés par leur effet observable, pas par leur cas d'usage.** « Cascade » et « objet
+  unique » sont des exemples, et un libellé qui est un exemple laisse l'auteur chercher lequel
+  des deux ressemble le plus à son tapis d'herbe. « Toutes les copies ensemble » contre
+  « chacune la sienne » est une différence de comportement, dicible sans expliquer le
+  matériel.
+- **`instance` par défaut.** C'est l'attente naturelle quand on pose un objet à une position
+  précise. `shared` demande en plus de *désactiver* la déduplication — une case dont on réécrit
+  les pixels ne peut pas partager sa tuile avec une autre, ce serait faire changer sa voisine
+  en même temps.
+- **Le débordement mémoire bloque le build et nomme l'autre mode.** C'est `instance` qui peut
+  déborder — un fond plein écran sur quatre images demanderait plus de tuiles que l'index de
+  carte ne peut en adresser. Le garde-fou dit un choix *impossible* et son issue ; il
+  n'explique pas le matériel. Effet de bord : aucun fond compressé n'avait jusque-là de
+  contrôle de budget bloquant, seul le chemin grit en avait un. Le trou est fermé.
+
+#### L'animé se pose SUR le décor, il ne le remplace pas
+
+Première version livrée : un placement écrasait la tuile de son hôte. Une case de tilemap ne
+portant qu'une tuile, la transparence de l'animé perçait alors jusqu'au fond d'écran — un
+arbre posé devant un mur trouait le mur sur tout son rectangle englobant. Correct côté
+matériel, absurde côté auteur.
+
+Le build **fusionne** désormais : pixel de l'animé là où il peint, pixel du décor là où il est
+transparent, transparence seulement là où les deux se taisent. Un arbre laisse voir le mur
+derrière lui ; un arbre posé sur un trou du décor laisse toujours passer le calque du dessous.
+La règle se dit sans parler du matériel, et c'est ce qu'on attend en regardant le canvas.
+
+- **La sous-palette est SYNTHÉTISÉE.** L'hôte et l'animé ont chacun la leur, une tuile fusionnée
+  pioche dans les deux : elle ne peut être ni l'une ni l'autre. Le build en fabrique une, allouée
+  comme n'importe quelle banque et dédupliquée par contenu.
+- **Au-delà de 15 couleurs, le build BLOQUE** en nommant le placement et sa position. Approximer
+  les couleurs du décor vers la palette de l'animé marcherait toujours et les ferait dériver sans
+  un mot : c'est exactement la dégradation silencieuse écartée en v0.2. Sur le cas de référence,
+  la fusion demande 6 couleurs sur 15 — la marge est confortable.
+- **Les tuiles dépendent de ce qu'il y a dessous.** Deux copies ne partagent leur bloc que si le
+  décor sous elles est identique. La déduplication le rattrape sans qu'on ait à le dire, mais
+  une forêt sur un décor varié coûte réellement plus cher qu'une forêt sur un fond uni. C'est le
+  prix de la règle, pas un défaut à corriger.
+
+Deux contraintes du mode `shared` **disparaissent** avec la fusion, et il ne faut pas les
+réintroduire : toutes les cases d'un placement partageant une seule sous-palette synthétisée, une
+case ne peut plus changer de banque d'une image à l'autre. Les miroirs, eux, sont résolus dans
+les pixels des deux côtés — une tuile fusionnée est neuve, elle n'hérite pas des bits de miroir
+de ses sources.
+
+- **En `shared`, les entrées de carte sont cuites en ROM**, pas posées à l'initialisation :
+  elles ne changeront jamais, et le placement étant une propriété du fond hôte, toute scène qui
+  affiche ce fond affiche ses animés. Il ne reste au runtime que des pixels à recopier.
+- **Le canvas de scène montre les animés posés, figés sur leur première image**, en passant par
+  le MÊME calcul de fusion que le build. Figés parce qu'un canvas de scène sert à placer des
+  acteurs et des collisions, et qu'un décor qui bouge sous la souris gêne ce travail — c'est
+  l'inverse du Background Editor, où l'animation est l'objet qu'on pose. Un aperçu qui
+  composerait autrement ferait mentir l'éditeur sur ce que la ROM produira.
+
+#### L'ordre de grandeur, mesuré
+
+Un arbre animé de 48×48 sur 4 images en 4bpp (36 tuiles par image), posé **deux fois** dans un
+décor de 10 tuiles. Chiffres relevés au build, pas estimés :
+
+| | `instance` | `shared` |
+| --- | --- | --- |
+| Tuiles chargées | 100 (10 + **90**) | 46 (10 + 36) |
+| Taille de la ROM | 823 884 o | 826 188 o |
+| Par changement d'image | 36 entrées de carte (72 o) | 36 tuiles (1152 o) |
+| Deux arbres désynchronisés | gratuit | impossible par construction |
+
+L'estimation faite avant d'écrire la moindre ligne annonçait « ≤ 144 tuiles, ~100 après
+déduplication, le tronc ne bougeant pas » : 90 mesurées, fusion avec le décor comprise. La
+fusion ne coûte donc que 2 tuiles ici — les cases entièrement transparentes au-dessus du même
+décor retombent sur une seule tuile, ce qui rattrape l'essentiel.
+
+Les deux modes tiennent largement, et ce n'est pas le coût qui tranche mais l'intention — six
+arbres qui scintillent au même instant, c'est la forêt qui respire en rythme.
+
+La règle de croisement, pour qui doit arbitrer : **`shared` ne gagne en mémoire que tant que le
+nombre de copies désynchronisées reste inférieur au nombre d'images.** À quatre arbres et
+quatre images, les deux modes coûtent la même chose et `shared` fait quatre fois plus de copies
+par tick. Il se paie par ailleurs en ROM, puisque ce sont les pixels qui voyagent.
+
+#### Ce qui se règle par COPIE
+
+Une copie posée porte deux réglages, et deux seulement — le reste (découpe, boucle, mode)
+appartient à l'animé, une cascade étant une cascade partout où on la pose.
+
+- **`start_frame`** — l'image sur laquelle cette copie démarre.
+- **`speed`** — une SURCHARGE de la cadence de l'animé, `0` valant « celle de l'animé ». Même
+  convention que `UIPanel.fill_speed` vis-à-vis du sprite qu'il pave : rien de neuf à apprendre.
+
+Le premier plan tenait un décalage en *ticks* plutôt qu'une image de départ, au motif qu'une
+forêt dont les arbres sont sur des images différentes change encore de façon synchrone. C'était
+vrai, mais la vitesse par copie règle le problème bien mieux : deux copies à des cadences
+différentes se désynchronisent durablement, là où un décalage en ticks ne fait que déphaser un
+rythme resté commun. L'image de départ suffit alors, et elle se règle sans traduire.
+
+- **Résolu au build.** Tout y est constant, le descripteur émis porte directement l'image et le
+  tick de départ ; le runtime ne divise jamais. L'initialisation de scène repart de ce départ
+  authoré et non de zéro — revenir dans une scène doit la retrouver telle qu'elle a été réglée,
+  pas là où la visite précédente l'avait laissée.
+- **Absents en `shared`**, où toutes les copies partagent un unique compteur : l'inspecteur
+  masque les champs au lieu de les griser. Un champ sans effet vaut moins qu'un champ absent.
+- **L'aperçu du canvas lit la même cadence effective que le build.** Deux copies y jouent
+  vraiment à des moments différents ; l'éditeur mentirait sur la ROM si les deux divergeaient.
+
+Ni l'un ni l'autre n'entre dans la clé de partage des blocs : deux copies déphasées lisent
+toujours les mêmes tuiles.
 
 #### Ouvert
 
-- Décor et calque d'interface réutilisable en parallèle impliquent plusieurs zones de mémoire
-  vidéo simultanées — l'ampleur du changement n'est pas évaluée.
-- Un « calque d'interface réutilisable » est-il un nouveau type d'asset, ou une variante du
-  fond existant ?
-- Un indicateur de budget mémoire vidéo dans l'éditeur, évoqué en principe mais pas conçu —
-  pertinent dès que plusieurs tilesets coexistent.
+- Un animé posé **à cheval sur deux fonds hôtes** n'a pas de sens aujourd'hui (le placement
+  appartient à un hôte) ; rien ne l'interdit non plus explicitement.
+- La fusion suppose que le décor sous un animé ne change pas. Un script qui réécrit ces cases
+  (`tilemap.set`) les remet à leur contenu de ROM, animé compris — cohérent, mais jamais
+  éprouvé.
 
-### v0.4.2 — Animation de tuiles
+### v0.4.2 — Palettes au runtime — **LIVRÉE**
+
+#### Le problème
+
+Les couleurs d'une scène étaient figées à son entrée. `PAL_BG_RAM` n'était écrit qu'au
+`scene_init` et par le système de police ; il n'existait **aucun domaine `palette.*`** dans
+l'API de script. `tilemap.set_palette` ne faisait pas exception — elle choisit *quelle banque*
+une tuile lit, elle ne change aucune couleur.
+
+Changer l'ambiance d'un décor en cours de jeu — la nuit qui tombe, une saison qui vire, une
+salle qui passe au rouge — était donc impossible. C'était une fonctionnalité absente, pas une
+variante d'autre chose.
+
+#### La frontière avec le mélange, mesurée
+
+Le préalable que ce jalon s'était fixé. Sur le même décor, le mélange en mode 3 (assombrir vers
+le noir, formule matérielle exacte) contre un échange de palette :
+
+- **Le mélange éteint tout uniformément.** `BLDCNT` ne cible que BG0-3, OBJ et le backdrop : sa
+  granularité est le **calque**, et ses deux seules directions sont le blanc et le noir.
+- **Une banque ne concerne que les tuiles qui la citent.** On peut donc refroidir un décor en
+  gardant ses lanternes allumées — ce que le mélange ne saura jamais faire.
+
+Le périmètre de la v0.4.2 est exactement ce que le mélange ne couvre pas : un changement de
+teinte sélectif. « Il fait nuit » restait du ressort de `blend.set_fade`, et le reste.
 
 #### Décisions verrouillées
 
-Trois techniques, selon le cas d'usage :
+- **La rotation de palette est écartée.** Elle figurait comme troisième technique d'animation
+  de tuiles (« faire tourner les couleurs d'une palette : eau, lave qui scintille »). Elle ne
+  gagne quelque chose que si les images sont la même grille d'index avec une palette
+  différente — or une lave dessinée puis exportée en planche a des *index* différents d'une
+  image à l'autre, ses tuiles ne se dédupliquent pas, et elle emprunte le chemin ordinaire des
+  fonds animés. La faire gagner supposerait que l'éditeur détecte une permutation d'index et
+  la convertisse en cycle : de la magie invisible, qui imposerait en plus la lockstep à tout
+  ce qui partage la banque. Le cas plein écran, seul rescapé plausible, est couvert par le
+  mode `shared`. À ne pas reproposer.
+- **Ce qui est visé, c'est l'échange**, pas le cycle : remplacer les seize couleurs d'une
+  banque par celles d'une autre palette du catalogue. C'est le besoin réel — une ambiance —
+  et il se pose au niveau de la scène, pas de l'asset.
+- **Le catalogue ENTIER part en ROM**, et rien n'est dérivé des scripts. Le plan initial
+  prévoyait que la scène déclare les palettes atteignables, sur le motif de la réservation des
+  polices et de sa règle de sûreté (« réserver trop peu écrit dans le vide sans erreur avant
+  l'exécution »). **Ce piège n'existe pas ici** : il venait de la mémoire vidéo, qui est rare.
+  Une palette pèse 32 octets en ROM — sur le projet de démo, tout le catalogue coûte 160 octets.
+  Émettre l'ensemble supprime d'un coup la dérivation depuis les scripts, la question du nom
+  choisi au runtime, et tout risque de sous-réserver. Ne pas recopier un mécanisme dont la
+  raison d'être ne s'applique pas.
+- **Deux fonctions, pas un argument de cible** : `palette.set_bg(bank, nom)` et
+  `palette.set_obj(bank, nom)`. Les deux pools sont physiquement distincts sur GBA
+  (`PAL_BG_RAM` / `PAL_OBJ_RAM`), la scène les sélectionne déjà séparément, et une cible en
+  paramètre laisserait croire qu'une même banque existe des deux côtés. Les sprites suivent
+  donc, au même titre que les fonds — une nuit qui ne tomberait que sur le décor se verrait.
+- **Le nom passe par un domaine**, `DOMAIN_PALETTE` → `PAL_{NOM}`, comme les polices et les
+  textes. Le checker refuse une palette absente du catalogue en la nommant, plutôt que de
+  laisser le `make` échouer sur un identifiant indéfini.
+- **Bornés des deux côtés au runtime** : une banque hors 0-15 écrirait dans la palette voisine,
+  un index hors table lirait des couleurs au hasard.
 
-1. **Changer l'index dans la carte** — peu coûteux, bien pour une torche ou une flaque d'eau.
-2. **Réécrire la tuile elle-même** — anime d'un coup toutes les cases qui l'utilisent, coût
-   par image, bien pour un effet plein écran.
-3. **Faire tourner les couleurs d'une palette** — eau, lave qui scintille : quasi gratuit, et
-   se branche naturellement sur l'écran Palette de la v0.2.
+#### Ouvert
+
+- La **transition** d'une palette vers une autre sur une durée, plutôt que l'échange sec.
+  L'échange sec est tranché comme point de départ : il écrit seize couleurs et s'arrête, là où
+  une transition demande un état par banque et une interpolation par image — d'une écriture
+  ponctuelle on passerait à un système qui tourne. À rouvrir quand l'échange sec sera en main
+  et qu'on verra où la coupure franche se voit.
+- Un échange **ne survit pas à un changement de scène** : `scene_init` recharge les palettes
+  authorées. C'est cohérent — la scène rétablit son état de départ, comme pour tout le reste —
+  mais aucun cas réel ne l'a encore éprouvé.
+- Rien côté ÉDITEUR : l'échange s'écrit en Lua, et aucun aperçu ne le montre. Cohérent avec le
+  reste de l'API de script, à rouvrir seulement si l'usage réclame de voir l'ambiance sans
+  lancer le jeu.
 
 ---
 
-## v0.5 — Sauvegarde (SRAM/Flash)
+## v0.5 — Sauvegarde (SRAM)
 
-S'appuie sur les variables globales déjà existantes pour décider quoi persister.
+S'appuie sur les variables globales déjà existantes pour décider quoi persister. Le socle
+était déjà là sans avoir été construit pour ça : `globals.h` émet depuis la v0.3 un **index
+par variable** et les accesseurs `global_read(i)` / `global_write(i, v)` — c'est-à-dire
+exactement ce dont un sérialiseur a besoin. Il ne manquait que le support.
 
-### Ouvert (quasiment tout)
+### Ce que ça donne
 
-- Portée : toutes les variables globales, ou une sélection explicite dans l'éditeur ?
-- Un seul emplacement de sauvegarde, ou plusieurs ?
+Une variable globale peut être marquée **persistante** ; un script écrit ou relit
+l'ensemble de ces variables dans un **emplacement de sauvegarde**, et le jeu retrouve son
+état au démarrage suivant.
+
+### Décisions verrouillées
+
+- **La persistance est un drapeau par variable**, coché dans la table GLOBALS. Tout
+  persister aurait l'air plus simple, mais un compteur de frames ou un index de travail
+  n'a rien à faire en mémoire de sauvegarde, et surtout : ce qui entre dans la sauvegarde
+  décide de sa compatibilité. Une case à cocher est le prix à payer pour que l'auteur
+  sache ce qu'il promet à ses joueurs.
+- **SRAM 32 Kio, seule.** 32 Kio adressés octet par octet, sans pilote, sans effacement.
+  Une centaine de globales pèse quelques centaines d'octets : la capacité n'est pas la
+  contrainte, donc le pilote Flash (identification du fabricant, effacement par secteur,
+  bascule de banque) n'achèterait rien. À rouvrir seulement si une donnée volumineuse —
+  une carte explorée, un journal — devient persistable, ce qui n'est pas le cas ici.
+- **Plusieurs emplacements, leur nombre réglé au projet** (1 par défaut). L'API prend
+  toujours un numéro d'emplacement : un jeu à une seule partie écrit `save.write(0)` et ne
+  rencontre jamais le concept, un jeu à trois fichiers ne demande pas de changer de
+  signature. Le nombre est un réglage et non une valeur libre parce qu'il **borne la
+  place** : la capacité se vérifie au build, pas à l'exécution.
+- **La sauvegarde ne connaît que des variables.** Pas de « scène de reprise », pas d'état
+  moteur caché : reprendre une partie est un aiguillage que l'auteur écrit, comme le
+  séquencement d'un dialogue reste du script (v0.3.2). Le moteur qui déciderait *où* on
+  reprend déciderait de la structure d'une partie — c'est une décision de genre.
+  Conséquence assumée : `scene.switch` reste résolu au build, et un jeu qui veut reprendre
+  sa scène écrit son propre test. Si ce test devient un motif récurrent dans un projet
+  réel, c'est là qu'il faudra rouvrir, pas avant.
+- **L'écriture est explicite, jamais automatique.** Aucune sauvegarde à la sortie de
+  scène, aucun rythme imposé : le moment où l'on peut sauver est une règle de game design.
+- **Le format est tolérant à l'évolution du jeu.** Chaque valeur est rangée avec l'**id
+  opaque** de sa variable, pas à un rang. Ajouter, retirer, réordonner ou renommer une
+  variable persistante laisse donc les sauvegardes existantes lisibles ; une variable
+  absente du fichier reprend simplement sa valeur par défaut. C'est huit octets par
+  variable (quatre d'identité, quatre de valeur) au lieu des deux ou quatre qu'un
+  tableau positionnel aurait coûtés — sur 32 Kio, le rapport est sans discussion face à
+  « l'auteur ajoute une variable et efface les parties de ses joueurs ». Mesuré sur la
+  démo : deux variables persistantes et trois emplacements occupent 84 octets.
+  - L'id vaut 12 chiffres, plus que 32 bits : c'est un **repli déterministe sur 32 bits**
+    qui est écrit, et une collision entre deux variables persistantes **bloque le build**
+    en les nommant. Elle est improbable et resterait sinon indétectable en jeu.
+- **Une sauvegarde douteuse est traitée comme absente.** Somme de contrôle par
+  emplacement, et empreinte de format en tête. Ni réparation, ni lecture partielle : la
+  mémoire d'une cartouche à pile vide rend des octets plausibles, et une lecture « au
+  mieux » restaurerait un état inventé sans un mot. Même refus de la dégradation
+  silencieuse qu'en v0.2.
+- **Le support n'est déclaré que s'il sert.** La chaîne de détection `SRAM_Vnnn` — que
+  cherchent émulateurs et linkers pour savoir qu'il y a une sauvegarde — n'est émise que
+  si le projet a au moins une variable persistante. Un jeu sans sauvegarde ne doit pas
+  faire naître un fichier de sauvegarde vide chez le joueur.
+
+### Ouvert
+
+- **Effacer un emplacement, oui ; le lister, pas encore.** `save.exists` répond « il y a
+  quelque chose ici », ce qui suffit à griser une entrée de menu. Un écran de sélection
+  qui afficherait *quoi* — un nom, une durée de jeu, un chapitre — demanderait un
+  en-tête descriptif par emplacement, donc une notion de métadonnée que le format
+  n'a pas. À rouvrir sur un cas réel.
+- Rien côté éditeur ne montre l'occupation de la sauvegarde en dehors du garde-fou de
+  build. Un indicateur « X octets sur 32 Kio » n'a d'intérêt que si l'on peut approcher
+  la limite, ce qui demande beaucoup de variables.
 
 ---
 

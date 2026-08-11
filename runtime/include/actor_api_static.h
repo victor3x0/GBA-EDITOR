@@ -230,6 +230,24 @@ extern void blend_set_backdrop(int side, int on);
 extern void blend_set_alpha   (int eva, int evb);
 extern void blend_set_fade    (int evy);
 
+/* Palettes au runtime — remplace les seize couleurs d'une banque matérielle.
+   Là où le mélange ci-dessus agit sur un CALQUE entier et seulement vers le
+   blanc ou le noir, une banque ne concerne que les tuiles qui la citent : on
+   peut refroidir un décor en gardant ses lanternes allumées. Les deux pools
+   sont physiquement distincts, d'où deux fonctions. */
+extern void palette_set_bg (int bank, int idx);
+extern void palette_set_obj(int bank, int idx);
+
+/* Sauvegarde — écrit ou relit les variables globales marquées persistantes
+   dans l'emplacement `slot`. Rendent 0 si l'emplacement n'existe pas, et
+   save_read 0 aussi si ce qui s'y trouve n'est pas relisible (marque, version
+   ou somme de contrôle) : le jeu doit pouvoir distinguer « pas de partie » de
+   « partie chargée » sans deviner. */
+extern int save_write (int slot);
+extern int save_read  (int slot);
+extern int save_exists(int slot);
+extern int save_erase (int slot);
+
 extern void tilemap_set        (int bg, int tx, int ty, int tile);
 extern int  tilemap_get        (int bg, int tx, int ty);
 extern void tilemap_set_palette(int bg, int tx, int ty, int bank);

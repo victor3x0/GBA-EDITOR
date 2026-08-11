@@ -518,18 +518,98 @@ def _encode_background_indexed_bitmap(source) -> Optional[dict]:
     }
 
 
-def compiled_background(ba, source_path) -> Optional[dict]:
+def compose_animations(ba, project, compiled: dict) -> dict:
+    """Compose les fonds ANIMÉS posés sur `ba` dans sa représentation rendue, à
+    leur PREMIÈRE image.
+
+    Pourquoi figés : un canvas de scène sert à placer des acteurs et des
+    collisions, et un décor qui bouge sous la souris gêne ce travail. C'est
+    l'inverse du canvas du Background Editor, où l'animation EST l'objet qu'on
+    pose et où la voir jouer est la seule raison d'ouvrir un canvas.
+
+    Le mode d'animation n'entre pas en jeu : `instance` et `shared` affichent la
+    même première image, ils ne divergent qu'en mouvement.
+
+    Composition locale : les tuiles et les palettes de l'animé sont concaténées
+    à celles de l'hôte, sans rien demander à la scène. Les banques réelles sont
+    allouées au build (cf. codegen/palette_alloc) — ici on ne cherche qu'à
+    montrer les bonnes couleurs.
+    """
+    if project is None or not getattr(ba, "animations", None):
+        return compiled
+    if compiled.get("bpp", 4) != 4:
+        # 8bpp : une seule palette de 256, la fusion par sous-palette n'a pas
+        # de sens (et le build n'émet pas ces animés non plus).
+        return compiled
+
+    # Le MÊME calcul que le build (codegen/bg_anim) : l'aperçu doit montrer la
+    # tuile fusionnée, pas une superposition approchée. Un aperçu qui composerait
+    # autrement ferait mentir l'éditeur sur ce que la ROM produira.
+    from codegen.bg_anim import resolve_blocks, host_placements, placement_geometry
+
+    tiles = list(compiled["tileset"])
+    pals = [list(x) for x in compiled["palettes"]]
+    tm = list(compiled["tilemap"])
+    tw = compiled["tiles_w"] or 1
+    blocks, for_pl = resolve_blocks(project, ba)
+
+    bank_of: dict = {}
+    base_of: dict = {}
+    for blk in blocks:
+        key = tuple(blk.composed.palette)
+        if key not in bank_of:
+            if len(pals) >= 16:
+                # Plus de banque libre : on montre le fond nu plutôt que des
+                # couleurs fausses que rien n'expliquerait à l'écran. Le build,
+                # lui, bloquera avec un message.
+                continue
+            bank_of[key] = len(pals)
+            pals.append(list(blk.composed.palette))
+        base_of[id(blk)] = len(tiles)
+        tiles += blk.initial_tiles()
+
+    for pl, src in host_placements(project, ba):
+        blk = for_pl.get(id(pl))
+        if blk is None or id(blk) not in base_of:
+            continue
+        bank = bank_of.get(tuple(blk.composed.palette))
+        if bank is None:
+            continue
+        geom = placement_geometry(ba, src, pl)
+        if geom is None:
+            continue
+        for r in range(geom.rows):
+            for c in range(geom.cols):
+                cell = r * geom.cols + c
+                dst = (geom.row + r) * tw + (geom.col + c)
+                # `shared` : une case = un emplacement dédié ; `instance` : la
+                # carte pointe la tuile de l'image 0. Même adressage que le build.
+                tid = cell if blk.shared else blk.composed.order[cell]
+                if 0 <= dst < len(tm):
+                    tm[dst] = pack_se(base_of[id(blk)] + tid, bank, False, False)
+
+    out = dict(compiled)
+    out.update({"tileset": tiles, "tilemap": tm, "palettes": pals})
+    return out
+
+
+def compiled_background(ba, source_path, project=None) -> Optional[dict]:
     """Représentation compressée (palette d'origine) d'un fond, pour un rendu
     éditeur (canvas de scène) : depuis le sidecar `ba` (BackgroundAsset) si déjà
     compressé, sinon compressée à la volée depuis le PNG (fallback legacy rare,
-    asset pas encore reconcilié). None si indisponible."""
+    asset pas encore reconcilié). None si indisponible.
+
+    `project` fourni : les fonds animés posés sur `ba` sont composés à leur
+    première image (cf. `compose_animations`). Sans lui, on rend le fond seul —
+    un appelant qui n'a pas le projet ne peut pas résoudre les noms d'animés."""
     if ba and ba.tileset:
         # effective_tilemap() : baseline + overrides d'inpainting asset
         # (BackgroundInpainting), pour que le rendu montre le fond tel qu'édité
         # au niveau éditeur, partagé entre toutes les scènes.
-        return {"tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
+        base = {"tiles_w": ba.tiles_w, "tiles_h": ba.tiles_h,
                 "tileset": ba.tileset, "tilemap": ba.effective_tilemap(),
                 "palettes": ba.palettes, "bpp": getattr(ba, "bpp", 4)}
+        return compose_animations(ba, project, base)
     if source_path and source_path.is_file():
         try:
             return encode_background(source_path)

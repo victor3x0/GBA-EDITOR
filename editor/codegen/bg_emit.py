@@ -64,3 +64,60 @@ def emit_bg_c(sym: str, tileset: list, tilemap: list, pal_offset: int = 0,
         f"#endif // GRIT_{sym.upper()}_H\n"
     )
     return c, h
+
+
+def emit_bg_anim_c(sym: str, tables: list) -> tuple[str, str]:
+    """Tables d'images des fonds ANIMÉS d'une scène — (source .c, header .h).
+
+    `tables` = [(nom du symbole, [entrées de carte])], chaque table contenant
+    toutes les images à la suite (cf. bg_anim.frame_table). Les entrées portent
+    déjà leur décalage de tuile et de banque : le runtime ne fait que recopier un
+    rectangle, il ne calcule rien.
+
+    Groupées PAR SCÈNE dans leur propre fichier, et non avec le calque : la
+    banque de palette d'un animé dépend de l'allocation de la scène, alors que le
+    C d'un calque est partagé entre les scènes qui le posent. Les mêlerait-on que
+    la première scène compilée imposerait ses couleurs aux autres."""
+    parts, decls = [], []
+    attr = '__attribute__((aligned(4)))'
+    for name, se in tables:
+        parts.append(
+            f"const unsigned short {name}[{len(se)}] {attr}=\n"
+            "{" + ",".join(f"0x{w:04X}" for w in se) + "};\n"
+        )
+        decls.append(f"extern const unsigned short {name}[{len(se)}];")
+    c = "\n".join(parts) if parts else "/* aucun fond animé dans cette scène */\n"
+    h = (
+        f"#ifndef {sym.upper()}_H\n#define {sym.upper()}_H\n\n"
+        + "\n".join(decls) + ("\n\n" if decls else "\n")
+        + f"#endif // {sym.upper()}_H\n"
+    )
+    return c, h
+
+
+def emit_bg_tileanim_c(sym: str, tables: list, bpp: int = 4) -> tuple[str, str]:
+    """Tables de PIXELS des fonds animés en mode `shared` — (source .c, header .h).
+
+    `tables` = [(nom du symbole, [tuiles hex])], les tuiles rangées image par
+    image puis case par case. Contrairement au mode `instance`, ce qui voyage
+    vers la VRAM à chaque changement d'image n'est pas une entrée de carte mais
+    la tuile elle-même — d'où des mots de 32 bits, au format tuile du matériel.
+
+    Fichier séparé de celui des tables d'entrées : rien ne les lie, et le mode
+    d'un animé peut changer d'une session à l'autre."""
+    parts, decls = [], []
+    attr = '__attribute__((aligned(4)))'
+    for name, tiles in tables:
+        words = tileset_words(tiles, bpp)
+        parts.append(
+            f"const unsigned int {name}[{len(words)}] {attr}=\n"
+            "{" + ",".join(f"0x{w:08X}" for w in words) + "};\n"
+        )
+        decls.append(f"extern const unsigned int {name}[{len(words)}];")
+    c = "\n".join(parts) if parts else "/* aucun fond animé « shared » dans cette scène */\n"
+    h = (
+        f"#ifndef {sym.upper()}_H\n#define {sym.upper()}_H\n\n"
+        + "\n".join(decls) + ("\n\n" if decls else "\n")
+        + f"#endif // {sym.upper()}_H\n"
+    )
+    return c, h

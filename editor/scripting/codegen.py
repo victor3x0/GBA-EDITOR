@@ -29,9 +29,9 @@ from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
-    DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE,
+    DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_PALETTE,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
-    text_constant, font_constant, region_constant, anon_text_key,
+    text_constant, font_constant, region_constant, anon_text_key, palette_constant,
     image_constant, image_state_constant,
     SCREEN_CONSTANTS,
 )
@@ -86,11 +86,18 @@ class CodegenContext:
     music_info: dict = field(default_factory=dict)  # {nom Music: (loop, volume)} — music_play(id, loop, volume)
     text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
+    palette_names: list[str] = field(default_factory=list)  # catalogue de couleurs (ordre = index dans g_palettes)
     region_names: list[str] = field(default_factory=list)  # emplacements de texte (ordre = index dans g_ui_regions)
     image_names:  list[str] = field(default_factory=list)  # images d'interface (ordre = index dans g_ui_images)
     # {nom d'image: [noms d'état de SON sprite]} — un état n'a de sens que dans
     # un sprite, et c'est l'image que le script nomme (cf. api.image_state_constant).
     image_states: dict = field(default_factory=dict)
+    # Sauvegarde — deux faits du projet, portés jusqu'ici pour que le checker des
+    # BEHAVIORS (relancé depuis ce contexte-ci) voie ce que voit celui des
+    # acteurs. Sans eux, `save.write(7)` passerait dans un behavior et pas dans
+    # un script d'acteur, ce qui serait incompréhensible.
+    save_slots: Optional[int] = None
+    has_persistent: Optional[bool] = None
 
 
 # ─── Générateur ───────────────────────────────────────────────────
@@ -175,6 +182,8 @@ class CodeGen:
                 global_names = list(self.ctx.global_names) if self.ctx.global_names else None,
                 const_names  = list(self.ctx.const_names) if self.ctx.const_names else None,
                 sfx_component_name = self.ctx.sfx_component_name,
+                save_slots   = self.ctx.save_slots,
+                has_persistent = self.ctx.has_persistent,
             )
             for err in _lua_check(beh_ast, check_ctx, check_event_names=False):
                 self.warnings.append(f"behavior '{stem}': {err.message}")
@@ -260,6 +269,16 @@ class CodeGen:
             self._w("/* Polices */")
             for i, name in enumerate(self.ctx.font_names):
                 self._w(f"#define {font_constant(name)} {i}")
+        # Constantes Palette — index dans g_palettes. Le catalogue ENTIER y
+        # passe : une palette pèse 32 octets en ROM, là où la réservation des
+        # polices coûtait de la mémoire vidéo. Rien à dériver des scripts, donc
+        # aucun risque de réserver trop peu — le piège que `scene_font_names`
+        # doit désamorcer n'existe pas ici.
+        if self.ctx.palette_names:
+            self._w("")
+            self._w("/* Palettes */")
+            for i, name in enumerate(self.ctx.palette_names):
+                self._w(f"#define {palette_constant(name)} {i}")
         # Constantes Zone de texte — index dans g_ui_regions. L'espace de noms
         # est le PROJET, pas la mise en page (cf. models/ui_region.py) : c'est
         # ce qui permet à cette table d'être plate, comme celle des textes.
@@ -632,6 +651,7 @@ class CodeGen:
                 return text_constant(name if name in self.ctx.text_keys
                                      else anon_text_key(name))
             case d if d == DOMAIN_FONT:   return font_constant(name)
+            case d if d == DOMAIN_PALETTE: return palette_constant(name)
             case d if d == DOMAIN_REGION: return region_constant(name)
             case d if d == DOMAIN_IMAGE:  return image_constant(name)
             case _:                        return f'"{name}"'

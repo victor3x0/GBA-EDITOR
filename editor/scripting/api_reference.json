@@ -301,6 +301,51 @@
       ]
     },
     {
+      "name": "Sauvegarde",
+      "entries": [
+        {
+          "label": "save.write(slot)",
+          "snippet": "save.write(0)",
+          "description": "Écrit les variables globales marquées « persist » dans un emplacement de sauvegarde.",
+          "params": [
+            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0 (leur nombre se règle dans le projet)" }
+          ],
+          "returns": "number — 1 si la sauvegarde a eu lieu, 0 si l'emplacement n'existe pas",
+          "doc_anchor": "save-write"
+        },
+        {
+          "label": "save.read(slot)",
+          "snippet": "save.read(0)",
+          "description": "Relit un emplacement dans les variables persistantes. Une variable absente du fichier reprend sa valeur par défaut ; si l'emplacement est vide ou illisible, rien n'est touché.",
+          "params": [
+            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+          ],
+          "returns": "number — 1 si la lecture a eu lieu, 0 sinon",
+          "doc_anchor": "save-read"
+        },
+        {
+          "label": "save.exists(slot)",
+          "snippet": "if save.exists(0) then\n    \nend",
+          "description": "Vrai si l'emplacement contient une sauvegarde relisible. De quoi n'afficher « Continuer » que s'il y a une partie.",
+          "params": [
+            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+          ],
+          "returns": "number — 1 si l'emplacement porte une sauvegarde, 0 sinon",
+          "doc_anchor": "save-exists"
+        },
+        {
+          "label": "save.erase(slot)",
+          "snippet": "save.erase(0)",
+          "description": "Vide un emplacement : save.exists y répond faux ensuite.",
+          "params": [
+            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+          ],
+          "returns": "number — 1 si l'emplacement existe, 0 sinon",
+          "doc_anchor": "save-erase"
+        }
+      ]
+    },
+    {
       "name": "Constants",
       "entries": [
         {

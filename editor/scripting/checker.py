@@ -28,6 +28,7 @@ from .parser import (
 )
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
+                  DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE)
 
 
@@ -64,8 +65,14 @@ class BuildContext:
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     text_keys:    list[str]  = None    # clés de la table de textes du projet
     font_names:   list[str]  = None    # noms des polices encodables
+    palette_names: list[str] = None    # palettes du catalogue de couleurs
     region_names: list[str]  = None    # emplacements de texte (toutes mises en page)
     image_names:  list[str]  = None    # images d'interface (toutes mises en page)
+    save_slots:   Optional[int] = None # emplacements de sauvegarde déclarés au projet
+    # Y a-t-il seulement quelque chose à sauver ? Sauver sans variable
+    # persistante n'échoue pas, ça ne fait simplement RIEN — le genre de silence
+    # qu'on ne diagnostique pas en regardant son script.
+    has_persistent: Optional[bool] = None
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
 
@@ -174,6 +181,9 @@ class Checker:
             if key == "get_actor":
                 self._check_get_actor(e.args)
                 return
+            if key.startswith("save."):
+                self._check_save(key, e.args)
+                # pas de `return` : le nombre d'arguments reste à vérifier
             api = RUNTIME_API.get(key)
             if api is None:
                 # Une API RETIRÉE est une erreur guidée ; un nom simplement
@@ -228,6 +238,8 @@ class Checker:
                 self._check_text(key, val, param.literal_ok)
             elif param.domain == DOMAIN_FONT:
                 self._check_font(key, val)
+            elif param.domain == DOMAIN_PALETTE:
+                self._check_palette(key, val)
             elif param.domain == DOMAIN_REGION:
                 self._check_region(key, val)
             elif param.domain == DOMAIN_IMAGE:
@@ -291,6 +303,18 @@ class Checker:
                 "error",
                 f"{call_key}('{name}') : police '{name}' introuvable ou sans glyphes "
                 f"({', '.join(self.ctx.font_names) or 'aucune police utilisable'}).",
+            ))
+
+    def _check_palette(self, call_key: str, name: str):
+        """Une palette inconnue est une ERREUR : le nom devient un `#define
+        PAL_*`, et sans lui le C généré ne compile pas — autant le dire ici,
+        avec la liste, plutôt qu'au `make` sur un identifiant indéfini."""
+        if self.ctx.palette_names is not None and name not in self.ctx.palette_names:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : palette '{name}' introuvable dans le "
+                f"catalogue de couleurs "
+                f"({', '.join(self.ctx.palette_names) or 'catalogue vide'}).",
             ))
 
     def _check_region(self, call_key: str, name: str):
@@ -362,6 +386,32 @@ class Checker:
                 f"({lo} à {hi}) — sera tronquée/wrap au build (comportement natif GBA/C), "
                 f"pas d'erreur mais probablement pas ce que tu voulais.",
             ))
+
+    def _check_save(self, call_key: str, args: list):
+        """Le numéro d'emplacement, quand il est écrit en clair.
+
+        Un emplacement hors capacité ne casse rien au runtime — les fonctions
+        rendent 0 — mais un `save.write(1)` dans un projet à un seul emplacement
+        est une sauvegarde qui n'a jamais lieu et ne dit rien. Vérifié seulement
+        sur un littéral : un slot calculé (un menu qui compte les emplacements)
+        est un usage légitime que le moteur borne déjà."""
+        if self.ctx.has_persistent is False:
+            self.errors.append(CheckError(
+                "warning",
+                f"{call_key}() : aucune variable globale n'est marquée "
+                f"persistante dans ce projet — l'appel ne sauvera rien. Cocher "
+                f"« persist » sur les variables à conserver."))
+        slots = self.ctx.save_slots
+        if not args or slots is None:
+            return
+        val = self._literal_int(args[0])
+        if val is None:
+            return
+        if not (0 <= val < slots):
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}({val}) : le projet déclare {slots} emplacement(s) "
+                f"de sauvegarde, numérotés de 0 à {slots - 1}."))
 
     def _check_const_name(self, call_key: str, args: list):
         if not args or not isinstance(args[0], ExprString):

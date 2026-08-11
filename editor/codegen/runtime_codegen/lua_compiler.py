@@ -83,6 +83,11 @@ def transpile_all(
     text_keys   = ([t.key for t in p.build_texts()] if hasattr(p, "build_texts")
                    else [t.key for t in getattr(p, "texts", [])])
     font_names  = [f.name for f in project_fonts(p)]
+    # Palettes : le catalogue ENTIER, dans son ordre. L'ordre devient
+    # l'index dans g_palettes (main_gen), comme pour les textes et les
+    # polices. Pas de dérivation depuis les scripts : la ROM est assez
+    # large pour toutes les porter (32 octets pièce).
+    palette_names = [b.name for b in getattr(p, "palettes", [])]
     # Zones de texte : l'ordre de `all_regions()` devient l'index dans
     # g_ui_regions, comme pour les textes et les polices.
     region_names = (p.region_names() if hasattr(p, "region_names") else [])
@@ -112,6 +117,13 @@ def transpile_all(
         const_names = write_constants(p.src_dir, p.constants)
         if const_names:
             emit("log_line", f"[lua] constants: {', '.join('CONST_'+n.upper() for n in const_names)}")
+
+    # Sauvegarde — deux faits du PROJET, les mêmes pour tous les scripts : le
+    # nombre d'emplacements déclaré, et s'il y a seulement quelque chose à
+    # sauver. Le checker s'en sert pour refuser un emplacement inexistant et
+    # signaler un save.write() qui ne sauverait rien.
+    _save_slots = max(1, int(getattr(p.settings, "save_slots", 1)))
+    _has_persist = any(getattr(g, "persist", False) for g in p.globals)
 
     parsed_scripts = []
 
@@ -146,8 +158,11 @@ def transpile_all(
             sfx_component_name = sfx_comp_name,
             text_keys    = text_keys,
             font_names   = font_names,
+            palette_names = palette_names,
             region_names = region_names,
             image_names  = image_names,
+            save_slots   = _save_slots,
+            has_persistent = _has_persist,
         )
         script, ok = _compile_script(sp, ctx_check, emit, sp.name)
         if not ok:
@@ -176,8 +191,11 @@ def transpile_all(
                 # inconnue n'échoue qu'au `make`, sur un `TEXT_*` indéfini.
                 text_keys    = text_keys,
                 font_names   = font_names,
+                palette_names = palette_names,
                 region_names = region_names,
-            image_names  = image_names,
+                image_names  = image_names,
+                save_slots   = _save_slots,
+                has_persistent = _has_persist,
             )
             scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)
             if not ok:
@@ -206,9 +224,12 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
             image_states  = image_states,
+            save_slots    = _save_slots,
+            has_persistent = _has_persist,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -249,6 +270,8 @@ def transpile_all(
             sfx_component_name = pf_sfx_comp_name,
             region_names = region_names,
             image_names  = image_names,
+            save_slots   = _save_slots,
+            has_persistent = _has_persist,
         )
         pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
         if not ok:
@@ -271,9 +294,12 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
             image_states  = image_states,
+            save_slots    = _save_slots,
+            has_persistent = _has_persist,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
         pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
@@ -301,9 +327,12 @@ def transpile_all(
             music_info    = music_info,
             text_keys     = text_keys,
             font_names    = font_names,
+            palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
             image_states  = image_states,
+            save_slots    = _save_slots,
+            has_persistent = _has_persist,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
         c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')

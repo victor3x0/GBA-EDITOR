@@ -17,7 +17,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
-    QScrollArea, QLineEdit, QComboBox, QPushButton,
+    QScrollArea, QLineEdit, QComboBox, QPushButton, QSpinBox,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import QSize, Qt
@@ -121,6 +121,27 @@ class ProjectInspector(QWidget):
         bd_row.addStretch(1)
         self._row("Backdrop", bd_box, id_inner)
 
+        # ── Emplacements de sauvegarde ────────────────────────────
+        # Un réglage de projet, et non une valeur libre laissée au script :
+        # c'est lui qui borne la place occupée en SRAM, donc ce qui rend la
+        # capacité vérifiable au build. Rien n'est émis tant qu'aucune variable
+        # globale n'est marquée persistante.
+        self._spin_slots = QSpinBox()
+        self._spin_slots.setRange(1, 99)
+        self._spin_slots.setFixedWidth(64)
+        self._spin_slots.setFont(QFont(T.MONO, T.MD))
+        self._spin_slots.setStyleSheet(QSS.spinbox)
+        self._spin_slots.setToolTip(
+            "<b>Save slots</b><br><br>"
+            "How many separate saves the game can hold in SRAM.<br>"
+            "Scripts address them by number: <tt>save.write(0)</tt>.<br><br>"
+            "Only the global variables marked <i>persist</i> are stored.<br>"
+            "A project with none of them writes no save data at all."
+        )
+        self._spin_slots.valueChanged.connect(
+            lambda v: self._set_setting("save_slots", int(v)))
+        self._row("Save slots", self._spin_slots, id_inner, stretch=False)
+
         layout.addWidget(id_card)
 
         # ── Carte Contenu ─────────────────────────────────────────
@@ -221,7 +242,7 @@ class ProjectInspector(QWidget):
         try:
             enabled = project is not None
             for w in (self._ed_author, self._ed_version, self._combo_start,
-                      self._btn_backdrop):
+                      self._btn_backdrop, self._spin_slots):
                 w.setEnabled(enabled)
             self._refresh_fields()
             self._refresh_counts()
@@ -252,6 +273,10 @@ class ProjectInspector(QWidget):
             self._combo_start.setCurrentIndex(idx if idx >= 0 else 0)
             self._combo_start.setEnabled(self._combo_start.count() > 0)
         self._combo_start.blockSignals(False)
+
+        self._spin_slots.blockSignals(True)
+        self._spin_slots.setValue(getattr(p.settings, "save_slots", 1) if p else 1)
+        self._spin_slots.blockSignals(False)
 
         self._refresh_backdrop()
 

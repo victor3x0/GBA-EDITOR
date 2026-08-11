@@ -17,6 +17,10 @@ class ProjectSettings:
     # rien d'opaque n'est dessiné nulle part. Éditée dans le ProjectInspector ;
     # Scene.backdrop_color peut la surcharger par scène.
     backdrop_color: int = 0
+    # Nombre d'emplacements de sauvegarde en SRAM. Un réglage et non une valeur
+    # libre laissée au script : c'est lui qui BORNE la place occupée, donc ce
+    # qui rend la capacité vérifiable au build plutôt qu'à l'exécution.
+    save_slots: int = 1
 
 
 # ── Variables du projet ───────────────────────────────────────────
@@ -41,6 +45,12 @@ class GlobalVar:
     default: int  = 0
     desc:    str  = ""      # description optionnelle
     id:      int  = 0       # opaque, stable à vie — voir en-tête de section
+    # Cette variable survit-elle à l'extinction de la console ? Un drapeau par
+    # variable, et non « tout persister » : un compteur de travail n'a rien à
+    # faire en SRAM, et surtout ce qui entre dans la sauvegarde décide de sa
+    # compatibilité (cf. ROADMAP.md v0.5). C'est l'`id` ci-dessus qui l'identifie
+    # dans le fichier de sauvegarde — jamais son rang, jamais son nom.
+    persist: bool = False
 
 
 @dataclass

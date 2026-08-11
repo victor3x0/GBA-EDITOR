@@ -27,18 +27,29 @@ static void copy16(vu16*d, const void*s, u32 b) {
 
 /* ── Chargement map BG avec tuilage source ───────────────────────── */
 /* gcols/grows = taille GBA (32 ou 64), tw/th = taille de la source  */
+/* Décalage de screenblock d'une case (c,r) dans une carte large de `gcols`.
+   Les blocs d'une carte multi-blocs se suivent : +0x400 u16 par bloc. Une carte
+   64-large en aligne deux par rangée (droite = +1 bloc, bas = +2) ; une carte
+   32-large n'en a qu'un par rangée, son bas est donc le bloc SUIVANT — pas deux
+   plus loin. Point de vérité UNIQUE : chargement initial, streaming et fonds
+   animés passent tous par ici. */
+static int bg_block_ofs(int gcols, int c, int r) {
+    if (gcols > 32) {
+        if (c >= 32 && r >= 32) return 0xC00;
+        if (r >= 32)            return 0x800;
+        if (c >= 32)            return 0x400;
+        return 0;
+    }
+    return r >= 32 ? 0x400 : 0;
+}
+
 static void load_map(vu16*dst, const void*src,
                      int tw, int th, int gcols, int grows) {
     const u16*m = (const u16*)src;
     for (int y = 0; y < grows; y++) {
         for (int x = 0; x < gcols; x++) {
             u16 t = (x < tw && y < th) ? m[y*tw + x] : 0;
-            int qx = x<32 ? x : x-32, qy = y<32 ? y : y-32;
-            vu16*d = dst;
-            if (x>=32 && y>=32) d += 0xC00;
-            else if (y>=32)     d += 0x800;
-            else if (x>=32)     d += 0x400;
-            d[qy*32+qx] = t;
+            dst[bg_block_ofs(gcols, x, y) + (y & 31)*32 + (x & 31)] = t;
         }
     }
 }
@@ -50,20 +61,16 @@ static void load_map(vu16*dst, const void*src,
    major). `dst` = MAP_RAM(sbb). Un seul fond streamé par scène. Pattern Tonc. */
 static int bg_base_col, bg_base_row;
 
-/* Écrit une SE à (c,r) dans la fenêtre en gérant les quadrants d'une map 64-large
-   (SBB contigus : +0x400 droite, +0x800 bas, +0xC00 coin) — comme load_map. */
-static void bg_se_write(vu16 *dst, int c, int r, u16 se) {
-    if (c >= 32 && r >= 32) dst += 0xC00;
-    else if (r >= 32)       dst += 0x800;
-    else if (c >= 32)       dst += 0x400;
-    dst[(r & 31)*32 + (c & 31)] = se;
+/* Écrit une SE à (c,r) dans une carte large de `gcols` (cf. bg_block_ofs). */
+static void bg_se_write(vu16 *dst, int gcols, int c, int r, u16 se) {
+    dst[bg_block_ofs(gcols, c, r) + (r & 31)*32 + (c & 31)] = se;
 }
 
 static void bg_load_col(vu16 *dst, const unsigned short *map,
-                        int tiles_w, int tiles_h, int win_h, int wc) {
+                        int tiles_w, int tiles_h, int win_w, int win_h, int wc) {
     for (int r = bg_base_row; r < bg_base_row + win_h; r++) {
         u16 se = (wc < tiles_w && r < tiles_h) ? map[r*tiles_w + wc] : 0;
-        bg_se_write(dst, wc & 63, r & 63, se);
+        bg_se_write(dst, win_w, wc & 63, r & 63, se);
     }
 }
 
@@ -71,7 +78,7 @@ static void bg_load_row(vu16 *dst, const unsigned short *map,
                         int tiles_w, int tiles_h, int win_w, int wr) {
     for (int c = bg_base_col; c < bg_base_col + win_w; c++) {
         u16 se = (c < tiles_w && wr < tiles_h) ? map[wr*tiles_w + c] : 0;
-        bg_se_write(dst, c & 63, wr & 63, se);
+        bg_se_write(dst, win_w, c & 63, wr & 63, se);
     }
 }
 
@@ -82,7 +89,7 @@ static void __attribute__((unused)) bg_stream_init(
     for (int r = 0; r < win_h; r++)
         for (int c = 0; c < win_w; c++) {
             u16 se = (c < tiles_w && r < tiles_h) ? map[r*tiles_w + c] : 0;
-            bg_se_write(dst, c, r, se);
+            bg_se_write(dst, win_w, c, r, se);
         }
 }
 
@@ -93,14 +100,306 @@ static void __attribute__((unused)) bg_stream_update(
         int win_w, int win_h, int stream_h, int stream_v, int cam_x, int cam_y) {
     if (stream_h) {
         int cc = cam_x >> 3;
-        while (bg_base_col < cc) { bg_load_col(dst, map, tiles_w, tiles_h, win_h, bg_base_col + 64); bg_base_col++; }
-        while (bg_base_col > cc) { bg_base_col--; bg_load_col(dst, map, tiles_w, tiles_h, win_h, bg_base_col); }
+        while (bg_base_col < cc) { bg_load_col(dst, map, tiles_w, tiles_h, win_w, win_h, bg_base_col + 64); bg_base_col++; }
+        while (bg_base_col > cc) { bg_base_col--; bg_load_col(dst, map, tiles_w, tiles_h, win_w, win_h, bg_base_col); }
     }
     if (stream_v) {
         int cr = cam_y >> 3;
         while (bg_base_row < cr) { bg_load_row(dst, map, tiles_w, tiles_h, win_w, bg_base_row + 64); bg_base_row++; }
         while (bg_base_row > cr) { bg_base_row--; bg_load_row(dst, map, tiles_w, tiles_h, win_w, bg_base_row); }
     }
+}
+
+/* ── Fonds ANIMÉS posés sur un fond hôte ─────────────────────────── */
+/* Mode `instance` : on réécrit les ENTRÉES DE CARTE du rectangle, les tuiles de
+   toutes les images restant résidentes dans le charblock de l'hôte. Chaque
+   placement a donc son propre compteur — deux copies du même animé peuvent être
+   à des moments différents de leur boucle.
+
+   `frames` = toutes les images à la suite (cols×rows entrées chacune), déjà
+   décalées en tuile et en banque par le build : ici on ne fait que recopier. */
+
+typedef struct {
+    const unsigned short *frames;
+    u16 sbb;            /* screenblock de la carte du calque hôte */
+    u8  ms;             /* taille de cette carte (bits map_size) */
+    u8  col, row;       /* coin haut-gauche du rectangle, en tuiles */
+    u8  cols, rows;     /* taille du rectangle, en tuiles */
+    u8  nframes, speed, loop;
+    u8  f0, t0;         /* départ authoré (décalage de phase de CETTE copie) */
+    u8  f, t;           /* image courante, ticks écoulés dans cette image */
+} BgAnim;
+
+static void bg_anim_draw(BgAnim *a) {
+    const unsigned short *se = a->frames + (u32)a->f * a->cols * a->rows;
+    vu16 *dst = MAP_RAM(a->sbb);
+    int gcols = (a->ms & 1) ? 64 : 32;   /* bit 0 de map_size = 64 colonnes */
+    for (int r = 0; r < a->rows; r++)
+        for (int c = 0; c < a->cols; c++)
+            bg_se_write(dst, gcols, a->col + c, a->row + r, se[r*a->cols + c]);
+}
+
+/* Pose la 1ère image. Appelé APRÈS le chargement de la carte de l'hôte, qu'il
+   recouvre : l'animé n'existe pas dans la carte en ROM, il est toujours posé
+   par-dessus — c'est ce qui permet au même hôte de servir des scènes qui ne
+   posent pas les mêmes animés. */
+/* Repart du décalage AUTHORÉ et non de zéro : deux copies posées à des moments
+   différents de leur boucle doivent se retrouver comme l'auteur les a réglées à
+   chaque entrée dans la scène, pas là où la visite précédente les avait
+   laissées. */
+static void __attribute__((unused)) bg_anim_init(BgAnim *list, int n) {
+    for (int i = 0; i < n; i++) {
+        list[i].f = list[i].f0; list[i].t = list[i].t0;
+        bg_anim_draw(&list[i]);
+    }
+}
+
+/* Mode `shared` : c'est la TUILE qu'on réécrit, pas la carte. Une seule image
+   est résidente, dans un bloc réservé du charblock de l'hôte, et toute case qui
+   l'utilise change avec elle — d'où le nom. La carte, elle, est cuite en ROM et
+   ne bouge jamais : rien à écrire de ce côté au runtime.
+
+   `frames` = toutes les images à la suite, `words` mots de 32 bits chacune. */
+typedef struct {
+    const unsigned int *frames;
+    u16 cbb;            /* charblock du calque hôte */
+    u16 vram_ofs;       /* décalage du bloc réservé, en u16 depuis la base */
+    u16 words;          /* mots de 32 bits par image */
+    u8  nframes, speed, loop;
+    u8  f, t;
+} BgTileAnim;
+
+static void bg_tileanim_draw(BgTileAnim *a) {
+    copy16(TILE_RAM(a->cbb) + a->vram_ofs,
+           a->frames + (u32)a->f * a->words, (u32)a->words * 4);
+}
+
+static void __attribute__((unused)) bg_tileanim_init(BgTileAnim *list, int n) {
+    for (int i = 0; i < n; i++) { list[i].f = 0; list[i].t = 0; }
+    /* Pas de dessin ici : l'image 0 est DÉJÀ dans le bloc réservé du tileset
+       chargé juste avant — la recopier ne ferait qu'écrire les mêmes octets. */
+}
+
+static void __attribute__((unused)) bg_tileanim_update(BgTileAnim *list, int n) {
+    for (int i = 0; i < n; i++) {
+        BgTileAnim *a = &list[i];
+        if (a->nframes <= 1) continue;
+        if (++a->t < a->speed) continue;
+        a->t = 0;
+        if (a->f + 1 < a->nframes)      a->f++;
+        else if (a->loop)               a->f = 0;
+        else                            continue;
+        bg_tileanim_draw(a);
+    }
+}
+
+static void __attribute__((unused)) bg_anim_update(BgAnim *list, int n) {
+    for (int i = 0; i < n; i++) {
+        BgAnim *a = &list[i];
+        if (a->nframes <= 1) continue;
+        if (++a->t < a->speed) continue;
+        a->t = 0;
+        if (a->f + 1 < a->nframes)      a->f++;
+        else if (a->loop)               a->f = 0;
+        else                            continue;   /* figé sur la dernière */
+        bg_anim_draw(a);
+    }
+}
+
+/* ── Palettes au runtime ─────────────────────────────────────────── */
+/* Remplacer les seize couleurs d'une banque matérielle : c'est ce qui permet de
+   changer l'ambiance d'un décor en cours de jeu — la nuit qui tombe, une saison
+   qui vire, une salle qui passe au rouge.
+
+   Le MÉLANGE (blend_*) ne couvre pas ce besoin : il assombrit ou éclaircit vers
+   le noir ou le blanc, uniformément, et sa granularité est le CALQUE (BLDCNT ne
+   cible que BG0-3, OBJ et le backdrop). Une banque, elle, ne concerne que les
+   tuiles qui la citent — on peut donc refroidir un décor en gardant ses
+   lanternes allumées, ce que le mélange ne sait pas faire.
+
+   `g_palettes` est émis par main_gen : le catalogue entier du projet, 16
+   couleurs par entrée. Les deux pools sont physiquement distincts, d'où deux
+   fonctions plutôt qu'un argument de cible. */
+
+extern const unsigned short g_palettes[][16];
+
+extern const int g_palette_count;
+
+/* Bornés des DEUX côtés : une banque hors 0-15 écrirait dans la palette
+   voisine, un index hors table lirait des couleurs au hasard. Le nom vient
+   d'une constante générée, donc l'index est juste par construction — sauf si
+   la palette a été supprimée du catalogue entre deux builds. */
+void palette_set_bg(int bank, int idx) {
+    if (bank < 0 || bank > 15 || idx < 0 || idx >= g_palette_count) return;
+    copy16(PAL_BG_RAM + bank * 16, g_palettes[idx], 32);
+}
+
+void palette_set_obj(int bank, int idx) {
+    if (bank < 0 || bank > 15 || idx < 0 || idx >= g_palette_count) return;
+    copy16(PAL_OBJ_RAM + bank * 16, g_palettes[idx], 32);
+}
+
+/* ── Sauvegarde (SRAM) ───────────────────────────────────────────── */
+/* 32 Kio de mémoire sauvegardée à 0x0E000000, alimentés par la pile de la
+   cartouche. Deux règles matérielles, non négociables :
+
+     - l'accès se fait OCTET PAR OCTET. Un `memcpy` ou un accès 16/32 bits y
+       lit et écrit du n'importe quoi — d'où les quatre écritures explicites de
+       `sram_put32` plutôt qu'un cast de pointeur, que le compilateur ne pourra
+       pas recombiner (le pointeur est volatile) ;
+     - le bus SRAM est lent : ses waitstates doivent être posés une fois au
+       démarrage, sinon la lecture rend des octets faux sur matériel réel là où
+       l'émulateur, lui, ne dira rien.
+
+   Ce que le moteur sauve, ce sont les variables globales MARQUÉES persistantes
+   dans l'éditeur. Il ne connaît ni la scène courante, ni aucun état interne :
+   reprendre une partie est un aiguillage que l'auteur écrit (cf. ROADMAP v0.5).
+
+   Le format est TOLÉRANT à l'évolution du jeu : chaque valeur est rangée avec
+   l'id opaque de sa variable, pas à un rang. Ajouter, retirer ou réordonner une
+   variable laisse donc les sauvegardes existantes lisibles, là où un tableau
+   positionnel aurait fait lire à `score` la valeur de `vies`. Une variable
+   absente du fichier reprend sa valeur par défaut : une lecture rend un état
+   COMPLET, jamais un mélange entre le fichier et la partie en cours.
+
+   Les tables ci-dessous sont émises par main_gen — trois tableaux parallèles,
+   une entrée par variable persistante. Un projet qui n'en a aucune reçoit
+   `g_save_count == 0`, et rien ici ne touche la SRAM. */
+
+#define SRAM_MEM       ((vu8*)0x0E000000)
+#define SRAM_SIZE      32768
+#define REG_WAITCNT   (*(vu16*)0x04000204)
+
+/* En-tête d'un emplacement, 12 octets :
+     0  'G','B','S','V'   marque de reconnaissance
+     4  u16 version du format
+     6  u16 nombre d'enregistrements qui suivent
+     8  u32 somme de contrôle des enregistrements
+   Puis `n` enregistrements de 8 octets : u32 id de la variable, s32 valeur. */
+#define SAVE_MAGIC0    'G'
+#define SAVE_MAGIC1    'B'
+#define SAVE_MAGIC2    'S'
+#define SAVE_MAGIC3    'V'
+#define SAVE_VERSION   1
+#define SAVE_HEADER    12
+#define SAVE_RECORD    8
+
+extern const unsigned int   g_save_id[];    /* id opaque de la variable, replié sur 32 bits */
+extern const unsigned short g_save_idx[];   /* son index GLOBAL_* — l'entrée de global_read/write */
+extern const int            g_save_def[];   /* sa valeur par défaut */
+extern const int            g_save_count;
+extern const int            g_save_slots;
+extern const int            g_save_slot_size;
+
+extern int  global_read (int i);
+extern void global_write(int i, int v);
+
+/* Waitstates SRAM à 8 cycles — la valeur sûre pour toutes les cartouches.
+   Appelée une fois par main() avant toute lecture. */
+static void sram_init(void) {
+    REG_WAITCNT = (REG_WAITCNT & ~3) | 3;
+}
+
+static unsigned int sram_get32(int off) {
+    return  (unsigned int)SRAM_MEM[off]
+         | ((unsigned int)SRAM_MEM[off + 1] << 8)
+         | ((unsigned int)SRAM_MEM[off + 2] << 16)
+         | ((unsigned int)SRAM_MEM[off + 3] << 24);
+}
+
+static void sram_put32(int off, unsigned int v) {
+    SRAM_MEM[off]     = (u8)(v);
+    SRAM_MEM[off + 1] = (u8)(v >> 8);
+    SRAM_MEM[off + 2] = (u8)(v >> 16);
+    SRAM_MEM[off + 3] = (u8)(v >> 24);
+}
+
+/* Décalage du début d'un emplacement, ou -1 s'il n'existe pas. Le second test
+   n'est pas redondant avec le garde-fou du build : `slot` peut venir d'une
+   variable, donc de n'importe quoi. */
+static int save_slot_base(int slot) {
+    if (g_save_count <= 0 || slot < 0 || slot >= g_save_slots) return -1;
+    int base = slot * g_save_slot_size;
+    if (base + g_save_slot_size > SRAM_SIZE) return -1;
+    return base;
+}
+
+static unsigned int save_sum(int base, int n) {
+    unsigned int s = 0;
+    for (int i = 0; i < n * SAVE_RECORD; i++)
+        s = s * 31u + SRAM_MEM[base + SAVE_HEADER + i];
+    return s;
+}
+
+/* Vrai si l'emplacement porte une sauvegarde LISIBLE : marque, version et somme
+   de contrôle. Une cartouche à pile vide rend des octets plausibles — sans ces
+   trois tests, le jeu restaurerait un état inventé sans un mot. */
+int save_exists(int slot) {
+    int base = save_slot_base(slot);
+    if (base < 0) return 0;
+    if (SRAM_MEM[base]     != SAVE_MAGIC0 || SRAM_MEM[base + 1] != SAVE_MAGIC1 ||
+        SRAM_MEM[base + 2] != SAVE_MAGIC2 || SRAM_MEM[base + 3] != SAVE_MAGIC3)
+        return 0;
+    if ((SRAM_MEM[base + 4] | (SRAM_MEM[base + 5] << 8)) != SAVE_VERSION) return 0;
+    int n = SRAM_MEM[base + 6] | (SRAM_MEM[base + 7] << 8);
+    /* Un nombre d'enregistrements plus grand que l'emplacement ferait lire
+       l'emplacement suivant : la sauvegarde est alors tenue pour illisible. */
+    if (n < 0 || n * SAVE_RECORD > g_save_slot_size - SAVE_HEADER) return 0;
+    return sram_get32(base + 8) == save_sum(base, n);
+}
+
+int save_write(int slot) {
+    int base = save_slot_base(slot);
+    if (base < 0) return 0;
+    int n = g_save_count;
+    for (int i = 0; i < n; i++) {
+        int off = base + SAVE_HEADER + i * SAVE_RECORD;
+        sram_put32(off,     g_save_id[i]);
+        sram_put32(off + 4, (unsigned int)global_read(g_save_idx[i]));
+    }
+    SRAM_MEM[base]     = SAVE_MAGIC0;
+    SRAM_MEM[base + 1] = SAVE_MAGIC1;
+    SRAM_MEM[base + 2] = SAVE_MAGIC2;
+    SRAM_MEM[base + 3] = SAVE_MAGIC3;
+    SRAM_MEM[base + 4] = SAVE_VERSION & 0xFF;
+    SRAM_MEM[base + 5] = (SAVE_VERSION >> 8) & 0xFF;
+    SRAM_MEM[base + 6] = n & 0xFF;
+    SRAM_MEM[base + 7] = (n >> 8) & 0xFF;
+    /* La somme est écrite EN DERNIER : une coupure de courant en plein milieu
+       laisse alors un emplacement qui ne se relit pas, plutôt qu'une sauvegarde
+       à moitié écrite qui se relit très bien. */
+    sram_put32(base + 8, save_sum(base, n));
+    return 1;
+}
+
+int save_read(int slot) {
+    if (!save_exists(slot)) return 0;
+    int base = save_slot_base(slot);
+    /* Les défauts d'abord : ce qui manque au fichier ne doit pas hériter de la
+       valeur qu'avait la partie en cours. */
+    for (int i = 0; i < g_save_count; i++)
+        global_write(g_save_idx[i], g_save_def[i]);
+    int n = SRAM_MEM[base + 6] | (SRAM_MEM[base + 7] << 8);
+    for (int r = 0; r < n; r++) {
+        int off = base + SAVE_HEADER + r * SAVE_RECORD;
+        unsigned int id = sram_get32(off);
+        for (int i = 0; i < g_save_count; i++)
+            if (g_save_id[i] == id) {
+                global_write(g_save_idx[i], (int)sram_get32(off + 4));
+                break;   /* les ids sont uniques — le build le vérifie */
+            }
+        /* Un id inconnu est une variable retirée du jeu depuis : on l'ignore. */
+    }
+    return 1;
+}
+
+/* Efface la MARQUE, pas les octets : l'emplacement redevient « vide » pour
+   save_exists, et la réécriture suivante repasse dessus de toute façon. */
+int save_erase(int slot) {
+    int base = save_slot_base(slot);
+    if (base < 0) return 0;
+    for (int i = 0; i < SAVE_HEADER; i++) SRAM_MEM[base + i] = 0;
+    return 1;
 }
 
 /* ── Layers BG vivants — shadows de registres ────────────────────── */

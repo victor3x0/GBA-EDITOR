@@ -242,6 +242,39 @@ def _bg_encoded_sources(p: Project, scene: Scene) -> list:
     return out
 
 
+def bg_animation_sources(p: Project, scene: Scene) -> list:
+    """Animés POSÉS sur les fonds des calques de la scène.
+
+    Un animé dessine ses propres tuiles, qui citent leurs propres sous-palettes :
+    il lui faut son bloc de banques, exactement comme au fond qui l'héberge. Sans
+    cette collecte il sortirait avec les couleurs de son hôte — une cascade aux
+    teintes du rocher derrière elle, sans rien pour signaler l'erreur.
+
+    Le placement vit chez l'hôte : c'est donc en parcourant les fonds des calques
+    qu'on trouve les animés, jamais l'inverse (cf. codegen/bg_anim)."""
+    from codegen.bg_anim import host_palettes
+
+    class _Synth:
+        """Porteur de palette pour l'allocateur. Une fusion n'appartient à aucun
+        asset : ses couleurs viennent de l'hôte ET de l'animé, elle n'est donc
+        pas dans `ba.palettes` de l'un ni de l'autre. Le bloc est dédupliqué par
+        contenu, comme pour les fonds — deux fusions aux mêmes couleurs partagent
+        leur banque."""
+        def __init__(self, name, pal):
+            self.name, self.palettes, self.bpp = name, [pal], 4
+
+    out = []
+    for layer in getattr(scene, "background_layers", []):
+        if not getattr(layer, "background_name", ""):
+            continue
+        host = p.get_background(layer.background_name)
+        if host is None or not getattr(host, "tileset", None):
+            continue
+        for i, pal in enumerate(host_palettes(p, host)):
+            out.append(_Synth(f"{host.name}#anim{i}", pal))
+    return out
+
+
 def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
     """BackgroundAsset compressés servant de FOND à un conteneur d'UI de la
     scène (`UIPanel.fill_kind` nine-slice ou background).
@@ -314,9 +347,14 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         own_color_lists = ([own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
                            + ui_image_own_palettes(p, scene, "bg"))
         pf_slots = {}
-        # Layers + fonds de conteneurs d'UI : les deux affichent des tuiles qui
-        # citent des sous-palettes, les deux ont donc besoin de leur bloc.
-        encoded_assets = _bg_encoded_sources(p, scene) + ui_fill_encoded_sources(p, scene)
+        # Layers + animés posés dessus + fonds de conteneurs d'UI : tous
+        # affichent des tuiles qui citent des sous-palettes, tous ont donc besoin
+        # de leur bloc. Les animés viennent juste après leurs hôtes — l'ordre
+        # d'allocation est l'ordre de cette liste, et un animé dont l'hôte a
+        # échoué n'aurait rien à colorier.
+        encoded_assets = (_bg_encoded_sources(p, scene)
+                          + bg_animation_sources(p, scene)
+                          + ui_fill_encoded_sources(p, scene))
 
     slots: list[Optional[list[int]]] = [None] * 16
     for i, name in enumerate(active):

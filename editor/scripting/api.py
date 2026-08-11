@@ -49,6 +49,7 @@ DOMAIN_TAG    = "tag"     # TAG_{name}
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
 DOMAIN_FONT   = "font"    # FONT_{name}
+DOMAIN_PALETTE = "palette"  # PAL_{name} — palette du catalogue de couleurs
 DOMAIN_REGION = "region"  # REGION_{name} — emplacement de texte (UILayout)
 DOMAIN_IMAGE  = "image"   # IMAGE_{name}  — image d'interface (UILayout)
 DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
@@ -627,6 +628,63 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # Deux jeux de cibles : le dessus (side 0, ce qui est mélangé) et le
     # dessous (side 1, ce avec quoi — situé derrière selon les priorités).
     # window.set_blend() décide ensuite des RÉGIONS où tout ceci s'applique.
+    # ── Palettes au runtime ────────────────────────────────────────
+    # Remplacer les seize couleurs d'une banque matérielle. C'est l'ÉCHANGE, pas
+    # le cycle : faire tourner les couleurs d'une palette a été écarté (une lave
+    # dessinée puis exportée en planche a des index différents d'une image à
+    # l'autre — elle emprunte le chemin ordinaire des fonds animés).
+    #
+    # Deux fonctions et non un paramètre de cible : les deux pools sont
+    # PHYSIQUEMENT distincts sur GBA (PAL_BG_RAM / PAL_OBJ_RAM), la scène les
+    # sélectionne déjà séparément, et une cible en argument laisserait croire
+    # qu'une même banque existe des deux côtés.
+    "palette.set_bg": ApiFunc(
+        lua_name="palette.set_bg", c_func="palette_set_bg",
+        params=[Param("bank", PARAM_INT), Param("p", PARAM_STR, DOMAIN_PALETTE)],
+        doc='Remplace les couleurs de la banque de FOND `bank` (0-15). '
+            'Ex: palette.set_bg(0, "Nuit")',
+    ),
+    "palette.set_obj": ApiFunc(
+        lua_name="palette.set_obj", c_func="palette_set_obj",
+        params=[Param("bank", PARAM_INT), Param("p", PARAM_STR, DOMAIN_PALETTE)],
+        doc='Remplace les couleurs de la banque de SPRITES `bank` (0-15). '
+            'Ex: palette.set_obj(1, "Nuit")',
+    ),
+
+    # ── Sauvegarde (SRAM) ──────────────────────────────────────────
+    # Écrit ou relit les variables globales MARQUÉES persistantes dans
+    # l'éditeur. Aucun nom de variable en argument : ce qui est sauvé est une
+    # propriété du projet, pas de l'appel — sinon deux endroits du jeu
+    # pourraient sauver deux ensembles différents et la dernière écriture
+    # gagnerait en silence.
+    #
+    # L'écriture est toujours explicite : le moment où l'on peut sauver est une
+    # règle de game design, pas quelque chose que le moteur décide.
+    "save.write": ApiFunc(
+        lua_name="save.write", c_func="save_write",
+        params=[Param("slot", PARAM_INT)], ret="int",
+        doc="Écrit les variables persistantes dans l'emplacement `slot` "
+            "(0 = le premier). Rend 0 si l'emplacement n'existe pas.",
+    ),
+    "save.read": ApiFunc(
+        lua_name="save.read", c_func="save_read",
+        params=[Param("slot", PARAM_INT)], ret="int",
+        doc="Relit l'emplacement `slot` dans les variables persistantes. Rend 0 "
+            "si l'emplacement est vide ou illisible — les variables ne sont "
+            "alors PAS touchées.",
+    ),
+    "save.exists": ApiFunc(
+        lua_name="save.exists", c_func="save_exists",
+        params=[Param("slot", PARAM_INT)], ret="int",
+        doc="Vrai si l'emplacement `slot` contient une sauvegarde relisible. "
+            "De quoi griser une entrée « Continuer ».",
+    ),
+    "save.erase": ApiFunc(
+        lua_name="save.erase", c_func="save_erase",
+        params=[Param("slot", PARAM_INT)], ret="int",
+        doc="Vide l'emplacement `slot` : save.exists y répond faux ensuite.",
+    ),
+
     "blend.set_mode": ApiFunc(
         lua_name="blend.set_mode", c_func="blend_set_mode",
         params=[Param("mode", PARAM_INT)],
@@ -1030,6 +1088,11 @@ def anon_text_key(literal: str) -> str:
 def font_constant(font_name: str) -> str:
     """'Pixelia' → 'FONT_PIXELIA'"""
     return f"FONT_{_c_ident(font_name)}"
+
+
+def palette_constant(palette_name: str) -> str:
+    """'Nuit' → 'PAL_NUIT'"""
+    return f"PAL_{_c_ident(palette_name)}"
 
 
 def region_constant(region_name: str) -> str:

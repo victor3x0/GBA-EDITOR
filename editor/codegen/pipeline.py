@@ -43,6 +43,19 @@ from core.validator import validate_project
 sys.path.insert(0, str(Path(__file__).parent))
 
 
+class _PalKey:
+    """Porteur de palette pour interroger `SceneBankLayout.bg_block_offset`.
+
+    Celui-ci prend un asset et lit `.palettes` ; une sous-palette synthétisée par
+    la fusion d'un animé avec son décor n'appartient à aucun asset (cf.
+    codegen/bg_anim). L'allocation étant dédupliquée par CONTENU, ce porteur
+    minimal suffit à retrouver la banque."""
+    __slots__ = ("palettes", "bpp")
+
+    def __init__(self, pal):
+        self.palettes, self.bpp = [pal], 4
+
+
 class BuildWorker(EventEmitter, threading.Thread):
     """
     Worker de build GBA — Python pur, sans dépendance GUI.
@@ -202,15 +215,22 @@ class BuildWorker(EventEmitter, threading.Thread):
                     if key in seen_bg_layers:
                         continue
                     seen_bg_layers.add(key)
+
                     png = p.background_images_dir / (ba.asset if ba and ba.asset else f"{layer.background_name}.png")
                     colors = effective_palette_colors(
                         p, layer.pal_bank, png, scene.active_bg_palettes)
                     mp_slot = bg_layout.bank_index(layer.pal_bank, colors)
                     unique_bg_layers.append((ba, layer, colors, mp_slot))
+                # Tables des animés posés — après les calques, dont elles
+                # dépendent (tuiles de l'hôte pour le décalage, bloc de banques
+                # pour les couleurs).
+                ok = self._emit_scene_animations(p, scene, bg_layout) and ok
             if ok and unique_bg_layers:
                 ok = ok and self._step_grit_bg(p, unique_bg_layers)
             if ok and unique_bg_layers:
                 ok = ok and self._check_bg_tile_budget(p, unique_bg_layers)
+            if ok:
+                ok = ok and self._check_encoded_tile_budget(p)
             if ok: self._emit("progress", 0.20)
 
             # grit Sprites : union de toutes scènes + prefabs (dédupliqués par
@@ -381,7 +401,14 @@ class BuildWorker(EventEmitter, threading.Thread):
                     out.append(pack_se(tid, slot, fh, fv))
                     continue
             out.append(pack_se(tid, pb + pal_offset, fh, fv))
-        return out
+        # Animés en mode `shared` : leur rectangle pointe sur le bloc réservé, une
+        # fois pour toutes. Cuit ici et non posé à l'init parce que la carte ne
+        # changera plus — au runtime il ne restera que des pixels à recopier.
+        from codegen.bg_anim import bake_shared_map, host_palettes
+        lay = scene_bank_layout(p, scene, "bg")
+        offsets = {tuple(pal): (lay.bg_block_offset(_PalKey(pal)) or 0)
+                   for pal in host_palettes(p, ba)}
+        return bake_shared_map(p, ba, out, offsets)
 
     def _bg_build_asset(self, p, ba):
         """Filtre les fonds non émissibles au build. Un fond BITMAP (Mode 4) est
@@ -399,16 +426,96 @@ class BuildWorker(EventEmitter, threading.Thread):
         grit. `sym` = symbole du layer (partagé, ou propre à la scène si peint,
         cf. bg_layer_sym_for). `final_tilemap` = SE avec pal_offset + overrides
         déjà appliqués (cf. _bg_final_tilemap) — donc pal_offset=0 ici. cf.
-        codegen/bg_emit."""
+        codegen/bg_emit.
+
+        Le tileset émis est celui du CHARBLOCK, pas celui du seul fond : les
+        tuiles des animés posés dessus le suivent (cf. codegen/bg_anim). La carte
+        de l'hôte reste valable telle quelle, ses tuiles venant en premier."""
         from codegen.bg_emit import emit_bg_c
+        from codegen.bg_anim import merged_tileset
         bpp = getattr(ba, "bpp", 4)
-        c, h = emit_bg_c(sym, ba.tileset, final_tilemap, pal_offset=0, bpp=bpp)
+        tileset = merged_tileset(p, ba)
+        c, h = emit_bg_c(sym, tileset, final_tilemap, pal_offset=0, bpp=bpp)
         p.grit_out_dir.mkdir(parents=True, exist_ok=True)
         (p.grit_out_dir / f"{sym}.c").write_text(c)
         (p.grit_out_dir / f"{sym}.h").write_text(h)
+        extra = len(tileset) - len(ba.tileset)
         self._emit("log_line",
                    f"[bg] {ba.name} compressé ({bpp}bpp) -> {sym} "
-                   f"({len(ba.tileset)} tuiles, {len(ba.palettes)} palettes)")
+                   f"({len(tileset)} tuiles"
+                   + (f", dont {extra} d'animés posés" if extra else "")
+                   + f", {len(ba.palettes)} palettes)")
+
+    def _emit_scene_animations(self, p, scene, bg_layout) -> bool:
+        """Écrit les tables des fonds animés de la scène — entrées de carte pour
+        le mode `instance`, pixels pour le mode `shared`.
+
+        Un fichier par scène : la banque de palette d'un animé est allouée PAR
+        SCÈNE, alors que le C d'un calque est partagé entre les scènes qui le
+        posent — les mêler ferait imposer ses couleurs par la première scène
+        compilée."""
+        from codegen.bg_emit import emit_bg_anim_c, emit_bg_tileanim_c
+        from codegen.bg_anim import (scene_animations, scene_anim_tables,
+                                     scene_anim_sym, anim_table_sym, frame_table,
+                                     shared_anim_sym, shared_table_sym,
+                                     shared_frame_tiles)
+
+        def _skip(name, why):
+            self._emit("log_line",
+                       f"[bg] animé '{name}' sur la scène '{scene.name}' — {why} → ignoré")
+
+        ok = True
+
+        def _err(name, geom, why):
+            nonlocal ok
+            self._emit(
+                "error_line",
+                f"[bg] '{name}' posé en ({geom.col}, {geom.row}) tuiles sur "
+                f"'{geom.host_name}' : {why}. Un fond animé est FUSIONNÉ avec le "
+                f"décor qui se trouve dessous — sa sous-palette contient donc les "
+                f"couleurs des deux. Déplacer le placement sur un décor plus sobre, "
+                f"ou réduire le nombre de couleurs de l'animé ou du fond."
+            )
+            ok = False
+
+        placements = scene_animations(p, scene, _skip, _err)
+        p.grit_out_dir.mkdir(parents=True, exist_ok=True)
+
+        def _bank(a) -> int:
+            """Banque allouée à la sous-palette SYNTHÉTISÉE de cette fusion."""
+            pal = a["block"].composed.palette
+            return bg_layout.bg_block_offset(_PalKey(pal)) or 0
+
+        # `instance` — une table par fusion distincte, pas par placement : deux
+        # copies au-dessus du même décor lisent la même.
+        tables = []
+        for a in scene_anim_tables(p, scene, shared=False):
+            tables.append((anim_table_sym(scene, a["table_index"]),
+                           frame_table(a, _bank(a))))
+        sym = scene_anim_sym(scene)
+        c, h = emit_bg_anim_c(sym, tables)
+        (p.grit_out_dir / f"{sym}.c").write_text(c)
+        (p.grit_out_dir / f"{sym}.h").write_text(h)
+
+        # `shared` — une table de pixels par fusion (toutes ses copies lisent le
+        # même bloc, c'est la définition du mode).
+        stables = []
+        for a in scene_anim_tables(p, scene, shared=True):
+            stables.append((shared_table_sym(scene, a["table_index"]),
+                            shared_frame_tiles(a)))
+        ssym = shared_anim_sym(scene)
+        c, h = emit_bg_tileanim_c(ssym, stables, 4)
+        (p.grit_out_dir / f"{ssym}.c").write_text(c)
+        (p.grit_out_dir / f"{ssym}.h").write_text(h)
+
+        if placements:
+            n_sh = sum(1 for a in placements if a["shared"])
+            total = sum(a["geom"].frames for a in placements)
+            self._emit("log_line",
+                       f"[bg] scène '{scene.name}' : {len(placements)} fond(s) animé(s) "
+                       f"posé(s) ({len(placements) - n_sh} per instance, {n_sh} shared), "
+                       f"{total} images")
+        return ok
 
     def _check_bg_tile_budget(self, p, layers) -> bool:
         """Garde-fou VRAM : un layer dont les tuiles débordent sur ce qui est
@@ -455,6 +562,51 @@ class BuildWorker(EventEmitter, threading.Thread):
                 ok = False
         return ok
 
+    def _check_encoded_tile_budget(self, p) -> bool:
+        """Garde-fou VRAM des fonds COMPRESSÉS — le pendant de
+        `_check_bg_tile_budget`, qui ne couvre que le chemin grit (fonds legacy).
+
+        Il manquait : rien ne bloquait un fond compressé dont les tuiles
+        dépassent ce que l'allocateur lui laisse. C'était supportable tant qu'un
+        calque ne portait que ses propres tuiles ; un animé posé dessus en ajoute
+        sans que l'auteur les ait dessinées dans l'image, et un dépassement
+        n'écrit pas un mauvais pixel — il écrase la zone du voisin, sans erreur
+        avant l'exécution."""
+        from codegen.bg_anim import layer_tile_count as bg_anim_tile_count
+        ok = True
+        budgets = self._scene_tile_budgets(p)
+        seen: set[tuple] = set()
+        for scene in p.scenes:
+            for layer in getattr(scene, "background_layers", []):
+                if not getattr(layer, "background_name", ""):
+                    continue
+                ba = p.get_background(layer.background_name)
+                if not (ba and getattr(ba, "tileset", None)):
+                    continue
+                if getattr(ba, "mode", "tiled") == "bitmap":
+                    continue
+                key = (ba.name, layer.bg_slot)
+                if key in seen:
+                    continue
+                seen.add(key)
+                used = bg_anim_tile_count(p, ba)
+                budget = budgets.get(key)
+                if budget is None or used <= budget:
+                    continue
+                own = len(ba.tileset)
+                extra = used - own
+                self._emit(
+                    "error_line",
+                    f"[bg] '{ba.name}' BG{layer.bg_slot} : {used} tuiles à charger "
+                    f"({own} pour le fond"
+                    + (f" + {extra} pour les fonds animés posés dessus" if extra else "")
+                    + f"), budget disponible {budget} tuiles depuis la base du "
+                    f"charblock {layer.bg_slot} — retirer un animé posé, réduire le "
+                    f"nombre de tuiles uniques, ou déplacer un autre calque de la scène."
+                )
+                ok = False
+        return ok
+
     def _scene_tile_budgets(self, p) -> dict:
         """{(nom du fond, bg_slot): budget en tuiles} — le MINIMUM sur toutes
         les scènes qui posent ce fond sur ce slot.
@@ -463,6 +615,7 @@ class BuildWorker(EventEmitter, threading.Thread):
         différents donc des budgets différents. Ses tuiles, elles, sont générées
         une fois : c'est la scène la plus contrainte qui commande."""
         from codegen.vram_alloc import scene_layout
+        from codegen.bg_anim import layer_tile_count as bg_anim_tile_count
         from codegen.runtime_codegen.main_gen import scene_text_reservation
         # Réservation prise au MÊME calcul que le placement réel, sinon le
         # budget validé ici n'est plus celui que la scène tient.
@@ -481,8 +634,10 @@ class BuildWorker(EventEmitter, threading.Thread):
                 _, _, ms = bg_map_geometry(w, h)
                 # Nombre de tuiles inconnu ici pour un fond legacy (grit n'a pas
                 # encore tourné) : on prend le pire, l'allocateur reste correct
-                # — il donnera juste un budget prudent.
-                slots[layer.bg_slot] = len(ba.tileset) if (ba and ba.tileset) else 512
+                # — il donnera juste un budget prudent. Pour un fond compressé,
+                # les animés posés dessus comptent (ils partagent le charblock).
+                slots[layer.bg_slot] = (bg_anim_tile_count(p, ba)
+                                        if (ba and ba.tileset) else 512)
                 maps[layer.bg_slot] = bg_map_sbb_count(ms)
                 names[layer.bg_slot] = layer.background_name
             if not slots:

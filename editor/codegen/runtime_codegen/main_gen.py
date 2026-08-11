@@ -103,12 +103,58 @@ def _bg_info(p: Project, scene) -> list[dict]:
     return result
 
 
+def scene_anim_descriptors(p, scene, bgi: list[dict]) -> list[dict]:
+    """Placements de fonds animés de la scène, enrichis de ce que seul le codegen
+    connaît : le screenblock et la taille de la carte du calque hôte.
+
+    L'ordre est celui de `bg_anim.scene_animations`, le même que `pipeline` a
+    utilisé pour nommer les tables — les deux le recalculent séparément, ils
+    doivent tomber d'accord (cf. bg_anim.anim_table_sym)."""
+    from codegen.bg_anim import scene_animations, anim_table_sym, shared_table_sym
+    by_slot = {bi["bg"]: bi for bi in bgi}
+    out = []
+    seen_shared: set[int] = set()
+    for a in scene_animations(p, scene):
+        bi = by_slot.get(a["layer"].bg_slot)
+        if bi is None:
+            continue    # calque non émis (bitmap, image manquante) : rien à animer
+        g = a["geom"]
+        if a["shared"]:
+            # UN descripteur par fusion, pas par copie : le bloc de pixels est
+            # partagé, deux descripteurs y écriraient la même chose deux fois.
+            if a["table_index"] in seen_shared:
+                continue
+            seen_shared.add(a["table_index"])
+            out.append({
+                "shared": True,
+                "table": shared_table_sym(scene, a["table_index"]),
+                # 8 mots de 32 bits par tuile 4bpp = 16 u16.
+                "cbb": bi["bg"], "vram_ofs": a["block"].tile_base * 16,
+                "words": g.cells * 8,
+                "frames": g.frames, "speed": g.speed, "loop": 1 if g.loop else 0,
+            })
+            continue
+        f0, t0 = g.start_state()
+        out.append({
+            "shared": False,
+            "table": anim_table_sym(scene, a["table_index"]),
+            "sbb": bi["sbb"], "ms": bi["map_size"],
+            "col": g.col, "row": g.row, "cols": g.cols, "rows": g.rows,
+            "frames": g.frames, "speed": g.speed, "loop": 1 if g.loop else 0,
+            "f0": f0, "t0": t0,
+        })
+    return out
+
+
 def _layer_tiles_used(p, bi: dict) -> int:
     """Tuiles réellement générées pour un layer. Deux sources selon le chemin :
     le sidecar pour un fond compressé (connu sans grit), l'en-tête grit sinon."""
     ba = p.get_background(bi["stem"]) if bi.get("stem") else None
     if bi.get("compressed") and ba is not None and ba.tileset:
-        return len(ba.tileset)
+        # Les animés posés partagent le charblock de leur hôte : leurs tuiles
+        # comptent dans ce que le calque charge (cf. codegen/bg_anim).
+        from codegen.bg_anim import layer_tile_count
+        return layer_tile_count(p, ba)
     header = p.grit_out_dir / f"{bi['sym']}.h"
     if header.exists():
         import re
@@ -926,7 +972,141 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
             + emit_ui_regions_c(regions, font_names, emit,
                                 obj_place=_obj_text_alloc(p),
                                 actor_index=_region_actor_index(p),
-                                bg_fill=_region_bg_fills(p)[0]))
+                                bg_fill=_region_bg_fills(p)[0])
+            + _palettes_lines(p, emit))
+
+
+def _palettes_lines(p, emit=None) -> list[str]:
+    """Table `g_palettes` — le catalogue de couleurs, pour `palette.set_bg/obj`.
+
+    Le catalogue ENTIER, dans son ordre, celui-là même dont `lua_compiler` dérive
+    les `#define PAL_*` : les deux doivent voir la même liste ou l'index désigne
+    une autre palette.
+
+    Émis en entier plutôt que dérivé des scripts — contrairement aux polices, où
+    la réservation doit être calculée parce qu'elle coûte de la mémoire vidéo.
+    Une palette pèse 32 octets en ROM ; réserver pour tout le catalogue est moins
+    cher que le risque de réserver trop peu, qui ferait basculer vers une palette
+    absente sans erreur avant l'exécution."""
+    banks = list(getattr(p, "palettes", []))
+    L = ["", "/* Palettes du catalogue — palette.set_bg / palette.set_obj */"]
+    L.append(f"const unsigned short g_palettes[{max(1, len(banks))}][16] = {{")
+    for b in banks:
+        cols = list(b.colors or [])[:16]
+        cols += [0] * (16 - len(cols))
+        L.append("    {" + ",".join(f"0x{c & 0xFFFF:04X}" for c in cols) + "},")
+    if not banks:
+        L.append("    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},")
+    L.append("};")
+    L.append(f"const int g_palette_count = {max(1, len(banks))};")
+    L.append("")
+    if emit and banks:
+        emit("log_line", f"[palette] {len(banks)} palette(s) du catalogue en ROM "
+                         f"({len(banks) * 32} octets)")
+    return L
+
+
+# ── Sauvegarde (SRAM) ─────────────────────────────────────────────
+# Trois tableaux parallèles, une entrée par variable globale marquée
+# persistante : son id (l'identité qui traverse les versions du jeu), son index
+# GLOBAL_* (par où le moteur la lit et l'écrit) et son défaut (ce qu'elle vaut
+# si le fichier chargé ne la contient pas).
+
+SAVE_HEADER_BYTES = 12
+SAVE_RECORD_BYTES = 8
+SRAM_BYTES        = 32768
+
+
+def save_vars(p) -> list[tuple[int, object]]:
+    """Les globales persistantes, avec leur INDEX dans `p.globals` — celui-là
+    même dont `globals.h` tire `GLOBAL_<NOM>`. Les deux listes doivent voir le
+    même ordre ou l'index désigne une autre variable."""
+    return [(i, g) for i, g in enumerate(getattr(p, "globals", []))
+            if getattr(g, "persist", False)]
+
+
+def save_id32(vid: int) -> int:
+    """L'id opaque replié sur 32 bits. Il en fait 12 chiffres (jusqu'à ~2^40) et
+    la SRAM se lit par mots de 32 bits : c'est un repli DÉTERMINISTE, pas un
+    hachage — deux builds du même projet donnent le même. Une collision entre
+    deux variables persistantes bloque le build (cf. `save_fatal`), sinon elle
+    ne se verrait qu'en jeu, sous la forme d'une variable qui prend la valeur
+    d'une autre."""
+    return int(vid) & 0xFFFFFFFF
+
+
+def save_slot_size(p) -> int:
+    return SAVE_HEADER_BYTES + SAVE_RECORD_BYTES * len(save_vars(p))
+
+
+def save_fatal(p) -> list[str]:
+    """Ce qui rend la sauvegarde impossible à émettre. Bloquant, comme le budget
+    de tuiles : une sauvegarde qui déborde de la SRAM n'échouerait qu'à
+    l'exécution, chez le joueur."""
+    out: list[str] = []
+    vars_ = save_vars(p)
+    if not vars_:
+        return out
+    seen: dict[int, str] = {}
+    for _i, g in vars_:
+        k = save_id32(g.id)
+        if k in seen:
+            out.append(
+                f"[error] les variables persistantes « {seen[k]} » et "
+                f"« {g.name} » retombent sur le même identifiant de sauvegarde. "
+                f"Renommer n'y changera rien — recréer l'une des deux lui donne "
+                f"un nouvel identifiant.")
+        seen[k] = g.name
+    slots = max(1, int(getattr(p.settings, "save_slots", 1)))
+    total = slots * save_slot_size(p)
+    if total > SRAM_BYTES:
+        out.append(
+            f"[error] {slots} emplacement(s) de sauvegarde × {len(vars_)} "
+            f"variable(s) demandent {total} octets, soit plus que les "
+            f"{SRAM_BYTES} de la SRAM. Réduire le nombre d'emplacements ou de "
+            f"variables persistantes.")
+    return out
+
+
+def _save_lines(p, emit=None) -> list[str]:
+    """Tables de sauvegarde + chaîne de détection du support.
+
+    Les tableaux sont émis MÊME VIDES (une entrée neutre) : le pilote de
+    `gba_engine.h` les déclare `extern` sans condition, et un projet sans
+    variable persistante doit tout de même se lier. C'est `g_save_count == 0`
+    qui dit au moteur de ne pas toucher la SRAM."""
+    vars_ = save_vars(p)
+    slots = max(1, int(getattr(p.settings, "save_slots", 1)))
+    L = ["", "/* Sauvegarde — variables globales marquées persistantes */"]
+    if vars_:
+        # La chaîne que cherchent émulateurs et linkers pour savoir de quel type
+        # de sauvegarde la cartouche dispose. Émise SEULEMENT si le projet sauve
+        # quelque chose : un jeu sans sauvegarde ne doit pas faire naître un
+        # fichier .sav vide chez le joueur. `used` parce que rien ne la
+        # référence — sans ça l'éditeur de liens la retire et la détection
+        # échoue silencieusement.
+        L += ['static const char __attribute__((used, aligned(4)))',
+              '    g_save_type[] = "SRAM_V113";', ""]
+        L.append("const unsigned int g_save_id[] = {"
+                 + ", ".join(f"0x{save_id32(g.id):08X}" for _i, g in vars_) + "};")
+        L.append("const unsigned short g_save_idx[] = {"
+                 + ", ".join(str(i) for i, _g in vars_) + "};")
+        L.append("const int g_save_def[] = {"
+                 + ", ".join(str(int(g.default)) for _i, g in vars_) + "};")
+    else:
+        L += ["const unsigned int   g_save_id[]  = {0};",
+              "const unsigned short g_save_idx[] = {0};",
+              "const int            g_save_def[] = {0};"]
+    L.append(f"const int g_save_count = {len(vars_)};")
+    L.append(f"const int g_save_slots = {slots if vars_ else 0};")
+    L.append(f"const int g_save_slot_size = {save_slot_size(p) if vars_ else 0};")
+    L.append("")
+    if emit and vars_:
+        emit("log_line",
+             f"[save] {len(vars_)} variable(s) persistante(s), {slots} "
+             f"emplacement(s) de {save_slot_size(p)} octets "
+             f"({slots * save_slot_size(p)} sur {SRAM_BYTES} de SRAM)")
+    return L
 
 
 def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
@@ -1453,6 +1633,25 @@ def _gen_scene_init(
         for i in range(0, len(_se), 12):
             L.append("    " + " ".join(f"0x{v:04X}," for v in _se[i:i + 12]))
         L.append("};")
+    # Fonds animés posés sur les calques : un descripteur par placement, avec son
+    # propre compteur — c'est ce qui permet à deux copies du même animé d'être à
+    # des moments différents de leur boucle (mode `instance`).
+    anims = [a for a in scene_anim_descriptors(p, scene, bgi) if not a["shared"]]
+    tanims = [a for a in scene_anim_descriptors(p, scene, bgi) if a["shared"]]
+    if anims:
+        L.append(f"static BgAnim g_bganim_{sym}[{len(anims)}] = {{")
+        for a in anims:
+            L.append(f"    {{ {a['table']}, {a['sbb']}, {a['ms']}, "
+                     f"{a['col']}, {a['row']}, {a['cols']}, {a['rows']}, "
+                     f"{a['frames']}, {a['speed']}, {a['loop']}, "
+                     f"{a['f0']}, {a['t0']}, {a['f0']}, {a['t0']} }},")
+        L.append("};")
+    if tanims:
+        L.append(f"static BgTileAnim g_bgtileanim_{sym}[{len(tanims)}] = {{")
+        for a in tanims:
+            L.append(f"    {{ {a['table']}, {a['cbb']}, {a['vram_ofs']}, {a['words']}, "
+                     f"{a['frames']}, {a['speed']}, {a['loop']}, 0, 0 }},")
+        L.append("};")
     if L:
         L.append("")
     L.append(f"static void scene_init_{sym}(void) {{")
@@ -1509,6 +1708,12 @@ def _gen_scene_init(
             # write-only, la shadow permet ensuite de changer priorité /
             # screenblock au runtime sans perdre les autres bits.
             L.append(f"    bg_cnt_set({bg}, 0x{val:04X});")
+    # APRÈS le chargement des cartes, qu'ils recouvrent : un animé n'existe pas
+    # dans la carte en ROM, il est toujours posé par-dessus.
+    if anims:
+        L.append(f"    bg_anim_init(g_bganim_{sym}, {len(anims)});")
+    if tanims:
+        L.append(f"    bg_tileanim_init(g_bgtileanim_{sym}, {len(tanims)});")
     # Sprites VRAM
     all_sprites = scene_actors + (p._prefab_sprites_cache if hasattr(p, "_prefab_sprites_cache") else [])
     done_vram: set[str] = set()
@@ -1992,6 +2197,17 @@ def _gen_scene_tick(
             L.append(f"    BGOFS({bi['bg']})=(u16)(((cam_x*{bi['speed']})>>8)+layer_get_scroll_x({bi['bg']}));")
             L.append(f"    BGVOFS({bi['bg']})=(u16)(((cam_y*{bi['speed']})>>8)+layer_get_scroll_y({bi['bg']}));")
 
+    # Fonds animés : APRÈS le streaming, qui recharge des colonnes/lignes
+    # entières de la carte en ROM — un animé recouvert par une colonne entrante
+    # se redessinerait avec un cycle de retard.
+    _all = scene_anim_descriptors(p, scene, bgi)
+    _anims = [a for a in _all if not a["shared"]]
+    _tanims = [a for a in _all if a["shared"]]
+    if _anims:
+        L.append(f"    bg_anim_update(g_bganim_{sym}, {len(_anims)});")
+    if _tanims:
+        L.append(f"    bg_tileanim_update(g_bgtileanim_{sym}, {len(_tanims)});")
+
     # Animation (state machine + direction)
     anim_actors = [(actor_offset + j, a, s2) for j, (a, s2) in enumerate(scene_actors) if s2 and s2.asset and s2.states]
     for idx, actor, sprite in anim_actors:
@@ -2174,6 +2390,10 @@ def generate_main(
                 f"[error] les zones de texte en sprites demandent "
                 f"{_tiles_need} tuiles OBJ après {obj_text_tile} de sprites, "
                 f"soit plus que les {_cap} disponibles.")
+    # Débordement de la SRAM, ou deux variables persistantes indiscernables :
+    # même règle que ci-dessus, ça bloque. Une sauvegarde qui déborde ne se
+    # verrait qu'à l'exécution, chez le joueur.
+    _fatal += save_fatal(p)
     if _fatal:
         for _m in _fatal:
             if emit:
@@ -2204,6 +2424,12 @@ def generate_main(
         _log_vram_layout(d["scene"], emit)
         for bi in bgi_d:
             _add_inc(f'#include "{bi["sym"]}.h"')
+        # Tables d'images des fonds animés — un header par scène, toujours émis
+        # (vide si la scène n'en pose aucun), pour que l'include ne dépende pas
+        # d'un état que le générateur devrait deviner.
+        from codegen.bg_anim import scene_anim_sym, shared_anim_sym
+        _add_inc(f'#include "{scene_anim_sym(d["scene"])}.h"')
+        _add_inc(f'#include "{shared_anim_sym(d["scene"])}.h"')
         for _, sprite in d["scene_actors"]:
             if sprite and sprite.asset:
                 _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
@@ -2268,6 +2494,11 @@ def generate_main(
 
     # ── Images d'interface ────────────────────────────────────────
     L += _ui_images_lines(p, sprite_offsets, emit)
+
+    # ── Sauvegarde ────────────────────────────────────────────────
+    # Après globals.h (inclus plus haut) : les tables citent les index
+    # GLOBAL_*, et le pilote appelle global_read/global_write.
+    L += _save_lines(p, emit)
 
     # ── Tile helpers (dispatch via pointeur) ──────────────────────
     L += _gen_tile_helpers()
@@ -2436,6 +2667,10 @@ def generate_main(
     # ── main() ────────────────────────────────────────────────────
     L.append("int main(void){")
     L.append("    irqInit(); irqEnable(IRQ_VBLANK);")
+    # Waitstates SRAM, posés avant toute lecture. Inconditionnel : c'est une
+    # écriture de registre, et la rendre conditionnelle ferait dépendre le
+    # démarrage d'un état du projet pour économiser un cycle.
+    L.append("    sram_init();")
 
     if has_sound and soundbank_h.exists():
         # mmVBlank() DOIT être lié à l'IRQ vblank (doc maxmod.h) — sans ça le

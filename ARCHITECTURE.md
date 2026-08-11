@@ -322,6 +322,63 @@ partout.
 
 ---
 
+## Sauvegarde — variables persistantes en SRAM
+
+32 Kio à `0x0E000000`, **accessibles octet par octet uniquement** : un accès 16/32 bits y
+lit et écrit du n'importe quoi, d'où `sram_get32`/`sram_put32` qui décomposent en quatre
+lectures/écritures sur un `vu8*`. Les waitstates du bus sont posés une fois par
+`sram_init()` au tout début de `main()` — sans eux, la lecture rend des octets faux sur
+matériel réel, et rien du tout côté émulateur, ce qui est le pire des deux mondes pour
+diagnostiquer.
+
+Ce qui est sauvé, ce sont les `GlobalVar` dont `persist` est vrai. Le moteur ne connaît
+aucun autre état : ni scène courante, ni position d'acteur. Reprendre une partie est un
+aiguillage que l'auteur écrit.
+
+**Le socle vient de `globals.h`, il n'a pas été construit pour ça** : `GLOBAL_<NOM>` et
+`global_read/global_write(i)` existent depuis la table de textes (une valeur interpolée
+connaît une variable par index, jamais par nom). C'est exactement ce dont un sérialiseur
+a besoin — `g_save_idx[]` ne contient que ces index-là.
+
+Format d'un emplacement, écrit par `save_write` :
+
+| Décalage | Contenu |
+| --- | --- |
+| 0 | `'G' 'B' 'S' 'V'` — marque de reconnaissance |
+| 4 | `u16` version du format |
+| 6 | `u16` nombre d'enregistrements |
+| 8 | `u32` somme de contrôle des enregistrements |
+| 12 | `n` × (`u32` id de la variable, `s32` valeur) |
+
+**Rangé par id, pas par rang.** Ajouter, retirer ou réordonner une variable persistante
+laisse les sauvegardes existantes lisibles, là où un tableau positionnel aurait fait lire
+à `score` la valeur de `vies`. L'id opaque fait 12 chiffres et la SRAM se lit par mots de
+32 bits : c'est un repli déterministe (`id & 0xFFFFFFFF`) qui est écrit, et une collision
+entre deux variables persistantes **bloque le build** — improbable, et invisible en jeu.
+
+**Trois tests avant de croire un emplacement** (marque, version, somme) : la mémoire d'une
+cartouche à pile vide rend des octets plausibles, et une lecture « au mieux » restaurerait
+un état inventé sans un mot. La somme est écrite en dernier, pour qu'une coupure de
+courant laisse un emplacement illisible plutôt qu'une sauvegarde à moitié écrite qui se
+relit très bien. `save_read` repose d'abord tous les défauts : une lecture rend un état
+complet, jamais un mélange entre le fichier et la partie en cours.
+
+Côté build (`main_gen._save_lines`) : trois tableaux parallèles (`g_save_id`, `g_save_idx`,
+`g_save_def`), émis **même vides** parce que `gba_engine.h` les déclare sans condition —
+c'est `g_save_count == 0` qui dit au moteur de ne pas toucher la SRAM. La chaîne
+`SRAM_V113`, que cherchent émulateurs et linkers pour détecter le type de sauvegarde,
+n'est émise **que** si le projet a au moins une variable persistante : un jeu sans
+sauvegarde ne doit pas faire naître un fichier `.sav` vide chez le joueur. Elle porte
+`used` — rien ne la référence, et l'éditeur de liens la retirerait.
+
+Deux erreurs bloquent le build, comme le budget de tuiles : le débordement de SRAM
+(`emplacements × taille`) et la collision d'identifiants. Le checker, lui, refuse un
+numéro d'emplacement littéral hors de ce que le projet déclare, et signale un `save.write`
+dans un projet où rien n'est marqué persistant — un appel qui ne fait rien ne se
+diagnostique pas en relisant son script.
+
+---
+
 ## Textes du joueur — table de chaînes
 
 `project/texts.json`, modèle dans `core/models/text.py`. Un seul fichier plutôt qu'un par
