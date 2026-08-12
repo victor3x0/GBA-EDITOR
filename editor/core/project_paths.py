@@ -64,6 +64,16 @@ class ProjectPathsMixin:
         return self.project_dir / "ui_layouts"
 
     @property
+    def cameras_dir(self) -> Path:
+        """Caméras — project/cameras/*.json.
+
+        Rangées avec les données propres au projet et non dans `assets/` : une
+        configuration de caméra ne dérive d'aucun fichier importé. Un fichier
+        par caméra, comme les mises en page d'UI — c'est un objet qu'on
+        renomme et qu'on partage entre scènes."""
+        return self.project_dir / "cameras"
+
+    @property
     def palettes_dir(self) -> Path:
         """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
         return self.project_dir / "palettes"
@@ -111,6 +121,13 @@ class ProjectPathsMixin:
     @property
     def scripts_scenes_dir(self) -> Path:
         return self.scripts_dir / "scenes"
+
+    @property
+    def scripts_cameras_dir(self) -> Path:
+        """Un dossier par famille de propriétaire, comme actors/ et scenes/ :
+        c'est le CHEMIN qui dit à l'éditeur de script quels points d'entrée
+        proposer (cf. ScriptEditor._detect_context)."""
+        return self.scripts_dir / "cameras"
 
     @property
     def build_dir(self) -> Path:

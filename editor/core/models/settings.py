@@ -21,6 +21,14 @@ class ProjectSettings:
     # libre laissée au script : c'est lui qui BORNE la place occupée, donc ce
     # qui rend la capacité vérifiable au build plutôt qu'à l'exécution.
     save_slots: int = 1
+    # Transition jouée à chaque changement de scène — le DÉFAUT du projet, qu'une
+    # scène peut surcharger (cf. Scene.transition_kind). Répondre ici une fois
+    # évite de reposer la question sur chaque scène ; la surcharge évite
+    # d'imposer un fondu à un menu qui doit apparaître net.
+    # Valeurs : les mêmes chaînes que les effets de mélange (models/scene.py),
+    # un fondu au noir devant s'appeler pareil partout.
+    transition_kind: str = "none"    # none | fade_black | fade_white
+    transition_frames: int = 16      # durée d'UNE moitié (fermeture ou ouverture)
 
 
 # ── Variables du projet ───────────────────────────────────────────

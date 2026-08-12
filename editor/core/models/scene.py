@@ -8,37 +8,10 @@ from core.models.palette import OWN_PAL_BANK
 from core.models.components import ComponentOwnerMixin, components_to_list, components_from_list
 from core.models.background import BackgroundLayer, decode_tile_palette_overrides
 
-# ──────────────────────────────────────────────────────────────────
-#  Collision map — types de tiles 8×8
-# ──────────────────────────────────────────────────────────────────
-
-TILE_EMPTY      = 0   # passable
-TILE_SOLID      = 1   # bloc plein
-TILE_SLOPE_L    = 2   # ◥  45° sol montant  L→R
-TILE_SLOPE_R    = 3   # ◤  45° sol descendant L→R
-TILE_SLOPE_L_LO = 4   # ◢  ~26° sol montant, tile gauche (bas)
-TILE_SLOPE_L_HI = 5   # ◥½ ~26° sol montant, tile droite (haut)
-TILE_SLOPE_R_LO = 6   # ◣  ~26° sol descendant, tile droite (bas)
-TILE_SLOPE_R_HI = 7   # ◤½ ~26° sol descendant, tile gauche (haut)
-# Plafond — miroir vertical des sols
-TILE_SLOPE_L_INV    = 8   # ◣  45° plafond montant  L→R
-TILE_SLOPE_R_INV    = 9   # ◢  45° plafond descendant L→R
-TILE_SLOPE_L_LO_INV = 10  # ~26° plafond montant, tile gauche
-TILE_SLOPE_L_HI_INV = 11  # ~26° plafond montant, tile droite
-TILE_SLOPE_R_LO_INV = 12  # ~26° plafond descendant, tile droite
-TILE_SLOPE_R_HI_INV = 13  # ~26° plafond descendant, tile gauche
-# Pentes raides sol (>45°, X=1 Y=2) — paires HI (petit triangle) + LO (grand quadrilatère)
-TILE_SLOPE_R_STEEP_HI     = 14  # ~63° sol descendant L→R, tile haut (petit triangle gauche)
-TILE_SLOPE_R_STEEP_LO     = 15  # ~63° sol descendant L→R, tile bas  (grand quadrilatère gauche)
-TILE_SLOPE_L_STEEP_HI     = 16  # ~63° sol montant  L→R, tile haut (petit triangle droit)
-TILE_SLOPE_L_STEEP_LO     = 17  # ~63° sol montant  L→R, tile bas  (grand quadrilatère droit)
-# Pentes raides plafond (miroir vertical)
-TILE_SLOPE_R_STEEP_HI_INV = 18  # ~63° plafond descendant L→R, tile bas  (petit triangle gauche)
-TILE_SLOPE_R_STEEP_LO_INV = 19  # ~63° plafond descendant L→R, tile haut (grand quadrilatère gauche)
-TILE_SLOPE_L_STEEP_HI_INV = 20  # ~63° plafond montant  L→R, tile bas  (petit triangle droit)
-TILE_SLOPE_L_STEEP_LO_INV = 21  # ~63° plafond montant  L→R, tile haut (grand quadrilatère droit)
-
-COLLISION_TILE_SIZE = 8   # pixels par tile de collision
+# Les types de tuiles de collision et leur géométrie vivent dans leur propre
+# module (feuille, il n'importe rien) : ils sont réclamés par l'outil de
+# peinture, par le canvas qui les dessine et par le codegen qui les émet en C.
+from core.models.collision_tiles import TILE_EMPTY, COLLISION_TILE_SIZE
 
 # ── Mélange de couleurs (BLDCNT / BLDALPHA / BLDY) ────────────────
 # **Le mode est GLOBAL à l'écran**, pas par layer : `BLDCNT` n'a qu'un champ
@@ -99,6 +72,19 @@ EFFECT_FADE_WHITE  = "fade_white"    # mode 2, tout l'écran
 EFFECT_TRANSLUCENT = "translucent"   # mode 1, un layer par-dessus ce qu'il y a derrière
 EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
 
+# Transitions de scène (v0.6.2) — le fondu joué en QUITTANT et en OUVRANT une
+# scène. Volontairement le même vocabulaire que les effets ci-dessus : c'est le
+# même effet matériel (BLDCNT mode 2/3 + BLDY sur tout l'écran), seul le moment
+# où il est joué diffère. `TRANSITION_INHERIT` n'existe qu'au niveau de la
+# scène — c'est l'absence de surcharge, donc le réglage du projet.
+TRANSITION_INHERIT = ""              # la scène suit ProjectSettings
+TRANSITION_KINDS = (EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE)
+# Le mode BLDCNT que chaque type demande — 0 = aucune transition. C'est ce que
+# le codegen émet, le runtime ne connaissant que des modes de mélange.
+TRANSITION_MODES = {EFFECT_NONE: BLEND_NONE,
+                    EFFECT_FADE_BLACK: BLEND_DARKEN,
+                    EFFECT_FADE_WHITE: BLEND_BRIGHTEN}
+
 _FADE_EFFECTS = {EFFECT_FADE_BLACK: BLEND_DARKEN, EFFECT_FADE_WHITE: BLEND_BRIGHTEN}
 
 
@@ -137,6 +123,25 @@ def blend_effect_of(scene) -> str:
             and int(scene.blend_eva) + int(scene.blend_evb) == BLEND_EV_MAX):
         return EFFECT_TRANSLUCENT
     return EFFECT_CUSTOM
+
+
+def transition_of(scene, settings) -> tuple[str, int]:
+    """La transition EFFECTIVE d'une scène : la sienne, ou celle du projet.
+
+    Source unique de la règle d'héritage — le codegen la résout au build (le
+    runtime ne connaît pas la notion) et l'inspecteur s'en sert pour dire à
+    l'auteur ce qu'il obtient réellement. La surcharge porte sur le COUPLE :
+    une scène hérite des deux valeurs ou définit les deux, sans quoi « durée
+    héritée, type surchargé » deviendrait un état à expliquer."""
+    kind = getattr(scene, "transition_kind", TRANSITION_INHERIT) or TRANSITION_INHERIT
+    if kind == TRANSITION_INHERIT:
+        kind = getattr(settings, "transition_kind", EFFECT_NONE) or EFFECT_NONE
+        frames = int(getattr(settings, "transition_frames", 16))
+    else:
+        frames = int(getattr(scene, "transition_frames", 16))
+    if kind not in TRANSITION_KINDS:
+        kind = EFFECT_NONE
+    return kind, max(1, frames)
 
 
 def blend_amount_of(scene) -> int:
@@ -358,23 +363,12 @@ class Scene(Resource):
     # un BackgroundAsset (sidecar de compression) par son nom d'image.
     background_layers: list = field(default_factory=list)  # list[BackgroundLayer]
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
-    cam_x: int = 0
-    cam_y: int = 0
-    cam_follow: str = ""   # nom de l'Actor à suivre (utilisé si cam_mode == "follow")
-    # Mode caméra — pilote QUI écrit cam_x/cam_y au runtime :
-    #   "fixed"  : reste à (cam_x, cam_y), authoré ci-dessus (pas de mouvement)
-    #   "follow" : suit cam_follow via camera_follow() (deadzone cam_margin_x/y),
-    #              même fonction runtime que l'API Lua camera.follow()
-    #   "script" : le codegen ne touche plus à la caméra, scripts seuls
-    # (cf. mémoire project_camera_abstraction — un seul point d'écriture).
-    cam_mode: str = "fixed"
-    cam_margin_x: int = 40   # deadzone horizontale (px), mode "follow"
-    cam_margin_y: int = 20   # deadzone verticale (px), mode "follow"
-    # Bornes de scroll (taille du monde en pixels) ; None = axe illimité.
-    # Champ explicite (plus de déduction depuis la vitesse de parallax d'un
-    # layer) ; pré-remplissable dans l'inspecteur depuis les fonds de la scène.
-    cam_bounds_w: Optional[int] = None
-    cam_bounds_h: Optional[int] = None
+    # Caméra de DÉMARRAGE, par nom d'asset (project/cameras/) — un script peut
+    # en changer ensuite (camera.switch). "" = la caméra par défaut : fixe à
+    # (0,0), sans bornes ni suivi. Elle n'existe pas comme fichier ; l'auteur
+    # n'a donc rien à créer pour le cas simple, et la liste des caméras ne se
+    # remplit pas d'une entrée par scène jamais réglée (cf. models/camera.py).
+    camera: str = ""
     # Windows matérielles (WIN0/WIN1) authorées pour cette scène — max 2,
     # une par région (cf. WindowSlot). Liste vide = comportement identique à
     # aujourd'hui (aucune window active, tout s'affiche normalement).
@@ -385,6 +379,12 @@ class Scene(Resource):
     # 1/2 = tuilé + affine ; 3/4/5 = un fond bitmap plein écran (BG2). Pilote
     # l'inspecteur (zones background/palettes). cf. ui MODE_INFO.
     render_mode: int = 0
+    # Transition jouée en QUITTANT cette scène et en l'OUVRANT — "" = celle du
+    # projet. Chaque scène décrit sa propre disparition et sa propre apparition,
+    # il n'y a donc jamais de conflit entre les deux scènes d'une bascule
+    # (cf. ROADMAP v0.6.2). Résolu au build par transition_of().
+    transition_kind: str = TRANSITION_INHERIT   # "" | none | fade_black | fade_white
+    transition_frames: int = 16                 # durée d'UNE moitié, ignorée si héritée
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
     # Mise en page d'UI référencée par NOM (project/ui_layouts/<nom>.json) —
@@ -470,14 +470,7 @@ class Scene(Resource):
                 for L in self.background_layers
             ],
             "actors": [a.to_dict() for a in self.actors],
-            "cam_x": self.cam_x,
-            "cam_y": self.cam_y,
-            "cam_follow": self.cam_follow,
-            "cam_mode": self.cam_mode,
-            "cam_margin_x": self.cam_margin_x,
-            "cam_margin_y": self.cam_margin_y,
-            "cam_bounds_w": self.cam_bounds_w,
-            "cam_bounds_h": self.cam_bounds_h,
+            "camera": self.camera,
             "windows": [
                 {"region": ws.region, "x": ws.x, "y": ws.y, "w": ws.w, "h": ws.h,
                  "visible": ws.visible, "layers_shown": ws.layers_shown,
@@ -485,6 +478,11 @@ class Scene(Resource):
                 for ws in self.windows
             ],
             "render_mode": self.render_mode,
+            # Absentes du fichier tant que la scène hérite du projet : le défaut
+            # ne s'écrit pas, sinon changer le réglage projet ne se verrait plus.
+            **({"transition_kind": self.transition_kind,
+                "transition_frames": self.transition_frames}
+               if self.transition_kind else {}),
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
             "script": self.script,
@@ -530,18 +528,12 @@ class Scene(Resource):
             name=d.get("name", "Scene"),
             background_layers=bg_layers,
             actors=actors,
-            cam_x=d.get("cam_x", 0),
-            cam_y=d.get("cam_y", 0),
-            cam_follow=d.get("cam_follow", ""),
-            # Migration : anciennes scènes sans cam_mode — "follow" si un
-            # cam_follow était déjà authoré, sinon "fixed" (le scroll libre au
-            # D-pad qui s'activait implicitement en son absence est retiré,
-            # cf. project_camera_abstraction).
-            cam_mode=d.get("cam_mode") or ("follow" if d.get("cam_follow") else "fixed"),
-            cam_margin_x=d.get("cam_margin_x", 40),
-            cam_margin_y=d.get("cam_margin_y", 20),
-            cam_bounds_w=d.get("cam_bounds_w"),
-            cam_bounds_h=d.get("cam_bounds_h"),
+            # Les anciens champs `cam_*` inline ne sont PAS relus : la caméra
+            # est devenue un asset, et la maison ne migre pas les formats (cf.
+            # core/project.py). Une scène antérieure repart de la caméra par
+            # défaut, ce qui était de toute façon le réglage de la quasi-totalité
+            # d'entre elles.
+            camera=d.get("camera", ""),
             windows=[
                 WindowSlot(
                     region=wd.get("region", 0),
@@ -554,6 +546,10 @@ class Scene(Resource):
                 for wd in d.get("windows", [])
             ],
             render_mode=int(d.get("render_mode", 0)),
+            # Absente = la scène hérite du projet, ce qui est le cas de toute
+            # scène antérieure à la v0.6.2.
+            transition_kind=d.get("transition_kind", TRANSITION_INHERIT),
+            transition_frames=int(d.get("transition_frames", 16)),
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),

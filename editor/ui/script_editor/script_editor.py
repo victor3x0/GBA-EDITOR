@@ -241,6 +241,8 @@ class ScriptEditorScreen(QWidget):
             return "scene"
         if "behaviors" in {path.parent.name}:
             return "behavior"
+        if "cameras" in {path.parent.name}:
+            return "camera"
         # deeper check via full path string
         path_str = str(path)
         if "/scripts/actors/" in path_str or "\\scripts\\actors\\" in path_str:
@@ -256,6 +258,7 @@ class ScriptEditorScreen(QWidget):
         _BADGE = {
             "actor":    ("ACTOR",    _C_EVENT),
             "scene":    ("SCENE",    _C_API),
+            "camera":   ("CAMERA",   _C_API),
             "behavior": ("BEHAVIOR", _C_BEHAVIOR),
         }
         if ctx in _BADGE:

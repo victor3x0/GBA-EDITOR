@@ -290,8 +290,10 @@ class BuildWorker(EventEmitter, threading.Thread):
                 const_names = self._write_project_constants(p)
             if ok: self._emit("progress", 0.65)
 
-            # Transpilation Lua → C pour chaque scène (prefabs compilés une seule fois)
+            # Transpilation Lua → C pour chaque scène (prefabs et caméras
+            # compilés une seule fois : ce sont des assets partagés)
             compiled_prefabs: set[str] = set()
+            compiled_cameras: set[str] = set()
             if ok:
                 for d in all_scene_data:
                     if not ok:
@@ -301,6 +303,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                         precomputed_global_names=global_names,
                         precomputed_const_names=const_names,
                         compiled_prefabs=compiled_prefabs,
+                        compiled_cameras=compiled_cameras,
                     )
             if ok: self._emit("progress", 0.80)
 
@@ -744,13 +747,14 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None,
                                  precomputed_global_names=None, precomputed_const_names=None,
-                                 compiled_prefabs=None):
+                                 compiled_prefabs=None, compiled_cameras=None):
         return transpile_all(
             p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
             precomputed_global_names=precomputed_global_names,
             precomputed_const_names=precomputed_const_names,
             compiled_prefabs=compiled_prefabs,
+            compiled_cameras=compiled_cameras,
         )
 
     # ── Génération de main.c ──────────────────────────────────────────

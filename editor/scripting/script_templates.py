@@ -15,10 +15,11 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ScriptTemplateContext:
-    """kind: "scene" | "actor" | "behavior" | "empty" """
+    """kind: "scene" | "camera" | "actor" | "behavior" | "empty" """
     kind: str = "empty"
     name: str = ""                 # nom du script (sans .lua)
     scene_name: str = ""           # pour kind="scene"
+    camera_name: str = ""          # pour kind="camera"
     actor_name: str = ""           # pour kind="actor"
     component_labels: list[str] = field(default_factory=list)
     has_sprite: bool = False
@@ -31,6 +32,8 @@ class ScriptTemplateContext:
 def generate_script_template(ctx: ScriptTemplateContext) -> str:
     if ctx.kind == "scene":
         return _generate_scene_template(ctx)
+    if ctx.kind == "camera":
+        return _generate_camera_template(ctx)
     if ctx.kind == "actor":
         return _generate_actor_template(ctx)
     if ctx.kind == "behavior":
@@ -44,6 +47,19 @@ def _generate_scene_template(ctx: ScriptTemplateContext) -> str:
         "function on_start()\nend\n\n"
         "function on_update()\nend\n\n"
         "function on_late_update()\nend\n"
+    )
+
+
+def _generate_camera_template(ctx: ScriptTemplateContext) -> str:
+    """Deux points d'entrée seulement, et l'ordre dit dans le commentaire : le
+    suivi déclaratif a déjà écrit la position quand `on_update` s'exécute, donc
+    ce qu'on écrit ici l'ajuste au lieu de se battre avec lui."""
+    return (
+        f"-- Script de caméra : {ctx.camera_name}\n"
+        "-- Les réglages déclaratifs (suivi, zone morte) sont calculés AVANT\n"
+        "-- ce script ; les bornes du monde sont appliquées APRÈS.\n\n"
+        "function on_start()\nend\n\n"
+        "function on_update()\nend\n"
     )
 
 

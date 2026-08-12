@@ -137,11 +137,12 @@ gba-editor/
         ├── assets/                  ← dépend d'une ressource externe (image, son...)
         │   ├── sprites/             ← PNG + JSON sidecar (SpriteAsset)
         │   ├── backgrounds/         ← PNG + JSON sidecar (BackgroundAsset)
-        │   └── scripts/             ← scripts Lua source (acteurs + scènes)
+        │   └── scripts/             ← scripts Lua source (acteurs, scènes, caméras)
         ├── project/                 ← données éditeur pures, aucune dépendance externe
         │   ├── scenes/              ← définition des scènes (.json)
         │   ├── palettes/            ← PaletteBank (.json) — catalogue de palettes nommées, 1 fichier/palette
         │   ├── prefab/              ← préfabs d'acteurs (.json)
+        │   ├── cameras/             ← caméras (.json) — réutilisables entre scènes
         │   └── variables.json       ← globals + constants du projet
         └── build/                   ← 100% généré, gitignored — compile assets/ ET project/
 ```
@@ -393,10 +394,120 @@ Trois portes en cascade, à garder en tête quand on débugge un effet absent :
 Un sprite en `obj_mode` 1 (semi-transparent) court-circuite la liste du dessus : il se
 mélange quel que soit le réglage OBJ — utile pour un seul fantôme translucide.
 
-`BLDCNT`/`BLDALPHA` sont shadowés (`g_bldcnt_sh`, `g_bldalpha_sh`) ; `BLDY` est write-only
-et n'a aucun lecteur, donc pas de shadow. `eva`/`evb`/`evy` sont des seizièmes clampés à
-0-16 par `ev_clamp()` — au-delà le matériel sature, on préfère un comportement identique
-partout.
+Les **trois** registres sont shadowés (`g_bldcnt_sh`, `g_bldalpha_sh`, `g_bldy_sh`) et
+`blend_flush()` est le seul endroit qui les écrive — `BLDY` a gagné sa shadow le jour où
+une transition de scène a eu besoin de rendre son intensité à la scène après le fondu.
+`eva`/`evb`/`evy` sont des seizièmes clampés à 0-16 par `ev_clamp()` — au-delà le matériel
+sature, on préfère un comportement identique partout.
+
+### Collision de tuiles — une géométrie, deux lecteurs
+
+Une carte de collision est un octet par tuile de 8×8. Ce que cet octet DÉSIGNE —
+un bloc plein, une pente à 26°, un plafond incliné — est décrit une seule fois,
+dans `core/models/collision_tiles.py`, et deux consommateurs en dérivent :
+
+- le **canvas** en tire son polygone (`polygon()`, le carré de la tuile découpé
+  par la droite de surface) ;
+- le **codegen** en tire `g_tile_surface[type][8]`, l'ordonnée de la surface dans
+  chacune des 8 colonnes de pixels, émise dans `main.c`.
+
+Tant que la forme n'existait que dans les polygones du canvas, la physique du jeu
+n'en avait aucune — et l'y réécrire à la main aurait créé la même divergence que
+les « deux listes de prototypes ». Une tuile s'y décrit par sa **droite de
+surface** (ordonnées en `x=0` et `x=8`, autorisées à sortir de la tuile) et le
+côté plein ; les 22 types y tiennent, pentes raides comprises.
+
+La résolution (`resolve_actor_tiles`, émise par `main_gen`) suit un ordre qui est
+la règle :
+
+1. **X d'abord**, et seul `TILE_SOLID` repousse — une pente qui bloquerait
+   l'horizontale serait un mur, personne ne la gravirait ;
+2. **plafond**, si l'acteur monte : la surface la plus basse des trois sondes ;
+3. **sol** : les deux coins bas et le centre de la box, la surface la plus haute
+   l'emportant. Chaque sonde balaie trois tuiles — celle au-dessus des pieds, celle des
+   pieds, celle du dessous — car sur une pente la matière de la colonne suivante vit dans
+   la tuile d'au-dessus ; une surface plus haute que la box est écartée. L'acteur qui
+   pénètre est remonté dessus, sans plafond de marche ;
+4. **vitesse le long du sol** : le pas horizontal est réduit du cosinus de la pente gravie
+   (`g_tile_scale`, précalculé — la GBA n'a pas de racine carrée), reste reporté au 1/256 de
+   pixel. C'est la seule chose que le moteur défait de ce qu'un script a demandé, d'où ses
+   deux garde-fous : être au sol à la frame précédente, et un pas qui tient dans une tuile ;
+5. **collage** en descente, tant que l'écart reste sous `|Δx|×2 + 1` — la chute
+   maximale qu'une pente à 63° peut creuser pour le déplacement réellement
+   parcouru (`Actor.last_x`), donc sans constante ni réglage.
+
+Hors carte vaut **plein** dans les quatre directions : le monde est une boîte close.
+Sans ça un acteur qui rate une plateforme tombe sans fin, et son sprite reboucle en
+haut de l'écran tous les 256 px — l'OAM ne code Y que sur 8 bits.
+
+Deux conséquences à connaître : la sonde ne porte qu'à une tuile au-delà des pieds,
+donc **rien n'agit à distance** (un acteur ne se pose pas sur un sol
+lointain — le moteur n'a pas de gravité, c'est au script de l'y amener) ; et
+`Actor.grounded`, ce que rend `actor_on_ground()`, décrit la FIN de la frame
+précédente, la résolution s'exécutant après les `on_update`.
+
+Enfin, `CollisionBox.solid` ne décide que de ceci : cette box est-elle arrêtée
+par la carte ? Les collisions acteur-contre-acteur ne l'ont jamais consulté.
+
+### Caméra — une donnée, pas du code
+
+`cam_x`/`cam_y` est l'origine d'une zone de taille écran, dont tout se dérive (scroll BG,
+position écran des sprites, bords de zone morte, clamp aux bornes). Ce qui DÉCIDE de cette
+origine est une **caméra**, un asset de projet (`project/cameras/*.json`) : mode, cible,
+zone morte, bornes, script. Une seule est active à la fois — la GBA n'a qu'un écran.
+
+- **Table en ROM, index actif en RAM.** `main_gen` émet `g_cam_table[]` (`Camera` défini
+  dans `actor_api_static.h`) et `g_cam_active`. L'entrée **0 est toujours la caméra par
+  défaut** — fixe à l'origine, sans bornes — celle qu'obtient une scène qui n'en désigne
+  aucune, sans qu'aucun fichier existe. La donner comme entrée réelle évite un cas
+  particulier à chaque activation.
+- **`camera_switch(i)` pose le cadrage ET les bornes**, puis appelle le `on_start` de la
+  caméra. C'est le seul endroit qui écrit `g_cam_max_x/y` : un script qui appelle ensuite
+  `camera.set_bounds()` garde la main jusqu'à la prochaine activation.
+- **L'ordre dans `scene_tick` est la règle** : retrait de la secousse de la frame
+  précédente → suivi déclaratif → script de la caméra → clamp aux bornes → secousse. Le
+  script peut donc ajuster ce que le déclaratif vient de poser (usage déclaratif, scripté
+  ou hybride sans réglage de bascule), le clamp a toujours le dernier mot sur la position
+  logique, et la secousse se pose par-dessus lui — trembler au bord du monde doit se voir.
+  Elle est retirée en début de frame suivante, si bien que la zone morte ne raisonne jamais
+  sur une position tremblée et que rien d'autre dans le moteur ne connaît la secousse.
+- **La cible est résolue par (scène, caméra), au build.** Une caméra est réutilisable et
+  cite son acteur par nom ; les noms d'acteurs sont locaux à une scène. Le tick porte donc
+  un `switch` sur `g_cam_active` où ne figurent que les caméras capables de suivre
+  quelqu'un dans CETTE scène — cible et marges devenant des constantes. Ailleurs, la caméra
+  reste immobile, et `_check_cameras` le dit avant le build.
+- **Le script d'une caméra emprunte le chemin des scripts de scène** (pas de `self`), avec
+  `hook_kind="camera"` : seul le mot du symbole C change (`<sym>_camera_on_update`). Deux
+  points d'entrée et non trois — le moteur n'exécute ce script qu'à un seul moment de la
+  frame, un `on_late_update` s'y enchaînerait sans que rien ne l'en sépare.
+
+### Transitions de scène — le fondu possède les registres
+
+Un changement de scène joue un fondu à la fermeture puis à l'ouverture (`ROADMAP.md`
+v0.6.2). Trois faits structurent l'implémentation :
+
+1. **Le séquencement vit dans la boucle principale générée**, seul endroit qui connaisse
+   les deux scènes — `scene_switch()` ne fait que poser `g_next_scene`. La machine à états
+   (`g_trans_phase` : 0 aucune, 1 fermeture, 2 ouverture) et `scene_enter()` sont émises
+   par `main_gen.py`, et **uniquement si au moins une scène a une transition** : un projet
+   qui n'en veut pas retrouve la bascule sèche, au bit près.
+2. **Entre `transition_begin()` et `transition_end()`, le fondu possède `BLDCNT`/`BLDY`.**
+   `blend_flush()` cesse de descendre les shadows au matériel, mais les shadows, elles,
+   continuent d'enregistrer : le `display_reset()` en tête de `scene_init` et tout le
+   réglage de mélange que la scène pose derrière lui s'écrivent normalement, et prennent
+   effet d'un coup à la fin du fondu. Sans cette règle, l'écran se rallumerait au milieu
+   du chargement de la scène entrante, en pleine lumière et sur une image à moitié
+   construite. C'est aussi pourquoi le backdrop est première cible du fondu : pendant
+   l'init, les layers sont éteints et c'est *lui* qu'on voit.
+3. **La scène sortante gèle** : son `tick()` n'est plus appelé dès la première frame de la
+   fermeture. Le reste de la frame (VBlank, `mmFrame()`, compteur, lecture des touches)
+   continue — une transition est un effet d'affichage, pas une pause du moteur.
+
+L'héritage projet→scène (`ProjectSettings.transition_kind/frames`, surchargés par
+`Scene.transition_kind/frames`) est résolu **au build**, par `transition_of()` : le runtime
+ne reçoit qu'un couple `(mode, frames)` par scène dans la vtable. Chaque scène décrit sa
+propre disparition et sa propre apparition, donc deux scènes ne peuvent pas se disputer une
+bascule.
 
 ---
 
@@ -1070,6 +1181,78 @@ que rien n'émettait — un mode permis mais jamais émis est pire qu'un mode ab
   des slots hors des 128 du matériel, donc rien à l'écran et aucune erreur.
 
 ---
+
+## Ressources matérielles — l'auteur ne les nomme jamais
+
+Cet éditeur ne représente pas seulement des objets. Il représente **des objets qui devront
+être matérialisés simultanément sur une machine minuscule**. C'est ce qui le sépare d'un
+éditeur de jeu générique, et c'est la source de la classe de bugs la plus coûteuse du
+projet : chaque fonctionnalité marche parfaitement, jusqu'au jour où deux d'entre elles
+servent en même temps.
+
+**La règle : aucun concept de haut niveau ne nomme une ressource matérielle.** Une caméra ne
+demande pas WIN0, elle demande *une région qui limite son rendu*. L'UI ne demande pas WIN1,
+elle demande *un rectangle de découpe*. Un acteur demande *un masque de visibilité*. Ce qui
+satisfait ces demandes — et si deux d'entre elles peuvent partager la même ressource — n'est
+pas leur affaire.
+
+Trois niveaux, à ne jamais confondre :
+
+| Niveau | Exemple | Qui le manipule |
+| --- | --- | --- |
+| **Intention** | `RenderRegion`, `ClipRegion`, `VisibilityMask` | l'auteur, dans l'éditeur |
+| **Ressource logique** | un masque : géométrie + calques autorisés + règles | l'allocateur |
+| **Ressource matérielle** | `WINR_0`, `WINR_1`, `WINR_OBJ`, un charblock, une entrée OAM | le backend seul |
+
+Deux intentions qui décrivent le même masque logique ne consomment **qu'une** ressource
+matérielle. C'est tout l'intérêt du niveau intermédiaire, et c'est invisible pour l'auteur.
+
+### Deux allocateurs, pas un — la durée de vie décide
+
+La tentation est d'écrire « un gestionnaire de ressources ». Il y en a deux, et les fusionner
+serait une faute : ils partagent un vocabulaire, jamais une implémentation.
+
+| | Résolu au BUILD | Résolu à la FRAME |
+| --- | --- | --- |
+| Exemples | palettes, VRAM/charblocks, tuiles de police | entrées OAM, canaux DMA, matrices affines, windows disputées |
+| Où | Python, `codegen/` | C, dans le runtime |
+| Coût admis | élevé — il tourne une fois | quasi nul — il tourne 60 fois par seconde |
+| Peut prévenir l'auteur | **oui**, et c'est sa raison d'être | non, il n'a personne à qui parler |
+
+Deux instances existent déjà et sont exactement ça : `codegen/palette_alloc.py` et
+`codegen/vram_alloc.py` (décrit ci-dessous). Elles arbitrent, elles replient quand ça ne
+tient pas, et elles rendent des comptes au build. Tout nouvel allocateur de build leur
+ressemble.
+
+**Ce qui n'est allouable par personne** : le temps CPU et l'IWRAM. L'IWRAM se décide à
+l'édition de liens (attributs de section), le CPU est un budget qu'on *mesure*. Les ranger
+dans la même liste que l'OAM laisserait croire qu'un ordonnanceur peut les arbitrer.
+
+### Le piège propre aux windows : les slots ne sont pas interchangeables
+
+`WINR_0` > `WINR_1` > `WINR_OBJ` > `WINR_OUT` est une priorité **câblée** (cf. « Windows — le
+pochoir »). Deux rectangles qui se recouvrent ne rendent donc pas la même image selon le slot
+qu'ils occupent. Un allocateur qui traiterait WIN0 et WIN1 comme équivalents produirait une
+allocation *valide* et une image *fausse* — rien ne planterait, rien ne se signalerait.
+
+La ressource n'est pas « une fenêtre » mais **« une fenêtre à un rang donné »**, et le rang
+appartient au modèle.
+
+De même, `WINR_OUT` n'est pas une quatrième ressource à distribuer : c'est le complément, et
+son contenu change à chaque allocation. Personne ne peut le demander.
+
+### Ce qui viole cette règle aujourd'hui
+
+Dette connue, à résorber quand le deuxième consommateur arrivera (cf. `ROADMAP.md`,
+« L'allocateur de ressources matérielles ») :
+
+- `Scene.windows` / `WindowSlot.region` — l'auteur choisit l'index matériel (0 ou 1)
+  lui-même, la docstring le dit explicitement.
+- L'API Lua `window.set_layer(r, …)` / `window.set_obj(…)`, où `r` vaut 0=WIN0, 1=WIN1,
+  2=fenêtre-objet, 3=extérieur.
+
+Aucune des deux n'est un accident : à un seul consommateur, l'indirection n'aurait rien
+acheté. Elles deviennent un problème au moment où un deuxième système veut un masque.
 
 ## Allocation de la VRAM BG — `codegen/vram_alloc.py`
 

@@ -29,6 +29,22 @@ typedef struct Actor {
     int pal_bank;          /* palette OAM (0-15) — modifiable via set_pal() */
     int obj_mode;          /* 0=normal, 1=semi-transparent, 2=fenêtre-objet (OBJWIN) */
     int data[8];           /* variables locales par instance (prefabs poolés) */
+    /* Résolution contre la carte de collision — écrits par resolve_actor_tiles,
+       lus par elle à la frame suivante (cf. ROADMAP v0.6.3) :
+         grounded : y avait-il un sol sous les pieds à la fin de la frame ?
+                    C'est ce que rend actor_on_ground() ;
+         last_x   : abscisse à la fin de la frame précédente. Le déplacement
+                    horizontal RÉELLEMENT parcouru s'en déduit, quelle que soit
+                    la façon dont le script bouge l'acteur (vélocité, move(),
+                    set_pos()) — c'est lui qui donne la distance de collage en
+                    descente, sans réglage à exposer. */
+    int grounded;
+    int last_x;
+    /* Reste de la correction de vitesse en pente, en 1/256 de pixel. Sans ce
+       report, un pas de 2 px sur une pente à 45° tomberait toujours sur 1 px
+       (troncature) et le personnage ramperait au lieu d'aller 1,41 fois moins
+       vite. */
+    int slope_acc;
     int box_count;         /* nombre de boxes actives (0..MAX_BOXES) */
     CollisionBox boxes[MAX_BOXES];
 } Actor;

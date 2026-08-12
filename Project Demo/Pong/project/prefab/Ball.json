@@ -16,7 +16,7 @@
       "component_type": "collision_box",
       "id": "Bounding Box",
       "active": true,
-      "solid": true,
+      "solid": false,
       "tag": "body",
       "x": 0,
       "y": 0,

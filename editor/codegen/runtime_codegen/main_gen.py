@@ -653,69 +653,254 @@ def _anim_tick_lines(idx: int, sym: str) -> list[str]:
 
 
 def _gen_tile_helpers() -> list[str]:
-    """Fonctions tile_solid_at/tile_get avec dispatch via pointeur (multi-scène)."""
-    return [
+    """Lecture de la carte de collision, et résolution d'un acteur contre elle.
+
+    La table de profils est ÉMISE depuis `core.models.collision_tiles`, la même
+    géométrie que celle dont le canvas tire ses polygones : la physique du jeu
+    et le dessin de l'éditeur ne peuvent pas diverger."""
+    from core.models.collision_tiles import (
+        TILE_COUNT, kind_of, column_surfaces, speed_scale,
+    )
+    L = [
         "static const u8 *g_active_cmap = NULL;",
         "static int g_cmap_w = 0, g_cmap_h = 0;",
         "#define TILE_SIZE 8",
-        "int tile_solid_at(int px,int py){",
-        "    if(!g_active_cmap) return 0;",
-        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
-        "    if(tx<0||ty<0||tx>=g_cmap_w||ty>=g_cmap_h) return 1;",
-        "    return g_active_cmap[ty*g_cmap_w+tx]!=0;",
-        "}",
+        "",
+        "/* Profil des types de tuiles — ÉMIS depuis core/models/collision_tiles.py,",
+        "   jamais écrit à la main ici : c'est la même géométrie que celle que",
+        "   l'éditeur dessine. `surface` porte l'ordonnée de la surface dans",
+        "   chacune des 8 colonnes de pixels ; pour un SOL la matière va de là au",
+        "   bas de la tuile (8 = colonne vide), pour un PLAFOND du haut jusque-là",
+        "   (0 = colonne vide). */",
+        "#define TK_EMPTY 0",
+        "#define TK_SOLID 1",
+        "#define TK_FLOOR 2",
+        "#define TK_CEIL  3",
+    ]
+    kinds = ", ".join(str(kind_of(t)) for t in range(TILE_COUNT))
+    L.append(f"static const u8 g_tile_kind[{TILE_COUNT}] = {{ {kinds} }};")
+    # Cosinus de la pente en virgule fixe 8 bits — 256 à plat. Un pas horizontal
+    # sur une pente parcourt √(1+p²) fois plus de distance qu'à plat ; c'est ce
+    # facteur qui le ramène à la distance demandée. Précalculé ici : pas de
+    # racine carrée à l'exécution, et la table est la même géométrie que le reste.
+    # u16 et non u8 : « plat » vaut 256, qui ne tient pas dans un octet.
+    scales = ", ".join(str(speed_scale(t)) for t in range(TILE_COUNT))
+    L.append(f"static const u16 g_tile_scale[{TILE_COUNT}] = {{ {scales} }};")
+    L.append(f"static const u8 g_tile_surface[{TILE_COUNT}][TILE_SIZE] = {{")
+    for t in range(TILE_COUNT):
+        row = ", ".join(f"{v}" for v in column_surfaces(t))
+        L.append(f"    {{ {row} }},")
+    L += [
+        "};",
+        "",
         "int tile_get(int px,int py){",
         "    if(!g_active_cmap) return 0;",
         "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
         "    if(tx<0||ty<0||tx>=g_cmap_w||ty>=g_cmap_h) return 0;",
         "    return (int)g_active_cmap[ty*g_cmap_w+tx];",
         "}",
+        "/* Le seul type qui REPOUSSE horizontalement. Une pente n'est pas un mur,",
+        "   sinon personne ne la gravirait : on y monte par la surface. */",
+        "static int tile_wall_at(int px,int py){",
+        "    if(!g_active_cmap) return 0;",
+        "    int tx=px/TILE_SIZE, ty=py/TILE_SIZE;",
+        "    if(tx<0||ty<0||tx>=g_cmap_w||ty>=g_cmap_h) return 1;",
+        "    return g_active_cmap[ty*g_cmap_w+tx]==TK_SOLID;",
+        "}",
+        "/* Ordonnée monde du DESSUS de la matière portant la colonne px.",
+        "",
+        "   Trois tuiles balayées de haut en bas, la PREMIÈRE trouvée gagnant : celle",
+        "   au-dessus des pieds, celle des pieds, celle du dessous. La tuile du DESSUS",
+        "   est indispensable — sur une pente, la matière de la colonne suivante vit",
+        "   dans la tuile d'au-dessus, et s'arrêter aux pieds fait décrocher l'acteur",
+        "   en pleine montée. Une surface plus haute que la box est écartée (`>=top`) :",
+        "   elle ne touche pas l'acteur, et l'y hisser le téléporterait sur une",
+        "   plateforme qu'il passait dessous.",
+        "",
+        "   Hors carte par le bas = plein : le monde est une boîte close, comme avant",
+        "   que la résolution ne connaisse les pentes. Sans ça un acteur qui rate une",
+        "   plateforme tombe indéfiniment — et son sprite reboucle en haut de l'écran,",
+        "   l'OAM ne codant Y que sur 8 bits. -1 = rien à portée. */",
+        "/* Type de la tuile qui a fourni la dernière surface rendue par",
+        "   tile_floor_at — c'est elle qui porte l'acteur, donc elle qui dit à",
+        "   quelle pente il marche. Rendu à côté plutôt qu'en valeur de retour :",
+        "   un seul appelant s'en sert, et le balayage n'est pas fait deux fois. */",
+        "static u8 g_floor_tile = 0;",
+        "static int tile_floor_at(int px,int top,int bot){",
+        "    g_floor_tile=0;",
+        "    if(!g_active_cmap) return -1;",
+        "    int tx=px/TILE_SIZE;",
+        "    if(tx<0||tx>=g_cmap_w) return -1;",
+        "    for(int i=-1;i<2;i++){",
+        "        int ty=bot/TILE_SIZE+i;",
+        "        if(ty<0) continue;",
+        "        if(ty>=g_cmap_h) return g_cmap_h*TILE_SIZE;",
+        "        int t=g_active_cmap[ty*g_cmap_w+tx];",
+        "        if(t==TK_SOLID){ if(ty*TILE_SIZE>=top){g_floor_tile=(u8)t; return ty*TILE_SIZE;} continue; }",
+        "        if(g_tile_kind[t]==TK_FLOOR){",
+        "            int s=g_tile_surface[t][px&(TILE_SIZE-1)];",
+        "            if(s<TILE_SIZE && ty*TILE_SIZE+s>=top){g_floor_tile=(u8)t; return ty*TILE_SIZE+s;}",
+        "        }",
+        "    }",
+        "    return -1;",
+        "}",
+        "/* Symétrique : ordonnée du DESSOUS de la matière au-dessus de la tête.",
+        "   Le balayage part de la tête et MONTE — jamais vers le bas, sinon le sol",
+        "   sur lequel l'acteur repose serait pris pour un plafond et le pousserait",
+        "   dedans. Hors carte par le haut = plein, même boîte close. */",
+        "static int tile_ceil_at(int px,int py){",
+        "    if(!g_active_cmap) return -1;",
+        "    int tx=px/TILE_SIZE;",
+        "    if(tx<0||tx>=g_cmap_w) return -1;",
+        "    for(int i=0;i<2;i++){",
+        "        int ty=py/TILE_SIZE-i;",
+        "        if(ty>=g_cmap_h) continue;",
+        "        if(ty<0) return 0;",
+        "        int t=g_active_cmap[ty*g_cmap_w+tx];",
+        "        if(t==TK_SOLID) return ty*TILE_SIZE+TILE_SIZE;",
+        "        if(g_tile_kind[t]==TK_CEIL){",
+        "            int s=g_tile_surface[t][px&(TILE_SIZE-1)];",
+        "            if(s>0) return ty*TILE_SIZE+s;",
+        "        }",
+        "    }",
+        "    return -1;",
+        "}",
         "typedef void (*TileCollideCb)(Actor*,int,int);",
+        "/* Résolution d'un acteur contre la carte (cf. ROADMAP v0.6.3).",
+        "   L'ordre est la règle : X d'abord — les pentes n'y font pas obstacle —",
+        "   puis Y, où la surface est cherchée en TROIS points (les deux coins bas",
+        "   et le centre), la plus haute l'emportant : un acteur large ne s'enfonce",
+        "   pas dans la pente et franchit une arête proprement.",
+        "   `cb` ne fait que PRÉVENIR : la vitesse est annulée dans tous les cas,",
+        "   écrire le hook ne désactive donc pas la physique. */",
         "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
+        "    if(!g_active_cmap) return;",
+        "    int was_grounded=a->grounded, dx=a->x-a->last_x;",
+        "    int moved=dx<0?-dx:dx;",
+        "    /* ── Vitesse constante LE LONG du sol ─────────────────────",
+        "       Un pas horizontal sur une pente parcourt √(1+p²) fois plus de",
+        "       distance qu'à plat : 114 % à 26°, 141 % à 45°, 224 % à 63°. Sans",
+        "       correction, plus la pente est raide plus le personnage paraît",
+        "       rapide. On ramène donc le pas au cosinus de la pente qu'il",
+        "       gravit, lu dans g_tile_scale.",
+        "",
+        "       Deux garde-fous, parce que le moteur DÉFAIT ici une partie de ce",
+        "       que le script a demandé :",
+        "         - il faut être au sol à la frame précédente — un saut, une",
+        "           chute ou un vol ne sont pas une marche ;",
+        "         - le pas doit tenir dans une tuile. Au-delà, la résolution ne",
+        "           prétend déjà plus rien (la sonde ne porte qu'à une tuile), et",
+        "           c'est là qu'un script téléporte plutôt qu'il ne marche.",
+        "       Le reste (1/256 de pixel) est REPORTÉ : sans lui, un pas de 2 px",
+        "       à 45° tomberait toujours sur 1 px, et le personnage ramperait au",
+        "       lieu d'aller 1,41 fois moins vite. */",
+        "    if(was_grounded && dx && moved<=TILE_SIZE){",
+        "        for(int i=0;i<a->box_count;i++){",
+        "            CollisionBox*b=&a->boxes[i];",
+        "            if(!b->solid) continue;",
+        "            int l=a->last_x+(int)b->x, r=l+(int)b->w-1;",
+        "            int t=a->y+(int)b->y;",
+        "            tile_floor_at((l+r)>>1, t, t+(int)b->h-1);",
+        "            int sc=g_tile_scale[g_floor_tile];",
+        "            if(sc<256){",
+        "                int want=dx*sc+a->slope_acc;",
+        "                int step=want/256;",
+        "                a->slope_acc=want-step*256;",
+        "                a->x=a->last_x+step;",
+        "            }",
+        "            break;",
+        "        }",
+        "    }else a->slope_acc=0;",
+        "    a->grounded=0;",
         "    for(int i=0;i<a->box_count;i++){",
         "        CollisionBox*b=&a->boxes[i];",
         "        if(!b->solid) continue;",
-        "        if(a->vy!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vy>0){",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,bot);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->y=(bot/TILE_SIZE)*TILE_SIZE-(int)b->y-(int)b->h;",
-        "                    if(cb)cb(a,0,1);else a->vy=0;}",
+        "        int left,right,top,bot;",
+        "        /* ── X : seuls les blocs pleins repoussent ───────────── */",
+        "        if(a->vx!=0){",
+        "            left=a->x+(int)b->x; right=left+(int)b->w-1;",
+        "            top =a->y+(int)b->y; bot  =top +(int)b->h-1;",
+        "            int hit=0;",
+        "            if(a->vx>0){",
+        "                for(int py=top;py<=bot&&!hit;py+=TILE_SIZE) hit=tile_wall_at(right,py);",
+        "                if(!hit) hit=tile_wall_at(right,bot);",
+        "                if(hit){a->x=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
+        "                    a->vx=0; if(cb)cb(a,1,0);}",
         "            }else{",
-        "                int hit=0;",
-        "                for(int px=left;px<=right&&!hit;px+=TILE_SIZE) hit=tile_solid_at(px,top);",
-        "                if(!hit) hit=tile_solid_at(right,top);",
-        "                if(hit){a->y=(top/TILE_SIZE+1)*TILE_SIZE-(int)b->y;",
-        "                    if(cb)cb(a,0,-1);else a->vy=0;}",
+        "                for(int py=top;py<=bot&&!hit;py+=TILE_SIZE) hit=tile_wall_at(left,py);",
+        "                if(!hit) hit=tile_wall_at(left,bot);",
+        "                if(hit){a->x=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
+        "                    a->vx=0; if(cb)cb(a,-1,0);}",
         "            }",
         "        }",
-        "        if(a->vx!=0){",
-        "            int left =a->x+(int)b->x; int right=left+(int)b->w-1;",
-        "            int top  =a->y+(int)b->y; int bot  =top +(int)b->h-1;",
-        "            if(a->vx>0){",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(right,px);",
-        "                if(!hit) hit=tile_solid_at(right,bot);",
-        "                if(hit){a->x=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
-        "                    if(cb)cb(a,1,0);else a->vx=0;}",
-        "            }else{",
-        "                int hit=0;",
-        "                for(int px=top;px<=bot&&!hit;px+=TILE_SIZE) hit=tile_solid_at(left,px);",
-        "                if(!hit) hit=tile_solid_at(left,bot);",
-        "                if(hit){a->x=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
-        "                    if(cb)cb(a,-1,0);else a->vx=0;}",
+        "        /* ── Plafond : la surface la plus BASSE arrête la tête ─ */",
+        "        left=a->x+(int)b->x; right=left+(int)b->w-1;",
+        "        top =a->y+(int)b->y; bot  =top +(int)b->h-1;",
+        "        if(a->vy<0){",
+        "            int c=-1;",
+        "            for(int k=0;k<3;k++){",
+        "                int px=(k==0)?left:((k==1)?((left+right)>>1):right);",
+        "                int cy=tile_ceil_at(px,top);",
+        "                if(cy>c) c=cy;",
+        "            }",
+        "            if(c>=0&&top<c){a->y=c-(int)b->y; a->vy=0; if(cb)cb(a,0,-1);}",
+        "        }",
+        "        /* ── Sol : la surface la plus HAUTE porte l'acteur ───── */",
+        "        top=a->y+(int)b->y; bot=top+(int)b->h-1;",
+        "        int g=-1;",
+        "        for(int k=0;k<3;k++){",
+        "            int px=(k==0)?left:((k==1)?((left+right)>>1):right);",
+        "            int gy=tile_floor_at(px,top,bot);",
+        "            if(gy>=0&&(g<0||gy<g)) g=gy;",
+        "        }",
+        "        if(g>=0){",
+        "            int feet=bot+1;",
+        "            if(feet>g){",
+        "                /* Pénétration : on remonte sur la surface. Aucun plafond",
+        "                   de marche — l'auteur a peint une pente, on la gravit. */",
+        "                a->y=g-(int)b->y-(int)b->h;",
+        "                if(a->vy>0) a->vy=0;",
+        "                a->grounded=1; if(cb)cb(a,0,1);",
+        "            }else if(feet==g){",
+        "                /* Pile sur la surface : au sol, et une vitesse vers le",
+        "                   bas n'a plus de sens — sans ça elle survit une frame",
+        "                   de plus et l'acteur retraverse le sol avant d'être",
+        "                   repoussé. */",
+        "                if(a->vy>0) a->vy=0;",
+        "                a->grounded=1;",
+        "            }else if(was_grounded&&a->vy>=0&&g-feet<=moved*2+1){",
+        "                /* Collage en descente : l'écart maximal qu'une pente à",
+        "                   63° peut creuser pour ce déplacement. Sans lui, toute",
+        "                   descente décolle et retombe, donc tressaute. */",
+        "                a->y=g-(int)b->y-(int)b->h;",
+        "                a->grounded=1;",
         "            }",
         "        }",
         "    }",
+        "    a->last_x=a->x;",
         "}",
         "",
     ]
+    return L
 
 
 # ─── Helpers affine / origine ─────────────────────────────────────────────────
+
+def _has_solid_box(owner) -> bool:
+    """Cet acteur (ou prefab) a-t-il une box PHYSIQUE ?
+
+    C'est ce qui lui donne droit à la résolution contre la carte de collision —
+    la définition que le modèle donne déjà de `solid` (cf. components.py)."""
+    return any(getattr(c, "solid", False) and getattr(c, "active", True)
+               and hasattr(c, "w") for c in getattr(owner, "components", []))
+
+
+def _scene_has_cmap(scene) -> bool:
+    """Carte de collision réellement peuplée — une grille de zéros n'est pas une
+    carte, et n'a rien à faire heurter."""
+    cmap = getattr(scene, "collision_map", None) or []
+    return any(v != 0 for row in cmap for v in row)
+
 
 def _get_sprite_comp(actor) -> "SpriteComponent | None":
     """Retourne le SpriteComponent d'un Actor/Prefab, ou None."""
@@ -853,6 +1038,78 @@ def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
     words = _layout_palette_words(scene_bank_layout(p, scene, "bg"))
     words[0] = _resolve_backdrop_color(p, scene)
     return words
+
+
+def camera_sym(name: str) -> str:
+    """Symbole C d'une caméra — préfixé, les caméras et les acteurs partageant
+    le même espace de noms C."""
+    return f"camera_{c_sym(name)}"
+
+
+def project_cameras(p) -> list:
+    """Les caméras du projet dans l'ordre de la TABLE runtime, `None` en tête.
+
+    Ce `None` est la caméra par défaut : fixe à l'origine, sans bornes ni
+    suivi, et sans fichier sur le disque — une scène qui n'en désigne aucune
+    tombe dessus. La donner comme entrée 0 plutôt que comme cas particulier
+    évite un `if` à chaque endroit qui active une caméra.
+
+    Source de vérité partagée : `main_gen` émet la table dans cet ordre et
+    `headers` en dérive les `#define CAM_*`, sinon `camera.switch` viserait la
+    mauvaise caméra."""
+    return [None] + list(getattr(p, "cameras", []))
+
+
+def scene_camera_index(p, scene) -> int:
+    """Index de la caméra de démarrage d'une scène dans la table runtime.
+
+    Un nom qui ne résout pas retombe sur 0 (la caméra par défaut) plutôt que de
+    faire échouer le build : le validateur signale la référence cassée, et un
+    jeu qui compile encore reste débuggable."""
+    name = getattr(scene, "camera", "")
+    if not name:
+        return 0
+    cams = project_cameras(p)
+    return next((i for i, c in enumerate(cams) if c is not None and c.name == name), 0)
+
+
+def camera_target_index(p, camera, scene_actors: list, actor_offset: int) -> int:
+    """Index dans `g_actors` de l'acteur suivi par cette caméra DANS CETTE
+    SCÈNE, ou -1.
+
+    Une caméra est réutilisable et cite sa cible par nom ; les noms d'acteurs
+    sont locaux à une scène. La résolution est donc faite par couple
+    (scène, caméra), et une scène sans acteur de ce nom laisse simplement la
+    caméra immobile."""
+    if camera is None or camera.mode != "follow" or not camera.follow_target:
+        return -1
+    local = next((j for j, (a, _) in enumerate(scene_actors)
+                  if a.name == camera.follow_target), None)
+    return -1 if local is None else actor_offset + local
+
+
+def _camera_follow_lines(p, scene, scene_actors: list, actor_offset: int) -> list[str]:
+    """Le suivi déclaratif de la frame, pour la caméra ACTIVE.
+
+    Un `switch` plutôt qu'une table de cibles lue au runtime : la cible et la
+    zone morte deviennent des constantes, et seules les caméras qui peuvent
+    réellement suivre quelqu'un DANS CETTE SCÈNE ont un cas. Une scène où
+    aucune caméra n'a de cible n'émet rien du tout."""
+    cases: list[str] = []
+    for i, cam in enumerate(project_cameras(p)):
+        t = camera_target_index(p, cam, scene_actors, actor_offset)
+        if t < 0:
+            continue
+        # Axe désactivé (scroll_h/scroll_v) : la cible sur cet axe devient
+        # cam_x/cam_y lui-même → écart nul → camera_follow ne le bouge pas.
+        tx = f"g_actors[{t}].x" if scene.scroll_h else "cam_x"
+        ty = f"g_actors[{t}].y" if scene.scroll_v else "cam_y"
+        cases.append(f"        case {i}: camera_follow({tx}, {ty}, "
+                     f"{int(cam.margin_x)}, {int(cam.margin_y)}); break;"
+                     f"   /* {cam.name} → {cam.follow_target} */")
+    if not cases:
+        return []
+    return ["    switch(g_cam_active){"] + cases + ["        default: break;", "    }"]
 
 
 def project_fonts(p) -> list:
@@ -1666,13 +1923,14 @@ def _gen_scene_init(
     # rendre — chaque frame — une zone appartenant à la mise en page d'une
     # autre scène (son texte réapparaît, son tempo se rejoue).
     L.append("    text_read_reset_all();")
-    # Caméra — position de départ + bornes de monde (0 = axe illimité côté
-    # C). Réinitialisées à chaque scène : cam_x/cam_y ne doivent pas hériter
-    # de la scène précédente (cf. project_camera_abstraction).
-    L.append(f"    cam_x = {int(scene.cam_x)}; cam_y = {int(scene.cam_y)};")
-    L.append(f"    camera_set_bounds({int(scene.cam_bounds_w or 0)}, {int(scene.cam_bounds_h or 0)});")
+    # Caméra de démarrage. L'activation pose cadrage ET bornes, et rejoue le
+    # on_start de la caméra : une scène n'hérite donc jamais du cadrage de la
+    # précédente, et un script peut basculer ailleurs ensuite (camera.switch).
+    _cam_idx = scene_camera_index(p, scene)
+    _cam_name = getattr(scene, "camera", "") or "(default)"
+    L.append(f"    camera_switch({_cam_idx});   /* {_cam_name} */")
     # Cmap dispatch
-    if scene.collision_map and any(v != 0 for row in scene.collision_map for v in row):
+    if _scene_has_cmap(scene):
         L.append(f"    g_active_cmap = g_cmap_{sym};")
         L.append(f"    g_cmap_w = CMAP_W_{sym.upper()};")
         L.append(f"    g_cmap_h = CMAP_H_{sym.upper()};")
@@ -2062,18 +2320,27 @@ def _gen_scene_tick(
             L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
             L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_update(&g_actors[_pi]);")
 
-    # Tile resolution actors scène (seulement si on_tile_collide défini)
-    for j in sorted(lua_idx):
-        actor, _ = scene_actors[j - actor_offset]
-        s = c_sym(actor.name)
-        if _def(s, "on_tile_collide"):
-            L.append(f"    if(g_actors[{j}].active) resolve_actor_tiles(&g_actors[{j}],{s}_on_tile_collide);")
+    # Résolution contre la carte de collision — pour TOUTE box solide, et non
+    # plus seulement pour les acteurs qui définissent `on_tile_collide` : la
+    # résolution DÉPLACE l'acteur, le hook ne fait que prévenir. C'est aussi ce
+    # que le modèle promet depuis toujours (« solid=True → résolution physique »).
+    # Rien n'est émis si la scène n'a pas de carte : il n'y aurait rien à heurter.
+    if _scene_has_cmap(scene):
+        for j in range(len(scene_actors)):
+            actor, _ = scene_actors[j]
+            if not _has_solid_box(actor):
+                continue
+            idx = actor_offset + j
+            s = c_sym(actor.name)
+            cb = f"{s}_on_tile_collide" if (idx in lua_idx and _def(s, "on_tile_collide")) else "NULL"
+            L.append(f"    if(g_actors[{idx}].active) resolve_actor_tiles(&g_actors[{idx}], {cb});")
 
-    # Tile resolution prefabs
-    for p2 in pi:
-        if _def(p2["sym"], "on_tile_collide"):
+        for p2 in pi:
+            if not _has_solid_box(p2["prefab"]):
+                continue
+            cb = f"{p2['sym']}_on_tile_collide" if _def(p2["sym"], "on_tile_collide") else "NULL"
             L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
-            L.append(f"        if(g_actors[_pi].active) resolve_actor_tiles(&g_actors[_pi], {p2['sym']}_on_tile_collide);")
+            L.append(f"        if(g_actors[_pi].active) resolve_actor_tiles(&g_actors[_pi], {cb});")
 
     # Pool→scene collisions
     col_scene = [
@@ -2168,24 +2435,24 @@ def _gen_scene_tick(
     if getattr(scene, "script", ""):
         L.append(f"    {sym}_scene_on_late_update();")
 
-    # Caméra — un seul point d'écriture (camera_follow), qu'il soit déclenché
-    # ici (mode "follow" authoré) ou par un script (camera.set/follow) en mode
-    # "script". Les bornes de monde sont appliquées inconditionnellement par
-    # camera_apply_bounds() juste après, peu importe qui a écrit cam_x/cam_y
-    # cette frame-là — un seul point de vérité (cf. project_camera_abstraction).
-    cam_mode = getattr(scene, "cam_mode", "follow" if scene.cam_follow else "fixed")
-    if cam_mode == "follow" and scene.cam_follow:
-        follow_local = next((j for j, (a, _) in enumerate(scene_actors) if a.name == scene.cam_follow), None)
-        if follow_local is not None:
-            follow_idx = actor_offset + follow_local
-            mx = int(getattr(scene, "cam_margin_x", 40))
-            my = int(getattr(scene, "cam_margin_y", 20))
-            # Axe désactivé (scroll_h/scroll_v) : on donne cam_x/cam_y lui-même
-            # comme cible sur cet axe → écart nul → camera_follow ne le bouge pas.
-            tx = f"g_actors[{follow_idx}].x" if scene.scroll_h else "cam_x"
-            ty = f"g_actors[{follow_idx}].y" if scene.scroll_v else "cam_y"
-            L.append(f"    camera_follow({tx}, {ty}, {mx}, {my});")
+    # Caméra — l'ordre est la règle, et il tient en quatre lignes :
+    #   1. la secousse de la frame précédente est retirée, pour que le suivi
+    #      raisonne sur la vraie position et non sur une position tremblée ;
+    #   2. le DÉCLARATIF est calculé (suivi par zone morte, si la caméra active
+    #      est en mode suivi et que sa cible existe dans cette scène) ;
+    #   3. le SCRIPT de la caméra s'exécute ensuite — il peut donc ajuster ce
+    #      que le déclaratif vient de poser, ce qui rend l'usage purement
+    #      déclaratif, purement scripté ou hybride sans réglage de bascule ;
+    #   4. les bornes clampent en dernier, peu importe qui a écrit cam_x/cam_y,
+    #      puis la secousse se pose PAR-DESSUS le clamp — trembler au bord du
+    #      monde doit se voir.
+    # Le tout lit `g_cam_active` : c'est ce qui permet à un script de changer de
+    # caméra en cours de partie (camera.switch) sans que le tick soit regénéré.
+    L.append("    camera_shake_undo();")
+    L += _camera_follow_lines(p, scene, scene_actors, actor_offset)
+    L.append("    if(g_cam_table[g_cam_active].on_update) g_cam_table[g_cam_active].on_update();")
     L.append("    camera_apply_bounds();")
+    L.append("    camera_shake_apply();")
 
     # BG scroll offset H+V (+ streaming des bords pour un grand niveau)
     if bgi:
@@ -2476,6 +2743,35 @@ def generate_main(
             ]
     L.append("")
 
+    # ── Caméras du projet ────────────────────────────────────────
+    # Une caméra est une DONNÉE : la table ci-dessous en est la forme runtime,
+    # l'entrée 0 étant toujours la caméra par défaut (fixe à l'origine, sans
+    # bornes) — celle qu'obtient une scène qui n'en désigne aucune, sans
+    # qu'aucun fichier n'ait à exister.
+    cams = project_cameras(p)
+    for cam in cams[1:]:
+        if getattr(cam, "script", ""):
+            cs = camera_sym(cam.name)
+            L += [
+                f"extern void {cs}_camera_on_start(void);",
+                f"extern void {cs}_camera_on_update(void);",
+            ]
+    L.append(f"const Camera g_cam_table[{len(cams)}] = {{")
+    for cam in cams:
+        if cam is None:
+            L.append("    { 0, 40, 20, 0, 0, 0, 0, NULL, NULL },   /* (default) */")
+            continue
+        cs = camera_sym(cam.name)
+        hooks = (f"{cs}_camera_on_start, {cs}_camera_on_update"
+                 if getattr(cam, "script", "") else "NULL, NULL")
+        L.append(
+            f"    {{ {cam.mode_id()}, {int(cam.margin_x)}, {int(cam.margin_y)}, "
+            f"{int(cam.x)}, {int(cam.y)}, "
+            f"{int(cam.bounds_w or 0)}, {int(cam.bounds_h or 0)}, {hooks} }},"
+            f"   /* {cam.name} — {cam.mode} */"
+        )
+    L += ["};", ""]
+
     # ── Polices + table des textes ───────────────────────────────
     L += _fonts_and_texts_lines(p, emit)
 
@@ -2569,6 +2865,12 @@ def generate_main(
         "u32   _g_keys_pressed = 0;",
         "int   cam_x = 0, cam_y = 0;",
         "int   g_cam_max_x = -1, g_cam_max_y = -1;",
+        "int   g_cam_active = 0;",
+        # État de la secousse — un événement en cours, pas un réglage : il vit
+        # ici et non dans la table des caméras (cf. actor_api_static.h).
+        "int   g_shake_amp = 0, g_shake_left = 0, g_shake_total = 1;",
+        "int   g_shake_dx = 0, g_shake_dy = 0;",
+        "u32   g_shake_seed = 2463534242u;",
         "int   _g_frame = 0;",
         "int   g_current_scene = -1;",
         "int   g_next_scene    = -1;",
@@ -2657,14 +2959,62 @@ def generate_main(
         )
 
     # ── Dispatch table ────────────────────────────────────────────
-    L += [
-        "typedef struct { void(*init)(void); void(*tick)(void); } _SceneVtable;",
-        f"static const _SceneVtable g_scene_vtable[{len(all_scene_data)}] = {{",
-    ]
+    # `trans_mode`/`trans_frames` : la transition de CETTE scène, employée
+    # aussi bien quand on la quitte (fermeture) que quand on l'ouvre
+    # (ouverture) — chaque scène décrit sa propre disparition et sa propre
+    # apparition, cf. ROADMAP v0.6.2. L'héritage projet→scène est résolu ici :
+    # le runtime ne connaît pas la notion.
+    from core.models.scene import TRANSITION_MODES, transition_of
+    n_scenes = len(all_scene_data)
+    trans = []   # (mode BLDCNT, durée d'une moitié) par scène
     for d in all_scene_data:
+        kind, frames = transition_of(d["scene"], p.settings)
+        trans.append((TRANSITION_MODES.get(kind, 0), min(255, max(1, frames)), kind))
+    # Aucune scène n'a de transition → rien de tout ceci n'est émis : un projet
+    # qui n'en veut pas garde la bascule sèche d'avant, au bit près.
+    has_transitions = any(m for m, _, _ in trans)
+
+    if has_transitions:
+        L += [
+            "typedef struct { void(*init)(void); void(*tick)(void);",
+            "                 u8 trans_mode; u8 trans_frames; } _SceneVtable;",
+        ]
+    else:
+        L.append("typedef struct { void(*init)(void); void(*tick)(void); } _SceneVtable;")
+    L.append(f"static const _SceneVtable g_scene_vtable[{n_scenes}] = {{")
+    for d, (mode, frames, kind) in zip(all_scene_data, trans):
         sym = c_sym(d["scene"].name)
-        L.append(f"    {{ scene_init_{sym}, scene_tick_{sym} }},")
+        entry = f"    {{ scene_init_{sym}, scene_tick_{sym}"
+        entry += f", {mode}, {frames} }},   /* transition : {kind} */" if has_transitions else " },"
+        L.append(entry)
     L += ["};", ""]
+
+    if has_transitions:
+        L += [
+            "/* ── Transition de scène (cf. ROADMAP v0.6.2) ──────────────────── */",
+            "/* Phase 0 = aucune, 1 = fermeture (la scène sortante est gelée),",
+            "   2 = ouverture. L'intensité va de 0 (net) à 16 (éteint). */",
+            "static int g_trans_phase = 0, g_trans_i = 0, g_trans_n = 1;",
+            "",
+            "/* Bascule effective. L'écran est déjà éteint quand scene_init tourne :",
+            "   son display_reset() n'écrit que dans les shadows tant que la",
+            "   transition possède les registres, donc la scène entrante ne",
+            "   surgit pas en pleine lumière au milieu de son chargement. */",
+            "static void scene_enter(void){",
+            "    int m = 0, n = 1;",
+            f"    if(g_next_scene>=0 && g_next_scene<{n_scenes}){{",
+            "        m = g_scene_vtable[g_next_scene].trans_mode;",
+            "        n = g_scene_vtable[g_next_scene].trans_frames;",
+            "    }",
+            "    if(m){ transition_begin(m); transition_fade(16); }",
+            "    g_current_scene = g_next_scene;",
+            f"    if(g_current_scene>=0 && g_current_scene<{n_scenes})",
+            "        g_scene_vtable[g_current_scene].init();",
+            "    if(m){ g_trans_i = n; g_trans_n = n; g_trans_phase = 2; }",
+            "    else { transition_end(); g_trans_phase = 0; }",
+            "}",
+            "",
+        ]
 
     # ── main() ────────────────────────────────────────────────────
     L.append("int main(void){")
@@ -2697,23 +3047,58 @@ def generate_main(
             ss = f"sprite_{c_sym(name)}"
             L.append(f"    copy16(OBJ_VRAM+{base}*16, {ss}Tiles, {ss}TilesLen);")
 
+    L.append(f"    g_next_scene = {start_idx};   /* {start_scene} */")
+    L.append("    while(1){")
+    if has_transitions:
+        L += [
+            "        /* Fermeture : la scène qu'on QUITTE décide du fondu, et gèle",
+            "           pendant celui-ci. Rien à jouer → bascule immédiate. */",
+            "        if(g_trans_phase==0 && g_next_scene!=g_current_scene){",
+            "            int m = (g_current_scene>=0 && g_current_scene<"
+            f"{n_scenes}) ? g_scene_vtable[g_current_scene].trans_mode : 0;",
+            "            if(m){",
+            "                g_trans_phase = 1; g_trans_i = 0;",
+            "                g_trans_n = g_scene_vtable[g_current_scene].trans_frames;",
+            "                transition_begin(m); transition_fade(0);",
+            "            } else scene_enter();",
+            "        }",
+        ]
+    else:
+        L += [
+            "        if(g_next_scene != g_current_scene){",
+            "            g_current_scene = g_next_scene;",
+            f"            if(g_current_scene>=0 && g_current_scene<{n_scenes})",
+            "                g_scene_vtable[g_current_scene].init();",
+            "        }",
+        ]
+    L.append("        VBlankIntrWait();")
+    if has_sound and soundbank_h.exists():
+        L.append("        mmFrame();   /* doc maxmod.h : _doit_ être appelée chaque frame */")
     L += [
-        f"    g_next_scene = {start_idx};   /* {start_scene} */",
-        "    while(1){",
-        "        if(g_next_scene != g_current_scene){",
-        "            g_current_scene = g_next_scene;",
-        f"            if(g_current_scene>=0 && g_current_scene<{len(all_scene_data)})",
-        "                g_scene_vtable[g_current_scene].init();",
-        "        }",
-        "        VBlankIntrWait();",
-    ] + ([
-        "        mmFrame();   /* doc maxmod.h : _doit_ être appelée chaque frame */",
-    ] if has_sound and soundbank_h.exists() else []) + [
         "        _g_frame++;",
         "        scanKeys();",
         "        _g_keys_held    = keysHeld();",
         "        _g_keys_pressed = keysDown();",
-        f"        if(g_current_scene>=0 && g_current_scene<{len(all_scene_data)})",
+    ]
+    if has_transitions:
+        # La musique et le compteur de frames continuent pendant le fondu : une
+        # transition est un effet d'affichage, pas une pause du moteur. Seul le
+        # tick de la scène s'arrête, et seulement à la fermeture.
+        L += [
+            "        if(g_trans_phase==1){",
+            "            g_trans_i++;",
+            "            transition_fade((16*g_trans_i)/g_trans_n);",
+            "            if(g_trans_i>=g_trans_n) scene_enter();",
+            "            continue;   /* la scène sortante est gelée */",
+            "        }",
+            "        if(g_trans_phase==2){",
+            "            g_trans_i--;",
+            "            transition_fade((16*g_trans_i)/g_trans_n);",
+            "            if(g_trans_i<=0){ transition_end(); g_trans_phase = 0; }",
+            "        }",
+        ]
+    L += [
+        f"        if(g_current_scene>=0 && g_current_scene<{n_scenes})",
         "            g_scene_vtable[g_current_scene].tick();",
         "    }",
         "    return 0;",

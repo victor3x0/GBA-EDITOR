@@ -91,6 +91,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_blend(ctx)
     _check_ui_panel_fill(ctx)
     _check_scene_font(ctx)
+    _check_cameras(ctx)
     _check_screen_space(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
@@ -160,7 +161,7 @@ def _check_api_prototypes(ctx: ValidationContext):
     La règle est DÉRIVÉE, pas listée : est exigé dans le second en-tête ce qui
     est déjà présent dans le premier. Les fonctions résolues ailleurs (méthodes
     d'actor, `scene_switch`, `sfx_play`, helpers de globals — générés dans
-    `actor_api.h` ou déclarés dans `runtime.h`) ne sont donc pas testées, sans
+    `actor_api.h`) ne sont donc pas testées, sans
     qu'on ait à les énumérer ni à maintenir une liste d'exceptions.
 
     Erreur et non avertissement : le lien est garanti perdu, autant le dire
@@ -585,6 +586,41 @@ def _check_ui_panel_fill(ctx: ValidationContext):
                     f"promet plus que le build ne tient.")
 
 
+def _check_cameras(ctx: ValidationContext):
+    """Deux références de caméra peuvent mentir, et aucune ne fait échouer le
+    build — d'où deux avertissements plutôt qu'un silence.
+
+    ① La scène désigne une caméra qui n'existe plus : elle retombe sur la
+      caméra par défaut, donc un cadrage à l'origine sans bornes.
+    ② Une caméra en suivi cite un acteur par nom, et les noms d'acteurs sont
+      LOCAUX à une scène : une caméra réutilisée dans une scène où cet acteur
+      n'existe pas y reste immobile, sans que rien ne le dise en jeu."""
+    p = ctx.project
+    known = {c.name for c in getattr(p, "cameras", [])}
+    # ⓪ Suivre PERSONNE — le mode le plus courant à moitié réglé : la caméra
+    # se comporte exactement comme une caméra fixe, sans que rien ne le dise.
+    for cam in getattr(p, "cameras", []):
+        if cam.mode == "follow" and not cam.follow_target:
+            ctx.warn(None,
+                f"Caméra « {cam.name} » : mode suivi sans acteur cible — elle se "
+                f"comportera comme une caméra fixe.")
+    for scene in p.scenes:
+        want = getattr(scene, "camera", "") or ""
+        if want and want not in known:
+            ctx.warn(None,
+                f"Scène '{scene.name}' : la caméra « {want} » n'existe plus — la "
+                f"scène repart de la caméra par défaut (fixe à l'origine, sans bornes).")
+            continue
+        cam = p.get_camera(want) if want else None
+        if cam is None or cam.mode != "follow" or not cam.follow_target:
+            continue
+        if not any(a.name == cam.follow_target for a in getattr(scene, "actors", []) or []):
+            ctx.warn(None,
+                f"Scène '{scene.name}' : la caméra « {cam.name} » suit "
+                f"« {cam.follow_target} », qui n'est pas un acteur de cette scène — "
+                f"la caméra y restera immobile.")
+
+
 def _check_scene_font(ctx: ValidationContext):
     """`Scene.font_name` désigne la police que `scene_init` charge. Un nom qui
     ne répond pas retombe sur la première police encodable du projet — il FAUT
@@ -642,12 +678,13 @@ def _check_screen_space(ctx: ValidationContext):
                     f"pixels de MONDE, la hitbox testera donc une autre case que "
                     f"celle qu'on voit. Retirer la CollisionBox, ou l'ancrage écran.")
             # ② Caméra — suivre une position d'écran fige la caméra sur place.
-            if (getattr(scene, "cam_mode", "") == "follow"
-                    and getattr(scene, "cam_follow", "") == actor.name):
+            _cam = p.scene_camera(scene) if hasattr(p, "scene_camera") else None
+            if (_cam is not None and _cam.mode == "follow"
+                    and _cam.follow_target == actor.name):
                 ctx.warn(actor,
-                    f"Scène '{scene.name}' : la caméra suit '{actor.name}', qui est "
-                    f"ancré à l'écran — sa position ne bouge pas avec le monde, la "
-                    f"caméra restera donc immobile. Cibler un acteur de monde.")
+                    f"Scène '{scene.name}' : la caméra '{_cam.name}' suit '{actor.name}', "
+                    f"qui est ancré à l'écran — sa position ne bouge pas avec le monde, "
+                    f"la caméra restera donc immobile. Cibler un acteur de monde.")
             # ③ Zone d'UI ancrée SUR cet acteur — `text_region_origin()` retranche
             # la caméra pour une ancre acteur (elle la suppose dans le monde) ;
             # sur un acteur d'écran ça décale la zone du scroll courant.

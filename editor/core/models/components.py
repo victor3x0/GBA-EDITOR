@@ -14,8 +14,19 @@ class CollisionBoxComponent:
     """
     Boîte de collision AABB attachée à un Actor.
 
-    solid=True  → résolution physique (repousse les autres actors solides)
-    solid=False → trigger pur : détecte les overlaps sans bloquer
+    `solid` décide d'UNE chose et d'une seule : cette box est-elle arrêtée par la
+    CARTE DE COLLISION de la scène (murs, pentes, plafonds) ?
+
+        solid=True  → l'acteur est repoussé par les tuiles, se pose sur les
+                      pentes, se cogne aux plafonds (cf. ROADMAP v0.6.3)
+        solid=False → la carte l'ignore : à un script de gérer les tuiles s'il
+                      le veut, via `tile.get`
+
+    Les collisions acteur-contre-acteur ne le consultent PAS : les callbacks
+    ci-dessous se déclenchent au recouvrement, quelle que soit la valeur. La
+    docstring a longtemps prétendu que `solid` « repoussait les autres actors
+    solides » — aucune ligne du runtime ne l'a jamais fait, et la v0.6.3 l'a
+    découvert en cherchant qui avait droit à la résolution.
 
     Callbacks Lua appelés par le runtime C :
         onCollisionEnter(other_id)  — actor solide entre en contact
@@ -30,7 +41,7 @@ class CollisionBoxComponent:
     """
     id: str = "collision"
     active: bool = True
-    solid: bool = True      # True = physique, False = trigger
+    solid: bool = True      # arrêté par la carte de collision (cf. docstring)
     tag: str = "body"       # ex: "body", "ground_check", "hitbox", "hurtbox"
     x: int = 0              # offset relatif au pivot du sprite (pixels)
     y: int = 0

@@ -71,8 +71,8 @@ Première version stable de **GBA Editor**.
 - **v0.2** ✅ : Gestion des palettes de couleurs
 - **v0.3** ✅ : Fondations runtime "background vivant" (layers, fenêtres, fondus) + Texte & UI in-game (polices custom, table de textes balisée, interface dessinée au canvas)
 - **v0.4** ✅ : Animation de décor (fonds animés posés au canvas, couleurs d'une scène pilotables au script)
-- **v0.5** : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
-- **v0.6** : Polish de la boucle de jeu (caméra, transitions, pentes)
+- **v0.5** ✅ : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
+- **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds)
 - **v0.7** : Son enrichi & écran de mixage (SFX/musique, pitch, volume par canal)
 - **v0.8** : Traduction des jeux depuis l'interface avec l'éditeur
 - **v0.9** : Distribution élargie (Linux)
@@ -83,7 +83,12 @@ Première version stable de **GBA Editor**.
 Fonctionnalités envisagées :
 
 - Backgrounds affines ("Mode 7"), rotation et zoom des couches de fond.
-- Support des modes bitmap (modes vidéo 3, 4 et 5) pour le rendu en framebuffer.
+- Physique et collision : gravité, milieux (air, viscosité), collision par normale, formes
+  cercle et maillage, import d'une carte de collision depuis une image.
+- Distorsion d'image par ligne (eau, chaleur, vitesse).
+- Un **second moteur de rendu**, en 3D logicielle sur framebuffer (modes bitmap), à côté du
+  moteur 2D actuel — avec pour objectif qu'un jeu du niveau de V-Rally 3 soit constructible
+  avec l'éditeur.
 - Support du câble Link (multijoueur)
 - Nouveaux outils d'édition
 - Optimisations du runtime

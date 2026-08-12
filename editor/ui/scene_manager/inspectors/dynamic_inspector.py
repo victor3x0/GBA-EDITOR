@@ -363,6 +363,7 @@ class DynamicInspector(QWidget):
         """Injecté par window.py pour ouvrir un script depuis la vue ScriptUses."""
         self._script_open_fn = fn
         self._actor_insp._script_open_fn = fn
+        self._camera_insp.set_script_open_fn(fn)
 
     def update_actor_position(self, x: int, y: int):
         self._actor_insp.update_position(x, y)

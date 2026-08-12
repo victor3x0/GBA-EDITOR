@@ -21,10 +21,10 @@ static inline int  camera_get_x(void)        { return cam_x; }
 static inline int  camera_get_y(void)        { return cam_y; }
 
 /* Bornes de scroll (taille du monde en pixels) — g_cam_max_x/y (définis dans
-   main.c comme cam_x/cam_y) valent -1 par défaut (axe illimité). Réglées par
-   scene_init depuis Scene.cam_bounds_w/h, ou par un script via
-   camera.set_bounds() (ex: débloquer une nouvelle zone au runtime). Minimum
-   toujours 0 (origine du monde). */
+   main.c comme cam_x/cam_y) valent -1 par défaut (axe illimité).
+   Réglées à l'activation d'une caméra (camera_switch, depuis ses bounds_w/h)
+   ou par un script via camera.set_bounds() — débloquer une nouvelle zone au
+   runtime, par exemple. Minimum toujours 0 (origine du monde). */
 extern int g_cam_max_x, g_cam_max_y;
 static inline void camera_set_bounds(int world_w, int world_h) {
     g_cam_max_x = (world_w > 0) ? world_w - SCREEN_W : -1;
@@ -37,6 +37,77 @@ static inline void camera_set_bounds(int world_w, int world_h) {
 static inline void camera_apply_bounds(void) {
     if (g_cam_max_x >= 0) { if (cam_x < 0) cam_x = 0; if (cam_x > g_cam_max_x) cam_x = g_cam_max_x; }
     if (g_cam_max_y >= 0) { if (cam_y < 0) cam_y = 0; if (cam_y > g_cam_max_y) cam_y = g_cam_max_y; }
+}
+
+/* ── Caméras nommées ─────────────────────────────────────────────
+   Une configuration de cadrage est une DONNÉE (un asset de l'éditeur), pas du
+   code : la table ci-dessous est émise dans main.c, une entrée par caméra du
+   projet, l'entrée 0 étant toujours la caméra par défaut. Une seule est active
+   à la fois — la GBA n'a qu'un écran.
+
+   `mode` : 0 fixe, 1 suivi, 2 script. La CIBLE du suivi n'est pas ici : elle
+   est un index d'acteur, donc propre à chaque scène, et vit dans une table par
+   scène émise à côté du tick. */
+typedef struct {
+    u8  mode;
+    u8  margin_x, margin_y;   /* zone morte du suivi */
+    s16 x, y;                 /* cadrage posé à l'activation */
+    s16 bounds_w, bounds_h;   /* taille du monde ; 0 = axe illimité */
+    void (*on_start)(void);   /* script de la caméra, ou NULL */
+    void (*on_update)(void);
+} Camera;
+
+extern const Camera g_cam_table[];
+extern int g_cam_active;
+
+/* Activer une caméra POSE son cadrage et ses bornes : c'est ce que « caméra
+   fixe » veut dire, et une caméra en suivi se recale dans la frame même. Les
+   bornes ne sont donc écrites qu'ici — un script qui appelle camera.set_bounds
+   ensuite garde la main jusqu'à la prochaine activation. */
+static inline void camera_switch(int idx) {
+    if (idx < 0) return;
+    const Camera *c = &g_cam_table[idx];
+    g_cam_active = idx;
+    cam_x = c->x; cam_y = c->y;
+    camera_set_bounds(c->bounds_w, c->bounds_h);
+    if (c->on_start) c->on_start();
+}
+
+/* ── Secousse ────────────────────────────────────────────────────
+   Un ÉVÉNEMENT, pas un état de la caméra : ses valeurs vivent à l'appel.
+   L'amplitude retombe linéairement à zéro sur la durée — c'est la décroissance,
+   sans troisième réglage à comprendre.
+
+   Le décalage est appliqué APRÈS le clamp aux bornes (une secousse au bord du
+   monde doit se voir) et RETIRÉ au début de la frame suivante : la logique de
+   suivi ne voit donc jamais une caméra tremblée, et rien d'autre dans le moteur
+   n'a à connaître la secousse. */
+extern int g_shake_amp, g_shake_left, g_shake_total, g_shake_dx, g_shake_dy;
+extern u32 g_shake_seed;
+
+static inline void camera_shake(int amplitude, int frames) {
+    if (amplitude <= 0 || frames <= 0) { g_shake_left = 0; return; }
+    g_shake_amp = amplitude; g_shake_left = frames; g_shake_total = frames;
+}
+
+static inline int _shake_offset(int a) {
+    g_shake_seed = g_shake_seed * 1664525u + 1013904223u;
+    return (int)((g_shake_seed >> 16) % (u32)(2 * a + 1)) - a;
+}
+
+static inline void camera_shake_undo(void) {
+    cam_x -= g_shake_dx; cam_y -= g_shake_dy;
+    g_shake_dx = 0; g_shake_dy = 0;
+}
+
+static inline void camera_shake_apply(void) {
+    if (g_shake_left <= 0) return;
+    g_shake_left--;
+    int a = (g_shake_amp * g_shake_left) / g_shake_total;
+    if (a <= 0) return;
+    g_shake_dx = _shake_offset(a);
+    g_shake_dy = _shake_offset(a);
+    cam_x += g_shake_dx; cam_y += g_shake_dy;
 }
 
 /* Mouvement */
@@ -160,8 +231,11 @@ static inline void camera_follow(int tx, int ty, int mx, int my) {
 /* Usage codegen : broadcast(tag, value) — résolu statiquement dans main.c. */
 /* Note : broadcast est résolu directement dans le codegen de chaque scène. */
 
-/* tile_solid_at exposée pour les scripts (définie dans main.c) */
-extern int tile_solid_at(int px, int py);
+/* (`tile_solid_at` a été retirée : elle répondait « il y a quelque chose ici »
+   sans distinguer un bloc plein d'une pente, ce qui n'a plus de sens depuis que
+   la résolution connaît la géométrie. Son dernier appelant était
+   `actor_on_ground`, et aucune entrée de l'API Lua ne la citait. Un script qui
+   veut inspecter la carte lit `tile.get`.) */
 
 /* Layers BG vivants — définis dans main.c via GBA_ENGINE_IMPL (gba_engine.h).
    `bg` = bg_slot 0-3 ; tx/ty en tuiles dans la map du layer. */
@@ -259,18 +333,17 @@ extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
    Remplacements : text_draw (libellé, depuis la table) et text_draw_num
    (valeur). */
 
-/* Vrai si au moins une solid box a un tile solide juste dessous */
-static inline int actor_on_ground(const Actor*a) {
-    for (int i=0; i<a->box_count; i++) {
-        if (!a->boxes[i].solid) continue;
-        int left =a->x+(int)a->boxes[i].x;
-        int right=left+(int)a->boxes[i].w-1;
-        int bot  =a->y+(int)a->boxes[i].y+(int)a->boxes[i].h;
-        for (int px=left; px<=right; px+=8)
-            if (tile_solid_at(px,bot)) return 1;
-        if (tile_solid_at(right,bot)) return 1;
-    }
-    return 0;
-}
+/* Y a-t-il un sol sous les pieds ?
+
+   Lecture du drapeau posé par la résolution contre la carte de collision, et
+   non un nouveau balayage : la résolution connaît les PENTES, un balayage de
+   `tile_solid_at` répondrait « non » sur toute pente puisque celle-ci n'est
+   solide que dans une partie de sa colonne.
+
+   L'état est donc celui de la FIN de la frame précédente — la résolution
+   s'exécute après les `on_update`. C'est le contrat normal d'un état de
+   collision, et le seul possible : pendant `on_update`, l'acteur n'a pas encore
+   fini de bouger. */
+static inline int actor_on_ground(const Actor*a) { return a->grounded; }
 
 #endif /* ACTOR_API_STATIC_H */

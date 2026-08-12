@@ -481,6 +481,21 @@ void blend_set_backdrop(int side, int on);
 void blend_set_alpha   (int eva, int evb);   /* 0-16 chacun, mode 1 */
 void blend_set_fade    (int evy);            /* 0-16, modes 2 et 3 */
 
+/* ── Transition de scène ─────────────────────────────────────────── */
+/* Un fondu de transition prend le blending POUR LUI le temps de la bascule :
+   BLDCNT n'a qu'un champ mode, il n'existe pas de fondu par-dessus une
+   translucidité (cf. ROADMAP v0.6.2). D'où l'instantané — le réglage authoré
+   de la scène est repris tel quel à la fin.
+
+   `mode` vaut 2 (vers le blanc) ou 3 (vers le noir). Entre begin et end, les
+   registres appartiennent au fondu : le display_reset() de scene_init écrit
+   alors dans les shadows sans rallumer l'écran, et le réglage de la scène
+   entrante prend effet d'un coup à la fin. Appelées par la boucle principale
+   générée, jamais par un script. */
+void transition_begin(int mode);
+void transition_fade (int evy);   /* 0-16, sans toucher au réglage de la scène */
+void transition_end  (void);
+
 /* ── Shadow OAM ──────────────────────────────────────────────────── */
 /* Déclarée ici et non en fin de fichier : le rendu de texte en sprites y écrit,
    et il est défini plus bas. */
@@ -2669,29 +2684,43 @@ void ui_image_show(int img, int on) {
 /* BLDCNT : bits 0-5 = cibles du dessus (BG0-3, OBJ, backdrop),
             bits 6-7 = mode, bits 8-13 = cibles du dessous.
    BLDALPHA : bits 0-4 = eva (dessus), bits 8-12 = evb (dessous), 0-16.
-   BLDY : bits 0-4 = evy, 0-16. Write-only, d'où la shadow des deux autres
-   seulement — evy n'a pas de lecteur. */
+   BLDY : bits 0-4 = evy, 0-16. Les trois registres sont shadowés — BLDY est
+   write-only et n'avait pas de lecteur jusqu'à ce qu'une transition de scène
+   ait besoin de RENDRE son intensité à la scène après le fondu. */
 
-static u16 g_bldcnt_sh, g_bldalpha_sh;
+static u16 g_bldcnt_sh, g_bldalpha_sh, g_bldy_sh;
+static int g_trans_owns;   /* 1 = une transition possède les registres */
+
+/* Le SEUL endroit qui écrive les trois registres de mélange. Pendant une
+   transition, le fondu les possède : les shadows continuent d'enregistrer le
+   réglage authoré de la scène (y compris celui que scene_init pose derrière
+   l'écran éteint), mais rien ne descend au matériel avant transition_end().
+   Sans ce point unique, le display_reset() de scene_init rallumerait l'écran
+   au milieu du fondu. */
+static void blend_flush(void) {
+    if (g_trans_owns) return;
+    REG_BLDCNT   = g_bldcnt_sh;
+    REG_BLDALPHA = g_bldalpha_sh;
+    REG_BLDY     = g_bldy_sh;
+}
 
 static void blend_reset(void) {
     g_bldcnt_sh   = 0;
     g_bldalpha_sh = 0;
-    REG_BLDCNT    = 0;
-    REG_BLDALPHA  = 0;
-    REG_BLDY      = 0;
+    g_bldy_sh     = 0;
+    blend_flush();
 }
 
 static void bld_target_set(int side, int bit, int on) {
     u16 m = (u16)(1 << (bit + ((side & 1) ? 8 : 0)));
     if (on) g_bldcnt_sh |=  m;
     else    g_bldcnt_sh &= (u16)~m;
-    REG_BLDCNT = g_bldcnt_sh;
+    blend_flush();
 }
 
 void blend_set_mode(int mode) {
     g_bldcnt_sh = (u16)((g_bldcnt_sh & ~0x00C0) | ((mode & 3) << 6));
-    REG_BLDCNT  = g_bldcnt_sh;
+    blend_flush();
 }
 
 int blend_get_mode(void) { return (g_bldcnt_sh >> 6) & 3; }
@@ -2706,11 +2735,36 @@ static int ev_clamp(int v) { return v < 0 ? 0 : (v > 16 ? 16 : v); }
 
 void blend_set_alpha(int eva, int evb) {
     g_bldalpha_sh = (u16)(ev_clamp(eva) | (ev_clamp(evb) << 8));
-    REG_BLDALPHA  = g_bldalpha_sh;
+    blend_flush();
 }
 
 void blend_set_fade(int evy) {
+    g_bldy_sh = (u16)ev_clamp(evy);
+    blend_flush();
+}
+
+/* ── Transition de scène ─────────────────────────────────────────── */
+
+void transition_begin(int mode) {
+    g_trans_owns = 1;
+    /* Tout l'écran est première cible (BG0-3, OBJ, backdrop = bits 0-5).
+       Oublier le backdrop laisserait les zones vides allumées pendant que le
+       reste s'éteint — la panne classique du fondu, et justement ce que
+       l'écran montre pendant que scene_init recharge ses layers. */
+    REG_BLDCNT = (u16)(0x003F | ((mode & 3) << 6));
+}
+
+/* Intensité du fondu, 0-16. Distincte de blend_set_fade() : celle-ci ne touche
+   pas au réglage de la scène, qui doit revenir intact à la fin. */
+void transition_fade(int evy) {
     REG_BLDY = (u16)ev_clamp(evy);
+}
+
+/* Rend les registres au réglage de la scène. Sans effet si aucune transition
+   n'était en cours — l'appeler est toujours sûr. */
+void transition_end(void) {
+    g_trans_owns = 0;
+    blend_flush();
 }
 
 #endif /* GBA_ENGINE_IMPL */

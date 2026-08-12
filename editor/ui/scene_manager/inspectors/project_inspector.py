@@ -41,6 +41,17 @@ _COUNTERS: tuple[tuple[str, str, str, str], ...] = (
 )
 
 
+# Transitions de scène — mêmes valeurs que les effets de mélange (models/scene.py).
+# Le projet définit la transition, une scène peut la surcharger : le
+# SceneInspector reprend donc CES libellés et y ajoute son « From project »,
+# pour que le même fondu ne soit pas nommé de deux façons selon le panneau.
+TRANSITION_LABELS: tuple[tuple[str, str], ...] = (
+    ("none",       "Cut (no transition)"),
+    ("fade_black", "Fade to black"),
+    ("fade_white", "Fade to white"),
+)
+
+
 class ProjectInspector(QWidget):
     """Identité éditable du projet (auteur, version, scène de démarrage) +
     inventaire des assets."""
@@ -142,6 +153,44 @@ class ProjectInspector(QWidget):
             lambda v: self._set_setting("save_slots", int(v)))
         self._row("Save slots", self._spin_slots, id_inner, stretch=False)
 
+        # ── Transition de scène (défaut projet) ───────────────────
+        # Le fondu joué à chaque changement de scène. Réglé une fois ici pour
+        # tout le jeu ; une scène peut le surcharger depuis son inspecteur.
+        trans_box = QWidget()
+        trans_row = QHBoxLayout(trans_box)
+        trans_row.setContentsMargins(0, 0, 0, 0)
+        trans_row.setSpacing(6)
+        self._combo_trans = QComboBox()
+        self._combo_trans.setFont(QFont(T.UI, T.MD))
+        self._combo_trans.setStyleSheet(QSS.combobox)
+        for kind, label in TRANSITION_LABELS:
+            self._combo_trans.addItem(label, kind)
+        self._combo_trans.setToolTip(
+            "<b>Scene transition</b><br><br>"
+            "Fade played when the game leaves a scene and when it opens one.<br>"
+            "Each scene fades out with its own setting and fades in with the<br>"
+            "one of the scene being opened — including the very first scene.<br><br>"
+            "While a transition plays, the outgoing scene is frozen and the<br>"
+            "scene's own color blending is suspended: the hardware has a single<br>"
+            "blend mode, so there is no fade on top of a translucency."
+        )
+        self._combo_trans.currentIndexChanged.connect(
+            lambda i: self._set_setting("transition_kind",
+                                        self._combo_trans.itemData(i) or "none"))
+        self._spin_trans = QSpinBox()
+        self._spin_trans.setRange(1, 255)
+        self._spin_trans.setFixedWidth(64)
+        self._spin_trans.setSuffix(" f")
+        self._spin_trans.setFont(QFont(T.MONO, T.MD))
+        self._spin_trans.setStyleSheet(QSS.spinbox)
+        self._spin_trans.setToolTip(
+            "Frames per half — 16 frames is a bit over a quarter of a second.")
+        self._spin_trans.valueChanged.connect(
+            lambda v: self._set_setting("transition_frames", int(v)))
+        trans_row.addWidget(self._combo_trans, 1)
+        trans_row.addWidget(self._spin_trans)
+        self._row("Transition", trans_box, id_inner)
+
         layout.addWidget(id_card)
 
         # ── Carte Contenu ─────────────────────────────────────────
@@ -242,7 +291,8 @@ class ProjectInspector(QWidget):
         try:
             enabled = project is not None
             for w in (self._ed_author, self._ed_version, self._combo_start,
-                      self._btn_backdrop, self._spin_slots):
+                      self._btn_backdrop, self._spin_slots,
+                      self._combo_trans, self._spin_trans):
                 w.setEnabled(enabled)
             self._refresh_fields()
             self._refresh_counts()
@@ -277,6 +327,17 @@ class ProjectInspector(QWidget):
         self._spin_slots.blockSignals(True)
         self._spin_slots.setValue(getattr(p.settings, "save_slots", 1) if p else 1)
         self._spin_slots.blockSignals(False)
+
+        kind = getattr(p.settings, "transition_kind", "none") if p else "none"
+        self._combo_trans.blockSignals(True)
+        idx = self._combo_trans.findData(kind)
+        self._combo_trans.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo_trans.blockSignals(False)
+        self._spin_trans.blockSignals(True)
+        self._spin_trans.setValue(getattr(p.settings, "transition_frames", 16) if p else 16)
+        self._spin_trans.blockSignals(False)
+        # La durée ne veut rien dire sans fondu.
+        self._spin_trans.setEnabled(bool(p) and kind != "none")
 
         self._refresh_backdrop()
 

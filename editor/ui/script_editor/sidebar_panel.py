@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QScrollArea, QToolButt
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 
-from scripting.api import KNOWN_EVENTS, KNOWN_SCENE_EVENTS, EVENT_REGISTRY as _EVENT_META
+from scripting.api import (KNOWN_EVENTS, KNOWN_SCENE_EVENTS, KNOWN_EVENTS_BY_KIND,
+                           EVENT_REGISTRY as _EVENT_META)
 from scripting import api_snippets
 from core.models.text import SEP
 from core.text_markup import display_text
@@ -293,7 +294,9 @@ class SidebarPanel(QWidget):
             self._sec_events._toggle.setText(f"▾  EVENTS")
             self._sec_refs.setVisible(True)
 
-            events_to_show = KNOWN_SCENE_EVENTS if context == "scene" else KNOWN_EVENTS
+            # Un script sans `self` (scène ou caméra) a ses propres points
+            # d'entrée — une caméra n'a pas d'on_late_update.
+            events_to_show = KNOWN_EVENTS_BY_KIND.get(context, KNOWN_EVENTS)
             for ev in events_to_show:
                 meta  = _EVENT_META.get(ev, {})
                 btn   = _EntryButton(f"  {ev}", _BTN_BASE, _event_tooltip(ev),

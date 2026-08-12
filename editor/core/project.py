@@ -13,11 +13,13 @@ Structure de projet :
     scripts/           ← Lua (pas de sidecar)
       actors/
       scenes/
+      cameras/
       behaviors/
 
   project/             ← géré exclusivement par l'éditeur
     scenes/            ← une scène par JSON (actors inline)
     prefab/            ← templates d'actors (jamais compilés directement)
+    cameras/           ← une caméra par JSON (réutilisable entre scènes)
 
   project.json         ← settings globaux (nom, scène de démarrage, auteur)
   build/               ← 100 % jetable (regénéré à chaque build)
@@ -77,6 +79,7 @@ from core.models.background import BackgroundAsset
 from core.models.audio import Sfx, Music
 from core.models.font import Font
 from core.models.ui_region import UILayout
+from core.models.camera import Camera
 from core.models.scene import Prefab, Actor, Scene
 
 
@@ -137,6 +140,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.fonts:       ResourceStore[Font]        = ResourceStore(self.fonts_dir, Font)
         self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
+        self.cameras: ResourceStore[Camera] = ResourceStore(self.cameras_dir, Camera)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -208,7 +212,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
-                    self.palettes):
+                    self.palettes, self.cameras):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -227,6 +231,45 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
     def get_ui_layout(self, name: str) -> Optional[UILayout]:
         return self.ui_layouts.get(name)
+
+    def get_camera(self, name: str) -> Optional[Camera]:
+        return self.cameras.get(name)
+
+    def scene_camera(self, scene) -> Optional[Camera]:
+        """Caméra de démarrage d'une scène, ou None si elle emploie la caméra
+        par défaut (nom vide) — ou si la référence est cassée, auquel cas le
+        validateur le dit et la scène retombe sur le défaut."""
+        name = getattr(scene, "camera", "")
+        return self.cameras.get(name) if name else None
+
+    def ensure_scene_camera(self, scene) -> Camera:
+        """La caméra de cette scène, MATÉRIALISÉE si elle emploie encore le
+        défaut implicite.
+
+        C'est le geste « je veux autre chose que l'origine » : personne ne crée
+        de caméra d'avance, elle apparaît au premier réglage (cadrage déplacé
+        dans le canvas, mode changé dans l'inspecteur). Sans ça, il faudrait
+        soit créer une caméra par scène à la création — une liste d'assets
+        remplie d'entrées jamais touchées — soit demander à l'auteur d'en créer
+        une avant de pouvoir bouger le cadre."""
+        cam = self.scene_camera(scene)
+        if cam is not None:
+            return cam
+        base = (getattr(scene, "name", "") or "Camera").strip()
+        name, n = base, 2
+        while self.cameras.get(name) is not None:
+            name, n = f"{base} {n}", n + 1
+        cam = Camera(name=name)
+        self.cameras.append(cam)
+        self.cameras.save(cam)
+        scene.camera = name
+        return cam
+
+    def camera_users(self, name: str) -> list:
+        """Scènes qui DÉMARRENT sur cette caméra. Ne voit pas les activations
+        faites par script : celles-là vivent dans le texte d'un `.lua`, comme
+        toute citation écrite à la main."""
+        return [s for s in self.scenes if getattr(s, "camera", "") == name]
 
     def ui_backgrounds(self, role: str = "") -> list[BackgroundAsset]:
         """Fonds d'INTERFACE du projet, éventuellement filtrés sur leur rôle
@@ -359,6 +402,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             "version":     self.settings.version,
             "backdrop_color": self.settings.backdrop_color,
             "save_slots":  self.settings.save_slots,
+            "transition_kind":   self.settings.transition_kind,
+            "transition_frames": self.settings.transition_frames,
         }
         atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -381,6 +426,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # reçoit un, comme un projet neuf. Sans variable persistante, aucun ne
         # sera émis de toute façon.
         self.settings.save_slots = max(1, int(d.get("save_slots", 1)))
+        # Un projet antérieur à la v0.6.2 n'a pas de transition : coupure franche,
+        # exactement ce qu'il avait avant. Le fondu se demande, il ne s'impose pas.
+        self.settings.transition_kind   = d.get("transition_kind", "none") or "none"
+        self.settings.transition_frames = max(1, int(d.get("transition_frames", 16)))
 
 
 
@@ -408,6 +457,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.music.save_all()
         self.fonts.save_all()
         self.ui_layouts.save_all()
+        self.cameras.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()
@@ -429,9 +479,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
                     "project/palettes", "project/ui_layouts",
+                    "project/cameras",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
+                    "assets/scripts/cameras",
                     "assets/sfx", "assets/music", "assets/fonts"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
@@ -460,6 +512,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Avant les scènes : une scène référence sa mise en page et ses prefabs
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
+        self.cameras.load()
         self.prefabs.load()
         self.load_scenes()
 

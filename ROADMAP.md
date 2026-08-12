@@ -26,12 +26,12 @@ suppositions faites à l'avance.
 | v0.2 | Palettes de couleurs | **Livrée**, quelques finitions |
 | v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé |
 | v0.4 | Animation de décor | **Livrée** |
-| v0.5 | Sauvegarde | Non commencée |
-| v0.6 | Polish de la boucle de jeu | Non commencée |
-| v0.7 | Son enrichi | Non commencée |
-| v0.8 | Traduction des jeux | Non commencée |
-| v0.9 | Distribution Linux | Non commencée |
-| v0.10 | Traduction de l'éditeur | Non commencée |
+| v0.5 | Sauvegarde | **Livrée** |
+| v0.6 | Polish de la boucle de jeu | **Livrée** |
+| v0.8 | Son enrichi | Non commencée |
+| v0.9 | Traduction des jeux | Non commencée |
+| v0.10 | Distribution Linux | Non commencée |
+| v0.11 | Traduction de l'éditeur | Non commencée |
 
 ---
 
@@ -156,7 +156,7 @@ canvas plutôt qu'en la codant.
 - **Polices importées** depuis une planche PNG ou un descripteur BMFont, avec un jeu de
   caractères corrigeable et des chasses déclarées.
 - **Table de textes** au niveau projet : chaque texte a une clé, il est rangé dans un arbre,
-  et il est traduisible — c'est ce qui rend la v0.8 possible sans tout refactorer.
+  et il est traduisible — c'est ce qui rend la v0.9 possible sans tout refactorer.
 - **Balisage** dans le contenu : pauses, vitesse de défilement, ondulation, couleur, et
   insertion de valeurs (`$score`). Tout est résolu à la compilation, le moteur n'embarque
   aucun analyseur.
@@ -189,7 +189,7 @@ modifier. Le pluriel est ce qui fait la différence entre un exemple et un défa
 
 #### Décisions verrouillées — le stockage du texte
 
-Le point de départ n'est pas l'affichage mais **où le texte est rangé**, parce que la v0.8
+Le point de départ n'est pas l'affichage mais **où le texte est rangé**, parce que la v0.9
 exige qu'il soit référencé par clé dès maintenant. Principe directeur : **séparer le stockage
 de la saisie**. Les confondre donne soit des clés à taper partout, soit du texte enterré dans
 les scripts.
@@ -206,7 +206,7 @@ les scripts.
   qui tue la redondance, pas la table.
 - **Un type de donnée « texte » distinct de « chaîne »** : le premier est destiné au joueur
   et traduisible, le second est technique et reste dans le script. Un mot posé maintenant
-  évite un tri manuel en v0.8.
+  évite un tri manuel en v0.9.
 
 #### Décisions verrouillées — l'API d'écriture
 
@@ -629,25 +629,36 @@ l'ensemble de ces variables dans un **emplacement de sauvegarde**, et le jeu ret
 
 ## v0.6 — Polish de la boucle de jeu
 
-### v0.6.1 — Caméra
+### v0.6.1 — Caméra — **LIVRÉE**
 
-Gros sujet, à la fois fonctionnel et rendu.
+#### Le problème d'origine
 
-#### Le problème
+Il était que **trois mécanismes de caméra coexistaient**, indépendants et
+non coordonnés : un déclaratif (la scène désigne un acteur à suivre, recentrage exact et
+blocage aux bords du monde), un scriptable (zone morte, sans blocage), et le scroll manuel
+au D-pad (sans blocage non plus). Les trois écrivaient la même position sans se coordonner.
 
-**Deux mécanismes de caméra coexistent aujourd'hui, indépendants et non coordonnés** : un
-déclaratif (la scène désigne un acteur à suivre, avec recentrage exact et blocage aux bords
-du monde) et un scriptable (suivi par zone morte, mais sans aucun blocage aux bords). Un
-troisième chemin, le scroll manuel, n'a pas de blocage non plus. Les trois écrivent la même
-position sans se coordonner : une scène configurée dans l'inspecteur **et** pilotée par un
-script se disputent la caméra. Le risque est concret, pas théorique.
+L'unification a été faite en premier : un seul point d'écriture, des bornes explicites
+appliquées par un clamp unique, et le scroll libre au D-pad retiré. **La v0.6.1 est LIVRÉE**
+(2026-08-12) : la caméra est devenue un asset portant mode, cible, zone morte, bornes et
+script, la secousse existe, et une scène désigne sa caméra de démarrage.
 
-Le parallaxe, lui, fonctionne déjà avec n'importe lequel des trois — il ne fait que lire la
-position de la caméra. Rien à reconstruire de ce côté.
+Le parallaxe fonctionne avec n'importe lequel des modes — il ne fait que lire la position de
+la caméra. Rien à reconstruire de ce côté.
 
-**Le zoom est impossible en Mode 0** : les calques réguliers ne savent pas se mettre à
-l'échelle. Bloqué jusqu'aux calques affines de la v2.0 — à exclure explicitement du périmètre,
-ce n'est pas un oubli.
+#### Ce que la v0.6.1 ne fera JAMAIS, et pourquoi
+
+Ce sont les branches d'une caméra de moteur 3D (Unity, Godot) que le matériel ne peut pas
+tenir. Les proposer dans l'inspecteur promettrait un rendu que la GBA ne produit pas — même
+règle que les modes de mélange *multiply* et *overlay*, absents pour la même raison.
+
+| Demandé | Verdict |
+| --- | --- |
+| rotation | **impossible en Mode 0.** Un calque régulier ne tourne pas ; seul un calque affine le sait (v2.0). Les sprites, eux, tournent déjà — mais tourner les sprites sans le décor n'est pas une rotation de caméra |
+| projection (ortho / perspective, FOV) | **la GBA n'a pas de 3D.** Le « Mode 7 » n'est pas une projection perspective mais une transformation affine appliquée ligne par ligne. Le vrai axe est *régulier* contre *affine* |
+| zoom (taille orthographique) | même raison que la rotation : c'est une matrice affine, donc la v2.0 |
+| viewport (x, y, largeur, hauteur) | **faisable, mais c'est une window matérielle** — il n'y en a que deux, et la scène les authore déjà. Reporté en v2.0 avec l'écran partagé, qui rouvrira « une région appartient-elle à une caméra, ou l'inverse ? » |
+| mode de rendu | **reste à la scène.** Le mode vidéo décide quels types de calques existent, et les fonds de la scène sont authorés contre lui : une caméra qui le changerait invaliderait les fonds de la scène qui l'active |
 
 #### Décisions verrouillées
 
@@ -655,68 +666,212 @@ Contrainte de départ : la GBA n'a qu'un seul écran et le multijoueur est hors 
 « Plusieurs caméras » ne peut donc pas vouloir dire plusieurs vues simultanées. Ça veut dire
 **plusieurs configurations définissables, une seule active à la fois par scène**.
 
-- **La caméra devient un asset à part entière**, réutilisable entre scènes comme un prefab,
-  et **remplace** les deux mécanismes en conflit par une seule source de vérité : cible, zone
-  morte, bornes et secousse au même endroit.
+- **La caméra est un asset à part entière**, réutilisable entre scènes comme un prefab :
+  mode, cible, zone morte, bornes et script au même endroit (`project/cameras/*.json`).
 - **Rangée avec les données propres au projet**, pas avec les ressources externes — une
   configuration de caméra ne dépend d'aucun fichier importé.
 - **Changement de caméra par appel explicite uniquement**, pas de bascule automatique par
   zone. Un comportement « zone » reste possible sans concept dédié : le script active la
   caméra depuis le déclencheur de collision qui existe déjà. Pas besoin d'un type « zone de
   caméra » séparé.
-- **Une caméra par défaut est créée avec la scène** : l'utilisateur n'a jamais à en créer une
-  pour le cas simple.
+- **La caméra par défaut est IMPLICITE** : une scène qui n'en désigne aucune est fixe à
+  l'origine, sans bornes ni suivi, et aucun fichier n'existe pour ça. L'auteur n'a donc rien
+  à créer pour le cas simple, et la liste des caméras ne se remplit pas d'une entrée par
+  scène jamais réglée. Elle se matérialise au PREMIER réglage — y compris le déplacement du
+  cadre dans le canvas : « je veux autre chose que l'origine » est exactement le moment où
+  une caméra a lieu d'exister. Au runtime, elle est l'entrée 0 de la table, ce qui évite un
+  cas particulier à chaque activation.
 - **La scène référence sa caméra de démarrage** ; le script peut en changer ensuite.
 - **Le défilement horizontal/vertical reste une propriété de la scène**, il ne migre pas dans
   la caméra. Ce sont deux concepts : la caméra décide *comment* la position est calculée, le
   défilement décrit *si le niveau lui-même* est censé défiler dans cet axe. Changer de caméra
   ne doit pas changer ça. Il agit comme un filtre appliqué par-dessus.
-  - **Bug à corriger dans le même chantier** : aujourd'hui désactiver le défilement ne bloque
-    pas réellement le mouvement de la caméra en mode suivi, seulement le blocage aux bords. Le
-    réglage ne fait pas ce que son nom promet — à corriger en posant le nouveau modèle, pas à
-    documenter tel quel.
+  - ~~**Bug à corriger dans le même chantier** : désactiver le défilement ne bloque pas
+    réellement le mouvement de la caméra en mode suivi.~~ **Corrigé** : un axe désactivé
+    reçoit `cam_x`/`cam_y` lui-même comme cible, donc un écart nul, donc aucun mouvement.
 - **La caméra peut recevoir un script**, avec les mêmes points d'entrée qu'une scène. Les
   réglages déclaratifs sont **toujours calculés en premier** ; le script s'exécute ensuite et
   peut ajuster. Ça permet un usage purement déclaratif, purement scripté, ou hybride, sans
   réglage de bascule dédié.
 
+- **La secousse n'a AUCUN champ dans l'asset.** C'est un événement, pas un état : rien de
+  déclaratif ne la déclenche, donc des champs seraient les valeurs par défaut d'un appel qui
+  les porte déjà. `camera.shake(amplitude, frames)`, l'amplitude retombant linéairement à
+  zéro sur la durée — c'est la décroissance, sans troisième réglage. Le décalage est appliqué
+  APRÈS le clamp aux bornes (trembler au bord du monde doit se voir) et retiré au début de la
+  frame suivante, si bien que le suivi ne raisonne jamais sur une position tremblée.
+- **Les bornes s'appliquent à l'ACTIVATION, pas à chaque frame.** Les réécrire chaque frame
+  ferait de `camera.set_bounds()` un mensonge : un script qui débloque une zone garde la main
+  jusqu'à la prochaine activation.
+- **Activer une caméra applique son cadrage.** C'est ce que « caméra fixe » veut dire ; une
+  caméra en suivi se recale de toute façon dans la frame.
+- **La cible est citée par NOM et résolue par scène.** Les noms d'acteurs sont locaux à une
+  scène ; une caméra réutilisée là où cet acteur n'existe pas y reste immobile, et le
+  validateur le dit. Le codegen n'émet le suivi que pour les caméras qui peuvent réellement
+  suivre quelqu'un dans cette scène-là.
+- **Migration : table rase.** Les anciens champs `cam_*` inline des scènes ne sont plus relus
+  (la maison ne migre pas les formats) ; une scène antérieure repart de la caméra par défaut.
+  Vérifié sans conséquence sur la démo Pong, dont les trois scènes étaient au défaut.
+
 #### Ouvert
 
-- Champs exacts de l'asset caméra (marges de zone morte ? bornes activables ? paramètres de
-  secousse — amplitude, durée, décroissance ?).
-- Convention de nommage de la caméra créée par défaut.
-- Stratégie de migration des scènes existantes — pré-1.0, donc probablement pas critique.
-- Le **blocage aux bords du monde** n'existe aujourd'hui que dans l'ancien mécanisme
-  déclaratif : à porter proprement dans le nouveau modèle.
+- Rien côté éditeur ne liste les caméras hors de l'inspecteur : on en choisit une, on la
+  renomme et on la crée depuis là. Un vrai gestionnaire d'assets n'a d'intérêt qu'avec
+  beaucoup de caméras — à rouvrir sur un cas réel.
 
 ### v0.6.2 — Transitions de scène
 
-Fondu à l'ouverture et à la fermeture : un changement de scène est aujourd'hui une coupure
-franche.
+Un changement de scène est une coupure franche. Cette version lui donne un fondu à la
+fermeture et à l'ouverture.
 
-### v0.6.3 — Pentes / collision
+La brique basse existait déjà : `blend_set_mode(2|3)` + `blend_set_fade(evy)` posent un
+fondu vers le blanc ou le noir sur tout l'écran (v0.3, mélange de couleurs). Ce qui manquait
+est le **séquencement** autour de la bascule, qui vit dans la boucle principale — le seul
+endroit qui connaisse les deux scènes. `scene_switch()` ne fait que poser une intention.
 
-Une vingtaine de types de tuiles de pente sont définis côté éditeur (26°, 45°, 63° et leurs
-miroirs), à finaliser côté runtime.
+#### Décisions verrouillées
+
+- **Réglage de projet, surchargeable par scène.** Un type (aucun / vers le noir / vers le
+  blanc) et une durée en frames valent pour tout le jeu ; une scène peut déclarer les siens.
+  Le défaut de projet évite d'avoir à répondre à la question sur chaque scène, la surcharge
+  évite d'imposer un fondu à un menu qui doit apparaître net.
+- **Une transition a deux moitiés, et chaque scène décrit la sienne.** La fermeture emploie
+  le réglage de la scène **qu'on quitte**, l'ouverture celui de la scène **qu'on ouvre**. Il
+  n'y a donc jamais de « qui gagne » entre deux scènes : une scène dit comment elle
+  disparaît et comment elle apparaît, un point c'est tout. L'héritage projet→scène est
+  résolu **au build**, en une table par scène : le runtime ne connaît pas la notion.
+- **La scène sortante gèle.** Son tick est suspendu dès la première frame du fondu : l'image
+  se fige et s'éteint. Laisser tourner le jeu sur un écran qu'on quitte, c'est laisser le
+  joueur agir sans le voir, et laisser un script s'exécuter sur une scène condamnée. La
+  musique et le compteur de frames, eux, continuent — la transition est un effet d'affichage,
+  pas une pause du moteur.
+- **La première scène fait son ouverture comme les autres.** Le jeu démarre en fondu si la
+  scène de départ en déclare un. Pas de cas particulier au démarrage : un écran noir pendant
+  l'init est de toute façon plus propre qu'une première frame à moitié construite.
+- **L'effet de mélange authoré de la scène est suspendu pendant la transition.** `BLDCNT`
+  n'a qu'un seul champ mode : il n'existe pas de « fondu par-dessus une translucidité » sur
+  ce matériel. Le réglage de la scène est repris tel quel à la fin du fondu (l'instantané
+  est pris après `scene_init`, donc c'est bien celui de la scène entrante). Conflit
+  matériel assumé et dit, pas contourné par un second chemin.
+- **Un `scene.switch` appelé pendant une transition est honoré à la fin de celle-ci**, pas
+  au milieu. Interrompre un fondu en cours pour en démarrer un autre demanderait de décider
+  ce que devient la moitié déjà jouée ; l'attente est prévisible et se comprend sans
+  documentation.
+- **Même vocabulaire que le mélange de couleurs** : `none`, `fade_black`, `fade_white`. Ce
+  sont les chaînes déjà employées par les effets de scène — un fondu au noir doit s'appeler
+  pareil partout.
 
 #### Ouvert
 
-- La résolution réelle des pentes au runtime n'a **jamais été confirmée** : ce point est
-  peut-être à *construire* plutôt qu'à *finaliser*. Vérifier avant de scoper.
+- Aucune API Lua dédiée n'est ajoutée : `blend.set_fade` couvre déjà le fondu piloté à la
+  main, et la transition de scène est déclarative. À rouvrir si un cas réel demande de
+  déclencher une transition sans changer de scène.
+- Autres types que le fondu (volet, cercle, pixelisation) : hors périmètre. Ils demandent
+  soit une window animée, soit une manipulation de palette par frame, c'est-à-dire un autre
+  chantier que celui-ci.
+
+### v0.6.3 — Pentes / collision — **LIVRÉE**
+
+22 types de tuiles de pente sont définis côté éditeur (26°, 45°, 63° et leurs miroirs
+plafond), avec leur génération par glisser et leur rendu dans le canvas. Le doute posé en
+« Ouvert » est **confirmé** : le runtime n'en savait rien — `tile_solid_at` répondait
+`cmap[i] != 0`, donc toute pente était un bloc plein. C'était à **construire**.
+
+Deux choses ont été trouvées en ouvrant le chantier, qui en ont élargi le périmètre :
+
+- **la résolution ne tournait que si l'acteur définissait `on_tile_collide`**, alors qu'elle
+  *déplace* l'acteur et que le callback n'est qu'une notification. Un acteur à box `solid`
+  sans ce hook traversait la carte, quand le modèle promet « solid = résolution physique » ;
+- **la géométrie des 22 tuiles n'existait que dans les polygones du canvas.** Écrire la table
+  du runtime à la main en aurait fait une seconde source, qui aurait divergé au premier
+  ajustement — le défaut des « deux listes de prototypes ».
+
+#### Décisions verrouillées
+
+- **Une seule source pour la géométrie.** Chacune des 22 tuiles se décrit par *une droite de
+  surface traversant la tuile, plus le côté plein* — deux ordonnées et un drapeau. Le
+  polygone exact du canvas et le profil de hauteurs que lit le runtime en **dérivent** tous
+  les deux. Vérifié sur les 22, pentes raides comprises (leur droite sort de la tuile et se
+  clampe).
+- **Toute box `solid` collisionne** avec la carte de tuiles dès que la scène en a une.
+  `on_tile_collide` redevient ce qu'il prétend être : une notification. Et la vitesse est
+  remise à zéro sur l'axe bloqué **toujours** — auparavant le callback la remplaçait, si bien
+  qu'écrire le hook désactivait la physique.
+- **Une tuile de pente ne bloque jamais le déplacement horizontal.** Seul `TILE_SOLID`
+  repousse en X ; sinon une pente serait un mur et personne ne la gravirait. La conséquence
+  est assumée : l'acteur qui entre dans une pente est *soulevé* à sa surface, sans plafond de
+  marche — c'est ce que l'auteur a dessiné en peignant une pente plutôt qu'un bloc.
+- **Le sol se cherche en trois points** — les deux coins bas de la box et son centre, la
+  surface la plus haute l'emportant. Un acteur large ne s'enfonce donc pas dans la pente et
+  franchit une arête proprement.
+  - Chaque sonde balaie **trois tuiles** : celle au-dessus des pieds, celle des pieds, celle
+    du dessous. La tuile du dessus est indispensable — sur une pente, la matière de la
+    colonne suivante vit dans la tuile d'au-dessus, et s'arrêter aux pieds fait décrocher
+    l'acteur en pleine montée. Une surface plus haute que la box est écartée : elle ne le
+    touche pas, et l'y hisser le téléporterait sur une plateforme qu'il passait dessous.
+- **La vitesse est constante LE LONG du sol.** Un pas horizontal sur une pente parcourt
+  `√(1+p²)` fois plus de distance qu'à plat — 114 % à 26°, 141 % à 45°, **224 % à 63°** —
+  donc sans correction, plus la pente est raide plus le personnage paraît rapide. Le moteur
+  ramène le pas au cosinus de la pente gravie, précalculé par type de tuile (aucune racine à
+  l'exécution). C'est la seule chose que le moteur DÉFAIT de ce qu'un script a demandé, d'où
+  deux garde-fous : il faut être au sol à la frame précédente (un saut n'est pas une marche),
+  et le pas doit tenir dans une tuile — au-delà la résolution ne prétend déjà plus rien, et
+  c'est là qu'un script téléporte au lieu de marcher. Le reste est reporté au 1/256 de pixel,
+  sinon un pas de 2 px à 45° tomberait toujours sur 1 px.
+  - Conséquence assumée des positions ENTIÈRES : à 1 px par frame, la marche devient « un
+    pixel, une pause » (29 % des frames sur une pente à 45°). Impossible d'avancer de 0,7
+    pixel ; à partir de 2 px par frame le mouvement redevient régulier.
+- **Le monde reste une boîte close.** Hors carte vaut plein, dans les quatre directions —
+  c'est ce que faisait l'ancien `tile_solid_at`, et le perdre laisse un acteur tomber sans
+  fin, son sprite rebouclant en haut de l'écran tous les 256 px (l'OAM ne code Y que sur
+  8 bits).
+- **Le collage au sol appartient au moteur, sans réglage exposé.** Un bit « au sol » sur
+  l'acteur, et en descente il est recollé tant que l'écart reste sous `|vx|×2 + 1` px — la
+  chute maximale que la pente la plus raide (63°) peut produire à cette vitesse. Dérivé du
+  mouvement : ni constante magique, ni champ à comprendre. Sans lui, toute descente
+  tressaute.
+- **L'ordre passe de Y-puis-X à X-puis-Y.** On avance à l'horizontale sans être gêné par les
+  pentes, *puis* la surface est cherchée — l'inverse ferait chercher le sol à une abscisse
+  qu'on n'occupe pas encore.
+
+- **`solid` ne voulait déjà dire que ça.** En cherchant qui avait droit à la résolution, on a
+  découvert que le drapeau n'est lu nulle part ailleurs : les collisions acteur-contre-acteur
+  ne le consultent pas, malgré une docstring qui prétendait l'inverse depuis toujours. La
+  décision ci-dessus ne fait donc qu'appliquer le sens que le code lui donnait déjà.
+  Conséquence sur la démo : les box de Pong (raquettes, balle) sont passées à `solid=false`,
+  car leurs scripts gèrent les murs eux-mêmes (`tile.get` + rebond maison). Sans ça la balle
+  se collait au mur du bas, vitesse verticale annulée — vérifié en simulation avant de le
+  dire.
+
+#### Ouvert
+
+- Pas de gravité, pas de plateforme traversable par le bas : le moteur n'a pas de physique à
+  lui au-delà de ce qui précède. Un script décide du mouvement, la résolution le corrige.
+- **Rien n'agit à distance** : la sonde ne regarde que la tuile courante et sa voisine, donc
+  un acteur qui va plus vite que 8 px par frame peut traverser un sol. C'était déjà le cas
+  avant, et le corriger demanderait un balayage du trajet — à rouvrir si un vrai jeu s'y
+  heurte. **Toujours vrai, et daté** : la
+  physique (gravité, milieux, collision par normale, types de corps) est le sujet de la
+  v2.1 et n'arrivera pas avant elle — décidé le 2026-08-12. Cette ligne n'est donc pas une
+  lacune à combler au prochain passage, c'est la règle en vigueur jusqu'à la v2.0.
+- `actor_on_ground()` existait en C sans être exposée en Lua ; elle l'est désormais
+  (`self:on_ground()`) et lit le bit posé par la résolution, donc l'état de la frame
+  précédente — un script qui la consulte dans `on_update` lit le résultat du tour d'avant,
+  ce qui est le contrat normal.
 
 ---
 
-## v0.7 — Son enrichi & écran de mixage
+## v0.8 — Son enrichi & écran de mixage
 
 Les ressources son et musique sont aujourd'hui des ébauches, explicitement marquées comme
 telles dans le code.
 
-### v0.7.1 — Clarifier les ressources
+### v0.8.1 — Clarifier les ressources
 
 Format source des effets (wav brut ou conversion), hauteur ; format de musique (module
 tracker) et point de bouclage.
 
-### v0.7.2 — Écran de mixage
+### v0.8.2 — Écran de mixage
 
 Existe déjà en partie, à enrichir : écoute du mélange en direct, volume par canal ou par
 catégorie, gestion des priorités — le nombre de canaux matériels est limité.
@@ -725,16 +880,16 @@ catégorie, gestion des priorités — le nombre de canaux matériels est limit�
 
 - Politique de priorité quand trop d'effets jouent en même temps : non décidée.
 
-### v0.7.3 — API
+### v0.8.3 — API
 
 Jouer un son ou une musique avec des surcharges de hauteur et de volume **à l'appel**, pas
 seulement au niveau de la ressource.
 
 ---
 
-## v0.8 — Traduction des jeux créés avec l'éditeur
+## v0.9 — Traduction des jeux créés avec l'éditeur
 
-Sujet **séparé** de la traduction de l'éditeur (v0.10) : deux chantiers indépendants.
+Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.
 
 ### Périmètre
 
@@ -750,7 +905,7 @@ Sujet **séparé** de la traduction de l'éditeur (v0.10) : deux chantiers indé
 
 ---
 
-## v0.9 — Distribution élargie
+## v0.10 — Distribution élargie
 
 Réactivation de la construction Linux (en pause, en attendant un test sur une vraie
 distribution).
@@ -762,7 +917,7 @@ distribution).
 
 ---
 
-## v0.10 — Traduction de l'interface de l'éditeur
+## v0.11 — Traduction de l'interface de l'éditeur
 
 Complètement indépendant du runtime GBA. Déplaçable librement dans l'ordre : peut être fait
 en parallèle de n'importe quelle autre version.
@@ -784,6 +939,73 @@ la v0.1. Plus stabilisation et documentation.
 
 ## Au-delà de la v1.0
 
+### Chantier transverse — l'allocateur de ressources matérielles
+
+Ne porte pas de numéro de version : il **se déclenche par un événement**, pas par une date —
+le jour où une ressource matérielle a son deuxième consommateur. Le premier candidat est le
+viewport de caméra / l'écran partagé de la v2.0, qui rouvre déjà « une région appartient-elle
+à une caméra, ou l'inverse ? ». Le second est le clipping d'UI.
+
+#### Le problème
+
+Les ressources du matériel ne correspondent pas aux concepts du game design. Une window GBA
+n'est pas une fonctionnalité : c'est une ressource. Or une caméra veut une région de rendu,
+l'UI un rectangle de découpe, un acteur un masque de visibilité, un effet un pochoir — quatre
+intentions distinctes qui réclament le même stock de trois slots.
+
+Écrire `camera.window = WIN0`, `ui.window = WIN1` fabrique le bug le plus classique de
+l'ingénierie logicielle : chaque fonctionnalité marche parfaitement, jusqu'au jour où deux
+d'entre elles servent en même temps. Et les windows ne sont que le premier exemple — sprites,
+palettes, VRAM, OAM, DMA, canaux sonores, matrices affines posent le même problème.
+
+Le principe et ses trois niveaux (intention / ressource logique / ressource matérielle) sont
+décrits dans [ARCHITECTURE](ARCHITECTURE.md), « Ressources matérielles — l'auteur ne les nomme
+jamais ». Ce jalon est son implémentation.
+
+#### Décisions verrouillées
+
+- **Deux allocateurs, pas un.** Ce qui se résout au BUILD (palettes, VRAM, tuiles) et ce qui
+  se résout à la FRAME (OAM, DMA, windows disputées) ne partagent qu'un vocabulaire. Le
+  premier peut être coûteux et **doit** parler à l'auteur ; le second tourne 60 fois par
+  seconde et n'a personne à qui parler. `palette_alloc.py` et `vram_alloc.py` sont déjà des
+  instances correctes du premier — ce chantier ne les refait pas, il leur donne une famille.
+- **Le rang fait partie de la ressource.** `WINR_0` > `WINR_1` > `WINR_OBJ` > `WINR_OUT` est
+  une priorité câblée : traiter deux slots comme équivalents produit une allocation valide et
+  une image fausse. C'est le mode de panne à empêcher par construction, parce que rien ne le
+  signalera au runtime.
+- **Déterminisme avant optimalité.** Pas d'ordonnancement par priorités déclarées
+  (`critical`/`high`/`medium`) : une allocation qui change parce que l'auteur a posé un sprite
+  sans rapport casse son UI sans qu'il puisse faire le lien. Un ordre de résolution stable,
+  documenté et ennuyeux vaut mieux qu'un ordre optimal — il est prévisible, et il est
+  testable.
+- **Les solutions de repli proposées doivent exister matériellement.** Fusionner deux masques
+  identiques, reprogrammer par scanline en HBlank (donne réellement plus de régions, au prix
+  de cycles), renoncer au masquage, assigner à la main. Pas de « clipping logiciel » pour un
+  calque tuilé en mode 0 : il faudrait réécrire la tilemap. Une liste courte et vraie, sinon
+  l'éditeur promet ce que la machine ne fait pas.
+- **L'assignation matérielle reste visible, dans un panneau avancé.** Le principe « l'auteur
+  peut descendre jusqu'au matériel » n'est pas suspendu : il ne nomme plus la ressource pour
+  obtenir un masque, mais il peut voir laquelle lui a été donnée, et la forcer.
+
+#### Ce qu'il faut faire AVANT, et qui ne coûte presque rien
+
+L'allocateur complet attend son deuxième client — une abstraction à un seul consommateur se
+dessinerait contre des besoins imaginés. Deux gestes se font en revanche dès maintenant, et
+rendent le reste possible sans rien casser :
+
+1. **Le principe est écrit** (fait — cf. ARCHITECTURE), pour que rien de neuf ne lie un
+   concept de haut niveau à un slot matériel d'ici là.
+2. **Cesser de faire de `WindowSlot.region` un index matériel côté auteur.** C'est une
+   indirection et un renommage, pas un ordonnanceur.
+
+#### Ouvert
+
+- L'API Lua `window.set_layer(r, …)` expose les régions par numéro matériel, et des scripts
+  les adressent déjà ainsi. C'est la partie la plus dure à déplacer, et la maison ne migre
+  pas les formats — à traiter comme une rupture assumée, au bon moment.
+- Jusqu'où va l'allocateur de frame. Un arbitrage OAM par frame est un vrai coût CPU ; il se
+  décide sur un cas mesuré, pas à l'avance.
+
 ### v2.0 — Backgrounds affines (« Mode 7 »)
 
 Un calque affine ajoute rotation et zoom, au prix de perdre des calques réguliers ailleurs —
@@ -792,6 +1014,30 @@ pas « un calque de plus ».
 
 Volontairement décrit à haut niveau : la portée exacte dépendra de ce qui aura été appris en
 construisant les fondations précédentes.
+
+#### Ce que la v2.0 n'est PAS — l'objectif V-Rally 3 n'est pas ici
+
+Cet objectif a été rangé dans cette version pendant une journée, sur une lecture de captures
+d'écran qui concluait au Mode 7 : sol texturé fuyant vers l'horizon, décor en sprites mis à
+l'échelle, HUD en calque normal. **Cette lecture était fausse**, et la mesure l'a montrée
+(2026-08-13, visualiseur de cartes mGBA sur la ROM) :
+
+| Relevé | Lecture |
+| --- | --- |
+| Fond de tuile : *s.o.* | aucune base de tuiles — le fond n'est pas tuilé |
+| Taille : 240×160 | un écran, pas une carte |
+| Fond de carte : `0x0600A000` | VRAM + 0xA000 = **frame 1 du mode 4** |
+
+Le mode 3 n'a pas de second tampon et le mode 5 afficherait 160×128 : c'est donc le **mode 4**,
+240×160 en 8bpp double-tamponné. Un framebuffer rempli par le processeur. Confirmé par des
+maillages qui tournent dans les menus.
+
+La leçon vaut d'être gardée : **un rasteriseur logiciel et un sol affine produisent la même
+image.** Une capture ne distingue pas les deux — seul le mode vidéo le fait. Aucune décision
+de rendu ne se verrouille sur une image, ici ou ailleurs.
+
+L'objectif part donc en **v3.1**, derrière le framebuffer dont il dépend. La v2.0 redevient
+ce qu'elle était : une capacité, sans cible de jeu.
 
 #### Piste posée — l'abstraction « caméra » sera remise en cause ici
 
@@ -812,7 +1058,107 @@ absurde d'en avoir deux), et l'**écran partagé**, qui rouvrira la question « 
 appartient-elle à une caméra, ou l'inverse ? ». Tant que les caméras sont exclusives, la
 question ne se pose pas.
 
-### v3.0 — Modes bitmap
+### v2.1 — Physique et collision
+
+Le moteur n'a aujourd'hui aucune physique à lui : un script décide du mouvement, la
+résolution de la v0.6.3 ne fait que le corriger. Cette version est **le renversement de cette
+règle** — pas son extension. C'est pour ça qu'elle est ici et pas en v0.6.4 : tant que les
+fondations 2D ne sont pas finies, un moteur qui décide du mouvement à la place du script
+coûterait plus qu'il ne rendrait.
+
+#### Périmètre
+
+- **Collision par normale.** Le contact rend une direction, pas seulement un booléen — c'est
+  ce qui distingue « je touche » de « je glisse le long de », et c'est la condition de tout
+  le reste.
+- **Gravité**, et deux milieux qui la modulent : **air** (traînée) et **viscosité**
+  (résistance d'un fluide). Trois réglages qui vivent quelque part entre la scène et
+  l'acteur — l'endroit reste ouvert.
+- **Nouvelles primitives** : cercle de collision et maillage de collision. Ce sont des
+  primitives **2D** ; le mot « mesh » ne promet pas de volume. La distinction devient
+  critique une fois la v3.1 au programme : deux choses différentes porteront le même mot si
+  personne n'y veille.
+- **Nouveaux types de collision**, en remplacement du booléen `solid` actuel :
+
+  | Type | Sens |
+  | --- | --- |
+  | `rigidbody` | réactif — le moteur calcule sa réponse au contact |
+  | `actor` | simplifié — se déplace, se bloque, ne réagit pas |
+  | `solid` | immobile — ne bouge jamais, sert de décor de collision |
+
+- **Import de carte de collision** — un nouvel asset, pour des collisions fidèles à l'image.
+
+#### Décisions verrouillées
+
+- **Jamais avant la v2.0.** Décidé explicitement (2026-08-12) : les fondations 2D passent
+  d'abord. La section « Ouvert » de la v0.6.3 reste donc vraie jusque-là, elle n'est pas
+  contredite — elle est datée.
+- **Les trois types ne sont pas un confort, ils sont le budget.** Une réponse par normale sur
+  N acteurs se paie en cycles, sans FPU et en virgule fixe. `actor` et `solid` existent pour
+  que `rigidbody` reste payable : le coût élevé se réserve à ce qui en a besoin. Une
+  taxonomie à deux niveaux (« physique ou trigger », l'actuelle) ne permet pas cet arbitrage.
+- **La carte de collision s'IMPORTE, elle ne se peint pas.** Même règle que partout ailleurs :
+  l'image source n'est jamais modifiée, un sidecar porte le résultat, et l'éditeur n'ajoute
+  pas d'outil de dessin (cf. la même décision pour les fonds et les sprites). C'est un
+  troisième client du pipeline d'import existant, pas un nouveau pipeline.
+- **« Pixel perfect » veut dire par tuile, pas par pixel.** Tester chaque pixel d'une scène
+  240×160 à chaque frame n'est pas tenable ; la forme réalisable est un masque de bits par
+  tuile, consulté après un rejet grossier par boîte. Le nom du champ doit dire ça, sinon il
+  promet une précision que le runtime ne tient pas.
+
+#### Ouvert
+
+- **`CollisionBoxComponent.solid` est un booléen aujourd'hui.** Les trois types le
+  remplacent : c'est un changement de format de composant, à traiter comme tel (la maison ne
+  migre pas les formats — cf. `core/project.py`).
+- Où vivent gravité, air et viscosité : propriétés de scène, de zone, ou d'acteur ? Les trois
+  se défendent et le choix dépend du premier jeu qui s'en sert.
+- Le maillage de collision est-il authoré, dérivé de l'image importée, ou les deux ? Dérivé
+  est cohérent avec le refus de l'outil de dessin ; authoré est ce que réclame une forme qui
+  n'existe dans aucune image.
+- Rien n'est dit du coût réel. Il se mesure sur un cas, pas avant — c'est la règle qui a
+  servi pour les animés de décor (v0.4.1, « L'ordre de grandeur, mesuré »).
+
+### v2.2 — Distorsion d'image
+
+Déformer un fond pour l'eau, la chaleur, la vitesse. Rangé ici parce que c'est **la même
+plomberie que le sol affine de la v2.0** : dans les deux cas on réécrit des registres de
+rendu à chaque scanline, seuls les registres visés et la table de valeurs changent. Construire
+l'un donne l'autre presque gratuitement — c'est la raison de leur voisinage, et l'ordre entre
+les deux n'a pas d'importance.
+
+#### Décisions verrouillées
+
+- **Sur un fond tuilé, la distorsion est PAR LIGNE, jamais par pixel.** On réécrit les
+  registres de décalage du calque à chaque scanline (HDMA) — c'est l'effet eau/chaleur
+  classique, réel et bon marché sur ce matériel. Une flow map par pixel suppose un
+  framebuffer : elle appartient donc à la v3.0, et n'a pas de sens avant.
+- **Les sprites n'en font pas partie.** Un OBJ ne connaît que la transformation affine
+  (rotation, échelle) ; il n'y a pas de distorsion libre à lui appliquer. Le proposer
+  promettrait un rendu que le matériel ne produit pas — même règle que les modes de mélange
+  *multiply* et *overlay*, absents pour cette raison.
+
+#### Ouvert
+
+- La forme d'authoring : une courbe par calque, une table d'amplitudes, ou un script qui
+  écrit la table lui-même ? Le troisième cas existe de toute façon, la question est ce que
+  le déclaratif couvre.
+
+### v3.0 — Le second moteur de rendu
+
+**Décidé (2026-08-13) : l'éditeur porte DEUX moteurs de rendu.** Un moteur 2D — tout ce qui
+existe jusqu'à la v2.2 incluse, calques tuilés et OBJ — et un moteur 3D, qui est le sujet de
+cette version.
+
+L'ancienne v3.0 « modes bitmap » disparaît en tant que jalon et **devient le substrat de
+celle-ci**. Elle n'avait jamais été un jalon pour l'auteur de jeu : personne ne veut « le
+support du mode 4 », on veut ce qu'il permet. Elle reste décrite ci-dessous parce que ses
+contraintes ne changent pas, mais elle ne se livre plus seule.
+
+Ce n'est pas un mode de plus dans le moteur existant. C'est **un second moteur**, et cette
+version consiste autant à réoutiller l'éditeur qu'à écrire un rasteriseur.
+
+#### Le substrat — les modes bitmap
 
 Famille complètement différente des modes tuilés : un seul calque, pas de tuiles ni de cartes,
 un framebuffer direct. Le budget des sprites y est par ailleurs divisé par deux.
@@ -824,12 +1170,192 @@ un framebuffer direct. Le budget des sprites y est par ailleurs divisé par deux
 | 5 | 160×128 | 16 bits directs | 2, résolution réduite |
 
 **Priorité au mode 4** : 256 couleurs, double tampon, pleine résolution — il évite le
-déchirement d'image du mode 3 et la résolution réduite du mode 5.
+déchirement d'image du mode 3 et la résolution réduite du mode 5. C'est aussi celui que le
+jeu de référence emploie (relevé du 2026-08-13).
 
 **Exclu délibérément des fondations v0.3** : les modes bitmap cassent tout le pipeline actuel
-(tilesets réutilisables, palettes par banque) au profit d'un framebuffer brut. C'est un moteur
-de rendu différent, pas une extension — et c'est aussi pourquoi de vrais jeux commerciaux les
-emploient rarement.
+(tilesets réutilisables, palettes par banque) au profit d'un framebuffer brut — et c'est aussi
+pourquoi de vrais jeux commerciaux les emploient rarement.
+
+Une brique est déjà là : `BackgroundAsset.mode == "bitmap"` existe côté éditeur (image plein
+écran, détectée à l'import) et n'attend que son émission ROM. C'est le plus petit usage du
+framebuffer, sans géométrie — un bon premier pas dans cette version.
+
+**Ce que le framebuffer débloque, et rien d'autre ne débloquera** : la vraie *flow map* — une
+distorsion décidée par pixel, et non par ligne comme en v2.2 — et le rendu de géométrie
+ci-dessous. C'est le seul mode où l'adresse de chaque pixel de destination est écrite par le
+programme.
+
+#### Ce qui reste PARTAGÉ entre les deux moteurs
+
+C'est la liste la plus importante de cette version : ce qui n'y figure pas se dédouble, et
+tout ce qui se dédouble est une occasion de diverger. Elle se tient courte volontairement.
+
+Palettes, audio, table de textes, variables et sauvegarde, scripting (le langage, le parseur,
+le checker, le renommage), le pipeline de build et la construction de la ROM, la découverte
+d'assets et les sidecars. **Rien de tout cela ne connaît le mode de rendu**, et rien ne doit
+l'apprendre.
+
+Les sprites (OBJ) sont partagés aussi, et c'est contre-intuitif : ils survivent au changement
+de moteur puisque le matériel OBJ est le même — mieux, c'est en 3D qu'ils portent le CIEL
+(cf. « rôles inversés » ci-dessous).
+
+#### Ce qui se DÉDOUBLE, et à quel niveau
+
+- **La scène.** `Scene.render_mode` existe déjà en ébauche : c'est le bon endroit, et
+  l'arbitrage est **par scène, pas par projet** — un jeu veut ses menus en 2D et sa course en
+  3D. Conséquence : la moitié des champs de `Scene` n'a de sens que dans un moteur
+  (`background_layers`, `collision_map`, `windows`, `text_bg` d'un côté ; la géométrie et la
+  caméra à projection de l'autre). À trancher : deux types de scène, ou un type dont les
+  champs se taisent selon le mode.
+- **Le canvas.** Cf. « Le point dur » ci-dessous.
+- **Les assets de géométrie.** Maillages et textures n'ont aucun équivalent 2D. Ils entrent
+  dans le pipeline d'import existant (fichier déposé → sidecar), pas dans un pipeline neuf.
+- **Le codegen.** Second chemin d'émission, comme prévu de longue date pour l'affine.
+- **L'API Lua.** `layer.*`, `tilemap.*`, `window.*` ne veulent rien dire en 3D, et la
+  géométrie n'a pas d'équivalent en 2D. `RUNTIME_API` doit donc porter la disponibilité par
+  moteur, et le checker refuser un appel 2D dans une scène 3D — sinon la faute n'apparaît
+  qu'au `make`, sur une ligne générée, jamais sur la cause. C'est le même défaut que les deux
+  listes de prototypes du moteur, et il se règle au même endroit : dans le catalogue.
+- **Les écrans de l'éditeur.** Le Background Editor n'a pas d'objet en 3D ; le Palette Editor
+  et le Sprite Editor gardent le leur ; le Scene Manager change de nature. Un écran doit
+  pouvoir déclarer les moteurs où il s'applique, faute de quoi l'utilisateur voit des outils
+  qui ne peuvent rien produire pour la scène ouverte.
+
+#### L'aperçu fidèle — une source, deux compilations
+
+`core/engine_emulation/` existe parce que **l'éditeur refait en Python ce que la console fait
+en C**, pour montrer le vrai résultat plutôt qu'une approximation : le layout de texte, les
+formules de mélange, le mixeur. Promesse tenue jusqu'ici, à un coût connu — deux
+implémentations à tenir d'accord.
+
+Un moteur 3D aurait mis cette promesse en défaut : porter un rasteriseur en Python fait de la
+double implémentation un vrai risque, et ses divergences sont **invisibles** — un arrondi en
+virgule fixe qui diffère ne plante pas, il donne une autre image. L'autre issue était d'admettre
+un aperçu approximatif, c'est-à-dire de mentir pour la première fois.
+
+**Décision (2026-08-13) : ni l'un ni l'autre. Le rasteriseur s'écrit UNE fois, en C portable,
+et se compile DEUX fois** — pour la GBA (ARM, en IWRAM), et pour l'hôte en bibliothèque
+partagée que l'éditeur appelle et dont il affiche le tampon rendu. Même source, mêmes types en
+virgule fixe : l'image de l'aperçu est identique au pixel près **par construction**, et non par
+discipline. C'est ce qu'Unity obtient en embarquant son runtime dans son éditeur ; on l'obtient
+en compilant le même fichier deux fois.
+
+Ce que ça implique, et qui n'est pas négociable :
+
+- **Le cœur du rasteriseur ne touche JAMAIS le matériel.** Il reçoit un pointeur de destination
+  et une palette de son appelant ; c'est la couche GBA qui lui passe la VRAM. Si la version
+  console écrit dans la VRAM en ligne, la compilation hôte devient impossible. **C'est le seul
+  point de cette version dont l'ordre est irréversible** : la contrainte ne coûte rien
+  aujourd'hui et ne se rattrape pas après coup.
+- **Ce que l'aperçu ne donnera pas : le temps.** Sur PC il tournera vite quoi qu'il arrive et ne
+  dira jamais si la frame tient dans le budget. mGBA reste l'outil de la cadence — appelé, pas
+  incorporé, et le lancement de ROM est déjà outillé.
+- **Un compilateur C hôte devient une dépendance de build**, pour ce composant seulement.
+  Relevé sur la machine de développement (2026-08-13) : aucun compilateur hôte, et le msys2
+  livré avec devkitPro n'expose que les dépôts `msys`, `dkp-libs`, `dkp-windows` — pas de
+  mingw-w64. C'est donc une installation à part, et elle ne concerne que qui touche au
+  rasteriseur : l'éditeur se distribue avec la bibliothèque déjà compilée, et le reste du
+  travail Python n'en a pas besoin.
+- **TCC pour développer, gcc pour publier.** TCC (Tiny C Compiler) tient en quelques
+  mégaoctets et un seul dossier, et sort la bibliothèque directement (`tcc -shared`) : c'est
+  le coût d'entrée le plus bas pour itérer sur le rasteriseur. Il convient d'autant mieux que
+  la source doit de toute façon rester du C conservateur et sans dépendances — elle compile
+  pour un ARM7TDMI avec devkitARM, ce qui interdit déjà tout ce que TCC ne saurait pas
+  digérer. Les builds de **release** passent par gcc (w64devkit, ou la CI qui en fournit un
+  gratuitement), pour du code optimisé et un compilateur éprouvé.
+
+  Le risque de TCC est réel mais borné : moins éprouvé que gcc, et une compilation fausse
+  donnerait une **image fausse** plutôt qu'un plantage. Deux garde-fous tombent tout seuls :
+  la même source tourne sur le vrai matériel (mGBA), et la présence des deux chaînes fait du
+  build de release un **test différentiel gratuit** — si l'image TCC et l'image gcc diffèrent,
+  l'un des deux compilateurs a tort et on le sait avant l'utilisateur.
+
+  **Ce choix n'engage rien.** Le compilateur hôte est un détail de build, pas une décision
+  d'architecture : la source étant du C portable dans les deux cas, remplacer TCC par autre
+  chose ne déplace aucune ligne, aucun format, aucune structure. À rouvrir librement, sans
+  que ce soit une reprise de décision.
+
+#### Ouvert
+
+- Le nom des deux moteurs, dans le code comme dans l'interface. Il sera lu partout et pour
+  longtemps.
+- Une scène peut-elle mélanger les deux ? Le matériel dit non pour les calques, mais les OBJ
+  traversent — donc « pas de mélange » est faux tel quel, et « mélange libre » est faux
+  aussi.
+- Ce que devient un projet dont l'auteur bascule une scène d'un moteur à l'autre. Rien ne se
+  convertit ; la question est ce que l'éditeur en dit.
+
+### v3.1 — Le rasteriseur
+
+Le moteur 3D proprement dit, une fois le substrat et le réoutillage de la v3.0 en place.
+
+#### L'objectif concret — V-Rally 3
+
+**Un jeu du niveau de V-Rally 3 sur GBA doit être constructible avec l'éditeur.** Premier
+objectif de la roadmap énoncé comme un résultat visible plutôt que comme une capacité — c'est
+ce qui rend sa portée décidable : une capacité s'étend indéfiniment, une cible se compare.
+
+#### Décisions verrouillées
+
+- **C'est un rasteriseur logiciel, mesuré, pas supposé.** Relevé mGBA du 2026-08-13 : mode 4,
+  framebuffer 240×160 8bpp double-tamponné (`0x0600A000` = frame 1), aucune base de tuiles, et
+  des maillages qui tournent dans les menus. **Confirmé en course**, où toute la scène passe
+  par ce même framebuffer — le doute « les menus seulement » est levé, il n'y a pas de chemin
+  hybride. Le détail du relevé et l'erreur qu'il corrige sont conservés en v2.0, « Ce que la
+  v2.0 n'est PAS ».
+- **Le framebuffer d'abord, sans alternative.** Le rendu écrit chaque pixel : il lui faut le
+  substrat bitmap de la v3.0, et il n'y a aucun chemin par les calques tuilés. Ce n'est pas
+  une préférence d'ordonnancement, c'est une dépendance — d'où la découpe v3.0 / v3.1.
+- **La GBA n'a ni FPU ni matériel 3D.** Tout est en virgule fixe et coûte des cycles
+  proportionnels au nombre de triangles — c'est le seul renderer de la roadmap dont le coût
+  dépend du contenu de la scène et non de sa configuration. Le budget est donc un sujet de
+  conception, pas une optimisation de fin de chantier.
+- **Le vocabulaire ne change pas de règle pour autant.** « 3D » décrit ici ce que le
+  PROGRAMME calcule, jamais une capacité du matériel : pas de calque 3D, pas de mode vidéo
+  3D. La réserve de la v2.0 sur « Caméra3D » tombe en revanche — une caméra à projection
+  perspective a un sens dans cette version, parce que quelque chose la calcule enfin.
+- **Les rôles fond/sprite sont INVERSÉS par rapport à tout le reste de l'éditeur.** Relevé en
+  course (2026-08-13) : le monde entier — sol, route, panneaux publicitaires, bâtiments,
+  public — est rasterisé dans l'unique fond disponible, et **c'est le ciel qui est fait de
+  sprites**.
+
+  Mesuré : un seul fond porte toute la scène, aucun élément de décor n'est un OBJ, l'arrière-
+  plan lointain en est un. Déduit : en mode bitmap il ne reste qu'un fond (BG2 = le
+  framebuffer), donc aucun calque pour le ciel ; et remplir le ciel dans le framebuffer
+  coûterait du CPU à chaque pixel de chaque frame, quand le matériel OBJ le peint pour rien.
+  Le rasteriseur ne dessine que sous l'horizon.
+
+  Trois conséquences, toutes structurantes :
+
+  - **Le vocabulaire actuel de l'éditeur ne tient pas ici.** Ce que l'auteur appelle « le
+    fond » (le ciel) est de l'OBJ ; ce que le matériel appelle le fond est la cible de rendu,
+    que personne n'authore. Les deux sens du mot se croisent — à trancher avant d'écrire le
+    moindre écran, sous peine d'un inspecteur qui ment sur ce qu'il configure.
+  - **Le budget OBJ devient un sujet.** Les modes bitmap divisent déjà la VRAM des sprites
+    par deux (cf. v3.0) — et le ciel vient maintenant en réclamer une part. Un ciel en bandes
+    répétées, avare en tuiles uniques, n'est pas une optimisation tardive : c'est la
+    condition pour qu'il reste des sprites au jeu.
+  - **Aucune contrainte affine ne s'applique.** Les 32 jeux de paramètres OBJ, invoqués tant
+    que la lecture était « décor en sprites mis à l'échelle », ne concernent rien ici.
+
+#### Ouvert
+
+- Tout le reste. Format des maillages, texturage ou faces plates, élimination des faces
+  cachées, tri en profondeur, découpage, budget par scène, et ce que l'éditeur montre d'un
+  maillage sans devenir un modeleur — le refus de l'outil de dessin s'applique ici aussi, et
+  il est bien plus dur à tenir face à de la géométrie que face à des tuiles.
+- **Le ciel est-il authoré comme un fond, ou comme des sprites ?** Les deux réponses coûtent
+  quelque chose. « Comme un fond » garde le modèle mental de l'auteur — il dessine un ciel,
+  le build le découpe en OBJ — mais c'est l'éditeur qui commente le matériel au lieu de le
+  rendre, ce que la maison refuse partout ailleurs. « Comme des sprites » est honnête et
+  demande à l'auteur de comprendre pourquoi son ciel n'est pas un fond. La tension est réelle
+  et ne se tranche pas à l'avance.
+- Le lien avec la v2.1 : une course a besoin de physique, mais la physique de la v2.1 est
+  **2D**. Ce qu'il faut ici pour un véhicule sur un relief n'est pas décidé, et ce n'est pas
+  la même chose.
+- La cadence visée. 60 fps n'est pas donné ; le jeu de référence tourne dans un budget qu'il
+  faudra mesurer plutôt que supposer.
 
 ---
 

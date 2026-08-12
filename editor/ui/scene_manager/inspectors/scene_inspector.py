@@ -18,8 +18,10 @@ from core.models.scene import (
     BLEND_TOP, BLEND_BOTTOM, BLEND_NEEDS_BOTTOM, blend_role_of,
     EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE, EFFECT_TRANSLUCENT,
     EFFECT_CUSTOM, blend_effect_of, blend_amount_of, apply_blend_effect,
+    TRANSITION_INHERIT,
 )
 from ui.scene_manager.inspectors.bg_layer_row import BgLayerRow
+from ui.scene_manager.inspectors.project_inspector import TRANSITION_LABELS
 from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
     RemoveListItemCmd, SetSceneModeCmd,
@@ -69,6 +71,15 @@ _AMOUNT_LABELS = {
 # le plus proche. Le dire, sinon « 40 » qui devient « 38 » passe pour un bug.
 _AMOUNT_QUANTIZED = ("<br><br>Snaps to the hardware's 17 steps (0-16), so the "
                      "value may shift by a percent or two.")
+# ── Transition — libellés ─────────────────────────────────────────
+# Les mêmes mots que l'inspecteur de projet (qui les définit, la transition
+# étant d'abord un réglage de projet), plus l'item d'absence de surcharge. Son
+# libellé dit ce que la scène hérite RÉELLEMENT (cf. _refresh_transition) : un
+# « from project » nu obligerait à aller voir ailleurs ce que ça donne.
+_TRANSITIONS: tuple[tuple[str, str], ...] = (
+    (TRANSITION_INHERIT, "From project"),
+) + TRANSITION_LABELS
+
 # Où un effet FRAÎCHEMENT choisi se pose. À mi-course : assez pour se voir dans
 # le canvas, jamais au point d'éteindre l'écran au moment du clic.
 _EFFECT_DEFAULT_AMOUNT = {
@@ -494,6 +505,43 @@ class SceneInspector(QWidget):
         self._mode_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
         mode_inner.addWidget(self._mode_hint)
 
+        # ── Transition ────────────────────────────────────────────
+        # Le fondu joué en QUITTANT cette scène et en l'OUVRANT. Hors de la
+        # colonne des paramètres : une transition vaut aussi en mode bitmap,
+        # alors que cette colonne y est masquée.
+        trans_row = QHBoxLayout(); trans_row.setSpacing(6)
+        lbl_trans = QLabel("Transition:")
+        lbl_trans.setFont(QFont(T.UI, T.SM)); lbl_trans.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_trans.setFixedWidth(70)
+        self._combo_trans = QComboBox()
+        self._combo_trans.setFont(QFont(T.UI, T.SM))
+        self._combo_trans.setStyleSheet(QSS.combobox)
+        for kind, label in _TRANSITIONS:
+            self._combo_trans.addItem(label, kind)
+        self._combo_trans.setToolTip(
+            "<b>Fade played when leaving AND when opening this scene</b><br><br>"
+            "Each scene describes its own disappearance and its own "
+            "appearance,<br>so two scenes never fight over a switch.<br><br>"
+            "The outgoing scene is frozen while its fade plays, and this "
+            "scene's<br>color blending is suspended for the duration — the "
+            "hardware has a<br>single blend mode, there is no fade on top of a "
+            "translucency."
+        )
+        self._combo_trans.currentIndexChanged.connect(self._on_transition_kind)
+        self._spin_trans = QSpinBox()
+        self._spin_trans.setRange(1, 255)
+        self._spin_trans.setFixedWidth(60)
+        self._spin_trans.setSuffix(" f")
+        self._spin_trans.setFont(QFont(T.MONO, T.SM))
+        self._spin_trans.setStyleSheet(QSS.spinbox)
+        self._spin_trans.setToolTip("Frames per half — leaving, then opening.")
+        self._spin_trans.valueChanged.connect(
+            lambda v: self._set_scene_field("transition_frames", int(v)))
+        trans_row.addWidget(lbl_trans)
+        trans_row.addWidget(self._combo_trans, 1)
+        trans_row.addWidget(self._spin_trans)
+        mode_inner.addLayout(trans_row)
+
         W.separator(mode_inner)
 
         from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
@@ -787,6 +835,7 @@ class SceneInspector(QWidget):
         # pilote la visibilité du rôle sur chaque ligne, qui doit exister.
         self._apply_mode_ui()
         self._refresh_blend()
+        self._refresh_transition()
         self._blocking = False
 
     def _mk_scroll_toggle(self, icon_key: str, tip: str) -> QToolButton:
@@ -1565,6 +1614,38 @@ class SceneInspector(QWidget):
         if self._blocking or not self._scene: return
         self._set_scene_field("scroll_h", self._chk_scroll_h.isChecked())
         self._set_scene_field("scroll_v", self._chk_scroll_v.isChecked())
+        self.changed.emit()
+
+    # ── Transition ──────────────────────────────────────────────────
+
+    def _refresh_transition(self):
+        """Réaffiche la surcharge — et, sur l'item « From project », CE QUE la
+        scène hérite : sans ça, savoir ce qu'on obtient demande d'aller ouvrir
+        l'inspecteur de projet."""
+        sc, p = self._scene, self._project
+        kind = getattr(sc, "transition_kind", TRANSITION_INHERIT)
+        st = p.settings if p else None
+        inherited = getattr(st, "transition_kind", EFFECT_NONE) or EFFECT_NONE
+        inh_frames = getattr(st, "transition_frames", 16)
+        label = dict(_TRANSITIONS).get(inherited, inherited)
+        self._combo_trans.setItemText(
+            0, f"From project — {label.lower()}"
+            + (f", {inh_frames} f" if inherited != EFFECT_NONE else ""))
+        self._combo_trans.blockSignals(True)
+        idx = self._combo_trans.findData(kind)
+        self._combo_trans.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo_trans.blockSignals(False)
+        self._spin_trans.blockSignals(True)
+        self._spin_trans.setValue(getattr(sc, "transition_frames", 16))
+        self._spin_trans.blockSignals(False)
+        # La durée n'appartient à la scène que si elle surcharge par un fondu.
+        self._spin_trans.setVisible(kind not in (TRANSITION_INHERIT, EFFECT_NONE))
+
+    def _on_transition_kind(self, idx: int):
+        if self._blocking or not self._scene: return
+        self._set_scene_field("transition_kind",
+                              self._combo_trans.itemData(idx) or TRANSITION_INHERIT,
+                              extra_persist=self._refresh_transition)
         self.changed.emit()
 
     # ── Backdrop ────────────────────────────────────────────────────

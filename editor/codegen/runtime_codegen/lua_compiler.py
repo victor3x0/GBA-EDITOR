@@ -67,6 +67,7 @@ def transpile_all(
     precomputed_global_names: list[str] | None = None,
     precomputed_const_names: list[str] | None = None,
     compiled_prefabs: set[str] | None = None,
+    compiled_cameras: set[str] | None = None,
 ) -> bool:
     """
     Compile tous les scripts Lua de la scène en C.
@@ -104,6 +105,7 @@ def transpile_all(
     all_syms    = [c_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
+    _camera_names = [c.name for c in getattr(p, "cameras", [])]
     # Les prefabs sont poolés au niveau PROJET : `actor.spawn("X")` vise la
     # liste entière, pas ce que la scène courante contient.
     _prefab_names = [pf.name for pf in prefabs]
@@ -157,6 +159,7 @@ def transpile_all(
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
+            camera_names = _camera_names,
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
@@ -189,6 +192,7 @@ def transpile_all(
                 sfx_names    = sfx_names,
                 music_names  = music_names,
                 scene_names  = _scene_names,
+                camera_names = _camera_names,
                 actor_names  = _actor_names,
             prefab_names = _prefab_names,
                 global_names = list(global_names) if global_names else None,
@@ -240,7 +244,6 @@ def transpile_all(
             has_persistent = _has_persist,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
-        c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
         for w in gen_warnings:
             emit("log_line", f"[warn] {sp.name}: {w}")
         out = p.src_dir / f"actor_{s}.c"
@@ -271,6 +274,7 @@ def transpile_all(
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
+            camera_names = _camera_names,
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
@@ -311,7 +315,6 @@ def transpile_all(
             has_persistent = _has_persist,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
-        pf_c = pf_c.replace('#include "runtime.h"', '#include "actor_api.h"')
         for w in pf_warnings:
             emit("log_line", f"[warn] prefab {pf.name}: {w}")
         out_pf = p.src_dir / f"actor_{pf_sym}.c"
@@ -344,12 +347,83 @@ def transpile_all(
             has_persistent = _has_persist,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
-        c_code = c_code.replace('#include "runtime.h"', '#include "actor_api.h"')
         for w in sc_warnings:
             emit("log_line", f"[warn] {scene_script_file.name}: {w}")
         out_name = f"{scene_s}_scene.c"
         out = p.src_dir / out_name
         out.write_text(c_code, encoding="utf-8")
         emit("log_line", f"[lua->c] {scene_script_file.name} -> {out_name}")
+
+    # Génération C — scripts de CAMÉRA
+    #
+    # Compilés une fois pour le PROJET et non par scène (`compiled_cameras`,
+    # même mécanique que les prefabs poolés) : une caméra est un asset partagé,
+    # et n'importe quelle scène peut activer n'importe laquelle par script.
+    # Mêmes points d'entrée qu'un script de scène — `hook_kind="camera"` ne
+    # change que le mot dans le symbole C émis.
+    for cam in getattr(p, "cameras", []):
+        if not getattr(cam, "script", ""):
+            continue
+        cam_sym = f"camera_{c_sym(cam.name)}"
+        if compiled_cameras is not None:
+            if cam_sym in compiled_cameras:
+                continue
+            compiled_cameras.add(cam_sym)
+        sp = p.asset_abs(cam.script)
+        if not sp or not sp.exists() or sp.suffix.lower() != ".lua":
+            continue
+        ctx_check = BuildContext(
+            actor_name   = cam.name,
+            sfx_names    = sfx_names,
+            music_names  = music_names,
+            scene_names  = _scene_names,
+            camera_names = _camera_names,
+            # Aucun `actor_names` : une caméra est réutilisable entre scènes et
+            # les noms d'acteurs y sont locaux. Citer un acteur depuis une
+            # caméra marcherait dans une scène et pas dans la suivante — le
+            # checker doit le dire, pas le laisser passer.
+            global_names = list(global_names) if global_names else None,
+            global_types = {g.name: g.type for g in p.globals},
+            const_names  = list(const_names) if const_names else None,
+            text_keys    = text_keys,
+            font_names   = font_names,
+            palette_names = palette_names,
+            region_names = region_names,
+            image_names  = image_names,
+            save_slots   = _save_slots,
+            has_persistent = _has_persist,
+        )
+        cam_ast, ok = _compile_script(sp, ctx_check, emit, f"camera {cam.name} ({sp.name})")
+        if not ok:
+            return False
+        ctx_cam = CodegenContext(
+            actor_name    = cam.name,
+            actor_sym     = cam_sym,
+            anim_names    = [],
+            sfx_names     = sfx_names,
+            music_names   = music_names,
+            global_names  = set(global_names),
+            const_names   = set(const_names),
+            all_actor_syms= all_syms,
+            is_scene      = True,
+            hook_kind     = "camera",
+            scene_names   = _scene_names,
+            sfx_volumes   = sfx_volumes,
+            music_info    = music_info,
+            text_keys     = text_keys,
+            font_names    = font_names,
+            palette_names = palette_names,
+            region_names  = region_names,
+            image_names   = image_names,
+            image_states  = image_states,
+            save_slots    = _save_slots,
+            has_persistent = _has_persist,
+        )
+        cam_c, cam_warnings = lua_generate(cam_ast, ctx_cam)
+        for w in cam_warnings:
+            emit("log_line", f"[warn] camera {cam.name}: {w}")
+        out_cam = p.src_dir / f"{cam_sym}.c"
+        out_cam.write_text(cam_c, encoding="utf-8")
+        emit("log_line", f"[lua->c] {sp.name} -> {out_cam.name}")
 
     return True

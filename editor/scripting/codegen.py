@@ -27,8 +27,9 @@ from .parser import (
 )
 from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
-    KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
+    KNOWN_SCENE_EVENTS, KNOWN_EVENTS_BY_KIND, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
+    DOMAIN_CAMERA, camera_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_PALETTE,
     DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
@@ -77,7 +78,11 @@ class CodegenContext:
     global_names: set[str]       # noms des variables globales (depuis globals.h)
     const_names:  set[str]       # noms des constantes (depuis constants.h)
     all_actor_syms: list[str]    # tous les acteurs de la scène
-    is_scene: bool = False       # True → script de scène (pas de self, signatures différentes)
+    is_scene: bool = False       # True → script SANS self (scène ou caméra)
+    # Famille de propriétaire, quand is_scene : nomme le symbole C émis
+    # (`<sym>_scene_on_update` / `<sym>_camera_on_update`). Une caméra a les
+    # mêmes points d'entrée qu'une scène et emprunte donc le même chemin.
+    hook_kind: str = "scene"
     scripts_dir: Path | None = None  # racine project/scripts/ pour résoudre les require()
     is_pooled: bool = False      # True → locals → self->data[N] (prefab poolé)
     scene_names: list[str] = field(default_factory=list)  # noms de scènes du projet
@@ -129,7 +134,7 @@ class CodeGen:
             self._emit_function(fn)
             defined.add(fn.name)
         # Stubs vides pour les events non définis (évite les erreurs de linker)
-        known = KNOWN_SCENE_EVENTS if self.ctx.is_scene else KNOWN_EVENTS
+        known = self._known_hooks() if self.ctx.is_scene else KNOWN_EVENTS
         for event in known:
             if event not in defined:
                 self._emit_stub(event)
@@ -223,13 +228,23 @@ class CodeGen:
 
     # ── En-tête ───────────────────────────────────────────────────
 
+    def _known_hooks(self) -> list:
+        """Les points d'entrée admis pour ce propriétaire — une scène en a
+        trois, une caméra deux (cf. KNOWN_EVENTS_BY_KIND)."""
+        return KNOWN_EVENTS_BY_KIND.get(self.ctx.hook_kind, KNOWN_SCENE_EVENTS)
+
     def _emit_header(self):
         sym = self.ctx.actor_sym
         if self.ctx.is_scene:
-            self._w(f"/* scene_{sym}.c — script de scène, généré par GBA Editor (ne pas éditer) */")
+            kind = self.ctx.hook_kind
+            self._w(f"/* {sym}.c — script de {kind}, généré par GBA Editor (ne pas éditer) */")
         else:
             self._w(f"/* actor_{sym}.c — généré par GBA Editor (ne pas éditer) */")
-        self._w('#include "runtime.h"')
+        # `actor_api.h` et non `runtime.h` : c'est l'en-tête généré qui porte
+        # la vraie struct Actor et l'API. Le C émis l'incluait autrefois sous le
+        # nom `runtime.h`, que chaque appelant remplaçait ensuite par celui-ci —
+        # un détour dont il ne restait que le nom.
+        self._w('#include "actor_api.h"')
         self._w('#include "globals.h"')
         self._w('#include "constants.h"')
         # Forward declarations pour éviter les erreurs d'ordre (ex: destroy appelle on_destroy)
@@ -403,8 +418,8 @@ class CodeGen:
     def _emit_function(self, fn: LuaFunction):
         if self.ctx.is_scene:
             sym = self.ctx.actor_sym
-            if fn.name in KNOWN_SCENE_EVENTS:
-                sig = scene_event_sig(sym, fn.name)   # "void PONG_scene_on_start(void)"
+            if fn.name in self._known_hooks():
+                sig = scene_event_sig(sym, fn.name, self.ctx.hook_kind)   # "void PONG_scene_on_start(void)"
             else:
                 sig = f"static void {sym}_scene_{fn.name}(void)"
         else:
@@ -735,9 +750,9 @@ class CodeGen:
     def _emit_stub(self, event_name: str):
         """Stub vide pour un event non défini dans le script."""
         if self.ctx.is_scene:
-            if event_name not in KNOWN_SCENE_EVENTS:
+            if event_name not in self._known_hooks():
                 return
-            sig = scene_event_sig(self.ctx.actor_sym, event_name)
+            sig = scene_event_sig(self.ctx.actor_sym, event_name, self.ctx.hook_kind)
             self._w(sig + " {}")
         else:
             sig_tpl = EVENT_C_SIGNATURES.get(event_name)
@@ -791,6 +806,7 @@ _DOMAIN_CONSTANT: dict = {
     DOMAIN_KEY:     lambda g, name: key_constant(name),
     DOMAIN_TAG:     lambda g, name: tag_constant(name),
     DOMAIN_SCENE:   lambda g, name: scene_constant(name),
+    DOMAIN_CAMERA:  lambda g, name: camera_constant(name),
     # Une chaîne qui ne matche aucune clé est un LITTÉRAL (`text.draw` seul le
     # permet, cf. Param.literal_ok) : il a sa propre entrée de table, donc le C
     # ne voit qu'un index comme pour tout texte.

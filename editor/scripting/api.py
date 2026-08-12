@@ -51,6 +51,7 @@ DOMAIN_MUSIC  = "music"   # MUSIC_{name}
 DOMAIN_KEY    = "key"     # BTN_{name} — enum fixe du hardware, jamais renommé
 DOMAIN_TAG    = "tag"     # TAG_{name}
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
+DOMAIN_CAMERA = "camera"  # CAM_{name}   — caméra du projet
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
 DOMAIN_FONT   = "font"    # FONT_{name}
 DOMAIN_PALETTE = "palette"  # PAL_{name} — palette du catalogue de couleurs
@@ -177,6 +178,12 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="self:get_vy", c_func="actor_get_vy",
         params=[], self_first=True, ret="int",
         doc="Retourne la vélocité Y de l'actor.",
+    ),
+    "self:on_ground": ApiFunc(
+        lua_name="self:on_ground", c_func="actor_on_ground",
+        params=[], self_first=True, ret="int",
+        doc="Vrai si une box solide reposait sur le sol à la fin de la frame précédente — "
+            "pentes comprises. Demande une carte de collision dans la scène.",
     ),
 
     # ── Animation ─────────────────────────────────────────────────
@@ -388,6 +395,18 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("world_w", PARAM_INT), Param("world_h", PARAM_INT)],
         doc="Définit les bornes de scroll (taille du monde en pixels, 0 = axe illimité). "
             "Ex: débloquer une nouvelle zone au runtime.",
+    ),
+    "camera.switch": ApiFunc(
+        lua_name="camera.switch", c_func="camera_switch",
+        params=[Param("name", PARAM_STR, DOMAIN_CAMERA)],
+        doc="Active une autre caméra du projet — son cadrage et ses bornes sont posés "
+            "immédiatement. Une seule caméra est active à la fois.",
+    ),
+    "camera.shake": ApiFunc(
+        lua_name="camera.shake", c_func="camera_shake",
+        params=[Param("amplitude", PARAM_INT), Param("frames", PARAM_INT)],
+        doc="Secoue la caméra : amplitude en pixels, retombant à zéro sur la durée. "
+            "Ex: camera.shake(4, 20)",
     ),
 
     # ── Maths ────────────────────────────────────────────────────
@@ -1040,6 +1059,11 @@ def scene_constant(scene_name: str) -> str:
     return f"SCENE_IDX_{c_ident(scene_name)}"
 
 
+def camera_constant(camera_name: str) -> str:
+    """'Boss' → 'CAM_BOSS'"""
+    return f"CAM_{c_ident(camera_name)}"
+
+
 def text_constant(text_key: str) -> str:
     """'village_garde_01' → 'TEXT_VILLAGE_GARDE_01'"""
     return f"TEXT_{c_ident(text_key)}"
@@ -1110,13 +1134,31 @@ KNOWN_SCENE_EVENTS: list[str] = [
     "on_late_update",
 ]
 
-def scene_event_sig(scene_sym: str, event: str) -> str:
-    """Signature C namespacée pour un hook de scène."""
-    return f"void {scene_sym}_scene_{event}(void)"
+# Points d'entrée d'une CAMÉRA — les mêmes, moins `on_late_update` : le moteur
+# n'exécute le script d'une caméra qu'à un seul moment de la frame (juste après
+# le suivi déclaratif, cf. ROADMAP v0.6.1). Deux hooks s'y enchaîneraient sans
+# que rien ne les sépare, donc l'un d'eux serait un mensonge.
+KNOWN_CAMERA_EVENTS: list[str] = [
+    "on_start",
+    "on_update",
+]
 
-
-SCENE_EVENT_C_SIGNATURES: dict[str, str] = {
-    "on_start":       "void {scene_sym}_scene_on_start(void)",
-    "on_update":      "void {scene_sym}_scene_on_update(void)",
-    "on_late_update": "void {scene_sym}_scene_on_late_update(void)",
+# Les événements ADMIS par famille de propriétaire — `hook_kind` du codegen.
+KNOWN_EVENTS_BY_KIND: dict[str, list[str]] = {
+    "scene":  KNOWN_SCENE_EVENTS,
+    "camera": KNOWN_CAMERA_EVENTS,
 }
+
+def scene_event_sig(scene_sym: str, event: str, kind: str = "scene") -> str:
+    """Signature C namespacée pour un hook sans `self`.
+
+    `kind` nomme la famille de propriétaire : une CAMÉRA a exactement les mêmes
+    points d'entrée qu'une scène (cf. ROADMAP v0.6.1) et emprunte donc toute
+    cette machinerie — seul le mot dans le symbole change, pour qu'un
+    `camera_Boss_camera_on_update` ne prétende pas être une scène."""
+    return f"void {scene_sym}_{kind}_{event}(void)"
+
+
+# (Une table `SCENE_EVENT_C_SIGNATURES` doublait `scene_event_sig` avec les
+#  mêmes trois signatures en dur ; personne ne la lisait, et elle aurait figé le
+#  mot « scene » que la caméra vient de rendre variable. Retirée.)

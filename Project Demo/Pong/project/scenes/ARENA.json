@@ -35,7 +35,7 @@
           "component_type": "collision_box",
           "id": "Bounding Box",
           "active": true,
-          "solid": true,
+          "solid": false,
           "tag": "body",
           "x": 0,
           "y": 0,
@@ -87,7 +87,7 @@
           "component_type": "collision_box",
           "id": "Blabla",
           "active": true,
-          "solid": true,
+          "solid": false,
           "tag": "Blabla",
           "x": 0,
           "y": 0,
@@ -120,14 +120,7 @@
       "notes": ""
     }
   ],
-  "cam_x": 0,
-  "cam_y": 0,
-  "cam_follow": "",
-  "cam_mode": "fixed",
-  "cam_margin_x": 40,
-  "cam_margin_y": 20,
-  "cam_bounds_w": 240,
-  "cam_bounds_h": 160,
+  "camera": "",
   "windows": [
     {
       "region": 0,

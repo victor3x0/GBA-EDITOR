@@ -14,7 +14,7 @@ Raide (|dy| > |dx|)   paires HI/LO par colonne (~63°)
 
 from __future__ import annotations
 
-from core.models.scene import (
+from core.models.collision_tiles import (
     TILE_SOLID,
     TILE_SLOPE_L,
     TILE_SLOPE_L_HI,

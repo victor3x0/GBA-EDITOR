@@ -30,7 +30,7 @@ from core.models.palette import PaletteBank, PaletteUsage, OWN_PAL_BANK
 from core.models.scene import Scene
 from core.models.sprite import SpriteAsset
 from scripting.api import (
-    DOMAIN_SCENE, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
+    DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
     DOMAIN_ACTOR, DOMAIN_REGION, DOMAIN_IMAGE,
 )
 
@@ -121,6 +121,23 @@ class ProjectRenameMixin:
                 self.save_settings()
             refs = self.rename_lua_refs(DOMAIN_SCENE, old_name, new_name)
         self._notify_renamed("Scene", old_name, new_name, refs)
+
+    def rename_camera(self, old_name: str, new_name: str):
+        """Renomme une caméra et répare ce qui la cite : les scènes qui
+        DÉMARRENT dessus, et les `camera.switch("…")` des scripts. Une caméra
+        est réutilisable entre scènes — la citation est donc partout."""
+        new_name = new_name.strip()
+        cam = self.cameras.get(old_name)
+        if not cam or not new_name or new_name == old_name:
+            return
+        with self._renaming():
+            self.cameras.rename(cam, new_name)
+            for scene in self.scenes:
+                if getattr(scene, "camera", "") == old_name:
+                    scene.camera = new_name
+                    self.save_scene(scene)
+            refs = self.rename_lua_refs(DOMAIN_CAMERA, old_name, new_name)
+        self._notify_renamed("Camera", old_name, new_name, refs)
 
     def rename_prefab(self, prefab, new_name: str):
         new_name = new_name.strip()

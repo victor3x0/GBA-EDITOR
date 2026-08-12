@@ -20,8 +20,9 @@ from core.models.tile_codec import unpack_se, hex_to_tile, hex_to_tile8, flip_h,
 # ici uniquement pour CollisionOverlay._slope_path et _draw_tile.
 from core.history import MoveActorCmd, get_history
 from core.models.resource import MIME_PREFAB_TEMPLATE
-from core.models.scene import (
-    Actor,
+from core.models.scene import Actor
+from core.models import collision_tiles as CT
+from core.models.collision_tiles import (
     COLLISION_TILE_SIZE,
     TILE_EMPTY,
     TILE_SLOPE_L,
@@ -1347,7 +1348,6 @@ class _GuideLine(QGraphicsLineItem):
 
 class GBAScene(QGraphicsScene):
     sprite_moved = pyqtSignal()
-    camera_moved = pyqtSignal(int, int)  # cam_x, cam_y
 
     def __init__(self, canvas_w: int = GBA_W, canvas_h: int = GBA_H, parent=None):
         super().__init__(0, 0, canvas_w, canvas_h, parent)
@@ -2238,118 +2238,18 @@ _CEIL_GENTLE = (
 
 
 def _slope_path(x: int, y: int, tile_type: int) -> QPainterPath:
-    """Retourne le QPainterPath du triangle de collision pour un tile slope."""
-    T = _T
-    H = T // 2  # demi-tile = 4 px
+    """Le contour de la matière d'une tuile de collision, posé en (x, y).
+
+    Dérivé de `collision_tiles.polygon()` : la forme est décrite UNE fois, là où
+    le codegen la lit aussi pour émettre la table du runtime. La physique du jeu
+    et ce dessin ne peuvent donc plus diverger."""
     p = QPainterPath()
-    # ── Sol (partie inférieure du tile) ──────────────────────────
-    if tile_type == TILE_SLOPE_L:
-        p.moveTo(x, y + T)
-        p.lineTo(x + T, y)
-        p.lineTo(x + T, y + T)
-    elif tile_type == TILE_SLOPE_R:
-        p.moveTo(x, y)
-        p.lineTo(x, y + T)
-        p.lineTo(x + T, y + T)
-    elif tile_type == TILE_SLOPE_L_LO:
-        p.moveTo(x, y + T)
-        p.lineTo(x + T, y + H)
-        p.lineTo(x + T, y + T)
-    elif tile_type == TILE_SLOPE_L_HI:
-        p.moveTo(x, y + H)
-        p.lineTo(x + T, y)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x, y + T)
-    elif tile_type == TILE_SLOPE_R_LO:
-        p.moveTo(x, y + H)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x, y + T)
-    elif tile_type == TILE_SLOPE_R_HI:
-        p.moveTo(x, y)
-        p.lineTo(x + T, y + H)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x, y + T)
-    # ── Plafond (miroir vertical — partie supérieure du tile) ────
-    elif tile_type == TILE_SLOPE_L_INV:  # ◣ plafond montant L→R
-        p.moveTo(x, y)
-        p.lineTo(x + T, y)
-        p.lineTo(x, y + T)
-    elif tile_type == TILE_SLOPE_R_INV:  # ◢ plafond descendant L→R
-        p.moveTo(x, y)
-        p.lineTo(x + T, y)
-        p.lineTo(x + T, y + T)
-    elif (
-        tile_type == TILE_SLOPE_L_LO_INV
-    ):  # plafond montant, tile gauche (petit triangle haut-droite)
-        p.moveTo(x, y)
-        p.lineTo(x + T, y + H)
-        p.lineTo(x + T, y)
-    elif (
-        tile_type == TILE_SLOPE_L_HI_INV
-    ):  # plafond montant, tile droite (trapèze haut-gauche)
-        p.moveTo(x, y)
-        p.lineTo(x, y + H)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x + T, y)
-    elif (
-        tile_type == TILE_SLOPE_R_HI_INV
-    ):  # plafond descendant, tile gauche (trapèze haut-droite)
-        p.moveTo(x, y)
-        p.lineTo(x, y + T)
-        p.lineTo(x + T, y + H)
-        p.lineTo(x + T, y)
-    elif (
-        tile_type == TILE_SLOPE_R_LO_INV
-    ):  # plafond descendant, tile droite (petit triangle haut-gauche)
-        p.moveTo(x, y)
-        p.lineTo(x, y + H)
-        p.lineTo(x + T, y)
-    # ── Pentes raides sol (>45°, X=1 Y=2) ──────────────────────
-    elif tile_type == TILE_SLOPE_R_STEEP_HI:  # tile haut : petit triangle gauche
-        p.moveTo(x, y)
-        p.lineTo(x + H, y + T)
-        p.lineTo(x, y + T)
-    elif tile_type == TILE_SLOPE_R_STEEP_LO:  # tile bas  : grand quadrilatère gauche
-        p.moveTo(x, y)
-        p.lineTo(x + H, y)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x, y + T)
-    elif tile_type == TILE_SLOPE_L_STEEP_HI:  # tile haut : petit triangle droit
-        p.moveTo(x + T, y)
-        p.lineTo(x + H, y + T)
-        p.lineTo(x + T, y + T)
-    elif tile_type == TILE_SLOPE_L_STEEP_LO:  # tile bas  : grand quadrilatère droit
-        p.moveTo(x + H, y)
-        p.lineTo(x + T, y)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x, y + T)
-    # ── Pentes raides plafond (miroir vertical) ──────────────────
-    elif (
-        tile_type == TILE_SLOPE_R_STEEP_HI_INV
-    ):  # tile bas (plafond) : petit triangle gauche haut
-        p.moveTo(x, y + T)
-        p.lineTo(x + H, y)
-        p.lineTo(x, y)
-    elif (
-        tile_type == TILE_SLOPE_R_STEEP_LO_INV
-    ):  # tile haut (plafond) : grand quadrilatère gauche haut
-        p.moveTo(x, y)
-        p.lineTo(x + T, y)
-        p.lineTo(x + H, y + T)
-        p.lineTo(x, y + T)
-    elif (
-        tile_type == TILE_SLOPE_L_STEEP_HI_INV
-    ):  # tile bas (plafond) : petit triangle droit haut
-        p.moveTo(x + T, y + T)
-        p.lineTo(x + H, y)
-        p.lineTo(x + T, y)
-    elif (
-        tile_type == TILE_SLOPE_L_STEEP_LO_INV
-    ):  # tile haut (plafond) : grand quadrilatère droit haut
-        p.moveTo(x, y)
-        p.lineTo(x + T, y)
-        p.lineTo(x + T, y + T)
-        p.lineTo(x + H, y + T)
+    poly = CT.polygon(tile_type)
+    if not poly:
+        return p
+    p.moveTo(x + poly[0][0], y + poly[0][1])
+    for px, py in poly[1:]:
+        p.lineTo(x + px, y + py)
     p.closeSubpath()
     return p
 
@@ -4397,10 +4297,10 @@ class SceneEditor(QWidget):
         # Backdrop (sous tous les layers)
         self.refresh_backdrop()
 
-        # Caméra
-        cam_x = scene.cam_x if scene else 0
-        cam_y = scene.cam_y if scene else 0
-        self._gba_scene.setup_camera(cam_x, cam_y)
+        # Caméra — le cadrage vit dans l'ASSET caméra de la scène ; une scène
+        # au défaut implicite n'en a pas, et se cadre donc à l'origine.
+        _cam = self._project.scene_camera(scene) if (self._project and scene) else None
+        self._gba_scene.setup_camera(_cam.x if _cam else 0, _cam.y if _cam else 0)
 
         # BG layers (sans rescale — taille native)
         shown = set()
@@ -4657,8 +4557,7 @@ class SceneEditor(QWidget):
         # Si la caméra est sélectionnée, mettre à jour l'inspecteur avec la nouvelle position
         if self._gba_scene._camera and self._gba_scene._camera.isSelected():
             x, y = self._gba_scene.camera_pos()
-            self._project.active_scene.cam_x = x
-            self._project.active_scene.cam_y = y
+            self._write_camera_pos(x, y)
             self.scene_changed.emit()
 
     # ── Sélection ─────────────────────────────────────────────────
@@ -4702,9 +4601,8 @@ class SceneEditor(QWidget):
         target = self._gba_scene.active_item or selected[0]
         if isinstance(target, CameraItem):
             if self._project and self._project.active_scene:
-                x, y = self._gba_scene.camera_pos()
-                self._project.active_scene.cam_x = x
-                self._project.active_scene.cam_y = y
+                # Sélectionner n'est pas régler : on ne matérialise pas la
+                # caméra par défaut ici, seulement au premier vrai déplacement.
                 get_bus().select(CameraSelection(self._project.active_scene))
         elif isinstance(target, SpriteItem):
             get_bus().select(target.scene_sprite)
@@ -4793,11 +4691,29 @@ class SceneEditor(QWidget):
     # ── Sauvegarde position caméra ────────────────────────────────
 
     def flush_camera_pos(self):
-        """Appelé avant save_scene pour persister la position de la caméra."""
+        """Appelé avant save_scene pour persister le cadrage de la caméra."""
         if self._project and self._project.active_scene and self._gba_scene._camera:
             x, y = self._gba_scene.camera_pos()
-            self._project.active_scene.cam_x = x
-            self._project.active_scene.cam_y = y
+            self._write_camera_pos(x, y)
+
+    def _write_camera_pos(self, x: int, y: int):
+        """Écrit le cadrage dans l'ASSET caméra de la scène active.
+
+        Déplacer le cadre est un réglage : si la scène employait encore la
+        caméra par défaut, c'est ici qu'une vraie caméra naît
+        (`ensure_scene_camera`). Ne rien faire quand la position est déjà celle
+        du défaut évite d'en créer une au premier clic sur le rectangle."""
+        scene = self._project.active_scene if self._project else None
+        if scene is None:
+            return
+        cam = self._project.scene_camera(scene)
+        if cam is None and x == 0 and y == 0:
+            return
+        cam = cam or self._project.ensure_scene_camera(scene)
+        if (cam.x, cam.y) == (x, y):
+            return
+        cam.x, cam.y = x, y
+        self._project.cameras.save(cam)
 
     def _on_prefab_template_dropped(self, prefab_name: str, pos: QPointF):
         if not self._project or not self._project.active_scene:

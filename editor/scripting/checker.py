@@ -27,7 +27,7 @@ from .parser import (
     ExprNumber, ExprUnop, ExprBool,
 )
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
-                  DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
+                  DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE,
                   DOMAIN_TAG, DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
@@ -60,6 +60,7 @@ class BuildContext:
     sfx_names:    list[str]  = None    # noms de Sfx dans le projet
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
+    camera_names: list[str]  = None    # noms de caméras du projet (pour camera.switch)
     actor_names:  list[str]  = None    # noms des actors de la scène (pour get_actor)
     prefab_names: list[str]  = None    # noms de Prefab du projet (pour actor.spawn)
     global_names: list[str]  = None    # noms de GlobalVar déclarées dans le projet
@@ -425,6 +426,18 @@ class Checker:
                 f"Scènes disponibles : {', '.join(self.ctx.scene_names) or 'aucune'}.",
             ))
 
+    def _check_camera(self, call_key: str, name: str):
+        """Même raison que la scène : sans caméra de ce nom, le #define CAM_*
+        n'existe pas et gcc échoue sur la ligne générée. `(default)` n'est pas
+        acceptée ici — la caméra par défaut n'a pas de nom, un script qui veut
+        y revenir écrit camera.switch sur une caméra qu'il a nommée."""
+        if self.ctx.camera_names is not None and name not in self.ctx.camera_names:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : caméra '{name}' introuvable dans le projet. "
+                f"Caméras disponibles : {', '.join(self.ctx.camera_names) or 'aucune'}.",
+            ))
+
     def _check_prefab(self, call_key: str, name: str):
         """Un prefab inconnu est une ERREUR, même raison que la scène : le
         codegen émet `spawn_<Nom>(...)` sans rien vérifier, donc la faute ne se
@@ -474,6 +487,7 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_REGION:  lambda c, key, val, p: c._check_region(key, val),
     DOMAIN_IMAGE:   lambda c, key, val, p: c._check_image(key, val),
     DOMAIN_SCENE:   lambda c, key, val, p: c._check_scene(key, val),
+    DOMAIN_CAMERA:  lambda c, key, val, p: c._check_camera(key, val),
     DOMAIN_PREFAB:  lambda c, key, val, p: c._check_prefab(key, val),
     DOMAIN_ACTOR:   lambda c, key, val, p: c._check_actor(key, val),
     DOMAIN_GLOBAL:  lambda c, key, val, p: c._check_global(key, val),

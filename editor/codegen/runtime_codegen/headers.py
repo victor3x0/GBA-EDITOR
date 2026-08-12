@@ -80,7 +80,7 @@ def generate_actor_api(
     # gba_font.h retiré : police 1bpp dont le consommateur (`text_init()`)
     # n'existe plus depuis l'asset Font — elle était encore recopiée dans
     # chaque build sans qu'aucune ligne ne la lise.
-    for static_h in ("actor_api_static.h", "gba_engine.h", "runtime.h"):
+    for static_h in ("actor_api_static.h", "gba_engine.h"):
         src_h = RUNTIME_DIR / "include" / static_h
         if src_h.exists():
             shutil.copy2(src_h, p.src_dir / static_h)
@@ -191,6 +191,20 @@ def generate_actor_api(
             a.append("")
             a.append("/* Fonds posés dans les scènes — un par (asset, bg_slot) unique */")
             a += layer_lines
+
+    # Constantes CAM_* — l'index d'une caméra dans la table du runtime, tel que
+    # `camera.switch(CAM_X)` l'attend. Même ordre que `project_cameras`, qui
+    # émet la table : les deux dérivent de la même liste, sinon un script
+    # activerait la mauvaise caméra.
+    from codegen.runtime_codegen.main_gen import project_cameras
+    _cams = project_cameras(p)
+    if len(_cams) > 1:
+        a.append("")
+        a.append("/* Caméras du projet — utilisées par camera.switch() */")
+        a.append("#define CAM_DEFAULT 0")
+        for i, cam in enumerate(_cams):
+            if cam is not None:
+                a.append(f"#define CAM_{c_sym(cam.name).upper()} {i}")
 
     a += ["", "#endif /* ACTOR_API_H */", ""]
     (p.src_dir / "actor_api.h").write_text("\n".join(a), encoding="utf-8")
