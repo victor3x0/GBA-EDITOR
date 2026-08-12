@@ -1,6 +1,6 @@
 """ui/sprite_editor/sprite_finder_panel.py — panneau gauche : liste des sprites + arbre d'animations."""
 from __future__ import annotations
-from typing import Optional
+from typing import Any, Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QSizePolicy,
@@ -13,7 +13,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from ui.common.widgets import W, FinderSection
 from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico, COLOR_DEFAULT
-from core.project import Project, SpriteAsset, AnimState, StateDirection
+from core.models.sprite import AnimState, SpriteAsset, StateDirection
+from core.project import Project
 from core.history import get_history, DeleteResourceCmd, RemoveListItemCmd
 from core.command_dispatcher import get_dispatcher
 
@@ -39,7 +40,7 @@ _DIR_ICON_KEYS = {
 _KEEP_SELECTION = object()
 
 
-def _dir_label(sd: StateDirection) -> str:
+def dir_label(sd: StateDirection) -> str:
     base = _DIR_LABELS.get(sd.dir, str(sd.dir))
     if sd.mirror_of is not None:
         src = _DIR_LABELS.get(sd.mirror_of, str(sd.mirror_of))
@@ -266,7 +267,7 @@ class SpriteFinderPanel(QWidget):
             state_item.setExpanded(True)
 
             for sd in state.directions:
-                lbl = _dir_label(sd)
+                lbl = dir_label(sd)
                 sd_item = QTreeWidgetItem([f"    {lbl}"])
                 sd_item.setFont(0, QFont(T.UI, T.SM))
                 mirrored = sd.mirror_of is not None

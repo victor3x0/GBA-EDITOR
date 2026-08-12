@@ -35,7 +35,7 @@ from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 
 from core.project import Project
 from core.text_markup import display_text
-from core.color_utils import bgr555_to_rgb888
+from core.gba_color import bgr555_to_rgb888
 from core.models.ui_region import (
     ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ,
     KIND_PANEL, KIND_TEXT, KIND_IMAGE,
@@ -689,7 +689,7 @@ class UIInspector(QWidget):
         chaque fois que les deux ne tombent pas d'accord."""
         if sprite is None or self._project is None:
             return 1
-        from codegen.asset_pipeline import count_frames
+        from codegen.grit_conversion import count_frames
         return count_frames(self._project, sprite)
 
     def _sync_image_note(self):

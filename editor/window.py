@@ -18,14 +18,17 @@ from ui.common.theme import C, T, QSS
 
 from codegen import BuildWorker
 from ui.scene_manager.scene_canvas import SceneEditor
+from core import asset_encoding
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
 from core.history import get_history
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
-from core.project import (
-    Project, Scene, SFX_FILE_EXTS, MUSIC_FILE_EXTS, FONT_FILE_EXTS,
-)
+from core.models.audio import MUSIC_FILE_EXTS, SFX_FILE_EXTS
+from core.models.font import FONT_FILE_EXTS
+from core.models.scene import Scene
+from core.project import Project
+from ui.screens import EditorScreen, ProjectScreen, plugin_screens
 
 # ── Sous-composants UI ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -226,26 +229,78 @@ class GbaStatusBar(QWidget):
 
 
 # ──────────────────────────────────────────────────────────────────
+#  Écrans dont la fenêtre est le propriétaire
+# ──────────────────────────────────────────────────────────────────
+class PlaceholderScreen(QWidget):
+    """Écriteau « coming soon » — un écran annoncé dans la navigation mais pas
+    encore écrit (Tileset Manager). Il remplit `ProjectScreen` sans rien en
+    faire : c'est un écran à part entière du point de vue de la fenêtre, et
+    l'exempter du contrat demanderait un second chemin pour un cas vide."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        from ui.common.widgets import W
+        self.setStyleSheet(f"background:{C.BG_BASE};")
+        layout = QVBoxLayout(self)
+        layout.addWidget(W.empty_state(f"{title}\n\n(coming soon)"))
+
+    def load_project(self, project):
+        pass
+
+
+class SceneManagerScreen(QWidget):
+    """Les trois colonnes du Scene Manager.
+
+    Assemblée par `MainWindow._build_scene_manager_screen` : ses colonnes sont
+    des attributs de la FENÊTRE (`assets_finder_panel`, `scene_editor`,
+    `_inspector`), lues depuis une trentaine d'endroits. Les faire descendre
+    ici est un chantier à part — cette classe existe pour que l'écran porte le
+    même contrat que les sept autres, et pour que la propagation du projet aux
+    trois colonnes soit écrite une fois, ici, plutôt que dispersée dans
+    `_refresh_ui`."""
+
+    def __init__(self, finder, canvas, inspector, parent=None):
+        super().__init__(parent)
+        self._finder    = finder
+        self._canvas    = canvas
+        self._inspector = inspector
+
+    def load_project(self, project):
+        self._finder.load_project(project)
+        self._inspector.set_project(project)
+        if project.active_scene:
+            self._canvas.load_project(project)
+            # Inspecteur de scène par défaut, sans passer par le bus.
+            self._inspector.show_scene(project.active_scene, project)
+
+
+# ──────────────────────────────────────────────────────────────────
 #  Fenêtre principale
 # ──────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
-    # L'ordre doit rester synchronisé avec celui d'ajout dans _screen_stack
-    # (l'index dans SCREENS == l'index dans le stack, cf. _switch_screen).
-    SCREENS = [
-        "Scene Manager", "Tileset Manager", "Background Editor",
-        "Sprite Editor", "Palette Editor", "Text Editor", "Sound Mixer",
-        "Script Editor",
-    ]
-
-    # Routage assets/<dossier>/*.ext → (méthode sync, méthode remove, label,
-    # accord féminin) — une seule table pour _on_asset_appeared/_removed,
-    # qui n'était avant dupliquée qu'avec "sync_"/"remove_" échangés.
+    # Routage assets/<dossier>/*.ext → (fonction sync, fonction remove, label)
+    # — une seule table pour _on_asset_appeared/_removed, qui n'était avant
+    # dupliquée qu'avec "sync_"/"remove_" échangés.
+    #
+    # Les FONCTIONS d'`asset_encoding`, pas leurs noms. La table portait des
+    # chaînes appelées par `getattr(self.project, nom)` : les treize passe-plats
+    # correspondants ont été retirés de `Project` (cf. core/project.py, « ce
+    # module ne fait plus passe-plat vers asset_encoding ») et le routage a
+    # continué de les épeler. Rien ne pouvait le voir — ni l'import, ni
+    # `check_architecture.py`, qui contrôle pourtant les noms résolus — et
+    # déposer un PNG dans assets/sprites/ levait un AttributeError dans un slot
+    # Qt, donc tuait l'éditeur. Une référence directe échoue à l'import.
     _ASSET_ROUTES = [
-        ("sprites",     (".png", ".bmp"), "sync_sprite_png",     "remove_sprite_png",     "Sprite"),
-        ("backgrounds", (".png", ".bmp"), "sync_background_png", "remove_background_png", "Background"),
-        ("sfx",         SFX_FILE_EXTS,    "sync_sfx_file",       "remove_sfx_file",       "SFX"),
-        ("music",       MUSIC_FILE_EXTS,  "sync_music_file",     "remove_music_file",     "Music"),
-        ("fonts",       FONT_FILE_EXTS,   "sync_font_file",      "remove_font_file",      "Font"),
+        ("sprites",     (".png", ".bmp"), asset_encoding.sync_sprite_png,
+                                          asset_encoding.remove_sprite_png,     "Sprite"),
+        ("backgrounds", (".png", ".bmp"), asset_encoding.sync_background_png,
+                                          asset_encoding.remove_background_png, "Background"),
+        ("sfx",         SFX_FILE_EXTS,    asset_encoding.sync_sfx_file,
+                                          asset_encoding.remove_sfx_file,       "SFX"),
+        ("music",       MUSIC_FILE_EXTS,  asset_encoding.sync_music_file,
+                                          asset_encoding.remove_music_file,     "Music"),
+        ("fonts",       FONT_FILE_EXTS,   asset_encoding.sync_font_file,
+                                          asset_encoding.remove_font_file,      "Font"),
     ]
 
     def __init__(self, project_path: Path = None):
@@ -281,6 +336,10 @@ class MainWindow(QMainWindow):
         self._load_default_project()
 
     def _setup_ui(self):
+        # Le catalogue AVANT la barre d'outils : elle en tire ses libellés.
+        # Construire le catalogue ne construit aucun widget — ce sont des
+        # fabriques.
+        self._screens: list[EditorScreen] = self._screen_catalogue()
         self._setup_toolbar()
 
         root = QWidget()
@@ -299,24 +358,7 @@ class MainWindow(QMainWindow):
         # Écrans éditeur — l'accueil (HomeScreen) est un QDialog séparé
         # (ui/project_picker.py), affiché par main.py avant la fenêtre
         # principale, et rouvrable via _go_home() pour changer de projet.
-        self._build_scene_manager_screen()
-        self._screen_stack.addWidget(self._make_placeholder_screen("Tileset Manager"))
-        self._bg_editor = BackgroundEditorScreen()
-        self._screen_stack.addWidget(self._bg_editor)
-        self._sprite_editor = SpriteEditorScreen()
-        self._screen_stack.addWidget(self._sprite_editor)
-        self._palette_editor = PaletteEditorScreen()
-        self._palette_editor.usage_activated.connect(self._open_palette_usage)
-        self._screen_stack.addWidget(self._palette_editor)
-        self._text_editor = TextEditorScreen()
-        self._screen_stack.addWidget(self._text_editor)
-        self._sound_mixer = SoundMixerScreen()
-        self._screen_stack.addWidget(self._sound_mixer)
-        self._script_editor = ScriptEditorScreen()
-        self._script_editor.back_requested.connect(
-            lambda: self._switch_screen("Scene Manager")
-        )
-        self._screen_stack.addWidget(self._script_editor)
+        self._build_screens()
 
         # Nav cachée tant qu'aucun projet n'est chargé
         self._screen_stack.setCurrentIndex(0)   # Scene Manager
@@ -328,19 +370,90 @@ class MainWindow(QMainWindow):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
 
-    def _make_placeholder_screen(self, title: str) -> QWidget:
-        from ui.common.widgets import W
-        w = QWidget(); w.setStyleSheet(f"background:{C.BG_BASE};")
-        lbl = W.empty_state(f"{title}\n\n(coming soon)")
-        from PyQt6.QtWidgets import QVBoxLayout as _VL
-        l = _VL(w); l.addWidget(lbl)
-        return w
+    # ── Catalogue d'écrans ────────────────────────────────────────
+    #
+    # L'UNIQUE liste. La barre de navigation, l'ordre du QStackedWidget et la
+    # propagation du projet en dérivent tous — il n'y a plus deux listes à
+    # tenir d'accord, ni d'index à compter. Ajouter un écran, c'est ajouter
+    # une ligne ici et écrire sa fabrique.
+    #
+    # Une fabrique par écran plutôt qu'une classe : deux écrans ne se
+    # construisent pas par simple appel de constructeur, et ceux que la fenêtre
+    # ré-adresse plus tard (`self._sprite_editor.select_sprite(...)`) doivent
+    # garder une référence nommée. Le branchement propre à un écran vit dans sa
+    # fabrique, à côté de sa construction, au lieu d'être dispersé.
 
-    def _build_scene_manager_screen(self):
-        screen = QWidget()
-        screen_layout = QVBoxLayout(screen)
-        screen_layout.setContentsMargins(0, 0, 0, 0)
-        screen_layout.setSpacing(0)
+    def _screen_catalogue(self) -> list[EditorScreen]:
+        return [
+            EditorScreen("Scene Manager",     self._build_scene_manager_screen),
+            EditorScreen("Tileset Manager",   self._make_tileset_manager),
+            EditorScreen("Background Editor", self._make_background_editor),
+            EditorScreen("Sprite Editor",     self._make_sprite_editor),
+            EditorScreen("Palette Editor",    self._make_palette_editor),
+            EditorScreen("Text Editor",       self._make_text_editor),
+            EditorScreen("Sound Mixer",       self._make_sound_mixer),
+            EditorScreen("Script Editor",     self._make_script_editor),
+        ] + plugin_screens()
+
+    @property
+    def _screen_names(self) -> list[str]:
+        return [s.name for s in self._screens]
+
+    def _build_screens(self):
+        """Construit chaque écran du catalogue, dans l'ordre, et le monte.
+
+        Le contrat `ProjectScreen` est vérifié ICI et pas par un contrôle
+        statique : un écran venu d'un plugin n'existe pour personne avant ce
+        moment. Un écran qui ne le remplit pas est monté quand même — il
+        s'affiche, il ne reçoit simplement jamais le projet — et le défaut est
+        signalé au démarrage plutôt que de se manifester en écran vide.
+        """
+        self._screen_widgets: list[QWidget] = []
+        self.screen_errors: list[str] = []
+        for spec in self._screens:
+            widget = spec.build()
+            self._screen_widgets.append(widget)
+            self._screen_stack.addWidget(widget)
+            if not isinstance(widget, ProjectScreen):
+                self.screen_errors.append(
+                    f"« {spec.name} » ne remplit pas le contrat ProjectScreen "
+                    f"(pas de load_project) — l'écran ne recevra aucun projet."
+                )
+
+    def _make_tileset_manager(self) -> QWidget:
+        return PlaceholderScreen("Tileset Manager")
+
+    def _make_background_editor(self) -> QWidget:
+        self._bg_editor = BackgroundEditorScreen()
+        return self._bg_editor
+
+    def _make_sprite_editor(self) -> QWidget:
+        self._sprite_editor = SpriteEditorScreen()
+        return self._sprite_editor
+
+    def _make_palette_editor(self) -> QWidget:
+        self._palette_editor = PaletteEditorScreen()
+        self._palette_editor.usage_activated.connect(self._open_palette_usage)
+        return self._palette_editor
+
+    def _make_text_editor(self) -> QWidget:
+        self._text_editor = TextEditorScreen()
+        return self._text_editor
+
+    def _make_sound_mixer(self) -> QWidget:
+        self._sound_mixer = SoundMixerScreen()
+        return self._sound_mixer
+
+    def _make_script_editor(self) -> QWidget:
+        self._script_editor = ScriptEditorScreen()
+        self._script_editor.back_requested.connect(
+            lambda: self._switch_screen("Scene Manager")
+        )
+        return self._script_editor
+
+    def _build_scene_manager_screen(self) -> QWidget:
+        # L'écran est construit EN DERNIER (cf. fin de méthode) : il reçoit ses
+        # trois colonnes, qui n'existent qu'une fois le splitter peuplé.
 
         # Splitter horizontal principal : 3 colonnes
         self._h_split = QSplitter(Qt.Orientation.Horizontal)
@@ -442,8 +555,13 @@ class MainWindow(QMainWindow):
         self._h_split.setStretchFactor(1, 1)
         self._h_split.setStretchFactor(2, 0)
 
+        screen = SceneManagerScreen(self.assets_finder_panel, self.scene_editor,
+                                    self._inspector)
+        screen_layout = QVBoxLayout(screen)
+        screen_layout.setContentsMargins(0, 0, 0, 0)
+        screen_layout.setSpacing(0)
         screen_layout.addWidget(self._h_split)
-        self._screen_stack.addWidget(screen)
+        return screen
 
     # ── Persistance layout ────────────────────────────────────────
 
@@ -562,13 +680,14 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
 
         from ui.common.reorderable_bar import ReorderableButtonBar
-        self._nav_bar = ReorderableButtonBar(self.SCREENS)
+        self._nav_bar = ReorderableButtonBar(self._screen_names)
         self._nav_bar.screen_requested.connect(self._show_screen)
         tb.addWidget(self._nav_bar)
         self._nav_bar.check_screen(0)
 
     def _show_screen(self, index: int):
-        # index dans SCREENS == index dans le stack (plus de HomeScreen intercalé)
+        # Un seul catalogue : l'index de nav EST l'index du stack, par
+        # construction (`_build_screens` monte dans l'ordre de `_screens`).
         self._screen_stack.setCurrentIndex(index)
         self._history.clear()
         self._bus.clear()
@@ -590,7 +709,8 @@ class MainWindow(QMainWindow):
             insp.refresh_current()  # carte palettes / rangées layers (grisées d'asset)
 
     def _switch_screen(self, name: str):
-        idx = self.SCREENS.index(name) if name in self.SCREENS else 0
+        names = self._screen_names
+        idx = names.index(name) if name in names else 0
         self._show_screen(idx)
         self._nav_bar.check_screen(idx)
 
@@ -606,7 +726,7 @@ class MainWindow(QMainWindow):
     def open_script(self, path):
         """Ouvre un script .lua dans le Script Editor et bascule l'écran."""
         from pathlib import Path
-        self._script_editor.set_project(self.project)
+        self._script_editor.load_project(self.project)
         self._script_editor.open_script(Path(path))
         self._switch_screen("Script Editor")
 
@@ -693,18 +813,22 @@ class MainWindow(QMainWindow):
         self._tb_build_btn.setToolTip(tooltip)
         self.build_panel.btn_build.setEnabled(can_build)
         self.build_panel.btn_build.setToolTip(tooltip)
-        self.assets_finder_panel.load_project(self.project)
-        self._sound_mixer.load_project(self.project)
-        self._sprite_editor.load_project(self.project)
-        self._palette_editor.load_project(self.project)
-        self._bg_editor.load_project(self.project)
-        self._text_editor.load_project(self.project)
-        self._inspector.set_project(self.project)
-        self._script_editor.set_project(self.project)
-        if self.project.active_scene:
-            self.scene_editor.load_project(self.project)
-            # Montrer l'inspector de scène par défaut (sans passer par le bus)
-            self._inspector.show_scene(self.project.active_scene, self.project)
+        # Le projet part vers chaque écran, dans l'ordre du catalogue. Le Scene
+        # Manager propage à ses trois colonnes (SceneManagerScreen.load_project).
+        for spec, widget in zip(self._screens, self._screen_widgets):
+            if not isinstance(widget, ProjectScreen):
+                continue      # signalé au démarrage par _build_screens
+            if not spec.plugin:
+                widget.load_project(self.project)
+                continue
+            # Un écran de plugin est du code tiers dans un slot Qt : une
+            # exception non rattrapée y fait abandonner le process (PyQt6),
+            # donc ouvrir un projet deviendrait impossible à cause d'un écran
+            # accessoire. Même traitement que les validateurs de plugin.
+            try:
+                widget.load_project(self.project)
+            except Exception as exc:
+                self._status.showMessage(f"Écran « {spec.name} » : {exc}", 8000)
         self._update_gba_bar()
 
     # ── Slots scène ───────────────────────────────────────────────
@@ -856,9 +980,9 @@ class MainWindow(QMainWindow):
     def _match_asset_route(self, p: Path):
         """Trouve la route (sync/remove/label) pour un fichier assets/<dossier>/*.ext."""
         suffix, parent = p.suffix.lower(), p.parent.name
-        for folder, exts, sync_name, remove_name, label in self._ASSET_ROUTES:
+        for folder, exts, sync_fn, remove_fn, label in self._ASSET_ROUTES:
             if parent == folder and suffix in exts:
-                return sync_name, remove_name, label
+                return sync_fn, remove_fn, label
         return None
 
     def _on_asset_appeared(self, path: str):
@@ -869,12 +993,12 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        sync_name, _, label = route
+        sync_fn, _, label = route
         # Certains sync_* renvoient un avertissement d'import (police sans
         # glyphe, format illisible…) — le taire laisserait un asset muet à
         # l'écran sans que l'utilisateur sache pourquoi. D'autres renvoient la
         # Resource créée (Sfx/Music) : seule une chaîne est un avertissement.
-        result = getattr(self.project, sync_name)(p)
+        result = sync_fn(self.project, p)
         warning = result if isinstance(result, str) else None
         self._refresh_ui()
         if warning:
@@ -890,8 +1014,8 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        _, remove_name, label = route
-        getattr(self.project, remove_name)(p)
+        _, remove_fn, label = route
+        remove_fn(self.project, p)
         self._refresh_ui()
         self._status.showMessage(f"{label} removed: {p.name}", 3000)
 

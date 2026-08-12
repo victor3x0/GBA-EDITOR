@@ -1,5 +1,5 @@
 """
-editor/asset_pipeline.py — Conversion des assets bruts en fichiers C/headers.
+editor/grit_conversion.py — Conversion des assets bruts en fichiers C/headers.
 
 Trois étapes indépendantes, chacune appelable séparément :
 
@@ -19,7 +19,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Callable
 
-from core.project import Project, BackgroundLayer, SpriteAsset
+from core.models.sprite import SpriteAsset
+from core.models.background import BackgroundLayer
+from core.project import Project
+# `sym` importée sous le nom `c_sym` : « sym » est un nom de variable locale
+# très courant dans la génération (`sym = bg_layer_sym(...)`), et une locale
+# masquerait la fonction dans toute la portée où elle apparaît.
+from codegen.c_names import sym as c_sym
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -49,7 +55,7 @@ def bg_layer_sym(asset_name: str, bg_slot: int) -> str:
     invalides) ni sur la scène (un BackgroundAsset peut être partagé par
     plusieurs scènes, comme un Prefab — cf. resolve_palette_bank côté
     pipeline.py)."""
-    return _sym(f"{asset_name}_bg{bg_slot}")
+    return c_sym(f"{asset_name}_bg{bg_slot}")
 
 
 def bg_layer_sym_for(scene, layer) -> str:
@@ -61,14 +67,14 @@ def bg_layer_sym_for(scene, layer) -> str:
     tuiles+map ensemble par simplicité (surcoût ROM seulement pour un fond
     partagé ET peint dans plusieurs scènes)."""
     if getattr(layer, "tile_palette_overrides", None):
-        return _sym(f"{scene.name}_{layer.background_name}_bg{layer.bg_slot}")
+        return c_sym(f"{scene.name}_{layer.background_name}_bg{layer.bg_slot}")
     return bg_layer_sym(layer.background_name, layer.bg_slot)
 
 
 def bg_map_geometry(w: int, h: int) -> tuple[int, int, int]:
     """tw/th (dimensions en tuiles) + ms (bits map_size grit/BGxCNT, 0-3)
     depuis les dimensions pixel d'une image de layer BG. Partagé entre
-    main_gen._bg_info (codegen) et pipeline.py (garde-fou budget VRAM)."""
+    main_gen.bg_info (codegen) et pipeline.py (garde-fou budget VRAM)."""
     tw = min(max(math.ceil(w / 8), 1), 64)
     th = min(max(math.ceil(h / 8), 1), 64)
     ms = (1 if tw > 32 else 0) | (2 if th > 32 else 0)
@@ -84,7 +90,7 @@ def quantize_asset(path: Path, bank_colors: list[int], mode: str) -> "Image.Imag
     """Quantifie `path` vers `bank_colors`, retourne une image RGBA.
     mode="direct_index" : les index 'P' du fichier se calent sur la banque
     (sprites). mode="nearest" : chaque pixel prend la couleur la plus proche (BG)."""
-    from core.color_utils import quantize_image_to_bank, direct_index_to_bank
+    from core.gba_color import quantize_image_to_bank, direct_index_to_bank
     if mode == "direct_index":
         return direct_index_to_bank(path, bank_colors)
     from PIL import Image
@@ -177,7 +183,7 @@ def _frame_key(frame: "AnimFrame") -> tuple:
     ))
 
 
-def _seq_key(src_sd: "StateDirection", flip_h: bool, flip_v: bool) -> tuple:
+def seq_key(src_sd: "StateDirection", flip_h: bool, flip_v: bool) -> tuple:
     """Clé hashable d'une séquence d'animation : compositions de ses frames
     (dans l'ordre) + flip appliqué. Deux directions produisant exactement la
     même suite de frames retournées de la même façon partagent un bloc."""
@@ -208,7 +214,7 @@ def sprite_unique_frames(sprite: SpriteAsset) -> tuple[dict, list]:
         dir_map = {sd.dir: sd for sd in state.directions}
         for sd in state.directions:
             src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            key = _seq_key(src_sd, sd.flip_h, sd.flip_v)
+            key = seq_key(src_sd, sd.flip_h, sd.flip_v)
             if key not in seq_starts:
                 seq_starts[key] = len(ordered)
                 for f in src_sd.frames:
@@ -341,11 +347,6 @@ def build_sprite_sheet_indexed(
 
 # ── GritSprites ────────────────────────────────────────────────────────────────
 
-def _sym(s: str) -> str:
-    r = "".join(c if (c.isalnum() or c == "_") else "_" for c in s)
-    return ("_" + r) if r and r[0].isdigit() else r
-
-
 _ARRAY_RE = r'(\w+{suffix})\[(\d+)\][^=]*=\s*\{{([^}}]*)\}}'
 
 
@@ -413,7 +414,7 @@ def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
     (0-15) dans scene.active_obj_palettes. None si OWN_PAL_BANK (l'asset
     utilise sa propre palette, gérée par palette_alloc), scène absente, slot
     vide, ou palette supprimée du catalogue."""
-    from core.project import OWN_PAL_BANK
+    from core.models.palette import OWN_PAL_BANK
     pal_bank = getattr(entity, "pal_bank", OWN_PAL_BANK)
     if scene is None or pal_bank == OWN_PAL_BANK:
         return None
@@ -467,12 +468,12 @@ class GritSprites:
             # cas normal passe déjà par `colors` (préfixé dans
             # palette_alloc.effective_palette_colors), ce fallback ne sert que si
             # la résolution en amont a échoué.
-            from core.color_utils import RESERVED_SLOT_COLOR
+            from core.models.palette import RESERVED_SLOT_COLOR
             bank_colors = list(colors) if colors else ([RESERVED_SLOT_COLOR] + own_pal if own_pal else [])
 
-            from core.color_utils import render_indexed
+            from core.gba_color import render_indexed
             p.grit_out_dir.mkdir(parents=True, exist_ok=True)
-            p_src = p.grit_out_dir / f"_srcidx_{_sym(sprite.name)}.png"
+            p_src = p.grit_out_dir / f"_srcidx_{c_sym(sprite.name)}.png"
             render_indexed(ap, own_pal).save(p_src, transparency=0)
             grit_src = build_sprite_sheet_indexed(p_src, sprite, p.grit_out_dir, self._emit)
             if grit_src is None:
@@ -487,7 +488,7 @@ class GritSprites:
                 self._emit("log_line",
                            f"[palette] {sprite.name} -> {len(bank_colors)} couleurs (indexé)")
 
-            out_base = str(p.grit_out_dir / f"sprite_{_sym(sprite.name)}")
+            out_base = str(p.grit_out_dir / f"sprite_{c_sym(sprite.name)}")
             self._emit("log_line",
                        f"[grit Actor] {sprite.name} <- {ap.name} "
                        f"({sprite.frame_w}x{sprite.frame_h}px)")

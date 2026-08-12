@@ -965,7 +965,7 @@ class FinderSection(QFrame):
 #  AssetHeaderBar — en-tête unifié "type + nom" pour l'objet sélectionné
 # ──────────────────────────────────────────────────────────────────
 
-def _kind_colors(accent: str) -> tuple[str, str, str]:
+def kind_colors(accent: str) -> tuple[str, str, str]:
     """Dérive (fond sombre, couleur du label TYPE, couleur du nom) depuis une
     seule couleur d'accent canonique (voir ui/icons.py), pour que toute la
     palette dérive d'une unique source par type d'objet."""
@@ -1027,25 +1027,25 @@ class AssetHeaderBar(QWidget):
         if not cls._PALETTE:
             from ui.common import icons
             cls._PALETTE = {
-                "actor":  _kind_colors(icons.COLOR_ACTOR),
-                "prefab": _kind_colors(icons.COLOR_PREFAB),
-                "scene":  _kind_colors(icons.COLOR_SCENE),
-                "camera": _kind_colors(icons.COLOR_SCENE),
-                "script": _kind_colors(icons.COLOR_SCRIPT),
-                "script_asset": _kind_colors(icons.COLOR_SCRIPT),
-                "sprite": _kind_colors(icons.COLOR_SPRITE),
-                "background": _kind_colors(icons.COLOR_BACKGROUND),
-                "sfx":    _kind_colors(icons.COLOR_SFX),
-                "music":  _kind_colors(icons.COLOR_MUSIC),
-                "uses":   _kind_colors(icons.COLOR_PREFAB),
-                "project": _kind_colors(C.ACCENT),
+                "actor":  kind_colors(icons.COLOR_ACTOR),
+                "prefab": kind_colors(icons.COLOR_PREFAB),
+                "scene":  kind_colors(icons.COLOR_SCENE),
+                "camera": kind_colors(icons.COLOR_SCENE),
+                "script": kind_colors(icons.COLOR_SCRIPT),
+                "script_asset": kind_colors(icons.COLOR_SCRIPT),
+                "sprite": kind_colors(icons.COLOR_SPRITE),
+                "background": kind_colors(icons.COLOR_BACKGROUND),
+                "sfx":    kind_colors(icons.COLOR_SFX),
+                "music":  kind_colors(icons.COLOR_MUSIC),
+                "uses":   kind_colors(icons.COLOR_PREFAB),
+                "project": kind_colors(C.ACCENT),
                 # Interface — un kind par type d'élément (même famille bleue) ;
                 # "ui_element" reste en repli pour les appels génériques.
-                "ui_panel":   _kind_colors(icons.COLOR_UI),
-                "ui_text":    _kind_colors(icons.COLOR_UI),
-                "ui_image":   _kind_colors(icons.COLOR_UI),
-                "ui_element": _kind_colors(icons.COLOR_UI),
-                "ui_layout":  _kind_colors(icons.COLOR_UI),
+                "ui_panel":   kind_colors(icons.COLOR_UI),
+                "ui_text":    kind_colors(icons.COLOR_UI),
+                "ui_image":   kind_colors(icons.COLOR_UI),
+                "ui_element": kind_colors(icons.COLOR_UI),
+                "ui_layout":  kind_colors(icons.COLOR_UI),
                 "empty":  ("#161616", "#333333", "#555555"),
             }
         return cls._PALETTE

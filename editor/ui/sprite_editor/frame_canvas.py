@@ -19,7 +19,13 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico
 from ui.common.palette_bank_strip import PaletteBankStrip
-from core.project import SpriteAsset, AnimState, AnimFrame, StateDirection, TilePlacement
+from core.models.sprite import (
+    AnimFrame,
+    AnimState,
+    SpriteAsset,
+    StateDirection,
+    TilePlacement,
+)
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
 
@@ -848,7 +854,7 @@ class _FrameCanvas(QWidget):
         #   mode 'png'     -> couleurs compressées (own_palette telle quelle)
         #   mode 'indexed' -> index de own_palette recolorés par la banque preview
         if self._own_palette:
-            from core.color_utils import render_indexed, recolor_indexed
+            from core.gba_color import render_indexed, recolor_indexed
             p_img = render_indexed(img, self._own_palette)
             if self._preview_indexed and self._tint_bank:
                 img = recolor_indexed(p_img, self._tint_bank)

@@ -84,6 +84,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_pal_bank_reference(ctx)
     _check_palette_bank_overflow(ctx)
     _check_api_prototypes(ctx)
+    _check_api_domains(ctx)
     _check_text_overflow(ctx)
     _check_ui_text_key(ctx)
     _check_ui_image(ctx)
@@ -103,6 +104,47 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
 
 
 # ── Validateurs built-in ──────────────────────────────────────────────
+
+def _check_api_domains(ctx: ValidationContext):
+    """Un domaine d'argument doit être connu de SES DEUX consommateurs.
+
+    Le `domain` d'un `Param` (`scripting/api.py`) dit qu'un argument cite un
+    élément nommé du projet. Trois modules en dépendent — `refactor` (suivre
+    les renommages), `checker` (le nom existe-t-il ?), `codegen` (quelle
+    constante C émettre ?). Le premier DÉRIVE sa table du catalogue et n'a rien
+    à oublier ; les deux autres portaient une liste écrite à la main, et un
+    domaine absent n'y produisait aucun signal : le checker ne validait
+    simplement rien, et le codegen retombait sur « émettre la chaîne telle
+    quelle », donc du texte C là où le C attend un entier — panne au `make`,
+    sur la ligne générée, jamais sur la cause.
+
+    Même famille que `_check_api_prototypes` ci-dessous, même remède : les
+    listes sont comparées ici, en ERREUR bloquante, plutôt que découvertes par
+    la chaîne C. Placer un nouveau domaine dans l'une des cases (validé par
+    domaine, validé par appel, non validé — et pourquoi) fait partie de son
+    ajout, ce n'est pas une formalité.
+    """
+    from scripting.api import ALL_DOMAINS
+    from scripting import checker, codegen
+
+    for role, couverts in (("checker", checker.covered_domains()),
+                           ("codegen", codegen.covered_domains())):
+        manquants = sorted(ALL_DOMAINS - couverts)
+        if manquants:
+            ctx.error(None,
+                      f"Domaine(s) d'argument inconnu(s) de {role} : "
+                      f"{', '.join(manquants)}. Ajouter une entrée dans la table "
+                      f"correspondante (scripting/{role}.py) — sans elle, un nom "
+                      f"cité dans ce domaine n'est ni vérifié ni résolu.")
+        # Un domaine listé mais qui n'existe plus est l'autre sens de la même
+        # dérive : la table garde une entrée morte que rien ne peut plus
+        # atteindre. Avertissement — ça ne casse pas le build.
+        fantomes = sorted(couverts - ALL_DOMAINS)
+        if fantomes:
+            ctx.warn(None,
+                     f"{role} : domaine(s) déclaré(s) mais inexistant(s) dans "
+                     f"api.py : {', '.join(fantomes)}.")
+
 
 def _check_api_prototypes(ctx: ValidationContext):
     """Une fonction du MOTEUR exposée en Lua doit être déclarée DEUX fois.
@@ -192,7 +234,7 @@ def _check_scene(ctx: ValidationContext):
 
 
 def _check_actors(ctx: ValidationContext):
-    from core.project import (component_type_name)
+    from core.models.components import component_type_name
 
     for actor in ctx.actors:
         for comp in actor.components:
@@ -301,7 +343,7 @@ def _check_text_overflow(ctx: ValidationContext):
     from scripting.refactor import find_call_sites_in_project
     from scripting.api import DOMAIN_REGION, DOMAIN_TEXT
     from core.text_markup import parse, resolve, KIND_VALUE
-    from core.text_layout import layout_text
+    from core.engine_emulation.text_layout import layout_text
 
     regions = {r.name: r for _lay, r in p.all_regions()}
     fonts   = {f.name: f for f in p.fonts}
@@ -641,7 +683,7 @@ def _check_pal_bank_reference(ctx: ValidationContext):
     - actors  -> active_obj_palettes de LEUR scène ;
     - prefabs -> active_obj_palettes de la scène d'ancrage (1ère) ;
     - layers  -> active_bg_palettes de chaque scène utilisant le background."""
-    from core.project import OWN_PAL_BANK
+    from core.models.palette import OWN_PAL_BANK
     p = ctx.project
 
     def _slot_missing(active: list, slot: int) -> bool:

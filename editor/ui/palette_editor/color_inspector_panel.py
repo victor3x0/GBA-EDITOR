@@ -20,7 +20,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 
-from core.color_utils import (
+from core.gba_color import (
     bgr555_to_rgb888, bgr555_components, components_to_bgr555, rgb888_to_bgr555,
 )
 from .color_wheel import ColorTriangleWheel

@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from ui.common.widgets import ScriptSlot, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
-from core.project import PaletteBank
+from core.models.palette import PaletteBank
 
 # Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —
 # l'appelant le mappe vers OWN_PAL_BANK (l'asset garde ses couleurs d'origine).

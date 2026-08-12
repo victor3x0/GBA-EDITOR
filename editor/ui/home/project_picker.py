@@ -380,7 +380,7 @@ class HomeScreen(QDialog):
             self._accept(Path(path), is_new=False)
 
     def _new_project(self):
-        dlg = _NewProjectDialog(self._projects_dir, self)
+        dlg = NewProjectDialog(self._projects_dir, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._accept(dlg.result_path, is_new=True, name=dlg.result_name)
 
@@ -407,7 +407,7 @@ class HomeScreen(QDialog):
 
 # ── Dialogue nouveau projet ───────────────────────────────────────────
 
-class _NewProjectDialog(QDialog):
+class NewProjectDialog(QDialog):
     """
     Nom + dossier parent éditables séparément (le nom ne dicte plus
     l'emplacement) ; le chemin final s'affiche en aperçu sous les deux champs.

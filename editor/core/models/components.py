@@ -99,7 +99,7 @@ def component_type_name(comp) -> str:
     raise ValueError(f"Composant de type inconnu : {comp!r}")
 
 
-def _components_to_list(components: list) -> list[dict]:
+def components_to_list(components: list) -> list[dict]:
     """Sérialise une liste de Component polymorphes (utilisé par Actor ET Prefab)."""
     return [
         {"component_type": component_type_name(c), **dataclasses.asdict(c)}
@@ -107,8 +107,8 @@ def _components_to_list(components: list) -> list[dict]:
     ]
 
 
-def _components_from_list(data: list) -> list:
-    """Inverse de _components_to_list."""
+def components_from_list(data: list) -> list:
+    """Inverse de components_to_list."""
     components = []
     for cd in data:
         cd = dict(cd)

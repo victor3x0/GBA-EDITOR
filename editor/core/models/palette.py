@@ -6,6 +6,14 @@ from typing import NamedTuple
 from core.models.resource import Resource
 
 
+# Index 0 d'une PaletteBank est réservé — le hardware GBA traite toujours
+# l'index de palette 0 comme transparent (OBJ comme BG), quelle que soit la
+# couleur RGB qui y est stockée. La valeur exacte n'a donc aucune incidence
+# visuelle pour une tuile normale (seul PAL_BG_RAM[0] — banque 0 — a un rôle
+# supplémentaire de backdrop, géré séparément via Project/Scene.backdrop_color).
+RESERVED_SLOT_COLOR = 0
+
+
 class PaletteUsage(NamedTuple):
     """Un usage d'une PaletteBank dans le projet — produit par
     `Project.palette_usages()`, affiché par la carte « USAGE » du Palette
@@ -24,7 +32,7 @@ class PaletteUsage(NamedTuple):
 class PaletteBank(Resource):
     """Une palette nommée de 16 couleurs, catalogue illimité et unifié au
     niveau projet (project/palettes/*.json, un fichier par palette — cf.
-    ResourceManager) — partagé entre OBJ et BG, une même palette peut servir
+    ResourceStore) — partagé entre OBJ et BG, une même palette peut servir
     aux deux. Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes
     / active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui
     occupe les banques hardware (physiquement séparées OBJ/BG) au build."""
@@ -53,7 +61,6 @@ class PaletteBank(Resource):
             # corrompues) ; en 256, borne au maximum 8bpp.
             if len(self.colors) > self.size:
                 self.colors = self.colors[:self.size]
-            from core.color_utils import RESERVED_SLOT_COLOR
             self.colors[0] = RESERVED_SLOT_COLOR
 
 

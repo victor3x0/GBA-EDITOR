@@ -20,8 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from core.project import Project, Scene, OWN_PAL_BANK
-from core.color_utils import extract_palette_from_image, RESERVED_SLOT_COLOR
+from core.models.palette import OWN_PAL_BANK
+from core.models.scene import Scene
+from core.project import Project
+from core.gba_color import extract_palette_from_image
+from core.models.palette import RESERVED_SLOT_COLOR
 from core.palette_presets import DEFAULT_PAL_BANK_COLORS
 
 # Cache des palettes propres, invalidé par mtime du PNG.
@@ -110,7 +113,7 @@ def effective_palette_colors(p: Project, pal_bank: int, png_path,
 # ── Sources d'assets « palette propre » d'une scène ──────────────────────────
 
 def _prefab_sprite(p: Project, pf):
-    from core.project import SpriteComponent
+    from core.models.components import SpriteComponent
     comp = next((c for c in pf.components
                  if isinstance(c, SpriteComponent) and c.sprite_name), None)
     return p.get_sprite(comp.sprite_name) if comp else None

@@ -1,13 +1,12 @@
 """Actor / Prefab / Scene — entités placées dans une scène + la scène elle-même."""
 
-import copy
 from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models.resource import Resource
 from core.models.palette import OWN_PAL_BANK
-from core.models.components import ComponentOwnerMixin, _components_to_list, _components_from_list
-from core.models.background import BackgroundLayer, _decode_tile_palette_overrides
+from core.models.components import ComponentOwnerMixin, components_to_list, components_from_list
+from core.models.background import BackgroundLayer, decode_tile_palette_overrides
 
 # ──────────────────────────────────────────────────────────────────
 #  Collision map — types de tiles 8×8
@@ -196,14 +195,6 @@ def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
     return [[TILE_EMPTY] * cols for _ in range(rows)]
 
 
-# Stub rétrocompat
-@dataclass
-class SceneLayer:
-    bg: int = 0
-    background_name: str = ""
-    scroll_speed: float = 1.0
-
-
 # ──────────────────────────────────────────────────────────────────
 #  Prefab — template réutilisable. Stocké dans project/prefab/{name}.json.
 #  Jamais compilé ni placé directement dans une scène.
@@ -222,7 +213,7 @@ class Prefab(Resource, ComponentOwnerMixin):
     def to_dict(self) -> dict:
         return {
             "name":          self.name,
-            "components":    _components_to_list(self.components),
+            "components":    components_to_list(self.components),
             "pal_bank":      self.pal_bank,
             "max_instances": self.max_instances,
             "notes":         self.notes,
@@ -232,9 +223,9 @@ class Prefab(Resource, ComponentOwnerMixin):
     def from_dict(cls, d: dict) -> "Prefab":
         return cls(
             name          = d.get("name", "Prefab"),
-            components    = _components_from_list(d.get("components", [])),
+            components    = components_from_list(d.get("components", [])),
             pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
-            max_instances = d.get("max_instances", d.get("pool_size", 0)),  # compat anciens JSON
+            max_instances = d.get("max_instances", 0),
             notes         = d.get("notes", ""),
         )
 
@@ -288,7 +279,7 @@ class Actor(ComponentOwnerMixin):
             "name":        self.name,
             "prefab_name": self.prefab_name,
             "active":      self.active,
-            "components":  _components_to_list(self.components),
+            "components":  components_to_list(self.components),
             "x":           self.x,
             "y":           self.y,
             "flip_h":      self.flip_h,
@@ -309,7 +300,7 @@ class Actor(ComponentOwnerMixin):
             name        = d.get("name", "Actor"),
             prefab_name = d.get("prefab_name"),
             active      = d.get("active", True),
-            components  = _components_from_list(d.get("components", [])),
+            components  = components_from_list(d.get("components", [])),
             x           = d.get("x", 112),
             y           = d.get("y", 72),
             flip_h      = d.get("flip_h", False),
@@ -518,53 +509,22 @@ class Scene(Resource):
         }
 
     @classmethod
-    def from_dict(cls, d: dict, legacy_actors: dict = None) -> "Scene":
-        """
-        legacy_actors : dict nom→Actor chargé depuis project/actors/ (anciens projets).
-        Si présent, les entrées `instances[actor_name]` sont converties en Actor inline.
-        """
-        # Layers de la scène (nouveau format). L'ancien `background_asset` (nom
-        # d'un BackgroundAsset multi-layer) est migré au niveau projet
-        # (Project._migrate_scene_backgrounds) car il faut lire cet asset.
+    def from_dict(cls, d: dict) -> "Scene":
         bg_layers = [
             BackgroundLayer(
-                background_name = L.get("background_name", L.get("image", "")),   # rétro-compat: ancienne clé "image"
+                background_name = L.get("background_name", ""),
                 bg_slot      = L.get("bg_slot", i),
                 scroll_speed = L.get("scroll_speed", 1.0),
                 pal_bank     = L.get("pal_bank", OWN_PAL_BANK),
-                # Migration : ancienne clé "tile_palettes" (avant l'harmonisation
-                # de nomenclature) relue pour préserver les scènes déjà peintes.
-                tile_palette_overrides= _decode_tile_palette_overrides(
-                    L.get("tile_palette_overrides") or L.get("tile_palettes")),
+                tile_palette_overrides= decode_tile_palette_overrides(
+                    L.get("tile_palette_overrides")),
                 visible      = L.get("visible", True),
                 blend_role   = (L.get("blend_role", "")
                                 if L.get("blend_role", "") in BLEND_ROLES else ""),
             )
             for i, L in enumerate(d.get("background_layers", []))
         ]
-
-        # Nouveau format : acteurs inline
-        if "actors" in d:
-            actors = [Actor.from_dict(a) for a in d["actors"]]
-        else:
-            # Ancien format : instances avec actor_name → migration automatique
-            actors = []
-            for sa in d.get("instances", []):
-                name = sa.get("actor_name", "") or sa.get("name", "Actor")
-                base = (legacy_actors or {}).get(name)
-                actors.append(Actor(
-                    name        = name,
-                    prefab_name = base.prefab_name if base else None,
-                    active      = base.active if base else True,
-                    components  = copy.deepcopy(base.components) if base else [],
-                    x           = sa.get("x", 112),
-                    y           = sa.get("y", 72),
-                    flip_h      = sa.get("flip_h", False),
-                    flip_v      = sa.get("flip_v", False),
-                    priority    = sa.get("priority", 0),
-                    pal_bank    = sa.get("pal_bank", OWN_PAL_BANK),
-                    visible     = sa.get("visible", True),
-                ))
+        actors = [Actor.from_dict(a) for a in d.get("actors", [])]
 
         scene = cls(
             name=d.get("name", "Scene"),
@@ -618,12 +578,5 @@ class Scene(Resource):
                                  if d.get("blend_backdrop_role", "") in BLEND_ROLES else ""),
             notes=d.get("notes", ""),
         )
-        # Ancien nom de BackgroundAsset (migré au load si background_layers vide).
-        scene._legacy_bg_asset = d.get("background_asset", "")
-        if not scene._legacy_bg_asset and "bg_layers" in d:   # très ancien format
-            for L in d["bg_layers"]:
-                if L.get("background_name"):
-                    scene._legacy_bg_asset = L["background_name"]
-                    break
         scene.ensure_collision_map()
         return scene

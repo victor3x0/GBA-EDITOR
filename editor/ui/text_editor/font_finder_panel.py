@@ -36,7 +36,7 @@ class FontFinderPanel(QWidget):
 
         sec = FinderSection("FONTS", FONT_COLOR)
         # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
-        # assets/fonts/ (asset_sync.sync_font_file), comme sprites et fonds.
+        # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
         sec.set_add_visible(False)
         root.addWidget(sec, 1)
 

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QWidget, QSizePolicy, QToolButton
 from PyQt6.QtGui import QFont, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import Qt, QRect, QPoint
 
-from core.text_layout import layout_text
+from core.engine_emulation.text_layout import layout_text
 from ui.common import icons
 from ui.common.theme import C, T
 from ui.text_editor.glyph_paint import key_out

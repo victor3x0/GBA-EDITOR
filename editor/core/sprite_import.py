@@ -10,10 +10,9 @@ preview/build (comme les backgrounds).
 """
 from __future__ import annotations
 
-from core.bg_import import _open_image, _is_indexed
-from core.color_utils import (
-    own_palette_from_source, _distinct_opaque, RESERVED_SLOT_COLOR,
-)
+from core.bg_import import open_image, is_indexed
+from core.gba_color import own_palette_from_source, distinct_opaque
+from core.models.palette import RESERVED_SLOT_COLOR
 
 # 4bpp : 16 entrées/banque dont l'index 0 réservé (transparent) → 15 opaques.
 MAX_4BPP_COLORS = 15
@@ -27,9 +26,9 @@ def detect_sprite_import_mode(source) -> dict:
 
     (Le multi-sous-palettes / 8bpp du sprite arrivera avec l'éditeur — cf.
     incrément Sprite Editor.) Clés : indexed, n_colors, bpp, lossy, warning."""
-    img = _open_image(source)
-    indexed = _is_indexed(img)
-    order, _counts = _distinct_opaque(img.convert("RGBA"))
+    img = open_image(source)
+    indexed = is_indexed(img)
+    order, _counts = distinct_opaque(img.convert("RGBA"))
     n = len(order)
 
     lossy = n > MAX_4BPP_COLORS

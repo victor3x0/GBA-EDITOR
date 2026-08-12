@@ -12,7 +12,11 @@ gba-editor/
 │   ├── main.py                      ← point d'entrée
 │   ├── window.py                    ← MainWindow + onglets
 │   ├── core/
-│   │   ├── project.py               ← classe Project : chemins canoniques, CRUD, orchestration save/load
+│   │   ├── project.py               ← classe Project : registres, scène active, recherches, save/load
+│   │   ├── project_paths.py         ← tranche de Project : où chaque chose vit sur le disque
+│   │   ├── project_variables.py     ← tranche de Project : globals et constantes
+│   │   ├── project_texts.py         ← tranche de Project : table de textes + règles de la clé
+│   │   ├── project_renames.py       ← tranche de Project : renommer et réparer ce qui cite
 │   │   ├── models/                  ← modèle de domaine (dataclasses + sérialisation), un fichier par sous-domaine
 │   │   │   ├── ids.py                   ← id opaque partagé (données) vs nom lisible (code écrit à la main)
 │   │   │   ├── resource.py, settings.py, palette.py, sub_palette.py
@@ -20,22 +24,27 @@ gba-editor/
 │   │   │   ├── sprite.py, background.py, audio.py
 │   │   │   ├── font.py                  ← Font/Glyph : géométrie de planche, coût VRAM, fusion de cases
 │   │   │   ├── text.py                  ← Text + clé dérivée + arbre de rangement (dérivé de la liste plate)
-│   │   │   └── scene.py                 ← Actor, Prefab, Scene, collision map
-│   │   ├── resource_manager.py      ← ResourceManager générique (I/O JSON par collection)
+│   │   │   ├── scene.py                 ← Actor, Prefab, Scene, collision map
+│   │   │   └── tile_codec.py            ← format binaire tuile/entrée de carte — module FEUILLE, n'importe rien
+│   │   ├── resource_store.py      ← ResourceStore générique (I/O JSON par collection)
 │   │   ├── project_migrations.py    ← migrations/réconciliations de formats JSON legacy (appelées par Project.load)
-│   │   ├── asset_sync.py            ← orchestration d'encodage déclenchée par l'apparition d'un PNG/audio sur disque
+│   │   ├── asset_encoding.py            ← orchestration d'encodage déclenchée par l'apparition d'un PNG/audio sur disque
 │   │   ├── collision_slopes.py      ← génération des tiles de pente (Bresenham) pour CollisionTool
 │   │   ├── project_watcher.py       ← détection live des assets
-│   │   ├── scene_editor.py          ← canvas GBA - Placer des acteurs, dessiner ses collisions, peindre des tuiles.
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
 │   │   ├── font_import.py           ← import de police (PNG déduit / BMFont .fnt), mesure des chasses
-│   │   ├── text_layout.py           ← où atterrit chaque glyphe (miroir de `text_layout` du runtime)
+│   │   ├── engine_emulation/           ← ce que l'éditeur REFAIT en Python parce que la console
+│   │   │   │                          le fait en C — DEUX implémentations à tenir d'accord
+│   │   │   ├── text_layout.py       ← où atterrit chaque glyphe (jumeau : text_layout() du moteur)
+│   │   │   ├── blend_preview.py     ← les formules BLDCNT/BLDALPHA/BLDY appliquées aux images
+│   │   │   ├── mod_render.py        ← rejoue un MOD façon mixeur Maxmod (taux réduit, sans interpolation)
+│   │   │   └── mod_file.py          ← le format ProTracker que mod_render lit
 │   │   ├── text_markup.py           ← langage de balisage des textes (BBCode) : analyse → affiché + effets
 │   │   ├── toolchain.py             ← détection devkitPro/mGBA (PATH, config, emplacements connus)
 │   │   └── ...
 │   ├── codegen/
 │   │   ├── pipeline.py              ← orchestration build
-│   │   ├── asset_pipeline.py        ← grit (sprites + BG + Sounds)
+│   │   ├── grit_conversion.py        ← grit (sprites + BG + Sounds)
 │   │   └── runtime_codegen/         ← génération main.c, scènes, acteurs
 │   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
 │   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C
@@ -43,9 +52,12 @@ gba-editor/
 │   │   └── script_templates.py      ← contenu initial d'un nouveau script (scène/actor/vide)
 │   ├── plugins/                     ← plugins chargés dynamiquement (spec_from_file_location)
 │   └── ui/                          ← rangé par écran, pas par type de widget
+│       ├── screens.py               ← le contrat d'un écran (ProjectScreen), le
+│       │                              descripteur EditorScreen, et register_screen()
+│       │                              pour les plugins (cf. « Ajouter un écran »)
 │       ├── common/                  ← transverse à tous les écrans
 │       │   ├── theme.py             ← C (couleurs) / T (typographie) — jamais de valeurs en dur
-│       │   ├── icons.py, widgets.py, collapsible.py, reorderable_bar.py, build_panel.py
+│       │   ├── icons.py, widgets.py, reorderable_bar.py, build_panel.py
 │       ├── home/
 │       │   └── project_picker.py    ← écran d'accueil (HomeScreen)
 │       ├── scene_manager/
@@ -96,14 +108,28 @@ gba-editor/
 │           ├── inspector_shell.py          ← coquille commune aux deux inspecteurs
 │           ├── text_inspector.py / font_inspector.py  ← colonne droite, un par contexte
 │           └── text_editor_screen.py       ← écran complet (assemble les 3 colonnes)
-├── runtime/
-│   └── Makefile                     ← copié dans build/ au moment du build
+├── runtime/                         ← le moteur GBA écrit À LA MAIN, en C. Aucun .py :
+│   │                                  pour l'éditeur c'est de la DONNÉE, jamais importée,
+│   │                                  seulement recopiée dans build/ (cf. app_paths.RUNTIME_DIR)
+│   ├── Makefile                     ← copié dans build/, pilote arm-none-eabi-gcc
+│   └── include/
+│       ├── gba_engine.h             ← le gros du moteur (~2 750 l.) : VRAM, layers, windows,
+│       │                              blending, palettes, fonds animés, texte, SRAM.
+│       │                              Inclus UNE SEULE FOIS, depuis le main.c généré
+│       ├── actor_api_static.h       ← la même API REDÉCLARÉE en extern, pour les unités de
+│       │                              compilation des acteurs et des scènes, qui n'incluent
+│       │                              pas le moteur (cf. « Deux listes de prototypes »)
+│       ├── actor_types_static.h     ← structs et constantes GBA, partie non générée
+│       └── runtime.h                ← API partagée entre le main.c généré et les scripts
 ├── packaging/                       ← packaging Nuitka + CI (voir section dédiée)
 │   ├── nuitka_build.py              ← commande de build unique (CI et local)
 │   ├── check_deps.py                ← garde-fou requirements.txt vs imports réels
 │   ├── icon.ico / icon.png
 │   ├── windows/installer.nsi        ← installateur NSIS (par utilisateur)
 │   └── linux/                       ← AppImage (job CI en pause)
+├── tools/
+│   └── check_architecture.py        ← les règles de ce document, rendues exécutables
+│                                      (voir « Les règles ci-dessus se vérifient toutes seules »)
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
     └── Pong/                        ← projet démo
@@ -232,6 +258,58 @@ apparaît sans qu'on touche au JSON — les deux dérives que ce fichier avait a
 (`display.print`, `display.clear`, `text.draw_box` encore proposées ; `text.draw_in`
 absente).
 
+### Un domaine a TROIS consommateurs, et deux ne le disaient pas
+
+Le `domain` d'un `Param` sert à `refactor` (suivre les renommages), au
+`checker` (le nom existe-t-il ?) et au `codegen` (quelle constante C émettre ?).
+Le premier **dérive** sa table du catalogue (`_reference_sites()`) et n'a rien à
+oublier. Les deux autres portaient une liste écrite à la main — une chaîne
+d'`elif` et un `match` — et un domaine absent n'y produisait **aucun signal** :
+le checker ne validait simplement rien, et le codegen retombait sur `case _`,
+c'est-à-dire la chaîne émise telle quelle, donc du texte C là où le C attend un
+entier. Panne au `make`, sur la ligne générée, jamais sur la cause. Même famille
+que « deux listes de prototypes » ci-dessus.
+
+Les deux listes sont devenues des **tables**, comparées à `api.ALL_DOMAINS` au
+build par `validator._check_api_domains`, en **erreur bloquante**. `ALL_DOMAINS`
+est lui-même dérivé des constantes `DOMAIN_*` du module : déclarer un domaine
+suffit à entrer dans le contrôle. Placer un nouveau domaine dans l'une des cases
+fait partie de son ajout :
+
+| Côté | Cases |
+|---|---|
+| `checker` | validé par domaine (`_DOMAIN_CHECKS`) ou non validé **avec sa raison** (`_DOMAINS_UNCHECKED` — seul `tag` y est, l'auteur y met ce qu'il veut) |
+| `codegen` | constante générique (`_DOMAIN_CONSTANT`) ou émetteur dédié (`_DOMAIN_EMITTED_ELSEWHERE`) |
+
+Chacun n'expose qu'un `covered_domains()` — le contrôle demande « ce domaine
+t'est-il connu ? », pas la mécanique interne.
+
+### Un nom se vérifie par son DOMAINE, pas par le nom de l'appel
+
+Cinq domaines étaient vérifiés par un contrôle accroché au nom de l'appel —
+`scene.switch`, `get_actor`, `global.get`/`set`, `const.get` — et
+`actor.spawn` ne l'était par rien. Deux conséquences, corrigées ensemble :
+
+- **une seconde fonction prenant le même domaine n'aurait rien déclenché.** Le
+  contrôle regardait `key == "scene.switch"`, pas « ce paramètre porte
+  `DOMAIN_SCENE` ». Ajouter une `scene.preload` aurait donc rendu le domaine
+  muet, sans que rien ne le dise ;
+- **`DOMAIN_PREFAB` n'était validé nulle part.** `_emit_actor_spawn` émet
+  `spawn_<Nom>(...)` sans rien vérifier, donc un nom fautif n'apparaissait qu'à
+  la compilation C, sur un « implicit declaration of function » pointant la
+  ligne générée. C'est une **erreur** de checker maintenant, pour la même raison
+  qu'une scène inconnue : le build échouerait de toute façon, avec un message
+  bien pire.
+
+Ce qui reste accroché à un appel précis dans `_check_call_expr` ne porte plus
+sur un nom : la **valeur** d'un `global.set` (plage du type déclaré) et le
+numéro d'emplacement d'un `save.*`. Ces contrôles n'interrompent plus la suite —
+d'où un effet de bord bienvenu : le **nombre d'arguments** de ces quatre appels
+est désormais vérifié lui aussi, alors qu'un `return` prématuré le sautait.
+
+`BuildContext.prefab_names` porte la liste, remplie par `lua_compiler` depuis le
+projet entier — un prefab est poolé au niveau projet, pas au niveau scène.
+
 ---
 
 ## Layers BG vivants (shadows de registres)
@@ -319,6 +397,196 @@ mélange quel que soit le réglage OBJ — utile pour un seul fantôme transluci
 et n'a aucun lecteur, donc pas de shadow. `eva`/`evb`/`evy` sont des seizièmes clampés à
 0-16 par `ev_clamp()` — au-delà le matériel sature, on préfère un comportement identique
 partout.
+
+---
+
+## Sens des dépendances
+
+L'empilement visé, du haut vers le bas — **une couche ne dépend jamais de ce qui est
+au-dessus d'elle** :
+
+```
+ui/            l'interface
+core/          la logique éditeur et le projet ouvert
+core/models/   les données du projet, et le format binaire qu'elles décrivent
+codegen/       la génération du C, qui consomme le modèle
+```
+
+Deux règles pratiques qui en découlent, et l'état du code au 2026-08-12 :
+
+- **`core/models/tile_codec.py` n'importe rien.** Le format d'une tuile et d'une entrée
+  de carte est réclamé par les modèles, par l'import, par la génération et par le canvas.
+  Tant qu'il vivait dans `core/bg_import.py`, tout le monde remontait jusqu'à la couche
+  import — et `bg_import` redescendait vers `codegen/bg_anim.py`, ce qui refermait une
+  boucle de dix modules, invisible parce que contournée par des imports posés au fond des
+  fonctions. Un module feuille ne peut, par construction, participer à aucun cycle.
+- **`Project` ne connaît pas l'application.** Il énonce des faits sur son propre
+  `EventEmitter` (`renamed`, `status`) et reçoit sa `rename_scope` — un appelable rendant
+  le gestionnaire de contexte dans lequel dérouler un renommage. `CommandDispatcher.setup()`
+  s'y abonne, met les faits en mots et rafraîchit les vues. Un projet ouvert sans interface
+  (build en ligne de commande, test) est donc muet **de lui-même**, sans repli à écrire ;
+  auparavant `project.py` importait le dispatcher dans un `try/except ImportError`, ce qui
+  était à la fois la boucle et son camouflage.
+
+- **Un nom s'importe du module qui le DÉFINIT.** `from core.models.scene import Scene`, et
+  jamais à travers `core.project`, qui a longtemps ré-exporté tout le domaine — trente
+  fichiers citaient ainsi une classe par une adresse où elle n'est pas écrite. Le piège
+  survit à la correction : `core/models/scene.py` importe `OWN_PAL_BANK` pour son propre
+  usage, donc l'emprunter *fonctionnerait*. Ce n'est pas parce qu'un module a un nom sous
+  la main qu'il en est la source.
+
+**Un import posé dans une fonction est un signal.** Il y en a de légitimes (coupure d'un
+coût de démarrage, dépendance optionnelle), mais quand il évite une boucle, il la cache :
+Python ne proteste jamais, et l'outillage non plus. En cas de doute, remonter l'import en
+tête de fichier : s'il échoue, la boucle était réelle.
+
+**Et un import différé n'est vérifié par rien.** Charger tous les modules ne l'exécute
+pas ; il n'échoue que le jour où l'utilisateur emprunte ce chemin-là. Après tout
+déplacement de symbole, résoudre *tous* les `from … import …` du dépôt — importer le
+module cité et vérifier que chaque nom y existe — plutôt que se fier au démarrage.
+
+### Les règles ci-dessus se vérifient toutes seules
+
+```
+python tools/check_architecture.py
+```
+
+Huit contrôles, sortie non nulle si l'un échoue, chacun né d'un défaut réel de ce dépôt :
+boucles d'import (dix modules enchevêtrés, masqués par des imports différés), sens des
+dépendances (un fichier d'interface rangé dans `core/`), imports résolus (six imports
+différés cassés par un déplacement de symbole), **noms résolus** (une fonction dupliquée
+retirée d'un module qui continuait de l'appeler — pas d'import fautif, il n'y en avait
+plus du tout), code mort, et frontières respectées (vingt et un symboles privés importés
+d'ailleurs).
+
+Deux boucles restantes y sont **assumées et datées**, pas ignorées : elles s'affichent
+avec leur raison sans faire échouer la commande, parce qu'un contrôle rouge en permanence
+est un contrôle que plus personne ne lance. Toute boucle nouvelle, elle, échoue.
+
+Les exemptions se justifient **par écrit dans le script** (`BOUCLES_ACCEPTEES`,
+`VIVANTS_SANS_APPELANT`). Sans motif, une liste d'exemptions redevient une liste qui
+grossit.
+
+Le huitième contrôle ne tourne qu'à la demande :
+
+```
+python tools/check_architecture.py --fresh
+```
+
+Il importe chaque module **seul, dans un interpréteur neuf** (~55 s). C'est le seul moyen
+de voir une boucle qui dépend de l'ORDRE : charger tous les modules d'affilée amorce le
+cache, et le premier import réussi masque le problème pour les suivants. Il est né de
+ceci — `scripting/api.py` importait `codegen/c_names.py`, sept lignes sans aucune
+dépendance ; mais importer un module d'un paquet exécute d'abord son `__init__.py`, et
+celui de `codegen` tirait toute la chaîne de build jusqu'à `core.project`, déjà en cours
+d'initialisation.
+
+**Corollaire : un `__init__.py` de paquet ne devrait rien importer au chargement.** Ce
+qu'il expose se donne paresseusement (`__getattr__`, PEP 562), sinon le module le plus
+modeste du paquet traîne derrière lui tout ce que ses voisins tirent.
+
+### Deux implémentations qu'il faut tenir d'accord — `core/engine_emulation/`
+
+Certains calculs existent **en double, dans deux langages** : le C les fait sur la console,
+Python les refait pour l'aperçu. Où atterrit chaque glyphe d'un texte, comment se mélangent
+deux couches, comment sonne un MOD passé au mixeur Maxmod. C'est inévitable — le C tourne
+sur l'ARM, Python dessine dans une fenêtre — mais c'est le **pire mode de panne du
+projet** : corriger une formule d'un seul côté ne casse rien, ne lève aucune erreur, et
+produit un éditeur qui montre autre chose que ce que la ROM fabrique. L'utilisateur n'a
+alors aucun moyen de savoir lequel des deux ment.
+
+D'où un dossier dont le nom est la règle. Ce qui entre dans `core/engine_emulation/` a un
+jumeau dans `runtime/`, et son en-tête le nomme.
+
+À ne pas confondre avec du code **partagé** : quand le build et l'aperçu appellent la même
+fonction (`nine_slice`, `models/tile_codec`), il n'y a qu'une implémentation, donc rien à
+tenir d'accord. Le test avant d'ajouter un fichier ici est celui-là, et pas « est-ce que ça
+sert à l'aperçu ».
+
+### `Project` est découpé en tranches, pas en collaborateurs
+
+`core/project.py` fait ~500 lignes et garde ce qui fait de lui un tout : registres
+d'assets, scène active, recherches, `save`/`load`/`create`/`open`. Quatre responsabilités
+volumineuses vivent à côté, en **mixins** dont `Project` hérite :
+`project_paths` (où chaque chose est rangée), `project_variables` (globals et constantes),
+`project_texts` (la table du joueur et les règles de sa clé), `project_renames` (renommer
+et réparer ce qui cite).
+
+Des mixins et non des objets délégués (`project.renamer.rename_scene(...)`) : la découpe
+sert la LECTURE, et ne doit rien coûter à l'écriture. `project.rename_scene(...)` s'écrit
+comme avant chez ses vingt-deux appelants, et rien n'a gagné un saut d'appel — un mixin
+est résolu une fois, à la construction de la classe. Le prix, assumé et à ne pas
+travestir : ces fichiers ne sont pas autonomes, chacun suppose le reste de `Project`
+(`project_variables` appelle `self._notify_renamed`, `project_texts` lit
+`self.texts_file`). Aucun d'eux ne doit importer `core.project` — ce serait un cycle
+immédiat.
+
+---
+
+## Ajouter un écran — le catalogue et le contrat
+
+Un écran n'était pas une donnée : il fallait l'épeler à **cinq** endroits de
+`window.py` — le tableau `SCREENS`, l'ordre des `addWidget`, un attribut, une
+ligne dans `_refresh_ui`, les abonnements du dispatcher — dont deux listes
+parallèles dont l'accord n'était tenu que par un commentaire (« l'ordre doit
+rester synchronisé »). Un écran inséré au milieu décalait l'autre liste sans un
+mot, et le `Tileset Manager` — un écriteau « coming soon » — occupait en partie
+l'index 1 pour tenir le compte.
+
+**Il n'y a plus qu'une liste**, `MainWindow._screen_catalogue()`. Les libellés
+de la barre de navigation, l'ordre du `QStackedWidget` et la propagation du
+projet en dérivent tous. Ajouter un écran, c'est une ligne et une fabrique :
+
+```python
+EditorScreen("Sound Editor", self._make_sound_editor)
+```
+
+- **`ProjectScreen`** (`ui/screens.py`) nomme le contrat : `load_project(project)`.
+  Il existait déjà sans nom, écrit `load_project` par six écrans et
+  `set_project` par un septième — le Script Editor a été aligné. Un `Protocol`
+  et non une classe de base : un écran est un `QWidget` d'abord.
+- **Le contrat est vérifié à la CONSTRUCTION** (`_build_screens`), pas
+  statiquement : un écran venu d'un plugin n'existe pour personne avant ce
+  moment. Un écran qui ne le remplit pas est monté quand même — il s'affiche,
+  il ne reçoit jamais le projet — et le défaut est annoncé au démarrage, dans
+  la même boîte que les erreurs de plugin. Un écran muet ne se distingue sinon
+  pas d'un écran vide.
+- **Une fabrique et non une classe** dans le descripteur : deux écrans ne se
+  construisent pas par simple appel de constructeur (le Scene Manager est
+  assemblé par la fenêtre, l'écriteau prend un titre), et les plugins sont
+  chargés **avant la `QApplication`** — construire un widget à l'import
+  planterait. Le branchement propre à un écran vit dans sa fabrique, à côté de
+  sa construction, au lieu d'être dispersé dans `_setup_ui`.
+- **`SceneManagerScreen`** existe pour porter ce contrat : ses trois colonnes
+  restent des attributs de la fenêtre (lues d'une trentaine d'endroits), les
+  faire descendre est un chantier à part. Sa `load_project` propage aux trois.
+- Les écrans de plugin sont ajoutés **après** les natifs : les index de ces
+  derniers ne bougent pas quand un plugin est installé, et l'ordre de nav
+  enregistré par l'utilisateur survit. Leurs appels sont entourés d'un
+  `try` — du code tiers dans un slot Qt fait abandonner le process.
+
+### Les trois surfaces d'extension d'un plugin
+
+| Portée | Point d'entrée | Exemple |
+|---|---|---|
+| un composant | `COMPONENT_REGISTRY` + `@register` | `plugins/example_path/` |
+| une règle de build | `@register_validator` | `core/validator.py` |
+| un écran entier | `register_screen(nom, fabrique)` | `plugins/example_screen/` |
+
+### Ce qui reste à la charge de la fenêtre
+
+Le catalogue ne couvre que le montage et le projet. Un écran qui doit réagir à
+un événement (`_d.on("palettes_changed", …)`) le déclare toujours dans
+`_build_scene_manager_screen` — c'est de l'abonnement, pas du cycle de vie.
+
+Et le **routage des assets** (`MainWindow._ASSET_ROUTES`) est une autre table :
+elle associe `assets/<dossier>/*.ext` aux fonctions d'`asset_encoding` que le
+watcher appelle. Elle a porté des **noms de méthodes** appelés par `getattr`
+sur `Project` jusqu'à ce que les passe-plats correspondants soient retirés de
+`Project` : plus rien ne pouvait le voir — ni l'import, ni
+`check_architecture.py`, qui contrôle pourtant les noms résolus — et déposer un
+PNG dans `assets/sprites/` levait un `AttributeError` dans un slot Qt, donc
+tuait l'éditeur. La table porte désormais les fonctions elles-mêmes.
 
 ---
 
@@ -951,7 +1219,7 @@ La gomme restaure la palette d'origine (supprime l'override).
    build/rom.gba → mgba
 ```
 
-Orchestré par `editor/codegen/pipeline.py` (`BuildWorker`), déclenché depuis `ui/build_panel.py`.
+Orchestré par `editor/codegen/rom_build.py` (`BuildWorker`), déclenché depuis `ui/build_panel.py`.
 
 ---
 

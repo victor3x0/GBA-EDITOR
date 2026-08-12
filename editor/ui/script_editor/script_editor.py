@@ -101,7 +101,7 @@ class ScriptEditorScreen(QWidget):
         self._title_lbl.setStyleSheet(f"color:{COLOR_SCRIPT};")
         bar_l.addWidget(self._title_lbl, 1)
 
-        from ui.common.widgets import _kind_colors as _badge_bg
+        from ui.common.widgets import kind_colors as _badge_bg
         self._ctx_badge = QLabel("")
         self._ctx_badge.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._ctx_badge.setStyleSheet(
@@ -218,8 +218,11 @@ class ScriptEditorScreen(QWidget):
         if path.exists():
             self._file_watcher.addPath(str(path))
 
-    def set_project(self, project):
-        """Connecte le projet pour peupler les sections dynamiques."""
+    def load_project(self, project):
+        """Connecte le projet pour peupler les sections dynamiques.
+
+        `load_project` et non `set_project` : c'est le contrat `ProjectScreen`
+        (cf. ui/screens.py), que les six autres écrans écrivaient déjà ainsi."""
         self._sidebar.set_project(project)
         self._file_tree.set_project(project)
         if project:
@@ -249,7 +252,7 @@ class ScriptEditorScreen(QWidget):
         return "unknown"
 
     def _update_context_badge(self, ctx: str):
-        from ui.common.widgets import _kind_colors
+        from ui.common.widgets import kind_colors
         _BADGE = {
             "actor":    ("ACTOR",    _C_EVENT),
             "scene":    ("SCENE",    _C_API),
@@ -257,7 +260,7 @@ class ScriptEditorScreen(QWidget):
         }
         if ctx in _BADGE:
             text, fg = _BADGE[ctx]
-            bg, _mid, _accent = _kind_colors(fg)
+            bg, _mid, _accent = kind_colors(fg)
             self._ctx_badge.setText(text)
             self._ctx_badge.setStyleSheet(
                 f"color:{fg};background:{bg};border:1px solid {fg};"

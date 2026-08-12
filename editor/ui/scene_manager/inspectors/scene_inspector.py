@@ -10,14 +10,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 
-from core.project import Project, Scene, OWN_PAL_BANK, WindowSlot
+from core.models.palette import OWN_PAL_BANK
+from core.models.scene import Scene, WindowSlot
+from core.project import Project
 from core.models.scene import (
     BLEND_NONE, BLEND_ALPHA, BLEND_BRIGHTEN, BLEND_DARKEN,
     BLEND_TOP, BLEND_BOTTOM, BLEND_NEEDS_BOTTOM, blend_role_of,
     EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE, EFFECT_TRANSLUCENT,
     EFFECT_CUSTOM, blend_effect_of, blend_amount_of, apply_blend_effect,
 )
-from core.asset_manager import BgLayerRow
+from ui.scene_manager.inspectors.bg_layer_row import BgLayerRow
 from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
     RemoveListItemCmd, SetSceneModeCmd,
@@ -920,7 +922,7 @@ class SceneInspector(QWidget):
         popup.show_below(self._btn_bitmap_pick)
 
     def _set_bitmap_bg(self, name: str):
-        from core.project import BackgroundLayer
+        from core.models.background import BackgroundLayer
         self._scene.background_layers[:] = [BackgroundLayer(background_name=name, bg_slot=2)]
         self._persist_scene()
         self._apply_mode_ui()
@@ -1239,7 +1241,7 @@ class SceneInspector(QWidget):
         (même mécanisme qu'Actor.pal_bank)."""
         if not self._scene: return
         from ui.common.pickers import PALETTE_NONE
-        from core.project import OWN_PAL_BANK
+        from core.models.palette import OWN_PAL_BANK
         active_names = self._scene.active_bg_palettes
         if pal_name == PALETTE_NONE:
             idx = OWN_PAL_BANK
@@ -1327,7 +1329,7 @@ class SceneInspector(QWidget):
         next_slot = next((i for i in valid_slots if i not in used_slots), None)
         if next_slot is None:
             return   # tous les slots BG du mode sont occupés
-        from core.project import BackgroundLayer
+        from core.models.background import BackgroundLayer
         new_layer = BackgroundLayer(background_name="", bg_slot=next_slot, scroll_speed=1.0)
 
         def _refresh():
@@ -1578,7 +1580,7 @@ class SceneInspector(QWidget):
         return self._project.settings.backdrop_color if self._project else 0
 
     def _refresh_backdrop(self):
-        from core.color_utils import bgr555_to_rgb888
+        from core.gba_color import bgr555_to_rgb888
         v = self._effective_backdrop()
         r, g, b = bgr555_to_rgb888(v)
         self._btn_backdrop.setStyleSheet(
@@ -1592,7 +1594,7 @@ class SceneInspector(QWidget):
 
     def _pick_backdrop(self):
         from PyQt6.QtWidgets import QColorDialog
-        from core.color_utils import bgr555_to_rgb888, rgb888_to_bgr555
+        from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
         if not self._scene:
             return
         r, g, b = bgr555_to_rgb888(self._effective_backdrop())

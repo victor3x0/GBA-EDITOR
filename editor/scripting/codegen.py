@@ -30,6 +30,7 @@ from .api import (
     KNOWN_SCENE_EVENTS, SCENE_EVENT_C_SIGNATURES, scene_event_sig,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_PALETTE,
+    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     text_constant, font_constant, region_constant, anon_text_key, palette_constant,
     image_constant, image_state_constant,
@@ -636,25 +637,15 @@ class CodeGen:
         if not isinstance(arg, ExprString) or param.domain is None:
             return self._expr(arg)
         name = arg.value
-        sym  = self.ctx.actor_sym
-        match param.domain:
-            case d if d == DOMAIN_ANIM:   return anim_constant(sym, name)
-            case d if d == DOMAIN_SFX:    return sfx_constant(name)
-            case d if d == DOMAIN_MUSIC:  return music_constant(name)
-            case d if d == DOMAIN_KEY:    return key_constant(name)
-            case d if d == DOMAIN_TAG:    return tag_constant(name)
-            case d if d == DOMAIN_SCENE:  return scene_constant(name)
-            # Une chaîne qui ne matche aucune clé est un LITTÉRAL (`text.draw`
-            # seul le permet, cf. Param.literal_ok) : il a sa propre entrée de
-            # table, donc le C ne voit qu'un index comme pour tout texte.
-            case d if d == DOMAIN_TEXT:
-                return text_constant(name if name in self.ctx.text_keys
-                                     else anon_text_key(name))
-            case d if d == DOMAIN_FONT:   return font_constant(name)
-            case d if d == DOMAIN_PALETTE: return palette_constant(name)
-            case d if d == DOMAIN_REGION: return region_constant(name)
-            case d if d == DOMAIN_IMAGE:  return image_constant(name)
-            case _:                        return f'"{name}"'
+        make_constant = _DOMAIN_CONSTANT.get(param.domain)
+        if make_constant is None:
+            # Domaine sans constante générique : la chaîne part telle quelle.
+            # Légitime pour les domaines résolus par un émetteur dédié
+            # (_DOMAIN_EMITTED_ELSEWHERE), qui n'arrivent pas jusqu'ici — et
+            # c'est `validator._check_api_domains` qui garantit qu'aucun autre
+            # domaine ne tombe dans ce cas par oubli.
+            return f'"{name}"'
+        return make_constant(self, name)
 
     # ── Cas spéciaux ──────────────────────────────────────────────
 
@@ -706,11 +697,11 @@ class CodeGen:
         get_actor("PADDLE_AUTO")  →  &g_actors[TAG_PADDLE_AUTO]
         Résolu à la compilation, zéro overhead runtime. Le nom doit être
         sanitisé avec la même fonction que celle qui définit les macros
-        TAG_* (headers.py::generate_actor_types, via codegen.build_utils.sym) —
+        TAG_* (headers.py::generate_actor_types, via codegen.c_names.sym) —
         sinon un nom d'actor avec un caractère hors [A-Za-z0-9_] (ex: un tiret)
         référence une macro qui n'existe pas.
         """
-        from codegen.build_utils import sym as c_sym
+        from codegen.c_names import sym as c_sym
         if not args or not isinstance(args[0], ExprString):
             return "/* get_actor() : argument invalide */"
         sym = c_sym(args[0].value)
@@ -788,6 +779,43 @@ _INVOKE_CUSTOM: dict = {
     "self:destroy":  CodeGen._emit_destroy,
     "self:play_sfx": CodeGen._emit_play_sfx,
 }
+
+# ── Résolution des domaines : un domaine → la constante C ──────────
+# Une table et non un `match` : elle se compare à `ALL_DOMAINS` au build
+# (`validator._check_api_domains`), ce qu'une suite de `case` ne permet pas.
+# Un domaine ajouté sans entrée ici partait en littéral C, silencieusement.
+_DOMAIN_CONSTANT: dict = {
+    DOMAIN_ANIM:    lambda g, name: anim_constant(g.ctx.actor_sym, name),
+    DOMAIN_SFX:     lambda g, name: sfx_constant(name),
+    DOMAIN_MUSIC:   lambda g, name: music_constant(name),
+    DOMAIN_KEY:     lambda g, name: key_constant(name),
+    DOMAIN_TAG:     lambda g, name: tag_constant(name),
+    DOMAIN_SCENE:   lambda g, name: scene_constant(name),
+    # Une chaîne qui ne matche aucune clé est un LITTÉRAL (`text.draw` seul le
+    # permet, cf. Param.literal_ok) : il a sa propre entrée de table, donc le C
+    # ne voit qu'un index comme pour tout texte.
+    DOMAIN_TEXT:    lambda g, name: text_constant(
+        name if name in g.ctx.text_keys else anon_text_key(name)),
+    DOMAIN_FONT:    lambda g, name: font_constant(name),
+    DOMAIN_PALETTE: lambda g, name: palette_constant(name),
+    DOMAIN_REGION:  lambda g, name: region_constant(name),
+    DOMAIN_IMAGE:   lambda g, name: image_constant(name),
+}
+
+# Domaines SANS constante générique : leur argument est résolu par un émetteur
+# dédié de `_CALL_CUSTOM` (nom de prefab poolé, actor résolu à la compilation,
+# variable C nommée) et n'atteint donc jamais `_resolve_arg`. Les déclarer est
+# ce qui distingue « traité ailleurs » de « oublié ».
+_DOMAIN_EMITTED_ELSEWHERE: frozenset = frozenset({
+    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST,
+})
+
+
+def covered_domains() -> frozenset:
+    """Domaines dont le codegen sait quoi faire — constante générique, ou
+    émetteur dédié. Pendant exact de `checker.covered_domains()`."""
+    return frozenset(_DOMAIN_CONSTANT) | _DOMAIN_EMITTED_ELSEWHERE
+
 
 _CALL_CUSTOM: dict = {
     "get_actor":   CodeGen._emit_get_actor,

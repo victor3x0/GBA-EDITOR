@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models.resource import Resource
+from core.models.tile_codec import pack_se, unpack_se
 from core.models.palette import OWN_PAL_BANK
-from core.models.sub_palette import SubPaletteAssetMixin, _decode_palette_overrides
+from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
 
 
 # ── Types de fond ─────────────────────────────────────────────────
@@ -106,7 +107,7 @@ class BackgroundLayer:
     blend_role:   str   = ""
 
 
-def _decode_tile_palette_overrides(raw) -> dict:
+def decode_tile_palette_overrides(raw) -> dict:
     """Relit tile_palette_overrides du JSON ({"col,row": slot}) en dict[(col,row), slot].
     Tolère l'absence (None) et les clés mal formées (ignorées)."""
     out: dict[tuple[int, int], int] = {}
@@ -386,7 +387,6 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
         pour que l'inpainting soit partagé partout."""
         if not self.tile_palette_overrides:
             return list(self.tilemap)
-        from core.bg_import import unpack_se, pack_se
         tw = self.tiles_w or 1
         out: list[int] = []
         for cell, se in enumerate(self.tilemap):
@@ -456,7 +456,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             tilemap=list(d.get("tilemap", [])),
             tiles_w=d.get("tiles_w", 0), tiles_h=d.get("tiles_h", 0),
             quantize_method=d.get("quantize_method", d.get("compress_method", "median_cut")),
-            tile_palette_overrides=_decode_tile_palette_overrides(
+            tile_palette_overrides=decode_tile_palette_overrides(
                 d.get("tile_palette_overrides")),
             diagnostics=dict(d.get("diagnostics") or {}),
             bpp=int(d.get("bpp", 4)),
@@ -465,7 +465,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             bitmap=d.get("bitmap", ""),
             out_w=int(d.get("out_w", 0)), out_h=int(d.get("out_h", 0)),
             source_palettes=list(d.get("source_palettes", [])),
-            palette_overrides=_decode_palette_overrides(d.get("palette_overrides")),
+            palette_overrides=decode_palette_overrides(d.get("palette_overrides")),
             kind=_read_kind(d.get("kind")),
             ui_role=_read_ui_role(d.get("ui_role")),
             slice_left=int(d.get("slice_left", 8) or 0),
@@ -485,14 +485,6 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
         # toutes deviennent grisées/overridables. Idempotent (persisté au save).
         if ba.tileset and not ba.source_palettes and ba.palettes:
             ba.source_palettes = [list(p) for p in ba.palettes]
-        # Anciens layers (format multi-layer) — transitoire, lus pour migrer vers
-        # Scene.background_layers puis abandonnés (to_dict ne les émet plus).
-        ba._legacy_layers = [
-            BackgroundLayer(background_name=L.get("image", ""), bg_slot=L.get("bg_slot", i),
-                            scroll_speed=L.get("scroll_speed", 1.0),
-                            pal_bank=L.get("pal_bank", OWN_PAL_BANK))
-            for i, L in enumerate(d.get("layers", []))
-        ]
         return ba
 
 

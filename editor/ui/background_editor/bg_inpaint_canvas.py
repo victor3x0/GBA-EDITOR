@@ -35,11 +35,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QColor, QPainter, QPixmap, QImage, QTransform, QPen, QBrush
 from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, QPropertyAnimation, pyqtSignal
 
-from core.bg_import import (
-    unpack_se, _hex_to_tile, _flip_h, _flip_v, render_bg_preview,
-    render_bitmap_preview,
-)
-from core.color_utils import bgr555_to_rgb888
+from core.bg_import import render_bg_preview, render_bitmap_preview
+from core.models.tile_codec import unpack_se, hex_to_tile, flip_h, flip_v
+from core.gba_color import bgr555_to_rgb888
 from core.models.resource import MIME_ANIMATED_BG
 from core.models.background import (
     KIND_UI, KIND_ANIMATED, UI_ROLE_NINE, BackgroundAnimation,
@@ -185,7 +183,7 @@ class BgInpaintController:
             "tilemap": ba.effective_tilemap(), "bpp": getattr(ba, "bpp", 4),
         }
         self._qimg = _pil_to_qimage(render_bg_preview(compiled))
-        self._tiles = [_hex_to_tile(t) for t in ba.tileset]
+        self._tiles = [hex_to_tile(t) for t in ba.tileset]
         self._pal_rgb = [[bgr555_to_rgb888(c) for c in pal] for pal in ba.palettes]
 
     def reload_render(self):
@@ -206,9 +204,9 @@ class BgInpaintController:
         eff = pb if ov is None else ov
         grid = tuple(self._tiles[tid]) if tid < len(self._tiles) else tuple([0] * 64)
         if fh:
-            grid = _flip_h(grid)
+            grid = flip_h(grid)
         if fv:
-            grid = _flip_v(grid)
+            grid = flip_v(grid)
         pal = self._pal_rgb[eff] if eff < len(self._pal_rgb) else (
             self._pal_rgb[0] if self._pal_rgb else [(0, 0, 0)] * 16)
         blk = QImage(8, 8, QImage.Format.Format_RGBA8888)

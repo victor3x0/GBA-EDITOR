@@ -17,7 +17,7 @@ from __future__ import annotations
 from abc import ABC
 from typing import TYPE_CHECKING, Optional
 
-from core.project import TILE_EMPTY, TILE_SOLID
+from core.models.scene import TILE_EMPTY, TILE_SOLID
 from core.collision_slopes import SLOPE_MODES, slope_tiles_for
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QBrush, QColor, QPen

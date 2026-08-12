@@ -20,9 +20,10 @@ from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 
-from core.project import Project, Sfx, Music
-from core.mod_file import load_mod
-from core.mod_render import render_mod, GBA_MIX_RATE
+from core.models.audio import Music, Sfx
+from core.project import Project
+from core.engine_emulation.mod_file import load_mod
+from core.engine_emulation.mod_render import render_mod, GBA_MIX_RATE
 from core.history import get_history, DeleteResourceCmd
 
 SFX_EXTS   = "*.wav *.ogg"
@@ -39,7 +40,7 @@ class AudioPlayer(QWidget):
     Deux moteurs selon le format :
       - QMediaPlayer (Qt Multimedia) pour tout ce qu'il sait décoder nativement
         (wav/ogg/mp3…).
-      - Rendu maison (core.mod_render) + QAudioSink pour les .mod : Qt
+      - Rendu maison (core.engine_emulation.mod_render) + QAudioSink pour les .mod : Qt
         Multimedia n'a aucun décodeur tracker (FormatError à l'ouverture), et
         le rendu maison simule en plus le mixeur logiciel Maxmod du GBA (taux
         réduit, pas d'interpolation) pour une preview fidèle au rendu en jeu.
@@ -315,7 +316,7 @@ class _AssetInspectorBase(QWidget):
         if self._blocking or not self._asset or not self._project: return
         new_name = new_name.strip()
         if new_name and new_name != self._asset.name:
-            # Passe par le projet (pas le ResourceManager brut) : il met aussi
+            # Passe par le projet (pas le ResourceStore brut) : il met aussi
             # à jour les sfx.play()/music.play() des scripts.
             self._project.rename_sound(self._asset, new_name)
             self.changed.emit()

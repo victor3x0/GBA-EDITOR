@@ -92,14 +92,19 @@ if __name__ == "__main__":
     # — source probable du crash "GBAScene has been deleted" au lancement).
     win.show()
 
-    # Afficher les erreurs de plugins APRÈS que la fenêtre est visible
-    if plugin_errors:
+    # Défauts des points d'extension, APRÈS que la fenêtre est visible : un
+    # plugin qui n'a pas pu être chargé, et un écran qui ne remplit pas le
+    # contrat ProjectScreen (`ui/screens.py`). Les deux se constatent au
+    # démarrage et nulle part ailleurs — un écran muet ne se distingue sinon
+    # pas d'un écran vide.
+    problems = ([f"{name} : {exc}" for name, exc in plugin_errors]
+                + list(win.screen_errors))
+    if problems:
         from PyQt6.QtWidgets import QMessageBox
-        lines = "\n".join(f"• {name} : {exc}" for name, exc in plugin_errors)
         box = QMessageBox(win)
-        box.setWindowTitle("Plugin Errors")
+        box.setWindowTitle("Extension Errors")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"{len(plugin_errors)} plugin(s) could not be loaded:")
-        box.setDetailedText(lines)
+        box.setText(f"{len(problems)} problem(s) found while loading extensions:")
+        box.setDetailedText("\n".join(f"• {p}" for p in problems))
         box.exec()
     sys.exit(app.exec())

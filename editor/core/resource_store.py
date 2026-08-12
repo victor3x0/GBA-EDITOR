@@ -1,4 +1,4 @@
-"""ResourceManager — collection générique de Resource persistée sur disque
+"""ResourceStore — collection générique de Resource persistée sur disque
 (un fichier JSON par item, dans un dossier). Utilitaire d'I/O générique,
 réutilisé par Project pour chacune de ses collections (scenes, sprites,
 backgrounds, prefabs, sfx, music, fonts, palettes)."""
@@ -20,7 +20,7 @@ def safe_filename(name: str) -> str:
     return name.translate(_WIN_FORBIDDEN).strip() or "_"
 
 
-def _atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
+def atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
     """Écrit `text` dans `path` de façon atomique (tmp → rename).
 
     Sous Windows, `os.replace` lève transitoirement PermissionError (WinError 5
@@ -48,12 +48,12 @@ def _atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
         raise
 
 
-# Rename atomique : nb de tentatives et délai entre elles (cf. _atomic_write).
+# Rename atomique : nb de tentatives et délai entre elles (cf. atomic_write).
 _REPLACE_RETRIES = 12
 _REPLACE_RETRY_DELAY = 0.02   # 12 × 20 ms ≈ 240 ms de fenêtre de retry
 
 
-class ResourceManager(Generic[T]):
+class ResourceStore(Generic[T]):
     """
     Gère une collection de Resource d'un type donné, persistée dans
     `directory/<name>.json`. Se comporte comme une liste (itération,
@@ -98,7 +98,7 @@ class ResourceManager(Generic[T]):
 
     def save(self, item: T):
         self.dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(self._path(item.name), json.dumps(item.to_dict(), indent=2, ensure_ascii=False))
+        atomic_write(self._path(item.name), json.dumps(item.to_dict(), indent=2, ensure_ascii=False))
 
     def save_all(self):
         for item in self.items:

@@ -6,7 +6,7 @@ Usage (éditeur interne) :
 
 Usage (plugin externe) :
     from ui.scene_manager.inspectors.component_editors import register, BaseComponentEditor
-    from core.project import COMPONENT_REGISTRY
+    from core.models.components import COMPONENT_REGISTRY
     import dataclasses
 
     @dataclasses.dataclass

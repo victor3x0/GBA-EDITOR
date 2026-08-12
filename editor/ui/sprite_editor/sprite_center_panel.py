@@ -8,7 +8,8 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QTimer
 
 from ui.common.theme import C
-from core.project import Project, SpriteAsset, AnimState, StateDirection
+from core.models.sprite import AnimState, SpriteAsset, StateDirection
+from core.project import Project
 from core.command_dispatcher import get_dispatcher
 from .frame_canvas import _FrameCanvasPanel, _FrameTimeline, _make_frame_pixmap
 from .spritesheet_viewer import _SpritesheetViewer
@@ -151,7 +152,7 @@ class SpriteCenterPanel(QWidget):
 
         # Miroir : les frames n'appartiennent pas à cette direction, elles sont
         # dérivées de la source (mirror_of) + flip. Affichage seul, pas d'édition
-        # — c'est aussi ce que fait le build (asset_pipeline._dedup_frames).
+        # — c'est aussi ce que fait le build (grit_conversion._dedup_frames).
         self._read_only = sd.mirror_of is not None
         if self._read_only:
             src = next((s for s in state.directions if s.dir == sd.mirror_of), None)
@@ -166,9 +167,9 @@ class SpriteCenterPanel(QWidget):
         self._canvas.set_read_only(self._read_only)
         self._canvas.set_display_flip(*self._flip)
         self._tiles.setEnabled(not self._read_only)
-        from ui.sprite_editor.sprite_finder_panel import _dir_label
+        from ui.sprite_editor.sprite_finder_panel import dir_label
         self._canvas_panel.set_read_only_banner(
-            f"MIRROR · {_dir_label(sd)} · read-only" if self._read_only else None)
+            f"MIRROR · {dir_label(sd)} · read-only" if self._read_only else None)
         self._refresh_canvas()
 
     def _active_frames(self) -> list:

@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models.background import KIND_ANIMATED, ANIM_INSTANCE, ANIM_SHARED
+from codegen.c_names import sym as c_sym
+from core.models.tile_codec import unpack_se, pack_se, hex_to_tile, flip_h, flip_v
 
 MAX_TILE_COLORS = 15    # 16 index par sous-palette, le 0 étant transparent
 
@@ -142,21 +144,19 @@ def compose_placement(host_ba, anim_ba, geom: PlacedAnim) -> tuple:
 
     Les miroirs sont résolus dans les pixels — la tuile fusionnée est neuve, elle
     n'a aucune raison d'hériter des bits de miroir de ses deux sources."""
-    from core.bg_import import unpack_se, _hex_to_tile, _flip_h, _flip_v
-
     def _grid(tiles, tilemap, tw, cell):
         if not 0 <= cell < len(tilemap):
             return tuple([0] * 64), 0
         tid, pb, fh, fv = unpack_se(tilemap[cell])
         g = tuple(tiles[tid]) if tid < len(tiles) else tuple([0] * 64)
         if fh:
-            g = _flip_h(g)
+            g = flip_h(g)
         if fv:
-            g = _flip_v(g)
+            g = flip_v(g)
         return g, pb
 
-    htiles = [_hex_to_tile(t) for t in host_ba.tileset]
-    atiles = [_hex_to_tile(t) for t in anim_ba.tileset]
+    htiles = [hex_to_tile(t) for t in host_ba.tileset]
+    atiles = [hex_to_tile(t) for t in anim_ba.tileset]
     hmap, amap = host_ba.effective_tilemap(), anim_ba.effective_tilemap()
     htw, atw = host_ba.tiles_w or 1, anim_ba.tiles_w or 1
 
@@ -344,8 +344,7 @@ def host_palettes(p, host_ba) -> list:
 
 def scene_anim_sym(scene) -> str:
     """Symbole du fichier C qui porte les tables d'images de cette scène."""
-    from codegen.asset_pipeline import _sym
-    return _sym(f"{scene.name}_bganim")
+    return c_sym(f"{scene.name}_bganim")
 
 
 def anim_table_sym(scene, index: int) -> str:
@@ -354,8 +353,7 @@ def anim_table_sym(scene, index: int) -> str:
 
 
 def shared_anim_sym(scene) -> str:
-    from codegen.asset_pipeline import _sym
-    return _sym(f"{scene.name}_bgtileanim")
+    return c_sym(f"{scene.name}_bgtileanim")
 
 
 def shared_table_sym(scene, index: int) -> str:
@@ -406,7 +404,6 @@ def frame_table(a: dict, pal_bank: int) -> list:
     image 0 puis 1, chacune balayée par rangées. Tuile décalée du `tile_base` du
     bloc, banque = celle allouée à la sous-palette synthétisée, miroirs nuls (ils
     sont résolus dans les pixels de la tuile fusionnée)."""
-    from core.bg_import import pack_se
     blk, geom = a["block"], a["geom"]
     base = blk.tile_base
     return [pack_se(base + t, pal_bank, 0, 0) for t in blk.composed.order]
@@ -428,7 +425,6 @@ def bake_shared_map(p, host_ba, tilemap: list, pal_offsets: dict) -> list:
     et le runtime n'a plus que des pixels à recopier. Elles vivent dans la carte
     de l'hôte et non dans une passe d'init parce que le placement est une
     propriété de l'hôte — toute scène qui affiche ce fond affiche ses animés."""
-    from core.bg_import import pack_se
     out = list(tilemap)
     tw = host_ba.tiles_w or 1
     _blocks, for_pl = resolve_blocks(p, host_ba)

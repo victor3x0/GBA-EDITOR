@@ -8,11 +8,14 @@ Layout : 3 colonnes
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QSplitter
 from PyQt6.QtCore import Qt
 
 from ui.common.theme import C
-from core.project import Project, SpriteAsset, AnimState, StateDirection
+from core.models.sprite import AnimState, SpriteAsset, StateDirection
+from core.project import Project
 from .sprite_finder_panel import SpriteFinderPanel
 from .sprite_center_panel import SpriteCenterPanel
 from .sprite_right_panel import SpriteRightPanel

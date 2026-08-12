@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import colorsys
 
-from core.color_utils import RESERVED_SLOT_COLOR, rgb888_to_bgr555
+from core.gba_color import rgb888_to_bgr555
+from core.models.palette import RESERVED_SLOT_COLOR
 
 
 def hsb_ramp_bgr555(hue_deg: float, sat: float, steps: int = 16) -> list[int]:
@@ -228,9 +229,9 @@ def _reduce_to(
     colors: list[tuple[int, int, int]], n: int
 ) -> list[tuple[int, int, int]]:
     """Réduit `colors` à `n` couleurs EXACTES (fusion des paires les plus
-    proches). Brique déplacée dans color_utils (partagée avec l'indexation
+    proches). Brique déplacée dans gba_color (partagée avec l'indexation
     des sprites)."""
-    from core.color_utils import reduce_nearest_pair
+    from core.gba_color import reduce_nearest_pair
 
     return reduce_nearest_pair(colors, n)
 
@@ -238,7 +239,7 @@ def _reduce_to(
 def generate_default_banks() -> list:
     """Catalogue de palettes d'un projet neuf : DMG OBJ (3 couleurs) + DMG
     BG (4 couleurs) + les palettes d'exemple. Index 0 réservé partout."""
-    from core.project import PaletteBank
+    from core.models.palette import PaletteBank
 
     banks = [
         PaletteBank(
@@ -259,3 +260,18 @@ def generate_default_banks() -> list:
             )
         )
     return banks
+
+
+def seed_default_palettes(project):
+    """Peuple le catalogue d'un projet qui n'en a aucun.
+
+    Appelée aux DEUX moments où ce cas se présente : `Project.create()`, pour que
+    les palettes existent dès la création, et `Project.load()`, pour le projet
+    dont le dossier `project/palettes/` a été vidé à la main. Le garde-fou est le
+    catalogue lui-même — non vide, on ne touche à rien — et non un drapeau posé
+    quelque part, qui pourrait mentir."""
+    if project.palettes.items:
+        return
+    for bank in generate_default_banks():
+        project.palettes.append(bank)
+    project.palettes.save_all()

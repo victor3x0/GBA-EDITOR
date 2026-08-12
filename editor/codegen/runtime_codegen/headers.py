@@ -8,8 +8,11 @@ from __future__ import annotations
 import shutil
 from typing import Optional
 
-from core.project import Project, Actor, SpriteAsset, CollisionBoxComponent, AnimState
-from codegen.build_utils import sym as _sym
+from core.models.components import CollisionBoxComponent
+from core.models.sprite import AnimState, SpriteAsset
+from core.models.scene import Actor
+from core.project import Project
+from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
 
 
@@ -44,20 +47,20 @@ def generate_actor_types(
         box_tags = ["body"]
 
     for ti, tag in enumerate(box_tags):
-        h.append(f"#define BOXTAG_{_sym(tag).upper()} {ti}")
+        h.append(f"#define BOXTAG_{c_sym(tag).upper()} {ti}")
     h.append("")
     h.append('#include "actor_types_static.h"')
     h.append("")
 
     # TAG_* pour les actors de scène
     for i, (actor, _) in enumerate(scene_actors):
-        h.append(f"#define TAG_{_sym(actor.name).upper()} {i}")
+        h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
 
     # TAG_* pour les prefabs poolés (offset après les actors de scène)
     pool_offset = len(scene_actors)
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) > 0:
-            pf_s = _sym(pf.name)
+            pf_s = c_sym(pf.name)
             h.append(f"#define TAG_{pf_s.upper()} {pool_offset}  /* prefab pool début */")
             pool_offset += pf.max_instances
 
@@ -144,7 +147,7 @@ def generate_actor_api(
         a.append("")
         a.append("/* spawn_X() — défini dans main.c, visible par tous les scripts */")
         for pf in spawnable:
-            a.append(f"extern int spawn_{_sym(pf.name)}(int x, int y);")
+            a.append(f"extern int spawn_{c_sym(pf.name)}(int x, int y);")
 
     # Constantes ANIM_* par SpriteAsset — résolues à la compile par le transpileur
     done_sprites: set[str] = set()
@@ -154,13 +157,13 @@ def generate_actor_api(
             a.append("")
             a.append(f"/* Animations : {sprite.name} */")
             for i, st in enumerate(sprite.states):
-                a.append(f"#define ANIM_{_sym(st.name).upper()} {i}")
+                a.append(f"#define ANIM_{c_sym(st.name).upper()} {i}")
 
     if all_scenes:
         a.append("")
         a.append("/* Indices de scènes — utilisés par scene.switch() */")
         for i, sc in enumerate(all_scenes):
-            a.append(f"#define SCENE_IDX_{_sym(sc.name).upper()} {i}")
+            a.append(f"#define SCENE_IDX_{c_sym(sc.name).upper()} {i}")
         a += [
             "",
             "extern int g_next_scene;",
@@ -174,11 +177,11 @@ def generate_actor_api(
     # différents. Dédupliquée : un layer partagé (même asset+slot) entre
     # plusieurs scènes ne produit qu'une seule constante.
     if all_scenes:
-        from codegen.runtime_codegen.main_gen import _bg_info
+        from codegen.runtime_codegen.main_gen import bg_info
         seen_layer_syms: set[str] = set()
         layer_lines: list[str] = []
         for sc in all_scenes:
-            for bi in _bg_info(p, sc):
+            for bi in bg_info(p, sc):
                 sym_u = bi["sym"].upper()
                 if sym_u in seen_layer_syms:
                     continue

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from core.project import AnimFrame
+from core.models.sprite import AnimFrame
 
 
 def compose_frame_image(abs_path: Optional[Path], frame: AnimFrame, fw: int, fh: int):

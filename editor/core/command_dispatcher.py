@@ -33,8 +33,9 @@ from contextlib import contextmanager
 
 import copy
 
+from core import asset_encoding
 from core.events import EventEmitter
-from core.project import Actor, Scene, Prefab
+from core.models.scene import Actor, Prefab, Scene
 from core.history import get_history, AddActorCmd
 from core.selection_bus import get_bus
 
@@ -86,6 +87,49 @@ class CommandDispatcher(EventEmitter):
         """Appelé par MainWindow à chaque chargement/création de projet."""
         self._project = project
         self._watcher = watcher
+        # Le projet énonce des faits, l'application les met en mots et
+        # rafraîchit les vues. C'est ce branchement-ci qui remplace l'import du
+        # dispatcher que `Project` faisait autrefois : la dépendance ne va plus
+        # que dans un sens, et un projet ouvert sans interface reste muet de
+        # lui-même. `off` d'abord : rebrancher deux fois le même projet
+        # doublerait chaque message.
+        project.events.off("renamed", self._on_project_renamed)
+        project.events.off("status", self._on_project_status)
+        project.events.on("renamed", self._on_project_renamed)
+        project.events.on("status", self._on_project_status)
+        project.rename_scope = self._rename_scope
+
+    # ── Ce que le projet annonce ──────────────────────────────────
+
+    @contextmanager
+    def _rename_scope(self):
+        """La portée dans laquelle `Project` déroule un renommage : frappe en
+        cours persistée avant de lire les scripts sur disque, surveillant
+        suspendu pendant nos propres écritures."""
+        self.flush_script_edits()
+        with self.suspended():
+            yield
+
+    def _on_project_status(self, msg: str):
+        self._emit("status_message", msg)
+
+    def _on_project_renamed(self, label: str, old: str, new: str,
+                            refs: dict, n_texts: int):
+        """Met en mots un renommage et rafraîchit ce qui affiche le nom."""
+        msg = f"{label} renamed: “{old}” → “{new}”"
+        if refs:
+            n_refs = sum(refs.values())
+            files  = ", ".join(sorted(p.name for p in refs))
+            msg += (f" — {n_refs} reference(s) updated in "
+                    f"{len(refs)} script(s): {files}")
+        if n_texts:
+            msg += f" — {n_texts} text(s) updated"
+        self._emit("project_tree_changed")
+        if refs:
+            self.notify_scripts_changed()
+        # En dernier : les rafraîchissements ci-dessus peuvent poster leur
+        # propre message de statut, celui du renommage doit rester visible.
+        self._emit("status_message", msg)
 
     @contextmanager
     def suspended(self):
@@ -344,7 +388,7 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "backgrounds")
         with self._watcher.suspended():
-            warning = self._project.sync_background_png(dst)
+            warning = asset_encoding.sync_background_png(self._project, dst)
         msg = f"Background importé : {dst.stem}"
         if warning:
             msg += f" — {warning}"
@@ -362,7 +406,7 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "sprites")
         with self._watcher.suspended():
-            warning = self._project.sync_sprite_png(dst)
+            warning = asset_encoding.sync_sprite_png(self._project, dst)
         msg = f"Sprite importé : {dst.stem}"
         if warning:
             msg += f" — {warning}"

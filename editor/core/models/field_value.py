@@ -11,10 +11,11 @@ fichier de DONNÉES, il doit survivre à un renommage sans que personne ne le
 réécrive (cf. models/ids.py). Le nom, lui, est résolu à la lecture pour
 l'affichage et pour l'expression C.
 
-Rétro-compatibilité : un champ historique (`x: int = 0`) reste un `int` pur ;
-il est simplement interprété comme un littéral pixel. Une référence de la forme
-ancienne (`{"var": "<nom>"}`) reste lisible — le nom sert alors de secours — et
-`project_migrations.migrate_var_refs_to_ids` la convertit à l'ouverture.
+Deux formes lues, une seule écrite : un champ nu (`x: 0`) est un littéral pixel,
+et `{"var": <id>}` est la référence telle que l'éditeur la sauvegarde. La forme
+par NOM (`{"var": "score_joueur"}`) reste acceptée en lecture — c'est celle qui
+s'écrit à la main dans un sidecar, l'id étant illisible — et se résout par nom.
+Elle repasse en id dès que l'éditeur réécrit le fichier.
 
 Ce module ne dépend pas de Qt : il est partagé par l'UI (aperçu pixel),
 le canvas (rendu) et le codegen (expression C). Les noms de symboles C
@@ -176,19 +177,6 @@ def var_names_from_project(project) -> dict:
         d[("global", g.id)] = g.name
     for c in project.constants:
         d[("const", c.id)] = c.name
-    return d
-
-
-def var_ids_from_project(project) -> dict:
-    """Map `(src, nom) -> id` — le sens inverse, pour poser une référence
-    depuis un choix fait par nom dans l'interface."""
-    if not project:
-        return {}
-    d: dict = {}
-    for g in project.globals:
-        d[("global", g.name)] = g.id
-    for c in project.constants:
-        d[("const", c.name)] = c.id
     return d
 
 

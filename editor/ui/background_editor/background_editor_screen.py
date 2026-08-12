@@ -25,7 +25,7 @@ from ui.common.widgets import W, FinderSection, AssetHeaderBar
 from ui.common.icons import COLOR_BACKGROUND, COLOR_UI
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from ui.common.asset_palette_view import background_palette_view
-from core.project import PaletteBank
+from core.models.palette import PaletteBank
 from core.models.resource import MIME_ANIMATED_BG
 from core.models.background import (
     KIND_SCENE, KIND_UI, KIND_ANIMATED, BG_KINDS, BG_KIND_LABELS,
@@ -57,7 +57,7 @@ _KIND_SECTION = {
 # La compression (bg_import) peut prendre plusieurs secondes sur un grand fond
 # ou une photo : on la lance dans un worker du QThreadPool pour ne JAMAIS geler
 # l'éditeur. Le worker calcule le dict de compression ; le thread UI l'applique
-# à l'asset (Project.apply_bg_encoding) puis rafraîchit.
+# à l'asset (asset_encoding.apply_bg_encoding) puis rafraîchit.
 
 class _CompressSignals(QObject):
     done   = pyqtSignal(int, str, dict)   # token, source_name, résultat
@@ -404,7 +404,7 @@ class BgFinderPanel(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
-        # Le PNG source doit partir avec l'asset : sinon _reconcile_backgrounds
+        # Le PNG source doit partir avec l'asset : sinon reconcile_backgrounds
         # recrée le fond au prochain chargement du projet. Les métadonnées de
         # compression vivent dans le JSON, qu'un Ctrl+Z (restore) ramène intact.
         png = (self._project.background_images_dir / ba.asset) if ba.asset else None
@@ -1462,8 +1462,8 @@ class BackgroundEditorScreen(QWidget):
             self._compress_tasks.discard(task)
             if tok != self._compress_token:
                 return  # résultat périmé (une compression plus récente a été lancée)
-            from core.project import Project
-            Project.apply_bg_encoding(ba, name, c)
+            from core import asset_encoding
+            asset_encoding.apply_bg_encoding(ba, name, c)
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(ba)
             get_dispatcher().notify_background_changed(ba)
@@ -1525,7 +1525,7 @@ class BackgroundEditorScreen(QWidget):
         name = dst.stem
         ba = self._project.get_background(name)
         if ba is None:
-            from core.project import BackgroundAsset
+            from core.models.background import BackgroundAsset
             ba = BackgroundAsset(name=name, asset=dst.name)
             self._project.backgrounds.append(ba)
         # Le type vient du « + » sur lequel on a cliqué : la section où l'auteur

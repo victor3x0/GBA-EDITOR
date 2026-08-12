@@ -1,5 +1,5 @@
 """Resource — base commune à tous les objets moteur identifiés par un nom et
-stockés en JSON (cf. core/resource_manager.ResourceManager pour la persistance)."""
+stockés en JSON (cf. core/resource_store.ResourceStore pour la persistance)."""
 
 import dataclasses
 from dataclasses import dataclass, fields

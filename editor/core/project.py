@@ -22,90 +22,121 @@ Structure de projet :
   project.json         ← settings globaux (nom, scène de démarrage, auteur)
   build/               ← 100 % jetable (regénéré à chaque build)
 
-Ce module ne porte plus que la classe `Project` (chemins canoniques, CRUD,
-orchestration save/load). Le modèle de domaine vit dans `core.models.*`,
-l'I/O générique de collection dans `core.resource_manager`, les migrations
-de format legacy dans `core.project_migrations`, et l'orchestration
-d'encodage d'assets dans `core.asset_sync`. Les noms de modèle sont
-ré-exportés ci-dessous pour que le reste du code (`from core.project import
-Scene, Actor, ...`) continue de fonctionner sans changement.
+Ce module porte la classe `Project` : ses registres d'assets, la scène active,
+les recherches, et l'orchestration save/load. Quatre responsabilités
+volumineuses en sont des TRANCHES, chacune dans son fichier — `project_paths`,
+`project_variables`, `project_texts`, `project_renames` (cf. la classe).
+
+Autour : le modèle de domaine dans `core.models.*`, l'I/O générique de
+collection dans `core.resource_store`, l'orchestration d'encodage d'assets dans
+`core.asset_encoding`.
+
+**Aucune migration de format.** Tant que le projet n'a pas de version diffusée,
+un changement de format se propage en cassant : on ne lit qu'UNE forme de chaque
+fichier, celle d'aujourd'hui. Un `core/project_migrations.py` a existé et absorbait
+les anciennes formes à l'ouverture ; il a été retiré avec elles. Le retrouver
+dans git est le point de départ si un convertisseur devient un jour nécessaire.
+
+**Ce module ne ré-exporte plus le modèle.** Chaque nom s'importe du fichier qui
+le définit — `from core.models.scene import Scene`, jamais à travers ce
+module-ci.
 """
 
 import json
 import shutil
 import copy
 import sys
-from contextlib import contextmanager
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
-from core import asset_sync, project_migrations
+from core.events import EventEmitter
+from core import asset_encoding
 from core.app_paths import IS_FROZEN
-from core.resource_manager import ResourceManager, safe_filename, _atomic_write
-# Domaines de référence Lua — un renommage d'élément met à jour les scripts
-# qui le citent (cf. rename_lua_refs / scripting/refactor.py).
-from scripting.api import (
-    DOMAIN_SCENE, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
-    DOMAIN_TEXT, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_ACTOR, DOMAIN_ANIM,
-    DOMAIN_REGION, DOMAIN_IMAGE,
-)
+from core.resource_store import ResourceStore, atomic_write
+from core.palette_presets import seed_default_palettes
+from core.project_paths import ProjectPathsMixin
+from core.project_variables import ProjectVariablesMixin
+from core.project_texts import ProjectTextsMixin
+from core.project_renames import ProjectRenameMixin
 
-# ── Ré-export du modèle de domaine (compat des ~27 fichiers qui font
-#    `from core.project import Scene, Actor, SpriteAsset, ...`) ────────────
-from core.models.resource import Resource, MIME_PREFAB_TEMPLATE, MIME_SCRIPT
+# ── Le modèle, importé pour l'usage de CE fichier ────────────────────────
+# Rien de plus. Ce bloc a longtemps ré-exporté tout le domaine, si bien que
+# trente fichiers écrivaient `from core.project import Scene` pour une classe
+# définie dans `core/models/scene.py` : deux adresses valides pour un même nom,
+# et un lecteur qui ouvrait ce fichier pour trouver `Scene` n'y voyait qu'une
+# ligne d'import. **Chaque nom s'importe désormais du module où il est
+# DÉFINI** — y compris quand un module voisin se trouve l'avoir sous la main
+# (`core.models.scene` importe `OWN_PAL_BANK` pour son propre usage ; il ne
+# faut pas le lui emprunter).
 from core.models.settings import ProjectSettings, GlobalVar, Constant
-from core.models.text import (
-    Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
-    new_id as new_text_id,
-)
-from core.models.ids import new_id
-from core.models.palette import PaletteBank, PaletteUsage, OWN_PAL_BANK
-from core.models.sub_palette import SubPaletteAssetMixin
-from core.models.components import (
-    CollisionBoxComponent, SpriteComponent, SoundFxComponent, ScriptComponent,
-    COMPONENT_REGISTRY, component_type_name, ComponentOwnerMixin,
-)
-from core.models.sprite import TilePlacement, AnimFrame, StateDirection, AnimState, SpriteAsset
-from core.models.background import BackgroundLayer, BackgroundAsset, Tileset
-from core.models.audio import Sfx, Music, SFX_FILE_EXTS, MUSIC_FILE_EXTS
-from core.models.font import Font, Glyph, FONT_FILE_EXTS
+from core.models.text import Text
+from core.models.palette import PaletteBank, OWN_PAL_BANK
+from core.models.sprite import SpriteAsset
+from core.models.background import BackgroundAsset
+from core.models.audio import Sfx, Music
+from core.models.font import Font
 from core.models.ui_region import UILayout
-from core.models.scene import (
-    TILE_EMPTY, TILE_SOLID,
-    TILE_SLOPE_L, TILE_SLOPE_R, TILE_SLOPE_L_LO, TILE_SLOPE_L_HI,
-    TILE_SLOPE_R_LO, TILE_SLOPE_R_HI,
-    TILE_SLOPE_L_INV, TILE_SLOPE_R_INV, TILE_SLOPE_L_LO_INV, TILE_SLOPE_L_HI_INV,
-    TILE_SLOPE_R_LO_INV, TILE_SLOPE_R_HI_INV,
-    TILE_SLOPE_R_STEEP_HI, TILE_SLOPE_R_STEEP_LO, TILE_SLOPE_L_STEEP_HI, TILE_SLOPE_L_STEEP_LO,
-    TILE_SLOPE_R_STEEP_HI_INV, TILE_SLOPE_R_STEEP_LO_INV,
-    TILE_SLOPE_L_STEEP_HI_INV, TILE_SLOPE_L_STEEP_LO_INV,
-    COLLISION_TILE_SIZE, make_collision_map, SceneLayer, Prefab, Actor, Scene, WindowSlot,
-)
+from core.models.scene import Prefab, Actor, Scene
 
 
 # ──────────────────────────────────────────────────────────────────
 #  Project — conteneur principal
 # ──────────────────────────────────────────────────────────────────
 
-class Project:
+class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
+              ProjectRenameMixin):
     """
     Représente un projet GBA ouvert.
-    Chemins canoniques et I/O vers le disque.
+
+    Reste ici ce qui fait de `Project` un tout : ses registres d'assets, la
+    scène active, la résolution des chemins d'assets, les recherches, et
+    l'orchestration `save`/`load`/`create`/`open`. Quatre responsabilités
+    volumineuses vivent dans leur propre fichier, sous forme de TRANCHES de
+    cette classe et non de collaborateurs :
+
+      - `core.project_paths`     — où chaque chose vit sur le disque
+      - `core.project_variables` — globals et constantes
+      - `core.project_texts`     — la table de textes du joueur
+      - `core.project_renames`   — renommer et réparer ce qui cite
+
+    Des mixins plutôt que des objets délégués : `project.rename_scene(...)`
+    s'écrit exactement comme avant chez ses vingt-deux appelants, et rien n'a
+    gagné un saut d'appel — la résolution se fait une fois, à la construction de
+    la classe. Le prix assumé : ces fichiers ne sont pas autonomes, ils
+    supposent le reste de `Project`.
     """
 
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.settings = ProjectSettings(name=root.name)
 
-        self.backgrounds: ResourceManager[BackgroundAsset] = ResourceManager(self.backgrounds_dir, BackgroundAsset)
-        self.sprites:     ResourceManager[SpriteAsset]     = ResourceManager(self.sprites_dir, SpriteAsset)
-        self.prefabs:     ResourceManager[Prefab]      = ResourceManager(self.prefab_dir, Prefab)
-        self.scenes:      ResourceManager[Scene]       = ResourceManager(self.scenes_dir, Scene)
-        self.sfx:         ResourceManager[Sfx]         = ResourceManager(self.sfx_dir, Sfx)
-        self.music:       ResourceManager[Music]       = ResourceManager(self.music_dir, Music)
-        self.fonts:       ResourceManager[Font]        = ResourceManager(self.fonts_dir, Font)
-        self.palettes: ResourceManager[PaletteBank] = ResourceManager(self.palettes_dir, PaletteBank)
-        self.ui_layouts: ResourceManager[UILayout] = ResourceManager(self.ui_layouts_dir, UILayout)
+        # Ce que le projet ANNONCE, et à quoi il se laisse ENTOURER.
+        #
+        # Un projet ne connaît pas l'application : il ne sait ni écrire dans une
+        # barre de statut, ni suspendre un surveillant de fichiers. Il énonce
+        # donc des faits — « ceci a été renommé, tant de références réécrites » —
+        # et c'est l'application qui décide de la formulation et du
+        # rafraîchissement. Sans abonné (build en ligne de commande, test), tout
+        # est silencieux, sans qu'aucun repli n'ait à être écrit.
+        #
+        # `rename_scope` est l'exception qui ne peut pas être un événement : un
+        # renommage doit se dérouler ENTOURÉ de quelque chose (la frappe en cours
+        # persistée, le surveillant suspendu), pas suivi d'une notification. Un
+        # appelable rendant un gestionnaire de contexte, que l'application
+        # remplace ; par défaut il n'entoure rien.
+        self.events = EventEmitter()
+        self.rename_scope = nullcontext
+
+        self.backgrounds: ResourceStore[BackgroundAsset] = ResourceStore(self.backgrounds_dir, BackgroundAsset)
+        self.sprites:     ResourceStore[SpriteAsset]     = ResourceStore(self.sprites_dir, SpriteAsset)
+        self.prefabs:     ResourceStore[Prefab]      = ResourceStore(self.prefab_dir, Prefab)
+        self.scenes:      ResourceStore[Scene]       = ResourceStore(self.scenes_dir, Scene)
+        self.sfx:         ResourceStore[Sfx]         = ResourceStore(self.sfx_dir, Sfx)
+        self.music:       ResourceStore[Music]       = ResourceStore(self.music_dir, Music)
+        self.fonts:       ResourceStore[Font]        = ResourceStore(self.fonts_dir, Font)
+        self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
+        self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -119,145 +150,6 @@ class Project:
         # Scène active (index dans self.scenes)
         self._active_scene_idx: int = 0
 
-    # ── Chemins canoniques ────────────────────────────────────────
-
-    @property
-    def assets_dir(self) -> Path:
-        """Espace libre utilisateur — PNGs bruts, sons..."""
-        return self.root / "assets"
-
-    @property
-    def project_dir(self) -> Path:
-        """Objets moteur (scenes, actors, sprites, tilesets, backgrounds, scripts)."""
-        return self.root / "project"
-
-    @property
-    def scenes_dir(self) -> Path:
-        return self.project_dir / "scenes"
-
-    @property
-    def prefab_dir(self) -> Path:
-        return self.project_dir / "prefab"
-
-    @property
-    def variables_file(self) -> Path:
-        """Globals + constants du projet — project/variables.json (pas de dépendance externe)."""
-        return self.project_dir / "variables.json"
-
-    @property
-    def texts_file(self) -> Path:
-        """Table des textes du joueur — project/texts.json.
-
-        Un seul fichier plutôt qu'un par entrée (contrairement aux palettes) :
-        on parle de centaines d'entrées courtes, et un traducteur veut tout voir
-        d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté."""
-        return self.project_dir / "texts.json"
-
-    @property
-    def ui_layouts_dir(self) -> Path:
-        """Mises en page d'UI — project/ui_layouts/*.json.
-
-        Un fichier par mise en page (contrairement aux textes, monolithiques) :
-        une mise en page est un objet qu'on renomme, duplique et partage entre
-        scènes, donc qui mérite une identité de fichier — comme une palette."""
-        return self.project_dir / "ui_layouts"
-
-    @property
-    def legacy_palettes_file(self) -> Path:
-        """Ancien catalogue monolithique (pré-migration) — project/palettes.json."""
-        return self.project_dir / "palettes.json"
-
-    @property
-    def palettes_dir(self) -> Path:
-        """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
-        return self.project_dir / "palettes"
-
-    @property
-    def legacy_obj_palettes_dir(self) -> Path:
-        """Ancien pool OBJ séparé (pré-fusion) — project/palettes/obj/."""
-        return self.project_dir / "palettes" / "obj"
-
-    @property
-    def legacy_bg_palettes_dir(self) -> Path:
-        """Ancien pool BG séparé (pré-fusion) — project/palettes/bg/."""
-        return self.project_dir / "palettes" / "bg"
-
-    @property
-    def sprites_dir(self) -> Path:
-        return self.assets_dir / "sprites"
-
-    @property
-    def tilesets_dir(self) -> Path:
-        return self.assets_dir / "backgrounds"
-
-    @property
-    def backgrounds_dir(self) -> Path:
-        """Dossier des sidecars BackgroundAsset (JSON) — co-localisé avec le PNG
-        source dans assets/backgrounds/, même modèle que SpriteAsset
-        (assets/sprites/). Migration depuis l'ancien project/backgrounds/ :
-        project_migrations.migrate_bg_sidecar_location()."""
-        return self.assets_dir / "backgrounds"
-
-    @property
-    def background_images_dir(self) -> Path:
-        """Dossier des images brutes PNG background."""
-        return self.assets_dir / "backgrounds"
-
-    @property
-    def sfx_dir(self) -> Path:
-        return self.assets_dir / "sfx"
-
-    @property
-    def music_dir(self) -> Path:
-        return self.assets_dir / "music"
-
-    @property
-    def fonts_dir(self) -> Path:
-        return self.assets_dir / "fonts"
-
-    @property
-    def scripts_dir(self) -> Path:
-        return self.assets_dir / "scripts"
-
-    @property
-    def scripts_actors_dir(self) -> Path:
-        return self.scripts_dir / "actors"
-
-    @property
-    def scripts_behaviors_dir(self) -> Path:
-        return self.scripts_dir / "behaviors"
-
-    @property
-    def scripts_scenes_dir(self) -> Path:
-        return self.scripts_dir / "scenes"
-
-    @property
-    def build_dir(self) -> Path:
-        return self.root / "build"
-
-    @property
-    def grit_out_dir(self) -> Path:
-        return self.build_dir / "grit_out"
-
-    @property
-    def src_dir(self) -> Path:
-        return self.build_dir / "src"
-
-    @property
-    def obj_dir(self) -> Path:
-        return self.build_dir / "obj"
-
-    @property
-    def makefile_path(self) -> Path:
-        return self.build_dir / "Makefile"
-
-    @property
-    def rom_path(self) -> Path:
-        return self.build_dir / "rom.gba"
-
-    @property
-    def project_file(self) -> Path:
-        return self.root / "project.json"
 
     # ── Scène active ──────────────────────────────────────────────
 
@@ -303,47 +195,14 @@ class Project:
             shutil.copy2(src, dst)
         return dst
 
-    # ── Encodage d'assets (déclenché watcher/import UI) ─────────────
-    # Orchestration déléguée à core.asset_sync ; méthodes minces conservées
-    # ici car appelées depuis plusieurs écrans UI et le ProjectWatcher.
-
-    def sync_sprite_png(self, png_path: Path) -> Optional[str]:
-        return asset_sync.sync_sprite_png(self, png_path)
-
-    @staticmethod
-    def apply_sprite_encoding(sprite: "SpriteAsset", c: dict):
-        asset_sync.apply_sprite_encoding(sprite, c)
-
-    def remove_sprite_png(self, png_path: Path):
-        asset_sync.remove_sprite_png(self, png_path)
-
-    def remove_background_png(self, png_path: Path):
-        asset_sync.remove_background_png(self, png_path)
-
-    def remove_sfx_file(self, path: Path):
-        asset_sync.remove_sfx_file(self, path)
-
-    def remove_music_file(self, path: Path):
-        asset_sync.remove_music_file(self, path)
-
-    def sync_sfx_file(self, path: Path) -> "Sfx":
-        return asset_sync.sync_sfx_file(self, path)
-
-    def sync_music_file(self, path: Path) -> "Music":
-        return asset_sync.sync_music_file(self, path)
-
-    def sync_background_png(self, png_path: Path) -> Optional[str]:
-        return asset_sync.sync_background_png(self, png_path)
-
-    def sync_font_file(self, path: Path) -> Optional[str]:
-        return asset_sync.sync_font_file(self, path)
-
-    def remove_font_file(self, path: Path):
-        asset_sync.remove_font_file(self, path)
-
-    @staticmethod
-    def apply_bg_encoding(ba: "BackgroundAsset", source_name: str, c: dict):
-        asset_sync.apply_bg_encoding(ba, source_name, c)
+    # ── Encodage d'assets ───────────────────────────────────────────
+    # L'orchestration vit dans `core/asset_encoding.py`, et ses appelants s'y
+    # adressent DIRECTEMENT (`asset_encoding.sync_sprite_png(project, chemin)`).
+    # Treize méthodes qui ne faisaient que rappeler ce module vivaient ici, au
+    # motif qu'elles servaient « depuis plusieurs écrans et le ProjectWatcher » :
+    # dix n'avaient aucun appelant et le watcher n'en appelait aucune. Un
+    # passe-plat ne rend pas un appel plus lisible, il ajoute un endroit où
+    # chercher.
 
     def commit_all_removals(self):
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
@@ -451,33 +310,6 @@ class Project:
         self.obj_dir.mkdir(parents=True, exist_ok=True)
         self._anon_texts = self.collect_literal_texts()
 
-    # ── Littéraux de script → entrées anonymes ────────────────────
-    # `text.draw` est la seule primitive à accepter un littéral en plus d'une
-    # clé (ROADMAP v0.3.2, 2026-07-27) : un accès rapide hors interface, au prix
-    # assumé de la traduction. À la compilation il devient une entrée ANONYME de
-    # la table, donc le runtime ne connaît qu'un seul chemin (mêmes codepoints,
-    # même balisage, mêmes valeurs interpolées).
-
-    def collect_literal_texts(self) -> list:
-        """Entrées anonymes à ajouter à la table pour ce build.
-
-        Le repérage est celui du renommage (`iter_refs`, par DOMAINE) : une
-        chaîne qui matche une clé existante n'en est pas un, c'est la référence
-        à cette entrée."""
-        from core.models.text import Text
-        from scripting.refactor import iter_refs, script_paths
-        from scripting.api import DOMAIN_TEXT, LITERAL_TEXT_CALLS, anon_text_key
-        keys = {t.key for t in self.texts}
-        found: dict[str, str] = {}
-        for path in script_paths(self):
-            try:
-                src = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            for ref in iter_refs(src, path=path, domain=DOMAIN_TEXT):
-                if ref.api_key in LITERAL_TEXT_CALLS and ref.value not in keys:
-                    found.setdefault(anon_text_key(ref.value), ref.value)
-        return [Text(key=k, content=v) for k, v in sorted(found.items())]
 
     def scene_scripts(self, scene) -> tuple[list, bool]:
         """(scripts Lua qu'une scène peut exécuter, en reste-t-il d'opaques ?).
@@ -515,13 +347,6 @@ class Project:
                 add(getattr(comp, "script", ""))
         return out, opaque
 
-    def build_texts(self) -> list:
-        """La table de textes VUE PAR LE BUILD : les entrées du projet, puis les
-        littéraux des scripts.
-
-        Les entrées réelles gardent leur rang — c'est lui qui fait l'index dans
-        `g_texts`, et un littéral ajouté ne doit décaler aucune clé."""
-        return list(self.texts) + list(getattr(self, "_anon_texts", []))
 
     # ── I/O settings globaux ──────────────────────────────────────
 
@@ -535,7 +360,7 @@ class Project:
             "backdrop_color": self.settings.backdrop_color,
             "save_slots":  self.settings.save_slots,
         }
-        _atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
+        atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
     def load_settings(self):
         if not self.project_file.exists():
@@ -557,611 +382,13 @@ class Project:
         # sera émis de toute façon.
         self.settings.save_slots = max(1, int(d.get("save_slots", 1)))
 
-    def text_values(self) -> dict:
-        """Valeurs à substituer aux marqueurs `$nom` d'un texte, à l'ÉDITION.
 
-        Un global n'a de valeur courante qu'en jeu : l'éditeur montre sa valeur
-        INITIALE, la seule qu'il connaisse et celle que la ROM affichera avant
-        que quoi que ce soit ne l'ait changée. Une constante, elle, ne bouge
-        jamais — l'aperçu montre exactement ce que l'encodeur cuira."""
-        out = {g.name: g.default for g in self.globals}
-        out.update({c.name: c.value for c in self.constants})
-        return out
 
-    # ── I/O variables (globals + constants) ─────────────────────────
-    # Assets côté éditeur sans dépendance externe -> project/variables.json,
-    # pas project.json (config racine uniquement, cf. ARCHITECTURE.md).
 
-    def save_variables(self):
-        data = {
-            "globals": [
-                {"id": g.id, "name": g.name, "type": g.type,
-                 "default": g.default, "desc": g.desc, "persist": g.persist}
-                for g in self.globals
-            ],
-            "constants": [
-                {"id": c.id, "name": c.name, "type": c.type,
-                 "value": c.value, "desc": c.desc}
-                for c in self.constants
-            ],
-        }
-        self.project_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(self.variables_file, json.dumps(data, indent=2, ensure_ascii=False))
 
-    def load_variables(self):
-        self.globals = []
-        self.constants = []
-        if not self.variables_file.exists():
-            return
-        d = json.loads(self.variables_file.read_text(encoding="utf-8"))
-        self.globals = [
-            GlobalVar(
-                name    = g.get("name", "var"),
-                type    = g.get("type", "int"),
-                default = g.get("default", 0),
-                desc    = g.get("desc", ""),
-                id      = int(g.get("id", 0)),
-                persist = bool(g.get("persist", False)),
-            )
-            for g in d.get("globals", [])
-        ]
-        self.constants = [
-            Constant(
-                name  = c.get("name", "const"),
-                type  = c.get("type", "int"),
-                value = c.get("value", 0),
-                desc  = c.get("desc", ""),
-                id    = int(c.get("id", 0)),
-            )
-            for c in d.get("constants", [])
-        ]
 
-    # ── Identité des variables ──────────────────────────────────────
 
-    def all_variables(self) -> list:
-        """Globals puis constantes — l'ordre d'affichage, pas un ordre de C."""
-        return list(self.globals) + list(self.constants)
-
-    def variable_by_id(self, vid: int):
-        """La variable d'id `vid`, ou None. C'est le chemin que suit une
-        RÉFÉRENCE stockée dans un fichier de données : elle survit au
-        renommage, contrairement à une résolution par nom."""
-        if not vid:
-            return None
-        return next((v for v in self.all_variables() if v.id == vid), None)
-
-    def variable_by_name(self, kind: str, name: str):
-        """La variable nommée `name`, ou None. Sert à résoudre ce qui est écrit
-        À LA MAIN (Lua, `$nom` d'un texte), pas les données."""
-        return next((v for v in self._variable_list(kind) if v.name == name), None)
-
-    def assign_variable_ids(self) -> int:
-        """Donne un id aux variables qui n'en ont pas — projets d'avant
-        l'identité opaque. Idempotent : une variable qui en a un n'y touche
-        pas, donc rejouer la migration ne renumérote rien."""
-        taken = {v.id for v in self.all_variables() if v.id}
-        n = 0
-        for v in self.all_variables():
-            if not v.id:
-                v.id = new_id(taken)
-                taken.add(v.id)
-                n += 1
-        return n
-
-    # ── I/O textes (table de chaînes destinées au joueur) ───────────
-
-    def save_texts(self):
-        data = {"texts": [t.to_dict() for t in self.texts]}
-        self.project_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write(self.texts_file, json.dumps(data, indent=2, ensure_ascii=False))
-
-    def load_texts(self):
-        self.texts = []
-        if not self.texts_file.exists():
-            return
-        d = json.loads(self.texts_file.read_text(encoding="utf-8"))
-        self.texts = [Text.from_dict(t) for t in d.get("texts", [])]
-        self._repair_texts()
-
-    def _repair_texts(self):
-        """Rattrape un fichier édité à la main : id manquant ou dupliqué, clé
-        manquante ou dupliquée. L'id prime — c'est lui l'identité ; une clé en
-        double est celle qu'on renumérote."""
-        seen_ids: set[int] = set()
-        seen_keys: set[str] = set()
-        for t in self.texts:
-            t.path = norm_text_path(t.path)
-            if not t.id or t.id in seen_ids:
-                t.id = new_text_id(seen_ids)
-            seen_ids.add(t.id)
-            if not t.key or t.key in seen_keys:
-                t.key = text_key_from_path(t.path, taken=seen_keys)
-            seen_keys.add(t.key)
-
-    # ── CRUD textes ─────────────────────────────────────────────────
-
-    def text_keys(self) -> set[str]:
-        return {t.key for t in self.texts}
-
-    def get_text(self, key: str) -> Optional[Text]:
-        """Résolution par clé — l'unique chemin de résolution côté script."""
-        return next((t for t in self.texts if t.key == key), None)
-
-    def get_text_by_id(self, tid: int) -> Optional[Text]:
-        """Résolution par id — pour les références stockées dans les fichiers
-        de données (inspecteurs, scènes), insensibles au renommage."""
-        return next((t for t in self.texts if t.id == tid), None)
-
-    def new_text(self, content: str = "", scene: str = "", path=None) -> Text:
-        """Crée une entrée. La clé dérive du chemin de rangement, jamais du
-        contenu (cf. models/text.py).
-
-        Un texte créé depuis une scène naît sous un nœud portant son nom :
-        l'arbre se remplit tout seul, et le chemin par défaut situe déjà."""
-        p = norm_text_path(path if path is not None else ([scene] if scene else []))
-        t = Text(
-            id      = new_text_id({x.id for x in self.texts}),
-            key     = text_key_from_path(p, taken=self.text_keys()),
-            path    = p,
-            content = content,
-            scene   = scene,
-        )
-        self.texts.append(t)
-        return t
-
-    def text_path_key(self, text: Text) -> str:
-        """Clé que le chemin actuel de `text` produirait — sans l'appliquer.
-        Sa propre clé est exclue des collisions, sinon un texte déjà posé au
-        bon endroit se verrait proposer un rang `_02` contre lui-même."""
-        return text_key_from_path(text.path, taken=self.text_keys() - {text.key})
-
-    def rename_text_key(self, text: Text, new_key: str) -> bool:
-        """Renommage MANUEL. Retourne False si le nom est vide ou déjà pris —
-        l'appelant (UI) affiche l'erreur. Les appels text.draw("clé") des
-        scripts suivent (cf. rename_lua_refs).
-
-        La clé se DÉTACHE alors du chemin (`auto_key=False`) : elle appartient
-        à l'utilisateur, ranger le texte ailleurs ne la touchera plus."""
-        return self._apply_text_key(text, new_key, manual=True)
-
-    def resync_text_key(self, text: Text) -> Optional[str]:
-        """Recale une clé automatique sur le chemin de rangement, et retourne
-        la nouvelle clé (None si rien n'a bougé).
-
-        No-op sur une clé nommée à la main — c'est tout l'intérêt de
-        `auto_key` : le rangement reste un geste cosmétique tant que
-        l'utilisateur n'a pas pris la main sur la clé."""
-        if not text.auto_key:
-            return None
-        want = self.text_path_key(text)
-        return want if (want != text.key
-                        and self._apply_text_key(text, want, manual=False)) else None
-
-    def restore_text_key(self, text: Text, key: str) -> bool:
-        """Repose une clé telle quelle sans la marquer « nommée à la main ».
-
-        Sert à l'ANNULATION d'un rangement : rejouer `resync_text_key` en sens
-        inverse ne rendrait pas forcément la même clé (le rang `_NN` dépend des
-        clés prises à cet instant), il faut donc remettre l'exacte ancienne."""
-        return self._apply_text_key(text, key, manual=False)
-
-    def _apply_text_key(self, text: Text, new_key: str, *, manual: bool) -> bool:
-        new_key = (new_key or "").strip()
-        if not new_key or any(t.key == new_key and t is not text for t in self.texts):
-            return False
-        old_key = text.key
-        if new_key == old_key:
-            return True
-        with self._renaming():
-            refs = self.rename_lua_refs(DOMAIN_TEXT, old_key, new_key)
-            text.key = new_key
-            if manual:
-                text.auto_key = False
-        self._notify_renamed("Text", old_key, new_key, refs)
-        return True
-
-    def delete_text(self, text: Text):
-        if text in self.texts:
-            self.texts.remove(text)
-
-    # ── Renommage (supprime l'ancien fichier + répare les références) ──
-    # ResourceManager.rename() seul ne suffit pas : il faut aussi mettre à
-    # jour tout ce qui référence l'ancien nom ailleurs dans le projet.
-
-    def rename_background(self, bg: BackgroundAsset, new_name: str):
-        new_name = new_name.strip()
-        if not new_name or new_name == bg.name:
-            return
-        old_name = bg.name
-        # Renommer aussi le PNG source : un BackgroundAsset est keyé par le stem
-        # de son PNG (name == stem(source)). Sans ça, la réconciliation des fonds
-        # recréerait un asset orphelin depuis l'ancien PNG au prochain chargement.
-        old_png = (self.background_images_dir / bg.asset) if bg.asset else None
-        if old_png and old_png.exists():
-            new_png = old_png.with_name(f"{new_name}{old_png.suffix}")
-            if not new_png.exists():
-                old_png.rename(new_png)
-                bg.asset = new_png.name
-        self.backgrounds.rename(bg, new_name)
-        # Met à jour les layers des scènes qui référencent ce fond par nom.
-        for scene in self.scenes:
-            touched = False
-            for L in scene.background_layers:
-                if L.background_name == old_name:
-                    L.background_name = new_name
-                    touched = True
-            if touched:
-                self.save_scene(scene)
-        self._notify_renamed("Background", old_name, new_name)
-
-    def rename_sprite(self, sprite: SpriteAsset, new_name: str):
-        new_name = new_name.strip()
-        if not new_name or new_name == sprite.name:
-            return
-        old_name = sprite.name
-        # Renommer aussi le PNG source : un SpriteAsset est keyé par le stem
-        # de son PNG (comme BackgroundAsset). Sans ça, la réconciliation des
-        # sprites recréerait un asset orphelin depuis l'ancien PNG au prochain
-        # chargement.
-        old_png = self.asset_abs(sprite.asset) if sprite.asset else None
-        if old_png and old_png.exists():
-            new_png = old_png.with_name(f"{new_name}{old_png.suffix}")
-            if not new_png.exists():
-                old_png.rename(new_png)
-                sprite.asset = self.asset_rel(new_png)
-        self.sprites.rename(sprite, new_name)
-        # Met à jour les SpriteComponent (Actors inline dans les scènes, et
-        # Prefabs) qui référencent ce sprite par nom.
-        for scene in self.scenes:
-            touched = False
-            for actor in scene.actors:
-                for comp in actor.components:
-                    if isinstance(comp, SpriteComponent) and comp.sprite_name == old_name:
-                        comp.sprite_name = new_name
-                        touched = True
-            if touched:
-                self.save_scene(scene)
-        for prefab in self.prefabs:
-            touched = False
-            for comp in prefab.components:
-                if isinstance(comp, SpriteComponent) and comp.sprite_name == old_name:
-                    comp.sprite_name = new_name
-                    touched = True
-            if touched:
-                self.save_prefab(prefab)
-        # Aucun domaine Lua : un sprite se référence par son composant, pas
-        # depuis un script (les animations, elles, ont DOMAIN_ANIM).
-        self._notify_renamed("Sprite", old_name, new_name)
-
-    def rename_scene(self, scene: Scene, new_name: str):
-        new_name = new_name.strip()
-        if not new_name or new_name == scene.name:
-            return
-        old_name = scene.name
-        with self._renaming():
-            self.scenes.rename(scene, new_name)
-            touched = False
-            for field in ("start_scene", "last_scene"):
-                if getattr(self.settings, field) == old_name:
-                    setattr(self.settings, field, new_name)
-                    touched = True
-            if touched:
-                self.save_settings()
-            refs = self.rename_lua_refs(DOMAIN_SCENE, old_name, new_name)
-        self._notify_renamed("Scene", old_name, new_name, refs)
-
-    def rename_prefab(self, prefab, new_name: str):
-        new_name = new_name.strip()
-        if not new_name or new_name == prefab.name:
-            return
-        old_name = prefab.name
-        with self._renaming():
-            self.prefabs.rename(prefab, new_name)
-            # Instances placées dans les scènes : elles pointent le template par nom.
-            for scene in self.scenes:
-                touched = False
-                for actor in scene.actors:
-                    if getattr(actor, "prefab_name", "") == old_name:
-                        actor.prefab_name = new_name
-                        touched = True
-                if touched:
-                    self.save_scene(scene)
-            refs = self.rename_lua_refs(DOMAIN_PREFAB, old_name, new_name)
-        self._notify_renamed("Prefab", old_name, new_name, refs)
-
-    def rename_actor(self, actor, new_name: str, scene: Optional[Scene] = None):
-        """Actor placé dans une scène (pas un template de prefab — cf.
-        rename_prefab). `scene` est sauvegardée si fournie."""
-        new_name = new_name.strip()
-        if not new_name or new_name == actor.name:
-            return
-        old_name = actor.name
-        with self._renaming():
-            refs = self.rename_lua_refs(DOMAIN_ACTOR, old_name, new_name)
-            actor.name = new_name
-            if scene is not None:
-                self.save_scene(scene)
-        self._notify_renamed("Actor", old_name, new_name, refs)
-
-    def rename_ui_element(self, layout, element, new_name: str) -> str:
-        """Renomme un élément d'une mise en page UI (texte, conteneur, image).
-
-        **Unicité sur TOUT le projet, quel que soit le type** (cf.
-        `ui_element_names`) : un texte se résout en `REGION_*` et une image en
-        `IMAGE_*`, deux constantes C projet-globales, et le conteneur partage
-        l'espace des refs `parent`. Chercher au plus large évite d'avoir à
-        expliquer pourquoi deux éléments homonymes coexistent parfois.
-
-        Les enfants pointant le parent par NOM, on les rebranche
-        (`retarget_parent`) AVANT de figer le nouveau nom. Le domaine Lua suit
-        le type — un conteneur n'en a pas, rien à réécrire. Retourne le nom
-        RÉELLEMENT appliqué (peut différer si collision)."""
-        from core.models.ui_region import (
-            KIND_TEXT, KIND_IMAGE, unique_element_name)
-        new_name = new_name.strip()
-        if not new_name or new_name == element.name:
-            return element.name
-        taken = set(self.ui_element_names()) - {element.name}
-        if new_name in taken:
-            new_name = unique_element_name(taken, new_name)
-        kind = getattr(element, "kind", KIND_TEXT)
-        domain = {KIND_TEXT: DOMAIN_REGION, KIND_IMAGE: DOMAIN_IMAGE}.get(kind)
-        label = {KIND_TEXT: "Text", KIND_IMAGE: "Image"}.get(kind, "UI element")
-        old_name = element.name
-        with self._renaming():
-            layout.retarget_parent(old_name, new_name)
-            element.name = new_name
-            refs = self.rename_lua_refs(domain, old_name, new_name) if domain else {}
-            self.ui_layouts.save_all()
-        self._notify_renamed(label, old_name, new_name, refs)
-        return new_name
-
-    def rename_sound(self, asset, new_name: str):
-        """Sfx ou Music — même chemin, seul le domaine Lua diffère."""
-        new_name = new_name.strip()
-        if not new_name or new_name == asset.name:
-            return
-        old_name = asset.name
-        is_music = isinstance(asset, Music)
-        with self._renaming():
-            (self.music if is_music else self.sfx).rename(asset, new_name)
-            refs = self.rename_lua_refs(DOMAIN_MUSIC if is_music else DOMAIN_SFX,
-                                        old_name, new_name)
-        self._notify_renamed("Music" if is_music else "SFX",
-                             old_name, new_name, refs)
-
-    def palette_usages(self, name: str) -> list[PaletteUsage]:
-        """Tout ce qui utilise la banque `name` — alimente la carte « USAGE »
-        du Palette Editor.
-
-        MÊMES référents que `rename_palette` : les deux doivent connaître
-        exactement la même liste, sinon on répare un lien qu'on n'affiche pas
-        (ou l'inverse).
-          - sprites / fonds : override de sous-palette (`palette_overrides`) ;
-          - scènes          : sélection active OBJ/BG (l'index EST la banque
-            hardware, d'où l'affichage du slot) ;
-          - prefabs         : `pal_bank` résolu via la scène d'ancrage (la 1re
-            scène), exactement comme au build (cf. codegen/palette_alloc.py).
-        Les Actors n'ont pas de ligne propre : un actor ne peut viser qu'un slot
-        DÉJÀ dans la sélection active de sa scène — la ligne de la scène couvre
-        le lien."""
-        usages: list[PaletteUsage] = []
-        if not name:
-            return usages
-
-        for assets, kind in ((self.sprites, "sprite"), (self.backgrounds, "background")):
-            for asset in assets:
-                overrides = getattr(asset, "palette_overrides", None) or {}
-                slots = sorted(i for i, n in overrides.items() if n == name)
-                if slots:
-                    usages.append(PaletteUsage(
-                        kind, asset.name,
-                        "sous-palette " + ", ".join(str(i) for i in slots)))
-
-        for scene in self.scenes:
-            slots = []
-            for pool, attr in (("OBJ", "active_obj_palettes"), ("BG", "active_bg_palettes")):
-                for i, n in enumerate(getattr(scene, attr, None) or []):
-                    if n == name:
-                        slots.append(f"{pool} {i}")
-            if slots:
-                usages.append(PaletteUsage("scene", scene.name, "banque " + ", ".join(slots)))
-
-        anchor = self.scenes[0] if len(self.scenes) else None
-        anchor_active = list(getattr(anchor, "active_obj_palettes", None) or []) if anchor else []
-        for prefab in self.prefabs:
-            pb = getattr(prefab, "pal_bank", OWN_PAL_BANK)
-            if pb != OWN_PAL_BANK and 0 <= pb < len(anchor_active) and anchor_active[pb] == name:
-                usages.append(PaletteUsage("prefab", prefab.name,
-                                           f"banque OBJ {pb} via « {anchor.name} »"))
-        return usages
-
-    def rename_palette(self, bank: PaletteBank, new_name: str):
-        """Renomme une PaletteBank du catalogue et répare TOUT ce qui la cite par
-        nom :
-          - la sélection active des scènes (`active_obj_palettes` /
-            `active_bg_palettes`) — remplacement EN PLACE : l'index dans la liste
-            est la banque hardware, il ne doit jamais bouger ;
-          - les overrides de sous-palette des sprites et des fonds
-            (`palette_overrides` = {idx dérivé -> nom de banque}).
-        Sans cette réparation, `palettes.rename()` seul laisse les scènes pointer
-        un nom mort : le slot devient vide au build (garde-fou du validateur) et
-        l'asset s'affiche avec le contenu par défaut de la banque.
-        Aucun domaine Lua : une palette ne se cite pas depuis un script."""
-        new_name = new_name.strip()
-        if not new_name or new_name == bank.name:
-            return
-        old_name = bank.name
-        with self._renaming():
-            self.palettes.rename(bank, new_name)
-            for scene in self.scenes:
-                touched = False
-                for attr in ("active_obj_palettes", "active_bg_palettes"):
-                    names = getattr(scene, attr, None) or []
-                    for i, n in enumerate(names):
-                        if n == old_name:
-                            names[i] = new_name
-                            touched = True
-                if touched:
-                    self.save_scene(scene)
-            for assets, save in ((self.sprites, self.save_sprite),
-                                 (self.backgrounds, self.save_background)):
-                for asset in assets:
-                    overrides = getattr(asset, "palette_overrides", None) or {}
-                    hits = [i for i, n in overrides.items() if n == old_name]
-                    for i in hits:
-                        overrides[i] = new_name
-                    if hits:
-                        save(asset)
-        self._notify_renamed("Palette", old_name, new_name)
-
-    def rename_font(self, font, new_name: str):
-        new_name = new_name.strip()
-        if not new_name or new_name == font.name:
-            return
-        old_name = font.name
-        with self._renaming():
-            self.fonts.rename(font, new_name)
-            refs = self.rename_lua_refs(DOMAIN_FONT, old_name, new_name)
-        self._notify_renamed("Font", old_name, new_name, refs)
-
-    # ── Références Lua ───────────────────────────────────────────────
-    # Un script cite un élément du projet par son NOM, mais ce nom n'est
-    # qu'une étiquette d'auteur : au build il est déjà résolu en index
-    # physique (SCENE_IDX_*, SFX_*, g_<var>…). Renommer côté éditeur doit
-    # donc mettre les scripts à jour tout seul — le lien survit, l'écriture
-    # reste lisible. Repérage structurel via scripting/refactor.py : seuls
-    # les arguments déclarés comme références bougent (jamais un commentaire
-    # ni une string sans rapport).
-
-    def rename_lua_refs(self, domain: str, old: str, new: str) -> dict:
-        """Propage un renommage dans les scripts. Retourne {script: n} —
-        vide si aucun script ne citait l'ancien nom."""
-        from scripting.refactor import rename_in_project
-        return rename_in_project(self, domain, old, new)
-
-    # ── Renommage — plomberie commune ────────────────────────────────
-
-    @contextmanager
-    def _renaming(self):
-        """Suspend le watcher pendant un renommage : le fichier de scène
-        déplacé et les scripts réécrits sont NOS écritures. Sans ça le watcher
-        les rapporte comme « modifié à l'extérieur », l'éditeur recharge et
-        son propre message écrase celui du renommage. No-op hors GUI.
-
-        Persiste aussi la frappe en cours du Script Editor AVANT de commencer :
-        la réécriture lit les scripts sur disque, une ligne encore dans le
-        buffer ne serait pas mise à jour."""
-        try:
-            from core.command_dispatcher import get_dispatcher
-        except ImportError:
-            yield
-            return
-        dispatcher = get_dispatcher()
-        dispatcher.flush_script_edits()
-        with dispatcher.suspended():
-            yield
-
-    def _notify_status(self, msg: str) -> None:
-        """Message de statut simple. Silencieux hors GUI (build en ligne de
-        commande, tests) — même repli que _notify_renamed."""
-        try:
-            from core.command_dispatcher import get_dispatcher
-        except ImportError:
-            return
-        get_dispatcher()._emit("status_message", msg)
-
-    def _notify_renamed(self, label: str, old: str, new: str,
-                        refs: Optional[dict] = None, n_texts: int = 0) -> None:
-        """Message de statut + rafraîchissement des vues qui affichent le nom.
-        Émis pour TOUT renommage, qu'il ait touché des scripts ou non — sinon
-        l'utilisateur n'a aucun retour quand rien ne référençait l'élément.
-        Silencieux hors GUI (build en ligne de commande, tests)."""
-        try:
-            from core.command_dispatcher import get_dispatcher
-        except ImportError:
-            return
-        msg = f"{label} renamed: “{old}” → “{new}”"
-        if refs:
-            n_refs  = sum(refs.values())
-            files   = ", ".join(sorted(p.name for p in refs))
-            msg += (f" — {n_refs} reference(s) updated in "
-                    f"{len(refs)} script(s): {files}")
-        if n_texts:
-            msg += f" — {n_texts} text(s) updated"
-        dispatcher = get_dispatcher()
-        dispatcher._emit("project_tree_changed")
-        if refs:
-            dispatcher.notify_scripts_changed()
-        # En dernier : les rafraîchissements ci-dessus peuvent poster leur
-        # propre message de statut, celui du renommage doit rester visible.
-        dispatcher._emit("status_message", msg)
-
-    # ── CRUD variables (globals / constants) ────────────────────────
-    # Unicité vérifiée PAR TYPE uniquement : un global et une constante
-    # peuvent partager un nom (préfixes C distincts : g_<nom> / CONST_<NOM>).
-
-    def _variable_list(self, kind: str) -> list:
-        """kind: "global" | "const" """
-        return self.constants if kind == "const" else self.globals
-
-    def variable_name_taken(self, kind: str, name: str, *, exclude=None) -> bool:
-        return any(e is not exclude and e.name == name for e in self._variable_list(kind))
-
-    def add_variable(self, kind: str, name: str):
-        """Ajoute un global ou une constante. Retourne None si le nom est vide ou déjà pris (par type)."""
-        name = name.strip()
-        if not name or self.variable_name_taken(kind, name):
-            return None
-        entry = Constant(name=name) if kind == "const" else GlobalVar(name=name)
-        # Id tout de suite, et pas au prochain chargement du projet : c'est lui
-        # qui identifie la variable dans une référence de champ comme dans un
-        # fichier de sauvegarde. Une variable sans id est une variable sans
-        # identité, y compris pendant la session qui vient de la créer.
-        entry.id = new_id({v.id for v in self.all_variables() if v.id})
-        self._variable_list(kind).append(entry)
-        self.save_variables()
-        return entry
-
-    def rename_variable(self, kind: str, entry, new_name: str) -> bool:
-        """Renomme en place. Retourne False (no-op) si le nom est vide/inchangé/déjà pris."""
-        new_name = new_name.strip()
-        if not new_name or new_name == entry.name:
-            return False
-        if self.variable_name_taken(kind, new_name, exclude=entry):
-            return False
-        old_name = entry.name
-        with self._renaming():
-            refs = self.rename_lua_refs(
-                DOMAIN_CONST if kind == "const" else DOMAIN_GLOBAL, old_name, new_name)
-            n_texts = self.rename_var_in_texts(old_name, new_name)
-            entry.name = new_name
-            self.save_variables()
-        self._notify_renamed("Constant" if kind == "const" else "Global",
-                             old_name, new_name, refs,
-                             n_texts=n_texts)
-        return True
-
-    def rename_var_in_texts(self, old_name: str, new_name: str) -> int:
-        """Réécrit les `$nom` des entrées de texte. Retourne le nombre d'entrées
-        touchées.
-
-        Un `$nom` est du texte ÉCRIT À LA MAIN, comme un script : il cite la
-        variable par son nom, pas par son id, donc c'est au renommage de le
-        suivre. Les références stockées dans des fichiers de données, elles,
-        citent l'id et n'ont rien à faire ici."""
-        from core.text_markup import rename_value
-        n = 0
-        for t in self.texts:
-            content = rename_value(t.content, old_name, new_name)
-            if content != t.content:
-                t.content = content
-                n += 1
-        if n:
-            self.save_texts()
-        return n
-
-    # ── Raccourcis de sauvegarde par objet (delegue au ResourceManager) ──
+    # ── Raccourcis de sauvegarde par objet (delegue au ResourceStore) ──
 
     def save_scene(self, scene: Scene):                    self.scenes.save(scene)
     def save_prefab(self, prefab: Prefab):                 self.prefabs.save(prefab)
@@ -1169,7 +396,6 @@ class Project:
     def save_background(self, bg: BackgroundAsset):       self.backgrounds.save(bg)
     def save_sfx(self, sfx: Sfx):                         self.sfx.save(sfx)
     def save_music(self, music: Music):                   self.music.save(music)
-    def save_tileset(self, tileset):                      pass  # stub rétrocompat
 
     # ── Sauvegarde / chargement global ────────────────────────────
 
@@ -1186,6 +412,19 @@ class Project:
         self.prefabs.save_all()
         self.scenes.save_all()
 
+    def load_scenes(self):
+        """Charge les scènes, puis rouvre sur la dernière éditée.
+
+        Repli : la scène de démarrage du jeu, qui tenait ce rôle avant la
+        séparation des deux champs."""
+        self.scenes.load()
+        restore = self.settings.last_scene or self.settings.start_scene
+        if restore:
+            for i, s in enumerate(self.scenes):
+                if s.name == restore:
+                    self._active_scene_idx = i
+                    break
+
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
@@ -1196,57 +435,33 @@ class Project:
                     "assets/sfx", "assets/music", "assets/fonts"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
-        project_migrations.migrate_on_load(self)
+        # Chaque registre est suivi de son rattrapage (cf. asset_encoding,
+        # section « Rattrapage à l'ouverture ») : un fichier déposé éditeur
+        # fermé n'a été vu par aucun watcher, on repasse une fois ici.
         self.load_settings()
         self.load_variables()
-        # Les ids manquent aux projets d'avant l'identité opaque, et tout ce
-        # qui référence une variable par id a besoin d'eux : attribution AVANT
+        # Une variable ajoutée à la main dans variables.json n'a pas d'id, et
+        # tout ce qui référence une variable en a besoin : attribution AVANT
         # que quoi que ce soit ne tente de résoudre.
         if self.assign_variable_ids():
             self.save_variables()
         self.load_texts()
         self.palettes.load()
-        project_migrations.seed_or_migrate_palettes(self)
+        seed_default_palettes(self)
         self.sprites.load()
-        project_migrations.migrate_sprite_palettes(self)
+        asset_encoding.reconcile_sprites(self)
+        self.backgrounds.load()
+        asset_encoding.reconcile_backgrounds(self)
         self.sfx.load()
         self.music.load()
+        asset_encoding.reconcile_sfx_and_music(self)
         self.fonts.load()
-        # Avant les scènes et prefabs, qui portent les références de champ :
-        # la migration réécrit les FICHIERS, donc doit passer avant leur lecture.
-        project_migrations.migrate_var_refs_to_ids(self)
-        # Avant les scènes : une scène référence sa mise en page par nom.
+        asset_encoding.reconcile_fonts(self)
+        # Avant les scènes : une scène référence sa mise en page et ses prefabs
+        # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
-        project_migrations.migrate_bg_sidecar_location(self)
-        self.backgrounds.load()
-        project_migrations.reconcile_backgrounds(self)
-        # Après les fonds ET les mises en page : la migration reporte les marges
-        # d'un cadre sur son fond source, puis repointe les panneaux qui le
-        # citaient. Il lui faut donc les deux déjà chargés.
-        project_migrations.migrate_nine_slices_to_ui_backgrounds(self)
         self.prefabs.load()
-        project_migrations.reconcile_sfx_and_music(self)
-        project_migrations.reconcile_fonts(self)
-        project_migrations.load_scenes_with_migration(self)
-        project_migrations.migrate_scene_backgrounds(self)
-        # En dernier : ces deux migrations réécrivent des SCRIPTS (et la
-        # première crée des entrées de table). Leurs messages doivent rester
-        # visibles, d'où le passage par _notify (silencieux hors GUI).
-        #
-        # display.* d'abord : elle ÉMET des appels text.draw, qui doivent sortir
-        # dans le nouvel ordre — c'est le cas, elle est à jour — et n'ont donc
-        # rien à faire dans le lot que réordonne la seconde. L'inverse
-        # (réordonner puis migrer) laisserait la question ouverte à chaque
-        # relecture de savoir lequel produit quoi.
-        # Le retrait des primitives vient EN DERNIER : il lit les arguments par
-        # position (`draw_num(tx, ty, valeur)`), donc il lui faut le nouvel
-        # ordre déjà posé. L'inverse aurait pris une coordonnée pour une valeur.
-        for fn in (project_migrations.migrate_display_calls,
-                   project_migrations.migrate_text_arg_order,
-                   project_migrations.migrate_removed_text_calls):
-            msg = fn(self)
-            if msg:
-                self._notify_status(msg)
+        self.load_scenes()
 
     # ── Création / ouverture ──────────────────────────────────────
 
@@ -1275,9 +490,8 @@ class Project:
 
         # Peupler le catalogue de palettes par défaut dès la création (sinon
         # le seeding n'a lieu qu'au prochain load() et les palettes n'apparaissent
-        # qu'après un redémarrage). Réutilise la logique de seed/migration :
-        # palettes.items étant vide, on retombe sur les presets par défaut.
-        project_migrations.seed_or_migrate_palettes(proj)
+        # qu'après un redémarrage).
+        seed_default_palettes(proj)
 
         # Créer une scène de démarrage par défaut
         default_scene = Scene(name="Scene_01")

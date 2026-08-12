@@ -1,190 +1,33 @@
-"""
-GBA Editor — Slots d'assignation d'assets
-Chaque slot représente un canal GBA (BG0-BG3, Sprite).
-Import : clic sur la vignette ou sur le bouton "⊕" → QFileDialog.
-Drag & drop depuis l'explorateur système également supporté.
-"""
+"""ui/scene_manager/inspectors/bg_layer_row.py — ligne de calque de fond de
+l'inspecteur de scène.
 
-from pathlib import Path
+Un calque BG par ligne : sa vignette, son image, sa palette, son décalage de
+parallaxe, et le glisser-déposer qui échange deux `bg_slot`.
+
+Vient de `core/asset_manager.py`, supprimé : ce fichier était un module
+d'INTERFACE rangé dans `core/`, donc la logique éditeur dépendait de l'UI. Les
+trois autres classes qu'il portait (`AssignSlot`, `AssignPanel`,
+`AssetManagerPanel`) n'étaient plus instanciées nulle part et sont parties avec
+lui. Seule celle-ci vivait, et son unique client est l'inspecteur de scène —
+d'où sa place ici."""
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QFileDialog, QToolButton, QScrollArea, QDoubleSpinBox,
+    QWidget, QHBoxLayout, QLabel, QPushButton, QFrame, QToolButton,
+    QDoubleSpinBox,
 )
 from PyQt6.QtGui import QPixmap, QFont, QDrag
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QMimeData
+
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QMimeData
-
-from core.project import Project
 
 LAYER_NAMES  = ["BG0", "BG1", "BG2", "BG3", "Sprite"]
 LAYER_COLORS = ["#4caf78", "#5b9bd5", "#9b6bc4", "#c48b3c", "#e8a838"]
-MIME_TYPE     = "application/x-gba-asset-path"
-MIME_BG_LAYER = "application/x-gba-bg-layer-slot"  # réordonnancement des BgLayerRow (échange de bg_slot)
-IMG_EXTS     = {".png", ".bmp"}
+# Réordonnancement des lignes entre elles : échange de `bg_slot`.
+MIME_BG_LAYER = "application/x-gba-bg-layer-slot"
 
-
-# ──────────────────────────────────────────────────────────────────
-#  Slot unique (BG0 … Sprite)
-# ──────────────────────────────────────────────────────────────────
-class AssignSlot(QFrame):
-    """
-    Un slot représente un canal GBA assignable à un PNG.
-    - Clic sur la vignette ou sur ⊕ → QFileDialog
-    - Drag & drop d'un fichier PNG accepté
-    - Émet asset_dropped(index, chemin_absolu) ou asset_dropped(index, "") pour effacer
-    """
-    asset_dropped = pyqtSignal(int, str)
-
-    def __init__(self, slot_index: int, parent=None):
-        super().__init__(parent)
-        self.slot_index = slot_index
-        self._color = LAYER_COLORS[slot_index]
-        self._path: str = ""
-        self._highlight = False
-        self.setAcceptDrops(True)
-        self._update_style()
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(6)
-
-        # Badge nom du layer
-        badge = QLabel(LAYER_NAMES[slot_index])
-        badge.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
-        badge.setStyleSheet(f"color:{self._color};")
-        badge.setFixedWidth(38)
-        layout.addWidget(badge)
-
-        # Vignette cliquable
-        self._thumb = QLabel()
-        self._thumb.setFixedSize(48, 34)
-        self._thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._thumb.setStyleSheet(
-            "background:#111; border:1px solid #2a2a2a; border-radius:2px;"
-        )
-        self._thumb.setToolTip("Click to import a PNG")
-        self._thumb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._thumb.mousePressEvent = lambda e: self._open_dialog()
-        layout.addWidget(self._thumb)
-
-        # Nom du fichier
-        self._name_lbl = QLabel("Drop or click")
-        self._name_lbl.setFont(QFont(T.UI, T.SM))
-        self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        layout.addWidget(self._name_lbl, 1)
-
-        # Bouton import
-        btn_import = QToolButton()
-        btn_import.setText("⊕")
-        btn_import.setToolTip("Import a PNG")
-        btn_import.setFixedSize(20, 20)
-        btn_import.setStyleSheet(
-            f"QToolButton{{color:{C.TEXT_DIM};border:none;background:none;font-size:12px;}}"
-            f"QToolButton:hover{{color:{C.ACCENT};}}"
-        )
-        btn_import.clicked.connect(self._open_dialog)
-        layout.addWidget(btn_import)
-
-        # Bouton effacer
-        self._btn_clear = QToolButton()
-        self._btn_clear.setText("×")
-        self._btn_clear.setFixedSize(18, 18)
-        self._btn_clear.setStyleSheet(
-            "QToolButton{color:#555;border:none;background:none;font-size:11px;}"
-            "QToolButton:hover{color:#ff6b6b;}"
-        )
-        self._btn_clear.setVisible(False)
-        self._btn_clear.clicked.connect(self._clear)
-        layout.addWidget(self._btn_clear)
-
-    # ── Apparence ─────────────────────────────────────────────────
-
-    def _update_style(self):
-        if self._highlight:
-            self.setStyleSheet(
-                f"border:2px dashed {self._color};"
-                "background:#1f2a1f; border-radius:4px;"
-            )
-        else:
-            self.setStyleSheet(
-                "QFrame{border:1px solid #2a2a2a; border-radius:4px;"
-                "background:#1a1a1a;}"
-            )
-
-    # ── Import ────────────────────────────────────────────────────
-
-    def _open_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Importer asset — {LAYER_NAMES[self.slot_index]}",
-            "", "Images (*.png *.bmp)"
-        )
-        if path:
-            self.set_asset(path)
-            self.asset_dropped.emit(self.slot_index, path)
-
-    def set_asset(self, path: str):
-        self._path = path
-        p = Path(path)
-        px = QPixmap(path)
-        if not px.isNull():
-            self._thumb.setPixmap(
-                px.scaled(48, 34,
-                          Qt.AspectRatioMode.KeepAspectRatio,
-                          Qt.TransformationMode.SmoothTransformation)
-            )
-        name = p.name
-        self._name_lbl.setText(name if len(name) <= 20 else name[:19] + "…")
-        self._name_lbl.setStyleSheet("color:#ccc;")
-        self._btn_clear.setVisible(True)
-
-    def clear_asset(self):
-        self._path = ""
-        self._thumb.setPixmap(QPixmap())
-        self._name_lbl.setText("Drop or click")
-        self._name_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        self._btn_clear.setVisible(False)
-
-    def _clear(self):
-        self.clear_asset()
-        self.asset_dropped.emit(self.slot_index, "")
-
-    # ── Drag & drop (depuis explorateur système) ─────────────────
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls() or event.mimeData().hasFormat(MIME_TYPE):
-            self._highlight = True
-            self._update_style()
-            event.acceptProposedAction()
-        else:
-            event.ignore()
-
-    def dragLeaveEvent(self, event):
-        self._highlight = False
-        self._update_style()
-
-    def dropEvent(self, event):
-        self._highlight = False
-        self._update_style()
-        path = ""
-        if event.mimeData().hasFormat(MIME_TYPE):
-            path = bytes(event.mimeData().data(MIME_TYPE)).decode("utf-8")
-        elif event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls:
-                path = urls[0].toLocalFile()
-        if path and Path(path).suffix.lower() in IMG_EXTS:
-            self.set_asset(path)
-            self.asset_dropped.emit(self.slot_index, path)
-            event.acceptProposedAction()
-
-
-# ──────────────────────────────────────────────────────────────────
-#  BgLayerRow — ligne compacte pour l'inspector de scène
-# ──────────────────────────────────────────────────────────────────
 
 class BgLayerRow(QFrame):
     """
@@ -597,82 +440,3 @@ class BgLayerRow(QFrame):
         if src != self.slot_index:
             self.layer_swap_requested.emit(src, self.slot_index)
         event.acceptProposedAction()
-
-
-# ──────────────────────────────────────────────────────────────────
-#  Panneau d'assignations (BG0-BG3 + Sprite)
-# ──────────────────────────────────────────────────────────────────
-class AssignPanel(QWidget):
-    slot_assigned = pyqtSignal(int, str)
-
-    def __init__(self, slot_count: int = 5, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet("background:#161616;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(3)
-
-        self._slots: list[AssignSlot] = []
-        for i in range(slot_count):
-            slot = AssignSlot(i)
-            slot.asset_dropped.connect(self.slot_assigned)
-            layout.addWidget(slot)
-            self._slots.append(slot)
-        layout.addStretch()
-
-    def refresh_from_project(self, project: Project):
-        scene = project.active_scene
-        # BG slots — résolution depuis les layers de la SCÈNE
-        by_slot = {L.bg_slot: L for L in (scene.background_layers if scene else [])}
-        for i in range(min(4, len(self._slots))):
-            layer = by_slot.get(i)
-            if layer and layer.background_name:
-                ba = project.get_background(layer.background_name)
-                png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
-                ap = project.background_images_dir / png
-                if ap.exists():
-                    self._slots[i].set_asset(str(ap))
-                    continue
-            self._slots[i].clear_asset()
-
-        if len(self._slots) > 4:
-            all_actors = [a for sc in project.scenes for a in sc.actors]
-            actor = next((a for a in all_actors if a.get_component("sprite")), None)
-            sc = actor.get_component("sprite") if actor else None
-            sprite = project.get_sprite(sc.sprite_name) if sc and sc.sprite_name else None
-            if sprite and sprite.asset:
-                ap = project.asset_abs(sprite.asset)
-                if ap and ap.exists():
-                    self._slots[4].set_asset(str(ap))
-                    return
-            self._slots[4].clear_asset()
-
-
-# ──────────────────────────────────────────────────────────────────
-#  Panneau complet (wrapper pour compatibilité MainWindow)
-# ──────────────────────────────────────────────────────────────────
-class AssetManagerPanel(QWidget):
-    slot_assigned = pyqtSignal(int, str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._project: Optional[Project] = None
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("background:#161616; border:none;")
-        self._assign = AssignPanel(slot_count=5)
-        self._assign.slot_assigned.connect(self.slot_assigned)
-        scroll.setWidget(self._assign)
-        layout.addWidget(scroll)
-
-    def load_project(self, project: Project):
-        self._project = project
-        self._assign.refresh_from_project(project)
-
-    def refresh(self):
-        if self._project:
-            self._assign.refresh_from_project(self._project)

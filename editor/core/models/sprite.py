@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.models.resource import Resource
-from core.models.sub_palette import SubPaletteAssetMixin, _decode_palette_overrides
+from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
 
 
 @dataclass
@@ -138,7 +138,7 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
     # Compression NON-DESTRUCTIVE du sprite : palette propre (couleurs BGR555
     # ordonnées, index 1..N ; index 0 transparent implicite) dérivée du PNG
     # source SANS le modifier, + l'algo qui l'a produite. Source de vérité de
-    # l'indexation (preview + build) — cf. core/color_utils.own_palette_from_source.
+    # l'indexation (preview + build) — cf. core/gba_color.own_palette_from_source.
     # [] = pas encore calculée (migration au chargement).
     own_palette: list = field(default_factory=list)   # list[int] BGR555
     quantize_method: str = "median_cut"
@@ -296,13 +296,13 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
             quantize_method = d.get("quantize_method", d.get("compress_method", "median_cut")),
             palettes          = list(d.get("palettes", [])),
             source_palettes   = list(d.get("source_palettes", [])),
-            palette_overrides = _decode_palette_overrides(d.get("palette_overrides")),
+            palette_overrides = decode_palette_overrides(d.get("palette_overrides")),
         )
         # Migration : un sprite sans `palettes` (antérieur au modèle sous-palettes)
         # dérive sa PAL_BANK de son `own_palette` (forme banque hardware : index 0
         # réservé + couleurs propres). Idempotent (persisté au save).
         if not sprite.palettes and sprite.own_palette:
-            from core.color_utils import RESERVED_SLOT_COLOR
+            from core.models.palette import RESERVED_SLOT_COLOR
             bank = ([RESERVED_SLOT_COLOR] + list(sprite.own_palette))[:16]
             bank += [0] * (16 - len(bank))
             sprite.palettes = [bank]

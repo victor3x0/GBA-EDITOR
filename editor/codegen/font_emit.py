@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from codegen.c_names import c_ident
+
 # Banque de palette BG réservée aux glyphes. Convention héritée du chemin TTE
 # (`SE_PALBANK(15)`), conservée pour ne pas déplacer la contrainte existante.
 FONT_PAL_BANK = 15
@@ -617,10 +619,6 @@ def encode_font(font, png_path: Path) -> dict:
 
 # ── Émission C ────────────────────────────────────────────────────
 
-def _c_ident(name: str) -> str:
-    return "".join(c if (c.isalnum() or c == "_") else "_" for c in name).upper()
-
-
 def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
     """`encoded` = [(nom de police, résultat d'encode_font)] → lignes C.
 
@@ -629,7 +627,7 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
     invisible qu'un projet qui ne linke pas."""
     L: list[str] = ["/* ── Polices ─────────────────────────────────────── */"]
     for name, e in encoded:
-        sym = _c_ident(name)
+        sym = c_ident(name)
         L.append(f"static const unsigned int g_font_{sym}_tiles[{max(1, len(e['tiles']))}] "
                  "__attribute__((aligned(4))) = {"
                  + (",".join(f"0x{w:08X}" for w in e["tiles"]) or "0") + "};")
@@ -660,7 +658,7 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
     L.append(f"const FontInfo g_fonts[{max(1, len(encoded))}] = {{")
     if encoded:
         for name, e in encoded:
-            sym = _c_ident(name)
+            sym = c_ident(name)
             L.append(f"    {{ g_font_{sym}_tiles, {e['n_tiles']}, g_font_{sym}_pal, "
                      f"g_font_{sym}_cp, g_font_{sym}_slot, "
                      f"g_font_{sym}_seq, g_font_{sym}_soff, g_font_{sym}_slen, "

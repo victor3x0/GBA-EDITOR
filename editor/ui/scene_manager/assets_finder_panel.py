@@ -17,10 +17,9 @@ from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QSize, QByteArray, Q
 from ui.common.theme import T, C, S, QSS, ui_font
 from ui.common.widgets import W, FinderSection
 
-from core.project import (
-    Project, Actor, Prefab, Scene,
-    MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
-)
+from core.models.resource import MIME_PREFAB_TEMPLATE, MIME_SCRIPT
+from core.models.scene import Actor, Prefab, Scene
+from core.project import Project
 from core.selection_bus import get_bus, UIElementSelection
 from core.command_dispatcher import get_dispatcher
 from core.history import (
@@ -1325,8 +1324,8 @@ class AssetsFinderPanel(QWidget):
     # ── Projets ───────────────────────────────────────────────────
 
     def _prompt_new(self):
-        from ui.home.project_picker import _NewProjectDialog
-        dlg = _NewProjectDialog(PROJECTS_DIR, self)
+        from ui.home.project_picker import NewProjectDialog
+        dlg = NewProjectDialog(PROJECTS_DIR, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.project_created.emit(dlg.result_name, str(dlg.result_path))
 

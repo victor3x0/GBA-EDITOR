@@ -14,13 +14,15 @@ import copy
 from typing import Optional
 
 from core.command_dispatcher import get_dispatcher
+from core.models.tile_codec import unpack_se, hex_to_tile, hex_to_tile8, flip_h, flip_v
 
 # Les constantes slope sont aussi importées par canvas_tools — on les garde
 # ici uniquement pour CollisionOverlay._slope_path et _draw_tile.
 from core.history import MoveActorCmd, get_history
-from core.project import (
+from core.models.resource import MIME_PREFAB_TEMPLATE
+from core.models.scene import (
+    Actor,
     COLLISION_TILE_SIZE,
-    MIME_PREFAB_TEMPLATE,
     TILE_EMPTY,
     TILE_SLOPE_L,
     TILE_SLOPE_L_HI,
@@ -43,16 +45,15 @@ from core.project import (
     TILE_SLOPE_R_STEEP_LO,
     TILE_SLOPE_R_STEEP_LO_INV,
     TILE_SOLID,
-    Actor,
-    Project,
 )
+from core.project import Project
 from PyQt6.QtCore import QObject, QPoint, QPointF, QRectF, QSize, Qt, pyqtSignal
 from ui.common.theme import T, QSS, C
 from ui.common.palette_bank_strip import PaletteBankStrip
 from ui.common.canvas_top_bar import CanvasTopBar
 from core.sprite_compose import compose_frame_image
-from core.color_utils import quantize_preview
-from codegen.asset_pipeline import resolve_palette_bank, resolve_obj_palette_bank
+from core.gba_color import quantize_preview
+from codegen.grit_conversion import resolve_palette_bank, resolve_obj_palette_bank
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -148,7 +149,7 @@ def _pal_to_rgb16(colors_bgr555: list) -> list:
     """Banque BGR555 → 16 triplets (r,g,b), complétée à 16 (index manquants →
     noir). L'index 0 reste dans la liste mais est traité comme transparent au
     rendu (cf. BgLayerRaster)."""
-    from core.color_utils import bgr555_to_rgb888
+    from core.gba_color import bgr555_to_rgb888
     out = []
     for i in range(16):
         out.append(bgr555_to_rgb888(colors_bgr555[i]) if i < len(colors_bgr555) else (0, 0, 0))
@@ -182,14 +183,12 @@ class BgLayerRaster:
         if self._bpp == 8:
             # 8bpp : tuiles en octets, UNE palette de 256 couleurs (pas de banques,
             # pas d'override de scène — cf. _pal_for).
-            from core.bg_import import _hex_to_tile8
-            from core.color_utils import bgr555_to_rgb888
-            self._tiles = [_hex_to_tile8(t) for t in compiled["tileset"]]
+            from core.gba_color import bgr555_to_rgb888
+            self._tiles = [hex_to_tile8(t) for t in compiled["tileset"]]
             pal = compiled["palettes"][0] if compiled["palettes"] else []
             self._pal_rgb = [[bgr555_to_rgb888(c) for c in pal]]
         else:
-            from core.bg_import import _hex_to_tile
-            self._tiles = [_hex_to_tile(t) for t in compiled["tileset"]]
+            self._tiles = [hex_to_tile(t) for t in compiled["tileset"]]
             self._pal_rgb = [_pal_to_rgb16(pal) for pal in compiled["palettes"]]
         self._bank_rgb_for = bank_rgb_for
         self._qimg = QImage(self.tiles_w * self.TILE, self.tiles_h * self.TILE,
@@ -198,13 +197,12 @@ class BgLayerRaster:
     # ── Décodage d'une cellule ────────────────────────────────────
     def _cell_grid(self, cell: int):
         """Grille d'index 8×8 (list[64]) de la cellule, flips appliqués."""
-        from core.bg_import import unpack_se, _flip_h, _flip_v
         tid, pb, fh, fv = unpack_se(self._tilemap[cell])
         grid = tuple(self._tiles[tid]) if tid < len(self._tiles) else tuple([0] * 64)
         if fh:
-            grid = _flip_h(grid)
+            grid = flip_h(grid)
         if fv:
-            grid = _flip_v(grid)
+            grid = flip_v(grid)
         return grid, pb
 
     def _cell_block(self, cell: int, pal_rgb):
@@ -1306,7 +1304,7 @@ class ActorBoxOverlay(QGraphicsItem):
         return QRectF(0, 0, self._canvas_w, self._canvas_h)
 
     def paint(self, painter: QPainter, option, widget=None):
-        from core.project import CollisionBoxComponent
+        from core.models.components import CollisionBoxComponent
         from core.models.field_value import FieldValue
 
         # Un champ peut être une référence de variable : on résout à la valeur
@@ -1534,7 +1532,7 @@ class GBAScene(QGraphicsScene):
         layers (z=-1). C'est ce que le hardware affiche là où rien n'est dessiné :
         une window qui masque tout laisse donc apparaître cette couleur, et le
         canvas le reflète."""
-        from core.color_utils import bgr555_to_rgb888
+        from core.gba_color import bgr555_to_rgb888
         r, g, b = bgr555_to_rgb888(int(bgr555) & 0x7FFF)
         if self._backdrop is None:
             self._backdrop = QGraphicsRectItem(0, 0, self._canvas_w, self._canvas_h)
@@ -2696,7 +2694,7 @@ class UIRegionItem(QGraphicsRectItem):
             bank = self._project.get_palette(getattr(el, "fill_palette", ""))
             idx = int(getattr(el, "fill_index", 0) or 0)
             if bank and 0 <= idx < len(bank.colors):
-                from core.color_utils import bgr555_to_rgb888
+                from core.gba_color import bgr555_to_rgb888
                 r, g, b = bgr555_to_rgb888(bank.colors[idx])
                 c = QColor(r, g, b)
                 c.setAlpha(180)
@@ -2944,7 +2942,7 @@ class UIRegionItem(QGraphicsRectItem):
         sheet = self._load_text_sheet(font)
         if sheet is None:
             return False
-        from core.text_layout import layout_text
+        from core.engine_emulation.text_layout import layout_text
         r = self.rect()
         placed, over = layout_text(font, text, int(r.width()), int(r.height()),
                                    align=getattr(self._region, "align", "left"),
@@ -4489,7 +4487,7 @@ class SceneEditor(QWidget):
 
         Rend None quand la scène ne mélange rien : l'appelant saute alors tout
         le chemin, et le canvas se comporte exactement comme avant."""
-        from core.blend_preview import blend_images, resolve_bottom, scene_blend_plan
+        from core.engine_emulation.blend_preview import blend_images, resolve_bottom, scene_blend_plan
         from core.models.scene import BLEND_BOTTOM
         if scene is None:
             return None
@@ -4541,7 +4539,7 @@ class SceneEditor(QWidget):
         est exact tant que le dessous est uniforme sous le sprite. Un dessous
         qui varie sous le sprite demanderait de recomposer à chaque déplacement ;
         c'est la limite assumée de l'aperçu, pas du moteur."""
-        from core.blend_preview import blend_images, scene_blend_plan
+        from core.engine_emulation.blend_preview import blend_images, scene_blend_plan
         from core.models.scene import BLEND_TOP, BLEND_ALPHA
         scene = self._project.active_scene if self._project else None
         plan = scene_blend_plan(scene) if scene else None
@@ -4565,7 +4563,7 @@ class SceneEditor(QWidget):
         raw = getattr(scene, "backdrop_color", None)
         if raw is None and self._project:
             raw = getattr(self._project.settings, "backdrop_color", 0)
-        from core.color_utils import bgr555_to_rgb888
+        from core.gba_color import bgr555_to_rgb888
         r, g, b = bgr555_to_rgb888(int(raw or 0))
         return QColor(r, g, b)
 

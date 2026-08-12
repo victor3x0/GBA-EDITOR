@@ -6,7 +6,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from ui.common.theme import C, T
 from ui.common.direction_grid import DirectionGrid
-from core.project import AnimState
+from core.models.sprite import AnimState
 from core.models.sprite import resolve_direction_mirrors
 
 

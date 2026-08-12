@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
 from ui.common.theme import C, T, S, QSS
-from core.project import GlobalVar, Constant
+from core.models.settings import Constant, GlobalVar
 from .colors import _C_GLOBAL, _C_CONST
 
 
@@ -223,7 +223,7 @@ class VarTablePanel(QWidget):
         ligne qui n'en a pas est une ligne neuve."""
         if not self._project or self._updating:
             return
-        from core.project import GlobalVar, Constant
+        from core.models.settings import Constant, GlobalVar
         entries = []
         for row in range(self._tbl.rowCount()):
             name_item = self._tbl.item(row, 0)

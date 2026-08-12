@@ -10,17 +10,19 @@ import math
 import shutil
 from typing import Optional
 
-from core.project import (
-    Project, Scene, Actor, SpriteAsset, CollisionBoxComponent, SpriteComponent, OWN_PAL_BANK,
-)
+from core.models.palette import OWN_PAL_BANK
+from core.models.components import CollisionBoxComponent, SpriteComponent
+from core.models.sprite import SpriteAsset
+from core.models.scene import Actor, Scene
+from core.project import Project
 from core.models.field_value import (FieldValue as _FV,
                                      var_names_from_project as _var_names)
 from codegen.palette_alloc import scene_bank_layout
-from codegen.asset_pipeline import (
-    count_frames, sprite_unique_frames, _seq_key,
+from codegen.grit_conversion import (
+    count_frames, sprite_unique_frames, seq_key,
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
 )
-from codegen.build_utils import sym as _sym
+from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
 
 
@@ -43,7 +45,7 @@ def _actor_script(actor: Actor) -> Optional[str]:
     return comp.script if comp and comp.active else None
 
 
-def _bg_info(p: Project, scene) -> list[dict]:
+def bg_info(p: Project, scene) -> list[dict]:
     """Un CBB (16 Ko) par layer = bg_slot ; sa map occupe les derniers SBB de ce
     CBB. Chaque layer de la scène référence une image ; sa compression vient du
     BackgroundAsset (sidecar) keyé par ce nom. cf. pipeline._check_bg_tile_budget."""
@@ -361,7 +363,7 @@ def _pool_info(prefabs, pool_start: int) -> list[dict]:
     info, offset = [], pool_start
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) > 0:
-            s = _sym(pf.name)
+            s = c_sym(pf.name)
             info.append({"prefab": pf, "sym": s, "start": offset, "size": pf.max_instances})
             offset += pf.max_instances
     return info
@@ -422,7 +424,7 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
             f"            g_actors[_i].box_count = {len(boxes)};",
         ]
         for bi, cb in enumerate(boxes):
-            tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
+            tag_s = "BOXTAG_" + c_sym(cb.tag or "body").upper()
             _vn = _var_names(p)
             bx, by = _FV.parse(cb.x, _vn).c_expr(), _FV.parse(cb.y, _vn).c_expr()
             bw, bh = _FV.parse(cb.w, _vn).c_expr(), _FV.parse(cb.h, _vn).c_expr()
@@ -586,7 +588,7 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
       {sym}_state_speed[] — speed (ticks) par état
       {sym}_state_loop[]  — loop (0/1) par état
     """
-    sym = f"sprite_{_sym(sprite.name)}"
+    sym = f"sprite_{c_sym(sprite.name)}"
     entries: list[str] = []          # "{dir,start,count}"
     state_starts: list[int] = []
     state_speeds: list[int] = []
@@ -603,7 +605,7 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
         dir_map = {sd.dir: sd for sd in state.directions}
         for sd in state.directions:
             src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            start = seq_starts[_seq_key(src_sd, sd.flip_h, sd.flip_v)]
+            start = seq_starts[seq_key(src_sd, sd.flip_h, sd.flip_v)]
             count = len(src_sd.frames)
             entries.append(f"{{{sd.dir},{start},{count}}}")
         entries.append("{255,0,0}")   # sentinel de fin d'état
@@ -878,7 +880,7 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
     ni pour une scène indécidable (police entière, déjà réservée)."""
     from codegen.font_emit import (build_font_subset, scene_codepoints,
                                    scene_font_names, scene_default_font)
-    from codegen.font_emit import _c_ident
+    from codegen.c_names import c_ident
     fonts = project_fonts(p)
     if not fonts or not encoded:
         return []
@@ -904,7 +906,7 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
             if sub is None or not sub["load"]:
                 continue
             colors = scene_text_colors(p, scene, fname)
-            sym = f"g_fsub_{_c_ident(scene.name)}_{_c_ident(fname)}"
+            sym = f"g_fsub_{c_ident(scene.name)}_{c_ident(fname)}"
             L.append(f"static const unsigned short {sym}_slot[{len(sub['slot'])}] = {{"
                      + ",".join(str(v) for v in sub["slot"]) + "};")
             L.append(f"static const unsigned short {sym}_load[{len(sub['load'])}] = {{"
@@ -1165,7 +1167,7 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
                 emit("log_line", f"[ui] image '{im.name}' : aucun sprite — "
                                  f"rien ne sera dessiné à cet endroit.")
             continue
-        ss = f"sprite_{_sym(sprite.name)}"
+        ss = f"sprite_{c_sym(sprite.name)}"
         n_states = max(1, len(getattr(sprite, "states", []) or []))
         st0 = im.state_index(sprite)
         base = sprite_offsets.get(sprite.name, 0)
@@ -1444,7 +1446,7 @@ def _gen_ui_images(p: Project, scene, text_cbb: int, sprite_offsets: dict,
         if pl is None:
             continue
         base = base0 + head + pl["base"]
-        ss = f"sprite_{_sym(sprite.name)}"
+        ss = f"sprite_{c_sym(sprite.name)}"
         L.append(f"    ui_image_set_bg_base({info['index']}, {base});")
         L.append(f"    copy16(TILE_RAM({text_cbb}) + {base} * 16, "
                  f"{ss}Tiles, {ss}TilesLen);"
@@ -1511,7 +1513,7 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     from core.models.ui_region import (
         KIND_PANEL, FILL_NINE, FILL_BG, ANCHOR_SCREEN, TARGET_BG)
     from core.nine_slice import nine_slice_rects
-    from core.bg_import import unpack_se, pack_se
+    from core.models.tile_codec import unpack_se, pack_se
     from codegen.palette_alloc import scene_bank_layout
 
     lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
@@ -1585,7 +1587,7 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
             from codegen.bg_emit import tileset_words
             words = tileset_words(ba.tileset, 4)   # 8 mots u32 = 1 tuile 4bpp
             by_name[ba.name] = len(assets)
-            assets.append({"name": ba.name, "sym": f"ui_bg_{_sym(ba.name)}",
+            assets.append({"name": ba.name, "sym": f"ui_bg_{c_sym(ba.name)}",
                            "words": words, "tiles": len(words) // 8})
         fills.append({"name": el.name, "tx": tx, "ty": ty, "w": w, "h": h,
                       "asset": by_name[ba.name], "se": se})
@@ -1610,7 +1612,7 @@ def _gen_scene_init(
     emit=None,
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
-    sym = _sym(scene.name)
+    sym = c_sym(scene.name)
     obj_layout = scene_bank_layout(p, scene, "obj")
     bg_layout  = scene_bank_layout(p, scene, "bg")
     L: list[str] = []
@@ -1628,7 +1630,7 @@ def _gen_scene_init(
         L.append("};")
     for _f in (getattr(scene, "_ui_img_fills", []) or []):
         _se = _f["se"]
-        L.append(f"static const unsigned short {sym}_uimap_{_sym(_f['name'])}[] = {{"
+        L.append(f"static const unsigned short {sym}_uimap_{c_sym(_f['name'])}[] = {{"
                  f"   /* {_f['w']}x{_f['h']} cases */")
         for i in range(0, len(_se), 12):
             L.append("    " + " ".join(f"0x{v:04X}," for v in _se[i:i + 12]))
@@ -1677,7 +1679,7 @@ def _gen_scene_init(
     else:
         L.append("    g_active_cmap = NULL; g_cmap_w = 0; g_cmap_h = 0;")
     # BG layers — chaque layer a son propre CBB (= bg_slot) pour ses tuiles,
-    # sa map vit dans les derniers SBB de ce même CBB (cf. _bg_info).
+    # sa map vit dans les derniers SBB de ce même CBB (cf. bg_info).
     if bgi:
         for bi in bgi:
             L.append(f"    copy16(TILE_RAM({bi['bg']}), {bi['sym']}Tiles, {bi['sym']}TilesLen);")
@@ -1722,7 +1724,7 @@ def _gen_scene_init(
             continue
         done_vram.add(sprite.name)
         bt = sprite_offsets.get(sprite.name, 0)
-        ss = f"sprite_{_sym(sprite.name)}"
+        ss = f"sprite_{c_sym(sprite.name)}"
         L.append(f"    copy16(OBJ_VRAM+{bt}*16, {ss}Tiles, {ss}TilesLen);")
     # Palettes OBJ — chaque banque occupée du layout (référencée OU palette
     # propre auto-allouée, cf. palette_alloc) est copiée dans PAL_OBJ_RAM.
@@ -1839,7 +1841,7 @@ def _gen_scene_init(
     for f in img_fills:
         L.append(
             f"    ui_fill_map({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
-            f"{sym}_uimap_{_sym(f['name'])}, {asset_base[f['asset']]});"
+            f"{sym}_uimap_{c_sym(f['name'])}, {asset_base[f['asset']]});"
             f"   /* fond image '{f['name']}' */")
     # Texte SUR un fond couleur : les zones enfants d'un panel couleur se
     # composent sur cette couleur (décision PAR ZONE au runtime, cf.
@@ -1912,7 +1914,7 @@ def _gen_scene_init(
     # Init actors
     for j, (actor, sprite) in enumerate(scene_actors):
         idx = actor_offset + j
-        s = _sym(actor.name)
+        s = c_sym(actor.name)
         boxes = [c for c in actor.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
         own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
         pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
@@ -1933,7 +1935,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].box_count = {len(boxes)};",
         ]
         for bi2, cb in enumerate(boxes):
-            tag_s = "BOXTAG_" + _sym(cb.tag or "body").upper()
+            tag_s = "BOXTAG_" + c_sym(cb.tag or "body").upper()
             _vn = _var_names(p)
             bx, by = _FV.parse(cb.x, _vn).c_expr(), _FV.parse(cb.y, _vn).c_expr()
             bw, bh = _FV.parse(cb.w, _vn).c_expr(), _FV.parse(cb.h, _vn).c_expr()
@@ -1955,7 +1957,7 @@ def _gen_scene_init(
 
     for j in sorted(lua_idx):
         actor, _ = scene_actors[j - actor_offset]
-        s = _sym(actor.name)
+        s = c_sym(actor.name)
         if _def_init(s, "on_start"):
             L.append(f"    {s}_on_start(&g_actors[{j}]);")
     # on_start scene
@@ -2034,7 +2036,7 @@ def _gen_scene_tick(
     affine_info: dict | None = None,
 ) -> list[str]:
     """Génère void scene_tick_{sym}(void) { ... }"""
-    sym = _sym(scene.name)
+    sym = c_sym(scene.name)
     L = [f"static void scene_tick_{sym}(void) {{"]
 
     def _def(s, ev):
@@ -2050,7 +2052,7 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            s = _sym(actor.name)
+            s = c_sym(actor.name)
             if _def(s, "on_update"):
                 L.append(f"    if(g_actors[{j}].active) {s}_on_update(&g_actors[{j}]);")
 
@@ -2063,7 +2065,7 @@ def _gen_scene_tick(
     # Tile resolution actors scène (seulement si on_tile_collide défini)
     for j in sorted(lua_idx):
         actor, _ = scene_actors[j - actor_offset]
-        s = _sym(actor.name)
+        s = c_sym(actor.name)
         if _def(s, "on_tile_collide"):
             L.append(f"    if(g_actors[{j}].active) resolve_actor_tiles(&g_actors[{j}],{s}_on_tile_collide);")
 
@@ -2114,8 +2116,8 @@ def _gen_scene_tick(
         L.append(f"    static u8 _col_prev[{len(col_pairs)}]={{0}};")
         for pair_idx, (i, j) in enumerate(col_pairs):
             i_lua = i in lua_idx; j_lua = j in lua_idx
-            si = _sym(scene_actors[i - actor_offset][0].name)
-            sj = _sym(scene_actors[j - actor_offset][0].name)
+            si = c_sym(scene_actors[i - actor_offset][0].name)
+            sj = c_sym(scene_actors[j - actor_offset][0].name)
             L += [
                 f"    {{ u8 _bx_i=0,_bx_j=0;",
                 f"        u8 _cur=(g_actors[{i}].active&&g_actors[{j}].active&&"
@@ -2138,9 +2140,9 @@ def _gen_scene_tick(
     if lua_idx:
         for btn, ev in _BTN_MAP:
             actors_b = [
-                (j, _sym(scene_actors[j - actor_offset][0].name))
+                (j, c_sym(scene_actors[j - actor_offset][0].name))
                 for j in sorted(lua_idx)
-                if _def(_sym(scene_actors[j - actor_offset][0].name), ev)
+                if _def(c_sym(scene_actors[j - actor_offset][0].name), ev)
             ]
             if actors_b:
                 L.append(f"    if(_g_keys_pressed&{btn}){{")
@@ -2152,7 +2154,7 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            s = _sym(actor.name)
+            s = c_sym(actor.name)
             if _def(s, "on_late_update"):
                 L.append(f"    if(g_actors[{j}].active) {s}_on_late_update(&g_actors[{j}]);")
 
@@ -2211,7 +2213,7 @@ def _gen_scene_tick(
     # Animation (state machine + direction)
     anim_actors = [(actor_offset + j, a, s2) for j, (a, s2) in enumerate(scene_actors) if s2 and s2.asset and s2.states]
     for idx, actor, sprite in anim_actors:
-        L += _anim_tick_lines(idx, f"sprite_{_sym(sprite.name)}")
+        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}")
 
     _aff = affine_info or {}
 
@@ -2420,7 +2422,7 @@ def generate_main(
         _add_inc('#include "soundbank.bin.h"')
 
     for d in all_scene_data:
-        bgi_d = _bg_info(p, d["scene"])
+        bgi_d = bg_info(p, d["scene"])
         _log_vram_layout(d["scene"], emit)
         for bi in bgi_d:
             _add_inc(f'#include "{bi["sym"]}.h"')
@@ -2432,11 +2434,11 @@ def generate_main(
         _add_inc(f'#include "{shared_anim_sym(d["scene"])}.h"')
         for _, sprite in d["scene_actors"]:
             if sprite and sprite.asset:
-                _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
+                _add_inc(f'#include "sprite_{c_sym(sprite.name)}.h"')
 
     for _, sprite in prefab_actor_sprites:
         if sprite and sprite.asset:
-            _add_inc(f'#include "sprite_{_sym(sprite.name)}.h"')
+            _add_inc(f'#include "sprite_{c_sym(sprite.name)}.h"')
 
     # Externs actors + scènes (filtrés sur les events réellement implémentés)
     def _def(sym, ev):
@@ -2447,9 +2449,9 @@ def generate_main(
 
     for d in all_scene_data:
         sc = d["scene"]
-        sc_sym = _sym(sc.name)
+        sc_sym = c_sym(sc.name)
         for actor, _ in d["scene_actors"]:
-            s = _sym(actor.name)
+            s = c_sym(actor.name)
             script_path = _actor_script(actor)
             if script_path:
                 abs_sp = p.asset_abs(script_path)
@@ -2506,7 +2508,7 @@ def generate_main(
     # ── Cmap flat arrays par scène ────────────────────────────────
     for d in all_scene_data:
         sc = d["scene"]
-        sym = _sym(sc.name)
+        sym = c_sym(sc.name)
         cmap = sc.collision_map or []
         if cmap and any(v != 0 for row in cmap for v in row):
             rows = len(cmap)
@@ -2531,7 +2533,7 @@ def generate_main(
     # de ROM par scène sans palette OBJ active, ex. INTRO/VICTORY).
     for d in all_scene_data:
         sc = d["scene"]
-        sym = _sym(sc.name)
+        sym = c_sym(sc.name)
         if scene_bank_layout(p, sc, "obj").bank_count() > 0:
             words = _scene_obj_palette_words(p, sc)
             L += [
@@ -2548,7 +2550,7 @@ def generate_main(
     # ce tableau, donc rien ne le référence si aucun slot BG n'est occupé.
     for d in all_scene_data:
         sc = d["scene"]
-        sym = _sym(sc.name)
+        sym = c_sym(sc.name)
         # Émis si un slot BG est occupé (référencé, bloc de fond compressé, ou
         # palette propre) ; le backdrop (PAL_BG_RAM[0]) est écrit séparément.
         if scene_bank_layout(p, sc, "bg").bank_count() > 0:
@@ -2594,7 +2596,7 @@ def generate_main(
     for i, d in enumerate(all_scene_data):
         sc         = d["scene"]
         act_off    = scene_offsets[i]
-        bgi_d      = _bg_info(p, d["scene"])
+        bgi_d      = bg_info(p, d["scene"])
         sa         = d["scene_actors"]
 
         # lua_idx local (indices GLOBAUX)
@@ -2628,7 +2630,7 @@ def generate_main(
     for i, d in enumerate(all_scene_data):
         sc      = d["scene"]
         act_off = scene_offsets[i]
-        bgi_d   = _bg_info(p, d["scene"])
+        bgi_d   = bg_info(p, d["scene"])
         sa      = d["scene_actors"]
 
         lua_idx_d: set[int] = set()
@@ -2660,7 +2662,7 @@ def generate_main(
         f"static const _SceneVtable g_scene_vtable[{len(all_scene_data)}] = {{",
     ]
     for d in all_scene_data:
-        sym = _sym(d["scene"].name)
+        sym = c_sym(d["scene"].name)
         L.append(f"    {{ scene_init_{sym}, scene_tick_{sym} }},")
     L += ["};", ""]
 
@@ -2683,7 +2685,7 @@ def generate_main(
         if sound_assets and sound_assets.get("music"):
             music_item, _ = sound_assets["music"][0]
             loop = "MM_PLAY_LOOP" if getattr(music_item, "loop", True) else "MM_PLAY_ONCE"
-            L.append(f"    mmStart(MOD_{_sym(music_item.name).upper()}, {loop});")
+            L.append(f"    mmStart(MOD_{c_sym(music_item.name).upper()}, {loop});")
 
     # Sprites VRAM (une seule fois au démarrage — toutes scènes). Les
     # palettes OBJ ne sont PLUS copiées ici : chaque scene_init_X() charge
@@ -2692,7 +2694,7 @@ def generate_main(
     if sprite_offsets:
         L.append("    /* Tiles sprites → OBJ VRAM (toutes scènes) */")
         for name, base in sprite_offsets.items():
-            ss = f"sprite_{_sym(name)}"
+            ss = f"sprite_{c_sym(name)}"
             L.append(f"    copy16(OBJ_VRAM+{base}*16, {ss}Tiles, {ss}TilesLen);")
 
     L += [

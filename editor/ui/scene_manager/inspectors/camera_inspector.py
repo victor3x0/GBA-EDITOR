@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal
 
-from core.project import Project, Scene
+from core.models.scene import Scene
+from core.project import Project
 from ui.common.theme import C, T, QSS
 
 _MODES = [

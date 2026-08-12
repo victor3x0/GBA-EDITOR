@@ -10,9 +10,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QCursor, QPixmap, QPainter
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
-from core.project import (
-    Project, Scene, Actor, MIME_SCRIPT, component_type_name,
-)
+from core.models.resource import MIME_SCRIPT
+from core.models.components import component_type_name
+from core.models.scene import Actor, Scene
+from core.project import Project
 from core.history import get_history, SetFieldCmd, AddComponentCmd, RemoveComponentCmd
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
@@ -628,7 +629,7 @@ class ActorInspector(QWidget):
         sprite_name = png_path.stem
 
         # Récupérer ou créer le SpriteAsset correspondant
-        from core.project import SpriteAsset
+        from core.models.sprite import SpriteAsset
         sprite = self._project.get_sprite(sprite_name)
         if not sprite:
             dst = self._project.import_asset(png_path, "sprites")

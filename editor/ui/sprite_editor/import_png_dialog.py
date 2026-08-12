@@ -13,14 +13,14 @@ from typing import Optional
 
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
-from core import asset_sync
+from core import asset_encoding
 from core.command_dispatcher import get_dispatcher
 
 
 def _encode_and_store(project, sprite, source) -> Optional[str]:
     """Encode `source` sur `sprite` (métadonnées, PNG intact) + persiste via le
     dispatcher. Renvoie un warning d'import éventuel (palette réduite)."""
-    warning = asset_sync.encode_sprite_asset(sprite, source)
+    warning = asset_encoding.encode_sprite_asset(sprite, source)
     get_dispatcher().save_sprite(sprite)
     return warning
 
@@ -33,7 +33,7 @@ def import_new_sprite(project, parent=None) -> Optional[Path]:
     if not path:
         return None
     dst = project.import_asset(Path(path), "sprites")   # copie le source intact
-    warning = project.sync_sprite_png(dst)              # détection + encodage + save
+    warning = asset_encoding.sync_sprite_png(project, dst)  # détection + encodage + save
     if warning and parent is not None:
         QMessageBox.information(parent, "Import sprite", warning)
     return dst

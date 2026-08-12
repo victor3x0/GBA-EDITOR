@@ -17,9 +17,18 @@ exacte vis-à-vis du hardware.
 from __future__ import annotations
 from typing import Optional
 
-from core.color_utils import (
+from core.gba_color import (
     reduce_colors, nearest_rgb, rgb888_to_bgr555, bgr555_to_rgb888,
-    RESERVED_SLOT_COLOR,
+)
+from core.models.palette import RESERVED_SLOT_COLOR
+
+# Le format binaire lui-même (tuile <-> hex, miroirs, entrée de carte) vit
+# dans son propre module : les modèles, la génération et le canvas en ont
+# besoin autant que cet import-ci, et le laisser ici les faisait tous
+# remonter jusqu'à la couche import de l'éditeur.
+from core.models.tile_codec import (
+    tile_to_hex, hex_to_tile, tile_to_hex8, hex_to_tile8,
+    flip_h, flip_v, pack_se, unpack_se,
 )
 
 TILE_BUDGET = 512        # tuiles 4bpp par charblock (16 Ko)
@@ -28,32 +37,14 @@ GBA_SCREEN_W = 240
 GBA_SCREEN_H = 160
 
 
-def _tile_to_hex(tile: list) -> str:
-    """Tuile (64 index 0-15) -> 64 caractères hex (1 nibble/index). Compact + JSON."""
-    return "".join("%x" % (i & 0xF) for i in tile)
-
-
-def _hex_to_tile(s: str) -> list:
-    return [int(ch, 16) for ch in s]
-
-
-def _tile_to_hex8(tile: list) -> str:
-    """Tuile 8bpp (64 index 0-255) -> 128 caractères hex (2/octet)."""
-    return "".join("%02x" % (i & 0xFF) for i in tile)
-
-
-def _hex_to_tile8(s: str) -> list:
-    return [int(s[i:i + 2], 16) for i in range(0, len(s), 2)]
-
-
-def _open_image(source):
+def open_image(source):
     """Ouvre le source PIL sans le convertir (préserve le mode 'P' indexé). Si un
     Image est déjà passé, le renvoie tel quel."""
     from PIL import Image
     return source if hasattr(source, "mode") else Image.open(source)
 
 
-def _is_indexed(img) -> bool:
+def is_indexed(img) -> bool:
     """Vrai si le PNG porte sa propre palette (mode 'P'/'PA') — la palette est
     alors l'AUTORITÉ voulue par l'auteur, on ne la re-déduit pas."""
     return img.mode in ("P", "PA")
@@ -66,8 +57,8 @@ def count_source_colors(source, cap: int = 257) -> tuple[int, bool]:
     - non-indexé : couleurs opaques distinctes après snap 5-bit (& 0xF8), donc un
       dégradé subtil qui s'effondre en BGR555 ne gonfle pas le compte à tort.
     Ne modifie pas le source."""
-    img = _open_image(source)
-    if _is_indexed(img):
+    img = open_image(source)
+    if is_indexed(img):
         used = img.getcolors(maxcolors=cap)   # [(count, index), ...] ou None si > cap
         if used is None:
             return cap, True
@@ -94,19 +85,9 @@ def source_palette_info(source) -> tuple[bool, int, bool]:
     """(indexed, n_colors, capped) pour l'UI : le PNG porte-t-il sa propre palette
     (indexé), et combien de couleurs. n_colors=-1 si plafonné. Léger (aucune dédup
     de tuiles, contrairement à detect_import_mode). Ne modifie pas le source."""
-    indexed = _is_indexed(_open_image(source))
+    indexed = is_indexed(open_image(source))
     n, capped = count_source_colors(source)
     return indexed, (-1 if capped else n), capped
-
-
-def detect_bpp(source) -> int:
-    """Profondeur indexée conseillée : 4 si ≤16 couleurs distinctes, sinon 8.
-    NE décide PAS du layout tuilé/bitmap (cf. detect_import_mode). Compte les
-    couleurs comme count_source_colors (palette d'un PNG indexé, ou couleurs
-    snappées 5-bit sinon) — corrige l'ancien seuil qui rendait 4bpp jusqu'à 256
-    couleurs, incohérent avec « une palette active ». Ne modifie pas le source."""
-    n, _ = count_source_colors(source, cap=17)
-    return 4 if n <= 16 else 8
 
 
 def detect_import_mode(source, tile_budget: int = TILE_BUDGET) -> dict:
@@ -126,7 +107,7 @@ def detect_import_mode(source, tile_budget: int = TILE_BUDGET) -> dict:
     Clés : indexed, n_colors (-1 = plafonné), bpp (4/8/16), mode (tiled/bitmap),
     token (tiled4/tiled8/bitmap/bitmap16), warning (str|None)."""
     n, capped = count_source_colors(source, cap=257)
-    indexed = _is_indexed(_open_image(source))
+    indexed = is_indexed(open_image(source))
 
     if n <= 16:
         bpp = 4
@@ -165,26 +146,9 @@ def detect_import_mode(source, tile_budget: int = TILE_BUDGET) -> dict:
     }
 
 
-def pack_se(tile_id: int, pal_bank: int, flip_h: bool, flip_v: bool) -> int:
-    """Screen entry GBA : tile_id (0-9) | flip_h (10) | flip_v (11) | pal_bank (12-15)."""
-    return (tile_id & 0x3FF) | (int(flip_h) << 10) | (int(flip_v) << 11) | ((pal_bank & 0xF) << 12)
-
-
-def unpack_se(se: int) -> tuple[int, int, bool, bool]:
-    return se & 0x3FF, (se >> 12) & 0xF, bool(se & 0x400), bool(se & 0x800)
-
-
 def _snap5(r: int, g: int, b: int) -> tuple[int, int, int]:
     """Snappe une couleur RGB888 sur la grille 5-bit/canal (représentable BGR555)."""
     return (r & 0xF8, g & 0xF8, b & 0xF8)
-
-
-def _flip_h(grid: tuple) -> tuple:
-    return tuple(grid[r * 8 + (7 - c)] for r in range(8) for c in range(8))
-
-
-def _flip_v(grid: tuple) -> tuple:
-    return tuple(grid[(7 - r) * 8 + c] for r in range(8) for c in range(8))
 
 
 def _dedup_tile(idxgrid: tuple, lookup: dict, tileset: list) -> tuple[int, bool, bool]:
@@ -192,13 +156,13 @@ def _dedup_tile(idxgrid: tuple, lookup: dict, tileset: list) -> tuple[int, bool,
     flip H/V/HV) si possible, sinon en crée une nouvelle."""
     if idxgrid in lookup:
         return lookup[idxgrid], False, False
-    fh = _flip_h(idxgrid)
+    fh = flip_h(idxgrid)
     if fh in lookup:
         return lookup[fh], True, False
-    fv = _flip_v(idxgrid)
+    fv = flip_v(idxgrid)
     if fv in lookup:
         return lookup[fv], False, True
-    fhv = _flip_h(fv)
+    fhv = flip_h(fv)
     if fhv in lookup:
         return lookup[fhv], True, True
     tid = len(tileset)
@@ -327,8 +291,8 @@ def _indexed_direct_source(source):
     None si le PNG n'est pas indexé / sans palette. `alpha` résout uniformément la
     transparence réelle (tRNS / mode PA) via RGBA ; `used` = getcolors (comptage
     et index max). Le source n'est pas modifié."""
-    src = _open_image(source)
-    if not _is_indexed(src):
+    src = open_image(source)
+    if not is_indexed(src):
         return None
     pimg = src if src.mode == "P" else src.convert("P")
     pal_raw = pimg.getpalette() or []
@@ -384,7 +348,7 @@ def _encode_background_indexed_4bpp(source) -> Optional[dict]:
 
     return {
         "palettes": [palette],                     # UNE sous-palette de 16 (PLTE native)
-        "tileset": [_tile_to_hex(t) for t in tileset],
+        "tileset": [tile_to_hex(t) for t in tileset],
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
@@ -448,7 +412,7 @@ def _encode_background_indexed_8bpp(source) -> Optional[dict]:
 
     return {
         "palettes": [pal256],                              # UNE palette de 256 (PLTE native)
-        "tileset": [_tile_to_hex8(t) for t in tileset],
+        "tileset": [tile_to_hex8(t) for t in tileset],
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
@@ -699,7 +663,7 @@ def encode_background(source, max_palettes: int = 16, max_colors: int = 16,
     return {
         "palettes": [[RESERVED_SLOT_COLOR] + [rgb888_to_bgr555(*c) for c in pal]
                      for pal in pal_lists],
-        "tileset": [_tile_to_hex(t) for t in tileset],   # list[str] (64 hex nibbles)
+        "tileset": [tile_to_hex(t) for t in tileset],   # list[str] (64 hex nibbles)
         "tilemap": tilemap,                               # list[int] (screen entries GBA)
         "tiles_w": tw,
         "tiles_h": th,
@@ -770,7 +734,7 @@ def encode_background_8bpp(source, dither: bool = False) -> dict:
 
     return {
         "palettes": [pal256],                              # UNE palette de 256
-        "tileset": [_tile_to_hex8(t) for t in tileset],    # list[str] (128 hex/tuile)
+        "tileset": [tile_to_hex8(t) for t in tileset],    # list[str] (128 hex/tuile)
         "tilemap": tilemap,
         "tiles_w": tw,
         "tiles_h": th,
@@ -792,7 +756,7 @@ def _render_bg_preview_8bpp(compiled: dict):
     """Rendu 8bpp : tuiles en octets, une seule palette de 256."""
     from PIL import Image
     tw, th = compiled["tiles_w"], compiled["tiles_h"]
-    tiles = [_hex_to_tile8(t) for t in compiled["tileset"]]
+    tiles = [hex_to_tile8(t) for t in compiled["tileset"]]
     pal = compiled["palettes"][0] if compiled["palettes"] else []
     rgb = [bgr555_to_rgb888(c) for c in pal]
     out = Image.new("RGBA", (tw * 8, th * 8), (0, 0, 0, 0))
@@ -801,9 +765,9 @@ def _render_bg_preview_8bpp(compiled: dict):
         tid, _pb, fh, fv = unpack_se(se)
         grid = tuple(tiles[tid]) if tid < len(tiles) else tuple([0] * 64)
         if fh:
-            grid = _flip_h(grid)
+            grid = flip_h(grid)
         if fv:
-            grid = _flip_v(grid)
+            grid = flip_v(grid)
         ox, oy = (cell % tw) * 8, (cell // tw) * 8
         for y in range(8):
             for x in range(8):
@@ -821,7 +785,7 @@ def render_bg_preview(compiled: dict):
     if compiled.get("bpp", 4) == 8:
         return _render_bg_preview_8bpp(compiled)
     tw, th = compiled["tiles_w"], compiled["tiles_h"]
-    tiles = [_hex_to_tile(t) for t in compiled["tileset"]]
+    tiles = [hex_to_tile(t) for t in compiled["tileset"]]
     palettes = compiled["palettes"]
     pal_rgb = [[bgr555_to_rgb888(c) for c in pal] for pal in palettes]
     out = Image.new("RGBA", (tw * 8, th * 8), (0, 0, 0, 0))
@@ -834,9 +798,9 @@ def render_bg_preview(compiled: dict):
         tid, pb, fh, fv = unpack_se(se)
         grid = tuple(tiles[tid]) if tid < len(tiles) else tuple([0] * 64)
         if fh:
-            grid = _flip_h(grid)
+            grid = flip_h(grid)
         if fv:
-            grid = _flip_v(grid)
+            grid = flip_v(grid)
         rgb = pal_rgb[pb] if pb < len(pal_rgb) else (pal_rgb[0] if pal_rgb else [])
         ox, oy = (cell % tw) * 8, (cell // tw) * 8
         for y in range(8):
@@ -916,7 +880,7 @@ def encode_by_mode(source, mode_token: str, method: str = "median_cut",
     `encode_background_bitmap` selon un token de mode ("tiled4"|"tiled8"|
     "bitmap"|"bitmap16" — vocabulaire de `detect_import_mode`). Partagé par
     l'import initial, la recompression depuis l'inspecteur (Background Editor)
-    et `core.asset_sync.encode_background_asset`, pour qu'il n'existe qu'un
+    et `core.asset_encoding.encode_background_asset`, pour qu'il n'existe qu'un
     seul endroit qui décide quel encodeur appeler.
 
     "bitmap16" = vrai 16bpp direct (détecté), pas encore implémenté : repli

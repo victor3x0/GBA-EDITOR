@@ -1,7 +1,11 @@
 """Orchestration d'encodage GBA déclenchée par l'apparition/suppression d'un
 fichier asset sur disque (ProjectWatcher, dialogues d'import UI). Calcule
 l'encodage (délégué à core.bg_import / core.sprite_import) et l'applique au
-sidecar JSON (BackgroundAsset / SpriteAsset) — jamais le PNG source."""
+sidecar JSON (BackgroundAsset / SpriteAsset) — jamais le PNG source.
+
+Deux déclencheurs, un seul geste : `sync_*` pour UN fichier qui apparaît
+maintenant, `reconcile_*` (en fin de module) pour le dossier entier à
+l'ouverture d'un projet, quand des fichiers ont été déposés éditeur fermé."""
 
 from pathlib import Path
 from typing import Optional
@@ -281,3 +285,92 @@ def encode_background_asset(ba: "BackgroundAsset", png_path: Path, method: str =
         apply_bg_encoding(ba, png_path.name, c)
     except Exception:
         pass
+
+
+# ── Rattrapage à l'ouverture d'un projet ──────────────────────────
+# Le ProjectWatcher voit les fichiers qui apparaissent PENDANT que l'éditeur
+# tourne. Ceux déposés à l'explorateur, éditeur fermé, ne sont vus par personne :
+# les `reconcile_*` ci-dessous repassent une fois par ouverture de projet.
+#
+# C'est le même geste que les `sync_*` de ce module, appliqué au DOSSIER au lieu
+# d'un fichier — d'où leur place ici : aucune n'a besoin d'importer quoi que ce
+# soit, elles bouclent sur ce qui précède. Elles rattrapent aussi le sidecar dont
+# l'encodage manque (import interrompu, échec avalé en tâche de fond) : le
+# fichier source est là, l'encodage se recalcule.
+#
+# Toutes NON-DESTRUCTIVES — le PNG / le .mod source n'est jamais modifié, seul le
+# sidecar JSON est écrit — et idempotentes : un asset déjà encodé est sauté.
+# Appelées uniquement depuis `Project.load()`, dans l'ordre (cf. project.py).
+
+
+def reconcile_backgrounds(project):
+    """(1) PNG déposés hors éditeur dans assets/backgrounds/ → crée le
+    BackgroundAsset + sa compression. (2) Fonds dont le sidecar existe sans
+    tileset → compression recalculée depuis le PNG."""
+    d = project.background_images_dir
+    for f in (sorted(d.glob("*")) if d.exists() else []):
+        if f.is_file() and f.suffix.lower() in (".png", ".bmp"):
+            sync_background_png(project, f)
+    for ba in list(project.backgrounds):
+        if ba.tileset:
+            continue
+        img = ba.image_name()
+        ap = project.background_images_dir / img if img else None
+        if ap and ap.exists():
+            encode_background_asset(ba, ap)
+            if ba.tileset:
+                project.backgrounds.save(ba)
+
+
+def reconcile_sprites(project):
+    """Sprites dont le sidecar existe sans PAL_BANK → encodage recalculé depuis
+    le PNG source. Pendant du point (2) de `reconcile_backgrounds` : c'est le cas
+    du sprite créé par `sync_sprite_png` alors que son encodage avait échoué —
+    l'exception y est avalée (tâche de fond watcher), la réparation est ici."""
+    for sp in list(project.sprites):
+        if sp.palettes or not sp.asset:
+            continue
+        ap = project.asset_abs(sp.asset)
+        if not ap or not ap.exists():
+            continue
+        try:
+            from core.sprite_import import encode_sprite
+            apply_sprite_encoding(sp, encode_sprite(ap, sp.quantize_method))
+            project.sprites.save(sp)
+        except Exception:
+            pass
+
+
+def reconcile_sfx_and_music(project):
+    """Crée les sidecars manquants pour les fichiers audio bruts déjà présents
+    dans assets/sfx/ et assets/music/."""
+    from core.models.audio import SFX_FILE_EXTS, MUSIC_FILE_EXTS
+    for f in sorted(project.sfx_dir.glob("*")) if project.sfx_dir.exists() else []:
+        if f.is_file() and f.suffix.lower() in SFX_FILE_EXTS:
+            sync_sfx_file(project, f)
+    for f in sorted(project.music_dir.glob("*")) if project.music_dir.exists() else []:
+        if f.is_file() and f.suffix.lower() in MUSIC_FILE_EXTS:
+            sync_music_file(project, f)
+
+
+def reconcile_fonts(project):
+    """Même rôle pour assets/fonts/ : planches PNG et descripteurs `.fnt`
+    déposés hors ligne.
+
+    Le `.fnt` passe en premier : quand les deux fichiers sont là, c'est lui qui
+    fait foi (il porte le mapping des caractères), et il référence sa planche —
+    laquelle ne doit donc pas créer une seconde police en doublon."""
+    from core.models.font import FONT_FILE_EXTS
+    if not project.fonts_dir.exists():
+        return
+    files = [f for f in sorted(project.fonts_dir.glob("*"))
+             if f.is_file() and f.suffix.lower() in FONT_FILE_EXTS]
+    pages = set()
+    for f in [x for x in files if x.suffix.lower() == ".fnt"]:
+        sync_font_file(project, f)
+        font = project.fonts.get(f.stem)
+        if font and font.asset:
+            pages.add(project.asset_abs(font.asset))
+    for f in [x for x in files if x.suffix.lower() != ".fnt"]:
+        if f not in pages:
+            sync_font_file(project, f)

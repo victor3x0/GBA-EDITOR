@@ -22,7 +22,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from PyQt6.QtCore import QObject, pyqtSignal
 
 if TYPE_CHECKING:
-    from core.project import Actor, Scene
+    from core.models.scene import Actor, Scene
 
 _MAX_HISTORY = 200
 
@@ -343,27 +343,6 @@ class AddActorCmd(Command):
             self._persist()
 
 
-class RemoveActorCmd(Command):
-    def __init__(self, scene: "Scene", actor: "Actor", index: int, persist_fn=None):
-        self._scene = scene
-        self._actor = actor
-        self._index = index
-        self.label = f"Supprimer {actor.name}"
-        self._persist = persist_fn
-
-    def execute(self):
-        if self._actor in self._scene.actors:
-            self._scene.actors.remove(self._actor)
-        if self._persist:
-            self._persist()
-
-    def undo(self):
-        idx = min(self._index, len(self._scene.actors))
-        self._scene.actors.insert(idx, self._actor)
-        if self._persist:
-            self._persist()
-
-
 class PaintFrameCmd(Command):
     """
     Peinture / effacement de tuiles sur un AnimFrame (canvas sprite editor).
@@ -422,7 +401,7 @@ class AddResourceCmd(Command):
     """
     Ajout d'une Resource au catalogue depuis l'UI (ex. dupliquer une palette).
     Strictement symétrique de DeleteResourceCmd — même paire de méthodes du
-    ResourceManager, dans l'autre sens :
+    ResourceStore, dans l'autre sens :
     execute : restore (ajoute à la liste et écrit le JSON)
     undo    : soft_delete (retire de la liste, JSON effacé à la fermeture)
     """
@@ -780,7 +759,7 @@ class AddListItemsCmd(Command):
 class RenameFileCmd(Command):
     """
     Renommage d'un fichier arbitraire sur disque (scripts assets/ — pas un
-    Resource géré par ResourceManager, donc pas de rename() disponible).
+    Resource géré par ResourceStore, donc pas de rename() disponible).
     execute/undo renomment réellement le fichier dans les deux sens.
     """
 
@@ -808,7 +787,7 @@ class DeleteFileCmd(Command):
     Suppression d'un fichier arbitraire sur disque (scripts assets/). Le
     contenu est gardé en mémoire le temps de la commande pour permettre un
     undo réel (contrairement à DeleteResourceCmd, il n'y a pas de
-    soft_delete/restore disponible pour un fichier hors ResourceManager).
+    soft_delete/restore disponible pour un fichier hors ResourceStore).
     """
 
     def __init__(self, path: Path, refresh_fn=None):

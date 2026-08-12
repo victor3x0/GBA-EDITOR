@@ -1,7 +1,8 @@
 """Gestion partagée des sous-palettes d'un asset (BackgroundAsset/SpriteAsset)."""
+from core.models.tile_codec import pack_se, unpack_se
 
 
-def _decode_palette_overrides(raw) -> dict:
+def decode_palette_overrides(raw) -> dict:
     """Relit palette_overrides du JSON ({"idx": "nom_catalogue"}) en dict[int, str].
     Tolère l'absence (None) et les clés mal formées (ignorées)."""
     out: dict[int, str] = {}
@@ -47,7 +48,7 @@ class SubPaletteAssetMixin:
         """Vide la sous-palette `idx` (ne garde que l'index 0 réservé). Ne retire
         pas la palette (indices inchangés), contrairement à remove_palette."""
         if 0 <= idx < len(self.palettes):
-            from core.color_utils import RESERVED_SLOT_COLOR
+            from core.models.palette import RESERVED_SLOT_COLOR
             self.palettes[idx] = [RESERVED_SLOT_COLOR] + [0] * 15
 
     def remove_palette(self, idx: int) -> None:
@@ -69,7 +70,6 @@ class SubPaletteAssetMixin:
             }
         tilemap = getattr(self, "tilemap", None)
         if tilemap:
-            from core.bg_import import unpack_se, pack_se
             for cell, se in enumerate(tilemap):
                 tid, pb, fh, fv = unpack_se(se)
                 tilemap[cell] = pack_se(tid, _remap(pb), fh, fv)

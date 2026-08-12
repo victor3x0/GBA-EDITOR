@@ -29,7 +29,9 @@ from .parser import (
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_PALETTE,
-                  DOMAIN_REGION, DOMAIN_IMAGE)
+                  DOMAIN_REGION, DOMAIN_IMAGE,
+                  DOMAIN_TAG, DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
+                  DOMAIN_CONST)
 
 
 # Ce à quoi ressemble une CLÉ et pas un libellé : minuscules, chiffres, au
@@ -59,6 +61,7 @@ class BuildContext:
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
     actor_names:  list[str]  = None    # noms des actors de la scène (pour get_actor)
+    prefab_names: list[str]  = None    # noms de Prefab du projet (pour actor.spawn)
     global_names: list[str]  = None    # noms de GlobalVar déclarées dans le projet
     global_types: dict[str, str] = None  # nom -> type ("int"/"bool"/"u8"/"u16"/"s8"/"s16")
     const_names:  list[str]  = None    # noms de Constant déclarées dans le projet
@@ -169,18 +172,15 @@ class Checker:
             key = self._call_key(e.func)
             if key is None:
                 return
-            if key == "scene.switch":
-                self._check_scene_switch(e.args)
-                return
-            if key in ("global.set", "global.get"):
-                self._check_global_name(key, e.args)
-                return
-            if key == "const.get":
-                self._check_const_name(key, e.args)
-                return
-            if key == "get_actor":
-                self._check_get_actor(e.args)
-                return
+            # Les NOMS cités (scène, prefab, actor, global, constante) sont
+            # vérifiés par leur domaine dans `_check_args`, comme tout autre
+            # argument nommé — ces appels n'ont donc plus de chemin à part.
+            # Ne restent ici que les contrôles qui portent sur autre chose que
+            # le nom : la valeur d'un `global.set`, le numéro d'emplacement
+            # d'un `save.*`. Aucun `return` : le reste des vérifications
+            # (nombre d'arguments compris) doit suivre.
+            if key == "global.set":
+                self._check_global_set_value(e.args)
             if key.startswith("save."):
                 self._check_save(key, e.args)
                 # pas de `return` : le nombre d'arguments reste à vérifier
@@ -225,25 +225,9 @@ class Checker:
             if not isinstance(arg, ExprString):
                 continue   # on ne valide les strings que si elles sont littérales
 
-            val = arg.value
-            if param.domain == DOMAIN_ANIM:
-                self._check_anim(key, val)
-            elif param.domain == DOMAIN_SFX:
-                self._check_sfx(key, val)
-            elif param.domain == DOMAIN_MUSIC:
-                self._check_music(key, val)
-            elif param.domain == DOMAIN_KEY:
-                self._check_key(key, val)
-            elif param.domain == DOMAIN_TEXT:
-                self._check_text(key, val, param.literal_ok)
-            elif param.domain == DOMAIN_FONT:
-                self._check_font(key, val)
-            elif param.domain == DOMAIN_PALETTE:
-                self._check_palette(key, val)
-            elif param.domain == DOMAIN_REGION:
-                self._check_region(key, val)
-            elif param.domain == DOMAIN_IMAGE:
-                self._check_image(key, val)
+            check = _DOMAIN_CHECKS.get(param.domain)
+            if check:
+                check(self, key, arg.value, param)
 
     def _check_anim(self, call_key: str, name: str):
         if self.ctx.anim_names is not None and name not in self.ctx.anim_names:
@@ -345,19 +329,27 @@ class Checker:
                 f"{call_key}('{name}') : image d'interface '{name}' introuvable ({near}).",
             ))
 
-    def _check_global_name(self, call_key: str, args: list):
-        if not args or not isinstance(args[0], ExprString):
-            return
-        name = args[0].value
+    def _check_global(self, call_key: str, name: str):
         if self.ctx.global_names is not None and name not in self.ctx.global_names:
             self.errors.append(CheckError(
                 "warning",
                 f"{call_key}('{name}') : variable globale '{name}' non déclarée dans le projet. "
                 f"Ajoutez-la dans le panneau Globals de l'éditeur.",
             ))
+
+    def _check_global_set_value(self, args: list):
+        """La VALEUR d'un `global.set` — ce que le domaine ne dit pas.
+
+        Le nom, lui, est vérifié par `_check_global` comme tout autre argument
+        porteur d'un domaine. Un nom inconnu n'a pas de type déclaré, donc
+        `_check_global_range` se tait de lui-même : pas besoin de séquencer les
+        deux contrôles."""
+        if len(args) < 2 or not isinstance(args[0], ExprString):
             return
-        if call_key == "global.set" and len(args) >= 2 and self.ctx.global_types is not None:
-            self._check_global_range(name, self.ctx.global_types.get(name), args[1])
+        if self.ctx.global_types is None:
+            return
+        name = args[0].value
+        self._check_global_range(name, self.ctx.global_types.get(name), args[1])
 
     @staticmethod
     def _literal_int(expr) -> Optional[int]:
@@ -413,10 +405,7 @@ class Checker:
                 f"{call_key}({val}) : le projet déclare {slots} emplacement(s) "
                 f"de sauvegarde, numérotés de 0 à {slots - 1}."))
 
-    def _check_const_name(self, call_key: str, args: list):
-        if not args or not isinstance(args[0], ExprString):
-            return
-        name = args[0].value
+    def _check_const(self, call_key: str, name: str):
         if self.ctx.const_names is not None and name not in self.ctx.const_names:
             self.errors.append(CheckError(
                 "warning",
@@ -424,29 +413,35 @@ class Checker:
                 f"Ajoutez-la dans le panneau Constants de l'éditeur.",
             ))
 
-    def _check_scene_switch(self, args: list):
+    def _check_scene(self, call_key: str, name: str):
         """Une scène inconnue est une ERREUR, pas un avertissement : le
         #define SCENE_IDX_* n'existerait pas et gcc échouerait de toute façon,
         avec un message bien moins clair (même raison que _check_text).
         Rappel : on attend le nom de la SCÈNE, pas celui de son script."""
-        if not args or not isinstance(args[0], ExprString):
-            return
-        name = args[0].value
         if self.ctx.scene_names is not None and name not in self.ctx.scene_names:
             self.errors.append(CheckError(
                 "error",
-                f"scene.switch('{name}') : scène '{name}' introuvable dans le projet. "
+                f"{call_key}('{name}') : scène '{name}' introuvable dans le projet. "
                 f"Scènes disponibles : {', '.join(self.ctx.scene_names) or 'aucune'}.",
             ))
 
-    def _check_get_actor(self, args: list):
-        if not args or not isinstance(args[0], ExprString):
-            return
-        name = args[0].value
+    def _check_prefab(self, call_key: str, name: str):
+        """Un prefab inconnu est une ERREUR, même raison que la scène : le
+        codegen émet `spawn_<Nom>(...)` sans rien vérifier, donc la faute ne se
+        voyait qu'à la compilation C, sur un « implicit declaration of
+        function » qui pointe la ligne générée."""
+        if self.ctx.prefab_names is not None and name not in self.ctx.prefab_names:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : prefab '{name}' introuvable dans le projet. "
+                f"Prefabs disponibles : {', '.join(self.ctx.prefab_names) or 'aucun'}.",
+            ))
+
+    def _check_actor(self, call_key: str, name: str):
         if self.ctx.actor_names is not None and name not in self.ctx.actor_names:
             self.errors.append(CheckError(
                 "warning",
-                f"get_actor('{name}') : aucun actor nommé '{name}' dans la scène "
+                f"{call_key}('{name}') : aucun actor nommé '{name}' dans la scène "
                 f"({', '.join(self.ctx.actor_names) or 'aucun'}).",
             ))
 
@@ -457,6 +452,56 @@ class Checker:
                 f"{call_key}('{name}') : bouton '{name}' invalide. "
                 f"Valeurs valides : {', '.join(sorted(BuildContext.VALID_KEYS))}.",
             ))
+
+
+# ─── Validation par domaine ───────────────────────────────────────
+# Un domaine → comment vérifier que le nom cité existe. Table et non chaîne
+# d'`elif` : elle se compare à `ALL_DOMAINS` au build
+# (`validator._check_api_domains`). Un domaine sans entrée ici n'était validé
+# par RIEN, en silence — l'erreur n'apparaissait qu'à la compilation C.
+#
+# Signature uniforme (checker, clé d'appel, valeur, param) : seul `_check_text`
+# lit le `param`, mais une signature à géométrie variable redonnerait une table
+# qu'on ne peut pas parcourir.
+_DOMAIN_CHECKS: dict = {
+    DOMAIN_ANIM:    lambda c, key, val, p: c._check_anim(key, val),
+    DOMAIN_SFX:     lambda c, key, val, p: c._check_sfx(key, val),
+    DOMAIN_MUSIC:   lambda c, key, val, p: c._check_music(key, val),
+    DOMAIN_KEY:     lambda c, key, val, p: c._check_key(key, val),
+    DOMAIN_TEXT:    lambda c, key, val, p: c._check_text(key, val, p.literal_ok),
+    DOMAIN_FONT:    lambda c, key, val, p: c._check_font(key, val),
+    DOMAIN_PALETTE: lambda c, key, val, p: c._check_palette(key, val),
+    DOMAIN_REGION:  lambda c, key, val, p: c._check_region(key, val),
+    DOMAIN_IMAGE:   lambda c, key, val, p: c._check_image(key, val),
+    DOMAIN_SCENE:   lambda c, key, val, p: c._check_scene(key, val),
+    DOMAIN_PREFAB:  lambda c, key, val, p: c._check_prefab(key, val),
+    DOMAIN_ACTOR:   lambda c, key, val, p: c._check_actor(key, val),
+    DOMAIN_GLOBAL:  lambda c, key, val, p: c._check_global(key, val),
+    DOMAIN_CONST:   lambda c, key, val, p: c._check_const(key, val),
+}
+
+# Cinq de ces domaines étaient auparavant vérifiés par un contrôle accroché au
+# NOM DE L'APPEL (`scene.switch`, `get_actor`, `global.*`, `const.get`) : une
+# seconde fonction prenant le même domaine n'aurait rien déclenché, et
+# `actor.spawn` n'était vérifié nulle part. Ils sont maintenant vérifiés par
+# leur domaine, comme les autres. Ce qui reste accroché à un appel précis dans
+# `_check_call_expr` ne porte plus sur un nom : la VALEUR d'un `global.set`, le
+# numéro d'emplacement d'un `save.*`.
+
+# Domaine NON validé, et pourquoi :
+#   tag → `TAG_*` est un espace ouvert, l'auteur y met ce qu'il veut ; il
+#         n'existe aucune liste de tags du projet contre quoi vérifier.
+_DOMAINS_UNCHECKED: frozenset = frozenset({DOMAIN_TAG})
+
+
+def covered_domains() -> frozenset:
+    """Domaines dont le checker sait quoi faire — validés, ou explicitement
+    laissés de côté.
+
+    Rendus par une fonction et non par les tables elles-mêmes : le contrôle
+    (`validator._check_api_domains`) demande « ce domaine t'est-il connu ? »,
+    pas la mécanique interne. Les tables restent privées."""
+    return frozenset(_DOMAIN_CHECKS) | _DOMAINS_UNCHECKED
 
 
 # ─── Point d'entrée public ────────────────────────────────────────

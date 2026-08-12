@@ -302,20 +302,6 @@ def rename_export(lua_path: Path, old_name: str, new_name: str) -> bool:
         lambda e: re.sub(r'^\w+', new_name, e, count=1))
 
 
-def set_export_type(lua_path: Path, name: str, new_type: str) -> bool:
-    """Change le `type` d'une variable exposée (l'insère si absent)."""
-    if new_type not in KNOWN_TYPES:
-        return False
-
-    def _t(entry: str) -> str:
-        if re.search(r'\btype\s*=\s*"\w+"', entry):
-            return re.sub(r'(\btype\s*=\s*")\w+(")', rf'\g<1>{new_type}\g<2>', entry)
-        # pas de type explicite : l'insérer juste après la 1ère accolade
-        return re.sub(r'\{', f'{{ type = "{new_type}",', entry, count=1)
-
-    return _rewrite_entry(lua_path, name, _t)
-
-
 def _format_entry(name: str, var: dict) -> str:
     """Régénère la déclaration `name = { … }` depuis un dict (type/default/
     label/min/max/values). Robuste — remplace l'édition regex clé par clé."""

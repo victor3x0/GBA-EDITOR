@@ -7,9 +7,19 @@ Il est chargé automatiquement au démarrage via load_all_plugins().
 Structure minimale d'un plugin :
     plugins/
       mon_plugin/
-        editor.py          ← doit appeler register() et enrichir COMPONENT_REGISTRY
+        editor.py          ← enrichit un des registres ci-dessous
 
-Exemple complet dans plugins/example_path/editor.py.
+Trois surfaces d'extension, par ordre de portée :
+
+  - un COMPOSANT      `COMPONENT_REGISTRY["x"] = XComponent` + `@register("x")`
+                      pour son éditeur       — plugins/example_path/editor.py
+  - une RÈGLE de build `@register_validator` — core/validator.py
+  - un ÉCRAN entier    `register_screen(nom, fabrique)` — ui/screens.py,
+                       exemple dans plugins/example_screen/editor.py
+
+Les plugins sont chargés AVANT la QApplication : un editor.py ne doit donc
+construire aucun widget au moment de son import — d'où la *fabrique* passée à
+`register_screen`, appelée plus tard par la fenêtre.
 """
 import importlib
 import importlib.util

@@ -193,8 +193,7 @@ class ScriptEditor(BaseComponentEditor):
         """Résout le contexte de l'actor (composants présents) puis délègue
         la génération du texte à scripting.script_templates (partagée avec
         les autres points de création de script)."""
-        from core.project import (CollisionBoxComponent, SpriteComponent,
-                             SoundFxComponent, component_type_name)
+        from core.models.components import CollisionBoxComponent, SoundFxComponent, SpriteComponent, component_type_name
         from scripting.script_templates import ScriptTemplateContext, generate_script_template
         actor = self.insp._actor
         comps = actor.components if actor else []

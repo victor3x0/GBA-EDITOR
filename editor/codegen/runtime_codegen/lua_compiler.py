@@ -9,13 +9,16 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from core.project import Project, Scene, Actor, SpriteAsset, ScriptComponent
+from core.models.components import ScriptComponent
+from core.models.sprite import SpriteAsset
+from core.models.scene import Actor, Scene
+from core.project import Project
 from scripting.parser  import parse as lua_parse, LuaParseError
 from scripting.checker import check as lua_check, BuildContext
 from scripting.codegen import generate as lua_generate, CodegenContext
 from scripting.globals import write_globals
 from scripting.constants import write_constants
-from codegen.build_utils import sym as _sym
+from codegen.c_names import sym as c_sym
 
 
 def _actor_script(actor: Actor) -> Optional[str]:
@@ -98,9 +101,12 @@ def transpile_all(
     for _lay, _im in (p.all_images() if hasattr(p, "all_images") else []):
         _spr = p.get_sprite(getattr(_im, "sprite_name", "") or "")
         image_states[_im.name] = [st.name for st in (getattr(_spr, "states", []) or [])]
-    all_syms    = [_sym(a.name) for a, _ in scene_actors]
+    all_syms    = [c_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
+    # Les prefabs sont poolés au niveau PROJET : `actor.spawn("X")` vise la
+    # liste entière, pas ce que la scène courante contient.
+    _prefab_names = [pf.name for pf in prefabs]
 
     # Globals résolus en avance (nécessaire pour le BuildContext du checker)
     if precomputed_global_names is not None:
@@ -152,6 +158,7 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             actor_names  = _actor_names,
+            prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
             global_types = {g.name: g.type for g in p.globals},
             const_names  = list(const_names) if const_names else None,
@@ -183,6 +190,7 @@ def transpile_all(
                 music_names  = music_names,
                 scene_names  = _scene_names,
                 actor_names  = _actor_names,
+            prefab_names = _prefab_names,
                 global_names = list(global_names) if global_names else None,
                 global_types = {g.name: g.type for g in p.globals},
                 const_names  = list(const_names) if const_names else None,
@@ -204,7 +212,7 @@ def transpile_all(
 
     # Génération C — actors de scène
     for actor, sprite, script, sp in parsed_scripts:
-        s    = _sym(actor.name)
+        s    = c_sym(actor.name)
         anims = [st.name for st in sprite.states] if sprite and sprite.states else []
         sfx_comp_name, sfx_autoplay = _sfx_component_info(actor)
         ctx  = CodegenContext(
@@ -243,7 +251,7 @@ def transpile_all(
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) <= 0:
             continue
-        pf_sym = _sym(pf.name)
+        pf_sym = c_sym(pf.name)
         if compiled_prefabs is not None:
             if pf_sym in compiled_prefabs:
                 continue
@@ -264,6 +272,7 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             actor_names  = _actor_names,
+            prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
             global_types = {g.name: g.type for g in p.globals},
             const_names  = list(const_names) if const_names else None,
@@ -311,7 +320,7 @@ def transpile_all(
 
     # Génération C — script de scène
     if scene_script_ast and scene_script_file:
-        scene_s = _sym(scene.name)
+        scene_s = c_sym(scene.name)
         ctx_sc  = CodegenContext(
             actor_name    = scene.name,
             actor_sym     = scene_s,

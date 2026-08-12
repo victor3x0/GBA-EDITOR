@@ -215,7 +215,7 @@ class DynamicInspector(QWidget):
     def on_selection(self, obj):
         """Reçu du bus — afficher le bon panneau selon le type de l'objet."""
         from pathlib import Path as _P
-        from core.project import Actor, Scene, Prefab
+        from core.models.scene import Actor, Prefab, Scene
         from core.selection_bus import CameraSelection, UIRegionSelection
         if obj is None:
             # Mode par défaut : aperçu du projet (pas le message d'aide vide) —

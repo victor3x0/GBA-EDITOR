@@ -117,12 +117,3 @@ def layout_text(font, text: str, width: int = SCREEN_W,
     return out, over
 
 
-def text_extent(font, text: str, width: int = SCREEN_W,
-                height: int = SCREEN_H) -> tuple[int, int]:
-    """Encombrement (largeur, hauteur) du texte posé — ce qu'il faut pour le
-    confronter au rectangle d'une `UIRegion`."""
-    placed, _ = layout_text(font, text, width, height)
-    if not placed:
-        return 0, 0
-    return (max(x + g.w for g, x, _y in placed),
-            max(y + g.h for g, _x, y in placed))

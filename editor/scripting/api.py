@@ -17,6 +17,10 @@ Convention de nommage des clés :
 from dataclasses import dataclass, field
 from typing import Optional
 
+# Les deux fabricants d'identifiants C vivent ensemble, dans un module qui
+# n'importe rien — ce catalogue les emploie, il ne les possède pas.
+from codegen.c_names import c_ident
+
 
 # ─── Types de paramètre ────────────────────────────────────────────
 # Utilisés par le codegen pour savoir comment convertir l'arg Lua → C.
@@ -58,6 +62,23 @@ DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
 DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
 DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
 DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
+
+# Tous les domaines, DÉRIVÉS des constantes ci-dessus : déclarer un
+# `DOMAIN_*` suffit à entrer dans le contrôle, il n'y a pas de seconde liste à
+# penser à compléter.
+#
+# Deux consommateurs doivent savoir quoi faire de chaque domaine — le checker
+# (le nom existe-t-il ?) et le codegen (quelle constante C émettre ?) — et
+# aucun des deux ne le signalait quand la réponse manquait : le checker ne
+# validait simplement rien, et le codegen retombait sur « émettre la chaîne
+# telle quelle », donc du texte C là où le C attend un entier. Panne au `make`,
+# sur la ligne générée, jamais sur la cause. C'est le même défaut que les deux
+# listes de prototypes du moteur, et il se règle pareil : les deux tables sont
+# comparées à celle-ci au build (`validator._check_api_domains`).
+ALL_DOMAINS: frozenset[str] = frozenset(
+    value for name, value in list(globals().items())
+    if name.startswith("DOMAIN_") and isinstance(value, str)
+)
 
 
 @dataclass
@@ -810,30 +831,6 @@ REMOVED_API: dict[str, str] = {
 }
 
 
-# Réordonnancement du 2026-07-27 : la famille `text.*` est passée à la grammaire
-# « position/conteneur → contenu ». L'ancien ordre reste du Lua VALIDE — mêmes
-# noms, mêmes arités — donc ni le checker ni le compilateur C ne peuvent le
-# repérer : `text.draw("clé", 2, 16)` résoudrait « clé » comme une coordonnée et
-# 16 comme une clé de texte. Un projet non migré rendrait donc n'importe quoi,
-# en silence.
-#
-# D'où la migration automatique au chargement
-# (`project_migrations.migrate_text_arg_order`), et cette table qui en est la
-# source : {nom Lua: (permutation des arguments de l'ANCIEN vers le NOUVEL
-# ordre)}. Une permutation plutôt que du texte à réécrire à la main, pour que la
-# migration et la signature ne puissent pas se contredire.
-TEXT_ARG_REORDER_2026_07: dict[str, tuple[int, ...]] = {
-    # text.draw(id, tx, ty)              → (tx, ty, id)
-    "text.draw":         (1, 2, 0),
-    # text.draw_upto(id, tx, ty, n)      → (tx, ty, id, n)
-    # text.draw_num(value, tx, ty)       → (tx, ty, value)
-    # text.draw_in(id, region)           → (region, id)
-    "text.draw_in":      (1, 0),
-    # text.draw_in_upto(id, region, n)   → (region, id, n)
-    # text.draw_num_in(value, region)    → (region, value)
-}
-
-
 # ─── Registre des événements ──────────────────────────────────────
 # Source unique de vérité pour tous les events Lua/C.
 # Clés par event :
@@ -1015,49 +1012,37 @@ EVENT_C_SIGNATURES: dict[str, str] = {k: v["c_sig"] for k, v in EVENT_REGISTRY.i
 # ─── Résolution des constantes "str" ──────────────────────────────
 # Helpers utilisés par le codegen pour convertir "nom_lua" → "NOM_C"
 
-def _c_ident(name: str) -> str:
-    """
-    Assainit un nom de ressource arbitraire (espaces, ponctuation...) en
-    fragment d'identifiant C valide, ex. 'Ruin At Last DX' -> 'RUIN_AT_LAST_DX'.
-    Sans ça, un nom de Sfx/Music avec espace génère un #define invalide (le
-    préprocesseur C coupe le nom de macro au premier espace et traite le
-    reste comme texte de substitution).
-    """
-    r = "".join(c if (c.isalnum() or c == "_") else "_" for c in name)
-    return r.upper()
-
-
 def anim_constant(actor_sym: str, anim_name: str) -> str:
     """'walk' pour Hero → 'ANIM_HERO_WALK'"""
-    return f"ANIM_{actor_sym.upper()}_{_c_ident(anim_name)}"
+    return f"ANIM_{actor_sym.upper()}_{c_ident(anim_name)}"
 
 
 def sfx_constant(sfx_name: str) -> str:
-    return f"SFX_{_c_ident(sfx_name)}"
+    return f"SFX_{c_ident(sfx_name)}"
 
 
 def music_constant(music_name: str) -> str:
-    return f"MUSIC_{_c_ident(music_name)}"
+    return f"MUSIC_{c_ident(music_name)}"
 
 
 def key_constant(key_name: str) -> str:
     """'a' → 'BTN_A', 'left' → 'BTN_LEFT'"""
-    return f"BTN_{_c_ident(key_name)}"
+    return f"BTN_{c_ident(key_name)}"
 
 
 def tag_constant(actor_name: str) -> str:
     """'enemy' → 'TAG_ENEMY'"""
-    return f"TAG_{_c_ident(actor_name)}"
+    return f"TAG_{c_ident(actor_name)}"
 
 
 def scene_constant(scene_name: str) -> str:
     """'Victory' → 'SCENE_IDX_VICTORY'"""
-    return f"SCENE_IDX_{_c_ident(scene_name)}"
+    return f"SCENE_IDX_{c_ident(scene_name)}"
 
 
 def text_constant(text_key: str) -> str:
     """'village_garde_01' → 'TEXT_VILLAGE_GARDE_01'"""
-    return f"TEXT_{_c_ident(text_key)}"
+    return f"TEXT_{c_ident(text_key)}"
 
 
 # Primitives qui acceptent un littéral à la place d'une clé — DÉDUIT du
@@ -1087,22 +1072,22 @@ def anon_text_key(literal: str) -> str:
 
 def font_constant(font_name: str) -> str:
     """'Pixelia' → 'FONT_PIXELIA'"""
-    return f"FONT_{_c_ident(font_name)}"
+    return f"FONT_{c_ident(font_name)}"
 
 
 def palette_constant(palette_name: str) -> str:
     """'Nuit' → 'PAL_NUIT'"""
-    return f"PAL_{_c_ident(palette_name)}"
+    return f"PAL_{c_ident(palette_name)}"
 
 
 def region_constant(region_name: str) -> str:
     """'boite_bas' → 'REGION_BOITE_BAS'"""
-    return f"REGION_{_c_ident(region_name)}"
+    return f"REGION_{c_ident(region_name)}"
 
 
 def image_constant(image_name: str) -> str:
     """'coeur_2' → 'IMAGE_COEUR_2' — index dans `g_ui_images`."""
-    return f"IMAGE_{_c_ident(image_name)}"
+    return f"IMAGE_{c_ident(image_name)}"
 
 
 def image_state_constant(image_name: str, state_name: str) -> str:
@@ -1113,7 +1098,7 @@ def image_state_constant(image_name: str, state_name: str) -> str:
     l'auteur ait à savoir quel asset est derrière. Le build émet une constante
     par (image, état de son sprite) — quelques `#define`, contre une résolution
     de chaîne au runtime que le moteur ne fait pas."""
-    return f"IMGST_{_c_ident(image_name)}_{_c_ident(state_name)}"
+    return f"IMGST_{c_ident(image_name)}_{c_ident(state_name)}"
 
 
 # ─── Événements de scène ───────────────────────────────────────────

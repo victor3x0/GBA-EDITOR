@@ -1,13 +1,16 @@
 """ui/sprite_editor/sprite_right_panel.py — panneau droit : propriétés, collision, anim settings."""
 from __future__ import annotations
 
+from typing import Optional
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QFrame, QComboBox, QScrollArea
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T
 from ui.common.widgets import W
-from core.project import Project, SpriteAsset, AnimState, AnimFrame, StateDirection
+from core.models.sprite import AnimFrame, AnimState, SpriteAsset, StateDirection
+from core.project import Project
 from core.models.sprite import valid_frame_heights, resolve_direction_mirrors
 from core.command_dispatcher import get_dispatcher
 from .direction_widget import DirectionWidget
@@ -258,8 +261,8 @@ class SpriteRightPanel(QWidget):
         ap = self._project.root / self._sprite.asset
         if not ap.exists():
             return
-        from core.color_utils import extract_palette_from_image
-        from core.project import PaletteBank
+        from core.gba_color import extract_palette_from_image
+        from core.models.palette import PaletteBank
         colors = extract_palette_from_image(ap)
         name = f"pal_{self._sprite.name}"
         existing = self._project.palettes.get(name)

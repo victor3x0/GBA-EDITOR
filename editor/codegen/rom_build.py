@@ -22,20 +22,22 @@ from typing import Optional
 
 from core.events import EventEmitter
 from core.toolchain import Toolchain
-from codegen.asset_pipeline import (
+from codegen.grit_conversion import (
     GritBackground, GritSprites, MmutilAudio,
     resolve_sound_assets, png_size,
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
     resolve_palette_bank,
 )
 from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
-from codegen.build_utils import sym as _sym_fn
 from core.app_paths import RUNTIME_DIR
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
 from codegen.runtime_codegen.main_gen import generate_main
-from core.project import (Project, Actor, SpriteAsset,
-                     SpriteComponent, OWN_PAL_BANK)
+from core.models.palette import OWN_PAL_BANK
+from core.models.components import SpriteComponent
+from core.models.sprite import SpriteAsset
+from core.models.scene import Actor
+from core.project import Project
 from core.validator import validate_project
 
 # Pipeline scripting (Lua → C) : importée localement dans les méthodes, d'où
@@ -331,10 +333,6 @@ class BuildWorker(EventEmitter, threading.Thread):
         comp = actor.get_component("script")
         return comp.script if comp and comp.active else None
 
-    @staticmethod
-    def _sym(s: str) -> str:
-        return _sym_fn(s)
-
     def _run_cmd(self, cmd, prefix, cwd=None, env=None) -> bool:
         self._emit("log_line",f"{prefix} {' '.join(str(c) for c in cmd)}")
         try:
@@ -382,7 +380,7 @@ class BuildWorker(EventEmitter, threading.Thread):
           scene_bank_layout qui place chaque banque active à son slot). La scène
           est la source de vérité : l'asset (`ba.tilemap`) reste intact.
         - tuile normale -> pal_bank local + pal_offset (bloc de l'asset)."""
-        from core.bg_import import unpack_se, pack_se
+        from core.models.tile_codec import unpack_se, pack_se
         tp = getattr(layer, "tile_palette_overrides", None) or {}
         tw = ba.tiles_w or 1
         out = []
@@ -692,7 +690,7 @@ class BuildWorker(EventEmitter, threading.Thread):
         """
         from scripting.parser import parse as _parse, LuaParseError
         from scripting.globals import write_globals as _write_globals
-        from codegen.build_utils import sym as _sym
+        from codegen.c_names import sym as c_sym
 
         # Écriture globals.h/c depuis la liste déclarée dans le projet
         names = _write_globals(p.src_dir, p.globals)
@@ -716,18 +714,18 @@ class BuildWorker(EventEmitter, threading.Thread):
             for actor, _ in d["scene_actors"]:
                 comp = actor.get_component("script")
                 if comp and comp.active and comp.script:
-                    _collect_events(_sym(actor.name), p.asset_abs(comp.script))
+                    _collect_events(c_sym(actor.name), p.asset_abs(comp.script))
             scene_script = getattr(scene, "script", "")
             if scene_script:
-                _collect_events(_sym(scene.name) + "_scene", p.asset_abs(scene_script))
+                _collect_events(c_sym(scene.name) + "_scene", p.asset_abs(scene_script))
 
         for pf in self.project.prefabs:
             if getattr(pf, "max_instances", 0) <= 0:
                 continue
-            from core.project import ScriptComponent
+            from core.models.components import ScriptComponent
             sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
             if sc and sc.script:
-                _collect_events(_sym(pf.name), p.asset_abs(sc.script))
+                _collect_events(c_sym(pf.name), p.asset_abs(sc.script))
 
         return names
 

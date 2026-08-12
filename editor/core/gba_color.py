@@ -1,10 +1,14 @@
 """
-editor/core/color_utils.py — Conversions couleur GBA (BGR555) et quantification.
+editor/core/gba_color.py — Conversions couleur GBA (BGR555) et quantification.
 
 Format hardware GBA (confirmé par `grit --help`, "-gT{n} ... 16bit BGR hex") :
 bits 0-4 = R, bits 5-9 = G, bits 10-14 = B, 5 bits par canal.
 """
 from __future__ import annotations
+
+# La réserve de l'index 0 est une règle de PALETTE, pas de conversion de
+# couleur : elle vit avec le modèle qui l'énonce.
+from core.models.palette import RESERVED_SLOT_COLOR
 
 
 def rgb888_to_bgr555(r: int, g: int, b: int) -> int:
@@ -27,12 +31,6 @@ def components_to_bgr555(r5: int, g5: int, b5: int) -> int:
     return ((b5 & 0x1F) << 10) | ((g5 & 0x1F) << 5) | (r5 & 0x1F)
 
 
-# Index 0 d'une PaletteBank est réservé — le hardware GBA traite toujours
-# l'index de palette 0 comme transparent (OBJ comme BG), quelle que soit la
-# couleur RGB qui y est stockée. La valeur exacte n'a donc aucune incidence
-# visuelle pour une tuile normale (seul PAL_BG_RAM[0] — banque 0 — a un rôle
-# supplémentaire de backdrop, géré séparément via Project/Scene.backdrop_color).
-RESERVED_SLOT_COLOR = 0
 
 
 def nearest_bank_color(rgb888: tuple[int, int, int], bank_colors: list[int]) -> int:
@@ -284,7 +282,7 @@ def reduce_colors(colors: list[tuple[int, int, int]],
     return {c: nearest_rgb(c, reps) for c in colors}
 
 
-def _distinct_opaque(img) -> tuple[list, dict]:
+def distinct_opaque(img) -> tuple[list, dict]:
     """Couleurs RGB opaques distinctes d'une image RGBA, dans l'ordre
     d'apparition (scan haut-gauche -> bas-droite), + comptes par couleur.
     Un pixel d'alpha 0 est transparent (ignoré)."""
@@ -324,7 +322,7 @@ def own_palette_from_source(source, method: str = "median_cut",
     `source` : chemin ou image PIL."""
     from PIL import Image
     img = (source if hasattr(source, "mode") else Image.open(source)).convert("RGBA")
-    order, counts = _distinct_opaque(img)
+    order, counts = distinct_opaque(img)
     if not order:
         return []
     color_map = reduce_colors(order, counts, max_colors, method)

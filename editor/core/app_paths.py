@@ -8,7 +8,7 @@ coin : c'est précisément la duplication de ce calcul qui avait laissé
 deux modules de codegen chercher runtime/ hors du bundle.
 
 Ce module ne doit importer que la stdlib — il est chargé très tôt et par
-des modules de bas niveau (codegen/build_utils.py notamment).
+des modules de bas niveau (codegen/c_names.py notamment).
 """
 
 import sys

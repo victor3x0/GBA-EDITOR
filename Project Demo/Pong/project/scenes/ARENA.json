@@ -62,6 +62,7 @@
       "pal_bank": -1,
       "visible": true,
       "obj_mode": 0,
+      "screen_space": false,
       "dir_x": 0,
       "dir_y": 0,
       "notes": ""
@@ -113,6 +114,7 @@
       "pal_bank": -1,
       "visible": true,
       "obj_mode": 0,
+      "screen_space": false,
       "dir_x": 0,
       "dir_y": 0,
       "notes": ""
@@ -131,7 +133,7 @@
       "region": 0,
       "x": 0,
       "y": 0,
-      "w": 226,
+      "w": 240,
       "h": 160,
       "visible": false,
       "layers_shown": [
@@ -149,6 +151,7 @@
   "script": "assets/scripts/scenes/PONG.lua",
   "text_bg": 0,
   "ui_layout": "arena_ui",
+  "font_name": "",
   "ui_pal_bank": -1,
   "collision_layer": 0,
   "collision_map": [

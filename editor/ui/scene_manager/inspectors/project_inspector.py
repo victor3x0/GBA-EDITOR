@@ -25,7 +25,7 @@ from PyQt6.QtCore import QSize, Qt
 from core.project import Project
 from core.history import get_history, SetFieldCmd
 from core.command_dispatcher import get_dispatcher
-from core.color_utils import bgr555_to_rgb888, rgb888_to_bgr555
+from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
 from ui.common.theme import C, T, QSS
 from ui.common import icons
 

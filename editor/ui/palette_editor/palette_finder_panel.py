@@ -17,8 +17,9 @@ from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.palette_swatch import bank_icon as _bank_icon
 
-from core.project import Project, PaletteBank
-from core.color_utils import rgb888_to_bgr555
+from core.models.palette import PaletteBank
+from core.project import Project
+from core.gba_color import rgb888_to_bgr555
 from core.palette_presets import hsb_ramp_bgr555
 from core.history import get_history, AddResourceCmd, DeleteResourceCmd
 

@@ -49,7 +49,7 @@ class SpriteEditor(BaseComponentEditor):
         # assigné n'a pas de palette active dans la scène où il finit instancié,
         # il retombe sur le slot 0, comme n'importe quel actor (pas un cas
         # spécial des prefabs).
-        from core.project import OWN_PAL_BANK
+        from core.models.palette import OWN_PAL_BANK
         from ui.common.pickers import PALETTE_NONE
         actor = self.insp._actor
         scene = self.insp._scene
