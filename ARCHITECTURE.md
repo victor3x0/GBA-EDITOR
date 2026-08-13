@@ -46,6 +46,7 @@ gba-editor/
 │   │   ├── pipeline.py              ← orchestration build
 │   │   ├── grit_conversion.py        ← grit (sprites + BG + Sounds)
 │   │   └── runtime_codegen/         ← génération main.c, scènes, acteurs
+│   │       └── data_tables.py       ← tables de données du projet, en `const` dans la ROM
 │   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
 │   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C
 │   │   ├── api.py                   ← RUNTIME_API : catalogue unique de l'API Lua ↔ C
@@ -84,6 +85,12 @@ gba-editor/
 │       │   ├── color_inspector_panel.py     ← panneau droit : roue/hex/RGB/TSL de la couleur active
 │       │   ├── palette_usage_card.py        ← carte USAGE (bas du panneau droit) : qui utilise la palette
 │       │   └── palette_editor_screen.py     ← écran complet (assemble les 3 colonnes)
+│       ├── data_editor/              ← un fichier par sous-zone de l'écran
+│       │   ├── data_commands.py            ← écritures annulables (cellule, ligne, colonne)
+│       │   ├── data_finder_panel.py        ← panneau gauche (les tables du projet)
+│       │   ├── data_grid_panel.py          ← centre : la grille, en-tête éditable en place
+│       │   ├── data_inspector_panel.py     ← panneau droit : la colonne, et ce que la cellule désigne
+│       │   └── data_editor_screen.py       ← écran complet (assemble les 3 colonnes)
 │       ├── sound_mixer/
 │       │   └── sound_panel.py
 │       ├── script_editor/             ← un fichier par sous-zone de l'écran
@@ -130,6 +137,19 @@ gba-editor/
 ├── tools/
 │   └── check_architecture.py        ← les règles de ce document, rendues exécutables
 │                                      (voir « Les règles ci-dessus se vérifient toutes seules »)
+├── tests/                           ← `pytest tests` — les trois modules où une
+│   │                                  erreur est SILENCIEUSE (pas d'exception,
+│   │                                  pas de message : une ROM fausse)
+│   ├── test_vram_alloc.py           ← géométrie VRAM BG + le garde-fou de l'allocateur
+│   ├── test_palette_alloc.py        ← les 16 banques, blocs contigus, débordement
+│   ├── text_layout_cases.py         ← polices et textes d'essai, partagés
+│   ├── test_text_layout.py          ← mise en page, côté aperçu Python
+│   ├── test_text_layout_native.py   ← ÉQUIVALENCE Python ↔ C : compile le vrai
+│   │                                  gba_engine.h et compare les placements.
+│   │                                  Saute sans compilateur C hôte (cf. `CC`)
+│   └── native/                      ← la sonde C et six en-têtes libgba bidon,
+│                                      de quoi compiler le moteur sur PC
+├── .github/workflows/tests.yml      ← contrôle d'architecture + tests, à chaque poussée
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
     └── Pong/                        ← projet démo
@@ -143,6 +163,7 @@ gba-editor/
         │   ├── palettes/            ← PaletteBank (.json) — catalogue de palettes nommées, 1 fichier/palette
         │   ├── prefab/              ← préfabs d'acteurs (.json)
         │   ├── cameras/             ← caméras (.json) — réutilisables entre scènes
+        │   ├── data/                ← tables de données (.json) — colonnes typées, lignes
         │   └── variables.json       ← globals + constants du projet
         └── build/                   ← 100% généré, gitignored — compile assets/ ET project/
 ```
@@ -310,6 +331,104 @@ est désormais vérifié lui aussi, alors qu'un `return` prématuré le sautait.
 
 `BuildContext.prefab_names` porte la liste, remplie par `lua_compiler` depuis le
 projet entier — un prefab est poolé au niveau projet, pas au niveau scène.
+
+### Tableaux — la forme est reconnue une fois, employée deux fois
+
+Un tableau se déclare de deux façons, et c'est `parser.array_dims()` qui les
+reconnaît — un seul endroit, appelé par le checker (valider) et par le codegen
+(émettre). Il rend les dimensions, ou `None` quand ce n'en est pas une :
+
+| Écrit en Lua | Dimensions | C émis |
+|---|---|---|
+| `local couts = {1, 2, 4, 8}` | `(4,)` | `static int couts[4] = {1, 2, 4, 8};` |
+| `local grille = array(20, 12)` | `(20, 12)` | `static int grille[20][12] = {{0}};` |
+
+**L'ordre des arguments d'`array` est l'ordre des index** : `array(20, 12)` se
+lit `grille[1..20][1..12]`. Aucun vocabulaire de largeur ni de hauteur n'entre
+dans la règle — il obligerait à se rappeler lequel des deux vient en premier,
+alors que la déclaration le montre.
+
+Trois pièges, et où ils sont tenus :
+
+- **Lua indexe à partir de 1**, et c'est `CodeGen._index()` qui traduit, à un
+  seul endroit : `t[i]` devient `t[(i) - 1]`, replié tout de suite quand l'index
+  est littéral (`t[1]` → `t[0]`). Le reste de l'API expose bien des index à
+  partir de 0, mais ce sont des **numéros matériels**, pas des positions dans un
+  conteneur du langage.
+- **`#t` est une constante de compilation** (`CodeGen._array_length`) : la taille
+  fait partie du type, elle n'est rangée nulle part à l'exécution.
+- **Un tableau d'état est refusé dans un prefab poolé.** Les locals de tête d'un
+  prefab poolé deviennent des cases de `Actor.data[8]` — huit entiers par
+  instance. `BuildContext.is_pooled` (posé par `lua_compiler`) permet au checker
+  de le dire sur la ligne Lua ; sans lui, le codegen retombait sur une
+  déclaration de fichier, donc un tableau partagé par toutes les copies, en
+  silence. Déclaré DANS un handler, il reste permis : c'est une variable de
+  travail, reconstruite à chaque appel.
+
+Deux corrections sont venues avec, toutes deux invisibles jusque-là :
+
+- **le `for` numérique ne s'exécutait jamais.** Les champs de `Fornum` étaient
+  lus décalés d'un cran par rapport à luaparser, qui expose
+  `(target, start, stop, step, body)` : `for i = 1, 10` produisait
+  `for (int i = 10; i <= 0; i += 1)`. Et le pas omis n'est pas `None` chez
+  luaparser mais l'**entier Python 1**, que `_expr` traduisait en
+  `__unsupported_int` ;
+- **`Checker._check_expr` ne descendait que dans les appels posés seuls** : ni
+  les opérandes d'un calcul ni les arguments d'un appel n'étaient visités, si
+  bien qu'un appel imbriqué échappait à toute validation. Une erreur de bornes
+  ne peut pas se permettre le même angle mort — `t[9] + 1` doit se voir — donc le
+  parcours couvre maintenant l'expression entière, cible d'affectation comprise.
+
+`ExprIndex` (notation pointée, un NOM connu à l'écriture) et `ExprIndexAt`
+(crochets, une EXPRESSION calculée) sont deux noeuds distincts. Les confondre —
+ce que faisait un `hasattr(node.idx, "id")` — rendait `t[i]` indiscernable de
+`t.i`, et le C émis lisait un champ de structure là où le script voulait un
+élément.
+
+### Tables de données — `data.Objets[i].prix`
+
+`data` est l'espace de noms RÉSERVÉ des tables authorées du projet
+(`parser.DATA_NS`). Un nom réservé plutôt qu'un global par table : sans lui, une
+table nommée `score` masquerait un `local score`, et rien ne dirait lequel des
+deux est lu.
+
+**La traduction se compose toute seule**, parce qu'elle suit la forme de l'AST :
+
+| Lua | AST | C |
+|---|---|---|
+| `data.Objets` | `ExprIndex(ExprName("data"), "Objets")` | `g_data_Objets` |
+| `data.Objets[i]` | `ExprIndexAt(…, i)` | `g_data_Objets[(i) - 1]` |
+| `data.Objets[i].prix` | `ExprIndex(…, "prix")` | `g_data_Objets[(i) - 1].prix` |
+| `#data.Objets` | `ExprUnop("#", …)` | le nombre de lignes, en littéral |
+
+Les trois lignes du milieu ne sont qu'une branche chacune : la première pose le
+tableau, et le reste (l'indexation à partir de 1, puis l'accès au champ) est le
+chemin générique déjà écrit. Le C se relit avec les mots du Lua.
+
+**Où vit quoi**, et pourquoi ce n'est pas un `DOMAIN_*` :
+
+- une table n'apparaît **jamais comme argument littéral d'un appel**, donc la
+  mécanique de domaine — dérivée de `RUNTIME_API.params` — ne s'y applique pas.
+  Lui inventer un domaine obligerait à le déclarer « traité ailleurs » des deux
+  côtés de `validator._check_api_domains` pour un `Param` qui n'existe pas ;
+- le CHECKER reçoit `BuildContext.data_tables` = `{nom: (colonnes, lignes)}` et
+  refuse une table inconnue, une colonne inconnue, un rang hors bornes écrit en
+  clair, et **toute écriture** (une table est `const` en ROM) ;
+- le CODEGEN reçoit la même table, dont il ne lit que le nombre de lignes — pour
+  `#data.X`, constante de compilation comme `#t` ;
+- les COLONNES de référence, elles, portent bien le nom d'un domaine (`text`,
+  `sfx`…), mais côté DONNÉE et non côté argument : c'est
+  `codegen/runtime_codegen/data_tables.py` qui les résout en index, et
+  `validator._check_data_column_types` qui tient les trois listes d'accord
+  (`COLUMN_REFERENCES`, `api.ALL_DOMAINS`, `project.DATA_COLUMN_SOURCES`).
+
+**L'émission n'emploie pas les `#define`** `TEXT_*` / `SFX_*` : ils sont écrits
+par `codegen` dans CHAQUE unité de traduction d'acteur, et `data_tables.c` n'en
+est pas une. L'entier est donc écrit en clair, suivi d'un commentaire qui nomme
+l'élément. `data_tables.h`, lui, est **toujours** généré et **toujours** inclus —
+un include conditionnel serait un second chemin pour un cas vide — alors que le
+`.c` n'existe que s'il y a une table (une unité de traduction vide n'est pas du
+C standard, et le Makefile ramasse `src/*.c` au glob).
 
 ---
 
@@ -641,8 +760,13 @@ Un écran n'était pas une donnée : il fallait l'épeler à **cinq** endroits d
 ligne dans `_refresh_ui`, les abonnements du dispatcher — dont deux listes
 parallèles dont l'accord n'était tenu que par un commentaire (« l'ordre doit
 rester synchronisé »). Un écran inséré au milieu décalait l'autre liste sans un
-mot, et le `Tileset Manager` — un écriteau « coming soon » — occupait en partie
-l'index 1 pour tenir le compte.
+mot, et un écriteau « coming soon » occupait l'index 1 pour tenir le compte.
+
+Cet écriteau — le `Tileset Manager` — a été **remplacé par le Data Editor**, et
+la classe `PlaceholderScreen` qui le portait a disparu avec lui : le tileset
+comme asset de premier rang est sorti du périmètre en v0.4 (« ce logiciel n'est
+pas un outil de dessin »), donc l'entrée de navigation promettait un écran qui
+ne viendra pas.
 
 **Il n'y a plus qu'une liste**, `MainWindow._screen_catalogue()`. Les libellés
 de la barre de navigation, l'ordre du `QStackedWidget` et la propagation du

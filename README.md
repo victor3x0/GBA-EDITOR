@@ -59,12 +59,26 @@ Un jeu Pong complet (scènes, sprites, scripts, son) est disponible dans [`Proje
 
 ### Objectif de la Version 1.0
 
-Première version stable de **GBA Editor**.
+Première version stable de **GBA Editor** : le pipeline 2D complet, de bout en bout.
 
-- Consolidation des fonctionnalités
-- Deuxième jeu de démo
-- Stabilisation du runtime et de l'éditeur
-- Documentation utilisateur
+L'objectif est énoncé comme une cible, pas comme une liste de fonctionnalités — à la v1.0,
+ces cinq genres doivent être réalisables avec l'éditeur :
+
+| Genre | Ce qu'il exerce |
+| --- | --- |
+| Platformer | gravité, pentes, collision de tuiles, caméra en suivi |
+| Metroidvania | état persistant entre scènes, déverrouillages |
+| RPG | tables de données, menus, dialogues, sauvegarde longue |
+| Tactique (Advance Wars) | grille, liste d'unités, recherche de chemin |
+| Gestion (Zoo Tycoon) | beaucoup d'entités à état propre, économie |
+
+Plus la stabilisation du runtime et de l'éditeur, la documentation utilisateur, et un
+deuxième jeu de démo choisi parmi les genres les plus exigeants de cette liste.
+
+Et quatre points qui ne sont pas des fonctionnalités, mais sans lesquels le mot « 1.0 » ne
+tient pas : une licence, des formats de fichiers qu'un outil de version sait relire, des
+modèles de projet pour démarrer, et la vérification que l'éditeur tient à l'échelle d'un vrai
+projet.
 
 ## Roadmap vers la v1.0
 
@@ -73,10 +87,14 @@ Première version stable de **GBA Editor**.
 - **v0.4** ✅ : Animation de décor (fonds animés posés au canvas, couleurs d'une scène pilotables au script)
 - **v0.5** ✅ : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
 - **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds)
-- **v0.7** : Son enrichi & écran de mixage (SFX/musique, pitch, volume par canal)
-- **v0.8** : Traduction des jeux depuis l'interface avec l'éditeur
-- **v0.9** : Distribution élargie (Linux)
-- **v0.10**: Traduction de l'interface de l'éditeur
+- **v0.7** ✅ : Structures de données — tableaux typés dans les scripts (une ou deux dimensions, indexés à partir de 1) et tables de données authorées, éditées dans le Data Editor et cuites en `const` dans la ROM — ce qui débloque RPG, tactique et gestion
+- **v0.8** : Son enrichi & écran de mixage (SFX/musique, pitch, volume par canal)
+- **v0.9** : Traduction des jeux depuis l'interface avec l'éditeur
+- **v0.10** : Distribution élargie (Linux)
+- **v0.11** : Traduction de l'interface de l'éditeur
+- **v0.12** : Vue d'ensemble — graphe des scènes et de leurs transitions, pour lire la logique d'un projet d'un coup d'œil
+- **v0.13** : Édition mixte code / no-code — les appels d'API s'éditent aussi comme des blocs, le script Lua restant la source unique
+- **v0.14** : Diagnostic — trace de débogage vers la console de l'émulateur, et mesure du budget de frame sur la console
 
 ## Les versions suivantes exploreront des fonctionnalités plus avancées de la Game Boy Advance :
 
@@ -86,6 +104,7 @@ Fonctionnalités envisagées :
 - Physique et collision : gravité, milieux (air, viscosité), collision par normale, formes
   cercle et maillage, import d'une carte de collision depuis une image.
 - Distorsion d'image par ligne (eau, chaleur, vitesse).
+- Rendu isométrique : projection en losange et tri en profondeur des sprites.
 - Un **second moteur de rendu**, en 3D logicielle sur framebuffer (modes bitmap), à côté du
   moteur 2D actuel — avec pour objectif qu'un jeu du niveau de V-Rally 3 soit constructible
   avec l'éditeur.

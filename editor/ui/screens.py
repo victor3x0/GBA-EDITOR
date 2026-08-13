@@ -45,9 +45,9 @@ class EditorScreen:
     """Une entrée du catalogue d'écrans.
 
     `build` rend le widget ; il n'est appelé qu'une fois, au démarrage. C'est
-    un appelable et non une classe parce que deux écrans ne se construisent pas
-    par simple appel de constructeur (le Scene Manager est assemblé par la
-    fenêtre, le Tileset Manager est un écriteau).
+    un appelable et non une classe parce qu'un écran ne se construit pas
+    forcément par simple appel de constructeur — le Scene Manager est assemblé
+    par la fenêtre à partir de trois colonnes qu'elle possède déjà.
     """
 
     name: str

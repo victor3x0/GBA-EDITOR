@@ -1,0 +1,14 @@
+# Dépendances de DÉVELOPPEMENT — `pip install -r requirements-dev.txt`.
+#
+# Séparées de requirements.txt, qui ne liste que ce dont l'éditeur a besoin pour
+# tourner : ce fichier n'entre ni dans le build Nuitka ni dans l'installateur, et
+# `packaging/check_deps.py` ne le regarde pas (il vérifie les imports de
+# editor/, où pytest n'a rien à faire).
+#
+# Les tests eux-mêmes n'importent RIEN d'autre : les trois modules qu'ils
+# couvrent (codegen/palette_alloc, codegen/vram_alloc,
+# core/engine_emulation/text_layout) ne tirent aucune dépendance externe, ce qui
+# rend le job de CI quasi instantané. Le seul outil supplémentaire est un
+# compilateur C hôte, pour l'équivalence Python/C — cf.
+# tests/test_text_layout_native.py.
+pytest

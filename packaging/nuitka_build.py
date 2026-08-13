@@ -129,6 +129,19 @@ def build_command(version: str, output_dir: Path) -> list[str]:
         f"=scripting/api_reference.json"
     )
 
+    # Fontes de l'interface (Inter). `--include-package=ui` n'embarque que du
+    # CODE : les données d'un paquet demandent une inclusion explicite.
+    #
+    # L'oubli ne se voit PAS : `install_app_fonts()` (ui/common/theme.py) teste
+    # `fonts_dir.is_dir()` et passe son chemin sans un mot si le dossier manque.
+    # QFont retombe alors sur Segoe UI — l'éditeur démarre, fonctionne, et n'a
+    # simplement pas la typographie qu'il annonce. La LICENSE.txt part avec :
+    # elle est la condition de redistribution de la fonte.
+    cmd.append(
+        f"--include-data-dir={EDITOR_DIR / 'ui' / 'common' / 'fonts'}"
+        f"=ui/common/fonts"
+    )
+
     # Les flèches ▲▼ des QSpinBox venaient d'assets PNG livrés ici ; elles
     # sortent maintenant de qtawesome comme le reste des icônes (ui.common.
     # icons.qss_image les rend au démarrage dans un cache temporaire).

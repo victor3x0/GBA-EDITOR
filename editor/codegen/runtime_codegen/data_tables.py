@@ -1,0 +1,172 @@
+"""runtime_codegen/data_tables.py — les tables de données du projet, en ROM.
+
+Émet `data_tables.h` (un typedef et une déclaration par table) et
+`data_tables.c` (les valeurs, en `const`). Un script les lit par indexation —
+`data.Objets[i].prix` devient `g_data_Objets[(i) - 1].prix` — et n'a donc rien
+à charger : la ROM est adressable directement.
+
+**Un tableau de structs, pas une structure de tableaux.** Le C se relit avec
+les mêmes mots que le Lua. Un tableau par colonne serait plus rapide sur un
+parcours d'une seule colonne, et illisible partout ailleurs.
+
+**Tout `int`, quel que soit le type de la colonne.** Un booléen y coûte quatre
+octets et une référence aussi ; c'est le prix d'une struct sans surprise
+d'alignement, et il est visible et proportionnel. À rouvrir si une table réelle
+devient assez grosse pour que ça compte.
+
+**Le registre ENTIER part en ROM**, sans dérivation depuis les scripts — même
+raisonnement qu'en v0.4.2 pour le catalogue de palettes : la donnée est en ROM,
+qui est large, alors qu'une dérivation ferait courir le risque de sous-réserver.
+
+Une colonne de RÉFÉRENCE devient l'index de ce qu'elle cite, résolu ici. Les
+`#define TEXT_*` / `SFX_*` ne sont pas employés : ils sont émis par `codegen`
+dans CHAQUE unité de traduction d'acteur, et ce fichier-ci n'en est pas une.
+L'entier est donc écrit en clair, suivi d'un commentaire qui nomme l'élément —
+le source généré reste relisible sans ouvrir l'éditeur.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from core.models.data_table import COLUMN_REFERENCES
+
+
+def reference_index(p) -> dict[str, dict[str, int]]:
+    """{type de colonne: {nom: index}} — les MÊMES ordres que les tables ROM.
+
+    Chaque source est celle dont l'émetteur correspondant tire sa table : les
+    deux doivent voir la même liste, ou la référence désigne autre chose. Elles
+    sont donc appelées ici, jamais recopiées.
+    """
+    from codegen.runtime_codegen.main_gen import project_fonts, project_cameras
+
+    def index_of(names) -> dict[str, int]:
+        return {n: i for i, n in enumerate(names)}
+
+    return {
+        # Les entrées authorées gardent leur rang dans `build_texts()` (les
+        # littéraux de script sont ajoutés APRÈS), donc `p.texts` suffit.
+        "text":    index_of([t.key for t in getattr(p, "texts", [])]),
+        "sfx":     index_of([s.name for s in getattr(p, "sfx", [])]),
+        "music":   index_of([m.name for m in getattr(p, "music", [])]),
+        "scene":   index_of([s.name for s in getattr(p, "scenes", [])]),
+        "font":    index_of([f.name for f in project_fonts(p)]),
+        "palette": index_of([b.name for b in getattr(p, "palettes", [])]),
+        "region":  index_of(p.region_names() if hasattr(p, "region_names") else []),
+        "image":   index_of(p.image_names() if hasattr(p, "image_names") else []),
+        # La caméra par DÉFAUT occupe l'entrée 0 et n'a pas de fichier : c'est
+        # `project_cameras` qui porte cette convention, pas cette table.
+        "camera":  {c.name: i for i, c in enumerate(project_cameras(p)) if c is not None},
+    }
+
+
+def row_type(table) -> str:
+    return f"DataRow_{table.name}"
+
+
+def array_name(table) -> str:
+    return f"g_data_{table.name}"
+
+
+def count_macro(table) -> str:
+    return f"DATA_{table.name.upper()}_COUNT"
+
+
+def _cell(table, row: dict, column, index: dict) -> tuple[str, str]:
+    """(valeur C, commentaire) pour une cellule."""
+    value = table.value(row, column)
+    if column.type == "bool":
+        return ("1" if value else "0"), ""
+    if column.type in COLUMN_REFERENCES:
+        name = str(value or "").strip()
+        if not name:
+            # Aucune référence : une valeur légitime, pas une faute. Le 0 vise
+            # la première entrée de la table citée — c'est à l'auteur de tester
+            # avant d'employer, comme partout ailleurs dans le moteur.
+            return "0", f"{column.name} : aucune référence"
+        i = index.get(column.type, {}).get(name)
+        if i is None:
+            # Le validateur a déjà bloqué le build en nommant la ligne ; ce
+            # repli n'existe que pour que le C reste compilable si on l'a forcé.
+            return "0", f"{column.name} : '{name}' INTROUVABLE"
+        return str(i), f"{column.name} = {name}"
+    try:
+        return str(int(value)), ""
+    except (TypeError, ValueError):
+        return "0", f"{column.name} : '{value}' n'est pas un entier"
+
+
+def generate_data_tables_h(tables) -> str:
+    lines = [
+        "/* data_tables.h — tables de données du projet */",
+        "/* Généré par GBA Editor — ne pas éditer */",
+        "",
+        "#ifndef DATA_TABLES_H",
+        "#define DATA_TABLES_H",
+        "",
+    ]
+    if not tables:
+        lines.append("/* aucune table de données dans ce projet */")
+    for t in tables:
+        fields = " ".join(f"int {c.name};" for c in t.columns) or "int _vide;"
+        lines += [
+            f"/* {t.name} — {len(t.rows)} ligne(s), {len(t.columns)} colonne(s) */",
+            f"typedef struct {{ {fields} }} {row_type(t)};",
+            f"extern const {row_type(t)} {array_name(t)}[{max(1, len(t.rows))}];",
+            f"#define {count_macro(t)} {len(t.rows)}",
+            "",
+        ]
+    lines += ["#endif /* DATA_TABLES_H */", ""]
+    return "\n".join(lines)
+
+
+def generate_data_tables_c(tables, index: dict) -> str:
+    lines = [
+        "/* data_tables.c — valeurs des tables de données */",
+        "/* Généré par GBA Editor — ne pas éditer */",
+        "",
+        '#include "data_tables.h"',
+        "",
+    ]
+    for t in tables:
+        lines.append(f"const {row_type(t)} {array_name(t)}[{max(1, len(t.rows))}] = {{")
+        for n, row in enumerate(t.rows):
+            cells, notes = [], []
+            for c in t.columns:
+                value, note = _cell(t, row, c, index)
+                cells.append(value)
+                if note:
+                    notes.append(note)
+            comment = f"   /* {n + 1} : {', '.join(notes)} */" if notes else ""
+            lines.append(f"    {{ {', '.join(cells) or '0'} }},{comment}")
+        if not t.rows:
+            # Un tableau de taille zéro n'est pas du C valide : une ligne nulle
+            # tient la place, et `DATA_*_COUNT` reste à 0 pour que personne ne
+            # la lise.
+            lines.append(f"    {{ {', '.join('0' for _ in t.columns) or '0'} }},")
+        lines += ["};", ""]
+    return "\n".join(lines)
+
+
+def write_data_tables(src_dir: Path, p, emit=None) -> list[str]:
+    """Écrit les deux fichiers et retourne les noms des tables émises.
+
+    `data_tables.h` est écrit MÊME SANS TABLE : chaque unité d'acteur l'inclut
+    sans condition, et un include conditionnel serait un second chemin pour un
+    cas vide. Le `.c`, lui, n'existe que s'il y a quelque chose dedans — une
+    unité de traduction vide n'est pas du C standard, et le Makefile ramasse
+    `src/*.c` au glob."""
+    tables = list(getattr(p, "data_tables", []))
+    (src_dir / "data_tables.h").write_text(generate_data_tables_h(tables),
+                                           encoding="utf-8")
+    c_path = src_dir / "data_tables.c"
+    if tables:
+        c_path.write_text(generate_data_tables_c(tables, reference_index(p)),
+                          encoding="utf-8")
+        if emit:
+            cells = sum(len(t.rows) * len(t.columns) for t in tables)
+            emit("log_line", f"[data] {len(tables)} table(s) en ROM "
+                             f"({cells} valeur(s), {cells * 4} octets)")
+    elif c_path.exists():
+        c_path.unlink()
+    return [t.name for t in tables]

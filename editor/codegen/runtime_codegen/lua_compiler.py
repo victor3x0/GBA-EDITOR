@@ -109,6 +109,12 @@ def transpile_all(
     # Les prefabs sont poolés au niveau PROJET : `actor.spawn("X")` vise la
     # liste entière, pas ce que la scène courante contient.
     _prefab_names = [pf.name for pf in prefabs]
+    # Tables de données : {nom: (colonnes, nombre de lignes)}. Le checker en
+    # tire ses refus (table ou colonne inconnue, index hors bornes, écriture sur
+    # une const) et le codegen la taille pour `#data.X`. Une seule lecture du
+    # registre pour tous les scripts de la scène.
+    _data_tables = {t.name: ([c.name for c in t.columns], len(t.rows))
+                    for t in getattr(p, "data_tables", [])}
 
     # Globals résolus en avance (nécessaire pour le BuildContext du checker)
     if precomputed_global_names is not None:
@@ -173,6 +179,7 @@ def transpile_all(
             image_names  = image_names,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
+            data_tables  = _data_tables,
         )
         script, ok = _compile_script(sp, ctx_check, emit, sp.name)
         if not ok:
@@ -208,6 +215,7 @@ def transpile_all(
                 image_names  = image_names,
                 save_slots   = _save_slots,
                 has_persistent = _has_persist,
+                data_tables  = _data_tables,
             )
             scene_script_ast, ok = _compile_script(sp, ctx_check, emit, sp.name)
             if not ok:
@@ -242,6 +250,7 @@ def transpile_all(
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
+            data_tables   = _data_tables,
         )
         c_code, gen_warnings = lua_generate(script, ctx)
         for w in gen_warnings:
@@ -285,6 +294,12 @@ def transpile_all(
             image_names  = image_names,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
+            data_tables  = _data_tables,
+            # Les locals de tête d'un prefab poolé deviennent des cases de
+            # `Actor.data[]` (cf. CodegenContext.is_pooled) : le checker doit le
+            # savoir pour refuser un tableau d'état, que le codegen ne pourrait
+            # que partager entre toutes les instances.
+            is_pooled    = True,
         )
         pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
         if not ok:
@@ -313,6 +328,7 @@ def transpile_all(
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
+            data_tables   = _data_tables,
         )
         pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
         for w in pf_warnings:
@@ -345,6 +361,7 @@ def transpile_all(
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
+            data_tables   = _data_tables,
         )
         c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
         for w in sc_warnings:
@@ -392,6 +409,7 @@ def transpile_all(
             image_names  = image_names,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
+            data_tables  = _data_tables,
         )
         cam_ast, ok = _compile_script(sp, ctx_check, emit, f"camera {cam.name} ({sp.name})")
         if not ok:
@@ -418,6 +436,7 @@ def transpile_all(
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
+            data_tables   = _data_tables,
         )
         cam_c, cam_warnings = lua_generate(cam_ast, ctx_cam)
         for w in cam_warnings:

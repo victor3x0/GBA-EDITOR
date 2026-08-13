@@ -110,10 +110,6 @@ def kind_of(tile: int) -> int:
     return _GEOMETRY.get(tile, (0, 0, KIND_EMPTY))[2]
 
 
-def is_slope(tile: int) -> bool:
-    return kind_of(tile) in (KIND_FLOOR, KIND_CEILING)
-
-
 def surface_y(tile: int, x: int) -> int:
     """Ordonnée de la surface dans la colonne de pixels `x`, bornée à [0, 8].
 

@@ -416,6 +416,21 @@
       ]
     },
     {
+      "name": "Tableaux",
+      "entries": [
+        {
+          "label": "array(taille)",
+          "snippet": "local sac = array(8)",
+          "description": "Déclare un tableau d'entiers rempli de zéros. Deux tailles pour une grille : array(20, 12) se lit grille[1..20][1..12] — l'ordre des arguments est l'ordre des index. La taille est fixée au build, #sac la rend, et les tableaux sont indexés à partir de 1 comme partout en Lua. Un tableau écrit en clair se déclare directement : local couts = {1, 2, 4, 8}.",
+          "params": [
+            { "name": "taille", "type": "number", "description": "Nombre d'éléments — une taille, ou deux pour une grille" }
+          ],
+          "returns": "tableau",
+          "doc_anchor": "array"
+        }
+      ]
+    },
+    {
       "name": "Scène",
       "entries": [
         {

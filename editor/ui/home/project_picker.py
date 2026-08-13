@@ -17,13 +17,17 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QFileDialog, QSizePolicy,
-    QLineEdit, QWidget, QMessageBox,
+    QLineEdit, QWidget, QMessageBox, QTabWidget,
 )
 from PyQt6.QtGui import QFont, QColor, QIcon
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
 
 from ui.common.theme import C, T, QSS
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
+from core.project_templates import (
+    ProjectTemplate, TEMPLATES, target_dir as template_target_dir,
+    is_downloaded as template_is_downloaded, download_template,
+)
 
 # Emplacement proposé par défaut pour un nouveau projet — jamais créé au
 # lancement. Il ne sert qu'à préremplir les champs et les dialogues de
@@ -182,6 +186,93 @@ class _ProjectItem(QWidget):
             hl.addWidget(dead_badge)
 
 
+# ── Widget d'un template téléchargeable ────────────────────────────────
+
+class _TemplateItem(QWidget):
+    """Une entrée de l'onglet Templates : nom + description + bouton d'état
+    (Download → ✓ Downloaded une fois sur le disque). Le double-clic sur la
+    ligne ouvre le projet extrait, géré par HomeScreen."""
+
+    download_requested = pyqtSignal(object)  # ProjectTemplate
+
+    def __init__(self, template: ProjectTemplate, downloaded: bool, parent=None):
+        super().__init__(parent)
+        self.template = template
+        self.downloaded = downloaded
+
+        hl = QHBoxLayout(self)
+        hl.setContentsMargins(12, 8, 12, 8)
+        hl.setSpacing(10)
+
+        icon = QLabel("🧩")
+        icon.setFont(QFont(T.UI, 16))
+        icon.setFixedWidth(28)
+        icon.setStyleSheet("background:transparent;")
+        hl.addWidget(icon)
+
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        name_lbl = QLabel(template.display_name)
+        name_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
+        name_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
+        col.addWidget(name_lbl)
+        desc_lbl = QLabel(template.description)
+        desc_lbl.setFont(QFont(T.UI, T.XS))
+        desc_lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
+        col.addWidget(desc_lbl)
+        hl.addLayout(col, 1)
+
+        self._btn = QPushButton()
+        self._btn.setFont(QFont(T.UI, T.SM))
+        self._btn.setFixedHeight(26)
+        self._btn.clicked.connect(lambda: self.download_requested.emit(self.template))
+        hl.addWidget(self._btn)
+
+        self.set_downloaded(downloaded)
+
+    def set_downloaded(self, downloaded: bool):
+        self.downloaded = downloaded
+        if downloaded:
+            self._btn.setText("✓ Downloaded")
+            self._btn.setEnabled(False)
+            self._btn.setStyleSheet(
+                f"QPushButton{{color:{C.POWER};background:transparent;"
+                f"border:1px solid {C.POWER};border-radius:3px;padding:2px 10px;}}"
+                f"QPushButton:disabled{{color:{C.POWER};border-color:{C.POWER};}}"
+            )
+        else:
+            self._btn.setText("Download")
+            self._btn.setEnabled(True)
+            self._btn.setStyleSheet(QSS.button_accent_outline)
+
+    def set_busy(self, label: str):
+        self._btn.setEnabled(False)
+        self._btn.setText(label)
+
+
+class _TemplateDownloadThread(QThread):
+    """Télécharge un template hors du thread UI — le zip du dépôt entier
+    peut prendre plusieurs secondes à récupérer et extraire."""
+
+    progress    = pyqtSignal(str)
+    succeeded   = pyqtSignal(str)   # chemin extrait (str : Path traverse mal les signaux Qt)
+    failed      = pyqtSignal(str)
+
+    def __init__(self, template: ProjectTemplate, projects_dir: Path, parent=None):
+        super().__init__(parent)
+        self._template = template
+        self._projects_dir = projects_dir
+
+    def run(self):
+        try:
+            dest = download_template(
+                self._template, self._projects_dir, progress_cb=self.progress.emit
+            )
+            self.succeeded.emit(str(dest))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 # ── Écran d'accueil ───────────────────────────────────────────────────
 
 class HomeScreen(QDialog):
@@ -213,6 +304,8 @@ class HomeScreen(QDialog):
             f"QDialog{{background:{C.BG_BASE};}}"
         )
 
+        self._download_thread: Optional[_TemplateDownloadThread] = None
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -241,32 +334,12 @@ class HomeScreen(QDialog):
         hl.addLayout(hc, 1)
         root.addWidget(hdr)
 
-        # ── Liste des récents ─────────────────────────────────────
-        self._list = QListWidget()
-        self._list.setStyleSheet(
-            f"QListWidget{{background:{C.BG_BASE};border:none;outline:none;}}"
-            f"QListWidget::item{{padding:0;border-bottom:1px solid {C.BORDER_DARK};}}"
-            f"QListWidget::item:selected{{background:{C.BG_SEL};}}"
-            f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
-        )
-        self._list.setIconSize(QSize(0, 0))
-        self._list.setSpacing(0)
-        self._list.itemDoubleClicked.connect(self._open_selected)
-        root.addWidget(self._list, 1)
-
-        self._populate()
-
-        # ── Message si liste vide ─────────────────────────────────
-        self._empty_lbl = QLabel(
-            "No recent project.\nCreate a new project or open an existing folder."
-        )
-        self._empty_lbl.setFont(QFont(T.UI, T.MD))
-        self._empty_lbl.setStyleSheet(
-            f"color:{C.TEXT_MUTED};background:{C.BG_BASE};"
-        )
-        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_lbl.setVisible(not self._recent)
-        root.addWidget(self._empty_lbl)
+        # ── Onglets : Projects (récents) / Templates (démos) ───────
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(QSS.tab)
+        self._tabs.addTab(self._build_projects_tab(), "Projects")
+        self._tabs.addTab(self._build_templates_tab(), "Templates")
+        root.addWidget(self._tabs, 1)
 
         # ── Statut toolchain (devkitPro / mGBA) ────────────────────
         status_wrap = QWidget()
@@ -280,7 +353,41 @@ class HomeScreen(QDialog):
         sw_l.addWidget(self._toolchain_status)
         root.addWidget(status_wrap)
 
-        # ── Barre du bas ──────────────────────────────────────────
+    # ── Onglet Projects ────────────────────────────────────────────
+
+    def _build_projects_tab(self) -> QWidget:
+        tab = QWidget()
+        tl = QVBoxLayout(tab)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+
+        self._list = QListWidget()
+        self._list.setStyleSheet(
+            f"QListWidget{{background:{C.BG_BASE};border:none;outline:none;}}"
+            f"QListWidget::item{{padding:0;border-bottom:1px solid {C.BORDER_DARK};}}"
+            f"QListWidget::item:selected{{background:{C.BG_SEL};}}"
+            f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
+        )
+        self._list.setIconSize(QSize(0, 0))
+        self._list.setSpacing(0)
+        self._list.itemDoubleClicked.connect(self._open_selected)
+        tl.addWidget(self._list, 1)
+
+        self._populate()
+
+        # ── Message si liste vide ─────────────────────────────────
+        self._empty_lbl = QLabel(
+            "No recent project.\nCreate a new project or open an existing folder."
+        )
+        self._empty_lbl.setFont(QFont(T.UI, T.MD))
+        self._empty_lbl.setStyleSheet(
+            f"color:{C.TEXT_MUTED};background:{C.BG_BASE};"
+        )
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setVisible(not self._recent)
+        tl.addWidget(self._empty_lbl)
+
+        # ── Barre du bas : Clear · Load · Open · Create ────────────
         footer = QWidget()
         footer.setStyleSheet(
             f"background:{C.BG_PANEL};"
@@ -305,18 +412,31 @@ class HomeScreen(QDialog):
 
         fl.addStretch()
 
-        btn_open = QPushButton("Open a folder…")
-        btn_open.setFont(QFont(T.UI, T.SM))
-        btn_open.setFixedHeight(30)
-        btn_open.setStyleSheet(
+        btn_load = QPushButton("Load a folder…")
+        btn_load.setFont(QFont(T.UI, T.SM))
+        btn_load.setFixedHeight(30)
+        btn_load.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER};border-radius:4px;padding:0 12px;}}"
             f"QPushButton:hover{{background:{C.BG_HOVER};border-color:#555;}}"
         )
-        btn_open.clicked.connect(self._browse)
-        fl.addWidget(btn_open)
+        btn_load.setToolTip("Browse the disk for an existing project folder")
+        btn_load.clicked.connect(self._browse)
+        fl.addWidget(btn_load)
 
-        btn_new = QPushButton("+ New project")
+        self._btn_open = QPushButton("Open")
+        self._btn_open.setFont(QFont(T.UI, T.SM))
+        self._btn_open.setFixedHeight(30)
+        self._btn_open.setStyleSheet(
+            f"QPushButton{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
+            f"border:1px solid {C.BORDER};border-radius:4px;padding:0 12px;}}"
+            f"QPushButton:hover{{background:{C.BG_HOVER};border-color:#555;}}"
+            f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER_DARK};}}"
+        )
+        self._btn_open.clicked.connect(self._open_selected)
+        fl.addWidget(self._btn_open)
+
+        btn_new = QPushButton("+ Create project")
         btn_new.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         btn_new.setFixedHeight(30)
         btn_new.setStyleSheet(
@@ -328,7 +448,7 @@ class HomeScreen(QDialog):
         btn_new.clicked.connect(self._new_project)
         fl.addWidget(btn_new)
 
-        root.addWidget(footer)
+        tl.addWidget(footer)
 
         # Sélectionner le premier item valide
         for i in range(self._list.count()):
@@ -339,6 +459,33 @@ class HomeScreen(QDialog):
 
         # Enter pour ouvrir
         self._list.itemSelectionChanged.connect(self._on_sel)
+        self._on_sel()
+
+        return tab
+
+    # ── Onglet Templates ───────────────────────────────────────────
+
+    def _build_templates_tab(self) -> QWidget:
+        tab = QWidget()
+        tl = QVBoxLayout(tab)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(0)
+
+        self._tpl_list = QListWidget()
+        self._tpl_list.setStyleSheet(
+            f"QListWidget{{background:{C.BG_BASE};border:none;outline:none;}}"
+            f"QListWidget::item{{padding:0;border-bottom:1px solid {C.BORDER_DARK};}}"
+            f"QListWidget::item:selected{{background:{C.BG_SEL};}}"
+            f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
+        )
+        self._tpl_list.setIconSize(QSize(0, 0))
+        self._tpl_list.setSpacing(0)
+        self._tpl_list.itemDoubleClicked.connect(self._open_template_selected)
+        tl.addWidget(self._tpl_list, 1)
+
+        self._populate_templates()
+
+        return tab
 
     # ── Population ─────────────────────────────────────────────────
 
@@ -352,10 +499,23 @@ class HomeScreen(QDialog):
             self._list.addItem(item)
             self._list.setItemWidget(item, w)
 
-    # ── Actions ────────────────────────────────────────────────────
+    def _populate_templates(self):
+        self._tpl_list.clear()
+        for template in TEMPLATES:
+            downloaded = template_is_downloaded(template, self._projects_dir)
+            item = QListWidgetItem(self._tpl_list)
+            w = _TemplateItem(template, downloaded)
+            w.download_requested.connect(self._download_template)
+            item.setSizeHint(QSize(0, 56))
+            self._tpl_list.addItem(item)
+            self._tpl_list.setItemWidget(item, w)
+
+    # ── Actions — Projects ────────────────────────────────────────
 
     def _on_sel(self):
-        pass
+        row = self._list.currentRow()
+        w = self._list.itemWidget(self._list.item(row)) if row >= 0 else None
+        self._btn_open.setEnabled(bool(w and not w.dead))
 
     def _open_selected(self, *_):
         row = self._list.currentRow()
@@ -368,7 +528,10 @@ class HomeScreen(QDialog):
 
     def keyPressEvent(self, ev):
         if ev.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._open_selected()
+            if self._tabs.currentIndex() == 0:
+                self._open_selected()
+            else:
+                self._open_template_selected()
         else:
             super().keyPressEvent(ev)
 
@@ -390,6 +553,7 @@ class HomeScreen(QDialog):
         self._recent = alive
         self._populate()
         self._empty_lbl.setVisible(not self._recent)
+        self._on_sel()
 
     def _open_toolchain_dialog(self):
         from ui.common.build_panel import ToolchainDialog
@@ -403,6 +567,54 @@ class HomeScreen(QDialog):
         self.result_is_new = is_new
         self.result_name   = name
         self.accept()
+
+    # ── Actions — Templates ───────────────────────────────────────
+
+    def _row_of_template(self, template: ProjectTemplate) -> Optional[int]:
+        for i in range(self._tpl_list.count()):
+            w = self._tpl_list.itemWidget(self._tpl_list.item(i))
+            if w and w.template is template:
+                return i
+        return None
+
+    def _download_template(self, template: ProjectTemplate):
+        if self._download_thread and self._download_thread.isRunning():
+            return  # un téléchargement à la fois
+        row = self._row_of_template(template)
+        w = self._tpl_list.itemWidget(self._tpl_list.item(row)) if row is not None else None
+        if w:
+            w.set_busy("Downloading…")
+
+        thread = _TemplateDownloadThread(template, self._projects_dir, self)
+        thread.progress.connect(lambda msg: w.set_busy(msg) if w else None)
+        thread.succeeded.connect(lambda _dest: self._on_template_downloaded(template))
+        thread.failed.connect(lambda err: self._on_template_download_failed(template, err))
+        self._download_thread = thread
+        thread.start()
+
+    def _on_template_downloaded(self, template: ProjectTemplate):
+        row = self._row_of_template(template)
+        if row is not None:
+            w = self._tpl_list.itemWidget(self._tpl_list.item(row))
+            if w:
+                w.set_downloaded(True)
+
+    def _on_template_download_failed(self, template: ProjectTemplate, message: str):
+        row = self._row_of_template(template)
+        if row is not None:
+            w = self._tpl_list.itemWidget(self._tpl_list.item(row))
+            if w:
+                w.set_downloaded(False)
+        QMessageBox.warning(self, "Download failed", message)
+
+    def _open_template_selected(self, *_):
+        row = self._tpl_list.currentRow()
+        if row < 0:
+            return
+        w = self._tpl_list.itemWidget(self._tpl_list.item(row))
+        if not w or not w.downloaded:
+            return
+        self._accept(template_target_dir(w.template, self._projects_dir), is_new=False)
 
 
 # ── Dialogue nouveau projet ───────────────────────────────────────────

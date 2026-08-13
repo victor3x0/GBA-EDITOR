@@ -80,7 +80,27 @@ from core.models.audio import Sfx, Music
 from core.models.font import Font
 from core.models.ui_region import UILayout
 from core.models.camera import Camera
+from core.models.data_table import DataTable
 from core.models.scene import Prefab, Actor, Scene
+
+
+# ── Ce qu'une colonne de RÉFÉRENCE peut citer ─────────────────────────────
+# Une entrée par type de colonne de `core.models.data_table.COLUMN_REFERENCES`.
+# Une table plutôt qu'une suite de `if` : le build compare les deux listes
+# (`validator._check_data_column_types`), ce qu'une chaîne de conditions ne
+# permet pas. Elle ne dit QUE les noms citables — l'index de chacun en ROM
+# appartient à l'émetteur, qui seul connaît l'ordre de ses tables.
+DATA_COLUMN_SOURCES = {
+    "text":    lambda p: [t.key for t in p.texts],
+    "sfx":     lambda p: [s.name for s in p.sfx],
+    "music":   lambda p: [m.name for m in p.music],
+    "scene":   lambda p: [s.name for s in p.scenes],
+    "camera":  lambda p: [c.name for c in p.cameras],
+    "font":    lambda p: [f.name for f in p.fonts],
+    "palette": lambda p: [b.name for b in p.palettes],
+    "region":  lambda p: p.region_names(),
+    "image":   lambda p: p.image_names(),
+}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -141,6 +161,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
         self.cameras: ResourceStore[Camera] = ResourceStore(self.cameras_dir, Camera)
+        self.data_tables: ResourceStore[DataTable] = ResourceStore(self.data_tables_dir, DataTable)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -234,6 +255,23 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
     def get_camera(self, name: str) -> Optional[Camera]:
         return self.cameras.get(name)
+
+    def get_data_table(self, name: str) -> Optional[DataTable]:
+        return self.data_tables.get(name)
+
+    def data_column_choices(self, column_type: str) -> list[str]:
+        """Les noms qu'une colonne de RÉFÉRENCE peut citer, pour ce projet.
+
+        Ce que cette méthode NE dit pas : à quel index chacun se résout en ROM.
+        Ce sont deux questions distinctes — l'éditeur a besoin de la liste à
+        proposer, le build de la position dans SA table — et les confondre
+        ferait dépendre l'éditeur des ordres d'émission.
+
+        `DATA_COLUMN_SOURCES` couvre exactement `COLUMN_REFERENCES` (vérifié au
+        build par `validator._check_data_column_types`) : un type de colonne
+        ajouté sans source n'offrirait aucun choix, en silence."""
+        source = DATA_COLUMN_SOURCES.get(column_type)
+        return list(source(self)) if source else []
 
     def scene_camera(self, scene) -> Optional[Camera]:
         """Caméra de démarrage d'une scène, ou None si elle emploie la caméra
@@ -458,6 +496,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.fonts.save_all()
         self.ui_layouts.save_all()
         self.cameras.save_all()
+        self.data_tables.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()
@@ -513,6 +552,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
         self.cameras.load()
+        self.data_tables.load()
         self.prefabs.load()
         self.load_scenes()
 

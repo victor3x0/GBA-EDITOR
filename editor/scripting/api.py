@@ -63,6 +63,15 @@ DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
 DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
 DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
 DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
+# Énumérations MATÉRIELLES : ensemble fixe, connu au build, jamais renommé —
+# même nature que DOMAIN_KEY, dont elles reprennent exactement le mécanisme.
+# Elles ne citent pas un élément du projet : `refactor` n'a donc rien à y
+# suivre, mais le checker et le codegen si (cf. HARDWARE_ENUMS plus bas).
+DOMAIN_OBJ_MODE   = "obj_mode"    # mode OAM d'un sprite
+DOMAIN_DIRECTION  = "direction"   # direction d'animation d'un acteur
+DOMAIN_WIN_REGION = "win_region"  # région de window (WINR_*)
+DOMAIN_BLEND_MODE = "blend_mode"  # mode de mélange (BLDCNT)
+DOMAIN_BLEND_SIDE = "blend_side"  # dessus / dessous du mélange
 
 # Tous les domaines, DÉRIVÉS des constantes ci-dessus : déclarer un
 # `DOMAIN_*` suffit à entrer dans le contrôle, il n'y a pas de seconde liste à
@@ -107,6 +116,85 @@ class ApiFunc:
     doc:       str = ""
 
 
+# ─── Énumérations matérielles — un nom, pas un nombre ─────────────
+# Le catalogue distinguait deux familles d'arguments sans que rien ne l'explique
+# à l'auteur : les éléments du PROJET se citaient par leur nom (`sfx.play("HIT")`,
+# `scene.switch("ARENA")`), les énumérations du MATÉRIEL par un entier nu
+# (`blend.set_mode(1)`, `self:set_obj_mode(2)`), leur sens vivant dans une phrase
+# de documentation. Rien ne permettait de deviner laquelle s'appliquait.
+#
+# Or `DOMAIN_KEY` prouvait déjà que le mécanisme des noms convient à une
+# énumération figée : `input.held("A")` se vérifie, se complète et se lit. Les
+# tables ci-dessous étendent ce traitement aux cinq énumérations restantes.
+#
+# UNE table par énumération, {nom Lua: constante C}. Ses deux consommateurs en
+# dérivent — le checker y valide le nom, le codegen y lit la constante à
+# émettre. Pas de seconde liste à tenir d'accord, et le C généré reste lisible
+# (`WINR_OBJ` plutôt que `2`).
+
+OBJ_MODES: dict[str, str] = {
+    "normal": "OBJ_MODE_NORMAL",   # 0 — sprite dessiné normalement
+    "blend":  "OBJ_MODE_BLEND",    # 1 — semi-transparent (réservé au mélange)
+    "window": "OBJ_MODE_WINDOW",   # 2 — masque : découpe la fenêtre-objet
+}
+
+# Les huit directions plus le neutre. Noms complets et non abrégés (« north »
+# et non « n ») : la règle de nommage du projet vaut aussi pour les valeurs.
+DIRECTIONS: dict[str, str] = {
+    "none":       "DIR_NONE",        # 0 — (0, 0), aucune direction
+    "north":      "DIR_NORTH",       # 1
+    "north_east": "DIR_NORTH_EAST",  # 2
+    "east":       "DIR_EAST",        # 3
+    "south_east": "DIR_SOUTH_EAST",  # 4
+    "south":      "DIR_SOUTH",       # 5
+    "south_west": "DIR_SOUTH_WEST",  # 6
+    "west":       "DIR_WEST",        # 7
+    "north_west": "DIR_NORTH_WEST",  # 8
+}
+
+# Vocabulaire aligné sur celui d'ARCHITECTURE (« Windows — le pochoir ») : les
+# deux rectangles n'ont pas de nom sémantique, seulement un RANG, et ce rang est
+# une priorité câblée — d'où « win0 » / « win1 » plutôt qu'une invention.
+WIN_REGIONS: dict[str, str] = {
+    "win0":    "WINR_0",    # rectangle 0 — priorité la plus forte
+    "win1":    "WINR_1",    # rectangle 1
+    "object":  "WINR_OBJ",  # fenêtre-objet, découpée par les sprites
+    "outside": "WINR_OUT",  # tout le reste — la plus faible
+}
+
+BLEND_MODES: dict[str, str] = {
+    "none":     "BLD_MODE_NONE",      # 0
+    "alpha":    "BLD_MODE_ALPHA",     # 1 — dessus×EVA + dessous×EVB
+    "brighten": "BLD_MODE_BRIGHTEN",  # 2 — vers le blanc
+    "darken":   "BLD_MODE_DARKEN",    # 3 — vers le noir
+}
+
+BLEND_SIDES: dict[str, str] = {
+    "top":    "BLD_SIDE_TOP",     # 0 — la source du mélange
+    "bottom": "BLD_SIDE_BOTTOM",  # 1 — ce sur quoi elle se mélange
+}
+
+# Domaine → sa table. DÉRIVÉE des tables ci-dessus, elle sert au checker (le nom
+# est-il dans l'ensemble ?) et au codegen (quelle constante émettre ?) sans
+# qu'aucun des deux ne réécrive les valeurs.
+HARDWARE_ENUMS: dict[str, dict[str, str]] = {
+    DOMAIN_OBJ_MODE:   OBJ_MODES,
+    DOMAIN_DIRECTION:  DIRECTIONS,
+    DOMAIN_WIN_REGION: WIN_REGIONS,
+    DOMAIN_BLEND_MODE: BLEND_MODES,
+    DOMAIN_BLEND_SIDE: BLEND_SIDES,
+}
+
+
+def hardware_enum_constant(domain: str, name: str) -> str:
+    """Nom Lua → constante C, pour une énumération matérielle.
+
+    Rend la chaîne telle quelle si elle est inconnue : le checker a déjà émis
+    l'erreur, et fabriquer une valeur ici la masquerait au profit d'un C qui ne
+    compile pas — même règle que partout, la faute se voit sur sa cause."""
+    return HARDWARE_ENUMS.get(domain, {}).get(name.lower(), name)
+
+
 # ─── Constantes écran (résolues par le codegen en littéraux C) ────
 # Accessibles en Lua comme screen.width, screen.center_x, etc.
 SCREEN_CONSTANTS: dict[str, int] = {
@@ -148,9 +236,9 @@ RUNTIME_API: dict[str, ApiFunc] = {
 
     "self:set_obj_mode": ApiFunc(
         lua_name="self:set_obj_mode", c_func="actor_set_obj_mode",
-        params=[Param("mode", PARAM_INT)],
+        params=[Param("mode", PARAM_STR, DOMAIN_OBJ_MODE)],
         self_first=True,
-        doc="Mode OAM : 0 = sprite normal, 2 = masque (window OBJ) — le sprite n'est plus dessiné, ses pixels opaques donnent sa forme à la window OBJ (région 2). 1 = semi-transparent, réservé au blending, pas encore câblé.",
+        doc="Mode OAM. \"normal\" = sprite dessiné. \"window\" = masque : le sprite n'est plus dessiné, ses pixels opaques donnent sa forme à la fenêtre-objet (région \"object\"). \"blend\" = semi-transparent, réservé au mélange, pas encore câblé.",
     ),
     "self:get_obj_mode": ApiFunc(
         lua_name="self:get_obj_mode", c_func="actor_get_obj_mode",
@@ -241,14 +329,14 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
     "self:set_dir": ApiFunc(
         lua_name="self:set_dir", c_func="actor_set_dir",
-        params=[Param("dir", PARAM_INT)],
+        params=[Param("dir", PARAM_STR, DOMAIN_DIRECTION)],
         self_first=True,
-        doc="Force la direction d'animation (1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW, 0=override).",
+        doc="Force la direction d'animation : \"north\", \"north_east\", \"east\", \"south_east\", \"south\", \"south_west\", \"west\", \"north_west\", ou \"none\" pour aucune direction.",
     ),
     "self:get_dir": ApiFunc(
         lua_name="self:get_dir", c_func="actor_get_dir",
         params=[], self_first=True, ret="int",
-        doc="Retourne la direction d'animation courante (1-8, 0=override).",
+        doc="Direction d'animation courante, en entier (0 = aucune, 1 = north, puis dans le sens horaire jusqu'à 8 = north_west).",
     ),
     "self:set_auto_dir": ApiFunc(
         lua_name="self:set_auto_dir", c_func="actor_set_auto_dir",
@@ -352,6 +440,23 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("name", PARAM_STR, DOMAIN_CONST)],
         ret="int",
         doc="Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
+    ),
+
+    # ── Tableaux ───────────────────────────────────────────────────
+    # `array` n'est pas un appel : c'est la DÉCLARATION d'un tableau, lue par le
+    # codegen à l'endroit du `local` (cf. parser.array_dims). Elle figure quand
+    # même au catalogue, parce que c'est lui qui remplit la sidebar et la
+    # référence de l'écran de script : une forme absente d'ici est une forme que
+    # personne ne découvre.
+    "array": ApiFunc(
+        lua_name="array", c_func="_array",   # résolu par codegen (déclaration)
+        params=[Param("taille", PARAM_INT)],
+        variadic=True,
+        ret="int",
+        doc="Déclare un tableau d'entiers rempli de zéros : local sac = array(8). "
+            "Deux tailles pour une grille — array(20, 12) se lit grille[1..20][1..12]. "
+            "La taille est fixée au build ; les tableaux sont indexés à partir de 1, "
+            "et #sac vaut leur taille.",
     ),
 
     # ── Affichage texte : voir `text.*` (cf. REMOVED_API) ─────────
@@ -645,22 +750,22 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
     "window.set_layer": ApiFunc(
         lua_name="window.set_layer", c_func="window_set_layer",
-        params=[Param("r", PARAM_INT), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Autorise ou non le layer de fond `bg` dans la région r (0=WIN0, 1=WIN1, 2=window OBJ, 3=extérieur).",
+        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non le layer de fond `bg` dans la région r : \"win0\", \"win1\", \"object\" (fenêtre-objet) ou \"outside\".",
     ),
     "window.get_layer": ApiFunc(
         lua_name="window.get_layer", c_func="window_get_layer",
-        params=[Param("r", PARAM_INT), Param("bg", PARAM_INT)], ret="int",
+        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT)], ret="int",
         doc="1 si le layer `bg` est autorisé dans la région r, 0 sinon.",
     ),
     "window.set_obj": ApiFunc(
         lua_name="window.set_obj", c_func="window_set_obj",
-        params=[Param("r", PARAM_INT), Param("on", PARAM_BOOL)],
+        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
         doc="Autorise ou non les sprites dans la région r.",
     ),
     "window.set_blend": ApiFunc(
         lua_name="window.set_blend", c_func="window_set_blend",
-        params=[Param("r", PARAM_INT), Param("on", PARAM_BOOL)],
+        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
         doc="Autorise ou non le blending dans la région r. Assombrir le monde SAUF un panneau = blending activé dans la région 3, coupé dans la 0.",
     ),
 
@@ -727,8 +832,8 @@ RUNTIME_API: dict[str, ApiFunc] = {
 
     "blend.set_mode": ApiFunc(
         lua_name="blend.set_mode", c_func="blend_set_mode",
-        params=[Param("mode", PARAM_INT)],
-        doc="0 = aucun mélange, 1 = alpha, 2 = éclaircir vers le blanc, 3 = assombrir vers le noir.",
+        params=[Param("mode", PARAM_STR, DOMAIN_BLEND_MODE)],
+        doc="Mode de mélange : \"none\", \"alpha\", \"brighten\" (vers le blanc) ou \"darken\" (vers le noir).",
     ),
     "blend.get_mode": ApiFunc(
         lua_name="blend.get_mode", c_func="blend_get_mode",
@@ -737,17 +842,17 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
     "blend.set_layer": ApiFunc(
         lua_name="blend.set_layer", c_func="blend_set_layer",
-        params=[Param("side", PARAM_INT), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Prend (ou non) le layer de fond `bg` comme cible. side 0 = le dessus, 1 = le dessous.",
+        params=[Param("side", PARAM_STR, DOMAIN_BLEND_SIDE), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Prend (ou non) le layer de fond `bg` comme cible du mélange, côté \"top\" (la source) ou \"bottom\" (ce sur quoi elle se mélange).",
     ),
     "blend.set_obj": ApiFunc(
         lua_name="blend.set_obj", c_func="blend_set_obj",
-        params=[Param("side", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Prend (ou non) les sprites comme cible du dessus (side 0) ou du dessous (side 1).",
+        params=[Param("side", PARAM_STR, DOMAIN_BLEND_SIDE), Param("on", PARAM_BOOL)],
+        doc="Prend (ou non) les sprites comme cible du mélange, côté \"top\" ou \"bottom\".",
     ),
     "blend.set_backdrop": ApiFunc(
         lua_name="blend.set_backdrop", c_func="blend_set_backdrop",
-        params=[Param("side", PARAM_INT), Param("on", PARAM_BOOL)],
+        params=[Param("side", PARAM_STR, DOMAIN_BLEND_SIDE), Param("on", PARAM_BOOL)],
         doc="Prend (ou non) la couleur de fond de la scène comme cible. Souvent le dessous manquant quand rien n'est dessiné derrière.",
     ),
     "blend.set_alpha": ApiFunc(

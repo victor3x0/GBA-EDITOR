@@ -132,9 +132,37 @@ class ExprName:
 
 @dataclass
 class ExprIndex:
-    """table.field ou table[key]"""
+    """module.champ — notation POINTÉE uniquement.
+
+    L'indexation par crochets a son propre noeud (`ExprIndexAt`) : les deux
+    s'écrivent pareil en Lua mais ne veulent pas dire la même chose ici. Un
+    champ est un NOM connu à l'écriture (`screen.width`, `data.Objets`), un
+    index est une EXPRESSION calculée."""
     obj:   Any
-    field: str   # pour notation DOT ; pour [] ce sera une Expr → non géré v1
+    field: str
+
+
+@dataclass
+class ExprIndexAt:
+    """t[i] — indexation par une expression, notation CROCHETS.
+
+    Deux niveaux imbriqués pour un tableau à deux dimensions : `g[y][x]` est
+    `ExprIndexAt(ExprIndexAt(g, y), x)`, exactement comme le C qu'il produit."""
+    obj:   Any
+    index: Any
+
+
+@dataclass
+class ExprTable:
+    """{1, 2, 3} — constructeur de tableau.
+
+    `items` porte des ExprTable quand le tableau est à deux dimensions
+    (`{{1,2},{3,4}}`). `has_keys` retient qu'une entrée était NOMMÉE
+    (`{a = 1}`) : c'est un enregistrement et non un tableau, donc une erreur —
+    mais elle se dit dans le checker, pas ici. Le parser décrit ce qui est
+    écrit, il ne juge pas."""
+    items:    list[Any] = field(default_factory=list)
+    has_keys: bool      = False
 
 
 @dataclass
@@ -272,12 +300,32 @@ class _Converter:
                     body = self._block(node.body, set(local_scope)),
                 )
             case "Fornum":
+                # luaparser expose EXACTEMENT (target, start, stop, step, body).
+                # Ces champs étaient lus décalés d'un cran — `start` pris pour la
+                # variable, `stop` pour la borne de départ, `step` pour la borne
+                # d'arrivée, et le pas jeté. `for i = 1, 10, 2` produisait donc
+                # `for (int i = 10; i <= 2; i += 1)` : un corps de boucle qui ne
+                # s'exécute jamais, sans une erreur de checker ni un
+                # avertissement gcc pour le dire.
+                var = getattr(node.target, "id", "i")
+                inner = set(local_scope)
+                inner.add(var)
+                # Pas omis : luaparser ne pose pas None mais l'ENTIER Python 1,
+                # que `_expr` ne sait pas lire (il attend un noeud) et traduisait
+                # en `__unsupported_int`.
+                raw_step = node.step
+                if raw_step is None:
+                    step = None
+                elif isinstance(raw_step, int):
+                    step = ExprNumber(raw_step)
+                else:
+                    step = self._expr(raw_step)
                 return StmtForNum(
-                    var   = node.start.id if hasattr(node.start, "id") else "i",
-                    start = self._expr(node.stop),    # luaparser: start/stop sont inversés parfois
-                    stop  = self._expr(node.step) if node.step else None,
-                    step  = None,
-                    body  = self._block(node.body, set(local_scope)),
+                    var   = var,
+                    start = self._expr(node.start),
+                    stop  = self._expr(node.stop),
+                    step  = step,
+                    body  = self._block(node.body, inner),
                 )
             case "Return":
                 vals = [self._expr(v) for v in (node.values or [])]
@@ -327,9 +375,21 @@ class _Converter:
             case "Name":
                 return ExprName(node.id)
             case "Index":
-                obj   = self._expr(node.value)
+                obj = self._expr(node.value)
+                # La NOTATION décide, pas la forme de l'index. Lue de `hasattr
+                # (node.idx, "id")`, elle rendait `t[i]` indiscernable de `t.i`
+                # (le C émis lisait un champ) et `t[1]` indiscernable de rien du
+                # tout (le repr Python du noeud partait dans le C).
+                if node.notation == _lua_nodes.IndexNotation.SQUARE:
+                    return ExprIndexAt(obj=obj, index=self._expr(node.idx))
                 field = node.idx.id if hasattr(node.idx, "id") else str(node.idx)
                 return ExprIndex(obj=obj, field=field)
+            case "Table":
+                items = [self._expr(f.value) for f in (node.fields or [])]
+                return ExprTable(
+                    items    = items,
+                    has_keys = any(f.key is not None for f in (node.fields or [])),
+                )
             case "Invoke":
                 return self._expr_invoke(node)
             case "Call":
@@ -398,8 +458,62 @@ class _Converter:
                 for _, b in s.elseifs:
                     self._collect_globals(b, locals_here, out)
                 self._collect_globals(s.else_, locals_here, out)
-            elif isinstance(s, (StmtWhile, StmtForNum)):
+            elif isinstance(s, StmtWhile):
                 self._collect_globals(s.body, locals_here, out)
+            elif isinstance(s, StmtForNum):
+                # La variable de boucle est LOCALE à la boucle : lui affecter
+                # une valeur dans le corps ne déclare pas une globale du projet.
+                self._collect_globals(s.body, locals_here | {s.var}, out)
+
+
+# ─── Déclaration d'un tableau ─────────────────────────────────────
+# Deux façons de déclarer, parce que ce sont deux besoins : `{1, 2, 4, 8}`
+# donne le CONTENU et en déduit la taille, `array(20, 12)` donne la TAILLE et
+# remplit de zéros. La reconnaissance vit ici, avec la forme d'AST qu'elle lit,
+# et le checker comme le codegen l'appellent — ils ont chacun besoin des mêmes
+# dimensions, pour en faire deux choses différentes.
+
+ARRAY_CTOR = "array"
+
+# L'espace de noms des tables AUTHORÉES du projet : `data.Objets[i].prix`.
+# Un nom réservé plutôt qu'un nom global par table — sans lui, une table
+# nommée `score` masquerait un `local score` du script, et l'auteur n'aurait
+# aucun moyen de savoir lequel des deux il lit.
+DATA_NS = "data"
+
+
+def array_dims(expr) -> Optional[tuple[int, ...]]:
+    """Dimensions déclarées par cette expression d'initialisation, ou None si
+    ce n'en est pas une (ou si sa forme est fautive — c'est alors au checker de
+    dire laquelle, avec les mots qui vont bien).
+
+    L'ORDRE DES ARGUMENTS EST L'ORDRE DES INDEX : `array(20, 12)` se lit
+    `t[1..20][1..12]` et devient `int t[20][12]`. Aucune notion de largeur, de
+    hauteur, de ligne ni de colonne — la déclaration montre déjà l'ordre."""
+    if (isinstance(expr, ExprCall)
+            and isinstance(expr.func, ExprName)
+            and expr.func.name == ARRAY_CTOR):
+        dims = []
+        for a in expr.args:
+            if not isinstance(a, ExprNumber) or a.value <= 0:
+                return None
+            dims.append(a.value)
+        return tuple(dims) if 1 <= len(dims) <= 2 else None
+
+    if isinstance(expr, ExprTable):
+        if expr.has_keys or not expr.items:
+            return None
+        rows = [it for it in expr.items if isinstance(it, ExprTable)]
+        if not rows:
+            return (len(expr.items),)
+        if len(rows) != len(expr.items):
+            return None                       # mélange de lignes et de valeurs
+        widths = {len(r.items) for r in rows}
+        if len(widths) != 1 or 0 in widths or any(r.has_keys for r in rows):
+            return None                       # lignes de longueurs différentes
+        return (len(rows), widths.pop())
+
+    return None
 
 
 # ─── Point d'entrée public ────────────────────────────────────────

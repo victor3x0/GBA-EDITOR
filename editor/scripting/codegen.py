@@ -23,11 +23,14 @@ from .parser import (
     StmtCall, StmtAssign, StmtLocalAssign, StmtIf, StmtWhile,
     StmtForNum, StmtReturn, StmtBreak,
     ExprNumber, ExprBool, ExprNil, ExprString, ExprName,
-    ExprIndex, ExprInvoke, ExprCall, ExprBinop, ExprUnop,
+    ExprIndex, ExprIndexAt, ExprTable, ExprInvoke, ExprCall, ExprBinop, ExprUnop,
+    array_dims, DATA_NS,
 )
 from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, KNOWN_EVENTS_BY_KIND, scene_event_sig,
+    DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
+    DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, hardware_enum_constant,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
     DOMAIN_CAMERA, camera_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_PALETTE,
@@ -98,6 +101,10 @@ class CodegenContext:
     # {nom d'image: [noms d'état de SON sprite]} — un état n'a de sens que dans
     # un sprite, et c'est l'image que le script nomme (cf. api.image_state_constant).
     image_states: dict = field(default_factory=dict)
+    # Tables de données : {nom: (noms de colonnes, nombre de lignes)}. Le nombre
+    # de lignes sert à `#data.X`, qui est une constante de compilation comme
+    # `#t` sur un tableau — la taille est connue, elle n'est rangée nulle part.
+    data_tables: dict = field(default_factory=dict)
     # Sauvegarde — deux faits du projet, portés jusqu'ici pour que le checker des
     # BEHAVIORS (relancé depuis ce contexte-ci) voie ce que voit celui des
     # acteurs. Sans eux, `save.write(7)` passerait dans un behavior et pas dans
@@ -116,6 +123,10 @@ class CodeGen:
         self._indent = 0
         self._required_behaviors: dict[str, str] = {}  # alias Lua → sym C
         self._pool_locals: dict[str, tuple[int, any]] = {}  # name → (data_index, init_value)
+        # Tableaux déclarés dans ce script : nom → dimensions. Sert à `#t`, qui
+        # est une constante de compilation — la taille fait partie du type, donc
+        # elle n'est rangée nulle part à l'exécution.
+        self._arrays: dict[str, tuple[int, ...]] = {}
         self.warnings: list[str] = []  # diagnostics non bloquants (ex: behavior manquant/invalide)
 
     # ── API publique ──────────────────────────────────────────────
@@ -190,6 +201,7 @@ class CodeGen:
                 sfx_component_name = self.ctx.sfx_component_name,
                 save_slots   = self.ctx.save_slots,
                 has_persistent = self.ctx.has_persistent,
+                data_tables  = self.ctx.data_tables or None,
             )
             for err in _lua_check(beh_ast, check_ctx, check_event_names=False):
                 self.warnings.append(f"behavior '{stem}': {err.message}")
@@ -247,6 +259,9 @@ class CodeGen:
         self._w('#include "actor_api.h"')
         self._w('#include "globals.h"')
         self._w('#include "constants.h"')
+        # Toujours inclus, même sans table : l'en-tête est toujours généré, et
+        # un include conditionnel serait un second chemin pour un cas vide.
+        self._w('#include "data_tables.h"')
         # Forward declarations pour éviter les erreurs d'ordre (ex: destroy appelle on_destroy)
         if not self.ctx.is_scene:
             self._w("")
@@ -347,6 +362,18 @@ class CodeGen:
             self._w("/* Variables locales — stockées dans Actor.data[] (une par instance) */")
             slot = 0
             for loc in non_require:
+                dims = array_dims(loc.value)
+                if dims:
+                    # `Actor.data[8]` porte huit ENTIERS par instance : un
+                    # tableau n'y tient pas. Le laisser retomber sur une
+                    # déclaration de fichier le ferait partager par toutes les
+                    # instances, silencieusement — le checker refuse donc en
+                    # amont, et cette trace n'existe que si on l'a contourné.
+                    msg = (f"'{loc.name}' : un tableau ne peut pas vivre dans un "
+                           f"prefab poolé (Actor.data[] ne porte que des entiers).")
+                    self._w(f"/* {msg} */")
+                    self.warnings.append(msg)
+                    continue
                 c_type, init, note = self._local_decl(loc)
                 if c_type == "int":
                     self._pool_locals[loc.name] = (slot, init)
@@ -361,6 +388,12 @@ class CodeGen:
             # Actor statique : locals → variables C statiques (partagées, OK car une seule instance)
             self._w("/* Variables locales à cet acteur */")
             for loc in non_require:
+                dims = array_dims(loc.value)
+                if dims:
+                    self._arrays[loc.name] = dims
+                    self._w(f"static {self._array_decl(loc.name, dims)} = "
+                            f"{self._array_init(loc.value, dims)};")
+                    continue
                 c_type, init, note = self._local_decl(loc)
                 if c_type is None:
                     self._w(f"/* {loc.name} : {note} */")
@@ -412,6 +445,57 @@ class CodeGen:
         if isinstance(loc.value, ExprString):
             return "const char *", init, ""
         return "int", init if init is not None else "0", ""
+
+    # ── Tableaux ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _array_decl(name: str, dims: tuple[int, ...]) -> str:
+        """`grille`, (20, 12) → « int grille[20][12] ». Le premier argument
+        d'`array` est le premier index, en Lua comme en C."""
+        return f"int {name}" + "".join(f"[{d}]" for d in dims)
+
+    def _array_init(self, value, dims: tuple[int, ...]) -> str:
+        """L'initialiseur C. `{1, 2, 4, 8}` recopie les valeurs écrites ;
+        `array(n)` remplit de zéros."""
+        if isinstance(value, ExprTable):
+            if len(dims) == 2:
+                return "{" + ", ".join(
+                    "{" + ", ".join(self._expr(v) for v in row.items) + "}"
+                    for row in value.items) + "}"
+            return "{" + ", ".join(self._expr(v) for v in value.items) + "}"
+        return "{0}" if len(dims) == 1 else "{{0}}"
+
+    @staticmethod
+    def _data_table_ref(e) -> Optional[str]:
+        """`data.Objets` → "Objets", sinon None."""
+        if (isinstance(e, ExprIndex) and isinstance(e.obj, ExprName)
+                and e.obj.name == DATA_NS):
+            return e.field
+        return None
+
+    def _array_length(self, operand) -> Optional[int]:
+        """La valeur de `#x`, connue au build. `#t` est le nombre d'éléments,
+        `#t[i]` la longueur d'une ligne d'un tableau à deux dimensions, et
+        `#data.X` le nombre de lignes de la table."""
+        name = self._data_table_ref(operand)
+        if name is not None:
+            entry = self.ctx.data_tables.get(name)
+            return entry[1] if entry else None
+        if isinstance(operand, ExprName):
+            dims = self._arrays.get(operand.name)
+            return dims[0] if dims else None
+        if isinstance(operand, ExprIndexAt) and isinstance(operand.obj, ExprName):
+            dims = self._arrays.get(operand.obj.name)
+            return dims[1] if dims and len(dims) == 2 else None
+        return None
+
+    def _index(self, e) -> str:
+        """Lua indexe à partir de 1, le C à partir de 0 — la traduction se fait
+        ici, une fois. Un index littéral est replié tout de suite : `t[1]`
+        devient `t[0]` et non `t[(1) - 1]`."""
+        if isinstance(e, ExprNumber):
+            return str(e.value - 1)
+        return f"({self._expr(e)}) - 1"
 
     # ── Fonctions / handlers ──────────────────────────────────────
 
@@ -471,6 +555,14 @@ class CodeGen:
                 self._required_behaviors[s.name] = sym
                 # Pas de déclaration C — le behavior est inclus dans l'en-tête
                 return
+            dims = array_dims(s.value)
+            if dims:
+                # Un tableau déclaré DANS un handler est reconstruit à chaque
+                # appel, comme n'importe quel `local` de Lua.
+                self._arrays[s.name] = dims
+                self._w(f"{self._array_decl(s.name, dims)} = "
+                        f"{self._array_init(s.value, dims)};")
+                return
             val = self._expr(s.value) if s.value is not None else "0"
             # Détecte local var = get_actor("...") → Actor* au lieu de int
             is_actor_ref = (
@@ -513,7 +605,14 @@ class CodeGen:
             stop  = self._expr(s.stop) if s.stop else "0"
             step  = self._expr(s.step) if s.step else "1"
             v     = s.var
-            self._w(f"for (int {v} = {start}; {v} <= {stop}; {v} += {step}) {{")
+            # Le SENS de la comparaison se décide au build, donc le pas doit
+            # être un littéral (le checker le refuse autrement) : un pas calculé
+            # obligerait à tester son signe à chaque tour, dans un moteur qui ne
+            # teste rien ailleurs.
+            descend = ((isinstance(s.step, ExprUnop) and s.step.op == "-")
+                       or (isinstance(s.step, ExprNumber) and s.step.value < 0))
+            cmp     = ">=" if descend else "<="
+            self._w(f"for (int {v} = {start}; {v} {cmp} {stop}; {v} += {step}) {{")
             self._indent += 1
             self._emit_block(s.body)
             self._indent -= 1
@@ -554,13 +653,35 @@ class CodeGen:
                 val = SCREEN_CONSTANTS.get(e.field)
                 if val is not None:
                     return str(val)
+            # `data.Objets` → le tableau const émis par data_tables.c. Ce qui
+            # suit (l'indexation puis la colonne) se compose tout seul : le
+            # `.champ` ci-dessous et `ExprIndexAt` s'appliquent au résultat,
+            # exactement comme en Lua.
+            table = self._data_table_ref(e)
+            if table is not None:
+                return f"g_data_{table}"
             # module.field — retourne le nom composé pour la résolution ultérieure
             return f"{self._expr(e.obj)}.{e.field}"
+        if isinstance(e, ExprIndexAt):
+            return f"{self._expr(e.obj)}[{self._index(e.index)}]"
+        if isinstance(e, ExprTable):
+            # Un constructeur n'a de sens que comme initialiseur de déclaration
+            # (`_array_init`) : ailleurs, il n'y a pas de tableau à écrire dedans.
+            self.warnings.append("un constructeur { } ne peut initialiser qu'un "
+                                 "tableau déclaré par `local`.")
+            return "0"
         if isinstance(e, (ExprInvoke, ExprCall)):
             return self._call_expr(e)
         if isinstance(e, ExprBinop):
             return f"({self._expr(e.left)} {e.op} {self._expr(e.right)})"
         if isinstance(e, ExprUnop):
+            if e.op == "#":
+                n = self._array_length(e.operand)
+                if n is None:
+                    self.warnings.append("`#` appliqué à autre chose qu'un "
+                                         "tableau déclaré dans ce script.")
+                    return "0"
+                return str(n)
             op = "!" if e.op == "not" else e.op
             return f"({op}{self._expr(e.operand)})"
         return "0"
@@ -707,6 +828,14 @@ class CodeGen:
         return (f"ui_image_set_state({image_constant(image)}, "
                 f"{image_state_constant(image, state)})")
 
+    def _emit_array_misuse(self, args: list) -> str:
+        """`array(n)` DÉCLARE un tableau : il est lu à l'endroit du `local`
+        (cf. `_emit_locals`), et n'arrive ici que s'il a été écrit ailleurs —
+        dans un calcul, un argument. Il n'y a rien à émettre pour ça."""
+        self.warnings.append("array() déclare un tableau et ne s'écrit que dans "
+                             "un `local` : local sac = array(8).")
+        return "0 /* array() hors d'une déclaration */"
+
     def _emit_get_actor(self, args: list) -> str:
         """
         get_actor("PADDLE_AUTO")  →  &g_actors[TAG_PADDLE_AUTO]
@@ -816,6 +945,14 @@ _DOMAIN_CONSTANT: dict = {
     DOMAIN_PALETTE: lambda g, name: palette_constant(name),
     DOMAIN_REGION:  lambda g, name: region_constant(name),
     DOMAIN_IMAGE:   lambda g, name: image_constant(name),
+    # Énumérations matérielles : la constante C vient de `HARDWARE_ENUMS`, la
+    # même table que celle où le checker a validé le nom. Le C généré porte donc
+    # `WINR_OBJ` et non `2` — lisible pour qui relit le build.
+    DOMAIN_OBJ_MODE:   lambda g, name: hardware_enum_constant(DOMAIN_OBJ_MODE, name),
+    DOMAIN_DIRECTION:  lambda g, name: hardware_enum_constant(DOMAIN_DIRECTION, name),
+    DOMAIN_WIN_REGION: lambda g, name: hardware_enum_constant(DOMAIN_WIN_REGION, name),
+    DOMAIN_BLEND_MODE: lambda g, name: hardware_enum_constant(DOMAIN_BLEND_MODE, name),
+    DOMAIN_BLEND_SIDE: lambda g, name: hardware_enum_constant(DOMAIN_BLEND_SIDE, name),
 }
 
 # Domaines SANS constante générique : leur argument est résolu par un émetteur
@@ -834,6 +971,7 @@ def covered_domains() -> frozenset:
 
 
 _CALL_CUSTOM: dict = {
+    "array":       CodeGen._emit_array_misuse,
     "get_actor":   CodeGen._emit_get_actor,
     "global.get":  CodeGen._emit_global_get,
     "global.set":  CodeGen._emit_global_set,

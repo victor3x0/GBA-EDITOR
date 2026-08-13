@@ -27,7 +27,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
+import re
+
 from .api import RUNTIME_API, PARAM_STR
+from .parser import DATA_NS
 
 try:
     from luaparser import ast as _lua_ast, astnodes as _nodes
@@ -147,9 +150,15 @@ def rename_in_text(text: str, domain: str, old: str, new: str) -> tuple[str, int
 # ── Portée projet ─────────────────────────────────────────────────
 
 def script_paths(project) -> list[Path]:
-    """Tous les .lua du projet (actors, scènes, behaviors)."""
+    """Tous les .lua du projet (actors, scènes, caméras, behaviors).
+
+    Les scripts de CAMÉRA manquaient à cette liste depuis leur apparition en
+    v0.6.1 : un `scene.switch("Arène")` écrit dans une caméra n'était donc pas
+    réécrit par un renommage de scène, et rien ne le signalait — la faute ne
+    remontait qu'au build suivant, sur un `SCENE_IDX_*` indéfini."""
     dirs = [getattr(project, attr, None) for attr in
-            ("scripts_actors_dir", "scripts_scenes_dir", "scripts_behaviors_dir")]
+            ("scripts_actors_dir", "scripts_scenes_dir", "scripts_cameras_dir",
+             "scripts_behaviors_dir")]
     out: list[Path] = []
     for d in dirs:
         if d and Path(d).exists():
@@ -295,6 +304,141 @@ def index_refs_in_project(project, domain: str) -> dict[str, dict[Path, int]]:
             index.setdefault(ref.value, {}).setdefault(p, 0)
             index[ref.value][p] += 1
     return index
+
+
+# ── Tables de données — le second type de site ────────────────────
+#
+# Tout ce qui précède repère une référence dans un ARGUMENT littéral d'appel,
+# et sa table de sites dérive de `RUNTIME_API`. Une table de données, elle, se
+# cite comme du CODE : `data.Objets[i].prix`, sans guillemets et sans appel.
+# Elle est donc invisible à `iter_refs`, et un renommage la laisserait derrière.
+#
+# Le repérage reste STRUCTUREL — c'est l'AST qui dit quelles occurrences sont
+# des citations, jamais une recherche de texte. Mais la réécriture ne peut pas
+# s'appuyer sur la position du NOM : dans cette version de luaparser, un noeud
+# `Name` ne porte pas d'offsets (`start_char` vaut None). Seuls les noeuds
+# `Index` en ont, et leur tranche se termine par le nom cherché. On relit donc
+# cette tranche et on ne réécrit que si elle finit bien par `.<nom>` — repérage
+# par l'arbre, écriture vérifiée sur le texte.
+
+
+@dataclass(frozen=True)
+class DataRef:
+    """Une citation de table de données dans un script."""
+    path:   Path
+    table:  str
+    column: Optional[str]   # None → c'est la TABLE qui est citée
+    line:   int
+    start:  int             # offset du nom lui-même
+    stop:   int             # offset du dernier caractère (inclusif)
+
+
+def _table_of(node) -> Optional[str]:
+    """`data.Objets` → "Objets", pour tout autre noeud → None."""
+    if (isinstance(node, _nodes.Index)
+            and node.notation == _nodes.IndexNotation.DOT
+            and isinstance(node.value, _nodes.Name)
+            and node.value.id == DATA_NS):
+        return getattr(node.idx, "id", None)
+    return None
+
+
+def _tail_span(text: str, node, name: str) -> Optional[tuple[int, int]]:
+    """Position du `name` final dans la tranche source de `node`, ou None si la
+    tranche ne se termine pas par `.name` — auquel cas on n'écrit rien."""
+    start, stop = getattr(node, "start_char", None), getattr(node, "stop_char", None)
+    if start is None or stop is None:
+        return None
+    m = re.search(r"\.\s*(" + re.escape(name) + r")\s*$", text[start:stop + 1])
+    return (start + m.start(1), start + m.end(1) - 1) if m else None
+
+
+def iter_data_refs(text: str, path: Path | None = None,
+                   table: str | None = None,
+                   column: str | None = None) -> Iterator[DataRef]:
+    """Citations de tables de données. `table` filtre la table ; `column`
+    demande les citations de CETTE colonne au lieu de celles de la table."""
+    if not _LUAPARSER_OK:
+        return
+    try:
+        tree = _lua_ast.parse(text)
+    except Exception:
+        return
+
+    def _line(off: int) -> int:
+        return text.count("\n", 0, off) + 1
+
+    for node in _lua_ast.walk(tree):
+        if not isinstance(node, _nodes.Index):
+            continue
+
+        # `data.Objets` — la table elle-même.
+        if column is None:
+            name = _table_of(node)
+            if name and (table is None or name == table):
+                span = _tail_span(text, node, name)
+                if span:
+                    yield DataRef(path=path or Path(""), table=name, column=None,
+                                  line=_line(span[0]), start=span[0], stop=span[1])
+            continue
+
+        # `data.Objets[…].prix` — la colonne. Le noeud porte le `.prix` ; sous
+        # lui, une indexation par crochets, et sous elle la table.
+        if node.notation != _nodes.IndexNotation.DOT:
+            continue
+        field = getattr(node.idx, "id", None)
+        if field != column or not isinstance(node.value, _nodes.Index):
+            continue
+        if node.value.notation != _nodes.IndexNotation.SQUARE:
+            continue
+        owner = _table_of(node.value.value)
+        if owner is None or (table is not None and owner != table):
+            continue
+        span = _tail_span(text, node, field)
+        if span:
+            yield DataRef(path=path or Path(""), table=owner, column=field,
+                          line=_line(span[0]), start=span[0], stop=span[1])
+
+
+def _rewrite_data_refs(text: str, refs: list[DataRef], new: str) -> tuple[str, int]:
+    """Remplace chaque nom repéré, de droite à gauche — le reste du fichier,
+    mise en forme et commentaires compris, est préservé octet pour octet."""
+    out = text
+    for r in sorted(refs, key=lambda r: r.start, reverse=True):
+        out = out[:r.start] + new + out[r.stop + 1:]
+    return out, len(refs)
+
+
+def rename_data_table_in_project(project, old: str, new: str) -> dict[Path, int]:
+    """Réécrit `data.<old>` en `data.<new>` dans tous les scripts."""
+    return _rename_data(project, new,
+                        lambda text, p: list(iter_data_refs(text, p, table=old)))
+
+
+def rename_data_column_in_project(project, table: str,
+                                  old: str, new: str) -> dict[Path, int]:
+    """Réécrit `data.<table>[…].<old>` en `.<new>`. La table est exigée : deux
+    tables peuvent avoir une colonne du même nom sans rapport l'une avec
+    l'autre."""
+    return _rename_data(project, new,
+                        lambda text, p: list(iter_data_refs(text, p, table=table,
+                                                            column=old)))
+
+
+def _rename_data(project, new: str, find) -> dict[Path, int]:
+    changed: dict[Path, int] = {}
+    for p in script_paths(project):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        refs = find(text, p)
+        if not refs:
+            continue
+        new_text, n = _rewrite_data_refs(text, refs, new)
+        p.write_text(new_text, encoding="utf-8")
+        changed[p] = n
+    return changed
 
 
 def rename_in_project(project, domain: str, old: str, new: str) -> dict[Path, int]:

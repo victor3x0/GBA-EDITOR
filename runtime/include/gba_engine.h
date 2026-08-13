@@ -473,6 +473,17 @@ void window_set_blend (int r, int on);
    quelles que soient les cibles ; et window_set_blend() décide des RÉGIONS où
    tout ceci s'applique. */
 
+/* Modes et côtés, nommés — le Lua les cite par leur nom (`blend.set_mode
+   ("alpha")`), le codegen émet ces constantes. Voir scripting/api.py,
+   « Énumérations matérielles ». */
+#define BLD_MODE_NONE       0
+#define BLD_MODE_ALPHA      1
+#define BLD_MODE_BRIGHTEN   2
+#define BLD_MODE_DARKEN     3
+
+#define BLD_SIDE_TOP        0   /* la source du mélange */
+#define BLD_SIDE_BOTTOM     1   /* ce sur quoi elle se mélange */
+
 void blend_set_mode    (int mode);
 int  blend_get_mode    (void);
 void blend_set_layer   (int side, int bg, int on);

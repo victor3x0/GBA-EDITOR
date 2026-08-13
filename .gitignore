@@ -1,6 +1,7 @@
 # Python cache — généré automatiquement, jamais besoin de commiter
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # GBA Editor — artefacts de build uniquement (générés à chaque build)
 Project Demo/*/build/

@@ -23,15 +23,18 @@ from typing import Optional
 from .parser import (
     LuaScript, LuaFunction,
     StmtCall, StmtAssign, StmtLocalAssign, StmtIf, StmtWhile, StmtForNum,
-    ExprInvoke, ExprCall, ExprIndex, ExprName, ExprString,
-    ExprNumber, ExprUnop, ExprBool,
+    ExprInvoke, ExprCall, ExprIndex, ExprIndexAt, ExprTable, ExprName, ExprString,
+    ExprNumber, ExprUnop, ExprBool, ExprBinop,
+    ARRAY_CTOR, array_dims, DATA_NS,
 )
 from .api import (RUNTIME_API, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE,
                   DOMAIN_TAG, DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
-                  DOMAIN_CONST)
+                  DOMAIN_CONST,
+                  DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
+                  DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, HARDWARE_ENUMS)
 
 
 # Ce à quoi ressemble une CLÉ et pas un libellé : minuscules, chiffres, au
@@ -73,6 +76,13 @@ class BuildContext:
     region_names: list[str]  = None    # emplacements de texte (toutes mises en page)
     image_names:  list[str]  = None    # images d'interface (toutes mises en page)
     save_slots:   Optional[int] = None # emplacements de sauvegarde déclarés au projet
+    # Ce script est-il celui d'un prefab poolé ? Ses locals vivent alors dans
+    # `Actor.data[8]`, huit entiers par instance — où un tableau ne tient pas.
+    is_pooled:    bool = False
+    # Tables de données : {nom: (noms de colonnes, nombre de lignes)}. Ce que le
+    # checker en fait : refuser une table ou une colonne qui n'existe pas, borner
+    # un index écrit en clair, et refuser l'écriture (elles sont `const` en ROM).
+    data_tables:  dict = None
     # Y a-t-il seulement quelque chose à sauver ? Sauver sans variable
     # persistante n'échoue pas, ça ne fait simplement RIEN — le genre de silence
     # qu'on ne diagnostique pas en regardant son script.
@@ -99,11 +109,217 @@ class Checker:
     def __init__(self, ctx: BuildContext):
         self.ctx    = ctx
         self.errors: list[CheckError] = []
+        # Tableaux du script : nom → dimensions, ou None quand le même nom est
+        # déclaré deux fois avec des tailles différentes. Une table PLATE, sans
+        # portée lexicale : approximer large ne peut que taire un contrôle,
+        # jamais en inventer un — et une erreur de bornes est bloquante, donc
+        # elle ne doit jamais porter sur le mauvais tableau.
+        self._arrays: dict[str, Optional[tuple[int, ...]]] = {}
 
     def check(self, script: LuaScript, check_event_names: bool = True) -> list[CheckError]:
+        self._collect_arrays(script)
+        for loc in script.locals:
+            self._check_array_decl(loc.name, loc.value, top_level=True)
         for fn in script.functions:
             self._check_function(fn, check_event_names)
         return self.errors
+
+    # ── Tableaux ──────────────────────────────────────────────────
+
+    def _collect_arrays(self, script: LuaScript):
+        """Relève toutes les déclarations de tableau du script, où qu'elles
+        soient — les locals de tête comme celles d'un corps de handler."""
+        def note(name: str, value):
+            dims = array_dims(value)
+            if dims is None:
+                return
+            if name in self._arrays and self._arrays[name] != dims:
+                self._arrays[name] = None      # deux tailles : on ne conclut rien
+            else:
+                self._arrays[name] = dims
+
+        def walk(stmts):
+            for s in stmts:
+                if isinstance(s, StmtLocalAssign):
+                    note(s.name, s.value)
+                elif isinstance(s, StmtIf):
+                    walk(s.then)
+                    for _, b in s.elseifs:
+                        walk(b)
+                    walk(s.else_)
+                elif isinstance(s, (StmtWhile, StmtForNum)):
+                    walk(s.body)
+
+        for loc in script.locals:
+            note(loc.name, loc.value)
+        for fn in script.functions:
+            walk(fn.body)
+
+    def _check_array_decl(self, name: str, value, top_level: bool = False):
+        """Ce qui rend une déclaration de tableau invalide, et le dit sur la
+        ligne fautive plutôt que sur le C généré.
+
+        `top_level` distingue l'ÉTAT du script (un `local` de tête, qui survit
+        d'une frame à l'autre) d'une variable de travail déclarée dans un
+        handler (reconstruite à chaque appel) : seul le premier doit tenir dans
+        `Actor.data[]` quand le prefab est poolé."""
+        dims = array_dims(value)
+
+        if isinstance(value, ExprCall) and isinstance(value.func, ExprName) \
+                and value.func.name == ARRAY_CTOR and dims is None:
+            self.errors.append(CheckError(
+                "error",
+                f"{ARRAY_CTOR}() pour '{name}' : une ou deux tailles attendues, "
+                f"écrites en clair et strictement positives — "
+                f"{ARRAY_CTOR}(8) ou {ARRAY_CTOR}(20, 12). La taille fait partie "
+                f"du type, elle doit être connue au build."))
+            return
+
+        if isinstance(value, ExprTable):
+            if dims is None:
+                if value.has_keys:
+                    raison = "une entrée nommée — c'est un enregistrement, pas un tableau"
+                elif not value.items:
+                    raison = ("aucun élément — un tableau vide n'a pas de taille, "
+                              f"écris {ARRAY_CTOR}(n)")
+                else:
+                    raison = "des lignes de longueurs différentes"
+                self.errors.append(CheckError("error", f"'{name}' : {raison}."))
+                return
+            if len(dims) == 2:
+                elements = [v for row in value.items for v in row.items]
+            else:
+                elements = list(value.items)
+            if any(isinstance(v, ExprString) for v in elements):
+                self.errors.append(CheckError(
+                    "error",
+                    f"'{name}' : un tableau ne contient que des entiers — le "
+                    f"moteur n'a pas de chaîne manipulable. Pour du texte "
+                    f"affichable, une colonne 'text' d'une table de données."))
+                return
+
+        if dims and top_level and self.ctx.is_pooled:
+            self.errors.append(CheckError(
+                "error",
+                f"'{name}' : un prefab poolé ne peut pas porter de tableau d'état. "
+                f"Ses variables de tête vivent dans Actor.data[], huit entiers par "
+                f"instance ; un tableau y serait partagé par toutes les copies. "
+                f"Déclaré DANS un handler, il reste possible — il est alors "
+                f"reconstruit à chaque appel."))
+
+    def _array_chain(self, e: ExprIndexAt):
+        """Vérifie `t[i]` et `t[i][j]` : le nom indexé, le nombre de dimensions
+        employées, et les bornes quand l'index est écrit en clair."""
+        indices = []
+        cur = e
+        while isinstance(cur, ExprIndexAt):
+            indices.append(cur.index)
+            cur = cur.obj
+        indices.reverse()
+        # `data.Objets[i]` : la base n'est pas un nom mais une table du projet,
+        # et sa « dimension » est son nombre de lignes.
+        table = self._data_table_ref(cur)
+        if table is not None:
+            self._check_data_rows(table, indices)
+            return
+        if not isinstance(cur, ExprName):
+            return
+        name = cur.name
+        if name not in self._arrays:
+            self.errors.append(CheckError(
+                "warning",
+                f"'{name}[…]' : '{name}' n'est pas un tableau déclaré dans ce "
+                f"script."))
+            return
+        dims = self._arrays[name]
+        if dims is None:
+            return
+        if len(indices) > len(dims):
+            self.errors.append(CheckError(
+                "error",
+                f"'{name}' a {len(dims)} dimension(s), {len(indices)} index "
+                f"employé(s)."))
+            return
+        for level, idx in enumerate(indices):
+            k = self._literal_int(idx)
+            if k is None:
+                continue          # index calculé : borné par personne, assumé
+            if not (1 <= k <= dims[level]):
+                self.errors.append(CheckError(
+                    "error",
+                    f"'{name}[{k}]' : hors bornes — ce tableau va de 1 à "
+                    f"{dims[level]} (les tableaux sont indexés à partir de 1, "
+                    f"comme partout en Lua)."))
+
+    # ── Tables de données ─────────────────────────────────────────
+
+    @staticmethod
+    def _data_table_ref(e) -> Optional[str]:
+        """`data.Objets` → "Objets", sinon None."""
+        if (isinstance(e, ExprIndex) and isinstance(e.obj, ExprName)
+                and e.obj.name == DATA_NS):
+            return e.field
+        return None
+
+    def _check_data_table(self, name: str) -> bool:
+        """La table existe-t-elle ? Une table inconnue est une ERREUR : le
+        `g_data_*` émis n'existerait pas, et gcc échouerait sur la ligne générée
+        — même sévérité et même raison qu'une scène ou une palette inconnue."""
+        if self.ctx.data_tables is None:
+            return True
+        if name in self.ctx.data_tables:
+            return True
+        near = ", ".join(sorted(self.ctx.data_tables)[:5]) or "aucune table dans le projet"
+        self.errors.append(CheckError(
+            "error", f"data.{name} : table de données introuvable ({near})."))
+        return False
+
+    def _check_data_rows(self, table: str, indices: list):
+        """Une table s'indexe sur UNE dimension — ses lignes — et le rang est
+        borné comme celui d'un tableau, quand il est écrit en clair."""
+        if not self._check_data_table(table) or self.ctx.data_tables is None:
+            return
+        _columns, rows = self.ctx.data_tables[table]
+        if len(indices) > 1:
+            self.errors.append(CheckError(
+                "error",
+                f"data.{table} s'indexe par sa LIGNE et rien d'autre : "
+                f"data.{table}[i].colonne."))
+            return
+        k = self._literal_int(indices[0]) if indices else None
+        if k is None:
+            return
+        if not (1 <= k <= rows):
+            borne = (f"de 1 à {rows}" if rows else "vide — aucune ligne")
+            self.errors.append(CheckError(
+                "error",
+                f"data.{table}[{k}] : hors bornes — cette table va {borne} "
+                f"(les lignes sont numérotées à partir de 1)."))
+
+    def _check_data_column(self, table: str, column: str):
+        if self.ctx.data_tables is None or table not in self.ctx.data_tables:
+            return
+        columns, _rows = self.ctx.data_tables[table]
+        if column not in columns:
+            self.errors.append(CheckError(
+                "error",
+                f"data.{table}[…].{column} : cette table n'a pas de colonne "
+                f"'{column}' ({', '.join(columns) or 'aucune colonne'})."))
+
+    def _check_data_write(self, target):
+        """Une table authorée est `const` en ROM : l'écriture ne compilerait
+        pas. Autant le dire sur la ligne Lua fautive que sur la ligne générée."""
+        node = target
+        while isinstance(node, (ExprIndex, ExprIndexAt)):
+            name = self._data_table_ref(node)
+            if name is not None:
+                self.errors.append(CheckError(
+                    "error",
+                    f"data.{name} ne s'écrit pas : une table de données est "
+                    f"constante, cuite dans la ROM. Pour une valeur qui change "
+                    f"en jeu, une variable globale ou un tableau de travail."))
+                return
+            node = node.obj
 
     # ── Fonctions ─────────────────────────────────────────────────
 
@@ -128,22 +344,101 @@ class Checker:
     def _check_stmt(self, s):
         if isinstance(s, StmtCall):
             self._check_call_expr(s.call)
-        elif isinstance(s, (StmtAssign, StmtLocalAssign)):
-            self._check_expr(getattr(s, "value", None))
+        elif isinstance(s, StmtLocalAssign):
+            self._check_array_decl(s.name, s.value)
+            self._check_expr(s.value)
+        elif isinstance(s, StmtAssign):
+            self._check_data_write(s.target)
+            self._check_expr(s.target)     # `t[i] = v` : la CIBLE aussi s'indexe
+            self._check_expr(s.value)
         elif isinstance(s, StmtIf):
             self._check_expr(s.cond)
             self._check_block(s.then)
             for _, b in s.elseifs:
                 self._check_block(b)
             self._check_block(s.else_)
-        elif isinstance(s, (StmtWhile, StmtForNum)):
+        elif isinstance(s, StmtWhile):
+            self._check_expr(s.cond)
+            self._check_block(s.body)
+        elif isinstance(s, StmtForNum):
+            self._check_for_step(s)
+            self._check_expr(s.start)
+            self._check_expr(s.stop)
             self._check_block(s.body)
 
+    def _check_for_step(self, s: StmtForNum):
+        """Le SENS de la comparaison est décidé au build (`i <= stop` ou
+        `i >= stop`), donc le pas doit être écrit en clair. Un pas calculé
+        obligerait à tester son signe à chaque tour de boucle, dans un moteur
+        qui ne teste rien ailleurs."""
+        if s.step is not None and self._literal_int(s.step) is None:
+            self.errors.append(CheckError(
+                "error",
+                "for … do : le pas doit être un nombre écrit en clair — c'est "
+                "lui qui dit si la boucle monte ou descend, et ça se décide à "
+                "la compilation."))
+
     def _check_expr(self, e):
+        """Descend dans TOUTE l'expression. Le parcours s'arrêtait aux appels
+        posés seuls : ni les opérandes d'un calcul, ni les arguments d'un appel
+        n'étaient visités, si bien qu'un appel imbriqué échappait à la
+        validation. Une erreur de bornes ne peut pas se permettre le même
+        angle mort — `t[9] + 1` doit se voir."""
         if e is None:
             return
-        if isinstance(e, (ExprInvoke, ExprCall)):
+        if isinstance(e, ExprIndexAt):
+            self._array_chain(e)
+            cur = e
+            while isinstance(cur, ExprIndexAt):
+                self._check_expr(cur.index)
+                cur = cur.obj
+            # La BASE est déjà traitée par `_array_chain` — un nom de tableau
+            # comme une table de données. La revisiter dirait deux fois la même
+            # erreur sur la même ligne.
+            if not isinstance(cur, ExprName) and self._data_table_ref(cur) is None:
+                self._check_expr(cur)
+        elif isinstance(e, (ExprInvoke, ExprCall)):
             self._check_call_expr(e)
+            for a in e.args:
+                self._check_expr(a)
+        elif isinstance(e, ExprBinop):
+            self._check_expr(e.left)
+            self._check_expr(e.right)
+        elif isinstance(e, ExprUnop):
+            if e.op == "#":
+                self._check_length(e.operand)
+            self._check_expr(e.operand)
+        elif isinstance(e, ExprTable):
+            for v in e.items:
+                self._check_expr(v)
+        elif isinstance(e, ExprIndex):
+            # `data.Objets` seul, ou la COLONNE de `data.Objets[i].prix` : les
+            # deux formes sont un accès pointé, et c'est ce qu'il y a DESSOUS
+            # qui les distingue.
+            table = self._data_table_ref(e)
+            if table is not None:
+                self._check_data_table(table)
+            elif isinstance(e.obj, ExprIndexAt):
+                owner = self._data_table_ref(e.obj.obj)
+                if owner is not None:
+                    self._check_data_column(owner, e.field)
+            self._check_expr(e.obj)
+
+    def _check_length(self, operand):
+        """`#x` est une constante de compilation : elle n'a de valeur que sur un
+        tableau dont ce script connaît la taille, ou sur une table du projet."""
+        base = operand
+        while isinstance(base, ExprIndexAt):
+            base = base.obj
+        if isinstance(base, ExprName) and base.name in self._arrays:
+            return
+        if self._data_table_ref(base) is not None:
+            return          # `#data.Objets` — validée par ailleurs
+        self.errors.append(CheckError(
+            "error",
+            "'#' ne s'applique qu'à un tableau déclaré dans ce script ou à une "
+            "table de données — sa valeur est calculée au build, pas rangée en "
+            "mémoire."))
 
     # ── Appels ────────────────────────────────────────────────────
 
@@ -223,6 +518,21 @@ class Checker:
             return
 
         for i, (param, arg) in enumerate(zip(api.params, args)):
+            # Un NOMBRE là où une énumération matérielle est attendue : c'est
+            # l'ancienne forme de l'API (`blend.set_mode(1)`), qui restait
+            # silencieuse — le codegen émettait l'entier tel quel, donc du C
+            # valide au comportement arbitraire. La rupture doit se voir ici,
+            # sur l'appel, et pas se découvrir en jouant.
+            if isinstance(arg, ExprNumber) and param.domain in HARDWARE_ENUMS:
+                valid = HARDWARE_ENUMS[param.domain]
+                self.errors.append(CheckError(
+                    "error",
+                    f"{key}() : l'argument « {param.name} » s'écrit par son nom, "
+                    f"pas par un nombre ({arg.value}). Valeurs valides : "
+                    f"{', '.join(sorted(valid))}.",
+                ))
+                continue
+
             if not isinstance(arg, ExprString):
                 continue   # on ne valide les strings que si elles sont littérales
 
@@ -466,6 +776,23 @@ class Checker:
                 f"Valeurs valides : {', '.join(sorted(BuildContext.VALID_KEYS))}.",
             ))
 
+    def _check_hw_enum(self, call_key: str, name: str, domain: str):
+        """Valeur d'une énumération matérielle (mode OAM, direction, région de
+        window, mode et côté de mélange).
+
+        L'ensemble valide vient de `HARDWARE_ENUMS`, donc du catalogue : cette
+        fonction n'énumère rien elle-même et ne périme pas quand une valeur
+        s'ajoute. Erreur bloquante et non avertissement — une valeur inconnue
+        produirait du C qui ne compile pas, et la panne apparaîtrait sur la
+        ligne générée au lieu de sa cause."""
+        valid = HARDWARE_ENUMS.get(domain, {})
+        if name.lower() not in valid:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : valeur '{name}' inconnue. "
+                f"Valeurs valides : {', '.join(sorted(valid))}.",
+            ))
+
 
 # ─── Validation par domaine ───────────────────────────────────────
 # Un domaine → comment vérifier que le nom cité existe. Table et non chaîne
@@ -492,6 +819,14 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_ACTOR:   lambda c, key, val, p: c._check_actor(key, val),
     DOMAIN_GLOBAL:  lambda c, key, val, p: c._check_global(key, val),
     DOMAIN_CONST:   lambda c, key, val, p: c._check_const(key, val),
+    # Énumérations matérielles : une seule vérification pour les cinq, puisque
+    # `HARDWARE_ENUMS` porte déjà l'ensemble valide de chacune. Un domaine
+    # d'énumération ajouté à `api.py` est donc contrôlé sans qu'on touche ici.
+    DOMAIN_OBJ_MODE:   lambda c, key, val, p: c._check_hw_enum(key, val, DOMAIN_OBJ_MODE),
+    DOMAIN_DIRECTION:  lambda c, key, val, p: c._check_hw_enum(key, val, DOMAIN_DIRECTION),
+    DOMAIN_WIN_REGION: lambda c, key, val, p: c._check_hw_enum(key, val, DOMAIN_WIN_REGION),
+    DOMAIN_BLEND_MODE: lambda c, key, val, p: c._check_hw_enum(key, val, DOMAIN_BLEND_MODE),
+    DOMAIN_BLEND_SIDE: lambda c, key, val, p: c._check_hw_enum(key, val, DOMAIN_BLEND_SIDE),
 }
 
 # Cinq de ces domaines étaient auparavant vérifiés par un contrôle accroché au

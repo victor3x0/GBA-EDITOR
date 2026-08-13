@@ -1,0 +1,32 @@
+{
+  "name": "Heyo",
+  "columns": [
+    {
+      "name": "digit",
+      "type": "image"
+    },
+    {
+      "name": "colonne",
+      "type": "sfx"
+    },
+    {
+      "name": "colonne_2",
+      "type": "scene"
+    },
+    {
+      "name": "colonne_3",
+      "type": "int"
+    },
+    {
+      "name": "colonne_4",
+      "type": "int"
+    }
+  ],
+  "rows": [
+    {
+      "digit": "image",
+      "colonne": "PADDLEBOUNCE"
+    },
+    {}
+  ]
+}

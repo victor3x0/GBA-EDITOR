@@ -4,6 +4,25 @@
 #ifndef ACTOR_API_STATIC_H
 #define ACTOR_API_STATIC_H
 
+/* Modes OAM et directions, nommés — le Lua les cite par leur nom
+   (`self:set_dir("north")`), le codegen émet ces constantes. Voir
+   scripting/api.py, « Énumérations matérielles ».
+   Les directions suivent l'ordre des tables de actor_set_dir : 0 = aucune,
+   puis dans le sens horaire depuis le nord. */
+#define OBJ_MODE_NORMAL   0
+#define OBJ_MODE_BLEND    1
+#define OBJ_MODE_WINDOW   2
+
+#define DIR_NONE          0
+#define DIR_NORTH         1
+#define DIR_NORTH_EAST    2
+#define DIR_EAST          3
+#define DIR_SOUTH_EAST    4
+#define DIR_SOUTH         5
+#define DIR_SOUTH_WEST    6
+#define DIR_WEST          7
+#define DIR_NORTH_WEST    8
+
 /* Globaux définis dans main.c, visibles par tous les scripts */
 extern Actor g_actors[];
 extern u32   _g_keys_held;

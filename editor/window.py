@@ -41,6 +41,7 @@ from ui.home.project_picker import HomeScreen, push_recent, PROJECTS_DIR
 from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
 from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
 from ui.background_editor.background_editor_screen import BackgroundEditorScreen
+from ui.data_editor.data_editor_screen import DataEditorScreen
 from ui.text_editor.text_editor_screen import TextEditorScreen
 
 
@@ -231,23 +232,6 @@ class GbaStatusBar(QWidget):
 # ──────────────────────────────────────────────────────────────────
 #  Écrans dont la fenêtre est le propriétaire
 # ──────────────────────────────────────────────────────────────────
-class PlaceholderScreen(QWidget):
-    """Écriteau « coming soon » — un écran annoncé dans la navigation mais pas
-    encore écrit (Tileset Manager). Il remplit `ProjectScreen` sans rien en
-    faire : c'est un écran à part entière du point de vue de la fenêtre, et
-    l'exempter du contrat demanderait un second chemin pour un cas vide."""
-
-    def __init__(self, title: str, parent=None):
-        super().__init__(parent)
-        from ui.common.widgets import W
-        self.setStyleSheet(f"background:{C.BG_BASE};")
-        layout = QVBoxLayout(self)
-        layout.addWidget(W.empty_state(f"{title}\n\n(coming soon)"))
-
-    def load_project(self, project):
-        pass
-
-
 class SceneManagerScreen(QWidget):
     """Les trois colonnes du Scene Manager.
 
@@ -386,7 +370,7 @@ class MainWindow(QMainWindow):
     def _screen_catalogue(self) -> list[EditorScreen]:
         return [
             EditorScreen("Scene Manager",     self._build_scene_manager_screen),
-            EditorScreen("Tileset Manager",   self._make_tileset_manager),
+            EditorScreen("Data Editor",       self._make_data_editor),
             EditorScreen("Background Editor", self._make_background_editor),
             EditorScreen("Sprite Editor",     self._make_sprite_editor),
             EditorScreen("Palette Editor",    self._make_palette_editor),
@@ -420,8 +404,9 @@ class MainWindow(QMainWindow):
                     f"(pas de load_project) — l'écran ne recevra aucun projet."
                 )
 
-    def _make_tileset_manager(self) -> QWidget:
-        return PlaceholderScreen("Tileset Manager")
+    def _make_data_editor(self) -> QWidget:
+        self._data_editor = DataEditorScreen()
+        return self._data_editor
 
     def _make_background_editor(self) -> QWidget:
         self._bg_editor = BackgroundEditorScreen()

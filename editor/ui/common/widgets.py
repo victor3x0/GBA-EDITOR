@@ -79,13 +79,21 @@ class _W:
             b.setToolTip(tooltip)
         return b
 
-    def btn_add(self, tooltip: str = "Add") -> QToolButton:
-        """Bouton + sans bordure, survol vert — style project panel."""
+    def btn_add(self, tooltip: str = "Add", icon: str | None = None) -> QToolButton:
+        """Bouton + sans bordure, survol accent — style project panel.
+        `icon` : nom logique dans ui/common/icons.py (ex: "add_row") pour
+        remplacer le "+" générique quand plusieurs boutons d'ajout se
+        cotoient et doivent se distinguer par leur fonction."""
         b = QToolButton()
-        b.setText("+")
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
         b.setToolTip(tooltip)
+        if icon is not None:
+            from ui.common import icons
+            b.setIcon(icons.get(icon, C.TEXT_DIM))
+            b.setIconSize(QSize(16, 16))
+        else:
+            b.setText("+")
         return b
 
     def btn_search(self, tooltip: str = "Search") -> QToolButton:

@@ -92,6 +92,8 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_ui_panel_fill(ctx)
     _check_scene_font(ctx)
     _check_cameras(ctx)
+    _check_data_column_types(ctx)
+    _check_data_tables(ctx)
     _check_screen_space(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
@@ -584,6 +586,93 @@ def _check_ui_panel_fill(ctx: ValidationContext):
                     f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
                     f"Le canvas le montre quand même : c'est l'éditeur qui "
                     f"promet plus que le build ne tient.")
+
+
+def _check_data_column_types(ctx: ValidationContext):
+    """Les trois listes qui décrivent un type de colonne doivent s'accorder.
+
+    Une colonne de RÉFÉRENCE porte le nom de son domaine de script, et ce nom
+    doit exister des deux autres côtés : dans `api.ALL_DOMAINS` (sinon le
+    checker et le codegen n'en savent rien) et dans `project.DATA_COLUMN_SOURCES`
+    (sinon la cellule n'offre aucun choix). `core.models.data_table` ne peut pas
+    importer les deux — c'est une couche en dessous — donc l'accord se vérifie
+    ICI, comme celui des prototypes du moteur et celui des domaines d'argument.
+
+    Erreur bloquante et non avertissement : un type sans domaine émettrait un 0
+    silencieux dans la ROM, et un type sans source rendrait la colonne
+    inéditable sans que rien ne le dise."""
+    from core.models.data_table import COLUMN_REFERENCES
+    from core.project import DATA_COLUMN_SOURCES
+    from scripting.api import ALL_DOMAINS
+
+    inconnus = sorted(set(COLUMN_REFERENCES) - ALL_DOMAINS)
+    if inconnus:
+        ctx.error(None,
+                  f"Type(s) de colonne sans domaine de script correspondant : "
+                  f"{', '.join(inconnus)}. Une colonne de référence porte le nom "
+                  f"de son domaine (scripting/api.py, DOMAIN_*).")
+    sans_source = sorted(set(COLUMN_REFERENCES) - set(DATA_COLUMN_SOURCES))
+    if sans_source:
+        ctx.error(None,
+                  f"Type(s) de colonne sans liste de noms citables : "
+                  f"{', '.join(sans_source)}. Compléter DATA_COLUMN_SOURCES "
+                  f"(core/project.py).")
+    fantomes = sorted(set(DATA_COLUMN_SOURCES) - set(COLUMN_REFERENCES))
+    if fantomes:
+        ctx.warn(None,
+                 f"DATA_COLUMN_SOURCES décrit un type de colonne qui n'existe "
+                 f"plus : {', '.join(fantomes)}.")
+
+
+def _check_data_tables(ctx: ValidationContext):
+    """Ce qu'une table de données doit respecter pour être émise.
+
+    Le nom d'une table et celui de ses colonnes s'écrivent comme du CODE dans
+    un script (`data.Objets[i].prix`) : ce sont des identifiants, pas des
+    libellés. Et une référence qui ne résout pas serait émise en 0 — c'est-à-dire
+    la PREMIÈRE entrée de la table citée, une valeur plausible et fausse. La
+    dégradation silencieuse est refusée ici comme partout ailleurs."""
+    from core.models.data_table import COLUMN_TYPES, COLUMN_REFERENCES, IDENTIFIER
+
+    p = ctx.project
+    for table in getattr(p, "data_tables", []):
+        if not IDENTIFIER.match(table.name):
+            ctx.error(None,
+                      f"Table « {table.name} » : un script l'écrit sans "
+                      f"guillemets (data.{table.name}), donc son nom doit être "
+                      f"un identifiant — lettres, chiffres et _, sans commencer "
+                      f"par un chiffre.")
+        vus = set()
+        for col in table.columns:
+            if not IDENTIFIER.match(col.name):
+                ctx.error(None,
+                          f"Table « {table.name} », colonne « {col.name} » : même "
+                          f"règle que le nom de la table, c'est un identifiant.")
+            if col.name in vus:
+                ctx.error(None,
+                          f"Table « {table.name} » : deux colonnes nommées "
+                          f"« {col.name} ».")
+            vus.add(col.name)
+            if col.type not in COLUMN_TYPES:
+                ctx.error(None,
+                          f"Table « {table.name} », colonne « {col.name} » : type "
+                          f"'{col.type}' inconnu ({', '.join(COLUMN_TYPES)}).")
+        for n, row in enumerate(table.rows, start=1):
+            for key in row:
+                if key not in vus:
+                    ctx.warn(None,
+                             f"Table « {table.name} », ligne {n} : la clé "
+                             f"« {key} » ne correspond à aucune colonne — elle "
+                             f"n'est pas émise.")
+            for col in table.columns:
+                if col.type not in COLUMN_REFERENCES:
+                    continue
+                name = str(table.value(row, col) or "").strip()
+                if name and name not in p.data_column_choices(col.type):
+                    ctx.error(None,
+                              f"Table « {table.name} », ligne {n}, colonne "
+                              f"« {col.name} » : aucun {col.type} nommé "
+                              f"« {name} » dans le projet.")
 
 
 def _check_cameras(ctx: ValidationContext):

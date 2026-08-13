@@ -290,6 +290,11 @@ class BuildWorker(EventEmitter, threading.Thread):
                 const_names = self._write_project_constants(p)
             if ok: self._emit("progress", 0.65)
 
+            # Tables de données — AVANT la transpilation : chaque unité d'acteur
+            # inclut `data_tables.h`, il doit donc exister quand gcc y arrive.
+            if ok:
+                self._write_project_data_tables(p)
+
             # Transpilation Lua → C pour chaque scène (prefabs et caméras
             # compilés une seule fois : ce sont des assets partagés)
             compiled_prefabs: set[str] = set()
@@ -742,6 +747,13 @@ class BuildWorker(EventEmitter, threading.Thread):
         if names:
             self._emit("log_line", f"[lua] constants: {', '.join('CONST_' + n.upper() for n in names)}")
         return names
+
+    # ── Tables de données projet ────────────────────────────────────────
+
+    def _write_project_data_tables(self, p) -> list[str]:
+        """Génère data_tables.h/.c depuis project.data_tables."""
+        from codegen.runtime_codegen.data_tables import write_data_tables
+        return write_data_tables(p.src_dir, p, self._emit)
 
     # ── Transpilation Lua → C ─────────────────────────────────────────
 

@@ -180,6 +180,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Chrome des widgets — consommées par les QSS via qss_image()
     "spin_up":               ("mdi.menu-up",                 "▲"),
     "spin_down":             ("mdi.menu-down",               "▼"),
+    # Data Editor — bandeau TABLE : deux actions "+" distinctes côte à côte,
+    # la FORME dit ce qui est ajouté (ligne vs colonne), pas juste "+".
+    "add_row":                ("mdi.table-row-plus-after",    "+▭"),
+    "add_column":             ("mdi.table-column-plus-after", "+▯"),
 }
 
 # ── Backend (chargé une seule fois) ──────────────────────────────

@@ -28,10 +28,14 @@ suppositions faites à l'avance.
 | v0.4 | Animation de décor | **Livrée** |
 | v0.5 | Sauvegarde | **Livrée** |
 | v0.6 | Polish de la boucle de jeu | **Livrée** |
+| v0.7 | Structures de données | **Livrée** — porte de la v1.0 |
 | v0.8 | Son enrichi | Non commencée |
 | v0.9 | Traduction des jeux | Non commencée |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | Non commencée |
+| v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
+| v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
+| v0.14 | Diagnostic (trace de débogage, budget) | Non commencée |
 
 ---
 
@@ -861,6 +865,259 @@ Deux choses ont été trouvées en ouvrant le chantier, qui en ont élargi le p�
 
 ---
 
+## v0.7 — Structures de données
+
+**Placée en tête du reste des v0.x parce qu'elle est la porte de la v1.0**, et la seule qui
+le soit : les versions qui suivent (son, traductions, distribution) enrichissent un pipeline
+déjà utilisable, celle-ci débloque des genres entiers qui sont aujourd'hui hors d'atteinte.
+
+### Le problème, mesuré
+
+Le sous-ensemble Lua ne connaît que des scalaires. `parser.py` le dit en toutes lettres :
+`field: str  # pour notation DOT ; pour [] ce sera une Expr → non géré v1`. Il n'y a ni
+constructeur de table, ni parcours `for … in`, ni indexation. L'AST complet est nombres,
+booléens, nil, chaînes, noms, accès pointé, appels, opérateurs.
+
+Et il n'existe **aucun asset de table de données** : les registres du projet sont des scènes,
+prefabs, sprites, fonds, sfx, musiques, polices, palettes, mises en page, caméras, textes et
+variables — et les variables sont des scalaires. Un RPG a deux cents objets à décrire quelque
+part ; il n'y a nulle part.
+
+Deux manques jumeaux, un seul effet :
+
+| Genre visé en v1.0 | Atteignable aujourd'hui | Ce qui manque |
+| --- | --- | --- |
+| Platformer | **oui** | rien — la gravité s'écrit au script, la résolution de pentes v0.6.3 fait le reste |
+| Metroidvania | **oui** | rien — l'état persistant tient dans les globals + SRAM de la v0.5 |
+| RPG | non | inventaire, objets, sorts, groupe : des listes |
+| Tactique (Advance Wars, FFT) | non | unités, grille, recherche de chemin : des tableaux |
+| Gestion (Zoo Tycoon) | non | N entités à état propre : un tableau |
+
+#### Un troisième manque, découvert en ouvrant le chantier
+
+**La boucle `for` numérique ne marche pas** — pas « n'existe pas » : elle se traduit, et le C
+produit ne s'exécute jamais. `parser.py` lit les champs de `Fornum` décalés d'un cran par
+rapport à luaparser, qui expose `(target, start, stop, step, body)` : le convertisseur prend
+`start` pour la variable de boucle, `stop` pour la borne de départ, `step` pour la borne
+d'arrivée, et jette le pas.
+
+```
+for i = 1, 10, 2   →   StmtForNum(var='i', start=10, stop=2, step=None)
+                   →   for (int i = 10; i <= 2; i += 1)     /* corps jamais atteint */
+```
+
+Sans pas déclaré, la borne d'arrivée tombe à `None`, donc à `0`, donc `i <= 0` : même
+silence. Et `var` retombe sur son défaut `"i"`, si bien que `for k = …` déclare quand même un
+`i`. C'est le premier caillou de la v0.7 — un tableau sans boucle ne sert à rien — et c'est
+une **correction**, pas une fonctionnalité : la panne n'a jamais rien dit, parce qu'un corps
+de boucle non exécuté ne produit ni erreur de checker, ni avertissement gcc.
+
+### v0.7.1 — Les tableaux dans le langage — **LIVRÉE**
+
+Vérifiée par un build ROM complet sur une copie de la démo, `build/` effacé : un tableau
+d'état dans un acteur de scène, un tableau de travail dans un handler de prefab poolé, et le
+refus attendu quand ce dernier est déclaré en tête. Le C émis se relit avec les mots du Lua :
+
+```c
+static int couts[4] = {1, 2, 4, 8};
+static int grille[4][3] = {{0}};
+for (int i = 1; i <= 4; i += 1) { total = (total + couts[(i) - 1]); }
+for (int y = 4; y >= 1; y += (-1)) { grille[(y) - 1][1] = total; }
+```
+
+#### Décisions verrouillées
+
+- **Des tableaux typés de taille fixe, pas des tables Lua.** Une vraie table Lua suppose
+  hachage, redimensionnement et ramasse-miettes — trois choses qui n'ont rien à faire dans un
+  moteur entièrement entier, sans allocation, sur 32 Ko d'IWRAM. Un tableau de taille connue
+  se traduit en C directement, et le coût reste visible dans le source généré.
+- **La taille fait partie du type.** Elle est connue au build, donc vérifiable au build : un
+  dépassement est une erreur du checker, pas un comportement au runtime. C'est la même règle
+  que partout ailleurs — la faute se voit sur la cause, jamais sur une ligne générée. Un index
+  **calculé** n'est en revanche vérifié par personne : le borner à chaque accès coûterait un
+  test par lecture dans un moteur qui n'en fait aucun ailleurs.
+- **Deux origines pour une table, un seul type à l'usage.** Une table AUTHORÉE (l'asset de la
+  v0.7.2, émis en `const` dans la ROM) et une table de TRAVAIL déclarée dans un script (en
+  RAM). Le script les lit de la même façon ; seule l'écriture distingue les deux, et la const
+  refuse d'être écrite — au build.
+- **Deux façons de déclarer, parce que ce sont deux besoins.** `local couts = {1, 2, 4, 8}`
+  donne le CONTENU et en déduit la taille ; `local grille = array(20, 12)` donne la TAILLE et
+  remplit de zéros. Écrire quatre cents zéros à la main n'est pas une option, et rien ne
+  remplace un petit tableau posé en clair.
+- **L'ordre des arguments d'`array` EST l'ordre des index.** `array(20, 12)` se lit
+  `grille[1..20][1..12]` et devient `int grille[20][12]`. Aucun vocabulaire de largeur, de
+  hauteur, de ligne ou de colonne n'entre dans la règle : les nommer obligerait l'auteur à se
+  rappeler lequel des deux vient en premier, alors que la déclaration le lui montre déjà.
+- **Les tableaux sont indexés à partir de 1**, comme partout en Lua. Le codegen émet
+  `t[(i) - 1]`, replié à la compilation quand l'index est littéral. Le reste de l'API expose
+  bien des index à partir de 0 (`save.write(0)`, les banques de palette) — mais ce sont des
+  **numéros matériels**, pas des positions dans un conteneur du langage. Un script Lua dont le
+  premier élément n'est pas `t[1]` serait un piège pour tout lecteur qui connaît Lua, et ce
+  n'est pas un piège qu'on rattrape par de la documentation.
+- **Un tableau ne contient que des entiers.** Le moteur n'a ni flottant ni chaîne manipulable ;
+  un tableau de chaînes est refusé en nommant l'issue — une colonne `text` de l'asset table.
+- **`#t` est une constante de compilation**, résolue en littéral. Pas de champ de longueur en
+  RAM : la taille fait partie du type, donc elle est connue sans être rangée.
+- **Pas de `for … in`, ni `ipairs`, ni `pairs`.** Le `for` numérique réparé plus `#t` couvrent
+  le parcours entier. Un itérateur générique suppose des valeurs de première classe et un état
+  d'itération, c'est-à-dire le début des tables Lua que la première décision écarte.
+- **Le pas d'une boucle `for` s'écrit en clair.** C'est lui qui dit si la boucle monte ou
+  descend, et la comparaison émise (`i <= stop` ou `i >= stop`) est décidée au build. Un pas
+  calculé obligerait à tester son signe à chaque tour, dans un moteur qui ne teste rien
+  ailleurs.
+- **Un tableau d'ÉTAT est refusé dans un prefab poolé**, en erreur qui nomme la variable. Les
+  locals de tête d'un prefab poolé vivent dans `Actor.data[8]`, huit entiers par instance :
+  un tableau n'y tient pas, et le laisser retomber sur une déclaration de fichier le ferait
+  partager par toutes les instances — silencieusement, ce qui est la pire des trois issues.
+  Déclaré DANS un handler, il reste permis : c'est une variable de travail, reconstruite à
+  chaque appel, elle ne prétend porter l'état de personne.
+
+### v0.7.2 — L'asset table — **LIVRÉE**
+
+Vérifiée par un build ROM complet, `build/` effacé, sur une copie de la démo qui porte une
+table réelle : `data_tables.h/.c` émis, compilés et liés, la référence résolue en index.
+
+```c
+typedef struct { int prix; int nom; int rare; } DataRow_Objets;
+const DataRow_Objets g_data_Objets[3] = {
+    { 10, 4, 0 },   /* 1 : nom = potion_nom */
+    { 50, 7, 1 },   /* 2 : nom = epee_nom */
+    { 5, 0, 0 },    /* 3 : nom : aucune référence */
+};
+```
+
+```c
+for (int i = 1; i <= 3; i += 1) { total = (total + g_data_Objets[(i) - 1].prix); }
+if (g_data_Objets[1].rare) { text_draw(8, 8, g_data_Objets[1].nom); }
+```
+
+
+Colonnes typées, lignes éditables, référençable depuis un script comme n'importe quel asset
+nommé. Un fichier par table dans `project/data/`, avec les données propres au projet et non
+dans `assets/` : une table ne dérive d'aucun fichier importé, comme une caméra ou une palette.
+
+#### L'écran remplace le Tileset Manager
+
+L'entrée « Tileset Manager » de la navigation était un **écriteau « coming soon »** —
+`PlaceholderScreen`, zéro ligne de logique — et elle promettait un écran qui ne viendra pas :
+le tileset comme asset de premier rang est sorti du périmètre en v0.4, « ce logiciel n'est pas
+un outil de dessin ». Le Data Editor prend sa place, et l'écriteau disparaît avec sa classe.
+
+Trois colonnes, comme Palette, Sprite et Texte : les tables du projet à gauche, la grille au
+centre, la colonne et la cellule sélectionnées à droite.
+
+- **Le schéma s'édite dans l'EN-TÊTE, les valeurs dans les cellules.** Deux objets d'édition
+  dans un seul widget — les colonnes et les lignes — distingués par le geste et non par un
+  mode à basculer. Double-clic sur l'en-tête pour renommer, menu contextuel pour le type.
+- **Ce qui justifie l'écran contre le JSON, c'est la CELLULE TYPÉE.** Un entier a un champ
+  numérique, un booléen une case à cocher, et une colonne de référence **une liste peuplée par
+  le registre du projet**. Taper `potion_nom` à la main est une faute de frappe qui n'apparaît
+  qu'au build ; le choisir dans une liste est impossible à rater. Le reste (aligner des
+  colonnes, compter des virgules) n'est qu'un confort.
+- **La grille montre la valeur, l'inspecteur montre ce qu'elle DÉSIGNE.** Afficher le contenu
+  du texte à côté de sa clé, sur deux cents lignes, écraserait la grille et ferait dire à
+  l'éditeur autre chose que ce que la donnée contient.
+- **Le rang d'une ligne est la vérité, et il se voit.** L'en-tête vertical numérote à partir
+  de 1 — l'index qu'un script écrit. Insérer au milieu décale ce qui suit : c'est le
+  comportement voulu, pas un défaut à masquer par une identité de ligne qu'un script ne
+  pourrait de toute façon pas nommer.
+- **L'écriture passe par la grille, jamais par l'inspecteur**, qui se contente d'émettre. Un
+  seul chemin d'écriture, donc un seul endroit qui pousse dans l'historique — même répartition
+  que le Palette Editor. Ctrl+Z couvre la cellule, la ligne, la colonne et son type.
+- **Ce n'est pas un tableur** : ni formule, ni tri, ni filtre. Un tri afficherait un ordre qui
+  n'est pas celui des index.
+- **Le JSON reste lisible et modifiable à la main.** Une ligne est un objet keyé par nom de
+  colonne, jamais un tableau positionnel : réordonner les colonnes ne déplace aucune valeur,
+  une clé absente reprend le défaut, et un diff git reste utile.
+
+#### Décisions verrouillées
+
+- **Le script y accède par indexation, pas par un appel** : `data.Objets[i].prix`. Le module
+  `data` est l'espace de noms réservé des tables authorées. C'est ce qui fait qu'une table SE
+  LIT comme un tableau — ce que la v0.7 promet — au lieu d'un `table.get("Objets", i, "prix")`
+  qui n'aurait d'un tableau que le nom.
+  - **Conséquence assumée, et c'est un vrai élargissement** : `scripting/refactor.py` ne savait
+    repérer une référence que dans un ARGUMENT littéral d'appel, sa table de sites étant
+    dérivée de `RUNTIME_API`. Un nom de table cité en `data.Objets` lui était invisible, et un
+    renommage aurait laissé les scripts en arrière. Il a donc appris un **second type de site
+    structurel** — la table ET la colonne — et le repérage reste ce qu'il a toujours été : de
+    l'AST, jamais du texte. Un commentaire qui mentionne `data.Objets`, ou une chaîne qui le
+    contient, ne bouge pas.
+    - Un détail du matériel de luaparser a forcé une nuance : un noeud `Name` n'y porte
+      **aucun offset** (`start_char` vaut `None`), seuls les noeuds `Index` en ont un, et leur
+      tranche se termine par le nom cherché. L'arbre dit donc QUELLES occurrences sont des
+      citations, et la réécriture relit la tranche source pour n'écrire que si elle finit bien
+      par `.<nom>`. Repérage structurel, écriture vérifiée.
+    - Trouvé au passage, et corrigé : `refactor.script_paths()` **oubliait les scripts de
+      caméra** depuis leur apparition en v0.6.1. Un `scene.switch("Arène")` écrit dans une
+      caméra n'était donc réécrit par aucun renommage de scène, et rien ne le disait — la
+      faute ne remontait qu'au build suivant, sur un `SCENE_IDX_*` indéfini.
+- **Le nom d'une table et de ses colonnes est un IDENTIFIANT**, pas un libellé libre : lettres,
+  chiffres et `_`, sans commencer par un chiffre. C'est la contrepartie directe de la décision
+  précédente — le script écrit ce nom comme du **code**, pas entre guillemets, donc « Objets
+  rares » n'est pas renommable en un identifiant valide. Contrainte posée à la saisie, comme
+  la clé d'une entrée de texte.
+- **Une colonne de référence déclare un DOMAINE**, et hérite gratuitement des trois
+  consommateurs qui en dépendent déjà : le checker (ce nom existe-t-il ?), le codegen (quelle
+  constante C émettre ?) et le refactor (suivre le renommage). Aucune mécanique nouvelle —
+  c'est la règle « un domaine a trois consommateurs » appliquée à une donnée au lieu d'un
+  argument.
+- **Sont admis les domaines que le runtime sait déjà INDEXER** : `text`, `sfx`, `music`,
+  `scene`, `camera`, `font`, `palette`, `region`, `image`. Chacun est déjà un `#define NOM i`
+  qui désigne une entrée d'une table en ROM ; une colonne de ce type EST cet entier, et ne
+  coûte rien de plus.
+- **Sont refusés `sprite` et `prefab`, et la raison n'est pas la même.**
+  - `sprite` (et `anim`, `actor`) : il n'existe aucune table indexée de sprites en ROM, et
+    aucune fonction de l'API ne prend un sprite par numéro. La colonne rendrait un entier que
+    rien ne peut consommer — une référence qui ne référence pas.
+  - `prefab` : `actor.spawn("X")` se résout en `spawn_X(x, y)`, une FONCTION, pas un index.
+    Une colonne de prefabs suppose donc un `spawn_by_id(int, x, y)` et son aiguillage généré,
+    c'est-à-dire une petite fonctionnalité de runtime à part entière. Elle est utile — « cette
+    ligne d'ennemi fait apparaître ce prefab » — et elle est nommée en « Ouvert » avec son
+    coût, plutôt que bâclée dans le même passage.
+- **Le registre ENTIER part en ROM**, sans dérivation depuis les scripts. Même raisonnement
+  qu'en v0.4.2 pour le catalogue de palettes : la donnée est en ROM, qui est large, alors que
+  la dérivation ferait courir le risque de sous-réserver — un risque qui n'a de sens que pour
+  la mémoire vidéo. Ce que ça coûte est visible et proportionnel : une ligne de six colonnes
+  pèse ses six entiers.
+- **Émise en tableau de structs**, un `typedef` par table, dans un `data_tables.h` / `.c`
+  générés. `data.Objets[i].prix` devient `g_table_Objets[(i) - 1].prix` : le C se relit avec
+  les mêmes mots que le Lua. Un tableau par colonne (structure de tableaux) serait plus rapide
+  sur un parcours d'une seule colonne, et illisible partout ailleurs.
+- **Une table authorée refuse l'écriture, au build**, en nommant la table et la colonne. Elle
+  est `const` en ROM : l'écriture ne serait pas seulement inefficace, elle ne compilerait pas —
+  autant le dire sur la ligne Lua fautive que sur la ligne générée.
+- **Une table n'est PAS un domaine de script**, malgré l'apparence. La mécanique de domaine
+  dérive de `RUNTIME_API.params`, et une table n'apparaît jamais comme argument littéral d'un
+  appel : lui inventer un `DOMAIN_TABLE` obligerait à le déclarer « traité ailleurs » des deux
+  côtés du contrôle de couverture, pour un `Param` qui n'existe pas. Le checker et le codegen
+  reçoivent donc directement `{nom: (colonnes, lignes)}`. Ce sont les **colonnes de référence**
+  qui portent un domaine, côté donnée et non côté argument — et c'est
+  `validator._check_data_column_types` qui tient les trois listes d'accord.
+- **Trois erreurs bloquantes plutôt qu'un 0 plausible** : table inconnue, colonne inconnue,
+  rang hors bornes écrit en clair. Et côté données, une référence qui ne résout pas bloque
+  aussi : elle serait émise en 0, c'est-à-dire la PREMIÈRE entrée de la table citée — une
+  valeur crédible et fausse, exactement la dégradation silencieuse refusée depuis la v0.2.
+
+### Ouvert
+
+- **Rien dans la sidebar du Script Editor ne liste les tables.** Elle est dérivée de
+  `RUNTIME_API`, et une table n'y figure pas — cf. la décision ci-dessus. Une section qui
+  proposerait `data.Objets[1].prix` au clic serait utile ; elle demande une source de snippets
+  qui ne vienne pas du catalogue.
+- **La colonne `prefab`** et son `spawn_by_id`, ci-dessus. À rouvrir sur le premier vrai
+  bestiaire — c'est là qu'on saura si l'aiguillage doit rendre l'acteur créé, et ce qu'il fait
+  quand le pool est plein.
+- L'import depuis un tableur (CSV). Rien ne l'exige, mais deux cents objets ne s'éditent pas
+  ligne à ligne avec plaisir.
+- La recherche de chemin : fournie par le moteur, ou laissée au script une fois les tableaux
+  disponibles ? Un A\* écrit en Lua transpilé est faisable ; sa vitesse ne l'est peut-être pas.
+  À trancher **mesuré**, pas supposé — les tableaux existants rendent l'expérience possible.
+- Un tableau de travail à trois dimensions : rien ne l'interdit dans la règle « l'ordre des
+  arguments est l'ordre des index », rien ne le réclame non plus.
+
+---
+
 ## v0.8 — Son enrichi & écran de mixage
 
 Les ressources son et musique sont aujourd'hui des ébauches, explicitement marquées comme
@@ -924,16 +1181,237 @@ en parallèle de n'importe quelle autre version.
 
 ---
 
-## v1.0 — Consolidation
+## v0.12 — Vue d'ensemble — le graphe des scènes
 
-Un **deuxième jeu de démo** au-delà de Pong, qui exerce réellement texte, sauvegarde, caméra,
-transitions et traduction — pour valider le pipeline de bout en bout comme Pong l'a fait pour
-la v0.1. Plus stabilisation et documentation.
+Un mode du Scene Canvas où chaque scène est un nœud et chaque transition une arête : on voit
+la logique du jeu d'un coup, au lieu de la reconstituer en ouvrant les scripts un par un.
+
+Pong a trois scènes ; un RPG en a quarante. C'est donc **la version qui sert le plus
+directement l'affirmation de la v1.0** (« le logiciel absorbe un projet de production ») :
+un projet qu'on ne peut pas parcourir n'est pas un projet qu'on peut tenir. Placée tard
+malgré ça, parce que sa valeur croît avec la taille des projets — donc après la v0.7, qui les
+rend gros. Comme les v0.9 à v0.11, elle se déplace librement dans l'ordre.
+
+### Ce que ça ne coûte pas
+
+Le graphe est **dérivé, et son index existe déjà**. `index_refs_in_project(project,
+DOMAIN_SCENE)` parcourt les scripts une seule fois et rend `{scène citée: {script: nombre}}` ;
+`LuaRef` porte en plus `path`, `line`, `start`, `stop` et `api_key`. Autrement dit : les
+nœuds, les arêtes, leur nature (`scene.switch`) et l'emplacement exact de chaque appel sont
+déjà calculables aujourd'hui. Cette version pose une vue, elle n'ajoute pas de modèle.
+
+Et le repérage est **structurel** (AST, via les domaines de `RUNTIME_API`), pas textuel : un
+commentaire qui mentionne « ARENA » ne crée pas d'arête.
+
+### Décisions verrouillées
+
+- **Le nœud existe parce que l'appel existe.** Le graphe ne possède rien que le script ne
+  possède déjà : il projette `scene.switch` là où il se trouve. Pas de modèle parallèle, pas
+  de sérialisation du graphe, donc aucune seconde source de vérité à tenir d'accord. C'est
+  la même règle que celle qui gouverne toute l'édition mixte de la v0.13.
+- **L'ARGUMENT s'édite, le FLUX ne s'édite pas.** Déplacer une arête de `VICTORY` vers
+  `ARENA`, c'est remplacer un littéral à sa position — le mécanisme exact de
+  `rename_in_text` (réécriture par offsets, mise en forme préservée octet pour octet), et
+  `LuaRef` porte déjà `start`/`stop`, guillemets inclus. Le `if` qui entoure l'appel, sa
+  condition et l'ordre des instructions ne sont jamais touchés. **C'est ce qui rend le geste
+  sûr, et c'est la ligne à tenir.**
+- **Créer une arête à partir de rien reste dehors.** Il faudrait deviner dans quel script,
+  à quel endroit et sous quelle garde poser l'appel — aucune valeur par défaut n'est
+  défendable. Une transition naît dans le script ; le graphe la retarge ensuite.
+- **Double-clic sur une arête = ouverture du script à la ligne de l'appel.** `LuaRef` la rend
+  presque gratuite, et c'est la sortie de secours pour tout ce que le graphe ne sait pas
+  faire : changer la condition, déplacer l'appel, le supprimer.
+- **Le graphe montre QU'un lien existe, jamais QUAND il se déclenche.** Dit explicitement
+  dans l'interface plutôt que laissé à supposer : une arête n'est pas un flux, c'est une
+  citation. Deux arêtes sortantes ne veulent pas dire « branchement », elles veulent dire
+  « ce script cite deux scènes ».
+- **Ce qui est une DONNÉE s'édite aussi** : la scène de démarrage du projet, la création
+  d'une scène, le renommage (qui se propage déjà aux scripts via `rename_in_project`).
 
 ### Ouvert
 
-- Aucun genre choisi. Une plateforme ou un proto-RPG exerceraient mieux les nouvelles
-  fonctionnalités qu'un second jeu du type de Pong.
+- **Les cibles dynamiques.** `scene.switch(une_variable)` ne se résout pas à l'analyse. Une
+  arête vers une cible inconnue, un nœud « indéterminé », ou rien du tout ? Ne rien montrer
+  ferait mentir le graphe par omission, ce qui est pire qu'une arête floue.
+- **La position des nœuds.** Disposition automatique, ou déplaçable et mémorisée ? La seconde
+  demande de ranger des coordonnées de présentation quelque part — soit dans la scène (qui
+  n'a rien à savoir de sa position dans une vue), soit dans un fichier d'éditeur à part. À
+  trancher, parce que c'est une décision de modèle et non d'affichage.
+- **Les autres relations.** Prefabs, mises en page, caméras et fonds forment déjà un graphe de
+  dépendances par les mêmes domaines. Les faire entrer dans la même vue est tentant et
+  probablement illisible ; à rouvrir une fois le graphe des scènes utilisé pour de vrai.
+
+---
+
+## v0.13 — Édition mixte — les appels d'API en blocs
+
+Un appel d'API d'un script apparaît comme un bloc éditable, et modifier le bloc réécrit
+l'appel là où il est. Du code ET du no-code, sans que ce soient deux chemins : **le script
+reste la source, le bloc en est une projection.**
+
+Référence assumée : GB Studio, dont l'ergonomie est le bon modèle. Son **architecture** ne
+l'est pas, et pour une raison précise — GB Studio n'a pas de texte du tout, ce qui rend son
+approche cohérente chez lui et inapplicable ici. Copier son modèle imposerait soit d'abandonner
+le Lua, soit d'accepter deux chemins d'authoring pour la même logique.
+
+La v0.12 (graphe des scènes) est la première instance de ce principe, appliquée à
+`scene.switch` seul. Cette version le généralise à tout le catalogue. Les deux reposent sur ce
+qui existe déjà : `iter_call_sites` pour trouver les appels, `RUNTIME_API` pour les décrire,
+la réécriture par offsets de `refactor.py` pour les modifier.
+
+### Décisions verrouillées
+
+- **Les appels seulement, jamais le flux de contrôle.** `if`, `while`, `for` restent du texte.
+  La raison est l'aller-retour : un appel dont les arguments sont des littéraux se relit et se
+  réécrit à l'identique, octet pour octet. Le flux de contrôle, lui, pose immédiatement la
+  question des commentaires, des lignes vides et de la mise en forme — et la première chose
+  qu'un éditeur structuré perd, c'est ce que l'auteur avait écrit autour de son code.
+- **La vue ne possède rien.** Chaque édition visuelle est une édition de texte à des offsets
+  connus (le mécanisme de `rename_in_text`). Aucun modèle parallèle, aucune sérialisation de
+  blocs, donc rien à tenir d'accord et rien à migrer.
+- **Les blocs DÉRIVENT de `RUNTIME_API`**, jamais écrits à la main. Même règle et même raison
+  mesurée que pour les snippets de la sidebar (cf. ARCHITECTURE, « Ce que l'éditeur INSÈRE
+  dérive du catalogue ») : écrits en dur, ils ont proposé pendant des mois `scene_goto("X")`
+  et `instantiate("X", x, y)`, deux noms qui n'ont jamais existé. Une fonction ajoutée à
+  `api.py` obtient son bloc gratuitement ; une fonction retirée perd le sien.
+- **Un argument s'édite selon son DOMAINE**, pas selon son rang. Un paramètre `DOMAIN_SCENE`
+  ouvre un sélecteur de scènes, `DOMAIN_SFX` un sélecteur d'effets, un entier un champ
+  numérique — tout vient de `Param.ptype` et `Param.domain`. Aucune interface par fonction à
+  écrire, et un réordonnancement de paramètres n'invalide rien.
+- **Ce qui n'est pas représentable s'affiche EN TEXTE, jamais masqué.** Un argument qui est une
+  expression (`self:move(dx * 2, 0)`), un appel hors catalogue, un helper de l'auteur :
+  fragment de code opaque dans la surface, éditable dans le Script Editor. **La surface ne
+  ment jamais par omission** — c'est la règle qui rend l'hybride honnête, et c'est exactement
+  celle dont GB Studio n'a pas besoin.
+
+### Ouvert
+
+- Où vit la surface : un panneau à côté du texte, une bascule qui le remplace, ou dans
+  l'inspecteur du composant Script qui porte le fichier ?
+- **Insérer un appel depuis la surface.** Contrairement à l'arête du graphe, une position par
+  défaut est ici défendable (fin de la fonction courante). À rouvrir sur un cas réel — c'est
+  la frontière entre « lire et ajuster » et « écrire », et elle mérite d'être franchie
+  sciemment.
+- Un argument qui référence une variable plutôt qu'un littéral. `FieldValue` traite déjà
+  exactement cette question pour les champs de composant (px / tuile / variable) ; c'est la
+  même, et sa réponse devrait être la même.
+
+---
+
+## v0.14 — Diagnostic — ce que le jeu fait, et ce qu'il coûte
+
+Le pipeline sait construire un jeu ; il ne sait rien dire de ce que ce jeu fait une fois
+lancé. Les deux manques sont vécus quotidiennement par qui développe, et aucun n'est couvert.
+
+### Le problème
+
+- **Rien ne permet de déboguer.** L'auteur écrit du Lua, qui devient du C, qui tourne sur du
+  matériel. Quand un acteur ne bouge pas, il n'a ni trace, ni journal, ni point d'arrêt.
+  `display.print` a été retiré en v0.3.2 et rien ne l'a remplacé **pour le développeur** —
+  `text.draw` s'adresse au joueur, ce qui n'est pas la même chose : il consomme des tuiles de
+  police, il passe par la table de textes, il est traduisible. Aucun de ces traits ne convient
+  à une trace de mise au point.
+- **Rien ne dit ce que la frame coûte.** Côté build, l'outillage est bon : VRAM et palettes
+  sont alloués, vérifiés, et le budget est signalé en erreur bloquante. Côté exécution, il n'y
+  a rien. « Le jeu tombe à 40 fps avec douze acteurs » n'a aucune réponse dans le logiciel, et
+  c'est le mur qu'on prend au troisième mois de projet.
+
+### Décisions verrouillées
+
+- **La trace de débogage sort de la ROM, pas de l'écran.** mGBA expose un canal de journal
+  qu'une ROM peut écrire ; c'est là que va `debug.log`, pas dans un coin de l'affichage. Le
+  jeu n'a donc rien à sacrifier pour être débogué — ni tuiles, ni palette, ni calque — et la
+  trace survit à un écran plein.
+- **`debug.*` disparaît des builds de release.** Sinon la mise au point coûte de la ROM et des
+  cycles dans le jeu livré. Un appel retiré à la compilation, pas une fonction qui teste un
+  drapeau au runtime.
+- **Le budget se mesure sur la CIBLE, jamais estimé par l'éditeur.** Un chiffre de coût qui
+  viendrait d'un modèle Python serait faux dès la première divergence, et faux en silence.
+  C'est la même règle que pour l'aperçu du rasteriseur en v3.0 : ce qui prétend décrire le
+  matériel vient du matériel.
+
+### Ouvert
+
+- Ce que `debug.log` accepte : une chaîne formatée demande un `printf` en ROM, ce que le
+  moteur évite partout ailleurs. Concaténer des valeurs déjà converties suffit peut-être.
+- Où le budget s'affiche : superposé en jeu (donc il fausse ce qu'il mesure), renvoyé au
+  journal, ou lu par l'éditeur pendant que la ROM tourne ?
+- Ce que le budget couvre au-delà du temps de frame : compte d'OAM, occupation des canaux
+  sonores, cycles DMA. À choisir sur ce qui sature réellement, mesuré, pas supposé.
+
+---
+
+## v1.0 — Le pipeline 2D complet
+
+### L'objectif concret — cinq genres
+
+La v1.0 était écrite comme un jalon de *validation* (« un deuxième jeu de démo, plus
+stabilisation »). Elle porte en réalité une **affirmation de capacité** : à la v1.0, le
+logiciel absorbe un projet 2D de production, de bout en bout.
+
+Une affirmation pareille n'est décidable que si on dit *quoi*. Voici le critère, sur le modèle
+de « V-Rally 3 » pour la v3.1 — une cible se compare, une capacité s'étend indéfiniment :
+
+| Genre | Ce qu'il exerce en propre |
+| --- | --- |
+| **Platformer** | gravité scriptée, pentes, collision de tuiles, caméra en suivi |
+| **Metroidvania** | état persistant entre scènes, retour arrière, déverrouillages |
+| **RPG** | tables de données (objets, sorts), menus, dialogues, sauvegarde longue |
+| **Tactique** (Advance Wars, FFT en vue de dessus) | grille, liste d'unités, recherche de chemin, curseur |
+| **Gestion** (Zoo Tycoon) | N entités à état propre, économie, budget OAM sous tension |
+
+Les deux premiers sont **atteignables aujourd'hui**. Les trois suivants attendent la v0.7 —
+c'est le seul verrou, et c'est pourquoi elle passe devant.
+
+### Le deuxième jeu de démo se choisit dans cette liste
+
+Et **pas parmi les deux premiers**. Un platformer ne validerait presque rien de neuf : il
+n'exerce ni les tables, ni les menus, ni la sauvegarde longue. Un proto-tactique ou un
+proto-gestion, à l'inverse, échoue immédiatement si la v0.7 a manqué sa cible — ce qui est
+exactement ce qu'on attend d'un jeu de validation.
+
+Le reste de la version est ce qu'il était : stabilisation du runtime et de l'éditeur,
+documentation utilisateur.
+
+### Ce qu'une « première version stable » exige, et qui n'est pas une fonctionnalité
+
+Quatre points sans lesquels le mot « 1.0 » ne tient pas. Aucun n'ajoute de capacité au moteur ;
+tous conditionnent le fait que quelqu'un puisse réellement bâtir dessus.
+
+- **Une licence.** Il n'existe aucun fichier `LICENSE`, et le défaut légal est donc « tous
+  droits réservés ». Le point est plus aigu ici qu'ailleurs : l'éditeur **copie son propre C
+  dans la ROM de l'utilisateur** (`gba_engine.h` et les sources générées). Quelqu'un qui
+  envisage de vendre son jeu doit pouvoir répondre à « ai-je le droit ? » avant d'engager six
+  mois. C'est la chose la moins chère de cette liste et la première qui bloque.
+- **Des formats que git sait relire.** Aujourd'hui un fond fait 688 lignes et la carte de
+  collision d'une scène environ 600, à raison d'**un entier par ligne** ; les couleurs sont
+  des entiers BGR555 décimaux. Ce n'est pas qu'un défaut de lisibilité : chaque modification
+  de scène produit un diff illisible, l'historique devient inexploitable, et deux personnes ne
+  peuvent pas toucher la même scène sans un conflit qu'aucun humain ne résout à la main. **Ça
+  plafonne le logiciel au travail solitaire**, ce qui est incompatible avec « projet de
+  production ».
+
+  La correction est connue et petite : une ligne de texte par rangée de grille — c'est
+  exactement ce que `tileset` fait déjà, une chaîne hexadécimale par tuile, et c'est de loin
+  la partie la plus lisible du sidecar. Et les couleurs en hexadécimal (`#39A8FF`), les deux
+  formes acceptées en lecture.
+- **Des modèles de départ.** Un seul projet de démo existe (Pong). Un modèle « platformer »
+  enseigne l'API sans qu'on lise une ligne de documentation, et c'est ce qui décide qu'on
+  reste après la première heure. Même famille que le deuxième jeu de démo : du contenu qui
+  enseigne, pas une fonctionnalité.
+- **La vérification que ça tient à l'échelle.** `Project.load()` charge tout, tout de suite —
+  chaque sidecar de chaque collection. Pong et ses 118 fichiers vont très bien ; quarante
+  scènes et deux cents sprites, personne n'en sait rien. L'affirmation « absorbe un projet de
+  production » se vérifie ou s'écroule exactement là, et c'est le deuxième jeu de démo qui
+  tranchera.
+
+### Ouvert
+
+- Lequel des trois genres bloqués sert de démo. À trancher quand la v0.7 est livrée, sur ce
+  qu'elle rend réellement confortable.
+- Les menus et listes (curseur, défilement, sélection) sont aujourd'hui du script pur
+  par-dessus `UILayout`. Faisable — mais si les trois genres à menus le rendent pénible, c'est
+  ici que ça se verra, et il faudra décider si le moteur en prend une part.
 
 ---
 
@@ -1143,6 +1621,38 @@ les deux n'a pas d'importance.
 - La forme d'authoring : une courbe par calque, une table d'amplitudes, ou un script qui
   écrit la table lui-même ? Le troisième cas existe de toute façon, la question est ce que
   le déclaratif couvre.
+
+### v2.3 — Rendu isométrique
+
+**Ce n'est pas un mode de rendu**, et c'est le piège du sujet : l'isométrique reste du 2D
+tuilé ordinaire, sur le même matériel, avec les mêmes calques. Ce qui change est la
+**convention de projection** et, surtout, l'**ordre de dessin**. Aucune ligne du moteur 2D
+n'est remplacée ; il s'en ajoute.
+
+#### Périmètre
+
+- **Le tri en profondeur des sprites.** C'est le cœur, et c'est du runtime. En vue de dessus,
+  l'ordre OAM suffit tel quel ; en isométrique, un acteur passe *devant* ou *derrière* un
+  autre selon sa position dans le monde, et l'ordre doit être recalculé quand ils bougent.
+  Le matériel dessine les OBJ dans l'ordre de la table : c'est donc la table qu'on trie.
+- **La projection.** Une position monde (x, y) devient une position écran en losange. Une
+  seule formule, mais elle doit vivre **au même endroit pour l'éditeur et pour le moteur** —
+  sinon le canvas ment sur l'emplacement des choses (c'est déjà le rôle de
+  `core/engine_emulation/`).
+- **La collision en espace isométrique.** Une boîte alignée à l'écran n'est pas une boîte
+  alignée dans le monde. À raccorder à la v2.1, qui aura introduit les normales et les
+  nouvelles primitives — les deux versions se touchent ici.
+- **L'authoring.** Poser un acteur au canvas doit se faire dans la grille du monde, pas dans
+  les pixels du losange.
+
+#### Ouvert
+
+- Le coût du tri par frame, et son plafond. Trier N acteurs à chaque frame sur un ARM7TDMI a
+  un prix ; le nombre d'entités simultanées s'en déduira, il ne se décrète pas.
+- Vraie isométrique (2:1) ou projection libre ? La première se tuile proprement, la seconde
+  ouvre des cas qui ne se rangent pas dans une grille.
+- La hauteur. Un décor isométrique sans élévation est une grille inclinée ; avec élévation,
+  le tri cesse d'être un tri sur Y. À décider avant, parce que ça change la donnée de carte.
 
 ### v3.0 — Le second moteur de rendu
 

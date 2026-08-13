@@ -74,6 +74,15 @@ class ProjectPathsMixin:
         return self.project_dir / "cameras"
 
     @property
+    def data_tables_dir(self) -> Path:
+        """Tables de données — project/data/*.json.
+
+        Un fichier par table, avec les données propres au projet : une table ne
+        dérive d'aucun fichier importé. Le dossier porte le mot que le script
+        écrit (`data.Objets`) — une seule grammaire du disque au Lua."""
+        return self.project_dir / "data"
+
+    @property
     def palettes_dir(self) -> Path:
         """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
         return self.project_dir / "palettes"

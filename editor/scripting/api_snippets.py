@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from scripting.api import (
     RUNTIME_API, PARAM_STR, PARAM_STR_LITERAL, PARAM_ACTOR, ApiFunc,
+    HARDWARE_ENUMS,
 )
 
 # Marqueur d'exemple dans les `doc` d'api.py. Convention déjà en place là-bas ;
@@ -66,6 +67,12 @@ def call(name: str, **by_domain: str) -> str:
     for p in f.params:
         if p.domain and p.domain in by_domain:
             args.append(_lua_str(by_domain[p.domain]))
+        elif p.domain in HARDWARE_ENUMS:
+            # Énumération matérielle : l'ensemble est FIXE et connu ici, donc on
+            # propose une vraie valeur plutôt qu'un gabarit. Un gabarit
+            # (`blend.set_mode("mode")`) serait refusé par le checker à la
+            # seconde même où l'utilisateur vient de cliquer pour l'insérer.
+            args.append(_lua_str(next(iter(HARDWARE_ENUMS[p.domain]))))
         elif p.ptype in (PARAM_STR, PARAM_STR_LITERAL):
             args.append(_lua_str(p.name))
         elif p.ptype == PARAM_ACTOR:

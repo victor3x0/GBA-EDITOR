@@ -328,6 +328,55 @@ class ProjectRenameMixin:
         vide si aucun script ne citait l'ancien nom."""
         from scripting.refactor import rename_in_project
         return rename_in_project(self, domain, old, new)
+
+    # ── Tables de données ────────────────────────────────────────────
+    # Une table et ses colonnes sont citées comme du CODE dans les scripts
+    # (`data.Objets[i].prix`), pas comme des chaînes d'arguments : elles ne
+    # passent donc pas par `rename_lua_refs` mais par le second type de site de
+    # `scripting/refactor.py`. Le nom sur le disque, lui, se renomme comme
+    # n'importe quelle ressource.
+
+    def rename_data_table(self, table, new_name: str) -> bool:
+        """Renomme une table et réécrit les scripts qui la citent.
+
+        Refuse (sans rien faire) un nom vide, inchangé, déjà pris, ou qui n'est
+        pas un identifiant : le script l'écrit sans guillemets, donc « Objets
+        rares » ne s'écrirait pas."""
+        from core.models.data_table import IDENTIFIER
+        from scripting.refactor import rename_data_table_in_project
+        new_name = new_name.strip()
+        if (not new_name or new_name == table.name
+                or not IDENTIFIER.match(new_name)
+                or self.data_tables.get(new_name)):
+            return False
+        old_name = table.name
+        with self._renaming():
+            refs = rename_data_table_in_project(self, old_name, new_name)
+            self.data_tables.rename(table, new_name)
+        self._notify_renamed("Table", old_name, new_name, refs)
+        return True
+
+    def rename_data_column(self, table, column, new_name: str) -> bool:
+        """Renomme une colonne : le schéma, la CLÉ de chaque ligne, et les
+        scripts. Les trois ou aucun — une ligne dont la clé garderait l'ancien
+        nom perdrait sa valeur au prochain chargement, sans un mot."""
+        from core.models.data_table import IDENTIFIER
+        from scripting.refactor import rename_data_column_in_project
+        new_name = new_name.strip()
+        if (not new_name or new_name == column.name
+                or not IDENTIFIER.match(new_name)
+                or table.column(new_name)):
+            return False
+        old_name = column.name
+        with self._renaming():
+            refs = rename_data_column_in_project(self, table.name, old_name, new_name)
+            for row in table.rows:
+                if old_name in row:
+                    row[new_name] = row.pop(old_name)
+            column.name = new_name
+            self.data_tables.save(table)
+        self._notify_renamed(f"Colonne de {table.name}", old_name, new_name, refs)
+        return True
     # ── Renommage — plomberie commune ────────────────────────────────
 
     @contextmanager
