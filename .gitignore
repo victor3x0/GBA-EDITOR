@@ -6,6 +6,9 @@ __pycache__/
 # GBA Editor — artefacts de build uniquement (générés à chaque build)
 Project Demo/*/build/
 
+# Sortie du build Nuitka — 180 Mo, régénérée par packaging/nuitka_build.py
+build-out/
+
 # Config toolchain locale — chemins devkitPro/mGBA spécifiques à la machine
 editor/core/toolchain.json
 

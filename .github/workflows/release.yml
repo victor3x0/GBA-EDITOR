@@ -81,14 +81,21 @@ jobs:
       - name: Construire l'installateur NSIS
         shell: pwsh
         run: |
-          # NSIS est préinstallé sur les runners Windows, mais pas toujours
-          # exposé dans le PATH — on le résout explicitement plutôt que de
-          # dépendre de ça.
+          # NSIS n'est plus garanti présent sur l'image windows-latest (il en a
+          # disparu) : on le résout d'abord, et on l'installe via Chocolatey
+          # (préinstallé sur ces runners) s'il manque, plutôt que de supposer
+          # qu'il est là.
           $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
           if (-not $makensis) {
-            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            $candidate = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            if (Test-Path $candidate) { $makensis = $candidate }
           }
-          if (-not (Test-Path $makensis)) { throw "makensis introuvable : $makensis" }
+          if (-not $makensis) {
+            choco install nsis -y --no-progress
+            $candidate = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+            if (Test-Path $candidate) { $makensis = $candidate }
+          }
+          if (-not $makensis) { throw "makensis introuvable même après installation via choco" }
 
           $version = "${{ needs.version.outputs.version }}"
           $src     = (Resolve-Path "build-out\GBAEditor").Path

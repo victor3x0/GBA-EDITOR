@@ -114,6 +114,43 @@ Fonctionnalités envisagées :
 
 ---
 
+## Licence
+
+### Votre jeu vous appartient
+
+**Sans réserve.** Vos images, vos sons, vos scripts, vos scènes et la ROM que
+vous en tirez sont votre travail : les avoir produits avec cet éditeur ne donne
+à personne le moindre droit dessus.
+
+- **Vendez-le** où vous voulez, sans nous demander, sans rien reverser.
+- **Ne publiez pas vos sources** si vous ne le souhaitez pas.
+- **Ne joignez aucune notice** à votre ROM.
+
+Le moteur recopié dans votre projet au moment du build est sous licence **zlib**
+([runtime/LICENSE](runtime/LICENSE)), justement pour que rien de tout ça ne soit
+à négocier.
+
+> Une réserve qui ne vient pas de nous : votre ROM est liée à `libgba` et
+> `maxmod` (devkitPro). Elles sont permissives et compatibles avec un jeu
+> commercial, mais leurs termes sont à lire chez devkitPro.
+
+### L'éditeur
+
+GBA Editor est un **logiciel libre**, sous [GPL-3.0-only](LICENSE). Vous pouvez
+l'utiliser, l'étudier, le modifier et le redistribuer. En contrepartie, toute
+version modifiée que vous distribuez doit rester libre, sous la même licence, et
+créditer les auteurs d'origine.
+
+Le téléchargement depuis GitHub est et restera gratuit. Les versions vendues sur
+d'autres plateformes sont les mêmes : ce qui s'y achète, c'est la commodité et
+le soutien au développement, jamais un supplément de fonctionnalités.
+
+Les composants tiers embarqués et leurs licences sont listés dans
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Pour contribuer, voir
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## Crédits
 
 Musiques du projet de démo par **Tiptoptom Cat** — [itch.io](https://tiptoptomcat.itch.io/).

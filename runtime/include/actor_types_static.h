@@ -1,3 +1,10 @@
+/* SPDX-License-Identifier: Zlib
+   Copyright (c) 2026 Yasor Rovic
+
+   Licence zlib — PAS la GPL de l'éditeur (cf. runtime/LICENSE). Ce fichier est
+   recopié dans le projet de l'utilisateur au build, puis compilé dans sa ROM :
+   le jeu produit lui appartient entièrement, il peut le vendre, et il n'a
+   aucune notice à joindre à sa ROM. */
 /* actor_types_static.h — structs et constantes GBA (partie non générée).
    Inclus depuis actor_types.h (généré par build.py). */
 #ifndef ACTOR_TYPES_STATIC_H

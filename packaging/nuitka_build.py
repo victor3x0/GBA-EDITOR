@@ -109,8 +109,17 @@ def build_command(version: str, output_dir: Path) -> list[str]:
     # modules résolvent leurs données via Path(__file__).parent, et Nuitka
     # donne aux modules compilés un __file__ cohérent dans la distribution.
 
-    # runtime/ — sources C du moteur (Makefile + include/*.h).
+    # runtime/ — sources C du moteur (Makefile + include/*.h). Emporte aussi
+    # runtime/LICENSE (zlib), qui doit voyager avec le moteur : c'est lui qui
+    # répond à « ai-je le droit de vendre mon jeu ? ».
     cmd.append(f"--include-data-dir={REPO_ROOT / 'runtime'}=runtime")
+
+    # Licence et notices tierces. Ce n'est pas de la courtoisie : la GPL de
+    # l'éditeur et la LGPL de Qt exigent toutes deux que ces textes ACCOMPAGNENT
+    # le binaire distribué. Les laisser dans le dépôt ne remplit pas
+    # l'obligation — l'utilisateur d'un ZIP portable n'a que ce dossier.
+    for notice in ("LICENSE", "THIRD-PARTY-NOTICES.md"):
+        cmd.append(f"--include-data-files={REPO_ROOT / notice}={notice}")
 
     # plugins/ — chargés par importlib.util.spec_from_file_location, donc
     # ils doivent exister comme .py REELS sur disque, pas seulement compilés.

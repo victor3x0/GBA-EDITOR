@@ -1,0 +1,68 @@
+Licence du MOTEUR — zlib
+========================
+
+Ce dossier (`runtime/`) n'est pas couvert par la GPL de l'éditeur.
+
+    Le fichier LICENSE à la racine du dépôt (GPL-3.0-only) couvre l'ÉDITEUR.
+    Il ne s'applique PAS à ce dossier, ni à ce que l'éditeur génère.
+
+
+Pourquoi une licence distincte
+------------------------------
+
+Les fichiers de `runtime/include/` sont recopiés dans le projet de chaque
+utilisateur au moment du build, puis compilés dans sa ROM. Sous la licence de
+l'éditeur, tout jeu construit avec cet outil deviendrait un travail dérivé sous
+GPL : sources à publier, vente en boutique fermée compromise. Ce n'est pas
+l'intention, et personne ne devrait avoir à le déduire.
+
+D'où cette licence séparée, permissive, et la déclaration explicite ci-dessous.
+
+
+Ce que ça veut dire pour qui fait un jeu   (note explicative, non contractuelle)
+-------------------------------------------------------------------------------
+
+**Votre projet et votre ROM vous appartiennent, entièrement.** Les images, sons,
+scripts, données et scènes que vous créez sont votre travail ; le fait de les
+avoir produits avec cet éditeur ne donne à personne d'autre le moindre droit
+dessus.
+
+**Vous pouvez vendre votre jeu**, sur la boutique de votre choix, sans nous
+demander quoi que ce soit, sans reverser quoi que ce soit, et sans publier vos
+sources.
+
+**Vous n'avez rien à joindre à votre ROM.** La clause 3 ci-dessous ne porte que
+sur la distribution des SOURCES de ce moteur. Distribuer une ROM compilée
+n'entraîne donc aucune obligation de notice — c'est précisément pourquoi la
+licence zlib a été retenue ici plutôt que MIT.
+
+Ces trois points sont l'intention ; le texte qui fait foi est celui qui suit.
+
+**Attention** — votre ROM est liée à `libgba` et `maxmod` (devkitPro), qui ne
+sont pas nos logiciels et ont leurs propres conditions. Elles sont permissives et
+compatibles avec un jeu commercial, mais c'est à vérifier auprès de devkitPro,
+pas ici.
+
+
+Texte de la licence
+-------------------
+
+Copyright (c) 2026 Yasor Rovic
+
+This software is provided 'as-is', without any express or implied warranty. In
+no event will the authors be held liable for any damages arising from the use of
+this software.
+
+Permission is granted to anyone to use this software for any purpose, including
+commercial applications, and to alter it and redistribute it freely, subject to
+the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a product,
+   an acknowledgment in the product documentation would be appreciated but is
+   not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
