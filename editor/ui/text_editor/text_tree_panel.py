@@ -189,7 +189,7 @@ class TextTreePanel(QWidget):
 
         # Même bandeau d'identité que les autres viewers, augmenté du compteur,
         # du filtre et des actions — ce panneau n'a pas de section repliable.
-        hdr = W.finder_bar("TEXTS")
+        hdr = W.finder_bar("Texts")
         hl = hdr.layout()
         self._count = QLabel("")
         self._count.setFont(QFont(T.MONO, T.XS))
@@ -354,7 +354,7 @@ class TextTreePanel(QWidget):
         prev_hdr.setStyleSheet(f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};")
         pl = QHBoxLayout(prev_hdr)
         pl.setContentsMargins(8, 0, 8, 0)
-        pv = QLabel("SCREEN PREVIEW")
+        pv = QLabel("Screen preview")
         pv.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         pv.setStyleSheet(QSS.title_panel)
         pl.addWidget(pv)

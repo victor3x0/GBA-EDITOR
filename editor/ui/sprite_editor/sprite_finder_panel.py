@@ -81,10 +81,10 @@ class SpriteFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Assets finder / Script finder / Sound finder) ──
-        root.addWidget(W.finder_bar("SPRITE FINDER"))
+        root.addWidget(W.finder_bar("Sprite finder"))
 
         # ── Sprites ───────────────────────────────────────────────
-        sec_sprites = FinderSection("SPRITES")
+        sec_sprites = FinderSection("Sprites")
         sec_sprites.add_clicked.connect(self._on_add_sprite)
         root.addWidget(sec_sprites, 3)
 
@@ -104,7 +104,7 @@ class SpriteFinderPanel(QWidget):
         sec_sprites.set_widget(self._sprite_tree)
 
         # ── Animations ────────────────────────────────────────────
-        sec_anim = FinderSection("ANIMATIONS STATES")
+        sec_anim = FinderSection("Animation states")
         sec_anim.add_clicked.connect(self._on_add_state)
         root.addWidget(sec_anim, 2)
 

@@ -251,10 +251,10 @@ class DynamicInspector(QWidget):
         scene = project.active_scene if project else None
         self._ui_insp.load(layout_asset, element, project, scene)
         header_kind, title = {
-            KIND_PANEL: ("ui_panel", "CONTAINER"),
-            KIND_TEXT:  ("ui_text",  "TEXT"),
-            KIND_IMAGE: ("ui_image", "IMAGE"),
-        }.get(kind, ("ui_element", "UI ELEMENT"))
+            KIND_PANEL: ("ui_panel", "Container"),
+            KIND_TEXT:  ("ui_text",  "Text"),
+            KIND_IMAGE: ("ui_image", "Image"),
+        }.get(kind, ("ui_element", "UI element"))
         self._set_header(header_kind, title, element.name)
         self._stack.setCurrentIndex(self._MODE_UI)
 
@@ -284,12 +284,12 @@ class DynamicInspector(QWidget):
         canvas, Échap, suppression du dernier actor sélectionné…)."""
         self._project_insp.load(self._project)
         name = self._project.settings.name if self._project else ""
-        self._set_header("project", "PROJECT", name)
+        self._set_header("project", "Project", name)
         self._stack.setCurrentIndex(self._MODE_PROJECT)
 
     def show_scene(self, scene, project):
         self._scene_insp.load(scene, project)
-        self._set_header("scene", "SCENE", scene.name if scene else "")
+        self._set_header("scene", "Scene", scene.name if scene else "")
         self._stack.setCurrentIndex(self._MODE_SCENE)
         # Sync si l'inspector SceneInspector émet changed après un rename interne
         self._scene_insp.changed.connect(
@@ -300,18 +300,18 @@ class DynamicInspector(QWidget):
 
     def show_actor(self, actor, project, scene=None):
         self._actor_insp.load(actor, project, scene)
-        self._set_header("actor", "ACTOR", actor.name if actor else "")
+        self._set_header("actor", "Actor", actor.name if actor else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_prefab(self, prefab, project):
         scene = project.active_scene if project else None
         self._actor_insp.load_prefab(prefab, project, scene)
-        self._set_header("prefab", "PREFAB", prefab.name if prefab else "")
+        self._set_header("prefab", "Prefab", prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_camera(self, scene, project):
         self._camera_insp.load(scene, project)
-        self._set_header("camera", "CAMERA", "240 × 160")
+        self._set_header("camera", "Camera", "240 × 160")
         self._stack.setCurrentIndex(self._MODE_CAMERA)
 
     def show_script(self, path, project=None):
@@ -321,7 +321,7 @@ class DynamicInspector(QWidget):
         path = _P(path)
         self._current_script_path = path
         self._script_insp.load(path)
-        self._set_header("script_asset", "SCRIPT", path.name)
+        self._set_header("script_asset", "Script", path.name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT)
 
     def show_prefab_uses(self, prefab, project=None):
@@ -329,7 +329,7 @@ class DynamicInspector(QWidget):
         if not proj:
             return
         self._uses_insp.load(prefab, proj)
-        self._set_header("uses", "INSTANCES", prefab.name if prefab else "")
+        self._set_header("uses", "Instances", prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_PREFAB_USES)
 
     def show_script_uses(self, script_path: str, project=None):
@@ -338,7 +338,7 @@ class DynamicInspector(QWidget):
             return
         from pathlib import Path as _P
         self._script_uses_insp.load(script_path, proj)
-        self._set_header("script", "SCRIPT", _P(script_path).name)
+        self._set_header("script", "Script", _P(script_path).name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT_USES)
 
     def show_variable_uses(self, kind: str, name: str, project=None):
@@ -346,7 +346,7 @@ class DynamicInspector(QWidget):
         if not proj:
             return
         self._variable_uses_insp.load(kind, name, proj)
-        type_text = "CONSTANT" if kind == "const" else "GLOBAL"
+        type_text = "Constant" if kind == "const" else "Global"
         self._set_header("uses", type_text, name)
         self._stack.setCurrentIndex(self._MODE_VARIABLE_USES)
 

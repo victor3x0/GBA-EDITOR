@@ -61,7 +61,7 @@ class VarTablePanel(QWidget):
         self._kind = kind   # "global" | "const"
         self._project = None
         self._updating = False
-        self._label = "GLOBALS" if kind == "global" else "CONSTANTS"
+        self._label = "Globals" if kind == "global" else "Constants"
         self._color = _C_GLOBAL if kind == "global" else _C_CONST
         value_col = "default" if kind == "global" else "value"
         # Colonne « persist » aux globals seulement : une constante ne change

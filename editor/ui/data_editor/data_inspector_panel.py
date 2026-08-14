@@ -44,7 +44,7 @@ class DataInspectorPanel(QWidget):
         root.setContentsMargins(S.MD, S.MD, S.MD, S.MD)
         root.setSpacing(S.SM)
 
-        root.addWidget(W.title_section("COLUMN"))
+        root.addWidget(W.title_section("Column"))
         self._name = QLabel("—")
         self._name.setStyleSheet(f"color:{C.ACCENT}; font-family:{T.CODE}; "
                                  f"font-size:{T.MD}px;")
@@ -61,7 +61,7 @@ class DataInspectorPanel(QWidget):
 
         W.separator(root)
 
-        root.addWidget(W.title_section("CELL"))
+        root.addWidget(W.title_section("Cell"))
         self._value = QLabel("—")
         self._value.setStyleSheet(f"color:{C.TEXT_HI}; font-family:{T.CODE}; "
                                   f"font-size:{T.MD}px;")

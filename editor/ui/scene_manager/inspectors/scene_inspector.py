@@ -190,7 +190,7 @@ class _WindowSlotRow(QFrame):
 
         is_obj = int(slot.region) == 2
         hdr = QHBoxLayout(); hdr.setSpacing(6)
-        title = QLabel("WINDOW OBJ" if is_obj else f"WIN{slot.region}")
+        title = QLabel("Window OBJ" if is_obj else f"WIN{slot.region}")
         title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         title.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
         hdr.addWidget(title)
@@ -341,7 +341,7 @@ class SceneInspector(QWidget):
 
         # ── Carte Note libre ───────────────────────────────────────
         notes_card, notes_inner = _card(C.TEXT_DIM)
-        notes_inner.addWidget(_card_title("NOTE", C.TEXT_NORM))
+        notes_inner.addWidget(_card_title("Note", C.TEXT_NORM))
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set_scene_field("notes", text))
         notes_inner.addWidget(self._notes_edit)
@@ -354,10 +354,10 @@ class SceneInspector(QWidget):
         # (Layer UI, Scrolling) prennent place à sa droite, et le script de scène
         # est rattaché juste en dessous.
         mode_card, mode_inner = _card(C.ACCENT)
-        mode_inner.addWidget(_card_title("SCENE MODE", C.ACCENT))
+        mode_inner.addWidget(_card_title("Scene mode", C.ACCENT))
 
         mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(12)
-        self._btn_mode = QPushButton("MODE 0")
+        self._btn_mode = QPushButton("Mode 0")
         self._btn_mode.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._btn_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_mode.setFixedSize(84, 44)
@@ -562,7 +562,7 @@ class SceneInspector(QWidget):
         # ── Carte Windows (WIN0/WIN1) ──────────────────────────────
         win_card, win_inner = _card(C.ACCENT_BLU)
         win_hdr = QHBoxLayout(); win_hdr.setContentsMargins(0, 0, 0, 0); win_hdr.setSpacing(4)
-        win_hdr.addWidget(_card_title("WINDOWS", C.ACCENT_BLU), 1)
+        win_hdr.addWidget(_card_title("Windows", C.ACCENT_BLU), 1)
         self._btn_win_add = {}
         for region, tip in (
             (0, "Add WIN0"),
@@ -606,7 +606,7 @@ class SceneInspector(QWidget):
         # partielles, EVA+EVB > 16 pour un halo saturé. Un réglage fait là
         # ressort en « Custom » et n'est jamais réécrit par l'effet.
         blend_card, blend_inner = _card(C.ACCENT_BLU)
-        blend_inner.addWidget(_card_title("BLENDING", C.ACCENT_BLU))
+        blend_inner.addWidget(_card_title("Blending", C.ACCENT_BLU))
 
         eff_row = QHBoxLayout(); eff_row.setContentsMargins(0, 0, 0, 0); eff_row.setSpacing(8)
         lbl_eff = self._dim_label("Effect:")
@@ -740,7 +740,7 @@ class SceneInspector(QWidget):
         self._bg_card = bg_card
 
         bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
-        bg_hdr.addWidget(_card_title("BACKGROUND LAYERS", C.ACCENT), 1)
+        bg_hdr.addWidget(_card_title("Background layers", C.ACCENT), 1)
         self._btn_bg_add = W.btn_add("Add a BG layer (max 4)")
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
         bg_hdr.addWidget(self._btn_bg_add)
@@ -783,7 +783,7 @@ class SceneInspector(QWidget):
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
         pal_card, pal_inner = _card(C.ACCENT)
-        pal_inner.addWidget(_card_title("PALETTES", C.ACCENT))
+        pal_inner.addWidget(_card_title("Palettes", C.ACCENT))
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}

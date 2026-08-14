@@ -163,7 +163,7 @@ class ActorInspector(QWidget):
         nl = QVBoxLayout(notes_card)
         nl.setContentsMargins(8, 6, 8, 8)
         nl.setSpacing(5)
-        notes_lbl = QLabel("NOTE")
+        notes_lbl = QLabel("Note")
         notes_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         notes_lbl.setStyleSheet(QSS.title_section())
         nl.addWidget(notes_lbl)
@@ -268,7 +268,7 @@ class ActorInspector(QWidget):
 
         # En-tête section avec barre colorée
         tg_hdr = QHBoxLayout()
-        tg_lbl = QLabel("TRANSFORM")
+        tg_lbl = QLabel("Transform")
         tg_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         tg_lbl.setStyleSheet(QSS.title_section())
         tg_hdr.addWidget(tg_lbl); tg_hdr.addStretch()
@@ -410,7 +410,7 @@ class ActorInspector(QWidget):
         _comp_card_l.addWidget(self._comp_list)
 
         self._comp_toggle.clicked.connect(lambda: self._toggle_section(
-            self._comp_toggle, self._comp_list, "COMPONENTS", self._ctx_color))
+            self._comp_toggle, self._comp_list, "Components", self._ctx_color))
 
         # ── ÉDITEUR card ─────────────────────────────────────────────
         self._editor_card = QFrame()
@@ -441,7 +441,7 @@ class ActorInspector(QWidget):
         _editor_card_l.addWidget(self._editor_container)
 
         self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "EDITOR", self._ctx_color))
+            self._editor_toggle, self._editor_container, "Editor", self._ctx_color))
 
         self._ctx_color = icons.COLOR_ACTOR   # couleur courante du contexte (actor par défaut)
         self._editor_section_visible = True   # état mémorisé du toggle ÉDITEUR
@@ -871,7 +871,7 @@ class ActorInspector(QWidget):
         except RuntimeError:
             pass
         self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "EDITOR", self._ctx_color))
+            self._editor_toggle, self._editor_container, "Editor", self._ctx_color))
 
         # Supprimer l'ancien (schedules deleteLater pour éviter crash de signal en cours)
         old.hide()

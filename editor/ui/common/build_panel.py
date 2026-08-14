@@ -173,7 +173,7 @@ class BuildPanel(QWidget):
         header.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(8, 0, 8, 0)
-        lbl = QLabel("BUILD / DEBUG")
+        lbl = QLabel("Build / debug")
         lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color:{C.TEXT_NORM};")
         hl.addWidget(lbl)

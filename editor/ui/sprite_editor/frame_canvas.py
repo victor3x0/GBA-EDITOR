@@ -1099,7 +1099,7 @@ class _FrameCanvasPanel(QWidget):
         self.toolbar.raise_()
 
         _FLOAT_STY = f"color:{C.TEXT_MUTED};background:transparent;"
-        self._tag_lbl = QLabel("CANVAS", self)
+        self._tag_lbl = QLabel("Canvas", self)
         self._tag_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._tag_lbl.setStyleSheet(_FLOAT_STY + "letter-spacing:1px;")
         self._tag_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

@@ -68,7 +68,7 @@ class PaletteUsageCard(QWidget):
         )
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(12, 0, 12, 0)
-        title = QLabel("USAGE")
+        title = QLabel("Usage")
         title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         title.setStyleSheet(QSS.title_panel)
         hl.addWidget(title)

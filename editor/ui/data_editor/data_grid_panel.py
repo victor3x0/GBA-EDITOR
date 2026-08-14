@@ -167,7 +167,7 @@ class DataGridPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._bar = W.section_bar("TABLE", C.ACCENT)
+        self._bar = W.section_bar("Table", C.ACCENT)
         hl = self._bar.layout()
         self._btn_row = W.btn_add("Add a row", icon="add_row")
         self._btn_row.clicked.connect(lambda: self._insert_row(len(self._table.rows)

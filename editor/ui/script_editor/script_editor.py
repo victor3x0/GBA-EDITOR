@@ -256,10 +256,10 @@ class ScriptEditorScreen(QWidget):
     def _update_context_badge(self, ctx: str):
         from ui.common.widgets import kind_colors
         _BADGE = {
-            "actor":    ("ACTOR",    _C_EVENT),
-            "scene":    ("SCENE",    _C_API),
-            "camera":   ("CAMERA",   _C_API),
-            "behavior": ("BEHAVIOR", _C_BEHAVIOR),
+            "actor":    ("Actor",    _C_EVENT),
+            "scene":    ("Scene",    _C_API),
+            "camera":   ("Camera",   _C_API),
+            "behavior": ("Behavior", _C_BEHAVIOR),
         }
         if ctx in _BADGE:
             text, fg = _BADGE[ctx]

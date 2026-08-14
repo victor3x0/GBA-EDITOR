@@ -188,7 +188,7 @@ class _SpritesheetViewer(QWidget):
         hdr_lay.setContentsMargins(8, 0, 4, 0)
         hdr_lay.setSpacing(4)
 
-        lbl_tiles = QLabel("TILES")
+        lbl_tiles = QLabel("Tiles")
         lbl_tiles.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         lbl_tiles.setStyleSheet(QSS.title_panel)
         hdr_lay.addWidget(lbl_tiles)

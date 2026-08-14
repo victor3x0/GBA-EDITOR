@@ -47,9 +47,9 @@ _KIND_COLOR = {KIND_SCENE: COLOR_BACKGROUND, KIND_UI: COLOR_UI,
 
 # Titre de section + libellé du bouton « + », par type.
 _KIND_SECTION = {
-    KIND_SCENE:    ("BACKGROUNDS",    "Import a PNG"),
-    KIND_UI:       ("UI BACKGROUNDS", "Import a UI frame or panel PNG"),
-    KIND_ANIMATED: ("ANIMATED",       "Import an animation sheet PNG"),
+    KIND_SCENE:    ("Backgrounds",    "Import a PNG"),
+    KIND_UI:       ("UI backgrounds", "Import a UI frame or panel PNG"),
+    KIND_ANIMATED: ("Animated",       "Import an animation sheet PNG"),
 }
 
 
@@ -221,7 +221,7 @@ class BgFinderPanel(QWidget):
         self._blocking = False
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
 
-        root.addWidget(W.finder_bar("BACKGROUND FINDER"))
+        root.addWidget(W.finder_bar("Background finder"))
 
         self._lists: dict[str, _BgList] = {}
         for kind in BG_KINDS:
@@ -507,7 +507,7 @@ class BgPropertiesPanel(QWidget):
         #    champs et les guides écrivent le même modèle.
         self._ui_widgets: list = []
         self._ui_sep = W.separator(root)
-        self._ui_title = W.section("UI ROLE", root)
+        self._ui_title = W.section("UI role", root)
         role_row = QHBoxLayout(); role_row.setContentsMargins(0, 2, 0, 2); role_row.setSpacing(6)
         self._btn_nine = self._mode_btn(
             "Nine-slice", "Stretchable frame: fixed corners, repeated edges and center")
@@ -551,7 +551,7 @@ class BgPropertiesPanel(QWidget):
         #    Découpe en GRILLE + vitesse en ticks 60 Hz (l'unité de
         #    `AnimState.speed` — animer un décor se lit comme animer un sprite).
         self._anim_sep = W.separator(root)
-        self._anim_title = W.section("ANIMATION", root)
+        self._anim_title = W.section("Animation", root)
         frame_host = QWidget(); frame_host.setStyleSheet("background:transparent;")
         frow = QHBoxLayout(frame_host); frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(4)
         self._frame_spins: dict[str, QSpinBox] = {}
@@ -614,7 +614,7 @@ class BgPropertiesPanel(QWidget):
         #    le finder : celui-ci pilote l'asset édité, y presser un item ferait
         #    changer le canvas sous le drag (cf. _AnimatedSourceList).
         self._src_sep = W.separator(root)
-        self._src_title = W.section("ANIMATIONS", root)
+        self._src_title = W.section("Animations", root)
         self._src_hint = QLabel("Drag onto the canvas to place")
         self._src_hint.setFont(QFont(T.UI, T.SM))
         self._src_hint.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
@@ -628,7 +628,7 @@ class BgPropertiesPanel(QWidget):
         #    Section pilotée par la SÉLECTION et non par le type de l'asset :
         #    elle décrit une copie posée, pas l'image courante.
         self._pl_sep = W.separator(root)
-        self._pl_title = W.section("PLACEMENT", root)
+        self._pl_title = W.section("Placement", root)
         self._pl_name = QLabel("")
         self._pl_name.setFont(QFont(T.MONO, T.SM))
         self._pl_name.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent;")
@@ -668,7 +668,7 @@ class BgPropertiesPanel(QWidget):
         #    clic droit = restaurer l'origine) ; « + » ajoute une palette du
         #    catalogue (éditable, clic = remplacer, clic droit = retirer). La
         #    palette active de PEINTURE se choisit dans la bande en haut du canvas.
-        W.separator(root); W.section("PALETTES", root)
+        W.separator(root); W.section("Palettes", root)
         self._pal_grid = PaletteSlotGridAsset(_BG_COLOR)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
@@ -1001,7 +1001,7 @@ class BgPropertiesPanel(QWidget):
         self._project, self._ba = project, ba
         self._blocking = True
         if ba:
-            self._header.set_header("background", ba.kind_label().upper(), ba.name)
+            self._header.set_header("background", ba.kind_label(), ba.name)
         else:
             self._header.set_header("empty", "", "")
         self._blocking = False

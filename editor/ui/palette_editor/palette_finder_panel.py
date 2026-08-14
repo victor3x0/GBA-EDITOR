@@ -56,9 +56,9 @@ class PaletteFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(W.finder_bar("PALETTE FINDER"))
+        root.addWidget(W.finder_bar("Palette finder"))
 
-        root.addWidget(self._make_section("PALETTES", C.ACCENT))
+        root.addWidget(self._make_section("Palettes", C.ACCENT))
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
         self._tree.setFont(QFont(T.UI, T.MD))

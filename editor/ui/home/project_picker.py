@@ -674,7 +674,7 @@ class NewProjectDialog(QDialog):
             return lbl
 
         # Nom du projet
-        bl.addWidget(_field_label("PROJECT NAME"))
+        bl.addWidget(_field_label("Project name"))
         self._name_edit = QLineEdit()
         self._name_edit.setFont(QFont(T.MONO, T.MD))
         self._name_edit.setStyleSheet(QSS.lineedit)
@@ -683,7 +683,7 @@ class NewProjectDialog(QDialog):
         bl.addWidget(self._name_edit)
 
         # Dossier parent
-        bl.addWidget(_field_label("LOCATION"))
+        bl.addWidget(_field_label("Location"))
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         self._dir_edit = QLineEdit(str(projects_dir))

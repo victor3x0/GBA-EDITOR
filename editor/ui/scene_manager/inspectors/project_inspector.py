@@ -79,7 +79,7 @@ class ProjectInspector(QWidget):
 
         # ── Carte Identité ────────────────────────────────────────
         id_card, id_inner = self._card()
-        id_inner.addWidget(self._card_title("IDENTITY"))
+        id_inner.addWidget(self._card_title("Identity"))
 
         self._ed_author = QLineEdit()
         self._ed_author.setPlaceholderText("Anonymous")
@@ -195,7 +195,7 @@ class ProjectInspector(QWidget):
 
         # ── Carte Contenu ─────────────────────────────────────────
         content_card, content_inner = self._card()
-        content_inner.addWidget(self._card_title("CONTENT"))
+        content_inner.addWidget(self._card_title("Content"))
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 2, 0, 0)

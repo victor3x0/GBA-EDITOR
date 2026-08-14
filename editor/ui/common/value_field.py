@@ -217,8 +217,8 @@ class ValueField(QWidget):
         consts = [(n, i) for s, n, i in self._variables if s == "const"]
         if globs or consts:
             m.addSeparator()
-        for title, src, names in (("GLOBALS", "global", globs),
-                                  ("CONSTANTES", "const", consts)):
+        for title, src, names in (("Globals", "global", globs),
+                                  ("Constants", "const", consts)):
             if not names:
                 continue
             hdr = m.addAction(title)

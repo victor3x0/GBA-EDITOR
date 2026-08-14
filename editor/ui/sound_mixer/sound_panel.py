@@ -368,7 +368,7 @@ class SfxInspector(_AssetInspectorBase):
 class MusicInspector(_AssetInspectorBase):
     _EMPTY_TEXT = "Select a track"
     _HEADER_KIND = "music"
-    _HEADER_LABEL = "MUSIC"
+    _HEADER_LABEL = "Music"
     _IMPORT_BTN_TEXT = "Importer MOD/WAV…"
     _IMPORT_DIALOG_TITLE = "Importer Music"
     _IMPORT_FILTER = "Tracker/Audio (*.mod *.xm *.s3m *.it *.wav);;Tous (*)"
@@ -413,7 +413,7 @@ class SoundFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Assets finder / Sprite finder / Script finder) ──
-        root.addWidget(W.finder_bar("SOUND FINDER"))
+        root.addWidget(W.finder_bar("Sound finder"))
 
         # SFX section — add/supprimer remontés dans le header (style asset finder)
         self._sfx_section = self._make_section(
@@ -441,7 +441,7 @@ class SoundFinderPanel(QWidget):
 
         # Music section
         self._music_section = self._make_section(
-            "MUSIC", C.TEXT_NORM, lambda: self._add(Music), "Add a track",
+            "Music", C.TEXT_NORM, lambda: self._add(Music), "Add a track",
             lambda: self._del(Music), "Delete selected track")
         root.addWidget(self._music_section)
         self._music_list = QTreeWidget()

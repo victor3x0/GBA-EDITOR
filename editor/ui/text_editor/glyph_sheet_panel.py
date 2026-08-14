@@ -51,7 +51,7 @@ class GlyphSheetPanel(QWidget):
         bl.setContentsMargins(8, 0, 8, 0)
         bl.setSpacing(6)
 
-        self._title = QLabel("GLYPH SHEET")
+        self._title = QLabel("Glyph sheet")
         self._title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._title.setStyleSheet(QSS.title_panel)
         bl.addWidget(self._title)
@@ -155,7 +155,7 @@ class GlyphSheetPanel(QWidget):
             self._ch.setValue(max(1, font.cell_h))
             self._title.setText(f"SHEET — {font.name}")
         else:
-            self._title.setText("GLYPH SHEET")
+            self._title.setText("Glyph sheet")
         self._blocking = False
         self._sheet.load(font, project)
 

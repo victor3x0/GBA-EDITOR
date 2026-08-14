@@ -98,7 +98,7 @@ class ScriptInspector(QWidget):
 
         # ── Carte Note ────────────────────────────────────────────
         notes_card, notes_inner = _card()
-        notes_inner.addWidget(_card_title("NOTE", C.TEXT_DIM, size=T.XS))
+        notes_inner.addWidget(_card_title("Note", C.TEXT_DIM, size=T.XS))
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(self._on_note_committed)
         notes_inner.addWidget(self._notes_edit)
@@ -107,7 +107,7 @@ class ScriptInspector(QWidget):
         # ── Carte Variables exposées ──────────────────────────────
         vars_card, vars_inner = _card()
         vars_hdr = QHBoxLayout(); vars_hdr.setContentsMargins(0, 0, 0, 0); vars_hdr.setSpacing(4)
-        vars_hdr.addWidget(_card_title("EXPOSED VARIABLES"), 1)
+        vars_hdr.addWidget(_card_title("Exposed variables"), 1)
         self._btn_add_var = W.btn_add("Add an exposed variable")
         self._btn_add_var.clicked.connect(self._on_add_var)
         vars_hdr.addWidget(self._btn_add_var)

@@ -50,7 +50,7 @@ class SidebarPanel(QWidget):
         self._cl.setSpacing(0)
 
         # ── Section EVENTS ─────────────────────────────────────────
-        self._sec_events = _Section("EVENTS", _C_EVENT)
+        self._sec_events = _Section("Events", _C_EVENT)
         self._event_btns: dict[str, _EntryButton] = {}
         for ev in KNOWN_EVENTS:
             meta  = _EVENT_META.get(ev, {})
@@ -67,7 +67,7 @@ class SidebarPanel(QWidget):
         self._cl.addWidget(self._sec_api)
 
         # ── Section RÉFÉRENCES ──────────────────────────────────────
-        self._sec_refs = _Section("REFERENCES", _C_REF, expanded=False)
+        self._sec_refs = _Section("References", _C_REF, expanded=False)
         self._cl.addWidget(self._sec_refs)
 
         self._cl.addStretch()
@@ -255,7 +255,7 @@ class SidebarPanel(QWidget):
 
         if context == "behavior":
             # Remplace EVENTS par MODULE
-            self._sec_events._title = "MODULE"
+            self._sec_events._title = "Module"
             self._sec_events._color = _C_BEHAVIOR
             self._sec_events._toggle.setStyleSheet(
                 f"QToolButton{{color:{_C_BEHAVIOR};border:none;background:transparent;"
@@ -283,7 +283,7 @@ class SidebarPanel(QWidget):
             self._sec_refs.setVisible(False)
         else:
             # Restore EVENTS header style
-            self._sec_events._title = "EVENTS"
+            self._sec_events._title = "Events"
             self._sec_events._color = _C_EVENT
             self._sec_events._toggle.setStyleSheet(
                 f"QToolButton{{color:{_C_EVENT};border:none;background:transparent;"

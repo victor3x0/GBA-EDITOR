@@ -65,7 +65,7 @@ class FontInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(FONT_COLOR, "FONT")
+        host, lay, self._name_lbl = insp_scroll(FONT_COLOR, "Font")
         root.addWidget(host)
 
         self._info = QLabel("")
@@ -79,7 +79,7 @@ class FontInspector(QWidget):
         # ── Transparence ──────────────────────────────────────────
         # Pipettes plutôt que sélecteur de couleur : la couleur voulue est
         # sous les yeux, dans la planche.
-        tr_lbl = QLabel("TRANSPARENCY")
+        tr_lbl = QLabel("Transparency")
         tr_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         tr_lbl.setStyleSheet(QSS.title_panel)
         lay.addWidget(tr_lbl)
@@ -96,7 +96,7 @@ class FontInspector(QWidget):
 
         W.separator(lay)
 
-        cs_lbl = QLabel("CHARSET")
+        cs_lbl = QLabel("Charset")
         cs_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         cs_lbl.setStyleSheet(QSS.title_panel)
         lay.addWidget(cs_lbl)
@@ -118,7 +118,7 @@ class FontInspector(QWidget):
 
         W.separator(lay)
 
-        gl_lbl = QLabel("SELECTED GLYPH")
+        gl_lbl = QLabel("Selected glyph")
         gl_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         gl_lbl.setStyleSheet(QSS.title_panel)
         lay.addWidget(gl_lbl)

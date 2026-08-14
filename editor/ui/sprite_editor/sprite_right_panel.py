@@ -76,7 +76,7 @@ class SpriteRightPanel(QWidget):
 
     def _build_params(self):
         lay = self._content_layout
-        W.section("CANVAS SIZE", lay)
+        W.section("Canvas size", lay)
 
         # Frame W / H
         self._cb_w = QComboBox(); self._cb_w.setFont(QFont(T.MONO, T.SM))
@@ -88,7 +88,7 @@ class SpriteRightPanel(QWidget):
         W.pair("Frame", "W", C.AXIS_X, self._cb_w, "H", C.AXIS_Y, self._cb_h, lay)
 
         W.separator(lay)
-        W.section("ANIMATION", lay)
+        W.section("Animation", lay)
 
         self._sp_speed = W.spinbox(8, min_v=1, max_v=120)
         self._sp_speed.setToolTip("Ticks GBA entre deux frames (60fps). 8=7.5fps  4=15fps  2=30fps")
@@ -103,7 +103,7 @@ class SpriteRightPanel(QWidget):
 
     def _build_direction(self):
         lay = self._content_layout
-        W.section("DIRECTIONS", lay)
+        W.section("Directions", lay)
         self._dir_widget = DirectionWidget()
         self._dir_widget.directions_changed.connect(self._on_directions_changed)
         lay.addWidget(self._dir_widget)
@@ -112,7 +112,7 @@ class SpriteRightPanel(QWidget):
         from ui.common.palette_slot_grid import PaletteSlotGridAsset
         lay = self._content_layout
         W.separator(lay)
-        W.section("PALETTE", lay)
+        W.section("Palette", lay)
 
         # Grille unifiée (modèle scène/background) : les sous-palettes de la
         # PAL_BANK du sprite — dérivées du PNG grisées + overridables, « + » pour
@@ -210,7 +210,7 @@ class SpriteRightPanel(QWidget):
         self._state   = sprite.states[0] if sprite.states else None
         self._blocking = True
 
-        self._header.set_header("sprite", "SPRITE", sprite.name)
+        self._header.set_header("sprite", "Sprite", sprite.name)
 
         # Frame size
         self._cb_w.setCurrentText(str(sprite.frame_w))

@@ -32,9 +32,9 @@ class FontFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(W.finder_bar("FONT FINDER"))
+        root.addWidget(W.finder_bar("Font finder"))
 
-        sec = FinderSection("FONTS", FONT_COLOR)
+        sec = FinderSection("Fonts", FONT_COLOR)
         # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
         # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
         sec.set_add_visible(False)

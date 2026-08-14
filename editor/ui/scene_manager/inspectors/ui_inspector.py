@@ -141,7 +141,7 @@ class UIInspector(QWidget):
         self._layout_lbl = W.hint("", L)
 
         # ── Ancrage (root uniquement — un enfant hérite) ──────────
-        W.section("ANCHOR", L)
+        W.section("Anchor", L)
         self._anchor = QComboBox()
         self._anchor.setFont(QFont(T.UI, T.MD))
         self._anchor.setStyleSheet(QSS.combobox)
@@ -215,7 +215,7 @@ class UIInspector(QWidget):
 
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
         self._text_sep = W.separator(L)
-        self._text_title = W.section("TEXT", L)
+        self._text_title = W.section("Text", L)
 
         # Contenu ÉDITABLE SUR PLACE d'un texte authoré, pour ne pas avoir à
         # créer l'entrée dans l'écran Texte puis revenir la choisir ici.
@@ -312,7 +312,7 @@ class UIInspector(QWidget):
 
         # ── Section FOND (conteneur) ──────────────────────────────
         self._fill_sep = W.separator(L)
-        self._fill_title = W.section("BACKGROUND", L)
+        self._fill_title = W.section("Background", L)
 
         self._fill_kind = QComboBox()
         self._fill_kind.setFont(QFont(T.UI, T.MD))
@@ -426,7 +426,7 @@ class UIInspector(QWidget):
         # dans le Sprite Editor. Recopier une vitesse donnerait deux vérités
         # pour un même dessin (cf. models/ui_region.UIImage).
         self._img_sep = W.separator(L)
-        self._img_title = W.section("IMAGE", L)
+        self._img_title = W.section("Image", L)
 
         self._img_sprite = QComboBox()
         self._img_sprite.setFont(QFont(T.UI, T.MD))

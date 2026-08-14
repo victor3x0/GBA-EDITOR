@@ -196,7 +196,7 @@ class PrefabUsesInspector(_UsesInspectorBase):
     _HEADER_COLOR = icons.COLOR_PREFAB
     _HEADER_BG_ALPHA = "30"
     _HEADER_BORDER_ALPHA = "50"
-    _SECTION_TITLE = "PREFAB USES"
+    _SECTION_TITLE = "Prefab uses"
     _ACTION_BTN_TEXT = "Edit prefab"
     _ACTION_BTN_COLOR = icons.COLOR_PREFAB
 
@@ -262,7 +262,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
     _HEADER_COLOR = icons.COLOR_SCRIPT
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
-    _SECTION_TITLE = "SCRIPT USES"
+    _SECTION_TITLE = "Script uses"
     _ACTION_BTN_TEXT = "Edit script"
     _ACTION_BTN_COLOR = icons.COLOR_SCRIPT
 
@@ -306,7 +306,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
         ]
         if linked_prefabs:
             found_any = True
-            self._add_group_row("◆", "PREFABS", C.ACCENT_BLU)
+            self._add_group_row("◆", "Prefabs", C.ACCENT_BLU)
             for pf in linked_prefabs:
                 self._add_leaf_row(pf.name, lambda p=pf: get_bus().select(p))
 
@@ -344,12 +344,12 @@ class VariableUsesInspector(_UsesInspectorBase):
     """
     edit_requested = pyqtSignal(str)   # chemin absolu du script à ouvrir
 
-    _LABELS = {"global": "GLOBAL USES", "const": "CONSTANT USES"}
+    _LABELS = {"global": "Global uses", "const": "Constant uses"}
 
     _HEADER_COLOR = icons.COLOR_GLOBAL
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
-    _SECTION_TITLE = "GLOBAL USES"
+    _SECTION_TITLE = "Global uses"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -362,7 +362,7 @@ class VariableUsesInspector(_UsesInspectorBase):
         self._kind = kind
         self._name = name
         self._name_lbl.setText(name)
-        self._sec_lbl.setText(self._LABELS.get(kind, "USES"))
+        self._sec_lbl.setText(self._LABELS.get(kind, "Uses"))
         self._clear_list()
 
         if kind == "const":

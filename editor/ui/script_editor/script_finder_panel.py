@@ -228,7 +228,7 @@ class ScriptFinderPanel(QWidget):
         # SCRIPT FINDER — même en-tête (flèche + titre coloré + recherche)
         # que les autres finders ; pas de "+" ici (aucune création de script
         # depuis ce panneau, seulement depuis l'Assets finder).
-        sec_scripts = FinderSection("SCRIPT FINDER")
+        sec_scripts = FinderSection("Script finder")
         sec_scripts.set_add_visible(False)
         tree_l.addWidget(sec_scripts, 1)
 
@@ -247,14 +247,14 @@ class ScriptFinderPanel(QWidget):
         sec_scripts.set_widget(scroll)
 
         # CONSTANTS puis GLOBALS — même ordre et même en-tête que l'Assets finder
-        sec_const = FinderSection("CONSTANTS")
+        sec_const = FinderSection("Constants")
         self._constants_panel = VarTablePanel(kind="const")
         self._constants_panel.snippet_requested.connect(self.snippet_requested)
         sec_const.set_widget(self._constants_panel)
         sec_const.add_clicked.connect(self._constants_panel._add_var)
         tree_l.addWidget(sec_const)
 
-        sec_globals = FinderSection("GLOBALS")
+        sec_globals = FinderSection("Globals")
         self._globals_panel = VarTablePanel(kind="global")
         self._globals_panel.snippet_requested.connect(self.snippet_requested)
         sec_globals.set_widget(self._globals_panel)

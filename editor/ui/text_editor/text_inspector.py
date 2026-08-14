@@ -36,7 +36,7 @@ class TextInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "TEXT")
+        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "Text")
         root.addWidget(host)
 
         self._empty = QLabel("Select a text entry\nfrom the table")
@@ -52,7 +52,7 @@ class TextInspector(QWidget):
 
         # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
         # traducteur et l'identité machine.
-        note_lbl = QLabel("NOTE FOR TRANSLATOR")
+        note_lbl = QLabel("Note for translator")
         note_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         note_lbl.setStyleSheet(QSS.title_panel)
         bl.addWidget(note_lbl)
@@ -77,7 +77,7 @@ class TextInspector(QWidget):
         # ── Balisage ──────────────────────────────────────────────
         # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
         # balisage n'ont nulle part ailleurs où apparaître avant le build.
-        mk_lbl = QLabel("MARKUP")
+        mk_lbl = QLabel("Markup")
         mk_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         mk_lbl.setStyleSheet(QSS.title_panel)
         mk_lbl.setToolTip("<br>".join(
@@ -109,7 +109,7 @@ class TextInspector(QWidget):
 
         # Contrepartie visible du renommage automatique : il réécrit les
         # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
-        use_lbl = QLabel("USED BY")
+        use_lbl = QLabel("Used by")
         use_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         use_lbl.setStyleSheet(QSS.title_panel)
         bl.addWidget(use_lbl)

@@ -6,7 +6,7 @@ Usage dans un éditeur de component (ou plugin) :
 
     W.row("Frame", fw_widget, layout)
     W.pair("Offset", "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, layout)
-    W.section("CALLBACKS", layout)
+    W.section("Callbacks", layout)
     W.separator(layout)
 
     btn = W.btn_ghost("Choisir…")
@@ -997,7 +997,7 @@ class AssetHeaderBar(QWidget):
     Usage :
         header = AssetHeaderBar()
         header.renamed.connect(lambda new_name: ...)
-        header.set_header("actor", "ACTOR", actor.name, editable=True)
+        header.set_header("actor", "Actor", actor.name, editable=True)
     """
 
     renamed = pyqtSignal(str)   # nouveau nom, émis quand l'utilisateur valide

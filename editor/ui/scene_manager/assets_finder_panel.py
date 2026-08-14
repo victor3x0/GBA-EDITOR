@@ -1199,7 +1199,7 @@ class AssetsFinderPanel(QWidget):
 
         # ── Bandeau "finder" (identité du panneau, cohérent avec les
         #    autres écrans : Sprite finder / Script finder / Sound finder) ──
-        layout.addWidget(W.finder_bar("PROJECT VIEWER"))
+        layout.addWidget(W.finder_bar("Project viewer"))
 
         # ── Scroll area ────────────────────────────────────────────
         scroll = QScrollArea()
@@ -1213,11 +1213,11 @@ class AssetsFinderPanel(QWidget):
         cl.setSpacing(0)
 
         # Sections
-        self._sec_scenes  = FinderSection("SCENES")
-        self._sec_prefabs = FinderSection("PREFABS")
-        self._sec_scripts = FinderSection("SCRIPTS")
-        self._sec_const   = FinderSection("CONSTANTS")
-        self._sec_globals = FinderSection("GLOBALS")
+        self._sec_scenes  = FinderSection("Scenes")
+        self._sec_prefabs = FinderSection("Prefabs")
+        self._sec_scripts = FinderSection("Scripts")
+        self._sec_const   = FinderSection("Constants")
+        self._sec_globals = FinderSection("Globals")
 
         self._sec_scenes.add_clicked.connect(self.scene_add_requested)
         self._sec_prefabs.add_clicked.connect(self._add_prefab)
@@ -1242,11 +1242,11 @@ class AssetsFinderPanel(QWidget):
 
         # Intertitres ACTORS / SCENES / BEHAVIORS : de simples labels, sinon on
         # empile deux niveaux de bandes sans distinguer section et groupe.
-        sb_layout.addWidget(W.title_group("ACTORS"))
+        sb_layout.addWidget(W.title_group("Actors"))
         sb_layout.addWidget(self._tree_scripts_a)
-        sb_layout.addWidget(W.title_group("SCENES"))
+        sb_layout.addWidget(W.title_group("Scenes"))
         sb_layout.addWidget(self._tree_scripts_s)
-        sb_layout.addWidget(W.title_group("BEHAVIORS"))
+        sb_layout.addWidget(W.title_group("Behaviors"))
         sb_layout.addWidget(self._tree_scripts_b)
         self._sec_scripts.set_widget(scripts_body)
 

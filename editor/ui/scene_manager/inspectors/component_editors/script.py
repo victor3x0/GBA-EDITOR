@@ -50,7 +50,7 @@ class ScriptEditor(BaseComponentEditor):
             return
 
         W.separator(layout)
-        W.section("EXPOSED VARIABLES", layout)
+        W.section("Exposed variables", layout)
 
         for var in variables:
             self._build_var_row(comp, var, layout)

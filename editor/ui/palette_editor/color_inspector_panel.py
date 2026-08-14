@@ -81,7 +81,7 @@ class ColorInspectorPanel(QWidget):
         card_hdr.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         chl = QHBoxLayout(card_hdr)
         chl.setContentsMargins(12, 0, 12, 0)
-        self._color_hdr = QLabel("COLOR")
+        self._color_hdr = QLabel("Color")
         self._color_hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._color_hdr.setStyleSheet(QSS.title_section())
         chl.addWidget(self._color_hdr)

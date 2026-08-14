@@ -41,7 +41,7 @@ class DataFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(W.finder_bar("DATA FINDER"))
+        root.addWidget(W.finder_bar("Data finder"))
         root.addWidget(self._make_section())
 
         self._tree = QTreeWidget()
@@ -56,7 +56,7 @@ class DataFinderPanel(QWidget):
         root.addWidget(self._tree, 1)
 
     def _make_section(self) -> QFrame:
-        f = W.section_bar("TABLES", C.ACCENT)
+        f = W.section_bar("Tables", C.ACCENT)
         hl = f.layout()
         btn_add = W.btn_add("New table")
         btn_add.clicked.connect(self._add)
