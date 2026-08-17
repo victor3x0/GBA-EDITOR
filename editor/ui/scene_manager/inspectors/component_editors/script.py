@@ -200,8 +200,7 @@ class ScriptEditor(BaseComponentEditor):
 
         has_sprite = any(isinstance(c, SpriteComponent)  for c in comps)
         has_sfx    = any(isinstance(c, SoundFxComponent) for c in comps)
-        solids     = [c for c in comps if isinstance(c, CollisionBoxComponent) and c.solid]
-        triggers   = [c for c in comps if isinstance(c, CollisionBoxComponent) and not c.solid]
+        boxes      = [c for c in comps if isinstance(c, CollisionBoxComponent)]
 
         comp_labels = []
         for c in comps:
@@ -215,9 +214,6 @@ class ScriptEditor(BaseComponentEditor):
             component_labels=comp_labels,
             has_sprite=has_sprite,
             has_sfx=has_sfx,
-            solid_tags=[(c.tag, getattr(c, "on_collision_enter", "onCollisionEnter"),
-                         getattr(c, "on_collision_exit", "onCollisionExit")) for c in solids],
-            trigger_tags=[(c.tag, getattr(c, "on_trigger_enter", "onTriggerEnter"),
-                           getattr(c, "on_trigger_exit", "onTriggerExit")) for c in triggers],
+            collision_tags=list(dict.fromkeys(c.tag or "body" for c in boxes)),
         )
         return generate_script_template(ctx)

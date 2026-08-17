@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripting.api import RUNTIME_API, REMOVED_API
+from scripting.api import RUNTIME_API, RUNTIME_PROPS, REMOVED_API
 from scripting import api_snippets
 
 _JSON_PATH = Path(__file__).parent / "api_reference.json"
@@ -32,6 +32,37 @@ RELABELED: list[str] = []  # libellé du JSON permuté par rapport au catalogue
 # laquelle : on ne devine pas, on les regroupe visiblement.
 _ACTOR_FALLBACK = "Actor"
 _MISC_FALLBACK  = "Autres"
+
+# Où ranger les PROPRIÉTÉS (RUNTIME_PROPS) : contrairement aux fonctions, un
+# module (`self`) ne suffit pas à dire la catégorie — self.position est du
+# Transform, self.velocity de la Physics. Une petite table à jour à la main,
+# le JSON restant lui completé automatiquement (cf. `_reconcile`).
+_PROP_HOME: dict[str, str] = {
+    "self.position":  "Transform",
+    "self.rotation":  "Transform",
+    "self.scale":     "Transform",
+    "self.sprite_rotation": "Transform",
+    "self.sprite_scale":    "Transform",
+    "self.sprite_offset":   "Transform",
+    "self.velocity":  "Physics",
+    "self.visible":   "Actor",
+    "self.active":    "Actor",
+    "self.tag":       "Actor",
+    "self.frame":     "Animation",
+    "self.flip_h":    "Animation",
+    "self.flip_v":    "Animation",
+    "self.pal":       "Animation",
+    "self.obj_mode":  "Animation",
+    "self.direction": "Movement",
+    "self.auto_dir":  "Movement",
+    "self.grounded":  "Physics",
+    "camera.position": "Caméra",
+    "camera.bound":    "Caméra",
+    "scene.size":      "Scène",
+    "scene.frame":     "Scène",
+    "input.axis":      "Input",
+    "blend.mode":      "Blend",
+}
 
 
 def _module_of(name: str) -> str:
@@ -56,7 +87,7 @@ def _fix_permuted(entry: dict, name: str) -> dict:
     libellé faux — il enseignerait une signature que le compilateur rejette. Un
     simple renommage de paramètre (`n` devenu `frame`) reste juste sur le fond,
     et écraser à cette occasion un libellé rédigé à la main coûterait ses
-    exemples choisis (`self:set_frame(0)` valant mieux que `self:set_frame(frame)`).
+    exemples choisis (`self.frame = 0` valant mieux que `self.frame = frame`).
 
     Description et tableau de paramètres sont conservés : c'est la prose de ce
     fichier, elle n'est pas concernée par l'ordre."""
@@ -86,15 +117,22 @@ def _reconcile(cats: list[dict]) -> list[dict]:
         kept = []
         for entry in cat.get("entries", []):
             name = entry.get("label", "").split("(")[0].strip()
+            # Le rangement s'apprend de TOUTES les entrées, y compris périmées :
+            # un `scene.frame()` mort dit encore que le module `scene` habite
+            # « Scène ». Ne l'apprendre que des survivantes envoyait
+            # `scene.switch` dans « Autres » le jour où la catégorie ne gardait
+            # que des entrées retirées.
+            homes.setdefault(_module_of(name), set()).add(cat["name"])
             if name in REMOVED_API or name not in RUNTIME_API:
                 STALE.append(name)
                 continue
             kept.append(_fix_permuted(entry, name))
             described.add(name)
-            homes.setdefault(_module_of(name), set()).add(cat["name"])
-        # Une catégorie vidée par le filtre ne doit pas laisser un en-tête creux.
-        if kept:
-            out.append({**cat, "entries": kept})
+        # La catégorie garde sa PLACE même vidée : c'est le JSON qui décide de
+        # l'ordre, et le filtre ne doit pas réordonner l'écran. Les propriétés
+        # la remplissent souvent juste après (« Transform » n'a plus que
+        # celles-là) ; celles qui restent vides sont retirées à la toute fin.
+        out.append({**cat, "entries": kept})
 
     by_name = {c["name"]: c for c in out}
     for name in RUNTIME_API:
@@ -111,7 +149,22 @@ def _reconcile(cats: list[dict]) -> list[dict]:
             out.append(cat)
         cat["entries"].append(api_snippets.entry_dict(name))
 
-    return out
+    # Les PROPRIÉTÉS n'ont pas de libellé de fonction : le filtre STALE ne les
+    # voit pas, et la boucle ci-dessus ne les voit pas non plus — on les ajoute
+    # à part, rangées par `_PROP_HOME`.
+    for name in RUNTIME_PROPS:
+        target = _PROP_HOME.get(name, _MISC_FALLBACK)
+        cat = by_name.get(target)
+        if cat is None:
+            cat = {"name": target, "entries": []}
+            by_name[target] = cat
+            out.append(cat)
+        cat["entries"].append(api_snippets.prop_entry_dict(name))
+
+    # Un en-tête sans rien dessous n'apprend rien : les catégories que ni le
+    # catalogue ni les propriétés n'ont remplies disparaissent — après, pour
+    # n'avoir pas coûté leur place à celles qui se remplissent.
+    return [c for c in out if c["entries"]]
 
 
 def get_categories() -> list[dict]:

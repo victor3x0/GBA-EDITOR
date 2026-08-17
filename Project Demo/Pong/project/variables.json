@@ -5,36 +5,49 @@
       "name": "score_player",
       "type": "int",
       "default": 0,
-      "desc": "Score du joueur"
+      "desc": "Score du joueur",
+      "persist": false
     },
     {
       "id": 567508507717,
       "name": "score_cpu",
       "type": "int",
       "default": 0,
-      "desc": "Score de l'IA"
+      "desc": "Score de l'IA",
+      "persist": false
     },
     {
       "id": 153300320944,
       "name": "ball_y",
       "type": "int",
       "default": 76,
-      "desc": "Position Y de la balle (suivi IA)"
+      "desc": "Position Y de la balle (suivi IA)",
+      "persist": false
     },
     {
       "id": 985399726903,
       "name": "winner",
       "type": "int",
       "default": 0,
-      "desc": "0 = joueur, 1 = IA"
+      "desc": "0 = joueur, 1 = IA",
+      "persist": false
     },
     {
       "id": 540104220337,
       "name": "point_side",
       "type": "int",
       "default": -1,
-      "desc": "-1 = rien ce frame, 0 = point joueur, 1 = point IA (posé par Ball, consommé par la scène PONG)"
+      "desc": "-1 = rien ce frame, 0 = point joueur, 1 = point IA (posé par Ball, consommé par la scène PONG)",
+      "persist": false
     }
   ],
-  "constants": []
+  "constants": [
+    {
+      "id": 444078280133,
+      "name": "constante",
+      "type": "u8",
+      "value": 0,
+      "desc": ""
+    }
+  ]
 }

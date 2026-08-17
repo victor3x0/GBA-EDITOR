@@ -30,6 +30,36 @@
 #define DIR_WEST          7
 #define DIR_NORTH_WEST    8
 
+/* Courbes d'accélération de math.ease() — mêmes noms qu'en Lua. */
+#define EASE_IN           0
+#define EASE_OUT          1
+#define EASE_IN_OUT       2
+
+/* Régions de window et cibles de blending. Elles DOUBLENT celles de
+   `gba_engine.h`, pour la même raison que les prototypes plus bas : le moteur
+   n'est inclus que par main.c, alors que les scènes et les acteurs — qui sont
+   ceux qui écrivent `window.set_layer("win0", ...)` — ne voient que ce
+   fichier-ci. Manquantes ici, elles passaient checker et codegen pour échouer
+   au `make` sur un identifiant inconnu, sur la ligne générée et jamais sur sa
+   cause.
+
+   Les deux listes sont comparées au build (`validator._check_api_prototypes`,
+   dérivé de `HARDWARE_ENUMS`), et une valeur qui divergerait entre les deux
+   fichiers ferait crier le préprocesseur dans main.c, qui les voit toutes
+   les deux. */
+#define WINR_0            0
+#define WINR_1            1
+#define WINR_OBJ          2
+#define WINR_OUT          3
+
+#define BLD_MODE_NONE     0
+#define BLD_MODE_ALPHA    1
+#define BLD_MODE_BRIGHTEN 2
+#define BLD_MODE_DARKEN   3
+
+#define BLD_SIDE_TOP      0
+#define BLD_SIDE_BOTTOM   1
+
 /* Globaux définis dans main.c, visibles par tous les scripts */
 extern Actor g_actors[];
 extern u32   _g_keys_held;
@@ -42,27 +72,38 @@ extern u32   _g_keys_pressed;
 #define SCREEN_W 240
 #define SCREEN_H 160
 extern int cam_x, cam_y;
-static inline void camera_set(int x, int y) { cam_x=x; cam_y=y; }
-static inline int  camera_get_x(void)        { return cam_x; }
-static inline int  camera_get_y(void)        { return cam_y; }
+extern int g_scene_w, g_scene_h;   /* taille du monde de la scène (px), posée par scene_init */
+static inline void camera_set_position(Vec2 p)  { cam_x=p.x; cam_y=p.y; }
+static inline Vec2 camera_get_position(void)     { return (Vec2){ cam_x, cam_y }; }
 
-/* Bornes de scroll (taille du monde en pixels) — g_cam_max_x/y (définis dans
-   main.c comme cam_x/cam_y) valent -1 par défaut (axe illimité).
-   Réglées à l'activation d'une caméra (camera_switch, depuis ses bounds_w/h)
-   ou par un script via camera.set_bounds() — débloquer une nouvelle zone au
-   runtime, par exemple. Minimum toujours 0 (origine du monde). */
-extern int g_cam_max_x, g_cam_max_y;
-static inline void camera_set_bounds(int world_w, int world_h) {
-    g_cam_max_x = (world_w > 0) ? world_w - SCREEN_W : -1;
-    g_cam_max_y = (world_h > 0) ? world_h - SCREEN_H : -1;
+/* Bornes de scroll — la zone scrollable du monde, un RECTANGLE (origine
+   x/y + taille w/h en pixels). g_bounds_* (définis dans main.c) valent 0 par
+   défaut (axe illimité). Réglées à l'activation d'une caméra (camera_switch,
+   depuis ses bounds_x/y/w/h) ou par un script via camera.bound — débloquer
+   une nouvelle zone au runtime, par exemple. */
+extern int g_bounds_x, g_bounds_y, g_bounds_w, g_bounds_h;
+static inline void camera_set_bounds(Rect b) {
+    g_bounds_x = b.x; g_bounds_y = b.y;
+    g_bounds_w = b.w; g_bounds_h = b.h;
+}
+static inline Rect camera_get_bounds(void) {
+    return (Rect){ g_bounds_x, g_bounds_y, g_bounds_w, g_bounds_h };
 }
 /* Appliquée une fois par frame par le moteur (scene tick), après tout code
    ayant pu écrire cam_x/cam_y cette frame-là — suivi authoré ou script :
    un seul point de vérité pour les bornes, peu importe qui a bougé la
    caméra. */
 static inline void camera_apply_bounds(void) {
-    if (g_cam_max_x >= 0) { if (cam_x < 0) cam_x = 0; if (cam_x > g_cam_max_x) cam_x = g_cam_max_x; }
-    if (g_cam_max_y >= 0) { if (cam_y < 0) cam_y = 0; if (cam_y > g_cam_max_y) cam_y = g_cam_max_y; }
+    if (g_bounds_w > 0) {
+        int lo = g_bounds_x, hi = g_bounds_x + g_bounds_w - SCREEN_W;
+        if (cam_x < lo) cam_x = lo;
+        if (cam_x > hi) cam_x = hi;
+    }
+    if (g_bounds_h > 0) {
+        int lo = g_bounds_y, hi = g_bounds_y + g_bounds_h - SCREEN_H;
+        if (cam_y < lo) cam_y = lo;
+        if (cam_y > hi) cam_y = hi;
+    }
 }
 
 /* ── Caméras nommées ─────────────────────────────────────────────
@@ -78,6 +119,7 @@ typedef struct {
     u8  mode;
     u8  margin_x, margin_y;   /* zone morte du suivi */
     s16 x, y;                 /* cadrage posé à l'activation */
+    s16 bounds_x, bounds_y;   /* origine de la zone scrollable */
     s16 bounds_w, bounds_h;   /* taille du monde ; 0 = axe illimité */
     void (*on_start)(void);   /* script de la caméra, ou NULL */
     void (*on_update)(void);
@@ -95,7 +137,7 @@ static inline void camera_switch(int idx) {
     const Camera *c = &g_cam_table[idx];
     g_cam_active = idx;
     cam_x = c->x; cam_y = c->y;
-    camera_set_bounds(c->bounds_w, c->bounds_h);
+    camera_set_bounds((Rect){ c->bounds_x, c->bounds_y, c->bounds_w, c->bounds_h });
     if (c->on_start) c->on_start();
 }
 
@@ -136,46 +178,204 @@ static inline void camera_shake_apply(void) {
     cam_x += g_shake_dx; cam_y += g_shake_dy;
 }
 
-/* Mouvement */
-static inline void actor_move(Actor* s, int dx, int dy)        { s->x+=dx; s->y+=dy; }
-static inline void actor_set_pos(Actor* s, int x, int y)       { s->x=x; s->y=y; }
-static inline void actor_set_velocity(Actor* s, int vx, int vy){ s->vx=vx; s->vy=vy; }
-static inline void actor_apply_velocity(Actor* s)               { s->x+=s->vx; s->y+=s->vy; }
+/* Vec2/Vec3 — opérateurs composante à composante. Pas d'opérateur `+`/`-`/`*`
+   sur les structs en C : ce sont ces fonctions que le codegen appelle pour
+   `a + b` / `a - b` / `v * k` sur deux valeurs vec2 ou vec3 (jamais mélangées
+   entre elles — cf. scripting/vec_types.py, seul juge du type). */
+static inline Vec2 vec2_add  (Vec2 a, Vec2 b) { return (Vec2){ a.x+b.x, a.y+b.y }; }
+static inline Vec2 vec2_sub  (Vec2 a, Vec2 b) { return (Vec2){ a.x-b.x, a.y-b.y }; }
+static inline Vec2 vec2_scale(Vec2 v, int k)  { return (Vec2){ v.x*k,   v.y*k   }; }
+static inline Vec3 vec3_add  (Vec3 a, Vec3 b) { return (Vec3){ a.x+b.x, a.y+b.y, a.z+b.z }; }
+static inline Vec3 vec3_sub  (Vec3 a, Vec3 b) { return (Vec3){ a.x-b.x, a.y-b.y, a.z-b.z }; }
+static inline Vec3 vec3_scale(Vec3 v, int k)  { return (Vec3){ v.x*k,   v.y*k,   v.z*k   }; }
 
-/* Lecture de position et vélocité */
-static inline int actor_get_x (const Actor* s) { return s->x;  }
-static inline int actor_get_y (const Actor* s) { return s->y;  }
-static inline int actor_get_vx(const Actor* s) { return s->vx; }
-static inline int actor_get_vy(const Actor* s) { return s->vy; }
+/* Transform — position instantanée, sans notion de temps ni de vitesse. */
+static inline void actor_set_position(Actor* s, Vec2 p) { s->x=p.x; s->y=p.y; }
+static inline Vec2 actor_get_position(const Actor* s)   { return (Vec2){ s->x, s->y }; }
+
+/* Racine carrée entière (algorithme bit à bit) — pas de FPU sur GBA, et le
+   BIOS Sqrt coûte un appel SWI pour un résultat qu'on ne calcule qu'une fois
+   par mouvement. Sert à normaliser une direction dans move()/move_to(). */
+static inline int isqrt(int n) {
+    if (n <= 0) return 0;
+    int res = 0, bit = 1 << 30;
+    while (bit > n) bit >>= 2;
+    while (bit != 0) {
+        if (n >= res + bit) { n -= res + bit; res = (res >> 1) + bit; }
+        else res >>= 1;
+        bit >>= 2;
+    }
+    return res;
+}
+
+/* Movement — déplacement étalé sur plusieurs frames : appelées depuis
+   on_update à chaque frame, elles avancent d'au plus `speed` px CE frame-là.
+   Aucun état gardé sur l'Actor (ni cible, ni reste fractionnaire) : la
+   direction est recalculée à chaque appel depuis la position courante. */
+static inline void actor_move(Actor* s, Vec2 dir, int speed) {
+    int dx = dir.x, dy = dir.y;
+    int mag = isqrt(dx*dx + dy*dy);
+    if (mag == 0) return;
+    s->x += dx * speed / mag;
+    s->y += dy * speed / mag;
+}
+static inline void actor_move_to(Actor* s, Vec2 target, int speed) {
+    int dx = target.x - s->x, dy = target.y - s->y;
+    int dist = isqrt(dx*dx + dy*dy);
+    if (dist <= speed) { s->x = target.x; s->y = target.y; return; }
+    s->x += dx * speed / dist;
+    s->y += dy * speed / dist;
+}
+
+/* Physics — vélocité stockée sur l'Actor, lue par get_velocity. Ne déplace
+   rien seule : c'est le script qui l'applique (cf. Ball.lua) ou l'ignore. */
+static inline void actor_set_velocity(Actor* s, Vec2 v) { s->vx=v.x; s->vy=v.y; }
+static inline void actor_add_velocity(Actor* s, Vec2 dv){ s->vx+=dv.x; s->vy+=dv.y; }
+static inline Vec2 actor_get_velocity(const Actor* s)    { return (Vec2){ s->vx, s->vy }; }
 
 /* Animation — play_anim reçoit l'index d'état (résolu à la compile par le transpileur) */
 static inline void actor_play_anim(Actor* s, int id) { if(s->anim_state!=id){s->anim_state=id;s->frame=0;s->timer=0;} }
+static inline int  actor_get_frame(const Actor* s)   { return s->frame; }
 static inline void actor_set_frame(Actor* s, int f)  { s->frame=f; }
+static inline int  actor_get_visible(const Actor* s) { return s->visible; }
 static inline void actor_set_visible(Actor* s, int v){ s->visible=v; }
-/* v=-1 → retourné, v=1 → normal (compatible variable de direction) */
-static inline void actor_set_flip_h(Actor* s, int v) { s->flip_h = (v < 0) ? 1 : 0; }
-static inline void actor_set_flip_v(Actor* s, int v) { s->flip_v = (v < 0) ? 1 : 0; }
+static inline int  actor_get_active(const Actor* s)  { return s->active; }
+static inline void actor_set_active(Actor* s, int v) { s->active=v; }
+/* Booléens (self.flip_h = true/false) — le sens du flip est porté par l'état,
+   pas par un signe passé à l'ancien self:set_flip_h. */
+static inline int  actor_get_flip_h(const Actor* s)  { return s->flip_h; }
+static inline void actor_set_flip_h(Actor* s, int v) { s->flip_h = v ? 1 : 0; }
+static inline int  actor_get_flip_v(const Actor* s)  { return s->flip_v; }
+static inline void actor_set_flip_v(Actor* s, int v) { s->flip_v = v ? 1 : 0; }
+
+/* ── Transform affine au runtime ──────────────────────────────────────────
+   Champs PAR-ACTOR de la struct Actor (cf. actor_types_static.h), et non des
+   globaux par slot : un script de prefab poolé est UNE fonction C partagée par
+   toutes ses instances, mais chaque instance a sa propre struct Actor et un
+   slot différent (Actor.affine_slot). Des globaux dans ce header `static`
+   créaient une COPIE par unité de compilation (main.c vs actor_*.c) — les
+   écritures self.rotation/self.scale n'atteignaient jamais le rendu.
+   Pas de FPU sur GBA : SIN_LUT est une table degrés→Q8 (×256) écrite en dur.
+   gba_cos se déduit d'un déphasage de 90° plutôt qu'une seconde table. */
+static const s16 SIN_LUT[360] = {
+    0, 4, 9, 13, 18, 22, 27, 31, 36, 40, 44, 49,
+    53, 58, 62, 66, 71, 75, 79, 83, 88, 92, 96, 100,
+    104, 108, 112, 116, 120, 124, 128, 132, 136, 139, 143, 147,
+    150, 154, 158, 161, 165, 168, 171, 175, 178, 181, 184, 187,
+    190, 193, 196, 199, 202, 204, 207, 210, 212, 215, 217, 219,
+    222, 224, 226, 228, 230, 232, 234, 236, 237, 239, 241, 242,
+    243, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 254,
+    255, 255, 255, 256, 256, 256, 256, 256, 256, 256, 255, 255,
+    255, 254, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245,
+    243, 242, 241, 239, 237, 236, 234, 232, 230, 228, 226, 224,
+    222, 219, 217, 215, 212, 210, 207, 204, 202, 199, 196, 193,
+    190, 187, 184, 181, 178, 175, 171, 168, 165, 161, 158, 154,
+    150, 147, 143, 139, 136, 132, 128, 124, 120, 116, 112, 108,
+    104, 100, 96, 92, 88, 83, 79, 75, 71, 66, 62, 58,
+    53, 49, 44, 40, 36, 31, 27, 22, 18, 13, 9, 4,
+    0, -4, -9, -13, -18, -22, -27, -31, -36, -40, -44, -49,
+    -53, -58, -62, -66, -71, -75, -79, -83, -88, -92, -96, -100,
+    -104, -108, -112, -116, -120, -124, -128, -132, -136, -139, -143, -147,
+    -150, -154, -158, -161, -165, -168, -171, -175, -178, -181, -184, -187,
+    -190, -193, -196, -199, -202, -204, -207, -210, -212, -215, -217, -219,
+    -222, -224, -226, -228, -230, -232, -234, -236, -237, -239, -241, -242,
+    -243, -245, -246, -247, -248, -249, -250, -251, -252, -253, -254, -254,
+    -255, -255, -255, -256, -256, -256, -256, -256, -256, -256, -255, -255,
+    -255, -254, -254, -253, -252, -251, -250, -249, -248, -247, -246, -245,
+    -243, -242, -241, -239, -237, -236, -234, -232, -230, -228, -226, -224,
+    -222, -219, -217, -215, -212, -210, -207, -204, -202, -199, -196, -193,
+    -190, -187, -184, -181, -178, -175, -171, -168, -165, -161, -158, -154,
+    -150, -147, -143, -139, -136, -132, -128, -124, -120, -116, -112, -108,
+    -104, -100, -96, -92, -88, -83, -79, -75, -71, -66, -62, -58,
+    -53, -49, -44, -40, -36, -31, -27, -22, -18, -13, -9, -4,
+};
+static inline int gba_sin(int deg) { deg = ((deg % 360) + 360) % 360; return SIN_LUT[deg]; }
+static inline int gba_cos(int deg) { return gba_sin(deg + 90); }
+
+/* Un matrix slot est réservé au build quand Actor.affine_transform est coché
+   (cf. main_gen._compute_affine_info) ; affine_slot est alors >= 0 et les
+   champs transform ci-dessous sont lus par le rendu. Sans slot, les getters
+   renvoient l'identité (0° / 100 %) et les setters sont sans effet. */
+
+/* Transform MONDE (self.rotation / self.scale). */
+static inline void actor_set_rotation(Actor* s, int deg) {
+    if (s->affine_slot >= 0) s->rotation = deg;
+}
+static inline void actor_set_scale(Actor* s, Vec2 v) {
+    if (s->affine_slot < 0) return;
+    s->scale_x = v.x * 256 / 100;
+    s->scale_y = v.y * 256 / 100;
+}
+static inline int  actor_get_rotation(const Actor* s) {
+    return (s->affine_slot >= 0) ? s->rotation : 0;
+}
+static inline Vec2 actor_get_scale(const Actor* s) {
+    if (s->affine_slot < 0) return (Vec2){ 100, 100 };
+    return (Vec2){ s->scale_x * 100 / 256, s->scale_y * 100 / 256 };
+}
+
+/* Transform LOCAL du sprite (self.sprite_rotation / self.sprite_scale /
+   self.sprite_offset), composé par-dessus le monde : la rotation s'AJOUTE,
+   le scale se MULTIPLIE, l'offset déplace le sprite dans le repère de l'actor. */
+static inline void actor_set_sprite_rotation(Actor* s, int deg) {
+    if (s->affine_slot >= 0) s->sprite_rot = deg;
+}
+static inline void actor_set_sprite_scale(Actor* s, Vec2 v) {
+    if (s->affine_slot < 0) return;
+    s->sprite_scale_x = v.x * 256 / 100;
+    s->sprite_scale_y = v.y * 256 / 100;
+}
+static inline void actor_set_sprite_offset(Actor* s, Vec2 o) {
+    if (s->affine_slot < 0) return;
+    s->offset_x = o.x;
+    s->offset_y = o.y;
+}
+static inline int  actor_get_sprite_rotation(const Actor* s) {
+    return (s->affine_slot >= 0) ? s->sprite_rot : 0;
+}
+static inline Vec2 actor_get_sprite_scale(const Actor* s) {
+    if (s->affine_slot < 0) return (Vec2){ 100, 100 };
+    return (Vec2){ s->sprite_scale_x * 100 / 256, s->sprite_scale_y * 100 / 256 };
+}
+static inline Vec2 actor_get_sprite_offset(const Actor* s) {
+    if (s->affine_slot < 0) return (Vec2){ 0, 0 };
+    return (Vec2){ s->offset_x, s->offset_y };
+}
 
 /* Direction 8-axes pour l'animation (0=override, 1=N..8=NW) */
 static inline int  actor_get_dir(const Actor* s)          { static const s8 _lut[3][3]={{8,1,2},{7,0,3},{6,5,4}}; return _lut[s->dir_y+1][s->dir_x+1]; }
 static inline void actor_set_dir(Actor* s, int dir)       { static const s8 _dx[]={0,0,1,1,1,0,-1,-1,-1}; static const s8 _dy[]={0,-1,-1,0,1,1,1,0,-1}; if(dir>=0&&dir<=8){s->dir_x=_dx[dir];s->dir_y=_dy[dir];} }
 static inline void actor_set_auto_dir(Actor* s, int v)    { s->auto_dir=v?1:0; }
+/* La lecture manquait : `auto_dir` s'écrivait sans pouvoir se relire, donc un
+   script qui voulait le basculer devait tenir son propre drapeau à côté. */
+static inline int  actor_get_auto_dir(const Actor* s)     { return s->auto_dir; }
 
 /* Direction : vecteur discret (-1|0|1) indépendant du flip */
-static inline int  actor_get_dir_x(const Actor* s)        { return s->dir_x; }
-static inline int  actor_get_dir_y(const Actor* s)        { return s->dir_y; }
-static inline void actor_set_direction(Actor* s, int dx, int dy) {
-    s->dir_x = (dx > 0) - (dx < 0);   /* clamp à -1/0/1 */
-    s->dir_y = (dy > 0) - (dy < 0);
+static inline Vec2 actor_get_direction(const Actor* s) {
+    return (Vec2){ s->dir_x, s->dir_y };
+}
+static inline void actor_set_direction(Actor* s, Vec2 v) {
+    s->dir_x = (v.x > 0) - (v.x < 0);   /* clamp à -1/0/1 */
+    s->dir_y = (v.y > 0) - (v.y < 0);
 }
 
 /* Activation / destruction */
-static inline void actor_set_active(Actor* s, int v) { s->active=v; }
 static inline void actor_destroy_internal(Actor* s)  { s->active=0; s->visible=0; }
 
 /* Input */
 static inline int input_held(int b)    { return (_g_keys_held   &(u32)b)?1:0; }
 static inline int input_pressed(int b) { return (_g_keys_pressed&(u32)b)?1:0; }
+
+/* Axe -1/0/1 par composante, dérivé de la croix directionnelle — pas d'état
+   propre, juste la différence des deux boutons opposés lus sur _g_keys_held.
+   Un seul appel côté script (input.get_axis()) plutôt que deux fonctions à
+   recombiner soi-même : x et y sont lus le même frame, jamais désynchronisés. */
+static inline Vec2 input_get_axis(void) {
+    Vec2 a;
+    a.x = ((_g_keys_held & BTN_RIGHT) ? 1 : 0) - ((_g_keys_held & BTN_LEFT) ? 1 : 0);
+    a.y = ((_g_keys_held & BTN_DOWN)  ? 1 : 0) - ((_g_keys_held & BTN_UP)   ? 1 : 0);
+    return a;
+}
 
 /* Collision AABB — teste une paire de CollisionBox dans l'espace monde */
 static inline int box_overlap(int ax, int ay, const CollisionBox*ba,
@@ -210,6 +410,7 @@ static inline int actors_overlap(const Actor*a, const Actor*b) {
 static inline int actor_get_tag(const Actor* s) { return s->tag; }
 
 /* Palette (flash de dégâts, invincibilité…) */
+static inline int  actor_get_pal(const Actor* s)    { return s->pal_bank; }
 static inline void actor_set_pal(Actor* s, int bank) { s->pal_bank = bank & 0xF; }
 
 /* Mode OAM — 0 = sprite normal, 2 = fenêtre-objet : le sprite n'est plus
@@ -225,6 +426,37 @@ static inline int math_clamp(int x, int lo, int hi){ return x<lo?lo:x>hi?hi:x; }
 static inline int math_sign (int x)              { return (x > 0) - (x < 0); }
 static inline int math_min  (int a, int b)       { return a < b ? a : b; }
 static inline int math_max  (int a, int b)       { return a > b ? a : b; }
+/* Interpolation linéaire entre a et b, à la fraction num/den (mêmes entiers
+   que le reste de l'API — pas de virgule flottante sur GBA). Ex: une valeur
+   qui glisse de 0 à 100 sur 30 frames : math.lerp(0, 100, frame, 30). */
+static inline int math_lerp(int a, int b, int num, int den) {
+    if (den == 0) return a;
+    return a + (b - a) * num / den;
+}
+/* Comme math.lerp, mais en courbant la fraction num/den avant de l'appliquer
+   (quadratique — pas de sinus/flottant sur GBA) :
+     "in"     démarre lentement, accélère à l'arrivée (ex: chute) ;
+     "out"    démarre vite, ralentit à l'arrivée (ex: freinage, rebond) ;
+     "in_out" les deux, symétriques autour du milieu. */
+static inline int math_ease(int a, int b, int num, int den, int kind) {
+    if (den <= 0) return a;
+    if (num <= 0) return a;
+    if (num >= den) return b;
+    int t = num, d = den, t2;
+    switch (kind) {
+        case EASE_OUT:
+            t2 = d - (d - t) * (d - t) / d;
+            break;
+        case EASE_IN_OUT:
+            if (t < d / 2) t2 = 2 * t * t / d;
+            else { int u = d - t; t2 = d - 2 * u * u / d; }
+            break;
+        default: /* EASE_IN */
+            t2 = t * t / d;
+            break;
+    }
+    return a + (b - a) * t2 / d;
+}
 
 /* Frame counter global (défini dans main.c) */
 extern int _g_frame;
@@ -242,8 +474,134 @@ static inline int math_rand(int lo, int hi) {
     return lo + (int)((_rand_seed >> 16) % (u32)range);
 }
 
+/* Trigonométrie — réutilise SIN_LUT/gba_sin/gba_cos (déjà écrits plus haut
+   pour la matrice affine) : même échelle Q8 (×256) que le hardware, donc pas
+   de nouvelle table à maintenir en cohérence. */
+static inline int math_sin(int deg) { return gba_sin(deg); }
+static inline int math_cos(int deg) { return gba_cos(deg); }
+
+/* Racine carrée entière (méthode du chiffre binaire) — pas de sqrt() flottant
+   sur GBA. Négatif ou nul → 0 plutôt que NaN. */
+static inline int math_sqrt(int x) {
+    if (x <= 0) return 0;
+    u32 n = (u32)x, res = 0, bit = 1u << 30;
+    while (bit > n) bit >>= 2;
+    while (bit != 0) {
+        if (n >= res + bit) { n -= res + bit; res = (res >> 1) + bit; }
+        else res >>= 1;
+        bit >>= 2;
+    }
+    return (int)res;
+}
+
+/* Angle en degrés (0-359) du vecteur (x, y) — même convention d'axes que
+   self.rotation puisque calculé par dichotomie CONTRE gba_sin/gba_cos plutôt
+   qu'avec une approximation séparée : toujours cohérent avec la matrice
+   affine réellement posée à l'écran. sin croît et cos décroît sur [0, 90],
+   donc sin(d)*ax - cos(d)*ay est monotone → la dichotomie cherche son zéro. */
+static inline int math_atan2(int y, int x) {
+    if (x == 0 && y == 0) return 0;
+    int ax = math_abs(x), ay = math_abs(y);
+    int deg;
+    if (ay == 0) deg = 0;
+    else if (ax == 0) deg = 90;
+    else {
+        int lo = 0, hi = 90;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) / 2;
+            if (gba_sin(mid) * ax >= gba_cos(mid) * ay) hi = mid; else lo = mid;
+        }
+        deg = hi;
+    }
+    if (x >= 0 && y >= 0) return deg;
+    if (x <  0 && y >= 0) return 180 - deg;
+    if (x <  0 && y <  0) return 180 + deg;
+    return 360 - deg;
+}
+
+/* Juiciness — effets de feedback sur le sprite (self:squash, self:stretch,
+   self:bounce, self:shake, self:flash, self:blink, self:pulse, self:pop,
+   self:wobble). Chacun est une fonction PURE de (t, duration, amount) :
+   aucun état caché, aucune coroutine (impossible sur GBA, cf.
+   ARCHITECTURE.md) — c'est l'appelant qui fait avancer `t` d'une frame à
+   l'autre et qui décide où ce compteur vit (une variable de tête du script,
+   ou une GlobalVar quand plusieurs scripts la regardent). Au-delà de
+   `duration`, chacun retombe à son état neutre (scale 100, offset 0,
+   rotation 0, pal 0, visible true) — rien à réinitialiser à la main.
+   Ne composent QUE scripting/api.py, « self.sprite_scale/sprite_offset/
+   sprite_rotation/pal/visible » et math_ease/math_lerp/math_rand
+   ci-dessus : un script Lua pourrait écrire la même chose à la main. */
+static inline void actor_squash(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    Vec2 v;
+    v.x = math_ease(100 + amount, 100, t, duration, EASE_OUT);
+    v.y = math_ease(100 - amount, 100, t, duration, EASE_OUT);
+    actor_set_sprite_scale(s, v);
+}
+static inline void actor_stretch(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    Vec2 v;
+    v.x = math_ease(100 - amount, 100, t, duration, EASE_OUT);
+    v.y = math_ease(100 + amount, 100, t, duration, EASE_OUT);
+    actor_set_sprite_scale(s, v);
+}
+static inline void actor_bounce(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    int half = math_max(1, duration / 2);
+    int y;
+    if (t <= half) y = -math_ease(0, amount, t, half, EASE_OUT);
+    else           y =  math_ease(-amount, 0, t - half, math_max(1, duration - half), EASE_IN);
+    Vec2 o = actor_get_sprite_offset(s);
+    o.y = y;
+    actor_set_sprite_offset(s, o);
+}
+static inline void actor_shake(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    int decayed = math_ease(amount, 0, t, math_max(1, duration), EASE_OUT);
+    Vec2 o;
+    o.x = math_rand(-decayed, decayed);
+    o.y = math_rand(-decayed, decayed);
+    actor_set_sprite_offset(s, o);
+}
+static inline void actor_flash(Actor* s, int t, int duration, int pal) {
+    actor_set_pal(s, (t >= 0 && t < duration) ? pal : 0);
+}
+static inline void actor_blink(Actor* s, int t, int duration, int interval) {
+    if (t < 0 || t >= duration) { actor_set_visible(s, 1); return; }
+    interval = math_max(1, interval);
+    actor_set_visible(s, ((t / interval) % 2) == 0);
+}
+static inline void actor_pulse(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    int half = math_max(1, duration / 2);
+    int a;
+    if (t <= half) a = math_ease(100, 100 + amount, t, half, EASE_OUT);
+    else           a = math_ease(100 + amount, 100, t - half, math_max(1, duration - half), EASE_IN);
+    actor_set_sprite_scale(s, (Vec2){ a, a });
+}
+static inline void actor_pop(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    int split = math_max(1, duration * 3 / 5);
+    int a;
+    if (t <= split) a = math_ease(0, 100 + amount, t, split, EASE_OUT);
+    else            a = math_ease(100 + amount, 100, t - split, math_max(1, duration - split), EASE_IN_OUT);
+    actor_set_sprite_scale(s, (Vec2){ a, a });
+}
+static inline void actor_wobble(Actor* s, int t, int duration, int amount) {
+    t = math_clamp(t, 0, duration);
+    int period = math_max(1, duration / 3);
+    int half = math_max(1, period / 2);
+    int phase = t % period;
+    int decayed = amount * (duration - t) / math_max(1, duration);
+    int deg;
+    if (phase < half) deg = math_lerp(-decayed, decayed, phase, half);
+    else               deg = math_lerp(decayed, -decayed, phase - half, math_max(1, period - half));
+    actor_set_sprite_rotation(s, ((deg % 360) + 360) % 360);
+}
+
 /* Caméra — suivi avec zone morte (dead-zone follow) */
-static inline void camera_follow(int tx, int ty, int mx, int my) {
+static inline void camera_follow(Vec2 target, int mx, int my) {
+    int tx = target.x, ty = target.y;
     if (tx - cam_x < mx)              cam_x = tx - mx;
     if (tx - cam_x > SCREEN_W - mx)   cam_x = tx - (SCREEN_W - mx);
     if (ty - cam_y < my)              cam_y = ty - my;
@@ -316,8 +674,13 @@ extern void text_skip        (int region);
    créer ni déplacer : la géométrie est authorée, seul l'ÉTAT est au script. */
 extern void ui_image_set_state(int img, int state);
 extern void ui_image_play     (int img, int on);
-extern void ui_image_show     (int img, int on);
 extern int  ui_image_state    (int img);
+
+/* Visibilité — commune aux trois types d'élément (texte, panel, image) :
+   `ui.get("nom")` résout au NOM d'élément DIRECTEMENT en `UIELEM_*` (cf.
+   ui_element_constant), donc AUCUN appel de fonction pour `ui.get` lui-même
+   — seul `self:show()`/`self:hide()` en émettent un, vers celle-ci. */
+extern void ui_element_show(int idx, int on);
 
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,

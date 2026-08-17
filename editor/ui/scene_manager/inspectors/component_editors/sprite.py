@@ -135,22 +135,48 @@ class SpriteEditor(BaseComponentEditor):
         speed.valueChanged.connect(lambda v: self._set_anim_speed(comp, v))
         W.row("Anim speed", speed, layout)
 
-        # ── Scale ─────────────────────────────────────────────────
+        # ── Scale local ───────────────────────────────────────────
+        # Transform LOCAL : ne vaut QUE si l'actor a "Affine transform" coché
+        # (rotation/scale/offset sont relatifs à l'actor et se composent par-
+        # dessus son transform monde). Sinon aucun slot de matrice affine, et
+        # ces réglages sont ignorés — on les grise pour le dire.
+        _aff = bool(getattr(self.insp._actor, "affine_transform", False)) if self.insp._actor else False
         sx = W.double_spinbox(getattr(comp, "scale_x", 1.0), min_v=0.1, max_v=4.0, step=0.1)
         sy = W.double_spinbox(getattr(comp, "scale_y", 1.0), min_v=0.1, max_v=4.0, step=0.1)
-        sx.setToolTip("X scale — affine OAM (1.0 = normal, GBA only)")
-        sy.setToolTip("Y scale — affine OAM")
+        sx.setEnabled(_aff); sy.setEnabled(_aff)
+        sx.setToolTip("Local X scale — MULTIPLIED by the actor's scale (affine OAM).\n"
+                      "Requires <b>Affine transform</b> on this actor.")
+        sy.setToolTip("Local Y scale — MULTIPLIED by the actor's scale (affine OAM).\n"
+                      "Requires <b>Affine transform</b> on this actor.")
         sx.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_x", v))
         sy.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_y", v))
         W.pair("Scale", "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
 
-        # ── Rotation ──────────────────────────────────────────────
+        # ── Rotation locale ───────────────────────────────────────
         rot = W.spinbox(int(getattr(comp, "rotation", 0)), min_v=0, max_v=359)
         rot.setSuffix("°")
         rot.setWrapping(True)
-        rot.setToolTip("Rotation in degrees — affine OAM (GBA only)")
+        rot.setEnabled(_aff)
+        rot.setToolTip("Local rotation in degrees — ADDED to the actor's rotation "
+                       "(affine OAM). Requires <b>Affine transform</b> on this actor.")
         rot.valueChanged.connect(lambda v: self._set_comp_field(comp, "rotation", v))
         W.row("Rotation", rot, layout)
+
+        # ── Offset (position relative à l'actor) ─────────────────
+        # Le sprite n'a PAS de position monde : son offset est relatif à
+        # l'actor, dans SON repère local (il tourne/scale avec lui).
+        offx = W.spinbox(int(getattr(comp, "offset_x", 0)), min_v=-32768, max_v=32767)
+        offy = W.spinbox(int(getattr(comp, "offset_y", 0)), min_v=-32768, max_v=32767)
+        offx.setEnabled(_aff); offy.setEnabled(_aff)
+        offx.setToolTip("Offset X from the actor — in the actor's LOCAL frame, in pixels.\n"
+                        "The sprite has no world position: it is drawn at the actor's "
+                        "position + this offset, rotated/scaled with the actor.\n"
+                        "Requires <b>Affine transform</b> on this actor.")
+        offy.setToolTip("Offset Y from the actor — in the actor's LOCAL frame, in pixels.\n"
+                        "Requires <b>Affine transform</b> on this actor.")
+        offx.valueChanged.connect(lambda v: self._set_comp_field(comp, "offset_x", v))
+        offy.valueChanged.connect(lambda v: self._set_comp_field(comp, "offset_y", v))
+        W.pair("Offset", "X", C.AXIS_X, offx, "Y", C.AXIS_Y, offy, layout)
 
     # ── Helpers ──────────────────────────────────────────────────────
 

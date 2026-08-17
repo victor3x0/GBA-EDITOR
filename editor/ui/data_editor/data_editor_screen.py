@@ -6,7 +6,7 @@ objet : le tileset comme asset de premier rang est sorti du périmètre en v0.4
 promettait donc quelque chose qui ne viendra pas.
 
 Layout : 3 colonnes (même modèle que le Palette Editor)
-  Gauche  : les tables du projet          (DataFinderPanel)
+  Gauche  : les tables du projet          (AssetFinder — composant partagé)
   Centre  : la grille de la table active  (DataGridPanel)
   Droite  : la colonne et la cellule      (DataInspectorPanel)
 
@@ -23,9 +23,10 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
 from PyQt6.QtCore import Qt
 
 from ui.common.theme import C, QSS
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import DATA_TABLES
 from core.project import Project
 
-from .data_finder_panel import DataFinderPanel
 from .data_grid_panel import DataGridPanel
 from .data_inspector_panel import DataInspectorPanel
 
@@ -48,7 +49,8 @@ class DataEditorScreen(QWidget):
         split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)
 
-        self._finder    = DataFinderPanel()
+        self._finder    = AssetFinder("Data finder", [DATA_TABLES],
+                                      min_width=200, max_width=360)
         self._grid      = DataGridPanel()
         self._inspector = DataInspectorPanel()
 
@@ -61,8 +63,11 @@ class DataEditorScreen(QWidget):
         split.setStretchFactor(2, 0)
         split.setCollapsible(1, False)
 
-        self._finder.table_selected.connect(self._grid.show_table)
-        self._finder.table_deleted.connect(self._grid.on_table_deleted)
+        # Le finder rend l'ASSET, la grille travaille par nom : c'est ici, et
+        # nulle part dans le finder, que se fait la conversion — le composant
+        # partagé ne connaît aucune famille en particulier.
+        self._finder.selected.connect(lambda _kind, t: self._grid.show_table(t.name))
+        self._finder.emptied.connect(lambda _kind: self._grid.on_table_deleted())
         # La grille écrit, l'inspecteur détaille : un seul chemin d'écriture,
         # donc un seul endroit qui pousse dans l'historique.
         self._grid.cell_selected.connect(self._inspector.set_selection)
@@ -83,5 +88,6 @@ class DataEditorScreen(QWidget):
             return
         name = self._grid.table_name
         self._finder.refresh()
-        if name and self._project.data_tables.get(name):
-            self._finder.select_table(name)
+        table = self._project.data_tables.get(name) if name else None
+        if table is not None:
+            self._finder.select(DATA_TABLES.label, table)

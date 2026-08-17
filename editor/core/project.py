@@ -347,6 +347,14 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         à trier."""
         return [(lay, im) for lay in self.ui_layouts for im in lay.images]
 
+    def all_elements(self) -> list:
+        """[(UILayout, élément)] de tout le projet, TOUS types confondus, ordre
+        STABLE — l'index de la table de visibilité plate (`UIELEM_*`), la seule
+        à couvrir aussi les panels-groupes purs (ni `REGION_*` ni `IMAGE_*`).
+        Même convention que `all_regions`/`all_images` : ordre des mises en
+        page, puis des éléments dans chacune."""
+        return [(lay, e) for lay in self.ui_layouts for e in lay.elements]
+
     def region_names(self) -> list[str]:
         """Noms de slot de texte du projet entier — l'espace de nommage des
         constantes `REGION_*`, donc ce contre quoi vérifier l'unicité."""
@@ -362,7 +370,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         sont distincts côté C, mais l'auteur, lui, ne devrait jamais avoir à
         savoir que deux éléments homonymes de types différents sont légaux —
         il les verrait côte à côte dans l'arbre sans pouvoir les distinguer."""
-        return [e.name for lay in self.ui_layouts for e in lay.elements]
+        return [e.name for _lay, e in self.all_elements()]
 
     def ui_layout_users(self, name: str) -> list:
         """Scènes qui référencent cette mise en page. Alimente le badge

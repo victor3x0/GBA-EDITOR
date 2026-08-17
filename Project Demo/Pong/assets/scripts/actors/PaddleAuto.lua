@@ -7,9 +7,13 @@ local reaction_timer = 0
 local REACTION_DELAY = 8
 local ERROR_MARGIN = 10
 
+-- Même réaction au choc que la raquette du joueur (cf. PaddlePlayer.lua) :
+-- écrasement en largeur et léger dévers, sur un compteur partagé parce que les
+-- deux helpers écrivent des canaux différents du sprite.
+local hit_t = 99   -- au-delà des deux durées : aucun effet au démarrage
+
 function on_update()
-    local x = self:get_x()
-    local y = self:get_y()
+    local pos = self.position
 
     reaction_timer = reaction_timer + 1
     if reaction_timer >= REACTION_DELAY then
@@ -17,13 +21,21 @@ function on_update()
         target = global.get("ball_y") - 12 + math.rand(-ERROR_MARGIN, ERROR_MARGIN)
     end
 
-    if y < target then
-        y = y + 2
+    if pos.y < target then
+        pos.y = pos.y + 2
     end
-    if y > target then
-        y = y - 2
+    if pos.y > target then
+        pos.y = pos.y - 2
     end
 
-    y = math.clamp(y, 0, 136)
-    self:set_pos(x, y)
+    pos.y = math.clamp(pos.y, 0, 136)
+    self.position = pos
+
+    hit_t = hit_t + 1
+    self:stretch(hit_t, 12, 30)
+    self:wobble(hit_t, 18, 6)
+end
+
+function on_collision_enter(other, my_box, other_box)
+    hit_t = 0
 end

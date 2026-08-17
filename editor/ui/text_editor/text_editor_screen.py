@@ -27,7 +27,7 @@ contexte actif :
   colors.py               les deux familles de couleur (police / texte)
   glyph_paint.py          trouage des couleurs-clés + damier
   text_commands.py        commandes annulables (clé, rangement, planche)
-  font_finder_panel.py    colonne gauche — liste des polices
+  (colonne gauche : AssetFinder — composant partagé, cf. ui/common/asset_finder.py)
   text_tree_panel.py      colonne centre, contexte Texte — arbre + atelier
   font_screen_preview.py  aperçu écran GBA (monté par l'atelier)
   markup_toolbar.py       boutons de balisage de l'atelier (dérivés de TAGS)
@@ -47,7 +47,8 @@ from PyQt6.QtCore import Qt
 from core.history import get_history, SetFieldCmd
 from ui.common.theme import C
 from ui.text_editor.colors import TEXT_COLOR
-from ui.text_editor.font_finder_panel import FontFinderPanel
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import FONTS
 from ui.text_editor.text_tree_panel import TextTreePanel
 from ui.text_editor.glyph_sheet_panel import GlyphSheetPanel
 from ui.text_editor.text_inspector import TextInspector
@@ -78,7 +79,8 @@ class TextEditorScreen(QWidget):
             f"QSplitter::handle:hover{{background:{TEXT_COLOR};}}"
         )
 
-        self._fonts = FontFinderPanel()
+        self._fonts = AssetFinder("Font finder", [FONTS],
+                                  min_width=180, max_width=420)
 
         # Le CENTRE est contextuel lui aussi : une planche fait plusieurs
         # centaines de cases, elle n'aurait pas tenu dans l'inspecteur.
@@ -106,7 +108,7 @@ class TextEditorScreen(QWidget):
         root.addWidget(split)
 
         # Bascule de contexte par sélection — jamais par un onglet.
-        self._fonts.font_selected.connect(self._on_font_selected)
+        self._fonts.selected.connect(lambda _kind, f: self._on_font_selected(f))
         self._texts.text_selected.connect(self._on_text_selected)
         self._texts.changed.connect(self._persist)
         # Clé/rangement édités au centre : l'inspecteur affiche la clé dans

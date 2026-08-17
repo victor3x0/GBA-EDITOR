@@ -4,5 +4,8 @@
   "last_scene": "Arena",
   "author": "",
   "version": "0.1",
-  "backdrop_color": 4132
+  "backdrop_color": 1,
+  "save_slots": 1,
+  "transition_kind": "none",
+  "transition_frames": 16
 }

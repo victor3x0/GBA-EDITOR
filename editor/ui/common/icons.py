@@ -121,6 +121,7 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "anim_state":            ("mdi.play-box-outline",        "▶"),
     "sfx":                   ("mdi.volume-high",             "♪"),
     "music":                 ("mdi.music-note",              "♫"),
+    "data_table":            ("mdi.table",                   "▦"),
     "asset_missing":         ("mdi.circle-outline",          "○"),
     # Canvas
     "camera":                ("mdi.camera-outline",          "[]"),
@@ -180,6 +181,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Chrome des widgets — consommées par les QSS via qss_image()
     "spin_up":               ("mdi.menu-up",                 "▲"),
     "spin_down":             ("mdi.menu-down",               "▼"),
+    # Chevrons de repli/dépli des arborescences (QTreeWidget::branch) — même
+    # rôle que le ▾/▸ de FinderSection, matérialisé en PNG pour la QSS.
+    "tree_closed":           ("mdi.chevron-right",           "▸"),
+    "tree_open":             ("mdi.chevron-down",            "▾"),
     # Data Editor — bandeau TABLE : deux actions "+" distinctes côte à côte,
     # la FORME dit ce qui est ajouté (ligne vs colonne), pas juste "+".
     "add_row":                ("mdi.table-row-plus-after",    "+▭"),

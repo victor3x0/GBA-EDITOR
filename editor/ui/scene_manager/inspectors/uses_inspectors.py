@@ -1,16 +1,14 @@
 """
-PrefabUsesInspector / ScriptUsesInspector / VariableUsesInspector.
+PrefabUsesInspector / ScriptUsesInspector.
 
-Trois vues "Voir les utilisations" affichées dans l'inspector, groupées dans
+Deux vues "Voir les utilisations" affichées dans l'inspector, groupées dans
 un seul fichier car structurellement proches (header coloré + section bar +
 liste + vidage de liste) — d'où la base commune _UsesInspectorBase ci-dessous.
 Chaque sous-classe ne diffère que par ses couleurs, son bouton d'action
 optionnel, et la façon dont elle peuple la liste (load()), qui reste propre
-à son domaine (instances de prefab / actors utilisant un script / scripts
-référençant une variable).
+à son domaine (instances de prefab / actors utilisant un script).
 """
 from __future__ import annotations
-import re
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -328,97 +326,3 @@ class ScriptUsesInspector(_UsesInspectorBase):
     def _on_action(self):
         if self._script_path:
             self.edit_requested.emit(self._script_path)
-
-
-class VariableUsesInspector(_UsesInspectorBase):
-    """
-    Vue 'GLOBAL USES' / 'CONSTANT USES' — recherche textuelle réelle des
-    appels global.get/global.set (kind="global") ou const.get (kind="const")
-    référençant ce nom, dans tous les scripts .lua du projet.
-
-    Contrairement à PrefabUsesInspector/ScriptUsesInspector (comparaison
-    structurelle sur les objets Actor/Scene/Prefab du projet), une variable
-    ou constante n'a pas de "placement" — seul le contenu des scripts peut
-    dire qui la référence. D'où une ligne de résultat différente (pas de
-    distinction groupe/feuille, un compteur d'occurrences par script).
-    """
-    edit_requested = pyqtSignal(str)   # chemin absolu du script à ouvrir
-
-    _LABELS = {"global": "Global uses", "const": "Constant uses"}
-
-    _HEADER_COLOR = icons.COLOR_GLOBAL
-    _HEADER_BG_ALPHA = "25"
-    _HEADER_BORDER_ALPHA = "40"
-    _SECTION_TITLE = "Global uses"
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._kind = "global"
-        self._name = ""
-
-    # ── Chargement ────────────────────────────────────────────────
-
-    def load(self, kind: str, name: str, project):
-        self._kind = kind
-        self._name = name
-        self._name_lbl.setText(name)
-        self._sec_lbl.setText(self._LABELS.get(kind, "Uses"))
-        self._clear_list()
-
-        if kind == "const":
-            patterns = [rf'const\.get\(\s*"{re.escape(name)}"']
-        else:
-            patterns = [
-                rf'global\.get\(\s*"{re.escape(name)}"',
-                rf'global\.set\(\s*"{re.escape(name)}"',
-            ]
-        combined = re.compile("|".join(patterns))
-
-        script_dirs = [
-            getattr(project, "scripts_actors_dir", None),
-            getattr(project, "scripts_scenes_dir", None),
-            getattr(project, "scripts_behaviors_dir", None),
-        ]
-
-        found_any = False
-        for d in script_dirs:
-            if not d or not Path(d).exists():
-                continue
-            for script_path in sorted(Path(d).rglob("*.lua")):
-                try:
-                    text = script_path.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                count = len(combined.findall(text))
-                if count == 0:
-                    continue
-                found_any = True
-                self._add_row(script_path, count)
-
-        if not found_any:
-            self._add_empty_row(f"No script uses “{name}”.")
-
-        self._list_layout.addStretch()
-
-    def _add_row(self, script_path: Path, count: int):
-        row = QFrame()
-        row.setFixedHeight(24)
-        row.setStyleSheet(f"background:{C.BG_RAISED};")
-        row.setCursor(Qt.CursorShape.PointingHandCursor)
-        rl = QHBoxLayout(row)
-        rl.setContentsMargins(10, 0, 8, 0)
-        icon_lbl = QLabel("λ")
-        icon_lbl.setFont(QFont(T.UI, T.MD))
-        icon_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
-        icon_lbl.setFixedWidth(16)
-        name_lbl = QLabel(script_path.name)
-        name_lbl.setFont(QFont(T.UI, T.MD))
-        name_lbl.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
-        count_lbl = QLabel(f"×{count}")
-        count_lbl.setFont(QFont(T.UI, T.SM))
-        count_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        rl.addWidget(icon_lbl)
-        rl.addWidget(name_lbl, 1)
-        rl.addWidget(count_lbl)
-        self._list_layout.addWidget(row)
-        row.mousePressEvent = lambda e, p=str(script_path): self.edit_requested.emit(p)

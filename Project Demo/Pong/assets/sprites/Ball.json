@@ -50,6 +50,9 @@
       0
     ]
   ],
+  "palette_overrides": {
+    "0": "pal_Ball"
+  },
   "states": [
     {
       "name": "Idle",

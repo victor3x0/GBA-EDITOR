@@ -85,11 +85,13 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_palette_bank_overflow(ctx)
     _check_api_prototypes(ctx)
     _check_api_domains(ctx)
+    _check_lua_subset(ctx)
     _check_text_overflow(ctx)
     _check_ui_text_key(ctx)
     _check_ui_image(ctx)
     _check_blend(ctx)
     _check_ui_panel_fill(ctx)
+    _check_ui_text_backdrop_bank(ctx)
     _check_scene_font(ctx)
     _check_cameras(ctx)
     _check_data_column_types(ctx)
@@ -149,6 +151,61 @@ def _check_api_domains(ctx: ValidationContext):
                      f"api.py : {', '.join(fantomes)}.")
 
 
+def _check_lua_subset(ctx: ValidationContext):
+    """Tout nœud de luaparser doit être CLASSÉ — traduit, refusé, ou structurel.
+
+    Même famille que `_check_api_domains` ci-dessus, et le même défaut réel à
+    l'origine : `parser.py` rendait `None` pour tout statement non géré et
+    `ExprName("__unsupported_<Type>")` pour toute expression non gérée. Un
+    `repeat` ou un `for … in` disparaissait donc du jeu sans un mot, et un `..`
+    n'échouait qu'au `make`. La liste des nœuds traités n'était écrite nulle
+    part : elle se lisait dans un `match`, et rien ne pouvait la comparer à ce
+    que luaparser sait produire.
+
+    Ce contrôle la compare. Une mise à jour de luaparser qui ajoute un nœud
+    casse le build ici, avec le nom du nœud à classer, plutôt que de rouvrir le
+    trou silencieux qu'on vient de boucher.
+
+    L'univers est DÉRIVÉ du module de luaparser (les sous-classes concrètes
+    d'`Expression` — dont héritent aussi les statements) : rien à énumérer à la
+    main, donc rien qui périme."""
+    import inspect
+    from scripting import lua_subset
+
+    try:
+        from luaparser import astnodes
+    except ImportError:
+        ctx.warn(None, "luaparser absent — sous-ensemble Lua non vérifié.")
+        return
+
+    # Les classes ABSTRAITES du module : elles ne sont jamais instanciées dans
+    # un arbre, seulement héritées. Les nommer est le seul geste manuel ici.
+    abstraites = {"Expression", "Statement", "Op", "BinaryOp", "AriOp",
+                  "BitOp", "RelOp", "LoOp", "UnaryOp", "Lhs"}
+    univers = frozenset(
+        name for name, cls in vars(astnodes).items()
+        if inspect.isclass(cls) and issubclass(cls, astnodes.Expression)
+        and name not in abstraites
+    )
+    couverts = lua_subset.covered_nodes()
+
+    manquants = sorted(univers - couverts)
+    if manquants:
+        ctx.error(None,
+                  f"Nœud(s) Lua non classé(s) dans scripting/lua_subset.py : "
+                  f"{', '.join(manquants)}. Chacun doit rejoindre ACCEPTED (il se "
+                  f"traduit), REFUSED (avec la phrase qui dit quoi écrire à la "
+                  f"place) ou STRUCTURAL (jamais dispatché) — sans quoi il "
+                  f"retombe dans le silence.")
+    # L'autre sens : une entrée que luaparser ne produit plus. Avertissement,
+    # comme pour les domaines fantômes — ça ne casse rien, ça encombre.
+    fantomes = sorted(couverts - univers)
+    if fantomes:
+        ctx.warn(None,
+                 f"lua_subset.py classe des nœuds inexistants dans luaparser : "
+                 f"{', '.join(fantomes)}.")
+
+
 def _check_api_prototypes(ctx: ValidationContext):
     """Une fonction du MOTEUR exposée en Lua doit être déclarée DEUX fois.
 
@@ -192,6 +249,48 @@ def _check_api_prototypes(ctx: ValidationContext):
                   "Fonctions du moteur exposées en Lua mais non déclarées dans "
                   f"actor_api_static.h : {', '.join(missing)}. Le C généré les "
                   "appellera sans prototype et le build échouera.")
+
+    # Les PROPRIÉTÉS (RUNTIME_PROPS) reposent sur les mêmes deux en-têtes : un
+    # getter/setter ajouté au moteur sans être redéclaré ferait échouer chaque
+    # script qui lit/écrit la propriété, au même endroit et pour la même raison
+    # que les fonctions ci-dessus. Même règle dérivée.
+    from scripting.api import RUNTIME_PROPS
+    missing_props = sorted({
+        fn for p in RUNTIME_PROPS.values()
+        for fn in (p.c_getter, p.c_setter)
+        if fn and declared(eng, fn) and not declared(fac, fn)
+    })
+    if missing_props:
+        ctx.error(None,
+                  "Fonctions de propriétés du moteur non déclarées dans "
+                  f"actor_api_static.h : {', '.join(missing_props)}. Le C généré "
+                  "les appellera sans prototype et le build échouera.")
+
+    # ── Les CONSTANTES tombent dans le même trou que les prototypes ──
+    # Le codegen émet `WINR_0` plutôt que `2` (c'est tout l'intérêt des
+    # énumérations nommées), et ce symbole doit exister dans l'unité qui
+    # compile le script — donc dans `actor_api_static.h`, pas seulement dans le
+    # moteur. `WINR_*`, `BLD_MODE_*` et `BLD_SIDE_*` n'y étaient pas : tout
+    # `window.set_layer` / `blend.set_layer` écrit depuis un script échouait au
+    # `make`. Contrôle DÉRIVÉ de `HARDWARE_ENUMS`, comme le reste : une
+    # énumération ajoutée au catalogue est exigée ici sans qu'on touche à ce
+    # fichier.
+    from scripting.api import HARDWARE_ENUMS
+
+    def defined(src: str, name: str) -> bool:
+        return re.search(r"^\s*#\s*define\s+" + re.escape(name) + r"\b", src, re.M) is not None
+
+    missing_consts = sorted({
+        c for table in HARDWARE_ENUMS.values()
+        for c in table.values()
+        if not defined(fac, c)
+    })
+    if missing_consts:
+        ctx.error(None,
+                  "Constantes d'énumération citées par l'API Lua mais non "
+                  f"définies dans actor_api_static.h : {', '.join(missing_consts)}. "
+                  "Le C généré les émettra et le build échouera sur un "
+                  "identifiant inconnu.")
 
     # ── Ordre des arguments : Lua ↔ C ─────────────────────────────
     # `codegen._emit_api_call` mappe les arguments par POSITION. Si l'ordre des
@@ -586,6 +685,49 @@ def _check_ui_panel_fill(ctx: ValidationContext):
                     f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
                     f"Le canvas le montre quand même : c'est l'éditeur qui "
                     f"promet plus que le build ne tient.")
+
+
+def _check_ui_text_backdrop_bank(ctx: ValidationContext):
+    """Une zone de texte composée SOUS un panel nine-slice/background
+    recompose son encre PAR-DESSUS les vraies tuiles du cadre (cf.
+    `RegionBackdrop` dans gba_engine.h) — ce qui suppose que le glyphe et le
+    cadre partagent la MÊME banque de palette : le hardware n'en offre qu'une
+    par tuile, impossible d'y mélanger deux jeux de couleurs.
+
+    Erreur bloquante et non avertissement : sans ce garde-fou, l'auteur
+    verrait un texte aux couleurs n'importe quoi (la banque du cadre lue comme
+    si c'était celle de la police), sans un mot pour expliquer pourquoi."""
+    p = ctx.project
+    from codegen.runtime_codegen.main_gen import scene_image_fills, scene_region_backdrops
+    from codegen.palette_alloc import scene_bank_layout
+    for scene in p.scenes:
+        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+        if lay is None:
+            continue
+        img_fills, _assets = scene_image_fills(p, scene)
+        backdrops = scene_region_backdrops(p, scene, img_fills)
+        if not backdrops:
+            continue
+        bank_layout = scene_bank_layout(p, scene, "bg")
+        uib = int(getattr(scene, "ui_pal_bank", -1))
+        seen: set[str] = set()
+        for rb in backdrops:
+            f = img_fills[rb["fill"]]
+            panel = lay.get(f["name"])
+            if panel is None or panel.name in seen:
+                continue
+            seen.add(panel.name)
+            ba = p.get_background(getattr(panel, "fill_asset", "") or "")
+            bank = bank_layout.bg_block_offset(ba) if ba else None
+            if bank is None or uib != bank:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : le texte de '{rb['name']}', posé "
+                    f"sur le conteneur '{panel.name}' (fond "
+                    f"'{getattr(panel, 'fill_asset', '')}'), recompose son "
+                    f"encre par-dessus le cadre — « Banque de palette du "
+                    f"texte » (ui_pal_bank) doit donc désigner la banque "
+                    f"{bank if bank is not None else '(introuvable)'} de cet "
+                    f"asset, pas {'aucune (auto)' if uib < 0 else uib}.")
 
 
 def _check_data_column_types(ctx: ValidationContext):

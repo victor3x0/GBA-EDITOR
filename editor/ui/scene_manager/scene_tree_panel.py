@@ -1,0 +1,676 @@
+
+"""Panneau gauche (haut) — contenu de la scène ACTIVE : acteurs + mise en
+page UI. Sépare deux questions distinctes que l'ancien panneau unique
+posait ensemble : « quelles scènes/prefabs/scripts existent dans le projet »
+(AssetsFinderPanel, cf. assets_finder_panel.py) et « qu'est-ce qu'il y a DANS
+la scène que j'édite en ce moment » (ce module).
+
+Le vocabulaire de l'arbre (rôles QTreeWidgetItem, types de nœud, icônes,
+`_lua_handle`) vit ICI : c'est le seul arbre du Scene Manager à en avoir
+besoin depuis que la liste projet est rendue par le composant partagé
+(ui/common/asset_finder.py)."""
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QTreeWidget,
+    QTreeWidgetItem, QMenu, QAbstractItemView, QScrollArea, QSizePolicy,
+)
+from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer, QSize
+
+from ui.common.theme import T, C, S, QSS, ui_font
+from ui.common.widgets import W
+from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
+
+from core.models.scene import Actor, Scene
+from core.project import Project
+from core.selection_bus import get_bus, UIElementSelection
+from core.command_dispatcher import get_dispatcher, unique_name
+from core.history import (
+    get_history, AddListItemCmd, RemoveListItemCmd, UILayoutOrderCmd,
+)
+from core.models.ui_region import KIND_PANEL, KIND_TEXT, KIND_IMAGE
+
+# ── Rôles QTreeWidgetItem ─────────────────────────────────────────
+_ROLE_TYPE = Qt.ItemDataRole.UserRole
+_ROLE_OBJ  = Qt.ItemDataRole.UserRole + 1
+_ROLE_PATH = Qt.ItemDataRole.UserRole + 2
+
+T_SCENE  = "scene"
+T_ACTOR  = "actor"
+T_PREFAB = "prefab"
+T_SCRIPT = "script"
+T_FOLDER = "folder"
+T_UI_LAYOUT = "ui_layout"    # nœud « Interface » d'une scène (asset partagé)
+T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/texte)
+
+# Icône par type d'élément UI (la couleur reste celle de la famille Interface —
+# le type se lit à la FORME, cf. project_theme_gba_redesign).
+_UI_ELEM_ICON = {KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text", KIND_IMAGE: "ui_image"}
+_UI_ELEM_LABEL = {KIND_PANEL: "container", KIND_TEXT: "text", KIND_IMAGE: "image"}
+
+
+def _lua_handle(node_type: str, obj) -> str:
+    """Poignée d'un nœud RÉFÉRENÇABLE en Lua, ou "" si authoring-only.
+
+    C'est le cœur de l'idée « l'arbre montre ce qu'un script peut nommer » : un
+    actor (`get_actor`), un texte (`REGION_*` / `text.draw_in`) et une image
+    (`IMAGE_*` / `ui.image_set`) le sont ; un conteneur ne l'est pas — il n'a
+    pas de domaine (cf. api.py). Sert au tooltip ET à décider si le nœud
+    s'affiche en clair (référençable) ou grisé (authoring)."""
+    if node_type == T_ACTOR:
+        return f'get_actor("{obj.name}")'
+    if node_type == T_UI_ELEM:
+        kind = getattr(obj, "kind", "")
+        if kind == KIND_TEXT:
+            return f'text.draw_in("{obj.name}", …)'
+        if kind == KIND_IMAGE:
+            return f'ui.image_set("{obj.name}", …)'
+    return ""
+
+# ── Thème ─── surfaces indigo centralisées (cf. project_theme_gba_redesign) ──
+_BG      = C.BG_BASE      # fond de l'arbre / panneaux (indigo profond)
+_HEADER  = C.BG_PANEL     # bandeaux de section (SCENES, PREFABS…)
+_HOVER   = C.BG_HOVER     # survol de ligne
+_SEL_BG  = C.BG_SEL       # fond sélection périwinkle
+_SEL_FG  = C.ACCENT       # texte/liseré sélection
+_TEXT    = C.TEXT_NORM
+_DIM     = C.TEXT_DIM
+# Plus de code couleur par type d'asset dans le finder : texte en tons de
+# thème, icônes en neutre (COLOR_DEFAULT), distinction par forme d'icône.
+# Le code couleur ne subsiste qu'aux niveaux locaux (scene canvas) et dans
+# l'en-tête d'inspecteur (AssetHeaderBar).
+_C_SCENE  = C.TEXT_HI     # parent de l'arbre : plus clair que ses enfants
+_C_PREFAB = _TEXT
+_C_SCRIPT = _TEXT
+_C_FOLDER = _DIM
+
+
+
+
+
+# ──────────────────────────────────────────────────────────────────
+#  QTreeWidget commun
+# ──────────────────────────────────────────────────────────────────
+
+class _Tree(QTreeWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setHeaderHidden(True)
+        self.setIndentation(14)
+        self.setAnimated(False)
+        self.setUniformRowHeights(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # Renommage en place, jamais de dialogue modal : clic sur un item déjà
+        # sélectionné, F2 (EditKeyPressed), ou « Renommer » au menu contextuel
+        # (add_rename_action ci-dessous) — les trois ouvrent le même éditeur,
+        # validé par Entrée ou perte de focus (itemChanged → _commit_rename_*).
+        self.setEditTriggers(
+            QAbstractItemView.EditTrigger.SelectedClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
+        self.setStyleSheet(QSS.tree_widget)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        # Ajuster la hauteur au contenu
+        self.model().rowsInserted.connect(self._fit)
+        self.model().rowsRemoved.connect(self._fit)
+        self.itemExpanded.connect(self._fit)
+        self.itemCollapsed.connect(self._fit)
+
+    def add_rename_action(self, menu: QMenu, item: QTreeWidgetItem, label: str):
+        """Entrée « Renommer » qui bascule l'item en édition en place. Grisée
+        si l'item n'est pas renommable (dossier, en-tête de section)."""
+        act = menu.addAction(label)
+        act.setShortcut("F2")            # affiché dans le menu ; géré par EditKeyPressed
+        act.setEnabled(bool(item.flags() & Qt.ItemFlag.ItemIsEditable))
+        # editItem() sur l'item survolé, pas sur la sélection courante : le clic
+        # droit ne sélectionne pas forcément la ligne visée.
+        act.triggered.connect(lambda _=False, it=item: self.editItem(it, 0))
+        return act
+
+    def _fit(self):
+        h = self.sizeHintForRow(0) if self.topLevelItemCount() else 0
+        total = 0
+        it = QTreeWidgetItem.__new__(QTreeWidgetItem)
+        i = self.invisibleRootItem()
+        stack = [i.child(n) for n in range(i.childCount())]
+        while stack:
+            item = stack.pop()
+            total += 1
+            if item.isExpanded():
+                stack.extend(item.child(n) for n in range(item.childCount()))
+        # S.ROW = hauteur d'une ligne dans QSS.tree_widget : les deux doivent
+        # rester d'accord, sinon l'arbre se coupe ou traîne du vide.
+        self.setFixedHeight(max(total * S.ROW, 4))
+
+    def sizeHint(self):
+        return QSize(self.width(), self.minimumHeight())
+
+
+try:
+    from PyQt6.QtWidgets import QTreeWidgetItemIterator
+except ImportError:
+    QTreeWidgetItemIterator = None
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Arbre du CONTENU de la scène active : acteurs + branche « Interface »
+# ──────────────────────────────────────────────────────────────────
+
+class _ActiveSceneTree(_Tree):
+    def __init__(self, panel: "SceneTreePanel"):
+        super().__init__()
+        self._panel = panel
+        self._scene: Scene | None = None
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.itemClicked.connect(self._on_click)
+        self.customContextMenuRequested.connect(self._ctx_menu)
+        self.itemChanged.connect(self._on_item_changed)
+        # Repli/dépli des éléments d'UI mémorisé PAR OBJET, comme l'ancien
+        # arbre unique — sinon chaque populate() (courant après le moindre
+        # edit) réouvre tout ce qu'on venait de refermer.
+        self._expand_overrides: dict[int, bool] = {}
+        self.itemExpanded.connect(self._on_item_expanded)
+        self.itemCollapsed.connect(self._on_item_collapsed)
+
+    def _on_item_expanded(self, item: QTreeWidgetItem):
+        obj = item.data(0, _ROLE_OBJ)
+        if obj is not None:
+            self._expand_overrides[id(obj)] = True
+
+    def _on_item_collapsed(self, item: QTreeWidgetItem):
+        obj = item.data(0, _ROLE_OBJ)
+        if obj is not None:
+            self._expand_overrides[id(obj)] = False
+
+    # ── Peuplement ────────────────────────────────────────────────
+
+    def populate(self, project: Project, scene: Scene | None):
+        self._scene = scene
+        self.blockSignals(True)
+        self.clear()
+        if scene is not None:
+            for actor in scene.actors:
+                a_item = QTreeWidgetItem(self)
+                a_item.setData(0, _ROLE_TYPE, T_ACTOR)
+                a_item.setData(0, _ROLE_OBJ, actor)
+                self._update_actor_item(a_item, actor)
+            self._populate_ui_branch(scene, project)
+        self.blockSignals(False)
+        self._fit()
+
+    def _populate_ui_branch(self, scene: Scene, project: Project):
+        """Ajoute, en tête de liste, la mise en page UI de la scène (si elle
+        en référence une) : un nœud racine « Interface » puis la hiérarchie
+        des éléments dérivée des refs `parent` (`in_tree_order`)."""
+        lay = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
+        if lay is None:
+            return
+        users = project.ui_layout_users(lay.name) if hasattr(project, "ui_layout_users") else []
+        shared = len(users) > 1
+        root_item = QTreeWidgetItem(self)
+        root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
+        root_item.setData(0, _ROLE_OBJ, lay)
+        root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
+        root_item.setText(0, f"Interface  ·  {len(users)} scenes" if shared else "Interface")
+        root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
+        root_item.setFont(0, ui_font(T.MD, bold=True))
+        root_item.setToolTip(
+            0, f"Layout “{lay.name}”"
+               + (f"\nSHARED by {len(users)} scenes — editing it affects all of them."
+                  if shared else ""))
+        items: dict[str, QTreeWidgetItem] = {}
+        for _depth, el in lay.in_tree_order():
+            parent_item = items.get(el.parent, root_item)
+            e_item = QTreeWidgetItem(parent_item)
+            self._update_ui_elem_item(e_item, el, lay)
+            e_item.setExpanded(self._expand_overrides.get(id(el), True))
+            items[el.name] = e_item
+        root_item.setExpanded(self._expand_overrides.get(id(lay), True))
+
+    def _update_ui_elem_item(self, item: QTreeWidgetItem, el, layout):
+        """Peuple la ligne d'un élément UI : icône de type (forme), nom éditable,
+        et — signal central — couleur selon la RÉFÉRENÇABILITÉ Lua (clair =
+        nommable dans un script, grisé = authoring-only)."""
+        kind = getattr(el, "kind", KIND_TEXT)
+        item.setData(0, _ROLE_TYPE, T_UI_ELEM)
+        item.setData(0, _ROLE_OBJ, el)
+        item.setData(0, _ROLE_PATH, layout)     # la layout porteuse (pour le bus/cmd)
+        item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_text"), COLOR_UI))
+        item.setText(0, el.name)
+        item.setFont(0, ui_font(T.LG))
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        handle = _lua_handle(T_UI_ELEM, el)
+        if handle:
+            item.setForeground(0, QColor(_TEXT))
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · referenceable: {handle}")
+        else:
+            item.setForeground(0, QColor(_DIM))
+            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · authoring — not "
+                               f"referenceable in script")
+
+    def _update_actor_item(self, item: QTreeWidgetItem, actor: Actor):
+        handle = _lua_handle(T_ACTOR, actor)
+        if actor.prefab_name:
+            item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
+            item.setToolTip(0, f"Prefab instance: {actor.prefab_name}\nreferenceable: {handle}")
+        else:
+            item.setIcon(0, _ico("actor", COLOR_DEFAULT))
+            item.setToolTip(0, f"referenceable: {handle}")
+        item.setText(0, actor.name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setForeground(0, QColor(_TEXT))
+
+    def highlight_actor(self, actor: Actor):
+        self._highlight(T_ACTOR, actor)
+
+    def highlight_ui_element(self, element):
+        self._highlight(T_UI_ELEM, element)
+
+    def _highlight(self, node_type: str, obj):
+        if QTreeWidgetItemIterator is None:
+            return
+        self.blockSignals(True)
+        self.clearSelection()
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            node = it.value()
+            if node.data(0, _ROLE_TYPE) == node_type and node.data(0, _ROLE_OBJ) is obj:
+                node.setSelected(True)
+                self.scrollToItem(node)
+                break
+            it += 1
+        self.blockSignals(False)
+
+    # ── Clic ──────────────────────────────────────────────────────
+
+    def _on_click(self, item: QTreeWidgetItem, _col: int):
+        typ = item.data(0, _ROLE_TYPE)
+        if typ == T_ACTOR:
+            get_bus().select(item.data(0, _ROLE_OBJ))
+        elif typ == T_UI_ELEM:
+            get_bus().select(UIElementSelection(item.data(0, _ROLE_PATH),
+                                                item.data(0, _ROLE_OBJ)))
+        # T_UI_LAYOUT (nœud « Interface ») : pas d'inspecteur propre, et la
+        # scène qu'il porte est déjà celle affichée par ce panneau — rien à
+        # faire de plus qu'un clic sans effet.
+
+    # ── Drag & drop : acteurs OU éléments d'UI ────────────────────
+
+    def dropEvent(self, event):
+        dragged = self.currentItem()
+        target = self.itemAt(event.position().toPoint())
+        if dragged is None:
+            event.ignore()
+            return
+        dtype = dragged.data(0, _ROLE_TYPE)
+
+        if dtype == T_UI_ELEM:
+            indicator = self.dropIndicatorPosition()
+            event.accept()
+            self._handle_ui_drop(dragged, target, indicator)
+            return
+
+        if dtype == T_ACTOR:
+            # Un acteur ne se réordonne qu'entre acteurs, jamais sous
+            # « Interface » (pas de nesting) — donc cible et indicateur
+            # doivent tous deux pointer sur un acteur de premier niveau.
+            Pos = QAbstractItemView.DropIndicatorPosition
+            if target is None or target.data(0, _ROLE_TYPE) != T_ACTOR:
+                event.ignore()
+                return
+            if self.dropIndicatorPosition() == Pos.OnItem:
+                event.ignore()
+                return
+            super().dropEvent(event)   # Qt réordonne visuellement
+            if self._scene is None:
+                return
+            new_order = [
+                self.topLevelItem(i).data(0, _ROLE_OBJ)
+                for i in range(self.topLevelItemCount())
+                if self.topLevelItem(i).data(0, _ROLE_TYPE) == T_ACTOR
+            ]
+            self._scene.actors[:] = new_order
+            get_dispatcher().save_scene()
+            self._panel.refresh()
+            return
+
+        event.ignore()
+
+    def _handle_ui_drop(self, dragged_item, target_item, indicator):
+        """Reparente + repositionne un élément d'UI d'après la cible et
+        l'indicateur (ON = dernier enfant ; AU-DESSUS = avant la cible ;
+        EN DESSOUS = après). Refuse de sortir de la mise en page d'origine."""
+        Pos = QAbstractItemView.DropIndicatorPosition
+        dragged = dragged_item.data(0, _ROLE_OBJ)
+        layout = dragged_item.data(0, _ROLE_PATH)
+        if target_item is None or layout is None:
+            return
+        ttype = target_item.data(0, _ROLE_TYPE)
+        if ttype == T_UI_LAYOUT:
+            if target_item.data(0, _ROLE_OBJ) is not layout:
+                return                         # autre mise en page → refus
+            new_parent, before = "", None      # lâché sur « Interface » = racine
+        elif ttype == T_UI_ELEM:
+            target = target_item.data(0, _ROLE_OBJ)
+            if target is dragged or target_item.data(0, _ROLE_PATH) is not layout:
+                return
+            if indicator == Pos.OnItem:
+                new_parent, before = target.name, None
+            else:
+                new_parent = layout._parent_key(target)
+                sibs = [s.name for s in layout._siblings(new_parent)
+                        if s.name != dragged.name]
+                if target.name in sibs and indicator == Pos.AboveItem:
+                    before = target.name
+                elif target.name in sibs:      # BelowItem → devant le suivant
+                    ti = sibs.index(target.name)
+                    before = sibs[ti + 1] if ti + 1 < len(sibs) else None
+                else:
+                    before = None
+        else:
+            return
+
+        def mutate(name=dragged.name, parent=new_parent, before=before):
+            layout.place_child(name, parent, before)
+
+        cmd = UILayoutOrderCmd(layout, mutate, f"Déplacer {dragged.name}",
+                               persist_fn=self._panel._after_ui_change)
+        QTimer.singleShot(0, lambda: get_history().push(cmd))
+
+    # ── Menu contextuel ───────────────────────────────────────────
+
+    def _ctx_menu(self, pos: QPoint):
+        item = self.itemAt(pos)
+        if not item:
+            return
+        typ = item.data(0, _ROLE_TYPE)
+        menu = QMenu(self)
+        menu.setFont(QFont(T.UI, T.MD))
+
+        if typ == T_ACTOR:
+            actor: Actor = item.data(0, _ROLE_OBJ)
+            scene = self._scene
+            menu.addAction("Move to top").triggered.connect(
+                lambda: self._move_actor(scene, actor, "top"))
+            menu.addAction("Move up").triggered.connect(
+                lambda: self._move_actor(scene, actor, "up"))
+            menu.addAction("Move down").triggered.connect(
+                lambda: self._move_actor(scene, actor, "down"))
+            menu.addAction("Move to bottom").triggered.connect(
+                lambda: self._move_actor(scene, actor, "bottom"))
+            menu.addSeparator()
+            self.add_rename_action(menu, item, "Rename actor")
+            menu.addAction("Delete actor").triggered.connect(
+                lambda: get_dispatcher().delete_actor(actor))
+
+        elif typ == T_UI_LAYOUT:
+            layout = item.data(0, _ROLE_OBJ)
+            add = menu.addMenu("Add a widget")
+            add.setFont(QFont(T.UI, T.MD))
+            for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
+                                (KIND_IMAGE, "Image")):
+                act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+                act.triggered.connect(
+                    lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
+
+        elif typ == T_UI_ELEM:
+            el = item.data(0, _ROLE_OBJ)
+            layout = item.data(0, _ROLE_PATH)
+            sibs = [s.name for s in layout._siblings(layout._parent_key(el))]
+            i, n = sibs.index(el.name), len(sibs)
+            for label, direction, on in (
+                ("Move to top", "top", i > 0),
+                ("Move up", "up", i > 0),
+                ("Move down", "down", i < n - 1),
+                ("Move to bottom", "bottom", i < n - 1),
+            ):
+                a = menu.addAction(label)
+                a.setEnabled(on)
+                a.triggered.connect(
+                    lambda _, d=direction, e=el, lay=layout: self._move_ui_elem(lay, e, d))
+            if getattr(el, "can_contain", False):
+                menu.addSeparator()
+                sub = menu.addMenu("Add a child")
+                sub.setFont(QFont(T.UI, T.MD))
+                for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
+                                    (KIND_IMAGE, "Image")):
+                    act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+                    act.triggered.connect(
+                        lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
+            menu.addSeparator()
+            self.add_rename_action(menu, item, "Rename")
+            menu.addAction("Delete").triggered.connect(
+                lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
+
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    # ── Éléments d'UI : création / réordonnancement / suppression ─
+    def _create_ui_elem(self, layout, kind: str, parent_name: str):
+        proj = self._panel._project
+        if proj is None:
+            return
+        from core.models.ui_region import (
+            UIPanel, UIText, UIImage, unique_element_name)
+        taken = set(layout.element_names()) | set(proj.ui_element_names())
+        if kind == KIND_PANEL:
+            el = UIPanel(name=unique_element_name(taken, "container"),
+                         parent=parent_name, x=8, y=8, w=96, h=48)
+        elif kind == KIND_IMAGE:
+            el = UIImage(name=unique_element_name(taken, "image"),
+                         parent=parent_name, x=8, y=8, w=16, h=16)
+        else:
+            el = UIText(name=unique_element_name(taken, "text"),
+                        parent=parent_name, x=8, y=8, w=80, h=16)
+        get_history().push(AddListItemCmd(
+            layout.elements, el, persist_fn=self._panel._after_ui_change,
+            label=f"New {_UI_ELEM_LABEL.get(kind, kind)} {el.name}"))
+        get_bus().select(UIElementSelection(layout, el))
+
+    def _move_ui_elem(self, layout, element, direction: str):
+        def mutate(name=element.name, d=direction):
+            layout.move_sibling(name, d)
+        get_history().push(UILayoutOrderCmd(
+            layout, mutate, f"Reorder {element.name}",
+            persist_fn=self._panel._after_ui_change))
+
+    def _delete_ui_elem(self, layout, element):
+        get_history().push(RemoveListItemCmd(
+            layout.elements, element, persist_fn=self._panel._after_ui_change,
+            label=f"Delete {element.name}"))
+        get_bus().clear()
+
+    # ── Renommage / réordonnancement d'un acteur ───────────────────
+
+    def _on_item_changed(self, item: QTreeWidgetItem, _col: int):
+        typ = item.data(0, _ROLE_TYPE)
+        if typ == T_ACTOR:
+            self._commit_rename_actor(item)
+        elif typ == T_UI_ELEM:
+            self._commit_rename_ui_elem(item)
+
+    def _commit_rename_ui_elem(self, item: QTreeWidgetItem):
+        el = item.data(0, _ROLE_OBJ)
+        layout = item.data(0, _ROLE_PATH)
+        proj = self._panel._project
+        new_name = item.text(0).strip()
+        if not proj or not new_name or new_name == el.name:
+            self.blockSignals(True)
+            item.setText(0, el.name)
+            self.blockSignals(False)
+            return
+        # `rename_ui_element` émet "renamed", relayé SYNCHRONEMENT en
+        # "project_tree_changed" par le dispatcher : ce panneau a déjà
+        # reconstruit l'arbre (avec le nom, possiblement dédupliqué, à jour)
+        # avant que cet appel ne rende la main. `item` est un QTreeWidgetItem
+        # que cette reconstruction a détruit — ne plus y toucher après.
+        proj.rename_ui_element(layout, el, new_name)
+        self._panel._after_ui_change()
+
+    def _commit_rename_actor(self, item: QTreeWidgetItem):
+        actor: Actor = item.data(0, _ROLE_OBJ)
+        new_name = item.text(0).strip()
+        proj = self._panel._project
+        if not new_name or new_name == actor.name:
+            self.blockSignals(True)
+            self._update_actor_item(item, actor)
+            self.blockSignals(False)
+            return
+        if proj:
+            # Émet "renamed" → "project_tree_changed" en cascade SYNCHRONE :
+            # l'arbre est déjà reconstruit à ce point, `item` déjà détruit —
+            # ne plus y toucher après cet appel (même mise en garde que
+            # ci-dessus et que `_commit_rename_scene` dans assets_finder_panel).
+            proj.rename_actor(actor, new_name, scene=self._scene)
+        else:
+            actor.name = new_name
+            self.blockSignals(True)
+            self._update_actor_item(item, actor)
+            self.blockSignals(False)
+        get_dispatcher()._emit("actors_list_changed")
+
+    def _move_actor(self, scene: Scene, actor: Actor, direction: str):
+        actors = scene.actors
+        idx = actors.index(actor)
+        if direction == "top":
+            actors.insert(0, actors.pop(idx))
+        elif direction == "up" and idx > 0:
+            actors[idx], actors[idx - 1] = actors[idx - 1], actors[idx]
+        elif direction == "down" and idx < len(actors) - 1:
+            actors[idx], actors[idx + 1] = actors[idx + 1], actors[idx]
+        elif direction == "bottom":
+            actors.append(actors.pop(idx))
+        get_dispatcher().save_scene()
+        self._panel.refresh()
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Panneau principal
+# ──────────────────────────────────────────────────────────────────
+
+class SceneTreePanel(QWidget):
+    # Un élément d'UI a été créé / déplacé / renommé / supprimé depuis
+    # l'arbre : le scene_editor sauve et redessine le canvas (câblé dans
+    # window.py) — même contrat que l'ancien AssetsFinderPanel.
+    ui_layout_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._project: Project | None = None
+        self._scene: Scene | None = None
+        self.setMinimumWidth(180)
+        self.setMaximumWidth(420)
+        self.setStyleSheet(f"background:{_BG};")
+        self._setup_ui()
+        get_bus().changed.connect(self.on_selection)
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Bandeau nom de la scène active + « + » (ajouter un acteur) ──
+        hdr = QFrame()
+        hdr.setFixedHeight(40)
+        hdr.setStyleSheet(f"background:{_HEADER}; border-bottom:1px solid {C.BORDER};")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(S.GUTTER, 0, S.MD, 0)
+        hl.setSpacing(S.SM)
+        self._scene_lbl = QLabel("No active scene")
+        self._scene_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
+        self._scene_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
+        hl.addWidget(self._scene_lbl, 1)
+        self._btn_add = W.btn_add("Add an actor")
+        self._btn_add.clicked.connect(self._add_actor)
+        hl.addWidget(self._btn_add)
+        layout.addWidget(hdr)
+
+        # ── Bandeau "finder" (identité du panneau) ────────────────
+        layout.addWidget(W.finder_bar("Scene tree"))
+
+        # ── Corps : arbre, ou état vide si aucune scène active ────
+        self._tree = _ActiveSceneTree(self)
+
+        self._empty = QLabel("No active scene")
+        self._empty.setFont(QFont(T.UI, T.MD))
+        self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:{S.CONTENT}px;")
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(f"background:{_BG}; border:none;")
+        container = QWidget()
+        container.setStyleSheet(f"background:{_BG};")
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(0, S.SM, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(self._tree)
+        cl.addWidget(self._empty)
+        cl.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+    # ── Chargement ────────────────────────────────────────────────
+
+    def load_project(self, project: Project):
+        self._project = project
+        self.set_active_scene(project.active_scene)
+
+    def set_active_scene(self, scene: Scene | None):
+        self._scene = scene
+        self.refresh()
+
+    def refresh(self):
+        self._scene_lbl.setText(self._scene.name if self._scene else "No active scene")
+        self._btn_add.setEnabled(self._scene is not None)
+        self._tree.populate(self._project, self._scene)
+        has_scene = self._scene is not None
+        self._tree.setVisible(has_scene)
+        self._empty.setVisible(not has_scene)
+
+    # ── Sélection bus ─────────────────────────────────────────────
+
+    def on_selection(self, obj):
+        if isinstance(obj, Actor):
+            self._tree.highlight_actor(obj)
+        elif isinstance(obj, UIElementSelection):
+            self._tree.highlight_ui_element(obj.element)
+
+    def _after_ui_change(self):
+        """Après une mutation d'UI depuis l'arbre (créer/déplacer/renommer/
+        supprimer) : prévenir le scene_editor (sauve + redessine le canvas),
+        reconstruire l'arbre, puis re-cibler la sélection courante du bus —
+        `populate` reconstruit des items neufs, mais les objets modèle
+        persistent, donc on retrouve l'élément par identité."""
+        self.ui_layout_changed.emit()
+        self.refresh()
+        cur = get_bus().current
+        if isinstance(cur, UIElementSelection):
+            self._tree.highlight_ui_element(cur.element)
+
+    # ── Ajout d'un acteur (inline, pas de dialogue — cf. Scenes/Prefabs) ──
+
+    def _add_actor(self):
+        if not self._project or not self._scene:
+            return
+        name = unique_name("Actor", {a.name for a in self._scene.actors})
+        get_dispatcher().add_actor(name)
+        self.refresh()
+        self._begin_rename_actor(name)
+
+    def _begin_rename_actor(self, name: str):
+        if QTreeWidgetItemIterator is None:
+            return
+        def go():
+            it = QTreeWidgetItemIterator(self._tree)
+            while it.value():
+                item = it.value()
+                if item.data(0, _ROLE_TYPE) == T_ACTOR and item.text(0) == name:
+                    self._tree.setCurrentItem(item)
+                    self._tree.editItem(item, 0)
+                    return
+                it += 1
+        QTimer.singleShot(0, go)

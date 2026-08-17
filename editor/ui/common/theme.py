@@ -541,16 +541,8 @@ QTreeWidget::item:hover:!selected {{
 QTreeWidget::branch {{
     background: {C.BG_BASE};
 }}
-QTreeWidget::branch:has-children:!has-siblings:closed,
-QTreeWidget::branch:closed:has-children:has-siblings {{
-    border-image: none;
-    image: none;
-}}
-QTreeWidget::branch:open:has-children:!has-siblings,
-QTreeWidget::branch:open:has-children:has-siblings {{
-    border-image: none;
-    image: none;
-}}
+{_arrow_rule("QTreeWidget::branch:has-children:closed", "tree_closed", C.TEXT_DIM)}
+{_arrow_rule("QTreeWidget::branch:has-children:open", "tree_open", C.TEXT_DIM)}
 """
 
     @property

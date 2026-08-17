@@ -11,6 +11,8 @@ from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from ui.common.widgets import W, FinderSection
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import SPRITES
 from ui.common.theme import C, T, QSS
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from core.models.sprite import AnimState, SpriteAsset, StateDirection
@@ -79,34 +81,21 @@ class SpriteFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Bandeau "finder" (identité du panneau, cohérent avec les
-        #    autres écrans : Assets finder / Script finder / Sound finder) ──
-        root.addWidget(W.finder_bar("Sprite finder"))
-
-        # ── Sprites ───────────────────────────────────────────────
-        sec_sprites = FinderSection("Sprites")
-        sec_sprites.add_clicked.connect(self._on_add_sprite)
-        root.addWidget(sec_sprites, 3)
-
-        self._sprite_tree = QTreeWidget()
-        self._sprite_tree.setHeaderHidden(True)
-        self._sprite_tree.setStyleSheet(QSS.tree_widget)
-        self._sprite_tree.setIndentation(14)
-        self._sprite_tree.setIconSize(QSize(14, 14))
-        self._sprite_tree.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self._sprite_tree.currentItemChanged.connect(self._on_sprite_item_changed)
-        self._sprite_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._sprite_tree.customContextMenuRequested.connect(self._on_sprite_context_menu)
-        # Renommage en place : clic sur un item déjà sélectionné (pas de dialogue modal)
-        self._sprite_tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-        self._sprite_tree.itemChanged.connect(self._on_sprite_item_text_changed)
-        sec_sprites.set_widget(self._sprite_tree)
+        # ── Sprites : le composant partagé (il porte aussi le bandeau
+        #    d'identité du panneau) ──────────────────────────────────
+        self._sprites = AssetFinder("Sprite finder", [SPRITES],
+                                    min_width=180, max_width=420)
+        self._sprites.selected.connect(lambda _kind, sp: self._on_sprite_chosen(sp))
+        self._sprites.add_requested.connect(lambda _label: self._import_sprite())
+        self._sprites.emptied.connect(lambda _label: self._on_sprite_chosen(None))
+        root.addWidget(self._sprites, 1)
 
         # ── Animations ────────────────────────────────────────────
+        # PAS un asset finder : l'arbre montre la structure INTERNE du sprite
+        # choisi (états × directions), pas des assets du projet.
         sec_anim = FinderSection("Animation states")
         sec_anim.add_clicked.connect(self._on_add_state)
-        root.addWidget(sec_anim, 2)
+        self._sprites.add_section(sec_anim)
 
         self._anim_tree = QTreeWidget()
         self._anim_tree.setHeaderHidden(True)
@@ -122,120 +111,30 @@ class SpriteFinderPanel(QWidget):
         self._anim_tree.itemChanged.connect(self._on_anim_item_text_changed)
         sec_anim.set_widget(self._anim_tree)
 
-        # Ressort de queue : sections repliées, rien n'absorbe la hauteur du
-        # panneau et QVBoxLayout centrerait le tout.
-        root.addStretch()
+
 
     # ── API publique ──────────────────────────────────────────────
 
     def load_project(self, project: Project):
         self._project = project
-        self._refresh_sprites()
+        self._sprites.load_project(project)
 
     def refresh_anim_tree(self):
         """Recharge l'arbre d'animations depuis le sprite courant (conserve la sélection)."""
         self._refresh_anim_tree(self._current_sprite)
 
     def select_sprite(self, name: str):
-        """Sélectionne le sprite `name` dans l'arbre (émet sprite_selected via
-        currentItemChanged) — point d'entrée d'une navigation venue d'un autre
-        écran, ex. la carte « Utilisations » du Palette Editor."""
+        """Sélectionne le sprite `name` — point d'entrée d'une navigation venue
+        d'un autre écran, ex. la carte « Utilisations » du Palette Editor."""
         sprite = self._project.sprites.get(name) if self._project else None
-        item = self._find_sprite_item(sprite)
-        if item is not None:
-            self._sprite_tree.setCurrentItem(item)
-            self._sprite_tree.scrollToItem(item)
+        if sprite is not None:
+            self._sprites.select(SPRITES.label, sprite)
 
     def select_direction(self, state: AnimState, sd: StateDirection):
         """Sélectionne explicitement (state, sd) dans l'arbre — ex: après ajout
         d'une direction depuis le panneau droit, pour que le canvas central
         bascule immédiatement dessus au lieu de rester sur l'ancienne sélection."""
         self._refresh_anim_tree(self._current_sprite, select=(state, sd))
-
-    # ── Peuplement sprite tree ────────────────────────────────────
-
-    def _find_sprite_item(self, sprite: Optional[SpriteAsset]) -> Optional[QTreeWidgetItem]:
-        if sprite is None:
-            return None
-        root = self._sprite_tree.invisibleRootItem()
-        stack = [root.child(i) for i in range(root.childCount())]
-        while stack:
-            item = stack.pop()
-            if item.data(0, Qt.ItemDataRole.UserRole) is sprite:
-                return item
-            stack.extend(item.child(i) for i in range(item.childCount()))
-        return None
-
-    def _refresh_sprites(self, select: Any = _KEEP_SELECTION):
-        target_sprite = self._current_sprite if select is _KEEP_SELECTION else select
-
-        self._blocking = True
-        self._sprite_tree.blockSignals(True)
-        self._sprite_tree.clear()
-
-        if not self._project:
-            self._blocking = False
-            self._sprite_tree.blockSignals(False)
-            return
-
-        sprites = list(self._project.sprites)
-        if not sprites:
-            self._blocking = False
-            self._sprite_tree.blockSignals(False)
-            self._current_sprite = None
-            return
-
-        # Regrouper par dossier fictif = première partie du nom (avant "_" ou "/")
-        groups: dict[str, list[SpriteAsset]] = {}
-        ungrouped: list[SpriteAsset] = []
-        for sp in sorted(sprites, key=lambda s: s.name):
-            parts = sp.name.split("_", 1)
-            if len(parts) > 1 and len(parts[0]) > 2:
-                groups.setdefault(parts[0], []).append(sp)
-            else:
-                ungrouped.append(sp)
-
-        # Items sans groupe
-        for sp in ungrouped:
-            self._make_sprite_item(self._sprite_tree.invisibleRootItem(), sp)
-
-        # Groupes
-        for grp_name, members in groups.items():
-            if len(members) == 1:
-                self._make_sprite_item(self._sprite_tree.invisibleRootItem(), members[0])
-                continue
-            grp_item = QTreeWidgetItem([f"  {grp_name}"])
-            grp_item.setFont(0, QFont(T.UI, T.SM, QFont.Weight.Bold))
-            grp_item.setForeground(0, QColor(C.TEXT_DIM))
-            grp_item.setData(0, Qt.ItemDataRole.UserRole, None)
-            self._sprite_tree.invisibleRootItem().addChild(grp_item)
-            grp_item.setExpanded(True)
-            for sp in members:
-                self._make_sprite_item(grp_item, sp)
-
-        self._blocking = False
-        self._sprite_tree.blockSignals(False)
-
-        # Sélectionner le sprite ciblé si possible, sinon le premier
-        target_item = self._find_sprite_item(target_sprite)
-        if target_item is None:
-            first = self._sprite_tree.topLevelItem(0)
-            target_item = (first.child(0) if first.childCount() else first) if first else None
-        if target_item is not None:
-            self._sprite_tree.setCurrentItem(target_item)
-
-    def _make_sprite_item(self, parent: QTreeWidgetItem, sp: SpriteAsset):
-        item = QTreeWidgetItem([sp.name])
-        item.setFont(0, QFont(T.UI, T.SM))
-        item.setForeground(0, QColor(C.TEXT_NORM))
-        item.setIcon(0, _ico("sprite", COLOR_DEFAULT))
-        item.setData(0, Qt.ItemDataRole.UserRole, sp)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-        if isinstance(parent, QTreeWidget):
-            parent.addTopLevelItem(item)
-        else:
-            parent.addChild(item)
-        return item
 
     # ── Peuplement anim tree ──────────────────────────────────────
 
@@ -310,18 +209,15 @@ class SpriteFinderPanel(QWidget):
 
     # ── Slots ─────────────────────────────────────────────────────
 
-    def _on_sprite_item_changed(self, current, _prev):
-        if self._blocking or not current:
-            return
-        sp = current.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(sp, SpriteAsset):
-            return
+    def _on_sprite_chosen(self, sp):
+        """Sprite choisi dans le finder partagé."""
         self._current_sprite = sp
-        # Le sprite actif doit être propagé avant que l'arbre d'animations
-        # ne sélectionne automatiquement sa première direction (sinon le
-        # panneau central résout encore l'ancien sprite/PNG).
+        # Le sprite actif doit être propagé AVANT que l'arbre d'animations ne
+        # sélectionne sa première direction, sinon le panneau central résout
+        # encore l'ancien sprite/PNG.
         self.sprite_selected.emit(sp)
         self._refresh_anim_tree(sp)
+
 
     def _on_anim_item_changed(self, current, _prev):
         if self._blocking or not current:
@@ -345,76 +241,20 @@ class SpriteFinderPanel(QWidget):
             get_dispatcher().save_sprite(self._current_sprite)
         self._refresh_anim_tree(self._current_sprite, select=(new_state, None))
 
-    # ── Sprites : ajout / renommage / suppression ───────────────────
-
-    def _on_add_sprite(self):
-        # Un sprite se crée uniquement par import d'une image (l'option
-        # « sprite vide » a été retirée) — le « + » ouvre directement l'import.
-        if not self._project:
-            return
-        self._import_sprite()
+    # ── Sprites : import (le reste est porté par AssetFinder/SPRITES) ──
 
     def _import_sprite(self):
+        """Le « + » du finder délègue ici : le dialogue d'import a besoin d'un
+        widget parent, que le composant partagé n'a pas à connaître."""
         from .import_png_dialog import import_new_sprite
         dst = import_new_sprite(self._project, self)
         if not dst:
             return
+        self._sprites.refresh()
         sprite = self._project.sprites.get(dst.stem)
-        self._refresh_sprites(select=sprite)
+        if sprite is not None:
+            self._sprites.select(SPRITES.label, sprite)
 
-    def _on_sprite_context_menu(self, pos):
-        item = self._sprite_tree.itemAt(pos)
-        if not item:
-            return
-        sp = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(sp, SpriteAsset):
-            return
-        menu = QMenu(self)
-        menu.setStyleSheet(QSS.menu)
-        delete_a = menu.addAction("Delete sprite")
-        act = menu.exec(self._sprite_tree.viewport().mapToGlobal(pos))
-        if act == delete_a:
-            self._delete_sprite(sp)
-
-    def _on_sprite_item_text_changed(self, item: QTreeWidgetItem, _col: int):
-        sp = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(sp, SpriteAsset):
-            return
-        new_name = item.text(0).strip()
-        if not new_name or new_name == sp.name:
-            self._sprite_tree.blockSignals(True)
-            item.setText(0, sp.name)
-            self._sprite_tree.blockSignals(False)
-            return
-        if not self._project or self._project.sprites.get(new_name):
-            QMessageBox.warning(self, "Name already used",
-                                f"A sprite named “{new_name}” already exists.")
-            self._sprite_tree.blockSignals(True)
-            item.setText(0, sp.name)
-            self._sprite_tree.blockSignals(False)
-            return
-        get_dispatcher().rename_sprite(sp, new_name)
-        self._sprite_tree.blockSignals(True)
-        item.setText(0, sp.name)
-        self._sprite_tree.blockSignals(False)
-        # setCurrentItem() ne réémet pas currentItemChanged si l'item était déjà
-        # courant : forcer explicitement le rafraîchissement des panneaux
-        # centre/droite pour que le nouveau nom s'y reflète.
-        self.sprite_selected.emit(sp)
-
-    def _delete_sprite(self, sp: SpriteAsset):
-        if not self._project:
-            return
-        if QMessageBox.question(
-            self, "Delete",
-            f"Delete sprite “{sp.name}”?\n(Ctrl+Z to undo)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        get_history().push(DeleteResourceCmd(
-            self._project.sprites, sp,
-            lambda: self._refresh_sprites(),
-        ))
 
     # ── Animations : renommage / suppression d'un état ──────────────
 

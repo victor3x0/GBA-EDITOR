@@ -273,6 +273,12 @@ class UIText(RectGeometryMixin):
     # cité par NOM et non par index : renommer un élément doit donc retargetter
     # les enfants (`UILayout.retarget_parent`), comme un renommage de clé.
     parent: str = ""
+    # État AUTHORÉ de départ, indépendant de celui des ancêtres — la visibilité
+    # EFFECTIVE (celle qui compte pour le rendu) se calcule à la lecture, elle
+    # ne se stocke jamais ici : cf. `UILayout.is_visible`. Un script bascule
+    # cette valeur au runtime via `ui.show(nom, on)`, même mécanisme pour les
+    # trois types (cf. `UIPanel.visible`, `UIImage.visible`).
+    visible: bool = True
     anchor: str = ANCHOR_SCREEN
     anchor_actor: str = ""   # nom de l'Actor suivi — seulement si anchor == actor
     # Géométrie en PIXELS. Pour un ancrage actor, x/y sont un OFFSET par rapport
@@ -330,7 +336,8 @@ class UIText(RectGeometryMixin):
     def to_dict(self) -> dict:
         return {
             "kind": KIND_TEXT,
-            "name": self.name, "parent": self.parent, "anchor": self.anchor,
+            "name": self.name, "parent": self.parent, "visible": self.visible,
+            "anchor": self.anchor,
             "text_color": self.text_color,
             "anchor_actor": self.anchor_actor,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
@@ -358,6 +365,7 @@ class UIText(RectGeometryMixin):
         return cls(
             name         = str(d.get("name", "region" if was_region else "text")),
             parent       = str(d.get("parent", "")),
+            visible      = bool(d.get("visible", True)),
             anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor = str(d.get("anchor_actor", "")),
             text_color   = _clamp_color(d.get("text_color", TEXT_COLOR_INK)),
@@ -620,6 +628,10 @@ class UIPanel(RectGeometryMixin):
     can_contain = True
     name: str = "panel"
     parent: str = ""
+    # Cf. `UIText.visible` — même contrat. Un panel caché cache tout son
+    # sous-arbre : c'est `UILayout.is_visible` qui remonte la chaîne, pas ce
+    # champ qui se propage aux enfants.
+    visible: bool = True
     x: int = 0
     y: int = 0
     w: int = 64
@@ -642,6 +654,7 @@ class UIPanel(RectGeometryMixin):
 
     def to_dict(self) -> dict:
         return {"kind": KIND_PANEL, "name": self.name, "parent": self.parent,
+                "visible": self.visible,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "anchor": self.anchor, "anchor_actor": self.anchor_actor,
                 "fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
@@ -655,6 +668,7 @@ class UIPanel(RectGeometryMixin):
         fk = d.get("fill_kind", FILL_NONE)
         return cls(
             name=str(d.get("name", "panel")), parent=str(d.get("parent", "")),
+            visible=bool(d.get("visible", True)),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
             w=int(d.get("w", 64)), h=int(d.get("h", 32)),
             anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
@@ -735,6 +749,11 @@ class UIImage(RectGeometryMixin):
     can_contain = False
     name: str = "image"
     parent: str = ""
+    # Cf. `UIText.visible` — même contrat, même remontée par `UILayout.
+    # is_visible`. Remplace l'état interne que `ui.image_show` bascule
+    # aujourd'hui côté runtime (`g_ui_img[img].visible`) : ce champ-ci n'est
+    # que l'état AUTHORÉ de départ, le script continue de décider ensuite.
+    visible: bool = True
     x: int = 0
     y: int = 0
     # Renseignés depuis le sprite (cf. `sync_size_from`) ; les défauts ne servent
@@ -759,6 +778,7 @@ class UIImage(RectGeometryMixin):
 
     def to_dict(self) -> dict:
         return {"kind": KIND_IMAGE, "name": self.name, "parent": self.parent,
+                "visible": self.visible,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
                 "anchor": self.anchor, "anchor_actor": self.anchor_actor,
                 "sprite_name": self.sprite_name, "state_name": self.state_name,
@@ -769,6 +789,7 @@ class UIImage(RectGeometryMixin):
         anchor = d.get("anchor", ANCHOR_SCREEN)
         return cls(
             name=str(d.get("name", "image")), parent=str(d.get("parent", "")),
+            visible=bool(d.get("visible", True)),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
             w=int(d.get("w", 16)), h=int(d.get("h", 16)),
             anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
@@ -951,6 +972,22 @@ class UILayout(Resource):
             out.append(child)
             out.extend(self.descendants(child.name))
         return out
+
+    def is_visible(self, name: str) -> bool:
+        """Visibilité EFFECTIVE de `name` : son propre `visible` ET celui de
+        chacun de ses ancêtres. Jamais stockée, jamais propagée à l'écriture —
+        recalculée à la lecture depuis `ancestors()`, exactement comme le reste
+        de l'arbre. Cacher un enfant puis remontrer son parent laisse donc
+        l'enfant caché : chaque nœud ne porte que son propre bit.
+
+        Un nom introuvable est traité comme invisible (rien à montrer) plutôt
+        que de lever — les autres lecteurs de l'arbre (`children`, `get`) sont
+        tout aussi tolérants aux refs mortes."""
+        e = self.get(name)
+        if e is None or not getattr(e, "visible", True):
+            return False
+        return all(getattr(self.get(a), "visible", True)
+                   for a in self.ancestors(name))
 
     def in_tree_order(self):
         """(profondeur, élément) en parcours préfixe, l'ordre de liste faisant foi

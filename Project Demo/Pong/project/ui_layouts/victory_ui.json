@@ -5,6 +5,7 @@
       "kind": "text",
       "name": "resultat",
       "parent": "",
+      "visible": true,
       "anchor": "screen",
       "text_color": 14,
       "anchor_actor": "",
@@ -23,6 +24,7 @@
       "kind": "text",
       "name": "press_start",
       "parent": "",
+      "visible": true,
       "anchor": "screen",
       "text_color": 0,
       "anchor_actor": "",
@@ -36,21 +38,6 @@
       "target": "",
       "preview_text": "victory_03",
       "animated_glyphs": 0
-    },
-    {
-      "kind": "image",
-      "name": "image",
-      "parent": "",
-      "x": 8,
-      "y": 56,
-      "w": 8,
-      "h": 8,
-      "anchor": "screen",
-      "anchor_actor": "",
-      "sprite_name": "Ball",
-      "state_name": "",
-      "playing": true,
-      "priority": 0
     }
   ],
   "notes": "Résultat centré (deux longueurs), invite ferrée à droite."

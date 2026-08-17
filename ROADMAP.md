@@ -4,13 +4,14 @@
 Ce document explique **le pourquoi** derrière chaque jalon : ce que la version résout, les
 choix qui sont tranchés, et les questions volontairement laissées ouvertes.
 
-Trois documents, trois rôles :
+Quatre documents, quatre rôles :
 
 | Fichier | Pour qui | Contenu |
 | --- | --- | --- |
 | [README](README.md) | un visiteur | une ligne par version |
 | **ce fichier** | qui décide de la suite | scope, décisions, questions ouvertes |
 | [ARCHITECTURE](ARCHITECTURE.md) | qui modifie le code | comment c'est construit |
+| [SCRIPTING](SCRIPTING.md) | qui écrit un script | le Lua accepté, et ce qui ne l'est pas |
 
 Convention : **Décisions verrouillées** = tranché, à implémenter tel quel — on ne rouvre
 pas sans raison neuve. **Ouvert** = identifié mais volontairement non tranché : à rouvrir
@@ -27,15 +28,16 @@ suppositions faites à l'avance.
 | v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé |
 | v0.4 | Animation de décor | **Livrée** |
 | v0.5 | Sauvegarde | **Livrée** |
-| v0.6 | Polish de la boucle de jeu | **Livrée** |
-| v0.7 | Structures de données | **Livrée** — porte de la v1.0 |
-| v0.8 | Son enrichi | Non commencée |
+| v0.6 | Polish de la boucle de jeu | **Livrée**, rouverte pour le game feel |
+| v0.7 | Structures de données, et le langage | **Livrée**, les deux chantiers rouverts avec |
+| v0.8 | Son : la musique par scène, les transitions, le mixage | Non commencée |
 | v0.9 | Traduction des jeux | Non commencée |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | Non commencée |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.14 | Diagnostic (trace de débogage, budget) | Non commencée |
+| v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu |
 
 ---
 
@@ -278,8 +280,10 @@ qu'un chantier à venir doit refaire — le faire maintenant obligerait à le re
 
 - Le calque unique réservé à l'interface suffit-il, maintenant que panneaux, texte et polices
   cohabitent dessus, ou faut-il pouvoir en réserver plusieurs ?
-- Une dizaine de méthodes d'acteur sont regroupées dans une catégorie fourre-tout de la
-  documentation intégrée, à ranger à la main.
+- ~~Une dizaine de méthodes d'acteur sont regroupées dans une catégorie fourre-tout de la
+  documentation intégrée, à ranger à la main.~~ **Réglé en v0.7.4** : `api_reference.json` est
+  purgé et la réconciliation garde sa place à une catégorie — 22 catégories nommées, aucune
+  « Autres ».
 
 Tranchés depuis : l'effet machine à écrire (remplacé par les balises), le retour à la ligne
 automatique (dans une zone oui, ailleurs non), la chasse proportionnelle, l'import de planche
@@ -859,9 +863,74 @@ Deux choses ont été trouvées en ouvrant le chantier, qui en ont élargi le p�
   v2.1 et n'arrivera pas avant elle — décidé le 2026-08-12. Cette ligne n'est donc pas une
   lacune à combler au prochain passage, c'est la règle en vigueur jusqu'à la v2.0.
 - `actor_on_ground()` existait en C sans être exposée en Lua ; elle l'est désormais
-  (`self:on_ground()`) et lit le bit posé par la résolution, donc l'état de la frame
-  précédente — un script qui la consulte dans `on_update` lit le résultat du tour d'avant,
-  ce qui est le contrat normal.
+  (`self.grounded`, propriété en lecture seule depuis la v0.7.4) et lit le bit posé par la
+  résolution, donc l'état de la frame précédente — un script qui la consulte dans
+  `on_update` lit le résultat du tour d'avant, ce qui est le contrat normal.
+
+### v0.6.4 — Transform affine et game feel — **LIVRÉE**
+
+Rangée ici par SUJET et non par date : elle est arrivée après la v0.7.7, et c'est bien du
+polish de boucle de jeu — un impact qui écrase le sprite, un dégât qui le fait clignoter.
+
+#### Le problème : ça existait, et ça ne marchait pas
+
+La v0.6.1 écrivait « les sprites, eux, tournent déjà ». C'était vrai sur le papier et faux à
+l'exécution : les tableaux `g_affine_*[]` étaient `static` dans un header **multi-inclus**,
+donc recopiés une fois par unité de compilation. Un `self.rotation` écrit depuis
+`actor_Ball.c` n'atteignait jamais le rendu, qui lisait la copie de `main.c`. Panne muette —
+le C compile, le sprite ne tourne pas.
+
+#### Décisions verrouillées
+
+- **Deux niveaux de transform, séparés par qui les possède.** Le transform **monde** appartient
+  à l'`Actor` (`self.rotation`, `self.scale`), le transform **local** au `SpriteComponent`
+  (`self.sprite_rotation`, `self.sprite_scale`, `self.sprite_offset`). Le matériel n'a qu'UNE
+  matrice par slot : le runtime les compose à la frame et n'écrit que le résultat — rotation
+  sommée, scale multiplié en Q8, offset transformé par la matrice de l'ACTOR. Le local vit donc
+  dans le repère de l'actor : quand l'actor tourne, l'offset du sprite tourne avec lui.
+- **La décision vit sur l'ACTOR, pas sur le sprite** — `Actor.affine_transform`, case « Affine
+  transform » de l'inspecteur. Un actor coché **réserve un des 32 jeux de paramètres du
+  matériel, même à l'identité** : c'est ce qui donne à `self.rotation` un endroit où écrire.
+  Décoché, aucun slot n'est pris et les champs de transform n'ont aucun effet.
+- **Un prefab porte la même case, et elle vaut pour tout son pool** — chaque copie réserve son
+  slot. Elle est montrée dans une carte « Affine » **séparée de « Transform »** : l'affine est
+  une capacité de RENDU, décidable sur un template, là où x/y/priority/direction sont un
+  PLACEMENT, qui n'existe que pour un actor posé dans une scène.
+- **Le slot appartient à la SCÈNE**, distribué au seed par `_compute_affine_info` : le même
+  prefab n'a pas le même numéro d'une scène à l'autre.
+- **Le stockage runtime est PAR-ACTOR, jamais indexé par slot.** Un script de prefab poolé est
+  une fonction C partagée par toutes ses instances ; chacune a sa struct `Actor` mais un
+  `affine_slot` différent, donc les valeurs propres à l'instance ne peuvent venir que de son
+  `g_actors[i]`. C'est aussi ce qui supprime par construction la panne muette ci-dessus : il
+  n'existe plus de copie par unité de compilation à désynchroniser.
+- **Sans slot, le getter rend l'identité et le setter ne fait rien** (`if (affine_slot >= 0)`),
+  et le **checker refuse au build** un `self.rotation` sur un actor non coché en nommant la
+  case. Le silence est fermé du côté où il se voit — sur la ligne Lua, pas sur le rendu.
+- **Neuf helpers de game feel qui ne composent que l'API existante** — `squash`, `stretch`,
+  `bounce`, `shake`, `flash`, `blink`, `pulse`, `pop`, `wobble`, tous en `self:<nom>(t,
+  duration, amount)`. Ils sont **sans état** : `t` est fourni par l'appelant, et au-delà de
+  `duration` l'effet retombe seul à son neutre. Aucun n'ajoute de capacité — chacun se
+  réécrit à la main avec `sprite_scale`, `sprite_offset`, `sprite_rotation`, `pal` ou
+  `visible`, et un test le vérifie. Ce sont donc des raccourcis nommés d'après l'effet
+  observable, pas un système d'animation.
+  - Les sept qui écrivent un transform exigent « Affine transform », **sans erreur** : même
+    contrat que `self.sprite_scale`, ils sont simplement sans effet. `flash` et `blink`
+    (palette, visibilité) n'ont pas cette contrainte.
+
+#### Le piège du spawn
+
+`spawn_X()` remet l'`Actor` à zéro (`(Actor){0}`). Il doit donc **préserver le slot et reposer
+les échelles neutres** (256 = ×1) du template : sans ça une instance spawnée repart avec une
+échelle nulle — matrice dégénérée, sprite invisible — et avec le slot 0, c'est-à-dire celui
+d'un autre actor. Trouvé au même endroit : le seed de scène lisait `flip_h` sur le
+`SpriteComponent`, un champ qui n'y existe pas, donc toujours faux ; il le lit sur l'`Actor`.
+
+#### Ouvert
+
+- **Les helpers demandent leur `t` parce qu'ils sont antérieurs aux séquences.** Depuis la
+  v0.7.7, `wait(n)` existe, et un helper appelé dans une séquence pourrait tenir son propre
+  compteur. Rien ne presse — la forme sans état reste la bonne hors séquence — mais les deux
+  écritures cohabitent sans qu'aucune documentation ne dise laquelle choisir.
 
 ---
 
@@ -965,12 +1034,10 @@ for (int y = 4; y >= 1; y += (-1)) { grille[(y) - 1][1] = total; }
   descend, et la comparaison émise (`i <= stop` ou `i >= stop`) est décidée au build. Un pas
   calculé obligerait à tester son signe à chaque tour, dans un moteur qui ne teste rien
   ailleurs.
-- **Un tableau d'ÉTAT est refusé dans un prefab poolé**, en erreur qui nomme la variable. Les
-  locals de tête d'un prefab poolé vivent dans `Actor.data[8]`, huit entiers par instance :
-  un tableau n'y tient pas, et le laisser retomber sur une déclaration de fichier le ferait
-  partager par toutes les instances — silencieusement, ce qui est la pire des trois issues.
-  Déclaré DANS un handler, il reste permis : c'est une variable de travail, reconstruite à
-  chaque appel, elle ne prétend porter l'état de personne.
+- ~~**Un tableau d'ÉTAT est refusé dans un prefab poolé**, en erreur qui nomme la variable.
+  Les locals de tête d'un prefab poolé vivent dans `Actor.data[8]`, huit entiers par
+  instance : un tableau n'y tient pas.~~ **Refus levé en v0.7.6** : `data[8]` a disparu au
+  profit d'une structure dimensionnée par le pool, qui n'a plus de contrainte de type.
 
 ### v0.7.2 — L'asset table — **LIVRÉE**
 
@@ -1099,6 +1166,661 @@ centre, la colonne et la cellule sélectionnées à droite.
   aussi : elle serait émise en 0, c'est-à-dire la PREMIÈRE entrée de la table citée — une
   valeur crédible et fausse, exactement la dégradation silencieuse refusée depuis la v0.2.
 
+### v0.7.3 — vec2/vec3 dans le langage — **LIVRÉE**
+
+Vérifiée par un build ROM complet, `build/` effacé, sur la démo Pong migrée à la nouvelle API :
+`checker.py`/`codegen.py` compilent, `arm-none-eabi-gcc -Wall` ne signale rien, `rom.gba` sort.
+
+```lua
+local pos = self.position
+local vel = self.velocity + input.axis
+self.velocity = vel
+self.position = pos + vel
+```
+
+```c
+Vec2 pos = actor_get_position(self);
+Vec2 vel = vec2_add(actor_get_velocity(self), input_get_axis());
+actor_set_velocity(self, vel);
+actor_set_position(self, vec2_add(pos, vel));
+```
+
+*(Ce chapitre a d'abord été livré avec des appels `self:get_position()` /
+`self:set_velocity(v)`. La v0.7.4 en a fait des PROPRIÉTÉS le lendemain : le C émis est
+resté le même, seule la forme Lua a changé. L'exemple ci-dessus est la forme courante —
+l'ancienne est refusée par le checker.)*
+
+`vec2(x, y)` / `vec3(x, y, z)` sont la SEULE exception au « sous-ensemble Lua entièrement
+scalaire » posé en tête de ce chapitre (`parser.py` n'en sait toujours rien : ce sont
+`checker.py`/`codegen.py`, via le module partagé `scripting/vec_types.py`, qui reconnaissent
+et valident ces deux constructeurs — pas un troisième type de nœud AST).
+
+- **Position, vélocité, l'axe d'input et le déplacement ponctuel passent en vec2** —
+  `self.position`, `self.velocity`, `self:add_velocity(dv)`, `input.axis`, puis
+  `self:move(dir, speed)` et `self:move_to(target, speed)` (une direction et un point du
+  monde sont des vecteurs). Les anciens `self:get_x/get_y/get_vx/get_vy` et
+  `input.get_horizontal_axis/get_vertical_axis` sont retirés (message guidé dans
+  `REMOVED_API`, pas juste un « méthode inconnue ») : deux scalaires toujours lus et écrits
+  ensemble sont un seul concept, pas deux appels à garder synchrones à la main.
+  `actor.spawn("prefab", position)` prend un nom scalaire et une position en vec2.
+- **`+`, `-` et `*` (par un entier), rien de plus.** Pas de comparaison, pas de produit
+  vectoriel, pas de mélange vec2/vec3 dans une même opération — `checker.py` bloque les quatre
+  à la ligne fautive plutôt que de laisser gcc les découvrir sur le C généré. Le C n'a pas
+  d'opérateur sur les structs : `vec2_add`/`vec2_sub`/`vec2_scale` (et leur vec3) vivent dans
+  `actor_api_static.h`, `+`/`-`/`*` Lua s'y traduisent.
+- **Deux entiers/trois entiers, jamais de virgule flottante** — `Vec2`/`Vec3` dans
+  `actor_types_static.h` sont des structs `int`, comme tout le reste du moteur.
+- ~~**Un vec2/vec3 d'ÉTAT est refusé dans un prefab poolé**, même raison et même erreur
+  nommée que pour un tableau (v0.7.1).~~ **Refus levé en v0.7.6**, en même temps que celui
+  du tableau et pour la même raison.
+- **vec3 sert dès maintenant à la couleur** (RVB) et servira de socle aux transforms de la v3
+  (3D) — aucune des deux n'a encore d'entrée `RUNTIME_API` qui RETOURNE un vec3 (`palette.*`
+  reste un échange de banque, pas une composante RVB adressable). Le type est prêt, l'API
+  couleur reste à ouvrir sur son premier vrai besoin.
+
+### v0.7.4 — Les propriétés : l'état s'écrit comme un champ — **LIVRÉE**
+
+Vérifiée par `pytest tests` (48 cas nouveaux, `tests/test_scripting_api.py`) et par une sonde
+compilée sur les VRAIS en-têtes du runtime avec l'`actor_types.h` généré de Pong : une unité
+d'acteur qui n'inclut que `actor_api.h` refusait `WINR_0`/`BLD_SIDE_TOP`/`BLD_MODE_*` avant,
+compile `-Wall -Wextra` sans un mot après — de même que le C émis pour les nouvelles
+propriétés — et main.c voyant les deux en-têtes ne signale aucune redéfinition. **Pas de build
+ROM complet sur ce jalon-ci** — le C émis est identique à celui de la v0.7.3 sur toute la démo
+Pong, qui n'écrit ni window, ni mélange, ni direction nommée.
+
+La v0.7.3 a rendu `self:get_position()` symétrique de `self:set_position(p)` — et ce faisant,
+a rendu visible que la paire elle-même était de trop. Une position n'est pas une opération :
+c'est un ÉTAT, et un état se lit et s'écrit comme un champ.
+
+```lua
+self.position = self.position + self.velocity   -- au lieu de self:set_position(...)
+self.flip_h   = self.direction.x < 0
+if not self.active then return end
+camera.bound  = rect(0, 0, 512, 256)
+```
+
+**La grammaire est réglée par la FORME, pas par le goût** — c'est elle qui dit au parseur quoi
+produire (`Invoke` pour `:`, `Index` pour `.`), donc qui décide de la résolution. Le tableau
+des trois formes et la règle de décision complète vivent dans
+[ARCHITECTURE](ARCHITECTURE.md#la-grammaire-de-lapi--trois-formes-une-par-nature) ; en une
+ligne : **état → propriété, requête pure sans argument → propriété en lecture seule, requête
+indexée → fonction, action → méthode ou fonction de module.**
+
+#### Décisions verrouillées
+
+- **Une valeur composée est IMMUABLE.** `self.position.x` se lit, `self.position = vec2(x, y)`
+  s'écrit, `self.position.x = 5` est refusé par le checker. Écrire un champ supposerait que le
+  getter rende une référence ; il rend une copie, et l'écriture partirait dans le vide.
+- **Une propriété d'actor s'accède sur N'IMPORTE QUEL acteur nommé** — `other.velocity`,
+  `get_actor("PADDLE").position`. Le catalogue les range sous `self.<champ>` : c'est une clé,
+  pas une restriction (`vec_types.resolve_prop`). Les MÉTHODES sont logées à la même enseigne,
+  et le checker les valide désormais sur tous les récepteurs — cf. le piège ci-dessous.
+- **Une propriété peut porter une énumération matérielle** (`ApiProp.domain`), donc s'écrire
+  ET se comparer par un nom : `self.obj_mode = "window"`, `if blend.mode == "alpha"`. Sans ce
+  champ, faire d'un réglage une propriété le faisait retomber sur l'entier nu que les
+  énumérations nommées (v0.6) existent pour supprimer. Le C ne change pas : `OBJ_MODE_WINDOW`
+  vaut toujours 2.
+- **Le C émis est identique à celui des anciens get/set.** Une propriété n'est pas une couche :
+  `c_getter`/`c_setter` nomment les mêmes fonctions `actor_*` qu'avant. Seule la forme Lua
+  change — donc aucun coût sur la ROM, et rien à re-mesurer.
+- **`scene.size` est la seule propriété sans fonction C** : sa lecture est synthétisée depuis
+  `g_scene_w`/`g_scene_h` (`getter_expr`). Une fonction pour deux globaux constants dans la
+  scène aurait été du bruit.
+
+#### Trois pièges, et ce qui les tient
+
+- **Retirer une API ne suffit pas à la retirer.** `codegen._invoke` traduit toute méthode
+  inconnue en `actor_<méthode>(récepteur, ...)` — qui tombait pile sur la fonction C encore
+  présente. `self:set_frame(0)` ne produisait donc qu'un avertissement NON bloquant et
+  continuait de marcher, non documenté, à côté de `self.frame = 0` : deux grammaires vivantes
+  pour le même état. Corrigé par les entrées `REMOVED_API` manquantes **et** par le passage de
+  « méthode inconnue » en ERREUR — un `:` ne peut désigner qu'une méthode du catalogue,
+  contrairement à `module.func()` qui peut être un helper de l'utilisateur.
+- **Ne valider que `self` laissait tout passer.** `other:set_position(p)` traversait sans un
+  mot, alors que le codegen en émettait du C qui compile. Le checker valide maintenant tous les
+  récepteurs. Seule exception, bloquée explicitement : un argument dont le nom appartient au
+  sprite du RÉCEPTEUR (`other:play_anim("walk")`) — le contexte de build décrit l'acteur qui
+  *exécute*, et le codegen résolvait le nom contre lui, produisant une constante crédible et
+  fausse.
+- **Les CONSTANTES tombent dans le trou des « deux listes de prototypes »**, pas seulement les
+  fonctions. `WINR_*`, `BLD_MODE_*` et `BLD_SIDE_*` n'étaient définies que dans `gba_engine.h`,
+  que les unités de scène et d'acteur n'incluent pas : tout `window.set_layer` ou
+  `blend.set_layer` écrit depuis un script échouait au `make` sur un identifiant inconnu.
+  Elles sont déclarées des deux côtés, et `validator._check_api_prototypes` compare maintenant
+  les constantes comme les prototypes, dérivées de `HARDWARE_ENUMS`.
+
+#### Ce que la règle a fini par emporter
+
+Appliquer la grammaire à tout le catalogue a fait tomber trois choses qui traînaient. Aucune
+n'était un renommage.
+
+- **La direction s'écrivait TROIS fois** pour un seul couple `dir_x`/`dir_y` : `self.direction`
+  (vec2), `self:set_dir("north")`, et `self:get_dir()` rendant un 0-8 nu — on la posait par un
+  nom et on la relisait en nombre. Il n'en reste qu'une, et elle accepte les deux écritures :
+  `self.direction = "north_east"` comme `self.direction = vec2(1, -1)`, et la comparaison suit
+  (`if self.direction == "west"`). C'est ce qui a demandé `ApiProp.c_getter_named` /
+  `c_setter_named` : le C ne range qu'une donnée, mais les deux vues n'y accèdent pas par la
+  même porte (`actor_set_dir` prend un index de boussole, `actor_set_direction` un `Vec2`) — et
+  le getter ordinaire rend un `Vec2`, que le C ne sait pas comparer du tout. Restent
+  `self.auto_dir` (setter d'état sans getter : la lecture n'existait pas, un script qui voulait
+  basculer le calcul automatique devait tenir son propre drapeau) et `self.grounded`, requête
+  pure sans argument — renommée au passage, `on_` étant le préfixe des ÉVÉNEMENTS.
+- **`ui.image_set(image, state)` : `state` n'avait pas de domaine**, donc n'était ni vérifié ni
+  suivi par `refactor`, contrairement à la règle posée en tête d'`api.py`. Le blocage était
+  réel : un état n'existe que DANS un sprite, et c'est l'IMAGE qui dit lequel — la validité
+  dépend d'un AUTRE argument. Résolu en donnant à la table de contrôle l'appel entier et non le
+  seul littéral. `DOMAIN_IMAGE_STATE` est le premier domaine de cette nature ; un futur
+  renommage d'état passera par `refactor.iter_call_sites(DOMAIN_IMAGE, DOMAIN_IMAGE_STATE)`,
+  qui rend la PAIRE et permet de ne toucher que les images du bon sprite.
+- **`self.tag` était inutilisable.** Sa doc disait « utile dans `on_collide` pour identifier
+  `other` » sans dire comment : elle rendait un entier opaque qu'aucune écriture Lua ne
+  permettait de nommer. `DOMAIN_TAG` existait pourtant — déclaré, résolu par le codegen, cité
+  par aucun paramètre, et rangé parmi les domaines NON validés au motif que `TAG_*` serait un
+  espace ouvert. C'était faux : `TAG_*` est émis une fois par acteur de scène et par prefab
+  poolé (`headers.py`), donc parfaitement énumérable. La confusion venait de `BOXTAG_*`, lui
+  bel et bien libre puisqu'il sort du champ texte `CollisionBoxComponent.tag`. `self.tag` porte
+  donc le domaine, se compare par le nom (`if other.tag == "Ball"` → `actor_get_tag(other) ==
+  TAG_BALL`), et un nom inconnu est refusé. Au passage, le domaine d'une propriété passe par
+  les MÊMES tables que celui d'un paramètre (`_DOMAIN_CHECKS`, `_DOMAIN_CONSTANT`) au lieu de
+  ne connaître que `HARDWARE_ENUMS` : c'est le domaine qui décide, pas ce qui le porte.
+- **L'écran de référence avait perdu son ordre et ses catégories.** 24 des 91 entrées
+  d'`api_reference.json` décrivaient une API retirée. La réconciliation les filtrait — mais une
+  catégorie entièrement vidée disparaissait puis se recréait EN FIN de liste (« Transform »,
+  première du fichier, s'affichait avant-dernière), et sept fonctions tombaient dans « Autres »
+  faute de catégorie. Le JSON est purgé, « Interface » et « Palette » existent, « Communication »
+  (qui ne contenait plus que `get_actor` depuis le retrait de `send`/`broadcast`) est repliée
+  sur « Actor », et deux règles ont changé dans `api_reference.py` : le RANGEMENT s'apprend de
+  toutes les entrées, mortes comprises — un `scene.frame()` périmé dit encore que le module
+  `scene` habite « Scène », et c'est faute de l'écouter que `scene.switch` finissait en vrac —
+  et une catégorie garde sa PLACE, n'étant retirée qu'à la toute fin si rien ne l'a remplie.
+
+### v0.7.5 — Le sous-ensemble Lua, dit et tenu — **LIVRÉE**
+
+Vérifiée par un build ROM complet sur une copie de la démo, `build\` effacé : les six scripts
+passent le checker sans une erreur, `arm-none-eabi-gcc -Wall` ne signale rien, `rom.gba` sort.
+Et par 41 tests qui figent chacun des silences ci-dessous.
+
+Les quatre versions précédentes ont ÉTENDU le langage. Celle-ci ne lui ajoute rien : elle dit
+ce qu'il est, et fait en sorte qu'il le tienne. Le déclencheur tient en un tableau — voici ce
+que produisait du Lua parfaitement légal, écrit par quelqu'un qui connaît Lua :
+
+| Écrit en Lua | Ce que le checker disait | Ce qui partait dans le C |
+| --- | --- | --- |
+| `for k, v in pairs(t) do … end` | rien | **rien — le bloc disparaît** |
+| `repeat … until n == 0` | rien | **rien — le bloc disparaît** |
+| `goto fin` / `::fin::` | rien | **rien** |
+| `"a" .. "b"` | rien | `__unsupported_Concat` |
+| `local f = function() … end` | rien | `__unsupported_AnonymousFunction` |
+| `math.floor(3.7)` | rien | `math.floor(3)` |
+| `print(n)` | rien | `print(n)` |
+| `table.insert(t, 1)` | rien | `table.insert(t, 1)` |
+
+Les cinq dernières lignes échouent au `make`, sur la ligne générée et jamais sur sa cause.
+Les trois premières ne disent **rien du tout** : le corps de boucle est simplement absent du
+jeu. C'est la même famille de panne que le `for` numérique inversé qui a ouvert la v0.7 — un
+silence, pas une erreur — et elle vient de deux lignes de `parser.py` : `_stmt` rend `None`
+pour tout nœud non géré (le commentaire dit « silencieux en v1 »), `_expr` rend
+`ExprName("__unsupported_<Type>")`.
+
+Un piège de plus, celui-là dû au succès de l'API : **`math` existe, mais ce n'est pas celui
+de Lua**. Le catalogue offre `abs, atan2, clamp, cos, ease, lerp, max, min, rand, sign, sin,
+sqrt` — donc pas de `floor` (le moteur est entier, il n'y a rien à arrondir), pas de `random`
+(c'est `rand`), pas de `pi`, et `sin`/`cos` prennent des **degrés**. Un module de la
+bibliothèque standard dont le nom est repris et le contenu différent est le pire cas
+possible : celui où l'auteur a raison de ne pas vérifier.
+
+#### Décisions verrouillées
+
+- **Une seule table décrit le sous-ensemble** — `scripting/lua_subset.py`. Chaque type de
+  nœud de luaparser y est soit ACCEPTÉ (en nommant ce qui le traduit), soit REFUSÉ avec la
+  phrase qui dit quoi écrire à la place. La documentation en dérive et le checker s'en sert :
+  les deux ne peuvent pas diverger, parce qu'il n'y a pas deux listes.
+- **Le contrôle de couverture casse le build**, comme celui des domaines d'arguments
+  (`validator._check_api_domains`) et pour la même raison exactement : un nœud que luaparser
+  ajouterait à la faveur d'une mise à jour retomberait sinon dans le trou silencieux qu'on
+  vient de boucher. Classer un nœud fait partie de l'ajout, ce n'est pas une formalité.
+- **Un refus est une ERREUR bloquante, située sur sa ligne.** Pas un avertissement : un
+  `repeat` ignoré ne se rattrape pas en jouant, et une expression traduite en
+  `__unsupported_Concat` ne compile de toute façon pas.
+- **Le parser décrit, le checker juge.** Le convertisseur porte le nœud non géré (son nom,
+  sa ligne) au lieu de le perdre ; la phrase, elle, vit dans la table et se dit dans le
+  checker. Même contrat que `ExprTable.has_keys`, écrit dans `parser.py` depuis la v0.7.1 :
+  « le parser décrit ce qui est écrit, il ne juge pas ».
+- **Un appel inconnu est refusé**, alors qu'il était toléré au motif que ce pouvait être un
+  helper écrit par l'utilisateur. Ce motif ne tenait pas : le codegen émettait quand même
+  l'appel tel quel, donc `math.floor(x)` partait en C avec son point. Les seuls appels
+  légitimes sont ceux du catalogue, les constructeurs du langage (`vec2`, `vec3`, `rect`,
+  `array`), `require`, et les méthodes d'un behavior importé — tout le reste est une faute de
+  frappe ou une fonction de Lua qui n'existe pas ici. C'est le pendant, côté `.`, de ce que la
+  v0.7.4 a fait pour le `:` (une méthode inconnue est une erreur, pas un avertissement).
+- **La bibliothèque standard est nommée, pas seulement absente.** `print`, `pairs`, `ipairs`,
+  `tostring`, `table.*`, `string.*`, `os.*`, `io.*`, `math.floor`… reçoivent chacun le message
+  qui dit l'issue quand il y en a une (`math.floor` → il n'y a que des entiers ; `print` → le
+  débogage est le sujet de la v0.14 ; `table.insert` → un tableau a une taille fixe, v0.7.1) et
+  qui dit clairement « non » quand il n'y en a pas. Un « fonction inconnue » générique
+  laisserait croire à une faute de frappe.
+- **Le document est écrit à la main, ses listes sont vérifiées.** `SCRIPTING.md` rejoint les
+  trois documents en tête de ce fichier ; il s'adresse à qui ÉCRIT un script, là où
+  `ARCHITECTURE` s'adresse à qui modifie le compilateur. Un test échoue si un refus de la
+  table n'y est pas documenté — la prose reste écrite, mais elle ne peut pas prendre du
+  retard.
+- **Rien de nouveau dans le langage.** Ni concaténation, ni closure, ni table Lua, ni
+  coroutine, ni `goto` : cette version ne fait que dire pourquoi. Chaque « pourquoi » existe
+  déjà et n'est pas rouvert ici — les tables (v0.7.1), les chaînes manipulables (v0.3.2 : le
+  texte vit dans la table de textes, pas dans le script), les flottants (le moteur est
+  entièrement entier).
+
+#### Ce que la règle a fait tomber
+
+Dire ce que le langage accepte a obligé à le REGARDER, et quatre choses sont tombées.
+
+- **Le template de behavior que l'éditeur écrit lui-même ne passait pas son propre checker.**
+  `local M = {}` était lu comme un tableau raté — « un tableau vide n'a pas de taille, écris
+  `array(n)` » — et le codegen émettait un `static int M = 0;` que personne ne lit. La table
+  de module est désormais une FORME, reconnue sur ses deux bouts (`local M = {}` ET
+  `function M.f(…)`) : elle ne produit rien en C. Exiger les deux évite de prendre pour un
+  module un `local t = {}` que l'auteur voulait tableau — celui-là reste refusé, avec la
+  phrase qui dit `array(n)`. Au passage, les appels `M.f(…)` sont validés contre les
+  fonctions du module : `M.aid` au lieu de `M.aide` est refusé.
+- **La liste des opérateurs traduits était une RUSE, pas une liste** : « le nom du nœud
+  luaparser finit par `Op` ». `^`, `//`, `&`, `|`, `<<`, `>>` la passaient, et leur nom de
+  classe partait tel quel dans le C — `(a ExpoOp b)`. Deux tables explicites la remplacent
+  (`_BINOP_MAP`, `_UNOP_MAP`), et ce sont elles que `lua_subset` complète. Elles portaient
+  aussi `EqOp` et `NotEqOp`, qui n'ont jamais existé chez luaparser (c'est `EqToOp` /
+  `NotEqToOp`) : deux entrées mortes depuis l'origine, à côté des vivantes.
+- **Une fonction de premier niveau au nom inconnu n'était qu'un avertissement**, alors que le
+  C émis (`static void <Acteur>_<nom>(Actor* self)`) n'est atteignable par aucun appel Lua —
+  `nom()` s'émet `nom()`, sans le préfixe. Donc du code mort au mieux, un « implicit
+  declaration » au `make` au pire. C'est une erreur, et le message nomme le behavior.
+- **La reconnaissance de `require` était écrite trois fois** dans `codegen.py`, dont une dans
+  un `_scan_requires` que plus rien n'appelait. Elle vit maintenant dans
+  `parser.require_target`, à côté d'`array_dims` et pour la raison que ce fichier écrit
+  déjà : la FORME se reconnaît là où on lit l'AST, et ses consommateurs l'appellent. Le
+  checker en est un nouveau — sans lui, refuser les appels inconnus aurait refusé
+  `IA.update(self)`.
+
+#### Ouvert
+
+- **Le code posé hors de tout handler reste ignoré en silence.** `convert_chunk` ne retient
+  que les fonctions, les `local` et la table `exports` : un `sfx.play("Bip")` écrit en tête
+  de fichier ne s'exécute jamais et ne dit rien. Le refuser demande de juger une POSITION et
+  non un nœud — la fonction imbriquée est le seul cas déjà traité ainsi — et de continuer à
+  laisser passer le `return M` d'un behavior. C'est le même silence que celui-ci, à un autre
+  étage, et il mérite son propre passage.
+- **Les opérateurs binaires sont refusés faute de demande, pas faute de moyen.** `&`, `|`,
+  `~`, `<<`, `>>` se traduiraient terme à terme. Aucun cas ne les a réclamés, et les ajouter
+  aurait fait de cette version une extension du langage, qu'elle n'est pas. À rouvrir sur un
+  besoin réel.
+- **Un refus qui vient d'un APPEL ne porte pas sa ligne** (`math.floor`, `print`), là où un
+  refus de nœud la porte. `ExprCall` n'a pas d'offset dans notre AST : le lui donner
+  situerait du même coup toutes les erreurs d'API, qui n'en ont jamais eu — un gain réel, et
+  un chantier à lui.
+- **La sidebar du Script Editor ne montre toujours que l'API, pas le LANGAGE.** Une section
+  « Langage » qui proposerait `if`, `for`, `local`, `array(n)` au clic est possible et pas
+  décidée : la sidebar sert à INSÉRER ce qu'on ne connaît pas par cœur, et `if … then` n'est
+  pas de cette famille. À rouvrir si les refus mesurés portent surtout sur la syntaxe.
+- **Les 67 `doc_anchor` d'`api_reference.json` ne mènent nulle part**, et le tooltip promet
+  encore « doc (bientôt disponible) ». `SCRIPTING.md` documente le LANGAGE, pas chaque
+  fonction du catalogue — la promesse reste donc à tenir ou à retirer, et ce n'est pas le même
+  chantier.
+- **Le checker ne tourne pas pendant qu'on écrit.** Un refus n'apparaît qu'au build, dans le
+  `BuildPanel`. Le faire vivre dans la marge de l'éditeur est un vrai gain et une vraie
+  mécanique (relance temporisée, position des erreurs) : à traiter avec le diagnostic de la
+  v0.14, pas à côté.
+
+### v0.7.6 — L'état d'un prefab poolé — **LIVRÉE**
+
+Un prefab poolé rangeait les variables de tête de son script dans `Actor.data[8]`
+: huit entiers par instance. Ce choix avait produit **trois refus et un piège**, et le
+prochain chantier en ajouterait un quatrième — c'est ce qui l'a rouvert.
+
+| Ce qui était refusé dans un prefab poolé | Depuis |
+| --- | --- |
+| un tableau d'état | v0.7.1 |
+| un vec2/vec3 d'état | v0.7.3 |
+| l'état d'une séquence | ce serait la v0.7.7 |
+
+Le piège, lui, était silencieux : dans `codegen._emit_locals`, une string ou un composite d'un
+prefab poolé **retombait sur une déclaration de fichier**, donc partagée par toutes les
+instances. Le commentaire l'assumait — « sans danger : ce sont des constantes d'initialisation »
+— et c'était vrai tant que personne n'y écrivait. Le jour où un script écrit dedans, les vingt
+instances partagent une variable, sans un mot.
+
+Et `data[8]` coûtait à **tout le monde** : le champ était dans chaque `Actor`, poolé ou pas. Un
+acteur de scène range ses locals dans des statiques de fichier et n'y touchait jamais — il
+payait 32 octets pour rien, multipliés par la taille de `g_actors[]`.
+
+#### Le remplacement existe déjà, pour un autre usage
+
+Les pools sont des **plages contiguës connues au build** — `for(int _pi=START; _pi<START+N;
+_pi++)` — et `main_gen.py:2428` émet déjà, pour la mémoire de collision d'un prefab poolé,
+un `static u8 _pcol_<sym>[N][boxes]` indexé par `_sl = _pi - START`. Un état par slot,
+dimensionné par le pool, alloué au build : exactement ce qu'il faut pour les locals.
+
+On fait donc pour l'état de script ce que le C généré fait déjà pour l'état de collision :
+
+```c
+static struct { int pv; Vec2 vitesse; int trajet[8]; } g_state_Ball[16];
+```
+
+#### Décisions verrouillées
+
+- **Un champ par local, du type que le local demande.** Plus de plafond à huit entiers, plus
+  de refus : un tableau, un vec2, une string d'état deviennent possibles parce qu'il n'y a
+  plus de case de taille fixe où les faire entrer.
+- **L'index est une soustraction de pointeurs** : `self - &g_actors[START_Ball]`, la plage
+  étant une constante de build. Pas de champ à ranger dans l'`Actor`, pas de recherche.
+- **`pool_init` garde son rôle** exact (remettre l'état à zéro au spawn) et son point
+  d'appel ; seule la cible change.
+- **`data[8]` disparaît de la struct `Actor`.** Il n'est ni sérialisé dans la sauvegarde, ni
+  exposé en Lua, ni lu par le runtime : il n'appartient qu'au transpileur, ce qui rend le
+  retrait contenu — `parser`/`checker`/`codegen`, plus l'appel de `pool_init`.
+- **Seul ce que le script ÉCRIT est de l'état.** Un local de tête jamais assigné est une
+  constante — `local FX_POP = 1` — et reste une déclaration de fichier, partagée par toutes
+  les instances comme aujourd'hui. Sur `Ball.lua`, quatre des six locals sont de ce genre :
+  les recopier par instance à chaque spawn ferait payer seize fois une valeur qui ne bouge
+  jamais, et ferait surtout **mentir la mesure** ci-dessous, qui n'annoncerait plus l'état
+  mais la longueur de l'en-tête du fichier. La règle se dit sans parler du C : *ce qui change
+  appartient à l'instance, ce qui ne change pas appartient au prefab.*
+- **La mesure, pas de garde-fou.** Le build dit, par prefab poolé, ce que son état coûte
+  (`Ball : 8 octets × 16 = 128`) et le total. Rien ne bloque. Le garde-fou bloquant de la
+  v0.2 protège la mémoire **vidéo**, qui est rare et dont le dépassement est *impossible* à
+  satisfaire ; ici la ressource est l'EWRAM (256 Kio) et le dépassement est un arbitrage —
+  bloquer demanderait un plafond arbitraire, c'est-à-dire exactement le `data[8]` qu'on
+  retire. Un chiffre juste vaut mieux qu'une limite inventée. À rouvrir le jour où un projet
+  réel s'en approche, avec son chiffre à lui.
+- **Le refus des tableaux et des vec2 d'état DISPARAÎT** — les deux messages du checker,
+  `BuildContext.is_pooled` qui n'existait que pour eux, et la mention dans `ARCHITECTURE.md`.
+  Laisser une règle debout après avoir retiré sa raison d'être, c'est laisser mentir la
+  documentation.
+
+#### Ce que le C émis donne, mesuré
+
+Les bornes du pool sont deux `#define` émis par `headers.py` là où l'offset est déjà
+calculé (`POOL_<SYM>_START`, `POOL_<SYM>_SIZE`) : le script transpilé est compilé une fois
+pour le PROJET et ne peut pas les connaître autrement. Le tableau d'état se dimensionne
+**sur le `#define`**, jamais sur un littéral recalculé — un écart avec la boucle de pool de
+`main.c` serait un débordement muet.
+
+```c
+/* Constantes du script — jamais assignées, donc partagées par toutes les instances */
+static int FX_NONE = 0;
+static int FX_POP = 1;
+
+/* État par instance — un champ par variable de tête que le script
+   écrit. 8 octets × 1 instance(s) = 8 octets. */
+typedef struct { int fx; int fx_t; } BallState;
+static BallState g_state_Ball[POOL_BALL_SIZE];
+static inline int Ball_pool_slot(Actor* self) { return (int)(self - g_actors) - POOL_BALL_START; }
+
+void Ball_pool_init(Actor* self) {
+    BallState* _st = &g_state_Ball[Ball_pool_slot(self)];
+    *_st = (BallState){ .fx = FX_POP, .fx_t = 0 };
+}
+```
+
+**Le slot est résolu une fois par fonction**, dans un `_st` posé en tête, et non réécrit à
+chaque accès — cf. « Le pointeur d'état » en fin de v0.7.7, où la mesure a été faite.
+
+Deux chiffres relevés au build, pas estimés. Sur la démo Pong telle quelle : `Ball` déclare
+six variables de tête, dont **deux seulement sont écrites** — son état pèse 8 octets là où
+`data[8]` en réservait 32, et les quatre `FX_*` sont sorties de l'instance. Sur une copie
+dont le pool est porté à 8 et dont le script gagne les trois types autrefois refusés
+(`array(4)`, `vec2`, string d'état) : 36 octets × 8 = 288 octets, ROM construite sans un
+warning. S'y ajoute la disparition de `data[8]` de la struct `Actor`, soit 32 octets rendus
+par acteur du projet, poolé ou non.
+
+- **`pool_init` pose un littéral composé, pas un `static const` de fichier.** Écrit
+  d'abord en `static const BallState BallState_init = { .fx = FX_POP, … }`, le build a
+  refusé : en C l'initialiseur d'un objet statique doit être une constante, et `FX_POP` est
+  une variable. Le littéral composé est en portée bloc, il n'a pas cette contrainte — et il
+  garde la propriété qui comptait, **une seule affectation**, la seule forme qui
+  réinitialise aussi un tableau et un vec2. Défaut attrapé par le build de bout en bout, pas
+  par les tests unitaires : la raison même pour laquelle il est fait.
+
+#### Ouvert
+
+- **La distinction écrit/constant ne descend pas dans les behaviors inlinés.** Un behavior
+  dont une variable porte par hasard le nom d'un local de tête de son hôte verrait sa
+  référence réécrite vers l'état de l'hôte. Le défaut est **antérieur** à ce chantier
+  (`_expr` faisait déjà la substitution sur `self->data[N]`, avec en prime un `self` qui
+  n'est pas forcément le nom du premier paramètre du behavior) et n'a pas été élargi. À
+  traiter avec la portée des behaviors, pas ici.
+
+---
+
+### v0.7.7 — Les séquences — écrire une attente en ligne droite — **LIVRÉE**
+
+Aujourd'hui, une scène scénarisée s'écrit en machine à états à la main : un `etape`, un
+compteur, et une chaîne de `elseif`. Le moteur a pourtant déjà tout ce qu'il faut pour la
+partie difficile — `self:move_to`, `camera.shake(amp, frames)`, `text.reading(zone)`,
+`math.ease` — mais **rien ne les enchaîne**. Le séquencement est du script (décision v0.3.2,
+« pas d'éditeur de dialogue »), et c'est l'écriture de ce séquencement qui est pénible.
+
+```lua
+function on_sequence()
+    self:move_to(vec2(120, 80), 60)
+    wait_until(self.position.x >= 120)
+    wait(30)
+    text.draw_in("bulle", "garde_01")
+    wait_until(not text.reading("bulle"))
+    scene.switch("Arena")
+end
+```
+
+Le C émis fait la même chose, à la frame près, que les quatre `elseif` qu'on écrit
+aujourd'hui. **Cette version n'ajoute aucune capacité** — elle ajoute de la lisibilité, comme
+la v0.7.4 l'a fait pour les propriétés (« le C émis est identique, seule la forme Lua
+change »). Décidé le 2026-08-16 de la faire quand même, sans attendre un cas réel : l'outil
+est assez courant dans les moteurs pour qu'un utilisateur le cherche.
+
+#### Décisions verrouillées
+
+- **Une séquence est un HANDLER NOMMÉ, pas un mot-clé.** Le front-end est luaparser : la
+  source doit rester du Lua syntaxiquement valide, donc `wait(30)` est un appel ordinaire et
+  une séquence est une fonction de premier niveau. Cette contrainte n'est pas négociable, et
+  c'est elle qui dessine la forme.
+- **La transformation est faite au BUILD** : le handler est découpé à chaque attente et émis
+  en `switch (état)`. Pas de pile, pas d'objet de première classe, pas d'allocation — juste un
+  entier d'état et les locals qui traversent une attente. C'est ce que font les itérateurs C#
+  et les coroutines d'Unity, et c'est possible ici précisément parce qu'`on_update` rend déjà
+  la main à chaque frame.
+- **L'ensemble des séquences est connu au build.** Rien n'en crée à l'exécution : c'est le
+  seul refus vraiment structurel de la vraie coroutine de Lua, et il vient du modèle mémoire
+  du projet — décidé au build, donc mesurable avant de graver.
+- **Plusieurs séquences peuvent tourner en même temps**, tant qu'elles sont déclarées. Ce
+  n'est pas un ordonnancement : ce sont N machines à états appelées dans l'ordre où elles sont
+  écrites, exactement comme les acteurs le sont déjà dans la boucle de frame — laquelle est
+  une liste d'appels directs déroulée au build (`main_gen.py:2386`), sans le moindre
+  ordonnanceur.
+- **Aucune priorité, aucune préemption.** C'est là que commencerait un vrai ordonnanceur, et
+  le refus n'est pas une question de coût : aujourd'hui l'ordre d'une frame se lit en clair
+  dans le `main.c` généré. Une politique de priorités serait le premier endroit du moteur où
+  l'ordre d'exécution est décidé ailleurs que là où on l'écrit.
+- **La sémantique diffère de Lua, et c'est assumé.** `wait_until(cond)` ré-évalue son
+  argument à chaque frame là où Lua l'évaluerait une fois, à l'appel. Le principe posé le
+  2026-08-16 : *le matériel impose ses conditions, le langage suit* — on offre l'outil adapté
+  plutôt que de s'en priver, à charge pour `SCRIPTING.md` de porter l'écart en toutes lettres.
+  C'est le même arbitrage que pour `math`, à une différence près qui doit rester visible :
+  celui-là, on l'introduit sciemment.
+- **Un nom de séquence est un DOMAINE** (`DOMAIN_SEQUENCE`), comme un nom d'animation. Ça
+  donne d'un coup la validation (`sequence.start("intr")` refusé, avec la liste), la constante
+  C, et le suivi des renommages — et `validator._check_api_domains` **oblige** le checker et le
+  codegen à le traiter, sous peine de casser le build.
+- **Le C émis garde l'ordre de la source** : un `case` par tranche, dans l'ordre d'écriture,
+  chacun commenté avec sa ligne Lua. C'est la contrepartie exigée par la règle « le C se relit
+  avec les mots du Lua » (v0.7.1, v0.7.2), que cette transformation met sous tension — à
+  juger sur un vrai fichier émis, pas sur cette promesse.
+- **L'état d'une séquence vit là où vit l'état du script**, donc dans la structure par slot
+  posée par la v0.7.6 — un `int` d'étape de plus dans `g_state_<sym>[]`, sans cas
+  particulier. C'est pour ça qu'elle passait avant : sans elle, cette version aurait ajouté
+  un quatrième « sauf dans un prefab poolé » à une liste qui n'existe plus.
+
+#### Décisions verrouillées — la forme écrite (2026-08-17)
+
+- **Une séquence est `function on_sequence_<nom>()`.** Le préfixe `on_` est la marque du
+  projet pour « le moteur appelle ça », et c'est exactement vrai : le moteur la fait avancer
+  à chaque frame. Aucune catégorie nouvelle à retenir, et le refus existant tient tout seul —
+  une fonction de premier niveau inconnue est DÉJÀ une erreur du checker
+  (`checker.py`, « Fonction '<nom>' inconnue »), donc admettre cette forme-là n'ouvre rien
+  d'autre.
+- **Le namespace d'un nom de séquence est le SCRIPT, pas le projet.** C'est la première fois
+  pour un domaine, et ça tombe bien : checker et codegen reçoivent déjà l'AST, ils collectent
+  les noms eux-mêmes — aucun champ de contexte à porter depuis `build.py`. Conséquence à
+  connaître : `refactor` dérive `DOMAIN_SEQUENCE` du catalogue comme les autres, mais aucun
+  renommage d'asset ne le déclenchera, une séquence n'étant pas un asset de projet.
+- **Trois portes, un seul entier** : `sequence.start(nom)`, `sequence.stop(nom)`,
+  `sequence.running(nom)`. L'état d'une séquence est un entier où **0 = arrêtée** et
+  **1..N = l'étape en cours** — `start` écrit 1, `stop` écrit 0, `running` teste ≠ 0. Les
+  trois fonctions ne coûtent donc rien de plus que la première. `running` est ce qui permet
+  d'enchaîner deux séquences ou de geler une commande pendant une cinématique, sans la
+  variable globale tenue à la main que cette version veut justement supprimer.
+- **Une TRANCHE PAR FRAME, et un `switch` sans boucle.** Chaque `case` s'exécute, avance
+  l'étape, et rend la main. Une séquence à N attentes coûte donc N frames de plus qu'une
+  exécution en ligne droite — invisible sur une cinématique, et c'est précisément « la même
+  chose, à la frame près, que les `elseif` qu'on écrit aujourd'hui ». L'alternative (dérouler
+  jusqu'à la prochaine VRAIE attente) demanderait un `for(;;)` autour du `switch`, donc un
+  cycle sans attente pourrait figer la frame. Le `switch` nu ne peut structurellement pas
+  tourner en rond.
+- **Le pompage vit à la FIN de `on_update`**, dans l'ordre de déclaration des séquences. Un
+  seul endroit, lisible dans le C émis, et rien à ajouter à la boucle de frame de `main.c` —
+  laquelle appelle déjà `on_update` pour chaque propriétaire. Un script qui n'écrit aucun
+  `on_update` en reçoit un : c'est le stub qui existe déjà, avec le pompage dedans.
+- **Mêmes règles dans un script de SCÈNE et d'ACTEUR.** La transformation est identique ; seul
+  diffère l'endroit où l'état atterrit, et la v0.7.6 a déjà répondu à ça (statique de fichier
+  pour un propriétaire unique, champ de `g_state_<sym>[]` pour un prefab poolé). Donner autre
+  chose à la scène serait un second chemin pour la même chose.
+
+#### Décisions verrouillées — attendre (2026-08-17)
+
+- **Deux primitives : `wait(frames)` et `wait_until(cond)`.** `wait_until` n'est pas un
+  confort : sans lui, attendre la fin d'un `self:move_to(pos, 60)` oblige à réécrire `wait(60)`
+  à côté — deux chiffres à tenir d'accord, dont le désaccord ne se voit qu'à l'œil. Et la durée
+  d'un `text.reading(zone)` dépend du contenu, donc ne s'écrit pas en dur du tout.
+- **`wait(n)` partage un compteur par séquence**, pas un par attente : une seule attente est
+  active à la fois par construction. Une séquence qui ne contient que des `wait_until` n'a
+  donc pas de compteur du tout.
+- **Une variable locale d'une séquence SURVIT à l'attente.** Celle qui est relue après une
+  attente devient un champ de l'état de la séquence. La règle se dit sans parler du C — *dans
+  une séquence, une locale survit à l'attente* — et c'est ce qu'on attend en lisant du code
+  écrit en ligne droite. L'analyse à écrire (« qui traverse une attente ? ») est la même que
+  celle qu'aurait demandée un refus ; seule change la réponse, et hisser est la réponse
+  aimable. Le coût apparaît dans la mesure `[ewram]` posée en v0.7.6.
+- **Un `wait_until` dont la condition ne peut PAS changer bloque le build.** Le contrôle ne
+  prétend pas tout attraper : il refuse le cas *décidable* — une condition sans appel d'API,
+  sans global, sans propriété, dont les seuls noms sont des variables qu'**aucune ligne du
+  script n'assigne**. `wait_until(false)` et `wait_until(SEUIL > 10)` sont donc refusés sur
+  leur ligne ; une condition portant sur un global écrit par un autre script passe, et c'est
+  assumé. Le prédicat réutilise `assigned_names()`, écrit pour la v0.7.6 — pas d'analyse
+  neuve. Un contrôle qui ferme la faute bête sans inventer de surveillance au runtime : un
+  watchdog aurait demandé un entier de plus par séquence et un seuil arbitraire, pour un
+  comportement qui diverge entre « ça marche » et « ça a mis trop longtemps ».
+
+#### Ce que le C émis donne, vérifié
+
+Sur une séquence de SCÈNE de la démo (pas de `self`), les deux primitives, et une variable
+qui traverse une attente :
+
+```c
+static void INTRO_scene_sequence_ouverture(void) {
+    switch (INTRO_seq_ouverture_step) {
+    case 1: {
+        INTRO_seq_ouverture_depart = compteur;
+        INTRO_seq_ouverture_step = 2;
+    } break;
+    case 2: {   /* wait(60) */
+        if (++INTRO_seq_ouverture_timer < 60) break;
+        INTRO_seq_ouverture_timer = 0;
+        INTRO_seq_ouverture_step = 3;
+    } break;
+    case 3: {
+        text_draw_in(REGION_INVITE, TEXT_INTRO_02);
+        INTRO_seq_ouverture_step = 4;
+    } break;
+    case 4: {   /* wait_until */
+        if (!((compteur >= (INTRO_seq_ouverture_depart + 90)))) break;
+        INTRO_seq_ouverture_step = 0;
+    } break;
+    }
+}
+```
+
+La contrepartie exigée par « le C se relit avec les mots du Lua » est tenue, et c'était la
+seule promesse à juger sur pièce. Deux détails du rendu, décidés en écrivant :
+
+- **Le commentaire d'une tranche nomme la construction, pas la ligne source.** Un numéro de
+  ligne aurait demandé de porter la position dans tout l'AST (aujourd'hui seuls les nœuds
+  refusés la portent), pour moins d'information que la condition C, qui est juste en dessous
+  et se lit.
+- **Chaque `case` est accolé** (`case 1: { … } break;`). Un `local` non hissé y est déclaré,
+  et sauter par-dessus une déclaration dans un `switch` nu n'est pas correct en C.
+
+Vérifié de bout en bout : ROM de la démo construite depuis zéro avec cette séquence, sans un
+warning. Un prefab poolé porte le même mécanisme, son état passant dans `g_state_<sym>[]` —
+mesuré par la jauge de la v0.7.6, une séquence coûte 4 octets par instance, plus 4 si elle
+contient un `wait(n)`, plus 4 par variable qui traverse une attente.
+
+#### Le pointeur d'état — dette de la v0.7.6, payée ici
+
+Première version : chaque accès à l'état d'un prefab poolé réécrivait le chemin complet,
+`g_state_Ball[Ball_pool_slot(self)].seq_entree_depart`. Trente-sept occurrences dans
+`actor_Ball.c`, et le nom que l'auteur a écrit noyé dans 38 caractères de machinerie. Les
+séquences n'ont pas créé le défaut — c'était la forme d'accès posée par la v0.7.6, que
+`on_update` portait déjà — mais elles l'ont rendu voyant : un `switch` touche l'état trois
+fois par tranche.
+
+Le codegen pose désormais **un pointeur par fonction qui en a besoin** :
+
+```c
+static void Ball_sequence_entree(Actor* self) {
+    BallState* _st = &g_state_Ball[Ball_pool_slot(self)];
+    switch (_st->seq_entree_step) {
+```
+
+- **Posé seulement s'il sert.** `_state_ref()` lève un drapeau, `_close_state_scope()` insère
+  la déclaration après coup — un pointeur déclaré et jamais lu, c'est un
+  `-Wunused-variable` à chaque build. Corollaire : il n'y a pas de seuil à choisir, donc pas
+  de chiffre arbitraire à défendre ; `pool_init`, qui n'y touche qu'une fois, le pose comme
+  les autres.
+- **Une seule forme d'accès**, chez les cinq émetteurs de corps (handlers, stubs,
+  `pool_init`, séquences, behaviors inlinés). Corriger les seules séquences aurait laissé
+  deux formes du même état dans un même fichier.
+- **Le gain runtime est réel mais mineur, et ce n'était pas le motif.** Mesuré au
+  désassemblage sur le prefab de la démo, pool de 4 avec une séquence :
+
+| | instructions | divisions de slot |
+| --- | --- | --- |
+| forme d'origine | 853 | 6 |
+| avec `_st` | **828** | **4** |
+
+`sizeof(Actor)` vaut 144 octets — pas une puissance de deux — donc `self - g_actors` est une
+division, que gcc développe en douze instructions Thumb. Il factorisait déjà presque tout
+seul (37 accès → 6 calculs) ; le pointeur atteint le plancher de 4, soit un par fonction qui
+touche l'état. La ROM de la démo perd 32 octets. **Le motif reste la lisibilité** : c'est la
+règle « le code généré doit se comprendre par son auteur sans consulter Claude » qui était
+en défaut, pas le budget.
+
+#### Ouvert
+
+- Rien côté ÉDITEUR : une séquence s'écrit et se lit dans le Script Editor, et la sidebar ne
+  la propose pas (elle est dérivée de `RUNTIME_API`, où une séquence de l'utilisateur ne
+  figure pas — même trou que pour les tables, cf. « Ouvert » de la v0.7).
+- **Une séquence ne peut pas en attendre une autre** autrement qu'en testant
+  `sequence.running`. Une primitive dédiée (`wait_sequence`) serait la même chose écrite plus
+  court ; à rouvrir si le motif se répète.
+- **L'état d'une séquence d'un propriétaire NON poolé est une statique de fichier**, donc il
+  survit à un changement de scène — comme n'importe quelle variable de tête depuis toujours.
+  Une scène quittée pendant sa cinématique la retrouve à son étape en y revenant. Cohérent
+  avec le reste, jamais éprouvé sur un cas réel. Un prefab poolé, lui, repart propre : son
+  `pool_init` remet l'état à zéro au spawn.
+- **Une attente reste refusée dans un `if` ou une boucle.** C'est la limite du découpage en
+  ligne droite, et elle est dite sur la ligne fautive avec ses deux issues. La lever
+  demanderait une transformation en continuations, dont le C émis ne se relirait plus avec
+  les mots du Lua — c'est-à-dire le prix que cette version refuse de payer. À rouvrir
+  seulement si une cinématique réelle bute dessus.
+
+---
+
 ### Ouvert
 
 - **Rien dans la sidebar du Script Editor ne liste les tables.** Elle est dérivée de
@@ -1118,29 +1840,212 @@ centre, la colonne et la cellule sélectionnées à droite.
 
 ---
 
-## v0.8 — Son enrichi & écran de mixage
+## v0.8 — Son : la musique par scène, les transitions, le mixage
 
 Les ressources son et musique sont aujourd'hui des ébauches, explicitement marquées comme
-telles dans le code.
+telles dans le code (`core/models/audio.py` porte un TODO en tête).
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-17)
+
+Le déséquilibre à connaître avant de découper : **le C est déjà largement en avance sur le
+Lua.** Ce jalon expose plus qu'il ne construit.
+
+| Couche | Ce qui existe |
+| --- | --- |
+| Modèle | `Sfx(asset, volume)`, `Music(asset, loop, volume)` — rien d'autre |
+| Build | mmutil + bin2s → soundbank ; `mmInitDefault(…, 8)`, huit canaux **en dur** |
+| Runtime C | `sfx_play(id, volume)`, `sfx_set_volume/panning/stop`, `sfx_set_effects_volume`, `music_play(id, loop, volume)`, `music_stop/pause/resume/is_playing/set_volume` |
+| Lua | **quatre entrées** : `sfx.play(nom)`, `music.play(nom)`, `music.stop()`, `self:play_sfx()` |
+| Écran | arbre d'assets, import, volume/loop par asset, aperçu — dont un rendu MOD en Python à `GBA_MIX_RATE` |
+
+Volume et boucle voyagent déjà jusqu'à la ROM : le codegen les lit sur la RESSOURCE et les
+pose dans l'appel émis (`sfx_play(SFX_GOAL, 255)`). Ce qui manque est donc la surcharge **à
+l'appel**, pas la plomberie.
+
+Et un trou qui n'apparaît dans aucune ligne du tableau : **la scène n'a pas de champ
+musique.** Le codegen émet `mmStart(MOD_<première musique du projet>)` une fois, au boot
+([main_gen.py:3256](editor/codegen/runtime_codegen/main_gen.py:3256)) ; tout le jeu joue donc
+le premier morceau du catalogue, quel qu'il soit. Ce n'est pas une ébauche à enrichir, c'est
+un emplacement réservé. Il passe devant le reste du jalon : **sans musique par scène, il n'y
+a rien à faire transiter.**
 
 ### v0.8.1 — Clarifier les ressources
 
 Format source des effets (wav brut ou conversion), hauteur ; format de musique (module
 tracker) et point de bouclage.
 
-### v0.8.2 — Écran de mixage
+- **Un trou concret, mesuré** : `SFX_FILE_EXTS` accepte `.ogg` et `.mp3`, `MUSIC_FILE_EXTS`
+  accepte `.mp3`, et le dialogue d'import propose `*.ogg` — or les fichiers partent **bruts**
+  à mmutil, qui ne connaît que le wav et les modules (mod/xm/s3m/it). Un `.ogg` déposé casse
+  donc le build sur une sortie mmutil, jamais sur sa cause, et `validator.py` ne dit rien du
+  son. Décider ce que l'éditeur accepte est exactement le sujet de ce chapitre : soit il
+  convertit, soit il refuse en le disant à l'import.
+- **La hauteur n'existe nulle part** : `ex.rate` est figé à `1024` dans le `sfx_play` émis.
+  C'est le seul manque réel côté C.
+
+#### Décisions verrouillées
+
+- **Le point de bouclage vient du FICHIER, jamais d'un champ.** Un MOD porte sa position de
+  restart dans son en-tête (octet 951, juste après la longueur du morceau), et
+  `mod_file.py:78` la **jette** — le commentaire le dit lui-même : « position de restart —
+  ignorée (v1) ». L'aperçu de l'éditeur reboucle donc toujours au début du morceau. La case
+  « Loop » garde son sens — jouer une fois ou en boucle — mais *où* ça boucle appartient au
+  fichier, et ne deviendra pas un réglage de l'éditeur.
+  - **Premier travail du chantier : mesurer l'écart, pas le supposer.** Que mmutil transporte
+    cette position jusqu'au format MAS et que Maxmod la relise en `MM_PLAY_LOOP` est plausible
+    mais **non vérifié ici** ; tant que ça ne l'est pas, on ne sait pas si l'éditeur diverge de
+    la ROM ou si les deux rebouclent pareil. Un module dont la position de restart n'est pas 0,
+    écouté dans l'écran puis dans mGBA, répond en une manipulation. La réponse décide s'il y a
+    un bug à corriger ou seulement un champ à afficher.
+- **L'aperçu ne connaît que le ProTracker**, `mod_file.py` le dit en tête : ni XM, ni S3M, ni
+  IT. Un `.xm` se construit donc en ROM mais reste muet dans l'écran. À **afficher** dans
+  l'interface, pas à laisser découvrir en cliquant ▶ — même refus de la dégradation
+  silencieuse qu'en v0.2.
+
+### v0.8.2 — La musique par scène
+
+Le socle du reste du jalon, et le seul morceau dont l'absence se voit déjà en jouant à la
+démo. Une scène désigne sa musique comme elle désigne déjà sa caméra de démarrage (v0.6.1) et
+ses réglages de transition (v0.6.2).
+
+#### Décisions verrouillées
+
+- **Trois valeurs, pas deux** : un morceau, `none` (silence explicite), et **`inherit` par
+  défaut** — la scène ne touche pas à ce qui joue. Passer d'une salle à la suivante ne doit
+  pas redémarrer le thème, et c'est aussi le cas le moins cher : aucun appel n'est émis.
+  Le silence se **déclare** ; il ne s'obtient pas en laissant un champ vide.
+- **Coût assumé** : dans une scène `inherit`, ce qui joue dépend d'où l'on vient. C'est voulu
+  — une scène qui exige un morceau précis le déclare — mais ça se vérifie : le validateur peut
+  nommer les scènes atteignables sans qu'aucune musique ait jamais été posée en amont.
+- **Pas de réglage de projet ici**, contrairement aux transitions de scène. Un fondu par défaut
+  vaut pour tout un jeu ; « le morceau par défaut du jeu » n'a pas de sens — c'est la scène de
+  démarrage qui le pose, et `inherit` le propage tout seul. Ne pas recopier un mécanisme dont
+  la raison d'être ne s'applique pas (même règle qu'en v0.4.2 pour la réservation de palettes).
+- **Résolu au build**, une table par scène. Le runtime ne connaît pas la notion d'héritage.
+
+### v0.8.3 — Les deux transitions, et ce que le matériel refuse
+
+#### Le crossfade n'existe pas sur cette console
+
+Le concept d'écran (2026-08-17) dessine un fondu enchaîné : deux enveloppes qui se recouvrent,
+« Normal (Forest Theme) » qui s'éteint pendant que « Combat (Battle Theme) » monte. **Le
+matériel ne le tient pas.** `maxmod.h` expose `mmPlayModule(address, mode, layer)` avec
+exactement deux couches : le module principal, et le **jingle** — qui ne boucle pas par
+construction. C'est une couche pour un cri de victoire, pas pour un second morceau. Deux
+musiques ne jouent jamais ensemble durablement.
+
+Le dessiner serait promettre un rendu que la console ne produit pas — même règle que la
+rotation et le zoom écartés de la caméra en v0.6.1, même règle que « BLDCNT n'a qu'un seul
+mode » en v0.3.1. **À ne pas reproposer.**
+
+#### Les deux transitions honnêtes, nommées séparément
+
+Séparément, parce qu'elles ne servent pas dans les mêmes cas et qu'un nom unique masquerait
+laquelle on obtient.
+
+| | Mécanisme | Ce que ça donne |
+| --- | --- | --- |
+| **Fondu traversant** | volume à 0, `mmStart`, volume remonte | marche entre deux morceaux quelconques ; laisse un creux, et le nouveau repart de son début |
+| **Coupe à la position** | `mmGetPosition()`, `mmStart` la variante, `mmPosition()` au même motif | instantané, en mesure, sans creux, et le morceau ne repart pas de zéro |
+
+La coupe à la position est **faite pour le catalogue de la démo** : 105 modules qui sont les
+mêmes morceaux en variantes (`Admin Rights - Full DX` / `… DRUMLESS` / `… FAST` / `… SLOW`).
+Deux variantes d'un même morceau partagent leur grille de motifs ; sauter de l'une à l'autre à
+la même position, c'est littéralement « la batterie entre ». **C'est ça, l'intensité, sur ce
+matériel** — pas un mixeur de couches, qui n'existe pas.
+
+#### Décisions verrouillées
+
+- **La compatibilité de deux variantes se vérifie au build, pas à l'oreille.**
+  `mod_file.py` rend déjà `order` et `patterns` : deux modules dont la table d'ordre diffère en
+  longueur ne peuvent pas se relayer à la position. Le validateur le dit en les nommant, sinon
+  l'auteur entend un saut sans savoir d'où il vient.
+- **La quantification vient de la MUSIQUE, jamais d'un champ en millisecondes.**
+  `MMCB_SONGMESSAGE` remonte l'effet `EFx` que le compositeur a posé dans son module — c'est
+  lui qui sait où une mesure se termine. À défaut de marqueur, `mmGetPositionRow()` donne la
+  ligne courante. Un délai en ms saisi dans l'inspecteur serait faux dès que le tempo change,
+  et faux en silence.
+- **La bascule est différée, jamais instantanée-et-fausse.** Un changement demandé en cours de
+  mesure attend le prochain point valide, comme un `scene.switch` appelé pendant une transition
+  est honoré à la fin de celle-ci (v0.6.2). L'attente est prévisible et se comprend sans
+  documentation.
+- **`mmSetModuleTempo` et `mmSetModulePitch` ne sont pas des transitions.** Ce sont des molettes
+  légitimes — les deux seules réellement continues de ce matériel — mais elles relèvent de
+  l'API (v0.8.5), pas d'ici. Ni volet, ni filtre : ils demanderaient un mixeur.
+
+### v0.8.4 — Écran de mixage
 
 Existe déjà en partie, à enrichir : écoute du mélange en direct, volume par canal ou par
 catégorie, gestion des priorités — le nombre de canaux matériels est limité.
 
+L'écran d'aujourd'hui est un **navigateur d'assets avec aperçu** : ni mixage, ni volume par
+catégorie, ni priorité. Mais `engine_emulation/mod_file.py` + `mod_render.py` rendent déjà un
+module au taux de mixage de la GBA — la brique de l'écoute est là, et elle suit la règle de la
+maison (l'éditeur refait en Python ce que la console fait en C, plutôt qu'une approximation).
+
+#### Le budget affiché doit être celui du son
+
+Le bandeau du bas montre OAM, cycles par ligne, VRAM et palettes. **Aucune de ces quatre
+valeurs ne concerne le son.** La ressource rare ici, ce sont les **huit canaux logiciels**
+partagés entre musique et effets, et le coût de `mmFrame` dans la frame. Un écran de son qui
+affiche le budget des sprites ne ment pas sur les chiffres, il ment par déplacement — il
+laisse croire qu'on voit ce qu'on dépense.
+
 #### Ouvert
 
 - Politique de priorité quand trop d'effets jouent en même temps : non décidée.
+- Les huit canaux de `mmInitDefault` sont un littéral du codegen. Réglage de projet, ou
+  chiffre dérivé de ce que le projet emploie ?
 
-### v0.8.3 — API
+### v0.8.5 — API
 
 Jouer un son ou une musique avec des surcharges de hauteur et de volume **à l'appel**, pas
 seulement au niveau de la ressource.
+
+C'est d'abord une **exposition** : `sfx_set_volume`, `sfx_set_panning`, `sfx_stop`,
+`sfx_set_effects_volume`, `music_pause`, `music_resume`, `music_is_playing`,
+`music_set_volume` existent en C et n'ont aucune porte Lua. La question de conception n'est
+donc pas « comment faire », c'est **quelles portes ouvrir** — et `sfx_play` rend déjà un
+`mm_sfxhand` que rien ne récupère, ce qui rouvre la question d'une référence d'effet en cours
+dans un langage qui n'a que des entiers.
+
+### v0.8.6 — La machine à états musicale
+
+La surface d'authoring du concept : un graphe d'états, chacun portant un morceau, reliés par
+des transitions nommées. Elle vient **après**, et par construction — elle ne fait que poser une
+interface au-dessus de la musique par scène (v0.8.2) et des deux transitions (v0.8.3). Si elle
+est repoussée, un jeu a quand même sa musique par scène et ses transitions, pilotables en Lua.
+L'inverse n'est pas vrai.
+
+#### Décisions verrouillées
+
+- **Asset de premier rang, réutilisable entre scènes**, rangé avec les données propres au
+  projet — même statut et même raison que la caméra en v0.6.1 : un graphe musical ne dépend
+  d'aucun fichier importé, et il sert plusieurs scènes.
+- **Le graphe ne possède pas le flux du jeu.** Un déclencheur est un **nom qu'un script émet**,
+  jamais une condition que le moteur évalue. Le moteur qui déciderait *quand* la musique passe
+  au combat déciderait de ce qu'est un combat — c'est une décision de genre, refusée pour la
+  même raison que l'éditeur de dialogue (v0.3.2) et que la « scène de reprise » (v0.5).
+- **Un état, c'est un morceau, son mode de bouclage, et par quelle transition on y entre.**
+  Rien de plus. Le curseur « Intensity » du concept est un pourcentage **sans cible nommée** :
+  sur ce matériel il ne peut désigner que le volume du module, son tempo, ou le choix d'une
+  variante. Un curseur qui ne dit pas lequel promet un mixeur de couches qui n'existe pas.
+- **Résolu au build**, comme le reste : le runtime lit une table, il ne parcourt pas un graphe.
+
+#### Ouvert
+
+- **Deux chemins pour changer la musique.** `music.play("X")` existe ; `music.trigger("…")`
+  arriverait à côté. C'est exactement le grief porté contre le modèle GB Studio en v0.13 — deux
+  chemins d'authoring pour la même logique. Trois issues : la machine à états absorbe
+  `music.play`, elle coexiste comme couche facultative, ou elle reste hors du Lua. **À trancher
+  quand le socle sera en main**, pas maintenant.
+- **Ce que « Parameters » devient, s'il devient quelque chose.** Une courbe qui mappe
+  « Player HP » vers une intensité suppose une molette continue ; il n'y en a que deux (volume,
+  tempo). Si l'intensité choisit une variante, ce sont des **seuils**, et l'interface doit
+  montrer des seuils — une courbe lissée dessinerait un fondu qui n'aura pas lieu.
+- **La position des nœuds** : disposition automatique, ou déplaçable et mémorisée quelque part ?
+  Même question qu'en v0.12, et elle mérite la même réponse — c'est une décision de modèle, pas
+  d'affichage.
 
 ---
 
@@ -1341,6 +2246,100 @@ lancé. Les deux manques sont vécus quotidiennement par qui développe, et aucu
 
 ---
 
+## v0.15 — Visibilité des éléments d'interface — **LIVRÉE**
+
+Livrée conforme sur le modèle et le runtime, **sous une autre forme côté Lua** : la décision
+verrouillée annonçait `ui.show(nom, on)`, le code expose `ui.get("nom"):show()` / `:hide()`.
+La raison est arrivée entre-temps — cf. « La forme écrite, et pourquoi elle a changé ».
+
+#### Le problème
+
+`UILayout` ([ui_region.py](editor/core/models/ui_region.py)) savait dessiner un `UIText`, un
+`UIPanel` ou une `UIImage`, mais aucun des trois ne savait *disparaître* proprement. Le seul
+équivalent existant était asymétrique et incomplet :
+
+- `UIImage` avait un show/hide runtime — `ui.image_show(nom, on)` — qui posait `attr0 =
+  0x0200` en cible OBJ et effaçait les tuiles déjà écrites en cible BG
+  (`ui_image_clear_bg`).
+- `UIText` n'avait rien d'équivalent : la seule façon de le « cacher » était `text.clear_in`,
+  qui efface le *contenu*, pas l'existence de la zone.
+- `UIPanel` n'avait aucune identité runtime en dehors de son fond sprite (`g_ui_images` si
+  `fill_kind == sprite`) — un panel-groupe pur n'existait dans aucune table C.
+
+### Le besoin
+
+Une propriété `visible` sur les trois types, et qui **se transmet aux enfants** : cacher un
+panel doit cacher tout son sous-arbre sans qu'il faille toucher un seul enfant.
+
+### Décisions verrouillées
+
+- **Authoré ET piloté au script**, pas l'un ou l'autre. Un champ `visible: bool = True` posé
+  dans le JSON pour l'état initial (même logique que `text_key` vide = zone que le script
+  remplit), plus un appel Lua générique pour basculer au runtime. Un élément qui ne doit
+  jamais apparaître avant qu'un script en décide autrement ne doit pas passer par une
+  case cochée puis un appel immédiat au chargement de la scène.
+- **La propagation aux enfants se calcule à la lecture, elle ne s'écrit jamais.** L'arbre de
+  `UILayout` est déjà dérivé des refs `parent` et jamais stocké (`children()`, `ancestors()`,
+  `descendants()`). La visibilité suit la même règle : chaque élément ne porte que son
+  propre bit ; la visibilité effective remonte la chaîne des parents à la lecture
+  (`layout.ancestors(name)`), sans jamais pousser un état vers les descendants. Cacher un
+  enfant individuellement puis remontrer son parent le laisse caché — comportement
+  prévisible, sans propagation à écrire ni à désynchroniser.
+- **Une seule API Lua pour les trois types**, plutôt qu'une par type. Un panel et une image
+  partagent déjà une surface d'accès commune côté fond sprite ; étendre ce principe à la
+  visibilité évite une troisième fonction (`ui.text_show` en plus de `ui.image_show`) pour le
+  même concept. `ui.image_show` est remplacé, pas dupliqué. ~~`ui.show(nom, on)`~~ — la forme
+  exacte a changé, cf. ci-dessous.
+- **Le BG et l'OBJ restent deux chemins distincts, comme partout ailleurs dans `UILayout`** :
+  cacher un élément en cible OBJ pose `attr0 = 0x0200` (déjà fait pour les images) ; en cible
+  BG ça déclenche le `clear` déjà écrit (`text_clear_in`, `ui_image_clear_bg`) — pas de
+  nouveau chemin de rendu, seulement une garde avant l'écriture existante.
+
+### La forme écrite, et pourquoi elle a changé
+
+`ui.show("alerte", false)` a été remplacé par `ui.get("alerte"):hide()` en écrivant le
+chantier, pour une raison qui n'existait pas au moment de la décision : **la v0.7.4 avait
+posé une grammaire**, et `ui.show(nom, on)` ne la respecte pas. La règle dit *requête indexée
+→ fonction, action → méthode* — cacher un élément est une action, sur un élément qu'on
+désigne d'abord.
+
+- **Le même schéma que `get_actor`**, qui existait déjà : un nom résolu en une constante à la
+  compilation, puis appelée en `:`. `ui.get("alerte")` s'émet `UIELEM_ALERTE` et rien d'autre —
+  aucune fonction runtime, la même constante que celle émise en tête de fichier pour la table.
+  Deux façons de désigner un élément de scène auraient été deux choses à apprendre.
+- **Une référence, pas un identifiant nu.** Un nom d'élément écrit sans porte
+  (`alerte:hide()`) collisionnerait avec les namespaces `ui` / `text` / `camera`.
+- **`show()` et `hide()`, pas `show(on)`.** Le booléen au site d'appel ne se lit pas :
+  `ui.show("alerte", false)` demande de savoir dans quel sens va le drapeau, `:hide()` non.
+- **`DOMAIN_UI_ELEMENT` est un domaine à part entière**, distinct de `DOMAIN_REGION` (les
+  zones de texte) : il couvre les trois types confondus. Il hérite donc gratuitement des trois
+  consommateurs — le checker refuse un nom absent de la mise en page, le codegen émet
+  `UIELEM_*`, et le refactor suit les renommages.
+
+### Ce que ça donne côté runtime
+
+Un panel-groupe pur n'avait aucune ligne dans aucune table C. La visibilité générique par NOM
+a donc demandé une table plate indexée sur **tous** les éléments de `UILayout.elements`
+(texte, panel, image confondus), pas seulement ceux qui dessinent — `g_ui_elements`, construite
+par le codegen dans le même ordre que `slots`/`images` le font déjà pour leurs propres tables.
+Chaque entrée porte son propre bit et l'index de son parent ; `ui_element_is_visible(idx)`
+remonte la chaîne, et l'effectif n'est **jamais** stocké — exactement la règle du modèle Python
+(`UILayout.is_visible`). Profondeur d'arbre d'UI toujours minuscule, donc coût négligeable.
+`g_ui_regions` et `g_ui_images` portent chacun l'index de leur ligne dans cette table,
+consultée avant chaque écriture.
+
+### Les deux « Ouvert » sont tranchés
+
+- **`ui.image_show` : suppression franche**, pas d'alias. Elle est entrée dans `REMOVED_API`
+  avec la phrase qui dit quoi écrire à la place — la porte ouverte en v0.7.4, quand retirer une
+  API sans le dire s'était révélé insuffisant à la retirer vraiment. Les scripts de Pong sont
+  migrés.
+- **La constante d'un panel-groupe est `UIELEM_*`**, un troisième espace à côté de `REGION_*`
+  et `IMAGE_*` — et c'est lui que `ui.get` rend, quel que soit le type de l'élément. Le nommer
+  d'après l'un des deux autres aurait fait croire à une table de dessin.
+
+---
+
 ## v1.0 — Le pipeline 2D complet
 
 ### L'objectif concret — cinq genres
@@ -1376,13 +2375,18 @@ documentation utilisateur.
 ### Ce qu'une « première version stable » exige, et qui n'est pas une fonctionnalité
 
 Quatre points sans lesquels le mot « 1.0 » ne tient pas. Aucun n'ajoute de capacité au moteur ;
-tous conditionnent le fait que quelqu'un puisse réellement bâtir dessus.
+tous conditionnent le fait que quelqu'un puisse réellement bâtir dessus. **Le premier est
+réglé** ; il reste trois.
 
-- **Une licence.** Il n'existe aucun fichier `LICENSE`, et le défaut légal est donc « tous
-  droits réservés ». Le point est plus aigu ici qu'ailleurs : l'éditeur **copie son propre C
-  dans la ROM de l'utilisateur** (`gba_engine.h` et les sources générées). Quelqu'un qui
-  envisage de vendre son jeu doit pouvoir répondre à « ai-je le droit ? » avant d'engager six
-  mois. C'est la chose la moins chère de cette liste et la première qui bloque.
+- ~~**Une licence.**~~ **FAIT.** Le point était plus aigu ici qu'ailleurs : l'éditeur **copie
+  son propre C dans la ROM de l'utilisateur** (`gba_engine.h` et les sources générées), donc
+  sous une licence unique tout jeu construit avec l'outil serait devenu un travail dérivé sous
+  GPL. D'où **deux licences, et c'est la découpe qui compte** : `LICENSE` (GPL-3.0-only) couvre
+  l'ÉDITEUR, `runtime/LICENSE` (zlib) couvre le moteur recopié dans la ROM — le jeu et sa ROM
+  appartiennent entièrement à leur auteur, sans rien à publier ni à demander.
+  `THIRD-PARTY-NOTICES.md` recense les composants redistribués, obligation déjà active
+  puisqu'ils sont dans l'installateur. Reste hors de ce point, et à trancher ailleurs : le nom
+  et la marque, où « GBA » porte un risque Nintendo.
 - **Des formats que git sait relire.** Aujourd'hui un fond fait 688 lignes et la carte de
   collision d'une scène environ 600, à raison d'**un entier par ligne** ; les couleurs sont
   des entiers BGR555 décimaux. Ce n'est pas qu'un défaut de lisibilité : chaque modification
@@ -1653,6 +2657,44 @@ n'est remplacée ; il s'en ajoute.
   ouvre des cas qui ne se rangent pas dans une grille.
 - La hauteur. Un décor isométrique sans élévation est une grille inclinée ; avec élévation,
   le tri cesse d'être un tri sur Y. À décider avant, parce que ça change la donnée de carte.
+
+### v2.4 — Sucre syntaxique Lua (+=, ++, ?:)
+
+Demandé le 2026-08-14 : `x += 1` / `x -= 1` / `x *= 2` / `x /= 2`, `x++` / `x--`, et
+`cond ? a : b`. **Aucun des trois n'est du Lua** — Lua n'a jamais eu d'affectation composée ni
+d'opérateur ternaire, choix délibéré du langage — et `luaparser` (un vrai parseur ANTLR) les
+refuse net :
+
+```
+x += 1          → no viable alternative at input 'x +'
+x++             → no viable alternative at input 'x+'
+a ? b : c       → token recognition error at: '?'
+```
+
+Donc ce n'est pas « étendre l'AST » : `parser.py` reçoit le texte source tel quel et le passe
+à `luaparser.ast.parse()` sans passe intermédiaire (`scripting/parser.py::parse()`). Accepter
+cette syntaxe demande une **réécriture du texte AVANT `luaparser`** — un dialecte Lua-like, pas
+du Lua strict.
+
+**Le ternaire a déjà un équivalent qui ne coûte rien** : `cond and a or b` est du Lua valide
+aujourd'hui et couvre tout ce que ce sous-ensemble manipule (entiers, vec2/vec3, chaînes) —
+sauf le cas où `a` vaut `false`, où Lua bascule sur `b` alors qu'un vrai `? :` ne le ferait
+pas. À vérifier si ce cas se présente en pratique avant d'écrire quoi que ce soit.
+
+#### Ce que le fork coûterait, si tranché « oui »
+
+- **La coloration syntaxique du Script Editor** (`lua_editor.py`) devrait apprendre ces tokens
+  en plus, sinon ils s'afficheraient comme une erreur alors qu'ils compileraient.
+- **Un vrai script Lua copié ailleurs** (interpréteur externe, autre colorateur) ne le
+  reconnaîtrait plus comme du Lua valide.
+- **Les numéros de ligne/colonne d'une vraie erreur de syntaxe** se décaleraient : `luaparser`
+  rapporterait la position dans le texte RÉÉCRIT, pas dans ce que l'auteur a tapé — une faute
+  ailleurs sur la ligne verrait son message mentir sur l'endroit fautif.
+- `? :` est le plus dur à réécrire sûrement en texte (imbrication, `?`/`:` à l'intérieur d'une
+  chaîne…) — une regex naïve est fragile ; il faudrait un petit tokenizer dédié, pas un
+  remplacement de texte.
+- `+=`/`++`/`--` sont plus simples : réécriture au niveau de l'instruction complète
+  (`NOM (+=|-=|*=|/=) EXPR` ou `NOM (\+\+|--)`), sans ambiguïté de priorité d'opérateurs.
 
 ### v3.0 — Le second moteur de rendu
 

@@ -176,7 +176,7 @@ class ScriptEditorScreen(QWidget):
         # souris, comme le Sprite Editor / Scene Manager (panneaux « étirables »
         # bornés par min/max, pas de largeur fixe). Le centre s'étire, les côtés
         # gardent leur taille. childrenCollapsible=False : la poignée ne réduit
-        # pas une colonne à 0 par accident (le finder a son propre bouton ‹/›).
+        # pas une colonne à 0 par accident.
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setStyleSheet(
             f"QSplitter::handle{{background:{_BORDER};}}"
@@ -230,7 +230,6 @@ class ScriptEditorScreen(QWidget):
                           project.root / "project" / "scripts"
             self._root_scripts_dir = scripts_dir
             self._file_tree.set_root(scripts_dir)
-            self._file_tree.show_panel()
 
     # ── Détection contexte ────────────────────────────────────────────
 

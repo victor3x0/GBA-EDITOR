@@ -21,6 +21,8 @@ from ui.common.widgets import W
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 
 from core.models.audio import Music, Sfx
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import SFX, MUSIC
 from core.project import Project
 from core.engine_emulation.mod_file import load_mod
 from core.engine_emulation.mod_render import render_mod, GBA_MIX_RATE
@@ -385,250 +387,8 @@ class MusicInspector(_AssetInspectorBase):
 # ──────────────────────────────────────────────────────────────────
 #  SoundMixerScreen
 # ──────────────────────────────────────────────────────────────────
-class SoundFinderPanel(QWidget):
-    """
-    Panneau gauche du Sound Mixer : listes SFX + Music (ajout/renommage en
-    place/suppression), même comportement que les autres finders (Assets
-    finder / Sprite finder / Script finder). Ne connaît pas l'inspector ni
-    le lecteur audio — il notifie l'écran parent via des signaux.
-    """
-
-    sfx_selected       = pyqtSignal(object)   # Sfx
-    music_selected     = pyqtSignal(object)   # Music
-    sfx_deleted        = pyqtSignal()
-    music_deleted      = pyqtSignal()
-    sfx_play_requested   = pyqtSignal(object)   # Sfx
-    music_play_requested = pyqtSignal(object)   # Music
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._project: Optional[Project] = None
-        self.setStyleSheet(f"background:{C.BG_BASE};")
-        self.setMinimumWidth(180)
-        self.setMaximumWidth(360)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
-
-        # ── Bandeau "finder" (identité du panneau, cohérent avec les
-        #    autres écrans : Assets finder / Sprite finder / Script finder) ──
-        root.addWidget(W.finder_bar("Sound finder"))
-
-        # SFX section — add/supprimer remontés dans le header (style asset finder)
-        self._sfx_section = self._make_section(
-            "SFX", C.TEXT_NORM, lambda: self._add(Sfx), "Add an SFX",
-            lambda: self._del(Sfx), "Delete selected SFX")
-        root.addWidget(self._sfx_section)
-        self._sfx_list = QTreeWidget()
-        self._sfx_list.setHeaderHidden(True)
-        self._sfx_list.setFont(QFont(T.UI, T.MD))
-        self._sfx_list.setStyleSheet(QSS.tree_widget)
-        self._sfx_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-        self._sfx_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._sfx_list.currentItemChanged.connect(lambda cur, prev: self._on_selected(Sfx, cur, prev))
-        self._sfx_list.itemDoubleClicked.connect(lambda item: self._play(Sfx, item))
-        self._sfx_list.itemChanged.connect(lambda item, col: self._on_item_text_changed(Sfx, item, col))
-        self._sfx_list.customContextMenuRequested.connect(lambda pos: self._on_ctx_menu(Sfx, pos))
-        root.addWidget(self._sfx_list, 1)
-
-        # Espace : preview rapide du SFX sélectionné (sans repasser par un
-        # double-clic). Contexte limité à la liste elle-même pour ne pas
-        # intercepter la barre espace ailleurs dans l'écran (boutons +/×...).
-        sc_sfx = QShortcut(QKeySequence(Qt.Key.Key_Space), self._sfx_list)
-        sc_sfx.setContext(Qt.ShortcutContext.WidgetShortcut)
-        sc_sfx.activated.connect(lambda: self._play_selected(Sfx))
-
-        # Music section
-        self._music_section = self._make_section(
-            "Music", C.TEXT_NORM, lambda: self._add(Music), "Add a track",
-            lambda: self._del(Music), "Delete selected track")
-        root.addWidget(self._music_section)
-        self._music_list = QTreeWidget()
-        self._music_list.setHeaderHidden(True)
-        self._music_list.setFont(QFont(T.UI, T.MD))
-        self._music_list.setStyleSheet(QSS.tree_widget)
-        self._music_list.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
-        self._music_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._music_list.currentItemChanged.connect(lambda cur, prev: self._on_selected(Music, cur, prev))
-        self._music_list.itemDoubleClicked.connect(lambda item: self._play(Music, item))
-        self._music_list.itemChanged.connect(lambda item, col: self._on_item_text_changed(Music, item, col))
-        self._music_list.customContextMenuRequested.connect(lambda pos: self._on_ctx_menu(Music, pos))
-        root.addWidget(self._music_list, 1)
-
-        sc_music = QShortcut(QKeySequence(Qt.Key.Key_Space), self._music_list)
-        sc_music.setContext(Qt.ShortcutContext.WidgetShortcut)
-        sc_music.activated.connect(lambda: self._play_selected(Music))
-
-    # ── Utilitaires ───────────────────────────────────────────────
-
-    def _make_section(self, title: str, color: str, on_add, add_tooltip: str,
-                       on_del, del_tooltip: str) -> QFrame:
-        """En-tête de section — titre + boutons Ajouter/Supprimer intégrés,
-        même emplacement/style que les autres asset finders (assets_finder_panel.py)."""
-        f = W.section_bar(title, color)
-        hl = f.layout()
-
-        btn_add = W.btn_add(add_tooltip)
-        btn_add.clicked.connect(on_add)
-        hl.addWidget(btn_add)
-
-        btn_del = W.btn_danger(del_tooltip)
-        btn_del.clicked.connect(on_del)
-        hl.addWidget(btn_del)
-
-        return f
-
-    # ── Chargement ────────────────────────────────────────────────
-
-    def load_project(self, project: Project):
-        self._project = project
-        self.refresh()
-
-    def refresh(self):
-        self._refresh_kind(Sfx)
-        self._refresh_kind(Music)
-
-    # ── Table de dispatch sfx/music ──────────────────────────────────
-    # Chaque méthode ci-dessous est paramétrée par le type (Sfx/Music) au
-    # lieu de dupliquer sa logique une fois par liste ; ce dict fournit
-    # les éléments qui diffèrent réellement entre les deux (liste Qt,
-    # collection projet, icône, signaux, libellés de dialogue).
-
-    def _kind_info(self, kind: type):
-        if kind is Sfx:
-            return dict(
-                list=self._sfx_list, other_list=self._music_list,
-                manager=self._project.sfx if self._project else None,
-                icon_key="sfx", icon_color=COLOR_DEFAULT,
-                selected=self.sfx_selected, play_requested=self.sfx_play_requested,
-                deleted=self.sfx_deleted,
-                add_title="New SFX", del_label="the SFX",
-                save=self._project.save_sfx if self._project else None,
-            )
-        return dict(
-            list=self._music_list, other_list=self._sfx_list,
-            manager=self._project.music if self._project else None,
-            icon_key="music", icon_color=COLOR_DEFAULT,
-            selected=self.music_selected, play_requested=self.music_play_requested,
-            deleted=self.music_deleted,
-            add_title="New track", del_label="the track",
-            save=self._project.save_music if self._project else None,
-        )
-
-    def _refresh_kind(self, kind: type):
-        info = self._kind_info(kind)
-        lst = info["list"]
-        lst.blockSignals(True)
-        lst.clear()
-        if self._project:
-            for asset in info["manager"]:
-                ap = self._project.asset_abs(asset.asset) if asset.asset else None
-                icon_key = info["icon_key"] if ap and ap.exists() else "asset_missing"
-                item = QTreeWidgetItem([asset.name])
-                item.setIcon(0, _ico(icon_key, info["icon_color"]))
-                item.setData(0, Qt.ItemDataRole.UserRole, asset)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-                lst.addTopLevelItem(item)
-        lst.blockSignals(False)
-
-    # ── Sélection ─────────────────────────────────────────────────
-
-    def _on_selected(self, kind: type, current: QTreeWidgetItem, _prev):
-        info = self._kind_info(kind)
-        info["other_list"].clearSelection()
-        asset = current.data(0, Qt.ItemDataRole.UserRole) if current else None
-        if isinstance(asset, kind):
-            info["selected"].emit(asset)
-
-    def _play(self, kind: type, item: QTreeWidgetItem):
-        asset = item.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(asset, kind):
-            self._kind_info(kind)["play_requested"].emit(asset)
-
-    def _play_selected(self, kind: type):
-        item = self._kind_info(kind)["list"].currentItem()
-        if item:
-            self._play(kind, item)
-
-    # ── Renommage en place ───────────────────────────────────────────
-
-    def _on_item_text_changed(self, kind: type, item: QTreeWidgetItem, _col: int):
-        asset = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(asset, kind):
-            return
-        info = self._kind_info(kind)
-        lst = info["list"]
-        new_name = item.text(0).strip()
-        if not new_name or new_name == asset.name:
-            lst.blockSignals(True)
-            item.setText(0, asset.name)
-            lst.blockSignals(False)
-            return
-        # Via le projet : met aussi à jour les sfx.play()/music.play() des scripts.
-        if self._project:
-            self._project.rename_sound(asset, new_name)
-        else:
-            info["manager"].rename(asset, new_name)
-        lst.blockSignals(True)
-        item.setText(0, asset.name)
-        lst.blockSignals(False)
-        info["selected"].emit(asset)
-
-    # ── Menus contextuels ────────────────────────────────────────────
-
-    def _on_ctx_menu(self, kind: type, pos):
-        lst = self._kind_info(kind)["list"]
-        item = lst.itemAt(pos)
-        if not item:
-            return
-        lst.setCurrentItem(item)
-        menu = QMenu(self)
-        delete_a = menu.addAction("Delete")
-        if menu.exec(lst.viewport().mapToGlobal(pos)) == delete_a:
-            self._del(kind)
-
-    # ── Ajout / suppression ───────────────────────────────────────
-
-    def _add(self, kind: type):
-        if not self._project: return
-        info = self._kind_info(kind)
-        name, ok = QInputDialog.getText(self, info["add_title"], "Name:")
-        if ok and name.strip():
-            asset = kind(name=name.strip())
-            info["manager"].append(asset)
-            info["save"](asset)
-            self._refresh_kind(kind)
-            lst = info["list"]
-            last = lst.topLevelItem(lst.topLevelItemCount() - 1)
-            if last:
-                lst.setCurrentItem(last)
-
-    def _del(self, kind: type):
-        info = self._kind_info(kind)
-        item = info["list"].currentItem()
-        asset = item.data(0, Qt.ItemDataRole.UserRole) if item else None
-        if not self._project or not isinstance(asset, kind):
-            return
-        if QMessageBox.question(
-            self, "Delete",
-            f"Delete {info['del_label']} “{asset.name}”?\n(Ctrl+Z to undo)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-
-        def _refresh():
-            self._refresh_kind(kind)
-            info["deleted"].emit()
-
-        get_history().push(DeleteResourceCmd(info["manager"], asset, _refresh))
-
-
-# ──────────────────────────────────────────────────────────────────
-#  SoundMixerScreen
-# ──────────────────────────────────────────────────────────────────
 class SoundMixerScreen(QWidget):
-    """Écran complet Sound Mixer : SFX + Music (via SoundFinderPanel) + preview."""
+    """Écran complet Sound Mixer : SFX + Music (via AssetFinder) + preview."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -654,13 +414,18 @@ class SoundMixerScreen(QWidget):
         root.addWidget(split, 1)
 
         # ── Panneau gauche : Sound finder ──────────────────────────
-        self._finder = SoundFinderPanel()
-        self._finder.sfx_selected.connect(self._on_sfx_selected)
-        self._finder.music_selected.connect(self._on_music_selected)
-        self._finder.sfx_deleted.connect(lambda: self._right_stack.setCurrentIndex(0))
-        self._finder.music_deleted.connect(lambda: self._right_stack.setCurrentIndex(0))
-        self._finder.sfx_play_requested.connect(self._play_asset)
-        self._finder.music_play_requested.connect(self._play_asset)
+        # Deux familles dans un seul finder partagé ; c'est le TYPE de l'asset
+        # reçu qui dit quel inspecteur montrer, pas un signal par famille.
+        self._finder = AssetFinder("Sound finder", [SFX, MUSIC],
+                                   min_width=180, max_width=360)
+        self._finder.selected.connect(lambda _kind, a: self._on_asset_selected(a))
+        self._finder.emptied.connect(lambda _kind: self._right_stack.setCurrentIndex(0))
+        # Double-clic ou Espace : écouter. Le finder ne sait pas ce qu'« activer »
+        # veut dire, l'écran si.
+        self._finder.activated.connect(lambda _kind, a: self._play_asset(a))
+        sc_play = QShortcut(QKeySequence(Qt.Key.Key_Space), self._finder)
+        sc_play.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_play.activated.connect(self._finder.activate_current)
         split.addWidget(self._finder)
 
         # ── Panneau droit : inspector ─────────────────────────────
@@ -696,6 +461,14 @@ class SoundMixerScreen(QWidget):
         self._right_stack.setCurrentIndex(0)
 
     # ── Sélection / lecture (relayées depuis le Sound finder) ──────
+
+    def _on_asset_selected(self, asset):
+        """Un seul point d'entrée pour les deux familles — le type de l'asset
+        choisit l'inspecteur."""
+        if isinstance(asset, Sfx):
+            self._on_sfx_selected(asset)
+        elif isinstance(asset, Music):
+            self._on_music_selected(asset)
 
     def _on_sfx_selected(self, sfx: Sfx):
         self._sfx_insp.load(sfx, self._project)

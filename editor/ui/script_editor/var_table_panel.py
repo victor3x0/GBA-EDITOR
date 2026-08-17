@@ -1,6 +1,6 @@
 """ui/script_editor/var_table_panel.py — table GLOBALS/CONSTANTS de la sidebar Script Editor."""
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView,
+    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy,
     QComboBox, QAbstractItemView, QMenu, QInputDialog, QMessageBox,
 )
 from PyQt6.QtGui import QColor
@@ -93,9 +93,24 @@ class VarTablePanel(QWidget):
         self._tbl.customContextMenuRequested.connect(self._ctx_menu)
         self._tbl.itemChanged.connect(self._on_item_changed)
         self._tbl.cellDoubleClicked.connect(self._on_double_click)
-        self._tbl.setMinimumHeight(80)
-        self._tbl.setMaximumHeight(240)
+        self._tbl.setMaximumHeight(self._MAX_H)
+        # Hauteur réglée sur le contenu (cf. `_fit`) et politique NON extensible :
+        # la section se cale alors dessus au lieu de réclamer de la place, et la
+        # suivante vient se ferrer juste en dessous. Sans ça, la table garde son
+        # sizeHint de QTableWidget — bien plus haut que deux lignes — et creuse
+        # un vide sous elle.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         root.addWidget(self._tbl)
+        self._fit()
+
+    # Une table vide montre quand même son en-tête ; au-delà de _MAX_H elle
+    # défile plutôt que de repousser les sections voisines hors de l'écran.
+    _MAX_H = 240
+
+    def _fit(self):
+        header = self._tbl.horizontalHeader().height()
+        rows = sum(self._tbl.rowHeight(r) for r in range(self._tbl.rowCount()))
+        self._tbl.setFixedHeight(min(header + rows + 4, self._MAX_H))
 
     def _entries(self):
         if not self._project:
@@ -114,6 +129,7 @@ class VarTablePanel(QWidget):
             self._append_row(e.name, e.type, str(value),
                              persist=getattr(e, "persist", False), entry=e)
         self._updating = False
+        self._fit()
 
     def _append_row(self, name="var", typ="int", default="0", persist=False,
                     entry=None):

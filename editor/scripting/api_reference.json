@@ -1,81 +1,65 @@
 {
   "categories": [
     {
-      "name": "Mouvement",
+      "name": "Transform",
+      "entries": []
+    },
+    {
+      "name": "Movement",
       "entries": [
         {
-          "label": "self:move(dx, dy)",
-          "snippet": "self:move(dx, dy)",
-          "description": "Déplace l'actor de (dx, dy) pixels ce frame. À appeler dans on_update.",
+          "label": "self:move(dir, speed)",
+          "snippet": "self:move(dir, speed)",
+          "description": "Avance ce frame d'au plus `speed` px dans la direction `dir` (un vec2), normalisée — une diagonale n'avance pas plus vite qu'un axe. À rappeler chaque frame depuis on_update. Ex: self:move(vec2(1, 0), 60)",
           "params": [
-            { "name": "dx", "type": "number", "description": "Déplacement horizontal en pixels (négatif = gauche)" },
-            { "name": "dy", "type": "number", "description": "Déplacement vertical en pixels (négatif = haut)" }
+            {
+              "name": "dir",
+              "type": "vec2",
+              "description": "Direction de déplacement (pas une distance)"
+            },
+            {
+              "name": "speed",
+              "type": "number",
+              "description": "Vitesse maximale ce frame, en pixels"
+            }
           ],
           "doc_anchor": "self-move"
         },
         {
-          "label": "self:set_pos(x, y)",
-          "snippet": "self:set_pos(x, y)",
-          "description": "Téléporte l'actor à la position monde (x, y) instantanément.",
+          "label": "self:move_to(target, speed)",
+          "snippet": "self:move_to(target, speed)",
+          "description": "Avance ce frame d'au plus `speed` px vers la position `target` (un vec2) ; s'arrête pile dessus sans dépasser. À rappeler chaque frame jusqu'à l'arrivée. Ex: self:move_to(vec2(100, 20), 30)",
           "params": [
-            { "name": "x", "type": "number", "description": "Position X monde en pixels" },
-            { "name": "y", "type": "number", "description": "Position Y monde en pixels" }
+            {
+              "name": "target",
+              "type": "vec2",
+              "description": "Position monde visée"
+            },
+            {
+              "name": "speed",
+              "type": "number",
+              "description": "Vitesse maximale ce frame, en pixels"
+            }
           ],
-          "doc_anchor": "self-set_pos"
-        },
-        {
-          "label": "self:set_velocity(vx, vy)",
-          "snippet": "self:set_velocity(vx, vy)",
-          "description": "Définit la vélocité. Appliquée chaque frame par apply_velocity.",
-          "params": [
-            { "name": "vx", "type": "number", "description": "Vélocité horizontale en pixels/frame" },
-            { "name": "vy", "type": "number", "description": "Vélocité verticale en pixels/frame" }
-          ],
-          "doc_anchor": "self-set_velocity"
-        },
-        {
-          "label": "self:apply_velocity()",
-          "snippet": "self:apply_velocity()",
-          "description": "Applique vx/vy accumulés à la position. À appeler en fin de on_update.",
-          "params": [],
-          "doc_anchor": "self-apply_velocity"
+          "doc_anchor": "self-move_to"
         }
       ]
     },
     {
-      "name": "Position & Vélocité",
+      "name": "Physics",
       "entries": [
         {
-          "label": "self:get_x()",
-          "snippet": "self:get_x()",
-          "description": "Retourne la position X monde de l'actor.",
-          "params": [],
-          "returns": "number — position X en pixels",
-          "doc_anchor": "self-get_x"
-        },
-        {
-          "label": "self:get_y()",
-          "snippet": "self:get_y()",
-          "description": "Retourne la position Y monde de l'actor.",
-          "params": [],
-          "returns": "number — position Y en pixels",
-          "doc_anchor": "self-get_y"
-        },
-        {
-          "label": "self:get_vx()",
-          "snippet": "self:get_vx()",
-          "description": "Retourne la vélocité X courante de l'actor.",
-          "params": [],
-          "returns": "number — vélocité X en pixels/frame",
-          "doc_anchor": "self-get_vx"
-        },
-        {
-          "label": "self:get_vy()",
-          "snippet": "self:get_vy()",
-          "description": "Retourne la vélocité Y courante de l'actor.",
-          "params": [],
-          "returns": "number — vélocité Y en pixels/frame",
-          "doc_anchor": "self-get_vy"
+          "label": "self:add_velocity(dv)",
+          "snippet": "self:add_velocity(dv)",
+          "description": "Ajoute `dv` (un vec2) à la vélocité courante. Pour accumuler une accélération ou une gravité frame après frame. Ex: self:add_velocity(vec2(0, 1))",
+          "params": [
+            {
+              "name": "dv",
+              "type": "vec2",
+              "description": "Ajout à la vélocité (.x, .y)"
+            }
+          ],
+          "doc_anchor": "self-add_velocity"
         }
       ]
     },
@@ -87,44 +71,13 @@
           "snippet": "self:play_anim(\"Idle\")",
           "description": "Démarre l'animation nommée définie dans le SpriteAsset. Sans effet si déjà active.",
           "params": [
-            { "name": "name", "type": "string", "description": "Nom de l'état d'animation (ex: \"Idle\", \"Run\", \"Jump\")" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de l'état d'animation (ex: \"Idle\", \"Run\", \"Jump\")"
+            }
           ],
           "doc_anchor": "self-play_anim"
-        },
-        {
-          "label": "self:set_frame(n)",
-          "snippet": "self:set_frame(0)",
-          "description": "Force la frame courante du sprite (0 = première frame).",
-          "params": [
-            { "name": "n", "type": "number", "description": "Index de frame (0-based)" }
-          ],
-          "doc_anchor": "self-set_frame"
-        },
-        {
-          "label": "self:get_tag()",
-          "snippet": "self:get_tag()",
-          "description": "Retourne le TAG_* de cet actor. Typiquement utilisé dans on_collide sur 'other' pour identifier ce qu'on a touché.",
-          "params": [],
-          "returns": "number — TAG_* de l'actor",
-          "doc_anchor": "self-get_tag"
-        },
-        {
-          "label": "self:set_pal(bank)",
-          "snippet": "self:set_pal(1)",
-          "description": "Change la palette bank OAM à la volée (0-15). Utile pour un flash de dégâts ou un effet d'invincibilité.",
-          "params": [
-            { "name": "bank", "type": "number", "description": "Index de palette (0-15)" }
-          ],
-          "doc_anchor": "self-set_pal"
-        },
-        {
-          "label": "self:set_visible(v)",
-          "snippet": "self:set_visible(true)",
-          "description": "Affiche ou cache le sprite sans désactiver l'actor.",
-          "params": [
-            { "name": "v", "type": "bool", "description": "true = visible, false = caché" }
-          ],
-          "doc_anchor": "self-set_visible"
         }
       ]
     },
@@ -136,7 +89,11 @@
           "snippet": "input.held(\"a\")",
           "description": "Vrai si le bouton est maintenu appuyé ce frame.",
           "params": [
-            { "name": "btn", "type": "string", "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\"" }
+            {
+              "name": "btn",
+              "type": "string",
+              "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\""
+            }
           ],
           "returns": "bool",
           "doc_anchor": "input-held"
@@ -146,7 +103,11 @@
           "snippet": "input.pressed(\"a\")",
           "description": "Vrai uniquement le premier frame où le bouton est appuyé (front montant).",
           "params": [
-            { "name": "btn", "type": "string", "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\"" }
+            {
+              "name": "btn",
+              "type": "string",
+              "description": "Nom du bouton : \"a\", \"b\", \"l\", \"r\", \"start\", \"select\", \"up\", \"down\", \"left\", \"right\""
+            }
           ],
           "returns": "bool",
           "doc_anchor": "input-pressed"
@@ -168,7 +129,11 @@
           "snippet": "sfx.play(\"name\")",
           "description": "Joue un effet sonore one-shot (défini dans project/sfx/).",
           "params": [
-            { "name": "name", "type": "string", "description": "Nom du Sfx (sans extension)" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom du Sfx (sans extension)"
+            }
           ],
           "doc_anchor": "sfx-play"
         },
@@ -177,7 +142,11 @@
           "snippet": "music.play(\"name\")",
           "description": "Démarre une piste musicale en boucle.",
           "params": [
-            { "name": "name", "type": "string", "description": "Nom de la Music (sans extension)" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la Music (sans extension)"
+            }
           ],
           "doc_anchor": "music-play"
         },
@@ -194,81 +163,62 @@
       "name": "Caméra",
       "entries": [
         {
-          "label": "camera.set(x, y)",
-          "snippet": "camera.set(x, y)",
-          "description": "Place la caméra exactement à (x, y) sans interpolation.",
+          "label": "camera.follow(target, mx, my)",
+          "snippet": "camera.follow(self.position, 40, 20)",
+          "description": "Suit `target` (un vec2) avec une zone morte. Typiquement appelé dans on_late_update.",
           "params": [
-            { "name": "x", "type": "number", "description": "Position X caméra en pixels" },
-            { "name": "y", "type": "number", "description": "Position Y caméra en pixels" }
-          ],
-          "doc_anchor": "camera-set"
-        },
-        {
-          "label": "camera.follow(x, y, mx, my)",
-          "snippet": "camera.follow(self:get_x(), self:get_y(), 40, 20)",
-          "description": "Suit le point (x, y) avec une zone morte. Typiquement appelé dans on_late_update.",
-          "params": [
-            { "name": "x",        "type": "number", "description": "Point cible X" },
-            { "name": "y",        "type": "number", "description": "Point cible Y" },
-            { "name": "margin_x", "type": "number", "description": "Marge horizontale avant de bouger (pixels)" },
-            { "name": "margin_y", "type": "number", "description": "Marge verticale avant de bouger (pixels)" }
+            {
+              "name": "target",
+              "type": "vec2",
+              "description": "Point cible"
+            },
+            {
+              "name": "margin_x",
+              "type": "number",
+              "description": "Marge horizontale avant de bouger (pixels)"
+            },
+            {
+              "name": "margin_y",
+              "type": "number",
+              "description": "Marge verticale avant de bouger (pixels)"
+            }
           ],
           "doc_anchor": "camera-follow"
-        },
-        {
-          "label": "camera.get_x()",
-          "snippet": "camera.get_x()",
-          "description": "Retourne la position X courante de la caméra.",
-          "params": [],
-          "returns": "number — position X caméra",
-          "doc_anchor": "camera-get_x"
-        },
-        {
-          "label": "camera.get_y()",
-          "snippet": "camera.get_y()",
-          "description": "Retourne la position Y courante de la caméra.",
-          "params": [],
-          "returns": "number — position Y caméra",
-          "doc_anchor": "camera-get_y"
-        },
-        {
-          "label": "camera.set_bounds(world_w, world_h)",
-          "snippet": "camera.set_bounds(world_w, world_h)",
-          "description": "Définit les bornes de scroll (taille du monde en pixels). 0 = axe illimité. Utile pour débloquer une nouvelle zone au runtime.",
-          "params": [
-            { "name": "world_w", "type": "number", "description": "Largeur du monde en pixels (0 = illimité)" },
-            { "name": "world_h", "type": "number", "description": "Hauteur du monde en pixels (0 = illimité)" }
-          ],
-          "doc_anchor": "camera-set_bounds"
         }
       ]
     },
     {
-      "name": "Communication",
+      "name": "Actor",
       "entries": [
         {
           "label": "get_actor(\"name\")",
           "snippet": "get_actor(\"Player\")",
           "description": "Retourne une référence à l'actor nommé dans la scène active.",
           "params": [
-            { "name": "name", "type": "string", "description": "Nom exact de l'actor dans la scène" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom exact de l'actor dans la scène"
+            }
           ],
           "returns": "actor — référence actor, ou nil si absent",
           "doc_anchor": "get_actor"
-        }
-      ]
-    },
-    {
-      "name": "Spawn",
-      "entries": [
+        },
         {
-          "label": "actor.spawn(\"prefab\", x, y)",
-          "snippet": "actor.spawn(\"Bullet\", self:get_x(), self:get_y())",
-          "description": "Instancie un prefab poolé à (x, y). Le prefab doit avoir max_instances > 0 dans l'éditeur. Retourne l'index du slot ou -1 si le pool est épuisé.",
+          "label": "actor.spawn(\"prefab\", position)",
+          "snippet": "actor.spawn(\"Bullet\", vec2(116, 76))",
+          "description": "Instancie un prefab poolé à `position` (un vec2). Le prefab doit avoir max_instances > 0 dans l'éditeur. Retourne l'index du slot ou -1 si le pool est épuisé.",
           "params": [
-            { "name": "prefab", "type": "string", "description": "Nom exact du Prefab (tel que créé dans l'éditeur)" },
-            { "name": "x",      "type": "number", "description": "Position X monde en pixels" },
-            { "name": "y",      "type": "number", "description": "Position Y monde en pixels" }
+            {
+              "name": "prefab",
+              "type": "string",
+              "description": "Nom exact du Prefab (tel que créé dans l'éditeur)"
+            },
+            {
+              "name": "position",
+              "type": "vec2",
+              "description": "Position monde en pixels (.x, .y)"
+            }
           ],
           "returns": "number — index slot dans g_actors[], ou -1 si pool plein",
           "doc_anchor": "actor-spawn"
@@ -276,14 +226,18 @@
       ]
     },
     {
-      "name": "Variables globales",
+      "name": "Variables",
       "entries": [
         {
           "label": "global.get(\"name\")",
           "snippet": "global.get(\"score\")",
           "description": "Lit une variable globale entière partagée entre tous les scripts.",
           "params": [
-            { "name": "name", "type": "string", "description": "Nom de la variable globale" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la variable globale"
+            }
           ],
           "returns": "number — valeur entière courante",
           "doc_anchor": "global-get"
@@ -293,10 +247,79 @@
           "snippet": "global.set(\"score\", 0)",
           "description": "Écrit une variable globale entière partagée entre tous les scripts.",
           "params": [
-            { "name": "name",  "type": "string", "description": "Nom de la variable globale" },
-            { "name": "value", "type": "number", "description": "Valeur entière à stocker" }
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la variable globale"
+            },
+            {
+              "name": "value",
+              "type": "number",
+              "description": "Valeur entière à stocker"
+            }
           ],
           "doc_anchor": "global-set"
+        },
+        {
+          "label": "const.get(\"name\")",
+          "snippet": "const.get(\"max_lives\")",
+          "description": "Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée — pas de const.set).",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la constante"
+            }
+          ],
+          "returns": "number — valeur fixe",
+          "doc_anchor": "const-get"
+        }
+      ]
+    },
+    {
+      "name": "Séquences",
+      "entries": [
+        {
+          "label": "sequence.start(name)",
+          "snippet": "sequence.start(\"intro\")",
+          "description": "Démarre (ou redémarre depuis le début) une séquence de ce script — une fonction « on_sequence_<nom> », écrite en ligne droite, où wait(frames) et wait_until(condition) marquent les pauses.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Le nom qui suit on_sequence_ dans le nom du handler"
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "sequence-start"
+        },
+        {
+          "label": "sequence.stop(name)",
+          "snippet": "sequence.stop(\"intro\")",
+          "description": "Arrête la séquence en cours de route. Elle ne reprend pas où elle en était : un sequence.start la relance depuis sa première ligne.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Le nom qui suit on_sequence_ dans le nom du handler"
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "sequence-stop"
+        },
+        {
+          "label": "sequence.running(name)",
+          "snippet": "if not sequence.running(\"intro\") then\n    \nend",
+          "description": "Vrai tant que la séquence n'a pas atteint sa dernière ligne. De quoi enchaîner deux séquences, ou geler une commande pendant une cinématique.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Le nom qui suit on_sequence_ dans le nom du handler"
+            }
+          ],
+          "returns": "bool — vrai si la séquence tourne",
+          "doc_anchor": "sequence-running"
         }
       ]
     },
@@ -308,7 +331,11 @@
           "snippet": "save.write(0)",
           "description": "Écrit les variables globales marquées « persist » dans un emplacement de sauvegarde.",
           "params": [
-            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0 (leur nombre se règle dans le projet)" }
+            {
+              "name": "slot",
+              "type": "number",
+              "description": "Numéro d'emplacement, à partir de 0 (leur nombre se règle dans le projet)"
+            }
           ],
           "returns": "number — 1 si la sauvegarde a eu lieu, 0 si l'emplacement n'existe pas",
           "doc_anchor": "save-write"
@@ -318,7 +345,11 @@
           "snippet": "save.read(0)",
           "description": "Relit un emplacement dans les variables persistantes. Une variable absente du fichier reprend sa valeur par défaut ; si l'emplacement est vide ou illisible, rien n'est touché.",
           "params": [
-            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+            {
+              "name": "slot",
+              "type": "number",
+              "description": "Numéro d'emplacement, à partir de 0"
+            }
           ],
           "returns": "number — 1 si la lecture a eu lieu, 0 sinon",
           "doc_anchor": "save-read"
@@ -328,7 +359,11 @@
           "snippet": "if save.exists(0) then\n    \nend",
           "description": "Vrai si l'emplacement contient une sauvegarde relisible. De quoi n'afficher « Continuer » que s'il y a une partie.",
           "params": [
-            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+            {
+              "name": "slot",
+              "type": "number",
+              "description": "Numéro d'emplacement, à partir de 0"
+            }
           ],
           "returns": "number — 1 si l'emplacement porte une sauvegarde, 0 sinon",
           "doc_anchor": "save-exists"
@@ -338,25 +373,14 @@
           "snippet": "save.erase(0)",
           "description": "Vide un emplacement : save.exists y répond faux ensuite.",
           "params": [
-            { "name": "slot", "type": "number", "description": "Numéro d'emplacement, à partir de 0" }
+            {
+              "name": "slot",
+              "type": "number",
+              "description": "Numéro d'emplacement, à partir de 0"
+            }
           ],
           "returns": "number — 1 si l'emplacement existe, 0 sinon",
           "doc_anchor": "save-erase"
-        }
-      ]
-    },
-    {
-      "name": "Constants",
-      "entries": [
-        {
-          "label": "const.get(\"name\")",
-          "snippet": "const.get(\"max_lives\")",
-          "description": "Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
-          "params": [
-            { "name": "name", "type": "string", "description": "Nom de la constante" }
-          ],
-          "returns": "number — valeur fixe",
-          "doc_anchor": "const-get"
         }
       ]
     },
@@ -367,7 +391,13 @@
           "label": "math.abs(x)",
           "snippet": "math.abs(x)",
           "description": "Valeur absolue entière.",
-          "params": [{ "name": "x", "type": "number", "description": "Valeur entière" }],
+          "params": [
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Valeur entière"
+            }
+          ],
           "returns": "number — |x|",
           "doc_anchor": "math-abs"
         },
@@ -376,9 +406,21 @@
           "snippet": "math.clamp(x, 0, 255)",
           "description": "Bloque x entre lo et hi inclus.",
           "params": [
-            { "name": "x",  "type": "number", "description": "Valeur à borner" },
-            { "name": "lo", "type": "number", "description": "Borne inférieure" },
-            { "name": "hi", "type": "number", "description": "Borne supérieure" }
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Valeur à borner"
+            },
+            {
+              "name": "lo",
+              "type": "number",
+              "description": "Borne inférieure"
+            },
+            {
+              "name": "hi",
+              "type": "number",
+              "description": "Borne supérieure"
+            }
           ],
           "returns": "number — valeur bornée",
           "doc_anchor": "math-clamp"
@@ -387,7 +429,13 @@
           "label": "math.sign(x)",
           "snippet": "math.sign(x)",
           "description": "Signe de x. Retourne -1, 0, ou 1. Pratique pour normaliser une direction.",
-          "params": [{ "name": "x", "type": "number", "description": "Valeur entière" }],
+          "params": [
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Valeur entière"
+            }
+          ],
           "returns": "number — -1, 0 ou 1",
           "doc_anchor": "math-sign"
         },
@@ -396,8 +444,16 @@
           "snippet": "math.min(a, b)",
           "description": "Retourne le plus petit des deux entiers.",
           "params": [
-            { "name": "a", "type": "number", "description": "Premier entier" },
-            { "name": "b", "type": "number", "description": "Second entier" }
+            {
+              "name": "a",
+              "type": "number",
+              "description": "Premier entier"
+            },
+            {
+              "name": "b",
+              "type": "number",
+              "description": "Second entier"
+            }
           ],
           "returns": "number — min(a, b)",
           "doc_anchor": "math-min"
@@ -407,11 +463,82 @@
           "snippet": "math.max(a, b)",
           "description": "Retourne le plus grand des deux entiers.",
           "params": [
-            { "name": "a", "type": "number", "description": "Premier entier" },
-            { "name": "b", "type": "number", "description": "Second entier" }
+            {
+              "name": "a",
+              "type": "number",
+              "description": "Premier entier"
+            },
+            {
+              "name": "b",
+              "type": "number",
+              "description": "Second entier"
+            }
           ],
           "returns": "number — max(a, b)",
           "doc_anchor": "math-max"
+        },
+        {
+          "label": "math.lerp(a, b, num, den)",
+          "snippet": "math.lerp(a, b, num, den)",
+          "description": "Interpole linéairement entre a et b à la fraction num/den. Ex: math.lerp(0, 100, frame, 30) glisse de 0 à 100 sur 30 frames.",
+          "params": [
+            {
+              "name": "a",
+              "type": "number",
+              "description": "Valeur de départ (fraction 0)"
+            },
+            {
+              "name": "b",
+              "type": "number",
+              "description": "Valeur d'arrivée (fraction 1)"
+            },
+            {
+              "name": "num",
+              "type": "number",
+              "description": "Numérateur de la fraction parcourue"
+            },
+            {
+              "name": "den",
+              "type": "number",
+              "description": "Dénominateur de la fraction parcourue"
+            }
+          ],
+          "returns": "number — valeur interpolée",
+          "doc_anchor": "math-lerp"
+        },
+        {
+          "label": "math.ease(a, b, num, den, \"kind\")",
+          "snippet": "math.ease(a, b, num, den, \"out\")",
+          "description": "Comme math.lerp, mais en courbant la fraction avant de l'appliquer. \"in\" démarre lentement et accélère, \"out\" démarre vite et ralentit, \"in_out\" combine les deux.",
+          "params": [
+            {
+              "name": "a",
+              "type": "number",
+              "description": "Valeur de départ (fraction 0)"
+            },
+            {
+              "name": "b",
+              "type": "number",
+              "description": "Valeur d'arrivée (fraction 1)"
+            },
+            {
+              "name": "num",
+              "type": "number",
+              "description": "Numérateur de la fraction parcourue"
+            },
+            {
+              "name": "den",
+              "type": "number",
+              "description": "Dénominateur de la fraction parcourue"
+            },
+            {
+              "name": "kind",
+              "type": "string",
+              "description": "Courbe : \"in\", \"out\" ou \"in_out\""
+            }
+          ],
+          "returns": "number — valeur interpolée et courbée",
+          "doc_anchor": "math-ease"
         }
       ]
     },
@@ -423,7 +550,11 @@
           "snippet": "local sac = array(8)",
           "description": "Déclare un tableau d'entiers rempli de zéros. Deux tailles pour une grille : array(20, 12) se lit grille[1..20][1..12] — l'ordre des arguments est l'ordre des index. La taille est fixée au build, #sac la rend, et les tableaux sont indexés à partir de 1 comme partout en Lua. Un tableau écrit en clair se déclare directement : local couts = {1, 2, 4, 8}.",
           "params": [
-            { "name": "taille", "type": "number", "description": "Nombre d'éléments — une taille, ou deux pour une grille" }
+            {
+              "name": "taille",
+              "type": "number",
+              "description": "Nombre d'éléments — une taille, ou deux pour une grille"
+            }
           ],
           "returns": "tableau",
           "doc_anchor": "array"
@@ -434,12 +565,18 @@
       "name": "Scène",
       "entries": [
         {
-          "label": "scene.frame()",
-          "snippet": "scene.frame()",
-          "description": "Compteur de frames global depuis le lancement de la scène (60 fps = 60 frames/s). Pratique pour des timers ou des effets périodiques sans variable locale.",
-          "params": [],
-          "returns": "number — nombre de frames écoulées",
-          "doc_anchor": "scene-frame"
+          "label": "scene.switch(name)",
+          "snippet": "scene.switch(\"name\")",
+          "description": "Passe à une autre scène au début de la prochaine frame.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "scene-switch"
         }
       ]
     },
@@ -448,11 +585,19 @@
       "entries": [
         {
           "label": "tile.get(x, y)",
-          "snippet": "tile.get(self:get_x(), self:get_y())",
+          "snippet": "tile.get(self.position.x, self.position.y)",
           "description": "Lit la valeur brute de la tile à la position monde (x, y) en pixels. 0 = vide. Utile pour des triggers non-solides (pièces, zones de spawn, poison…).",
           "params": [
-            { "name": "x", "type": "number", "description": "Position X monde en pixels" },
-            { "name": "y", "type": "number", "description": "Position Y monde en pixels" }
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Position X monde en pixels"
+            },
+            {
+              "name": "y",
+              "type": "number",
+              "description": "Position Y monde en pixels"
+            }
           ],
           "returns": "number — valeur de la tile (0 = vide)",
           "doc_anchor": "tile-get"
@@ -467,8 +612,16 @@
           "snippet": "layer.show(2, false)",
           "description": "Affiche ou cache un layer de fond. n = le slot de fond 0-3, celui de l'inspecteur de scène. Le layer garde son contenu : le rallumer le fait réapparaître tel quel.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "on", "type": "boolean", "description": "true = visible, false = caché" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = visible, false = caché"
+            }
           ],
           "doc_anchor": "layer-show"
         },
@@ -477,7 +630,11 @@
           "snippet": "layer.is_visible(2)",
           "description": "Teste si le layer n est actuellement affiché.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            }
           ],
           "returns": "number — 1 si visible, 0 sinon",
           "doc_anchor": "layer-is_visible"
@@ -487,8 +644,16 @@
           "snippet": "layer.set_priority(1, 0)",
           "description": "Change l'ordre d'affichage du layer, sprites compris : 0 = devant, 3 = derrière. Permet de faire passer un décor devant le joueur (feuillage, pont) ou de remonter un panneau d'UI.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "prio", "type": "number", "description": "Priorité 0-3 (0 = premier plan)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "prio",
+              "type": "number",
+              "description": "Priorité 0-3 (0 = premier plan)"
+            }
           ],
           "doc_anchor": "layer-set_priority"
         },
@@ -497,7 +662,11 @@
           "snippet": "layer.get_priority(1)",
           "description": "Priorité actuelle du layer n (0 = devant).",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            }
           ],
           "returns": "number — priorité 0-3",
           "doc_anchor": "layer-get_priority"
@@ -507,9 +676,21 @@
           "snippet": "layer.set_scroll(0, 0, 0)",
           "description": "Décalage propre du layer, en pixels. Il s'ajoute au scroll de la caméra (la vitesse de parallax du layer continue de s'appliquer). Sert à décaler un layer indépendamment du monde : nuages, secousse, panneau qui glisse.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "x", "type": "number", "description": "Décalage horizontal en pixels" },
-            { "name": "y", "type": "number", "description": "Décalage vertical en pixels" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Décalage horizontal en pixels"
+            },
+            {
+              "name": "y",
+              "type": "number",
+              "description": "Décalage vertical en pixels"
+            }
           ],
           "doc_anchor": "layer-set_scroll"
         },
@@ -518,9 +699,21 @@
           "snippet": "layer.scroll_by(0, 1, 0)",
           "description": "Ajoute (dx, dy) au décalage propre du layer. Appelé chaque frame dans on_update, donne un défilement autonome (nuages qui dérivent, eau qui coule) sans bouger la caméra.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "dx", "type": "number", "description": "Pixels ajoutés horizontalement" },
-            { "name": "dy", "type": "number", "description": "Pixels ajoutés verticalement" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "dx",
+              "type": "number",
+              "description": "Pixels ajoutés horizontalement"
+            },
+            {
+              "name": "dy",
+              "type": "number",
+              "description": "Pixels ajoutés verticalement"
+            }
           ],
           "doc_anchor": "layer-scroll_by"
         },
@@ -529,7 +722,11 @@
           "snippet": "layer.get_scroll_x(0)",
           "description": "Décalage horizontal propre du layer (n'inclut pas la caméra).",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            }
           ],
           "returns": "number — décalage en pixels",
           "doc_anchor": "layer-get_scroll_x"
@@ -539,7 +736,11 @@
           "snippet": "layer.get_scroll_y(0)",
           "description": "Décalage vertical propre du layer (n'inclut pas la caméra).",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            }
           ],
           "returns": "number — décalage en pixels",
           "doc_anchor": "layer-get_scroll_y"
@@ -549,8 +750,16 @@
           "snippet": "layer.set_map(1, 12)",
           "description": "Avancé — bascule le layer sur un autre screenblock (0-31). Permet de composer une carte pendant qu'une autre est affichée, puis de l'afficher d'un coup, sans déchirure. Les appels tilemap.* suivants visent le nouveau screenblock.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "sbb", "type": "number", "description": "Numéro de screenblock (0-31)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "sbb",
+              "type": "number",
+              "description": "Numéro de screenblock (0-31)"
+            }
           ],
           "doc_anchor": "layer-set_map"
         },
@@ -559,7 +768,11 @@
           "snippet": "layer.get_map(1)",
           "description": "Avancé — screenblock actuellement affiché par le layer n.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            }
           ],
           "returns": "number — screenblock 0-31",
           "doc_anchor": "layer-get_map"
@@ -574,30 +787,34 @@
           "snippet": "text.draw(2, 16, \"village_garde_01\")",
           "description": "Affiche un texte de la table du projet. tx/ty sont en tuiles (1 tuile = 8 px). Le texte se pose sur le layer d'interface de la scène — c'est là que vivent les glyphes de la police, donc il n'y a pas de layer à choisir. La position vient avant le contenu : c'est le contenu qui grandira (valeurs interpolées), pas la géométrie.",
           "params": [
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
-            { "name": "id", "type": "string", "description": "Clé du texte dans la table du projet" }
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne, en tuiles"
+            },
+            {
+              "name": "id",
+              "type": "string",
+              "description": "Clé du texte dans la table du projet"
+            }
           ],
           "doc_anchor": "text-draw"
-        },
-        {
-          "label": "text.draw_upto(tx, ty, id, n)",
-          "snippet": "text.draw_upto(2, 16, \"village_garde_01\", scene.frame() / 2)",
-          "description": "Affiche les n premiers caractères — l'effet machine à écrire. Le rythme vous appartient entièrement : le moteur ne décide d'aucune vitesse. Faire varier n avec scene.frame() donne un défilement régulier ; un compteur à vous permet de ralentir sur la ponctuation, de jouer un son par lettre, ou de tout révéler d'un coup au bouton. Datée : le langage de marqueurs la remplacera.",
-          "params": [
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
-            { "name": "id", "type": "string", "description": "Clé du texte" },
-            { "name": "n", "type": "number", "description": "Nombre de caractères révélés" }
-          ],
-          "doc_anchor": "text-draw_upto"
         },
         {
           "label": "text.length(id)",
           "snippet": "text.length(\"village_garde_01\")",
           "description": "Nombre de caractères d'un texte. C'est la borne de la machine à écrire : quand n l'atteint, le texte est entièrement révélé.",
           "params": [
-            { "name": "id", "type": "string", "description": "Clé du texte" }
+            {
+              "name": "id",
+              "type": "string",
+              "description": "Clé du texte"
+            }
           ],
           "returns": "number — nombre de caractères",
           "doc_anchor": "text-length"
@@ -607,10 +824,26 @@
           "snippet": "text.clear(0, 0, 30, 4)",
           "description": "Efface un rectangle de w×h tuiles sur le layer d'interface.",
           "params": [
-            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
-            { "name": "w", "type": "number", "description": "Largeur en tuiles" },
-            { "name": "h", "type": "number", "description": "Hauteur en tuiles" }
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne du coin haut-gauche, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne du coin haut-gauche, en tuiles"
+            },
+            {
+              "name": "w",
+              "type": "number",
+              "description": "Largeur en tuiles"
+            },
+            {
+              "name": "h",
+              "type": "number",
+              "description": "Hauteur en tuiles"
+            }
           ],
           "doc_anchor": "text-clear"
         },
@@ -619,9 +852,100 @@
           "snippet": "text.set_font(\"Pixelia\")",
           "description": "Charge une police en mémoire vidéo. Une seule police est résidente à la fois : rappeler cette fonction remplace la précédente. La première police du projet est chargée automatiquement au début de chaque scène.",
           "params": [
-            { "name": "f", "type": "string", "description": "Nom de la police du projet" }
+            {
+              "name": "f",
+              "type": "string",
+              "description": "Nom de la police du projet"
+            }
           ],
           "doc_anchor": "text-set_font"
+        }
+      ]
+    },
+    {
+      "name": "Interface",
+      "entries": [
+        {
+          "label": "ui.image_set(image, state)",
+          "snippet": "ui.image_set(\"coeur_2\", \"vide\")",
+          "description": "Change l'état affiché par une image de l'interface.",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "state",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "ui-image_set"
+        },
+        {
+          "label": "ui.image_play(image, on)",
+          "snippet": "ui.image_play(\"curseur\", false)",
+          "description": "Lance (true) ou fige (false) le défilement des frames.",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "on",
+              "type": "number",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "ui-image_play"
+        },
+        {
+          "label": "ui.get(\"name\")",
+          "snippet": "ui.get(\"alerte\")",
+          "description": "Retourne une référence à l'élément d'interface nommé (texte, panel ou image) — appeler :show()/:hide() dessus.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom exact de l'élément dans la mise en page"
+            }
+          ],
+          "returns": "ui_element — référence, ou nil si absent",
+          "doc_anchor": "ui-get"
+        },
+        {
+          "label": "self:show()",
+          "snippet": "ui.get(\"alerte\"):show()",
+          "description": "Affiche l'élément — et implicitement ses enfants, sauf ceux cachés individuellement.",
+          "params": [],
+          "returns": "",
+          "doc_anchor": "self-show"
+        },
+        {
+          "label": "self:hide()",
+          "snippet": "ui.get(\"alerte\"):hide()",
+          "description": "Cache l'élément et tout son sous-arbre.",
+          "params": [],
+          "returns": "",
+          "doc_anchor": "self-hide"
+        },
+        {
+          "label": "ui.image_state(image)",
+          "snippet": "if ui.image_state(\"coeur_1\") == 0 then ... end",
+          "description": "Index de l'état affiché — de quoi enchaîner sans mémoriser.",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "int",
+          "doc_anchor": "ui-image_state"
         }
       ]
     },
@@ -633,8 +957,16 @@
           "snippet": "window.show(0, true)",
           "description": "Active ou désactive une window. Une window ne dessine rien : c'est un pochoir, qui dit par région de l'écran QUI a le droit de s'afficher. L'apparence vient de ce que vous mettez dedans. n : 0 et 1 = les deux rectangles, 2 = la window OBJ. Attention : dès qu'une window est active, la région 3 (extérieur) régit tout le reste de l'écran.",
           "params": [
-            { "name": "n", "type": "number", "description": "0 = window 0, 1 = window 1, 2 = window OBJ" },
-            { "name": "on", "type": "boolean", "description": "true = active" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "0 = window 0, 1 = window 1, 2 = window OBJ"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = active"
+            }
           ],
           "doc_anchor": "window-show"
         },
@@ -643,7 +975,11 @@
           "snippet": "window.is_visible(0)",
           "description": "Teste si la window n est active.",
           "params": [
-            { "name": "n", "type": "number", "description": "0, 1 ou 2 (window OBJ)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "0, 1 ou 2 (window OBJ)"
+            }
           ],
           "returns": "number — 1 si active, 0 sinon",
           "doc_anchor": "window-is_visible"
@@ -653,11 +989,31 @@
           "snippet": "window.set(0, 24, 96, 192, 56)",
           "description": "Définit le rectangle d'une window, en pixels écran (240×160). Il n'y a que DEUX rectangles disponibles sur GBA, 0 et 1 — c'est une contrainte de la console, pas de l'éditeur. Animer ce rectangle frame après frame donne les transitions (iris, volet, bandeau).",
           "params": [
-            { "name": "n", "type": "number", "description": "Window 0 ou 1" },
-            { "name": "x", "type": "number", "description": "Bord gauche, en pixels écran" },
-            { "name": "y", "type": "number", "description": "Bord haut, en pixels écran" },
-            { "name": "w", "type": "number", "description": "Largeur en pixels" },
-            { "name": "h", "type": "number", "description": "Hauteur en pixels" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Window 0 ou 1"
+            },
+            {
+              "name": "x",
+              "type": "number",
+              "description": "Bord gauche, en pixels écran"
+            },
+            {
+              "name": "y",
+              "type": "number",
+              "description": "Bord haut, en pixels écran"
+            },
+            {
+              "name": "w",
+              "type": "number",
+              "description": "Largeur en pixels"
+            },
+            {
+              "name": "h",
+              "type": "number",
+              "description": "Hauteur en pixels"
+            }
           ],
           "doc_anchor": "window-set"
         },
@@ -666,9 +1022,21 @@
           "snippet": "window.set_layer(0, 2, true)",
           "description": "Autorise ou non un layer de fond à s'afficher dans une région. Régions : 0 = window 0, 1 = window 1, 2 = window OBJ, 3 = tout l'extérieur. Un pixel obéit à la première région qui le contient, dans cet ordre. C'est ainsi qu'un layer plein écran ne se voit que dans un rectangle.",
           "params": [
-            { "name": "r", "type": "number", "description": "Région 0-3 (3 = extérieur)" },
-            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" },
-            { "name": "on", "type": "boolean", "description": "true = autorisé dans cette région" }
+            {
+              "name": "r",
+              "type": "number",
+              "description": "Région 0-3 (3 = extérieur)"
+            },
+            {
+              "name": "bg",
+              "type": "number",
+              "description": "Slot de fond 0-3"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = autorisé dans cette région"
+            }
           ],
           "doc_anchor": "window-set_layer"
         },
@@ -677,8 +1045,16 @@
           "snippet": "window.get_layer(0, 2)",
           "description": "Teste si le layer bg est autorisé dans la région r.",
           "params": [
-            { "name": "r", "type": "number", "description": "Région 0-3" },
-            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" }
+            {
+              "name": "r",
+              "type": "number",
+              "description": "Région 0-3"
+            },
+            {
+              "name": "bg",
+              "type": "number",
+              "description": "Slot de fond 0-3"
+            }
           ],
           "returns": "number — 1 si autorisé, 0 sinon",
           "doc_anchor": "window-get_layer"
@@ -688,8 +1064,16 @@
           "snippet": "window.set_obj(0, false)",
           "description": "Autorise ou non les sprites dans la région r. Couper les sprites dans un rectangle empêche un personnage de passer par-dessus une zone d'interface.",
           "params": [
-            { "name": "r", "type": "number", "description": "Région 0-3" },
-            { "name": "on", "type": "boolean", "description": "true = sprites autorisés" }
+            {
+              "name": "r",
+              "type": "number",
+              "description": "Région 0-3"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = sprites autorisés"
+            }
           ],
           "doc_anchor": "window-set_obj"
         },
@@ -698,27 +1082,18 @@
           "snippet": "window.set_blend(3, true)",
           "description": "Autorise ou non le mélange de couleurs dans la région r. Combinaison la plus utile : mélange activé dans la région 3 et coupé dans la région 0, ce qui estompe tout l'écran SAUF votre rectangle — sans dépenser le moindre octet de mémoire vidéo.",
           "params": [
-            { "name": "r", "type": "number", "description": "Région 0-3" },
-            { "name": "on", "type": "boolean", "description": "true = mélange appliqué ici" }
+            {
+              "name": "r",
+              "type": "number",
+              "description": "Région 0-3"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = mélange appliqué ici"
+            }
           ],
           "doc_anchor": "window-set_blend"
-        },
-        {
-          "label": "self:set_obj_mode(mode)",
-          "snippet": "self:set_obj_mode(2)",
-          "description": "Mode d'affichage du sprite. 0 = normal. 2 = window OBJ : le sprite n'est plus dessiné, ses pixels opaques DÉCOUPENT la région 2 — une région de forme absolument libre, animable comme n'importe quelle animation de sprite, là où les windows 0 et 1 restent rectangulaires. Le prix : une entrée d'affichage et de la mémoire sprite. (Mode 1 = semi-transparent, réservé au mélange de couleurs, pas encore câblé.)",
-          "params": [
-            { "name": "mode", "type": "number", "description": "0 = normal, 1 = semi-transparent, 2 = window OBJ" }
-          ],
-          "doc_anchor": "self-set_obj_mode"
-        },
-        {
-          "label": "self:get_obj_mode()",
-          "snippet": "self:get_obj_mode()",
-          "description": "Mode d'affichage courant du sprite (0, 1 ou 2).",
-          "params": [],
-          "returns": "number — 0, 1 ou 2",
-          "doc_anchor": "self-get_obj_mode"
         }
       ]
     },
@@ -726,40 +1101,43 @@
       "name": "Blend",
       "entries": [
         {
-          "label": "blend.set_mode(mode)",
-          "snippet": "blend.set_mode(1)",
-          "description": "Type de mélange de couleurs. 0 = aucun, 1 = alpha (transparence entre deux couches), 2 = éclaircir vers le blanc, 3 = assombrir vers le noir. Les modes 2 et 3 se dosent avec blend.set_fade(), le mode 1 avec blend.set_alpha().",
-          "params": [
-            { "name": "mode", "type": "number", "description": "0 aucun, 1 alpha, 2 vers le blanc, 3 vers le noir" }
-          ],
-          "doc_anchor": "blend-set_mode"
-        },
-        {
-          "label": "blend.get_mode()",
-          "snippet": "blend.get_mode()",
-          "description": "Mode de mélange courant (0-3).",
-          "params": [],
-          "returns": "number — 0 à 3",
-          "doc_anchor": "blend-get_mode"
-        },
-        {
           "label": "blend.set_layer(side, bg, on)",
           "snippet": "blend.set_layer(0, 1, true)",
           "description": "Désigne un layer de fond comme participant au mélange. Il y a DEUX jeux de cibles : le dessus (side 0), ce qui est mélangé, et le dessous (side 1), ce avec quoi — c'est-à-dire ce qui se trouve derrière selon les priorités. En mode alpha, rien ne se passe là où un pixel du dessus n'a aucun pixel du dessous derrière lui : c'est la cause n°1 d'un effet qui « ne marche pas ».",
           "params": [
-            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
-            { "name": "bg", "type": "number", "description": "Slot de fond 0-3" },
-            { "name": "on", "type": "boolean", "description": "true = ce layer participe" }
+            {
+              "name": "side",
+              "type": "number",
+              "description": "0 = le dessus, 1 = le dessous"
+            },
+            {
+              "name": "bg",
+              "type": "number",
+              "description": "Slot de fond 0-3"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = ce layer participe"
+            }
           ],
           "doc_anchor": "blend-set_layer"
         },
         {
           "label": "blend.set_obj(side, on)",
           "snippet": "blend.set_obj(0, true)",
-          "description": "Désigne les sprites comme cible du dessus ou du dessous. Note : un sprite passé en self:set_obj_mode(1) se mélange de toute façon, indépendamment de ce réglage — pratique pour un seul fantôme translucide sans toucher aux autres.",
+          "description": "Désigne les sprites comme cible du dessus ou du dessous. Note : un sprite passé en self.obj_mode = 1 se mélange de toute façon, indépendamment de ce réglage — pratique pour un seul fantôme translucide sans toucher aux autres.",
           "params": [
-            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
-            { "name": "on", "type": "boolean", "description": "true = les sprites participent" }
+            {
+              "name": "side",
+              "type": "number",
+              "description": "0 = le dessus, 1 = le dessous"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = les sprites participent"
+            }
           ],
           "doc_anchor": "blend-set_obj"
         },
@@ -768,8 +1146,16 @@
           "snippet": "blend.set_backdrop(1, true)",
           "description": "Désigne la couleur de fond de la scène comme cible. C'est très souvent le dessous qui manque : là où aucun layer ne dessine, seul le fond est derrière.",
           "params": [
-            { "name": "side", "type": "number", "description": "0 = le dessus, 1 = le dessous" },
-            { "name": "on", "type": "boolean", "description": "true = le fond participe" }
+            {
+              "name": "side",
+              "type": "number",
+              "description": "0 = le dessus, 1 = le dessous"
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": "true = le fond participe"
+            }
           ],
           "doc_anchor": "blend-set_backdrop"
         },
@@ -778,8 +1164,16 @@
           "snippet": "blend.set_alpha(8, 8)",
           "description": "Dosage du mode 1, en seizièmes (0 à 16) : eva pour le dessus, evb pour le dessous. (8, 8) donne moitié-moitié, (16, 0) rend le dessus complètement opaque. Les deux n'ont pas à totaliser 16 — les dépasser éclaircit l'image.",
           "params": [
-            { "name": "eva", "type": "number", "description": "Part du dessus, 0-16" },
-            { "name": "evb", "type": "number", "description": "Part du dessous, 0-16" }
+            {
+              "name": "eva",
+              "type": "number",
+              "description": "Part du dessus, 0-16"
+            },
+            {
+              "name": "evb",
+              "type": "number",
+              "description": "Part du dessous, 0-16"
+            }
           ],
           "doc_anchor": "blend-set_alpha"
         },
@@ -788,9 +1182,56 @@
           "snippet": "blend.set_fade(8)",
           "description": "Intensité des modes 2 et 3, en seizièmes : 0 = rien, 16 = blanc ou noir complet. Un fondu d'entrée ou de sortie, c'est cette valeur incrémentée frame après frame. Combiné à window.set_blend(), l'estompe ne s'applique que dans les régions choisies.",
           "params": [
-            { "name": "evy", "type": "number", "description": "Intensité 0-16" }
+            {
+              "name": "evy",
+              "type": "number",
+              "description": "Intensité 0-16"
+            }
           ],
           "doc_anchor": "blend-set_fade"
+        }
+      ]
+    },
+    {
+      "name": "Palette",
+      "entries": [
+        {
+          "label": "palette.set_bg(bank, p)",
+          "snippet": "palette.set_bg(0, \"Nuit\")",
+          "description": "Remplace les couleurs de la banque de FOND `bank` (0-15).",
+          "params": [
+            {
+              "name": "bank",
+              "type": "number",
+              "description": ""
+            },
+            {
+              "name": "p",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "palette-set_bg"
+        },
+        {
+          "label": "palette.set_obj(bank, p)",
+          "snippet": "palette.set_obj(1, \"Nuit\")",
+          "description": "Remplace les couleurs de la banque de SPRITES `bank` (0-15).",
+          "params": [
+            {
+              "name": "bank",
+              "type": "number",
+              "description": ""
+            },
+            {
+              "name": "p",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "palette-set_obj"
         }
       ]
     },
@@ -802,10 +1243,26 @@
           "snippet": "tilemap.set(1, 5, 3, 0)",
           "description": "Pose une tuile sur le layer n. tx/ty sont en TUILES dans la carte du layer (1 tuile = 8 px), pas en pixels monde, et bouclent au bord comme le matériel. Le flip et la palette de la case sont conservés.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
-            { "name": "tile", "type": "number", "description": "Index de tuile dans le tileset du layer (0-1023)" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne, en tuiles"
+            },
+            {
+              "name": "tile",
+              "type": "number",
+              "description": "Index de tuile dans le tileset du layer (0-1023)"
+            }
           ],
           "doc_anchor": "tilemap-set"
         },
@@ -814,9 +1271,21 @@
           "snippet": "tilemap.get(1, 5, 3)",
           "description": "Index de tuile actuellement posé en (tx, ty) sur le layer n. À ne pas confondre avec tile.get(), qui lit la carte de collision à une position monde en pixels.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne, en tuiles"
+            }
           ],
           "returns": "number — index de tuile (0-1023)",
           "doc_anchor": "tilemap-get"
@@ -826,10 +1295,26 @@
           "snippet": "tilemap.set_palette(1, 5, 3, 4)",
           "description": "Repeint une case avec une autre sous-palette (0-15) sans changer son dessin — l'équivalent en jeu du pinceau de palette du Background Editor. Idéal pour une case qui s'allume, gèle, ou passe en nuit.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
-            { "name": "bank", "type": "number", "description": "Sous-palette 0-15" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne, en tuiles"
+            },
+            {
+              "name": "bank",
+              "type": "number",
+              "description": "Sous-palette 0-15"
+            }
           ],
           "doc_anchor": "tilemap-set_palette"
         },
@@ -838,11 +1323,31 @@
           "snippet": "tilemap.set_flip(1, 5, 3, true, false)",
           "description": "Retourne une case horizontalement et/ou verticalement. Gratuit côté matériel : un miroir ne coûte aucune tuile supplémentaire.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "tx", "type": "number", "description": "Colonne, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne, en tuiles" },
-            { "name": "h", "type": "boolean", "description": "Miroir horizontal" },
-            { "name": "v", "type": "boolean", "description": "Miroir vertical" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne, en tuiles"
+            },
+            {
+              "name": "h",
+              "type": "boolean",
+              "description": "Miroir horizontal"
+            },
+            {
+              "name": "v",
+              "type": "boolean",
+              "description": "Miroir vertical"
+            }
           ],
           "doc_anchor": "tilemap-set_flip"
         },
@@ -851,12 +1356,36 @@
           "snippet": "tilemap.fill(1, 0, 0, 30, 20, 0)",
           "description": "Remplit un rectangle de w×h tuiles avec la même tuile. Pratique pour effacer une zone (tuile 0) ou poser un fond de panneau.",
           "params": [
-            { "name": "n", "type": "number", "description": "Slot de fond (0-3)" },
-            { "name": "tx", "type": "number", "description": "Colonne du coin haut-gauche, en tuiles" },
-            { "name": "ty", "type": "number", "description": "Ligne du coin haut-gauche, en tuiles" },
-            { "name": "w", "type": "number", "description": "Largeur en tuiles" },
-            { "name": "h", "type": "number", "description": "Hauteur en tuiles" },
-            { "name": "tile", "type": "number", "description": "Index de tuile à poser" }
+            {
+              "name": "n",
+              "type": "number",
+              "description": "Slot de fond (0-3)"
+            },
+            {
+              "name": "tx",
+              "type": "number",
+              "description": "Colonne du coin haut-gauche, en tuiles"
+            },
+            {
+              "name": "ty",
+              "type": "number",
+              "description": "Ligne du coin haut-gauche, en tuiles"
+            },
+            {
+              "name": "w",
+              "type": "number",
+              "description": "Largeur en tuiles"
+            },
+            {
+              "name": "h",
+              "type": "number",
+              "description": "Hauteur en tuiles"
+            },
+            {
+              "name": "tile",
+              "type": "number",
+              "description": "Index de tuile à poser"
+            }
           ],
           "doc_anchor": "tilemap-fill"
         }

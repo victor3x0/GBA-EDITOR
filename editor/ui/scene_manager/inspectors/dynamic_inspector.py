@@ -12,7 +12,7 @@ from .camera_inspector import CameraInspector
 from .project_inspector import ProjectInspector
 from .script_inspector import ScriptInspector
 from .ui_inspector import UIInspector
-from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector, VariableUsesInspector
+from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector
 
 
 class DynamicInspector(QWidget):
@@ -41,10 +41,9 @@ class DynamicInspector(QWidget):
     _MODE_CAMERA      = 3
     _MODE_PREFAB_USES = 4
     _MODE_SCRIPT_USES = 5
-    _MODE_VARIABLE_USES = 6
-    _MODE_PROJECT     = 7
-    _MODE_SCRIPT      = 8
-    _MODE_UI          = 9
+    _MODE_PROJECT     = 6
+    _MODE_SCRIPT      = 7
+    _MODE_UI          = 8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -106,21 +105,16 @@ class DynamicInspector(QWidget):
         self._script_uses_insp.edit_requested.connect(self._on_script_edit_requested)
         self._stack.addWidget(self._script_uses_insp)
 
-        # 6 — global/constant uses
-        self._variable_uses_insp = VariableUsesInspector()
-        self._variable_uses_insp.edit_requested.connect(self._on_script_edit_requested)
-        self._stack.addWidget(self._variable_uses_insp)
-
-        # 7 — projet (mode par défaut : aucune sélection)
+        # 6 — projet (mode par défaut : aucune sélection)
         self._project_insp = ProjectInspector()
         self._stack.addWidget(self._project_insp)
 
-        # 8 — script (asset .lua sélectionné dans le Project Viewer)
+        # 7 — script (asset .lua sélectionné dans le Project Viewer)
         self._script_insp = ScriptInspector()
         self._stack.addWidget(self._script_insp)
         self._current_script_path = None   # utilisé par _on_header_rename
 
-        # 9 — élément d'UI (texte, conteneur ou image) — UN inspecteur adaptatif
+        # 8 — élément d'UI (texte, conteneur ou image) — UN inspecteur adaptatif
         self._ui_insp = UIInspector()
         self._ui_insp.changed.connect(self.changed)
         self._ui_insp.changed.connect(self.ui_regions_changed)
@@ -340,15 +334,6 @@ class DynamicInspector(QWidget):
         self._script_uses_insp.load(script_path, proj)
         self._set_header("script", "Script", _P(script_path).name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT_USES)
-
-    def show_variable_uses(self, kind: str, name: str, project=None):
-        proj = project or self._project
-        if not proj:
-            return
-        self._variable_uses_insp.load(kind, name, proj)
-        type_text = "Constant" if kind == "const" else "Global"
-        self._set_header("uses", type_text, name)
-        self._stack.setCurrentIndex(self._MODE_VARIABLE_USES)
 
     def _on_script_edit_requested(self, path: str):
         """Ouvre le script dans l'éditeur — relayé par window.py via script_opened."""

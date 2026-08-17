@@ -1,6 +1,6 @@
 """
 GBA Editor — Scene Canvas
-Canvas dynamique (max 512×512) avec caméra 240×160 déplaçable.
+Canvas dynamique (plafond monde 32767×32767) avec caméra 240×160 déplaçable.
 
 Layers (z-order) :
   z=0..3   → BG3..BG0 (PNG composités)
@@ -94,8 +94,13 @@ from ui.scene_manager.align_snap import (
 # ── Constantes GBA ───────────────────────────────────────────────
 GBA_W = 240
 GBA_H = 160
-MAX_CANVAS_W = 512  # limite hardware BG tuilé régulier
-MAX_CANVAS_H = 512
+# Plafond MONDE : les coordonnées de la caméra sont des s16 (bounds jusqu'à
+# 32767), donc un monde au-delà de 32767 ne serait pas scrollable. Le scroll
+# caméra max vaut alors 32767 - screen.width. Ce n'est PAS
+# une limite de carte : un axe de map > 64 tuiles est streamé au build
+# (main_gen.py), le monde peut être bien plus grand que 512×512.
+MAX_CANVAS_W = 32767
+MAX_CANVAS_H = 32767
 
 # Aperçu des windows matérielles — une teinte par région (WIN0, WIN1), reprise
 # du bleu de la carte WINDOWS de l'inspecteur de scène.
@@ -4283,7 +4288,8 @@ class SceneEditor(QWidget):
                     max_w = max(max_w, px.width())
                     max_h = max(max_h, px.height())
 
-        # Clamper au maximum hardware GBA
+        # Clamper au plafond monde (32767, coordonnées s16 de la caméra) — pas à
+        # 512 : une carte plus grande est streamée au build, pas interdite.
         self._canvas_w = min(max_w, MAX_CANVAS_W)
         self._canvas_h = min(max_h, MAX_CANVAS_H)
         self._gba_scene.resize_canvas(self._canvas_w, self._canvas_h)
@@ -4524,16 +4530,26 @@ class SceneEditor(QWidget):
             save_fn = lambda _s=self: _s.scene_changed.emit()
             ox  = getattr(sprite_comp, "origin_x", 0)   if sprite_comp else 0
             oy  = getattr(sprite_comp, "origin_y", 0)   if sprite_comp else 0
-            sx  = getattr(sprite_comp, "scale_x",  1.0) if sprite_comp else 1.0
-            sy  = getattr(sprite_comp, "scale_y",  1.0) if sprite_comp else 1.0
-            rot = getattr(sprite_comp, "rotation", 0.0) if sprite_comp else 0.0
+            # Transform affine MONDE (Actor) × LOCAL (SpriteComponent), comme au
+            # runtime : le sprite hérite scale (produit) et rotation (somme) de
+            # son actor, et se place en offset dans le repère local de l'actor.
+            # Sans "Affine transform" sur l'actor, tout est identité (0°/100%).
+            _aff = bool(getattr(actor, "affine_transform", False))
+            asx = getattr(actor, "scale_x", 1.0)  if _aff else 1.0
+            asy = getattr(actor, "scale_y", 1.0)  if _aff else 1.0
+            arot = getattr(actor, "rotation", 0)  if _aff else 0
+            sx  = (getattr(sprite_comp, "scale_x",  1.0) if sprite_comp else 1.0) * asx
+            sy  = (getattr(sprite_comp, "scale_y",  1.0) if sprite_comp else 1.0) * asy
+            rot = (getattr(sprite_comp, "rotation", 0.0) if sprite_comp else 0.0) + arot
+            off_x = getattr(sprite_comp, "offset_x", 0) if (sprite_comp and _aff) else 0
+            off_y = getattr(sprite_comp, "offset_y", 0) if (sprite_comp and _aff) else 0
             # Flip effectif = flip du component XOR flip de la direction miroir
             # (ex. Ouest = miroir horizontal de l'Est).
             fh  = bool(getattr(sprite_comp, "flip_h", False) if sprite_comp else False) ^ dir_fh
             fv  = bool(getattr(sprite_comp, "flip_v", False) if sprite_comp else False) ^ dir_fv
             item = self._gba_scene.add_sprite(
                 frame_px, actor, save_fn=save_fn,
-                origin_x=ox, origin_y=oy, scale_x=sx, scale_y=sy,
+                origin_x=ox + off_x, origin_y=oy + off_y, scale_x=sx, scale_y=sy,
                 rotation=rot, flip_h=fh, flip_v=fv,
                 resolver=_pos_resolver, placeholder=is_placeholder,
             )

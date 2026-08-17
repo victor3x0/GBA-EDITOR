@@ -44,6 +44,8 @@ Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'édi
 
 ![Script Editor](docs/screenshots/ScriptEditor.png)
 
+  Le script étant *traduit* en C et non interprété, le langage accepté est un sous-ensemble de Lua : [**SCRIPTING.md**](SCRIPTING.md) dit ce qu'on peut écrire, ce qui ne marche pas, et quoi écrire à la place.
+
 - **Son** : effets sonores et musique (maxmod), gérés depuis l'éditeur.
 
 - **Prefabs** : acteurs réutilisables entre scènes.
@@ -76,9 +78,9 @@ Plus la stabilisation du runtime et de l'éditeur, la documentation utilisateur,
 deuxième jeu de démo choisi parmi les genres les plus exigeants de cette liste.
 
 Et quatre points qui ne sont pas des fonctionnalités, mais sans lesquels le mot « 1.0 » ne
-tient pas : une licence, des formats de fichiers qu'un outil de version sait relire, des
-modèles de projet pour démarrer, et la vérification que l'éditeur tient à l'échelle d'un vrai
-projet.
+tient pas : une licence (**faite** — cf. plus bas), des formats de fichiers qu'un outil de
+version sait relire, des modèles de projet pour démarrer, et la vérification que l'éditeur
+tient à l'échelle d'un vrai projet.
 
 ## Roadmap vers la v1.0
 
@@ -86,15 +88,16 @@ projet.
 - **v0.3** ✅ : Fondations runtime "background vivant" (layers, fenêtres, fondus) + Texte & UI in-game (polices custom, table de textes balisée, interface dessinée au canvas)
 - **v0.4** ✅ : Animation de décor (fonds animés posés au canvas, couleurs d'une scène pilotables au script)
 - **v0.5** ✅ : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
-- **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds)
-- **v0.7** ✅ : Structures de données — tableaux typés dans les scripts (une ou deux dimensions, indexés à partir de 1) et tables de données authorées, éditées dans le Data Editor et cuites en `const` dans la ROM — ce qui débloque RPG, tactique et gestion
-- **v0.8** : Son enrichi & écran de mixage (SFX/musique, pitch, volume par canal)
+- **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds), rotation et échelle des sprites (transform monde × local) avec neuf raccourcis de game feel (squash, flash, shake…)
+- **v0.7** ✅ : Structures de données — tableaux typés dans les scripts (une ou deux dimensions, indexés à partir de 1) et tables de données authorées, éditées dans le Data Editor et cuites en `const` dans la ROM — ce qui débloque RPG, tactique et gestion ; et le sous-ensemble Lua enfin **dit et tenu** ([SCRIPTING.md](SCRIPTING.md)) : ce qui n'est pas traduit est refusé sur sa ligne, plus jamais ignoré en silence
+- **v0.8** : Son — la musique portée par la scène (elle ne l'est pas encore), deux transitions fidèles au matériel (fondu traversant, coupe à la position pour enchaîner deux variantes d'un même morceau sans creux), écran de mixage et surcharges de hauteur/volume à l'appel
 - **v0.9** : Traduction des jeux depuis l'interface avec l'éditeur
 - **v0.10** : Distribution élargie (Linux)
 - **v0.11** : Traduction de l'interface de l'éditeur
 - **v0.12** : Vue d'ensemble — graphe des scènes et de leurs transitions, pour lire la logique d'un projet d'un coup d'œil
 - **v0.13** : Édition mixte code / no-code — les appels d'API s'éditent aussi comme des blocs, le script Lua restant la source unique
 - **v0.14** : Diagnostic — trace de débogage vers la console de l'émulateur, et mesure du budget de frame sur la console
+- **v0.15** ✅ : Visibilité des éléments d'interface — texte, panneau et image peuvent se cacher/montrer, au script (`ui.get("alerte"):hide()`) comme à l'authoring, et un panneau caché cache tout son sous-arbre
 
 ## Les versions suivantes exploreront des fonctionnalités plus avancées de la Game Boy Advance :
 

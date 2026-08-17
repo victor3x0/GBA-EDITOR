@@ -32,6 +32,17 @@ from core.models.background import (
     UI_ROLE_NINE, UI_ROLE_BG, ANIM_INSTANCE, ANIM_SHARED,
 )
 from core.command_dispatcher import get_dispatcher
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import (
+    BACKGROUNDS_SCENE, BACKGROUNDS_UI, BACKGROUNDS_ANIM,
+)
+
+# Section du finder <-> `kind` du modèle. Le composant partagé ne parle que de
+# libellés de famille ; l'écran, lui, raisonne en `kind`.
+_LABEL_OF_KIND = {KIND_SCENE:    BACKGROUNDS_SCENE.label,
+                  KIND_UI:       BACKGROUNDS_UI.label,
+                  KIND_ANIMATED: BACKGROUNDS_ANIM.label}
+_KIND_OF_LABEL = {v: k for k, v in _LABEL_OF_KIND.items()}
 from core.history import get_history, DeleteResourceCmd
 from core.bg_import import bg_fits_vram
 from .bg_inpaint_canvas import BgInpaintCanvas
@@ -201,218 +212,6 @@ class _AnimatedSourceList(_BgList):
         rows = min(max(len(assets), 1), 4)
         self.setFixedHeight(rows * self.ROW_H + 8)
 
-
-class BgFinderPanel(QWidget):
-    """Trois sections, un asset par section — décors, fonds d'interface, fonds
-    animés. Trois LISTES et pas une colonne « type » : le type gouverne ce que
-    l'inspecteur propose et ce que le canvas montre, donc le trouver demande de
-    savoir où regarder, pas de lire une colonne.
-
-    La sélection est exclusive entre les trois : l'écran n'a qu'un canvas."""
-
-    bg_selected  = pyqtSignal(object)   # BackgroundAsset | None
-    import_asked = pyqtSignal(str)      # kind à donner à l'image importée
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumWidth(180); self.setMaximumWidth(420)
-        self.setStyleSheet(f"background:{C.BG_BASE};")
-        self._project = None
-        self._blocking = False
-        root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-
-        root.addWidget(W.finder_bar("Background finder"))
-
-        self._lists: dict[str, _BgList] = {}
-        for kind in BG_KINDS:
-            title, add_tip = _KIND_SECTION[kind]
-            color = _KIND_COLOR[kind]
-            sec = FinderSection(title, color)
-            sec.set_add_tooltip(add_tip)
-            sec.add_clicked.connect(lambda k=kind: self.import_asked.emit(k))
-            root.addWidget(sec, 1)
-
-            lst = _BgList(color, draggable=(kind == KIND_ANIMATED))
-            lst.chosen.connect(lambda cur, k=kind: self._on_sel(k, cur))
-            lst.itemChanged.connect(self._on_item_renamed)
-            lst.customContextMenuRequested.connect(
-                lambda pos, k=kind: self._ctx_menu(k, pos))
-            sec.set_widget(lst)
-            self._lists[kind] = lst
-
-        # Ressort de queue : sections repliées, rien n'absorbe la hauteur du
-        # panneau et QVBoxLayout centrerait le tout.
-        root.addStretch()
-
-    def load_project(self, project):
-        self._project = project
-        self.refresh()
-
-    # ── Peuplement ────────────────────────────────────────────────
-
-    def _assets(self, kind: str) -> list:
-        return [b for b in (self._project.backgrounds if self._project else [])
-                if b.kind == kind]
-
-    def refresh(self, select: str = None):
-        """Repeuple les trois listes et sélectionne `select` (dans quelque
-        section qu'il soit), sinon le premier asset trouvé, en parcourant les
-        sections dans l'ordre. Rien à sélectionner = notifier None, pour que le
-        canvas et l'inspecteur se vident."""
-        self._blocking = True
-        for kind, lst in self._lists.items():
-            lst.blockSignals(True)
-            lst.clear()
-            for ba in self._assets(kind):
-                it = QListWidgetItem(ba.name)
-                it.setFont(ui_font(T.LG))   # même corps que les lignes d'arbre
-                it.setData(Qt.ItemDataRole.UserRole, ba)
-                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsEditable)
-                if kind == KIND_ANIMATED:
-                    it.setToolTip("Drag onto a background canvas to place it")
-                lst.addItem(it)
-            lst.blockSignals(False)
-
-        target = select or next((b.name for k in BG_KINDS
-                                 for b in self._assets(k)), None)
-        found = next(((kind, i) for kind, lst in self._lists.items()
-                      for i in range(lst.count())
-                      if lst.item(i).text() == target), None)
-        # Les sélections des AUTRES listes sont vidées avant de poser la bonne :
-        # sans ça, deux sections resteraient surlignées et le surlignage ne
-        # dirait plus ce que le canvas montre.
-        for kind, lst in self._lists.items():
-            lst.blockSignals(True)
-            if found is None or kind != found[0]:
-                lst.setCurrentItem(None)
-            lst.blockSignals(False)
-        self._blocking = False
-        if found is None:
-            self.bg_selected.emit(None)
-            return
-        kind, row = found
-        lst = self._lists[kind]
-        if lst.currentRow() == row:
-            # Déjà courant : setCurrentRow ne réémettrait rien, alors que
-            # l'appelant attend un rafraîchissement (recompression, renommage).
-            self.bg_selected.emit(lst.item(row).data(Qt.ItemDataRole.UserRole))
-        else:
-            lst.setCurrentRow(row)
-
-    def _on_sel(self, kind: str, cur):
-        if self._blocking:
-            return
-        if cur is None:
-            return          # désélection provoquée par une autre section
-        for k, lst in self._lists.items():
-            if k != kind:
-                lst.blockSignals(True)
-                lst.setCurrentItem(None)
-                lst.blockSignals(False)
-        self.bg_selected.emit(cur.data(Qt.ItemDataRole.UserRole))
-
-    # ── Renommage en place ────────────────────────────────────────
-
-    def _reset_item_text(self, item: QListWidgetItem, ba):
-        self._blocking = True
-        item.setText(ba.name if ba else "")
-        self._blocking = False
-
-    def _on_item_renamed(self, item: QListWidgetItem):
-        if self._blocking or not self._project:
-            return
-        ba = item.data(Qt.ItemDataRole.UserRole)
-        new_name = item.text().strip()
-        if not ba or not new_name or new_name == ba.name:
-            self._reset_item_text(item, ba)
-            return
-        if self._project.get_background(new_name):
-            QMessageBox.warning(self, "Name already used",
-                                f"A background named “{new_name}” already exists.")
-            self._reset_item_text(item, ba)
-            return
-        old_name = ba.name
-        with get_dispatcher().suspended():
-            self._project.rename_background(ba, new_name)
-            self._retarget_placements(old_name, ba.name)
-        self._reset_item_text(item, ba)
-        # setCurrentRow ne réémet pas la sélection si l'item était déjà courant :
-        # forcer le rafraîchissement de l'inspecteur pour refléter le nouveau nom.
-        self.bg_selected.emit(ba)
-
-    def _retarget_placements(self, old: str, new: str):
-        """Un fond animé renommé est encore POSÉ sur ses hôtes, qui le citent par
-        nom : sans ce rebranchement, chaque placement pointerait dans le vide.
-        Même geste que `UILayout.retarget_parent` après un renommage d'élément."""
-        if not self._project or old == new:
-            return
-        for host in self._project.backgrounds:
-            touched = False
-            for pl in host.animations:
-                if pl.animated_name == old:
-                    pl.animated_name = new
-                    touched = True
-            if touched:
-                self._project.backgrounds.save(host)
-
-    # ── Menu contextuel ───────────────────────────────────────────
-
-    def _ctx_menu(self, kind: str, pos):
-        lst = self._lists[kind]
-        item = lst.itemAt(pos)
-        if not item:
-            return
-        ba = item.data(Qt.ItemDataRole.UserRole)
-        if not ba:
-            return
-        menu = QMenu(self)
-        menu.setStyleSheet(QSS.menu)
-        act_rename = menu.addAction("Rename")
-        menu.addSeparator()
-        # Convertir = déplacer l'asset d'une section à l'autre. Un décor qu'on
-        # décide d'employer en cadre n'a pas à être réimporté : c'est le même
-        # PNG, la même compression, seul son EMPLOI change.
-        conv = menu.addMenu("Convert to")
-        conv.setStyleSheet(QSS.menu)
-        acts = {conv.addAction(BG_KIND_LABELS[k]): k
-                for k in BG_KINDS if k != kind}
-        menu.addSeparator()
-        act_del = menu.addAction("Delete background")
-        chosen = menu.exec(lst.viewport().mapToGlobal(pos))
-        if chosen == act_rename:
-            lst.editItem(item)
-        elif chosen == act_del:
-            self._delete_bg(ba)
-        elif chosen in acts:
-            self.convert_kind(ba, acts[chosen])
-
-    def convert_kind(self, ba, kind: str):
-        if not self._project or ba.kind == kind:
-            return
-        ba.kind = kind
-        with get_dispatcher().suspended():
-            self._project.backgrounds.save(ba)
-        get_dispatcher().notify_background_changed(ba)
-        self.refresh(select=ba.name)
-
-    def _delete_bg(self, ba):
-        if not self._project:
-            return
-        if QMessageBox.question(
-            self, "Delete",
-            f"Delete background “{ba.name}”?\n(Ctrl+Z to undo)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        # Le PNG source doit partir avec l'asset : sinon reconcile_backgrounds
-        # recrée le fond au prochain chargement du projet. Les métadonnées de
-        # compression vivent dans le JSON, qu'un Ctrl+Z (restore) ramène intact.
-        png = (self._project.background_images_dir / ba.asset) if ba.asset else None
-        with get_dispatcher().suspended():
-            if png and png.exists():
-                png.unlink()
-        get_history().push(DeleteResourceCmd(
-            self._project.backgrounds, ba, lambda: self.refresh()))
 
 
 # ── Propriétés (droite) ─────────────────────────────────────────────────────
@@ -1393,7 +1192,12 @@ class BackgroundEditorScreen(QWidget):
             f"QSplitter::handle:horizontal{{width:2px;}}"
             f"QSplitter::handle:hover{{background:{_BG_COLOR};}}"
         )
-        self._finder = BgFinderPanel()
+        # Trois sections, une par `kind` : chacune a son propre import (un PNG,
+        # un cadre d'UI, une planche d'animation). Cf. ui/common/asset_kinds.py.
+        self._finder = AssetFinder(
+            "Background finder",
+            [BACKGROUNDS_SCENE, BACKGROUNDS_UI, BACKGROUNDS_ANIM],
+            min_width=180, max_width=420)
         self._canvas = BgInpaintCanvas()
         self._props = BgPropertiesPanel()
         split.addWidget(self._finder); split.addWidget(self._canvas); split.addWidget(self._props)
@@ -1401,8 +1205,9 @@ class BackgroundEditorScreen(QWidget):
         split.setStretchFactor(0, 0); split.setStretchFactor(1, 1); split.setStretchFactor(2, 0)
         root.addWidget(split)
 
-        self._finder.bg_selected.connect(self._on_selected)
-        self._finder.import_asked.connect(self._on_import)
+        self._finder.selected.connect(lambda _kind, ba: self._on_selected(ba))
+        self._finder.add_requested.connect(
+            lambda label: self._on_import(_KIND_OF_LABEL[label]))
         self._props.changed.connect(self._canvas.reload)
         self._props.renamed.connect(self._on_renamed)
         # Mutation de la liste des palettes → re-render du canvas (sa bande de
@@ -1439,11 +1244,32 @@ class BackgroundEditorScreen(QWidget):
     def load_project(self, project):
         self._project = project
         self._finder.load_project(project)
+        self._refresh_finder()
 
     def select_background(self, name: str):
         """Ouvre le fond `name` — navigation entrante depuis un autre écran
         (ex. carte « Utilisations » du Palette Editor)."""
-        self._finder.refresh(select=name)
+        self._refresh_finder(select=name)
+
+    def _refresh_finder(self, select: str = None):
+        """Repeuple les trois sections et met à l'écran le fond `select` — ou le
+        premier trouvé, à défaut. La sélection est posée SIGNAUX COUPÉS puis
+        notifiée à la main : `select()` ne réémet rien si la ligne était déjà
+        courante, alors que l'appelant attend un rafraîchissement (renommage,
+        recompression)."""
+        self._finder.refresh()
+        bgs = list(self._project.backgrounds) if self._project else []
+        target = next((b for b in bgs if b.name == select), None)
+        if target is None:
+            target = bgs[0] if bgs else None
+        if target is None:
+            self._finder.clear_selection()
+            self._on_selected(None)
+            return
+        self._finder.blockSignals(True)
+        self._finder.select(_LABEL_OF_KIND.get(target.kind, ""), target)
+        self._finder.blockSignals(False)
+        self._on_selected(target)
 
     # ── Compression hors-thread ───────────────────────────────────
 
@@ -1500,12 +1326,12 @@ class BackgroundEditorScreen(QWidget):
         # sur le nouveau nom (il émettra bg_selected → recharge preview + props).
         ba = self._props._ba
         if ba:
-            self._finder.refresh(select=ba.name)
+            self._refresh_finder(select=ba.name)
 
     def _on_kind_changed(self):
         ba = self._props._ba
         if ba:
-            self._finder.refresh(select=ba.name)
+            self._refresh_finder(select=ba.name)
 
     def _on_placements_changed(self):
         """Un fond animé posé, déplacé ou retiré : l'inspecteur n'en montre que
@@ -1550,7 +1376,7 @@ class BackgroundEditorScreen(QWidget):
             token = "tiled8"
         # Sélectionner immédiatement (canvas vide + « Compression… ») puis
         # compresser hors-thread — l'éditeur n'est jamais bloqué.
-        self._finder.refresh(select=ba.name)
+        self._refresh_finder(select=ba.name)
         self._compress_async(
             ba, dst, token, ba.quantize_method, ba.dither,
             then=lambda: self._after_import(ba))

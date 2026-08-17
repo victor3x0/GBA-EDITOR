@@ -105,6 +105,20 @@ def bg_info(p: Project, scene) -> list[dict]:
     return result
 
 
+def scene_world_size(p: Project, scene) -> tuple[int, int]:
+    """Taille du monde de la scène en pixels — le canvas : le plus grand des
+    fonds posés, 240×160 par défaut. C'est ce que `scene.size.w/.h` expose aux
+    scripts (posé au runtime par scene_init dans g_scene_w/g_scene_h)."""
+    w, h = 240, 160
+    for bi in bg_info(p, scene):
+        tw, th = bi.get("tw") or 0, bi.get("th") or 0
+        if tw:
+            w = max(w, tw * 8)
+        if th:
+            h = max(h, th * 8)
+    return min(w, 32767), min(h, 32767)
+
+
 def scene_anim_descriptors(p, scene, bgi: list[dict]) -> list[dict]:
     """Placements de fonds animés de la scène, enrichis de ce que seul le codegen
     connaît : le screenblock et la taille de la carte du calque hôte.
@@ -416,7 +430,32 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
             f"int spawn_{s}(int x, int y) {{",
             f"    for(int _i={start}; _i<{start+size}; _i++) {{",
             f"        if(!g_actors[_i].active) {{",
-            f"            g_actors[_i] = (Actor){{0}};",
+        ]
+
+        # Transform affine : `(Actor){0}` remet TOUT à zéro, y compris le slot de
+        # matrice posé par scene_init et les échelles neutres (256 = ×1). Un
+        # prefab affine spawné repartait donc avec une échelle de ZÉRO — matrice
+        # dégénérée, sprite illisible — et avec le slot 0, celui d'un autre actor.
+        # Le slot appartient à la SCÈNE (il change d'une scène à l'autre) : on le
+        # préserve. L'échelle et la rotation appartiennent au PREFAB : on les
+        # repose comme au scene_init, c'est-à-dire à l'état neutre du template.
+        _sp_aff = _affine_entry(pf, sp, 0) if sp else None
+        if _sp_aff:
+            L.append(f"            int _aff = g_actors[_i].affine_slot;")
+        L.append(f"            g_actors[_i] = (Actor){{0}};")
+        if _sp_aff:
+            L += [
+                f"            g_actors[_i].affine_slot = _aff;",
+                f"            g_actors[_i].rotation     = {_sp_aff['rotation']};",
+                f"            g_actors[_i].scale_x      = {_sp_aff['scale_x']};",
+                f"            g_actors[_i].scale_y      = {_sp_aff['scale_y']};",
+                f"            g_actors[_i].sprite_rot   = {_sp_aff['sprite_rotation']};",
+                f"            g_actors[_i].sprite_scale_x = {_sp_aff['sprite_scale_x']};",
+                f"            g_actors[_i].sprite_scale_y = {_sp_aff['sprite_scale_y']};",
+                f"            g_actors[_i].offset_x     = {_sp_aff['offset_x']};",
+                f"            g_actors[_i].offset_y     = {_sp_aff['offset_y']};",
+            ]
+        L += [
             f"            g_actors[_i].x = x; g_actors[_i].y = y;",
             f"            g_actors[_i].active   = 1; g_actors[_i].visible = 1;",
             f"            g_actors[_i].pal_bank = {pal};",
@@ -910,70 +949,53 @@ def _get_sprite_comp(actor) -> "SpriteComponent | None":
     return None
 
 
-def _affine_entry(sc, slot: int) -> dict | None:
+def _has_col_event(defined, sym: str) -> bool:
+    """Ce script réagit-il à une collision ? `defined` est le prédicat local
+    `_def(symbole, événement)` de la génération de scène (il rend True quand le
+    script n'a pas été analysé, cf. `_gen_scene_tick`)."""
+    return bool(defined(sym, "on_collision_enter") or defined(sym, "on_collide")
+                or defined(sym, "on_collision_exit"))
+
+
+def _affine_entry(actor, sc, slot: int) -> dict | None:
     """
-    Calcule les valeurs affines GBA pour un SpriteComponent.
+    Calcule l'entrée affine d'un Actor + son SpriteComponent.
 
-    Retourne None si aucune transformation affine n'est requise.
+    Retourne None si l'actor ne réserve pas de slot affine.
 
-    Matrice GBA (8.8 fp, ×256) :
-        PA = cos/sx   PB = sin/sx
-        PC = -sin/sy  PD = cos/sy
-    Flip encodé dans le signe (runtime) : flip_h → -(PA,PB), flip_v → -(PC,PD).
+    La décision est portée par `Actor.affine_transform` (cf. ARCHITECTURE.md
+    « Le modèle affine ») : coché → un des 32 slots hardware est réservé, même si
+    scale/rotation valent leur défaut (c'est ce qui laisse self.rotation/
+    self.scale/self.sprite_* avoir où écrire au runtime). Sans lui, aucun slot
+    n'est alloué et le sprite est émis en OAM normale.
 
-    Position OAM ajustée pour que le pixel à (ox,oy) atterrisse sur (actor.x, actor.y) :
-        oam_x = actor.x - cam_x + oam_x_const  (4 variantes selon flip runtime)
+    Au runtime la matrice est TOUJOURS calculée à partir des champs transform de
+    la struct Actor (monde + local composés, cf. actor_types_static.h) — il n'y a
+    plus de chemin statique pré-calculé : le rendu lit rotation/scale/offset
+    chaque frame (cf. _affine_oam_lines_dynamic).
     """
-    sx      = getattr(sc, "scale_x",  1.0)
-    sy      = getattr(sc, "scale_y",  1.0)
-    angle   = getattr(sc, "rotation", 0.0)
-    ox      = getattr(sc, "origin_x", 0)
-    oy      = getattr(sc, "origin_y", 0)
-
-    needs_affine = (
-        abs(sx - 1.0) > 1e-4 or abs(sy - 1.0) > 1e-4 or abs(angle) > 1e-4
-    )
-    if not needs_affine:
+    if not bool(getattr(actor, "affine_transform", False)):
         return None
-
-    theta  = math.radians(angle)
-    cos_a  = math.cos(theta)
-    sin_a  = math.sin(theta)
-
-    # PA, PB, PC, PD en 8.8 fp (base, sans flip)
-    pa = round(cos_a / sx * 256) if sx != 0 else 0
-    pb = round(sin_a / sx * 256) if sx != 0 else 0
-    pc = round(-sin_a / sy * 256) if sy != 0 else 0
-    pd = round(cos_a / sy * 256) if sy != 0 else 0
-
-    # Éviter PA=PD=0 quand scale est gigantesque
-    if pa == 0 and pb == 0:
-        pa = 1
-    if pc == 0 and pd == 0:
-        pd = 1
-
-    def _oam_adj(fh: bool, fv: bool, W: int, H: int) -> tuple[int, int]:
-        """OAM constant (oam_x_adj, oam_y_adj) pour un état flip donné.
-        En double-size mode le centre de référence écran est W,H (pas W/2,H/2)
-        mais le centre texture reste toujours W/2,H/2."""
-        sx_eff = -sx if fh else sx
-        sy_eff = -sy if fv else sy
-        dx = ox - W / 2   # origine relative au centre texture
-        dy = oy - H / 2
-        u = cos_a * sx_eff * dx - sin_a * sy_eff * dy
-        v = sin_a * sx_eff * dx + cos_a * sy_eff * dy
-        return round(-W - u), round(-H - v)  # -W/-H car double-size (centre = W,H)
 
     return {
         "slot": slot,
-        "pa": pa, "pb": pb, "pc": pc, "pd": pd,
-        "_oam_adj": _oam_adj,   # callable(fh, fv, W, H) → (x_adj, y_adj)
+        # Valeurs de départ des champs Actor, écrites au scene_init. Monde sur
+        # l'actor, local sur le sprite ; le rendu compose rotation (somme) et
+        # scale (produit), l'offset étant transformé par la matrice de l'actor.
+        "rotation":   int(round(getattr(actor, "rotation", 0))),
+        "scale_x":    int(round(getattr(actor, "scale_x", 1.0) * 256)),
+        "scale_y":    int(round(getattr(actor, "scale_y", 1.0) * 256)),
+        "sprite_rotation":   int(round(getattr(sc, "rotation", 0))),
+        "sprite_scale_x":    int(round(getattr(sc, "scale_x", 1.0) * 256)),
+        "sprite_scale_y":    int(round(getattr(sc, "scale_y", 1.0) * 256)),
+        "offset_x":    int(getattr(sc, "offset_x", 0)),
+        "offset_y":    int(getattr(sc, "offset_y", 0)),
     }
 
 
 def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dict:
     """
-    Retourne {oam_idx: entry} pour tout actor nécessitant un sprite affine.
+    Retourne {oam_idx: entry} pour tout actor dont `affine_transform` est coché.
     Limité à 32 slots (contrainte hardware GBA OAM).
     """
     result: dict = {}
@@ -985,7 +1007,7 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
         sc = _get_sprite_comp(actor)
         if not sc:
             continue
-        entry = _affine_entry(sc, slot)
+        entry = _affine_entry(actor, sc, slot)
         if entry:
             result[actor_offset + j] = entry
             slot += 1
@@ -998,7 +1020,7 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
         for oam_idx in range(p2["start"], p2["start"] + p2["size"]):
             if slot >= 32:
                 break
-            entry = _affine_entry(sc, slot)
+            entry = _affine_entry(pf, sc, slot)
             if entry:
                 result[oam_idx] = entry
                 slot += 1
@@ -1104,7 +1126,7 @@ def _camera_follow_lines(p, scene, scene_actors: list, actor_offset: int) -> lis
         # cam_x/cam_y lui-même → écart nul → camera_follow ne le bouge pas.
         tx = f"g_actors[{t}].x" if scene.scroll_h else "cam_x"
         ty = f"g_actors[{t}].y" if scene.scroll_v else "cam_y"
-        cases.append(f"        case {i}: camera_follow({tx}, {ty}, "
+        cases.append(f"        case {i}: camera_follow((Vec2){{{tx}, {ty}}}, "
                      f"{int(cam.margin_x)}, {int(cam.margin_y)}); break;"
                      f"   /* {cam.name} → {cam.follow_target} */")
     if not cases:
@@ -1231,7 +1253,8 @@ def _fonts_and_texts_lines(p, emit=None) -> list[str]:
             + emit_ui_regions_c(regions, font_names, emit,
                                 obj_place=_obj_text_alloc(p),
                                 actor_index=_region_actor_index(p),
-                                bg_fill=_region_bg_fills(p)[0])
+                                bg_fill=_region_bg_fills(p)[0],
+                                elem_index=_ui_element_index(p))
             + _palettes_lines(p, emit))
 
 
@@ -1382,11 +1405,13 @@ def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
                          f"(dont {n_fill} fond(s) de conteneur), "
                          f"{n_bound} relié(s) à un sprite")
     return emit_ui_images_c(p, sprite_offsets, _obj_text_alloc(p),
-                            actor_index=_region_actor_index(p), emit=emit)
+                            actor_index=_region_actor_index(p),
+                            elem_index=_ui_element_index(p), emit=emit)
 
 
 def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
-                     actor_index: dict | None = None, emit=None) -> list[str]:
+                     actor_index: dict | None = None,
+                     elem_index: dict | None = None, emit=None) -> list[str]:
     """Table `g_ui_images` — une entrée par image du projet, dans l'ordre de
     `Project.all_images()`, qui fait l'index (donc la constante `IMAGE_*`).
 
@@ -1416,9 +1441,10 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
             x, y, _res = lay.absolute_origin(im, None)
             x -= x % 8
             y -= y % 8
+        elem = (elem_index or {}).get(im.name, -1)
         if sprite is None or not sprite.asset:
             rows.append(f"    {{ {x}, {y}, {im.w}, {im.h}, 0, 0, -1, "
-                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0 }},"
+                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, {elem} }},"
                         f"  /* {im.name} — aucun sprite */")
             if emit:
                 emit("log_line", f"[ui] image '{im.name}' : aucun sprite — "
@@ -1441,7 +1467,8 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
             f"{ss}_anim_dirs, {ss}_state_start, {ss}_state_speed, {ss}_state_loop, "
             f"{n_states}, {st0}, {1 if im.playing else 0}, "
             f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {im.priority}, "
-            f"{g['cols']}, {g['rows']}, {int(getattr(im, 'anim_speed', 0) or 0)} }},"
+            f"{g['cols']}, {g['rows']}, {int(getattr(im, 'anim_speed', 0) or 0)}, "
+            f"{elem} }},"
             f"  /* {im.name} — {sprite.name}"
             + (f", pavage {g['cols']}×{g['rows']}"
                if g['cols'] * g['rows'] > 1 else "") + " */")
@@ -1456,9 +1483,43 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
     L = ["/* ── Images d'interface (UILayout) ─────────────── */"]
     L.append(f"const UIImageInfo g_ui_images[{max(1, len(rows))}] = {{")
     L += rows or ["    { 0, 0, 8, 8, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,"
-                  " 1, 1, 0 },   /* aucune image */"]
+                  " 1, 1, 0, -1 },   /* aucune image */"]
     L.append("};")
     L.append(f"const int g_ui_image_count = {len(rows)};")
+    L.append("")
+    return L
+
+
+def _ui_element_index(p: Project) -> dict:
+    """{nom d'élément : index dans `Project.all_elements()`} — l'index de la
+    table de visibilité plate (`UIELEM_*`, `g_ui_elements`). Même ordre que
+    celui utilisé par `codegen.py` pour les `#define` de script, donc la
+    même constante des deux côtés du link."""
+    return {e.name: i for i, (_lay, e) in enumerate(
+        p.all_elements() if hasattr(p, "all_elements") else [])}
+
+
+def emit_ui_elements_c(p: Project) -> list[str]:
+    """Table `g_ui_elements` — un `{parent, visible}` par élément du projet,
+    dans l'ordre de `Project.all_elements()`, qui fait l'index (`UIELEM_*`).
+
+    `parent` référence un AUTRE index de CETTE MÊME table (-1 = racine) : la
+    visibilité effective se recalcule au runtime en la remontant
+    (`ui_element_is_visible`), elle n'est jamais stockée — même règle que le
+    modèle Python (`UILayout.is_visible`, jamais propagée aux enfants)."""
+    elements = p.all_elements() if hasattr(p, "all_elements") else []
+    index = _ui_element_index(p)
+    rows: list[str] = []
+    for lay, e in elements:
+        parent = getattr(e, "parent", "") or ""
+        parent_idx = index.get(parent, -1) if lay.get(parent) is not None else -1
+        rows.append(f"    {{ {parent_idx}, {1 if getattr(e, 'visible', True) else 0} }},"
+                    f"  /* {e.name} */")
+    L = ["/* ── Visibilité des éléments d'interface (UILayout) ───────── */"]
+    L.append(f"const UIElementInfo g_ui_elements[{max(1, len(rows))}] = {{")
+    L += rows or ["    { -1, 1 },   /* aucun élément */"]
+    L.append("};")
+    L.append(f"const int g_ui_element_count = {len(rows)};")
     L.append("")
     return L
 
@@ -1523,6 +1584,64 @@ def _region_bg_fills(p: Project) -> tuple[dict, dict]:
             nxt -= 1
         by_name[r.name] = color_index[col]
     return by_name, {i: c for c, i in color_index.items()}
+
+
+def scene_region_backdrops(p: Project, scene, img_fills: list[dict]) -> list[dict]:
+    """Zones de texte composées SOUS un panel nine-slice/background : leur
+    ancêtre le plus proche ne fournit pas d'aplat (`_region_bg_fills` ne
+    regarde que `FILL_COLOR`) — sans plus, `text_surf_prepare` composerait sur
+    du transparent et effacerait le cadre à cet endroit au lieu de le garder
+    sous l'encre.
+
+    Renvoie une entrée par zone concernée : `{region, fill, dx, dy}` — `fill`
+    est l'INDEX de son panel ancêtre dans `img_fills` (déjà émis par
+    `scene_image_fills`, réutilisé tel quel, jamais dupliqué) ; `dx, dy` le
+    coin de la zone DANS la carte de ce panel, en tuiles. Le runtime lit
+    directement la carte du panel avec cet offset (cf. `RegionBackdrop` dans
+    `gba_engine.h`) plutôt que de recevoir une carte à la taille de la zone :
+    une donnée, pas deux à tenir d'accord."""
+    from core.models.ui_region import KIND_PANEL, KIND_TEXT, FILL_NONE, FILL_NINE, FILL_BG
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None or not img_fills:
+        return []
+    by_panel = {f["name"]: i for i, f in enumerate(img_fills)}
+    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
+    out: list[dict] = []
+    for el in lay.slots:
+        if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
+            continue
+        # Le fond le plus PROCHE gagne : un panel Color entre la zone et un
+        # panel nine-slice plus lointain doit rester géré par `_region_bg_
+        # fills` (aplat), pas se retrouver ici en plus.
+        panel = None
+        for anc_name in lay.ancestors(el.name):
+            anc = lay.get(anc_name)
+            if getattr(anc, "kind", "") != KIND_PANEL:
+                continue
+            fk = getattr(anc, "fill_kind", FILL_NONE)
+            if fk == FILL_NONE:
+                continue
+            if fk in (FILL_NINE, FILL_BG):
+                panel = anc
+            break
+        if panel is None or panel.name not in by_panel:
+            continue
+        fi = by_panel[panel.name]
+        f = img_fills[fi]
+        rx, ry, _ = lay.absolute_origin(el, lambda _n: None)
+        rx -= rx % 8
+        ry -= ry % 8
+        rtx, rty = rx // 8, ry // 8
+        rw = max(1, (el.w + 7) // 8)
+        rh = max(1, (el.h + 7) // 8)
+        dx, dy = rtx - f["tx"], rty - f["ty"]
+        # Zone qui déborde de son panel (authoring incohérent) : rien à
+        # enregistrer, `_check_ui_text_backdrop_bank` (validator) le signale.
+        if dx < 0 or dy < 0 or dx + rw > f["w"] or dy + rh > f["h"]:
+            continue
+        out.append({"region": slot_idx[el.name], "name": el.name,
+                    "fill": fi, "dx": dx, "dy": dy})
+    return out
 
 
 def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
@@ -1867,6 +1986,7 @@ def _gen_scene_init(
     obj_text_oam: int = -1,
     obj_text_tile: int = 0,
     emit=None,
+    affine_info: dict | None = None,
 ) -> list[str]:
     """Génère void scene_init_{sym}(void) { ... }"""
     sym = c_sym(scene.name)
@@ -1914,6 +2034,10 @@ def _gen_scene_init(
     if L:
         L.append("")
     L.append(f"static void scene_init_{sym}(void) {{")
+    # Taille du monde (canvas) — lue par scene.size.w/.h côté script. Posée à
+    # chaque activation, une scène peut donc faire avancer son monde.
+    _sw, _sh = scene_world_size(p, scene)
+    L.append(f"    g_scene_w = {_sw}; g_scene_h = {_sh};")
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
     L.append("    bg_maps_clear();")
@@ -1923,6 +2047,18 @@ def _gen_scene_init(
     # rendre — chaque frame — une zone appartenant à la mise en page d'une
     # autre scène (son texte réapparaît, son tempo se rejoue).
     L.append("    text_read_reset_all();")
+    # Fonds nine-slice/background des zones composées : table scène-locale elle
+    # aussi (la base VRAM de l'asset source change d'une scène à l'autre), donc
+    # même reset — sans lui une zone de la scène PRÉCÉDENTE resterait
+    # enregistrée sous le même index et prêterait sa carte à une zone qui n'a
+    # plus rien à voir avec elle (cf. `_gen_scene_init`, plus bas, pour les
+    # `text_set_region_backdrop` qui la repeuplent).
+    L.append("    text_clear_region_backdrops();")
+    # Visibilité des éléments d'interface : table PROJET-GLOBALE elle aussi,
+    # même raison que `text_read_reset_all` juste au-dessus — reposer les bits
+    # AUTHORÉS de départ à chaque scène, sinon un élément caché par un script
+    # dans la scène précédente resterait caché ici.
+    L.append("    ui_elements_reset();")
     # Caméra de démarrage. L'activation pose cadrage ET bornes, et rejoue le
     # on_start de la caméra : une scène n'hérite donc jamais du cadrage de la
     # précédente, et un script peut basculer ailleurs ensuite (camera.switch).
@@ -2101,6 +2237,18 @@ def _gen_scene_init(
             f"    ui_fill_map({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
             f"{sym}_uimap_{c_sym(f['name'])}, {asset_base[f['asset']]});"
             f"   /* fond image '{f['name']}' */")
+    # Zones de texte composées SOUS un fond image (nine-slice, background) :
+    # elles recomposent leur encre PAR-DESSUS les vraies tuiles du panel au
+    # lieu d'un aplat — cf. `scene_region_backdrops` et, côté runtime,
+    # `RegionBackdrop`/`text_surf_seed`. Réutilise la carte déjà émise
+    # ci-dessus pour le panel, jamais dupliquée pour la zone.
+    for rb in scene_region_backdrops(p, scene, img_fills):
+        f = img_fills[rb["fill"]]
+        L.append(
+            f"    text_set_region_backdrop({rb['region']}, "
+            f"{sym}_uimap_{c_sym(f['name'])}, {f['w']}, {rb['dx']}, {rb['dy']}, "
+            f"{asset_base[f['asset']]});"
+            f"   /* '{rb['name']}' recompose le fond '{f['name']}' */")
     # Texte SUR un fond couleur : les zones enfants d'un panel couleur se
     # composent sur cette couleur (décision PAR ZONE au runtime, cf.
     # UIRegionInfo.bg_fill). La surface composée a son PROPRE bloc de tuiles,
@@ -2181,8 +2329,8 @@ def _gen_scene_init(
             f"    g_actors[{idx}].y       = {_FV.parse(actor.y, _var_names(p)).c_expr()};",
             f"    g_actors[{idx}].active  = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].visible = {1 if actor.visible else 0};",
-            f"    g_actors[{idx}].flip_h  = {1 if getattr(_get_sprite_comp(actor),'flip_h',False) else 0};",
-            f"    g_actors[{idx}].flip_v  = {1 if getattr(_get_sprite_comp(actor),'flip_v',False) else 0};",
+            f"    g_actors[{idx}].flip_h  = {1 if actor.flip_h else 0};",
+            f"    g_actors[{idx}].flip_v  = {1 if actor.flip_v else 0};",
             f"    g_actors[{idx}].dir_x   = {getattr(actor,'dir_x',0)};",
             f"    g_actors[{idx}].dir_y   = {getattr(actor,'dir_y',0)};",
             f"    g_actors[{idx}].pal_bank= {pal if pal is not None else 0};",
@@ -2192,6 +2340,22 @@ def _gen_scene_init(
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
             f"    g_actors[{idx}].box_count = {len(boxes)};",
         ]
+        _aff_i = (affine_info or {}).get(idx)
+        if _aff_i:
+            _aslot = _aff_i["slot"]
+            L += [
+                f"    g_actors[{idx}].affine_slot = {_aslot};",
+                f"    g_actors[{idx}].rotation     = {_aff_i['rotation']};",
+                f"    g_actors[{idx}].scale_x      = {_aff_i['scale_x']};",
+                f"    g_actors[{idx}].scale_y      = {_aff_i['scale_y']};",
+                f"    g_actors[{idx}].sprite_rot   = {_aff_i['sprite_rotation']};",
+                f"    g_actors[{idx}].sprite_scale_x = {_aff_i['sprite_scale_x']};",
+                f"    g_actors[{idx}].sprite_scale_y = {_aff_i['sprite_scale_y']};",
+                f"    g_actors[{idx}].offset_x     = {_aff_i['offset_x']};",
+                f"    g_actors[{idx}].offset_y     = {_aff_i['offset_y']};",
+            ]
+        else:
+            L.append(f"    g_actors[{idx}].affine_slot = -1;")
         for bi2, cb in enumerate(boxes):
             tag_s = "BOXTAG_" + c_sym(cb.tag or "body").upper()
             _vn = _var_names(p)
@@ -2207,6 +2371,22 @@ def _gen_scene_init(
         for slot in range(p2["start"], p2["start"] + p2["size"]):
             L.append(f"    g_actors[{slot}].tag = TAG_{p2['sym'].upper()};")
             L.append(f"    g_actors[{slot}].active = 0;")
+            _aff_p = (affine_info or {}).get(slot)
+            if _aff_p:
+                _aslot = _aff_p["slot"]
+                L += [
+                    f"    g_actors[{slot}].affine_slot = {_aslot};",
+                    f"    g_actors[{slot}].rotation     = {_aff_p['rotation']};",
+                    f"    g_actors[{slot}].scale_x      = {_aff_p['scale_x']};",
+                    f"    g_actors[{slot}].scale_y      = {_aff_p['scale_y']};",
+                    f"    g_actors[{slot}].sprite_rot   = {_aff_p['sprite_rotation']};",
+                    f"    g_actors[{slot}].sprite_scale_x = {_aff_p['sprite_scale_x']};",
+                    f"    g_actors[{slot}].sprite_scale_y = {_aff_p['sprite_scale_y']};",
+                    f"    g_actors[{slot}].offset_x     = {_aff_p['offset_x']};",
+                    f"    g_actors[{slot}].offset_y     = {_aff_p['offset_y']};",
+                ]
+            else:
+                L.append(f"    g_actors[{slot}].affine_slot = -1;")
     # on_start actors (seulement si défini dans le script Lua)
     def _def_init(s, ev):
         if actor_defined_events is None:
@@ -2226,53 +2406,65 @@ def _gen_scene_init(
     return L
 
 
-def _signed(n: int) -> str:
-    """Formate un entier en chaîne C signée : +3, -8, '' si zéro."""
-    if n == 0:
-        return ""
-    return f"+{n}" if n > 0 else str(n)
+def _affine_oam_lines_dynamic(idx: int, aff: dict, sprite, bt: int, priority_expr: str,
+                               screen_space: bool = False) -> list[str]:
+    """Lignes C (intérieur du if actif) pour un sprite affine : PA/PB/PC/PD et
+    position recalculés CHAQUE FRAME depuis les champs transform de la struct
+    Actor via gba_sin/gba_cos (cf. actor_api_static.h), même formule que la
+    matrice GBA 8.8 (PA=cos/scale_x, PB=sin/scale_x, PC=-sin/scale_y,
+    PD=cos/scale_y, évaluée en C avec des Q8).
 
+    Composition du transform MONDE de l'actor (self.rotation/self.scale) et du
+    transform LOCAL du sprite (self.sprite_*), cf. ARCHITECTURE.md « Le modèle
+    affine » :
+        angle_eff     = rotation + sprite_rot            (somme)
+        scale_eff     = scale_x * sprite_scale_x / 256   (produit, Q8)
+        position_eff  = actor.position + R(rotation)·S(scale)·offset
+    L'offset vit dans le repère local de l'actor : il tourne ET scale avec lui.
+    C'est lui qui décale le sprite par rapport à la position monde (l'actor n'a
+    pas l'offset ; le sprite n'a pas de position monde).
 
-def _affine_oam_lines(idx: int, aff: dict, sprite, bt: int, priority_expr: str,
-                      screen_space: bool = False) -> list[str]:
-    """Lignes C (intérieur du if actif) pour un sprite affine : rotation+scale+flip runtime.
-
-    `screen_space` retire la soustraction de caméra (cf. Actor.screen_space) :
-    x/y sont alors des pixels d'écran. Le reste du calcul est identique — les
-    ajustements affines sont relatifs à l'ancrage, pas à l'espace."""
+    `screen_space` retire la soustraction de caméra (cf. Actor.screen_space)."""
     aslot = aff["slot"]
-    pa, pb, pc, pd = aff["pa"], aff["pb"], aff["pc"], aff["pd"]
-    adj_fn = aff["_oam_adj"]
     W, H   = sprite.frame_w, sprite.frame_h
     sh, sz = sprite.oam_shape, sprite.oam_size
     tpf    = sprite.tiles_per_frame
+    dx, dy = -(W // 2), -(H // 2)
 
-    x00, y00 = adj_fn(False, False, W, H)
-    xfh, yfh = adj_fn(True,  False, W, H)
-    xfv, yfv = adj_fn(False, True,  W, H)
-    xhv, yhv = adj_fn(True,  True,  W, H)
-
-    def _pos(base: str, n0, nfh, nfv, nhv) -> str:
-        if n0 == nfh == nfv == nhv:
-            return f"{base}{_signed(n0)}"
-        return (
-            f"{base}+(g_actors[{idx}].flip_h"
-            f"?(g_actors[{idx}].flip_v?({nhv}):({nfh}))"
-            f":(g_actors[{idx}].flip_v?({nfv}):({n0})))"
-        )
-
-    sx_expr = _pos(f"g_actors[{idx}].x" + ("" if screen_space else "-cam_x"),
-                   x00, xfh, xfv, xhv)
-    sy_expr = _pos(f"g_actors[{idx}].y" + ("" if screen_space else "-cam_y"),
-                   y00, yfh, yfv, yhv)
+    base_x = f"g_actors[{idx}].x" + ("" if screen_space else "-cam_x")
+    base_y = f"g_actors[{idx}].y" + ("" if screen_space else "-cam_y")
 
     return [
-        f"        int sx={sx_expr}; int sy={sy_expr};",
+        # Transform monde + local composés
+        f"        int _arot=g_actors[{idx}].rotation;",
+        f"        int _srot=g_actors[{idx}].sprite_rot;",
+        f"        int _ang=_arot+_srot; int _cosA=gba_cos(_ang); int _sinA=gba_sin(_ang);",
+        f"        int _asx=g_actors[{idx}].scale_x; int _asy=g_actors[{idx}].scale_y;",
+        f"        int _ssx=g_actors[{idx}].sprite_scale_x; int _ssy=g_actors[{idx}].sprite_scale_y;",
+        f"        int _sxq=_asx*_ssx/256; int _syq=_asy*_ssy/256;",
+        f"        int _fh=g_actors[{idx}].flip_h; int _fv=g_actors[{idx}].flip_v;",
+        f"        int _sxs=_fh?-_sxq:_sxq; int _sys=_fv?-_syq:_syq;",
+        # Matrice 8.8 (base, sans flip)
+        f"        int _pa=_sxq?_cosA*256/_sxq:0; int _pb=_sxq?_sinA*256/_sxq:0;",
+        f"        int _pc=_syq?-_sinA*256/_syq:0; int _pd=_syq?_cosA*256/_syq:0;",
+        f"        if(!_pa&&!_pb){{_pa=1;}}",
+        f"        if(!_pc&&!_pd){{_pd=1;}}",
+        # Offset local transformé par la matrice de l'ACTOR (hérarchie) :
+        #   ox = R(rotation)·S(scale)·offset, avec le flip déjà dans le signe.
+        f"        int _acos=gba_cos(_arot); int _asin=gba_sin(_arot);",
+        f"        int _asxs=_fh?-_asx:_asx; int _asys=_fv?-_asy:_asy;",
+        f"        int _ofx=(_acos*_asxs*g_actors[{idx}].offset_x - _asin*_asys*g_actors[{idx}].offset_y)/65536;",
+        f"        int _ofy=(_asin*_asxs*g_actors[{idx}].offset_x + _acos*_asys*g_actors[{idx}].offset_y)/65536;",
+        # Position : pivot de rotation au centre texture ; l'offset s'ajoute au monde.
+        f"        int _ocx=({base_x})+_ofx; int _ocy=({base_y})+_ofy;",
+        f"        int _u=(_cosA*_sxs*({dx}))/65536-(_sinA*_sys*({dy}))/65536;",
+        f"        int _v=(_sinA*_sxs*({dx}))/65536+(_cosA*_sys*({dy}))/65536;",
+        f"        int sx=_ocx+(-{W}-_u); int sy=_ocy+(-{H}-_v);",
         f"        u16 ti=(u16)({bt}+g_actors[{idx}].frame*{tpf});",
-        f"        shadow_oam[{aslot*4+0}].dummy=(u16)(s16)(g_actors[{idx}].flip_h?{-pa}:{pa});",
-        f"        shadow_oam[{aslot*4+1}].dummy=(u16)(s16)(g_actors[{idx}].flip_h?{-pb}:{pb});",
-        f"        shadow_oam[{aslot*4+2}].dummy=(u16)(s16)(g_actors[{idx}].flip_v?{-pc}:{pc});",
-        f"        shadow_oam[{aslot*4+3}].dummy=(u16)(s16)(g_actors[{idx}].flip_v?{-pd}:{pd});",
+        f"        shadow_oam[{aslot*4+0}].dummy=(u16)(s16)(_fh?-_pa:_pa);",
+        f"        shadow_oam[{aslot*4+1}].dummy=(u16)(s16)(_fh?-_pb:_pb);",
+        f"        shadow_oam[{aslot*4+2}].dummy=(u16)(s16)(_fv?-_pc:_pc);",
+        f"        shadow_oam[{aslot*4+3}].dummy=(u16)(s16)(_fv?-_pd:_pd);",
         f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(1<<8)|(1<<9)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
         f"        shadow_oam[{idx}].attr1=(sx&0x1FF)|({aslot}<<9)|({sz}<<14);",
         f"        shadow_oam[{idx}].attr2=(ti&0x3FF)|({priority_expr}<<10)|(g_actors[{idx}].pal_bank<<12);",
@@ -2359,10 +2551,19 @@ def _gen_scene_tick(
                 f"            if(!g_actors[_pi].active) continue;",
                 f"            int _sl=_pi-{start};",
             ]
-            has_col = (_def(s, "on_collision_enter") or _def(s, "on_collide")
-                       or _def(s, "on_collision_exit"))
+            # Une collision a DEUX côtés, et chacun apprend la nouvelle dans son
+            # propre script : c'est déjà ce que fait la boucle scène↔scène plus
+            # bas. Ici seul le prefab était prévenu — un actor de scène heurté
+            # par un projectile poolé n'avait donc aucun moyen de réagir, et
+            # devait passer par une variable globale que la balle posait pour
+            # lui. Les deux appels partagent le même test de recouvrement et le
+            # même souvenir de frame (`_pcol_`), avec les boxes échangées : la
+            # `my_box` de l'un est la `other_box` de l'autre.
+            pool_reacts = _has_col_event(_def, s)
             for ci, (sidx, sactor) in enumerate(col_scene):
-                if not has_col:
+                ss = c_sym(sactor.name)
+                s_lua = (sidx in lua_idx) and _has_col_event(_def, ss)
+                if not pool_reacts and not s_lua:
                     continue
                 L += [
                     f"            {{ u8 _bx=0,_bo=0;",
@@ -2371,10 +2572,16 @@ def _gen_scene_tick(
                 ]
                 if _def(s, "on_collision_enter"):
                     L.append(f"              if(_c&&!_p) {s}_on_collision_enter(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                if s_lua and _def(ss, "on_collision_enter"):
+                    L.append(f"              if(_c&&!_p) {ss}_on_collision_enter(&g_actors[{sidx}],&g_actors[_pi],_bo,_bx);")
                 if _def(s, "on_collide"):
                     L.append(f"              if(_c&&_p)  {s}_on_collide(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                if s_lua and _def(ss, "on_collide"):
+                    L.append(f"              if(_c&&_p)  {ss}_on_collide(&g_actors[{sidx}],&g_actors[_pi],_bo,_bx);")
                 if _def(s, "on_collision_exit"):
                     L.append(f"              if(!_c&&_p) {s}_on_collision_exit(&g_actors[_pi],&g_actors[{sidx}],_bx,_bo);")
+                if s_lua and _def(ss, "on_collision_exit"):
+                    L.append(f"              if(!_c&&_p) {ss}_on_collision_exit(&g_actors[{sidx}],&g_actors[_pi],_bo,_bx);")
                 L.append(f"              _pcol_{s}[_sl][{ci}]=_c; }}")
             L += [f"        }}", f"    }}"]
 
@@ -2504,8 +2711,9 @@ def _gen_scene_tick(
             _cx = "" if _ss else "-cam_x"
             _cy = "" if _ss else "-cam_y"
             if idx in _aff:
-                inner = _affine_oam_lines(idx, _aff[idx], sprite, bt,
-                                          str(actor.priority), screen_space=_ss)
+                _lines_fn = _affine_oam_lines_dynamic
+                inner = _lines_fn(idx, _aff[idx], sprite, bt,
+                                  str(actor.priority), screen_space=_ss)
                 L += [
                     f"    if(g_actors[{idx}].active && g_actors[{idx}].visible){{",
                     *inner,
@@ -2541,7 +2749,8 @@ def _gen_scene_tick(
         oy_s = (f"-{oy}" if oy > 0 else f"+{-oy}") if oy else ""
         for oam_slot in range(p2["start"], p2["start"] + p2["size"]):
             if oam_slot in _aff:
-                inner = _affine_oam_lines(oam_slot, _aff[oam_slot], pf_spr, bt, "0")
+                _lines_fn = _affine_oam_lines_dynamic
+                inner = _lines_fn(oam_slot, _aff[oam_slot], pf_spr, bt, "0")
                 L += [
                     f"    if(g_actors[{oam_slot}].active && g_actors[{oam_slot}].visible){{",
                     *inner,
@@ -2759,17 +2968,16 @@ def generate_main(
     L.append(f"const Camera g_cam_table[{len(cams)}] = {{")
     for cam in cams:
         if cam is None:
-            L.append("    { 0, 40, 20, 0, 0, 0, 0, NULL, NULL },   /* (default) */")
+            L.append("    { 0, 40, 20, 0, 0, 0, 0, 0, 0, NULL, NULL },   /* (default) */")
             continue
         cs = camera_sym(cam.name)
         hooks = (f"{cs}_camera_on_start, {cs}_camera_on_update"
                  if getattr(cam, "script", "") else "NULL, NULL")
-        L.append(
-            f"    {{ {cam.mode_id()}, {int(cam.margin_x)}, {int(cam.margin_y)}, "
-            f"{int(cam.x)}, {int(cam.y)}, "
-            f"{int(cam.bounds_w or 0)}, {int(cam.bounds_h or 0)}, {hooks} }},"
-            f"   /* {cam.name} — {cam.mode} */"
-        )
+        L.append(f"    {{ {cam.mode_id()}, {int(cam.margin_x)}, {int(cam.margin_y)}, "
+                 f"{int(cam.x)}, {int(cam.y)}, "
+                 f"{int(cam.bounds_x or 0)}, {int(cam.bounds_y or 0)}, "
+                 f"{int(cam.bounds_w or 0)}, {int(cam.bounds_h or 0)}, {hooks} }},"
+                 f"   /* {cam.name} — {cam.mode} */")
     L += ["};", ""]
 
     # ── Polices + table des textes ───────────────────────────────
@@ -2792,6 +3000,13 @@ def generate_main(
 
     # ── Images d'interface ────────────────────────────────────────
     L += _ui_images_lines(p, sprite_offsets, emit)
+
+    # ── Visibilité des éléments d'interface ──────────────────────
+    # APRÈS g_ui_regions/g_ui_images : les deux référencent un index de
+    # CETTE table (`elem`), mais la lecture est par nom aux deux endroits
+    # (`_ui_element_index`), l'ordre d'émission n'a donc pas à être contraint
+    # — placée ici pour rester avec le reste de l'UI.
+    L += emit_ui_elements_c(p)
 
     # ── Sauvegarde ────────────────────────────────────────────────
     # Après globals.h (inclus plus haut) : les tables citent les index
@@ -2864,7 +3079,7 @@ def generate_main(
         "u32   _g_keys_held    = 0;",
         "u32   _g_keys_pressed = 0;",
         "int   cam_x = 0, cam_y = 0;",
-        "int   g_cam_max_x = -1, g_cam_max_y = -1;",
+        "int   g_bounds_x = 0, g_bounds_y = 0, g_bounds_w = 0, g_bounds_h = 0;",
         "int   g_cam_active = 0;",
         # État de la secousse — un événement en cours, pas un réglage : il vit
         # ici et non dans la table des caméras (cf. actor_api_static.h).
@@ -2872,6 +3087,10 @@ def generate_main(
         "int   g_shake_dx = 0, g_shake_dy = 0;",
         "u32   g_shake_seed = 2463534242u;",
         "int   _g_frame = 0;",
+        # Taille du monde de la scène courante, lue par `scene.size` : déclarée
+        # `extern` dans actor_api_static.h et posée par chaque scene_init — il
+        # manquait sa DÉFINITION, et le lien échouait sur tout projet.
+        "int   g_scene_w = 0, g_scene_h = 0;",
         "int   g_current_scene = -1;",
         "int   g_next_scene    = -1;",
         "",
@@ -2926,6 +3145,7 @@ def generate_main(
             actor_defined_events=actor_defined_events,
             obj_text_oam=obj_text_oam, obj_text_tile=obj_text_tile,
             emit=emit,
+            affine_info=_compute_affine_info(act_off, sa, pi),
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────

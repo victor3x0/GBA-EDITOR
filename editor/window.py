@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QSplitter, QLabel, QPushButton, QFrame,
     QStatusBar, QDialog,
-    QInputDialog, QMessageBox,
+    QMessageBox,
     QToolButton, QStackedWidget, QToolBar,
 )
 from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
@@ -33,6 +33,7 @@ from ui.screens import EditorScreen, ProjectScreen, plugin_screens
 # ── Sous-composants UI ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
 from ui.scene_manager.assets_finder_panel import AssetsFinderPanel
+from ui.scene_manager.scene_tree_panel import SceneTreePanel
 from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog, AnimatedBuildButton
 from ui.scene_manager.inspectors import DynamicInspector
 from ui.sound_mixer.sound_panel import SoundMixerScreen
@@ -233,24 +234,28 @@ class GbaStatusBar(QWidget):
 #  Écrans dont la fenêtre est le propriétaire
 # ──────────────────────────────────────────────────────────────────
 class SceneManagerScreen(QWidget):
-    """Les trois colonnes du Scene Manager.
+    """Les colonnes du Scene Manager (colonne 1 scindée en deux panneaux
+    empilés : liste projet au-dessus, contenu de la scène active en-dessous).
 
     Assemblée par `MainWindow._build_scene_manager_screen` : ses colonnes sont
-    des attributs de la FENÊTRE (`assets_finder_panel`, `scene_editor`,
-    `_inspector`), lues depuis une trentaine d'endroits. Les faire descendre
-    ici est un chantier à part — cette classe existe pour que l'écran porte le
-    même contrat que les sept autres, et pour que la propagation du projet aux
-    trois colonnes soit écrite une fois, ici, plutôt que dispersée dans
+    des attributs de la FENÊTRE (`assets_finder_panel`, `scene_tree_panel`,
+    `scene_editor`, `_inspector`), lues depuis une trentaine d'endroits. Les
+    faire descendre ici est un chantier à part — cette classe existe pour que
+    l'écran porte le même contrat que les sept autres, et pour que la
+    propagation du projet aux colonnes soit écrite une fois, ici, plutôt que
+    dispersée dans
     `_refresh_ui`."""
 
-    def __init__(self, finder, canvas, inspector, parent=None):
+    def __init__(self, finder, scene_tree, canvas, inspector, parent=None):
         super().__init__(parent)
-        self._finder    = finder
-        self._canvas    = canvas
-        self._inspector = inspector
+        self._finder     = finder
+        self._scene_tree = scene_tree
+        self._canvas     = canvas
+        self._inspector  = inspector
 
     def load_project(self, project):
         self._finder.load_project(project)
+        self._scene_tree.load_project(project)
         self._inspector.set_project(project)
         if project.active_scene:
             self._canvas.load_project(project)
@@ -444,12 +449,15 @@ class MainWindow(QMainWindow):
         self._h_split = QSplitter(Qt.Orientation.Horizontal)
         self._h_split.setStyleSheet(QSS.splitter)
 
-        # ── Colonne 1 : Project Panel (pleine hauteur) ────────────
+        # ── Colonne 1 : Project Panel (haut) + Scene Tree (bas) ───
+        # Deux questions distinctes, deux panneaux : « quelles scènes/prefabs/
+        # scripts existe-t-il dans le projet » (AssetsFinderPanel) et « qu'y
+        # a-t-il DANS la scène active » (SceneTreePanel — acteurs + mise en
+        # page UI, à la façon du Scene dock de Godot).
         self.assets_finder_panel = AssetsFinderPanel()
         self._setup_menu()
         self.assets_finder_panel.scene_selected.connect(self._on_scene_selected)
         self.assets_finder_panel.scene_add_requested.connect(self._add_scene)
-        self.assets_finder_panel.actor_add_requested.connect(self._add_actor)
         self.assets_finder_panel.prefab_add_requested.connect(self._add_prefab)
         self.assets_finder_panel.script_opened.connect(self.open_script)
         self.assets_finder_panel.project_created.connect(self._new_project)
@@ -458,14 +466,17 @@ class MainWindow(QMainWindow):
             lambda p: self._inspector.show_prefab_uses(p))
         self.assets_finder_panel.script_uses_requested.connect(
             lambda path: self._inspector.show_script_uses(path))
-        self.assets_finder_panel.variable_uses_requested.connect(
-            lambda kind, name: self._inspector.show_variable_uses(kind, name))
 
-        # La mise en page UI vit désormais DANS l'arbre de scène (sous chaque
-        # scène, sous-branche « Interface »), à la façon du Scene dock de Godot :
-        # l'arbre montre d'un coup d'œil ce qu'un script peut référencer. Plus de
-        # panneau d'UI séparé.
-        self._h_split.addWidget(self.assets_finder_panel)
+        self.scene_tree_panel = SceneTreePanel()
+
+        self._left_v_split = QSplitter(Qt.Orientation.Vertical)
+        self._left_v_split.setStyleSheet(QSS.splitter)
+        self._left_v_split.addWidget(self.scene_tree_panel)
+        self._left_v_split.addWidget(self.assets_finder_panel)
+        self._left_v_split.setSizes([260, 420])
+        self._left_v_split.setStretchFactor(0, 1)
+        self._left_v_split.setStretchFactor(1, 1)
+        self._h_split.addWidget(self._left_v_split)
 
         # ── Colonne 2 : Canvas (haut) + Console (bas) ────────────
         self._center_v_split = QSplitter(Qt.Orientation.Vertical)
@@ -501,16 +512,17 @@ class MainWindow(QMainWindow):
 
         # Mise en page UI éditée depuis l'arbre de scène (ajout/suppression/
         # reparentage/réordonnancement/renommage) → sauver ET redessiner le
-        # canvas, même contrat que le contrôleur de zones. À l'inverse, une
-        # édition venue de l'inspecteur ou du canvas reconstruit l'arbre.
-        self.assets_finder_panel.ui_layout_changed.connect(
+        # canvas, même contrat qu'avant (porté par SceneTreePanel désormais).
+        # À l'inverse, une édition venue de l'inspecteur ou du canvas
+        # reconstruit l'arbre.
+        self.scene_tree_panel.ui_layout_changed.connect(
             self.scene_editor._save_ui_regions)
-        self.assets_finder_panel.ui_layout_changed.connect(
+        self.scene_tree_panel.ui_layout_changed.connect(
             self.scene_editor._reload_ui_regions)
         self._inspector.ui_regions_changed.connect(
-            self.assets_finder_panel._refresh_scenes)
+            self.scene_tree_panel.refresh)
         self.scene_editor.scene_changed.connect(
-            self.assets_finder_panel._refresh_scenes)
+            self.scene_tree_panel.refresh)
 
         # Bus de sélection — vider sur changement de scène/écran
         self._bus = get_bus()
@@ -518,7 +530,7 @@ class MainWindow(QMainWindow):
         # CommandDispatcher — abonnements aux événements engine
         _d = get_dispatcher()
         _d.on("scene_sprites_changed", self.scene_editor._reload_sprites)
-        _d.on("actors_list_changed",   self.assets_finder_panel.refresh)
+        _d.on("actors_list_changed",   self.scene_tree_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
         _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
@@ -527,6 +539,7 @@ class MainWindow(QMainWindow):
         _d.on("backdrop_changed",       self.scene_editor.refresh_backdrop)
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 6000))
         _d.on("project_tree_changed",  self.assets_finder_panel.refresh)
+        _d.on("project_tree_changed",  self.scene_tree_panel.refresh)
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
         # lambda : _text_editor / _script_editor / _palette_editor sont construits
         # plus loin dans _setup_ui que ce bloc d'abonnement — résoudre l'attribut
@@ -540,8 +553,8 @@ class MainWindow(QMainWindow):
         self._h_split.setStretchFactor(1, 1)
         self._h_split.setStretchFactor(2, 0)
 
-        screen = SceneManagerScreen(self.assets_finder_panel, self.scene_editor,
-                                    self._inspector)
+        screen = SceneManagerScreen(self.assets_finder_panel, self.scene_tree_panel,
+                                    self.scene_editor, self._inspector)
         screen_layout = QVBoxLayout(screen)
         screen_layout.setContentsMargins(0, 0, 0, 0)
         screen_layout.setSpacing(0)
@@ -558,6 +571,7 @@ class MainWindow(QMainWindow):
         for name, splitter in (
             ("h_split", self._h_split),
             ("center_v_split", self._center_v_split),
+            ("left_v_split", self._left_v_split),
         ):
             data = s.value(name)
             if isinstance(data, QByteArray):
@@ -568,6 +582,7 @@ class MainWindow(QMainWindow):
         s.setValue("geometry", self.saveGeometry())
         s.setValue("h_split", self._h_split.saveState())
         s.setValue("center_v_split", self._center_v_split.saveState())
+        s.setValue("left_v_split", self._left_v_split.saveState())
 
     def closeEvent(self, event):
         self._save_layout()
@@ -826,6 +841,7 @@ class MainWindow(QMainWindow):
         self.scene_editor.load_project(self.project)
         self._inspector.show_scene(self.project.active_scene, self.project)
         self.assets_finder_panel.refresh()
+        self.scene_tree_panel.set_active_scene(self.project.active_scene)
         self._update_gba_bar()
         self._status.showMessage(f"Active scene: {self.project.active_scene.name}")
 
@@ -836,12 +852,6 @@ class MainWindow(QMainWindow):
         get_dispatcher().add_scene(name)
         self.assets_finder_panel.refresh()
         self.assets_finder_panel.begin_rename_scene(name)
-
-    def _add_actor(self):
-        if not self.project or not self.project.active_scene: return
-        name, ok = QInputDialog.getText(self, "Nouvel acteur", "Nom :")
-        if ok and name.strip():
-            get_dispatcher().add_actor(name.strip())
 
     # ── Slots prefab ─────────────────────────────────────────────
 
@@ -927,6 +937,7 @@ class MainWindow(QMainWindow):
             self.project.save_scene(self.project.active_scene)
         # Rafraîchissement ciblé : sprites uniquement (pas reset zoom/cam/BG)
         self.assets_finder_panel.refresh()
+        self.scene_tree_panel.refresh()
         self.scene_editor._reload_sprites()
         self._update_gba_bar()
         # Recharger l'inspector scène
@@ -1007,9 +1018,40 @@ class MainWindow(QMainWindow):
     def _on_asset_modified(self, path: str):
         """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""
         p = Path(path)
+        if p.suffix.lower() in (".png", ".bmp") and p.parent.name == "backgrounds":
+            # Un fond ne se contente pas d'un rafraîchissement d'affichage : sa
+            # compression (palettes + tuiles) est stockée dans le sidecar, et
+            # c'est ELLE que lit le build. Sans ré-encodage, l'ancienne image
+            # resterait à l'écran ET dans la ROM.
+            if not self.project:
+                return
+            with self._watcher.suspended():   # le sidecar réécrit est NOTRE écriture
+                warning = asset_encoding.resync_background_png(self.project, p)
+            # Le fond retouché reste celui qu'on regardait : `select` le remet à
+            # l'écran plutôt que de renvoyer au premier de la liste.
+            self._bg_editor._refresh_finder(select=p.stem)
+            self.scene_editor.load_project(self.project)
+            self._update_gba_bar()
+            self._status.showMessage(warning or f"Background updated: {p.stem}",
+                                     8000 if warning else 3000)
+            return
         if p.suffix.lower() in (".png", ".bmp") and p.parent.name == "sprites":
+            # Comme un fond : les palettes stockées viennent des pixels, il faut
+            # les refaire. La ROM, elle, était juste — grit relit le PNG au
+            # build — mais l'éditeur affichait les anciennes couleurs (aperçu
+            # d'acteur, coût en palettes, allocation de banques).
+            if not self.project:
+                return
+            with self._watcher.suspended():   # le sidecar réécrit est NOTRE écriture
+                warning = asset_encoding.resync_sprite_png(self.project, p)
             self._sprite_editor.load_project(self.project)
-        elif p.parent.name == "fonts":
+            self.scene_editor._reload_sprites()
+            self._inspector.actor_inspector._refresh_sprite_preview()
+            self._update_gba_bar()
+            self._status.showMessage(warning or f"Sprite updated: {p.stem}",
+                                     8000 if warning else 3000)
+            return
+        if p.parent.name == "fonts":
             # Planche retouchée : les métriques affichées (glyphes, coût en
             # tuiles) sont dérivées de l'asset, pas du fichier — un refresh
             # suffit, l'asset lui-même n'est jamais ré-analysé automatiquement

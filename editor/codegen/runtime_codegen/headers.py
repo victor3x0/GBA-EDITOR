@@ -56,12 +56,21 @@ def generate_actor_types(
     for i, (actor, _) in enumerate(scene_actors):
         h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
 
-    # TAG_* pour les prefabs poolés (offset après les actors de scène)
+    # TAG_* pour les prefabs poolés (offset après les actors de scène), et la
+    # géométrie de la plage — POOL_<SYM>_START / POOL_<SYM>_SIZE. Le script
+    # transpilé en a besoin pour dimensionner son état par instance et pour
+    # retrouver le slot d'un `self` (`self - &g_actors[START]`) ; il est compilé
+    # une fois pour le PROJET et ne peut donc pas connaître ces bornes autrement.
+    # Émis ici parce que c'est ici que l'offset est calculé — `_pool_info`
+    # (main_gen) part du même total d'acteurs de scène, ces headers recevant les
+    # acteurs de TOUTES les scènes.
     pool_offset = len(scene_actors)
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) > 0:
             pf_s = c_sym(pf.name)
             h.append(f"#define TAG_{pf_s.upper()} {pool_offset}  /* prefab pool début */")
+            h.append(f"#define POOL_{pf_s.upper()}_START {pool_offset}")
+            h.append(f"#define POOL_{pf_s.upper()}_SIZE {pf.max_instances}")
             pool_offset += pf.max_instances
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]

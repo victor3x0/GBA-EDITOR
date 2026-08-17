@@ -12,6 +12,8 @@ reste du ressort de l'UI ; ce module ne produit que du texte.
 from __future__ import annotations
 from dataclasses import dataclass, field
 
+from codegen.c_names import c_ident
+
 
 @dataclass
 class ScriptTemplateContext:
@@ -24,9 +26,9 @@ class ScriptTemplateContext:
     component_labels: list[str] = field(default_factory=list)
     has_sprite: bool = False
     has_sfx: bool = False
-    # (tag, on_enter_callback_name, on_exit_callback_name)
-    solid_tags: list[tuple[str, str, str]] = field(default_factory=list)
-    trigger_tags: list[tuple[str, str, str]] = field(default_factory=list)
+    # Tags des CollisionBox de l'actor — pas un handler par box : le runtime
+    # n'appelle qu'une paire de handlers par actor, qui reçoit le tag touché.
+    collision_tags: list[str] = field(default_factory=list)
 
 
 def generate_script_template(ctx: ScriptTemplateContext) -> str:
@@ -94,17 +96,12 @@ def _generate_actor_template(ctx: ScriptTemplateContext) -> str:
     if ctx.has_sfx:    lines += ["    -- self:play_sfx()"]
     lines += ["end", ""]
 
-    for tag, enter, exit_ in ctx.solid_tags:
-        note = f"  -- tag='{tag}'" if tag != "body" else ""
-        lines += [f"function {enter}(other_id){note}",
-                  "    -- local other = actors[other_id]", "end",
-                  f"function {exit_}(other_id)", "end", ""]
-    for tag, enter, exit_ in ctx.trigger_tags:
-        note = f"  -- tag='{tag}'" if tag != "body" else ""
-        lines += [f"function {enter}(other_id){note}",
-                  "    -- local other = actors[other_id]", "end",
-                  f"function {exit_}(other_id)", "end", ""]
+    if ctx.collision_tags:
+        boxtags = ", ".join("BOXTAG_" + c_ident(t or "body") for t in ctx.collision_tags)
+        lines += [f"-- my_box / other_box : {boxtags}",
+                  "function on_collision_enter(other, my_box, other_box)", "end", "",
+                  "function on_collision_exit(other, my_box, other_box)", "end", ""]
 
-    if not (ctx.has_sprite or ctx.solid_tags or ctx.trigger_tags or ctx.has_sfx):
+    if not (ctx.has_sprite or ctx.collision_tags or ctx.has_sfx):
         lines += ["-- Ajoute des components dans l'inspector pour débloquer l'API.", ""]
     return "\n".join(lines)

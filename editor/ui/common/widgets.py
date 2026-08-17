@@ -12,9 +12,6 @@ Usage dans un éditeur de component (ou plugin) :
     btn = W.btn_ghost("Choisir…")
     btn = W.btn_accent("Ouvrir")
     btn = W.btn_danger("×")
-
-
-    W.callback_row("onCollisionEnter", comp, "on_collision_enter", register_syncer, set_field, layout)
 """
 from __future__ import annotations
 from typing import Callable, Any
@@ -303,38 +300,6 @@ class _W:
         lbl.setWordWrap(True)
         return lbl
 
-    # ── Ligne callback Lua ────────────────────────────────────────────
-
-    def callback_row(self, display_label: str, default_fn: str,
-                     comp: Any, field_name: str,
-                     register_syncer: Callable, set_field: Callable,
-                     layout: QVBoxLayout) -> QWidget:
-        """
-        Ligne callback Lua :  « display_label »  [ onFunctionName ]
-        Le QLineEdit est en vert GBA sur fond sombre.
-        Retourne le container QWidget.
-        """
-        le = QLineEdit(getattr(comp, field_name, default_fn))
-        le.setFont(_FONT_MONO_SM)
-        le.setPlaceholderText(default_fn)
-        le.setStyleSheet(
-            f"color:{C.ACCENT}; background:{C.BG_DEEP};"
-            f"border:1px solid {C.BORDER_DARK}; border-radius:3px; padding:2px 5px;"
-        )
-        le.textChanged.connect(
-            lambda v, f=field_name, d=default_fn: set_field(comp, f, v or d))
-        register_syncer(field_name, lambda v, w=le: (
-            w.blockSignals(True), w.setText(str(v)), w.blockSignals(False)))
-
-        container = QWidget(); container.setStyleSheet("background:transparent;")
-        r = QHBoxLayout(container)
-        r.setContentsMargins(0, 1, 0, 1); r.setSpacing(8)
-        lbl = QLabel(display_label); lbl.setFont(_FONT_UI_SM)
-        lbl.setStyleSheet(_LBL_STY); lbl.setFixedWidth(76)
-        r.addWidget(lbl); r.addWidget(le, 1)
-        layout.addWidget(container)
-        return container
-
     # ── Barre méta (id + Active) ──────────────────────────────────────
 
     def meta_bar(self, comp: Any,
@@ -425,7 +390,7 @@ class _W:
         return sp
 
     def value_field(self, raw=0, project=None, variables=None,
-                    min_px: int = -512, max_px: int = 512,
+                    min_px: int = -32767, max_px: int = 32767,
                     allow_tile: bool = True):
         """Champ de valeur px / tile / référence de variable — voir
         ui/common/value_field.py. `project` alimente automatiquement la liste

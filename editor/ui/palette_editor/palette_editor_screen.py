@@ -6,7 +6,7 @@ choisit jusqu'à 16 palettes actives par pool parmi ce catalogue (voir Scene
 Inspector, carte "Palettes actives").
 
 Layout : 3 colonnes (même modèle que le Sprite Editor)
-  Gauche  : catalogue des palettes du projet   (PaletteFinderPanel)
+  Gauche  : catalogue des palettes du projet   (AssetFinder — partagé)
   Centre  : grille de swatches de la banque    (PaletteGridPanel)
   Droite  : inspecteur de la couleur active    (ColorInspectorPanel)
             + carte « USAGE » ferrée en bas, hauteur réglable (PaletteUsageCard)
@@ -22,7 +22,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from ui.common.theme import C, T, QSS
 from core.project import Project
 
-from .palette_finder_panel import PaletteFinderPanel
+from ui.common.asset_finder import AssetFinder
+from ui.common.asset_kinds import PALETTES
 from .palette_grid_panel import PaletteGridPanel
 from .color_inspector_panel import ColorInspectorPanel
 from .palette_usage_card import PaletteUsageCard
@@ -52,7 +53,8 @@ class PaletteEditorScreen(QWidget):
         split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)
 
-        self._finder    = PaletteFinderPanel()
+        self._finder    = AssetFinder("Palette finder", [PALETTES],
+                                      min_width=200, max_width=360)
         self._grid      = PaletteGridPanel()
         self._inspector = ColorInspectorPanel()
         self._usage     = PaletteUsageCard()
@@ -86,8 +88,8 @@ class PaletteEditorScreen(QWidget):
 
         # Finder → grille + carte : la banque sélectionnée devient la banque
         # affichée (et celle dont on liste les usages).
-        self._finder.bank_selected.connect(self._on_bank_selected)
-        self._finder.bank_deleted.connect(self._on_bank_deleted)
+        self._finder.selected.connect(lambda _kind, b: self._on_bank_selected(b.name))
+        self._finder.emptied.connect(lambda _kind: self._on_bank_deleted())
         self._usage.usage_activated.connect(self.usage_activated)
         # Grille → inspecteur : la couleur active est la seule chose partagée.
         self._grid.color_selected.connect(self._inspector.load_color)
@@ -96,7 +98,7 @@ class PaletteEditorScreen(QWidget):
         # Grille → finder : nom/icône à rafraîchir, ou banque à ramener à l'écran
         # (undo/redo visant une palette non affichée).
         self._grid.catalog_changed.connect(self._finder.refresh)
-        self._grid.bank_focus_requested.connect(self._finder.select_bank)
+        self._grid.bank_focus_requested.connect(self._select_bank)
         # Inspecteur → grille : l'écriture (et l'historique) restent côté grille.
         self._inspector.color_changed.connect(self._grid.apply_color)
         self._inspector.grid_focus_requested.connect(self._grid.focus_grid)
@@ -104,6 +106,14 @@ class PaletteEditorScreen(QWidget):
         self._inspector.setVisible(False)
 
     # ── Sélection de banque ───────────────────────────────────────
+
+    def _select_bank(self, name: str):
+        """Le finder sélectionne un ASSET ; ici on n'a que son nom (la grille
+        et l'historique travaillent par nom). La conversion vit dans l'écran,
+        pas dans le composant partagé, qui ne connaît aucune famille."""
+        bank = self._project.palettes.get(name or "") if self._project else None
+        if bank is not None:
+            self._finder.select(PALETTES.label, bank)
 
     def _on_bank_selected(self, name: str):
         self._grid.show_bank(name)
@@ -131,9 +141,7 @@ class PaletteEditorScreen(QWidget):
         if not self._project:
             return
         self._finder.refresh()
-        name = self._grid.bank_name
-        if name and self._project.palettes.get(name):
-            self._finder.select_bank(name)
+        self._select_bank(self._grid.bank_name)
         # Les usages peuvent avoir bougé sans que la banque change (slot de
         # scène réassigné, override d'asset) : recalculer dans tous les cas.
         self._usage.refresh()

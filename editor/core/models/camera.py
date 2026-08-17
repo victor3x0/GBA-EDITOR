@@ -61,8 +61,11 @@ class Camera(Resource):
     margin_x: int = 40
     margin_y: int = 20
     # Bornes du monde en pixels, appliquées à l'activation ; None = axe
-    # illimité. Un script peut les redéfinir ensuite (camera.set_bounds), et
-    # une réactivation les repose.
+    # illimité. La zone scrollable est un RECTANGLE : l'origine (bounds_x/y,
+    # presque toujours 0) et la taille (bounds_w/h). Un script peut les
+    # redéfinir ensuite (camera.bound), et une réactivation les repose.
+    bounds_x: Optional[int] = None
+    bounds_y: Optional[int] = None
     bounds_w: Optional[int] = None
     bounds_h: Optional[int] = None
     # Script Lua de la caméra, mêmes points d'entrée qu'une scène. Les réglages

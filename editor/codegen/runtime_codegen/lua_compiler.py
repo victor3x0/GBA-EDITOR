@@ -96,6 +96,9 @@ def transpile_all(
     # g_ui_regions, comme pour les textes et les polices.
     region_names = (p.region_names() if hasattr(p, "region_names") else [])
     image_names  = (p.image_names()  if hasattr(p, "image_names")  else [])
+    # TOUS les éléments d'UI, tous types confondus — l'index de la table de
+    # visibilité plate (UIELEM_*), pour ui.get().
+    element_names = (p.ui_element_names() if hasattr(p, "ui_element_names") else [])
     # Les états que chaque image peut prendre, lus dans SON sprite : c'est le
     # seul endroit du build qui tienne les deux bouts (l'élément et l'asset).
     image_states = {}
@@ -159,9 +162,11 @@ def transpile_all(
 
         anim_names = [st.name for st in sprite.states] if sprite and sprite.states else []
         sfx_comp_name, _ = _sfx_component_info(actor)
+        _rt_transform = bool(getattr(actor, "affine_transform", False))
         ctx_check = BuildContext(
             actor_name   = actor.name,
             anim_names   = anim_names,
+            affine_transform = _rt_transform,
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
@@ -177,6 +182,8 @@ def transpile_all(
             palette_names = palette_names,
             region_names = region_names,
             image_names  = image_names,
+            element_names = element_names,
+            image_states = image_states,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
             data_tables  = _data_tables,
@@ -213,6 +220,8 @@ def transpile_all(
                 palette_names = palette_names,
                 region_names = region_names,
                 image_names  = image_names,
+                element_names = element_names,
+                image_states = image_states,
                 save_slots   = _save_slots,
                 has_persistent = _has_persist,
                 data_tables  = _data_tables,
@@ -247,12 +256,13 @@ def transpile_all(
             palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
+            element_names = element_names,
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
             data_tables   = _data_tables,
         )
-        c_code, gen_warnings = lua_generate(script, ctx)
+        c_code, gen_warnings, _ = lua_generate(script, ctx)
         for w in gen_warnings:
             emit("log_line", f"[warn] {sp.name}: {w}")
         out = p.src_dir / f"actor_{s}.c"
@@ -260,6 +270,10 @@ def transpile_all(
         emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
 
     # Génération C — prefabs poolés (compilés une seule fois grâce à compiled_prefabs)
+    # `prefabs` est la liste du PROJET : la première scène les compile tous, les
+    # suivantes n'en recompilent aucun. Le total ci-dessous est donc bien celui
+    # du projet, et il n'est dit que là où il a été calculé.
+    pool_state_total = 0
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) <= 0:
             continue
@@ -277,9 +291,11 @@ def transpile_all(
         pf_spr  = next((c for c in pf.components if hasattr(c, "states")), None)
         pf_anim = [st.name for st in pf_spr.states] if pf_spr and hasattr(pf_spr, "states") else []
         pf_sfx_comp_name, pf_sfx_autoplay = _sfx_component_info(pf)
+        _pf_rt_transform = bool(getattr(pf, "affine_transform", False))
         ctx_check = BuildContext(
             actor_name   = pf.name,
             anim_names   = pf_anim,
+            affine_transform = _pf_rt_transform,
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
@@ -292,14 +308,11 @@ def transpile_all(
             sfx_component_name = pf_sfx_comp_name,
             region_names = region_names,
             image_names  = image_names,
+            element_names = element_names,
+            image_states = image_states,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
             data_tables  = _data_tables,
-            # Les locals de tête d'un prefab poolé deviennent des cases de
-            # `Actor.data[]` (cf. CodegenContext.is_pooled) : le checker doit le
-            # savoir pour refuser un tableau d'état, que le codegen ne pourrait
-            # que partager entre toutes les instances.
-            is_pooled    = True,
         )
         pf_ast, ok = _compile_script(sp_path, ctx_check, emit, f"prefab {pf.name} ({sp_path.name})")
         if not ok:
@@ -315,6 +328,7 @@ def transpile_all(
             all_actor_syms= all_syms,
             scripts_dir   = p.scripts_dir,
             is_pooled     = True,
+            pool_size     = pf.max_instances,
             scene_names   = _scene_names,
             sfx_component_name = pf_sfx_comp_name,
             sfx_autoplay  = pf_sfx_autoplay,
@@ -325,17 +339,31 @@ def transpile_all(
             palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
+            element_names = element_names,
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
             data_tables   = _data_tables,
         )
-        pf_c, pf_warnings = lua_generate(pf_ast, ctx_pf)
+        pf_c, pf_warnings, pf_state_bytes = lua_generate(pf_ast, ctx_pf)
         for w in pf_warnings:
             emit("log_line", f"[warn] prefab {pf.name}: {w}")
         out_pf = p.src_dir / f"actor_{pf_sym}.c"
         out_pf.write_text(pf_c, encoding="utf-8")
         emit("log_line", f"[lua->c] prefab {pf.name} -> {out_pf.name}")
+        # Ce que l'état de script de ce prefab occupe en EWRAM. Le chiffre est
+        # dit et non plafonné (cf. ROADMAP v0.7.6) : le plafond de huit entiers
+        # qu'il remplace était arbitraire, et la ressource ici est arbitrable.
+        pool_state_total += pf_state_bytes * pf.max_instances
+        if pf_state_bytes:
+            emit("log_line",
+                 f"[ewram] prefab {pf.name} : état de script {pf_state_bytes} "
+                 f"octets × {pf.max_instances} instance(s) = "
+                 f"{pf_state_bytes * pf.max_instances} octets")
+
+    if pool_state_total:
+        emit("log_line",
+             f"[ewram] état de script des prefabs poolés : {pool_state_total} octets")
 
     # Génération C — script de scène
     if scene_script_ast and scene_script_file:
@@ -358,12 +386,13 @@ def transpile_all(
             palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
+            element_names = element_names,
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
             data_tables   = _data_tables,
         )
-        c_code, sc_warnings = lua_generate(scene_script_ast, ctx_sc)
+        c_code, sc_warnings, _ = lua_generate(scene_script_ast, ctx_sc)
         for w in sc_warnings:
             emit("log_line", f"[warn] {scene_script_file.name}: {w}")
         out_name = f"{scene_s}_scene.c"
@@ -407,6 +436,8 @@ def transpile_all(
             palette_names = palette_names,
             region_names = region_names,
             image_names  = image_names,
+            element_names = element_names,
+            image_states = image_states,
             save_slots   = _save_slots,
             has_persistent = _has_persist,
             data_tables  = _data_tables,
@@ -433,12 +464,13 @@ def transpile_all(
             palette_names = palette_names,
             region_names  = region_names,
             image_names   = image_names,
+            element_names = element_names,
             image_states  = image_states,
             save_slots    = _save_slots,
             has_persistent = _has_persist,
             data_tables   = _data_tables,
         )
-        cam_c, cam_warnings = lua_generate(cam_ast, ctx_cam)
+        cam_c, cam_warnings, _ = lua_generate(cam_ast, ctx_cam)
         for w in cam_warnings:
             emit("log_line", f"[warn] camera {cam.name}: {w}")
         out_cam = p.src_dir / f"{cam_sym}.c"

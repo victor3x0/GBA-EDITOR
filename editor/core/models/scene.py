@@ -213,25 +213,34 @@ class Prefab(Resource, ComponentOwnerMixin):
     components: list = field(default_factory=list)
     pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
+    # Même décision que `Actor.affine_transform`, portée ici pour TOUTES les
+    # copies du pool : cochée, chaque instance réserve un slot de matrice affine
+    # OAM au build, donc self.rotation/self.scale/self.sprite_* (et les helpers
+    # de juiciness qui les composent) ont où écrire au runtime. Le codegen la
+    # lisait déjà (`_affine_entry`, lua_compiler) ; seul le modèle ne la rangeait
+    # pas, ce qui condamnait tout prefab spawné à l'OAM normale.
+    affine_transform: bool = False
     notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
 
     def to_dict(self) -> dict:
         return {
-            "name":          self.name,
-            "components":    components_to_list(self.components),
-            "pal_bank":      self.pal_bank,
-            "max_instances": self.max_instances,
-            "notes":         self.notes,
+            "name":             self.name,
+            "components":       components_to_list(self.components),
+            "pal_bank":         self.pal_bank,
+            "max_instances":    self.max_instances,
+            "affine_transform": self.affine_transform,
+            "notes":            self.notes,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Prefab":
         return cls(
-            name          = d.get("name", "Prefab"),
-            components    = components_from_list(d.get("components", [])),
-            pal_bank      = d.get("pal_bank", OWN_PAL_BANK),
-            max_instances = d.get("max_instances", 0),
-            notes         = d.get("notes", ""),
+            name             = d.get("name", "Prefab"),
+            components       = components_from_list(d.get("components", [])),
+            pal_bank         = d.get("pal_bank", OWN_PAL_BANK),
+            max_instances    = d.get("max_instances", 0),
+            affine_transform = d.get("affine_transform", False),
+            notes            = d.get("notes", ""),
         )
 
 
@@ -261,8 +270,18 @@ class Actor(ComponentOwnerMixin):
     # Mode OAM (bits 10-11 d'attr0) : 0 = sprite normal, 2 = fenêtre-objet —
     # le sprite n'est plus dessiné, ses pixels opaques DÉCOUPENT la région
     # window.OBJ (forme libre, animable). Mode 1 (semi-transparent) suppose le
-    # blending, pas encore câblé. Modifiable au runtime par self:set_obj_mode().
+    # blending, pas encore câblé. Modifiable au runtime par self.obj_mode.
     obj_mode: int = 0
+    # Transformation affine MONDE (cf. ARCHITECTURE.md « Le modèle affine ») :
+    # `affine_transform` réserve un slot de matrice affine OAM (32 max/scène) pour
+    # CET actor, même si scale/rotation valent leur défaut — c'est lui qui porte
+    # la décision, plus le SpriteComponent. Une fois coché, l'actor peut avoir un
+    # scale et une rotation (rotation/scale de l'actor, hérités par le sprite), et
+    # le SpriteComponent peut exprimer son propre scale/rotation/offset locaux.
+    affine_transform: bool = False
+    rotation: int = 0            # degrés 0-359 — rotation monde de l'actor
+    scale_x: float = 1.0         # scale monde de l'actor (1.0 = normal)
+    scale_y: float = 1.0
     # Ancrage ÉCRAN : x/y ne sont plus des coordonnées de monde mais des pixels
     # d'écran, et l'émission OAM ne retranche pas la caméra — l'acteur ne
     # défile pas. C'est l'UI en sprite (score, cœurs, curseur) avec tout le
@@ -293,6 +312,10 @@ class Actor(ComponentOwnerMixin):
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
             "obj_mode":    self.obj_mode,
+            "affine_transform": self.affine_transform,
+            "rotation":    self.rotation,
+            "scale_x":     self.scale_x,
+            "scale_y":     self.scale_y,
             "screen_space": self.screen_space,
             "dir_x":       self.dir_x,
             "dir_y":       self.dir_y,
@@ -314,6 +337,10 @@ class Actor(ComponentOwnerMixin):
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
             obj_mode    = d.get("obj_mode", 0),
+            affine_transform = d.get("affine_transform", False),
+            rotation    = int(d.get("rotation", 0)),
+            scale_x     = float(d.get("scale_x", 1.0)),
+            scale_y     = float(d.get("scale_y", 1.0)),
             screen_space = d.get("screen_space", False),
             dir_x       = d.get("dir_x", 0),
             dir_y       = d.get("dir_y", 0),

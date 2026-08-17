@@ -37,12 +37,12 @@ _TOOLTIPS = {
                           "Lua : self.active = false"),
     "actor.x":           ("self.x",
                           "Position horizontale en pixels (0–239).\n"
-                          "Lecture directe depuis Lua : local px = self.x\n"
-                          "Écriture → self:set_pos(x, y)  ou  self:move(dx, dy)"),
+                          "Lecture directe depuis Lua : local px = self.position.x\n"
+                          "Écriture → self.position = vec2(x, y)  ou  self:move(self.position, speed)"),
     "actor.y":           ("self.y",
                           "Position verticale en pixels (0–159).\n"
-                          "Lecture directe depuis Lua : local py = self.y\n"
-                          "Écriture → self:set_pos(x, y)  ou  self:move(dx, dy)"),
+                          "Lecture directe depuis Lua : local py = self.position.y\n"
+                          "Écriture → self.position = vec2(x, y)  ou  self:move(self.position, speed)"),
     "actor.priority":    ("self.priority  (lecture seule)",
                           "Ordre d'affichage sur les BG layers.\n"
                           "0 = devant tous les backgrounds,  3 = derrière tous.\n"
@@ -62,10 +62,35 @@ _TOOLTIPS = {
                           "matérielle du GBA, pas un choix de l'éditeur.\n"
                           "\n"
                           "Résolu à la compilation : pas de bascule au runtime."),
-    "actor.visible":     ("self:set_visible(true/false)",
+    "actor.visible":     ("self.visible = true/false",
                           "Masque l'actor sans le désactiver.\n"
                           "Le slot OAM reste réservé mais avec bit OBJ_DISABLE."),
-    "actor.obj_mode":    ("self:set_obj_mode(0 | 2)",
+    "actor.affine_transform": ("self.rotation, self.scale, self.sprite_*",
+                          "Réserve un des 32 slots de matrice affine du GBA pour\n"
+                          "CET actor et libère son transform monde.\n"
+                          "\n"
+                          "Coché → l'actor a un scale et une rotation (self.rotation,\n"
+                          "self.scale), et son SpriteComponent gagne un scale, une\n"
+                          "rotation et un offset LOCAUX (self.sprite_*) : le sprite\n"
+                          "hérite des propriétés de l'actor (rotation somme des deux,\n"
+                          "scale produit des deux) et se place en OFFSET relatif à lui.\n"
+                          "\n"
+                          "Décoché → OAM normale, aucun slot, les champs ci-dessous\n"
+                          "et les self.sprite_* sont sans effet.\n"
+                          "\n"
+                          "GBA : OAM attribute 1, bits 8-12 (affine matrix slot)."),
+    "actor.rotation":    ("self.rotation",
+                          "Rotation MONDE de cet actor, en degrés (0–359).\n"
+                          "Héritée par le sprite : à l'écran, l'angle total est\n"
+                          "rotation_actor + sprite_rotation.\n"
+                          "Nécessite « Affine transform » coché."),
+    "actor.scale":       ("self.scale  (vec2 en pourcent)",
+                          "Échelle MONDE de cet actor, en pourcent — 100 = normal.\n"
+                          "Héritée par le sprite : à l'écran, l'échelle totale est\n"
+                          "scale_actor × sprite_scale.\n"
+                          "Nécessite « Affine transform » coché.\n"
+                          "Lua : self.scale = vec2(150, 150)"),
+    "actor.obj_mode":    ('self.obj_mode = "normal" | "window"',
                           "Rôle du sprite dans le système de windows (masques d'écran).\n"
                           "\n"
                           "Normal : le sprite est dessiné, comme n'importe quel autre.\n"
@@ -322,7 +347,7 @@ class ActorInspector(QWidget):
         # Mode 1 (semi-transparent) volontairement absent — il suppose le
         # blending, pas encore câblé côté runtime.
         # Le champ reste `obj_mode` (nom du registre GBA, OAM attr0 bits 10-11,
-        # et API Lua publique self:set_obj_mode) : seuls les libellés adoptent
+        # et API Lua publique self.obj_mode) : seuls les libellés adoptent
         # le vocabulaire « window » du panneau WINDOWS de la scène.
         self._tobj_mode = _W.combobox(["Normal", "Masque (window OBJ)"])
         self._tobj_mode.currentIndexChanged.connect(
@@ -344,6 +369,69 @@ class ActorInspector(QWidget):
         _tip(self._tvisible, "actor.visible")
         tl.addWidget(self._tvisible)
         cl.addWidget(self._transform_group)
+
+        # ── AFFINE card ──────────────────────────────────────────────
+        # Carte à part, et non une ligne du Transform : `affine_transform` n'est
+        # pas un PLACEMENT (x/y/priority/direction — propre à un actor posé dans
+        # une scène) mais une capacité de RENDU, que le prefab décide pour toutes
+        # les copies de son pool. C'est ce qui permet de la montrer sur un
+        # Prefab, dont la carte Transform, elle, n'a aucun sens.
+        # `affine_transform` réserve un slot de matrice affine OAM (32 max/scène) ;
+        # sans lui, rotation/scale (et les self.sprite_* du sprite) n'ont rien où
+        # écrire au runtime.
+        self._affine_group = QFrame()
+        self._affine_group.setObjectName("affine_card")
+        self._affine_group.setStyleSheet(QSS.card("affine_card"))
+        al = QVBoxLayout(self._affine_group)
+        al.setContentsMargins(8, 6, 8, 8)
+        al.setSpacing(7)
+
+        _ag_hdr = QHBoxLayout()
+        _ag_lbl = QLabel("Affine")
+        _ag_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+        _ag_lbl.setStyleSheet(QSS.title_section())
+        _ag_hdr.addWidget(_ag_lbl); _ag_hdr.addStretch()
+        al.addLayout(_ag_hdr)
+
+        self._taffine = QCheckBox("Affine transform"); self._taffine.setStyleSheet(QSS.checkbox)
+        self._taffine.toggled.connect(self._on_affine_toggle)
+        _tip(self._taffine, "actor.affine_transform")
+        al.addWidget(self._taffine)
+
+        # Rotation/Scale de DÉPART : des valeurs d'instance, pas de template —
+        # d'où des conteneurs nommés, masqués en mode Prefab (cf. load_prefab).
+        self._aff_rot_row = QWidget(); self._aff_rot_row.setStyleSheet("background:transparent;")
+        _aff_row = QHBoxLayout(self._aff_rot_row); _aff_row.setContentsMargins(0, 2, 0, 2)
+        _aff_lbl = QLabel("Rotation"); _aff_lbl.setFont(QFont(T.UI, T.MD))
+        _aff_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
+        _aff_lbl.setFixedWidth(58)
+        _aff_row.addWidget(_aff_lbl)
+        self._taff_rot = _W.spinbox(0, min_v=0, max_v=359)
+        self._taff_rot.valueChanged.connect(lambda v: self._set("rotation", v))
+        _tip(self._taff_rot, "actor.rotation")
+        _aff_row.addWidget(self._taff_rot)
+        _aff_row.addStretch()
+        al.addWidget(self._aff_rot_row)
+
+        self._aff_scale_row = QWidget(); self._aff_scale_row.setStyleSheet("background:transparent;")
+        _scale_row = QHBoxLayout(self._aff_scale_row); _scale_row.setContentsMargins(0, 2, 0, 2)
+        _scale_lbl = QLabel("Scale"); _scale_lbl.setFont(QFont(T.UI, T.MD))
+        _scale_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
+        _scale_lbl.setFixedWidth(58)
+        _scale_row.addWidget(_scale_lbl)
+        self._taff_sx = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
+        self._taff_sy = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
+        self._taff_sx.valueChanged.connect(lambda v: self._set("scale_x", v))
+        self._taff_sy.valueChanged.connect(lambda v: self._set("scale_y", v))
+        _tip(self._taff_sx, "actor.scale"); _tip(self._taff_sy, "actor.scale")
+        _scale_row.addWidget(self._taff_sx)
+        _scale_row.addWidget(QLabel("×"))
+        _scale_row.addWidget(self._taff_sy)
+        _scale_row.addStretch()
+        al.addWidget(self._aff_scale_row)
+        # Rotation/scale n'ont de sens que si le slot est réservé
+        self._aff_widgets = (self._taff_rot, self._taff_sx, self._taff_sy)
+        cl.addWidget(self._affine_group)
 
         # ── COMPONENTS card ──────────────────────────────────────────
         _comp_card = QFrame()
@@ -498,6 +586,12 @@ class ActorInspector(QWidget):
         self._active.setChecked(True)
         self._prefab_badge.setVisible(False)   # un prefab n'est pas une instance
         self._transform_group.setVisible(False)
+        # Le slot affine, si : c'est le prefab qui le réserve pour tout son pool.
+        # Rotation/scale de départ, non : ce sont des valeurs d'instance.
+        self._affine_group.setVisible(True)
+        self._aff_rot_row.setVisible(False)
+        self._aff_scale_row.setVisible(False)
+        self._taffine.setChecked(bool(getattr(prefab, "affine_transform", False)))
         self._blocking = False
         self._refresh_component_list()
 
@@ -529,6 +623,9 @@ class ActorInspector(QWidget):
         else:
             self._prefab_badge.setVisible(False)
         self._transform_group.setVisible(True)
+        self._affine_group.setVisible(True)
+        self._aff_rot_row.setVisible(True)
+        self._aff_scale_row.setVisible(True)
         from core.models.field_value import variables_from_project
         _vars = variables_from_project(self._project)
         self._tx.set_variables(_vars); self._ty.set_variables(_vars)
@@ -537,6 +634,12 @@ class ActorInspector(QWidget):
         self._tpriority.setValue(actor.priority)
         self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
         self._tscreen.setChecked(bool(getattr(actor, "screen_space", False)))
+        self._taffine.setChecked(bool(getattr(actor, "affine_transform", False)))
+        self._set_affine_enabled(bool(getattr(actor, "affine_transform", False)))
+        if not self._blocking:
+            self._taff_rot.setValue(getattr(actor, "rotation", 0))
+            self._taff_sx.setValue(getattr(actor, "scale_x", 1.0))
+            self._taff_sy.setValue(getattr(actor, "scale_y", 1.0))
         self._tvisible.setChecked(actor.visible)
         self._blocking = False
         self._refresh_component_list()
@@ -691,6 +794,15 @@ class ActorInspector(QWidget):
         if self._blocking or not self._actor: return
         self._set("dir_x", dx)
         self._set("dir_y", dy)
+
+    def _on_affine_toggle(self, on: bool):
+        if self._blocking or not self._actor: return
+        self._set("affine_transform", on)
+        self._set_affine_enabled(on)
+
+    def _set_affine_enabled(self, on: bool):
+        for w in self._aff_widgets:
+            w.setEnabled(on)
 
     # ── Components ───────────────────────────────────────────────
 

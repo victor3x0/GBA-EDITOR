@@ -31,6 +31,14 @@ class LuaScript:
     functions:  list[LuaFunction] = field(default_factory=list)   # handlers d'event
     locals:     list[LuaLocal]    = field(default_factory=list)    # local x = val
     globals_w:  list[str]         = field(default_factory=list)    # noms des vars globales écrites
+    # Table de module d'un behavior : le `M` de `local M = {}` … `function
+    # M.update(actor)` … `return M`. C'est une FORME, pas une donnée — elle ne
+    # produit rien en C, les fonctions étant inlinées une à une
+    # (codegen._emit_inlined_behaviors). Sans ce repérage, `{}` était lu comme
+    # un tableau vide : le template de behavior qu'écrit l'éditeur lui-même
+    # récoltait « un tableau vide n'a pas de taille », et le codegen émettait un
+    # `static int M = 0;` que personne ne lit.
+    module_names: list[str]       = field(default_factory=list)
 
 
 @dataclass
@@ -101,6 +109,20 @@ class StmtForNum:
 @dataclass
 class StmtBreak:
     pass
+
+
+@dataclass
+class StmtUnsupported:
+    """Un statement que ce sous-ensemble ne traduit pas — `repeat`, `for … in`,
+    `goto`, une fonction imbriquée…
+
+    Il est PORTÉ et non jeté. Le rendre `None` (« noeud non géré, silencieux en
+    v1 ») faisait disparaître le bloc du jeu sans un mot : ni erreur de checker,
+    ni avertissement gcc, juste un corps de boucle qui n'existe plus. Ce que
+    l'auteur écrit se retrouve donc dans l'AST, et c'est le checker qui refuse —
+    avec la phrase de `lua_subset`. Le parser décrit, il ne juge pas."""
+    node: str      # nom du noeud luaparser ("Repeat", "Forin", "Function"…)
+    line: int
 
 
 # ── Expressions ───────────────────────────────────────────────────
@@ -193,16 +215,62 @@ class ExprUnop:
     operand: Any
 
 
+@dataclass
+class ExprUnsupported:
+    """Une expression que ce sous-ensemble ne traduit pas — `..`, `^`, `//`,
+    une fonction anonyme, un opérateur binaire…
+
+    Même rôle que `StmtUnsupported` côté expressions. Elle remplace le
+    `ExprName("__unsupported_<Type>")` d'avant, qui partait tel quel dans le C
+    et n'échouait qu'au `make`, sur un identifiant inconnu, à la ligne
+    générée."""
+    node: str      # nom du noeud luaparser ("Concat", "ExpoOp"…)
+    line: int
+
+
 # ─── Erreur de parse ───────────────────────────────────────────────
 
 class LuaParseError(Exception):
     pass
 
 
+# ─── Opérateurs traduits ──────────────────────────────────────────
+# Deux tables, et elles font LISTE : un opérateur qui n'y est pas n'est pas dans
+# le sous-ensemble (cf. lua_subset.REFUSED, qui porte la phrase correspondante).
+# Les noms sont ceux de luaparser, capitale finale de `ULengthOP` comprise.
+# Le C est déjà écrit ici (`and` → `&&`) : l'AST porte l'opérateur cible, comme
+# depuis l'origine.
+
+_BINOP_MAP: dict[str, str] = {
+    "AddOp": "+", "SubOp": "-", "MultOp": "*", "FloatDivOp": "/",
+    "ModOp": "%", "EqToOp": "==", "NotEqToOp": "!=", "LessThanOp": "<",
+    "GreaterThanOp": ">", "LessOrEqThanOp": "<=", "GreaterOrEqThanOp": ">=",
+    "AndLoOp": "&&", "OrLoOp": "||",
+}
+
+_UNOP_MAP: dict[str, str] = {
+    "UMinusOp": "-", "ULNotOp": "not", "ULengthOP": "#",
+}
+
+
 # ─── Convertisseur AST luaparser → nos noeuds ─────────────────────
 
 class _Converter:
     """Traverse l'AST luaparser et produit nos noeuds."""
+
+    def __init__(self, source: str = ""):
+        # Le source, pour situer un noeud refusé sur SA ligne. Il est recompté
+        # depuis l'offset et non lu dans `node.line` : celui de luaparser lève
+        # dès que le noeud n'a pas conservé ses tokens (même contrainte que
+        # `refactor.iter_call_sites`, qui compte déjà les sauts de ligne).
+        self._source = source
+
+    def _line(self, node) -> int:
+        """Ligne 1-indexée du noeud, ou 0 si son offset est inconnu."""
+        off = getattr(node, "start_char", None)
+        if off is None or not self._source:
+            return 0
+        return self._source.count("\n", 0, off) + 1
 
     def convert_chunk(self, node) -> LuaScript:
         block = node.body
@@ -251,10 +319,21 @@ class _Converter:
                                                 export_type=decl_type))
             # On ignore les autres statements top-level.
 
+        # Le nom d'un module de behavior se lit sur les DEUX bouts : `local M =
+        # {}` d'un côté, `function M.update(…)` de l'autre. Exiger les deux
+        # évite de prendre pour un module un `local t = {}` que l'auteur voulait
+        # tableau — celui-là reste refusé, avec la phrase qui dit `array(n)`.
+        qualifiers = {fn.name.split(".", 1)[0] for fn in functions if "." in fn.name}
+        modules = [loc.name for loc in locals_
+                   if loc.name in qualifiers
+                   and isinstance(loc.value, ExprTable)
+                   and not loc.value.items and not loc.value.has_keys]
+
         return LuaScript(
-            functions = functions,
-            locals    = locals_,
-            globals_w = sorted(globals_w),
+            functions    = functions,
+            locals       = [loc for loc in locals_ if loc.name not in modules],
+            globals_w    = sorted(globals_w),
+            module_names = modules,
         )
 
     def _func(self, node) -> LuaFunction:
@@ -333,7 +412,11 @@ class _Converter:
             case "Break":
                 return StmtBreak()
             case _:
-                return None   # noeud non géré (silencieux en v1)
+                # Tout le reste est PORTÉ jusqu'au checker, qui le refuse en
+                # nommant l'issue (cf. StmtUnsupported). Un `Function` arrive
+                # ici quand il est imbriqué dans un corps — au premier niveau,
+                # c'est `convert_chunk` qui le prend, et il est légitime.
+                return StmtUnsupported(node=t, line=self._line(node))
 
     def _if(self, node, local_scope) -> StmtIf:
         then = self._block(node.body, set(local_scope))
@@ -399,14 +482,18 @@ class _Converter:
             # matchaient rien : `not x` retombait sur la branche binaire et
             # levait « 'ULNotOp' object has no attribute 'left' », un message
             # qui ne dit ni le nom de l'opérateur ni la ligne fautive.
-            case "UMinusOp" | "ULNotOp" | "ULengthOP" | "UBNotOp":
-                op = {"UMinusOp": "-", "ULNotOp": "not",
-                      "ULengthOP": "#", "UBNotOp": "~"}.get(t, t)
-                return ExprUnop(op=op, operand=self._expr(node.operand))
-            case n if n.endswith("Op"):
-                return self._binop(node, t)
+            case n if n in _UNOP_MAP:
+                return ExprUnop(op=_UNOP_MAP[n], operand=self._expr(node.operand))
+            case n if n in _BINOP_MAP:
+                return ExprBinop(op=_BINOP_MAP[n],
+                                 left=self._expr(node.left),
+                                 right=self._expr(node.right))
             case _:
-                return ExprName(f"__unsupported_{t}")
+                # Les deux tables ci-dessus sont la LISTE des opérateurs
+                # traduits. Le test qui les remplaçait — « le nom du noeud finit
+                # par Op » — acceptait aussi `^`, `//`, `&`, `<<`, dont le nom
+                # de classe partait alors tel quel dans le C : `(a ExpoOp b)`.
+                return ExprUnsupported(node=t, line=self._line(node))
 
     def _expr_invoke(self, node) -> ExprInvoke:
         obj    = self._expr(node.source)
@@ -418,17 +505,6 @@ class _Converter:
         func = self._expr(node.func)
         args = [self._expr(a) for a in (node.args or [])]
         return ExprCall(func=func, args=args)
-
-    _BINOP_MAP = {
-        "AddOp": "+", "SubOp": "-", "MultOp": "*", "FloatDivOp": "/",
-        "ModOp": "%", "EqOp": "==", "EqToOp": "==", "NotEqOp": "!=", "NotEqToOp": "!=", "LessThanOp": "<",
-        "GreaterThanOp": ">", "LessOrEqThanOp": "<=", "GreaterOrEqThanOp": ">=",
-        "AndLoOp": "&&", "OrLoOp": "||",
-    }
-
-    def _binop(self, node, t: str) -> ExprBinop:
-        op = self._BINOP_MAP.get(t, t)
-        return ExprBinop(op=op, left=self._expr(node.left), right=self._expr(node.right))
 
     def _collect_globals(self, stmts: list, local_names: set[str], out: set[str]):
         """Collecte les noms écrits (Assign) qui ne sont pas dans local_names,
@@ -475,11 +551,99 @@ class _Converter:
 
 ARRAY_CTOR = "array"
 
+# L'import d'un behavior. La forme est reconnue ICI, avec l'AST qu'elle lit,
+# et ses deux consommateurs l'appellent : le checker (pour savoir qu'un alias
+# de module n'est pas un nom inconnu) et le codegen (pour inliner le fichier).
+# Elle était écrite deux fois dans codegen.py, à quinze lignes d'écart.
+REQUIRE_FN = "require"
+
+
+def require_target(expr) -> Optional[str]:
+    """`require("behaviors/paddle_ai")` → "behaviors/paddle_ai", sinon None."""
+    if (isinstance(expr, ExprCall)
+            and isinstance(expr.func, ExprName)
+            and expr.func.name == REQUIRE_FN
+            and expr.args
+            and isinstance(expr.args[0], ExprString)):
+        return expr.args[0].value
+    return None
+
+# ─── Séquences ────────────────────────────────────────────────────
+# Une séquence est une fonction de premier niveau `on_sequence_<nom>`, découpée
+# au build à chaque attente. La FORME est reconnue ici, comme celle du tableau
+# et du require, et ses trois consommateurs l'appellent : le checker (admettre
+# ce nom-là et refuser une attente ailleurs), le codegen (découper), et
+# `rom_build` (savoir qu'un script sans `on_update` a quand même quelque chose
+# à faire à chaque frame).
+SEQUENCE_PREFIX = "on_sequence_"
+WAIT_FN         = "wait"
+WAIT_UNTIL_FN   = "wait_until"
+WAIT_FNS        = (WAIT_FN, WAIT_UNTIL_FN)
+
+
+def sequence_name(fn_name: str) -> Optional[str]:
+    """`on_sequence_intro` → "intro", sinon None."""
+    if fn_name.startswith(SEQUENCE_PREFIX) and len(fn_name) > len(SEQUENCE_PREFIX):
+        return fn_name[len(SEQUENCE_PREFIX):]
+    return None
+
+
+def wait_call(stmt) -> Optional[tuple[str, Any]]:
+    """`wait(30)` → ("wait", ExprNumber(30)) ; `wait_until(c)` → ("wait_until", c).
+
+    Une attente n'est un appel que par sa SYNTAXE — la source doit rester du Lua
+    valide. Elle ne produit aucun appel C : elle coupe la séquence en deux.
+    Rend None (et non une erreur) sur un nombre d'arguments fautif : c'est au
+    checker de le dire avec les mots qui vont bien."""
+    if not isinstance(stmt, StmtCall) or not isinstance(stmt.call, ExprCall):
+        return None
+    f = stmt.call.func
+    if not isinstance(f, ExprName) or f.name not in WAIT_FNS:
+        return None
+    return f.name, (stmt.call.args[0] if stmt.call.args else None)
+
+
 # L'espace de noms des tables AUTHORÉES du projet : `data.Objets[i].prix`.
 # Un nom réservé plutôt qu'un nom global par table — sans lui, une table
 # nommée `score` masquerait un `local score` du script, et l'auteur n'aurait
 # aucun moyen de savoir lequel des deux il lit.
 DATA_NS = "data"
+
+
+def assigned_names(script: LuaScript) -> set[str]:
+    """Les noms que le script ÉCRIT quelque part, à travers tous ses handlers.
+
+    Ce qui compte est le nom à la BASE de la cible : `trajet[i] = 3` et
+    `vitesse.x = 0` écrivent bien `trajet` et `vitesse`. Deux consommateurs :
+    le codegen sépare l'état d'un prefab poolé (par instance) de ses constantes
+    (partagées) ; le checker refuse un `wait_until` dont la condition ne lit que
+    des noms absents d'ici — elle ne pourra jamais devenir vraie."""
+    names: set[str] = set()
+
+    def base(target) -> Optional[str]:
+        while isinstance(target, (ExprIndex, ExprIndexAt)):
+            target = target.obj
+        return target.name if isinstance(target, ExprName) else None
+
+    def walk(stmts):
+        for s in stmts:
+            if isinstance(s, StmtAssign):
+                n = base(s.target)
+                if n is not None:
+                    names.add(n)
+            elif isinstance(s, StmtIf):
+                walk(s.then)
+                for _cond, body in s.elseifs:
+                    walk(body)
+                walk(s.else_)
+            elif isinstance(s, StmtWhile):
+                walk(s.body)
+            elif isinstance(s, StmtForNum):
+                walk(s.body)
+
+    for fn in script.functions:
+        walk(fn.body)
+    return names
 
 
 def array_dims(expr) -> Optional[tuple[int, ...]]:
@@ -527,6 +691,6 @@ def parse(source: str) -> LuaScript:
         raise LuaParseError("luaparser n'est pas installé (pip install luaparser)")
     try:
         raw = _lua_ast.parse(source)
-        return _Converter().convert_chunk(raw)
+        return _Converter(source).convert_chunk(raw)
     except Exception as e:
         raise LuaParseError(str(e)) from e

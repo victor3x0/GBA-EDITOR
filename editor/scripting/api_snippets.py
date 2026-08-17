@@ -24,9 +24,10 @@ Deux entrées distinctes, parce que les deux usages ne veulent pas la même chos
 from __future__ import annotations
 
 from scripting.api import (
-    RUNTIME_API, PARAM_STR, PARAM_STR_LITERAL, PARAM_ACTOR, ApiFunc,
+    RUNTIME_API, RUNTIME_PROPS, PARAM_STR, PARAM_STR_LITERAL, PARAM_ACTOR, ApiFunc,
     HARDWARE_ENUMS,
 )
+from scripting.vec_types import VEC_FIELDS, VEC_CONSTRUCTORS
 
 # Marqueur d'exemple dans les `doc` d'api.py. Convention déjà en place là-bas ;
 # la nommer ici évite qu'un troisième lecteur la redevine.
@@ -70,7 +71,7 @@ def call(name: str, **by_domain: str) -> str:
         elif p.domain in HARDWARE_ENUMS:
             # Énumération matérielle : l'ensemble est FIXE et connu ici, donc on
             # propose une vraie valeur plutôt qu'un gabarit. Un gabarit
-            # (`blend.set_mode("mode")`) serait refusé par le checker à la
+            # (`window.set("win0", ...)`) serait refusé par le checker à la
             # seconde même où l'utilisateur vient de cliquer pour l'insérer.
             args.append(_lua_str(next(iter(HARDWARE_ENUMS[p.domain]))))
         elif p.ptype in (PARAM_STR, PARAM_STR_LITERAL):
@@ -105,6 +106,66 @@ def example(name: str) -> str:
     return call(name)
 
 
+def _param_type(p) -> str:
+    """Type affiché d'un paramètre — « string »/« number » pour les scalaires,
+    mais un vec2/vec3 garde son type composé : dire « number » pour une
+    position tromperait (il faut écrire vec2(x, y))."""
+    if p.ptype in (PARAM_STR, PARAM_STR_LITERAL):
+        return "string"
+    if p.ptype == "vec2" or p.ptype == "vec3":
+        return p.ptype
+    return "number"
+
+
+def _prop_label(name: str, p) -> str:
+    """Libellé d'une propriété : `self.position` à la lecture, mais une
+    PROPRIÉTÉ enseignée par son ÉCRITURE quand elle en a une — c'est la forme
+    complète, celle qu'on met dans un script. `camera.bound = rect(x, y, w, h)`
+    en dit plus que `camera.bound`."""
+    if p is None:
+        return name
+    if p.read_only or p.c_setter is None:
+        return name
+    fields = VEC_FIELDS.get(p.ptype, ())
+    if p.ptype in VEC_CONSTRUCTORS:
+        return f"{name} = {p.ptype}({', '.join(fields)})"
+    if p.domain in HARDWARE_ENUMS:
+        # Énumération matérielle : une VRAIE valeur, pas un gabarit — même
+        # raison que pour un argument du même domaine dans `call()`.
+        return f'{name} = {_lua_str(next(iter(HARDWARE_ENUMS[p.domain])))}'
+    return f"{name} = ..."
+
+
+def prop_entry_dict(name: str) -> dict:
+    """Entrée au format d'`api_reference.json` pour une PROPRIÉTÉ
+    (`RUNTIME_PROPS`) — même forme que `entry_dict`, pour que `make_tooltip`
+    n'ait pas à savoir d'où vient l'entrée qu'il affiche."""
+    p = RUNTIME_PROPS.get(name)
+    fields = VEC_FIELDS.get(p.ptype, ()) if p is not None else ()
+    # Une propriété COMPOSITE qui porte aussi des noms (`self.direction`) rend un
+    # vec2 : c'est ça qu'il faut annoncer, les noms étant une seconde écriture
+    # décrite dans sa doc — pas son type de retour.
+    enum = (HARDWARE_ENUMS.get(p.domain)
+            if p is not None and p.ptype not in VEC_CONSTRUCTORS else None)
+    if p is None or p.read_only:
+        snippet = name
+    else:
+        snippet = _prop_label(name, p)
+    return {
+        "label":       _prop_label(name, p),
+        "snippet":     snippet,
+        "description": p.doc if p is not None else "",
+        "params": [
+            {"name": f, "type": "number", "description": ""} for f in fields
+        ],
+        # Une propriété d'énumération ne rend pas « int » côté script : elle
+        # rend l'un de ces noms, et c'est ce qu'il faut lire dans l'infobulle.
+        "returns":     " | ".join(f'"{v}"' for v in enum) if enum
+                       else (p.ptype if p is not None else ""),
+        "doc_anchor":  name.replace(":", "-").replace(".", "-"),
+    }
+
+
 def entry_dict(name: str) -> dict:
     """Entrée au format d'`api_reference.json`, pour une fonction que le JSON
     ne décrit pas. Même forme exactement : c'est ce qui permet à `make_tooltip`
@@ -117,7 +178,7 @@ def entry_dict(name: str) -> dict:
         "description": description(name),
         "params": [
             {"name": p.name,
-             "type": "string" if p.ptype in (PARAM_STR, PARAM_STR_LITERAL) else "number",
+             "type": _param_type(p),
              "description": ""}
             for p in (f.params if f else [])
         ],

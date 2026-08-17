@@ -213,6 +213,17 @@ class UIInspector(QWidget):
                "H", C.AXIS_Y, self._sp["h"], L)
         self._size_lbl = W.hint("", L)
 
+        W.separator(L)
+
+        # ── Visibilité (commune aux trois types) ──────────────────
+        # État AUTHORÉ de départ, pas l'état effectif : un enfant sous un parent
+        # caché reste coché ici (rien ne lui est arrivé), `_visible_why` dit
+        # pourquoi il ne s'affiche quand même pas. Un script bascule cette même
+        # valeur au runtime via `ui.show(nom, on)` — cf. models/ui_region.py.
+        self._visible = W.checkbox_row("Visible", "Shown at scene start", L)
+        self._visible.toggled.connect(self._on_visible)
+        self._visible_why = W.hint("", L)
+
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
         self._text_sep = W.separator(L)
         self._text_title = W.section("Text", L)
@@ -537,6 +548,8 @@ class UIInspector(QWidget):
             self._reload_actors()
             for k in ("x", "y", "w", "h"):
                 self._sp[k].setValue(int(getattr(element, k, 0)))
+            self._visible.setChecked(bool(getattr(element, "visible", True)))
+            self._sync_visible_hint()
 
             # Sections par type — tout se montre/cache ICI, une seule fois.
             is_text  = kind == KIND_TEXT
@@ -911,6 +924,24 @@ class UIInspector(QWidget):
             else "GEOMETRY (PX, ACTOR OFFSET)" if eff_anchor == ANCHOR_ACTOR
             else "GEOMETRY (PX)")
 
+    def _sync_visible_hint(self):
+        """Dit pourquoi l'élément ne s'affiche pas quand la case est cochée :
+        un ancêtre caché l'emporte sans jamais toucher à cette case (cf.
+        `UILayout.is_visible`, qui remonte la chaîne au lieu de la propager)."""
+        e, lay = self._element, self._layout_asset
+        if e is None or lay is None or not self._visible.isChecked():
+            self._visible_why.setText("")
+            return
+        hidden_ancestor = next(
+            (a for a in lay.ancestors(e.name)
+             if not getattr(lay.get(a), "visible", True)), None)
+        if hidden_ancestor:
+            self._visible_why.setText(
+                f"Hidden anyway — parent “{hidden_ancestor}” is not visible.")
+            self._visible_why.setStyleSheet(f"color:{C.ACCENT_YLW};")
+        else:
+            self._visible_why.setText("")
+
     def _refresh_diagnostics(self):
         """Empreinte + avertissements d'un élément de TEXTE.
 
@@ -1189,6 +1220,12 @@ class UIInspector(QWidget):
             return
         self._set(key, int(val), "Geometry")
         self._refresh_diagnostics()
+
+    def _on_visible(self, on: bool):
+        if self._blocking or not self._element:
+            return
+        self._set("visible", bool(on), "Visibility")
+        self._sync_visible_hint()
 
     def _on_align(self, i):
         if self._blocking or not self._element:

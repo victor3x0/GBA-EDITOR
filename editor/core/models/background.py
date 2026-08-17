@@ -244,6 +244,14 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
     # Diagnostics de compression (validateur éditeur, non-bloquant) — calculés à
     # la compression, cf. bg_import.encode_background. Le PNG reste intact.
     diagnostics: dict = field(default_factory=dict)
+    # Empreinte de l'image dont sont tirés `tileset`/`palettes` ci-dessus —
+    # « ces tuiles viennent de CETTE version du PNG ». Permet de voir qu'une
+    # image a été retouchée hors de l'éditeur, ce qu'une date de fichier ne dit
+    # pas de façon fiable : le sidecar est réécrit à chaque sauvegarde, donc
+    # presque toujours plus récent que le PNG, et certains outils de dessin
+    # reposent l'ancienne date en enregistrant. Vide = origine inconnue (asset
+    # d'avant ce champ). Cf. core/asset_encoding.resync_background_png.
+    source_stamp: str = ""
     # Origine des sous-palettes pour l'éditeur (modèle scène : grisé + override).
     # `source_palettes` = snapshot des palettes DÉRIVÉES du PNG à la compression
     # (baseline restaurable). Les indices < len(source_palettes) sont dérivés
@@ -414,6 +422,10 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             d["animations"] = [a.to_dict() for a in self.animations]
         if self.asset:
             d["asset"] = self.asset
+        # Hors des branches ci-dessous : l'empreinte décrit l'IMAGE SOURCE, pas
+        # la forme de l'encodage — elle vaut autant en tuilé qu'en bitmap.
+        if self.source_stamp:
+            d["source_stamp"] = self.source_stamp
         if self.tileset:
             d.update({
                 "palettes": self.palettes, "tileset": self.tileset,
@@ -459,6 +471,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             tile_palette_overrides=decode_tile_palette_overrides(
                 d.get("tile_palette_overrides")),
             diagnostics=dict(d.get("diagnostics") or {}),
+            source_stamp=str(d.get("source_stamp", "")),
             bpp=int(d.get("bpp", 4)),
             dither=bool(d.get("dither", False)),
             mode=d.get("mode", "tiled"),

@@ -151,6 +151,12 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
     palettes: list = field(default_factory=list)           # list[list[int]] BGR555
     source_palettes: list = field(default_factory=list)    # list[list[int]] BGR555
     palette_overrides: dict = field(default_factory=dict)  # dict[int, str]
+    # Empreinte de l'image dont sont tirées les palettes ci-dessus — « ces
+    # couleurs viennent de CETTE version du PNG ». Même rôle et mêmes raisons
+    # que BackgroundAsset.source_stamp : une date de fichier ne dit pas de façon
+    # fiable qu'une planche a été retouchée. Vide = origine inconnue (sprite
+    # d'avant ce champ). Cf. core/asset_encoding.resync_sprite_png.
+    source_stamp: str = ""
 
     @property
     def tile_w(self) -> int:
@@ -196,6 +202,9 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
             "asset":   self.asset,
             "frame_w": self.frame_w,
             "frame_h": self.frame_h,
+            # Décrit l'image SOURCE, donc hors des blocs conditionnels de
+            # palettes ci-dessous — elle vaut même sans encodage réussi.
+            **({"source_stamp": self.source_stamp} if self.source_stamp else {}),
             **({"own_palette": self.own_palette,
                 "quantize_method": self.quantize_method} if self.own_palette else {}),
             **({"palettes": self.palettes} if self.palettes else {}),
@@ -297,6 +306,7 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
             palettes          = list(d.get("palettes", [])),
             source_palettes   = list(d.get("source_palettes", [])),
             palette_overrides = decode_palette_overrides(d.get("palette_overrides")),
+            source_stamp      = str(d.get("source_stamp", "")),
         )
         # Migration : un sprite sans `palettes` (antérieur au modèle sous-palettes)
         # dérive sa PAL_BANK de son `own_palette` (forme banque hardware : index 0

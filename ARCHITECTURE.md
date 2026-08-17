@@ -50,6 +50,7 @@ gba-editor/
 │   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
 │   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C
 │   │   ├── api.py                   ← RUNTIME_API : catalogue unique de l'API Lua ↔ C
+│   │   ├── lua_subset.py            ← le Lua accepté, et le refus qui dit quoi écrire (→ SCRIPTING.md)
 │   │   └── script_templates.py      ← contenu initial d'un nouveau script (scène/actor/vide)
 │   ├── plugins/                     ← plugins chargés dynamiquement (spec_from_file_location)
 │   └── ui/                          ← rangé par écran, pas par type de widget
@@ -203,8 +204,8 @@ Ces concepts n'ont pas d'équivalent direct dans grit ou le hardware GBA.
 
 | Nom | Rôle | API Lua |
 |-----|------|---------|
-| `SpriteComponent` | Lien vers un `SpriteAsset`, état initial, vitesse d'animation... | `self:play_anim("state")` `self:set_frame(n)` `self:set_visible(bool)` `self:set_flip_h(bool)` `self:set_pal(n)` |
-| `CollisionBoxComponent` | AABB de collision. `solid=true` → résolution physique ; `solid=false` → trigger | callbacks : `onCollisionEnter(id)` `onCollisionExit(id)` `onTriggerEnter(id)` `onTriggerExit(id)` |
+| `SpriteComponent` | Lien vers un `SpriteAsset`, état initial, vitesse d'animation... | `self:play_anim("state")` `self.frame = n` `self.visible = bool` `self.flip_h = bool` `self.pal = n` |
+| `CollisionBoxComponent` | AABB de collision. `solid` ne décide que d'une chose : la box est-elle arrêtée par la carte de collision de la scène | handlers du script de l'actor (pas du composant) : `on_collision_enter(other, my_box, other_box)` `on_collision_exit(...)` `on_collide(...)` `on_tile_collide(nx, ny)` |
 | `SoundFxComponent` | Déclenche un effet sonore lié à l'acteur | `sfx.play("name")` |
 | `ScriptComponent` | Attache un script Lua à l'acteur — **un seul actif par actor** (le compilateur n'en lit de toute façon qu'un seul) | `on_start()` `on_update()` `on_late_update()` |
 | `PathComponent` | Chemin de déplacement (waypoints) | — (en cours) |
@@ -242,6 +243,66 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`global.get`/`set` → accès direct à la variable C, `self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation.
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 - **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
+- **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (ROADMAP v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge.
+- **`vec_types.py`** — la seule exception au sous-ensemble Lua entièrement scalaire (ROADMAP v0.7.3) : `vec2(x, y)`/`vec3(x, y, z)` sont des constructeurs de langage, pas des entrées `RUNTIME_API`. `checker.py` et `codegen.py` partagent ce module pour savoir si une expression EST un vec2/vec3 (locals `self._vec_types`, remplie au fil d'un même parcours à plat dans les deux fichiers — même approximation que `self._arrays`) plutôt que de laisser chacun réinventer sa propre inférence. `+`/`-`/`*` (par un entier) s'y traduisent en appels `vec2_add`/`vec2_sub`/`vec2_scale` (`actor_api_static.h`) : le C n'a pas d'opérateur sur les structs.
+
+### La grammaire de l'API — trois formes, une par nature
+
+L'API expose trois formes syntaxiques, et chacune a UNE nature. La forme n'est pas
+un choix stylistique : c'est elle qui dit au parseur quoi produire (`Invoke` pour
+`:` — parser.py —, `Index` pour `.`), donc qui décide de la résolution.
+
+| Syntaxe | Nature | Compile en |
+|---|---|---|
+| `identifier:member(...)` | **méthode** — opération sur une instance, qui peut produire un effet | `actor_member(récepteur, ...)` |
+| `identifier.member` | **propriété** — donnée que l'API expose comme un état, lue et écrite | `actor_get_member(...)` / `actor_set_member(...)` |
+| `module.member(...)` | **fonction module** — opération au niveau du système, sans instance | `module_member(...)` |
+
+`identifier` dans la forme méthode est une **instance** (`self`, `other`, une
+variable d'actor) ; `module` est un namespace (`sfx`, `math`, `camera`, `scene`,
+`input`, `blend`…). Le même namespace peut exposer des propriétés ET des
+fonctions (`camera.position` + `camera.follow(...)`) : les parenthèses lèvent
+l'ambiguïté.
+
+La règle de décision pour TOUTE API future, dérivée des définitions ci-dessus :
+
+- **état intrinsèque** → propriété (`self.position`, `blend.mode`) — jamais un
+  appel `get_*`/`set_*`.
+- **requête pure sans argument** (`input.get_axis()`, `scene.frame()`) → c'est
+  de l'état déguisé en fonction → propriété en lecture seule.
+- **requête INDEXÉE** (`tile.get(x, y)`, `save.read(n)`, `layer.get_*(n)`) →
+  reste une fonction : une propriété ne prend pas d'argument.
+- **action qui produit un effet** → méthode si elle porte sur une instance
+  (`self:move(...)`), fonction module si elle agit au niveau du système
+  (`scene.switch(...)`, `sfx.play(...)`).
+
+Deux cas hors des trois formes : les **fonctions libres** (`get_actor(name)`,
+`array`) et les **constructeurs** (`vec2(x, y)`) — ni instance, ni module.
+
+Deux conséquences qui se paient cher si on les oublie :
+
+- **Méthode et propriété s'écrivent sur N'IMPORTE QUEL acteur nommé**, pas seulement
+  `self` : `other.velocity`, `other:move(...)`. Le catalogue les range sous la clé
+  `self:`/`self.` — c'est une clé, pas une restriction — et `checker.py` valide donc
+  tous les récepteurs. N'en valider qu'un laissait `other:set_position(p)` traverser
+  sans un mot, pendant que `codegen._invoke` en émettait du C qui compile : l'API
+  retirée survivait tant qu'on ne l'écrivait pas sur `self`. Seule exception, bloquée
+  explicitement : un argument dont le nom appartient au sprite du RÉCEPTEUR
+  (`other:play_anim("walk")`), que le contexte de build ne peut ni vérifier ni
+  résoudre — il ne décrit que l'acteur qui *exécute*.
+- **Une propriété peut porter un domaine** (`ApiProp.domain`), donc s'écrire et se
+  comparer par un NOM : `self.obj_mode = "window"`, `blend.mode == "alpha"`,
+  `other.tag == "Ball"`. C'est le même `DOMAIN_*` que sur un paramètre, jugé par les
+  mêmes tables (`checker._DOMAIN_CHECKS`, `codegen._DOMAIN_CONSTANT`) — une énumération
+  du matériel et un espace de noms du projet s'y traitent donc pareil. Sans ce champ,
+  faire d'un réglage une propriété le faisait
+  retomber sur l'entier nu que les énumérations nommées existent pour supprimer — c'est
+  l'asymétrie qu'avaient `self:set_dir("north")` et `self:get_dir()` rendant un `0-8`,
+  tous deux absorbés depuis par `self.direction`. Le C, lui, ne change pas :
+  `OBJ_MODE_WINDOW` vaut toujours un entier. Quand la forme nommée n'atteint pas l'état
+  par la même fonction C que la forme ordinaire — `self.direction` est un vec2 côté
+  calcul, une boussole côté nom — `c_getter_named`/`c_setter_named` portent la seconde
+  porte. Une seule propriété, deux écritures.
 
 ### Deux listes de prototypes, et le garde-fou qui les tient d'accord
 
@@ -261,6 +322,15 @@ La règle est *dérivée* — est exigé dans `actor_api_static.h` ce qui est d�
 `gba_engine.h`. Les fonctions résolues ailleurs (méthodes d'actor, `scene_switch`,
 `sfx_play`, helpers de globals — générées dans `actor_api.h` ou déclarées dans
 `runtime.h`) sortent du test d'elles-mêmes, sans liste d'exceptions à maintenir.
+
+**Les CONSTANTES tombent dans le même trou**, et y sont tombées : le codegen émet `WINR_0`
+et `BLD_SIDE_TOP` (c'est tout l'intérêt des énumérations nommées — cf. `api.py`,
+« Énumérations matérielles »), or ces `#define` ne vivaient que dans `gba_engine.h`. Tout
+`window.set_layer` / `blend.set_layer` écrit depuis un script échouait donc au `make` sur un
+identifiant inconnu, alors que `OBJ_MODE_*`, `DIR_*` et `EASE_*` — recopiés, eux — passaient.
+Elles sont maintenant déclarées des deux côtés et comparées par le même garde-fou, dérivé de
+`HARDWARE_ENUMS`. Sans `#ifndef` : main.c voyant les deux fichiers, une valeur qui divergerait
+ferait crier le préprocesseur au lieu de dériver en silence.
 
 ### Ce que l'éditeur INSÈRE dérive du catalogue
 
@@ -332,6 +402,15 @@ est désormais vérifié lui aussi, alors qu'un `return` prématuré le sautait.
 `BuildContext.prefab_names` porte la liste, remplie par `lua_compiler` depuis le
 projet entier — un prefab est poolé au niveau projet, pas au niveau scène.
 
+**Une collision a deux côtés, et chacun l'apprend dans son propre script.** Le tick de
+scène teste deux familles de paires : scène↔scène et pool↔scène. La première appelait
+déjà `on_collision_enter` des DEUX acteurs ; la seconde ne prévenait que le prefab. Un
+acteur de scène heurté par un projectile poolé n'avait donc aucun moyen de réagir, et
+devait passer par une variable globale que le projectile posait pour lui — une seconde
+source de vérité pour un événement que le runtime connaissait déjà. Les deux appels
+partagent maintenant le même test de recouvrement et le même souvenir de frame
+(`_pcol_`), avec les boxes échangées : la `my_box` de l'un est l'`other_box` de l'autre.
+
 ### Tableaux — la forme est reconnue une fois, employée deux fois
 
 Un tableau se déclare de deux façons, et c'est `parser.array_dims()` qui les
@@ -357,13 +436,10 @@ Trois pièges, et où ils sont tenus :
   conteneur du langage.
 - **`#t` est une constante de compilation** (`CodeGen._array_length`) : la taille
   fait partie du type, elle n'est rangée nulle part à l'exécution.
-- **Un tableau d'état est refusé dans un prefab poolé.** Les locals de tête d'un
-  prefab poolé deviennent des cases de `Actor.data[8]` — huit entiers par
-  instance. `BuildContext.is_pooled` (posé par `lua_compiler`) permet au checker
-  de le dire sur la ligne Lua ; sans lui, le codegen retombait sur une
-  déclaration de fichier, donc un tableau partagé par toutes les copies, en
-  silence. Déclaré DANS un handler, il reste permis : c'est une variable de
-  travail, reconstruite à chaque appel.
+- **Un tableau d'état est permis partout, y compris dans un prefab poolé.** Ça
+  n'a pas toujours été vrai : les locals de tête d'un prefab poolé vivaient dans
+  `Actor.data[8]`, huit entiers par instance, où ni un tableau ni un vec2 ne
+  tenaient. Cf. « L'état d'un prefab poolé » plus bas pour ce qui l'a remplacé.
 
 Deux corrections sont venues avec, toutes deux invisibles jusque-là :
 
@@ -1149,7 +1225,11 @@ Le runtime a deux chemins, choisis par `UIRegionInfo.target` :
 
 - **BG** — `text_render_cp_al()` avec la position, la largeur de coupe et l'alignement de
   la zone. Rien de spécifique : c'est le chemin libre avec une géométrie qui vient d'une
-  table au lieu des arguments.
+  table au lieu des arguments — sauf la hauteur de boîte (`R->h`), passée en plus : une
+  zone AUTEURE prépare toujours toute sa boîte avant de composer, pas seulement l'étendue
+  du texte du moment, sinon un texte plus court que le précédent laisse l'encre de
+  l'ancien rendu hors de la nouvelle étendue mesurée. L'écriture libre (`text_draw`) n'a
+  pas de boîte à reboucher et garde l'ancien comportement (étendue mesurée seule).
 - **OBJ** — la zone est couverte d'une **bande de sprites** de 8 px de haut, et le texte
   s'y compose par le même code, seul le bloc de destination change. Blocs de 8 px et non
   un sprite par ligne parce que l'interligne vient de la police, qu'un script peut changer :
@@ -1256,8 +1336,9 @@ acteur d'écran est un **acteur de jeu** (script, composants, logique) qui ne d�
 - **Un seul effet, au bon endroit** : l'émission OAM ne retranche pas la caméra. `x`/`y`
   cessent d'être des coordonnées de monde pour devenir des pixels d'écran — le même repère
   que les éléments d'UI ancrés à l'ÉCRAN. Trois sites suivent (acteur simple, acteur
-  affine, et `_affine_oam_lines(..., screen_space=)`) ; le **pool de prefabs reste en
-  monde**, un prefab n'ayant pas de scène propriétaire unique où authorer ce choix.
+  affine via `_affine_oam_lines_dynamic(..., screen_space=)`, et matrice affines du
+  prefab) ; le **pool de prefabs reste en monde**, un prefab n'ayant pas de scène
+  propriétaire unique où authorer ce choix.
 - **Résolu au build.** Pas de champ dans `g_actors`, pas de setter Lua : un acteur est de
   l'UI ou du monde pour toute sa vie. Conséquence à préserver — le C émis pour un acteur
   de monde est **mot pour mot** celui d'avant l'existence du drapeau.
@@ -1303,6 +1384,212 @@ que rien n'émettait — un mode permis mais jamais émis est pire qu'un mode ab
 - **Le débordement OAM bloque le build.** Les deux dépassements OBJ n'étaient que
   journalisés, `generate_main` rendant `True` quoi qu'il arrive : la ROM se construisait avec
   des slots hors des 128 du matériel, donc rien à l'écran et aucune erreur.
+
+---
+
+## Le modèle affine — rotation/scale monde × local
+
+Rotation et scale d'un sprite passent par une **matrice affine** OAM (`ATTR_AFFINE`),
+au prix d'un des 32 jeux de paramètres (`pa..pd`) du matériel. Deux couples de valeurs
+le demandent à la fois — le transform **monde** de l'actor et le transform **local** du
+sprite — et la GBA ne possède qu'UNE matrice par slot. Le modèle les compose donc à la
+frame, et le C émis n'écrit que la matrice composée.
+
+La décision vit sur **l'actor** : `Actor.affine_transform` (case « Affine transform »
+dans l'inspecteur), porté dans la struct runtime par `Actor.affine_slot`. Un actor coché
+**réserve un des 32 slots au build, même à l'identité** — c'est ce qui laisse
+`self.rotation`/`self.scale` avoir où écrire. Décoché, aucun slot, et les champs de
+transform n'ont aucun effet.
+
+Un **prefab** porte la même case (`Prefab.affine_transform`), et elle vaut pour **toutes
+les copies de son pool** : chacune réserve son propre slot. La case est montrée sur un
+prefab dans une carte « Affine » séparée de « Transform » — l'affine est une capacité de
+RENDU, décidable sur un template, là où x/y/priority/direction sont un PLACEMENT, qui
+n'existe que pour un actor posé dans une scène. Deux conséquences que le pool impose :
+
+- le **slot appartient à la scène** (le même prefab n'a pas le même numéro d'une scène à
+  l'autre : il est distribué par `_compute_affine_info` au seed de chaque scène) ;
+- `spawn_X()` remet l'`Actor` à zéro (`(Actor){0}`) : il doit donc **préserver le slot et
+  reposer les échelles neutres** (256 = ×1) du template. Sans cela une instance spawnée
+  repart avec une échelle de zéro — matrice dégénérée — et avec le slot 0, celui d'un
+  autre actor.
+
+Deux niveaux de transform, séparés par qui les possède :
+
+| | Qui possède | Éditeur | API Lua | Runtime |
+| --- | --- | --- | --- | --- |
+| **Monde** | l'`Actor` | rotation (0-359°), scale X/Y | `self.rotation`, `self.scale` | `g_actors[i].rotation`, `.scale_x/y` (Q8, 256 = 100%) |
+| **Local** | le `SpriteComponent` | rotation, scale X/Y, offset X/Y | `self.sprite_rotation`, `self.sprite_scale`, `self.sprite_offset` | `g_actors[i].sprite_rot`, `.sprite_scale_x/y`, `.offset_x/y` |
+
+Le local est exprimé **dans le repère de l'actor** (hérarchie parent→enfant) : quand
+l'actor tourne ou scale, le sprite le suit — son offset tourne et scale avec lui. La
+composition au runtime (`_affine_oam_lines_dynamic` dans `main_gen.py`, lue chaque
+frame) :
+
+- **rotation effective** = rotation + sprite_rot (somme, degrés) ;
+- **scale effectif** = scale_x · sprite_scale_x / 256 (produit, Q8) ;
+- **offset** = R(rotation) · S(scale) · (offset_x, offset_y) — transformé par la
+  matrice de l'ACTOR, pas par la matrice composée ;
+- **position** = actor.position + offset composé ;
+- les quatre paramètres `pa/pb/pc/pd` sont écrits à partir du cosinus/sinus de la
+  rotation effective (table `SIN_LUT[360]`, Q8 — `gba_sin`/`gba_cos`) et des scales,
+  et le sprite est étiqueté `ATTR_AFFINE` avec son `affine_slot`.
+
+### Pourquoi le stockage est PAR-ACTOR et non par slot
+
+Le stockage runtime vit **dans la struct `Actor`** (`g_actors[i].rotation`,
+`.sprite_rot`, …) et non dans des tableaux indexés par slot. Deux raisons, la seconde
+étant un bug qui a coûté cher :
+
+1. **Un script de prefab poolé est une fonction C partagée** par toutes ses instances.
+   Chaque instance a sa propre struct `Actor`, mais un slot `affine_slot` différent :
+   les valeurs propres à l'instance doivent donc partir de son `g_actors[i]`, jamais
+   d'un tableau global keyé par slot.
+2. **Les anciens `g_affine_*` étaient `static` dans un header multi-inclus** — une
+   copie PAR UNITÉ DE COMPILATION. Les écritures `self.rotation`/`self.scale` d'un
+   script `actor_*.c` n'atteignaient jamais le rendu dans `main.c`. Stocker dans la
+   struct partagée `Actor` supprime la distinction, et avec elle la classe de bug.
+
+Le seed de scène écrit donc les valeurs de départ dans les champs de la struct
+(`g_actors[i].rotation`, `.sprite_rot`, `.offset_x`, …), et les getters/setters Lua
+(`actor_get/set_rotation`, `actor_get/set_sprite_rotation`, … — header
+`actor_api_static.h`) lisent/écrivent ces mêmes champs, tous gardés par
+`if (affine_slot >= 0)` : sans slot réservé, getter → identité (0°, 100%, offset nul),
+setter → no-op. Le checker (`BuildContext.affine_transform`) refuse au build un
+`self.rotation`/`self.sprite_*` sur un actor sans « Affine transform ».
+
+---
+
+## L'état d'un prefab poolé
+
+Un script de prefab poolé est **une fonction C partagée** par toutes ses instances :
+ses variables de tête ne peuvent donc pas être de simples `static` de fichier, qui
+seraient communes aux vingt copies. Elles vivaient dans `Actor.data[8]` — huit
+entiers par instance — un plafond arbitraire qui refusait les tableaux et les
+vecteurs, et qui coûtait 32 octets dans **chaque** `Actor`, poolé ou non.
+
+À la place, `CodeGen._emit_pool_state` émet un état dimensionné par le pool :
+
+```c
+typedef struct { int fx; int fx_t; } BallState;
+static BallState g_state_Ball[POOL_BALL_SIZE];
+static inline int Ball_pool_slot(Actor* self) { return (int)(self - g_actors) - POOL_BALL_START; }
+
+void Ball_on_update(Actor* self) {
+    BallState* _st = &g_state_Ball[Ball_pool_slot(self)];
+    _st->fx_t = _st->fx_t + 1;
+}
+```
+
+Quatre points s'y tiennent :
+
+- **Le pool est une plage contiguë de `g_actors[]`**, dont les bornes sont des
+  constantes de build. `POOL_<SYM>_START` et `POOL_<SYM>_SIZE` sont émises par
+  `headers.py`, à l'endroit même où l'offset est calculé — le script transpilé
+  est compilé une fois pour le PROJET et ne peut pas les connaître autrement.
+  Le C émis se dimensionne sur le `#define`, jamais sur un littéral recalculé :
+  un écart avec la boucle de pool de `main.c` serait un débordement silencieux.
+- **Seul ce que le script ÉCRIT est de l'état.** `assigned_names()` (codegen)
+  parcourt les handlers ; un local de tête qu'aucune ligne n'assigne est une
+  constante et reste un `static` de fichier. Sur `Ball.lua`, quatre des six
+  locals sont dans ce cas. La règle rend aussi la mesure honnête : le build
+  annonce l'état, pas la longueur de l'en-tête du fichier.
+- **`pool_init` est une seule affectation de structure**, pas un champ à la
+  fois : c'est ce qui réinitialise un tableau ou un vec2 sans code spécial.
+  L'état de départ est un `static const` (donc en ROM), et il est recopié dans
+  le slot au spawn.
+- **Le slot est résolu une fois par fonction**, dans un `_st` posé en tête par
+  `_close_state_scope()` — et seulement si le corps y a touché, sinon c'est un
+  `-Wunused-variable`. `_state_ref()` rend donc `_st->champ`, jamais le chemin
+  complet : `sizeof(Actor)` ne vaut pas une puissance de deux, la soustraction
+  de pointeurs coûte une division, et surtout le chemin complet répété à chaque
+  site noyait le nom écrit par l'auteur. Tous les émetteurs de corps passent par
+  cette paire — handlers, stubs, `pool_init`, séquences, behaviors inlinés — de
+  sorte qu'il n'existe qu'UNE forme d'accès à cet état dans le fichier émis.
+- **Le build dit ce que ça coûte, il ne le plafonne pas** — `[ewram] prefab X :
+  état de script N octets × M instances`. Cf. ROADMAP v0.7.6 pour pourquoi il
+  n'y a pas de garde-fou bloquant ici, là où la mémoire vidéo en a un.
+
+Ce n'est pas en contradiction avec « le stockage affine est PAR-ACTOR et non par
+slot » ci-dessus, dont les deux raisons ne s'appliquent pas : l'index est ici
+celui de l'instance dans `g_actors[]` (unique par instance, pas un slot de
+matrice partagé), et `g_state_*` est `static` dans **un seul** `.c`, celui du
+prefab — pas dans un header multi-inclus.
+
+---
+
+## Les séquences — une ligne droite devient un `switch`
+
+`function on_sequence_intro()` est un handler que le build **découpe à chaque
+attente** et réémet en machine à états. C'est la seule transformation du
+transpileur qui change la FORME du code, et non seulement son vocabulaire.
+
+La forme est reconnue dans `parser.py` (`sequence_name`, `wait_call`), comme
+celle du tableau et du `require` : ses trois consommateurs l'appellent — le
+checker, le codegen, et `rom_build` (cf. plus bas).
+
+`CodeGen._plan_sequences` produit, par séquence, la liste de ses tranches et
+l'état qu'elle demande ; `_emit_sequence` écrit le `switch`. Les deux temps sont
+séparés parce que l'état doit être **déclaré avant** d'être écrit, et à un
+endroit qui dépend du propriétaire.
+
+```c
+static void Hero_sequence_intro(Actor* self) {
+    switch (Hero_seq_intro_step) {
+    case 1: {
+        Hero_seq_intro_depart = actor_get_position(self).x;
+        actor_move_to(self, (Vec2){120, 80}, 60);
+        Hero_seq_intro_step = 2;
+    } break;
+    case 2: {   /* wait_until */
+        if (!((actor_get_position(self).x >= 120))) break;
+        Hero_seq_intro_step = 3;
+    } break;
+    case 3: {   /* wait(30) */
+        if (++Hero_seq_intro_timer < 30) break;
+        Hero_seq_intro_timer = 0;
+        Hero_seq_intro_step = 0;   /* dernière tranche : la séquence s'arrête */
+    } break;
+    }
+}
+```
+
+(Propriétaire unique ci-dessus, donc des statiques de fichier. Dans un prefab
+poolé, la même séquence ouvre sur `BallState* _st = &g_state_Ball[…];` et lit
+`_st->seq_intro_step` — cf. `_state_ref` plus haut.)
+
+Cinq points s'y tiennent :
+
+- **Un entier suffit** : 0 = arrêtée, 1..N = l'étape en cours. `sequence.start`
+  écrit 1, `stop` écrit 0, `running` teste ≠ 0 — aucune fonction C derrière les
+  trois, d'où un `c_func` vide dans `RUNTIME_API`.
+- **Pas de boucle autour du `switch`.** Chaque `case` rend la main : une tranche
+  par frame. C'est ce qui rend impossible, par construction, qu'une séquence
+  tourne en rond dans une frame — et c'est pourquoi une attente ne peut
+  s'écrire qu'au PREMIER NIVEAU d'une séquence (le checker refuse ailleurs :
+  dans un `if`, le `switch` ne saurait pas où reprendre).
+- **Chaque `case` est accolé.** Un `local` non hissé y est déclaré, et sauter
+  par-dessus une déclaration dans un `switch` nu ne serait pas correct.
+- **Ce qui traverse une attente est HISSÉ dans l'état.** `referenced_names()`
+  répond à « ce `local` est-il encore lu dans une tranche suivante ? » ; si oui
+  il devient un champ, et son `local x = …` n'est plus qu'une affectation. Sinon
+  il reste un local C, et ne coûte rien.
+- **L'état vit là où vit celui du script** (`_state_ref`) : statique de fichier
+  pour un propriétaire unique, champ de `g_state_<sym>[]` pour un prefab poolé.
+  La v0.7.6 a posé les deux, il n'y a rien de spécifique aux séquences ici.
+
+**Le pompage vit à la fin de `on_update`** (`_emit_sequence_pump`), dans l'ordre
+de déclaration. Rien n'est ajouté à la boucle de frame de `main.c`, qui appelle
+déjà `on_update` pour chaque propriétaire. Un script qui n'écrit pas
+d'`on_update` en reçoit un : le stub existant le porte. Le seul fil à tirer
+ailleurs est dans `rom_build._collect_events`, qui ajoute `on_update` aux events
+d'un script à séquences — sans ça, `main.c` ne l'appellerait pas et la séquence
+démarrerait pour ne jamais avancer.
+
+`DOMAIN_SEQUENCE` est le seul domaine dont **l'espace de noms est le script** et
+non le projet : checker et codegen reçoivent l'AST et collectent les noms
+eux-mêmes. Conséquence : `refactor` le dérive du catalogue comme les autres,
+mais aucun renommage d'asset ne le déclenche — une séquence n'est pas un asset.
 
 ---
 

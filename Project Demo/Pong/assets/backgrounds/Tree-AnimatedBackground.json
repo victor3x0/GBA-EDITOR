@@ -7,6 +7,7 @@
   "loop": true,
   "animation_mode": "instance",
   "asset": "Tree-AnimatedBackground.png",
+  "source_stamp": "1288:b55870f39fe22c94",
   "palettes": [
     [
       0,
@@ -276,9 +277,6 @@
     "tiles_reduced": 0,
     "pre_merge_palettes": 1,
     "final_palettes": 1,
-    "unique_tiles": 80,
-    "src_indexed": true,
-    "src_colors": 10,
-    "src_capped": false
+    "unique_tiles": 80
   }
 }

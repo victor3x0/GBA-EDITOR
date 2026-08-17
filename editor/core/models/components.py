@@ -28,13 +28,19 @@ class CollisionBoxComponent:
     solides » — aucune ligne du runtime ne l'a jamais fait, et la v0.6.3 l'a
     découvert en cherchant qui avait droit à la résolution.
 
-    Callbacks Lua appelés par le runtime C :
-        onCollisionEnter(other_id)  — actor solide entre en contact
-        onCollisionExit(other_id)   — contact rompu
-        onTriggerEnter(other_id)    — actor entre dans la zone trigger
-        onTriggerExit(other_id)     — actor quitte la zone trigger
+    Handlers Lua appelés par le runtime C. Ils n'appartiennent PAS à ce
+    composant : ce sont des fonctions globales du script de l'actor, et le
+    codegen se contente de regarder lesquelles le .lua définit.
 
-    other_id = index de l'actor dans actors[] (table Lua de la scène).
+        on_collision_enter(other, my_box, other_box)  — premier frame de contact
+        on_collision_exit(other, my_box, other_box)   — premier frame sans contact
+        on_collide(other, my_box, other_box)          — chaque frame de contact
+        on_tile_collide(normal_x, normal_y)           — choc contre la carte
+
+    `other` est une référence d'actor (pas un index) ; `my_box`/`other_box`
+    valent une constante `BOXTAG_<TAG>` dérivée du champ `tag` ci-dessous —
+    c'est ainsi qu'un script distingue quelle box a touché, y compris entre
+    boxes solides et boxes trigger : il n'existe pas de handler trigger séparé.
 
     tag : label libre pour que le script distingue plusieurs colliders
           sur un même actor (ex: "body", "sword_hitbox", "ground_check").
@@ -47,11 +53,6 @@ class CollisionBoxComponent:
     y: int = 0
     w: int = 16
     h: int = 16
-    # Callbacks Lua à déclencher (chaîne vide = pas de callback)
-    on_collision_enter: str = "onCollisionEnter"
-    on_collision_exit:  str = "onCollisionExit"
-    on_trigger_enter:   str = "onTriggerEnter"
-    on_trigger_exit:    str = "onTriggerExit"
 
 
 @dataclass
@@ -61,14 +62,27 @@ class SpriteComponent:
     sprite_name: Optional[str] = None   # référence SpriteAsset.name
     initial_state: str = "Idle"         # nom de l'AnimState joué au démarrage
     auto_dir: bool = True               # calcule dir depuis vélocité automatiquement
-    scale_x: float = 1.0               # affine OAM (1.0 = normal)
+    # Transform affine LOCAL (cf. ARCHITECTURE.md « Le modèle affine »). Ces
+    # valeurs ne valent QUE si l'Actor qui porte ce composant a `affine_transform`
+    # coché (réservation du slot de matrice affine OAM) : elles se composent alors
+    # par-dessus le transform MONDE de l'actor — rotation locale ajoutée à la
+    # rotation de l'actor, scale local multiplié par le scale de l'actor. Sans
+    # `affine_transform`, elles sont ignorées (aucun slot alloué, OAM normale).
+    scale_x: float = 1.0               # affine OAM (1.0 = normal), local
     scale_y: float = 1.0
-    rotation: int = 0                  # degrés 0–359 (OAM affine)
+    rotation: int = 0                  # degrés 0–359 (OAM affine), local
+    # Position du sprite RELATIVE à son actor, en pixels, dans le repère local de
+    # l'actor : l'offset tourne/scale AVEC l'actor (hérarchie parent→enfant). Le
+    # sprite n'a pas de position monde — la position monde reste Actor.x/y.
+    offset_x: int = 0
+    offset_y: int = 0
 
     def __post_init__(self):
         self.scale_x  = float(self.scale_x)
         self.scale_y  = float(self.scale_y)
         self.rotation = int(self.rotation)
+        self.offset_x = int(self.offset_x)
+        self.offset_y = int(self.offset_y)
 
 
 @dataclass

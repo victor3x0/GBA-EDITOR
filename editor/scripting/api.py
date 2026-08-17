@@ -36,6 +36,14 @@ PARAM_STR          = "str"
 PARAM_STR_LITERAL  = "str_literal"   # string passée telle quelle entre guillemets C (pas de résolution de constante)
 PARAM_BOOL         = "bool"
 PARAM_ACTOR        = "actor"         # nom Lua → &g_actors[TAG_NAME]
+# vec2/vec3 — valeur composée (cf. scripting/vec_types.py), pas une chaîne à
+# résoudre : l'argument Lua est un vec2(x,y)/vec3(x,y,z) littéral, une variable
+# du même type, ou une expression qui s'y réduit (a + b, get_position()…). Ces
+# deux chaînes SONT le type de retour ("ret") d'une ApiFunc qui rend un vecteur
+# — même vocabulaire des deux côtés, un seul à retenir.
+PARAM_VEC2         = "vec2"
+PARAM_VEC3         = "vec3"
+PARAM_RECT         = "rect"
 
 # ─── Domaines de résolution pour les arguments "str" ──────────────
 # Quand le codegen voit PARAM_STR il a besoin de savoir dans quel
@@ -49,7 +57,12 @@ DOMAIN_ANIM   = "anim"    # ANIM_{actor}_{name}
 DOMAIN_SFX    = "sfx"     # SFX_{name}
 DOMAIN_MUSIC  = "music"   # MUSIC_{name}
 DOMAIN_KEY    = "key"     # BTN_{name} — enum fixe du hardware, jamais renommé
-DOMAIN_TAG    = "tag"     # TAG_{name}
+# TAG_{name} — l'IDENTITÉ d'un acteur. L'espace de noms est celui des acteurs de
+# la scène et des prefabs poolés, un `#define` par nom (cf. headers.py) : il est
+# donc parfaitement énumérable, contrairement à ce que ce fichier a longtemps
+# prétendu. La confusion venait de `BOXTAG_*`, lui bel et bien libre — il vient
+# de `CollisionBoxComponent.tag`, que l'auteur écrit à la main.
+DOMAIN_TAG    = "tag"
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
 DOMAIN_CAMERA = "camera"  # CAM_{name}   — caméra du projet
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
@@ -57,12 +70,31 @@ DOMAIN_FONT   = "font"    # FONT_{name}
 DOMAIN_PALETTE = "palette"  # PAL_{name} — palette du catalogue de couleurs
 DOMAIN_REGION = "region"  # REGION_{name} — emplacement de texte (UILayout)
 DOMAIN_IMAGE  = "image"   # IMAGE_{name}  — image d'interface (UILayout)
+# État affiché par une image d'interface. Le SEUL domaine dont la validité
+# dépend d'un AUTRE argument : un état n'existe que dans un sprite, et c'est
+# l'image qui dit lequel (`IMGST_{image}_{état}`). D'où un contrôle qui reçoit
+# l'appel entier plutôt que son seul littéral — et, pour un futur renommage
+# d'état, `refactor.iter_call_sites(DOMAIN_IMAGE, DOMAIN_IMAGE_STATE)`, qui rend
+# la PAIRE et permet de ne toucher que les images du bon sprite.
+DOMAIN_IMAGE_STATE = "image_state"
 DOMAIN_PREFAB = "prefab"  # nom de Prefab — actor.spawn()
 # Domaines résolus par un _emit_* dédié du codegen (pas de constante C
 # générique) : ils n'en restent pas moins des références nommées.
 DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
+# UIELEM_{name} — N'IMPORTE QUEL élément d'une mise en page (texte, panel,
+# image), tous types confondus — ui.get(). Distinct de DOMAIN_REGION et
+# DOMAIN_IMAGE : ces deux-là indexent g_ui_regions/g_ui_images (ce qui
+# DESSINE), celui-ci une table de visibilité qui couvre aussi les panels-
+# groupes purs, qui n'ont sinon aucune identité runtime (cf. ui_region.py).
+DOMAIN_UI_ELEMENT = "ui_element"
 DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
 DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
+# Nom de séquence — `sequence.start("intro")` désigne `function on_sequence_intro`.
+# Le SEUL domaine dont l'espace de noms est le SCRIPT et non le projet : checker
+# et codegen reçoivent l'AST, ils collectent les noms eux-mêmes. Conséquence à
+# connaître : `refactor` le dérive du catalogue comme les autres, mais aucun
+# renommage d'asset ne le déclenche — une séquence n'est pas un asset.
+DOMAIN_SEQUENCE = "sequence"
 # Énumérations MATÉRIELLES : ensemble fixe, connu au build, jamais renommé —
 # même nature que DOMAIN_KEY, dont elles reprennent exactement le mécanisme.
 # Elles ne citent pas un élément du projet : `refactor` n'a donc rien à y
@@ -72,6 +104,7 @@ DOMAIN_DIRECTION  = "direction"   # direction d'animation d'un acteur
 DOMAIN_WIN_REGION = "win_region"  # région de window (WINR_*)
 DOMAIN_BLEND_MODE = "blend_mode"  # mode de mélange (BLDCNT)
 DOMAIN_BLEND_SIDE = "blend_side"  # dessus / dessous du mélange
+DOMAIN_EASE       = "ease"        # courbe d'accélération de math.ease()
 
 # Tous les domaines, DÉRIVÉS des constantes ci-dessus : déclarer un
 # `DOMAIN_*` suffit à entrer dans le contrôle, il n'y a pas de seconde liste à
@@ -116,12 +149,58 @@ class ApiFunc:
     doc:       str = ""
 
 
+@dataclass
+class ApiProp:
+    """Décrit une PROPRIÉTÉ d'objet — un état intrinsèque lu et écrit par accès
+    pointé (`self.position`, `camera.bound`) plutôt que par un appel get/set.
+
+    La frontière est celle de la grammaire (ARCHITECTURE, « La grammaire de
+    l'API » ; ROADMAP v0.7.4) : ce qui est un état de l'objet (`self.position`)
+    se lit/s'écrit comme un champ ; ce qui est une ACTION (`self:play_anim`)
+    reste un appel. Une propriété composite
+    (PARAM_VEC2 / PARAM_RECT) est une valeur IMMUABLE : on lit `self.position.x`
+    mais on écrit `self.position = vec2(x, y)` — jamais `self.position.x = 5`
+    (le checker le refuse).
+
+    Le `c_getter` rend une valeur composite (un Vec2/Rect) ou un scalaire, et
+    `c_setter` en prend une. `scene.size` est la seule propriété sans fonction C
+    : le codegen synthétise sa lecture depuis `g_scene_w/g_scene_h`
+    (getter_expr), et elle est en lecture seule."""
+    lua_name:   str                          # clé d'accès (ex: "self.position")
+    c_getter:   str                          # fonction C de lecture (ex: "actor_get_position")
+    c_setter:   Optional[str] = None         # fonction C d'écriture (None → lecture seule)
+    ptype:      str = PARAM_INT              # PARAM_INT / PARAM_VEC2 / PARAM_RECT
+    self_first: bool = False                 # True → émettre (récepteur, ...) en C
+    read_only:  bool = False
+    getter_expr: Optional[str] = None        # lecture synthétique C (scène) au lieu d'un appel
+    # DOMAIN_* d'énumération matérielle, quand la valeur de cette propriété est
+    # un NOM et pas un nombre (`self.obj_mode = "window"`). Sans ce champ, une
+    # propriété ne pouvait porter qu'un entier nu : convertir `blend.set_mode
+    # ("alpha")` en propriété faisait donc RETOMBER ce réglage sur le `1` que la
+    # section « Énumérations matérielles » ci-dessus existe pour supprimer.
+    # Côté C rien ne change — la constante vaut toujours un entier. Ce qui
+    # change, c'est ce que l'auteur écrit et ce que le checker sait vérifier :
+    # l'écriture (`= "alpha"`) comme la comparaison (`== "alpha"`).
+    domain:     Optional[str] = None
+    # Fonctions C de la forme NOMMÉE, quand elle ne passe pas par les mêmes que
+    # la forme ordinaire. Un seul cas : `self.direction` est un vec2 (pour le
+    # calcul : `self.direction.x < 0`) dont les neuf valeurs ont AUSSI des noms
+    # de boussole. Le C ne range qu'une donnée — `dir_x`/`dir_y` — mais les deux
+    # vues n'y accèdent pas par la même porte : l'une prend/rend le vecteur,
+    # l'autre l'index de boussole. Une énumération SCALAIRE (`blend.mode`) n'en
+    # a pas besoin : sa constante EST l'entier que le getter ordinaire rend.
+    c_getter_named: Optional[str] = None
+    c_setter_named: Optional[str] = None
+    doc:        str = ""
+
+
 # ─── Énumérations matérielles — un nom, pas un nombre ─────────────
 # Le catalogue distinguait deux familles d'arguments sans que rien ne l'explique
 # à l'auteur : les éléments du PROJET se citaient par leur nom (`sfx.play("HIT")`,
 # `scene.switch("ARENA")`), les énumérations du MATÉRIEL par un entier nu
-# (`blend.set_mode(1)`, `self:set_obj_mode(2)`), leur sens vivant dans une phrase
-# de documentation. Rien ne permettait de deviner laquelle s'appliquait.
+# (`blend.set_layer("top", ...)`, `window.set("object", ...)`), leur sens vivant
+# dans une phrase de documentation. Rien ne permettait de deviner laquelle
+# s'appliquait.
 #
 # Or `DOMAIN_KEY` prouvait déjà que le mécanisme des noms convient à une
 # énumération figée : `input.held("A")` se vérifie, se complète et se lit. Les
@@ -131,6 +210,11 @@ class ApiFunc:
 # dérivent — le checker y valide le nom, le codegen y lit la constante à
 # émettre. Pas de seconde liste à tenir d'accord, et le C généré reste lisible
 # (`WINR_OBJ` plutôt que `2`).
+#
+# Un `domain` d'énumération se porte indifféremment sur un PARAMÈTRE (`Param`)
+# ou sur une PROPRIÉTÉ (`ApiProp`) : `window.set_layer("win0", ...)` et
+# `self.obj_mode = "window"` passent par la même table. C'est ce qui empêche
+# qu'un réglage retombe sur un entier nu le jour où il devient une propriété.
 
 OBJ_MODES: dict[str, str] = {
     "normal": "OBJ_MODE_NORMAL",   # 0 — sprite dessiné normalement
@@ -174,6 +258,12 @@ BLEND_SIDES: dict[str, str] = {
     "bottom": "BLD_SIDE_BOTTOM",  # 1 — ce sur quoi elle se mélange
 }
 
+EASE_KINDS: dict[str, str] = {
+    "in":     "EASE_IN",      # 0 — démarre lentement, accélère à l'arrivée
+    "out":    "EASE_OUT",     # 1 — démarre vite, ralentit à l'arrivée
+    "in_out": "EASE_IN_OUT",  # 2 — les deux, symétriques autour du milieu
+}
+
 # Domaine → sa table. DÉRIVÉE des tables ci-dessus, elle sert au checker (le nom
 # est-il dans l'ensemble ?) et au codegen (quelle constante émettre ?) sans
 # qu'aucun des deux ne réécrive les valeurs.
@@ -183,6 +273,7 @@ HARDWARE_ENUMS: dict[str, dict[str, str]] = {
     DOMAIN_WIN_REGION: WIN_REGIONS,
     DOMAIN_BLEND_MODE: BLEND_MODES,
     DOMAIN_BLEND_SIDE: BLEND_SIDES,
+    DOMAIN_EASE:       EASE_KINDS,
 }
 
 
@@ -209,70 +300,37 @@ SCREEN_CONSTANTS: dict[str, int] = {
 
 RUNTIME_API: dict[str, ApiFunc] = {
 
-    # ── Mouvement ──────────────────────────────────────────────────
+    # ── Transform — position, rotation, échelle ──────────────────────
+    # Ce sont des ÉTATS de l'actor : des PROPRIÉTÉS (self.position,
+    # self.rotation, self.scale — cf. RUNTIME_PROPS), pas des appels get/set.
+    # Le déplacement étalé (`self:move*`) reste un appel : une action, pas un
+    # état stocké.
     "self:move": ApiFunc(
         lua_name="self:move", c_func="actor_move",
-        params=[Param("dx", PARAM_INT), Param("dy", PARAM_INT)],
+        params=[Param("dir", PARAM_VEC2), Param("speed", PARAM_INT)],
         self_first=True,
-        doc="Déplace l'actor de (dx, dy) pixels ce frame.",
+        doc="Avance ce frame d'au plus `speed` px dans la direction `dir` (un vec2) — normalisée, donc une diagonale n'avance pas plus vite qu'un axe.",
     ),
-    "self:set_pos": ApiFunc(
-        lua_name="self:set_pos", c_func="actor_set_pos",
-        params=[Param("x", PARAM_INT), Param("y", PARAM_INT)],
+    "self:move_to": ApiFunc(
+        lua_name="self:move_to", c_func="actor_move_to",
+        params=[Param("target", PARAM_VEC2), Param("speed", PARAM_INT)],
         self_first=True,
-        doc="Téléporte l'actor à la position monde (x, y).",
-    ),
-    "self:set_velocity": ApiFunc(
-        lua_name="self:set_velocity", c_func="actor_set_velocity",
-        params=[Param("vx", PARAM_INT), Param("vy", PARAM_INT)],
-        self_first=True,
-        doc="Définit la vélocité (appliquée chaque frame par apply_velocity).",
-    ),
-    "self:apply_velocity": ApiFunc(
-        lua_name="self:apply_velocity", c_func="actor_apply_velocity",
-        params=[], self_first=True,
-        doc="Applique vx/vy à x/y.",
+        doc="Avance ce frame d'au plus `speed` px vers la position `target` (un vec2) ; s'arrête pile dessus sans dépasser.",
     ),
 
-    "self:set_obj_mode": ApiFunc(
-        lua_name="self:set_obj_mode", c_func="actor_set_obj_mode",
-        params=[Param("mode", PARAM_STR, DOMAIN_OBJ_MODE)],
+    # ── Physics — vélocité stockée sur l'actor ────────────────────────
+    # La vélocité est un état : la propriété `self.velocity` (cf. RUNTIME_PROPS).
+    # Seul l'ACCUMUL reste un appel — add_velocity est une action, pas une
+    # affectation d'état.
+    "self:add_velocity": ApiFunc(
+        lua_name="self:add_velocity", c_func="actor_add_velocity",
+        params=[Param("dv", PARAM_VEC2)],
         self_first=True,
-        doc="Mode OAM. \"normal\" = sprite dessiné. \"window\" = masque : le sprite n'est plus dessiné, ses pixels opaques donnent sa forme à la fenêtre-objet (région \"object\"). \"blend\" = semi-transparent, réservé au mélange, pas encore câblé.",
-    ),
-    "self:get_obj_mode": ApiFunc(
-        lua_name="self:get_obj_mode", c_func="actor_get_obj_mode",
-        params=[], self_first=True, ret="int",
-        doc="Mode OAM courant de l'actor (0, 1 ou 2).",
+        doc="Ajoute `dv` (un vec2) à la vélocité courante. Utile pour l'accélération ou la gravité, frame après frame.",
     ),
 
-    # ── Lecture position / vélocité ───────────────────────────────
-    "self:get_x": ApiFunc(
-        lua_name="self:get_x", c_func="actor_get_x",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la position X monde de l'actor.",
-    ),
-    "self:get_y": ApiFunc(
-        lua_name="self:get_y", c_func="actor_get_y",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la position Y monde de l'actor.",
-    ),
-    "self:get_vx": ApiFunc(
-        lua_name="self:get_vx", c_func="actor_get_vx",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la vélocité X de l'actor.",
-    ),
-    "self:get_vy": ApiFunc(
-        lua_name="self:get_vy", c_func="actor_get_vy",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la vélocité Y de l'actor.",
-    ),
-    "self:on_ground": ApiFunc(
-        lua_name="self:on_ground", c_func="actor_on_ground",
-        params=[], self_first=True, ret="int",
-        doc="Vrai si une box solide reposait sur le sol à la fin de la frame précédente — "
-            "pentes comprises. Demande une carte de collision dans la scène.",
-    ),
+    # self.grounded (lecture seule) : cf. RUNTIME_PROPS — « y a-t-il un sol
+    # sous les pieds » est une requête pure sans argument, donc de l'état.
 
     # ── Animation ─────────────────────────────────────────────────
     "self:play_anim": ApiFunc(
@@ -281,102 +339,148 @@ RUNTIME_API: dict[str, ApiFunc] = {
         self_first=True,
         doc="Démarre l'animation nommée (définie dans le SpriteAsset).",
     ),
-    "self:set_frame": ApiFunc(
-        lua_name="self:set_frame", c_func="actor_set_frame",
-        params=[Param("frame", PARAM_INT)],
+    # self.frame / self.flip_h / self.flip_v / self.pal / self.obj_mode : cf.
+    # RUNTIME_PROPS — l'état de l'acteur se lit/s'écrit en propriétés, pas en
+    # appels set_*.
+
+    # ── Juiciness — effets de feedback sur le sprite ─────────────────
+    # Neuf helpers "prêts à l'emploi", mais qui ne composent QUE ce qui
+    # précède (self.sprite_scale/sprite_offset/sprite_rotation/pal/visible,
+    # math.ease/lerp/rand) — rien qu'un script ne pourrait écrire à la main.
+    # `t`/`duration` sont en frames et fournis par l'appelant : sur GBA un
+    # script ne peut pas "attendre" (pas de coroutine, cf. ARCHITECTURE.md),
+    # donc c'est lui qui fait avancer `t` d'une frame à l'autre — dans une
+    # variable de tête du script, ou dans une GlobalVar quand plusieurs
+    # scripts la regardent. Au-delà de `duration`, l'effet retombe à son état
+    # neutre (scale 100, offset 0, rotation 0, pal 0, visible) tout seul.
+    # squash/stretch/bounce/shake/pulse/pop/wobble écrivent sprite_scale,
+    # sprite_offset ou sprite_rotation : comme ces propriétés, ils exigent
+    # "Affine transform" coché sur l'actor, sinon ils sont sans effet
+    # (aucune erreur — même contrat que self.sprite_scale). flash/blink
+    # (pal/visible) n'ont pas cette contrainte.
+    "self:squash": ApiFunc(
+        lua_name="self:squash", c_func="actor_squash",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Force la frame courante.",
+        doc="Aplatit le sprite (large et bas) puis revient à 100% en `duration` frames. "
+            "`amount` = intensité en points de %. Ex: impact au sol → self:squash(t, 8, 30).",
     ),
-    "self:set_visible": ApiFunc(
-        lua_name="self:set_visible", c_func="actor_set_visible",
-        params=[Param("v", PARAM_BOOL)],
+    "self:stretch": ApiFunc(
+        lua_name="self:stretch", c_func="actor_stretch",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Affiche (1) ou cache (0) le sprite.",
+        doc="Étire le sprite (fin et haut) puis revient à 100% en `duration` frames. "
+            "`amount` = intensité en points de %. Ex: départ d'un saut → self:stretch(t, 6, 25).",
     ),
-    "self:set_active": ApiFunc(
-        lua_name="self:set_active", c_func="actor_set_active",
-        params=[Param("v", PARAM_BOOL)],
+    "self:bounce": ApiFunc(
+        lua_name="self:bounce", c_func="actor_bounce",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Active (1) ou désactive (0) l'actor : update, collisions et rendu arrêtés si 0.",
+        doc="Décale le sprite vers le haut puis le laisse retomber (self.sprite_offset.y), "
+            "`amount` px d'amplitude sur `duration` frames.",
     ),
-    "self:set_flip_h": ApiFunc(
-        lua_name="self:set_flip_h", c_func="actor_set_flip_h",
-        params=[Param("v", PARAM_INT)],
+    "self:shake": ApiFunc(
+        lua_name="self:shake", c_func="actor_shake",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Orientation horizontale : -1=gauche (retourné), 1=droite (normal). Passer la variable direction directement.",
+        doc="Fait trembler le sprite (self.sprite_offset aléatoire), `amount` px max, "
+            "retombant à zéro sur `duration` frames. Écrase tout self.sprite_offset déjà posé.",
     ),
-    "self:set_flip_v": ApiFunc(
-        lua_name="self:set_flip_v", c_func="actor_set_flip_v",
-        params=[Param("v", PARAM_INT)],
+    "self:flash": ApiFunc(
+        lua_name="self:flash", c_func="actor_flash",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("pal", PARAM_INT)],
         self_first=True,
-        doc="Orientation verticale : -1=bas (retourné), 1=haut (normal).",
+        doc="Bascule sur la banque palette `pal` (self.pal) tant que t < duration, "
+            "puis revient à la banque 0. Ex: dégât → self:flash(t, 4, WHITE_FLASH_BANK).",
     ),
-    "self:get_dir_x": ApiFunc(
-        lua_name="self:get_dir_x", c_func="actor_get_dir_x",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la direction X courante : -1 (gauche), 0 (neutre), 1 (droite).",
-    ),
-    "self:get_dir_y": ApiFunc(
-        lua_name="self:get_dir_y", c_func="actor_get_dir_y",
-        params=[], self_first=True, ret="int",
-        doc="Retourne la direction Y courante : -1 (haut), 0 (neutre), 1 (bas).",
-    ),
-    "self:set_direction": ApiFunc(
-        lua_name="self:set_direction", c_func="actor_set_direction",
-        params=[Param("dx", PARAM_INT), Param("dy", PARAM_INT)],
+    "self:blink": ApiFunc(
+        lua_name="self:blink", c_func="actor_blink",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("interval", PARAM_INT)],
         self_first=True,
-        doc="Définit la direction discrète (dx, dy). Chaque valeur est clampée à -1|0|1.",
+        doc="Bascule self.visible on/off toutes les `interval` frames tant que t < duration, "
+            "puis reste visible. Ex: invincibilité → self:blink(t, 90, 4).",
     ),
-    "self:set_dir": ApiFunc(
-        lua_name="self:set_dir", c_func="actor_set_dir",
-        params=[Param("dir", PARAM_STR, DOMAIN_DIRECTION)],
+    "self:pulse": ApiFunc(
+        lua_name="self:pulse", c_func="actor_pulse",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Force la direction d'animation : \"north\", \"north_east\", \"east\", \"south_east\", \"south\", \"south_west\", \"west\", \"north_west\", ou \"none\" pour aucune direction.",
+        doc="Grossit puis revient à 100% (self.sprite_scale), `amount` points de % "
+            "d'amplitude sur `duration` frames. Ex: objet ramassable → self:pulse(t, 30, 15).",
     ),
-    "self:get_dir": ApiFunc(
-        lua_name="self:get_dir", c_func="actor_get_dir",
-        params=[], self_first=True, ret="int",
-        doc="Direction d'animation courante, en entier (0 = aucune, 1 = north, puis dans le sens horaire jusqu'à 8 = north_west).",
-    ),
-    "self:set_auto_dir": ApiFunc(
-        lua_name="self:set_auto_dir", c_func="actor_set_auto_dir",
-        params=[Param("v", PARAM_BOOL)],
+    "self:pop": ApiFunc(
+        lua_name="self:pop", c_func="actor_pop",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
         self_first=True,
-        doc="Active (true) ou désactive (false) le calcul automatique de la direction depuis la vélocité.",
+        doc="Apparition : grossit de 0% jusqu'à 100+`amount`% puis se stabilise à 100%. "
+            "Ex: spawn d'un power-up → self:pop(t, 15, 20).",
     ),
+    "self:wobble": ApiFunc(
+        lua_name="self:wobble", c_func="actor_wobble",
+        params=[Param("t", PARAM_INT), Param("duration", PARAM_INT), Param("amount", PARAM_INT)],
+        self_first=True,
+        doc="Oscille en rotation autour de 0° (self.sprite_rotation), `amount` degrés max, "
+            "amplitude retombant à zéro sur `duration` frames.",
+    ),
+
+    # La direction s'écrivait de trois façons pour un seul état (`dir_x`/`dir_y`)
+    # : un vec2, une boussole nommée, et un entier 0-8 en lecture. Il n'en reste
+    # qu'UNE — la propriété `self.direction` (cf. RUNTIME_PROPS), qui accepte le
+    # vecteur COMME le nom de boussole et se compare aux deux. `self.auto_dir`
+    # est l'état voisin : le calcul automatique depuis la vélocité.
     "self:destroy": ApiFunc(
         lua_name="self:destroy", c_func="_destroy",  # résolu par codegen
         params=[], self_first=True,
         doc="Détruit l'actor : appelle on_destroy() puis le désactive (plus d'update, plus de rendu).",
     ),
-    "self:get_tag": ApiFunc(
-        lua_name="self:get_tag", c_func="actor_get_tag",
-        params=[], self_first=True, ret="int",
-        doc="Retourne le TAG_* de cet actor. Utile dans on_collide pour identifier other.",
-    ),
-    "self:set_pal": ApiFunc(
-        lua_name="self:set_pal", c_func="actor_set_pal",
-        params=[Param("bank", PARAM_INT)], self_first=True,
-        doc="Change la palette bank OAM (0-15). Utile pour flash de dégâts ou effet d'invincibilité.",
-    ),
+    # self.tag (lecture seule) et self.pal : cf. RUNTIME_PROPS.
     "self:play_sfx": ApiFunc(
         lua_name="self:play_sfx", c_func="_play_sfx",  # résolu par codegen (SoundFxComponent de l'actor)
         params=[], self_first=True,
         doc="Joue le Sfx configuré dans le SoundFX component de cet actor.",
     ),
 
-    # ── Spawn ──────────────────────────────────────────────────────
+    # ── Actors ─────────────────────────────────────────────────────
     "actor.spawn": ApiFunc(
         lua_name="actor.spawn", c_func="_spawn",     # résolu par codegen
-        params=[Param("prefab", PARAM_STR, DOMAIN_PREFAB), Param("x", PARAM_INT), Param("y", PARAM_INT)],
+        params=[Param("prefab", PARAM_STR, DOMAIN_PREFAB), Param("position", PARAM_VEC2)],
         ret="void",
-        doc='Instancie un prefab poolé à (x, y). Ex: actor.spawn("Bullet", self:get_x(), self:get_y()).',
+        doc='Instancie un prefab poolé à `position` (un vec2). Ex: actor.spawn("Bullet", vec2(116, 76)).',
     ),
     "get_actor": ApiFunc(
         lua_name="get_actor", c_func="_get_actor",   # résolu par codegen
         params=[Param("name", PARAM_STR, DOMAIN_ACTOR)],
         ret="actor",
-        doc='Référence directe vers un actor de la scène par son nom. Résolu à la compilation, zéro overhead runtime. Ex: get_actor("PADDLE_AUTO"):get_x().',
+        doc='Référence directe vers un actor de la scène par son nom. Résolu à la compilation, zéro overhead runtime. Ex: get_actor("PADDLE_AUTO"):get_position().x.',
+    ),
+
+    # ── Visibilité des éléments d'interface ──────────────────────────
+    # N'IMPORTE QUEL élément d'une mise en page (texte, panel, image), par son
+    # nom d'authoring. Même schéma que get_actor : une référence, résolue à la
+    # compilation, puis appelée en colon — pas de fonction par type
+    # (`ui.image_show` a disparu) ni d'identifiant nu (un nom d'élément
+    # collisionnerait avec les namespaces `ui`/`text`/`camera`…).
+    #
+    # Cacher un panel cache tout son sous-arbre SANS toucher ses enfants : la
+    # visibilité effective remonte la chaîne des parents au runtime, elle ne
+    # se propage jamais à l'écriture (cf. models/ui_region.UILayout.is_visible,
+    # même règle côté éditeur).
+    "ui.get": ApiFunc(
+        lua_name="ui.get", c_func="_ui_get",   # résolu par codegen
+        params=[Param("name", PARAM_STR, DOMAIN_UI_ELEMENT)],
+        ret="ui_element",
+        doc='Référence directe vers un élément d\'interface par son nom. Résolu '
+            'à la compilation, zéro overhead runtime. Ex: ui.get("alerte"):show().',
+    ),
+    "self:show": ApiFunc(
+        lua_name="self:show", c_func="_ui_element_show",   # résolu par codegen
+        params=[], self_first=True,
+        doc='Affiche l\'élément (et implicitement ses enfants, sauf s\'ils sont '
+            'cachés individuellement). Ex: ui.get("alerte"):show()',
+    ),
+    "self:hide": ApiFunc(
+        lua_name="self:hide", c_func="_ui_element_hide",   # résolu par codegen
+        params=[], self_first=True,
+        doc='Cache l\'élément et tout son sous-arbre. Ex: ui.get("alerte"):hide()',
     ),
 
     # ── Input ──────────────────────────────────────────────────────
@@ -390,9 +494,10 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="input.pressed", c_func="input_pressed",
         params=[Param("btn", PARAM_STR, DOMAIN_KEY)],
         ret="bool",
-        doc="Vrai si le bouton vient d'être pressé (front montant).",
+        doc="Vrai si le bouton vient d'être pressé.",
     ),
-
+    # input.axis (vec2, lecture seule) : cf. RUNTIME_PROPS — l'état de la croix
+    # directionnelle est une donnée, pas un appel.
     # ── Audio ──────────────────────────────────────────────────────
     "sfx.play": ApiFunc(
         lua_name="sfx.play", c_func="sfx_play",
@@ -417,9 +522,19 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Passe à une autre scène au début de la prochaine frame.",
     ),
 
-    # ── Globals ────────────────────────────────────────────────────
-    # Le codegen émet un accès direct à la variable (g_score) plutôt
-    # qu'un appel de fonction. Ces entrées servent surtout au checker.
+    # ── Variables (globals + constantes) ──────────────────────────
+    # Deux registres distincts (project.globals / project.constants, cf.
+    # core/project_variables.py — un nom PEUT être partagé entre les deux,
+    # leurs préfixes C ne collisionnent pas), regroupés ici sous un même
+    # en-tête parce qu'ils répondent à la même question côté script : « lire
+    # une valeur nommée du projet ». Rester deux modules Lua (`global.*` /
+    # `const.*`) plutôt qu'un seul évite justement l'ambiguïté d'un nom
+    # partagé — voir la discussion en tête de ce fichier avant d'y toucher.
+    #
+    # Le codegen émet un accès direct — variable (g_score) pour l'un,
+    # symbole (CONST_NOM) pour l'autre — plutôt qu'un appel de fonction. Ces
+    # entrées servent surtout au checker. Lecture seule côté constante :
+    # pas de const.set.
     "global.get": ApiFunc(
         lua_name="global.get", c_func="_global_get",   # résolu par codegen
         params=[Param("name", PARAM_STR, DOMAIN_GLOBAL)],
@@ -431,10 +546,6 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("name", PARAM_STR, DOMAIN_GLOBAL), Param("value", PARAM_INT)],
         doc="Écrit une variable globale.",
     ),
-
-    # ── Constants ──────────────────────────────────────────────────
-    # Le codegen émet un accès direct au symbole (CONST_NOM) plutôt
-    # qu'un appel de fonction. Lecture seule — pas de const.set.
     "const.get": ApiFunc(
         lua_name="const.get", c_func="_const_get",   # résolu par codegen
         params=[Param("name", PARAM_STR, DOMAIN_CONST)],
@@ -470,36 +581,17 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # REMOVED_API pour que le checker guide au lieu de dire « inconnu ».
 
     # ── Caméra ────────────────────────────────────────────────────
-    "camera.set": ApiFunc(
-        lua_name="camera.set", c_func="camera_set",
-        params=[Param("x", PARAM_INT), Param("y", PARAM_INT)],
-        doc="Place la caméra exactement à (x, y).",
-    ),
-    "camera.get_x": ApiFunc(
-        lua_name="camera.get_x", c_func="camera_get_x",
-        params=[], ret="int",
-        doc="Retourne la position X courante de la caméra.",
-    ),
-    "camera.get_y": ApiFunc(
-        lua_name="camera.get_y", c_func="camera_get_y",
-        params=[], ret="int",
-        doc="Retourne la position Y courante de la caméra.",
-    ),
+    # La position et les bornes sont des ÉTATS de la caméra : des PROPRIÉTÉS
+    # (camera.position, camera.bound — cf. RUNTIME_PROPS). Ne restent des
+    # appels que les ACTIONS : suivre, basculer, secouer.
     "camera.follow": ApiFunc(
         lua_name="camera.follow", c_func="camera_follow",
         params=[
-            Param("x",        PARAM_INT),
-            Param("y",        PARAM_INT),
+            Param("target",   PARAM_VEC2),
             Param("margin_x", PARAM_INT),
             Param("margin_y", PARAM_INT),
         ],
-        doc="Suit le point (x,y) avec une zone morte. Ex: camera.follow(self:get_x(), self:get_y(), 40, 20)",
-    ),
-    "camera.set_bounds": ApiFunc(
-        lua_name="camera.set_bounds", c_func="camera_set_bounds",
-        params=[Param("world_w", PARAM_INT), Param("world_h", PARAM_INT)],
-        doc="Définit les bornes de scroll (taille du monde en pixels, 0 = axe illimité). "
-            "Ex: débloquer une nouvelle zone au runtime.",
+        doc="Suit `target` (un vec2) avec une zone morte. Ex: camera.follow(camera.position, 40, 20)",
     ),
     "camera.switch": ApiFunc(
         lua_name="camera.switch", c_func="camera_switch",
@@ -507,6 +599,31 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Active une autre caméra du projet — son cadrage et ses bornes sont posés "
             "immédiatement. Une seule caméra est active à la fois.",
     ),
+    # ── Séquences ────────────────────────────────────────────────
+    # Un seul entier porte l'état d'une séquence : 0 = arrêtée, 1..N = l'étape
+    # en cours. Les trois portes ne sont donc qu'une écriture, une écriture et
+    # un test — aucune fonction C derrière (cf. codegen._emit_sequence_*), d'où
+    # `c_func` vide. Elles figurent au catalogue parce que c'est lui qui porte
+    # la documentation, la validation d'arguments et la sidebar.
+    "sequence.start": ApiFunc(
+        lua_name="sequence.start", c_func="",
+        params=[Param("name", PARAM_STR, DOMAIN_SEQUENCE)],
+        doc="Démarre (ou redémarre depuis le début) la séquence `on_sequence_<name>` "
+            "de ce script. Ex: sequence.start(\"intro\")",
+    ),
+    "sequence.stop": ApiFunc(
+        lua_name="sequence.stop", c_func="",
+        params=[Param("name", PARAM_STR, DOMAIN_SEQUENCE)],
+        doc="Arrête la séquence en cours de route. Elle ne reprend pas où elle en "
+            "était : un `sequence.start` la relance depuis le début.",
+    ),
+    "sequence.running": ApiFunc(
+        lua_name="sequence.running", c_func="",
+        params=[Param("name", PARAM_STR, DOMAIN_SEQUENCE)], ret="bool",
+        doc="Vrai tant que la séquence n'a pas atteint sa dernière ligne. "
+            "Ex: if not sequence.running(\"intro\") then … end",
+    ),
+
     "camera.shake": ApiFunc(
         lua_name="camera.shake", c_func="camera_shake",
         params=[Param("amplitude", PARAM_INT), Param("frames", PARAM_INT)],
@@ -547,13 +664,50 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("a", PARAM_INT), Param("b", PARAM_INT)], ret="int",
         doc="Maximum de deux entiers.",
     ),
+    "math.lerp": ApiFunc(
+        lua_name="math.lerp", c_func="math_lerp",
+        params=[Param("a", PARAM_INT), Param("b", PARAM_INT), Param("num", PARAM_INT), Param("den", PARAM_INT)],
+        ret="int",
+        doc="Interpole linéairement entre a et b à la fraction num/den. "
+            "Ex: math.lerp(0, 100, frame, 30) glisse de 0 à 100 sur 30 frames.",
+    ),
+    "math.ease": ApiFunc(
+        lua_name="math.ease", c_func="math_ease",
+        params=[Param("a", PARAM_INT), Param("b", PARAM_INT), Param("num", PARAM_INT), Param("den", PARAM_INT),
+                Param("kind", PARAM_STR, DOMAIN_EASE)],
+        ret="int",
+        doc='Comme math.lerp, mais en courbant la fraction avant de l\'appliquer. '
+            '"in" démarre lentement et accélère, "out" démarre vite et ralentit, '
+            '"in_out" combine les deux. Ex: math.ease(0, 100, frame, 30, "out").',
+    ),
+    "math.sin": ApiFunc(
+        lua_name="math.sin", c_func="math_sin",
+        params=[Param("deg", PARAM_INT)], ret="int",
+        doc="Sinus de deg (degrés), en fixe Q8 (×256 : -256 à 256, pas de virgule "
+            "flottante sur GBA) — la même échelle que la matrice affine du sprite. "
+            "Ex: dx = amount * math.sin(deg) / 256.",
+    ),
+    "math.cos": ApiFunc(
+        lua_name="math.cos", c_func="math_cos",
+        params=[Param("deg", PARAM_INT)], ret="int",
+        doc="Cosinus de deg (degrés), en fixe Q8 (×256), même échelle que math.sin.",
+    ),
+    "math.sqrt": ApiFunc(
+        lua_name="math.sqrt", c_func="math_sqrt",
+        params=[Param("x", PARAM_INT)], ret="int",
+        doc="Racine carrée entière (tronquée). x négatif ou nul → 0.",
+    ),
+    "math.atan2": ApiFunc(
+        lua_name="math.atan2", c_func="math_atan2",
+        params=[Param("y", PARAM_INT), Param("x", PARAM_INT)], ret="int",
+        doc="Angle en degrés (0-359) du vecteur (x, y) — même convention d'axes que "
+            "self.rotation, donc self.rotation = math.atan2(vel.y, vel.x) oriente "
+            "l'actor dans le sens de sa vélocité.",
+    ),
 
     # ── Scène ──────────────────────────────────────────────────────
-    "scene.frame": ApiFunc(
-        lua_name="scene.frame", c_func="scene_frame",
-        params=[], ret="int",
-        doc="Compteur de frames global depuis le début de la scène. Utile pour timers sans variable locale.",
-    ),
+    # scene.frame (int, lecture seule) et scene.size (rect) : cf. RUNTIME_PROPS
+    # — la scène expose son état en propriétés.
 
     # ── Tile ───────────────────────────────────────────────────────
     "tile.get": ApiFunc(
@@ -705,7 +859,7 @@ RUNTIME_API: dict[str, ApiFunc] = {
     "ui.image_set": ApiFunc(
         lua_name="ui.image_set", c_func="ui_image_set_state",
         params=[Param("image", PARAM_STR, DOMAIN_IMAGE),
-                Param("state", PARAM_STR)],
+                Param("state", PARAM_STR, DOMAIN_IMAGE_STATE)],
         doc='Change l\'état affiché par une image de l\'interface. '
             'Ex: ui.image_set("coeur_2", "vide")',
     ),
@@ -714,11 +868,6 @@ RUNTIME_API: dict[str, ApiFunc] = {
         params=[Param("image", PARAM_STR, DOMAIN_IMAGE), Param("on", PARAM_BOOL)],
         doc='Lance (true) ou fige (false) le défilement des frames. '
             'Ex: ui.image_play("curseur", false)',
-    ),
-    "ui.image_show": ApiFunc(
-        lua_name="ui.image_show", c_func="ui_image_show",
-        params=[Param("image", PARAM_STR, DOMAIN_IMAGE), Param("on", PARAM_BOOL)],
-        doc='Affiche ou cache une image. Ex: ui.image_show("alerte", true)',
     ),
     "ui.image_state": ApiFunc(
         lua_name="ui.image_state", c_func="ui_image_state",
@@ -750,23 +899,23 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
     "window.set_layer": ApiFunc(
         lua_name="window.set_layer", c_func="window_set_layer",
-        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Autorise ou non le layer de fond `bg` dans la région r : \"win0\", \"win1\", \"object\" (fenêtre-objet) ou \"outside\".",
+        params=[Param("region", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non le layer de fond `bg` dans la région : \"win0\", \"win1\", \"object\" (fenêtre-objet) ou \"outside\".",
     ),
     "window.get_layer": ApiFunc(
         lua_name="window.get_layer", c_func="window_get_layer",
-        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT)], ret="int",
-        doc="1 si le layer `bg` est autorisé dans la région r, 0 sinon.",
+        params=[Param("region", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT)], ret="int",
+        doc="1 si le layer `bg` est autorisé dans la région, 0 sinon.",
     ),
     "window.set_obj": ApiFunc(
         lua_name="window.set_obj", c_func="window_set_obj",
-        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
-        doc="Autorise ou non les sprites dans la région r.",
+        params=[Param("region", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non les sprites dans la région.",
     ),
     "window.set_blend": ApiFunc(
         lua_name="window.set_blend", c_func="window_set_blend",
-        params=[Param("r", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
-        doc="Autorise ou non le blending dans la région r. Assombrir le monde SAUF un panneau = blending activé dans la région 3, coupé dans la 0.",
+        params=[Param("region", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
+        doc="Autorise ou non le blending dans la région. Assombrir le monde SAUF un panneau = blending activé dans la région 3, coupé dans la 0.",
     ),
 
     # ── Blend ──────────────────────────────────────────────────────
@@ -830,16 +979,8 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Vide l'emplacement `slot` : save.exists y répond faux ensuite.",
     ),
 
-    "blend.set_mode": ApiFunc(
-        lua_name="blend.set_mode", c_func="blend_set_mode",
-        params=[Param("mode", PARAM_STR, DOMAIN_BLEND_MODE)],
-        doc="Mode de mélange : \"none\", \"alpha\", \"brighten\" (vers le blanc) ou \"darken\" (vers le noir).",
-    ),
-    "blend.get_mode": ApiFunc(
-        lua_name="blend.get_mode", c_func="blend_get_mode",
-        params=[], ret="int",
-        doc="Mode de mélange courant (0-3).",
-    ),
+    # blend.mode (int 0-3) : cf. RUNTIME_PROPS — l'état du mélange est une
+    # propriété. set_layer/set_obj/set_alpha/set_fade restent des actions.
     "blend.set_layer": ApiFunc(
         lua_name="blend.set_layer", c_func="blend_set_layer",
         params=[Param("side", PARAM_STR, DOMAIN_BLEND_SIDE), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
@@ -899,6 +1040,216 @@ RUNTIME_API: dict[str, ApiFunc] = {
 
 }
 
+# ─── Propriétés (RUNTIME_PROPS) ────────────────────────────────────
+# L'autre versant de l'API : ce qui est un ÉTAT d'objet se lit/s'écrit par accès
+# pointé (`self.position`, `camera.bound`) au lieu d'un appel get/set. La
+# frontière est celle de la grammaire (ROADMAP v0.7.4) :
+#   - position, vélocité, rotation, échelle d'un actor → self.*
+#   - position et zone scrollable de la caméra → camera.*
+#   - taille du monde de la scène → scene.size (lecture seule, .w/.h)
+# Les propriétés d'actor s'accèdent sur n'importe quel Actor* nommé (self,
+# other, ou une variable d'actor) — c'est `vec_types.resolve_prop` qui le gère.
+#
+# Une propriété composite (PARAM_VEC2 / PARAM_RECT) est une valeur IMMUABLE :
+# `self.position.x` se lit, `self.position = vec2(x, y)` s'écrit, mais
+# `self.position.x = 5` est refusé par le checker.
+
+RUNTIME_PROPS: dict[str, ApiProp] = {
+
+    # ── Actor — transform ──────────────────────────────────────────
+    "self.position": ApiProp(
+        lua_name="self.position", c_getter="actor_get_position",
+        c_setter="actor_set_position", ptype=PARAM_VEC2, self_first=True,
+        doc="Position monde de l'actor (un vec2, .x/.y). "
+            "self.position = vec2(x, y) la téléporte instantanément.",
+    ),
+    "self.rotation": ApiProp(
+        lua_name="self.rotation", c_getter="actor_get_rotation",
+        c_setter="actor_set_rotation", ptype=PARAM_INT, self_first=True,
+        doc='Rotation MONDE de cet actor en degrés (0-359), héritée par son sprite. '
+            'Nécessite la case "Affine transform" cochée sur l\'actor lui-même '
+            "(réserve un des 32 slots affines du GBA). Le sprite a sa propre rotation "
+            "locale : self.sprite_rotation (somme des deux à l'écran).",
+    ),
+    "self.scale": ApiProp(
+        lua_name="self.scale", c_getter="actor_get_scale",
+        c_setter="actor_set_scale", ptype=PARAM_VEC2, self_first=True,
+        doc="Échelle MONDE de cet actor en pourcent (100 = normal, 50 = moitié) — un vec2 "
+            "(.x, .y), héritée par son sprite. Nécessite \"Affine transform\" coché sur "
+            "l'actor. Le sprite a son propre scale local : self.sprite_scale (produit "
+            "des deux à l'écran).",
+    ),
+
+    # ── Actor — transform LOCAL du sprite ─────────────────────────
+    # Le sprite n'a pas de position monde : sa position, son échelle et sa rotation
+    # sont RELATIVES à son actor, dans le repère local de l'actor (l'offset tourne/
+    # scale avec lui). Valides seulement si l'actor a "Affine transform" coché.
+    "self.sprite_rotation": ApiProp(
+        lua_name="self.sprite_rotation", c_getter="actor_get_sprite_rotation",
+        c_setter="actor_set_sprite_rotation", ptype=PARAM_INT, self_first=True,
+        doc="Rotation LOCAL du sprite en degrés (0-359), composée PAR-DESSUS la rotation "
+            "monde de l'actor (la somme des deux s'affiche). Nécessite \"Affine transform\" "
+            "coché sur l'actor.",
+    ),
+    "self.sprite_scale": ApiProp(
+        lua_name="self.sprite_scale", c_getter="actor_get_sprite_scale",
+        c_setter="actor_set_sprite_scale", ptype=PARAM_VEC2, self_first=True,
+        doc="Échelle LOCALE du sprite en pourcent (100 = normal) — un vec2 (.x, .y), "
+            "MULTIPLIÉE par le scale monde de l'actor. Nécessite \"Affine transform\" "
+            "coché sur l'actor.",
+    ),
+    "self.sprite_offset": ApiProp(
+        lua_name="self.sprite_offset", c_getter="actor_get_sprite_offset",
+        c_setter="actor_set_sprite_offset", ptype=PARAM_VEC2, self_first=True,
+        doc="Offset du sprite par rapport à son actor, en pixels, dans le repère LOCAL de "
+            "l'actor : il tourne et scale avec lui (hérarchie parent→enfant). Le sprite "
+            "n'a pas de position monde — la position monde, c'est self.position. "
+            "Nécessite \"Affine transform\" coché sur l'actor.",
+    ),
+
+    # ── Actor — physique ───────────────────────────────────────────
+    "self.velocity": ApiProp(
+        lua_name="self.velocity", c_getter="actor_get_velocity",
+        c_setter="actor_set_velocity", ptype=PARAM_VEC2, self_first=True,
+        doc="Vélocité de l'actor (un vec2, .x/.y). Ne déplace pas seule : "
+            "self.position = self.position + self.velocity l'applique.",
+    ),
+
+    # ── Actor — état général ───────────────────────────────────────
+    "self.visible": ApiProp(
+        lua_name="self.visible", c_getter="actor_get_visible",
+        c_setter="actor_set_visible", ptype=PARAM_BOOL, self_first=True,
+        doc="Affiche (true) ou cache (false) le sprite.",
+    ),
+    "self.active": ApiProp(
+        lua_name="self.active", c_getter="actor_get_active",
+        c_setter="actor_set_active", ptype=PARAM_BOOL, self_first=True,
+        doc="Active (true) ou désactive (false) l'actor : update, collisions et "
+            "rendu arrêtés si false.",
+    ),
+    # Se compare par le NOM de l'acteur ou du prefab — sans quoi la propriété
+    # rendait un entier opaque qu'aucune écriture Lua ne permettait de nommer :
+    # « utile pour identifier other », disait sa doc, sans dire comment.
+    "self.tag": ApiProp(
+        lua_name="self.tag", c_getter="actor_get_tag", ptype=PARAM_INT,
+        self_first=True, read_only=True, domain=DOMAIN_TAG,
+        doc='Identité de cet actor (lecture seule) : le nom de son acteur de '
+            'scène ou de son prefab. C\'est ce qui permet de reconnaître qui '
+            'l\'on touche. Ex: if other.tag == "Ball" then self:destroy() end',
+    ),
+
+    # ── Actor — animation ──────────────────────────────────────────
+    "self.frame": ApiProp(
+        lua_name="self.frame", c_getter="actor_get_frame",
+        c_setter="actor_set_frame", ptype=PARAM_INT, self_first=True,
+        doc="Frame courante de l'animation. self.frame = 0 la remet au début.",
+    ),
+    "self.flip_h": ApiProp(
+        lua_name="self.flip_h", c_getter="actor_get_flip_h",
+        c_setter="actor_set_flip_h", ptype=PARAM_BOOL, self_first=True,
+        doc="Sprite retourné horizontalement (true) ou normal (false). "
+            "self.flip_h = self.direction.x < 0 suit le regard.",
+    ),
+    "self.flip_v": ApiProp(
+        lua_name="self.flip_v", c_getter="actor_get_flip_v",
+        c_setter="actor_set_flip_v", ptype=PARAM_BOOL, self_first=True,
+        doc="Sprite retourné verticalement (true) ou normal (false).",
+    ),
+    "self.pal": ApiProp(
+        lua_name="self.pal", c_getter="actor_get_pal",
+        c_setter="actor_set_pal", ptype=PARAM_INT, self_first=True,
+        doc="Palette bank OAM courante (0-15). Flash de dégâts, invincibilité…",
+    ),
+    "self.obj_mode": ApiProp(
+        lua_name="self.obj_mode", c_getter="actor_get_obj_mode",
+        c_setter="actor_set_obj_mode", ptype=PARAM_INT, self_first=True,
+        domain=DOMAIN_OBJ_MODE,
+        doc='Mode OAM, par son nom : "normal", "blend" (semi-transparent, '
+            'réservé au mélange) ou "window" (masque : découpe la '
+            'fenêtre-objet). Ex: self.obj_mode = "window"',
+    ),
+
+    # ── Actor — direction ──────────────────────────────────────────
+    # UN état, deux écritures — et c'est la même propriété. Le vecteur sert au
+    # CALCUL (`self.direction.x < 0` suit le regard), le nom de boussole sert à
+    # POSER une direction sans avoir à se rappeler quel axe monte. Les deux
+    # atteignent `dir_x`/`dir_y` ; seule la porte C diffère (cf. ApiProp).
+    "self.direction": ApiProp(
+        lua_name="self.direction", c_getter="actor_get_direction",
+        c_setter="actor_set_direction", ptype=PARAM_VEC2, self_first=True,
+        domain=DOMAIN_DIRECTION,
+        c_getter_named="actor_get_dir", c_setter_named="actor_set_dir",
+        doc='Direction d\'animation discrète. Se lit en vec2 dont chaque '
+            'composante vaut -1, 0 ou 1 (.x = gauche/droite, .y = haut/bas), et '
+            's\'écrit des deux façons : self.direction = vec2(1, -1) ou '
+            'self.direction = "north_east". Se compare aussi par son nom : '
+            'if self.direction == "west". Écrire le vecteur ENTIER — jamais '
+            'self.direction.x seul.',
+    ),
+    "self.auto_dir": ApiProp(
+        lua_name="self.auto_dir", c_getter="actor_get_auto_dir",
+        c_setter="actor_set_auto_dir", ptype=PARAM_BOOL, self_first=True,
+        doc="Calcule (true) ou non (false) la direction automatiquement depuis "
+            "la vélocité. À false, self.direction est ce que le script en fait.",
+    ),
+
+    # ── Actor — collision ──────────────────────────────────────────
+    "self.grounded": ApiProp(
+        lua_name="self.grounded", c_getter="actor_on_ground", ptype=PARAM_BOOL,
+        self_first=True, read_only=True,
+        doc="Vrai si une box solide reposait sur le sol à la fin de la frame "
+            "précédente — pentes comprises. Demande une carte de collision dans "
+            "la scène. Lecture seule.",
+    ),
+
+    # ── Caméra ─────────────────────────────────────────────────────
+    "camera.position": ApiProp(
+        lua_name="camera.position", c_getter="camera_get_position",
+        c_setter="camera_set_position", ptype=PARAM_VEC2,
+        doc="Position courante de la caméra (un vec2, .x/.y). "
+            "camera.position = vec2(x, y) la place exactement.",
+    ),
+    "camera.bound": ApiProp(
+        lua_name="camera.bound", c_getter="camera_get_bounds",
+        c_setter="camera_set_bounds", ptype=PARAM_RECT,
+        doc="Zone scrollable du monde, un rect (.x/.y = origine, .w/.h = taille en px ; "
+            "0 = axe illimité). camera.bound = rect(x, y, w, h) débloque une zone au runtime.",
+    ),
+
+    # ── Blend ──────────────────────────────────────────────────────
+    "blend.mode": ApiProp(
+        lua_name="blend.mode", c_getter="blend_get_mode",
+        c_setter="blend_set_mode", ptype=PARAM_INT,
+        domain=DOMAIN_BLEND_MODE,
+        doc='Mode de mélange courant, par son nom : "none", "alpha" '
+            '(dessus×EVA + dessous×EVB), "brighten" (vers le blanc) ou '
+            '"darken" (vers le noir). Ex: blend.mode = "alpha"',
+    ),
+
+    # ── Input ──────────────────────────────────────────────────────
+    "input.axis": ApiProp(
+        lua_name="input.axis", c_getter="input_get_axis",
+        ptype=PARAM_VEC2, read_only=True,
+        doc="Croix directionnelle en vec2, chaque axe valant -1, 0 ou 1 "
+            "(.x = gauche/droite, .y = haut/bas). Lecture seule. "
+            "Ex: input.axis.x pour le seul axe horizontal.",
+    ),
+
+    # ── Scène ──────────────────────────────────────────────────────
+    "scene.frame": ApiProp(
+        lua_name="scene.frame", c_getter="scene_frame",
+        ptype=PARAM_INT, read_only=True,
+        doc="Compteur de frames global depuis le début de la scène. Lecture "
+            "seule — utile pour des timers sans variable locale.",
+    ),
+    "scene.size": ApiProp(
+        lua_name="scene.size", c_getter="", ptype=PARAM_RECT, read_only=True,
+        getter_expr="(Rect){0, 0, g_scene_w, g_scene_h}",
+        doc="Taille du monde de la scène (un rect : .x/.y = 0, .w/.h = canvas en px). "
+            "Lecture seule.",
+    ),
+}
+
 
 # ─── API retirée ──────────────────────────────────────────────────
 # Le checker laisse passer un appel inconnu : ce peut être un helper défini par
@@ -952,6 +1303,193 @@ REMOVED_API: dict[str, str] = {
         'puis appelle text.draw_in("nom_de_zone", "clé"). La machine à écrire '
         "s'obtient en mettant [speed=4] en tête du texte. L'alignement, lui, "
         "n'existait pas et devient un réglage de la zone.",
+    # ── Retiré au profit de add_velocity (2026-08-14) ─────────────
+    # apply_velocity faisait double emploi avec set_velocity sans jamais être
+    # utilisé : aucun script du dépôt ne l'appelait, le déplacement se lit et
+    # s'écrit à la main via get_velocity + set_position (cf. Ball.lua).
+    "self:apply_velocity":
+        "self:apply_velocity a été retiré (faisait doublon avec set_velocity, "
+        "jamais appelé en pratique). Pour déplacer par la vélocité : "
+        "self.position = self.position + self.velocity. "
+        "Pour l'accumuler frame après frame (accélération, gravité) : "
+        "self:add_velocity(vec2(dvx, dvy)).",
+    # ── Retiré au profit de set_position (2026-08-14) ──────────────
+    # Renommage pur : « pos » était la seule abréviation du catalogue, alors
+    # que le reste des concepts (position, vélocité) s'écrit en toutes lettres
+    # partout ailleurs (C, Python, UI). Aucun changement de comportement.
+    "self:set_pos":
+        "self:set_pos a été retiré au profit de la propriété self.position — "
+        "self:set_pos(x, y) devient self.position = vec2(x, y).",
+    # ── Visibilité généralisée aux trois types d'élément (2026-08-17) ──
+    # ui.image_show ne concernait que les images ; les zones de texte et les
+    # panels n'avaient rien d'équivalent. Remplacé par un mécanisme unique,
+    # par référence plutôt que par nom à chaque appel — cf. ui.get.
+    "ui.image_show":
+        "ui.image_show a été retiré : la visibilité couvre maintenant les "
+        "trois types d'élément (texte, panel, image), pas seulement les "
+        'images. Remplace ui.image_show("alerte", true) par '
+        'ui.get("alerte"):show() (ou :hide() pour false).',
+    # ── vec2/vec3 dans l'API position/vélocité/input (2026-08-14) ──
+    # position et vélocité passent en vec2 (un seul objet plutôt que deux
+    # scalaires toujours lus/écrits ensemble), et input.axis remplace les deux
+    # appels d'axe séparés pour la même raison — cf. ROADMAP.
+    "self:get_x":
+        "self:get_x a été retiré au profit de la propriété self.position — un "
+        "vec2 (.x, .y). self:get_x() devient self.position.x.",
+    "self:get_y":
+        "self:get_y a été retiré au profit de la propriété self.position — "
+        "self:get_y() devient self.position.y.",
+    "self:get_vx":
+        "self:get_vx a été retiré au profit de la propriété self.velocity — un "
+        "vec2 (.x, .y). self:get_vx() devient self.velocity.x.",
+    "self:get_vy":
+        "self:get_vy a été retiré au profit de la propriété self.velocity — "
+        "self:get_vy() devient self.velocity.y.",
+    "input.get_horizontal_axis":
+        "input.get_horizontal_axis a été retiré au profit de la propriété "
+        "input.axis — un vec2 (.x, .y) lu en un seul accès plutôt que deux "
+        "composantes recombinées à la main. "
+        "input.get_horizontal_axis() devient input.axis.x.",
+    "input.get_vertical_axis":
+        "input.get_vertical_axis a été retiré au profit de la propriété "
+        "input.axis — input.get_vertical_axis() devient input.axis.y.",
+    # ── camera.* en vec2 (2026-08-14) ───────────────────────────────
+    "camera.set":
+        "camera.set a été retiré au profit de la propriété camera.position — "
+        "camera.set(x, y) devient camera.position = vec2(x, y).",
+    "camera.get_x":
+        "camera.get_x a été retiré au profit de la propriété camera.position — "
+        "un vec2 (.x, .y). camera.get_x() devient camera.position.x.",
+    "camera.get_y":
+        "camera.get_y a été retiré au profit de la propriété camera.position — "
+        "camera.get_y() devient camera.position.y.",
+    # ── get/set → PROPRIÉTÉS (2026-08-15) ─────────────────────────
+    # Ce qui est un ÉTAT d'objet s'accède désormais par propriété pointée
+    # (cf. RUNTIME_PROPS) : self.position, self.velocity, self.rotation,
+    # self.scale, camera.position, camera.bound. Chaque entrée guide l'écriture
+    # équivalente — le checker l'émettra au lieu d'un « méthode inconnue ».
+    "self:set_position":
+        "self:set_position a été retiré au profit de la propriété self.position "
+        "— self:set_position(vec2(x, y)) devient self.position = vec2(x, y). "
+        "self.position se lit aussi, sans appel : self.position.x.",
+    "self:get_position":
+        "self:get_position a été retiré au profit de la propriété self.position "
+        "— self:get_position() devient self.position.",
+    "self:set_velocity":
+        "self:set_velocity a été retiré au profit de la propriété self.velocity "
+        "— self:set_velocity(v) devient self.velocity = v.",
+    "self:get_velocity":
+        "self:get_velocity a été retiré au profit de la propriété self.velocity "
+        "— self:get_velocity() devient self.velocity.",
+    "self:set_rotation":
+        "self:set_rotation a été retiré au profit de la propriété self.rotation "
+        "— self:set_rotation(deg) devient self.rotation = deg.",
+    "self:set_scale":
+        "self:set_scale a été retiré au profit de la propriété self.scale "
+        "— self:set_scale(sx, sy) devient self.scale = vec2(sx, sy).",
+    # L'ÉTAT du sprite et de l'acteur suit la même migration. Sans entrée ici,
+    # ces noms ne déclenchaient qu'un « méthode inconnue » non bloquant, et le
+    # repli de `codegen._invoke` (`actor_<méthode>(récepteur, ...)`) tombait
+    # pile sur la fonction C encore présente : l'ancienne API continuait donc de
+    # marcher, non documentée, à côté de la nouvelle. Deux grammaires vivantes
+    # pour le même état, c'est ce que la migration voulait supprimer.
+    "self:set_frame":
+        "self:set_frame a été retiré au profit de la propriété self.frame "
+        "— self:set_frame(n) devient self.frame = n. Elle se lit aussi, sans "
+        "appel : self.frame.",
+    "self:set_visible":
+        "self:set_visible a été retiré au profit de la propriété self.visible "
+        "— self:set_visible(true) devient self.visible = true.",
+    "self:set_active":
+        "self:set_active a été retiré au profit de la propriété self.active "
+        "— self:set_active(false) devient self.active = false.",
+    "self:set_pal":
+        "self:set_pal a été retiré au profit de la propriété self.pal "
+        "— self:set_pal(bank) devient self.pal = bank.",
+    "self:get_tag":
+        "self:get_tag a été retiré au profit de la propriété self.tag "
+        "— self:get_tag() devient self.tag (lecture seule).",
+    "self:set_flip_h":
+        "self:set_flip_h a été retiré au profit de la propriété self.flip_h "
+        "— self:set_flip_h(true) devient self.flip_h = true. Le sens du flip "
+        "est porté par un booléen, plus par un signe.",
+    "self:set_flip_v":
+        "self:set_flip_v a été retiré au profit de la propriété self.flip_v "
+        "— self:set_flip_v(true) devient self.flip_v = true.",
+    "self:set_obj_mode":
+        'self:set_obj_mode a été retiré au profit de la propriété self.obj_mode '
+        '— et le mode s\'écrit par son NOM : self:set_obj_mode(2) devient '
+        'self.obj_mode = "window" ("normal", "blend" ou "window").',
+    "self:get_obj_mode":
+        'self:get_obj_mode a été retiré au profit de la propriété self.obj_mode '
+        '— self:get_obj_mode() == 2 devient self.obj_mode == "window".',
+    # ── La direction est un vec2 (2026-08-14), rappelé ici ─────────
+    # Ces trois-là accompagnaient le passage en vec2 sans avoir été listées.
+    "self:set_direction":
+        "self:set_direction a été retiré au profit de la propriété "
+        "self.direction — self:set_direction(dx, dy) devient "
+        "self.direction = vec2(dx, dy). Écrire le vecteur entier, jamais "
+        "self.direction.x seul.",
+    "self:get_dir_x":
+        "self:get_dir_x a été retiré au profit de la propriété self.direction "
+        "— un vec2 (.x, .y). self:get_dir_x() devient self.direction.x.",
+    "self:get_dir_y":
+        "self:get_dir_y a été retiré au profit de la propriété self.direction "
+        "— self:get_dir_y() devient self.direction.y.",
+    # ── La direction n'a plus qu'une orthographe (2026-08-16) ──────
+    # Trois formes pour un seul état (`dir_x`/`dir_y`) : le vec2, la boussole
+    # nommée, et un entier 0-8 en lecture — qu'on posait par un nom et qu'on
+    # relisait en nombre. `self.direction` porte maintenant les deux écritures.
+    "self:set_dir":
+        'self:set_dir a été retiré au profit de la propriété self.direction, '
+        'qui accepte le nom de boussole : self:set_dir("north") devient '
+        'self.direction = "north". Le vecteur marche aussi '
+        '(self.direction = vec2(0, -1)), et se lit en .x/.y.',
+    "self:get_dir":
+        'self:get_dir a été retiré au profit de la propriété self.direction. '
+        'Il rendait un entier 0-8 qu\'il fallait comparer de tête alors qu\'on '
+        'écrivait un nom : self:get_dir() == 1 devient '
+        'self.direction == "north". Pour le calcul, self.direction.x / .y.',
+    "self:set_auto_dir":
+        "self:set_auto_dir a été retiré au profit de la propriété "
+        "self.auto_dir — self:set_auto_dir(true) devient self.auto_dir = true. "
+        "Elle se lit aussi, ce que l'ancien appel ne permettait pas.",
+    "self:on_ground":
+        "self:on_ground a été retiré au profit de la propriété self.grounded "
+        "— self:on_ground() devient self.grounded. Une requête sans argument "
+        "est de l'état, pas une action ; et « on_ » est le préfixe des "
+        "événements (on_start, on_collide), à ne pas mélanger.",
+    "camera.set_position":
+        "camera.set_position a été retiré au profit de la propriété "
+        "camera.position — camera.set_position(vec2(x, y)) devient "
+        "camera.position = vec2(x, y).",
+    "camera.get_position":
+        "camera.get_position a été retiré au profit de la propriété "
+        "camera.position — camera.get_position() devient camera.position.",
+    "camera.set_bounds":
+        "camera.set_bounds a été retiré au profit de la propriété camera.bound "
+        "— un rect avec origine désormais : camera.set_bounds(vec2(w, h)) "
+        "devient camera.bound = rect(x, y, w, h) (x = y = 0 pour un monde "
+        "ancré en haut à gauche).",
+    # ── requêtes pures → PROPRIÉTÉS (2026-08-15) ───────────────────
+    # Une fonction qui ne fait que RENDRE de l'état (pas d'effet) est une
+    # propriété (grammaire : identifier.member = état, module.member(...) =
+    # fonction système). Les requêtes indexées (save.read(n), tile.get(x,y),
+    # layer.get_*(n)…) restent des fonctions : une propriété ne prend pas
+    # d'argument.
+    "input.get_axis":
+        "input.get_axis a été retiré au profit de la propriété input.axis "
+        "— input.get_axis() devient input.axis (un vec2, .x/.y).",
+    "scene.frame":
+        "scene.frame() a été retiré au profit de la propriété scene.frame "
+        "— scene.frame() devient scene.frame.",
+    "blend.get_mode":
+        'blend.get_mode a été retiré au profit de la propriété blend.mode '
+        '— blend.get_mode() == 1 devient blend.mode == "alpha" ("none", '
+        '"alpha", "brighten" ou "darken").',
+    "blend.set_mode":
+        'blend.set_mode a été retiré au profit de la propriété blend.mode '
+        '— blend.set_mode("alpha") devient blend.mode = "alpha".',
 }
 
 
@@ -1133,6 +1671,31 @@ KNOWN_EVENTS: list[str] = list(EVENT_REGISTRY.keys())
 EVENT_C_SIGNATURES: dict[str, str] = {k: v["c_sig"] for k, v in EVENT_REGISTRY.items()}
 
 
+# ─── Les modules, dérivés du catalogue ────────────────────────────
+# `math`, `text`, `layer`… : le préfixe d'une clé pointée. Dérivés et non
+# listés, comme KNOWN_EVENTS ci-dessus — un module naît de sa première
+# fonction, il n'a rien à déclarer. Sert au checker pour distinguer « ce module
+# n'existe pas » de « ce module n'a pas cette fonction-là », distinction qui
+# vaut surtout pour `math` : le nom est celui de Lua, le contenu non.
+
+# `self` en est exclu : ce n'est pas un module mais un RÉCEPTEUR — ses champs
+# sont des propriétés (`self.position`) et ses fonctions des méthodes, appelées
+# avec deux points (`self:play_anim`). Le confondre ferait dire « le module self
+# n'a pas de … » à quelqu'un qui a juste écrit un point de trop.
+API_MODULES: frozenset[str] = frozenset(
+    key.split(".", 1)[0] for key in (*RUNTIME_API, *RUNTIME_PROPS) if "." in key
+) - {"self"}
+
+
+def module_members(module: str) -> list[str]:
+    """Ce que ce module offre — fonctions et propriétés confondues, puisque
+    c'est ce que l'auteur cherche."""
+    prefix = f"{module}."
+    return sorted(key[len(prefix):]
+                  for key in (*RUNTIME_API, *RUNTIME_PROPS)
+                  if key.startswith(prefix))
+
+
 # ─── Résolution des constantes "str" ──────────────────────────────
 # Helpers utilisés par le codegen pour convertir "nom_lua" → "NOM_C"
 
@@ -1217,6 +1780,13 @@ def region_constant(region_name: str) -> str:
 def image_constant(image_name: str) -> str:
     """'coeur_2' → 'IMAGE_COEUR_2' — index dans `g_ui_images`."""
     return f"IMAGE_{c_ident(image_name)}"
+
+
+def ui_element_constant(element_name: str) -> str:
+    """'alerte' → 'UIELEM_ALERTE' — index dans la table de visibilité plate,
+    qui couvre TOUS les éléments d'une mise en page (texte, panel, image),
+    contrairement à REGION_*/IMAGE_* qui n'indexent que ce qui dessine."""
+    return f"UIELEM_{c_ident(element_name)}"
 
 
 def image_state_constant(image_name: str, state_name: str) -> str:

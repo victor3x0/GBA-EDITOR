@@ -679,7 +679,8 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
 def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                       obj_place: dict | None = None,
                       actor_index: dict | None = None,
-                      bg_fill: dict | None = None) -> list[str]:
+                      bg_fill: dict | None = None,
+                      elem_index: dict | None = None) -> list[str]:
     """Table des emplacements de texte — `regions` est [(UILayout, UIText)]
     dans l'ordre de `Project.all_regions()`, qui fait l'index.
 
@@ -692,7 +693,13 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
     des entrées de tilemap, une origine entre deux tuiles n'existe pas.
 
     La police est résolue en index (255 = « garder la police courante »), pour
-    que le runtime n'ait aucun nom à chercher."""
+    que le runtime n'ait aucun nom à chercher.
+
+    `elem_index` = {nom d'élément : index dans `Project.all_elements()`}, la
+    table de visibilité PLATE (`UIELEM_*`) — plus large que celle-ci, qui
+    n'indexe que ce qui dessine. Absent d'une zone (-1) : `ui_element_
+    is_visible` traite un index hors table comme toujours visible, jamais
+    comme une erreur (cf. sa garde de boucle)."""
     from core.models.ui_region import TARGET_OBJ, ALIGNS, ANCHORS
 
     L: list[str] = ["/* ── Slots de texte (UILayout) ─────────────────── */"]
@@ -721,13 +728,14 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"0, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
         bgf = (bg_fill or {}).get(r.name, -1)
+        elem = (elem_index or {}).get(r.name, -1)
         # En commentaire : d'où vient le contenu. La table seule ne le dit pas,
         # et c'est la première question en relisant le C.
         origin = "authoré" if getattr(r, "text_key", "") else "écrit par script"
         rows.append(
             f"    {{ {x}, {y}, {w}, {h}, {ALIGNS.index(r.align)}, "
             f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(eff_anchor)}, "
-            f"{alloc}, {bgf}, {int(getattr(r, 'text_color', 0) or 0) & 0xF} }},"
+            f"{alloc}, {bgf}, {int(getattr(r, 'text_color', 0) or 0) & 0xF}, {elem} }},"
             f"  /* {r.name} — {origin} */"
         )
         if target_obj and emit and pl:
@@ -745,8 +753,9 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"'{eff_actor or '(aucun)'}', introuvable — il se posera "
                  f"à l'origine de l'écran.")
     L.append(f"const UIRegionInfo g_ui_regions[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0 },   /* aucun texte */"]
+    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0, -1 },   /* aucun texte */"]
     L.append("};")
+    L.append(f"const int g_ui_region_count = {len(rows)};")
     L.append("")
     return L
 

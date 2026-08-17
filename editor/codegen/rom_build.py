@@ -709,11 +709,20 @@ class BuildWorker(EventEmitter, threading.Thread):
         if actor_defined_events is None:
             return names
 
+        from scripting.parser import sequence_name as _sequence_name
+
         def _collect_events(sym, sp):
             if sp and sp.exists() and sp.suffix.lower() == ".lua":
                 try:
                     ast = _parse(sp.read_text(encoding="utf-8"))
-                    actor_defined_events[sym] = {fn.name for fn in ast.functions}
+                    events = {fn.name for fn in ast.functions}
+                    # Une séquence avance à la fin d'`on_update` : un script qui
+                    # n'en écrit pas mais déclare une séquence a quand même
+                    # quelque chose à faire à chaque frame, et `main.c` ne
+                    # l'appellerait pas (cf. ROADMAP v0.7.7).
+                    if any(_sequence_name(n) is not None for n in events):
+                        events.add("on_update")
+                    actor_defined_events[sym] = events
                 except LuaParseError:
                     pass
 

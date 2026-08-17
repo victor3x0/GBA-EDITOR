@@ -19,7 +19,7 @@ from ui.scene_manager.inspectors.actor_inspector import ActorInspector, Componen
 from ui.scene_manager.inspectors.scene_inspector import SceneInspector
 from ui.scene_manager.inspectors.camera_inspector import CameraInspector
 from ui.scene_manager.inspectors.uses_inspectors import (
-    PrefabUsesInspector, ScriptUsesInspector, VariableUsesInspector,
+    PrefabUsesInspector, ScriptUsesInspector,
 )
 from ui.scene_manager.inspectors.dynamic_inspector import DynamicInspector
 
@@ -30,6 +30,5 @@ __all__ = [
     "CameraInspector",
     "PrefabUsesInspector",
     "ScriptUsesInspector",
-    "VariableUsesInspector",
     "ComponentListWidget",
 ]

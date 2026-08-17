@@ -17,7 +17,7 @@ sérialisable (`int` px, ou dict tile/ref) — voir core/models/field_value.py.
 
 ──────────────────────────────────────────────────────────────────────────
 API
-    ValueField(raw=0, variables=None, min_px=-512, max_px=512, allow_tile=True)
+    ValueField(raw=0, variables=None, min_px=-32767, max_px=32767, allow_tile=True)
         variables : list[(src, name)] avec src ∈ {"global","const"}.
                     En pratique : core.models.field_value.variables_from_project.
     .changed(raw)          signal — nouvelle forme sérialisable (int|dict)
@@ -70,7 +70,7 @@ class _QuietSpin(QSpinBox):
 class ValueField(QWidget):
     changed = pyqtSignal(object)   # émet la forme sérialisable (int | dict)
 
-    def __init__(self, raw=0, variables=None, min_px: int = -512, max_px: int = 512,
+    def __init__(self, raw=0, variables=None, min_px: int = -32767, max_px: int = 32767,
                  allow_tile: bool = True, parent=None):
         super().__init__(parent)
         # [(src, nom, id)] — les paires d'avant l'identité opaque restent

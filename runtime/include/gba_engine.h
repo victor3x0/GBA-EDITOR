@@ -706,9 +706,13 @@ typedef struct UIRegionInfo {
        comme tel : `g_ui_regions` est partagée entre scènes, et deux scènes
        n'ont pas chargé les mêmes variantes. */
     unsigned char color;
+    /* Index dans `g_ui_elements` (visibilité) — cf. plus bas. Une zone existe
+       toujours comme élément, donc toujours >= 0 en pratique. */
+    short elem;
 } UIRegionInfo;
 
 extern const UIRegionInfo g_ui_regions[];
+extern const int g_ui_region_count;
 
 /* ── Images d'interface ───────────────────────────────────────────
    Un SPRITE À ÉTAT posé sur la mise en page. L'élément DÉSIGNE un sprite et
@@ -754,10 +758,39 @@ typedef struct UIImageInfo {
     /* Surcharge de `state_speed[state]`, en ticks entre deux frames. 0 = la
        vitesse du sprite, qui reste la source de vérité. */
     unsigned char speed;
+    /* Index dans `g_ui_elements` (visibilité) — cf. plus bas. */
+    short elem;
 } UIImageInfo;
 
 extern const UIImageInfo g_ui_images[];
 extern const int g_ui_image_count;
+
+/* ── Visibilité des éléments d'interface ────────────────────────────
+   Table PLATE, PROJET-GLOBALE, qui couvre TOUS les éléments d'une mise en
+   page — texte, panel, image confondus — contrairement à g_ui_regions/
+   g_ui_images qui n'indexent que ce qui DESSINE. Un panel-groupe pur (fond
+   `none`) n'a sinon aucune identité runtime.
+
+   `visible` est l'état AUTHORÉ de départ (`ui.get(...):show()/:hide()` le
+   bascule au script). `parent` est l'index du parent dans CETTE MÊME
+   table, -1 = racine. La visibilité EFFECTIVE n'est JAMAIS stockée : elle
+   remonte la chaîne des parents à la lecture (`ui_element_is_visible`),
+   exactement comme le modèle Python (`UILayout.is_visible`) — cacher un
+   enfant puis remontrer son parent laisse l'enfant caché, sans qu'aucune
+   propagation n'ait à s'écrire ici non plus. */
+typedef struct UIElementInfo {
+    short parent;
+    unsigned char visible;
+} UIElementInfo;
+
+extern const UIElementInfo g_ui_elements[];
+extern const int g_ui_element_count;
+
+#define UI_ELEMENT_MAX 64
+
+void ui_elements_reset(void);          /* repose les bits authorés (par scène) */
+int  ui_element_is_visible(int idx);   /* remonte la chaîne des parents */
+void ui_element_show(int idx, int on); /* self:show() / self:hide() */
 
 /* Posés par scene_init, AVANT le premier ui_image_update. Les trois dépendent
    de la SCÈNE (charblock alloué, sélection de palettes) alors que `g_ui_images`
@@ -774,7 +807,8 @@ void ui_image_set_bank(int img, int bank);
    rouvrir au runtime reprendrait ce que la mise en page existe pour fermer. */
 void ui_image_set_state(int img, int state);
 void ui_image_play(int img, int on);
-void ui_image_show(int img, int on);
+/* Visibilité : ui_element_show(idx, on), cf. plus haut — plus de fonction
+   par type, une image partage l'index avec le texte et les panels. */
 int  ui_image_state(int img);
 void ui_image_update(void);   /* une fois par frame, avant oam_update */
 
@@ -807,6 +841,16 @@ void text_read_reset_all(void);   /* posé par scene_init — ferme les lectures
                                       de la scène précédente */
 void text_update  (void);         /* une fois par frame, avant oam_update */
 void text_clear_in    (int region);             /* vide une zone, BG ou OBJ */
+
+/* Fond nine-slice/background d'une zone composée — posés par scene_init,
+   AVANT les postes de texte (cf. `_gen_scene_init`). `text_clear_region_
+   backdrops` vide la table de la scène précédente ; `text_set_region_
+   backdrop` y enregistre une zone : `se`/`stride` sont ceux du PANEL entier
+   émis pour cette scène, `(dx, dy)` recale sur le coin de la zone, `tile_
+   base` est la base VRAM où l'asset source a été copié CETTE scène. */
+void text_clear_region_backdrops(void);
+void text_set_region_backdrop(int region, const unsigned short *se, int stride,
+                              int dx, int dy, int tile_base);
 void text_obj_set_base(int oam, int tile);   /* posé par scene_init */
 void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int));
 
@@ -1460,6 +1504,75 @@ static int text_is_composited(void) {
     return (g_font && g_font->composited) || g_blit_h || g_ui_fill_bg >= 0;
 }
 
+/* ── Fond NINE-SLICE/BACKGROUND recomposé sous un texte ──────────────
+   Un panel Color donne à ses zones enfant un simple APLAT (`g_ui_fill_bg`,
+   ci-dessus) : une couleur suffit à la surface composée. Un panel Nine-slice
+   ou Background n'a pas d'aplat qui vaille — il faut les VRAIS pixels du
+   cadre à cet endroit, faute de quoi composer une zone REMPLACE le cadre par
+   du transparent au lieu de se poser dessus.
+
+   Posé par `scene_init` (donc scène-spécifique, comme la base VRAM où
+   l'asset source a été copié cette scène-ci) — contrairement à
+   `UIRegionInfo`, table PROJET-GLOBALE incapable de porter une base qui
+   varie d'une scène à l'autre. Table scannée linéairement plutôt qu'indexée
+   par région : peu de zones composent sur un fond image à la fois dans une
+   scène, un tableau à la taille de `g_ui_regions` gaspillerait pour rien.
+
+   Un seul mot par pixel : la tuile de surface reçoit la MÊME banque de
+   palette pour le cadre recopié et pour l'encre du glyphe
+   (`g_pal_bank_bg`) — le hardware n'en offre qu'une par tuile. C'est un
+   contrat d'auteur (le build le vérifie) : `scene.ui_pal_bank` doit désigner
+   la banque de l'asset nine-slice/background, et l'encre du texte doit être
+   une couleur déjà présente dans cette même banque. */
+#define TEXT_REGION_BACKDROP_MAX 8
+
+typedef struct {
+    short region;                 /* index dans g_ui_regions */
+    const unsigned short *se;     /* carte du PANEL ENTIER (pas dupliquée) */
+    short stride;                 /* largeur du panel, en tuiles */
+    short dx, dy;                 /* coin de la zone DANS le panel, en tuiles */
+    short tile_base;              /* où l'asset source a été copié cette scène */
+} RegionBackdrop;
+
+static RegionBackdrop g_region_backdrop[TEXT_REGION_BACKDROP_MAX];
+static int g_region_backdrop_n = 0;
+/* Fond de la zone EN COURS de composition — posé par `text_render_region_cp`
+   (et par `text_clear_region_at`, son pendant à l'effacement) depuis une
+   recherche dans la table ci-dessus, remis à NULL après. NULL = zone sans
+   fond image, `text_surf_prepare`/`text_clear` retombent sur `g_ui_fill_bg`. */
+static const RegionBackdrop *g_ui_backdrop = 0;
+
+/* Vide la table — posé par `scene_init`, au même titre que
+   `text_read_reset_all` : sans lui une zone de la scène PRÉCÉDENTE resterait
+   enregistrée sous le même index et prêterait sa carte à une zone qui n'a
+   plus rien à voir avec elle. */
+void text_clear_region_backdrops(void) { g_region_backdrop_n = 0; }
+
+void text_set_region_backdrop(int r, const unsigned short *se, int stride,
+                              int dx, int dy, int tile_base) {
+    if (g_region_backdrop_n >= TEXT_REGION_BACKDROP_MAX) return;
+    RegionBackdrop *b = &g_region_backdrop[g_region_backdrop_n++];
+    b->region = (short)r; b->se = se; b->stride = (short)stride;
+    b->dx = (short)dx;    b->dy = (short)dy;    b->tile_base = (short)tile_base;
+}
+
+static const RegionBackdrop *text_region_backdrop(int r) {
+    for (int i = 0; i < g_region_backdrop_n; i++)
+        if (g_region_backdrop[i].region == r) return &g_region_backdrop[i];
+    return 0;
+}
+
+/* Inverse l'ordre des 8 nibbles d'un mot — un flip HORIZONTAL de tuile,
+   baké en pixels puisque la tuile de surface ne porte pas son propre
+   drapeau de miroir (elle est composée une fois, pas relue par le hardware
+   avec la SE d'origine). */
+static u32 text_nibble_hflip(u32 row) {
+    u32 out = 0;
+    for (int i = 0; i < 8; i++)
+        out |= ((row >> (i * 4)) & 0xF) << ((7 - i) * 4);
+    return out;
+}
+
 /* Tuile du bloc courant couvrant la case écran (tx, ty), ou -1 si la case est
    HORS du bloc — seule une bande peut être débordée, la surface BG bouclant sur
    elle-même. Retourner -1 plutôt que de replier fait qu'un texte trop long pour
@@ -1665,6 +1778,36 @@ int text_length(int id) {
     return text_materialize(id, &s, &e, &n);
 }
 
+/* Écrit les 8 mots u32 d'une tuile de surface pour la case LOCALE (lc, lr)
+   de la zone en cours de composition — c'est-à-dire l'offset depuis l'ORIGINE
+   de la zone (le même `(0,0)` que `dx,dy` dans `RegionBackdrop`).
+
+   Avec un fond image enregistré (`g_ui_backdrop`), recopie les VRAIS pixels
+   du cadre à cet endroit (flip de la SE source baké en pixels, la tuile de
+   surface elle-même n'en portant pas) ; sinon retombe sur l'aplat
+   `g_ui_fill_bg` (ou transparent). Partagée par `text_clear` et
+   `text_surf_prepare` : effacer et préparer doivent revenir au MÊME fond,
+   sinon l'un des deux referait apparaître le mauvais. */
+static void text_surf_seed(volatile u32 *p, int lc, int lr) {
+    const RegionBackdrop *bd = g_ui_backdrop;
+    if (bd) {
+        unsigned short e = bd->se[(bd->dy + lr) * bd->stride + (bd->dx + lc)];
+        if (e != UI_SE_EMPTY) {
+            int local = (int)(e & 0x03FF);
+            int fh = e & 0x0400, fv = e & 0x0800;
+            const volatile u32 *sp =
+                (const volatile u32*)(TILE_RAM(g_text_cbb)) + (bd->tile_base + local) * 8;
+            for (int k = 0; k < 8; k++) {
+                u32 row = sp[fv ? (7 - k) : k];
+                p[k] = fh ? text_nibble_hflip(row) : row;
+            }
+            return;
+        }
+    }
+    u32 bg = (g_ui_fill_bg >= 0) ? (u32)(g_ui_fill_bg & 0xF) * 0x11111111u : 0u;
+    for (int k = 0; k < 8; k++) p[k] = bg;
+}
+
 /* Vide la zone. En mono il suffit de remettre le tilemap sur la tuile 0 ; en
    proportionnel les pixels sont DANS les tuiles de surface, c'est donc elles
    qu'il faut remettre à zéro — sinon le texte suivant s'écrirait par-dessus
@@ -1674,9 +1817,6 @@ void text_clear(int tx, int ty, int w, int h) {
     int prop = text_is_composited();
     blit_use_bg_surface();          /* text_clear ne vide QUE la surface BG */
     volatile u32 *base = g_blit_mem;
-    /* Vider = revenir au fond : transparent, ou la couleur du panel si la zone
-       en a une (sinon effacer le texte ferait aussi disparaître son fond). */
-    u32 bg = (g_ui_fill_bg >= 0) ? (u32)(g_ui_fill_bg & 0xF) * 0x11111111u : 0u;
     /* Effacer prend des coordonnées LIBRES, comme `draw` : son cadre est donc
        l'écran. Sinon un rectangle trop grand viderait des cases qui ne lui
        appartiennent pas — sur la surface partagée, n'importe lesquelles. */
@@ -1686,7 +1826,7 @@ void text_clear(int tx, int ty, int w, int h) {
             if (!text_tile_in_clip(tx + c, ty + r)) continue;
             if (prop) {
                 volatile u32 *t = base + text_surf_tile(tx + c, ty + r) * 8;
-                for (int k = 0; k < 8; k++) t[k] = bg;
+                text_surf_seed(t, c, r);
             } else {
                 tilemap_set(g_text_layer, tx + c, ty + r, 0);
             }
@@ -1698,17 +1838,16 @@ void text_clear(int tx, int ty, int w, int h) {
    composition précédente, ou n'importe quel index laissé par le décor. */
 static void text_surf_prepare(int tx, int ty, int w, int h) {
     volatile u32 *base = g_blit_mem;
-    /* Fond de la surface : transparent (0), ou la couleur du panel répétée sur
-       les 8 pixels du mot u32 quand la zone a un fond (`g_ui_fill_bg`). L'encre
-       des glyphes se compose ensuite PAR-DESSUS. */
-    u32 bg = (g_ui_fill_bg >= 0) ? (u32)(g_ui_fill_bg & 0xF) * 0x11111111u : 0u;
     for (int r = 0; r < h; r++)
         for (int c = 0; c < w; c++) {
             int t = text_surf_tile(tx + c, ty + r);
             tilemap_set(g_text_layer, tx + c, ty + r, t);
             tilemap_set_palette(g_text_layer, tx + c, ty + r, g_pal_bank_bg);
+            /* La tuile de surface ne porte pas de flip propre : le fond
+               image y a déjà été baké par `text_surf_seed`. */
+            tilemap_set_flip(g_text_layer, tx + c, ty + r, 0, 0);
             volatile u32 *p = base + t * 8;
-            for (int k = 0; k < 8; k++) p[k] = bg;
+            text_surf_seed(p, c, r);
         }
 }
 
@@ -1935,16 +2074,31 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
    même effacement. Dupliquer un mini-rendu pour les nombres aurait garanti
    qu'un jour l'un des deux dérive. */
 static void text_render_cp_al(const unsigned short *s, int slen,
-                              int tx, int ty, int wrap, int n, int align) {
+                              int tx, int ty, int wrap, int n, int align,
+                              int box_h) {
     if (g_text_layer < 0 || !g_font) return;
     blit_use_bg_surface();
     if (text_is_composited()) {
         /* Préparer AVANT de composer : la composition ne pose que de l'encre,
            elle n'efface pas ce qui était là. La zone préparée doit couvrir le
            texte ALIGNÉ, d'où le même `align` dans les deux passes. Zone à
-           fond, on prépare même en police mono (le texte s'y compose). */
+           fond, on prépare même en police mono (le texte s'y compose).
+
+           `box_h` > 0 = la zone a une boîte AUTEUR connue (cf.
+           `text_render_region_cp`) : on prépare TOUTE la boîte — largeur ET
+           hauteur — plutôt que la seule étendue de CE texte. Sans ça, un
+           texte plus court que le précédent (ligne de dialogue suivante)
+           laisserait l'encre de l'ancien rendu hors de la nouvelle étendue
+           mesurée : la zone semblerait mal peinte là où elle n'a plus de
+           texte. `box_h == 0` (écriture LIBRE, `text_draw`) garde l'ancien
+           comportement : sans boîte auteure à reboucher, rien à
+           sur-préparer. */
         int w = 1, h = 1;
         text_layout(s, slen, tx, ty, wrap, n, 1, align, &w, &h);
+        if (box_h > 0) {
+            if (wrap > 0) w = wrap;
+            h = box_h;
+        }
         text_surf_prepare(tx, ty, w, h);
     }
     text_layout(s, slen, tx, ty, wrap, n, 0, align, 0, 0);
@@ -1960,7 +2114,7 @@ static void text_render_cp(const unsigned short *s, int slen,
        d'origine de la police — la variante 0. */
     g_var_cur = 0;
     g_zone_ink = 0;
-    text_render_cp_al(s, slen, tx, ty, wrap, n, TEXT_ALIGN_LEFT);
+    text_render_cp_al(s, slen, tx, ty, wrap, n, TEXT_ALIGN_LEFT, 0);
 }
 
 static void text_render(int id, int tx, int ty, int wrap, int n) {
@@ -2041,23 +2195,54 @@ typedef struct TextRead {
        là où il EST avant de le reposer ailleurs, la caméra ayant bougé entre
        les deux. Inutilisé en ancrage écran, où l'origine ne change pas. */
     short sx, sy;
+    /* Dernière visibilité EFFECTIVE connue de cette zone (cf. `ui_element_
+       is_visible`) — posée par `text_draw_in` et par le balayage de
+       `ui_element_show`. Sert à ne redessiner/effacer QUE ce qui a
+       réellement changé quand un panel ancêtre bascule. */
+    unsigned char last_visible;
 } TextRead;
 
 static TextRead g_reads[TEXT_READ_MAX];
 static int      g_reads_init = 0;
+
+/* ── Visibilité des éléments d'interface ────────────────────────────
+   État MUTABLE, propre bit de chaque élément — le seul que `ui_element_show`
+   écrit. La visibilité EFFECTIVE (cf. `ui_element_is_visible`) n'est jamais
+   stockée : elle se recalcule à la lecture en remontant `g_ui_elements[].
+   parent`, jusqu'à la racine. */
+static unsigned char g_ui_element_vis[UI_ELEMENT_MAX];
+
+void ui_elements_reset(void) {
+    int n = g_ui_element_count < UI_ELEMENT_MAX ? g_ui_element_count : UI_ELEMENT_MAX;
+    for (int i = 0; i < n; i++) g_ui_element_vis[i] = g_ui_elements[i].visible;
+}
+
+int ui_element_is_visible(int idx) {
+    /* `guard` borne la remontée : une chaîne de parents corrompue (donnée
+       externe, jamais censée arriver) ne doit pas tourner en boucle infinie
+       sur du matériel sans protection mémoire. */
+    for (int guard = 0; idx >= 0 && idx < UI_ELEMENT_MAX && guard < UI_ELEMENT_MAX; guard++) {
+        if (!g_ui_element_vis[idx]) return 0;
+        idx = (idx < g_ui_element_count) ? g_ui_elements[idx].parent : -1;
+    }
+    return 1;
+}
 
 /* Vide le rectangle d'une zone posée à une origine DONNÉE.
 
    L'origine est un paramètre plutôt que `R->x`/`R->y` : après un déplacement de
    caméra, une zone ancrée monde doit s'effacer là où le texte EST, sinon on
    gomme du décor et on laisse une traînée. */
-static void text_clear_region_at(const UIRegionInfo *R, int ox, int oy) {
+static void text_clear_region_at(const UIRegionInfo *R, int r, int ox, int oy) {
     /* Fond de la zone le temps de l'effacement : sans lui, `text_clear`
-       remettrait du transparent au lieu de la couleur du panel. */
+       remettrait du transparent au lieu de la couleur du panel — ou, sous un
+       panel nine-slice/background, plutôt que le cadre en dessous. */
     int w = R->w >> 3, h = R->h >> 3;
     g_ui_fill_bg = R->bg_fill;
+    g_ui_backdrop = text_region_backdrop(r);
     text_clear(ox >> 3, oy >> 3, w > 0 ? w : 1, h > 0 ? h : 1);
     g_ui_fill_bg = -1;
+    g_ui_backdrop = 0;
 }
 
 static void text_render_region_cp(const unsigned short *s, int slen,
@@ -2086,10 +2271,13 @@ static void text_render_region_cp(const unsigned short *s, int slen,
        zone ancrée monde se coupe sur elle-même, pas sur sa position de départ. */
     text_clip_set(ox, oy, R->w, R->h);
     /* Fond de la zone le temps du rendu : la surface se compose sur cette
-       couleur (cf. text_surf_prepare/text_clear), puis on la remet à -1. */
+       couleur — ou, sous un panel nine-slice/background, sur ces tuiles
+       (cf. text_surf_prepare/text_clear) — puis on remet les deux à vide. */
     g_ui_fill_bg = R->bg_fill;
-    text_render_cp_al(s, slen, ox >> 3, oy >> 3, R->w >> 3, n, R->align);
+    g_ui_backdrop = text_region_backdrop(r);
+    text_render_cp_al(s, slen, ox >> 3, oy >> 3, R->w >> 3, n, R->align, R->h >> 3);
     g_ui_fill_bg = -1;
+    g_ui_backdrop = 0;
 }
 
 static void text_render_region(int id, int r, int n) {
@@ -2158,6 +2346,18 @@ void text_draw_in(int r, int id) {
     if (r >= 0 && r < TEXT_READ_MAX && g_reads[r].active && g_reads[r].id == id)
         return;
     text_read_reset(r);
+    /* Visible ? Si non, rien ne se pose à l'écran — mais le CONTENU est
+       quand même retenu (au moins pour les TEXT_READ_MAX premières zones,
+       cf. `ui_element_show`) : c'est ce qui permet à `self:show()` de
+       révéler exactement ce qui aurait dû s'afficher, sans qu'un script
+       ait à rappeler `text.draw_in` après coup. */
+    int elem = (r >= 0) ? g_ui_regions[r].elem : -1;
+    int vis  = ui_element_is_visible(elem);
+    if (r >= 0 && r < TEXT_READ_MAX) {
+        g_reads[r].id = (short)id;
+        g_reads[r].last_visible = (unsigned char)vis;
+    }
+    if (!vis) return;
     if (r >= TEXT_READ_MAX || !text_has_tempo(e, ne)) {
         text_render_region(id, r, -1);
         return;
@@ -2166,7 +2366,7 @@ void text_draw_in(int r, int id) {
        sur le texte ENTIER (cf. text_layout) — révéler n'est qu'un masque, donc
        aucune ligne ne saute pendant que le texte s'écrit. */
     TextRead *R = &g_reads[r];
-    R->id = (short)id; R->n = 0; R->len = (short)len;
+    R->n = 0; R->len = (short)len;
     R->speed = 1; R->active = 1;
     R->wait  = (short)text_tempo_at(e, ne, 0, &R->speed);
     text_render_region(id, r, 0);
@@ -2196,18 +2396,23 @@ void text_update(void) {
     for (int r = 0; r < TEXT_READ_MAX; r++) {
         TextRead *R = &g_reads[r];
         if (R->id < 0) continue;
+        const UIRegionInfo *RI = &g_ui_regions[r];
+        /* Caché (soi-même ou par un ancêtre) : la lecture et le suivi d'ancre
+           sont en PAUSE, pas annulés — `ui_element_show` reprend exactement là
+           où c'était resté, via `text_hide_region_visual`/le balayage qui
+           l'accompagne. Rien à effacer ici, c'est déjà fait (ou jamais posé). */
+        if (!ui_element_is_visible(RI->elem)) continue;
         const unsigned short *s; const TextEvent *e; int ne;
         text_materialize(R->id, &s, &e, &ne);
         /* Une zone ANCRÉE (monde ou acteur) suit son ancre. Redessin seulement
            quand l'ancre a bougé, donc une bulle immobile ne coûte rien.
            Cible BG, effacer d'abord à l'ANCIENNE origine : les tuiles déjà
            écrites ne s'en vont pas seules. En OBJ, reposer les sprites suffit. */
-        const UIRegionInfo *RI = &g_ui_regions[r];
         int ox, oy;
         text_region_origin(RI, &ox, &oy);
         int moved = RI->anchor != 0 && (ox != R->sx || oy != R->sy);
         if (moved && RI->target == 0)
-            text_clear_region_at(RI, R->sx, R->sy);
+            text_clear_region_at(RI, r, R->sx, R->sy);
         if (R->active) {
             if (R->wait > 0) R->wait--;
             /* `while` et non `if` : [speed=0] révèle tout d'un trait, ce qui
@@ -2389,18 +2594,11 @@ static void text_render_obj(const unsigned short *s, int slen,
     (void)strip_slots;
 }
 
-/* Vide une zone, quelle que soit sa cible — le pendant exact de `text_draw_in`.
-
-   La cible ne doit PAS remonter jusqu'à l'auteur : il a dessiné une zone, il
-   l'efface. Que ce soit une bande de sprites à masquer ou des tuiles de BG à
-   remettre à zéro est une conséquence de l'ancrage qu'il a choisi, et lui faire
-   choisir la primitive selon la cible reviendrait à lui demander de refaire ce
-   calcul à chaque fois qu'il déplace une zone. */
-void text_clear_in(int r) {
-    /* Vider, c'est aussi annuler la lecture : sans ça `text_update` la
-       redessinerait à la frame suivante, et la zone se remplirait toute
-       seule après avoir été effacée. */
-    text_read_reset(r);
+/* Efface VISUELLEMENT une zone (bande OAM ou tuiles BG) SANS toucher à la
+   lecture — contrairement à `text_clear_in`. C'est ce qui permet à
+   `ui_element_show` de cacher puis remontrer la même zone : son contenu
+   (`g_reads[r].id`) reste connu pendant qu'elle est invisible. */
+static void text_hide_region_visual(int r) {
     const UIRegionInfo *R = &g_ui_regions[r];
 
     /* La zone peut imposer sa police, et l'effacement en DÉPEND : une police
@@ -2429,7 +2627,56 @@ void text_clear_in(int r) {
        que `text_render_region_cp`. */
     int ox, oy;
     text_region_origin(R, &ox, &oy);
-    text_clear_region_at(R, ox, oy);
+    text_clear_region_at(R, r, ox, oy);
+}
+
+/* Vide une zone, quelle que soit sa cible — le pendant exact de `text_draw_in`.
+
+   La cible ne doit PAS remonter jusqu'à l'auteur : il a dessiné une zone, il
+   l'efface. Que ce soit une bande de sprites à masquer ou des tuiles de BG à
+   remettre à zéro est une conséquence de l'ancrage qu'il a choisi, et lui faire
+   choisir la primitive selon la cible reviendrait à lui demander de refaire ce
+   calcul à chaque fois qu'il déplace une zone. */
+void text_clear_in(int r) {
+    /* Vider, c'est aussi annuler la lecture : sans ça `text_update` la
+       redessinerait à la frame suivante, et la zone se remplirait toute
+       seule après avoir été effacée. Contrairement à `ui_element_show(idx,
+       0)`, on ne cherche PAS à se souvenir du contenu : l'auteur a demandé
+       à vider, pas à cacher temporairement. */
+    text_read_reset(r);
+    text_hide_region_visual(r);
+}
+
+/* self:show() / self:hide() — bascule le bit PROPRE de l'élément, puis
+   resynchronise les zones de texte dont la visibilité EFFECTIVE en dépend
+   (cf. `ui_element_sync_text`). Les images n'ont rien à resynchroniser ici :
+   `ui_image_update` consulte `ui_element_is_visible` à CHAQUE frame, la
+   cascade s'y résout donc d'elle-même, avec au plus une frame de latence —
+   comme `ui_image_play` avant elle. */
+static void ui_element_sync_text(void) {
+    int n = g_ui_region_count < TEXT_READ_MAX ? g_ui_region_count : TEXT_READ_MAX;
+    for (int r = 0; r < n; r++) {
+        const UIRegionInfo *R = &g_ui_regions[r];
+        int vis = ui_element_is_visible(R->elem);
+        if (vis == g_reads[r].last_visible) continue;   /* pas concernée */
+        g_reads[r].last_visible = (unsigned char)vis;
+        if (vis) {
+            /* Rien n'a jamais été dessiné ici (id encore -1) : aucune
+               reveal à faire, `text_draw_in` s'en chargera le jour où un
+               script (ou scene_init) y écrit quelque chose. */
+            if (g_reads[r].id >= 0)
+                text_render_region(g_reads[r].id, r,
+                                   g_reads[r].active ? g_reads[r].n : -1);
+        } else {
+            text_hide_region_visual(r);
+        }
+    }
+}
+
+void ui_element_show(int idx, int on) {
+    if (idx < 0 || idx >= UI_ELEMENT_MAX) return;
+    g_ui_element_vis[idx] = on ? 1 : 0;
+    ui_element_sync_text();
 }
 
 /* ── Chiffres ─────────────────────────────────────────────────────
@@ -2480,7 +2727,10 @@ typedef struct UIImageState {
     unsigned char frame;    /* index ABSOLU de frame dans le sheet */
     unsigned char timer;    /* ticks depuis la dernière frame */
     unsigned char playing;
-    unsigned char visible;
+    /* Plus de bit `visible` ici : la visibilité vient de `g_ui_element_vis`
+       via `I->elem` (cf. `ui_element_is_visible`), une seule fois pour les
+       trois types d'élément — ce champ dupliquait ce que `self:hide()`
+       écrit maintenant ailleurs. */
     short         bg_base;  /* cible BG : 1re tuile dans le charblock d'UI */
     short         sx, sy;   /* dernière origine écran dessinée (cible BG) */
     unsigned char drawn;    /* 1 = des tuiles sont posées à (sx, sy) */
@@ -2521,7 +2771,6 @@ void ui_images_reset(void) {
         g_ui_img[i].frame   = (unsigned char)fs;
         g_ui_img[i].timer   = 0;
         g_ui_img[i].playing = I ? I->playing : 0;
-        g_ui_img[i].visible = 1;
         g_ui_img[i].bg_base = 0;
         g_ui_img[i].bank = 0;
         g_ui_img[i].sx = g_ui_img[i].sy = 0;
@@ -2633,13 +2882,20 @@ void ui_image_update(void) {
             }
         }
 
+        /* Visibilité EFFECTIVE (soi-même ET tous les ancêtres) — consultée
+           CHAQUE frame, donc une image dont le panel parent bascule suit
+           sans qu'aucune propagation n'ait eu à s'écrire au moment du
+           `self:hide()`. Au plus une frame de latence, comme `ui_image_
+           play` avant elle. */
+        int visible = ui_element_is_visible(I->elem);
+
         int sx, sy;
         ui_image_origin(I, &sx, &sy);
 
         if (I->target == 0) {
             /* Cible BG : n'écrire que si quelque chose a CHANGÉ. Une icône de
                HUD figée ne coûte alors pas une seule écriture par frame. */
-            if (!S->visible) {
+            if (!visible) {
                 if (S->drawn) { ui_image_clear_bg(I, S->sx, S->sy); S->drawn = 0; }
                 continue;
             }
@@ -2670,7 +2926,7 @@ void ui_image_update(void) {
                 for (int cx = 0; cx < cols; cx++) {
                     int slot = g_obj_oam_base + I->oam_rel + cy * cols + cx;
                     if (slot < 0 || slot >= 128) continue;
-                    if (!S->visible) { shadow_oam[slot].attr0 = 0x0200; continue; }
+                    if (!visible) { shadow_oam[slot].attr0 = 0x0200; continue; }
                     int px = sx + cx * I->w, py = sy + cy * I->h;
                     shadow_oam[slot].attr0 = (u16)((py & 0xFF)
                                            | (ui_image_shape(I->w, I->h) << 14));
@@ -2682,19 +2938,6 @@ void ui_image_update(void) {
                 }
             }
         }
-    }
-}
-
-void ui_image_show(int img, int on) {
-    if (img < 0 || img >= UI_IMAGE_MAX) return;
-    g_ui_img[img].visible = on ? 1 : 0;
-    /* Le masquage OBJ tombe au prochain `ui_image_update` ; en BG il faut
-       effacer, et le faire ICI plutôt qu'au tick évite qu'une image cachée
-       reste à l'écran une frame de plus. */
-    if (img < g_ui_image_count && g_ui_images[img].target == 0
-        && !on && g_ui_img[img].drawn) {
-        ui_image_clear_bg(&g_ui_images[img], g_ui_img[img].sx, g_ui_img[img].sy);
-        g_ui_img[img].drawn = 0;
     }
 }
 

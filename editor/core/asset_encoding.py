@@ -62,6 +62,37 @@ def encode_sprite_asset(sprite: "SpriteAsset", png_path: Path, method: str = Non
     return warning
 
 
+def resync_sprite_png(project, png_path: Path) -> Optional[str]:
+    """La planche d'un sprite EXISTANT a changé sur le disque : recalculer ses
+    palettes depuis les nouveaux pixels. Pendant de `resync_background_png`.
+
+    Moins grave qu'un fond — le build fait relire le PNG par grit, donc la ROM
+    est juste — mais l'éditeur affichait, lui, les anciennes couleurs : aperçu
+    d'acteur, coût en palettes, allocation de banques. Tout ce que l'auteur a
+    dessiné (découpe en frames, états, directions, miroirs) ne dépend pas des
+    couleurs et reste intact ; `apply_sprite_encoding` ne touche qu'aux
+    palettes."""
+    sprite = project.sprites.get(png_path.stem)
+    if sprite is None:
+        return None
+    before = len(sprite.palettes)
+    pal_overrides = dict(sprite.palette_overrides)
+    try:
+        warning = encode_sprite_asset(sprite, png_path)
+    except Exception as e:
+        return f"“{sprite.name}”: image could not be re-read ({e})."
+    sprite.source_stamp = file_stamp(png_path)
+    if len(sprite.palettes) == before:
+        # Autant de sous-palettes qu'avant : les renvois au catalogue visent
+        # toujours les mêmes, on les garde.
+        sprite.palette_overrides = pal_overrides
+    project.sprites.save(sprite)
+    if pal_overrides and len(sprite.palettes) != before:
+        return (f"“{sprite.name}”: palette count changed, "
+                f"{len(pal_overrides)} palette link(s) could not be kept.")
+    return warning
+
+
 def remove_sprite_png(project, png_path: Path):
     """PNG supprimé de assets/sprites/ : suppression différée du JSON."""
     sprite = project.sprites.get(png_path.stem)
@@ -235,6 +266,64 @@ def sync_background_png(project, png_path: Path) -> Optional[str]:
     return None
 
 
+def resync_background_png(project, png_path: Path) -> Optional[str]:
+    """Le PNG d'un fond EXISTANT a changé sur le disque : recalculer sa
+    compression depuis les nouveaux pixels.
+
+    `sync_background_png` ne touche pas à un asset déjà connu (c'est sa règle :
+    ne jamais écraser un import), et `reconcile_backgrounds` ne rattrape que les
+    sidecars SANS tileset. Un fond retouché gardait donc ses anciennes tuiles
+    pour toujours — à l'écran ET dans la ROM, puisque le build lit `ba.tileset`
+    et non le PNG.
+
+    Les choix de l'utilisateur sont conservés : `encode_background_asset` ne
+    re-détecte pas le mode, et le `kind`, le rôle UI, les marges de découpe et
+    les animations ne dépendent pas des pixels. Les repeints par tuile, eux,
+    sont indexés par (colonne, ligne) : ils ne survivent que si la géométrie n'a
+    pas bougé — sinon ils désigneraient d'autres tuiles que celles peintes.
+
+    Renvoie un avertissement si des repeints ont dû être abandonnés, None sinon.
+    """
+    ba = project.backgrounds.get(png_path.stem)
+    if ba is None:
+        return None
+    before = (ba.tiles_w, ba.tiles_h, len(ba.palettes))
+    tile_overrides = dict(ba.tile_palette_overrides)
+    pal_overrides = dict(ba.palette_overrides)
+
+    encode_background_asset(ba, png_path)
+    ba.source_stamp = file_stamp(png_path)
+
+    same_geometry = (ba.tiles_w, ba.tiles_h, len(ba.palettes)) == before
+    if same_geometry:
+        # Simple retouche : les repeints désignent toujours les mêmes tuiles.
+        ba.tile_palette_overrides = tile_overrides
+        ba.palette_overrides = pal_overrides
+    project.backgrounds.save(ba)
+
+    dropped = len(tile_overrides) + len(pal_overrides)
+    if dropped and not same_geometry:
+        return (f"“{ba.name}”: image geometry changed, {dropped} palette "
+                f"repaint(s) could not be kept.")
+    return None
+
+
+def file_stamp(path: Path) -> str:
+    """Empreinte d'un fichier : sa taille et le hachage de son contenu.
+
+    On lit les octets plutôt que de se fier à la date : le sidecar est réécrit
+    à chaque sauvegarde du projet — il est donc presque toujours plus récent que
+    son image, ce qui rendrait toute comparaison de dates aveugle — et un
+    logiciel de dessin peut reposer l'ancienne date en enregistrant. Les images
+    d'un fond tiennent dans un écran GBA : les relire ne coûte rien."""
+    import hashlib
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return ""
+    return f"{len(data)}:{hashlib.sha1(data).hexdigest()[:16]}"
+
+
 def apply_bg_encoding(ba: "BackgroundAsset", source_name: str, c: dict):
     """Applique un résultat de compression (dict de bg_import.encode_background)
     à un BackgroundAsset. Séparé du calcul pour permettre une compression
@@ -306,39 +395,61 @@ def encode_background_asset(ba: "BackgroundAsset", png_path: Path, method: str =
 def reconcile_backgrounds(project):
     """(1) PNG déposés hors éditeur dans assets/backgrounds/ → crée le
     BackgroundAsset + sa compression. (2) Fonds dont le sidecar existe sans
-    tileset → compression recalculée depuis le PNG."""
+    tileset → compression recalculée depuis le PNG. (3) Fonds dont le PNG a été
+    RETOUCHÉ éditeur fermé → compression refaite depuis les nouveaux pixels."""
     d = project.background_images_dir
     for f in (sorted(d.glob("*")) if d.exists() else []):
         if f.is_file() and f.suffix.lower() in (".png", ".bmp"):
             sync_background_png(project, f)
     for ba in list(project.backgrounds):
-        if ba.tileset:
-            continue
         img = ba.image_name()
         ap = project.background_images_dir / img if img else None
-        if ap and ap.exists():
+        if not (ap and ap.exists()):
+            continue
+        if not ba.tileset and ba.mode != "bitmap":
             encode_background_asset(ba, ap)
+            ba.source_stamp = file_stamp(ap)
             if ba.tileset:
                 project.backgrounds.save(ba)
+        elif ba.source_stamp != file_stamp(ap):
+            # Le watcher ne voit que ce qui bouge pendant que l'éditeur tourne ;
+            # une retouche faite à côté ne serait vue par personne, et le fond
+            # resterait périmé à l'écran ET dans la ROM sans que rien ne le dise.
+            #
+            # Empreinte vide = asset antérieur à ce champ : on ré-encode une
+            # fois pour reprendre pied. C'est sans effet si l'image n'a pas
+            # bougé (l'encodage est déterministe), et ça répare justement les
+            # fonds déjà périmés au moment où cette version arrive.
+            resync_background_png(project, ap)
 
 
 def reconcile_sprites(project):
-    """Sprites dont le sidecar existe sans PAL_BANK → encodage recalculé depuis
-    le PNG source. Pendant du point (2) de `reconcile_backgrounds` : c'est le cas
-    du sprite créé par `sync_sprite_png` alors que son encodage avait échoué —
-    l'exception y est avalée (tâche de fond watcher), la réparation est ici."""
+    """(1) Sprites dont le sidecar existe sans PAL_BANK → encodage recalculé
+    depuis le PNG source : c'est le cas du sprite créé par `sync_sprite_png`
+    alors que son encodage avait échoué — l'exception y est avalée (tâche de
+    fond watcher), la réparation est ici. (2) Sprites dont la planche a été
+    RETOUCHÉE éditeur fermé → palettes refaites depuis les nouveaux pixels.
+
+    Pendant de `reconcile_backgrounds`, aux mêmes conditions d'empreinte."""
     for sp in list(project.sprites):
-        if sp.palettes or not sp.asset:
+        if not sp.asset:
             continue
         ap = project.asset_abs(sp.asset)
         if not ap or not ap.exists():
             continue
-        try:
-            from core.sprite_import import encode_sprite
-            apply_sprite_encoding(sp, encode_sprite(ap, sp.quantize_method))
-            project.sprites.save(sp)
-        except Exception:
-            pass
+        if not sp.palettes:
+            try:
+                from core.sprite_import import encode_sprite
+                apply_sprite_encoding(sp, encode_sprite(ap, sp.quantize_method))
+                sp.source_stamp = file_stamp(ap)
+                project.sprites.save(sp)
+            except Exception:
+                pass
+        elif sp.source_stamp != file_stamp(ap):
+            # Empreinte vide = sprite antérieur au champ : on ré-encode une fois
+            # pour reprendre pied (sans effet si la planche n'a pas bougé,
+            # l'encodage étant déterministe).
+            resync_sprite_png(project, ap)
 
 
 def reconcile_sfx_and_music(project):

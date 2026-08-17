@@ -211,7 +211,7 @@ class CameraInspector(QWidget):
 
         layout.addWidget(self._follow_group)
 
-        # ── Bornes du monde ───────────────────────────────────────
+        # ── Bornes du monde (rect : origine + taille) ──────────────
         layout.addWidget(_section_label("World bounds (0 = unlimited):"))
         bounds_row = QHBoxLayout()
         bounds_row.setSpacing(10)
@@ -224,15 +224,40 @@ class CameraInspector(QWidget):
             spin = QSpinBox()
             spin.setFont(QFont(T.MONO, T.MD))
             spin.setStyleSheet(QSS.spinbox)
-            spin.setRange(0, 32760)
+            # Bornes monde jusqu'à 32767 (s16) → scroll caméra max = 32767 -
+            # screen.width (32527 en X, 32607 en Y).
+            spin.setRange(0, 32767)
             spin.setSingleStep(8)
             setattr(self, attr, spin)
             col.addWidget(spin)
             bounds_row.addLayout(col)
         bounds_row.addStretch()
         layout.addLayout(bounds_row)
+        origin_row = QHBoxLayout()
+        origin_row.setSpacing(10)
+        for label, attr in (("Origin X:", "_bounds_x"), ("Origin Y:", "_bounds_y")):
+            col = QVBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFont(QFont(T.UI, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+            col.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setFont(QFont(T.MONO, T.MD))
+            spin.setStyleSheet(QSS.spinbox)
+            # Origine de la zone scrollable — 0 = le monde commence au bord de
+            # l'écran. Presque toujours 0, exposé pour rester cohérent avec le
+            # rect camera.bound du script.
+            spin.setRange(0, 32767)
+            spin.setSingleStep(8)
+            setattr(self, attr, spin)
+            col.addWidget(spin)
+            origin_row.addLayout(col)
+        origin_row.addStretch()
+        layout.addLayout(origin_row)
         self._bounds_w.valueChanged.connect(self._on_bounds_changed)
         self._bounds_h.valueChanged.connect(self._on_bounds_changed)
+        self._bounds_x.valueChanged.connect(self._on_bounds_changed)
+        self._bounds_y.valueChanged.connect(self._on_bounds_changed)
 
         self._btn_recalc = QPushButton("Recompute from backgrounds")
         self._btn_recalc.setFont(QFont(T.UI, T.SM))
@@ -246,7 +271,7 @@ class CameraInspector(QWidget):
 
         bounds_info = QLabel(
             "Applied when the camera is activated. A script can redefine them "
-            "afterwards with camera.set_bounds."
+            "afterwards with camera.bound = rect(x, y, w, h)."
         )
         bounds_info.setFont(QFont(T.UI, T.XS))
         bounds_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -283,7 +308,8 @@ class CameraInspector(QWidget):
         # Tout ce qui n'a de sens qu'avec une caméra RÉELLE.
         self._editors = (
             self._mode_combo, self._follow_group, self._margin_x, self._margin_y,
-            self._bounds_w, self._bounds_h, self._btn_recalc, self._script_slot,
+            self._bounds_w, self._bounds_h, self._bounds_x, self._bounds_y,
+            self._btn_recalc, self._script_slot,
             self._ed_name,
         )
 
@@ -354,6 +380,8 @@ class CameraInspector(QWidget):
             self._margin_y.setValue(cam.margin_y if cam else 20)
             self._bounds_w.setValue((cam.bounds_w if cam else 0) or 0)
             self._bounds_h.setValue((cam.bounds_h if cam else 0) or 0)
+            self._bounds_x.setValue((cam.bounds_x if cam else 0) or 0)
+            self._bounds_y.setValue((cam.bounds_y if cam else 0) or 0)
             self._update_position_labels()
 
             script = (cam.script if cam else "") or ""
@@ -449,6 +477,8 @@ class CameraInspector(QWidget):
             return
         cam.bounds_w = self._bounds_w.value() or None
         cam.bounds_h = self._bounds_h.value() or None
+        cam.bounds_x = self._bounds_x.value() or None
+        cam.bounds_y = self._bounds_y.value() or None
         self._commit(refresh=False)
 
     def _recalc_bounds(self):
@@ -466,6 +496,8 @@ class CameraInspector(QWidget):
             QMessageBox.warning(self, "World bounds", f"Could not read dimensions of '{ref.background_name}'.")
             return
         w, h = size
+        self._bounds_x.setValue(0)
+        self._bounds_y.setValue(0)
         self._bounds_w.setValue(w)
         self._bounds_h.setValue(h)
         # setValue déclenche déjà _on_bounds_changed via valueChanged.

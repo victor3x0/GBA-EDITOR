@@ -10,22 +10,16 @@ from ui.common.theme import C
 
 _TOOLTIPS = {
     "collision.solid":              ("self.collision.solid",
-                                     "true → résolution physique.\n"
-                                     "false → trigger (onTriggerEnter/Exit)."),
+                                     "true → arrêté par la carte de collision.\n"
+                                     "false → trigger : la carte l'ignore.\n"
+                                     "Les handlers on_collision_* se déclenchent\n"
+                                     "dans les deux cas."),
     "collision.tag":                ("self.collision.tag",
                                      "Label identifiant ce collider. Ex : 'body', 'sword_hitbox'."),
     "collision.x":                  ("self.collision.x", "Décalage horizontal de la hitbox (px)."),
     "collision.y":                  ("self.collision.y", "Décalage vertical de la hitbox (px)."),
     "collision.w":                  ("self.collision.width",  "Largeur AABB (px)."),
     "collision.h":                  ("self.collision.height", "Hauteur AABB (px)."),
-    "collision.on_collision_enter": ("function onCollisionEnter(other_id)",
-                                     "Appelée quand un actor SOLIDE entre en contact."),
-    "collision.on_collision_exit":  ("function onCollisionExit(other_id)",
-                                     "Appelée quand le contact avec un actor solide est rompu."),
-    "collision.on_trigger_enter":   ("function onTriggerEnter(other_id)",
-                                     "Appelée quand un actor entre dans la zone trigger."),
-    "collision.on_trigger_exit":    ("function onTriggerExit(other_id)",
-                                     "Appelée quand un actor quitte la zone trigger."),
 }
 
 def _tip(w, key):
