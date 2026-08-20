@@ -68,16 +68,33 @@ def transpile_all(
     precomputed_const_names: list[str] | None = None,
     compiled_prefabs: set[str] | None = None,
     compiled_cameras: set[str] | None = None,
+    sound_assets: dict | None = None,
 ) -> bool:
     """
     Compile tous les scripts Lua de la scène en C.
 
     Retourne False si une erreur bloquante est trouvée.
     """
-    sfx_names   = [s.name for s in p.sfx]   if hasattr(p, "sfx")   else []
-    sfx_volumes = {s.name: getattr(s, "volume", 255) for s in p.sfx} if hasattr(p, "sfx") else {}
-    music_names = [m.name for m in p.music] if hasattr(p, "music") else []
-    music_info  = ({m.name: (getattr(m, "loop", True), getattr(m, "volume", 255)) for m in p.music}
+    # L'ORDRE fait foi ici aussi, mais il ne nous appartient PAS : c'est mmutil
+    # qui numérote les sons, dans l'ordre où le build les lui passe. `SFX_X` et
+    # `MUSIC_X` doivent donc être des rangs dans les listes RÉELLEMENT émises
+    # (`sound_assets`), jamais dans le catalogue du projet.
+    #
+    # Le piège s'est refermé le jour où le build a cessé de tout émettre : tant
+    # que les 105 musiques partaient dans l'ordre du projet, les deux
+    # numérotations coïncidaient par accident et `music.play` fonctionnait.
+    # Filtrer sur ce qui est référencé a désaligné les deux, sans qu'aucun
+    # symbole ne manque — la ROM compilait et jouait le mauvais module.
+    if sound_assets is not None:
+        sfx_items   = [s for s, _ in sound_assets.get("sfx", [])]
+        music_items = [m for m, _ in sound_assets.get("music", [])]
+    else:
+        sfx_items   = list(getattr(p, "sfx", []))
+        music_items = list(getattr(p, "music", []))
+    sfx_names   = [s.name for s in sfx_items]
+    sfx_volumes = {s.name: getattr(s, "volume", 100) for s in sfx_items}
+    music_names = [m.name for m in music_items]
+    music_info  = ({m.name: (getattr(m, "loop", True), getattr(m, "volume", 100)) for m in p.music}
                    if hasattr(p, "music") else {})
     # Textes et polices : l'ORDRE fait foi (il devient l'index dans les tables C
     # émises par main_gen). project_fonts() est la source unique côté polices.
@@ -109,6 +126,24 @@ def transpile_all(
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
     _camera_names = [c.name for c in getattr(p, "cameras", [])]
+    # Une famille, un espace de noms — depuis que les trois boîtes sont trois
+    # assets, rien n'oblige leurs états à se distinguer entre familles.
+    from core.models.sound_box import KIND_SOUND, KIND_JINGLE
+    _snd_names = (p.sound_state_names(KIND_SOUND)
+                  if hasattr(p, "sound_state_names") else [])
+    _jgl_names = (p.sound_state_names(KIND_JINGLE)
+                  if hasattr(p, "sound_state_names") else [])
+    _snd_triggers = p.sound_trigger_names() if hasattr(p, "sound_trigger_names") else []
+    # Le rang d'un état est celui qu'il occupe DANS SA boîte — c'est ce que les
+    # tables C indexent.
+    _trigger_index = {n: i for i, n in enumerate(_snd_triggers)}
+    _snd_index: dict = {}
+    _jgl_index: dict = {}
+    for _store, _index in ((getattr(p, "sound_boxes", []), _snd_index),
+                           (getattr(p, "jingle_boxes", []), _jgl_index)):
+        for _b in sorted(_store, key=lambda b: b.name):
+            for _i, _st in enumerate(_b.states):
+                _index.setdefault(_st.name, _i)
     # Les prefabs sont poolés au niveau PROJET : `actor.spawn("X")` vise la
     # liste entière, pas ce que la scène courante contient.
     _prefab_names = [pf.name for pf in prefabs]
@@ -171,6 +206,9 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            sound_box_state_names   = _snd_names,
+            jingle_box_state_names  = _jgl_names,
+            music_box_trigger_names = _snd_triggers,
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
@@ -207,6 +245,9 @@ def transpile_all(
                 music_names  = music_names,
                 scene_names  = _scene_names,
                 camera_names = _camera_names,
+                sound_box_state_names   = _snd_names,
+                jingle_box_state_names  = _jgl_names,
+                music_box_trigger_names = _snd_triggers,
                 actor_names  = _actor_names,
             prefab_names = _prefab_names,
                 global_names = list(global_names) if global_names else None,
@@ -251,6 +292,9 @@ def transpile_all(
             sfx_autoplay  = sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            sound_box_states   = _snd_index,
+            jingle_box_states  = _jgl_index,
+            music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
             palette_names = palette_names,
@@ -300,6 +344,9 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            sound_box_state_names   = _snd_names,
+            jingle_box_state_names  = _jgl_names,
+            music_box_trigger_names = _snd_triggers,
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
@@ -334,6 +381,9 @@ def transpile_all(
             sfx_autoplay  = pf_sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            sound_box_states   = _snd_index,
+            jingle_box_states  = _jgl_index,
+            music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
             palette_names = palette_names,
@@ -381,6 +431,9 @@ def transpile_all(
             scene_names   = _scene_names,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            sound_box_states   = _snd_index,
+            jingle_box_states  = _jgl_index,
+            music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
             palette_names = palette_names,
@@ -424,6 +477,9 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            sound_box_state_names   = _snd_names,
+            jingle_box_state_names  = _jgl_names,
+            music_box_trigger_names = _snd_triggers,
             # Aucun `actor_names` : une caméra est réutilisable entre scènes et
             # les noms d'acteurs y sont locaux. Citer un acteur depuis une
             # caméra marcherait dans une scène et pas dans la suivante — le
@@ -459,6 +515,9 @@ def transpile_all(
             scene_names   = _scene_names,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
+            sound_box_states   = _snd_index,
+            jingle_box_states  = _jgl_index,
+            music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
             palette_names = palette_names,

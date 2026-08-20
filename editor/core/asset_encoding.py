@@ -12,6 +12,60 @@ from typing import Optional
 
 from core.models.background import BackgroundAsset
 from core.models.sprite import SpriteAsset
+from core.models.audio import MUSIC_FILE_EXTS, SFX_FILE_EXTS, WAV_BITS_OK
+
+
+def check_audio_file(path) -> Optional[str]:
+    """None si le fichier est utilisable, sinon la raison du refus, rédigée
+    pour être affichée telle quelle à l'auteur.
+
+    Ce contrôle n'est pas une ceinture de plus : c'est le SEUL. mmutil ne
+    renvoie jamais un code d'erreur — ni sur un wav 24 bits (dont il émet
+    quand même la constante, donc un effet muet dans la ROM), ni sur une
+    extension inconnue. S'il n'y a pas de refus ici, il n'y en a nulle part.
+
+    Appelé à l'import ET par le validateur, parce que le ProjectWatcher
+    ramasse aussi les fichiers déposés à la main dans assets/.
+    """
+    from pathlib import Path
+    path = Path(path)
+    ext = path.suffix.lower()
+
+    if ext in MUSIC_FILE_EXTS:
+        # Le contenu décide, pas l'extension : c'est la règle de la v0.8.1, et
+        # elle vaut d'autant plus avec quatre formats — un `.xm` renommé `.mod`
+        # se joue très bien, et un `.mod` qui n'en est pas un doit se refuser
+        # ici, puisque mmutil ne dira jamais non.
+        from core.engine_emulation.module_model import load_module
+        try:
+            mod = load_module(path)
+        except ValueError as e:
+            return f"{e} — l'extension dit « {ext[1:]} », le contenu non."
+        except Exception as e:
+            return f"module illisible ({e})."
+        if not mod.order:
+            return "module sans table d'ordre — aucun motif à jouer."
+        if not any(s.data.size for s in mod.samples):
+            return "module sans aucun échantillon — il ne rendrait aucun son."
+        return None
+
+    if ext == ".wav":
+        import wave
+        try:
+            with wave.open(str(path)) as w:
+                bits = w.getsampwidth() * 8
+        except wave.Error as e:
+            return (f"WAV non reconnu ({e}). Il faut du PCM non compressé, "
+                    f"8 ou 16 bits.")
+        except Exception as e:
+            return f"lecture impossible ({e})."
+        if bits not in WAV_BITS_OK:
+            return (f"WAV {bits} bits : mmutil ne convertit que 8 et 16 bits. "
+                    f"Il construirait la ROM sans le dire, avec un effet muet.")
+        return None
+
+    accepted = ", ".join(sorted(SFX_FILE_EXTS | MUSIC_FILE_EXTS))
+    return f"extension {ext or '(aucune)'} non prise en charge — accepté : {accepted}."
 
 
 def sync_sprite_png(project, png_path: Path) -> Optional[str]:

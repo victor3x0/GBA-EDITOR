@@ -90,14 +90,27 @@ tient à l'échelle d'un vrai projet.
 - **v0.5** ✅ : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
 - **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds), rotation et échelle des sprites (transform monde × local) avec neuf raccourcis de game feel (squash, flash, shake…)
 - **v0.7** ✅ : Structures de données — tableaux typés dans les scripts (une ou deux dimensions, indexés à partir de 1) et tables de données authorées, éditées dans le Data Editor et cuites en `const` dans la ROM — ce qui débloque RPG, tactique et gestion ; et le sous-ensemble Lua enfin **dit et tenu** ([SCRIPTING.md](SCRIPTING.md)) : ce qui n'est pas traduit est refusé sur sa ligne, plus jamais ignoré en silence
-- **v0.8** : Son — la musique portée par la scène (elle ne l'est pas encore), deux transitions fidèles au matériel (fondu traversant, coupe à la position pour enchaîner deux variantes d'un même morceau sans creux), écran de mixage et surcharges de hauteur/volume à l'appel
+- **v0.8** ✅ : Son — musique portée par la scène, deux transitions fidèles au matériel (fondu traversant, coupe à la position pour enchaîner deux variantes d'un même morceau sans creux), écran de mixage à boîtes d'état (musique/jingle/effets), référence d'effet avec cinq réglages à l'appel (volume, hauteur, panning), canaux logiciels en réglage de projet, et import des quatre formats de module que maxmod sait jouer (`.mod`, `.xm`, `.s3m`, `.it`)
 - **v0.9** : Traduction des jeux depuis l'interface avec l'éditeur
 - **v0.10** : Distribution élargie (Linux)
 - **v0.11** : Traduction de l'interface de l'éditeur
 - **v0.12** : Vue d'ensemble — graphe des scènes et de leurs transitions, pour lire la logique d'un projet d'un coup d'œil
 - **v0.13** : Édition mixte code / no-code — les appels d'API s'éditent aussi comme des blocs, le script Lua restant la source unique
 - **v0.14** : Diagnostic — trace de débogage vers la console de l'émulateur, et mesure du budget de frame sur la console
-- **v0.15** ✅ : Visibilité des éléments d'interface — texte, panneau et image peuvent se cacher/montrer, au script (`ui.get("alerte"):hide()`) comme à l'authoring, et un panneau caché cache tout son sous-arbre
+- **v0.15** ✅ : Visibilité des éléments d'interface — texte, panneau et image peuvent se cacher/montrer, au script comme à l'authoring, et un panneau caché cache tout son sous-arbre
+- **v0.16** : L'API rangée — une règle de construction unique (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool dimensionné au build), et huit sections nommées d'après ce qu'on tient au lieu de vingt-deux nommées d'après le moteur
+- **v0.17** : Le pool par scène — une scène déclare les prefabs qu'elle fait apparaître et ne paie que ceux-là, au lieu de porter les slots de tous les prefabs du projet
+- **v0.18** : La valeur affichée — un texte peut interpoler une valeur que l'appel lui passe (`text.draw(9, 2, "PV : $1", hp)`), et non plus seulement une variable globale déclarée : afficher un compteur local ou une expression ne demande plus de la promouvoir en global
+- **v0.19** : Le sous-pixel — position et vitesse en point fixe, pour une accélération, un saut à hauteur variable et un recul qui ne se règlent pas par pixel entier
+- **v0.20** : Les collections persistantes — un tableau de globales sauvegardable, au lieu d'une variable par coffre
+- **v0.21** : Le texte adressable — un identifiant de texte devient une valeur, donc un dialogue peut vivre dans une table de données
+- **v0.22** : Menus, listes et curseur — le moteur prend la navigation, la mise en page reste authorée
+- **v0.23** : Ce qu'un boss demande — attendre dans une boucle bornée, une hiérarchie d'acteurs (un boss segmenté se déplace d'un bloc, chaque partie gardant son sprite et ses collisions — y compris pour un ennemi spawné, dont le prefab porte son propre arbre), et une matrice de collision entre tags
+- **v0.24** : Le projet à l'échelle d'une équipe — des formats que git sait fusionner, un build parallèle et mis en cache, un chargement paresseux
+
+Les six dernières viennent d'une revue du logiciel du point de vue d'un projet de production
+mené à plusieurs ; la [ROADMAP](ROADMAP.md) en donne l'ordre recommandé, qui n'est pas celui
+des numéros.
 
 ## Les versions suivantes exploreront des fonctionnalités plus avancées de la Game Boy Advance :
 

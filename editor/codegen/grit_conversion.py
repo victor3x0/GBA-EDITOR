@@ -510,18 +510,97 @@ class GritSprites:
 
 # ── MmutilAudio ────────────────────────────────────────────────────────────────
 
+def referenced_sound_names(p: Project) -> tuple[set[str], set[str]]:
+    """(noms de sfx, noms de musiques) que le projet peut réellement jouer.
+
+    Cette liste est EXHAUSTIVE, et ça tient à une propriété du langage plutôt
+    qu'à la qualité du parcours : le sous-ensemble Lua n'a pas de chaîne
+    manipulable (SCRIPTING.md, « Texte et chaînes »). Une chaîne y est toujours
+    un nom cité du projet, résolu au build — il n'existe donc aucun moyen de
+    ranger un nom de piste dans une variable. Le problème des « cibles
+    dynamiques » laissé ouvert pour le graphe des scènes (ROADMAP v0.12) ne se
+    pose pas ici, et aucun drapeau « garde-le quand même » n'est nécessaire.
+
+    Quatre sources, parce qu'un son se cite de quatre façons :
+      ① un littéral d'appel — `sfx.play("GOAL")`, `music.play("Dreamy DX")` ;
+      ② un `SoundFxComponent` posé sur un acteur ou un prefab, que
+         `self:play_sfx()` joue sans jamais nommer le son dans le script ;
+      ③ le MAPPING d'un état d'une boîte sonore (ROADMAP v0.8.7) ;
+      ④ la musique nommée par une scène.
+
+    Une frame d'animation n'est PAS une source : depuis la v0.8.7 elle nomme un
+    EMPLACEMENT (« pas »), pas un effet. Ce sont les mappings des états qui
+    disent vers quel échantillon cet emplacement se résout — d'où ③.
+    """
+    from scripting.api import DOMAIN_SFX, DOMAIN_MUSIC
+    from scripting.refactor import index_refs_in_project
+    from core.models.components import component_type_name
+
+    sfx_names   = set(index_refs_in_project(p, DOMAIN_SFX))
+    music_names = set(index_refs_in_project(p, DOMAIN_MUSIC))
+
+    # ② Le composant ne passe pas par un littéral de script : `self:play_sfx()`
+    # ne nomme rien, c'est le codegen qui va chercher le nom dans le composant.
+    entities = list(p.prefabs)
+    for scene in p.scenes:
+        entities.extend(getattr(scene, "actors", []) or [])
+    for ent in entities:
+        for comp in getattr(ent, "components", []) or []:
+            try:
+                if component_type_name(comp) == "sound_fx" and comp.sfx_name:
+                    sfx_names.add(comp.sfx_name)
+            except ValueError:
+                continue
+
+    # ③ Ce que les trois boîtes citent. Un emplacement posé sur une frame ne
+    # nomme aucun asset ; c'est l'état qui dit vers quoi il pointe. Un effet
+    # cité seulement là doit tout de même entrer en ROM, sinon sa constante
+    # `SFX_*` n'existe pas et le C échoue sur un message obscur.
+    for box in getattr(p, "sound_boxes", []):
+        sfx_names |= box.referenced_assets()
+    for box in getattr(p, "jingle_boxes", []):
+        music_names |= box.referenced_assets()
+    for box in getattr(p, "music_boxes", []):
+        music_names |= box.referenced_music()
+
+    # ④ `Scene.music` — une scène nomme sa piste sans qu'aucun script ne la
+    # cite. Remplace le `mmStart(music[0])` du boot, qui référençait la
+    # première musique du projet faute de mieux (ROADMAP v0.8.2).
+    from core.models.scene import MUSIC_INHERIT, MUSIC_NONE
+    for scene in p.scenes:
+        want = getattr(scene, "music", MUSIC_INHERIT) or MUSIC_INHERIT
+        if want not in (MUSIC_INHERIT, MUSIC_NONE):
+            music_names.add(want)
+
+    return sfx_names, music_names
+
+
 def resolve_sound_assets(p: Project) -> dict:
-    """Retourne {'sfx': [(Sfx, Path)], 'music': [(Music, Path)]}."""
-    sfx_list, music_list = [], []
-    for sfx in p.sfx:
-        ap = p.asset_abs(sfx.asset) if sfx.asset else None
-        if ap and ap.exists():
-            sfx_list.append((sfx, ap))
-    for music in p.music:
-        ap = p.asset_abs(music.asset) if music.asset else None
-        if ap and ap.exists():
-            music_list.append((music, ap))
-    return {"sfx": sfx_list, "music": music_list}
+    """Retourne {'sfx': [(Sfx, Path)], 'music': [(Music, Path)], 'skipped': [...]}.
+
+    Ne retient que ce que le projet peut jouer. Tout embarquer paraissait
+    inoffensif ; mesuré sur la démo, c'était 101 modules jamais joués sur 105,
+    soit 5 408 Kio de ROM — la ROM de Pong était à 91,6 % de son, presque
+    entièrement mort.
+
+    Un asset écarté n'est pas supprimé : son fichier reste dans assets/ et sa
+    ressource dans le projet. Il est seulement absent de la ROM, et le build le
+    NOMME (`skipped`) — sans quoi ce serait la dégradation silencieuse refusée
+    partout ailleurs.
+    """
+    ref_sfx, ref_music = referenced_sound_names(p)
+    sfx_list, music_list, skipped = [], [], []
+    for kind, store, keep, out in (("sfx", p.sfx, ref_sfx, sfx_list),
+                                   ("music", p.music, ref_music, music_list)):
+        for item in store:
+            ap = p.asset_abs(item.asset) if item.asset else None
+            if not (ap and ap.exists()):
+                continue
+            if item.name in keep:
+                out.append((item, ap))
+            else:
+                skipped.append((kind, item.name, ap.stat().st_size))
+    return {"sfx": sfx_list, "music": music_list, "skipped": skipped}
 
 
 class MmutilAudio:
@@ -533,12 +612,59 @@ class MmutilAudio:
         self._emit    = emit
         self._run_cmd = run_cmd
 
+    def _check_ids(self, soundbank_h: Path, sound_assets: dict) -> bool:
+        """Vérifie que mmutil a numéroté dans l'ordre où on lui a passé les
+        fichiers — l'hypothèse dont dépendent les `#define SFX_*` / `MUSIC_*`
+        émis par le transpileur Lua.
+
+        Elle n'était écrite nulle part, et elle a lâché en silence : tant que
+        le build émettait TOUT le catalogue, le rang dans le projet et l'id du
+        soundbank coïncidaient. Le jour où le build a filtré, `music.play` s'est
+        mis à jouer un autre module — sans symbole manquant, donc sans erreur de
+        compilation, donc invisible jusqu'à ce qu'on écoute. Une hypothèse qui
+        se trompe en silence doit devenir un contrôle qui bloque.
+        """
+        import re
+        try:
+            text = soundbank_h.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            self._emit("error_line", f"[mmutil] soundbank.h illisible : {e}")
+            return False
+        found = {m.group(1): int(m.group(2))
+                 for m in re.finditer(r"#define\s+(\w+)\s+(\d+)", text)}
+        bad = []
+        for prefix, key in (("SFX_", "sfx"), ("MOD_", "music")):
+            for expected, (item, _ap) in enumerate(sound_assets.get(key, [])):
+                sym = f"{prefix}{c_sym(item.name).upper()}"
+                got = found.get(sym)
+                if got is None:
+                    bad.append(f"{sym} absent de soundbank.h")
+                elif got != expected:
+                    bad.append(f"{sym} vaut {got}, attendu {expected}")
+        for msg in bad:
+            self._emit("error_line", f"[mmutil] numérotation inattendue : {msg}")
+        if bad:
+            self._emit("error_line",
+                       "[mmutil] les constantes SFX_*/MUSIC_* du code généré seraient "
+                       "fausses — build interrompu plutôt que ROM au son décalé.")
+        return not bad
+
     def run(self, p: Project, sound_assets: dict) -> bool:
         if not self._mmutil:
             self._emit("error_line", "[mmutil] introuvable — skip audio"); return True
 
+        # Ré-échantillonnage éventuel des effets, vers le dossier de build.
+        # L'ORDRE de `all_files` est intouchable : c'est lui qui fixe les
+        # identifiants SFX_*/MUSIC_*. On substitue des chemins, jamais des rangs.
+        from codegen.sfx_encode import encode_sfx_for_build
+        try:
+            encoded = encode_sfx_for_build(p, sound_assets["sfx"], self._emit)
+        except Exception as e:
+            self._emit("error_line", f"[sfx] ré-échantillonnage ignoré : {e}")
+            encoded = {}
+
         all_files = (
-            [str(ap) for _, ap in sound_assets["sfx"]] +
+            [str(encoded.get(s.name, ap)) for s, ap in sound_assets["sfx"]] +
             [str(ap) for _, ap in sound_assets["music"]]
         )
         if not all_files:
@@ -550,7 +676,27 @@ class MmutilAudio:
         self._emit("log_line",
                    f"[mmutil] {len(sound_assets['sfx'])} sfx + "
                    f"{len(sound_assets['music'])} music")
+        # Ce qui n'entre pas dans la ROM doit se lire dans le journal : un asset
+        # qui disparaît sans un mot, c'est le défaut qu'on vient de corriger.
+        #
+        # On annonce un NOMBRE, pas un gain en octets. La taille des fichiers
+        # source ne prédit pas le coût ROM : mmutil partage les échantillons
+        # entre les modules d'un même soundbank, et un catalogue de variantes
+        # d'un même morceau (DRUMLESS/FAST/SLOW) n'en porte donc qu'un jeu.
+        # Mesuré sur la démo : 5 351 Kio de .mod écartés n'ont retiré que
+        # 437 Kio de soundbank. Annoncer la taille source ferait croire à un
+        # gain douze fois trop grand.
+        if skipped := sound_assets.get("skipped"):
+            self._emit("log_line",
+                       f"[mmutil] {len(skipped)} son(s) non référencé(s) — hors ROM, "
+                       f"fichiers conservés dans assets/")
+            for kind, name, _size in sorted(skipped, key=lambda s: -s[2])[:10]:
+                self._emit("log_line", f"           · {kind} « {name} »")
+            if len(skipped) > 10:
+                self._emit("log_line", f"           · … et {len(skipped) - 10} autre(s)")
         ok = self._run_cmd(cmd, "[mmutil]", cwd=p.build_dir)
+        if ok and soundbank_h.exists():
+            ok = self._check_ids(soundbank_h, sound_assets) and ok
         if ok and soundbank_h.exists():
             # mmutil écrit soundbank.h dans build/ — le Makefile ne compile
             # que depuis build/src/ (-Isrc), donc le header doit y être copié

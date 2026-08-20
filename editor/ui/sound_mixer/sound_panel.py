@@ -4,32 +4,41 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QFrame, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView,
     QMenu, QFileDialog,
-    QSlider, QSpinBox, QCheckBox, QScrollArea, QInputDialog, QMessageBox,
+    QSlider, QSpinBox, QCheckBox, QScrollArea, QMessageBox,
+    QComboBox, QTabWidget, QStackedWidget,
 )
 from PyQt6.QtMultimedia import (
     QMediaPlayer, QAudioOutput, QSoundEffect,
     QAudioSink, QAudioFormat, QMediaDevices, QAudio,
 )
 from PyQt6.QtGui import QFont, QColor, QShortcut, QKeySequence
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QBuffer, QByteArray, QIODevice
+from PyQt6.QtCore import (
+    Qt, QUrl, pyqtSignal, QBuffer, QByteArray, QIODevice, QTimer,
+)
 
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 
-from core.models.audio import Music, Sfx
+from core.asset_encoding import check_audio_file
+from core.models.audio import (
+    Music, Sfx, SFX_FILE_EXTS, MUSIC_FILE_EXTS,
+    file_dialog_filter, sfx_rom_bytes,
+)
+from ui.sound_mixer.state_machines import (
+    ActionMatrix, MusicMachinePanel, MusicStateInspector,
+)
+from ui.sound_mixer.box_playback import BoxPlayer
+from ui.sound_mixer.sound_budget_bar import SoundBudgetBar
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import SFX, MUSIC
 from core.project import Project
-from core.engine_emulation.mod_file import load_mod
-from core.engine_emulation.mod_render import render_mod, GBA_MIX_RATE
+from core.engine_emulation.module_model import load_module
+from core.engine_emulation.module_render import render_module, GBA_MIX_RATE
 from core.history import get_history, DeleteResourceCmd
-
-SFX_EXTS   = "*.wav *.ogg"
-MUSIC_EXTS = "*.mod *.xm *.s3m *.it *.wav"
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -50,7 +59,7 @@ class AudioPlayer(QWidget):
 
     # Cache {chemin: pcm} pour ne pas re-render à chaque clic play/pause sur
     # le même morceau (le rendu prend jusqu'à ~1s pour un morceau long).
-    _mod_cache: dict = {}
+    _module_cache: dict = {}
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -63,7 +72,7 @@ class AudioPlayer(QWidget):
 
         self._sink: Optional[QAudioSink] = None
         self._buffer: Optional[QBuffer] = None
-        self._is_mod = False
+        self._is_module = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 4)
@@ -109,21 +118,21 @@ class AudioPlayer(QWidget):
     def load(self, path: Path):
         self._teardown_sink()
         self._current = path
-        self._is_mod = path.suffix.lower() == ".mod"
+        self._is_module = path.suffix.lower() in MUSIC_FILE_EXTS
         self._lbl.setText(path.name)
         self._btn.setText("▶")
 
-        if self._is_mod:
+        if self._is_module:
             self._player.stop()
             self._player.setSource(QUrl())
-            self._prepare_mod_sink(path)
+            self._prepare_module_sink(path)
         else:
             self._player.stop()
             self._player.setSource(QUrl.fromLocalFile(str(path)))
 
     def play(self, path: Path):
         self.load(path)
-        if self._is_mod:
+        if self._is_module:
             if self._sink is not None:
                 self._buffer.seek(0)
                 self._sink.start(self._buffer)
@@ -131,12 +140,12 @@ class AudioPlayer(QWidget):
         else:
             self._player.play()
 
-    def _prepare_mod_sink(self, path: Path):
+    def _prepare_module_sink(self, path: Path):
         try:
-            pcm = self._mod_cache.get(path)
+            pcm = self._module_cache.get(path)
             if pcm is None:
-                pcm = render_mod(load_mod(path))
-                self._mod_cache[path] = pcm
+                pcm = render_module(load_module(path))
+                self._module_cache[path] = pcm
             if pcm.shape[0] == 0:
                 self._lbl.setText(f"{path.name}  (empty / unreadable)")
                 return
@@ -164,7 +173,7 @@ class AudioPlayer(QWidget):
             self._buffer = None
 
     def _toggle(self):
-        if self._is_mod:
+        if self._is_module:
             if self._sink is None:
                 return
             if self._sink.state() == QAudio.State.ActiveState:
@@ -181,7 +190,12 @@ class AudioPlayer(QWidget):
             self._player.play()
 
     def _stop(self):
-        if self._is_mod:
+        self.stop_playback()
+
+    def stop_playback(self):
+        """Couper la lecture d'asset — appelé aussi de l'extérieur : la lecture
+        ROM et l'aperçu d'un fichier se disputent la même carte son."""
+        if self._is_module:
             if self._sink is not None:
                 self._sink.stop()
             self._btn.setText("▶")
@@ -189,13 +203,13 @@ class AudioPlayer(QWidget):
         self._player.stop()
 
     def _on_state(self, state):
-        if self._is_mod:
+        if self._is_module:
             return
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self._btn.setText("⏸" if playing else "▶")
 
     def _on_sink_state(self, state):
-        if not self._is_mod:
+        if not self._is_module:
             return
         self._btn.setText("⏸" if state == QAudio.State.ActiveState else "▶")
 
@@ -206,7 +220,7 @@ class AudioPlayer(QWidget):
             self._sink.setVolume(vol)
 
     def _on_player_error(self, error, error_string: str):
-        if self._is_mod or error == QMediaPlayer.Error.NoError:
+        if self._is_module or error == QMediaPlayer.Error.NoError:
             return
         self._lbl.setText(f"{self._current.name if self._current else '—'}  (preview unavailable: {error_string})")
 
@@ -279,20 +293,45 @@ class _AssetInspectorBase(QWidget):
             self._loop.toggled.connect(self._on_loop)
             cl.addWidget(self._loop)
 
-        self._vol = QSpinBox(); self._vol.setRange(0, 255)
+        self._vol = QSpinBox(); self._vol.setRange(0, 100); self._vol.setSuffix(" %")
         self._vol.setFont(QFont(T.MONO, T.MD))
         self._vol.setStyleSheet(
             f"QSpinBox{{background:{C.BG_INPUT};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};"
             "border-radius:3px;padding:2px;}"
         )
-        self._vol.setToolTip("Volume (0–255)")
+        self._vol.setToolTip(
+            "Niveau, en pourcentage.\n\n"
+            "maxmod a deux échelles de volume — 0–255 pour un effet, 0–1024\n"
+            "pour le module — et le build convertit vers celle de la cible.\n"
+            "Un pourcentage ne peut être confondu avec ni l'une ni l'autre."
+        )
         self._vol.valueChanged.connect(self._on_vol)
         row("Volume", self._vol)
+
+        self._build_extra_rows(row, cl)
+
+        # Poids réel en ROM, relevé au dernier build. Vide tant qu'aucun build
+        # n'a eu lieu : l'éditeur mesure, il ne devine pas.
+        self._weight = QLabel("")
+        self._weight.setFont(QFont(T.UI, T.SM))
+        self._weight.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:6px;")
+        self._weight.setWordWrap(True)
+        cl.addWidget(self._weight)
 
         cl.addStretch()
         layout.addWidget(self._content)
         layout.addStretch()
         self._content.setVisible(False)
+
+    def _build_extra_rows(self, row, layout):
+        """Champs propres à une famille. Rien par défaut."""
+
+    def _weight_text(self, entry) -> str:
+        """Ce que pèse cet asset en ROM, tel qu'on l'écrit à l'auteur."""
+        return f"En ROM : {entry.own_bytes / 1024:.1f} Kio  (dernier build)"
+
+    def refresh_weight(self, entry):
+        self._weight.setText(self._weight_text(entry) if entry else "")
 
     def _manager(self):
         raise NotImplementedError
@@ -308,10 +347,13 @@ class _AssetInspectorBase(QWidget):
         self._blocking = True
         self._header.set_header(self._HEADER_KIND, self._HEADER_LABEL, asset.name)
         ap = project.asset_abs(asset.asset) if asset.asset else None
-        self._file_lbl.setText(ap.name if ap else "Aucun fichier")
+        self._set_file_label(ap)
         if self._HAS_LOOP:
             self._loop.setChecked(getattr(asset, "loop", True))
-        self._vol.setValue(getattr(asset, "volume", 255))
+        self._vol.setValue(getattr(asset, "volume", 100))
+        if rate := getattr(self, "_rate", None):
+            idx = rate.findData(int(getattr(asset, "sample_rate", 0) or 0))
+            rate.setCurrentIndex(idx if idx >= 0 else 0)
         self._blocking = False
 
     def _on_renamed(self, new_name: str):
@@ -335,17 +377,34 @@ class _AssetInspectorBase(QWidget):
         self._save()
         self.changed.emit()
 
+    def _file_hint(self, path: Path) -> str:
+        """Complément affiché à côté du nom de fichier. Vide par défaut."""
+        return ""
+
+    def _set_file_label(self, path: Optional[Path]):
+        if path is None:
+            self._file_lbl.setText("Aucun fichier"); return
+        self._file_lbl.setText(f"{path.name}{self._file_hint(path)}")
+
     def _import(self):
         if not self._project or not self._asset: return
         path, _ = QFileDialog.getOpenFileName(
             self, self._IMPORT_DIALOG_TITLE, "", self._IMPORT_FILTER
         )
-        if path:
-            dst = self._project.import_asset(Path(path), self._IMPORT_FOLDER)
-            self._asset.asset = self._project.asset_rel(dst)
-            self._save()
-            self._file_lbl.setText(dst.name)
-            self.changed.emit()
+        if not path:
+            return
+        # Refuser AVANT la copie : un fichier écarté ne doit pas atterrir dans
+        # assets/. Et c'est le seul refus possible — mmutil construit la ROM
+        # sans broncher sur un wav 24 bits, en la laissant muette.
+        if reason := check_audio_file(Path(path)):
+            QMessageBox.warning(self, "Fichier non importé",
+                                f"{Path(path).name}\n\n{reason}")
+            return
+        dst = self._project.import_asset(Path(path), self._IMPORT_FOLDER)
+        self._asset.asset = self._project.asset_rel(dst)
+        self._save()
+        self._set_file_label(dst)
+        self.changed.emit()
 
 
 class SfxInspector(_AssetInspectorBase):
@@ -354,11 +413,47 @@ class SfxInspector(_AssetInspectorBase):
     _HEADER_LABEL = "SFX"
     _IMPORT_BTN_TEXT = "Importer WAV…"
     _IMPORT_DIALOG_TITLE = "Importer SFX"
-    _IMPORT_FILTER = "Audio (*.wav *.ogg);;Tous (*)"
+    _IMPORT_FILTER = file_dialog_filter("WAV PCM 8/16 bits", SFX_FILE_EXTS)
     _IMPORT_FOLDER = "sfx"
+
+    # Taux proposés. Maxmod mixe autour de 16 kHz : au-delà on paie de la ROM
+    # pour un détail que la console ne restitue pas.
+    _RATES = ((0, "From project"), (8000, "8 000 Hz"), (11025, "11 025 Hz"),
+              (16000, "16 000 Hz"), (22050, "22 050 Hz"), (32000, "32 000 Hz"))
+
+    def _file_hint(self, path: Path) -> str:
+        """Le poids du FICHIER SOURCE, avant tout ré-échantillonnage.
+
+        mmutil conserve le taux : sans quantification, un effet en 44,1 kHz
+        coûte près de trois fois ce qu'il coûterait en 16 kHz sans rien
+        apporter que le mixeur Maxmod sache restituer. On affiche le fait, on
+        ne refuse pas le choix (ROADMAP v0.8.1).
+        """
+        n = sfx_rom_bytes(path)
+        return f"  —  source {n / 1024:.1f} Kio" if n else ""
+
+    def _build_extra_rows(self, row, layout):
+        self._rate = QComboBox()
+        self._rate.setFont(QFont(T.UI, T.MD))
+        for value, label in self._RATES:
+            self._rate.addItem(label, value)
+        self._rate.setToolTip(
+            "Taux d'échantillonnage visé pour cet effet.\n\n"
+            "La conversion a lieu au build : le fichier de assets/ n'est jamais\n"
+            "réécrit, on peut donc remonter le taux après coup sans rien perdre.\n\n"
+            "« From project » suit le réglage du projet."
+        )
+        self._rate.currentIndexChanged.connect(self._on_rate)
+        row("Taux", self._rate)
 
     def _manager(self):
         return self._project.sfx
+
+    def _on_rate(self, idx: int):
+        if self._blocking or not self._asset: return
+        self._asset.sample_rate = int(self._rate.itemData(idx) or 0)
+        self._save()
+        self.changed.emit()
 
     def _save(self):
         self._project.save_sfx(self._asset)
@@ -371,17 +466,231 @@ class MusicInspector(_AssetInspectorBase):
     _EMPTY_TEXT = "Select a track"
     _HEADER_KIND = "music"
     _HEADER_LABEL = "Music"
-    _IMPORT_BTN_TEXT = "Importer MOD/WAV…"
+    _IMPORT_BTN_TEXT = "Importer MOD…"
     _IMPORT_DIALOG_TITLE = "Importer Music"
-    _IMPORT_FILTER = "Tracker/Audio (*.mod *.xm *.s3m *.it *.wav);;Tous (*)"
+    _IMPORT_FILTER = file_dialog_filter("Module", MUSIC_FILE_EXTS)
     _IMPORT_FOLDER = "music"
     _HAS_LOOP = True
+
+    def _weight_text(self, entry) -> str:
+        """DEUX nombres, jamais un seul.
+
+        mmutil mutualise les échantillons identiques entre les modules d'un
+        même soundbank — et un catalogue de variantes du même morceau
+        (DRUMLESS / FAST / SLOW) n'en porte donc qu'un jeu. Un chiffre unique
+        mentirait dans les deux sens : le total laisserait croire qu'en retirer
+        une en rend autant, et le poids propre cacherait ce qu'elle a fait
+        entrer (cf. ROADMAP v0.8.4).
+        """
+        own = f"{entry.own_bytes / 1024:.1f} Kio en propre"
+        if entry.shared_bytes and entry.shared_with:
+            return (f"En ROM : {own}, plus {entry.shared_bytes / 1024:.1f} Kio "
+                    f"d'échantillons partagés avec {entry.shared_with} autre(s) "
+                    f"piste(s).  (dernier build)")
+        return f"En ROM : {own}  (dernier build)"
 
     def _manager(self):
         return self._project.music
 
     def _save(self):
         self._project.save_music(self._asset)
+
+
+# ──────────────────────────────────────────────────────────────────
+#  Un onglet de famille : le sélecteur de boîte, et son éditeur
+# ──────────────────────────────────────────────────────────────────
+class _BoxTab(QWidget):
+    """Choisit UNE boîte d'une famille et la donne à son éditeur.
+
+    Trois instances, une par famille. Ce qui les distingue tient en trois
+    valeurs — le registre du projet, la classe à instancier, l'éditeur — donc
+    en paramètres, pas en sous-classes.
+    """
+    changed = pyqtSignal()      # la boîte courante a changé (choix ou création)
+
+    def __init__(self, store_attr: str, cls, editor: QWidget,
+                 load_fn, empty_text: str, parent=None):
+        super().__init__(parent)
+        self._store_attr = store_attr
+        self._cls = cls
+        self._editor = editor
+        self._load_fn = load_fn
+        self._project: Optional[Project] = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+
+        bar = QHBoxLayout(); bar.setSpacing(6)
+        lbl = QLabel("Boîte :")
+        lbl.setFont(QFont(T.UI, T.SM))
+        lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+        self._combo = QComboBox()
+        self._combo.setFont(QFont(T.UI, T.SM))
+        self._combo.setStyleSheet(QSS.combobox)
+        self._combo.setToolTip(
+            "Le jeu n'en charge qu'UNE par famille — la première par ordre de "
+            "nom.\n\nLes autres restent dans le projet mais ne sonneront pas ; "
+            "le validateur les signale.")
+        self._combo.currentIndexChanged.connect(lambda _i: self._load())
+        # Le champ de renommage prend la PLACE du sélecteur, il ne s'ajoute
+        # pas à côté : on renomme la boîte qu'on a sous les yeux, et la barre
+        # ne grandit pas d'un widget qui ne sert qu'un instant.
+        # Drapeau EXPLICITE et non `isVisible()` : un widget d'onglet non
+        # affiché est « invisible » même quand il est en cours d'édition, et
+        # la validation serait alors avalée en silence.
+        self._renaming = False
+        self._name_edit = QLineEdit()
+        self._name_edit.setFont(QFont(T.UI, T.SM))
+        self._name_edit.setStyleSheet(QSS.lineedit)
+        self._name_edit.setVisible(False)
+        self._name_edit.editingFinished.connect(self._commit_rename)
+        self._btn_ren = W.btn_ghost("✎")
+        self._btn_ren.setToolTip("Renommer cette boîte")
+        self._btn_ren.clicked.connect(self._begin_rename)
+        btn_new = W.btn_ghost("+ Nouvelle")
+        btn_new.clicked.connect(self._new)
+        self._btn_del = W.btn_danger("Supprimer cette boîte")
+        self._btn_del.clicked.connect(self._delete)
+        bar.addWidget(lbl)
+        bar.addWidget(self._combo, 1); bar.addWidget(self._name_edit, 1)
+        bar.addWidget(self._btn_ren); bar.addWidget(btn_new)
+        bar.addWidget(self._btn_del)
+        lay.addLayout(bar)
+
+        lay.addWidget(editor, 1)
+        self._empty = W.empty_state(empty_text)
+        lay.addWidget(self._empty)
+
+    # ── Chargement ────────────────────────────────────────────────
+
+    def _store(self):
+        return getattr(self._project, self._store_attr) if self._project else []
+
+    def current(self):
+        if not self._project:
+            return None
+        return getattr(self._project, self._store_attr).get(
+            self._combo.currentData() or "")
+
+    def load_project(self, project: Project):
+        self._project = project
+        self.refresh()
+
+    def refresh(self):
+        """Repeuple la liste et recharge la boîte courante dans l'éditeur."""
+        if not self._project:
+            return
+        want = self._combo.currentData()
+        self._combo.blockSignals(True)
+        self._combo.clear()
+        for box in sorted(self._store(), key=lambda b: b.name):
+            self._combo.addItem(box.name, box.name)
+        i = self._combo.findData(want)
+        self._combo.setCurrentIndex(i if i >= 0 else 0)
+        self._combo.blockSignals(False)
+        self._load()
+
+    def _load(self):
+        box = self.current()
+        self._editor.setVisible(box is not None)
+        self._empty.setVisible(box is None)
+        self._btn_del.setEnabled(box is not None)
+        self._btn_ren.setEnabled(box is not None)
+        if box is not None:
+            self._load_fn(box)
+        self.changed.emit()
+
+    # ── Édition ───────────────────────────────────────────────────
+
+    def _new(self):
+        """Crée une boîte au nom automatique — pas de pop-up de saisie."""
+        if not self._project:
+            return
+        from core.command_dispatcher import unique_name
+        store = getattr(self._project, self._store_attr)
+        box = self._cls(name=unique_name(self._cls().name,
+                                         [b.name for b in store]))
+        store.append(box)
+        store.save(box)
+        self.refresh()
+        i = self._combo.findData(box.name)
+        if i >= 0:
+            self._combo.setCurrentIndex(i)
+
+    # ── Renommage ─────────────────────────────────────────────────
+
+    def _begin_rename(self):
+        """Le nom passe en édition, sélectionné — prêt à être remplacé."""
+        box = self.current()
+        if box is None:
+            return
+        self._name_edit.setText(box.name)
+        self._renaming = True
+        self._combo.setVisible(False)
+        self._name_edit.setVisible(True)
+        self._name_edit.setFocus()
+        self._name_edit.selectAll()
+
+    def _commit_rename(self):
+        """Applique, ou revient en arrière en silence.
+
+        Un nom vide, inchangé ou déjà pris est REFUSÉ sans pop-up : le champ
+        reprend l'ancien nom, ce qui dit le refus sans interrompre. Rien ne
+        cite une boîte par son nom — ni scène, ni script —, donc le renommage
+        n'a rien à réparer : c'est le fichier sur le disque qui suit.
+        """
+        if not self._renaming:
+            return
+        self._renaming = False
+        box, new = self.current(), self._name_edit.text().strip()
+        self._name_edit.setVisible(False)
+        self._combo.setVisible(True)
+        if box is None or not new or new == box.name:
+            return
+        store = getattr(self._project, self._store_attr)
+        if store.get(new) is not None:
+            return
+        store.rename(box, new)
+        self.refresh()
+        i = self._combo.findData(new)
+        if i >= 0:
+            self._combo.setCurrentIndex(i)
+
+    def keyPressEvent(self, e):
+        # Échap pendant l'édition : on annule sans écrire.
+        if e.key() == Qt.Key.Key_Escape and self._renaming:
+            self._renaming = False
+            self._name_edit.setVisible(False)
+            self._combo.setVisible(True)
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _delete(self):
+        """Supprime la boîte courante — annulable, comme tout asset.
+
+        Confirmation d'abord : une boîte porte des états, des mappings et,
+        pour la MusicBox, une disposition de graphe. Ce n'est pas ce qu'on
+        refait de tête après un clic malheureux.
+        """
+        box = self.current()
+        if box is None or not self._project:
+            return
+        if QMessageBox.question(
+            self, "Supprimer",
+            f"Supprimer la boîte « {box.name} » ?\n(Ctrl+Z pour annuler)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        get_history().push(DeleteResourceCmd(
+            getattr(self._project, self._store_attr), box))
+        self.refresh()
+
+    def save_current(self):
+        box = self.current()
+        if box is not None and self._project:
+            getattr(self._project, self._store_attr).save(box)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -393,6 +702,8 @@ class SoundMixerScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project: Optional[Project] = None
+        self._weights: Optional[dict] = None   # poids du dernier build, à la demande
+        self._last_selected = None             # cf. _on_state_selected
         self.setStyleSheet(f"background:{C.BG_PANEL};")
 
         root = QVBoxLayout(self)
@@ -402,11 +713,11 @@ class SoundMixerScreen(QWidget):
         # Pas de bandeau-titre d'écran : la nav du haut indique déjà où on est
         # (décision refonte thème 2026-08).
 
-        # Player bar
+        # La barre de lecture ne vit plus en haut de l'écran : elle est sous
+        # le node editor, dans le panneau central (cf. _build_machines_panel).
+        # C'est là qu'on écoute, donc là qu'on commande.
         self._player = AudioPlayer()
-        self._player.setStyleSheet(f"background:{C.BG_BASE}; border-bottom:1px solid {C.BORDER};")
-        self._player.setFixedHeight(34)
-        root.addWidget(self._player)
+        self._box_player = BoxPlayer(self)
 
         # Splitter principal
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -428,8 +739,13 @@ class SoundMixerScreen(QWidget):
         sc_play.activated.connect(self._finder.activate_current)
         split.addWidget(self._finder)
 
+        # ── Panneau central : les boîtes à état ───────────────────
+        # C'est le cœur de l'écran (ROADMAP v0.8.7) : le finder n'est qu'un
+        # magasin, l'inspecteur de droite ne règle qu'un asset à la fois, et
+        # c'est ici que les sons se rangent en états et se relient.
+        split.addWidget(self._build_machines_panel())
+
         # ── Panneau droit : inspector ─────────────────────────────
-        from PyQt6.QtWidgets import QStackedWidget
         self._right_stack = QStackedWidget()
         self._right_stack.setMinimumWidth(200)
 
@@ -450,15 +766,253 @@ class SoundMixerScreen(QWidget):
         self._music_insp.changed.connect(self._on_changed)
         self._right_stack.addWidget(self._music_insp)  # 2
 
-        split.addWidget(self._right_stack)
-        split.setSizes([220, 500])
+        # L'inspecteur du nœud sélectionné dans le graphe. Il partage la
+        # colonne avec les inspecteurs d'asset : c'est la même question posée
+        # à la même place — « qu'est-ce qui est sélectionné, et comment se
+        # règle-t-il ? ».
+        self._state_insp = MusicStateInspector()
+        self._state_insp.changed.connect(self._music_tab.save_current)
+        self._state_insp.changed.connect(self._refresh_budget)
+        self._state_insp.restructured.connect(self._music_machine.refresh)
+        self._right_stack.addWidget(self._state_insp)  # 3
 
-    # ── Chargement ────────────────────────────────────────────────
+        split.addWidget(self._right_stack)
+        split.setSizes([200, 560, 300])
+
+        # Bandeau de canaux : jumeau LOCAL de GbaStatusBar (window.py), pour
+        # la ressource rare de CET écran — cf. sound_budget_bar.py. Sous le
+        # splitter, comme la barre de fenêtre est sous tout le reste.
+        self._budget_bar = SoundBudgetBar()
+        root.addWidget(self._budget_bar)
+
+    # ── Les trois machines ────────────────────────────────────────
+
+    def _build_machines_panel(self) -> QWidget:
+        """Un onglet par FAMILLE, et chacune choisit sa propre boîte.
+
+        Trois onglets et non un graphe unique : les trois couches sont
+        indépendantes sur ce matériel (module, couche jingle, canaux d'effets),
+        et « sur du sable » n'a rien à voir avec « en combat ». Depuis qu'elles
+        sont trois assets, chaque onglet porte aussi son propre sélecteur — une
+        MusicBox et une SoundBox n'ont aucune raison de s'appeler pareil ni
+        d'être choisies ensemble.
+        """
+        from core.models.sound_box import (
+            MusicBox, JingleBox, SoundBox, KIND_SOUND, KIND_JINGLE,
+        )
+
+        panel = QWidget()
+        panel.setStyleSheet(f"background:{C.BG_PANEL};")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
+
+        self._music_machine = MusicMachinePanel()
+        self._music_machine.state_selected.connect(self._on_state_selected)
+        self._music_machine.state_created.connect(
+            lambda: QTimer.singleShot(0, self._state_insp.focus_name))
+        self._sfx_matrix = ActionMatrix(KIND_SOUND)
+        self._jingle_matrix = ActionMatrix(KIND_JINGLE)
+
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(QSS.tab)
+        self._music_tab = _BoxTab(
+            "music_boxes", MusicBox, self._music_machine,
+            lambda box: self._music_machine.load(box),
+            "Une MusicBox range les états musicaux et les transitions entre "
+            "eux : quelle piste dans quelle ambiance, et par quel déclencheur "
+            "on passe de l'une à l'autre.")
+        self._sound_tab = _BoxTab(
+            "sound_boxes", SoundBox, self._sfx_matrix,
+            lambda box: self._sfx_matrix.load(
+                box, [s.name for s in self._project.sfx]),
+            "Une SoundBox dit vers quel effet chaque action pointe selon "
+            "l'état — le même cycle de marche sonne le sable ou les cailloux "
+            "sans être authoré deux fois.")
+        self._jingle_tab = _BoxTab(
+            "jingle_boxes", JingleBox, self._jingle_matrix,
+            lambda box: self._jingle_matrix.load(
+                box, [m.name for m in self._project.music]),
+            "Une JingleBox dit vers quel module chaque action de jingle "
+            "pointe selon l'état. Un jingle se superpose à la musique, il ne "
+            "la remplace pas.")
+        for tab, title in ((self._music_tab, "MusicBox"),
+                           (self._sound_tab, "SoundBox"),
+                           (self._jingle_tab, "JingleBox")):
+            tab.changed.connect(self._on_box_changed)
+            self._tabs.addTab(tab, title)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._music_machine.changed.connect(self._music_tab.save_current)
+        self._sfx_matrix.changed.connect(self._sound_tab.save_current)
+        self._jingle_matrix.changed.connect(self._jingle_tab.save_current)
+        # Le bandeau ne lit que musique + jingle (cf. sound_budget_bar.py) :
+        # la SoundBox n'y entre pas, donc `_sfx_matrix.changed` n'a rien à y
+        # déclencher.
+        self._music_machine.changed.connect(self._refresh_budget)
+        self._jingle_matrix.changed.connect(self._refresh_budget)
+        lay.addWidget(self._tabs, 1)
+        lay.addWidget(self._build_player_bar())
+        return panel
+
+    def _build_player_bar(self) -> QWidget:
+        """Sous le node editor : écouter un asset, ou écouter la BOÎTE.
+
+        Deux lectures dans une seule barre parce qu'elles se disputent la même
+        carte son — les mettre côte à côte, c'est rendre visible qu'on ne peut
+        pas les avoir toutes les deux.
+        """
+        bar = QWidget()
+        bar.setStyleSheet(f"background:{C.BG_BASE}; border-top:1px solid {C.BORDER};")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(0, 0, 8, 0)
+        lay.setSpacing(8)
+
+        self._player.setFixedHeight(34)
+        lay.addWidget(self._player, 1)
+
+        self._btn_rom = QPushButton("▶ Lecture ROM")
+        self._btn_rom.setCheckable(True)
+        self._btn_rom.setFont(QFont(T.UI, T.SM))
+        self._btn_rom.setStyleSheet(
+            f"QPushButton{{background:{C.BG_INPUT}; color:{C.TEXT_NORM};"
+            f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:3px 10px;}}"
+            f"QPushButton:hover{{background:{C.BG_HOVER};}}"
+            f"QPushButton:checked{{background:{C.BG_SEL}; color:{C.ACCENT};"
+            f"border-color:{C.ACCENT};}}")
+        self._btn_rom.setToolTip(
+            "Joue la MusicBox comme la ROM la jouera.\n\n"
+            "Cliquer un nœud émet le déclencheur qui y mène : la transition\n"
+            "s'entend exactement comme en jeu, sans build. S'il n'existe pas\n"
+            "d'arête vers ce nœud, rien ne se passe — comme sur la console.")
+        self._btn_rom.toggled.connect(self._on_rom_toggled)
+        lay.addWidget(self._btn_rom)
+
+        self._rom_state = QLabel("")
+        self._rom_state.setFont(QFont(T.MONO, T.SM))
+        self._rom_state.setStyleSheet(f"color:{C.TEXT_DIM};")
+        self._rom_state.setMinimumWidth(120)
+        lay.addWidget(self._rom_state)
+
+        self._box_player.state_changed.connect(self._on_rom_state)
+        self._box_player.message.connect(
+            lambda m: self._rom_state.setText(m))
+        return bar
+
+    # ── Lecture ROM ───────────────────────────────────────────────
+
+    def _on_rom_toggled(self, on: bool):
+        if on:
+            self._player.stop_playback()   # une seule sortie audio à la fois
+            box = self._music_tab.current()
+            if box is None or not box.states:
+                self._rom_state.setText("Aucun état à jouer.")
+                self._btn_rom.setChecked(False)
+                return
+            self._box_player.load(self._project, box)
+            self._box_player.start()
+        else:
+            self._box_player.stop()
+            self._rom_state.setText("")
+
+    def _on_rom_state(self, name: str):
+        self._rom_state.setText(f"▶ {name}")
+
+    def _box_tabs(self) -> tuple:
+        return (self._music_tab, self._sound_tab, self._jingle_tab)
+
+    def _on_tab_changed(self, index: int):
+        """Le finder ne montre que ce que l'onglet courant peut résoudre.
+
+        Une action de SoundBox pointe vers un Sfx, une action de JingleBox et
+        un état de MusicBox vers une Music : la banque d'effets n'a rien à
+        faire à côté d'un graphe musical, et l'inverse non plus. C'est aussi ce
+        qui rend le glisser-déposer sans ambiguïté — ce qui est visible est ce
+        qui se dépose.
+        """
+        self._finder.show_only({SFX.label} if index == 1 else {MUSIC.label})
+
+    def _on_box_changed(self):
+        """Une boîte a été choisie ou créée : l'inspecteur d'état la suit."""
+        # Une autre boîte, ce sont d'autres états : ce qui jouait n'a plus de
+        # sens. On coupe plutôt que de laisser sonner un état disparu.
+        if self._btn_rom.isChecked():
+            self._btn_rom.setChecked(False)
+        self._last_selected = None
+        self._state_insp.load(self._music_tab.current(), None)
+        if self._right_stack.currentWidget() is self._state_insp:
+            self._right_stack.setCurrentIndex(0)
+        self._refresh_budget()
+
+    def _refresh_budget(self):
+        """Recalcule le bandeau depuis les boîtes MUSIQUE et JINGLE en cours
+        d'édition — pas depuis « la » boîte active en jeu (v0.8.7 : une seule
+        par famille, la première par nom), parce que c'est celles-ci que
+        l'auteur règle sous ses yeux.
+
+        Le plafond est relu depuis le projet à CHAQUE appel plutôt que mis en
+        cache : rien ne prévient cet écran quand il change ailleurs (aucun
+        écran ne l'est — cf. window._show_screen), donc le lire à chaque
+        édition est la seule façon de ne jamais afficher une valeur périmée.
+        """
+        if not self._project:
+            return
+        limit = int(getattr(self._project.settings, "sound_channels", 8))
+        self._budget_bar.update_boxes(
+            self._project, self._music_tab.current(), self._jingle_tab.current(), limit)
 
     def load_project(self, project: Project):
+        if self._btn_rom.isChecked():
+            self._btn_rom.setChecked(False)
+        self._last_selected = None
         self._project = project
         self._finder.load_project(project)
         self._right_stack.setCurrentIndex(0)
+        self._weights = None
+        self._state_insp.set_musics([m.name for m in project.music])
+        for tab in self._box_tabs():
+            tab.load_project(project)
+        self._on_tab_changed(self._tabs.currentIndex())
+        self._refresh_budget()
+
+    def _sound_weights(self) -> dict:
+        """Poids relevés au dernier build, calculés à la demande puis gardés.
+
+        Le rapprochement nom↔entrée du soundbank exige de connaître l'ORDRE
+        dans lequel le build a passé les fichiers à mmutil — donc de reparcourir
+        les scripts. Une fois par ouverture de projet suffit ; la mesure ne
+        change qu'au build suivant.
+        """
+        if self._weights is not None or not self._project:
+            return self._weights or {}
+        try:
+            from codegen.grit_conversion import resolve_sound_assets
+            from codegen.rom_report import sound_weights
+            sa = resolve_sound_assets(self._project)
+            self._weights = sound_weights(
+                self._project,
+                [s.name for s, _ in sa["sfx"]],
+                [m.name for m, _ in sa["music"]],
+            )
+        except Exception:
+            # Aucun build, ou soundbank illisible : on n'affiche rien plutôt
+            # que d'annoncer un poids deviné.
+            self._weights = {}
+        return self._weights
+
+    def _on_state_selected(self, state):
+        """Un nœud du graphe : c'est lui que la colonne de droite montre."""
+        # Et, en lecture ROM, c'est le déclencheur qui y mène. Le graphe se
+        # reconstruit à chaque édition et ré-émet la même sélection : sans ce
+        # garde-fou, régler un volume rejouerait une transition.
+        if (state is not None and state is not self._last_selected
+                and self._btn_rom.isChecked()):
+            self._box_player.go_to(state.name)
+        self._last_selected = state
+        self._state_insp.load(self._music_tab.current(), state)
+        if state is not None:
+            self._right_stack.setCurrentWidget(self._state_insp)
+        elif self._right_stack.currentWidget() is self._state_insp:
+            self._right_stack.setCurrentIndex(0)
 
     # ── Sélection / lecture (relayées depuis le Sound finder) ──────
 
@@ -472,11 +1026,13 @@ class SoundMixerScreen(QWidget):
 
     def _on_sfx_selected(self, sfx: Sfx):
         self._sfx_insp.load(sfx, self._project)
+        self._sfx_insp.refresh_weight(self._sound_weights().get(("sfx", sfx.name)))
         self._right_stack.setCurrentIndex(1)
         self._load_asset(sfx)
 
     def _on_music_selected(self, music: Music):
         self._music_insp.load(music, self._project)
+        self._music_insp.refresh_weight(self._sound_weights().get(("music", music.name)))
         self._right_stack.setCurrentIndex(2)
         self._load_asset(music)
 
@@ -491,6 +1047,8 @@ class SoundMixerScreen(QWidget):
             self._player.load(ap)
 
     def _play_asset(self, obj):
+        if self._btn_rom.isChecked():
+            self._btn_rom.setChecked(False)
         ap = self._project.asset_abs(obj.asset) if self._project and obj.asset else None
         if ap and ap.exists():
             self._player.play(ap)

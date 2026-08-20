@@ -153,6 +153,79 @@ class ProjectInspector(QWidget):
             lambda v: self._set_setting("save_slots", int(v)))
         self._row("Save slots", self._spin_slots, id_inner, stretch=False)
 
+        # ── Cartouche visée ───────────────────────────────────────
+        # Sert de plafond au rapport de poids affiché en fin de build. Les
+        # quatre tailles réellement produites en cartouche masquée sur GBA ;
+        # l'espace d'adressage de la console s'arrête à 32 Mio.
+        from codegen.rom_report import CARTRIDGE_SIZES_MIB
+        self._combo_cart = QComboBox()
+        self._combo_cart.setFont(QFont(T.UI, T.MD))
+        self._combo_cart.setStyleSheet(QSS.combobox)
+        for mib in CARTRIDGE_SIZES_MIB:
+            self._combo_cart.addItem(f"{mib} MiB", mib)
+        self._combo_cart.setToolTip(
+            "<b>Cartridge size</b><br><br>"
+            "The capacity the build report compares the ROM against.<br>"
+            "Going over it is reported as an error — the ROM still exists,<br>"
+            "it simply does not fit on that cartridge.<br><br>"
+            "These are the mask-ROM sizes actually manufactured for the GBA."
+        )
+        self._combo_cart.currentIndexChanged.connect(
+            lambda i: self._set_setting("cartridge_mib", int(self._combo_cart.itemData(i) or 4)))
+        self._row("Cartridge", self._combo_cart, id_inner, stretch=False)
+
+        # ── Taux d'échantillonnage des effets (défaut projet) ──────
+        # Surchargeable par effet (cf. Sfx.sample_rate). « Source » ne
+        # ré-échantillonne rien : c'est le défaut, parce que dégrader d'office
+        # un projet existant serait le faire dans le dos de son auteur.
+        self._combo_rate = QComboBox()
+        self._combo_rate.setFont(QFont(T.UI, T.MD))
+        self._combo_rate.setStyleSheet(QSS.combobox)
+        for value, label in ((0, "Source (no resampling)"), (8000, "8 000 Hz"),
+                             (11025, "11 025 Hz"), (16000, "16 000 Hz"),
+                             (22050, "22 050 Hz"), (32000, "32 000 Hz")):
+            self._combo_rate.addItem(label, value)
+        self._combo_rate.setToolTip(
+            "<b>Default sample rate for sound effects</b><br><br>"
+            "mmutil converts effects to 8-bit mono but <b>keeps their sample "
+            "rate</b>,<br>so a 44.1 kHz effect costs about three times what it "
+            "would at 16 kHz<br>— for detail the Maxmod mixer does not "
+            "reproduce.<br><br>"
+            "Resampling happens at build time. The file in <tt>assets/</tt> is "
+            "never<br>rewritten, so raising the rate again loses nothing."
+        )
+        self._combo_rate.currentIndexChanged.connect(
+            lambda i: self._set_setting("sfx_sample_rate", int(self._combo_rate.itemData(i) or 0)))
+        self._row("SFX rate", self._combo_rate, id_inner, stretch=False)
+
+        # ── Canaux logiciels ──────────────────────────────────────
+        # Musique et effets se les partagent. Le coût est exact et vient du
+        # modèle, pas d'un chiffre recopié ici (cf. audio.sound_channels_bytes).
+        from core.models.audio import (SOUND_CHANNELS_MIN, SOUND_CHANNELS_MAX,
+                                       SOUND_HANDLE_SLOTS, sound_channels_bytes)
+        self._spin_channels = QSpinBox()
+        self._spin_channels.setRange(SOUND_CHANNELS_MIN, SOUND_CHANNELS_MAX)
+        self._spin_channels.setFixedWidth(64)
+        self._spin_channels.setFont(QFont(T.MONO, T.MD))
+        self._spin_channels.setStyleSheet(QSS.spinbox)
+        self._spin_channels.setToolTip(
+            "<b>Sound channels</b><br><br>"
+            "Software mixing channels, shared by music and sound effects.<br>"
+            "A module needs one per voice; every effect playing takes one more."
+            "<br><br>"
+            f"Each channel costs {sound_channels_bytes(1) - sound_channels_bytes(0)}"
+            f" bytes of heap, plus a fixed {sound_channels_bytes(0)}-byte mixing "
+            f"buffer.<br>"
+            f"Eight channels — the default — cost {sound_channels_bytes(8)} bytes."
+            "<br><br>"
+            f"Unrelated to sound effect <i>references</i>: Maxmod tracks "
+            f"{SOUND_HANDLE_SLOTS} of those<br>whatever this is set to. An effect "
+            "past that limit still plays,<br>it simply has no reference."
+        )
+        self._spin_channels.valueChanged.connect(
+            lambda v: self._set_setting("sound_channels", int(v)))
+        self._row("Sound channels", self._spin_channels, id_inner, stretch=False)
+
         # ── Transition de scène (défaut projet) ───────────────────
         # Le fondu joué à chaque changement de scène. Réglé une fois ici pour
         # tout le jeu ; une scène peut le surcharger depuis son inspecteur.
@@ -327,6 +400,17 @@ class ProjectInspector(QWidget):
         self._spin_slots.blockSignals(True)
         self._spin_slots.setValue(getattr(p.settings, "save_slots", 1) if p else 1)
         self._spin_slots.blockSignals(False)
+
+        self._spin_channels.blockSignals(True)
+        self._spin_channels.setValue(getattr(p.settings, "sound_channels", 8) if p else 8)
+        self._spin_channels.blockSignals(False)
+
+        for combo, field, default in ((self._combo_cart, "cartridge_mib", 4),
+                                      (self._combo_rate, "sfx_sample_rate", 0)):
+            combo.blockSignals(True)
+            idx = combo.findData(getattr(p.settings, field, default) if p else default)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+            combo.blockSignals(False)
 
         kind = getattr(p.settings, "transition_kind", "none") if p else "none"
         self._combo_trans.blockSignals(True)

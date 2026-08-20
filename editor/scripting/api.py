@@ -36,7 +36,7 @@ PARAM_STR          = "str"
 PARAM_STR_LITERAL  = "str_literal"   # string passée telle quelle entre guillemets C (pas de résolution de constante)
 PARAM_BOOL         = "bool"
 PARAM_ACTOR        = "actor"         # nom Lua → &g_actors[TAG_NAME]
-# vec2/vec3 — valeur composée (cf. scripting/vec_types.py), pas une chaîne à
+# vec2/vec3 — valeur composée (cf. scripting/expr_types.py), pas une chaîne à
 # résoudre : l'argument Lua est un vec2(x,y)/vec3(x,y,z) littéral, une variable
 # du même type, ou une expression qui s'y réduit (a + b, get_position()…). Ces
 # deux chaînes SONT le type de retour ("ret") d'une ApiFunc qui rend un vecteur
@@ -44,6 +44,16 @@ PARAM_ACTOR        = "actor"         # nom Lua → &g_actors[TAG_NAME]
 PARAM_VEC2         = "vec2"
 PARAM_VEC3         = "vec3"
 PARAM_RECT         = "rect"
+
+# ─── Types de RÉFÉRENCE — ce qu'un appel REND, et sur quoi on écrit « : » ──
+# Une référence n'est ni une valeur composée (vec2) ni un nom résolu au build :
+# c'est un SLOT pris dans un pool dimensionné par le matériel, rendu par l'appel
+# qui l'a pris — la forme de `actor.spawn`, et celle de `sfx.play` depuis la
+# v0.8.6. Le `ret` d'une ApiFunc porte ce type ; les méthodes qui s'écrivent
+# dessus sont indexées `"<type>:<méthode>"` dans le catalogue, exactement comme
+# les méthodes d'actor le sont sous `"self:"`.
+REF_SFX = "sfx"                   # un effet EN TRAIN de jouer — un mm_sfxhand
+REF_TYPES: frozenset[str] = frozenset({REF_SFX})
 
 # ─── Domaines de résolution pour les arguments "str" ──────────────
 # Quand le codegen voit PARAM_STR il a besoin de savoir dans quel
@@ -65,6 +75,14 @@ DOMAIN_KEY    = "key"     # BTN_{name} — enum fixe du hardware, jamais renomm�
 DOMAIN_TAG    = "tag"
 DOMAIN_SCENE  = "scene"   # SCENE_IDX_{name}
 DOMAIN_CAMERA = "camera"  # CAM_{name}   — caméra du projet
+# Les trois boîtes sonores (ROADMAP v0.8.7). Un domaine PAR BOÎTE, parce que
+# chaque boîte a son propre espace de noms depuis qu'elles sont trois assets :
+# « sable » dans une SoundBox et « sable » dans une JingleBox sont deux états
+# différents, et l'appel dit lequel il vise. Un ÉTAT reste un fait qu'on pose
+# (« le sol est du sable »), un DÉCLENCHEUR un événement qu'on émet.
+DOMAIN_SOUND_BOX_STATE   = "sound_box_state"
+DOMAIN_JINGLE_BOX_STATE  = "jingle_box_state"
+DOMAIN_MUSIC_BOX_TRIGGER = "music_box_trigger"
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
 DOMAIN_FONT   = "font"    # FONT_{name}
 DOMAIN_PALETTE = "palette"  # PAL_{name} — palette du catalogue de couleurs
@@ -502,7 +520,48 @@ RUNTIME_API: dict[str, ApiFunc] = {
     "sfx.play": ApiFunc(
         lua_name="sfx.play", c_func="sfx_play",
         params=[Param("name", PARAM_STR, DOMAIN_SFX)],
-        doc="Joue un effet sonore one-shot.",
+        ret=REF_SFX,
+        doc="Joue un effet sonore one-shot. L'appel REND l'effet qui vient de "
+            "démarrer : `sfx.play(\"Bip\")` seul reste le cas courant, "
+            "`local pas = sfx.play(\"Pas\")` le suit ensuite. La référence "
+            "vaut 0 quand maxmod n'en a pas donné — plus aucun canal libre "
+            "(l'effet ne sonne pas), ou les 16 références déjà prises (il "
+            "sonne quand même).",
+    ),
+    # Les cinq méthodes de la référence. Elles ne valent que sur ce qu'un
+    # `sfx.play` a rendu : la clé porte le TYPE, pas le nom d'une variable.
+    # Une référence périmée — le son est fini — ne fait rien : maxmod range un
+    # compteur dans le handle et le relit à chaque appel (mesuré, v0.8.6).
+    f"{REF_SFX}:stop": ApiFunc(
+        lua_name="sfx:stop", c_func="sfx_stop",
+        params=[], self_first=True,
+        doc="Coupe cet effet. Sans effet s'il est déjà terminé.",
+    ),
+    f"{REF_SFX}:playing": ApiFunc(
+        lua_name="sfx:playing", c_func="sfx_is_playing",
+        params=[], ret="int", self_first=True,
+        doc="Vrai tant que cet effet sonne.",
+    ),
+    f"{REF_SFX}:set_volume": ApiFunc(
+        lua_name="sfx:set_volume", c_func="sfx_set_volume",
+        params=[Param("percent", PARAM_INT)], self_first=True,
+        doc="Règle le volume de CET effet, en pourcentage (100 = le niveau de "
+            "la ressource). Sans rapport avec `sound_box.set_volume`, qui règle "
+            "la catégorie entière.",
+    ),
+    f"{REF_SFX}:set_pitch": ApiFunc(
+        lua_name="sfx:set_pitch", c_func="sfx_set_pitch",
+        params=[Param("percent", PARAM_INT)], self_first=True,
+        doc="Règle la hauteur de CET effet, en pourcentage de sa hauteur "
+            "d'origine — 200 = une octave au-dessus, 50 = une octave en "
+            "dessous. La valeur est absolue : la même donne la même hauteur, "
+            "quel que soit le nombre d'appels.",
+    ),
+    f"{REF_SFX}:set_panning": ApiFunc(
+        lua_name="sfx:set_panning", c_func="sfx_set_panning",
+        params=[Param("panning", PARAM_INT)], self_first=True,
+        doc="Place cet effet dans le champ stéréo : −100 à gauche, 0 au "
+            "centre, +100 à droite.",
     ),
     "music.play": ApiFunc(
         lua_name="music.play", c_func="music_play",
@@ -513,6 +572,107 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="music.stop", c_func="music_stop",
         params=[],
         doc="Arrête la musique.",
+    ),
+    # Pas de référence côté musique : il n'y a qu'un module à la fois sur cette
+    # console, donc rien à tenir — l'appel désigne le seul qui puisse jouer.
+    "music.pause": ApiFunc(
+        lua_name="music.pause", c_func="music_pause",
+        params=[],
+        doc="Suspend la musique là où elle en est. `music.resume()` la reprend "
+            "au même endroit.",
+    ),
+    "music.resume": ApiFunc(
+        lua_name="music.resume", c_func="music_resume",
+        params=[],
+        doc="Reprend la musique suspendue.",
+    ),
+    "music.is_playing": ApiFunc(
+        lua_name="music.is_playing", c_func="music_is_playing",
+        params=[], ret="int",
+        doc="Vrai tant qu'un module joue. Faux après `music.stop()`, vrai "
+            "pendant une pause.",
+    ),
+    "music.set_volume": ApiFunc(
+        lua_name="music.set_volume", c_func="music_set_volume",
+        params=[Param("percent", PARAM_INT)],
+        doc="Règle le volume de la musique, en pourcentage. C'est le SEUL "
+            "niveau de la couche module : le matériel n'a qu'un scaler, et "
+            "aucune boîte n'en ajoute un deuxième.",
+    ),
+    # Le jingle : la seule superposition que la console autorise. Il ne boucle
+    # pas, prend jusqu'à 4 des 8 canaux, et il n'y en a qu'un à la fois — trois
+    # faits matériels, énoncés dans la doc plutôt que corrigés en douce.
+    "sound_box.set_state": ApiFunc(
+        lua_name="sound_box.set_state", c_func="sound_box_set_state",
+        params=[Param("state", PARAM_STR, DOMAIN_SOUND_BOX_STATE)],
+        doc="Change l'état de la SoundBox — « le sol est du sable », « on est "
+            "en vol ». Les actions posées sur les frames d'animation se "
+            "résolvent alors vers les échantillons de ce nouvel état : le même "
+            "cycle de marche sonne le sable ou les cailloux sans être authoré "
+            "deux fois.",
+    ),
+    "jingle_box.set_state": ApiFunc(
+        lua_name="jingle_box.set_state", c_func="jingle_box_set_state",
+        params=[Param("state", PARAM_STR, DOMAIN_JINGLE_BOX_STATE)],
+        doc="Change l'état de la JingleBox : vers quel module chaque "
+            "action de jingle pointe désormais.",
+    ),
+    "sound_box.set_volume": ApiFunc(
+        lua_name="sound_box.set_volume", c_func="sfx_set_effects_volume",
+        params=[Param("percent", PARAM_INT)],
+        doc="Règle le volume de TOUS les effets, en pourcentage. C'est un "
+            "réglage de mixage : il multiplie le volume propre de chaque "
+            "effet, il ne le remplace pas.",
+    ),
+    "jingle_box.set_volume": ApiFunc(
+        lua_name="jingle_box.set_volume", c_func="music_jingle_volume",
+        params=[Param("percent", PARAM_INT)],
+        doc="Règle le volume de la couche jingle, en pourcentage. Avec "
+            "`music.set_volume`, c'est la moitié du duck : la musique "
+            "s'efface pendant la fanfare, puis remonte.",
+    ),
+    "music_box.trigger": ApiFunc(
+        lua_name="music_box.trigger", c_func="music_box_trigger",
+        params=[Param("trigger", PARAM_STR, DOMAIN_MUSIC_BOX_TRIGGER)],
+        doc="Émet un déclencheur de la MusicBox. C'est la BOÎTE qui décide "
+            "vers quel état il mène et par quelle transition — le script dit "
+            "seulement qu'il s'est passé quelque chose.",
+    ),
+    "music.jingle": ApiFunc(
+        lua_name="music.jingle", c_func="music_jingle",
+        params=[Param("name", PARAM_STR, DOMAIN_MUSIC)],
+        doc="Joue un module PAR-DESSUS la musique en cours, sans l'arrêter — "
+            "une fanfare de victoire, un carillon. Il ne boucle jamais et se "
+            "termine seul. Un seul à la fois, et il prend jusqu'à 4 des 8 "
+            "canaux du projet. C'est la seule façon de faire sonner deux "
+            "musiques ensemble sur cette console.",
+    ),
+    "music.jingle_playing": ApiFunc(
+        lua_name="music.jingle_playing", c_func="music_jingle_playing",
+        params=[], ret="int",
+        doc="Vrai tant qu'un jingle sonne.",
+    ),
+
+    # Les DEUX transitions du matériel. Il n'y en a pas de troisième : maxmod
+    # n'a qu'une couche de module qui boucle, donc aucun fondu enchaîné n'est
+    # possible sur cette console (cf. ROADMAP v0.8.3).
+    "music.fade_to": ApiFunc(
+        lua_name="music.fade_to", c_func="music_fade_to",
+        params=[Param("name", PARAM_STR, DOMAIN_MUSIC),
+                Param("frames", PARAM_INT)],
+        doc="Passe à une autre piste par un fondu traversant : le volume tombe "
+            "à zéro, la piste change, le volume remonte. Marche entre deux "
+            "morceaux quelconques, au prix d'un creux audible. `frames` est la "
+            "durée totale des deux moitiés.",
+    ),
+    "music.cut_to": ApiFunc(
+        lua_name="music.cut_to", c_func="music_cut_to",
+        params=[Param("name", PARAM_STR, DOMAIN_MUSIC)],
+        doc="Passe à une autre piste SANS creux, à la fin du motif en cours, "
+            "en reprenant à la même position. C'est ce qui enchaîne deux "
+            "variantes d'un même morceau — la batterie qui entre, le thème qui "
+            "s'intensifie. Les deux pistes doivent avoir la même structure ; le "
+            "validateur le vérifie.",
     ),
 
     # ── Scènes ─────────────────────────────────────────────────────
@@ -1048,7 +1208,7 @@ RUNTIME_API: dict[str, ApiFunc] = {
 #   - position et zone scrollable de la caméra → camera.*
 #   - taille du monde de la scène → scene.size (lecture seule, .w/.h)
 # Les propriétés d'actor s'accèdent sur n'importe quel Actor* nommé (self,
-# other, ou une variable d'actor) — c'est `vec_types.resolve_prop` qui le gère.
+# other, ou une variable d'actor) — c'est `expr_types.resolve_prop` qui le gère.
 #
 # Une propriété composite (PARAM_VEC2 / PARAM_RECT) est une valeur IMMUABLE :
 # `self.position.x` se lit, `self.position = vec2(x, y)` s'écrit, mais

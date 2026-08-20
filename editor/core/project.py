@@ -80,6 +80,7 @@ from core.models.audio import Sfx, Music
 from core.models.font import Font
 from core.models.ui_region import UILayout
 from core.models.camera import Camera
+from core.models.sound_box import MusicBox, JingleBox, SoundBox
 from core.models.data_table import DataTable
 from core.models.scene import Prefab, Actor, Scene
 
@@ -161,6 +162,14 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
         self.cameras: ResourceStore[Camera] = ResourceStore(self.cameras_dir, Camera)
+        # Trois registres et non un : les trois couches du matériel ne se
+        # coordonnent pas, et un appel Lua nomme la boîte à qui il parle.
+        self.music_boxes: ResourceStore[MusicBox] = ResourceStore(
+            self.music_boxes_dir, MusicBox)
+        self.jingle_boxes: ResourceStore[JingleBox] = ResourceStore(
+            self.jingle_boxes_dir, JingleBox)
+        self.sound_boxes: ResourceStore[SoundBox] = ResourceStore(
+            self.sound_boxes_dir, SoundBox)
         self.data_tables: ResourceStore[DataTable] = ResourceStore(self.data_tables_dir, DataTable)
 
         # Variables globales déclarées explicitement dans le projet
@@ -233,7 +242,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
-                    self.palettes, self.cameras):
+                    self.palettes, self.cameras, self.music_boxes,
+                    self.jingle_boxes, self.sound_boxes):
             mgr.commit_deletes()
 
     # ── Helpers de lookup ────────────────────────────────────────
@@ -372,6 +382,172 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         il les verrait côte à côte dans l'arbre sans pouvoir les distinguer."""
         return [e.name for _lay, e in self.all_elements()]
 
+    def _action_boxes(self, kind: str):
+        """Le registre d'actions d'une famille, trié par nom."""
+        from core.models.sound_box import KIND_JINGLE
+        store = self.jingle_boxes if kind == KIND_JINGLE else self.sound_boxes
+        return sorted(store, key=lambda b: b.name)
+
+    def sound_action_names(self, kind: str) -> list[str]:
+        """Les actions d'une famille, dans un ordre stable.
+
+        L'espace est COMMUN au projet et non propre à une boîte : une frame
+        d'animation cite une action par son nom (« pas »), et elle ne sait pas
+        quelle boîte sera active quand elle se jouera. Deux boîtes qui
+        déclarent `pas` doivent donc viser la même action — sinon la même
+        animation sonnerait ou non selon la boîte, sans que rien ne le dise.
+
+        L'ordre — boîtes par nom, puis l'ordre d'écriture de l'auteur dans
+        chacune — devient l'index émis en C. Il est recalculé à chaque build et
+        n'est jamais sérialisé : un index rangé dans un fichier est un index à
+        tenir d'accord avec sa source (même règle que l'arbre de `UILayout`).
+        """
+        names: list[str] = []
+        for box in self._action_boxes(kind):
+            for action in box.actions:
+                if action and action not in names:
+                    names.append(action)
+        return names
+
+    def sound_state_names(self, kind: str) -> list[str]:
+        """Les états d'une famille, dans un ordre stable.
+
+        UN espace par famille, et non un espace commun : depuis que les trois
+        boîtes sont trois assets, `sound_box.set_state("sable")` dit à qui il
+        parle. Deux familles peuvent donc porter le même nom d'état sans que
+        rien ne devienne ambigu — ce que le fichier unique interdisait.
+        """
+        from core.models.sound_box import KIND_MUSIC
+        boxes = (sorted(self.music_boxes, key=lambda b: b.name)
+                 if kind == KIND_MUSIC else self._action_boxes(kind))
+        names: list[str] = []
+        for box in boxes:
+            for st in box.states:
+                if st.name and st.name not in names:
+                    names.append(st.name)
+        return names
+
+    def sound_trigger_names(self) -> list[str]:
+        """Les déclencheurs cités par les arêtes musicales, dans un ordre stable.
+
+        L'ordre devient l'entier que `music_box.trigger(...)` passe au runtime,
+        et il est recalculé à chaque build : jamais sérialisé, donc jamais à
+        tenir d'accord avec autre chose.
+        """
+        names: list[str] = []
+        for box in sorted(self.music_boxes, key=lambda b: b.name):
+            for tr in box.transitions:
+                if tr.trigger and tr.trigger not in names:
+                    names.append(tr.trigger)
+        return names
+
+    def _migrate_box_dirs(self):
+        """Renomme les trois dossiers de boîtes vers leur nom au SINGULIER.
+
+        Le pluriel (`musics_boxes`) est tombé avec la v0.8.6, qui aligne le nom
+        de la boîte sur celui de l'appel Lua (`music_box.trigger`). Le CONTENU
+        des fichiers ne change pas : seul le dossier est renommé, donc rien à
+        relire ni à réécrire.
+
+        Le dossier neuf ne l'est jamais avant ce passage — `load()` crée les
+        sous-dossiers manquants juste après. S'il existe déjà avec du contenu,
+        on ne touche à rien : deux dossiers pleins veulent dire que quelqu'un a
+        déjà migré, et écraser serait choisir à sa place.
+        """
+        for old, new_dir in (("musics_boxes", self.music_boxes_dir),
+                             ("jingles_boxes", self.jingle_boxes_dir),
+                             ("sounds_boxes", self.sound_boxes_dir)):
+            old_dir = self.project_dir / old
+            if not old_dir.is_dir():
+                continue
+            if new_dir.exists() and any(new_dir.iterdir()):
+                continue
+            try:
+                if new_dir.exists():
+                    new_dir.rmdir()
+                old_dir.rename(new_dir)
+            except OSError:
+                continue
+
+    def _migrate_sound_states(self):
+        """Découpe les anciennes boîtes à trois machines en trois assets.
+
+        Un fichier `project/sound_states/X.json` d'avant le 2026-08-18 portait
+        musique, effets et jingles ensemble. Il devient jusqu'à trois fichiers
+        du même nom, un par famille — et seulement pour les familles qui
+        avaient du contenu : une boîte vide créée par la migration serait un
+        asset que personne n'a voulu.
+
+        Le dossier d'origine est ensuite RENOMMÉ, pas effacé : la donnée de
+        l'auteur reste sur le disque, et la migration ne se rejoue pas
+        par-dessus le travail qui a suivi.
+        """
+        import json
+        import time
+        from core.models.sound_box import (
+            MusicBox, JingleBox, SoundBox, MusicState, MusicTransition,
+            ActionState,
+        )
+        old_dir = self.legacy_sound_states_dir
+        if not old_dir.is_dir():
+            return
+        files = sorted(old_dir.glob("*.json"))
+        for path in files:
+            try:
+                d = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            name = d.get("name", path.stem)
+            made = False
+            if d.get("music_states"):
+                box = MusicBox(
+                    name=name, start=d.get("music_start", ""),
+                    states=[MusicState(
+                        name=s.get("name", "state"), music=s.get("music", ""),
+                        loop=s.get("loop", True), level=int(s.get("level", 100)),
+                        intensity_target=s.get("intensity_target", "volume"),
+                        intensity=int(s.get("intensity", 100)),
+                        x=int(s.get("x", 0)), y=int(s.get("y", 0)))
+                        for s in d["music_states"]],
+                    transitions=[MusicTransition(
+                        src=t.get("src", ""), dst=t.get("dst", ""),
+                        trigger=t.get("trigger", ""), kind=t.get("kind", "fade"),
+                        frames=int(t.get("frames", 30)))
+                        for t in d.get("music_transitions", [])])
+                self.music_boxes.save(box)
+                made = True
+            for key, cls, store in (("sfx", SoundBox, self.sound_boxes),
+                                    ("jingle", JingleBox, self.jingle_boxes)):
+                m = d.get(key) or {}
+                if not (m.get("slots") or m.get("states")):
+                    continue
+                made = True
+                store.save(cls(
+                    name=name, actions=list(m.get("slots", [])),
+                    start=m.get("start", ""),
+                    states=[ActionState(name=s.get("name", "state"),
+                                        mapping=dict(s.get("mapping", {})))
+                            for s in m.get("states", [])]))
+            if not made:
+                # Une boîte encore vide reste une boîte que l'auteur a créée et
+                # NOMMÉE. La perdre en silence serait perdre une intention.
+                self.music_boxes.save(MusicBox(name=name))
+        if files:
+            # Le projet énonce le fait ; c'est l'application qui décide de la
+            # formulation et de l'endroit où elle s'affiche.
+            self.events._emit(
+                "status",
+                f"{len(files)} boîte(s) à état découpée(s) en MusicBox / "
+                f"JingleBox / SoundBox — ancien dossier conservé sous "
+                f"« sound_states.migre »")
+        target = old_dir.with_name("sound_states.migre")
+        if target.exists():
+            target = old_dir.with_name(f"sound_states.migre.{int(time.time())}")
+        try:
+            old_dir.rename(target)
+        except OSError:
+            pass
+
     def ui_layout_users(self, name: str) -> list:
         """Scènes qui référencent cette mise en page. Alimente le badge
         « partagée — N scènes » : éditer une région depuis le canvas modifie un
@@ -450,6 +626,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             "save_slots":  self.settings.save_slots,
             "transition_kind":   self.settings.transition_kind,
             "transition_frames": self.settings.transition_frames,
+            "cartridge_mib":     self.settings.cartridge_mib,
+            "sfx_sample_rate":   self.settings.sfx_sample_rate,
+            "sound_channels":    self.settings.sound_channels,
         }
         atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
 
@@ -476,6 +655,20 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # exactement ce qu'il avait avant. Le fondu se demande, il ne s'impose pas.
         self.settings.transition_kind   = d.get("transition_kind", "none") or "none"
         self.settings.transition_frames = max(1, int(d.get("transition_frames", 16)))
+        # Un projet antérieur à la v0.8.4 vise la plus petite cartouche et ne
+        # ré-échantillonne rien : les deux défauts ne changent RIEN à ce qui
+        # était construit avant.
+        from codegen.rom_report import CARTRIDGE_SIZES_MIB, DEFAULT_CARTRIDGE_MIB
+        cart = int(d.get("cartridge_mib", DEFAULT_CARTRIDGE_MIB))
+        self.settings.cartridge_mib = cart if cart in CARTRIDGE_SIZES_MIB else DEFAULT_CARTRIDGE_MIB
+        self.settings.sfx_sample_rate = max(0, int(d.get("sfx_sample_rate", 0)))
+        # Antérieur à la v0.8.8 : les 8 canaux qui étaient en dur dans le
+        # codegen. Borné par le matériel — le masque de canaux de maxmod est un
+        # mot de 32 bits, et sous 4 canaux un module ordinaire ne tient pas.
+        from core.models.audio import SOUND_CHANNELS_MIN, SOUND_CHANNELS_MAX
+        self.settings.sound_channels = max(
+            SOUND_CHANNELS_MIN,
+            min(SOUND_CHANNELS_MAX, int(d.get("sound_channels", 8))))
 
 
 
@@ -504,6 +697,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.fonts.save_all()
         self.ui_layouts.save_all()
         self.cameras.save_all()
+        self.music_boxes.save_all()
+        self.jingle_boxes.save_all()
+        self.sound_boxes.save_all()
         self.data_tables.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
@@ -527,6 +723,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         for sub in ("project/scenes", "project/prefab",
                     "project/palettes", "project/ui_layouts",
                     "project/cameras",
+                    "project/music_boxes",
+                    "project/jingle_boxes",
+                    "project/sound_boxes",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",
@@ -560,6 +759,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
         self.cameras.load()
+        self._migrate_box_dirs()
+        self._migrate_sound_states()
+        self.music_boxes.load()
+        self.jingle_boxes.load()
+        self.sound_boxes.load()
         self.data_tables.load()
         self.prefabs.load()
         self.load_scenes()

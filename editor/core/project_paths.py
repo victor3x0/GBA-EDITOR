@@ -64,6 +64,33 @@ class ProjectPathsMixin:
         return self.project_dir / "ui_layouts"
 
     @property
+    def music_boxes_dir(self) -> Path:
+        """MusicBox — project/music_boxes/*.json.
+
+        Avec les données propres au projet, comme les caméras : une boîte
+        sonore ne dérive d'aucun fichier importé (ROADMAP v0.8.7)."""
+        return self.project_dir / "music_boxes"
+
+    @property
+    def jingle_boxes_dir(self) -> Path:
+        """JingleBox — project/jingle_boxes/*.json."""
+        return self.project_dir / "jingle_boxes"
+
+    @property
+    def sound_boxes_dir(self) -> Path:
+        """SoundBox — project/sound_boxes/*.json."""
+        return self.project_dir / "sound_boxes"
+
+    @property
+    def legacy_sound_states_dir(self) -> Path:
+        """L'ancien dossier des boîtes à trois machines (avant 2026-08-18).
+
+        Lu une seule fois, à l'ouverture, pour être découpé en trois — puis
+        renommé afin que la migration ne se rejoue pas par-dessus le travail
+        qui a suivi (cf. Project._migrate_sound_states)."""
+        return self.project_dir / "sound_states"
+
+    @property
     def cameras_dir(self) -> Path:
         """Caméras — project/cameras/*.json.
 

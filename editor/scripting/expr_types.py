@@ -1,6 +1,16 @@
-"""editor/scripting/vec_types.py — les seules exceptions au « le sous-ensemble
-Lua ne connaît que des scalaires » (cf. ARCHITECTURE.md) : les VALEURS COMPOSÉES
-`vec2`, `vec3` et `rect`.
+"""editor/scripting/expr_types.py — de quel TYPE est une expression Lua.
+
+Le sous-ensemble ne connaît que des scalaires (cf. ARCHITECTURE.md), à deux
+exceptions près, et ce module répond pour les deux : les VALEURS COMPOSÉES
+(`vec2`, `vec3`, `rect`) et les RÉFÉRENCES rendues par un appel (`sfx.play`).
+Il s'appelait `vec_types.py` tant qu'il n'y en avait qu'une.
+
+Une valeur composée se COPIE, une référence DÉSIGNE un slot pris dans un pool
+du matériel : les deux ne se confondent pas, mais checker.py et codegen.py se
+posent la même question sur les deux — « quel type porte ce nom ? » — et deux
+modules auraient fini par y répondre différemment.
+
+── Les valeurs composées ────────────────────────────────────────────────
 
 `vec2(x, y)`, `vec3(x, y, z)` et `rect(x, y, w, h)` sont des CONSTRUCTEURS DE
 LANGAGE, pas des entrées `RUNTIME_API` : ils ne traduisent pas un appel C, ils
@@ -26,7 +36,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .parser import ExprName, ExprIndex, ExprCall, ExprInvoke, ExprBinop
-from .api import RUNTIME_API, RUNTIME_PROPS, ApiProp
+from .api import RUNTIME_API, RUNTIME_PROPS, REF_TYPES, ApiProp
 
 # Champs valides par type — l'ordre est celui du constructeur.
 VEC_FIELDS: dict[str, tuple[str, ...]] = {
@@ -134,3 +144,28 @@ def infer_vec_type(expr, local_types: dict[str, Optional[str]]) -> Optional[str]
             return p.ptype if (p.ptype in VEC_CONSTRUCTORS) else None
 
     return None
+
+
+# ─── Les références ───────────────────────────────────────────────
+# Ce qu'un appel REND et sur quoi s'écrivent des méthodes : un slot pris dans
+# un pool dimensionné par le matériel. Le catalogue déclare le type (`ret`), ce
+# module dit si une expression en porte un, et la table ci-dessous ce que le C
+# écrit pour le tenir.
+
+C_REF_TYPES: dict[str, str] = {
+    "sfx": "mm_sfxhand",     # une référence d'effet — cf. headers.py
+}
+
+
+def infer_ref_type(expr) -> Optional[str]:
+    """Le type de référence que rend `expr`, ou None.
+
+    Un seul producteur possible : un appel du catalogue dont le `ret` est un
+    type de référence. Une référence ne se calcule pas — on ne l'additionne
+    pas, on n'en prend pas de champ —, donc il n'y a rien d'autre à parcourir,
+    contrairement aux valeurs composées.
+    """
+    if not isinstance(expr, ExprCall):
+        return None
+    api = RUNTIME_API.get(_call_key(expr.func) or "")
+    return api.ret if (api and api.ret in REF_TYPES) else None

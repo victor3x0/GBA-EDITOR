@@ -466,6 +466,7 @@ class AssetFinder(QWidget):
         self._project = None
         self._kinds = list(kinds)
         self._trees: dict[str, _KindTree] = {}
+        self._sections: dict[str, QWidget] = {}
         self._empties: dict[str, QLabel] = {}
         self._extra_actions: dict[str, list] = {}
         self.setStyleSheet(f"background:{C.BG_BASE};")
@@ -499,6 +500,7 @@ class AssetFinder(QWidget):
             section = FinderSection(kind.label)
             tree = _KindTree(self, kind)
             self._trees[kind.label] = tree
+            self._sections[kind.label] = section
             section.set_widget(self._wrap(tree, kind))
             if kind.add is None and not kind.add_tooltip:
                 section.set_add_visible(False)
@@ -510,6 +512,17 @@ class AssetFinder(QWidget):
         self._column.addStretch()
         scroll.setWidget(container)
         root.addWidget(scroll, 1)
+
+    def show_only(self, labels):
+        """N'affiche que ces familles — le finder suit ce qu'on édite.
+
+        Une banque d'effets n'a rien à faire à côté d'un graphe musical : elle
+        ne s'y glisse pas et ne s'y référence pas. Masquer plutôt que griser,
+        comme partout ailleurs : on ne propose pas une action impossible.
+        `None` remet tout.
+        """
+        for label, section in self._sections.items():
+            section.setVisible(labels is None or label in labels)
 
     def add_section(self, section: QWidget):
         """Ajoute une section À LA SUITE des familles, dans la même colonne

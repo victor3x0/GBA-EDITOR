@@ -37,8 +37,10 @@ gba-editor/
 │   │   │   │                          le fait en C — DEUX implémentations à tenir d'accord
 │   │   │   ├── text_layout.py       ← où atterrit chaque glyphe (jumeau : text_layout() du moteur)
 │   │   │   ├── blend_preview.py     ← les formules BLDCNT/BLDALPHA/BLDY appliquées aux images
-│   │   │   ├── mod_render.py        ← rejoue un MOD façon mixeur Maxmod (taux réduit, sans interpolation)
-│   │   │   └── mod_file.py          ← le format ProTracker que mod_render lit
+│   │   │   ├── module_render.py     ← rejoue un module façon mixeur maxmod (taux réduit, sans interpolation)
+│   │   │   ├── music_deck.py        ← la couche module et ses 2 transitions (jumeau : music_transition_tick())
+│   │   │   ├── module_model.py      ← le modèle commun aux 4 formats + reconnaissance par signature
+│   │   │   └── mod/s3m/xm/it_file.py ← les 4 lecteurs de format que maxmod accepte
 │   │   ├── text_markup.py           ← langage de balisage des textes (BBCode) : analyse → affiché + effets
 │   │   ├── toolchain.py             ← détection devkitPro/mGBA (PATH, config, emplacements connus)
 │   │   └── ...
@@ -93,7 +95,12 @@ gba-editor/
 │       │   ├── data_inspector_panel.py     ← panneau droit : la colonne, et ce que la cellule désigne
 │       │   └── data_editor_screen.py       ← écran complet (assemble les 3 colonnes)
 │       ├── sound_mixer/
-│       │   └── sound_panel.py
+│       │   ├── box_playback.py             ← lecture ROM d'une MusicBox (sortie audio + cache des modules)
+│       │   ├── music_graph.py              ← centre : le graphe de la MusicBox (nœuds déplaçables)
+│       │   ├── sound_commands.py           ← écritures annulables (déplacer, supprimer, renommer un état)
+│       │   ├── state_machines.py           ← hôte du graphe, inspecteur d'état, tables actions × états
+│       │   ├── sound_budget_bar.py         ← bandeau canaux, LOCAL à l'écran (jumeau de GbaStatusBar)
+│       │   └── sound_panel.py              ← écran complet (finder + 3 onglets de boîtes + inspecteurs)
 │       ├── script_editor/             ← un fichier par sous-zone de l'écran
 │       │   ├── colors.py                  ← proxys couleur partagés par tout l'écran
 │       │   ├── lua_editor.py               ← coloration syntaxique + widget d'édition
@@ -244,7 +251,7 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 - **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
 - **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (ROADMAP v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge.
-- **`vec_types.py`** — la seule exception au sous-ensemble Lua entièrement scalaire (ROADMAP v0.7.3) : `vec2(x, y)`/`vec3(x, y, z)` sont des constructeurs de langage, pas des entrées `RUNTIME_API`. `checker.py` et `codegen.py` partagent ce module pour savoir si une expression EST un vec2/vec3 (locals `self._vec_types`, remplie au fil d'un même parcours à plat dans les deux fichiers — même approximation que `self._arrays`) plutôt que de laisser chacun réinventer sa propre inférence. `+`/`-`/`*` (par un entier) s'y traduisent en appels `vec2_add`/`vec2_sub`/`vec2_scale` (`actor_api_static.h`) : le C n'a pas d'opérateur sur les structs.
+- **`expr_types.py`** — les deux exceptions au sous-ensemble Lua entièrement scalaire (ROADMAP v0.7.3 et v0.8.6) : `vec2(x, y)`/`vec3(x, y, z)` sont des constructeurs de langage, pas des entrées `RUNTIME_API`. `checker.py` et `codegen.py` partagent ce module pour savoir si une expression EST un vec2/vec3 (locals `self._vec_types`, remplie au fil d'un même parcours à plat dans les deux fichiers — même approximation que `self._arrays`) plutôt que de laisser chacun réinventer sa propre inférence. `+`/`-`/`*` (par un entier) s'y traduisent en appels `vec2_add`/`vec2_sub`/`vec2_scale` (`actor_api_static.h`) : le C n'a pas d'opérateur sur les structs. La seconde exception sont les **références** — ce qu'un appel REND (`local pas = sfx.play("Pas")`) : une valeur composée se copie, une référence DÉSIGNE un slot pris dans un pool du matériel, mais les deux répondent à la même question (« quel type porte ce nom ? ») et deux modules y auraient fini par répondre différemment. Le module s'appelait `vec_types.py` tant qu'il n'y avait qu'une exception.
 
 ### La grammaire de l'API — trois formes, une par nature
 
@@ -254,12 +261,17 @@ un choix stylistique : c'est elle qui dit au parseur quoi produire (`Invoke` pou
 
 | Syntaxe | Nature | Compile en |
 |---|---|---|
-| `identifier:member(...)` | **méthode** — opération sur une instance, qui peut produire un effet | `actor_member(récepteur, ...)` |
+| `identifier:member(...)` | **méthode** — opération sur une instance, qui peut produire un effet | `actor_member(récepteur, ...)`, ou `sfx_member(...)` sur une référence |
 | `identifier.member` | **propriété** — donnée que l'API expose comme un état, lue et écrite | `actor_get_member(...)` / `actor_set_member(...)` |
 | `module.member(...)` | **fonction module** — opération au niveau du système, sans instance | `module_member(...)` |
 
-`identifier` dans la forme méthode est une **instance** (`self`, `other`, une
-variable d'actor) ; `module` est un namespace (`sfx`, `math`, `camera`, `scene`,
+`identifier` dans la forme méthode est une **instance** : un acteur (`self`, `other`, une
+variable d'actor) ou une **référence** rendue par un appel (`local pas = sfx.play("Pas")` →
+`pas:set_volume(80)`, ROADMAP v0.8.6). Le catalogue range les méthodes d'acteur sous la clé
+`self:` et celles d'une référence sous le TYPE qu'elle porte (`sfx:`) : c'est ce type, relevé
+sur le `local` par `expr_types.infer_ref_type`, qui décide de la fonction C émise — sans lui,
+`pas:set_volume` retomberait sur le repli `actor_set_volume(pas, …)`, qui ne compile pas.
+`module` est un namespace (`sfx`, `math`, `camera`, `scene`,
 `input`, `blend`…). Le même namespace peut exposer des propriétés ET des
 fonctions (`camera.position` + `camera.follow(...)`) : les parenthèses lèvent
 l'ambiguïté.

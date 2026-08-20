@@ -30,7 +30,7 @@ suppositions faites à l'avance.
 | v0.5 | Sauvegarde | **Livrée** |
 | v0.6 | Polish de la boucle de jeu | **Livrée**, rouverte pour le game feel |
 | v0.7 | Structures de données, et le langage | **Livrée**, les deux chantiers rouverts avec |
-| v0.8 | Son : la musique par scène, les transitions, le mixage | Non commencée |
+| v0.8 | Son : la musique par scène, les transitions, le mixage | **Livrée** |
 | v0.9 | Traduction des jeux | Non commencée |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | Non commencée |
@@ -38,6 +38,19 @@ suppositions faites à l'avance.
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.14 | Diagnostic (trace de débogage, budget) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu |
+| v0.16 | L'API : règle de construction et rangement | Non commencée |
+| v0.17 | Le pool par scène | Non commencée |
+| v0.18 | La valeur affichée : d'où elle vient | Non commencée |
+| v0.19 | Le sous-pixel | Non commencée |
+| v0.20 | L'état du monde : les collections persistantes | Non commencée |
+| v0.21 | Le texte adressable : le dialogue piloté par la donnée | Non commencée |
+| v0.22 | Menus, listes et curseur | Non commencée |
+| v0.23 | Ce qu'un boss demande | Non commencée |
+| v0.24 | Le projet à l'échelle d'une équipe | Non commencée |
+
+Les six dernières viennent de la revue « projet de production » du 2026-08-19, dont l'ordre
+recommandé — **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 → v0.22** — est justifié dans sa
+section, juste avant la v1.0. Un numéro reste une identité, pas un rang.
 
 ---
 
@@ -628,10 +641,12 @@ l'ensemble de ces variables dans un **emplacement de sauvegarde**, et le jeu ret
   quelque chose ici », ce qui suffit à griser une entrée de menu. Un écran de sélection
   qui afficherait *quoi* — un nom, une durée de jeu, un chapitre — demanderait un
   en-tête descriptif par emplacement, donc une notion de métadonnée que le format
-  n'a pas. À rouvrir sur un cas réel.
+  n'a pas. À rouvrir sur un cas réel. — **Rouvert le 2026-08-19 : c'est la v0.22**, avec
+  l'écran de sélection de partie qui les affiche.
 - Rien côté éditeur ne montre l'occupation de la sauvegarde en dehors du garde-fou de
   build. Un indicateur « X octets sur 32 Kio » n'a d'intérêt que si l'on peut approcher
-  la limite, ce qui demande beaucoup de variables.
+  la limite, ce qui demande beaucoup de variables. — **La v0.20 crée exactement ça** : un
+  tableau persistant est le premier objet capable d'approcher les 32 Kio.
 
 ---
 
@@ -1817,7 +1832,9 @@ en défaut, pas le budget.
   ligne droite, et elle est dite sur la ligne fautive avec ses deux issues. La lever
   demanderait une transformation en continuations, dont le C émis ne se relirait plus avec
   les mots du Lua — c'est-à-dire le prix que cette version refuse de payer. À rouvrir
-  seulement si une cinématique réelle bute dessus.
+  seulement si une cinématique réelle bute dessus. — **Le cas réel est arrivé le 2026-08-19**
+  (un pattern d'attaque de boss, `3 × (tirer, attendre 20)`) : la **v0.23** lève la limite pour
+  la seule **boucle bornée**, et maintient le refus dans un `if`.
 
 ---
 
@@ -1840,10 +1857,13 @@ en défaut, pas le budget.
 
 ---
 
-## v0.8 — Son : la musique par scène, les transitions, le mixage
+## v0.8 — Son : la musique par scène, les transitions, le mixage — **LIVRÉE**
 
-Les ressources son et musique sont aujourd'hui des ébauches, explicitement marquées comme
-telles dans le code (`core/models/audio.py` porte un TODO en tête).
+Les ressources son et musique n'étaient au départ que des ébauches, explicitement marquées
+comme telles dans le code (`core/models/audio.py` portait un TODO en tête). Le jalon les a
+sorties de cet état : musique par scène, deux transitions fidèles au matériel, écran de
+mixage à trois boîtes d'état, référence d'effet avec ses cinq réglages à l'appel, canaux
+logiciels en réglage de projet, et les quatre formats de module que maxmod sait jouer.
 
 ### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-17)
 
@@ -1869,21 +1889,180 @@ le premier morceau du catalogue, quel qu'il soit. Ce n'est pas une ébauche à e
 un emplacement réservé. Il passe devant le reste du jalon : **sans musique par scène, il n'y
 a rien à faire transiter.**
 
-### v0.8.1 — Clarifier les ressources
+### v0.8.1 — Clarifier les ressources — **LIVRÉE**
 
 Format source des effets (wav brut ou conversion), hauteur ; format de musique (module
 tracker) et point de bouclage.
 
-- **Un trou concret, mesuré** : `SFX_FILE_EXTS` accepte `.ogg` et `.mp3`, `MUSIC_FILE_EXTS`
-  accepte `.mp3`, et le dialogue d'import propose `*.ogg` — or les fichiers partent **bruts**
-  à mmutil, qui ne connaît que le wav et les modules (mod/xm/s3m/it). Un `.ogg` déposé casse
-  donc le build sur une sortie mmutil, jamais sur sa cause, et `validator.py` ne dit rien du
-  son. Décider ce que l'éditeur accepte est exactement le sujet de ce chapitre : soit il
-  convertit, soit il refuse en le disant à l'import.
+- **Quatre listes se contredisent** : `SFX_FILE_EXTS` accepte `.ogg` et `.mp3`,
+  `MUSIC_FILE_EXTS` accepte `.mp3`, le dialogue d'import propose `*.ogg`, mmutil ne connaît que
+  le wav et les modules, et l'aperçu de l'éditeur ne sait lire que le ProTracker. Aucune des
+  quatre n'est la bonne, et `validator.py` ne dit rien du son.
 - **La hauteur n'existe nulle part** : `ex.rate` est figé à `1024` dans le `sfx_play` émis.
   C'est le seul manque réel côté C.
 
-#### Décisions verrouillées
+#### mmutil n'échoue JAMAIS — mesuré, et c'est le fait qui décide de tout (2026-08-17)
+
+Un build de contrôle sur des fichiers volontairement mauvais. **Les trois cas sortent avec le
+code de retour 0**, et `MmutilAudio.run()` ne lit que ce code et l'existence du fichier : rien
+n'inspecte la sortie de mmutil.
+
+| Entrée | Ce que mmutil dit | `#define` émis ? | Ce que ça donne |
+| --- | --- | --- | --- |
+| `.wav` PCM 8 ou 16 bits, mono ou stéréo | rien | oui | correct — converti en 8 bits mono |
+| `.wav` 24 bits ou 32 bits flottant | `Unsupported bit-depth.` | **oui** | **le build passe, l'effet est MUET dans la ROM** |
+| `.ogg`, `.mp3`, extension inconnue | `Unknown file X...` | non | le build échoue plus tard, sur un `SFX_X` indéfini en C |
+
+Le cas du milieu est le grave : un `#define` est bien émis, la ROM se construit, et le son
+n'existe pas. C'est exactement la **dégradation silencieuse** refusée en v0.2 et en v0.5.
+Le troisième cas échoue au moins bruyamment, mais l'erreur pointe le C généré et non le fichier
+déposé. Et le tri se fait sur l'**extension**, pas sur le contenu : un wav valide renommé
+`.ogg` est rejeté comme « Unknown file ».
+
+**Conséquence directe : on ne peut pas s'appuyer sur mmutil pour dire non.** Le refus doit
+avoir lieu à l'import, dans l'éditeur, ou nulle part.
+
+#### Ce que le son coûte aujourd'hui, mesuré sur la démo
+
+| | |
+| --- | --- |
+| `soundbank.bin` | 760 156 o |
+| `rom.gba` | 829 764 o |
+| **part du son dans la ROM** | **91,6 %** |
+| dont les cinq SFX | 227 966 o (222,6 Kio) |
+
+Les cinq effets de Pong sont des wav **stéréo 16 bits à 44,1 kHz**. mmutil les convertit en
+8 bits mono mais **conserve le taux d'échantillonnage** : un rebond de balle coûte 13,5 Kio de
+ROM. Ré-échantillonnés à 16 kHz — au-dessus de ce que le mixeur Maxmod restitue —, les cinq
+tomberaient à 80,8 Kio, soit **142 Kio récupérés sans perte audible**.
+
+Mais le taux d'échantillonnage n'était que la moitié du sujet. L'autre moitié suit.
+
+#### La ROM transportait 96 % de musique morte — **CORRIGÉ**
+
+`resolve_sound_assets()` prenait **toutes** les ressources du projet, sans jamais regarder si
+quelque chose les jouait. Pong ne cite que quatre morceaux dans ses scripts ; il en embarquait
+105.
+
+| | avant | après |
+| --- | --- | --- |
+| musiques en ROM | 105 | 5 |
+| `soundbank.bin` | 760 156 o | 312 268 o |
+| `rom.gba` | 829 764 o | **381 876 o** |
+
+**La ROM perd 54 % de sa taille**, et le jeu est identique. Les cinq musiques retenues sont
+les quatre citées plus celle que le boot démarre — un emplacement réservé que la v0.8.2 doit
+remplacer.
+
+- **La liste des sons atteignables est EXHAUSTIVE, et ça tient au langage.** Le sous-ensemble
+  Lua n'a pas de chaîne manipulable (SCRIPTING.md) : une chaîne y est toujours un nom cité,
+  résolu au build, et il n'existe aucun moyen de ranger un nom de piste dans une variable. Le
+  problème des « cibles dynamiques » resté ouvert pour le graphe des scènes (v0.12) **ne se
+  pose donc pas ici**, et aucun drapeau « garde-le quand même » n'est nécessaire. Ne pas
+  recopier un mécanisme dont la raison d'être ne s'applique pas.
+- **Trois sources de référence**, parce qu'un son se cite de trois façons : un littéral
+  d'appel, un `SoundFxComponent` posé sur un acteur ou un prefab (que `self:play_sfx()` joue
+  sans jamais nommer le son), et la piste de démarrage.
+- **Écarter n'est pas supprimer.** Le fichier reste dans `assets/`, la ressource reste dans le
+  projet ; seule la ROM ne le porte plus. Et le build **NOMME** ce qu'il écarte — un asset qui
+  disparaît sans un mot serait précisément la dégradation silencieuse refusée partout ailleurs.
+
+- **Piège mesuré : la taille source ne prédit pas le coût ROM.** Les 100 modules écartés pèsent
+  5 351 Kio de `.mod`, mais leur retrait n'enlève que 437 Kio de soundbank — **douze fois
+  moins**. mmutil **partage les échantillons entre les modules d'un même soundbank**, et un
+  catalogue de variantes du même morceau (`DRUMLESS` / `FAST` / `SLOW`) n'en porte donc qu'un
+  seul jeu. Le journal de build annonce en conséquence un **nombre**, jamais un gain en octets :
+  afficher la taille source aurait promis douze fois le gain réel.
+
+#### Ce que le filtre a réveillé : `MUSIC_*` ne désignait pas le bon module
+
+Un défaut **préexistant**, resté invisible tant que le build émettait tout.
+
+Le transpileur Lua émettait `#define MUSIC_DREAMY_DX 41` — le **rang de la ressource dans le
+catalogue du projet**. L'id réel du module est celui que **mmutil** attribue, et lui seul :
+`#define MOD_DREAMY_DX 2` dans `soundbank.h`. Les deux coïncidaient par accident, parce que
+les 105 musiques partaient chez mmutil dans l'ordre du projet.
+
+Filtrer a désaligné les deux numérotations. Aucun symbole ne manquait, donc **le C compilait
+et la ROM jouait un autre module** — le genre de panne qui ne se voit qu'en écoutant.
+
+- **L'id appartient à mmutil.** `SFX_*` et `MUSIC_*` sont désormais des rangs dans les listes
+  RÉELLEMENT passées à mmutil (`sound_assets`), pas dans le catalogue. Le transpileur reçoit
+  ces listes au lieu de relire `p.sfx` / `p.music`.
+- **L'hypothèse est devenue un contrôle qui BLOQUE.** « mmutil numérote dans l'ordre où on lui
+  passe les fichiers » n'était écrite nulle part et s'est trompée en silence. Le build relit
+  maintenant `soundbank.h` et compare chaque constante à ce qu'il a supposé ; un désaccord
+  arrête le build en nommant le symbole. Vérifié dans les deux sens — il passe sur l'ordre réel,
+  il refuse sur un ordre inversé.
+- **`SFX_*` était sur le même fil**, en sursis pour une autre raison : les cinq effets de la
+  démo sont tous référencés, donc rien n'était filtré. Le même correctif couvre les deux.
+
+Reste que le son pèse encore 81,8 % de la ROM après ce nettoyage — cette fois-ci pour de bon,
+et c'est le taux d'échantillonnage des cinq effets qui en est responsable. Ce qui ramène au
+point précédent : pas « quelles extensions », mais **le taux d'échantillonnage est le budget
+ROM**, et jusqu'ici rien ne le disait à l'auteur.
+
+#### Décisions verrouillées — les formats acceptés
+
+**La règle d'abord, la liste ensuite** : l'éditeur n'accepte que ce qu'il sait **à la fois
+construire ET faire écouter**. Une liste se défend mal et se met à grandir par petites
+exceptions ; une règle produit la liste et dit quand elle a le droit de changer. Ici elle en
+produit deux entrées, et le précédent est connu — GB Studio s'en tient à `.uge` et `.mod`.
+
+| Famille | Accepté | Pourquoi pas le reste |
+| --- | --- | --- |
+| **Musique** | **`.mod`** (ProTracker) | mmutil sait aussi lire XM/S3M/IT, mais `mod_file.py` **ne sait pas les rendre** : le bouton ▶ resterait muet dessus. Un format qu'on peut mettre en ROM sans pouvoir l'écouter fait mentir l'écran |
+| **Effets** | **`.wav` PCM, 8 ou 16 bits, mono ou stéréo** | c'est exactement ce que mmutil convertit sans se plaindre. 24 bits et 32 bits flottants produisent un effet muet en silence ; `.ogg` et `.mp3` demanderaient d'embarquer un décodeur, donc une dépendance et une perte de qualité invisible sur une source déjà destinée à tomber en 8 bits |
+
+- **Le refus a lieu à l'IMPORT, en nommant le fichier et la raison.** C'est le corollaire direct
+  de « mmutil n'échoue jamais » : il n'y a pas d'autre endroit où dire non. Un message au build
+  arriverait trop tard, et pour l'un des trois cas il n'arriverait pas du tout.
+- **`validator.py` reprend le même contrôle**, parce que l'import n'est pas la seule porte : le
+  `ProjectWatcher` resynchronise les fichiers déposés à la main dans `assets/sfx/` et
+  `assets/music/`. Une seule fonction de vérification, appelée aux deux endroits — pas deux
+  listes qui divergeront.
+- **Pas de conversion automatique.** L'éditeur refuse et dit quoi faire ; il ne réencode pas à
+  la place de l'auteur. Même raison qu'ailleurs : ce logiciel n'est pas un outil de création
+  d'assets, et une conversion silencieuse choisirait à la place de l'auteur un compromis
+  qualité/taille qui lui appartient.
+- **Le taux d'échantillonnage n'est PAS restreint — il est CHIFFRÉ.** Refuser un wav à 44,1 kHz
+  serait interdire un choix légitime ; ne rien dire laisse 142 Kio par terre sans que personne
+  le sache. L'éditeur affiche donc ce que l'effet pèse en ROM, au moment de l'import et dans
+  l'inspecteur. Un nombre d'octets est un fait, pas un commentaire — la règle « l'éditeur rend
+  le matériel fidèlement, il ne le commente pas » est respectée.
+- **Les extensions ne vivent qu'à UN endroit.** `SFX_FILE_EXTS` / `MUSIC_FILE_EXTS` deviennent
+  la seule source, et les filtres des dialogues d'import en dérivent au lieu d'être réécrits à
+  la main — c'est la divergence des quatre listes qui a créé le trou.
+
+**Le resserrage ne coûte rien** : la démo est déjà entièrement conforme — 105 `.mod` et
+5 `.wav`, aucun fichier à convertir ni à écarter. On retire donc des portes que personne
+n'a franchies, ce qui est le bon moment pour le faire.
+
+#### Décisions verrouillées — la quantification
+
+Une objection que ce document portait, et qui est **retirée**. « Pas de conversion
+automatique » (ci-dessus) reste vrai et ne s'applique pas ici : refuser de transcoder un
+`.ogg` en `.wav`, c'est refuser de faire le travail de l'outil audio de l'auteur.
+Ré-échantillonner un wav **pour la cible**, c'est de l'**encodage** — exactement ce que
+l'éditeur fait déjà en découpant un PNG en tuiles et en lui allouant une palette. Personne ne
+tient grit pour un éditeur d'images.
+
+L'enjeu est chiffré : **228 092 o pour cinq bruitages en 44,1 kHz, contre ~83 000 o à
+16 kHz. 145 Kio, soit 39 % de la ROM actuelle de la démo.**
+
+- **Un taux cible PAR EFFET, hérité d'un défaut de projet.** Même motif `inherit`/surcharge que
+  les transitions de scène. Un seul réglage global forcerait le même compromis sur un bip de
+  menu et sur une nappe d'ambiance, qui n'ont ni la même durée ni le même contenu spectral.
+- **La conversion a lieu au BUILD, vers le dossier de build.** Le fichier de `assets/` n'est
+  **jamais** réécrit — c'est l'import non destructif de la v0.2, appliqué au son. On peut donc
+  remonter le taux après coup sans avoir rien perdu.
+- **Le taux effectif est AFFICHÉ avec son coût**, pas seulement réglable. C'est le chiffre qui
+  fait prendre la décision, et il n'existait nulle part.
+- **Aucun taux par défaut qui dégraderait un projet existant.** Le défaut de projet part du
+  taux d'origine ; c'est un choix de l'auteur, pas une optimisation appliquée dans son dos.
+  La v0.2 a déjà tranché ce point sous le nom de « dégradation silencieuse ».
+
+#### Décisions verrouillées — le bouclage et l'aperçu
 
 - **Le point de bouclage vient du FICHIER, jamais d'un champ.** Un MOD porte sa position de
   restart dans son en-tête (octet 951, juste après la longueur du morceau), et
@@ -1891,22 +2070,30 @@ tracker) et point de bouclage.
   ignorée (v1) ». L'aperçu de l'éditeur reboucle donc toujours au début du morceau. La case
   « Loop » garde son sens — jouer une fois ou en boucle — mais *où* ça boucle appartient au
   fichier, et ne deviendra pas un réglage de l'éditeur.
-  - **Premier travail du chantier : mesurer l'écart, pas le supposer.** Que mmutil transporte
-    cette position jusqu'au format MAS et que Maxmod la relise en `MM_PLAY_LOOP` est plausible
-    mais **non vérifié ici** ; tant que ça ne l'est pas, on ne sait pas si l'éditeur diverge de
-    la ROM ou si les deux rebouclent pareil. Un module dont la position de restart n'est pas 0,
-    écouté dans l'écran puis dans mGBA, répond en une manipulation. La réponse décide s'il y a
-    un bug à corriger ou seulement un champ à afficher.
+  - **Mesuré (2026-08-17) : il n'y a PAS d'écart, et le soupçon tombe.** Les 105 modules de la
+    démo portent tous `restart = 0` — la valeur qu'écrivent ProTracker et ses successeurs sauf
+    intention contraire. Surtout, `render_mod` boucle sur `while order_pos < len(mod.order)` :
+    **l'aperçu joue le morceau UNE fois et s'arrête**, il ne reboucle jamais. Les `loop` qu'on
+    lit dans ce fichier sont ceux des *échantillons*, pas du morceau. Jeter la position de
+    restart ne peut donc rien fausser aujourd'hui.
+  - **Le vrai écart est ailleurs, et il est bénin** : la ROM boucle indéfiniment
+    (`MM_PLAY_LOOP`), l'aperçu s'arrête à la fin. Acceptable pour un outil d'écoute — on
+    auditionne un morceau, on ne l'habite pas. À rouvrir seulement si l'aperçu gagne un jour la
+    boucle, car c'est ce jour-là que la position de restart deviendrait nécessaire.
 - **L'aperçu ne connaît que le ProTracker**, `mod_file.py` le dit en tête : ni XM, ni S3M, ni
   IT. Un `.xm` se construit donc en ROM mais reste muet dans l'écran. À **afficher** dans
   l'interface, pas à laisser découvrir en cliquant ▶ — même refus de la dégradation
   silencieuse qu'en v0.2.
 
-### v0.8.2 — La musique par scène
+### v0.8.2 — La musique par scène — **LIVRÉE**
 
-Le socle du reste du jalon, et le seul morceau dont l'absence se voit déjà en jouant à la
+Le socle du reste du jalon, et le seul morceau dont l'absence se voyait déjà en jouant à la
 démo. Une scène désigne sa musique comme elle désigne déjà sa caméra de démarrage (v0.6.1) et
 ses réglages de transition (v0.6.2).
+
+Le `mmStart(music[0])` du boot **disparaît avec ce chantier**. Il démarrait la première
+musique du projet, quelle qu'elle soit — sur la démo, un bref éclat de la mauvaise piste avant
+que l'`INTRO` ne pose la sienne.
 
 #### Décisions verrouillées
 
@@ -1921,9 +2108,21 @@ ses réglages de transition (v0.6.2).
   vaut pour tout un jeu ; « le morceau par défaut du jeu » n'a pas de sens — c'est la scène de
   démarrage qui le pose, et `inherit` le propage tout seul. Ne pas recopier un mécanisme dont
   la raison d'être ne s'applique pas (même règle qu'en v0.4.2 pour la réservation de palettes).
-- **Résolu au build**, une table par scène. Le runtime ne connaît pas la notion d'héritage.
+- **Résolu au build**, dans `scene_init`. Le runtime ne connaît pas la notion d'héritage :
+  `inherit` n'émet **rien du tout**, `none` émet `music_stop()`, un nom émet `music_play()`.
+- **Posée AVANT les `on_start`** : le réglage déclaratif d'abord, le script ajuste ensuite —
+  exactement la règle de la caméra (v0.6.1). Un `music.play()` dans `on_start` gagne donc, ce
+  qui est ce qu'on attend. C'est ce qui permet à `VICTORY` de choisir sa musique selon le
+  vainqueur alors que le champ de scène ne saurait en nommer qu'une.
+- **Écarté en cours d'écriture : « ne redémarre pas si c'est déjà la même ».** La tentation est
+  réelle — douze salles qui nomment le même thème le relanceraient douze fois. Mais `inherit`
+  répond DÉJÀ à ce besoin : on nomme le thème dans la salle où il commence, les autres héritent.
+  Retenir la piste courante demanderait en plus un état que `music.play()` appelé depuis un
+  script ne mettrait pas à jour — il aurait suffi d'un script pour le désynchroniser, et la
+  scène déclarative se serait alors tue sans raison visible. Un second mécanisme pour un
+  problème déjà résolu, et faux par-dessus le marché. **À ne pas reproposer.**
 
-### v0.8.3 — Les deux transitions, et ce que le matériel refuse
+### v0.8.3 — Les deux transitions, et ce que le matériel refuse — **LIVRÉE**
 
 #### Le crossfade n'existe pas sur cette console
 
@@ -1971,33 +2170,252 @@ matériel** — pas un mixeur de couches, qui n'existe pas.
   documentation.
 - **`mmSetModuleTempo` et `mmSetModulePitch` ne sont pas des transitions.** Ce sont des molettes
   légitimes — les deux seules réellement continues de ce matériel — mais elles relèvent de
-  l'API (v0.8.5), pas d'ici. Ni volet, ni filtre : ils demanderaient un mixeur.
+  l'API (v0.8.6), pas d'ici. Ni volet, ni filtre : ils demanderaient un mixeur.
 
-### v0.8.4 — Écran de mixage
+#### Ce que l'écriture a appris : la quantification n'est PAS une option
 
-Existe déjà en partie, à enrichir : écoute du mélange en direct, volume par canal ou par
-catégorie, gestion des priorités — le nombre de canaux matériels est limité.
+Le plan présentait « attendre le bon moment » comme un raffinement, à côté de la coupe. C'est
+**le mécanisme lui-même**, et pour une raison matérielle : `mmPosition()` ne sait viser qu'un
+**motif**, jamais une ligne. Couper depuis la ligne 40 du motif 3 vers le motif 3 de l'autre
+module rejouerait donc quarante lignes en arrière — un bégaiement franchement audible.
+
+La coupe est donc **nécessairement différée à la frontière de motif**. Ce n'est pas une option
+de confort qu'on pourrait retirer pour simplifier : sans elle, la coupe est fausse.
+
+- **La frontière se détecte sur la LIGNE qui recule**, pas sur l'index d'ordre qui change.
+  Un module d'un seul motif reboucle sans jamais changer d'index : guetter l'ordre le laisserait
+  attendre indéfiniment. La ligne, elle, retombe à zéro dans tous les cas.
+- **`MMCB_SONGMESSAGE` n'a pas été nécessaire.** Le plan le désignait comme source de la
+  quantification, l'auteur posant un `EFx` dans son module. La frontière de motif suffit, ne
+  demande **rien à l'auteur**, et fonctionne sur les 105 modules du catalogue sans qu'aucun
+  n'ait été préparé. Le marqueur reste la bonne réponse le jour où il faudra un point de
+  bascule *à l'intérieur* d'un motif — pas avant.
+- **Un seul point d'écriture du volume de module et de la bascule**, dans un tick de la boucle
+  principale. Même règle que la caméra en v0.6.1 : deux mécanismes qui écrivent le même
+  registre sans se coordonner, c'est le défaut qu'on a déjà corrigé une fois.
+- **`music.fade_to` sous deux frames bascule sec** plutôt que de jouer un fondu d'une frame.
+  Un effet trop court pour exister ne doit pas coûter une machine d'état.
+- **`music.cut_to` sans musique en cours démarre simplement la piste** : il n'y a aucune
+  position à respecter.
+
+#### Le garde-fou, vérifié sur le catalogue réel
+
+Le validateur compare la longueur de table d'ordre des modules qu'un même script cite, et
+avertit quand une reprise à la position tomberait ailleurs dans le morceau. Mesuré :
+`Dreamy DX` et `Dreamy DX DRUMLESS` ont **4 motifs chacun** — aucun avertissement, elles se
+relaient. `Claimed DX` en a 9 — averti. La règle discrimine donc exactement ce qu'elle devait
+discriminer, sur des fichiers que personne n'a préparés pour elle.
+
+En avertissement et non en erreur : la ROM se construit et joue, c'est le résultat *musical*
+qui est douteux, et une structure volontairement différente reste un choix défendable.
+
+### v0.8.4 — Ce que le jeu pèse — **LIVRÉE**
+
+Le pipeline sait construire une ROM ; il ne sait rien dire de **ce qu'elle contient**. Toute
+la v0.8.1 s'est jouée sur des chiffres qu'il a fallu aller chercher à la main — et c'est
+exactement ce qui a laissé 96 % de musique morte passer inaperçue pendant des mois.
+
+Référence assumée : GB Studio, dont la barre d'occupation est le bon modèle.
+
+#### Les chiffres viennent de la CIBLE, jamais d'un modèle Python
+
+C'est la règle déjà posée en v0.14, et elle a une raison neuve : la v0.8.1 a mesuré que la
+taille des fichiers source **prédit douze fois trop** le coût ROM d'un module. Un budget estimé
+depuis les assets serait faux, et faux en silence.
+
+Trois sources, toutes des artefacts réels du build :
+
+| Source | Ce qu'elle donne |
+| --- | --- |
+| `arm-none-eabi-size -A rom.elf` | les sections — la vérité sur ce qui part en ROM |
+| `arm-none-eabi-nm --print-size rom.elf` | l'attribution par symbole |
+| `soundbank.bin` (sa table d'offsets) | le poids de chaque module et de chaque échantillon |
+
+La table du soundbank est un `nsamples`/`nsongs`, la signature `*maxmod*`, puis un offset par
+entrée : la somme des tailles dérivées retombe sur la taille du fichier **à l'octet près**.
+
+#### Trois pièges relevés en établissant la faisabilité (2026-08-17)
+
+- **`soundbank_bin` n'a PAS de taille dans l'ELF.** `bin2s` génère de l'assembleur sans
+  directive `.size`. Une attribution naïve par `nm` perdrait donc **81 % de la ROM** sans rien
+  signaler. Il faut passer par `soundbank_bin_end − soundbank_bin`, deux symboles que `bin2s`
+  émet bien.
+- **Les marqueurs de section du linker portent des tailles absurdes** (`__iwram_top`,
+  `__eheap_end`, `_stack` — jusqu'à 100 Mo). À écarter, sans quoi la barre est du bruit.
+- **`.bss` n'est pas en ROM.** 6 220 o sur la démo, qui ne coûtent rien à la cartouche.
+
+#### Décisions verrouillées
+
+- **La barre ne compte QUE ce qui est réellement compilé.** C'est le sens du filtre de la
+  v0.8.1 : un catalogue de 105 musiques dont 4 sont jouées doit afficher le poids de 4.
+- **Le reste non attribué est AFFICHÉ**, jamais absorbé dans une catégorie voisine ni réparti
+  au prorata. Une barre qui boucle à 100 % en cachant ce qu'elle n'a pas su nommer ment
+  précisément là où on la consulte.
+- **Capacité de cartouche : un réglage de projet**, parmi 4, 8, 16 et 32 Mio — les tailles
+  réellement produites en cartouche masquée. Dépasser devient une erreur de build nommée, au
+  même titre que le débordement de mémoire vidéo (v0.4.1).
+  - Ordre de grandeur, pour situer : Pong pèse **374 Kio**, soit 9 % de la plus petite
+    cartouche. **Le plafond n'est pas le sujet aujourd'hui** — la répartition l'est. C'est
+    pourquoi la barre montre d'abord qui pèse quoi, et le plafond seulement ensuite.
+- **Les catégories dérivent des noms de symboles**, donc de `c_names.py` — jamais d'une liste
+  écrite à la main. Même règle et même raison que les snippets de la sidebar : une liste en dur
+  se désaccorde du générateur sans que rien ne le dise.
+- **Ce qu'on croyait savoir est faux, et c'est l'argument de la fonctionnalité.** Sur la démo :
+  les **polices sont le 2ᵉ poste d'assets** (16 852 o, quatre planches à 3 040 o), les
+  **sprites pèsent 376 o** — rien du tout — et **cinq bruitages coûtent trois fois les quatre
+  musiques réunies** (228 092 o contre 76 468 o). Une barre limitée à « sprites / musique »,
+  qui est l'intuition de départ, aurait raté les trois.
+
+#### Le poids d'une musique se dit en DEUX nombres
+
+Mesuré sur la démo : les quatre modules pèsent 8 736, 3 844, 3 168 et 2 012 o de données
+propres, plus **58 708 o d'échantillons qu'ils se partagent**. mmutil mutualise les
+échantillons identiques entre les modules d'un même soundbank — et un catalogue de variantes
+d'un même morceau (`DRUMLESS` / `FAST` / `SLOW`) n'en porte donc qu'un seul jeu.
+
+Un chiffre unique par piste mentirait donc dans les deux sens : « 15 Kio » laisserait croire
+qu'en retirer une en rend 15, et « 4 Kio » cacherait ce qu'elle a fait entrer. L'éditeur en
+affiche **deux** : le poids propre, et le poids partagé avec le nombre de pistes concernées.
+
+#### Ouvert
+
+- Le coût d'une piste **à la marge** — ce que la ROM perdrait vraiment si on la retirait seule —
+  n'est calculable qu'en reconstruisant sans elle. Exact mais impraticable à chaque affichage.
+  À rouvrir si « propre + partagé » se révèle insuffisant à l'usage.
+- Rien ne montre l'évolution d'un build à l'autre. « La ROM a pris 40 Kio depuis hier, à cause
+  de quoi ? » demanderait de garder l'historique des mesures quelque part.
+
+### v0.8.5 — Le socle du mixage : niveaux, jingles, animations — **LIVRÉE**
+
+Ce que l'écran de boîtes à état (v0.8.7) suppose sous lui. Trois manques, dont un défaut
+franc, tous invisibles tant que rien ne montrait les sons ENSEMBLE — ce qui est exactement la
+raison d'être d'un mixeur.
 
 L'écran d'aujourd'hui est un **navigateur d'assets avec aperçu** : ni mixage, ni volume par
 catégorie, ni priorité. Mais `engine_emulation/mod_file.py` + `mod_render.py` rendent déjà un
 module au taux de mixage de la GBA — la brique de l'écoute est là, et elle suit la règle de la
 maison (l'éditeur refait en Python ce que la console fait en C, plutôt qu'une approximation).
 
-#### Le budget affiché doit être celui du son
+#### La musique jouait à 25 %, et rien ne pouvait le dire
 
-Le bandeau du bas montre OAM, cycles par ligne, VRAM et palettes. **Aucune de ces quatre
+maxmod a **deux échelles de volume**, et le modèle les traitait comme une seule :
+
+| Appel | Plage réelle | Ce qu'on lui passait |
+| --- | --- | --- |
+| `mm_sound_effect.volume` (par effet) | 0–255 (`mm_byte`) | 0–255 — juste |
+| `mmSetModuleVolume` | 0–**1024** | 0–255 |
+| `mmSetEffectsVolume` | 0–**1024** | 0–255 |
+
+`Music.volume = 255`, le défaut « à fond », réglait donc le module au **quart** de son niveau.
+La musique était quatre fois trop basse par rapport aux effets depuis la première version.
+
+- **Le modèle passe en POURCENTAGE**, et chaque émission convertit vers l'échelle de SON
+  registre. Multiplier par quatre au moment d'émettre aurait corrigé le symptôme en laissant
+  dans le modèle deux échelles qui se ressemblent — le prochain appel maxmod ajouté serait
+  retombé dedans. Un pourcentage n'appartient à aucun registre, donc il ne peut pas être
+  confondu avec l'un d'eux.
+- **C'est aussi la bonne unité pour un mixeur** : deux curseurs voisins qui n'ont pas la même
+  graduation forment un mixeur qu'on lit de travers.
+
+#### Le jingle : la seule superposition que la console autorise
+
+`mmJingle()` est une **deuxième couche de module**, avec son propre scaler
+(`mmSetJingleVolume`) et son propre état (`mmActiveSub()`). C'est le seul endroit de tout le
+système où deux sources musicales sonnent vraiment en même temps — donc le seul endroit où un
+**duck** a un sens sur ce matériel.
+
+Trois contraintes, à AFFICHER et non à contourner :
+
+- **il ne boucle pas**, par construction : c'est une fanfare, jamais un thème ;
+- **il est plafonné à 4 canaux** (doc maxmod), pris sur les 8 du projet ;
+- **il n'y en a qu'un à la fois**.
+
+Ce qui referme définitivement la question du fondu enchaîné : la deuxième couche existe, mais
+elle ne peut pas porter un morceau. Le duck musique↔jingle la remplace, et lui est réel.
+
+#### « Intensité » doit nommer sa cible
+
+Trois molettes continues existent, et trois seulement : le **volume** du module (0–1024), le
+**tempo** (`mmSetModuleTempo`, Q10, ×0,5 à ×2) et la **hauteur** (`mmSetModulePitch`, même
+plage). Tout le reste — `DRUMLESS` ↔ complet — est un **choix de variante**, donc des
+**seuils**, jamais une courbe.
+
+Un curseur « Intensity » de 0 à 100 % qui ne dit pas laquelle des quatre il pilote promet un
+mixeur de couches qui n'existe pas sur cette console. Il porte donc sa cible, explicitement.
+
+#### Le pont vers les animations appartient à l'ANIMATION
+
+`AnimFrame` ne porte aujourd'hui que des tuiles : aucun événement de frame n'existe nulle part.
+Un script peut déjà tester `self:frame() == 3`, mais rien de déclaratif.
+
+- **Le son se pose sur la frame, dans le sprite.** Un pas de course appartient au cycle de
+  marche, partout où on le joue — même règle qu'en v0.4.1, « le placement vit chez l'hôte, la
+  nature de l'animation vit chez l'animé ». L'écran Son le montre et le règle ; il ne le
+  possède pas.
+- **Deux portes, une seule donnée** — le Sprite Editor et l'écran Son — exactement comme la
+  table de textes en a trois. C'est ce qui évite qu'un même réglage existe à deux endroits.
+- **La déduplication par séquence est une LIMITE ASSUMÉE du modèle**, tranchée (2026-08-18).
+  Deux directions identiques partagent leur bloc de frames, donc leur effet. Pour un miroir
+  c'est ce qu'on veut : le pas est le même à gauche et à droite. Deux états qui se trouvent
+  identiques produiront aussi les mêmes effets ; qui veut les différencier **renonce au mode
+  miroir** et décrit ses directions à la main. Plus de réglages pour l'auteur, mais la limite
+  est dite au lieu d'être découverte.
+  - Vérifié sur la démo : les trois directions de `Run` du sprite `Paddle` se réduisent au même
+    bloc (`{7,1,1}`, `{0,1,1}`, `{3,1,1}` dans `sprite_Paddle_anim_dirs`).
+- **La table n'est émise que si une frame porte un effet**, et le test du stepper avec elle. Un
+  sprite muet ne paie ni la ROM ni la comparaison par frame.
+- **L'effet se déclenche en ARRIVANT sur la frame**, donc seulement quand elle change — sinon
+  une animation d'une seule frame rejouerait le son à chaque tick de vitesse.
+- **Une frame ajoute une source de références** au filtre de la v0.8.1 : un effet cité par un
+  sprite et par aucun script doit tout de même entrer en ROM. Sans ça sa constante `SFX_*`
+  n'existerait pas et la compilation C échouerait sur un message obscur.
+
+#### Le budget affiché doit être celui du son — **LIVRÉ (2026-08-20)**
+
+Le bandeau du bas montrait OAM, cycles par ligne, VRAM et palettes. **Aucune de ces quatre
 valeurs ne concerne le son.** La ressource rare ici, ce sont les **huit canaux logiciels**
-partagés entre musique et effets, et le coût de `mmFrame` dans la frame. Un écran de son qui
-affiche le budget des sprites ne ment pas sur les chiffres, il ment par déplacement — il
-laisse croire qu'on voit ce qu'on dépense.
+partagés entre musique et effets — dont un jingle en prend jusqu'à quatre — et le coût de
+`mmFrame` dans la frame. Un écran de son qui affiche le budget des sprites ne ment pas sur les
+chiffres, il ment par déplacement.
+
+- **Un bandeau LOCAL, pas une extension de la barre de fenêtre.** `GbaStatusBar` (`window.py`)
+  reste sprite/BG et globale à toute la fenêtre, rattachée à la scène active quel que soit
+  l'écran ouvert. Y ajouter des compteurs son les aurait affichés dans TOUS les écrans — le
+  même défaut inversé. `ui/sound_mixer/sound_budget_bar.py` porte donc son propre bandeau,
+  même langage visuel (nom+valeur+trois couleurs+tooltip) mais posé en bas de CET écran,
+  sous le splitter.
+- **UN seul compteur : « channels ».** La somme du pire état de musique et du pire état de
+  jingle — les deux couches CONTINUES, qui peuvent se superposer à tout instant puisqu'elles
+  ne se coordonnent pas (v0.8.7, « TROIS ASSETS indépendants »). Le pire total possible est
+  donc la SOMME de deux maximums pris séparément, pas le pire d'une paire d'états précise.
+- **La SoundBox n'entre pas dans le compte.** Ses effets sont des déclenchements ponctuels,
+  pilotés par le gameplay ; aucune analyse statique ne borne combien en jouent à la fois.
+  C'est exactement pour ça que maxmod porte sa propre politique de pénurie (mesurée en
+  v0.8.6/v0.8.8) : ce bandeau ne couvre que ce qui EST prévisible au build.
+- **Le coût de `mmFrame` reste absent**, faute de mesure — ce projet n'affiche pas de nombre
+  deviné. Aucun émulateur cycle-exact n'est installé sur la machine ; à rouvrir si l'un
+  devient disponible.
+- **Les boîtes lues sont celles EN COURS D'ÉDITION**, pas « la » boîte qui ira en ROM (la
+  première par nom, v0.8.7) : c'est celles-là que l'auteur règle sous ses yeux, même principe
+  que `GbaStatusBar` rattachée à la scène ouverte.
+- **Le plafond est relu à chaque calcul**, jamais mis en cache : aucun écran de ce projet ne
+  reçoit de notification quand un réglage change ailleurs (`window._show_screen` ne
+  resynchronise que le Scene Manager) — le relire à chaque édition est la seule façon de ne
+  jamais afficher une valeur périmée.
 
 #### Ouvert
 
-- Politique de priorité quand trop d'effets jouent en même temps : non décidée.
-- Les huit canaux de `mmInitDefault` sont un littéral du codegen. Réglage de projet, ou
-  chiffre dérivé de ce que le projet emploie ?
+- ~~Politique de priorité quand trop d'effets jouent en même temps : non décidée.~~
+  **Répondu en v0.8.6/v0.8.8** : maxmod a déjà une politique (vole le canal d'arrière-plan le
+  plus faible, jamais un `CUSTOM`) — ce qu'on tient est protégé, ce qu'on lâche peut céder.
+- ~~Les huit canaux de `mmInitDefault` sont un littéral du codegen. Réglage de projet, ou
+  chiffre dérivé de ce que le projet emploie ?~~ **Tranché en v0.8.8** : réglage de projet,
+  4 à 32, défaut 8.
+- ~~Le bandeau du bas montre toujours OAM/VRAM/palettes sur l'écran Son.~~ **Livré ci-dessus.**
+- Le coût de `mmFrame` reste à mesurer — seul reste du jalon, et il attend un outil de mesure
+  cycle-exacte qui n'existe pas encore dans l'environnement de développement.
 
-### v0.8.5 — API
+### v0.8.6 — Les portes du son — **LIVRÉE**
 
 Jouer un son ou une musique avec des surcharges de hauteur et de volume **à l'appel**, pas
 seulement au niveau de la ressource.
@@ -2005,32 +2423,325 @@ seulement au niveau de la ressource.
 C'est d'abord une **exposition** : `sfx_set_volume`, `sfx_set_panning`, `sfx_stop`,
 `sfx_set_effects_volume`, `music_pause`, `music_resume`, `music_is_playing`,
 `music_set_volume` existent en C et n'ont aucune porte Lua. La question de conception n'est
-donc pas « comment faire », c'est **quelles portes ouvrir** — et `sfx_play` rend déjà un
-`mm_sfxhand` que rien ne récupère, ce qui rouvre la question d'une référence d'effet en cours
-dans un langage qui n'a que des entiers.
+donc pas « comment faire », c'est **quelles portes ouvrir**.
 
-### v0.8.6 — La machine à états musicale
-
-La surface d'authoring du concept : un graphe d'états, chacun portant un morceau, reliés par
-des transitions nommées. Elle vient **après**, et par construction — elle ne fait que poser une
-interface au-dessus de la musique par scène (v0.8.2) et des deux transitions (v0.8.3). Si elle
-est repoussée, un jeu a quand même sa musique par scène et ses transitions, pilotables en Lua.
-L'inverse n'est pas vrai.
+Ce chantier **applique** la règle de construction posée en v0.16, il ne la décide pas. Ce
+qu'il en retient tient en une phrase : *on ne construit rien — on nomme, ou on prend un slot.*
 
 #### Décisions verrouillées
 
-- **Asset de premier rang, réutilisable entre scènes**, rangé avec les données propres au
-  projet — même statut et même raison que la caméra en v0.6.1 : un graphe musical ne dépend
-  d'aucun fichier importé, et il sert plusieurs scènes.
+- **`sfx.play` garde son nom ET rend sa référence.** Les huit canaux de maxmod **sont un
+  pool**, exactement comme celui des prefabs, et `sfx_play` rend déjà un `mm_sfxhand` que le
+  Lua jette. Un `new_sound_effect()` a été proposé (2026-08-19) puis **retiré** : aucun
+  constructeur n'existe ailleurs dans cette API, et rien ne justifiait que le son soit
+  l'exception. L'appel prend un slot et le rend — c'est la forme de `actor.spawn`, pas celle
+  d'un `new`.
+
+  ```lua
+  sfx.play("Bip")                 -- le cas courant, une ligne, inchangé
+  local pas = sfx.play("Pas")     -- la MÊME fonction, quand on veut le suivre
+  pas:set_volume(80)
+  pas:set_pitch(120)
+  pas:stop()
+  ```
+
+- **Cinq méthodes sur la référence** : `:stop()` `:playing()` `:set_volume(pct)`
+  `:set_pitch(pct)` `:set_panning(p)`. `sfx_play` fixe aujourd'hui `ex.rate = 1024` et
+  `ex.panning = 128` en dur (`headers.py`) : ce sont exactement les deux champs de
+  `mm_sound_effect` à ouvrir. Les empiler en paramètres positionnels de `sfx.play` ferait
+  grossir le cas simple pour servir le cas rare.
+  - **La hauteur a coûté 32 octets de RAM, et la mesure dit pourquoi** (2026-08-20).
+    `ex.rate` est bien un facteur AU MOMENT DE JOUER, mais `mmEffectRate` — la seule porte
+    vers un effet déjà en cours — n'en est pas un : il écrit la fréquence brute du mixeur
+    (`freq = rate × 4`), inutilisable sans le taux d'origine de l'échantillon, que le
+    soundbank ne rend pas. Le seul réglage relatif est `mmEffectScaleRate`, **cumulatif** :
+    `:set_pitch(120)` appelé deux fois aurait monté deux fois. Le runtime tient donc
+    `g_sfx_rate[16]` — un facteur courant par handle, écrit à la lecture, relu pour calculer
+    la mise à l'échelle à appliquer. C'est le seul état que ce jalon invente, et il rend
+    l'appel ABSOLU : la même valeur donne la même hauteur, quel que soit l'ordre des appels.
+
+- **`music.*` reste sans référence.** Il n'y a qu'un module à la fois : il n'y a rien à tenir.
+  Quatre portes s'ouvrent telles quelles — `music.pause()`, `music.resume()`,
+  `music.is_playing()`, `music.set_volume(pct)` — en **pourcentage**, l'unité tranchée en
+  v0.8.5.
+
+- **`sfx_set_effects_volume` n'est pas une porte de gameplay.** Un volume par catégorie est un
+  réglage de **mixage** : il devient `sound_box.set_volume(pct)`, pas une fonction globale que
+  le premier script venu appelle au milieu d'un `on_update`.
+  - **`music_box.set_volume` n'existe PAS, et le matériel l'explique** (2026-08-20). Le scaler
+    de la couche module est `mmSetModuleVolume` — exactement celui de `music.set_volume`. Deux
+    noms pour un seul registre auraient été les deux chemins d'authoring que la v0.13 refuse,
+    et le mixeur aurait promis une hiérarchie (« le niveau de la piste, PUIS celui de la
+    catégorie ») que la console ne tient pas. Les effets, eux, ont bien deux registres (le
+    volume par canal et `mmSetEffectsVolume`), et le jingle son propre scaler : ces deux-là
+    gardent leur porte de boîte.
+
+- **Les trois boîtes sont renommées.** `soundsbox` / `jinglesbox` / `musicsbox` deviennent
+  `sound_box` / `music_box` / `jingle_box` : le pluriel est bancal, et surtout ce sont les
+  noms de la couche moteur. Renommage **complet** — Lua, C émis, `headers.py`,
+  `lua_compiler.py`, catalogue, `SCRIPTING.md`, scripts de la démo. Chacune gagne
+  `set_volume(pct)` : le volume des effets, et les deux scalers du duck (v0.8.7).
+
+Bilan : **+11 fonctions** — 5 sur la référence d'effet, 4 sur `music`, 2 volumes de boîte (le troisième n'a pas de registre à lui, cf. ci-dessus).
+
+#### Les trois « Ouvert » sont tranchés — désassemblés, pas supposés (2026-08-20)
+
+Aucune des trois questions ne demandait une ROM : `libmm.a` est sur le disque à côté du
+compilateur, et `arm-none-eabi-objdump -d` répond. C'est la même méthode que le contrôle de
+`soundbank.h` en v0.8.1 — on ne suppose pas ce que fait l'outil, on le lit.
+
+| Question | Réponse mesurée | Où |
+| --- | --- | --- |
+| Que rend `mmEffectEx` quand rien n'est libre ? | **0**, et l'effet ne joue pas : l'allocateur de canal rend ≥ 255, la fonction sort sur `movs r0, #0` | `mmEffectEx+0x48` |
+| La référence survit-elle à la fin du son ? | **Non, et sans danger.** Le handle porte un compteur que le résolveur commun relit sur le canal ; périmé, il résout à −1 et les cinq réglages deviennent des non-opérations SILENCIEUSES | `mmEffectEx+0xda` |
+| Quelle échelle pour `mmEffectVolume` ? | **0–255** : `volume × volume_effets >> 10`, rangé en octet — exactement comme `mm_sound_effect.volume` | `mmEffectVolume+0xa` |
+
+Le « 0->65535 » écrit dans `maxmod.h` est donc **faux sur GBA**, et le C émis avait raison
+depuis le début. C'est le pendant exact de la v0.8.5 : là une échelle réelle avait été prise
+pour une autre, ici c'est la documentation qui se trompe. Dans les deux cas la seule défense
+est de lire le code de l'autre côté.
+
+Deux faits relevés au passage, qui n'étaient dans aucune ligne du plan :
+
+- **Le pool des handles a SEIZE entrées, les canaux sont HUIT.** Deux plafonds distincts, que
+  « les huit canaux sont un pool » confondait en un seul. Un `0` rendu par `sfx.play` veut donc
+  dire « pas de référence », sans distinguer les deux causes — l'effet peut très bien sonner.
+  C'est ce que la doc de l'API dit, plutôt que de promettre un « pool plein » qui serait faux
+  une fois sur deux.
+- **Demander un handle change le TYPE du canal.** `ex.handle = 0` — ce que le codegen émet
+  aujourd'hui pour TOUS les effets — réserve un canal `CUSTOM`, que l'allocateur ne vole
+  jamais ; `ex.handle = 255` en ferait un canal d'arrière-plan, volable par l'effet suivant.
+  Conséquence sur la démo : le neuvième bruitage d'une frame chargée est perdu, là où il
+  remplacerait le plus ancien. Ce n'est **pas** touché ici — c'est un changement de ce qu'on
+  entend, pas une porte à ouvrir — et ça rejoint la « politique de priorité » laissée ouverte
+  en v0.8.5, qui a maintenant son fait mesuré.
+
+Limite honnête, à ne pas taire : le compteur du handle est un **octet**. Après 256 effets
+retombant sur la même entrée, une référence périmée peut de nouveau correspondre, et
+`:set_volume` réglerait alors un autre son. Le cas n'est pas évitable côté éditeur ; il est
+dit.
+
+#### Décisions verrouillées — ce que la mesure a permis de trancher
+
+- **Le panning s'écrit −100..+100, centré sur 0** (tranché le 2026-08-20). L'éditeur convertit
+  vers les 0–255 de `mmEffectPanning`. La règle « rendre le matériel fidèlement » interdit
+  d'inventer un mécanisme que la console n'a pas ; elle n'oblige pas à recopier une graduation.
+  Et le voisinage décide : les volumes sont en pourcentage depuis la v0.8.5, un panning en
+  0–255 à côté d'eux ferait deux graduations dans le même appel.
+- **`sfx.play` rend `0` quand elle n'a pas de référence à donner**, et `if not h then` est la
+  forme du test — la même que `actor.spawn` sur un pool plein. Ce que le zéro ne dit pas :
+  si l'effet sonne quand même (cf. les deux plafonds ci-dessus).
+- **Une référence périmée ne fait rien**, et c'est le matériel qui le garantit, pas un contrôle
+  ajouté par-dessus. Aucun garde-fou côté éditeur : il doublerait, en plus lent, ce que le
+  résolveur de maxmod fait déjà à chaque appel.
+
+#### Ouvert — une tension de grammaire, laissée telle quelle
+
+`music.is_playing()` et `music.set_volume(pct)` sont des APPELS, alors que la règle de
+grammaire d'ARCHITECTURE range une requête pure sans argument et un état intrinsèque en
+PROPRIÉTÉS (`music.playing`, `music.volume`). Les deux moitiés ne se tranchent pas pareil :
+`mmActive()` est bien un getter, donc `music.playing` serait légitime — mais `mmSetModuleVolume`
+n'a **pas** de getter, et une propriété en écriture seule demanderait une variable fantôme,
+c'est-à-dire exactement l'état inventé qu'on n'accepte ici que faute d'alternative (la hauteur).
+Une moitié en propriété et l'autre en appel dans le même module se lit plus mal que deux appels.
+À reprendre pour TOUT le module audio d'un coup — `music.jingle_playing()` est dans le même cas —
+plutôt qu'au fil des ajouts.
+
+### v0.8.7 — L'écran de mixage : les boîtes à état — **LIVRÉE**
+
+Le but énoncé (2026-08-18) : **faire le pont entre les musiques, les jingles, les effets, les
+animations et le gameplay**. Ranger tout ça dans des boîtes à état, et gérer les transitions
+sous les contraintes de la console.
+
+L'écran vient **après le socle**, et par construction — il ne fait que poser une surface
+au-dessus de la musique par scène (v0.8.2), des deux transitions (v0.8.3) et des niveaux,
+jingles et événements d'animation (v0.8.5). Si on le repousse, un jeu a quand même tout ça,
+pilotable en Lua. L'inverse n'est pas vrai.
+
+#### Ce qui remplace le fondu enchaîné du panneau bas
+
+La maquette dessine deux enveloppes qui se recouvrent. Le matériel n'en tient pas deux
+(v0.8.3), mais il tient **le duck musique↔jingle** — deux scalers indépendants sur les deux
+seules couches qui existent. C'est **ça** que le panneau doit dessiner : la musique qui
+s'efface pendant la fanfare, puis remonte. Une vraie superposition, à la place d'une fausse.
+
+Les autres transitions du panneau restent les deux honnêtes : **fondu traversant** (creux
+assumé) et **coupe à la position** (sans creux, à la frontière de motif). Et les durées
+s'écrivent en **frames**, pas en millisecondes : c'est l'unité du runtime et celle des
+transitions de scène (v0.6.2) — une même durée ne doit pas s'écrire de deux façons selon
+l'écran.
+
+#### Le modèle : TROIS ASSETS indépendants (2026-08-18, revu le 2026-08-19)
+
+Ce que l'exemple « marche sur sable, marche sur cailloux, course sur sable, course sur
+cailloux » a révélé, et que le plan n'avait pas.
+
+- **Les trois couches ont chacune leur état courant**, et elles ne se coordonnent pas. C'est la
+  structure du matériel — module, couche jingle et canaux d'effets sont physiquement distincts —
+  et c'est ce qui permet à « sur du sable » et « en combat » de coexister. Un graphe unique
+  aurait exigé un état par combinaison : quatre pour deux sols et deux ambiances, huit pour
+  trois sols.
+- **TROIS ASSETS, et non trois machines dans un fichier** (tranché le 2026-08-19).
+  `MusicBox`, `JingleBox`, `SoundBox` — un fichier, un registre et un espace de noms par
+  famille. Le fichier unique laissait croire à une coordination que le matériel n'offre pas :
+  ouvrir une « boîte à état » et y voir musique, effets et jingles côte à côte suggère qu'ils
+  se répondent. Ils ne se répondent pas. Chaque boîte porte sa propre configuration, et
+  l'auteur sait ce qu'il appelle sans avoir à se rappeler quelle machine porte quel état.
+- **Une musique ne transitionne JAMAIS vers un jingle**, et c'est la raison de fond de la
+  découpe. `music.jingle` joue un module PAR-DESSUS la piste en cours sans l'arrêter : deux
+  couches physiquement distinctes. Le jingle se superpose puis se termine seul — il ne remplace
+  rien, donc il n'y a rien à faire transiter entre les deux.
+- **La MusicBox a des TRANSITIONS, les deux autres n'en ont pas.** Une musique est continue et
+  son changement s'entend, d'où `fade_to` / `cut_to` et un déclencheur nommé. Un effet est
+  ponctuel : le prochain pas prend simplement le nouvel échantillon, il n'y a rien à faire
+  transiter. Donner des transitions aux effets serait un mécanisme sans objet.
+- **SoundBox et JingleBox ont la MÊME forme** — une table d'actions par état — donc un
+  seul type de base (`ActionBox`) les porte, et chacune n'ajoute que ce qu'une action
+  RÉSOUT : un effet ou un module. Ce n'est pas une factorisation par ressemblance, c'est une
+  structure unique dont l'élément varie ; deux classes complètes auraient dupliqué la
+  sérialisation pour un mot.
+
+#### L'ACTION — ce qui rend l'authoring linéaire au lieu de combinatoire
+
+Une frame d'animation ne nomme plus un effet concret mais une **action** ; l'état courant la
+résout. Le cycle de marche est donc authoré **une seule fois**, et les quatre combinaisons de
+l'exemple se réduisent à deux actions × deux états :
+
+| | état `sable` | état `cailloux` |
+| --- | --- | --- |
+| action `pas` (cycle marche) | `PAS_SABLE` | `PAS_CAILLOUX` |
+| action `pas_lourd` (cycle course) | `COURSE_SABLE` | `COURSE_CAILLOUX` |
+
+**Le mot a été choisi le 2026-08-19**, après qu'« emplacement » a porté à confusion. Trois
+raisons : c'est ainsi que l'auteur nomme spontanément ces choses (`PlayerWalk`, `PlayerRun`) ;
+`slot` désigne déjà un rang de palette, de VRAM et de sauvegarde dans ce dépôt ; et
+« emplacement » suggérait un contenant, alors qu'il s'agit de ce qui SE PASSE — l'état, lui,
+dit comment ça sonne.
+
+- **Un seul chemin, jamais deux.** Une frame nomme TOUJOURS une action, même quand il n'y a
+  qu'un seul état — sinon on aurait « un effet en dur ou une action », c'est-à-dire deux
+  façons d'écrire la même chose, exactement ce que la roadmap refuse en v0.13.
+- **Reprise assumée de la v0.8.5.** `AnimFrame.sfx_name` désignait un effet concret et le build
+  émettait `SFX_X` en dur. Ça devient un id d'action, résolu au runtime par une indirection
+  de table (`g_sound_box_action[]`) : un accès mémoire par déclenchement. La source de
+  références ③ du filtre ROM change avec : ce sont les **mappings des états** qui citent des
+  effets, plus les noms posés sur les frames.
+  Le champ s'appelle **`AnimFrame.action_name`** depuis le 2026-08-19 : il portait un nom
+  d'action mais s'annonçait « sfx », dernier endroit où le vocabulaire mentait. Lecture
+  tolérante de l'ancienne clé JSON, réécriture avec la neuve. À ne pas confondre avec
+  `SoundFxComponent.sfx_name`, qui référence vraiment un Sfx et garde son nom.
+- **Une boîte se renomme en place** (2026-08-19), depuis la barre de son onglet : le champ prend
+  la PLACE du sélecteur, prérempli et sélectionné. Rien ne cite une boîte par son nom — ni
+  scène, ni script —, donc le renommage n'a rien à réparer : seul le fichier suit. Un nom vide,
+  inchangé ou déjà pris est refusé en silence, comme partout ailleurs dans l'éditeur.
+- **Trois appels Lua, et chacun NOMME sa boîte** (revu le 2026-08-19).
+  `music_box.trigger("combat_start")` — un événement, la boîte décide.
+  `sound_box.set_state("sable")` et `jingle_box.set_state("fanfare")` — un fait, il n'y a rien
+  à décider. Ce ne sont pas des chemins vers la même chose : l'un dit qu'il s'est passé quelque
+  chose, les autres disent ce qui EST.
+- **L'espace de noms est celui de la BOÎTE, pas du projet.** « sable » dans une SoundBox et
+  « sable » dans une JingleBox sont deux états différents, et l'appel dit lequel il vise. Ce
+  que le validateur refuse, c'est un doublon DANS une boîte — là seulement, le build choisirait
+  à la place de l'auteur. L'ancienne règle (« le nom d'état suffit à désigner sa machine »)
+  achetait une brièveté d'appel au prix d'une contrainte d'unicité sur tout le projet ; elle
+  tombe avec le fichier unique.
+
+#### Décisions verrouillées
+
+- **Assets de premier rang, réutilisables entre scènes**, rangés avec les données propres au
+  projet — même statut et même raison que la caméra en v0.6.1 : une boîte ne dépend d'aucun
+  fichier importé, et elle sert plusieurs scènes. Trois dossiers :
+  `project/music_boxes/`, `project/jingle_boxes/`, `project/sound_boxes/`.
 - **Le graphe ne possède pas le flux du jeu.** Un déclencheur est un **nom qu'un script émet**,
   jamais une condition que le moteur évalue. Le moteur qui déciderait *quand* la musique passe
   au combat déciderait de ce qu'est un combat — c'est une décision de genre, refusée pour la
   même raison que l'éditeur de dialogue (v0.3.2) et que la « scène de reprise » (v0.5).
-- **Un état, c'est un morceau, son mode de bouclage, et par quelle transition on y entre.**
-  Rien de plus. Le curseur « Intensity » du concept est un pourcentage **sans cible nommée** :
-  sur ce matériel il ne peut désigner que le volume du module, son tempo, ou le choix d'une
-  variante. Un curseur qui ne dit pas lequel promet un mixeur de couches qui n'existe pas.
+- **Un état porte AU PLUS une musique, et AU PLUS un jingle.** Ce n'est pas une limite
+  d'interface, c'est le nombre de couches de la console. Un état qui accepterait deux musiques
+  mentirait dès qu'on le remplit.
+- **Les effets rangés dans une boîte n'y sont pas « joués » : ils y sont MIXÉS.** Un état règle
+  le niveau d'une catégorie d'effets, il ne déclenche rien — un effet se déclenche depuis le
+  gameplay ou depuis une frame d'animation, jamais depuis un état d'ambiance. Confondre les deux
+  ferait de la machine à états un séquenceur, c'est-à-dire une décision de genre.
+- **« Intensity » porte sa cible, explicitement** : volume du module, tempo, hauteur, ou choix
+  de variante. Les trois premières sont continues ; la quatrième est un jeu de **seuils** et
+  doit s'afficher comme tel. Un curseur sans cible nommée promet un mixeur de couches qui
+  n'existe pas sur ce matériel.
 - **Résolu au build**, comme le reste : le runtime lit une table, il ne parcourt pas un graphe.
+- **UNE SEULE boîte active PAR FAMILLE** (tranché 2026-08-18, étendu le 2026-08-19). Le runtime
+  charge la première par ordre de nom dans chacun des trois registres, et ne connaît pas la
+  notion d'en changer. Plusieurs boîtes actives d'une même famille auraient demandé de dire
+  laquelle répond à l'appel, donc un paramètre de plus dans chaque appel. Le validateur nomme
+  celles qui ne sonneront pas. L'espace des ACTIONS, lui, reste commun au projet : une
+  frame d'animation cite l'action `pas` sans savoir quelle SoundBox sera chargée.
+- **Une boîte d'actions se montre en TABLE, pas en graphe.** Elle n'a pas d'arêtes : un
+  graphe y dessinerait des nœuds sans liens. Actions en lignes, états en colonnes — la
+  question qu'on se pose en tenant un pas de course (« et sur les cailloux, ça donne quoi ? »)
+  se lit alors sur une ligne.
+- **La machine MUSIQUE se montre en GRAPHE DÉPLAÇABLE, et les positions sont de la donnée**
+  (tranché 2026-08-18). Elle est la seule des trois à avoir des arêtes, donc la seule où un
+  graphe dit quelque chose qu'une liste ne dit pas : quel état mène à quel autre, et par quel
+  déclencheur. Les coordonnées vivent sur l'état (`MusicState.x/y`), dans le même fichier que
+  lui — une disposition rangée à côté serait un second fichier à tenir d'accord, et une
+  disposition recalculée à chaque ouverture effacerait le travail de l'auteur à chaque fois.
+  C'est de la donnée d'authoring, pas de l'état d'interface : le build l'ignore, et deux
+  personnes sur le même projet voient le même dessin.
+- **Le graphe n'édite pas, il désigne.** Un nœud se déplace, se sélectionne et se relie ; tout
+  le reste — piste, boucle, niveau, intensité, transitions sortantes — se règle dans
+  l'inspecteur de droite, comme un actor dans le Scene Manager. Sans quoi il faudrait des
+  champs de saisie dans les nœuds, donc un nœud par taille de contenu.
+- **Un fil se DÉCROCHE, et les deux bouts ne disent pas la même chose.** Le bout flèche lâché
+  sur un nœud rebranche la transition ; lâché dans le vide, il la supprime — une transition qui
+  ne mène nulle part n'en est pas une. Le bout d'origine lâché dans le vide rend l'arête
+  globale (« depuis n'importe quel état »), ce qui est un cas courant et non une suppression.
+- **Une piste se GLISSE dans le graphe** (2026-08-19). Lâchée sur un nœud, elle en devient la
+  piste ; lâchée sur le vide, elle crée l'état qui la joue, nommé d'après elle et posé sous le
+  curseur. Deux gestes et pas un : viser un nœud, c'est dire « celui-ci joue ça » ; viser le
+  vide, c'est dire « il manque un état pour ça ». N'en garder qu'un obligerait à créer puis
+  régler, ou à régler puis déplacer.
+- **Le Sound finder suit l'onglet** (2026-08-19). Une action de SoundBox résout vers un Sfx ;
+  une action de JingleBox et un état de MusicBox vers une Music. La banque d'effets n'a donc
+  rien à faire à côté d'un graphe musical, et l'inverse non plus. Masqué plutôt que grisé,
+  comme partout : on ne propose pas une action impossible. C'est aussi ce qui rend le
+  glisser-déposer sans ambiguïté — ce qui est visible est ce qui se dépose.
+- **Une boîte se supprime**, depuis la barre de son onglet, avec confirmation et Ctrl+Z — comme
+  tout asset du projet. Une boîte porte des états, des mappings et, pour la MusicBox, une
+  disposition de graphe : ce n'est pas ce qu'on refait de tête après un clic malheureux.
+- **On écoute la boîte SANS BUILD** (2026-08-19). La barre de lecture descend sous le node
+  editor et gagne un mode « Lecture ROM » : la MusicBox joue comme la console la jouera, et
+  cliquer un nœud émet le déclencheur qui y mène — la transition s'entend, réglée. C'est la
+  boucle d'itération qui manquait : régler un fondu de 30 frames et l'entendre coûtait un build
+  complet, donc personne ne le réglait.
+  - La décision vit dans `core/engine_emulation/music_deck.py`, jumeau de
+    `music_transition_tick()` : même horloge (une frame de VBlank), même courbe (le volume tombe
+    à zéro en n/2 frames, l'autre module DÉMARRE là, puis remonte), même coupe (on attend la
+    frontière de motif, on reprend au même index d'ordre). C'est le dossier dont le nom est la
+    règle : deux implémentations à tenir d'accord, et l'en-tête nomme son jumeau.
+  - **Pas d'arête = rien.** Cliquer un nœud qu'aucune transition n'atteint depuis l'état courant
+    ne joue rien, et le dit. Inventer un fondu par défaut ferait régler à l'oreille quelque chose
+    que le jeu ne jouera jamais.
+  - **`intensity` n'est pas jouée**, parce que le codegen ne l'émet pas : le C ne pose que l'id
+    du module, la boucle et le volume. L'aperçu ne comble pas un trou du build, il le rend
+    visible.
+  - Approximation connue et unique : la boucle repart au DÉBUT du module, pas à sa position de
+    restart — `mod_file.py` ne lit pas encore ce champ. Ça ne s'entend que sur un module dont le
+    restart n'est pas 0.
+- **Tout geste des TROIS boîtes passe par l'historique** (2026-08-19). Pour la MusicBox :
+  déplacement, création, suppression, câblage, décrochage, rebranchement, renommage et réglages
+  de l'inspecteur. Pour les tables SoundBox / JingleBox : la case, l'action, la colonne d'état
+  et l'état de départ. Une entrée par geste, pas une par pixel.
+  - Les gestes COMPOSÉS ont leur propre commande (`ui/sound_mixer/sound_commands.py`) —
+    supprimer un état emporte ses arêtes et son statut de départ, et un seul Ctrl+Z doit tout
+    rendre ; deux commandes génériques enchaînées auraient laissé la boîte incohérente entre les
+    deux annulations. `AddBoxStateCmd` sert les trois — ajouter un état est le même geste
+    partout ; la suppression, non, puisque seule la MusicBox a des arêtes à emporter.
+  - **Une case vidée RETIRE l'action du mapping**, elle ne la laisse pas à vide : c'est ce qui
+    distingue « ne joue rien ici » de « à remplir », et l'annulation doit restituer l'un ou
+    l'autre — d'où `SetActionTargetCmd` plutôt qu'un `SetFieldCmd` sur le dictionnaire entier.
+  - **Deux crochets, jamais un.** Une écriture STRUCTURELLE reconstruit la grille ; une écriture
+    SCALAIRE se contente de resynchroniser les widgets en place. Détruire un QComboBox depuis son
+    propre signal fait tomber Qt — et un undo doit remonter la valeur À L'ÉCRAN, pas seulement
+    dans le modèle.
 
 #### Ouvert
 
@@ -2040,12 +2751,146 @@ L'inverse n'est pas vrai.
   `music.play`, elle coexiste comme couche facultative, ou elle reste hors du Lua. **À trancher
   quand le socle sera en main**, pas maintenant.
 - **Ce que « Parameters » devient, s'il devient quelque chose.** Une courbe qui mappe
-  « Player HP » vers une intensité suppose une molette continue ; il n'y en a que deux (volume,
-  tempo). Si l'intensité choisit une variante, ce sont des **seuils**, et l'interface doit
-  montrer des seuils — une courbe lissée dessinerait un fondu qui n'aura pas lieu.
-- **La position des nœuds** : disposition automatique, ou déplaçable et mémorisée quelque part ?
-  Même question qu'en v0.12, et elle mérite la même réponse — c'est une décision de modèle, pas
-  d'affichage.
+  « Player HP » vers une intensité suppose une molette continue ; il y en a trois (volume,
+  tempo, hauteur). Si l'intensité choisit une variante, ce sont des **seuils**, et l'interface
+  doit montrer des seuils — une courbe lissée dessinerait un fondu qui n'aura pas lieu.
+- **Le pont vers les animations, vu depuis CET écran.** La donnée vit sur la frame du sprite
+  (v0.8.5). Reste à décider ce que l'écran Son en montre : la liste des frames qui déclenchent
+  un effet donné (« qui m'appelle ? »), ou rien du tout. La première est la question qu'on se
+  pose en tenant un effet dans la main, mais c'est un index inverse à construire.
+- **La contrainte de canaux dans le graphe.** Un état dont la musique prend 6 canaux et dont
+  le jingle en veut 4 déborde du réglage de projet (v0.8.8). C'est calculable au build — les
+  modules déclarent leur nombre de canaux, et `module_model.py` le lit déjà. La pénurie, elle,
+  EST mesurée depuis la v0.8.8 (maxmod vole le canal d'arrière-plan le plus faible) : reste
+  seulement à décider si le graphe doit avertir ou bloquer, question d'interface et non plus de
+  comportement matériel inconnu.
+
+### v0.8.8 — Ce que la revue a rouvert : les formats de module, et la voix — **LIVRÉE**
+
+Relevé en relisant le chantier du point de vue du **sound designer** d'une équipe de trois,
+sur un jeu à ambiance de boss en couches. Quatre points, dont un remet en cause une décision
+de la v0.8.1.
+
+- **La musique n'accepte que `.mod`** (`MUSIC_FILE_EXTS`,
+  [audio.py:101](editor/core/models/audio.py:101)). La décision venait de deux contraintes
+  réelles : mmutil, et l'aperçu de l'éditeur, qui ne sait lire que le ProTracker
+  (`engine_emulation/mod_file.py`). Mais **maxmod lit aussi `.xm`, `.it` et `.s3m`** — et c'est
+  ce qu'un sound designer livre : instruments, enveloppes, panning, colonne de volume, plus de
+  canaux. Le refus actuel n'est donc **pas une limite du matériel, c'est une limite de
+  l'aperçu**, et il est le seul point du jalon qui contraigne le métier de quelqu'un d'autre.
+  Deux sorties : étendre l'aperçu (coûteux, un lecteur par format), ou accepter les formats
+  **sans** aperçu — ce qui est tenable parce que la v0.8.1 a déjà décidé que le refus a lieu à
+  l'import, sur le contenu, et pas chez mmutil qui ne dit jamais non.
+
+  → **Tranché le 2026-08-20 : on ÉTEND L'APERÇU**, et les quatre formats sont acceptés. La
+  règle de la v0.8.1 — « on n'accepte que ce qu'on sait construire ET faire écouter » — n'a pas
+  été assouplie : c'est l'aperçu qui a rattrapé le matériel, donc la même règle rend maintenant
+  quatre entrées au lieu d'une. Accepter sans aperçu aurait fait mentir l'écran, ce que la
+  v0.8.1 refusait déjà pour une autre raison.
+
+#### Un lecteur audio, quatre lecteurs de format (2026-08-20)
+
+`mod_render.py` devient **`module_render.py`**, et il ne connaît plus aucun format : les
+quatre lecteurs (`mod_file`, `s3m_file`, `xm_file`, `it_file`) produisent un **`Module`**
+commun (`module_model.py`). Un lecteur audio et non quatre — sinon le vibrato existerait en
+quatre versions, et trois d'entre elles seraient fausses.
+
+- **Le format se reconnaît à sa SIGNATURE**, jamais à son extension. C'est le trou mesuré en
+  v0.8.1 (un wav valide renommé `.ogg` était rejeté ; un `.mod` qui n'en est pas un passait) :
+  un `.xm` renommé `.mod` se joue, et un `.mod` qui n'en est pas un se refuse à l'import.
+- **Trois divergences seulement** séparent les quatre formats côté rendu, et le modèle les
+  porte au lieu de les cacher : la hauteur (période Amiga ou échelle linéaire), la couche
+  d'INSTRUMENTS avec ses enveloppes (XM/IT), et la numérotation des effets — normalisée à la
+  lecture. Tout le reste est commun.
+- **La décompression IT214/IT215 est écrite**, parce que c'est le format d'échantillon par
+  défaut d'Impulse Tracker et d'OpenMPT : sans elle, la moitié des modules livrés par un
+  compositeur seraient muets — et muets sans message, le fichier étant par ailleurs valide.
+- **Ce qui n'est pas rendu ne l'est pas non plus sur la console** : filtres résonants d'IT,
+  échantillons stéréo, NNA au-delà de la coupure. L'aperçu vise ce que maxmod jouera, pas ce
+  qu'un lecteur de bureau jouerait.
+
+**Trois défauts du rendu ProTracker, révélés en écrivant le lecteur commun** — ils étaient là
+depuis la v0.8, et l'aperçu des `.mod` change donc, en mieux :
+
+| Défaut | Ce que ça donnait |
+| --- | --- |
+| glissés quatre fois trop rapides | `1xy`/`2xy`/`E1x`/`E2x` déplaçaient la hauteur de `xy × 4` périodes par tick au lieu de `xy` |
+| un canal à volume 0 était GELÉ | l'échantillon reprenait où il s'était arrêté, au lieu de continuer à se dérouler muet ; 352 `C00` dans un seul module de la démo |
+| six effets simplement ignorés | trémolo, retrigger, retard de note, boucle et retard de pattern, slides de volume fins |
+
+- **Vérifié : mêmes longueurs, mêmes repères de position** sur les modules de la démo — le
+  rendu diffère là où ces trois corrections s'appliquent, pas ailleurs.
+- **Testé contre des fixtures**, faute de mieux : aucun `.xm`, `.s3m` ni `.it` n'existe sur la
+  machine. `tests/module_fixtures.py` écrit le MÊME petit morceau dans les quatre formats, et
+  le test vérifie qu'ils sonnent à la même hauteur — un décalage d'octave dans la table de
+  notes d'un format ne se prouve pas contre lui-même, il se prouve contre les trois autres.
+  Ce que ça ne remplace pas : un vrai module écrit par un tracker. **À écouter dès qu'un
+  fichier réel sera disponible**, en particulier un `.it` à échantillons compressés.
+- **Huit canaux logiciels, en dur** (`mmInitDefault(…, 8)`,
+  [main_gen.py:3425](editor/codegen/runtime_codegen/main_gen.py:3425)), et le jingle plafonné à
+  4 par maxmod ([headers.py:145](editor/codegen/runtime_codegen/headers.py:145)). Pour une
+  ambiance en couches — thème, nappe, cris du boss, projectiles, impacts — c'est le premier
+  plafond touché, et il est **réglable**, contrairement aux quatre canaux du matériel.
+  → **Livré** : `ProjectSettings.sound_channels`, de 4 à 32, défaut 8. Le coût est affiché
+  parce qu'il est exact (92 o par canal, mesuré), et le validateur nomme le module qui demande
+  plus de voies que le projet n'a de canaux.
+- **`sfx_set_panning` existe en C, pas en Lua.** Un projectile qui traverse l'écran ne peut pas
+  être placé dans le champ stéréo. Les v0.8.5 et v0.8.6 exposent le volume et la hauteur ; le
+  panning est le troisième de la même famille et n'a aucune raison de rester dedans.
+  → **Tombé avec la v0.8.6** : `:set_panning(−100..+100)` est l'une des cinq méthodes de la
+  référence d'effet.
+- **Ni priorité de voix, ni ducking.** Quand les huit canaux sont pris, maxmod décide seul
+  lequel meurt — et **ce qu'il fait en pénurie n'est pas mesuré**, ce que la v0.8.7 note déjà
+  (« la contrainte de canaux dans le graphe »). La mesure vient donc avant toute décision ici :
+  sans elle, une politique de priorité serait écrite contre un comportement supposé.
+
+#### La pénurie, mesurée : maxmod A une politique, et on l'empêchait de s'appliquer (2026-08-20)
+
+`mmAllocChannel` désassemblée (même méthode qu'en v0.8.6 — la lib est sur le disque). Elle
+tient en quatre lignes, et elle est ordonnée :
+
+| Ordre | Ce qu'elle fait |
+| --- | --- |
+| 1 | un canal LIBRE existe → elle le prend, et sort immédiatement |
+| 2 | sinon, elle vole le canal `BACKGROUND` **au volume le plus faible** |
+| 3 | les canaux `FOREGROUND` (les notes du module) et `CUSTOM` ne sont **jamais** volés |
+| 4 | rien de disponible → elle rend 255, `mmEffectEx` rend 0, et l'effet ne sonne pas |
+
+Le fait qui décide de tout : **demander un handle fait du canal un `CUSTOM`**, donc un canal
+inviolable. Or `sfx_play` pose `ex.handle = 0` — « attribue-m'en un » — pour TOUS les effets,
+y compris un `sfx.play("Bip")` posé seul dont personne ne lira jamais la référence. Les huit
+canaux du projet se remplissent donc d'effets intouchables, et le neuvième bruitage d'une frame
+chargée est **perdu en silence** là où maxmod aurait su faire céder le plus faible.
+
+- **Décision : ce qu'on TIENT ne se fait pas voler ; ce qu'on lâche peut céder la place**
+  (2026-08-20). `sfx.play("Bip")` posé en instruction émet `ex.handle = 255` — un canal
+  d'arrière-plan, volable ; `local h = sfx.play("Bip")` émet `ex.handle = 0` et protège le
+  canal, puisque l'auteur a dit vouloir le suivre. **Le codegen connaît la différence au
+  build** : c'est la même information qui décide déjà du type C du local.
+- **Ce n'est pas une politique de priorité, et c'est mieux ainsi.** Une file de priorités
+  aurait demandé un réglage par effet, donc une notion de plus à comprendre, pour reproduire à
+  la main ce que le mixeur fait déjà — il vole le plus FAIBLE, ce qui est la bonne heuristique
+  et la moins audible. On rend simplement à maxmod le droit de l'appliquer.
+- **Le ducking reste dehors.** Il n'a de sens qu'entre les deux couches de module, et il y est
+  déjà : `music.set_volume` + `jingle_box.set_volume` (v0.8.6). Un duck effets↔musique
+  demanderait de suivre le niveau des huit canaux, ce que le matériel ne rend pas.
+
+#### Les canaux, chiffrés (2026-08-20)
+
+`mmInitDefault(bank, n)` alloue exactement `92 × n + 1056` octets sur le tas : 40 o de voie de
+module, 28 o de voie active et 24 o de voie de mixage par canal, plus 1 056 o de tampon — la
+longueur de mixage du **mode 3, soit 16 kHz**, ce que l'aperçu Python reproduit déjà. Huit
+canaux coûtent donc **1 792 o**, et chaque canal de plus 92 o.
+
+- **Le nombre de canaux devient un réglage de projet**, de 4 à 32 (le masque de canaux de
+  maxmod est un mot de 32 bits). Défaut **8**, la valeur en dur d'aujourd'hui : un projet
+  existant ne change pas de son parce qu'un réglage est apparu.
+- **Le pool de RÉFÉRENCES, lui, reste 16** — table de 16 entrées dans maxmod, indépendante du
+  nombre de canaux. Monter à 24 canaux ne donne pas 24 références suivables ; l'effet joue,
+  simplement sans référence.
+- **Le validateur compare le module au réglage.** Un `.xm` à 16 voies dans un projet à 8 canaux
+  ne joue pas tronqué à moitié : les notes en trop n'ont nulle part où aller. C'est le même
+  contrôle que les 4 canaux du jingle, avec l'autre plafond.
 
 ---
 
@@ -2205,6 +3050,12 @@ la réécriture par offsets de `refactor.py` pour les modifier.
 
 ## v0.14 — Diagnostic — ce que le jeu fait, et ce qu'il coûte
 
+> **Priorité relevée le 2026-08-19.** La revue « projet de production » (juste avant la v1.0)
+> la place **en tête** de tout ce qui reste : un combat de boss — projectiles, effets,
+> blending, musique — est l'endroit exact où le budget de frame se perd, et c'est aussi le seul
+> endroit qu'on ne peut pas régler à l'œil. Toutes les autres versions se décident mieux une
+> fois qu'on sait mesurer.
+
 Le pipeline sait construire un jeu ; il ne sait rien dire de ce que ce jeu fait une fois
 lancé. Les deux manques sont vécus quotidiennement par qui développe, et aucun n'est couvert.
 
@@ -2340,6 +3191,850 @@ consultée avant chaque écriture.
 
 ---
 
+## v0.16 — L'API : la règle de construction, et le rangement
+
+Le constat, posé le 2026-08-19 : **l'API est inégale, et il lui manque une règle de
+construction.** Relevé sur le catalogue réel — `api_reference.get_categories()` réconcilié
+rend **22 sections, 124 entrées, aucune périmée, aucune permutée**. La mécanique est saine :
+`api.py` reste la source de vérité, le JSON ne décide que de la mise en rayon, et le loader
+filtre puis complète tout seul. C'est le **rangement** qui ne va pas, pas la machinerie.
+
+### Deux couches
+
+L'API se conçoit à deux niveaux, et toute porte ouverte doit dire auquel elle appartient.
+
+- **La couche d'itération** est celle de la majorité des scripts : simple à découvrir, rapide
+  à utiliser, proche du Lua ordinaire, suffisante pour le gameplay courant, sans exposer
+  l'intérieur du moteur. Faire une chose courante tient en quelques lignes.
+- **La couche moteur** expose les outils spécialisés, et leur **nom** dit qu'ils en sont :
+  `Interface`, `TextTable`, `DataTable`, `SoundBox`, `MusicBox`, `JingleBox`.
+
+L'itération répond au **besoin immédiat**, le moteur au **besoin spécialisé**. On ne déplace
+pas le simple vers le spécialisé par anticipation — afficher un texte ponctuel ne doit pas
+exiger `TextTable` ; à l'inverse, un RPG de centaines de dialogues ira volontairement le
+chercher. **Et l'itération ne cherche pas à égaler le moteur** : les deux ont volontairement
+des objectifs différents. Le moteur peut être complexe ; l'API de base ne doit pas l'être.
+
+### La règle de construction : on ne construit rien
+
+**Une règle existe déjà, et elle n'est pas celle-ci.** `ARCHITECTURE.md` tranche la **forme**
+d'un appel : état intrinsèque → propriété, requête sans argument → propriété en lecture seule,
+requête indexée → fonction, action → méthode ou fonction de module. Elle répond à « *comment
+ça s'écrit* ». Elle ne dit rien de « *d'où vient la chose sur laquelle j'écris* » — et c'est ce
+deuxième axe qui manque. Les deux se composent ; aucune ne remplace l'autre.
+
+Signe que le manque était déjà visible : `ARCHITECTURE.md` range `get_actor(name)` parmi les
+« cas hors des trois formes », sans pouvoir dire pourquoi il détonne. La réponse est ici — il
+ne suit aucune des trois provenances.
+
+Trois provenances, et trois seulement :
+
+| Provenance | Ce que c'est | Coût runtime |
+| --- | --- | --- |
+| `module.get("Nom")` | une chose **nommée du projet**, qui existe avant que le jeu démarre | un `#define` |
+| `module.spawn(…)` / `sfx.play(…)` | un **slot pris dans un pool dimensionné au build** ; rend une référence, ou rien si le pool est plein | une boucle sur une plage contiguë |
+| `module.verbe(n, …)` | le **matériel, numéroté par le matériel** : 4 calques, 2 fenêtres, 16 banques | un registre |
+
+Plus une quatrième, qui n'obtient rien et ne vise rien de numéroté : `text.draw(tx, ty, id)`
+dessine à des **coordonnées libres**. Elle est légitime — elle doit être nommée comme telle au
+lieu d'être subie.
+
+**Aucun constructeur ne rend une référence.** Le seul `new` envisagé —
+`new_sound_effect()` — a été retiré le jour même : les huit canaux de maxmod sont un pool, et
+`sfx.play` rend son slot comme `actor.spawn` rend le sien (v0.8.6). `vec2` / `vec3` / `rect`
+sont bien des constructeurs, comme `ARCHITECTURE.md` les nomme — mais ils construisent une
+**valeur**, comme `12` : rien qui vive dans le moteur, rien dont on tienne une référence. La
+règle se dit donc précisément : *aucune référence ne s'obtient autrement que par les trois
+provenances ci-dessus.*
+
+Ce qui est inégal, c'est exactement ce qui ne suit aucune des trois : `get_actor("x")`, seule
+fonction du catalogue à porter son verbe devant — et le seul « cas hors formes » de
+`ARCHITECTURE.md` que ce chantier fait rentrer dans le rang.
+
+### Ce que le rangement actuel enseigne de faux
+
+Cinq intentions ordinaires, passées sur les 22 sections. **Quatre échouent.**
+
+| « Je veux… » | Ce que l'auteur trouve |
+| --- | --- |
+| cacher quelque chose | cinq réponses dans cinq sections — `self.visible` (Animation), `self:hide()` (Interface), `self.active` (Actor), `layer.show` (Layer), `window.show` (Window). Choisir suppose de savoir ce qu'est sa chose **pour le moteur** — précisément ce que l'itération promet de ne pas exiger. Et `self.visible` rangé dans « Animation » ne s'invente pas. |
+| faire sauter mon perso | **Movement** ne contient rien à ce sujet ; la réponse est dans **Physics** (`add_velocity`, `velocity`, `grounded`). Deux sections, un sujet, une frontière indevinable — et on s'arrête raisonnablement à la première. |
+| afficher mon score | **Texte** montre huit fonctions, aucune ne dit que la valeur vient de `global.set` plus un marqueur `$`. La recette traverse deux sections et un écran de l'éditeur. |
+| changer mon fond | cinq sections, trente entrées, toutes nommées d'après des **registres**. Et **Tile** (1 entrée) parle de collision, pas de décor : posé à côté de Tilemap, il se lit comme son petit frère. |
+| débuter | **Actor** est la corbeille de repli du réconciliateur (`_ACTOR_FALLBACK`) : la section la plus consultée par un débutant est celle dont le contenu est le moins prévisible. |
+
+Seule **Sauvegarde** passe proprement : quatre fonctions, un sujet, un nom.
+
+Et la liste des intitulés **inverse la réalité deux fois** :
+
+| Ce que la liste montre | Ce qui est vrai |
+| --- | --- |
+| Transform, Movement, Physics, Animation, Actor — **5 sections** | **un seul objet**, `self` |
+| Layer, Tilemap, Palette, Window, Blend — **5 sections** | **une seule chose**, le décor |
+| Tableaux (1), Tile (1), Scène (3) | des feuilles isolées, au même rang qu'Audio (11) |
+
+Les sections sont nommées d'après le **grain de l'implémentation** — une famille de verbes, un
+registre matériel — jamais d'après la **chose que l'auteur a en tête**. Qui lit la barre
+latérale en déduit un moteur à 22 sous-systèmes de poids comparable. Il en a huit.
+
+### Décisions verrouillées
+
+- **Huit sections, une par chose qu'on tient.**
+
+  | Section | Ce qu'elle absorbe | Entrées |
+  | --- | --- | --- |
+  | **L'acteur** | Transform + Movement + Physics + Animation + Actor | 17 fn + 18 propriétés |
+  | **Le décor** | Layer + Tilemap + Window + Blend + Palette | 29 fn + 1 |
+  | **Le son** | Audio + les trois boîtes | 22 |
+  | **Le texte et l'interface** | Texte + Interface | 14 |
+  | **Les données** | Variables + Sauvegarde + `data` + `array` | 8 + l'indexation |
+  | **Le script** | Maths + Séquences + `vec2`/`rect` + `wait` + les handlers | 21 + les handlers |
+  | **La scène** | Scène + Caméra + `tile.get` | 5 fn + 4 |
+  | **Le joueur** | Input | 2 fn + 1 |
+
+- **Les 22 noms actuels deviennent des sous-titres**, ils ne disparaissent pas. `blend` reste
+  `blend` pour qui le connaît déjà ; il cesse d'être une **porte d'entrée** pour qui ne le
+  connaît pas.
+
+- **La couche est une MARQUE sur l'entrée, pas la navigation.** Couper le panneau en deux au
+  premier niveau (« Itération » / « Moteur ») obligerait qui cherche à faire défiler son fond
+  à savoir d'abord que le défilement est « moteur » — encore de la connaissance du moteur pour
+  trouver la porte. Donc : **une seule navigation, par nom** ; dans chaque section,
+  l'itération d'abord, le moteur replié sous un « Aller plus loin ». C'est la réponse à la
+  question « où la frontière se voit-elle », sans laquelle la frontière ne survivrait pas
+  trois versions.
+
+- **Quatre renommages, complets.** `get_actor` → `actor.get` (le verbe passe derrière, comme
+  `ui.get`, `global.get`, `const.get`) ; `ui` → `interface` (une abréviation, que la grammaire
+  de la maison refuse) ; les quatre `text.*_in` → `interface.draw_text` / `clear_text` /
+  `reading` / `skip` (elles visent une **zone nommée d'une mise en page**, pas des coordonnées
+  libres — c'est ce mélange qui rendait « Texte » illisible) ; les trois boîtes sonores
+  (v0.8.6).
+
+- **`TextTable` n'a pas de module.** Sa surface Lua **est** `text.draw` plus les marqueurs
+  `$variable` de l'entrée ; clés, balisage et traductions sont résolus au build. Pas de module
+  vide inventé par symétrie avec les autres assets nommés.
+
+- **`text.draw` accepte DÉJÀ un littéral écrit sur place** (`api.py`, entrée anonyme
+  `_lit_<hash>` dérivée du contenu). « Un texte ponctuel ne doit pas exiger `TextTable` » est
+  donc tenu depuis le début, et n'était écrit nulle part. **À documenter, pas à construire.**
+
+- **C'est du rangement, pas une réécriture.** `api_reference.json` décide déjà de la mise en
+  rayon, et le loader complète depuis `api.py` : il faut réécrire ses catégories et
+  `_PROP_HOME`. Le catalogue, lui, ne bouge que par les quatre renommages.
+
+Bilan : **112 fonctions de catalogue** (100 + 12 par v0.8.6), **24 propriétés** rangées avec
+leur objet, **6 mots du langage** enfin listés (`vec2`, `vec3`, `rect`, `wait`, `wait_until`,
+`require`), **8 sections** au lieu de 22.
+
+### Ouvert
+
+- **`#data.Objets`** — le nombre de lignes d'une table de données. Évident, absent. À ouvrir,
+  ou à refuser par écrit dans `SCRIPTING.md`.
+- **`SCRIPTING.md` adopte-t-il les mêmes huit sections ?** Deux plans différents pour la même
+  API rouvriraient exactement le problème qu'on ferme ici.
+- **v0.13 hérite de ce rangement** : les palettes de blocs de l'édition mixte seront ces huit
+  sections. À vérifier quand le chantier démarre, pas maintenant.
+- **`ARCHITECTURE.md` porte déjà les anciens noms** (`get_actor`, `ui.get`, `text.draw_in`
+  — huit endroits au moins). Ils y sont **justes tant que le renommage n'est pas fait** : ce
+  fichier décrit le code tel qu'il est. Il devient donc la liste de contrôle du renommage,
+  pas une dette à corriger d'avance.
+
+---
+
+## v0.17 — Le pool par scène
+
+### Ce qui a été écarté, et pourquoi
+
+Un **spawn dynamique depuis la librairie de prefabs** a été envisagé le 2026-08-19, puis
+écarté. Ce n'est pas « compliqué » : c'est incompatible avec **trois allocateurs qui sont tous
+au build**.
+
+1. Les tuiles du sprite sont en VRAM **par scène** (`tile_offset` calculé à l'émission).
+2. La palette est allouée **par scène** (`palette_alloc`, plafond de 16 banques).
+3. L'état de script d'une instance est un tableau dimensionné sur `POOL_<X>_SIZE` (v0.7.6).
+
+Un prefab tiré de la librairie en cours de partie demanderait les trois à l'exécution. Ce ne
+serait pas un chantier, ce serait un autre moteur.
+
+### Ce qui existe déjà, et ce qui manque vraiment
+
+Le pool old-school **est écrit** : `spawn_<Prefab>` balaie sa plage à la recherche d'un slot
+inactif, `pool_init` remet l'état à zéro, `-1` si plein. Ce qui manque n'est pas le pool,
+c'est **où il se déclare**.
+
+> `max_instances` est un champ du **Prefab** (`core/models/scene.py`), pas de la Scene. Et
+> `headers.py` fait `sum(pf.max_instances for pf in prefabs)` : **chaque scène du projet porte
+> les slots de tous les prefabs spawnables du projet**, y compris ceux qu'elle n'utilise
+> jamais. Une scène de menu paie les seize balles du niveau d'action — en EWRAM, en entrées de
+> `g_actors[]`, et en état de script.
+
+### Décisions verrouillées
+
+- **Le pool se déclare sur la SCÈNE**, avec les prefabs qu'elle emploie réellement.
+  `max_instances` quitte `Prefab`. Un prefab reste un **template de projet** ; combien
+  d'exemplaires en vivent en même temps est une propriété du **niveau**, pas du template.
+- **Pas de spawn dynamique depuis la librairie.** Écarté pour les trois raisons ci-dessus. À
+  ne pas rouvrir tant qu'aucune des trois n'a changé.
+- **`active = false` LIBÈRE le slot.** C'est déjà le comportement — la boucle de spawn cherche
+  `if(!g_actors[_i].active)` (`main_gen.py`) — mais rien ne le disait : désactiver un acteur
+  ne le met pas en pause, ça le rend réutilisable, et le prochain spawn écrasera tout par
+  `(Actor){0}`. `self:destroy()` devient le **nom lisible du même geste**. Trois états
+  (actif / réservé inactif / libre) ont été envisagés et écartés : un drapeau de plus par
+  acteur, une règle de plus à expliquer, et un pool qui peut se remplir de slots réservés que
+  rien ne rend.
+- **`actor.spawn` rend sa référence, ou rien si le pool est plein.** Le C rend déjà `_i` ou
+  `-1` (`main_gen.py`) ; le Lua le jetait. Même forme que `sfx.play` (v0.8.6), parce que c'est
+  la même chose : prendre un slot dans un pool dimensionné au build.
+- **La mesure, pas de garde-fou** — même règle qu'en v0.7.6 : le build dit ce que les pools de
+  la scène coûtent, rien ne bloque.
+
+### Ce que ça touche
+
+`core/models/scene.py` (le champ change de classe), `headers.py` (les `POOL_*` deviennent
+per-scène), `main_gen.py` (`_pool_info`, la boucle de spawn), `lua_compiler.py` (le
+dimensionnement de `g_state_*`), `palette_alloc.py`, `rom_build.py`, `validator.py`, et
+l'écran Scene, qui doit désormais montrer les pools de la scène.
+
+### Ouvert
+
+- **Le vrai coût du chantier, et il n'est pas tranché.** `POOL_<X>_START` / `POOL_<X>_SIZE`
+  sont des constantes de build lues par le **script transpilé**, qui est compilé **une seule
+  fois pour le projet** — c'est écrit tel quel dans `headers.py`. Si la taille devient
+  per-scène, un même script voit deux tailles selon la scène. Deux sorties : dimensionner
+  `g_state_<X>[]` sur le **maximum du projet** (on récupère les entrées de `g_actors[]`, mais
+  pas l'état de script), ou **compiler les scripts par scène** (on récupère tout, au prix du
+  temps de build et d'une hypothèse tenue partout ailleurs qui tombe). À trancher avant
+  d'écrire une ligne. **La v0.23 attend cette réponse** : un prefab qui porte un sous-arbre
+  dimensionne son pool en instances × parties, et l'état de script de chaque partie se range
+  là où celui-ci se range.
+- **Où le pool d'une scène se déclare dans l'éditeur** : dans la liste des acteurs de la
+  scène, ou dans un panneau à part ?
+
+---
+
+## v0.18 — La valeur affichée : d'où elle vient
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+Le grief de départ était « il faut traverser trois écrans pour afficher un score ». **Il est
+faux, et il faut le dire avant de concevoir quoi que ce soit** : le littéral est déjà accepté
+par `text.draw` (« une clé de la table, *ou un littéral écrit sur place* »), il fabrique son
+entrée anonyme tout seul (`api.anon_text_key`), et les globals se déclarent dans la **sidebar
+du Script Editor**. Afficher un score, aujourd'hui, c'est un écran et deux gestes — ce que
+fait déjà le Pong :
+
+```lua
+-- sidebar : déclarer `score_player`. Puis, sans quitter l'écran :
+text.draw(9, 2, "$score_player")
+```
+
+Le défaut est ailleurs, et il est **structurel : la valeur affichée ne peut être qu'un global
+déclaré.** `text_materialize` lit `global_read(g_text_values[src])`
+([gba_engine.h:1758](runtime/include/gba_engine.h:1758)), et `font_emit` ne sait écrire dans
+`g_text_values` qu'un `GLOBAL_<NOM>` ([font_emit.py:842](editor/codegen/font_emit.py:842)).
+Il n'existe pas d'autre source au runtime.
+
+Ce que ça interdit : afficher un `local`, une expression, une propriété (`self.position.x`),
+une cellule de table de données. Il faut **promouvoir** la valeur en global — payer un nom
+dans un espace de noms de projet, de la RAM, et une décision de persistance, pour un nombre
+qui vit trois frames. L'auteur déforme son modèle pour satisfaire l'afficheur.
+
+Un fait qui décide de la forme de la solution : **une constante, elle, est déjà cuite dans les
+codepoints au build** (`_bake_values`). La substitution n'est donc pas « globale par nature » :
+elle est globale *au runtime*, faute d'une autre source à cet instant-là. Il en manque une
+troisième, et c'est le **site d'appel**.
+
+### Décisions verrouillées
+
+- **Des marqueurs positionnels `$1` à `$4`, à côté du `$nom` existant.** L'entrée porte la
+  phrase, l'appel porte les valeurs :
+
+  ```lua
+  text.draw(9, 2, "score", points)              -- l'entrée dit « Score : $1 »
+  text.draw_in("boite", "degats", hp, hp_max)   -- « $1 / $2 PV »
+  text.draw(2, 2, "PV : $1", hp)                -- littéral : rien à déclarer
+  text.draw(2, 2, "$1", self.position.x)        -- debug, une ligne, zéro écran
+  ```
+
+- **`$nom` ne bouge pas.** Deux sources pour deux durées de vie : un global est un état
+  *partagé et persistant* que plusieurs textes citent, un positionnel est une valeur que
+  l'appelant a déjà en main. Confondre les deux rendrait le HUD propriétaire d'un espace de
+  noms de projet.
+- **Ceci ne rouvre pas le retrait de `display.print`.** Le motif de ce retrait était « leur
+  chaîne de format vivait dans le script, donc hors de la table de textes : intraduisible »
+  ([api.py:643](editor/scripting/api.py:643)). Ici la **phrase reste dans l'entrée** ; seule la
+  *valeur* vient de l'appel. `$1` n'est pas du texte, c'est un trou — il occupe une place de
+  sentinelle exactement comme `$score` aujourd'hui, donc le centrage, la coupe, la machine à
+  écrire et la traduction continuent de fonctionner.
+- **Les positionnels sont admis dans une entrée de la table, pas seulement dans un littéral.**
+  C'est même leur premier intérêt en v0.9 : une langue qui ordonne « 3/5 PV » autrement
+  réordonne ses `$n` dans sa propre entrée, sans que le script sache qu'elle existe.
+- **Les valeurs voyagent par un tampon de passage, pas par des varargs.**
+
+  ```c
+  g_text_arg[0] = score; g_text_arg[1] = hp; g_text_arg_n = 2;
+  text_draw(9, 2, TEXT_HUD);
+  ```
+
+  Le codegen émet déjà des instructions : poser deux affectations avant l'appel ne lui coûte
+  rien, et **la signature de `text_draw` ne bouge pas**. C'est ce qui donne le mécanisme
+  gratuitement à `text_draw_in`, `text_reading` et `text_length` — toutes passent par
+  `text_materialize`. Ce dernier point décide : `text_length` doit voir la valeur substituée
+  (c'est la borne de la machine à écrire) et ne prend, elle, aucun argument. Des varargs
+  n'auraient rien pu pour elle.
+- **Plafond de quatre valeurs par entrée, refusé au Build au-delà.** Une ligne de HUD n'en
+  demande pas plus, et le tampon est dimensionné au build comme tout le reste : un plafond
+  variable serait une allocation.
+- **L'arité est vérifiée au Build.** Une entrée qui cite `$2` appelée avec une seule valeur est
+  une erreur sur sa ligne, pas un zéro affiché. `BuildContext.text_keys` doit donc porter le
+  nombre de `$n` par entrée, là où il n'est aujourd'hui qu'une liste de clés.
+- **La mécanique variadique existe déjà et suffit.** `ApiFunc.variadic` est câblé de bout en
+  bout — contrôle d'arité ([checker.py:1014](editor/scripting/checker.py:1014)) et
+  pass-through des args au-delà des paramètres déclarés
+  ([codegen.py:1283](editor/scripting/codegen.py:1283)) — et sert déjà à `array(20, 12)`.
+  Rien à inventer côté langage : `text.draw` et `text.draw_in` prennent le drapeau.
+- **La conversion en chiffres est déjà écrite.** `text_num_cp`
+  ([gba_engine.h:2691](runtime/include/gba_engine.h:2691)) reste le point unique ; seule la
+  **source** de `src` change dans `text_materialize`.
+
+### Ce qui a été écarté, et pourquoi
+
+- **`text.number(tx, ty, valeur)`** — le moins cher à écrire (le rendu des chiffres existe), et
+  le plus mauvais. Il ramène exactement le défaut qui avait fait retirer `text_draw_num` : pour
+  poser « Score : » puis le nombre, l'auteur doit savoir **où finit le libellé en pixels**.
+  Faux dès qu'une police est proportionnelle, faux dès qu'on traduit, faux dès que la valeur
+  change de nombre de chiffres. Et c'est le geste du débutant, donc l'endroit où se tromper
+  coûte le plus cher.
+- **Les varargs C** — `__va_start` embarqué, la signature d'une fonction chaude modifiée pour
+  tous ses appelants, et `text_length` toujours sans réponse.
+
+### Ce que ça touche
+
+[text_markup.py](editor/core/text_markup.py) (la regex de marqueur
+[ligne 185](editor/core/text_markup.py:185), l'arité rendue par l'analyse, `resolve` pour
+l'aperçu), [font_emit.py](editor/codegen/font_emit.py) (`emit_texts_c` : un marqueur
+positionnel écrit son rang au lieu d'un index dans `g_text_values`),
+[gba_engine.h](runtime/include/gba_engine.h) (`text_materialize` : deux sources au lieu d'une,
+plus `g_text_arg`), [api.py](editor/scripting/api.py) (le drapeau `variadic` sur les deux
+`text.draw*`), [checker.py](editor/scripting/checker.py) (l'arité, et le contexte de build qui
+la porte), [codegen.py](editor/scripting/codegen.py) (les affectations posées avant l'appel),
+et l'écran Texte, qui doit montrer un aperçu de ce qu'il ne connaît pas.
+
+### Ouvert
+
+- **Ce que l'aperçu de l'écran Texte affiche pour un `$n`.** `resolve()` substitue aujourd'hui
+  la vraie valeur d'un global ; un positionnel n'en a aucune au moment de l'authoring. Trois
+  sorties : laisser `$1` visible tel quel (comme un `$nom` inconnu, cf. `_bake_values`),
+  afficher un `0`, ou donner à l'entrée une **colonne de valeurs d'exemple** — qui a le mérite
+  de montrer la mise en page réelle d'un « 999/999 » avant qu'elle ne déborde en jeu.
+- **`text.length` et `text.reading` sur une entrée à positionnels.** Leur résultat dépend des
+  dernières valeurs posées dans le tampon, donc du dernier `text.draw` — y compris quand ce
+  n'était pas la même entrée. À trancher : rendre le tampon **propre à la zone** (une copie par
+  tête de lecture, comme `g_reads`), ou assumer un tampon global et dire dans quel ordre les
+  deux appels s'écrivent. La première est la seule qui reste vraie avec deux boîtes de dialogue
+  à l'écran.
+- **Un `$n` au-delà de ce que l'appel a fourni**, si le contrôle d'arité est un jour contourné
+  (entrée modifiée après coup, traduction ajoutant un `$3`) : un trou de cellule comme un
+  glyphe absent, ou zéro ? La règle maison dit trou — « mieux qu'un nombre silencieusement
+  faux » (cf. le commentaire de `text_num_cp`).
+
+---
+
+## Ce que la revue « projet de production » a relevé (2026-08-19)
+
+Les six versions qui suivent viennent d'une seule séance : la relecture du logiciel du point
+de vue d'un **projet cible** — un metroidvania à composante RPG (dialogues denses, arbre de
+compétences, physique fine) et à combats de boss scénarisés (phases, projectiles, effets,
+ambiance), mené par une **équipe de trois** : un programmeur, un sound designer, un pixel
+artiste, avec une cartouche réelle au bout.
+
+Ce ne sont pas des idées de fonctionnalités. Chacune est un point où ce projet-là **s'arrête**,
+ou paie un prix qui ne se rattrape plus en fin de production. Elles passent avant la v1.0
+parce que la v1.0 affirme « le logiciel absorbe un projet 2D de production », et qu'elle
+déclare le platformer et le metroidvania « atteignables aujourd'hui » : la revue dit où c'est
+faux.
+
+**L'ordre recommandé n'est pas l'ordre des numéros** — un numéro est une identité, pas un
+rang :
+
+| Rang | Version | Pourquoi là |
+| --- | --- | --- |
+| 1 | **v0.14** — Diagnostic | Un combat de boss est l'endroit exact où le budget de frame se perd. Sans mesure, tout le reste se règle à l'aveugle. |
+| 2 | **v0.19** — Le sous-pixel | Décide si le genre est faisable. Touche la structure `Actor` : plus il arrive tard, plus il casse de projets. |
+| 3 | **v0.24** — Le projet à l'échelle d'une équipe | Les formats non fusionnables plafonnent l'outil au travail solitaire **dès la première semaine**, pas à la v1.0. |
+| 4 | **v0.20** — Collections persistantes | Sans elle, l'état d'un monde metroidvania s'écrit à la main, une variable par coffre. |
+| 5 | **v0.23** — Ce qu'un boss demande | Trois manques déjà connus, réunis par un seul cas d'usage. |
+| 6 | **v0.21** — Le texte adressable | Débloque le dialogue dense ; la v0.9 (traduction) en dépend. |
+| 7 | **v0.22** — Menus, listes et curseur | Le plus gros chantier, et le seul dont la forme reste ouverte. |
+
+---
+
+## v0.19 — Le sous-pixel
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+La position et la vélocité d'un acteur sont des **pixels entiers** :
+
+```c
+typedef struct Actor {
+    int x, y;              /* position monde */
+    int vx, vy;            /* vélocité */
+```
+([actor_types_static.h:33](runtime/include/actor_types_static.h:33))
+
+Ce que ça interdit, et qui n'a rien d'exotique : une vitesse de marche plus lente que
+**1 px/frame, soit 60 px/s** ; une gravité qui s'incrémente autrement que par pixel entier ;
+un saut à hauteur variable ; une décélération douce ; un recul de dégâts crédible. Ce sont les
+cinq premières choses qu'on règle dans un platformer, et aucune n'est réglable ici.
+
+Deux faits qui décident de la forme du chantier :
+
+- **La convention existe déjà dans la même structure.** `scale_x/y` et `sprite_scale_x/y` sont
+  en **Q8** (`256 = 100%`, [actor_types_static.h:71](runtime/include/actor_types_static.h:71)).
+  Le point fixe n'est donc pas une notion à introduire dans le moteur — il n'a simplement
+  jamais atteint la position.
+- **Le contournement en Lua existe, et il est mauvais.** Un auteur peut tenir un accumulateur
+  `×256` dans une variable de script et écrire `self.position` chaque frame. Mais `self:move`,
+  `self:move_to`, `self:add_velocity`, `self.grounded` et toute la résolution de pentes
+  (v0.6.3) travaillent en entiers : il tiendrait alors **deux positions**, dont l'une ment.
+  C'est la définition d'une fonctionnalité qui doit vivre dans le moteur.
+
+### Décisions verrouillées
+
+- **Le sous-pixel vit dans la STRUCTURE, pas dans le langage.** `x/y/vx/vy` deviennent du Q8
+  en interne ; le sous-ensemble Lua reste **entier**, sans virgule flottante. La règle
+  « que des entiers » (SCRIPTING.md) n'est pas négociée ici : elle est la raison pour laquelle
+  la ROM est rapide.
+- **`self.position` continue de rendre des pixels.** Un projet existant ne change pas de
+  comportement, et un auteur qui n'a pas besoin de sous-pixel n'en entend jamais parler. C'est
+  la même politique que `screen_space` : le défaut doit rester littéralement gratuit.
+- **L'arrondi se fait à UN seul endroit** — l'émission OAM et l'entrée de la collision. Deux
+  arrondis, c'est un acteur qui se dessine un pixel à côté de là où il touche.
+- **La caméra arrondit après avoir suivi, jamais avant.** Un suivi qui tronque avant de
+  soustraire fait trembler le décor d'un pixel ; c'est le défaut classique de ce chantier, et
+  il ne se voit qu'en mouvement lent — donc après coup.
+
+### Ce que ça touche
+
+[actor_types_static.h](runtime/include/actor_types_static.h) (la structure),
+[gba_engine.h](runtime/include/gba_engine.h) (`actor_move`, `actor_move_to`,
+`actor_add_velocity`, `resolve_actor_tiles`, les pentes),
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (émission OAM, caméra, streaming),
+[api.py](editor/scripting/api.py) (les propriétés de transform), et SCRIPTING.md, qui doit
+dire en une phrase où le pixel s'arrête.
+
+### Ouvert
+
+- **Comment l'auteur exprime une vélocité fractionnaire.** Trois sorties : `self.velocity`
+  change de sens (rupture pour les projets existants), un second nom cohabite
+  (`self.velocity_q8` — deux façons de dire la même chose, ce que le projet refuse ailleurs),
+  ou une **unité par acteur** déclarée à l'authoring. À trancher en premier : tout le reste en
+  découle.
+- **Q8 ou Q4.** Q8 s'aligne sur `scale` et donne ±8 millions de pixels de course, largement
+  au-delà d'une carte ; Q4 divise par 16 le risque de débordement dans les produits
+  intermédiaires (`vx * cos`). Se tranche par mesure, sur une vraie course de projectile.
+- **Ce que deviennent `math.lerp` et `math.ease`**, qui rendent des entiers et qu'on utilisera
+  désormais pour interpoler des Q8.
+
+---
+
+## v0.20 — L'état du monde : les collections persistantes
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+La sauvegarde **ne connaît que des variables scalaires** — c'est une décision verrouillée de
+la v0.5, et elle était juste pour ce qu'elle visait. Le type d'une globale est
+`int|bool|u8|u16|s8|s16` ([settings.py:62](editor/core/models/settings.py:62)) ; les tableaux
+de la v0.7.1 sont des variables **de script**, qui ne traversent ni la sauvegarde, ni un
+changement de scène quand leur propriétaire est poolé ; et il n'existe **aucun opérateur
+binaire** dans le langage (SCRIPTING.md), donc pas même le paquetage à la main.
+
+Un metroidvania, c'est 200 à 400 booléens de monde : coffres ouverts, portes déverrouillées,
+raccourcis activés, boss vaincus, dialogues déjà vus, compétences acquises. Aujourd'hui, c'est
+**une ligne dans la table GLOBALS par booléen**, écrite à la main, et une constante nommée à
+tenir d'accord avec le coffre correspondant.
+
+C'est exactement le cas que la v0.5 avait laissé en réserve : *« à rouvrir seulement si une
+donnée volumineuse — une carte explorée, un journal — devient persistable »*. Elle l'est.
+
+### Décisions verrouillées
+
+- **Ce qui manque est un TABLEAU persistant, pas un système de drapeaux.** Un `flag.set(id)`
+  serait un domaine de plus pour un seul usage ; un tableau global persistant sert aussi bien
+  les coffres, l'inventaire, les niveaux de compétence et le journal de quêtes.
+- **Le format de sauvegarde ne change pas de principe.** Chaque valeur reste rangée avec l'id
+  opaque de sa variable (v0.5) : un tableau s'écrit avec son id, sa longueur, puis ses
+  éléments. Une longueur qui change entre deux versions du jeu se relit en tronquant ou en
+  complétant par le défaut — **même tolérance que pour un scalaire absent**, et c'est ce qui
+  garantit qu'ajouter dix coffres n'efface pas les parties des joueurs.
+- **Le paquetage est une décision d'ÉMISSION, jamais une notion d'auteur.** Un tableau de
+  `bool` tient huit valeurs par octet en SRAM parce que le codegen le décide, pas parce que
+  l'auteur manipule des bits. Sinon on réintroduit les opérateurs binaires par la porte de
+  la sauvegarde, après les avoir refusés par la porte du langage.
+- **Le plafond reste vérifié au build.** 32 Kio, et la place occupée se calcule déjà (v0.5).
+  Un tableau est le premier objet capable d'approcher la limite : c'est ce qui rend
+  l'indicateur « X octets sur 32 Kio » enfin utile — il était noté « sans intérêt » en v0.5,
+  faute de quoi que ce soit d'assez gros.
+
+### Ce que ça touche
+
+[settings.py](editor/core/models/settings.py) (une globale porte une taille),
+[project_variables.py](editor/core/project_variables.py),
+[globals.py](editor/scripting/globals.py),
+[gba_engine.h](runtime/include/gba_engine.h) (`save_write` / `save_read`),
+[codegen.py](editor/scripting/codegen.py), l'écran des variables, et `validator.py`.
+
+### Ouvert
+
+- **Comment une globale-tableau se lit dans un script.** `GLOBAL_COFFRES[i] = 1` est ce qu'on
+  attend en lisant du Lua ; `global.set_at("coffres", i, 1)` est ce que la grammaire actuelle
+  impose (une globale se traverse par accesseurs). À trancher **avec la v0.16**, qui range
+  l'API : décider ici en solitaire, c'est se contredire deux versions plus loin.
+- **Une valeur par défaut de tableau** : une seule valeur pour toutes les cases, ou une liste
+  authorée ? La première suffit aux coffres, pas à un inventaire de départ.
+- Les métadonnées de sauvegarde (nom, chapitre, temps de jeu) ne sont **pas** ici : elles vont
+  avec l'écran qui les affiche, en v0.22.
+
+---
+
+## v0.21 — Le texte adressable : le dialogue piloté par la donnée
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+`text.draw(tx, ty, id)` prend un **nom résolu au build** — `Param("id", PARAM_STR,
+DOMAIN_TEXT)` ([api.py:858](editor/scripting/api.py:858)). Conséquence : un script ne peut pas
+parcourir une conversation, ni afficher « la réplique *i* », ni tirer un dialogue d'une
+DataTable. Chaque réplique est un appel écrit à la main, et l'enchaînement est une chaîne de
+`if`. Les séquences (v0.7.7) rendent une **cinématique** lisible ; elles ne font rien pour
+cent PNJ.
+
+Et le fait qui décide du coût du chantier : **le C est déjà prêt.**
+
+```c
+void text_draw(int tx, int ty, int id);   /* gba_engine.h:826 */
+const unsigned short *s = g_texts[id];    /* gba_engine.h:1737 */
+```
+
+L'index existe, il est déjà un `int`, et `g_texts[]` est déjà une table. Ce n'est pas le
+runtime qui refuse un id calculé : c'est le Lua qui ne sait pas le nommer autrement que par
+une constante.
+
+### Décisions verrouillées
+
+- **Un id de texte devient une VALEUR.** Une expression entière est acceptée là où une clé
+  l'était. C'est le même écart que celui déjà assumé pour un littéral (`literal_ok`), et il ne
+  coûte **rien** au runtime.
+- **Cette valeur vient d'une colonne de DataTable de type `text`.** La v0.7.2 a la table ; il
+  lui manque ce type de colonne. C'est ce qui rend un dialogue de données **traduisible sans
+  rien inventer** : la table porte des ids, la table de textes porte les langues (v0.9).
+- **Ce n'est PAS un éditeur de dialogue à branches.** La décision de la v0.3.2 tient : le
+  séquencement est du script. Ce qui change, c'est qu'un script peut enfin *parcourir de la
+  donnée* au lieu d'être déroulé à la main.
+- **Le filtre « qui est cité ? » doit suivre, et c'est le vrai piège.** La v0.8.4 a montré que
+  la ROM ne transporte que les ressources effectivement nommées par un script. Un id calculé
+  n'est nommé nulle part : sans traitement, **les textes d'une table disparaîtraient de la
+  ROM**. Une colonne de type `text` doit donc marquer ses entrées comme atteintes — même
+  mécanisme, une source de référence de plus.
+
+### Ce que ça touche
+
+[api.py](editor/scripting/api.py) (le type du paramètre),
+[checker.py](editor/scripting/checker.py), [codegen.py](editor/scripting/codegen.py),
+[data_table.py](editor/core/models/data_table.py) (la colonne `text`), le filtre de ressources
+citées de `rom_build.py`, et l'écran Data.
+
+### Ouvert
+
+- **`text.length` et `text.reading` sur un id calculé** — même question que la v0.18, et même
+  réponse probable : le tampon doit être propre à la zone.
+- **Ce que l'éditeur montre.** Une colonne d'ids de texte doit s'éditer en montrant le texte,
+  pas l'id, sinon la table devient illisible dès la dixième ligne.
+- **Le choix du joueur** (deux ou trois options, un curseur) est la brique qui manque *après*
+  celle-ci. Elle est en v0.22, et c'est là qu'il faut la traiter — pas ici.
+
+---
+
+## v0.22 — Menus, listes et curseur
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+`UILayout` a trois types d'éléments : texte, panneau, image
+([ui_region.py](editor/core/models/ui_region.py)). **Aucun ne tient une sélection.** Un menu
+s'écrit donc entièrement en script : index courant, bornes, défilement, répétition de touche,
+retour arrière, et le curseur à déplacer. Sans fonction déclarable dans le langage, **chaque
+écran le réécrit en entier**.
+
+La v1.0 le note déjà, en « Ouvert » : *« si les trois genres à menus le rendent pénible, c'est
+ici que ça se verra »*. La revue tranche : pour un RPG à arbre de compétences, à inventaire et
+à équipement, ce n'est pas un confort qu'on jugera après coup — c'est un tiers du contenu du
+jeu, et il est aujourd'hui entièrement à la charge de l'auteur.
+
+Un manque va avec, et il est plus petit : `save.exists(slot)` répond « il y a quelque chose
+ici », rien de plus (v0.5, « Ouvert »). Un écran de sélection de partie ne peut donc afficher
+**ni chapitre, ni temps de jeu, ni nom** — c'est-à-dire rien de ce qu'un joueur regarde pour
+choisir sa partie.
+
+### Décisions verrouillées
+
+- **Le moteur prend la NAVIGATION, pas la mise en page.** Une liste, c'est un `UILayout`
+  existant plus quatre choses : un index courant, des bornes, un pas de défilement, et
+  l'entrée qui les fait bouger. Ce qui s'affiche reste du texte et des images authorées, avec
+  les outils qui existent.
+- **Un item est une LIGNE DE DONNÉE, pas un objet d'interface.** Une liste se lie à un tableau
+  (v0.20) ou à une table (v0.7.2), et l'auteur écrit ce qu'une ligne affiche. L'alternative —
+  un widget par genre de menu — n'a pas de fin, et chaque genre de jeu en redemanderait un.
+- **Le curseur est ce qui existe déjà** : un acteur `screen_space` ou une image d'UI. Pas de
+  troisième chose à apprendre.
+- **L'en-tête de sauvegarde s'étend, et il reste de l'auteur.** Un bloc descriptif par
+  emplacement — les valeurs de N globales que l'auteur désigne — lisible **sans charger la
+  partie**. Le moteur ne décide pas *ce qu'*une partie affiche, comme il ne décide pas où elle
+  reprend (v0.5).
+
+### Ce que ça touche
+
+[ui_region.py](editor/core/models/ui_region.py),
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tick d'UI),
+[api.py](editor/scripting/api.py) (un domaine `list`),
+[gba_engine.h](runtime/include/gba_engine.h) (l'en-tête de sauvegarde), l'inspecteur de scène,
+et `validator.py`.
+
+### Ouvert
+
+- **Où une liste se dessine.** Sur le calque de texte — donc soumise au budget de tuiles d'UI
+  et à la grille de tuiles — ou en sprites, donc dans les 128 OAM ? Les deux chemins existent
+  déjà (v0.3.3) ; il faut dire lequel une liste choisit, et pourquoi.
+- **Le défilement, à la ligne ou au pixel.** À la ligne, le texte reste sur sa grille et rien
+  ne coûte ; au pixel, un inventaire long défile joliment mais demande un redessin partiel à
+  chaque frame.
+- **La répétition de touche** : réglage par liste, ou du projet ? C'est un réglage de game
+  feel, donc probablement par liste — mais trois listes avec trois cadences est une incohérence
+  qu'un joueur sent.
+- **Ce que le moteur fait d'un choix de dialogue** (2–3 options dans une boîte) : est-ce une
+  liste comme les autres, ou la seule forme qui mérite un raccourci ?
+
+---
+
+## v0.23 — Ce qu'un boss demande
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+Trois manques déjà connus séparément, que **le même cas d'usage** réunit : un combat de boss à
+phases, avec des projectiles et des parties mobiles.
+
+1. **Une attente reste refusée dans un `if` ou une boucle.** C'est une limite dite et assumée
+   de la v0.7.7, avec sa condition de réouverture écrite noir sur blanc : *« à rouvrir
+   seulement si une cinématique réelle bute dessus »*. Le cas réel est là : un pattern
+   d'attaque, c'est `3 × (tirer, attendre 20)`. Aujourd'hui il s'éclate en séquences nommées —
+   c'est-à-dire que la fonctionnalité écrite pour rendre l'attente lisible redevient illisible
+   exactement là où on l'emploie le plus.
+2. **Pas de hiérarchie d'acteurs.** Un acteur porte un sprite — le codegen prend le
+   **premier** `SpriteComponent`
+   ([main_gen.py:1007](editor/codegen/runtime_codegen/main_gen.py:1007)) — et **rien ne relie
+   deux acteurs entre eux**. Un boss segmenté — bras, tête, points faibles, queue — est donc N
+   acteurs recalés à la main en `math.sin`/`math.cos` dans le script du corps, à chaque frame,
+   avec autant d'occasions de désynchroniser une partie qu'il y a de parties. Le moteur sait
+   pourtant déjà faire exactement ce calcul : il le fait entre un acteur et son sprite
+   (ARCHITECTURE.md, « Le modèle affine »). Il ne sait simplement pas le faire un cran plus
+   haut.
+3. **La collision scène↔scène est déroulée en O(n²) au build.** `col_pairs` prend **toutes**
+   les paires dont au moins un côté porte un script
+   ([main_gen.py:3290](editor/codegen/runtime_codegen/main_gen.py:3290)), et chaque paire
+   produit son bloc de C. Il n'existe aucune matrice : on ne peut pas déclarer que les
+   projectiles du joueur n'entrent jamais en collision avec ceux du boss. Le coût grandit en
+   carré — en taille de ROM **et** en temps de frame — précisément dans la salle où il y a le
+   plus de choses à l'écran.
+
+### Décisions verrouillées
+
+- **Pour (1) : la levée se limite à la BOUCLE BORNÉE**, `for i = 1, n`. Une boucle bornée se
+  découpe sans continuation : un compteur de plus dans l'état de la séquence, et un `case` qui
+  revient en arrière — le `switch` émis se relit toujours avec les mots du Lua. **Le `if`
+  autour d'une attente reste refusé** : lui demanderait la transformation en continuations que
+  la v0.7.7 a chiffrée et refusée, et son prix n'a pas changé.
+- **Pour (2) : une hiérarchie d'ACTEURS, parce que `un acteur = un OBJ` doit rester vrai.**
+  Décidé le 2026-08-20, **contre la première rédaction de cette version**, qui proposait
+  plusieurs `SpriteComponent` par acteur. Le multi-sprite achetait la même chose en cassant
+  trois invariants d'un coup : le garde-fou des 128 compte des **acteurs**
+  ([main_gen.py:2965](editor/codegen/runtime_codegen/main_gen.py:2965)), un slot affine est
+  réservé par **acteur** (`_compute_affine_info`, 32 au maximum), et une box de collision est
+  relative au pivot de l'**acteur**. La preuve que c'était la mauvaise découpe tient dans une
+  question que cette section laissait ouverte faute de bonne réponse — *« le hitbox d'un bras
+  suit-il le sprite ou l'acteur ? »* : avec un acteur par partie, elle ne se pose pas. Le
+  hitbox du bras appartient au bras.
+- **Ce n'est pas de l'héritage, c'est un REPÈRE**, et le mot doit être tenu. `Actor.parent` dit
+  « ma position est exprimée dans le repère de celui-là », pas « je reprends sa définition ».
+  L'héritage d'une définition existe déjà dans le logiciel, il s'appelle un **prefab**, et
+  laisser les deux sens du même mot cohabiter coûterait plus cher que la fonctionnalité.
+- **La composition est celle qui est DÉJÀ écrite, d'un cran plus haut.** Le modèle affine
+  compose déjà monde × local : rotation = **somme** des degrés, scale = **produit** Q8, offset
+  = `R(rotation)·S(scale)·offset` exprimé dans le repère du parent, position = parent + offset
+  composé (ARCHITECTURE.md, « Le modèle affine » ; `_affine_oam_lines_dynamic`). Un enfant est
+  exactement ça, l'`Actor` parent tenant la place que tenait l'acteur pour son sprite. **Aucune
+  règle nouvelle à apprendre, ni à écrire** — et c'est ce qui rend le chantier petit. Une seule
+  précaution si la v0.19 passe avant, ce qui est l'ordre recommandé : la composition se fait
+  **dans l'unité de la position** (Q8), l'arrondi restant à l'émission OAM. Un arrondi par
+  niveau ferait dériver un bras d'un pixel par cran de profondeur.
+- **L'ordre se décide au BUILD, par tri de profondeur.** C'était l'objection à la hiérarchie —
+  « un ordre de mise à jour, des transforms composés, une invalidation » — et elle tombe : les
+  acteurs sont émis **parents avant enfants**, la composition est déroulée dans le `main.c`
+  comme le reste de la frame, et il n'y a **ni ordonnanceur, ni drapeau de salissure, ni
+  invalidation**. L'ordre d'une frame continue de se lire en clair dans le C émis, ce qui était
+  la seule chose à protéger (même règle qu'en v0.7.7 pour les séquences). Un **cycle de
+  parenté** est décidable au build et bloque le build en nommant les acteurs.
+- **Un enfant sans transform propre PARTAGE le slot affine de son parent.** Un slot ne contient
+  que `pa/pb/pc/pd` — donc deux OBJ de même rotation et de même échelle peuvent pointer le même
+  slot, la position n'y étant pour rien. Un boss à six parties qui tourne d'un bloc coûte
+  **un** slot sur 32, pas sept. Une partie qui a sa propre rotation paie le sien, et c'est
+  juste.
+- **`visible` se propage au sous-arbre, comme un panneau d'UI caché cache le sien** (v0.15).
+  Deux endroits du logiciel, une seule règle : cacher un boss cache ses bras.
+- **La parenté est AUTHORÉE, jamais assignée au runtime.** C'est ce qui rend le tri de
+  profondeur possible au build.
+- **Un parent EXTERNE est réservé aux acteurs posés dans la scène.** Un prefab est un template
+  de **projet** : il ne peut pas nommer un acteur d'une **scène**, donc une instance de pool ne
+  s'attache à rien du décor. Conséquence assumée, et elle tombe bien — un projectile qui
+  suivrait le bras qui l'a tiré serait un défaut, pas une fonctionnalité.
+- **Mais un prefab porte son PROPRE sous-arbre**, et c'est le point corrigé le 2026-08-20, à la
+  lecture du modèle de Godot. La première rédaction concluait « une instance de pool n'a pas de
+  parent » ; le motif — *un prefab ne peut pas nommer un acteur de scène* — ne couvrait que le
+  parent **externe**. Un sous-arbre **interne** ne nomme rien d'extérieur : la profondeur reste
+  connue au build, le tri tient, et un ennemi segmenté redevient spawnable — une chenille à cinq
+  anneaux, un mini-boss qui apparaît deux fois. C'est le `PackedScene` de Godot, dont on ne
+  prend que ceci : **un template est un arbre, pas un objet plat.**
+- **Les parties d'un prefab sont des PARTIES, pas d'autres prefabs.** Un sous-arbre imbriquant
+  des templates ferait du dimensionnement de pool un problème de graphe, et d'un pool imbriqué
+  une notion que personne ne tient dans sa tête. Une partie est ce qu'un acteur est déjà : des
+  composants et un transform local.
+- **Le pool se dit en INSTANCES, le build multiplie par les parties.** `max_instances = 8` sur
+  un prefab de quatre parties réserve 32 entrées de `g_actors`, contiguës, et c'est **ce
+  chiffre-là** que la mesure affiche — pas 8. Le dimensionnement de l'état de script des
+  parties, lui, dépend de la question laissée ouverte en **v0.17** (une taille de pool par
+  projet ou par scène) : ce chantier attend sa réponse, il ne la donne pas.
+- **Détruire la racine détruit le sous-arbre.** `self:destroy()` sur le corps libère les slots
+  des bras. C'est la même règle que la propagation de `visible`, et le pendant exact de
+  « `active = false` libère le slot » (v0.17) : sans elle, un boss tué laisserait ses bras dans
+  le pool jusqu'à la fin de la scène.
+- **Un acteur SANS sprite est un marqueur, et il ne coûte aucun OBJ.** C'est le `Marker2D` de
+  Godot — point de tir, point de saisie, ancre de hitbox — et ça marche **déjà** : l'émission
+  OAM est gardée par `if sprite and sprite.asset`
+  ([main_gen.py:2811](editor/codegen/runtime_codegen/main_gen.py:2811)). Ce qui se décide ici
+  n'est donc pas le mécanisme mais le **statut** : l'invariant s'écrit « un acteur = **au plus**
+  un OBJ », un marqueur coûte 144 octets et une entrée dans la boucle de frame, zéro pixel, et
+  l'éditeur doit le **dessiner** dans le canvas (une croix, un nom) — sans quoi la
+  fonctionnalité existe sans pouvoir être authorée.
+- **Le coût, dit en clair.** Chaque partie reste un `Actor` complet : 144 octets dans
+  `g_actors` (mesuré en v0.7.7), une entrée dans la boucle de frame, ses paires de collision,
+  et son slot affine si elle tourne pour son compte. Un boss à six parties, c'est **sept
+  acteurs**. C'est le prix de l'invariant, et il se paie en EWRAM — pas en lisibilité, ni en
+  règles à retenir.
+- **Pour (3) : la matrice est une propriété de PROJET, entre TAGS de boxes.** Les tags existent
+  déjà (`CollisionBoxComponent.tag`), et le build s'en sert pour **ne pas émettre** la paire.
+  Le gain est donc en ROM autant qu'en cycles — ce qu'un filtre au runtime n'aurait pas donné,
+  et c'est la raison de le faire au build comme tout le reste.
+
+### Ce que ça touche
+
+[checker.py](editor/scripting/checker.py) et [codegen.py](editor/scripting/codegen.py) (la
+boucle bornée dans une séquence),
+[scene.py](editor/core/models/scene.py) (le champ `Actor.parent`, et le sous-arbre d'un
+`Prefab`), [headers.py](editor/codegen/runtime_codegen/headers.py) et
+[lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) (un pool dimensionné en
+instances × parties),
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tri de profondeur, la
+composition du transform, `_compute_affine_info` pour le partage de slot, la destruction d'un
+sous-arbre, `col_pairs`),
+[settings.py](editor/core/models/settings.py) (la matrice de collision),
+[api.py](editor/scripting/api.py) (lire son parent, ou ses enfants), l'inspecteur d'acteur et
+le canvas de scène (l'arborescence, et le dessin d'un marqueur qui n'a pas d'image),
+`validator.py` (le cycle de parenté), et SCRIPTING.md.
+
+### Ouvert
+
+- **Le ré-attachement au runtime** — une main qui saisit, un projectile qui se plante dans un
+  bouclier et le suit. Interdit par le tri de profondeur au build, qui est précisément ce qui
+  garde la frame lisible. À rouvrir sur un cas réel, en sachant que la sortie n'est pas
+  évidente : soit la profondeur devient dynamique (et l'ordre quitte le C émis), soit un
+  attachement se déclare à l'authoring et ne fait que **s'activer** au runtime.
+- **La matrice se règle par paire de tags** (n²/2 cases, ça se lit) **ou par masque par tag**
+  (ça s'écrit plus vite, ça se relit mal). À trancher sur le nombre réel de tags d'un projet —
+  chiffre qu'on n'a pas.
+- **Comment une partie se désigne depuis le script de la racine**, et réciproquement.
+  `get_actor("bras")` nomme un acteur de scène ; une partie d'instance poolée n'a pas de nom
+  unique, il y en a huit. C'est la question qui décide si le sous-arbre d'un prefab est
+  scriptable ou seulement géométrique — et elle se tranche avec la forme retenue en **v0.16**
+  (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool).
+- **La profondeur est-elle bornée ?** Une queue segmentée veut une chaîne ; un boss ordinaire
+  veut un seul cran. Rien n'oblige à plafonner — le tri gère n'importe quelle profondeur — mais
+  chaque cran est une composition de plus par frame et par enfant. À mesurer avant de décider
+  s'il faut le dire à l'auteur.
+- **Ce que le canvas fait d'un enfant.** Déplacer le parent déplace le sous-arbre, c'est
+  entendu. Mais sélectionne-t-on un enfant directement, ou passe-t-on par le parent ? Et
+  l'arborescence se montre-t-elle dans la liste des acteurs de la scène — la première hiérarchie
+  visible de l'éditeur ?
+- **Ce que `active = false` fait à un sous-arbre.** `visible` se propage (décidé ci-dessus),
+  mais `active` porte un autre sens depuis la v0.17 : il **libère un slot de pool**. Un acteur
+  posé dans une scène n'en a pas, donc les deux ne se contredisent pas encore ; c'est le jour où
+  un enfant sera poolé que la question se posera — et ce jour n'existe pas, la parenté étant
+  réservée aux acteurs de scène.
+
+---
+
+## v0.24 — Le projet à l'échelle d'une équipe
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+Trois points, dont un est déjà écrit en v1.0 — et c'est **la date qui change**, pas le
+constat.
+
+- **Les formats.** « Des formats que git sait relire » est le deuxième des quatre prérequis de
+  la v1.0. Mais il ne se comporte pas comme un prérequis de v1.0 : à trois personnes, deux
+  commits sur la même scène ne se fusionnent **pas**, et l'historique devient inexploitable dès
+  la première semaine. Ce n'est pas une finition, c'est un préalable — et plus il est repoussé,
+  plus l'historique qu'il faudra traverser est illisible.
+- **Le build.** `make` est appelé sans `-j`
+  ([rom_build.py:813](editor/codegen/rom_build.py:813)) : la compilation est **sérielle**. Et
+  rien ne met en cache la conversion des assets — chaque build repasse grit sur tout le
+  catalogue. Le temps d'itération grandit donc linéairement avec le nombre d'assets, alors que
+  l'itération est exactement ce qui fait ou défait un combat de boss.
+- **Le chargement.** `Project.load()` charge tout, tout de suite (déjà noté en v1.0). Pong et
+  ses 118 fichiers vont bien ; quarante scènes et deux cents sprites, personne n'en sait rien.
+
+### Décisions verrouillées
+
+- **Les formats d'abord, et il n'y a rien à concevoir.** La correction est déjà écrite en
+  v1.0 : une ligne de texte par rangée de grille — ce que `tileset` fait déjà, et c'est de loin
+  la partie la plus lisible du sidecar — et les couleurs en hexadécimal (`#39A8FF`), **les deux
+  formes acceptées en lecture**. Il reste à le faire, et à le faire avant que le projet cible
+  n'accumule un historique qu'on ne relira jamais.
+- **`-j` n'est pas un réglage.** Le nombre de cœurs se lit ; le build en profite. Une case de
+  plus à expliquer n'achèterait rien.
+- **Le cache de conversion se fait sur l'EMPREINTE de la source et des options, pas sur la
+  date.** Une date de fichier change à chaque `git checkout` : un cache daté serait inutile
+  exactement là où il sert le plus, c'est-à-dire en changeant de branche à trois.
+
+### Ce que ça touche
+
+[background.py](editor/core/models/background.py) et
+[scene.py](editor/core/models/scene.py) (la sérialisation),
+[gba_color.py](editor/core/gba_color.py),
+[rom_build.py](editor/codegen/rom_build.py),
+[grit_conversion.py](editor/codegen/grit_conversion.py), et
+[project.py](editor/core/project.py) (le chargement).
+
+### Ouvert
+
+- **Le temps de build réel n'est pas mesuré.** Décomposé (grit / make / émission / mmutil), sur
+  la démo puis sur un projet gonflé artificiellement. Sans ce chiffre, « le build est lent »
+  reste une impression, et on optimiserait au hasard — la v0.8.4 a montré ce que vaut une
+  intuition non mesurée (12× d'écart entre la taille source et le coût ROM).
+- **Quand cesse-t-on d'ÉCRIRE l'ancien format ?** La lecture des deux formes est décidée ; le
+  moment où l'écriture bascule ne l'est pas, et il décide s'il faut un convertisseur de projet.
+- **Le chargement paresseux, par collection ou par écran ?** La seconde est plus simple et
+  suffit peut-être. À décider sur la mesure, pas avant.
+
+---
+
 ## v1.0 — Le pipeline 2D complet
 
 ### L'objectif concret — cinq genres
@@ -2359,8 +4054,11 @@ de « V-Rally 3 » pour la v3.1 — une cible se compare, une capacité s'étend
 | **Tactique** (Advance Wars, FFT en vue de dessus) | grille, liste d'unités, recherche de chemin, curseur |
 | **Gestion** (Zoo Tycoon) | N entités à état propre, économie, budget OAM sous tension |
 
-Les deux premiers sont **atteignables aujourd'hui**. Les trois suivants attendent la v0.7 —
-c'est le seul verrou, et c'est pourquoi elle passe devant.
+Les trois derniers attendaient la v0.7, qui est livrée. Quant aux deux premiers, ils étaient
+écrits ici comme **atteignables aujourd'hui** : la revue du 2026-08-19 (juste au-dessus) dit
+que c'est faux, et où. Un platformer sans sous-pixel (v0.19) n'a ni accélération ni saut à
+hauteur variable ; un metroidvania sans collection persistante (v0.20) écrit une variable par
+coffre. Les deux genres réputés acquis sont donc, en réalité, les deux qui ouvrent la liste.
 
 ### Le deuxième jeu de démo se choisit dans cette liste
 
@@ -2387,7 +4085,7 @@ réglé** ; il reste trois.
   `THIRD-PARTY-NOTICES.md` recense les composants redistribués, obligation déjà active
   puisqu'ils sont dans l'installateur. Reste hors de ce point, et à trancher ailleurs : le nom
   et la marque, où « GBA » porte un risque Nintendo.
-- **Des formats que git sait relire.** Aujourd'hui un fond fait 688 lignes et la carte de
+- **Des formats que git sait relire** — devenu la **v0.24**, où il est traité avec le build et le chargement, parce que la revue du 2026-08-19 a montré qu'il ne se comporte pas comme une finition de v1.0 mais comme un préalable. Aujourd'hui un fond fait 688 lignes et la carte de
   collision d'une scène environ 600, à raison d'**un entier par ligne** ; les couleurs sont
   des entiers BGR555 décimaux. Ce n'est pas qu'un défaut de lisibilité : chaque modification
   de scène produit un diff illisible, l'historique devient inexploitable, et deux personnes ne
@@ -2403,7 +4101,7 @@ réglé** ; il reste trois.
   enseigne l'API sans qu'on lise une ligne de documentation, et c'est ce qui décide qu'on
   reste après la première heure. Même famille que le deuxième jeu de démo : du contenu qui
   enseigne, pas une fonctionnalité.
-- **La vérification que ça tient à l'échelle.** `Project.load()` charge tout, tout de suite —
+- **La vérification que ça tient à l'échelle** (le chargement paresseux lui-même est en v0.24 ; ce qui reste ici, c'est la vérification sur un vrai projet). `Project.load()` charge tout, tout de suite —
   chaque sidecar de chaque collection. Pong et ses 118 fichiers vont très bien ; quarante
   scènes et deux cents sprites, personne n'en sait rien. L'affirmation « absorbe un projet de
   production » se vérifie ou s'écroule exactement là, et c'est le deuxième jeu de démo qui
@@ -2413,9 +4111,11 @@ réglé** ; il reste trois.
 
 - Lequel des trois genres bloqués sert de démo. À trancher quand la v0.7 est livrée, sur ce
   qu'elle rend réellement confortable.
-- Les menus et listes (curseur, défilement, sélection) sont aujourd'hui du script pur
-  par-dessus `UILayout`. Faisable — mais si les trois genres à menus le rendent pénible, c'est
-  ici que ça se verra, et il faudra décider si le moteur en prend une part.
+- ~~Les menus et listes (curseur, défilement, sélection)~~ **Tranché le 2026-08-19 : le moteur
+  en prend une part, et c'est la v0.22.** La question posée ici — « si les trois genres à menus
+  le rendent pénible, c'est ici que ça se verra » — a reçu sa réponse d'un projet cible à arbre
+  de compétences, inventaire et équipement : ce n'est pas un confort qu'on juge après coup,
+  c'est un tiers du contenu, entièrement à la charge de l'auteur.
 
 ---
 

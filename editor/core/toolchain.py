@@ -178,6 +178,27 @@ class Toolchain:
 
         return None
 
+    def resolve_binutil(self, tool: str) -> Path | None:
+        """Un binutil devkitARM (`nm`, `size`, `objdump`…) par son nom court.
+
+        Même recherche que `resolve_arm_gcc`, dont ces outils partagent le
+        dossier et le préfixe. Écrit une fois plutôt qu'une méthode par outil :
+        ils ne se distinguent que par leur nom.
+        """
+        exe = f"arm-none-eabi-{tool}"
+        if p := shutil.which(exe):
+            return Path(p)
+        bases = []
+        if dkp := self.devkitpro_path:
+            bases.append(Path(dkp))
+        bases += [Path(b) for b in _WIN_DEFAULTS + _UNIX_DEFAULTS]
+        for base in bases:
+            for name in (f"{exe}.exe", exe):
+                candidate = base / "devkitARM" / "bin" / name
+                if candidate.exists():
+                    return candidate
+        return None
+
     def resolve_mgba(self) -> Path | None:
         """Retourne le chemin de mgba, ou None."""
         for name in ("mgba", "mgba-qt", "mGBA"):

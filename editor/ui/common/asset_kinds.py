@@ -26,7 +26,7 @@ from ui.common.theme import QSS
 from ui.common.asset_finder import AssetKind, store_nodes, dir_nodes
 
 from core.models.resource import (
-    MIME_ANIMATED_BG, MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
+    MIME_ANIMATED_BG, MIME_MUSIC, MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
 )
 from core.history import (
     get_history, DeleteResourceCmd, DeleteFileCmd, RenameFileCmd,
@@ -381,6 +381,9 @@ MUSIC = AssetKind(
     label         = "Music",
     icon          = "music",
     nodes         = store_nodes("music"),
+    # Glissable vers le graphe de la MusicBox : lâchée sur un nœud, elle en
+    # devient la piste ; lâchée sur le vide, elle crée l'état qui la joue.
+    mime          = (MIME_MUSIC, lambda _p, m: m.name),
     rename        = _renamer("rename_sound"),
     delete        = _store_deleter("music"),
     delete_prompt = lambda a: f"Delete track “{a.name}”?\n(Ctrl+Z to undo)",

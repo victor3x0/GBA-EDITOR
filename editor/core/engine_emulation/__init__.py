@@ -20,9 +20,15 @@ Ce qui vit ici aujourd'hui, et son jumeau :
                           (ligatures, chasses, coupe au mot, repli)
     blend_preview.py  <-> les formules BLDCNT/BLDALPHA/BLDY du moteur
                           (alpha saturé, éclaircir vers le blanc, assombrir)
-    mod_render.py     <-> le mixeur logiciel Maxmod (taux réduit, plus proche
+    module_render.py  <-> le mixeur logiciel maxmod (taux réduit, plus proche
                           voisin — le GBA n'interpole pas)
-    mod_file.py           le format ProTracker que mod_render.py lit
+    module_model.py       le modèle commun aux quatre formats de module, et la
+                          reconnaissance du format par SIGNATURE
+    mod_file.py           ProTracker      ─┐  quatre lecteurs, un seul modèle :
+    s3m_file.py           ScreamTracker 3  │  le rendu ne connaît pas les
+    xm_file.py            FastTracker II   │  formats, et un effet corrigé
+    it_file.py            Impulse Tracker ─┘  l'est pour les quatre
+    music_deck.py     <-> music_transition_tick() — les deux transitions
 
 Avant d'ajouter un fichier ici, poser la question : y a-t-il vraiment DEUX
 implémentations ? Si une seule suffit, elle va ailleurs et tout le monde

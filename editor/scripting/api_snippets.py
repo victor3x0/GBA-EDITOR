@@ -27,7 +27,7 @@ from scripting.api import (
     RUNTIME_API, RUNTIME_PROPS, PARAM_STR, PARAM_STR_LITERAL, PARAM_ACTOR, ApiFunc,
     HARDWARE_ENUMS,
 )
-from scripting.vec_types import VEC_FIELDS, VEC_CONSTRUCTORS
+from scripting.expr_types import VEC_FIELDS, VEC_CONSTRUCTORS
 
 # Marqueur d'exemple dans les `doc` d'api.py. Convention déjà en place là-bas ;
 # la nommer ici évite qu'un troisième lecteur la redevine.

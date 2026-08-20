@@ -29,6 +29,13 @@ from .parser import (
     array_dims, require_target, DATA_NS,
     assigned_names, sequence_name, wait_call, WAIT_FN, WAIT_UNTIL_FN,
 )
+# Les volumes du modèle sont des POURCENTAGES ; chaque appel maxmod a sa
+# propre échelle, et c'est ici qu'on convertit (cf. models/audio.py).
+from core.models.audio import (
+    volume_to_effect, volume_to_module, pitch_to_rate, panning_to_hardware,
+    volume_to_effect_expr, volume_to_module_expr, pitch_to_rate_expr,
+    panning_to_hardware_expr,
+)
 from .api import (
     RUNTIME_API, EVENT_C_SIGNATURES, KNOWN_EVENTS, ApiFunc,
     KNOWN_SCENE_EVENTS, KNOWN_EVENTS_BY_KIND, scene_event_sig,
@@ -36,6 +43,7 @@ from .api import (
     DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, DOMAIN_EASE,
     hardware_enum_constant,
     DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
+    DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE, DOMAIN_MUSIC_BOX_TRIGGER,
     DOMAIN_CAMERA, camera_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE,
     DOMAIN_PALETTE, DOMAIN_UI_ELEMENT,
@@ -46,7 +54,8 @@ from .api import (
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
-from .vec_types import VEC_CONSTRUCTORS, C_TYPES, infer_vec_type, resolve_prop
+from .expr_types import (VEC_CONSTRUCTORS, C_TYPES, C_REF_TYPES,
+                         infer_vec_type, infer_ref_type, resolve_prop)
 
 
 # ─── Types C des variables exposées (table `exports`) ─────────────
@@ -184,8 +193,12 @@ class CodegenContext:
     scene_names: list[str] = field(default_factory=list)  # noms de scènes du projet
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     sfx_autoplay: bool = False   # True → SoundFxComponent.trigger == "on_spawn"
-    sfx_volumes: dict = field(default_factory=dict)  # {nom Sfx: volume 0-255} — sfx_play(id, volume)
-    music_info: dict = field(default_factory=dict)  # {nom Music: (loop, volume)} — music_play(id, loop, volume)
+    sfx_volumes: dict = field(default_factory=dict)  # {nom Sfx: volume EN %} — converti à l'émission
+    music_info: dict = field(default_factory=dict)
+    # {nom d'état: rang dans SA boîte}, par famille, et {déclencheur: rang}
+    sound_box_states: dict = field(default_factory=dict)
+    jingle_box_states: dict = field(default_factory=dict)
+    music_box_triggers: dict = field(default_factory=dict)
     text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
     palette_names: list[str] = field(default_factory=list)  # catalogue de couleurs (ordre = index dans g_palettes)
@@ -245,6 +258,8 @@ class CodeGen:
         # plutôt que `+` sur un `a + b` dont les deux côtés sont des vecteurs.
         # Cf. scripting/vec_types.py — même règle que checker.py.
         self._vec_types: dict[str, str] = {}
+        # Locals qui tiennent une référence : nom → type (cf. expr_types).
+        self._ref_types: dict[str, str] = {}
         self.warnings: list[str] = []  # diagnostics non bloquants (ex: behavior manquant/invalide)
 
     # ── API publique ──────────────────────────────────────────────
@@ -905,9 +920,15 @@ class CodeGen:
         self._w("")
 
     def _emit_sfx_autoplay(self):
-        """Injecte l'appel sfx_play() auto au début de on_start si trigger == 'on_spawn'."""
+        """Injecte l'appel sfx_play() auto au début de on_start si trigger == 'on_spawn'.
+
+        Le volume vient de la ressource, comme partout ailleurs : il MANQUAIT
+        ici, et l'appel à un seul argument n'aurait pas compilé — personne
+        n'avait encore posé un SoundFX en « on_spawn » dans un projet."""
         if self.ctx.sfx_autoplay and self.ctx.sfx_component_name:
-            self._w(f"sfx_play({sfx_constant(self.ctx.sfx_component_name)});")
+            name = self.ctx.sfx_component_name
+            volume = volume_to_effect(self.ctx.sfx_volumes.get(name, 100))
+            self._w(f"sfx_play({sfx_constant(name)}, {volume}, 0);")
 
     # ── Blocs et statements ───────────────────────────────────────
 
@@ -917,7 +938,16 @@ class CodeGen:
 
     def _emit_stmt(self, s):
         if isinstance(s, StmtCall):
-            self._w(self._call_expr(s.call) + ";")
+            # `sfx.play(...)` posé SEUL ne tient pas sa référence : son canal
+            # reste volable par l'effet suivant quand tout est plein (cf.
+            # `hold` dans headers.py, ROADMAP v0.8.8). C'est la seule décision
+            # de tout le générateur qui dépend de la POSITION de l'appel et non
+            # de ce qu'il contient — d'où ce test ici, et pas dans l'émetteur.
+            if (isinstance(s.call, ExprCall)
+                    and self._call_key(s.call.func) == "sfx.play"):
+                self._w(self._emit_sfx_play(s.call.args, hold=False) + ";")
+            else:
+                self._w(self._call_expr(s.call) + ";")
 
         elif isinstance(s, StmtAssign):
             prop = resolve_prop(s.target)
@@ -952,6 +982,13 @@ class CodeGen:
             lifted = self._local_state.get(s.name)
             if lifted is not None:
                 val = self._expr(s.value) if s.value is not None else "0"
+                # Le type de la référence se note même quand la variable est
+                # HISSÉE dans l'état d'une séquence : c'est le même nom, et
+                # `pas:set_volume(…)` doit rester un réglage d'effet après
+                # l'attente qui l'a fait monter là.
+                rt = infer_ref_type(s.value) if s.value is not None else None
+                if rt:
+                    self._ref_types[s.name] = rt
                 self._w(f"{self._state_ref(lifted)} = {val};")
                 return
             dims = array_dims(s.value)
@@ -975,7 +1012,13 @@ class CodeGen:
                 and isinstance(s.value.func, ExprName)
                 and s.value.func.name == "get_actor"
             )
-            ctype = "Actor*" if is_actor_ref else "int"
+            # Une RÉFÉRENCE rendue par un appel (`sfx.play`) porte le type C du
+            # handle, et le nom est retenu : c'est lui qui dira à `_invoke` que
+            # `pas:set_volume(80)` est un réglage d'effet et non d'acteur.
+            rt = infer_ref_type(s.value) if s.value is not None else None
+            if rt:
+                self._ref_types[s.name] = rt
+            ctype = "Actor*" if is_actor_ref else (C_REF_TYPES[rt] if rt else "int")
             self._w(f"{ctype} {s.name} = {val};")
 
         elif isinstance(s, StmtIf):
@@ -1208,13 +1251,26 @@ class CodeGen:
         """var:method(args) — var peut être self ou toute variable Actor*."""
         if not isinstance(e.obj, ExprName):
             return f"/* invoke sur expression complexe ignoré */"
-        receiver = e.obj.name          # "self", "other", "paddle", ...
-        key = f"self:{e.method}"       # les méthodes sont toujours indexées sous "self:"
+        # Le NOM tel qu'il est écrit sert de clé (type de référence, tables de
+        # dispatch) ; ce qui est ÉMIS passe par `_expr`, parce qu'une variable
+        # peut vivre ailleurs que sous son nom — hissée dans l'état d'une
+        # séquence qui traverse une attente, ou dans le slot d'un prefab poolé.
+        # Émettre le nom nu produisait un identifiant que le C ne connaît pas.
+        name     = e.obj.name          # "self", "other", "paddle", ...
+        receiver = self._expr(e.obj)
+        # Les méthodes d'actor sont indexées sous "self:" ; celles d'une
+        # référence sous le type qu'elle porte (`sfx:`). Le repli `actor_*`
+        # plus bas ne doit surtout pas s'appliquer à une référence : il
+        # inventerait un `actor_set_volume(pas, …)` qui ne compile pas.
+        ref = self._ref_types.get(name)
+        key = f"{ref}:{e.method}" if ref else f"self:{e.method}"
         custom = _INVOKE_CUSTOM.get(key)
         if custom:
             return custom(self, e.args, receiver)
         api = RUNTIME_API.get(key)
         if api is None:
+            if ref:
+                return f"/* {name}:{e.method}() : inconnu sur une référence {ref} */"
             args = ", ".join(self._expr(a) for a in e.args)
             return f"actor_{e.method}({receiver}, {args})"
         return self._emit_api_call(api, e.args, receiver=receiver)
@@ -1304,8 +1360,8 @@ class CodeGen:
         if not self.ctx.sfx_component_name:
             return "(void)0 /* self:play_sfx() : aucun SoundFX configuré sur cet actor */"
         name   = self.ctx.sfx_component_name
-        volume = self.ctx.sfx_volumes.get(name, 255)
-        return f"sfx_play({sfx_constant(name)}, {volume})"
+        volume = volume_to_effect(self.ctx.sfx_volumes.get(name, 100))
+        return f"sfx_play({sfx_constant(name)}, {volume}, 0)"
 
     def _emit_destroy(self, args: list, receiver: str) -> str:
         """self:destroy() → appelle on_destroy() puis désactive l'actor."""
@@ -1326,21 +1382,135 @@ class CodeGen:
         éditeur."""
         return f"ui_element_show({receiver}, 0)"
 
-    def _emit_sfx_play(self, args: list) -> str:
-        """sfx.play("Name") → sfx_play(SFX_NAME, volume) — volume lu depuis la ressource Sfx."""
+    def _emit_sfx_play(self, args: list, hold: bool = True) -> str:
+        """sfx.play("Name") → sfx_play(SFX_NAME, volume, hold).
+
+        Volume lu depuis la ressource Sfx. `hold` dit si l'appelant garde la
+        référence : vrai quand l'appel est une VALEUR (`local h = sfx.play…`),
+        faux quand il est posé seul — c'est `_emit_stmt` qui le sait."""
         if not args or not isinstance(args[0], ExprString):
             return "/* sfx.play() : argument invalide */"
         name   = args[0].value
-        volume = self.ctx.sfx_volumes.get(name, 255)
-        return f"sfx_play({sfx_constant(name)}, {volume})"
+        volume = volume_to_effect(self.ctx.sfx_volumes.get(name, 100))
+        return f"sfx_play({sfx_constant(name)}, {volume}, {1 if hold else 0})"
+
+    def _percent_arg(self, args: list, fold, to_expr, default: int = 100) -> str:
+        """Un pourcentage écrit DANS l'appel → la graduation du registre visé.
+
+        Plié au build quand c'est un littéral — le C reste lisible et l'arrondi
+        est exact — et converti à l'exécution sinon, parce qu'un niveau peut
+        venir d'une variable (`global.get("Volume")`). Les deux formes de
+        conversion vivent côte à côte dans `models/audio.py`, pour qu'aucune ne
+        dérive de l'autre.
+        """
+        if not args:
+            return str(fold(default))
+        a = args[0]
+        # `-50` est un moins UNAIRE sur un littéral, pas un littéral négatif :
+        # sans ce cas, le seul panning qu'on écrit vraiment (« à gauche »)
+        # partirait en arithmétique C au lieu d'être plié.
+        if isinstance(a, ExprUnop) and a.op == "-" and isinstance(a.operand, ExprNumber):
+            return str(fold(-int(a.operand.value)))
+        if isinstance(a, ExprNumber):
+            return str(fold(int(a.value)))
+        return to_expr(self._expr(a))
+
+    def _emit_sfx_set_volume(self, args: list, receiver: str) -> str:
+        return (f"sfx_set_volume({receiver}, "
+                f"{self._percent_arg(args, volume_to_effect, volume_to_effect_expr)})")
+
+    def _emit_sfx_set_pitch(self, args: list, receiver: str) -> str:
+        return (f"sfx_set_pitch({receiver}, "
+                f"{self._percent_arg(args, pitch_to_rate, pitch_to_rate_expr)})")
+
+    def _emit_sfx_set_panning(self, args: list, receiver: str) -> str:
+        """Le panning s'écrit −100..+100 et le registre prend 0–255 : ce n'est
+        pas une mise à l'échelle mais un décalage autour du centre."""
+        return (f"sfx_set_panning({receiver}, "
+                f"{self._percent_arg(args, panning_to_hardware, panning_to_hardware_expr, 0)})")
+
+    def _emit_music_set_volume(self, args: list) -> str:
+        return (f"music_set_volume("
+                f"{self._percent_arg(args, volume_to_module, volume_to_module_expr)})")
+
+    def _emit_sound_box_set_volume(self, args: list) -> str:
+        return (f"sfx_set_effects_volume("
+                f"{self._percent_arg(args, volume_to_module, volume_to_module_expr)})")
+
+    def _emit_jingle_box_set_volume(self, args: list) -> str:
+        return (f"music_jingle_volume("
+                f"{self._percent_arg(args, volume_to_module, volume_to_module_expr)})")
 
     def _emit_music_play(self, args: list) -> str:
         """music.play("Name") → music_play(MUSIC_NAME, loop, volume) — loop/volume lus depuis la ressource Music."""
         if not args or not isinstance(args[0], ExprString):
             return "/* music.play() : argument invalide */"
         name = args[0].value
-        loop, volume = self.ctx.music_info.get(name, (True, 255))
-        return f"music_play({music_constant(name)}, {1 if loop else 0}, {volume})"
+        loop, volume = self.ctx.music_info.get(name, (True, 100))
+        return (f"music_play({music_constant(name)}, {1 if loop else 0}, "
+                f"{volume_to_module(volume)})")
+
+    def _emit_music_transition(self, args: list, c_func: str, extra: str = "") -> str:
+        """Les deux transitions se traduisent pareil : loop et volume viennent
+        de la RESSOURCE, comme pour `music.play` — un fondu ne change pas ce
+        qu'est la piste d'arrivée, seulement la façon d'y aller."""
+        if not args or not isinstance(args[0], ExprString):
+            return f"/* {c_func}() : argument invalide */"
+        name = args[0].value
+        loop, volume = self.ctx.music_info.get(name, (True, 100))
+        tail = f", {extra}" if extra else ""
+        return (f"{c_func}({music_constant(name)}, {1 if loop else 0}, "
+                f"{volume_to_module(volume)}{tail})")
+
+    def _emit_box_set_state(self, kind: str, index: dict, args: list) -> str:
+        """`<boîte>.set_state("sable")` → `<boîte>_set_state(1)`.
+
+        L'index est le RANG de l'état dans SA boîte : chaque boîte a son propre
+        espace de noms, donc deux boîtes peuvent porter « sable » sans que
+        l'appel devienne ambigu — c'est l'appel qui nomme la boîte.
+        """
+        if not args or not isinstance(args[0], ExprString):
+            return f"/* {kind}.set_state() : argument invalide */"
+        name = args[0].value
+        idx = index.get(name, -1)
+        if idx < 0:
+            return f'/* {kind}.set_state("{name}") : état inconnu */'
+        return f"{kind}_set_state({idx})"
+
+    def _emit_sound_box_set_state(self, args: list) -> str:
+        return self._emit_box_set_state("sound_box", self.ctx.sound_box_states, args)
+
+    def _emit_jingle_box_set_state(self, args: list) -> str:
+        return self._emit_box_set_state("jingle_box", self.ctx.jingle_box_states, args)
+
+    def _emit_sound_trigger(self, args: list) -> str:
+        """music_box.trigger("combat_start") → music_box_trigger(0)."""
+        if not args or not isinstance(args[0], ExprString):
+            return "/* music_box.trigger() : argument invalide */"
+        name = args[0].value
+        idx = self.ctx.music_box_triggers.get(name, -1)
+        if idx < 0:
+            return f'/* music_box.trigger("{name}") : aucune arête sur ce déclencheur */'
+        return f"music_box_trigger({idx})"
+
+    def _emit_music_jingle(self, args: list) -> str:
+        """music.jingle("Fanfare") → music_jingle(MUSIC_X, volume).
+
+        `mmSetJingleVolume` partage l'échelle 0–1024 de `mmSetModuleVolume` :
+        c'est bien la conversion « module », pas celle d'un effet.
+        """
+        if not args or not isinstance(args[0], ExprString):
+            return "/* music.jingle() : argument invalide */"
+        name = args[0].value
+        _loop, volume = self.ctx.music_info.get(name, (True, 100))
+        return f"music_jingle({music_constant(name)}, {volume_to_module(volume)})"
+
+    def _emit_music_fade_to(self, args: list) -> str:
+        frames = self._expr(args[1]) if len(args) > 1 else "30"
+        return self._emit_music_transition(args, "music_fade_to", frames)
+
+    def _emit_music_cut_to(self, args: list) -> str:
+        return self._emit_music_transition(args, "music_cut_to")
 
     def _emit_ui_image_set(self, args: list) -> str:
         """ui.image_set("coeur_2", "vide") → ui_image_set_state(IMAGE_COEUR_2,
@@ -1508,6 +1678,13 @@ class CodeGen:
 # en if/elif dans _invoke/_call.
 
 _INVOKE_CUSTOM: dict = {
+    # Les trois réglages d'une référence d'effet qui portent un POURCENTAGE :
+    # ils passent par un émetteur parce que la valeur change de graduation
+    # entre le script et le registre. `:stop()` et `:playing()` n'en ont pas
+    # besoin — ils se traduisent terme à terme depuis le catalogue.
+    "sfx:set_volume":  CodeGen._emit_sfx_set_volume,
+    "sfx:set_pitch":   CodeGen._emit_sfx_set_pitch,
+    "sfx:set_panning": CodeGen._emit_sfx_set_panning,
     "self:destroy":  CodeGen._emit_destroy,
     "self:play_sfx": CodeGen._emit_play_sfx,
     "self:show":     CodeGen._emit_ui_element_show,
@@ -1551,6 +1728,9 @@ _DOMAIN_CONSTANT: dict = {
 # variable C nommée) et n'atteint donc jamais `_resolve_arg`. Les déclarer est
 # ce qui distingue « traité ailleurs » de « oublié ».
 _DOMAIN_EMITTED_ELSEWHERE: frozenset = frozenset({
+    # Résolus par les émetteurs des trois boîtes : l'index est le RANG de
+    # l'état dans sa boîte, pas une constante par nom.
+    DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE, DOMAIN_MUSIC_BOX_TRIGGER,
     DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST,
     # Une séquence n'a pas de constante C : son nom désigne une variable
     # d'état, que `_emit_sequence_start/stop/running` écrit ou teste.
@@ -1581,7 +1761,16 @@ _CALL_CUSTOM: dict = {
     "sequence.stop":    CodeGen._emit_sequence_stop,
     "sequence.running": CodeGen._emit_sequence_running,
     "sfx.play":    CodeGen._emit_sfx_play,
-    "music.play":  CodeGen._emit_music_play,
+    "music.play":    CodeGen._emit_music_play,
+    "music.set_volume":      CodeGen._emit_music_set_volume,
+    "sound_box.set_volume":  CodeGen._emit_sound_box_set_volume,
+    "jingle_box.set_volume": CodeGen._emit_jingle_box_set_volume,
+    "sound_box.set_state":  CodeGen._emit_sound_box_set_state,
+    "jingle_box.set_state": CodeGen._emit_jingle_box_set_state,
+    "music_box.trigger":    CodeGen._emit_sound_trigger,
+    "music.jingle":  CodeGen._emit_music_jingle,
+    "music.fade_to": CodeGen._emit_music_fade_to,
+    "music.cut_to":  CodeGen._emit_music_cut_to,
     "ui.image_set": CodeGen._emit_ui_image_set,
     "ui.get":       CodeGen._emit_ui_get,
 }

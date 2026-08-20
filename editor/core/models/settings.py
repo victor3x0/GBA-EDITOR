@@ -29,6 +29,24 @@ class ProjectSettings:
     # un fondu au noir devant s'appeler pareil partout.
     transition_kind: str = "none"    # none | fade_black | fade_white
     transition_frames: int = 16      # durée d'UNE moitié (fermeture ou ouverture)
+    # Capacité de la cartouche visée, en Mio — 4, 8, 16 ou 32, les tailles
+    # réellement produites en cartouche masquée sur GBA (l'espace d'adressage
+    # de la console s'arrête à 32 Mio). Sert de plafond au rapport de poids
+    # affiché en fin de build (cf. codegen/rom_report.py).
+    cartridge_mib: int = 4
+    # Taux d'échantillonnage cible des effets, en Hz — le DÉFAUT du projet,
+    # qu'un Sfx peut surcharger (cf. Sfx.sample_rate). 0 = on garde le taux du
+    # fichier source. C'est bien le défaut : ré-échantillonner d'office
+    # dégraderait un projet existant sans que personne ne l'ait demandé.
+    sfx_sample_rate: int = 0
+    # Canaux logiciels de maxmod, partagés par la musique et les effets.
+    # `mmInitDefault(bank, n)` alloue exactement 92 × n + 1056 octets sur le
+    # tas (40 o de voie de module + 28 o de voie active + 24 o de voie de
+    # mixage par canal, plus le tampon de mixage 16 kHz) — mesuré au
+    # désassemblage, cf. ROADMAP v0.8.8. Défaut 8 : la valeur qui était en dur,
+    # pour qu'un projet existant ne change pas de son parce qu'un réglage est
+    # apparu. Le pool de RÉFÉRENCES d'effets, lui, vaut 16 quoi qu'on mette ici.
+    sound_channels: int = 8
 
 
 # ── Variables du projet ───────────────────────────────────────────

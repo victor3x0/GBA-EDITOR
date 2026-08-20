@@ -1,0 +1,24 @@
+{
+  "name": "Claimed",
+  "actions": [
+    "klmkl4",
+    "yjv",
+    "ljnj"
+  ],
+  "start": "gyuugj",
+  "states": [
+    {
+      "name": "gyuugj",
+      "mapping": {
+        "klmkl4": "GOAL",
+        "yjv": "GoalTaken"
+      }
+    },
+    {
+      "name": "hihn",
+      "mapping": {
+        "klmkl4": "GoalTaken"
+      }
+    }
+  ]
+}

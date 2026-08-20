@@ -32,6 +32,8 @@ from .parser import (
 )
 from . import lua_subset
 from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
+                  DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE,
+                  DOMAIN_MUSIC_BOX_TRIGGER,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE, DOMAIN_UI_ELEMENT,
@@ -39,9 +41,9 @@ from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_
                   DOMAIN_CONST, DOMAIN_SEQUENCE,
                   DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
                   DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, DOMAIN_EASE, HARDWARE_ENUMS,
-                  API_MODULES, module_members)
-from .vec_types import (VEC_FIELDS, VEC_CONSTRUCTORS, ARITH_TYPES,
-                        infer_vec_type, resolve_prop)
+                  API_MODULES, module_members, REF_TYPES)
+from .expr_types import (VEC_FIELDS, VEC_CONSTRUCTORS, ARITH_TYPES,
+                         infer_vec_type, infer_ref_type, resolve_prop)
 
 
 # Ce à quoi ressemble une CLÉ et pas un libellé : minuscules, chiffres, au
@@ -71,6 +73,9 @@ class BuildContext:
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
     camera_names: list[str]  = None    # noms de caméras du projet (pour camera.switch)
+    sound_box_state_names: list[str]  = None  # états des SoundBox du projet
+    jingle_box_state_names: list[str] = None  # états des JingleBox du projet
+    music_box_trigger_names: list[str] = None  # déclencheurs des MusicBox
     actor_names:  list[str]  = None    # noms des actors de la scène (pour get_actor)
     prefab_names: list[str]  = None    # noms de Prefab du projet (pour actor.spawn)
     global_names: list[str]  = None    # noms de GlobalVar déclarées dans le projet
@@ -133,8 +138,13 @@ class Checker:
         self._arrays: dict[str, Optional[tuple[int, ...]]] = {}
         # Locals vec2/vec3 du script : nom → type, ou None si le même nom a
         # servi avec deux types différents. Même approximation, à plat, que
-        # `_arrays` ci-dessus — cf. scripting/vec_types.py.
+        # `_arrays` ci-dessus — cf. scripting/expr_types.py.
         self._vec_types: dict[str, Optional[str]] = {}
+        # Locals qui tiennent une RÉFÉRENCE : nom → type de référence
+        # (`local pas = sfx.play("Pas")` → "sfx"). C'est ce qui dit à quel
+        # catalogue de méthodes un `pas:...` doit être confronté — sans quoi il
+        # serait jugé comme une méthode d'actor, et refusé.
+        self._ref_types: dict[str, str] = {}
         # Les deux espaces de noms qu'un script peut appeler en plus du
         # catalogue : l'alias d'un behavior importé (`local AI =
         # require("behaviors/ai")` → `AI.update(self)`) et, dans un behavior, sa
@@ -148,7 +158,7 @@ class Checker:
 
     def check(self, script: LuaScript, check_event_names: bool = True) -> list[CheckError]:
         self._collect_arrays(script)
-        self._collect_vec_types(script)
+        self._collect_local_types(script)
         self._collect_namespaces(script)
         # Les séquences déclarées par CE script : l'espace de noms de
         # `sequence.start` est le script, pas le projet (cf. DOMAIN_SEQUENCE).
@@ -194,12 +204,21 @@ class Checker:
         for fn in script.functions:
             walk(fn.body)
 
-    def _collect_vec_types(self, script: LuaScript):
-        """Relève le type (vec2/vec3) de chaque `local` du script, où qu'il
-        soit déclaré — même parcours à plat que `_collect_arrays`, dans le
-        même ordre que le script : au moment de noter `n = pos + vel`, `pos`
-        et `vel` ont déjà été vus si le script les déclare avant."""
+    def _collect_local_types(self, script: LuaScript):
+        """Relève le type de chaque `local` du script, où qu'il soit déclaré —
+        même parcours à plat que `_collect_arrays`, dans le même ordre que le
+        script : au moment de noter `n = pos + vel`, `pos` et `vel` ont déjà
+        été vus si le script les déclare avant.
+
+        Deux tables remplies par le MÊME parcours : les valeurs composées
+        (vec2/vec3/rect) et les références rendues par un appel (`sfx.play`).
+        Deux natures, mais une seule question — « quel type porte ce nom ? » —
+        et deux traversées auraient fini par répondre à des endroits différents.
+        """
         def note(name: str, value):
+            rt = infer_ref_type(value)
+            if rt is not None:
+                self._ref_types[name] = rt
             vt = infer_vec_type(value, self._vec_types)
             if vt is None:
                 return
@@ -838,7 +857,7 @@ class Checker:
             # `récepteur:method(args)`. Les méthodes d'actor sont indexées sous
             # `self:` dans le catalogue, mais s'appellent sur n'importe quel
             # Actor* nommé (`other`, une variable de get_actor) — exactement
-            # comme les PROPRIÉTÉS (cf. vec_types.resolve_prop). Ne valider que
+            # comme les PROPRIÉTÉS (cf. expr_types.resolve_prop). Ne valider que
             # `self` laissait tout le reste traverser sans un mot, alors que
             # `codegen._invoke` émettait quand même du C : `other:set_position(p)`
             # devenait `actor_set_position(other, p)`, qui compile et marche,
@@ -846,10 +865,24 @@ class Checker:
             # `self`.
             if isinstance(e.obj, ExprName):
                 receiver = e.obj.name
-                key = f"self:{e.method}"
+                # Un récepteur qui tient une RÉFÉRENCE (`local pas =
+                # sfx.play(...)`) a son propre jeu de méthodes : la clé porte
+                # alors le type de la référence et non `self`. Sans ça un
+                # `pas:set_volume(80)` serait jugé — et refusé — comme une
+                # méthode d'actor.
+                ref = self._ref_types.get(receiver)
+                key = f"{ref}:{e.method}" if ref else f"self:{e.method}"
                 shown = f"{receiver}:{e.method}"
                 api = RUNTIME_API.get(key)
-                if api is None:
+                if api is None and ref:
+                    self.errors.append(CheckError(
+                        "error",
+                        f"Méthode inconnue sur une référence d'effet : "
+                        f"{shown}() — `{receiver}` tient ce que `sfx.play` a "
+                        f"rendu, et les cinq méthodes sont :stop(), "
+                        f":playing(), :set_volume(), :set_pitch() et "
+                        f":set_panning()."))
+                elif api is None:
                     # Une méthode RETIRÉE est une erreur guidée. Un nom
                     # simplement inconnu l'est AUSSI, contrairement à un
                     # `module.func()` : celui-là peut être un helper écrit par
@@ -1081,6 +1114,34 @@ class Checker:
             self.errors.append(CheckError(
                 "warning",
                 f"{call_key}('{name}') : sfx '{name}' introuvable dans le projet.",
+            ))
+
+    def _check_box_state(self, call_key: str, name: str, known):
+        """Un état inconnu est une ERREUR : le codegen n'émettrait aucun appel,
+        et la scène resterait muette sans que rien ne l'ait dit.
+
+        La liste est celle de la boîte VISÉE par l'appel — un état de SoundBox
+        ne répond pas à `jingle_box.set_state`, et le message le montre en
+        n'énumérant que les états recevables."""
+        if known is not None and name not in known:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : aucun état de ce nom dans cette boîte. "
+                f"États disponibles : {', '.join(known) or 'aucun'}.",
+            ))
+
+    def _check_sound_trigger(self, call_key: str, name: str):
+        """Un déclencheur qu'aucune arête n'écoute ne mène nulle part.
+
+        AVERTISSEMENT et non erreur : écrire l'appel avant de dessiner l'arête
+        est un ordre de travail légitime, et le jeu tourne — il ne change
+        simplement pas de musique."""
+        known = self.ctx.music_box_trigger_names
+        if known is not None and name not in known:
+            self.errors.append(CheckError(
+                "warning",
+                f"{call_key}('{name}') : aucune transition musicale n'écoute ce "
+                f"déclencheur — l'appel ne fera rien.",
             ))
 
     def _check_music(self, call_key: str, name: str):
@@ -1423,6 +1484,11 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_IMAGE_STATE: lambda c, key, val, p, a: c._check_image_state(key, val, a),
     DOMAIN_SCENE:   lambda c, key, val, p, a: c._check_scene(key, val),
     DOMAIN_CAMERA:  lambda c, key, val, p, a: c._check_camera(key, val),
+    DOMAIN_SOUND_BOX_STATE:  lambda c, key, val, p, a: c._check_box_state(
+        key, val, c.ctx.sound_box_state_names),
+    DOMAIN_JINGLE_BOX_STATE: lambda c, key, val, p, a: c._check_box_state(
+        key, val, c.ctx.jingle_box_state_names),
+    DOMAIN_MUSIC_BOX_TRIGGER: lambda c, key, val, p, a: c._check_sound_trigger(key, val),
     DOMAIN_PREFAB:  lambda c, key, val, p, a: c._check_prefab(key, val),
     DOMAIN_ACTOR:   lambda c, key, val, p, a: c._check_actor(key, val),
     DOMAIN_TAG:     lambda c, key, val, p, a: c._check_tag(key, val),
@@ -1462,7 +1528,7 @@ def _prop_label(receiver: str, p) -> str:
     """`self.tag` lu sur `other` s'annonce « other.tag ».
 
     Le catalogue range les propriétés d'actor sous la clé `self.<champ>` — une
-    clé, pas une restriction (cf. vec_types.resolve_prop) — et un message qui
+    clé, pas une restriction (cf. expr_types.resolve_prop) — et un message qui
     reprendrait la clé telle quelle citerait à l'auteur une ligne qu'il n'a pas
     écrite."""
     return f"{receiver}.{p.lua_name.split('.', 1)[1]}"

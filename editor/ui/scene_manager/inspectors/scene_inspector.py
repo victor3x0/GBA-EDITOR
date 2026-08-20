@@ -542,6 +542,31 @@ class SceneInspector(QWidget):
         trans_row.addWidget(self._spin_trans)
         mode_inner.addLayout(trans_row)
 
+        # ── Music ─────────────────────────────────────────────────
+        # Trois valeurs et non deux : « Keep playing » n'est pas le silence,
+        # c'est l'absence d'ordre — traverser une porte ne doit pas relancer
+        # le thème. Le silence se déclare (cf. ROADMAP v0.8.2).
+        music_row = QHBoxLayout(); music_row.setSpacing(6)
+        lbl_music = QLabel("Music:")
+        lbl_music.setFont(QFont(T.UI, T.SM)); lbl_music.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_music.setFixedWidth(70)
+        self._combo_music = QComboBox()
+        self._combo_music.setFont(QFont(T.UI, T.SM))
+        self._combo_music.setStyleSheet(QSS.combobox)
+        self._combo_music.setToolTip(
+            "<b>Track started when this scene opens</b><br><br>"
+            "<b>Keep playing</b> — the scene issues no order at all, so "
+            "whatever is<br>already playing carries on. This is the default: "
+            "walking through a<br>door should not restart the theme.<br><br>"
+            "<b>Silence</b> — explicitly stops the music.<br><br>"
+            "The track starts before the scene's <code>on_start</code>, so a "
+            "<code>music.play()</code><br>in the script overrides it."
+        )
+        self._combo_music.currentIndexChanged.connect(self._on_music)
+        music_row.addWidget(lbl_music)
+        music_row.addWidget(self._combo_music, 1)
+        mode_inner.addLayout(music_row)
+
         W.separator(mode_inner)
 
         from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
@@ -836,6 +861,7 @@ class SceneInspector(QWidget):
         self._apply_mode_ui()
         self._refresh_blend()
         self._refresh_transition()
+        self._refresh_music()
         self._blocking = False
 
     def _mk_scroll_toggle(self, icon_key: str, tip: str) -> QToolButton:
@@ -1640,6 +1666,34 @@ class SceneInspector(QWidget):
         self._spin_trans.blockSignals(False)
         # La durée n'appartient à la scène que si elle surcharge par un fondu.
         self._spin_trans.setVisible(kind not in (TRANSITION_INHERIT, EFFECT_NONE))
+
+    def _refresh_music(self):
+        """Repeuple la liste depuis le catalogue — il change sous l'inspecteur
+        (import, renommage, suppression dans le Sound Mixer)."""
+        from core.models.scene import MUSIC_INHERIT, MUSIC_NONE
+        sc, p = self._scene, self._project
+        want = getattr(sc, "music", MUSIC_INHERIT) or MUSIC_INHERIT
+        self._combo_music.blockSignals(True)
+        self._combo_music.clear()
+        self._combo_music.addItem("Keep playing", MUSIC_INHERIT)
+        self._combo_music.addItem("Silence", MUSIC_NONE)
+        for m in (getattr(p, "music", []) if p else []):
+            self._combo_music.addItem(m.name, m.name)
+        idx = self._combo_music.findData(want)
+        if idx < 0:
+            # Piste disparue : on la garde VISIBLE plutôt que de retomber en
+            # silence sur « Keep playing ». Le champ dirait le contraire du
+            # fichier, et le validateur signale déjà le problème.
+            self._combo_music.addItem(f"{want}  (missing)", want)
+            idx = self._combo_music.count() - 1
+        self._combo_music.setCurrentIndex(idx)
+        self._combo_music.blockSignals(False)
+
+    def _on_music(self, idx: int):
+        if self._blocking or not self._scene: return
+        from core.models.scene import MUSIC_INHERIT
+        self._set_scene_field("music", self._combo_music.itemData(idx) or MUSIC_INHERIT)
+        self.changed.emit()
 
     def _on_transition_kind(self, idx: int):
         if self._blocking or not self._scene: return

@@ -111,6 +111,22 @@ local IA = require("behaviors/ia") -- un behavior partagé
 IA.update(self)
 ```
 
+Quelques appels **rendent une référence** : ce qu'ils viennent de prendre dans un pool du
+matériel. On l'ignore la plupart du temps, et on la retient quand on veut suivre la chose :
+
+```lua
+sfx.play("Pas")                    -- le cas courant : une ligne, rien à tenir
+local pas = sfx.play("Pas")        -- la MÊME fonction, quand on veut le suivre
+pas:set_volume(80)
+pas:set_pitch(120)                 -- % de la hauteur d'origine
+if pas:playing() then pas:stop() end
+```
+
+Il n'y a **rien à construire ni à libérer** : l'appel prend un slot, le rend, et le matériel
+le reprend seul quand le son se termine. Deux conséquences à connaître plutôt qu'à découvrir :
+une référence vaut **0** quand rien n'était libre, et une référence **périmée ne fait rien** —
+régler le volume d'un effet déjà terminé n'ira jamais toucher un autre son.
+
 Le catalogue complet des fonctions et propriétés du moteur est dans le panneau **API** du
 Script Editor, avec la description de chaque argument. Il n'est pas repris ici : il évolue à
 chaque version, et l'éditeur le tient à jour tout seul.

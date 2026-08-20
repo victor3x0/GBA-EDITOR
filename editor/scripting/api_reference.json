@@ -138,6 +138,59 @@
           "doc_anchor": "sfx-play"
         },
         {
+          "label": "sfx:stop()",
+          "snippet": "pas:stop()",
+          "description": "Coupe l'effet que `sfx.play` a rendu. Sans effet s'il est déjà terminé — une référence périmée ne règle jamais un autre son.",
+          "params": [],
+          "doc_anchor": "sfx-stop"
+        },
+        {
+          "label": "sfx:playing()",
+          "snippet": "pas:playing()",
+          "description": "Vrai tant que cet effet sonne.",
+          "params": [],
+          "doc_anchor": "sfx-playing"
+        },
+        {
+          "label": "sfx:set_volume(percent)",
+          "snippet": "pas:set_volume(80)",
+          "description": "Règle le volume de CET effet, en pourcentage (100 = le niveau réglé sur la ressource).",
+          "params": [
+            {
+              "name": "percent",
+              "type": "int",
+              "description": "0 à 100"
+            }
+          ],
+          "doc_anchor": "sfx-set_volume"
+        },
+        {
+          "label": "sfx:set_pitch(percent)",
+          "snippet": "pas:set_pitch(120)",
+          "description": "Règle la hauteur de CET effet, en pourcentage de sa hauteur d'origine : 200 = une octave au-dessus, 50 = une octave en dessous. La valeur est absolue.",
+          "params": [
+            {
+              "name": "percent",
+              "type": "int",
+              "description": "100 = hauteur d'origine"
+            }
+          ],
+          "doc_anchor": "sfx-set_pitch"
+        },
+        {
+          "label": "sfx:set_panning(panning)",
+          "snippet": "pas:set_panning(-50)",
+          "description": "Place cet effet dans le champ stéréo : −100 à gauche, 0 au centre, +100 à droite.",
+          "params": [
+            {
+              "name": "panning",
+              "type": "int",
+              "description": "−100 (gauche) à +100 (droite)"
+            }
+          ],
+          "doc_anchor": "sfx-set_panning"
+        },
+        {
           "label": "music.play(\"name\")",
           "snippet": "music.play(\"name\")",
           "description": "Démarre une piste musicale en boucle.",
@@ -156,6 +209,156 @@
           "description": "Arrête la musique en cours.",
           "params": [],
           "doc_anchor": "music-stop"
+        },
+        {
+          "label": "music.pause()",
+          "snippet": "music.pause()",
+          "description": "Suspend la musique là où elle en est.",
+          "params": [],
+          "doc_anchor": "music-pause"
+        },
+        {
+          "label": "music.resume()",
+          "snippet": "music.resume()",
+          "description": "Reprend la musique suspendue, au même endroit.",
+          "params": [],
+          "doc_anchor": "music-resume"
+        },
+        {
+          "label": "music.is_playing()",
+          "snippet": "music.is_playing()",
+          "description": "Vrai tant qu'un module joue. Faux après `music.stop()`, vrai pendant une pause.",
+          "params": [],
+          "doc_anchor": "music-is_playing"
+        },
+        {
+          "label": "music.set_volume(percent)",
+          "snippet": "music.set_volume(60)",
+          "description": "Règle le volume de la musique, en pourcentage. C'est le seul niveau de la couche module : le matériel n'a qu'un scaler.",
+          "params": [
+            {
+              "name": "percent",
+              "type": "int",
+              "description": "0 à 100"
+            }
+          ],
+          "doc_anchor": "music-set_volume"
+        },
+        {
+          "label": "music.fade_to(\"name\", frames)",
+          "snippet": "music.fade_to(\"name\", 60)",
+          "description": "Passe à une autre piste par un fondu traversant : le volume tombe à zéro, la piste change, il remonte. Marche entre deux morceaux quelconques, au prix d'un creux audible.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la Music"
+            },
+            {
+              "name": "frames",
+              "type": "int",
+              "description": "Durée totale des deux moitiés"
+            }
+          ],
+          "doc_anchor": "music-fade_to"
+        },
+        {
+          "label": "music.cut_to(\"name\")",
+          "snippet": "music.cut_to(\"name\")",
+          "description": "Passe à une autre piste SANS creux, à la fin du motif en cours, en reprenant à la même position. C'est ce qui enchaîne deux variantes d'un même morceau. Les deux pistes doivent avoir la même structure.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la Music"
+            }
+          ],
+          "doc_anchor": "music-cut_to"
+        },
+        {
+          "label": "music.jingle(\"name\")",
+          "snippet": "music.jingle(\"name\")",
+          "description": "Joue un module PAR-DESSUS la musique en cours, sans l'arrêter. Il ne boucle jamais, un seul à la fois, et il prend jusqu'à 4 des 8 canaux. C'est la seule façon de faire sonner deux musiques ensemble sur cette console.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom de la Music jouée en jingle"
+            }
+          ],
+          "doc_anchor": "music-jingle"
+        },
+        {
+          "label": "music.jingle_playing()",
+          "snippet": "music.jingle_playing()",
+          "description": "Vrai tant qu'un jingle sonne.",
+          "params": [],
+          "doc_anchor": "music-jingle_playing"
+        },
+        {
+          "label": "sound_box.set_state(\"name\")",
+          "snippet": "sound_box.set_state(\"sable\")",
+          "description": "Change l'état de la SoundBox — « le sol est du sable ». Les actions posées sur les frames d'animation se résolvent alors vers les échantillons de ce nouvel état : le même cycle de marche sonne le sable ou les cailloux sans être authoré deux fois.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom d'un état de la SoundBox"
+            }
+          ],
+          "doc_anchor": "sound_box-set_state"
+        },
+        {
+          "label": "sound_box.set_volume(percent)",
+          "snippet": "sound_box.set_volume(50)",
+          "description": "Règle le volume de TOUS les effets, en pourcentage. Un réglage de mixage : il multiplie le volume propre de chaque effet, il ne le remplace pas.",
+          "params": [
+            {
+              "name": "percent",
+              "type": "int",
+              "description": "0 à 100"
+            }
+          ],
+          "doc_anchor": "sound_box-set_volume"
+        },
+        {
+          "label": "jingle_box.set_state(\"name\")",
+          "snippet": "jingle_box.set_state(\"victoire\")",
+          "description": "Change l'état de la JingleBox : vers quel module chaque action de jingle pointe désormais.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom d'un état de la JingleBox"
+            }
+          ],
+          "doc_anchor": "jingle_box-set_state"
+        },
+        {
+          "label": "jingle_box.set_volume(percent)",
+          "snippet": "jingle_box.set_volume(25)",
+          "description": "Règle le volume de la couche jingle, en pourcentage. Avec `music.set_volume`, c'est la moitié du duck : la musique s'efface pendant la fanfare, puis remonte.",
+          "params": [
+            {
+              "name": "percent",
+              "type": "int",
+              "description": "0 à 100"
+            }
+          ],
+          "doc_anchor": "jingle_box-set_volume"
+        },
+        {
+          "label": "music_box.trigger(\"name\")",
+          "snippet": "music_box.trigger(\"combat_start\")",
+          "description": "Émet un déclencheur de la MusicBox. C'est la BOÎTE qui décide vers quel état il mène et par quelle transition — le script dit seulement qu'il s'est passé quelque chose.",
+          "params": [
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom d'un déclencheur d'arête de la MusicBox"
+            }
+          ],
+          "doc_anchor": "music_box-trigger"
         }
       ]
     },

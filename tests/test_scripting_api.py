@@ -459,3 +459,142 @@ def test_les_neuf_helpers_existent_en_c():
         fn = RUNTIME_API[f"self:{m}"].c_func
         assert re.search(r"\b" + re.escape(fn) + r"\s*\(", facade), (
             f"self:{m} : {fn}() n'existe pas dans actor_api_static.h")
+
+
+
+# ── 9. Les portes du son : une référence, et les graduations ──────────
+# ROADMAP v0.8.6. Deux erreurs silencieuses possibles ici : un `pas:set_volume`
+# traduit en `actor_set_volume(pas, …)` — le repli des méthodes d'actor, qui ne
+# compile pas mais ne dit rien avant le `make` —, et un pourcentage envoyé tel
+# quel dans un registre qui compte en 0–255, en 0–1024 ou en facteur 6.10. Le
+# second ne fait jamais échouer le build : il règle juste au mauvais niveau,
+# comme la musique qui jouait à 25 % avant la v0.8.5.
+
+
+def _lua_sfx(src: str):
+    """Comme `_lua`, mais avec un Sfx dans le contexte des DEUX côtés."""
+    from scripting.parser import parse
+    from scripting.checker import check, BuildContext
+    from scripting.codegen import generate, CodegenContext
+
+    script = parse(src)
+    errors = check(script, BuildContext(actor_name="Ball", anim_names=["idle"],
+                                        sfx_names=["Pas"]))
+    code, _, _ = generate(script, CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=["idle"], sfx_names=["Pas"],
+        music_names=[], global_names=set(), const_names=set(), all_actor_syms=["Ball"],
+        sfx_volumes={"Pas": 100}))
+    return [e.message for e in errors if e.level == "error"], code
+
+
+CINQ_METHODES = '''function on_update(self)
+  local pas = sfx.play("Pas")
+  pas:set_volume(80)
+  pas:set_pitch(120)
+  pas:set_panning(-40)
+  if pas:playing() then pas:stop() end
+end
+'''
+
+
+def test_la_reference_deffet_porte_son_type_et_ses_cinq_methodes():
+    errs, code = _lua_sfx(CINQ_METHODES)
+    assert errs == []
+    # `hold = 1` : la référence est tenue, donc le canal est protégé.
+    assert "mm_sfxhand pas = sfx_play(SFX_PAS, 255, 1);" in code
+    for appel in ("sfx_set_volume(pas,", "sfx_set_pitch(pas,", "sfx_set_panning(pas,",
+                  "sfx_is_playing(pas)", "sfx_stop(pas)"):
+        assert appel in code, appel
+    # Le repli des méthodes d'actor ne doit surtout pas s'appliquer ici.
+    assert "actor_set_volume" not in code
+
+
+def test_chaque_pourcentage_part_dans_la_graduation_de_son_registre():
+    """Quatre registres, quatre échelles — et un pourcentage n'appartient à
+    aucune. 80 % vaut 204 par effet (0–255), 60 % vaut 614 pour un module
+    (0–1024), 120 % vaut 1229 en hauteur (facteur 6.10), et −40 vaut 77 en
+    panning (0–255, centré sur 128)."""
+    errs, code = _lua_sfx(CINQ_METHODES.replace(
+        "  if pas:playing() then pas:stop() end\n",
+        "  music.set_volume(60)\n"
+        "  sound_box.set_volume(60)\n"
+        "  jingle_box.set_volume(60)\n"))
+    assert errs == []
+    assert "sfx_set_volume(pas, 204)" in code
+    assert "sfx_set_pitch(pas, 1229)" in code
+    assert "sfx_set_panning(pas, 77)" in code
+    assert "music_set_volume(614)" in code
+    assert "sfx_set_effects_volume(614)" in code
+    assert "music_jingle_volume(614)" in code
+
+
+def test_un_pourcentage_calcule_se_convertit_a_lexecution():
+    """Un niveau peut venir d'une variable : la conversion ne peut alors pas
+    être pliée au build, mais elle doit avoir lieu quand même."""
+    errs, code = _lua_sfx('function on_update(self)\n'
+                          '  local pas = sfx.play("Pas")\n'
+                          '  pas:set_volume(niveau)\n'
+                          'end\n')
+    assert errs == []
+    assert "sfx_set_volume(pas, ((niveau) * 255 / 100))" in code
+
+
+def test_une_methode_inconnue_sur_une_reference_est_refusee():
+    errs, _ = _lua_sfx('function on_update(self)\n'
+                       '  local pas = sfx.play("Pas")\n'
+                       '  pas:set_speed(2)\n'
+                       'end\n')
+    assert len(errs) == 1
+    assert "référence d'effet" in errs[0]
+    assert ":set_pitch()" in errs[0]
+
+
+def test_une_reference_qui_traverse_une_attente_garde_son_champ_detat():
+    """Une variable de séquence vit dans l'état, pas sous son nom : émettre le
+    nom nu produisait un identifiant que le C ne connaît pas — et le `make`
+    échouait loin de la ligne fautive."""
+    errs, code = _lua_sfx('function on_sequence_intro(self)\n'
+                          '  local pas = sfx.play("Pas")\n'
+                          '  wait(10)\n'
+                          '  pas:stop()\n'
+                          'end\n')
+    assert errs == []
+    assert "sfx_stop(Ball_seq_intro_pas)" in code
+    assert "sfx_stop(pas)" not in code
+
+
+def test_les_portes_du_son_existent_dans_le_c_emis():
+    """Même garde-fou que pour les helpers de juiciness, côté audio : ces
+    fonctions-là ne vivent pas dans `actor_api_static.h` mais dans l'en-tête
+    ÉMIS par `headers.py`, et un `c_func` sans implémentation ne se verrait
+    qu'au `make`."""
+    from scripting.api import RUNTIME_API
+
+    src = (REPO_DIR / "editor" / "codegen" / "runtime_codegen" / "headers.py").read_text(
+        encoding="utf-8", errors="ignore")
+    prefixes = ("sfx:", "sfx.", "music.", "sound_box.", "jingle_box.", "music_box.")
+    portes = [k for k in RUNTIME_API if k.startswith(prefixes)]
+    assert portes, "aucune porte audio dans le catalogue"
+    for key in portes:
+        fn = RUNTIME_API[key].c_func
+        assert re.search(r"\b" + re.escape(fn) + r"\s*\(", src), (
+            f"{key} : {fn}() n'est émis nulle part par headers.py")
+
+
+DEUX_LECTURES = '''function on_update(self)
+  sfx.play("Pas")
+  local tenu = sfx.play("Pas")
+end
+'''
+
+
+def test_un_effet_pose_seul_laisse_son_canal_volable():
+    """La règle de la v0.8.8 : `sfx.play(…)` posé seul n'a pas de référence à
+    protéger, donc son canal reste volable (`hold = 0`) ; celui qu'on retient
+    est protégé (`hold = 1`). C'est la seule décision du générateur qui dépend
+    de la POSITION de l'appel — sans elle, huit bruitages intouchables
+    faisaient perdre le neuvième en silence."""
+    errs, code = _lua_sfx(DEUX_LECTURES)
+    assert errs == []
+    assert "sfx_play(SFX_PAS, 255, 0);" in code
+    assert "mm_sfxhand tenu = sfx_play(SFX_PAS, 255, 1);" in code

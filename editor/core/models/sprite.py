@@ -29,6 +29,27 @@ class TilePlacement:
 class AnimFrame:
     """Une frame = composition de tuiles 8×8 peintes depuis le spritesheet source."""
     tiles: list[TilePlacement] = field(default_factory=list)
+    # Effet joué en ARRIVANT sur cette frame — un pas de course, un impact.
+    # "" = rien.
+    #
+    # La donnée vit ICI et non dans l'écran Son : un pas appartient au cycle de
+    # marche, partout où on le joue. Même règle qu'en v0.4.1, « le placement vit
+    # chez l'hôte, la nature de l'animation vit chez l'animé ». L'écran Son en
+    # est une seconde porte, pas le propriétaire (ROADMAP v0.8.5).
+    #
+    # LIMITE ASSUMÉE DU MODÈLE : les frames sont dédupliquées au niveau
+    # SÉQUENCE (cf. grit_conversion.sprite_unique_frames). Deux directions
+    # identiques — une source et son miroir, une source et son omni — partagent
+    # donc le même bloc, et l'effet se déclenche pour les deux. C'est ce qu'on
+    # VEUT d'un miroir : le pas est le même à gauche et à droite. Deux états
+    # qui se trouvent identiques produiront aussi les mêmes effets ; qui veut
+    # les différencier renonce au mode miroir et décrit ses directions à la
+    # main. Plus de réglages pour l'auteur, mais la limite est dite.
+    # Le nom d'une ACTION de la SoundBox — « PlayerWalk » —, jamais un effet
+    # concret : c'est l'état courant de la boîte qui dit vers quel échantillon
+    # elle pointe (ROADMAP v0.8.7). À ne pas confondre avec
+    # `SoundFxComponent.sfx_name`, qui référence vraiment un Sfx.
+    action_name: str = ""
 
     def clone(self) -> "AnimFrame":
         """Copie indépendante (nouvelles TilePlacement) — utilisé par la
@@ -36,7 +57,7 @@ class AnimFrame:
         return AnimFrame(tiles=[
             TilePlacement(t.src_col, t.src_row, t.dst_col, t.dst_row, t.flip_h, t.flip_v)
             for t in self.tiles
-        ])
+        ], action_name=self.action_name)
 
 
 @dataclass
@@ -227,7 +248,8 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
                                          **({"flip_h": True} if t.flip_h else {}),
                                          **({"flip_v": True} if t.flip_v else {})}
                                         for t in f.tiles
-                                    ]
+                                    ],
+                                    **({"action_name": f.action_name} if f.action_name else {}),
                                 }
                                 for f in sd.frames
                             ],
@@ -258,7 +280,7 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
                         flip_h=t.get("flip_h", False), flip_v=t.get("flip_v", False),
                     )
                     for t in f["tiles"]
-                ])
+                ], action_name=f.get("action_name", f.get("sfx_name", "")))
             # Migration ancien format {col, row} → bloc plein de tuiles 8×8
             old_col, old_row = f.get("col", 0), f.get("row", 0)
             return AnimFrame(tiles=[

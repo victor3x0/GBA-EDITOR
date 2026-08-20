@@ -309,6 +309,9 @@ class BuildWorker(EventEmitter, threading.Thread):
                         precomputed_const_names=const_names,
                         compiled_prefabs=compiled_prefabs,
                         compiled_cameras=compiled_cameras,
+                        # Les #define SFX_*/MUSIC_* sont des rangs dans ce que
+                        # mmutil a reçu, pas dans le catalogue du projet.
+                        sound_assets=sound_assets,
                     )
             if ok: self._emit("progress", 0.80)
 
@@ -322,6 +325,11 @@ class BuildWorker(EventEmitter, threading.Thread):
             if ok:
                 ok = self._step_make(p)
             if ok: self._emit("progress", 0.97)
+            # Le rapport de poids vient APRÈS le make : il se lit sur la ROM et
+            # sur l'ELF, pas sur le projet. Et avant mGBA, pour que les chiffres
+            # soient la dernière chose lisible du journal.
+            if ok:
+                self._step_rom_report(p, sound_assets)
             if ok:
                 ok = self._step_launch_mgba(p)
             if ok: self._emit("progress", 1.0)
@@ -768,7 +776,8 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None,
                                  precomputed_global_names=None, precomputed_const_names=None,
-                                 compiled_prefabs=None, compiled_cameras=None):
+                                 compiled_prefabs=None, compiled_cameras=None,
+                                 sound_assets=None):
         return transpile_all(
             p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
@@ -776,6 +785,7 @@ class BuildWorker(EventEmitter, threading.Thread):
             precomputed_const_names=precomputed_const_names,
             compiled_prefabs=compiled_prefabs,
             compiled_cameras=compiled_cameras,
+            sound_assets=sound_assets,
         )
 
     # ── Génération de main.c ──────────────────────────────────────────
@@ -802,6 +812,37 @@ class BuildWorker(EventEmitter, threading.Thread):
         return self._run_cmd(
             [str(make)], "[make]", cwd=p.build_dir, env=self._make_env()
         )
+
+    # ── Étape 4b : ce que la ROM pèse ─────────────────────────────
+
+    def _step_rom_report(self, p, sound_assets) -> None:
+        """Affiche la répartition du poids en fin de build.
+
+        Ne renvoie rien et n'interrompt jamais : c'est un rapport, et une ROM
+        correctement construite ne doit pas échouer parce que `nm` manque. Le
+        seul cas bloquant est le dépassement de capacité, et il est signalé en
+        erreur sans annuler un build déjà terminé — la ROM existe, elle ne
+        tient simplement pas sur la cartouche visée.
+        """
+        from codegen.rom_report import measure, format_report
+        try:
+            report = measure(
+                p, self.toolchain,
+                [s.name for s, _ in (sound_assets or {}).get("sfx", [])],
+                [m.name for m, _ in (sound_assets or {}).get("music", [])],
+                cartridge_mib=getattr(p.settings, "cartridge_mib", 4),
+            )
+        except Exception as e:
+            self._emit("log_line", f"[poids] rapport indisponible : {e}")
+            return
+        if report is None:
+            self._emit("log_line", "[poids] rapport indisponible (ELF ou binutils absents)")
+            return
+        for line in format_report(report):
+            self._emit("log_line", line)
+        if report.over_capacity:
+            self._emit("error_line",
+                       "[poids] la ROM dépasse la capacité de cartouche déclarée.")
 
     # ── Étape 5 : mgba ────────────────────────────────────────────
 

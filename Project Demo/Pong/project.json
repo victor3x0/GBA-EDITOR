@@ -7,5 +7,7 @@
   "backdrop_color": 1,
   "save_slots": 1,
   "transition_kind": "none",
-  "transition_frames": 16
+  "transition_frames": 16,
+  "cartridge_mib": 4,
+  "sfx_sample_rate": 0
 }

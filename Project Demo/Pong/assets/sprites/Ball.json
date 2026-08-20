@@ -3,6 +3,7 @@
   "asset": "assets/sprites/Ball.png",
   "frame_w": 8,
   "frame_h": 8,
+  "source_stamp": "255:29ecb0d20f8f352b",
   "own_palette": [
     7336,
     32364,

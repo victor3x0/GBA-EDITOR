@@ -3,6 +3,7 @@
   "asset": "assets/sprites/Paddle.png",
   "frame_w": 8,
   "frame_h": 32,
+  "source_stamp": "243:ab399c4cd287e3ad",
   "own_palette": [
     7336,
     32364,

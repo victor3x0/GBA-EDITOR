@@ -79,6 +79,19 @@ EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
 # scène — c'est l'absence de surcharge, donc le réglage du projet.
 TRANSITION_INHERIT = ""              # la scène suit ProjectSettings
 TRANSITION_KINDS = (EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE)
+
+# Musique de la scène (v0.8.2) — TROIS valeurs, pas deux.
+#
+# `MUSIC_INHERIT` (le défaut) ne veut pas dire « silence » mais « ne touche à
+# rien » : traverser une porte ne doit pas redémarrer le thème, et c'est aussi
+# le cas le moins cher — aucun appel n'est émis. Le silence, lui, se DÉCLARE ;
+# il ne s'obtient pas en laissant un champ vide.
+#
+# Contrairement aux transitions, il n'y a PAS de réglage de projet : « le
+# morceau par défaut du jeu » n'a pas de sens, c'est la scène de démarrage qui
+# le pose et l'héritage le propage tout seul.
+MUSIC_INHERIT = ""
+MUSIC_NONE    = "none"
 # Le mode BLDCNT que chaque type demande — 0 = aucune transition. C'est ce que
 # le codegen émet, le runtime ne connaissant que des modes de mélange.
 TRANSITION_MODES = {EFFECT_NONE: BLEND_NONE,
@@ -412,6 +425,12 @@ class Scene(Resource):
     # (cf. ROADMAP v0.6.2). Résolu au build par transition_of().
     transition_kind: str = TRANSITION_INHERIT   # "" | none | fade_black | fade_white
     transition_frames: int = 16                 # durée d'UNE moitié, ignorée si héritée
+    # Musique de la scène — MUSIC_INHERIT ("") = ne touche pas à ce qui joue,
+    # MUSIC_NONE ("none") = silence explicite, sinon le nom d'une Music.
+    # Redemander la piste DÉJÀ en cours ne la redémarre pas (le runtime tient
+    # la piste courante) : nommer explicitement le thème dans douze salles se
+    # comporte donc comme l'héritage, et non comme douze redémarrages.
+    music: str = MUSIC_INHERIT
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
     # Mise en page d'UI référencée par NOM (project/ui_layouts/<nom>.json) —
@@ -510,6 +529,8 @@ class Scene(Resource):
             **({"transition_kind": self.transition_kind,
                 "transition_frames": self.transition_frames}
                if self.transition_kind else {}),
+            # Même règle : absente du fichier tant que la scène hérite.
+            **({"music": self.music} if self.music else {}),
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
             "script": self.script,
@@ -577,6 +598,9 @@ class Scene(Resource):
             # scène antérieure à la v0.6.2.
             transition_kind=d.get("transition_kind", TRANSITION_INHERIT),
             transition_frames=int(d.get("transition_frames", 16)),
+            # Absente = la scène hérite, ce qui est le cas de toute scène
+            # antérieure à la v0.8.2.
+            music=d.get("music", MUSIC_INHERIT),
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),

@@ -618,6 +618,30 @@ def _obj_text_alloc(p: Project) -> dict:
     return out
 
 
+def _frame_action_ids(p: Project, sprite: SpriteAsset) -> list[int]:
+    """L'ACTION de chaque frame du sprite, dans l'ordre ABSOLU des frames.
+
+    Source de vérité unique pour la table émise et pour le test du stepper : les
+    deux doivent voir exactement la même liste, sinon on émet un test qui lit
+    une table absente.
+
+    Une frame nomme une action (« pas »), jamais un effet : c'est l'état
+    courant de la SoundBox qui dit vers quel échantillon elle pointe. L'index
+    vient de `Project.sound_action_names()`, COMMUN au projet — une frame ne
+    sait pas quelle SoundBox sera active quand elle se jouera.
+
+    Un nom qu'aucun graphe ne déclare rend -1. C'est le cas le plus courant
+    aujourd'hui (aucun graphe n'existe encore) et c'est volontairement le
+    comportement le plus inoffensif : silencieux plutôt que faux. Le validateur,
+    lui, le signale — pour que « silencieux » ne veuille pas dire « invisible ».
+    """
+    actions = p.sound_action_names("sound_box")
+    index = {name: i for i, name in enumerate(actions)}
+    _, ordered = sprite_unique_frames(sprite)
+    return [index.get(getattr(fr, "action_name", "") or "", -1)
+            for fr, _fh, _fv in ordered]
+
+
 def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
     """Génère les tables C d'animation pour un SpriteAsset.
 
@@ -649,6 +673,16 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
             entries.append(f"{{{sd.dir},{start},{count}}}")
         entries.append("{255,0,0}")   # sentinel de fin d'état
 
+    # Effets posés sur les frames. `ordered` fait autorité sur l'index absolu de
+    # frame — le même layout que le sheet reconstruit — donc la table s'indexe
+    # directement par `Actor.frame`.
+    #
+    # Conséquence ASSUMÉE de la déduplication par séquence : une source et son
+    # miroir partagent leur bloc, donc leur effet. C'est voulu (le pas est le
+    # même à gauche et à droite) ; deux états identiques le partagent aussi, et
+    # qui veut les différencier renonce au miroir (ROADMAP v0.8.5).
+    frame_actions = _frame_action_ids(p, sprite)
+
     L: list[str] = [
         f"static const u8 __attribute__((unused)) {sym}_anim_dirs[][3] = {{",
         "    " + ",".join(entries),
@@ -657,11 +691,28 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
         f"static const u8 __attribute__((unused)) {sym}_state_speed[] = {{{','.join(str(x) for x in state_speeds)}}};",
         f"static const u8 __attribute__((unused)) {sym}_state_loop[]  = {{{','.join(str(x) for x in state_loops)}}};",
     ]
+    # Émise SEULEMENT si au moins une frame porte un emplacement : une table de
+    # -1 serait de la ROM dépensée pour rien, et un test par frame pour rien.
+    #
+    # Ce qui est émis est un id d'EMPLACEMENT, pas un effet : c'est l'état
+    # courant de la machine SFX qui dit vers quel échantillon il pointe, et le
+    # runtime le lit dans `g_sound_box_action[]`. C'est ce qui permet au même cycle de
+    # marche de sonner « sable » ou « cailloux » sans être authoré deux fois.
+    if any(a >= 0 for a in frame_actions):
+        L += [
+            "/* Emplacement joué en arrivant sur la frame — -1 = aucun. */",
+            f"static const s16 {sym}_frame_action[] = {{{','.join(str(a) for a in frame_actions)}}};",
+        ]
     return L
 
 
-def _anim_tick_lines(idx: int, sym: str) -> list[str]:
-    """Génère le bloc C de tick d'animation pour un acteur (dans scene_tick)."""
+def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False) -> list[str]:
+    """Génère le bloc C de tick d'animation pour un acteur (dans scene_tick).
+
+    `has_frame_sfx` dit si le sprite porte des effets sur ses frames : le test
+    n'est émis que dans ce cas, pour ne pas payer une comparaison par frame et
+    par acteur sur les sprites qui n'en ont pas.
+    """
     return [
         f"    if(g_actors[{idx}].auto_dir&&(g_actors[{idx}].vx||g_actors[{idx}].vy)){{",
         f"        g_actors[{idx}].dir_x=(g_actors[{idx}].vx>0)-(g_actors[{idx}].vx<0);",
@@ -684,8 +735,20 @@ def _anim_tick_lines(idx: int, sym: str) -> list[str]:
         f"        if(g_actors[{idx}].timer>={sym}_state_speed[_st]){{",
         f"            g_actors[{idx}].timer=0;",
         f"            int _fi=g_actors[{idx}].frame-_fs;",
+        f"            int _fprev=g_actors[{idx}].frame;",
         f"            if({sym}_state_loop[_st]) g_actors[{idx}].frame=_fs+(_fc>1?(_fi+1)%_fc:0);",
         f"            else if(_fi<_fc-1) g_actors[{idx}].frame=_fs+_fi+1;",
+        # L'effet se déclenche en ARRIVANT sur la frame, donc seulement quand
+        # elle change — sinon une animation d'une seule frame, ou arrêtée sur
+        # sa dernière, rejouerait le son à chaque tick de vitesse.
+        *([f"            if(g_actors[{idx}].frame!=_fprev){{",
+           f"                int _ac={sym}_frame_action[g_actors[{idx}].frame];",
+           # L'indirection : l'emplacement, puis ce vers quoi l'état courant le
+           # résout. Un emplacement non réglé dans cet état vaut -1 et ne joue
+           # rien — « pas de bruit de pas en vol » se dit sans réglage dédié.
+           f"                if(_ac>=0&&g_sound_box_action[_ac]>=0)",
+           f"                    sfx_play(g_sound_box_action[_ac],g_sound_box_action_vol[_ac],0);",
+           f"            }}"] if has_frame_sfx else [f"            (void)_fprev;"]),
         f"        }}",
         f"    }}",
     ]
@@ -1970,6 +2033,45 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     return fills, assets
 
 
+def _scene_music_lines(p: Project, scene: Scene, sound_assets: dict | None) -> list[str]:
+    """L'appel musical de `scene_init`, ou rien du tout.
+
+    Les trois valeurs de `Scene.music` (cf. models/scene.py) :
+      - `MUSIC_INHERIT` — **rien n'est émis**. « Ne touche pas à ce qui joue »
+        doit être littéralement gratuit, c'est le cas par défaut et de loin le
+        plus fréquent.
+      - `MUSIC_NONE`    — silence déclaré.
+      - un nom          — la piste.
+
+    Pas de « ne redémarre pas si c'est déjà la même ». La tentation est réelle
+    (douze salles qui nomment le même thème le relanceraient douze fois), mais
+    `MUSIC_INHERIT` répond DÉJÀ à ce besoin : on nomme le thème dans la salle où
+    il commence, les autres héritent. Retenir la piste courante en plus
+    demanderait un état que `music.play()` appelé depuis un script ne mettrait
+    pas à jour — il suffirait d'un script pour le désynchroniser, et la scène
+    déclarative se tairait alors sans raison visible. Un second mécanisme pour
+    un problème déjà résolu, et faux par-dessus le marché.
+    """
+    from core.models.scene import MUSIC_INHERIT, MUSIC_NONE
+    want = getattr(scene, "music", MUSIC_INHERIT) or MUSIC_INHERIT
+    if want == MUSIC_INHERIT:
+        return []
+    if want == MUSIC_NONE:
+        return ["    music_stop();   /* silence déclaré par la scène */"]
+    in_rom = {m.name: m for m, _ in (sound_assets or {}).get("music", [])}
+    music = in_rom.get(want)
+    if music is None:
+        # Le validateur a déjà nommé le problème ; ici on ne PEUT pas émettre
+        # MOD_X, la constante n'existe pas dans soundbank.h et la compilation C
+        # échouerait sur un message bien moins clair.
+        return [f"    /* musique « {want} » absente de la ROM — scène muette */"]
+    from core.models.audio import volume_to_module
+    loop = 1 if getattr(music, "loop", True) else 0
+    # `volume` est un POURCENTAGE ; mmSetModuleVolume attend 0–1024.
+    vol  = volume_to_module(int(getattr(music, "volume", 100)))
+    return [f"    music_play(MOD_{c_sym(want).upper()}, {loop}, {vol});"]
+
+
 def _gen_scene_init(
     p: Project,
     scene: Scene,
@@ -2387,6 +2489,13 @@ def _gen_scene_init(
                 ]
             else:
                 L.append(f"    g_actors[{slot}].affine_slot = -1;")
+    # ── Musique de la scène (ROADMAP v0.8.2) ───────────────────────
+    # Posée AVANT les on_start : le réglage déclaratif passe en premier et le
+    # script ajuste ensuite, exactement comme pour la caméra (v0.6.1). Un
+    # `music.play()` dans on_start gagne donc, ce qui est ce qu'on attend.
+    if has_sound:
+        L += _scene_music_lines(p, scene, sound_assets)
+
     # on_start actors (seulement si défini dans le script Lua)
     def _def_init(s, ev):
         if actor_defined_events is None:
@@ -2687,7 +2796,10 @@ def _gen_scene_tick(
     # Animation (state machine + direction)
     anim_actors = [(actor_offset + j, a, s2) for j, (a, s2) in enumerate(scene_actors) if s2 and s2.asset and s2.states]
     for idx, actor, sprite in anim_actors:
-        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}")
+        # Le test d'effet par frame n'est émis que si le sprite en porte —
+        # même source de vérité que la table, `sprite_unique_frames`.
+        _has_fx = any(a >= 0 for a in _frame_action_ids(p, sprite))
+        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx)
 
     _aff = affine_info or {}
 
@@ -3086,6 +3198,11 @@ def generate_main(
         "int   g_shake_amp = 0, g_shake_left = 0, g_shake_total = 1;",
         "int   g_shake_dx = 0, g_shake_dy = 0;",
         "u32   g_shake_seed = 2463534242u;",
+        # Transition musicale en cours — un événement, comme la secousse : il
+        # vit ici, pas dans un réglage d'asset (cf. headers.py pour les deux
+        # modes et pourquoi il n'y en a pas un troisième).
+        "int   g_mtr_mode = 0, g_mtr_id = 0, g_mtr_loop = 1, g_mtr_vol = 255;",
+        "int   g_mtr_i = 0, g_mtr_n = 1, g_mtr_row = 0;",
         "int   _g_frame = 0;",
         # Taille du monde de la scène courante, lue par `scene.size` : déclarée
         # `extern` dans actor_api_static.h et posée par chaque scene_init — il
@@ -3112,6 +3229,20 @@ def generate_main(
             "static int _txt_actor_y(int i) { return g_actors[i].y; }",
             "",
         ]
+
+    # ── Boîtes à état sonores ─────────────────────────────────────
+    # Avant les scene_init et les scene_tick : le stepper d'animation lit
+    # `g_sound_box_action[]` pour résoudre l'action d'une frame.
+    if has_sound and soundbank_h.exists():
+        # La hauteur courante de chaque effet — déclarée `extern` dans
+        # actor_api.h, définie ici comme les autres états d'un événement en
+        # cours. 1024 = hauteur normale ; `sfx_play` la repose à chaque
+        # lecture (cf. headers.py, et ROADMAP v0.8.6 pour la mesure qui
+        # oblige à la retenir).
+        L += ["mm_hword g_sfx_rate[16] = {1024,1024,1024,1024,1024,1024,1024,1024,"
+              "1024,1024,1024,1024,1024,1024,1024,1024};", ""]
+        from codegen.runtime_codegen.sound_emit import emit as _emit_sound_boxes
+        L += _emit_sound_boxes(p)
 
     # ── scene_init_X() par scène ──────────────────────────────────
     for i, d in enumerate(all_scene_data):
@@ -3236,6 +3367,56 @@ def generate_main(
             "",
         ]
 
+    # ── Transitions musicales (ROADMAP v0.8.3) ────────────────────
+    # Le pas par frame des deux transitions. Un seul point d'écriture du
+    # volume de module et de la bascule, comme la caméra n'a qu'un seul point
+    # d'écriture de sa position (v0.6.1) : deux mécanismes qui écrivent le même
+    # registre sans se coordonner, c'est le défaut qu'on a déjà corrigé une fois.
+    if has_sound and soundbank_h.exists():
+        L += [
+            "static void music_transition_tick(void){",
+            "    if(!g_mtr_mode) return;",
+            "    if(g_mtr_mode == 1){",
+            "        /* Fondu traversant. La bascule tombe à la moitié, quand le",
+            "           volume est à zéro : c'est là qu'un changement s'entend le",
+            "           moins. */",
+            "        int half = g_mtr_n / 2;",
+            "        g_mtr_i++;",
+            "        if(g_mtr_i < half){",
+            "            mmSetModuleVolume((mm_word)(g_mtr_vol * (half - g_mtr_i) / half));",
+            "        } else if(g_mtr_i == half){",
+            "            mmStart((mm_word)g_mtr_id, g_mtr_loop ? MM_PLAY_LOOP : MM_PLAY_ONCE);",
+            "            mmSetModuleVolume(0);",
+            "        } else if(g_mtr_i >= g_mtr_n){",
+            "            mmSetModuleVolume((mm_word)g_mtr_vol);",
+            "            g_mtr_mode = 0;",
+            "        } else {",
+            "            int k = g_mtr_i - half, n = g_mtr_n - half;",
+            "            mmSetModuleVolume((mm_word)(g_mtr_vol * k / n));",
+            "        }",
+            "        return;",
+            "    }",
+            "    /* Coupe à la position. On guette le retour en arrière de la LIGNE :",
+            "       c'est la frontière de motif, et ça marche aussi pour un module",
+            "       d'un seul motif, dont l'index d'ordre ne changerait jamais.",
+            "       mmPosition() ne sait viser qu'un motif — couper en cours de motif",
+            "       rejouerait donc les lignes déjà passées, ce qui s'entend. */",
+            "    {",
+            "        int row = (int)mmGetPositionRow();",
+            "        if(row < g_mtr_row){",
+            "            mm_word pat = mmGetPosition();",
+            "            mmStart((mm_word)g_mtr_id, g_mtr_loop ? MM_PLAY_LOOP : MM_PLAY_ONCE);",
+            "            mmPosition(pat);",
+            "            mmSetModuleVolume((mm_word)g_mtr_vol);",
+            "            g_mtr_mode = 0;",
+            "        } else {",
+            "            g_mtr_row = row;",
+            "        }",
+            "    }",
+            "}",
+            "",
+        ]
+
     # ── main() ────────────────────────────────────────────────────
     L.append("int main(void){")
     L.append("    irqInit(); irqEnable(IRQ_VBLANK);")
@@ -3248,14 +3429,21 @@ def generate_main(
         # mmVBlank() DOIT être lié à l'IRQ vblank (doc maxmod.h) — sans ça le
         # mixeur n'avance jamais et le son ne sort qu'en grésillement/silence.
         L.append("    irqSet(IRQ_VBLANK, mmVBlank);")
-        # 8 canaux logiciels — valeur standard des exemples maxmod
-        # (MM_SIZEOF_MODLIST n'existe pas dans maxmod.h : mmInitDefault()
-        # attend un nombre de canaux, pas une taille).
-        L.append("    mmInitDefault((mm_addr)soundbank_bin, 8);")
-        if sound_assets and sound_assets.get("music"):
-            music_item, _ = sound_assets["music"][0]
-            loop = "MM_PLAY_LOOP" if getattr(music_item, "loop", True) else "MM_PLAY_ONCE"
-            L.append(f"    mmStart(MOD_{c_sym(music_item.name).upper()}, {loop});")
+        # Les canaux logiciels, partagés par la musique et les effets — un
+        # réglage de projet depuis la v0.8.8 (défaut 8, la valeur qui était en
+        # dur). `mmInitDefault()` attend un NOMBRE de canaux, pas une taille :
+        # MM_SIZEOF_MODLIST n'existe pas dans maxmod.h. Ce qu'elle alloue est
+        # chiffré par `audio.sound_channels_bytes`.
+        from core.models.audio import sound_channels_bytes
+        _ch = int(getattr(p.settings, "sound_channels", 8))
+        L.append(f"    mmInitDefault((mm_addr)soundbank_bin, {_ch});"
+                 f"   /* {_ch} canaux — {sound_channels_bytes(_ch)} o de tas */")
+        from codegen.runtime_codegen.sound_emit import music_start_lines
+        L += music_start_lines(p)
+        # Plus de mmStart au boot. Il démarrait la PREMIÈRE musique du projet,
+        # quelle qu'elle soit — un emplacement réservé qui rendait un bref
+        # éclat de la mauvaise piste avant que la scène de départ ne pose la
+        # sienne. C'est `Scene.music` qui décide maintenant (ROADMAP v0.8.2).
 
     # Sprites VRAM (une seule fois au démarrage — toutes scènes). Les
     # palettes OBJ ne sont PLUS copiées ici : chaque scene_init_X() charge
@@ -3294,6 +3482,7 @@ def generate_main(
     L.append("        VBlankIntrWait();")
     if has_sound and soundbank_h.exists():
         L.append("        mmFrame();   /* doc maxmod.h : _doit_ être appelée chaque frame */")
+        L.append("        music_transition_tick();")
     L += [
         "        _g_frame++;",
         "        scanKeys();",

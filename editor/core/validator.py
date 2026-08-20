@@ -17,7 +17,7 @@ Plugins : enregistrer un validateur avec @register_validator
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.project import Project
@@ -48,6 +48,22 @@ class ValidationContext:
         self.scene   = project.active_scene
         self.actors  = self.scene.actors if self.scene else []
         self._msgs: list[ValidationMessage] = []
+        # Les modules déjà analysés pendant CETTE validation. Trois contrôles
+        # les lisent (structure de coupe, canaux du jingle, canaux du projet)
+        # et un module coûte ~9 ms à analyser : sans ce cache, la démo et ses
+        # 105 morceaux paient trois secondes pour trois questions.
+        self._modules: dict = {}
+
+    def module(self, path):
+        """Le module lu à ce chemin, ou None s'il est illisible."""
+        key = str(path)
+        if key not in self._modules:
+            from core.engine_emulation.module_model import load_module
+            try:
+                self._modules[key] = load_module(path)
+            except Exception:
+                self._modules[key] = None
+        return self._modules[key]
 
     def warn(self, actor_or_name, message: str):
         name = getattr(actor_or_name, "name", str(actor_or_name)) if actor_or_name else ""
@@ -97,6 +113,11 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_data_column_types(ctx)
     _check_data_tables(ctx)
     _check_screen_space(ctx)
+    _check_audio_files(ctx)
+    _check_music_cut_compat(ctx)
+    _check_jingle_channels(ctx)
+    _check_module_channels(ctx)
+    _check_sound_boxes(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -850,6 +871,244 @@ def _check_cameras(ctx: ValidationContext):
                 f"Scène '{scene.name}' : la caméra « {cam.name} » suit "
                 f"« {cam.follow_target} », qui n'est pas un acteur de cette scène — "
                 f"la caméra y restera immobile.")
+
+
+def _check_audio_files(ctx: ValidationContext):
+    """Second filet derrière le refus à l'import : le ProjectWatcher crée aussi
+    des ressources pour les fichiers déposés à la main dans assets/sfx/ et
+    assets/music/, qui n'ont donc traversé aucun dialogue.
+
+    En ERREUR et non en avertissement, contrairement à la plupart des contrôles
+    d'ici, parce que mmutil ne bronchera pas : un wav 24 bits produit une ROM
+    complète, avec sa constante `SFX_*` bien définie et un effet muet. Laisser
+    passer, c'est livrer un jeu dont un son manque sans que rien ne l'ait dit —
+    et ça ne s'entend qu'en jouant."""
+    from core.asset_encoding import check_audio_file
+    p = ctx.project
+    for kind, assets in (("SFX", getattr(p, "sfx", [])),
+                         ("Musique", getattr(p, "music", []))):
+        for a in assets or []:
+            if not a.asset:
+                ctx.warn(None, f"{kind} « {a.name} » : aucun fichier associé.")
+                continue
+            path = p.asset_abs(a.asset)
+            if not path or not path.exists():
+                ctx.error(None, f"{kind} « {a.name} » : fichier introuvable ({a.asset}).")
+                continue
+            if reason := check_audio_file(path):
+                ctx.error(None, f"{kind} « {a.name} » ({path.name}) : {reason}")
+
+    # `Scene.music` nomme une piste sans qu'aucun script ne la cite : c'est une
+    # référence de plus à vérifier. En AVERTISSEMENT — le codegen sait ne pas
+    # émettre l'appel, donc la scène est muette au lieu de casser le build.
+    from core.models.scene import MUSIC_INHERIT, MUSIC_NONE
+    known = {m.name for m in getattr(p, "music", [])}
+    for scene in p.scenes:
+        want = getattr(scene, "music", MUSIC_INHERIT) or MUSIC_INHERIT
+        if want in (MUSIC_INHERIT, MUSIC_NONE) or want in known:
+            continue
+        ctx.warn(None,
+            f"Scène '{scene.name}' : la musique « {want} » n'existe pas — la scène "
+            f"n'en démarrera aucune (ce qui joue déjà continue).")
+
+    # `MUSIC_NONE` est le mot réservé qui déclare le silence. Une piste qui
+    # porterait ce nom deviendrait inatteignable par une scène, sans que rien
+    # ne le dise.
+    if MUSIC_NONE in known:
+        ctx.error(None,
+            f"Une musique s'appelle « {MUSIC_NONE} », qui est le mot réservé du "
+            f"silence dans Scene.music — renommez-la.")
+
+
+def _check_music_cut_compat(ctx: ValidationContext):
+    """`music.cut_to` reprend l'autre module au MÊME index d'ordre. Deux
+    modules dont la table d'ordre n'a pas la même longueur ne peuvent donc pas
+    se relayer : la reprise tomberait ailleurs dans le morceau.
+
+    Sans ce contrôle, l'auteur entend un saut sans savoir d'où il vient — et
+    c'est le genre de défaut qu'on ne rattache jamais à sa cause. En
+    AVERTISSEMENT : la ROM se construit et joue, c'est le résultat musical qui
+    est douteux, et une structure volontairement différente reste un choix
+    défendable.
+
+    On compare chaque piste citée par `cut_to` à celles que le script peut
+    avoir en cours — c'est-à-dire toutes les autres du même script. Grossier,
+    mais du bon côté : on préfère un avertissement de trop qu'un saut muet."""
+    from scripting.api import DOMAIN_MUSIC
+    from scripting.refactor import iter_refs, script_paths
+    p = ctx.project
+    by_name = {m.name: m for m in getattr(p, "music", [])}
+    orders: dict[str, int] = {}
+
+    def order_len(name: str) -> Optional[int]:
+        if name in orders:
+            return orders[name]
+        m = by_name.get(name)
+        ap = p.asset_abs(m.asset) if m and m.asset else None
+        n = None
+        if ap and ap.exists():
+            mod = ctx.module(ap)
+            n = len(mod.order) if mod is not None else None
+        orders[name] = n
+        return n
+
+    for path in script_paths(p):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "cut_to" not in text:            # évite de parser pour rien
+            continue
+        cited = {r.value for r in iter_refs(text, path=path, domain=DOMAIN_MUSIC)}
+        targets = {r.value for r in iter_refs(text, path=path, domain=DOMAIN_MUSIC)
+                   if r.api_key == "music.cut_to"}
+        for target in sorted(targets):
+            n_t = order_len(target)
+            if n_t is None:
+                continue
+            for other in sorted(cited - {target}):
+                n_o = order_len(other)
+                if n_o is not None and n_o != n_t:
+                    ctx.warn(None,
+                        f"{path.name} : music.cut_to(« {target} ») reprend à la position "
+                        f"courante, mais « {other} » n'a pas la même structure "
+                        f"({n_o} motifs contre {n_t}) — la reprise tomberait ailleurs "
+                        f"dans le morceau.")
+
+
+def _check_jingle_channels(ctx: ValidationContext):
+    """Un jingle est plafonné à 4 canaux par maxmod (doc `mmJingle`).
+
+    Un module qui en demande plus sera joué tronqué — et un morceau tronqué ne
+    s'entend pas comme une erreur, il s'entend comme un morceau raté. Le nombre
+    de canaux est écrit dans l'en-tête du MOD et `mod_file.py` le lit déjà : ça
+    se vérifie sans rien construire."""
+    from scripting.api import DOMAIN_MUSIC
+    from scripting.refactor import iter_refs, script_paths
+    p = ctx.project
+    by_name = {m.name: m for m in getattr(p, "music", [])}
+    seen: set[str] = set()
+    for path in script_paths(p):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "jingle" not in text:
+            continue
+        for ref in iter_refs(text, path=path, domain=DOMAIN_MUSIC):
+            if ref.api_key != "music.jingle" or ref.value in seen:
+                continue
+            seen.add(ref.value)
+            m = by_name.get(ref.value)
+            ap = p.asset_abs(m.asset) if m and m.asset else None
+            if not (ap and ap.exists()):
+                continue
+            mod = ctx.module(ap)
+            if mod is None:
+                continue
+            ch = mod.num_channels
+            if ch > 4:
+                ctx.warn(None,
+                    f"{path.name} : « {ref.value} » est joué en jingle mais utilise "
+                    f"{ch} canaux — maxmod n'en donne que 4 à un jingle, les autres "
+                    f"seront muets.")
+
+
+def _check_module_channels(ctx: ValidationContext):
+    """Un module qui demande plus de voies que le projet n'a de canaux.
+
+    `mmInitDefault(bank, n)` fixe le nombre de canaux logiciels — un réglage de
+    projet depuis la v0.8.8 — et musique et effets s'y partagent. Un module de
+    16 voies dans un projet à 8 canaux ne joue pas « un peu moins fort » : les
+    notes en trop n'ont nulle part où sonner, et il manque des instruments sans
+    que rien ne le dise. Même contrôle que les 4 canaux du jingle, avec l'autre
+    plafond.
+
+    En AVERTISSEMENT : la ROM se construit et joue. Et volontairement large —
+    on regarde toutes les musiques du projet, pas seulement celles qu'un script
+    cite, parce que le coût du contrôle est nul et qu'un morceau importé pour
+    plus tard vaut mieux d'être signalé maintenant.
+    """
+    p = ctx.project
+    channels = int(getattr(p.settings, "sound_channels", 8))
+    for m in getattr(p, "music", []):
+        ap = p.asset_abs(m.asset) if getattr(m, "asset", None) else None
+        if not (ap and ap.exists()):
+            continue
+        mod = ctx.module(ap)
+        if mod is None:
+            continue
+        ch = mod.num_channels
+        if ch > channels:
+            ctx.warn(None,
+                f"« {m.name} » utilise {ch} voies, le projet n'a que {channels} "
+                f"canaux — les voies en trop resteront muettes. Le nombre de "
+                f"canaux se règle dans l'inspecteur de projet.")
+
+
+def _check_sound_boxes(ctx: ValidationContext):
+    """Les trois boîtes sonores (ROADMAP v0.8.7).
+
+    Depuis qu'elles sont trois assets, chaque boîte a son propre espace de
+    noms : un même nom d'état dans une SoundBox et dans une JingleBox n'est
+    plus ambigu, puisque l'appel Lua nomme la boîte. Ce qui reste refusé, c'est
+    un doublon DANS une boîte — là, le build choisirait à la place de l'auteur.
+    """
+    p = ctx.project
+    sfx_names = {s.name for s in getattr(p, "sfx", [])}
+    music_names = {m.name for m in getattr(p, "music", [])}
+
+    # Une boîte active par famille — la première par ordre de nom (v0.8.7).
+    # Les autres existent dans le projet mais ne sonneront jamais.
+    for store, label in ((getattr(p, "music_boxes", []), "MusicBox"),
+                         (getattr(p, "jingle_boxes", []), "JingleBox"),
+                         (getattr(p, "sound_boxes", []), "SoundBox")):
+        boxes = sorted(store, key=lambda b: b.name)
+        for extra in boxes[1:]:
+            ctx.warn(None,
+                f"{label} « {extra.name} » : le jeu n'en charge qu'une, "
+                f"« {boxes[0].name} » (la première par ordre de nom). Celle-ci "
+                f"ne sera pas jouée.")
+        for box in boxes:
+            for dup in box.duplicate_state_names():
+                ctx.error(None,
+                    f"{label} « {box.name} » : deux états s'appellent "
+                    f"« {dup} » — l'appel serait ambigu. Renommez-en un.")
+
+    for box in getattr(p, "music_boxes", []):
+        for st in box.states:
+            if st.music and st.music not in music_names:
+                ctx.warn(None,
+                    f"MusicBox « {box.name} », état « {st.name} » : la musique "
+                    f"« {st.music} » n'existe pas — l'état sera muet.")
+
+    for store, known, label, target in (
+            (getattr(p, "sound_boxes", []), sfx_names, "SoundBox", "effet"),
+            (getattr(p, "jingle_boxes", []), music_names, "JingleBox", "musique")):
+        for box in store:
+            for st in box.states:
+                for action, name in st.mapping.items():
+                    if name and name not in known:
+                        ctx.warn(None,
+                            f"{label} « {box.name} », état « {st.name} » : "
+                            f"l'action « {action} » pointe vers {target} "
+                            f"« {name} », qui n'existe pas.")
+
+    # Une action posée sur une frame mais qu'aucune SoundBox ne déclare ne
+    # résout vers rien : la frame est silencieuse, et rien ne le dirait.
+    from core.models.sound_box import KIND_SOUND
+    declared = set(p.sound_action_names(KIND_SOUND))
+    for spr in getattr(p, "sprites", []):
+        for stt in getattr(spr, "states", []) or []:
+            for sd in getattr(stt, "directions", []) or []:
+                for fr in getattr(sd, "frames", []) or []:
+                    action = getattr(fr, "action_name", "") or ""
+                    if action and action not in declared:
+                        ctx.warn(None,
+                            f"Sprite « {spr.name} », état « {stt.name} » : la frame "
+                            f"cite l'action « {action} », qu'aucune SoundBox "
+                            f"ne déclare — elle ne jouera rien.")
+                        break
 
 
 def _check_scene_font(ctx: ValidationContext):
