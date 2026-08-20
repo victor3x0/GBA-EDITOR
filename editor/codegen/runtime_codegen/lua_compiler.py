@@ -196,11 +196,22 @@ def transpile_all(
             continue
 
         anim_names = [st.name for st in sprite.states] if sprite and sprite.states else []
+        # EventCall (ROADMAP v0.8.9) : les `event_name` cités par CE sprite —
+        # une fonction de premier niveau qui porte l'un de ces noms est un
+        # point d'entrée légitime (cf. `checker._check_function`), pas une
+        # fonction inconnue.
+        frame_event_names = sorted({
+            getattr(fr, "event_name", "") or ""
+            for stt in (sprite.states if sprite else [])
+            for sd in stt.directions
+            for fr in sd.frames
+        } - {""})
         sfx_comp_name, _ = _sfx_component_info(actor)
         _rt_transform = bool(getattr(actor, "affine_transform", False))
         ctx_check = BuildContext(
             actor_name   = actor.name,
             anim_names   = anim_names,
+            frame_event_names = frame_event_names,
             affine_transform = _rt_transform,
             sfx_names    = sfx_names,
             music_names  = music_names,

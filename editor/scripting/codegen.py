@@ -903,7 +903,15 @@ class CodeGen:
         else:
             sig_tpl = EVENT_C_SIGNATURES.get(fn.name)
             if sig_tpl is None:
-                sig = f"static void {self.ctx.actor_sym}_{fn.name}(Actor* self)"
+                # PAS static : une fonction personnalisée (ni un hook connu, ni
+                # `EVENT_C_SIGNATURES`) est le point d'entrée d'un EventCall —
+                # une frame d'animation du sprite de CET actor peut l'appeler
+                # depuis `main.c`, une autre unité de compilation (ROADMAP
+                # v0.8.9 ; cf. `_actor_frame_event_lines` dans main_gen.py).
+                # Rien ne distingue ici « appelée par une frame » de « jamais
+                # appelée » : les deux cas restent corrects avec une liaison
+                # externe, et le linker élague ce qui ne sert à personne.
+                sig = f"void {self.ctx.actor_sym}_{fn.name}(Actor* self)"
             else:
                 sig = sig_tpl.format(prefix=self.ctx.actor_sym)
         self._w(sig + " {")

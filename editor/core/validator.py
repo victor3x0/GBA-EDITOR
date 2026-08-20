@@ -53,6 +53,10 @@ class ValidationContext:
         # et un module coûte ~9 ms à analyser : sans ce cache, la démo et ses
         # 105 morceaux paient trois secondes pour trois questions.
         self._modules: dict = {}
+        # Même cache que `_modules`, pour les scripts Lua analysés par
+        # `_check_frame_events` — plusieurs actors peuvent partager le même
+        # fichier de script, pas la peine de le reparser à chaque fois.
+        self._scripts: dict = {}
 
     def module(self, path):
         """Le module lu à ce chemin, ou None s'il est illisible."""
@@ -64,6 +68,21 @@ class ValidationContext:
             except Exception:
                 self._modules[key] = None
         return self._modules[key]
+
+    def script_functions(self, path) -> set:
+        """Les noms de fonctions top-level déclarées dans le script Lua à ce
+        chemin, ou un set vide s'il est illisible/invalide au parse — un
+        script qui ne compile pas ne déclare rien de fiable, et l'échec du
+        parse est déjà signalé ailleurs (`_check_lua_subset`)."""
+        key = str(path)
+        if key not in self._scripts:
+            from scripting.parser import parse as lua_parse, LuaParseError
+            try:
+                script = lua_parse(path.read_text(encoding="utf-8"))
+                self._scripts[key] = {fn.name for fn in script.functions}
+            except (LuaParseError, OSError):
+                self._scripts[key] = set()
+        return self._scripts[key]
 
     def warn(self, actor_or_name, message: str):
         name = getattr(actor_or_name, "name", str(actor_or_name)) if actor_or_name else ""
@@ -118,6 +137,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_jingle_channels(ctx)
     _check_module_channels(ctx)
     _check_sound_boxes(ctx)
+    _check_frame_events(ctx)
 
     # ── Validateurs plugins ──────────────────────────────────────────
     for fn in _VALIDATORS:
@@ -1096,19 +1116,63 @@ def _check_sound_boxes(ctx: ValidationContext):
 
     # Une action posée sur une frame mais qu'aucune SoundBox ne déclare ne
     # résout vers rien : la frame est silencieuse, et rien ne le dirait.
+    # Même chose pour un Sfx direct (`sfx_name`) qui ne correspond à aucun Sfx
+    # du projet — les deux emplacements sont indépendants (ROADMAP v0.8.9).
     from core.models.sound_box import KIND_SOUND
     declared = set(p.sound_action_names(KIND_SOUND))
     for spr in getattr(p, "sprites", []):
         for stt in getattr(spr, "states", []) or []:
             for sd in getattr(stt, "directions", []) or []:
+                _warned_action = _warned_sfx = False
                 for fr in getattr(sd, "frames", []) or []:
                     action = getattr(fr, "action_name", "") or ""
-                    if action and action not in declared:
+                    if action and action not in declared and not _warned_action:
                         ctx.warn(None,
                             f"Sprite « {spr.name} », état « {stt.name} » : la frame "
                             f"cite l'action « {action} », qu'aucune SoundBox "
                             f"ne déclare — elle ne jouera rien.")
-                        break
+                        _warned_action = True
+                    sfx_name = getattr(fr, "direct_sfx_name", "") or ""
+                    if sfx_name and sfx_name not in sfx_names and not _warned_sfx:
+                        ctx.warn(None,
+                            f"Sprite « {spr.name} », état « {stt.name} » : la frame "
+                            f"cite le Sfx « {sfx_name} », qui n'existe pas — "
+                            f"elle ne jouera rien.")
+                        _warned_sfx = True
+
+
+def _check_frame_events(ctx: ValidationContext):
+    """EventCall (`AnimFrame.event_name`) : le sprite est un asset PARTAGÉ, il
+    ne sait pas quel actor l'anime — donc le nom ne se vérifie qu'ICI, contre
+    le script de CHAQUE actor qui utilise ce sprite. Même philosophie que
+    `action_name`/`sfx_name` : un nom qui ne résout vers rien est silencieux,
+    pas une erreur bloquante (ROADMAP v0.8.9)."""
+    p = ctx.project
+    for actor in ctx.actors:
+        sprite_comp = actor.get_component("sprite")
+        script_comp = actor.get_component("script")
+        if not sprite_comp or not script_comp or not script_comp.active or not script_comp.script:
+            continue
+        sprite = p.get_sprite(getattr(sprite_comp, "sprite_name", "") or "")
+        if not sprite:
+            continue
+        events = {
+            getattr(fr, "event_name", "") or ""
+            for stt in getattr(sprite, "states", []) or []
+            for sd in getattr(stt, "directions", []) or []
+            for fr in getattr(sd, "frames", []) or []
+        } - {""}
+        if not events:
+            continue
+        sp = p.asset_abs(script_comp.script)
+        declared = ctx.script_functions(sp) if sp and sp.exists() else set()
+        for ev in sorted(events):
+            if ev not in declared:
+                ctx.warn(actor,
+                    f"Sprite « {sprite.name} » cite l'event « {ev} » sur une frame, "
+                    f"mais le script de « {actor.name} » ne déclare aucune fonction "
+                    f"« {ev} » — l'appel ne jouera rien. Ajoute "
+                    f"`function {ev}(self) ... end` au script, ou retire l'appel.")
 
 
 def _check_scene_font(ctx: ValidationContext):

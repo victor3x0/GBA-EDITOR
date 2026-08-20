@@ -69,6 +69,10 @@ class BuildContext:
     """
     actor_name:   str        = ""
     anim_names:   list[str]  = None    # noms d'anim définis dans le SpriteAsset lié
+    # `AnimFrame.event_name` cités par le sprite lié (ROADMAP v0.8.9) — une
+    # fonction de premier niveau portant l'un de ces noms est un EventCall,
+    # pas une fonction inconnue : cf. `_check_function`.
+    frame_event_names: list[str] = None
     sfx_names:    list[str]  = None    # noms de Sfx dans le projet
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
@@ -558,17 +562,24 @@ class Checker:
         # fonctions top-level sont des noms de méthode arbitraires (M.update),
         # pas des handlers d'événement actor/scène — seul le corps est validé.
         seq = sequence_name(fn.name)
-        if check_event_names and seq is None and fn.name not in KNOWN_EVENTS:
+        is_frame_event = fn.name in (self.ctx.frame_event_names or ())
+        if check_event_names and seq is None and fn.name not in KNOWN_EVENTS and not is_frame_event:
             # ERREUR et non avertissement : le C émis pour un nom inconnu est
             # `static void <Acteur>_<nom>(Actor* self)`, qu'aucun appel Lua ne
             # peut atteindre (`nom()` s'émet `nom()`, sans le préfixe). Donc du
             # code mort au mieux, un « implicit declaration » au `make` au pire
             # — jamais ce que l'auteur croyait écrire.
+            #
+            # Exception : un nom cité par `AnimFrame.event_name` sur LE sprite
+            # de cet actor (`frame_event_names`) EST atteint — pas par un appel
+            # Lua, par le stepper d'anim de `main.c` (ROADMAP v0.8.9, EventCall,
+            # cf. `codegen._emit_function` / `main_gen._actor_frame_event_lines`).
             self.errors.append(CheckError(
                 "error",
                 f"Fonction '{fn.name}' inconnue : une fonction de premier niveau "
-                f"est un handler d'événement ({', '.join(KNOWN_EVENTS[:5])}…) ou "
-                f"une séquence ({SEQUENCE_PREFIX}<nom>). "
+                f"est un handler d'événement ({', '.join(KNOWN_EVENTS[:5])}…), "
+                f"une séquence ({SEQUENCE_PREFIX}<nom>), ou un EventCall cité par "
+                f"une frame du sprite de cet actor. "
                 f"Pour du code partagé, un behavior — un fichier de "
                 f"scripts/behaviors/, importé par require(\"behaviors/nom\").",
             ))

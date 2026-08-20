@@ -2894,6 +2894,91 @@ canaux coûtent donc **1 792 o**, et chaque canal de plus 92 o.
 
 ---
 
+### v0.8.9 — Trois déclencheurs sur une frame : SoundBox, Sfx direct, EventCall — **LIVRÉE**
+
+`AnimFrame.action_name` (v0.8.7) existait déjà dans le modèle mais n'avait **aucune UI** — le
+clic-droit du Frame Editor (Sprite Editor) n'offrait que Copy/Clone/Clear/Delete. Trois
+déclencheurs y sont ajoutés, cumulables sur une même frame (pas mutuellement exclusifs) :
+
+| Déclencheur | Champ `AnimFrame` | Cible | Résolution |
+| --- | --- | --- | --- |
+| Play SoundBox action | `action_name` (déjà là) | une action commune au projet | indirecte, via l'état de la boîte |
+| Play sound effect | `direct_sfx_name` | un `Sfx` du projet | directe |
+| Event call | `event_name` | une fonction du script de **l'actor** | directe, mais par actor, pas par sprite |
+
+Le menu contextuel reste un `QMenu` — deux sous-menus listant les noms disponibles
+(SoundBox/Sfx), un troisième avec un `QLineEdit` **embarqué dans le menu** (`QWidgetAction`)
+pour l'EventCall : jamais de `QDialog`, même règle que partout ailleurs dans l'éditeur.
+
+#### Piège : le nom de champ `sfx_name` était déjà pris
+
+`SpriteAsset.from_dict._parse_frame` lit `action_name=f.get("action_name", f.get("sfx_name",
+""))` — un ALIAS hérité du nom du champ avant son renommage en `action_name`. Nommer le nouveau
+champ `sfx_name` aurait fait relire de travers tout vieux projet portant encore l'ancienne clé.
+D'où `direct_sfx_name`. Root-caused par un warning de validation qui accusait à tort une action
+SoundBox jamais posée — le genre d'erreur qu'un build de bout en bout attrape et qu'un test
+unitaire isolé aurait laissé passer.
+
+Autre piège du même geste : `SpriteAsset.to_dict`/`from_dict` sont des sérialiseurs **écrits à
+la main** (pas le générique `dataclasses.asdict`) — ajouter un champ au dataclass ne suffit pas,
+il faut aussi l'ajouter aux DEUX. Oublié une fois, silencieux : les deux nouveaux champs se
+seraient perdus à chaque sauvegarde sans qu'aucune erreur ne le dise.
+
+#### EventCall a buté sur le sous-ensemble Lua lui-même
+
+Un test de bout en bout (build ROM headless, copie de `Project Demo/Pong`) a découvert qu'une
+fonction de script personnalisée est **déjà rejetée par le checker** : une fonction de premier
+niveau ne peut être qu'un handler d'événement connu ou une séquence (`on_sequence_<nom>`) — pour
+une bonne raison, un nom inconnu produisait avant ceci du code C mort ou une déclaration
+implicite au `make`, jamais ce que l'auteur croyait écrire. La correction n'ouvre PAS le
+sous-ensemble à un nom arbitraire : `BuildContext.frame_event_names` (calculé depuis les
+`event_name` réellement cités par le sprite lié à CET actor, dans `lua_compiler.py`) rend
+légitime précisément les noms qu'une frame appelle — même logique de liste blanche contextuelle
+que `anim_names`/`sequence_name`, pas un assouplissement général.
+
+Conséquence côté C : la fonction cible perd son `static` (`scripting/codegen.py`) — elle doit
+être atteignable depuis `main.c`, une AUTRE unité de compilation (chaque script compile vers son
+propre `actor_<sym>.c`). La table de dispatch, elle, est PAR ACTOR et non par sprite
+(`{actor_sym}_frame_event[]`, `main_gen._actor_frame_event_lines`) : deux actors qui partagent
+un sprite (vérifié avec PADDLE_PL/PADDLE_CPU de la démo Pong, tous deux sur le sprite `Paddle`)
+peuvent résoudre le même `event_name` vers deux fonctions différentes, ou aucune — silencieux
+comme les deux autres déclencheurs, jamais une erreur de lien.
+
+#### Validation
+
+Un nom qui ne résout vers rien est **averti, pas bloquant** — même philosophie que
+`action_name` déjà en place : `_check_sound_boxes` (SoundBox/Sfx direct) et
+`_check_frame_events` (EventCall, nouveau — un cache de fonctions déclarées par script,
+`ValidationContext.script_functions`, miroir du cache de modules existant).
+
+Vérifié par un build ROM complet de bout en bout sur une copie de `Project Demo/Pong` (pas
+seulement des tests unitaires) : sprite `Paddle` partagé par les deux raquettes, une frame
+portant les trois déclencheurs à la fois, une des deux raquettes déclarant la fonction
+EventCall et l'autre non — `rom.gba` généré, `main.c` inspecté pour confirmer l'émission exacte
+(`sprite_Paddle_frame_sfx[]`, `PADDLE_PL_frame_event[]`, extern + appel), aucune régression sur
+les 258 tests existants.
+
+#### Ce que ça touche
+
+`core/models/sprite.py` (modèle + les DEUX sérialiseurs), `core/validator.py`,
+`scripting/checker.py` (+`BuildContext.frame_event_names`), `scripting/codegen.py` (fonction
+personnalisée non-`static`), `codegen/grit_conversion.py` (`referenced_sound_names`, 5ᵉ source),
+`codegen/runtime_codegen/lua_compiler.py` (calcul de `frame_event_names`),
+`codegen/runtime_codegen/main_gen.py` (tables + stepper d'anim), `ui/sprite_editor/frame_canvas.py`
+(menu contextuel + badges de vignette).
+
+#### Ouvert
+
+- **Les prefabs poolés n'ont pas de stepper d'animation du tout** (limite préexistante, pas
+  introduite ici) : `_anim_tick_lines` ne couvre que les actors DIRECTS d'une scène
+  (`anim_actors`), jamais la boucle `on_update` des pools (`Ball` dans la démo, par exemple,
+  n'avance ses frames nulle part — il compte sur l'affine transform, pas sur une timeline). Les
+  trois déclencheurs de cette version héritent donc de la même limite : posés sur un sprite
+  utilisé uniquement par un prefab poolé, ils ne se déclenchent jamais. À rouvrir si un prefab
+  animé par timeline (pas seulement affine) se présente.
+
+---
+
 ## v0.9 — Traduction des jeux créés avec l'éditeur
 
 Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.

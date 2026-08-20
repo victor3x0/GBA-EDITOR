@@ -8,7 +8,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButton,
-    QFrame, QScrollArea, QMenu, QApplication,
+    QFrame, QScrollArea, QMenu, QApplication, QWidgetAction, QLineEdit,
 )
 from PyQt6.QtGui import (
     QFont, QColor, QPixmap, QImage, QDrag, QPainter, QPen,
@@ -93,7 +93,30 @@ class _FrameThumb(QFrame):
         self._idx_lbl.setGeometry(0, _THUMB_IMG + 8, _THUMB_W, 14)
         self._idx_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
+        # Badge des déclencheurs posés sur la frame (SoundBox/Sfx/EventCall) —
+        # initiales empilées en haut à droite, juste pour dire « il y a quelque
+        # chose ici » sans ouvrir le menu contextuel.
+        self._badge_lbl = QLabel("", self)
+        self._badge_lbl.setFont(QFont(T.MONO, T.XS, QFont.Weight.DemiBold))
+        self._badge_lbl.setStyleSheet(f"color:{C.ACCENT};background:transparent;")
+        self._badge_lbl.setGeometry(_THUMB_W - 18, 2, 16, 12)
+        self._badge_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self._badge_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.update_triggers(frame)
+
         self._refresh_style()
+
+    def update_triggers(self, frame: AnimFrame):
+        """Reflète action_name/direct_sfx_name/event_name : badge + tooltip."""
+        parts = []
+        if frame.action_name:
+            parts.append(("B", f"SoundBox action: {frame.action_name}"))
+        if frame.direct_sfx_name:
+            parts.append(("X", f"Sound effect: {frame.direct_sfx_name}"))
+        if frame.event_name:
+            parts.append(("E", f"Event call: {frame.event_name}"))
+        self._badge_lbl.setText("".join(p[0] for p in parts))
+        self.setToolTip("\n".join(p[1] for p in parts))
 
     def set_selected(self, sel: bool):
         if self._selected != sel:
@@ -186,6 +209,7 @@ class _FrameTimeline(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self._sprite:    Optional[SpriteAsset]    = None
+        self._project    = None   # Project — pour lister les Sfx/actions SoundBox du menu contextuel
         self._state:     Optional[AnimState]       = None
         self._sd:        Optional[StateDirection]  = None
         self._abs_path:  Optional[Path]            = None
@@ -265,8 +289,9 @@ class _FrameTimeline(QWidget):
     def load(self, sprite: SpriteAsset, state: AnimState,
              sd: StateDirection, abs_path: Optional[Path],
              read_only: bool = False, disp_frames: Optional[list] = None,
-             flip: tuple[bool, bool] = (False, False)):
+             flip: tuple[bool, bool] = (False, False), project=None):
         self._sprite     = sprite
+        self._project    = project
         self._state      = state
         self._sd         = sd
         self._abs_path   = abs_path
@@ -381,6 +406,14 @@ class _FrameTimeline(QWidget):
         del_a   = menu.addAction("Delete              Del")
         del_a.setEnabled(len(self._sd.frames) > 1)
 
+        menu.addSeparator()
+        frame = self._sd.frames[index]
+        self._build_trigger_menu(menu, "Play SoundBox action", frame.action_name,
+                                 self._sound_action_names(), index, "action_name")
+        self._build_trigger_menu(menu, "Play sound effect", frame.direct_sfx_name,
+                                 self._sfx_names(), index, "direct_sfx_name")
+        self._build_event_call_menu(menu, frame.event_name, index)
+
         act = menu.exec(pos)
         if act == copy_a:
             self._copy_frame(index)
@@ -390,6 +423,71 @@ class _FrameTimeline(QWidget):
             self._clear_frame(index)
         elif act == del_a:
             self._delete_frame(index)
+
+    # ── Déclencheurs de frame (SoundBox action / Sfx / EventCall) ──────
+
+    def _sound_action_names(self) -> list[str]:
+        if not self._project:
+            return []
+        from core.models.sound_box import KIND_SOUND
+        return self._project.sound_action_names(KIND_SOUND)
+
+    def _sfx_names(self) -> list[str]:
+        if not self._project:
+            return []
+        return [s.name for s in getattr(self._project, "sfx", [])]
+
+    def _build_trigger_menu(self, parent: QMenu, label: str, current: str,
+                            names: list[str], index: int, field: str):
+        """Sous-menu inline listant les noms disponibles (SoundBox action ou
+        Sfx) — pas de dialogue, on choisit dans le menu contextuel lui-même."""
+        sub = parent.addMenu(f"{label} ({current})" if current else label)
+        none_a = sub.addAction("(None)")
+        none_a.setCheckable(True)
+        none_a.setChecked(not current)
+        none_a.triggered.connect(lambda: self._set_frame_trigger(index, field, ""))
+        if names:
+            sub.addSeparator()
+            for name in names:
+                act = sub.addAction(name)
+                act.setCheckable(True)
+                act.setChecked(name == current)
+                act.triggered.connect(lambda _c=False, n=name: self._set_frame_trigger(index, field, n))
+        else:
+            empty_a = sub.addAction("Aucun dans le projet")
+            empty_a.setEnabled(False)
+
+    def _build_event_call_menu(self, parent: QMenu, current: str, index: int):
+        """EventCall : nom libre (fonction du script de l'actor), donc pas de
+        liste à proposer — un champ texte embarqué DANS le menu contextuel
+        (QWidgetAction), jamais une boîte de dialogue séparée."""
+        label = f"Event call ({current})" if current else "Event call"
+        sub = parent.addMenu(label)
+        edit = QLineEdit(current)
+        edit.setPlaceholderText("nom de la fonction du script…")
+        edit.setStyleSheet(
+            f"QLineEdit{{background:{C.BG_INPUT};color:{C.TEXT_HI};"
+            f"border:1px solid {C.BORDER};border-radius:3px;padding:3px 6px;}}"
+        )
+        wa = QWidgetAction(sub)
+        wa.setDefaultWidget(edit)
+        sub.addAction(wa)
+        edit.returnPressed.connect(lambda: (
+            self._set_frame_trigger(index, "event_name", edit.text().strip()),
+            sub.close(), parent.close(),
+        ))
+        if current:
+            sub.addSeparator()
+            clear_a = sub.addAction("(None)")
+            clear_a.triggered.connect(lambda: self._set_frame_trigger(index, "event_name", ""))
+
+    def _set_frame_trigger(self, index: int, field: str, value: str):
+        if not self._sd or not (0 <= index < len(self._sd.frames)):
+            return
+        setattr(self._sd.frames[index], field, value)
+        if 0 <= index < len(self._thumbs):
+            self._thumbs[index].update_triggers(self._sd.frames[index])
+        self.frames_changed.emit()
 
     # ── Actions frame (partagées menu contextuel + raccourcis clavier) ──
 

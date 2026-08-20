@@ -71,6 +71,18 @@
                   "dst_col": 0,
                   "dst_row": 0
                 }
+              ],
+              "action_name": "klmkl4",
+              "event_name": "blop"
+            },
+            {
+              "tiles": [
+                {
+                  "src_col": 0,
+                  "src_row": 0,
+                  "dst_col": 0,
+                  "dst_row": 0
+                }
               ]
             }
           ]

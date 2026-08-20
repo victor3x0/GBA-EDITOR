@@ -50,6 +50,22 @@ class AnimFrame:
     # elle pointe (ROADMAP v0.8.7). À ne pas confondre avec
     # `SoundFxComponent.sfx_name`, qui référence vraiment un Sfx.
     action_name: str = ""
+    # Un Sfx joué DIRECTEMENT en arrivant sur cette frame — pas une action de
+    # SoundBox indirecte, le nom d'un Sfx du projet (même espace que
+    # `SoundFxComponent.sfx_name`). "" = rien. Cumulable avec `action_name` :
+    # les deux sont des emplacements indépendants (ROADMAP v0.8.9).
+    #
+    # NOM DÉLIBÉRÉMENT DIFFÉRENT de `sfx_name` : cette clé JSON est déjà prise
+    # — `SpriteAsset.from_dict._parse_frame` la lit en ALIAS hérité de
+    # `action_name` (l'ancien nom du champ, avant le renommage de la v0.8.7).
+    # Réutiliser `sfx_name` ici aurait fait relire un vieux projet de travers.
+    direct_sfx_name: str = ""
+    # Le nom d'une fonction déclarée dans le script de l'ACTOR qui utilise ce
+    # sprite — appelée en arrivant sur cette frame, comme un Animation Event.
+    # Le sprite est un asset partagé : il ne sait pas quel actor l'anime, donc
+    # ce nom n'est vérifié qu'au build, contre le script de CHAQUE actor qui
+    # réfère ce sprite (ROADMAP v0.8.9). "" = rien.
+    event_name: str = ""
 
     def clone(self) -> "AnimFrame":
         """Copie indépendante (nouvelles TilePlacement) — utilisé par la
@@ -57,7 +73,8 @@ class AnimFrame:
         return AnimFrame(tiles=[
             TilePlacement(t.src_col, t.src_row, t.dst_col, t.dst_row, t.flip_h, t.flip_v)
             for t in self.tiles
-        ], action_name=self.action_name)
+        ], action_name=self.action_name, direct_sfx_name=self.direct_sfx_name,
+           event_name=self.event_name)
 
 
 @dataclass
@@ -250,6 +267,8 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
                                         for t in f.tiles
                                     ],
                                     **({"action_name": f.action_name} if f.action_name else {}),
+                                    **({"direct_sfx_name": f.direct_sfx_name} if f.direct_sfx_name else {}),
+                                    **({"event_name": f.event_name} if f.event_name else {}),
                                 }
                                 for f in sd.frames
                             ],
@@ -280,7 +299,11 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
                         flip_h=t.get("flip_h", False), flip_v=t.get("flip_v", False),
                     )
                     for t in f["tiles"]
-                ], action_name=f.get("action_name", f.get("sfx_name", "")))
+                ], action_name=f.get("action_name", f.get("sfx_name", "")),
+                   # `direct_sfx_name`/`event_name` (ROADMAP v0.8.9) : pas de
+                   # legacy à migrer, ce sont de nouveaux champs.
+                   direct_sfx_name=f.get("direct_sfx_name", ""),
+                   event_name=f.get("event_name", ""))
             # Migration ancien format {col, row} → bloc plein de tuiles 8×8
             old_col, old_row = f.get("col", 0), f.get("row", 0)
             return AnimFrame(tiles=[

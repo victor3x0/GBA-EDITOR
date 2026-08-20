@@ -163,7 +163,8 @@ class SpriteCenterPanel(QWidget):
             self._flip = (False, False)
 
         self._timeline.load(self._sprite, state, sd, self._abs_path(),
-                            self._read_only, self._disp_frames, self._flip)
+                            self._read_only, self._disp_frames, self._flip,
+                            project=self._project)
         self._canvas.set_read_only(self._read_only)
         self._canvas.set_display_flip(*self._flip)
         self._tiles.setEnabled(not self._read_only)

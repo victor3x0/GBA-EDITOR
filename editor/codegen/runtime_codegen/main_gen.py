@@ -642,6 +642,96 @@ def _frame_action_ids(p: Project, sprite: SpriteAsset) -> list[int]:
             for fr, _fh, _fv in ordered]
 
 
+def _frame_sfx_syms(p: Project, sprite: SpriteAsset) -> list[tuple[str, int]]:
+    """Le Sfx DIRECT de chaque frame du sprite (ROADMAP v0.8.9), dans l'ordre
+    ABSOLU des frames — même patron que `_frame_action_ids`, mais résolu au
+    nom du Sfx lui-même : pas d'indirection par un espace de noms d'actions,
+    `AnimFrame.direct_sfx_name` VISE déjà un Sfx du projet. La constante `SFX_*`
+    existe forcément (cf. `referenced_sound_names`, source ⑤) puisque
+    `resolve_sound_assets` garde tout Sfx cité par une frame.
+
+    Retourne (symbole C du volume, ou "-1") — le volume vient de la ressource
+    Sfx elle-même, même lecture que `self:play_sfx()`/`sfx.play()`
+    (`Sfx.volume` → `volume_to_effect`), pas d'un réglage propre à la frame.
+
+    Un nom qui ne correspond à aucun Sfx du projet rend ("-1", 0) — signalé
+    par le validateur (`_check_sound_boxes`), silencieux ici plutôt que faux.
+    """
+    from codegen.c_names import c_ident
+    from core.models.audio import volume_to_effect
+    by_name = {s.name: s for s in getattr(p, "sfx", [])}
+    _, ordered = sprite_unique_frames(sprite)
+    out = []
+    for fr, _fh, _fv in ordered:
+        name = getattr(fr, "direct_sfx_name", "") or ""
+        sfx = by_name.get(name)
+        if sfx is not None:
+            out.append((f"SFX_{c_ident(name)}", volume_to_effect(sfx.volume)))
+        else:
+            out.append(("-1", 0))
+    return out
+
+
+_actor_fn_cache: dict = {}
+
+
+def _actor_script_functions(p: Project, actor: Actor) -> set[str]:
+    """Les noms de fonctions top-level déclarées dans le script Lua de cet
+    actor — même lecture que `ValidationContext.script_functions`
+    (core/validator.py), mais indépendante : le build n'a pas de
+    ValidationContext sous la main ici. Cache module-level : plusieurs actors
+    de la même scène partagent parfois le même fichier de script."""
+    comp = actor.get_component("script")
+    if not comp or not comp.active or not comp.script:
+        return set()
+    sp = p.asset_abs(comp.script)
+    if not sp or not sp.exists():
+        return set()
+    key = str(sp)
+    if key not in _actor_fn_cache:
+        from scripting.parser import parse as lua_parse, LuaParseError
+        try:
+            script = lua_parse(sp.read_text(encoding="utf-8"))
+            _actor_fn_cache[key] = {fn.name for fn in script.functions}
+        except (LuaParseError, OSError):
+            _actor_fn_cache[key] = set()
+    return _actor_fn_cache[key]
+
+
+def _actor_frame_event_lines(p: Project, actor: Actor, sprite: SpriteAsset) -> tuple[list[str], bool]:
+    """Table de pointeurs de fonction EventCall pour CET actor (ROADMAP
+    v0.8.9) — PAS pour son sprite : contrairement à `_frame_action_ids`/
+    `_frame_sfx_syms`, la cible d'un EventCall est une fonction du script de
+    l'actor, donc deux actors qui partagent le même sprite peuvent résoudre
+    le même `event_name` vers deux fonctions différentes (ou aucune). La
+    table est donc nommée par ACTOR (`{actor_sym}_frame_event`), pas par
+    sprite, et régénérée pour chaque actor qui en a besoin.
+
+    Un event qui ne correspond à aucune fonction déclarée dans le script
+    résout vers NULL — averti par le validateur (`_check_frame_events`),
+    silencieux ici comme les deux autres emplacements plutôt que de casser
+    le lien."""
+    declared = _actor_script_functions(p, actor)
+    if not declared:
+        return [], False
+    asym = c_sym(actor.name)
+    _, ordered = sprite_unique_frames(sprite)
+    entries: list[str] = []
+    used: set[str] = set()
+    for fr, _fh, _fv in ordered:
+        name = getattr(fr, "event_name", "") or ""
+        if name and name in declared:
+            entries.append(f"&{asym}_{name}")
+            used.add(name)
+        else:
+            entries.append("0")
+    if not used:
+        return [], False
+    L = [f"extern void {asym}_{name}(Actor*);" for name in sorted(used)]
+    L.append(f"static void (* const {asym}_frame_event[])(Actor*) = {{{','.join(entries)}}};")
+    return L, True
+
+
 def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
     """Génère les tables C d'animation pour un SpriteAsset.
 
@@ -703,15 +793,38 @@ def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
             "/* Emplacement joué en arrivant sur la frame — -1 = aucun. */",
             f"static const s16 {sym}_frame_action[] = {{{','.join(str(a) for a in frame_actions)}}};",
         ]
+    # Sfx DIRECT par frame (ROADMAP v0.8.9) — même garde qu'au-dessus : une
+    # table de -1 ne vaut pas la ROM qu'elle coûterait.
+    frame_sfx = _frame_sfx_syms(p, sprite)
+    if any(s != "-1" for s, _v in frame_sfx):
+        L += [
+            "/* Sfx joué directement en arrivant sur la frame — -1 = aucun. */",
+            f"static const s16 {sym}_frame_sfx[] = {{{','.join(s for s, _v in frame_sfx)}}};",
+            f"static const u8  {sym}_frame_sfxv[] = {{{','.join(str(v) for _s, v in frame_sfx)}}};",
+        ]
     return L
 
 
-def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False) -> list[str]:
+def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False,
+                     has_frame_direct_sfx: bool = False,
+                     event_lines: Optional[list[str]] = None,
+                     has_frame_events: bool = False,
+                     actor_sym: str = "") -> list[str]:
     """Génère le bloc C de tick d'animation pour un acteur (dans scene_tick).
 
-    `has_frame_sfx` dit si le sprite porte des effets sur ses frames : le test
-    n'est émis que dans ce cas, pour ne pas payer une comparaison par frame et
-    par acteur sur les sprites qui n'en ont pas.
+    `has_frame_sfx` dit si le sprite porte des ACTIONS de SoundBox sur ses
+    frames (`{sym}_frame_action[]`), `has_frame_direct_sfx` s'il porte des Sfx
+    DIRECTS (`{sym}_frame_sfx[]`, ROADMAP v0.8.9) — deux tables indépendantes,
+    chacune son propre test, pour ne pas payer une comparaison par frame et
+    par acteur sur les sprites qui n'en portent aucune.
+
+    `event_lines`/`has_frame_events`/`actor_sym` : EventCall (ROADMAP v0.8.9).
+    Contrairement aux deux précédents, la table (`{actor_sym}_frame_event`,
+    cf. `_actor_frame_event_lines`) est par ACTOR et non par sprite — deux
+    actors qui partagent un sprite peuvent résoudre le même `event_name` vers
+    deux fonctions différentes. Elle est donc déclarée `static` ICI, en
+    portée LOCALE à ce bloc (un `static` de fonction est légal en C, même
+    patron que `_dlut` juste en dessous), plutôt qu'au niveau fichier.
     """
     return [
         f"    if(g_actors[{idx}].auto_dir&&(g_actors[{idx}].vx||g_actors[{idx}].vy)){{",
@@ -720,6 +833,7 @@ def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False) -> list[st
         f"    }}",
         # dir_x/dir_y → indice 1-8 (NW=8,N=1,NE=2,W=7,0=0,E=3,SW=6,S=5,SE=4)
         f"    {{",
+        *([f"        {line}" for line in event_lines] if has_frame_events and event_lines else []),
         f"        static const s8 _dlut[3][3]={{{{8,1,2}},{{7,0,3}},{{6,5,4}}}};",
         f"        int _ad=_dlut[g_actors[{idx}].dir_y+1][g_actors[{idx}].dir_x+1];",
         f"        int _st=g_actors[{idx}].anim_state;",
@@ -741,14 +855,22 @@ def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False) -> list[st
         # L'effet se déclenche en ARRIVANT sur la frame, donc seulement quand
         # elle change — sinon une animation d'une seule frame, ou arrêtée sur
         # sa dernière, rejouerait le son à chaque tick de vitesse.
-        *([f"            if(g_actors[{idx}].frame!=_fprev){{",
-           f"                int _ac={sym}_frame_action[g_actors[{idx}].frame];",
-           # L'indirection : l'emplacement, puis ce vers quoi l'état courant le
-           # résout. Un emplacement non réglé dans cet état vaut -1 et ne joue
-           # rien — « pas de bruit de pas en vol » se dit sans réglage dédié.
-           f"                if(_ac>=0&&g_sound_box_action[_ac]>=0)",
-           f"                    sfx_play(g_sound_box_action[_ac],g_sound_box_action_vol[_ac],0);",
-           f"            }}"] if has_frame_sfx else [f"            (void)_fprev;"]),
+        *(([f"            if(g_actors[{idx}].frame!=_fprev){{"]
+           + ([f"                int _ac={sym}_frame_action[g_actors[{idx}].frame];",
+               # L'indirection : l'emplacement, puis ce vers quoi l'état courant le
+               # résout. Un emplacement non réglé dans cet état vaut -1 et ne joue
+               # rien — « pas de bruit de pas en vol » se dit sans réglage dédié.
+               f"                if(_ac>=0&&g_sound_box_action[_ac]>=0)",
+               f"                    sfx_play(g_sound_box_action[_ac],g_sound_box_action_vol[_ac],0);"]
+              if has_frame_sfx else [])
+           + ([f"                int _as={sym}_frame_sfx[g_actors[{idx}].frame];",
+               f"                if(_as>=0) sfx_play(_as,{sym}_frame_sfxv[g_actors[{idx}].frame],0);"]
+              if has_frame_direct_sfx else [])
+           + ([f"                void (*_ev)(Actor*)={actor_sym}_frame_event[g_actors[{idx}].frame];",
+               f"                if(_ev) _ev(&g_actors[{idx}]);"]
+              if has_frame_events else [])
+           + [f"            }}"]) if (has_frame_sfx or has_frame_direct_sfx or has_frame_events)
+          else [f"            (void)_fprev;"]),
         f"        }}",
         f"    }}",
     ]
@@ -2799,7 +2921,10 @@ def _gen_scene_tick(
         # Le test d'effet par frame n'est émis que si le sprite en porte —
         # même source de vérité que la table, `sprite_unique_frames`.
         _has_fx = any(a >= 0 for a in _frame_action_ids(p, sprite))
-        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx)
+        _has_dfx = any(s != "-1" for s, _v in _frame_sfx_syms(p, sprite))
+        _evt_lines, _has_evt = _actor_frame_event_lines(p, actor, sprite)
+        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx, _has_dfx,
+                              _evt_lines, _has_evt, c_sym(actor.name))
 
     _aff = affine_info or {}
 

@@ -521,16 +521,20 @@ def referenced_sound_names(p: Project) -> tuple[set[str], set[str]]:
     dynamiques » laissé ouvert pour le graphe des scènes (ROADMAP v0.12) ne se
     pose pas ici, et aucun drapeau « garde-le quand même » n'est nécessaire.
 
-    Quatre sources, parce qu'un son se cite de quatre façons :
+    Cinq sources, parce qu'un son se cite de cinq façons :
       ① un littéral d'appel — `sfx.play("GOAL")`, `music.play("Dreamy DX")` ;
       ② un `SoundFxComponent` posé sur un acteur ou un prefab, que
          `self:play_sfx()` joue sans jamais nommer le son dans le script ;
       ③ le MAPPING d'un état d'une boîte sonore (ROADMAP v0.8.7) ;
-      ④ la musique nommée par une scène.
+      ④ la musique nommée par une scène ;
+      ⑤ `AnimFrame.direct_sfx_name` (ROADMAP v0.8.9) — un Sfx joué DIRECTEMENT
+         en arrivant sur une frame.
 
-    Une frame d'animation n'est PAS une source : depuis la v0.8.7 elle nomme un
-    EMPLACEMENT (« pas »), pas un effet. Ce sont les mappings des états qui
-    disent vers quel échantillon cet emplacement se résout — d'où ③.
+    `AnimFrame.action_name`, lui, n'est PAS une source : depuis la v0.8.7 il
+    nomme un EMPLACEMENT (« pas »), pas un effet. Ce sont les mappings des
+    états qui disent vers quel échantillon cet emplacement se résout — d'où
+    ③. `direct_sfx_name` est la différence : un nom de Sfx DIRECT, comme ②,
+    donc une source au même titre.
     """
     from scripting.api import DOMAIN_SFX, DOMAIN_MUSIC
     from scripting.refactor import index_refs_in_project
@@ -571,6 +575,17 @@ def referenced_sound_names(p: Project) -> tuple[set[str], set[str]]:
         want = getattr(scene, "music", MUSIC_INHERIT) or MUSIC_INHERIT
         if want not in (MUSIC_INHERIT, MUSIC_NONE):
             music_names.add(want)
+
+    # ⑤ `AnimFrame.direct_sfx_name` — direct, comme ②, sinon un Sfx cité
+    # seulement par une frame serait laissé hors ROM et sa constante `SFX_*`
+    # n'existerait pas au moment où le stepper d'anim tente de l'émettre.
+    for spr in getattr(p, "sprites", []):
+        for stt in getattr(spr, "states", []) or []:
+            for sd in getattr(stt, "directions", []) or []:
+                for fr in getattr(sd, "frames", []) or []:
+                    name = getattr(fr, "direct_sfx_name", "") or ""
+                    if name:
+                        sfx_names.add(name)
 
     return sfx_names, music_names
 
