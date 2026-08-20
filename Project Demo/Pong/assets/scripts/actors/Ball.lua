@@ -18,22 +18,34 @@ function on_start()
     if math.rand(0, 1) == 0 then
         vx = -2
     end
-    self.velocity = vec2(vx, 1)
-    self.rotation = math.atan2(1, vx)
+    -- self.velocity est en Q8 depuis la ROADMAP v0.19 (256 = 1 px/frame) :
+    -- les vitesses de ce script restent des pas entiers de pixels, donc ×256
+    -- ici suffit — aucun sous-pixel n'est demandé, seule l'unité a changé.
+    self.velocity = vec2(vx * 256, 256)
+    self.rotation = math.atan2(1, vx)   -- un angle : l'échelle des composantes n'y change rien
     fx   = FX_POP
     fx_t = 0
 end
 
 function on_update()
     local pos = self.position
+
+    -- self:apply_velocity() remplace `self.position = self.position +
+    -- self.velocity` (ROADMAP v0.19) : les deux membres n'ont plus la même
+    -- échelle depuis que self.velocity est Q8. `n` rejoue le rôle de
+    -- l'ancien `pos + vel` — la position candidate, testée avant d'être
+    -- éventuellement corrigée par un rebond.
+    self:apply_velocity()
+    local n = self.position
     local vel = self.velocity
-    local n = pos + vel
 
     -- Rebond vertical sur tiles solides
     if vel.y < 0 then
         if tile.get(n.x, n.y) ~= 0 or tile.get(n.x + 7, n.y) ~= 0 then
-            vel.y = -vel.y
-            n.y = pos.y
+            self.velocity = vec2(vel.x, -vel.y)
+            self.position = vec2(n.x, pos.y)   -- annule le déplacement Y de cette frame
+            n   = self.position
+            vel = self.velocity
             sfx.play("WALLBOUNCE")
             fx   = FX_SQUASH
             fx_t = 0
@@ -41,8 +53,10 @@ function on_update()
     end
     if vel.y > 0 then
         if tile.get(n.x, n.y + 7) ~= 0 or tile.get(n.x + 7, n.y + 7) ~= 0 then
-            vel.y = -vel.y
-            n.y = pos.y
+            self.velocity = vec2(vel.x, -vel.y)
+            self.position = vec2(n.x, pos.y)
+            n   = self.position
+            vel = self.velocity
             sfx.play("WALLBOUNCE")
             fx   = FX_SQUASH
             fx_t = 0
@@ -62,8 +76,6 @@ function on_update()
         return
     end
 
-    self.velocity = vel
-    self.position = n
     global.set("ball_y", n.y)
 
     -- Orientation : le sprite pointe dans le sens du déplacement — l'axe
@@ -87,9 +99,13 @@ function on_update()
     else
         -- vitesse ×100 (×10000 sous la racine pour garder 2 décimales de
         -- précision — math.sqrt est entier, pas de virgule flottante sur
-        -- GBA). vx vaut toujours ±2 ici, seul vy varie (0 à ±2) : la vitesse
-        -- va donc de 200 (croisière) à 283 (rebond en biais).
-        local speed100 = math.sqrt((vel.x * vel.x + vel.y * vel.y) * 10000)
+        -- GBA). vel est Q8 (ROADMAP v0.19) : /256 ramène chaque composante en
+        -- pixels/frame AVANT le carré, pour retrouver exactement le calcul
+        -- d'avant ce chantier (vx vaut toujours ±2 ici, seul vy varie de 0 à
+        -- ±2 : la vitesse va donc de 200, croisière, à 283, rebond en biais).
+        local pvx = vel.x / 256
+        local pvy = vel.y / 256
+        local speed100 = math.sqrt((pvx * pvx + pvy * pvy) * 10000)
         local stretch = math.clamp(100 + (speed100 - 200) / 2, 100, 140)
         self.sprite_scale = vec2(stretch, 200 - stretch)
     end
@@ -103,7 +119,7 @@ function on_collision_enter(other, my_box, other_box)
     local ball_center   = self.position.y + 4
     local paddle_center = other.position.y + 16
     local offset = ball_center - paddle_center
-    local vy = math.clamp(offset / 3, -2, 2)
+    local vy = math.clamp(offset / 3, -2, 2)   -- en pixels/frame, comme avant v0.19
 
     sfx.play("PADDLEBOUNCE")
 
@@ -113,12 +129,14 @@ function on_collision_enter(other, my_box, other_box)
     fx   = FX_STRETCH
     fx_t = 0
 
+    -- self.velocity.x est déjà en Q8 : le reprendre tel quel n'a rien à
+    -- convertir. Seul `vy`, calculé ci-dessus en pixels, passe à l'échelle Q8
+    -- à l'écriture.
     local vx = self.velocity.x
     if x < 120 then
-        self.velocity = vec2(math.abs(vx), vy)
+        self.velocity = vec2(math.abs(vx), vy * 256)
     end
     if x >= 120 then
-        self.velocity = vec2(-math.abs(vx), vy)
-	end
+        self.velocity = vec2(-math.abs(vx), vy * 256)
+    end
 end
-

@@ -47,6 +47,11 @@ class ProjectSettings:
     # pour qu'un projet existant ne change pas de son parce qu'un réglage est
     # apparu. Le pool de RÉFÉRENCES d'effets, lui, vaut 16 quoi qu'on mette ici.
     sound_channels: int = 8
+    # Build DEBUG (`debug.log`, mesure de budget par frame — cf. ROADMAP v0.14)
+    # vs RELEASE (les deux disparaissent de la ROM, à la compilation, pas au
+    # runtime). Vrai par défaut : c'est le comportement qu'avait le logiciel
+    # avant que ce réglage existe, un projet existant ne doit rien voir changer.
+    debug_build: bool = True
 
 
 # ── Variables du projet ───────────────────────────────────────────

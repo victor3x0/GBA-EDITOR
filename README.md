@@ -96,17 +96,17 @@ tient à l'échelle d'un vrai projet.
 - **v0.11** : Traduction de l'interface de l'éditeur
 - **v0.12** : Vue d'ensemble — graphe des scènes et de leurs transitions, pour lire la logique d'un projet d'un coup d'œil
 - **v0.13** : Édition mixte code / no-code — les appels d'API s'éditent aussi comme des blocs, le script Lua restant la source unique
-- **v0.14** : Diagnostic — trace de débogage vers la console de l'émulateur, et mesure du budget de frame sur la console
+- **v0.14** ✅ : Diagnostic — `debug.log` vers la console mGBA, budget de frame et occupation OAM mesurés sur la cible, un réglage de projet Debug/Release qui retire tout ça de la ROM livrée
 - **v0.15** ✅ : Visibilité des éléments d'interface — texte, panneau et image peuvent se cacher/montrer, au script comme à l'authoring, et un panneau caché cache tout son sous-arbre
 - **v0.16** : L'API rangée — une règle de construction unique (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool dimensionné au build), et huit sections nommées d'après ce qu'on tient au lieu de vingt-deux nommées d'après le moteur
 - **v0.17** : Le pool par scène — une scène déclare les prefabs qu'elle fait apparaître et ne paie que ceux-là, au lieu de porter les slots de tous les prefabs du projet
 - **v0.18** : La valeur affichée — un texte peut interpoler une valeur que l'appel lui passe (`text.draw(9, 2, "PV : $1", hp)`), et non plus seulement une variable globale déclarée : afficher un compteur local ou une expression ne demande plus de la promouvoir en global
-- **v0.19** : Le sous-pixel — position et vitesse en point fixe, pour une accélération, un saut à hauteur variable et un recul qui ne se règlent pas par pixel entier
+- **v0.19** ✅ : Le sous-pixel — position et vitesse en point fixe (Q8), pour une accélération, un saut à hauteur variable et un recul qui ne se règlent pas par pixel entier ; `self.velocity` change d'unité, `self:apply_velocity()` l'accumule sans perte de fraction à travers la collision
 - **v0.20** : Les collections persistantes — un tableau de globales sauvegardable, au lieu d'une variable par coffre
 - **v0.21** : Le texte adressable — un identifiant de texte devient une valeur, donc un dialogue peut vivre dans une table de données
 - **v0.22** : Menus, listes et curseur — le moteur prend la navigation, la mise en page reste authorée
 - **v0.23** : Ce qu'un boss demande — attendre dans une boucle bornée, une hiérarchie d'acteurs (un boss segmenté se déplace d'un bloc, chaque partie gardant son sprite et ses collisions — y compris pour un ennemi spawné, dont le prefab porte son propre arbre), et une matrice de collision entre tags
-- **v0.24** : Le projet à l'échelle d'une équipe — des formats que git sait fusionner, un build parallèle et mis en cache, un chargement paresseux
+- **v0.24** (en cours) : Le projet à l'échelle d'une équipe — des fichiers de projet que git sait relire (le jeu de démo passe de 14 444 à 3 679 lignes, couleurs en `#RRGGBB`, une ligne par rangée de carte), et un build qui ne refait que ce qui a changé : rebuild à chaud de 9,1 s à 6,6 s, dont `make` de 3,5 s à 0,17 s
 
 Les six dernières viennent d'une revue du logiciel du point de vue d'un projet de production
 mené à plusieurs ; la [ROADMAP](ROADMAP.md) en donne l'ordre recommandé, qui n'est pas celui

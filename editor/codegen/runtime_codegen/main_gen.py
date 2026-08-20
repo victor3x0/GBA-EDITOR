@@ -24,6 +24,7 @@ from codegen.grit_conversion import (
 )
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
+from codegen import build_output
 
 
 _BTN_MAP = [
@@ -456,7 +457,9 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
                 f"            g_actors[_i].offset_y     = {_sp_aff['offset_y']};",
             ]
         L += [
-            f"            g_actors[_i].x = x; g_actors[_i].y = y;",
+            # ROADMAP v0.19 : x/y en Q8 en interne. `x`/`y` ici sont les entiers
+            # pixels passés à actor.spawn() par le script — <<8 à l'entrée.
+            f"            g_actors[_i].x = x<<8; g_actors[_i].y = y<<8;",
             f"            g_actors[_i].active   = 1; g_actors[_i].visible = 1;",
             f"            g_actors[_i].pal_bank = {pal};",
             f"            g_actors[_i].tag      = TAG_{s.upper()};",
@@ -999,7 +1002,17 @@ def _gen_tile_helpers() -> list[str]:
         "   écrire le hook ne désactive donc pas la physique. */",
         "static void __attribute__((unused)) resolve_actor_tiles(Actor*a, TileCollideCb cb){",
         "    if(!g_active_cmap) return;",
-        "    int was_grounded=a->grounded, dx=a->x-a->last_x;",
+        "    /* ROADMAP v0.19 : x/y de l'Actor sont en Q8 (256 = 1 px), mais TOUTE la",
+        "       géométrie ci-dessous (tuiles, boxes, pentes) est en pixels, inchangée",
+        "       depuis la v0.6.3 — l'arrondi se fait UNE fois à l'entrée (_px/_py) et",
+        "       UNE fois à la sortie. _fx/_fy portent le sous-pixel à travers la",
+        "       fonction : une frame sans collision sur un axe lui rend EXACTEMENT",
+        "       sa position Q8 d'entrée (x == (x>>8)<<8 | x&255, arithmétique deux's",
+        "       complément) ; une frame qui clampe (mur, sol, plafond) réémet la",
+        "       fraction d'AVANT le clamp — approximation délibérée plutôt qu'une",
+        "       remise à zéro par branche, dont le gain serait imperceptible ici. */",
+        "    int _px=a->x>>8, _py=a->y>>8, _fx=a->x&255, _fy=a->y&255;",
+        "    int was_grounded=a->grounded, dx=_px-a->last_x;",
         "    int moved=dx<0?-dx:dx;",
         "    /* ── Vitesse constante LE LONG du sol ─────────────────────",
         "       Un pas horizontal sur une pente parcourt √(1+p²) fois plus de",
@@ -1023,14 +1036,14 @@ def _gen_tile_helpers() -> list[str]:
         "            CollisionBox*b=&a->boxes[i];",
         "            if(!b->solid) continue;",
         "            int l=a->last_x+(int)b->x, r=l+(int)b->w-1;",
-        "            int t=a->y+(int)b->y;",
+        "            int t=_py+(int)b->y;",
         "            tile_floor_at((l+r)>>1, t, t+(int)b->h-1);",
         "            int sc=g_tile_scale[g_floor_tile];",
         "            if(sc<256){",
         "                int want=dx*sc+a->slope_acc;",
         "                int step=want/256;",
         "                a->slope_acc=want-step*256;",
-        "                a->x=a->last_x+step;",
+        "                _px=a->last_x+step;",
         "            }",
         "            break;",
         "        }",
@@ -1042,39 +1055,39 @@ def _gen_tile_helpers() -> list[str]:
         "        int left,right,top,bot;",
         "        /* ── X : seuls les blocs pleins repoussent ───────────── */",
         "        if(a->vx!=0){",
-        "            left=a->x+(int)b->x; right=left+(int)b->w-1;",
-        "            top =a->y+(int)b->y; bot  =top +(int)b->h-1;",
+        "            left=_px+(int)b->x; right=left+(int)b->w-1;",
+        "            top =_py+(int)b->y; bot  =top +(int)b->h-1;",
         "            int hit=0;",
         "            if(a->vx>0){",
-        "                for(int py=top;py<=bot&&!hit;py+=TILE_SIZE) hit=tile_wall_at(right,py);",
+        "                for(int cpy=top;cpy<=bot&&!hit;cpy+=TILE_SIZE) hit=tile_wall_at(right,cpy);",
         "                if(!hit) hit=tile_wall_at(right,bot);",
-        "                if(hit){a->x=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
+        "                if(hit){_px=(right/TILE_SIZE)*TILE_SIZE-(int)b->x-(int)b->w;",
         "                    a->vx=0; if(cb)cb(a,1,0);}",
         "            }else{",
-        "                for(int py=top;py<=bot&&!hit;py+=TILE_SIZE) hit=tile_wall_at(left,py);",
+        "                for(int cpy=top;cpy<=bot&&!hit;cpy+=TILE_SIZE) hit=tile_wall_at(left,cpy);",
         "                if(!hit) hit=tile_wall_at(left,bot);",
-        "                if(hit){a->x=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
+        "                if(hit){_px=(left/TILE_SIZE+1)*TILE_SIZE-(int)b->x;",
         "                    a->vx=0; if(cb)cb(a,-1,0);}",
         "            }",
         "        }",
         "        /* ── Plafond : la surface la plus BASSE arrête la tête ─ */",
-        "        left=a->x+(int)b->x; right=left+(int)b->w-1;",
-        "        top =a->y+(int)b->y; bot  =top +(int)b->h-1;",
+        "        left=_px+(int)b->x; right=left+(int)b->w-1;",
+        "        top =_py+(int)b->y; bot  =top +(int)b->h-1;",
         "        if(a->vy<0){",
         "            int c=-1;",
         "            for(int k=0;k<3;k++){",
-        "                int px=(k==0)?left:((k==1)?((left+right)>>1):right);",
-        "                int cy=tile_ceil_at(px,top);",
+        "                int cpx=(k==0)?left:((k==1)?((left+right)>>1):right);",
+        "                int cy=tile_ceil_at(cpx,top);",
         "                if(cy>c) c=cy;",
         "            }",
-        "            if(c>=0&&top<c){a->y=c-(int)b->y; a->vy=0; if(cb)cb(a,0,-1);}",
+        "            if(c>=0&&top<c){_py=c-(int)b->y; a->vy=0; if(cb)cb(a,0,-1);}",
         "        }",
         "        /* ── Sol : la surface la plus HAUTE porte l'acteur ───── */",
-        "        top=a->y+(int)b->y; bot=top+(int)b->h-1;",
+        "        top=_py+(int)b->y; bot=top+(int)b->h-1;",
         "        int g=-1;",
         "        for(int k=0;k<3;k++){",
-        "            int px=(k==0)?left:((k==1)?((left+right)>>1):right);",
-        "            int gy=tile_floor_at(px,top,bot);",
+        "            int cpx=(k==0)?left:((k==1)?((left+right)>>1):right);",
+        "            int gy=tile_floor_at(cpx,top,bot);",
         "            if(gy>=0&&(g<0||gy<g)) g=gy;",
         "        }",
         "        if(g>=0){",
@@ -1082,7 +1095,7 @@ def _gen_tile_helpers() -> list[str]:
         "            if(feet>g){",
         "                /* Pénétration : on remonte sur la surface. Aucun plafond",
         "                   de marche — l'auteur a peint une pente, on la gravit. */",
-        "                a->y=g-(int)b->y-(int)b->h;",
+        "                _py=g-(int)b->y-(int)b->h;",
         "                if(a->vy>0) a->vy=0;",
         "                a->grounded=1; if(cb)cb(a,0,1);",
         "            }else if(feet==g){",
@@ -1096,12 +1109,13 @@ def _gen_tile_helpers() -> list[str]:
         "                /* Collage en descente : l'écart maximal qu'une pente à",
         "                   63° peut creuser pour ce déplacement. Sans lui, toute",
         "                   descente décolle et retombe, donc tressaute. */",
-        "                a->y=g-(int)b->y-(int)b->h;",
+        "                _py=g-(int)b->y-(int)b->h;",
         "                a->grounded=1;",
         "            }",
         "        }",
         "    }",
-        "    a->last_x=a->x;",
+        "    a->last_x=_px;",
+        "    a->x=(_px<<8)|_fx; a->y=(_py<<8)|_fy;",
         "}",
         "",
     ]
@@ -1309,8 +1323,12 @@ def _camera_follow_lines(p, scene, scene_actors: list, actor_offset: int) -> lis
             continue
         # Axe désactivé (scroll_h/scroll_v) : la cible sur cet axe devient
         # cam_x/cam_y lui-même → écart nul → camera_follow ne le bouge pas.
-        tx = f"g_actors[{t}].x" if scene.scroll_h else "cam_x"
-        ty = f"g_actors[{t}].y" if scene.scroll_v else "cam_y"
+        # cam_x/cam_y restent en pixels (ROADMAP v0.19 : « la caméra arrondit
+        # après avoir suivi, jamais avant » — un seul arrondi, ICI, à la
+        # frontière acteur→caméra ; tout le reste du suivi/scroll/streaming
+        # continue en pixels, inchangé).
+        tx = f"(g_actors[{t}].x>>8)" if scene.scroll_h else "cam_x"
+        ty = f"(g_actors[{t}].y>>8)" if scene.scroll_v else "cam_y"
         cases.append(f"        case {i}: camera_follow((Vec2){{{tx}, {ty}}}, "
                      f"{int(cam.margin_x)}, {int(cam.margin_y)}); break;"
                      f"   /* {cam.name} → {cam.follow_target} */")
@@ -2549,8 +2567,9 @@ def _gen_scene_init(
         own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
         pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
         L += [
-            f"    g_actors[{idx}].x       = {_FV.parse(actor.x, _var_names(p)).c_expr()};",
-            f"    g_actors[{idx}].y       = {_FV.parse(actor.y, _var_names(p)).c_expr()};",
+            # ROADMAP v0.19 : x/y en Q8 en interne, l'auteur place l'acteur en pixels.
+            f"    g_actors[{idx}].x       = ({_FV.parse(actor.x, _var_names(p)).c_expr()})<<8;",
+            f"    g_actors[{idx}].y       = ({_FV.parse(actor.y, _var_names(p)).c_expr()})<<8;",
             f"    g_actors[{idx}].active  = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].visible = {1 if actor.visible else 0};",
             f"    g_actors[{idx}].flip_h  = {1 if actor.flip_h else 0};",
@@ -2662,8 +2681,13 @@ def _affine_oam_lines_dynamic(idx: int, aff: dict, sprite, bt: int, priority_exp
     tpf    = sprite.tiles_per_frame
     dx, dy = -(W // 2), -(H // 2)
 
-    base_x = f"g_actors[{idx}].x" + ("" if screen_space else "-cam_x")
-    base_y = f"g_actors[{idx}].y" + ("" if screen_space else "-cam_y")
+    # ROADMAP v0.19 : x/y sont en Q8 en interne (256 = 1 px) ; l'émission OAM
+    # est UN des deux seuls points d'arrondi du chantier (l'autre est l'entrée
+    # de la collision, cf. resolve_actor_tiles). >>8 tronque vers -inf sur un
+    # entier signé avec ce compilateur (ARM/GCC, décalage arithmétique) —
+    # cohérent, pas de saut à la traversée de 0.
+    base_x = f"(g_actors[{idx}].x>>8)" + ("" if screen_space else "-cam_x")
+    base_y = f"(g_actors[{idx}].y>>8)" + ("" if screen_space else "-cam_y")
 
     return [
         # Transform monde + local composés
@@ -2959,7 +2983,7 @@ def _gen_scene_tick(
             else:
                 L += [
                     f"    if(g_actors[{idx}].active && g_actors[{idx}].visible){{",
-                    f"        int sx=g_actors[{idx}].x{_cx}{ox_s}; int sy=g_actors[{idx}].y{_cy}{oy_s};",
+                    f"        int sx=(g_actors[{idx}].x>>8){_cx}{ox_s}; int sy=(g_actors[{idx}].y>>8){_cy}{oy_s};",
                     f"        u16 ti=(u16)({bt}+g_actors[{idx}].frame*{sprite.tiles_per_frame});",
                     f"        int fh=g_actors[{idx}].flip_h; int fv=g_actors[{idx}].flip_v;",
                     f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
@@ -2996,7 +3020,7 @@ def _gen_scene_tick(
             else:
                 L += [
                     f"    if(g_actors[{oam_slot}].active && g_actors[{oam_slot}].visible){{",
-                    f"        int sx=g_actors[{oam_slot}].x-cam_x{ox_s}; int sy=g_actors[{oam_slot}].y-cam_y{oy_s};",
+                    f"        int sx=(g_actors[{oam_slot}].x>>8)-cam_x{ox_s}; int sy=(g_actors[{oam_slot}].y>>8)-cam_y{oy_s};",
                     f"        u16 ti=(u16)({bt}+g_actors[{oam_slot}].frame*{pf_spr.tiles_per_frame});",
                     f"        int fh=g_actors[{oam_slot}].flip_h; int fv=g_actors[{oam_slot}].flip_v;",
                     f"        shadow_oam[{oam_slot}].attr0=(sy&0xFF)|(g_actors[{oam_slot}].obj_mode<<10)|({sh}<<14);",
@@ -3040,7 +3064,7 @@ def generate_main(
     # Copier gba_engine.h
     _src = RUNTIME_DIR / "include" / "gba_engine.h"
     if _src.exists():
-        shutil.copy2(_src, p.src_dir / "gba_engine.h")
+        build_output.copy(_src, p.src_dir / "gba_engine.h")
 
     # ── Calcul des offsets globaux des actors ─────────────────────
     # Chaque scène reçoit une tranche de g_actors[].
@@ -3129,6 +3153,7 @@ def generate_main(
     _add_inc('#include "actor_api.h"')
     _add_inc('#include "globals.h"')
     _add_inc('#include "constants.h"')
+    _add_inc('#include "gba_debug.h"')   # mesure de budget par frame — ROADMAP v0.14
     if has_sound and soundbank_h.exists():
         _add_inc('#include <maxmod.h>')
         _add_inc(f'#include "{soundbank_h.name}"')
@@ -3350,8 +3375,8 @@ def generate_main(
     if obj_text_oam >= 0:
         L += [
             "/* ── Position d'acteur pour les zones de texte ancrées ─── */",
-            "static int _txt_actor_x(int i) { return g_actors[i].x; }",
-            "static int _txt_actor_y(int i) { return g_actors[i].y; }",
+            "static int _txt_actor_x(int i) { return g_actors[i].x>>8; }",
+            "static int _txt_actor_y(int i) { return g_actors[i].y>>8; }",
             "",
         ]
 
@@ -3605,6 +3630,11 @@ def generate_main(
             "        }",
         ]
     L.append("        VBlankIntrWait();")
+    # ROADMAP v0.14 : la fenêtre mesurée est EXACTEMENT le travail d'une frame —
+    # de la reprise après ce VBlankIntrWait() à l'entrée du suivant. Hors build
+    # debug, `debug_budget_start` est un stub vide éliminé à l'inlining (-O2) :
+    # aucun coût, pas un drapeau testé à chaque frame.
+    L.append("        debug_budget_start();")
     if has_sound and soundbank_h.exists():
         L.append("        mmFrame();   /* doc maxmod.h : _doit_ être appelée chaque frame */")
         L.append("        music_transition_tick();")
@@ -3634,12 +3664,22 @@ def generate_main(
     L += [
         f"        if(g_current_scene>=0 && g_current_scene<{n_scenes})",
         "            g_scene_vtable[g_current_scene].tick();",
+        # Compté après tick() : oam_update() (fin de scene_tick_*) vient de
+        # copier shadow_oam vers l'OAM réel — c'est l'état FINAL de la frame,
+        # pas un instantané pris en cours d'écriture. Bit 9 seul (0x0200,
+        # sans bit 8) = sprite désactivé (cf. gba_engine.h, oam_hide_all).
+        # Boucle éliminée à -O2 quand debug_budget_report ne fait rien (hors
+        # build debug) : son résultat n'est alors utilisé nulle part.
+        "        { int _dbg_oam = 0;",
+        "          for (int _i = 0; _i < 128; _i++)",
+        "              if ((shadow_oam[_i].attr0 & 0x0300) != 0x0200) _dbg_oam++;",
+        "          debug_budget_report(_dbg_oam); }",
         "    }",
         "    return 0;",
         "}",
     ]
 
     out = p.src_dir / "main.c"
-    out.write_text("\n".join(L) + "\n", encoding="utf-8")
+    build_output.write(out, "\n".join(L) + "\n")
     emit("log_line", f"[gen] {out.relative_to(p.root)}")
     return True

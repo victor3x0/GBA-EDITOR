@@ -9,5 +9,7 @@
   "transition_kind": "none",
   "transition_frames": 16,
   "cartridge_mib": 4,
-  "sfx_sample_rate": 0
+  "sfx_sample_rate": 0,
+  "sound_channels": 8,
+  "debug_build": true
 }

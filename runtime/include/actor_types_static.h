@@ -30,8 +30,17 @@ typedef struct { int x, y, z; } Vec3;
 typedef struct { int x, y, w, h; } Rect;
 
 typedef struct Actor {
-    int x, y;              /* position monde */
-    int vx, vy;            /* vélocité */
+    /* Position et vélocité MONDE, en Q8 (256 = 1 pixel) depuis la ROADMAP
+       v0.19 (2026-08-20) — le point fixe existait déjà dans cette même
+       struct pour scale_x/y, il n'avait simplement jamais atteint la
+       position. self.position (script) continue de ne rendre/accepter que
+       des pixels entiers ; self.velocity, elle, expose le Q8 directement —
+       rupture assumée plutôt qu'un second nom (self.velocity_q8) à côté du
+       premier. self:apply_velocity() ajoute vx/vy à x/y SANS convertir :
+       c'est exactement ce qui fait vivre le sous-pixel d'une frame à
+       l'autre. */
+    int x, y;               /* position monde, Q8 */
+    int vx, vy;             /* vélocité, Q8 */
     int frame;             /* index de frame dans le spritesheet */
     int timer;             /* compteur interne (animation, délai…) */
     int anim_state;        /* index de l'AnimState courant */
@@ -79,11 +88,14 @@ typedef struct Actor {
        lus par elle à la frame suivante (cf. ROADMAP v0.6.3) :
          grounded : y avait-il un sol sous les pieds à la fin de la frame ?
                     C'est ce que rend actor_on_ground() ;
-         last_x   : abscisse à la fin de la frame précédente. Le déplacement
-                    horizontal RÉELLEMENT parcouru s'en déduit, quelle que soit
-                    la façon dont le script bouge l'acteur (vélocité, move(),
-                    move_to(), set_position()) — c'est lui qui donne la
-                    distance de collage en descente, sans réglage à exposer. */
+         last_x   : abscisse à la fin de la frame précédente, en PIXELS (pas
+                    Q8, contrairement à x — resolve_actor_tiles travaille en
+                    pixels du début à la fin, cf. gba_engine.h, ROADMAP
+                    v0.19). Le déplacement horizontal RÉELLEMENT parcouru
+                    s'en déduit, quelle que soit la façon dont le script
+                    bouge l'acteur (vélocité, move(), move_to(),
+                    set_position()) — c'est lui qui donne la distance de
+                    collage en descente, sans réglage à exposer. */
     int grounded;
     int last_x;
     /* Reste de la correction de vitesse en pente, en 1/256 de pixel. Sans ce

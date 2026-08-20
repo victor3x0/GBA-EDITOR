@@ -33,11 +33,23 @@ Autour : le modèle de domaine dans `core.models.*`, l'I/O générique de
 collection dans `core.resource_store`, l'orchestration d'encodage d'assets dans
 `core.asset_encoding`.
 
-**Aucune migration de format.** Tant que le projet n'a pas de version diffusée,
-un changement de format se propage en cassant : on ne lit qu'UNE forme de chaque
-fichier, celle d'aujourd'hui. Un `core/project_migrations.py` a existé et absorbait
-les anciennes formes à l'ouverture ; il a été retiré avec elles. Le retrouver
-dans git est le point de départ si un convertisseur devient un jour nécessaire.
+**Une seule forme ÉCRITE, deux formes LUES — et seulement pour la v0.24.**
+La règle est longtemps restée « on ne lit qu'UNE forme de chaque fichier, celle
+d'aujourd'hui » : sans version diffusée, un changement de format se propageait
+en cassant, et un `core/project_migrations.py` a été retiré avec les anciennes
+formes qu'il absorbait.
+
+Ce qui a changé (ROADMAP v0.24) : à plusieurs, l'ancienne forme n'est pas dans
+le passé, elle est **dans la branche d'à côté**. Un coéquipier qui rebase sur
+un fichier écrit avant la bascule doit pouvoir l'ouvrir. Les trois formes
+touchées par ce chantier se relisent donc dans les deux écritures, pour de
+bon — les couleurs (`#RRGGBB` ou entier BGR555, cf. `core/gba_color.py`) et
+les grilles (en rangées ou à plat, cf. `core/project_json.py`). L'écriture,
+elle, n'a jamais qu'UNE forme : la nouvelle. Aucun convertisseur à lancer, le
+premier enregistrement d'un fichier le réécrit.
+
+Ce n'est pas une porte ouverte à un système de migration : c'est une paire de
+lecteurs tolérants, à l'endroit précis où le travail à plusieurs l'exige.
 
 **Ce module ne ré-exporte plus le modèle.** Chaque nom s'importe du fichier qui
 le définit — `from core.models.scene import Scene`, jamais à travers ce
@@ -53,6 +65,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.events import EventEmitter
+from core import project_json
 from core import asset_encoding
 from core.app_paths import IS_FROZEN
 from core.resource_store import ResourceStore, atomic_write
@@ -568,9 +581,15 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     # ── Build ─────────────────────────────────────────────────────
 
     def prepare_build(self):
+        # Les deux répertoires générés ne sont PLUS effacés ici (ROADMAP
+        # v0.24). Le rmtree répondait au bon risque — le Makefile ramasse
+        # `src/*.c` au glob, donc un asset retiré du projet laissait un `.c`
+        # qui continuait d'être compilé — mais il datait à neuf 32 fichiers
+        # identiques d'un build à l'autre, et `make` recompilait tout à chaque
+        # itération. Le même risque est couvert en fin de génération par
+        # `codegen.build_output.sweep`, qui retire ce que ce build-ci n'a pas
+        # produit.
         for d in (self.grit_out_dir, self.src_dir):
-            if d.exists():
-                shutil.rmtree(d)
             d.mkdir(parents=True, exist_ok=True)
         self.obj_dir.mkdir(parents=True, exist_ok=True)
         self._anon_texts = self.collect_literal_texts()
@@ -629,8 +648,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             "cartridge_mib":     self.settings.cartridge_mib,
             "sfx_sample_rate":   self.settings.sfx_sample_rate,
             "sound_channels":    self.settings.sound_channels,
+            "debug_build":       self.settings.debug_build,
         }
-        atomic_write(self.project_file, json.dumps(data, indent=2, ensure_ascii=False))
+        atomic_write(self.project_file, project_json.dumps(data))
 
     def load_settings(self):
         if not self.project_file.exists():
@@ -669,6 +689,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.settings.sound_channels = max(
             SOUND_CHANNELS_MIN,
             min(SOUND_CHANNELS_MAX, int(d.get("sound_channels", 8))))
+        # Antérieur à la v0.14 : `debug.*` n'existait pas encore, donc rien ne
+        # change de comportement pour un projet ancien — défaut à True.
+        self.settings.debug_build = bool(d.get("debug_build", True))
 
 
 
@@ -701,6 +724,13 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.jingle_boxes.save_all()
         self.sound_boxes.save_all()
         self.data_tables.save_all()
+        # `palettes` manquait ici — seule des quatorze collections. Sans
+        # conséquence au quotidien (l'éditeur de palettes écrit chaque banque
+        # dès l'édition, cf. palette_grid_panel), mais un « enregistrer le
+        # projet » qui saute une collection est un piège à l'échelle d'une
+        # équipe, et c'est ce qui a laissé les fichiers de palettes dans
+        # l'ancienne forme écrite quand tout le reste avait basculé (v0.24).
+        self.palettes.save_all()
         self.backgrounds.save_all()
         self.prefabs.save_all()
         self.scenes.save_all()

@@ -39,6 +39,7 @@ from core.models.sprite import SpriteAsset
 from core.models.scene import Actor
 from core.project import Project
 from core.validator import validate_project
+from codegen import build_output
 
 # Pipeline scripting (Lua → C) : importée localement dans les méthodes, d'où
 # l'ajout du dossier au sys.path ici pour que `from scripting.…` se résolve.
@@ -117,6 +118,7 @@ class BuildWorker(EventEmitter, threading.Thread):
             self._emit("log_line", f"[build] {len(all_scenes)} scène(s) : {', '.join(scene_names)}")
 
             p.prepare_build()
+            build_output.begin_build()
             # Le scan des `text.set_font` est mémoïsé pour la durée d'un build
             # seulement (cf. font_emit) : les scripts changent entre deux builds.
             from codegen.font_emit import clear_font_scan_cache
@@ -322,6 +324,17 @@ class BuildWorker(EventEmitter, threading.Thread):
                     actor_defined_events=actor_defined_events,
                 )
             if ok: self._emit("progress", 0.88)
+            # Le balayage remplace le rmtree que `prepare_build` faisait en tête
+            # de build (ROADMAP v0.24) : ce que CE build n'a pas produit n'a plus
+            # lieu d'être compilé. Il doit passer avant `make`, qui ramasse
+            # `src/*.c` et `grit_out/*.c` au glob.
+            if ok:
+                stale = build_output.sweep((p.src_dir, p.grit_out_dir))
+                for f in stale:
+                    self._emit("log_line", f"[gen] périmé, retiré : {f.name}")
+                self._emit("log_line",
+                           f"[gen] {build_output.written} fichier(s) écrit(s), "
+                           f"{build_output.skipped} inchangé(s)")
             if ok:
                 ok = self._step_make(p)
             if ok: self._emit("progress", 0.97)
@@ -451,8 +464,8 @@ class BuildWorker(EventEmitter, threading.Thread):
         tileset = merged_tileset(p, ba)
         c, h = emit_bg_c(sym, tileset, final_tilemap, pal_offset=0, bpp=bpp)
         p.grit_out_dir.mkdir(parents=True, exist_ok=True)
-        (p.grit_out_dir / f"{sym}.c").write_text(c)
-        (p.grit_out_dir / f"{sym}.h").write_text(h)
+        build_output.write(p.grit_out_dir / f"{sym}.c", c)
+        build_output.write(p.grit_out_dir / f"{sym}.h", h)
         extra = len(tileset) - len(ba.tileset)
         self._emit("log_line",
                    f"[bg] {ba.name} compressé ({bpp}bpp) -> {sym} "
@@ -508,8 +521,8 @@ class BuildWorker(EventEmitter, threading.Thread):
                            frame_table(a, _bank(a))))
         sym = scene_anim_sym(scene)
         c, h = emit_bg_anim_c(sym, tables)
-        (p.grit_out_dir / f"{sym}.c").write_text(c)
-        (p.grit_out_dir / f"{sym}.h").write_text(h)
+        build_output.write(p.grit_out_dir / f"{sym}.c", c)
+        build_output.write(p.grit_out_dir / f"{sym}.h", h)
 
         # `shared` — une table de pixels par fusion (toutes ses copies lisent le
         # même bloc, c'est la définition du mode).
@@ -519,8 +532,8 @@ class BuildWorker(EventEmitter, threading.Thread):
                             shared_frame_tiles(a)))
         ssym = shared_anim_sym(scene)
         c, h = emit_bg_tileanim_c(ssym, stables, 4)
-        (p.grit_out_dir / f"{ssym}.c").write_text(c)
-        (p.grit_out_dir / f"{ssym}.h").write_text(h)
+        build_output.write(p.grit_out_dir / f"{ssym}.c", c)
+        build_output.write(p.grit_out_dir / f"{ssym}.h", h)
 
         if placements:
             n_sh = sum(1 for a in placements if a["shared"])
@@ -808,9 +821,24 @@ class BuildWorker(EventEmitter, threading.Thread):
         src = RUNTIME_DIR / "Makefile"
         if not src.exists():
             self._emit("error_line",f"[make] Makefile manquant : {src}"); return False
-        shutil.copy2(src, p.makefile_path)
+        build_output.copy(src, p.makefile_path)
+        env = self._make_env()
+        # ROADMAP v0.14 : `debug.*` n'existe dans la ROM que build DEBUG. Le
+        # define passe par l'environnement de make (EXTRA_CFLAGS, cf.
+        # runtime/Makefile) plutôt que par un flag d'exécution — retiré à la
+        # compilation, pas testé à chaque frame.
+        if getattr(p.settings, "debug_build", True):
+            env["EXTRA_CFLAGS"] = (env.get("EXTRA_CFLAGS", "") + " -DGBA_DEBUG_BUILD").strip()
+        # ROADMAP v0.24 : `-j` n'est pas un réglage. Le nombre de cœurs se lit,
+        # le build en profite — une case de plus à expliquer n'achèterait rien.
+        # `make` était appelé sériel, et il pèse la moitié du temps de build
+        # (6,1 s sur 12,3 pour Pong, mesuré le 2026-08-20) : c'est le seul
+        # poste où la parallélisation change quelque chose.
+        # Repli à 1 si la plateforme ne sait pas dire combien de cœurs elle a —
+        # `-j` sans nombre lancerait un job par cible, sans aucune borne.
+        jobs = os.cpu_count() or 1
         return self._run_cmd(
-            [str(make)], "[make]", cwd=p.build_dir, env=self._make_env()
+            [str(make), f"-j{jobs}"], "[make]", cwd=p.build_dir, env=env
         )
 
     # ── Étape 4b : ce que la ROM pèse ─────────────────────────────

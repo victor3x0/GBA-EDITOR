@@ -6,6 +6,7 @@ from typing import Optional
 
 from core.models.resource import Resource
 from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
+from core.gba_color import write_colors, read_colors, write_palettes, read_palettes
 
 
 @dataclass
@@ -243,10 +244,13 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
             # Décrit l'image SOURCE, donc hors des blocs conditionnels de
             # palettes ci-dessous — elle vaut même sans encodage réussi.
             **({"source_stamp": self.source_stamp} if self.source_stamp else {}),
-            **({"own_palette": self.own_palette,
+            # ROADMAP v0.24 : les couleurs s'écrivent en #RRGGBB — même donnée,
+            # relisible par un humain dans un diff (cf. core/gba_color.py).
+            **({"own_palette": write_colors(self.own_palette),
                 "quantize_method": self.quantize_method} if self.own_palette else {}),
-            **({"palettes": self.palettes} if self.palettes else {}),
-            **({"source_palettes": self.source_palettes} if self.source_palettes else {}),
+            **({"palettes": write_palettes(self.palettes)} if self.palettes else {}),
+            **({"source_palettes": write_palettes(self.source_palettes)}
+               if self.source_palettes else {}),
             **({"palette_overrides": {str(i): n for i, n in self.palette_overrides.items()}}
                if self.palette_overrides else {}),
             "states": [
@@ -346,10 +350,10 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
             frame_w   = frame_w,
             frame_h   = frame_h,
             states    = states,
-            own_palette     = list(d.get("own_palette", [])),
+            own_palette     = read_colors(d.get("own_palette", [])),
             quantize_method = d.get("quantize_method", d.get("compress_method", "median_cut")),
-            palettes          = list(d.get("palettes", [])),
-            source_palettes   = list(d.get("source_palettes", [])),
+            palettes          = read_palettes(d.get("palettes", [])),
+            source_palettes   = read_palettes(d.get("source_palettes", [])),
             palette_overrides = decode_palette_overrides(d.get("palette_overrides")),
             source_stamp      = str(d.get("source_stamp", "")),
         )

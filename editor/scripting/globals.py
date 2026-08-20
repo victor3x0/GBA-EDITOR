@@ -8,6 +8,7 @@ sont une ressource explicite du projet (project.globals).
 
 from __future__ import annotations
 from pathlib import Path
+from codegen import build_output
 
 
 _C_TYPES = {
@@ -96,6 +97,6 @@ def write_globals(src_dir: Path, globals_) -> list[str]:
     Écrit globals.h et globals.c dans src_dir depuis la liste de GlobalVar.
     Retourne la liste des noms (utile pour CodegenContext).
     """
-    (src_dir / "globals.h").write_text(generate_globals_h(globals_), encoding="utf-8")
-    (src_dir / "globals.c").write_text(generate_globals_c(globals_), encoding="utf-8")
+    build_output.write(src_dir / "globals.h", generate_globals_h(globals_))
+    build_output.write(src_dir / "globals.c", generate_globals_c(globals_))
     return [g.name for g in globals_]

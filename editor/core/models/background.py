@@ -9,6 +9,8 @@ from core.models.resource import Resource
 from core.models.tile_codec import pack_se, unpack_se
 from core.models.palette import OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
+from core.gba_color import write_palettes, read_palettes
+from core.project_json import write_grid, read_grid
 
 
 # ── Types de fond ─────────────────────────────────────────────────
@@ -427,9 +429,14 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
         if self.source_stamp:
             d["source_stamp"] = self.source_stamp
         if self.tileset:
+            # ROADMAP v0.24 : couleurs en #RRGGBB et tilemap rangée en RANGÉES,
+            # pour que deux personnes qui retouchent deux zones d'un même fond
+            # produisent deux diffs que git sait fusionner. La donnée ne change
+            # pas — seule sa forme écrite (cf. core/project_json.py).
             d.update({
-                "palettes": self.palettes, "tileset": self.tileset,
-                "tilemap": self.tilemap, "tiles_w": self.tiles_w,
+                "palettes": write_palettes(self.palettes), "tileset": self.tileset,
+                "tilemap": write_grid(self.tilemap, self.tiles_w),
+                "tiles_w": self.tiles_w,
                 "tiles_h": self.tiles_h, "quantize_method": self.quantize_method,
             })
             if self.tile_palette_overrides:
@@ -437,7 +444,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
                     f"{c},{r}": s for (c, r), s in self.tile_palette_overrides.items()
                 }
             if self.source_palettes:
-                d["source_palettes"] = self.source_palettes
+                d["source_palettes"] = write_palettes(self.source_palettes)
             if self.palette_overrides:
                 d["palette_overrides"] = {
                     str(i): n for i, n in self.palette_overrides.items()
@@ -452,7 +459,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             d.update({
                 "mode": "bitmap", "bitmap": self.bitmap,
                 "out_w": self.out_w, "out_h": self.out_h,
-                "palettes": self.palettes,
+                "palettes": write_palettes(self.palettes),
             })
             if self.diagnostics:
                 d["diagnostics"] = self.diagnostics
@@ -463,9 +470,9 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
         ba = cls(
             name=d.get("name", "background"),
             asset=d.get("asset", d.get("source", "")),   # rétro-compat: ancienne clé "source"
-            palettes=list(d.get("palettes", [])),
+            palettes=read_palettes(d.get("palettes", [])),
             tileset=list(d.get("tileset", [])),
-            tilemap=list(d.get("tilemap", [])),
+            tilemap=read_grid(d.get("tilemap", [])),
             tiles_w=d.get("tiles_w", 0), tiles_h=d.get("tiles_h", 0),
             quantize_method=d.get("quantize_method", d.get("compress_method", "median_cut")),
             tile_palette_overrides=decode_tile_palette_overrides(
@@ -477,7 +484,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
             mode=d.get("mode", "tiled"),
             bitmap=d.get("bitmap", ""),
             out_w=int(d.get("out_w", 0)), out_h=int(d.get("out_h", 0)),
-            source_palettes=list(d.get("source_palettes", [])),
+            source_palettes=read_palettes(d.get("source_palettes", [])),
             palette_overrides=decode_palette_overrides(d.get("palette_overrides")),
             kind=_read_kind(d.get("kind")),
             ui_role=_read_ui_role(d.get("ui_role")),

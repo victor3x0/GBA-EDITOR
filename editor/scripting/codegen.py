@@ -589,6 +589,7 @@ class CodeGen:
         self._w('#include "actor_api.h"')
         self._w('#include "globals.h"')
         self._w('#include "constants.h"')
+        self._w('#include "gba_debug.h"')   # debug.log — ROADMAP v0.14
         # Toujours inclus, même sans table : l'en-tête est toujours généré, et
         # un include conditionnel serait un second chemin pour un cas vide.
         self._w('#include "data_tables.h"')
@@ -1542,6 +1543,29 @@ class CodeGen:
                              "un `local` : local sac = array(8).")
         return "0 /* array() hors d'une déclaration */"
 
+    def _emit_debug_log(self, args: list) -> str:
+        """`debug.log("hp=", hp, " x=", x)` → une séquence d'appels C, un par
+        argument (`debug_write_str`/`debug_write_int`), fermée par
+        `debug_flush()` — jamais un unique appel variadique : le moteur
+        n'émet pas de printf (ROADMAP v0.14). L'opérateur virgule enchaîne
+        les appels dans une seule expression, valide en position de
+        statement comme n'importe quel autre appel de l'API.
+
+        Le C émis ne change pas entre build debug et release : c'est
+        `gba_debug.h` qui décide, en fournissant soit les vraies fonctions
+        (canal mGBA), soit des stubs `inline` vides hors GBA_DEBUG_BUILD.
+        À -O2 un appel à un stub vide disparaît par inlining — retiré à la
+        compilation, sans qu'aucun drapeau ne soit testé au runtime."""
+        calls = []
+        for arg in args:
+            if isinstance(arg, ExprString):
+                escaped = arg.value.replace("\\", "\\\\").replace('"', '\\"')
+                calls.append(f'debug_write_str("{escaped}")')
+            else:
+                calls.append(f"debug_write_int({self._expr(arg)})")
+        calls.append("debug_flush()")
+        return "(" + ", ".join(calls) + ")"
+
     def _emit_get_actor(self, args: list) -> str:
         """
         get_actor("PADDLE_AUTO")  →  &g_actors[TAG_PADDLE_AUTO]
@@ -1781,6 +1805,7 @@ _CALL_CUSTOM: dict = {
     "music.cut_to":  CodeGen._emit_music_cut_to,
     "ui.image_set": CodeGen._emit_ui_image_set,
     "ui.get":       CodeGen._emit_ui_get,
+    "debug.log":    CodeGen._emit_debug_log,
 }
 
 

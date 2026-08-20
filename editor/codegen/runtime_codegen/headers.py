@@ -14,6 +14,7 @@ from core.models.scene import Actor
 from core.project import Project
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
+from codegen import build_output
 
 
 def generate_actor_types(
@@ -24,7 +25,7 @@ def generate_actor_types(
     """Écrit actor_types_static.h (copie) et actor_types.h (généré)."""
     _types_static = RUNTIME_DIR / "include" / "actor_types_static.h"
     if _types_static.exists():
-        shutil.copy2(_types_static, p.src_dir / "actor_types_static.h")
+        build_output.copy(_types_static, p.src_dir / "actor_types_static.h")
 
     h = [
         "/* actor_types.h — struct Actor partagée entre main.c et les scripts */",
@@ -74,7 +75,7 @@ def generate_actor_types(
             pool_offset += pf.max_instances
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]
-    (p.src_dir / "actor_types.h").write_text("\n".join(h), encoding="utf-8")
+    build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
 
 
 def generate_actor_api(
@@ -89,10 +90,10 @@ def generate_actor_api(
     # gba_font.h retiré : police 1bpp dont le consommateur (`text_init()`)
     # n'existe plus depuis l'asset Font — elle était encore recopiée dans
     # chaque build sans qu'aucune ligne ne la lise.
-    for static_h in ("actor_api_static.h", "gba_engine.h"):
+    for static_h in ("actor_api_static.h", "gba_engine.h", "gba_debug.h"):
         src_h = RUNTIME_DIR / "include" / static_h
         if src_h.exists():
-            shutil.copy2(src_h, p.src_dir / static_h)
+            build_output.copy(src_h, p.src_dir / static_h)
     _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
 
     prefab_slots = sum(pf.max_instances for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
@@ -318,4 +319,4 @@ def generate_actor_api(
                 a.append(f"#define CAM_{c_sym(cam.name).upper()} {i}")
 
     a += ["", "#endif /* ACTOR_API_H */", ""]
-    (p.src_dir / "actor_api.h").write_text("\n".join(a), encoding="utf-8")
+    build_output.write(p.src_dir / "actor_api.h", "\n".join(a))

@@ -24,6 +24,7 @@ import json
 from typing import Optional
 
 from core.resource_store import atomic_write
+from core import project_json
 from core.models.text import (
     Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
     new_id as new_text_id,
@@ -80,7 +81,7 @@ class ProjectTextsMixin:
     def save_texts(self):
         data = {"texts": [t.to_dict() for t in self.texts]}
         self.project_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.texts_file, json.dumps(data, indent=2, ensure_ascii=False))
+        atomic_write(self.texts_file, project_json.dumps(data))
 
     def load_texts(self):
         self.texts = []

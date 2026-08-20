@@ -17,7 +17,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
-    QScrollArea, QLineEdit, QComboBox, QPushButton, QSpinBox,
+    QScrollArea, QLineEdit, QComboBox, QPushButton, QSpinBox, QCheckBox,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import QSize, Qt
@@ -226,6 +226,28 @@ class ProjectInspector(QWidget):
             lambda v: self._set_setting("sound_channels", int(v)))
         self._row("Sound channels", self._spin_channels, id_inner, stretch=False)
 
+        # ── Build debug ─────────────────────────────────────────────
+        # `debug.log` et la mesure de budget par frame (cf. ROADMAP v0.14) ne
+        # coûtent rien en ROM release : ce réglage décide de quel build sort
+        # de F5. Coché par défaut, comme le comportement du logiciel avant
+        # que ce réglage existe (aucun projet ne change de taille sans le
+        # décider).
+        self._chk_debug = QCheckBox("Debug build")
+        self._chk_debug.setFont(QFont(T.UI, T.MD))
+        self._chk_debug.setToolTip(
+            "<b>Debug build</b><br><br>"
+            "Enables <tt>debug.*</tt> in scripts: <tt>debug.log(...)</tt> writes "
+            "to the mGBA log console,<br>and the engine measures frame time, OAM "
+            "usage, sound channels and DMA<br>load once per frame, also logged "
+            "there.<br><br>"
+            "Unchecked (Release), every <tt>debug.*</tt> call and the "
+            "measurement it costs<br>are removed at compile time — not just "
+            "silenced at runtime."
+        )
+        self._chk_debug.toggled.connect(
+            lambda v: self._set_setting("debug_build", bool(v)))
+        self._row("Build", self._chk_debug, id_inner, stretch=False)
+
         # ── Transition de scène (défaut projet) ───────────────────
         # Le fondu joué à chaque changement de scène. Réglé une fois ici pour
         # tout le jeu ; une scène peut le surcharger depuis son inspecteur.
@@ -400,6 +422,10 @@ class ProjectInspector(QWidget):
         self._spin_slots.blockSignals(True)
         self._spin_slots.setValue(getattr(p.settings, "save_slots", 1) if p else 1)
         self._spin_slots.blockSignals(False)
+
+        self._chk_debug.blockSignals(True)
+        self._chk_debug.setChecked(getattr(p.settings, "debug_build", True) if p else True)
+        self._chk_debug.blockSignals(False)
 
         self._spin_channels.blockSignals(True)
         self._spin_channels.setValue(getattr(p.settings, "sound_channels", 8) if p else 8)

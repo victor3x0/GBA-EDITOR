@@ -189,9 +189,15 @@ static inline Vec3 vec3_add  (Vec3 a, Vec3 b) { return (Vec3){ a.x+b.x, a.y+b.y,
 static inline Vec3 vec3_sub  (Vec3 a, Vec3 b) { return (Vec3){ a.x-b.x, a.y-b.y, a.z-b.z }; }
 static inline Vec3 vec3_scale(Vec3 v, int k)  { return (Vec3){ v.x*k,   v.y*k,   v.z*k   }; }
 
-/* Transform — position instantanée, sans notion de temps ni de vitesse. */
-static inline void actor_set_position(Actor* s, Vec2 p) { s->x=p.x; s->y=p.y; }
-static inline Vec2 actor_get_position(const Actor* s)   { return (Vec2){ s->x, s->y }; }
+/* Transform — position instantanée, sans notion de temps ni de vitesse.
+   ROADMAP v0.19 : s->x/s->y sont en Q8 en interne (256 = 1 px), mais
+   self.position continue de rendre des PIXELS — décision verrouillée : un
+   projet existant ne change pas de comportement, et un auteur qui n'a pas
+   besoin de sous-pixel n'en entend jamais parler. L'écriture perd donc toute
+   fraction sous-pixel accumulée (ex: par self:apply_velocity()) — c'est
+   attendu d'un appel qui dit « l'acteur est ICI, au pixel », pas « avance ». */
+static inline void actor_set_position(Actor* s, Vec2 p) { s->x=p.x<<8; s->y=p.y<<8; }
+static inline Vec2 actor_get_position(const Actor* s)   { return (Vec2){ s->x>>8, s->y>>8 }; }
 
 /* Racine carrée entière (algorithme bit à bit) — pas de FPU sur GBA, et le
    BIOS Sqrt coûte un appel SWI pour un résultat qu'on ne calcule qu'une fois
@@ -210,28 +216,56 @@ static inline int isqrt(int n) {
 
 /* Movement — déplacement étalé sur plusieurs frames : appelées depuis
    on_update à chaque frame, elles avancent d'au plus `speed` px CE frame-là.
-   Aucun état gardé sur l'Actor (ni cible, ni reste fractionnaire) : la
-   direction est recalculée à chaque appel depuis la position courante. */
+   `speed` et `target` restent des PIXELS entiers, comme avant v0.19 — ce sont
+   des arguments Lua, et le sous-ensemble Lua reste entier (décision
+   verrouillée). Aucun état gardé sur l'Actor (ni cible, ni reste
+   fractionnaire) : la direction est recalculée à chaque appel depuis la
+   position courante.
+
+   actor_move accumule en Q8 (dx/dy/mag restent petits — une direction, pas
+   une distance monde — aucun risque de débordement à multiplier speed<<8) :
+   un bonus de précision, gratuit, sur un calcul qui tronquait avant. */
 static inline void actor_move(Actor* s, Vec2 dir, int speed) {
     int dx = dir.x, dy = dir.y;
     int mag = isqrt(dx*dx + dy*dy);
     if (mag == 0) return;
-    s->x += dx * speed / mag;
-    s->y += dy * speed / mag;
+    s->x += dx * (speed<<8) / mag;
+    s->y += dy * (speed<<8) / mag;
 }
+/* actor_move_to, à l'inverse, calcule dx/dy/dist contre la position ARRONDIE
+   (cx/cy) : `target` est une distance MONDE, potentiellement grande, et
+   speed<<8 dans le même produit déborderait un int 32 bits. Le résultat est
+   remis à l'échelle Q8 seulement à l'écriture — la même règle qu'ailleurs
+   dans ce chantier : un seul arrondi, jamais dans le calcul intermédiaire. */
 static inline void actor_move_to(Actor* s, Vec2 target, int speed) {
-    int dx = target.x - s->x, dy = target.y - s->y;
+    int cx = s->x>>8, cy = s->y>>8;
+    int dx = target.x - cx, dy = target.y - cy;
     int dist = isqrt(dx*dx + dy*dy);
-    if (dist <= speed) { s->x = target.x; s->y = target.y; return; }
-    s->x += dx * speed / dist;
-    s->y += dy * speed / dist;
+    if (dist <= speed) { s->x = target.x<<8; s->y = target.y<<8; return; }
+    s->x += (dx * speed / dist) << 8;
+    s->y += (dy * speed / dist) << 8;
 }
 
 /* Physics — vélocité stockée sur l'Actor, lue par get_velocity. Ne déplace
-   rien seule : c'est le script qui l'applique (cf. Ball.lua) ou l'ignore. */
+   rien seule : c'est le script qui l'applique, via actor_apply_velocity
+   (cf. Ball.lua) ou en l'ignorant.
+
+   ROADMAP v0.19 : self.velocity change de SENS — s->vx/s->vy sont Q8, et
+   get/set_velocity ne convertissent plus rien (contrairement à la position,
+   qui reste pixels). Un script qui lisait/écrivait self.velocity en pixels
+   avant cette version doit être migré : c'est la rupture assumée qui rend le
+   sous-pixel utilisable sans un second nom (self.velocity_q8) à côté du
+   premier. */
 static inline void actor_set_velocity(Actor* s, Vec2 v) { s->vx=v.x; s->vy=v.y; }
 static inline void actor_add_velocity(Actor* s, Vec2 dv){ s->vx+=dv.x; s->vy+=dv.y; }
 static inline Vec2 actor_get_velocity(const Actor* s)    { return (Vec2){ s->vx, s->vy }; }
+/* Applique la vélocité Q8 stockée à la position Q8 stockée — l'accumulateur
+   sous-pixel est LITTÉRALEMENT s->x/s->y, donc rien à reporter ailleurs
+   (contrairement à slope_acc, qui corrige une AUTRE fraction : le cosinus de
+   pente en collision, cf. resolve_actor_tiles). Remplace l'ancien idiome
+   `self.position = self.position + self.velocity`, qui n'a plus de sens dès
+   que les deux membres ont des échelles différentes. */
+static inline void actor_apply_velocity(Actor* s) { s->x+=s->vx; s->y+=s->vy; }
 
 /* Animation — play_anim reçoit l'index d'état (résolu à la compile par le transpileur) */
 static inline void actor_play_anim(Actor* s, int id) { if(s->anim_state!=id){s->anim_state=id;s->frame=0;s->timer=0;} }

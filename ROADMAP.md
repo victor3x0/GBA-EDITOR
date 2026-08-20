@@ -31,26 +31,33 @@ suppositions faites à l'avance.
 | v0.6 | Polish de la boucle de jeu | **Livrée**, rouverte pour le game feel |
 | v0.7 | Structures de données, et le langage | **Livrée**, les deux chantiers rouverts avec |
 | v0.8 | Son : la musique par scène, les transitions, le mixage | **Livrée** |
+| v0.14 | Diagnostic (trace de débogage, budget) | **Livrée**, réduite au frame+OAM (canaux/DMA non mesurables) |
+| v0.19 | Le sous-pixel | **Livrée** |
+| v0.24 | Le projet à l'échelle d'une équipe | **En cours** — formats livrés, build et chargement à faire |
+| v0.20 | L'état du monde : les collections persistantes | Non commencée |
+| v0.23 | Ce qu'un boss demande | Non commencée |
+| v0.21 | Le texte adressable : le dialogue piloté par la donnée | Non commencée |
+| v0.22 | Menus, listes et curseur | Non commencée |
 | v0.9 | Traduction des jeux | Non commencée |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | Non commencée |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
-| v0.14 | Diagnostic (trace de débogage, budget) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu |
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
 | v0.17 | Le pool par scène | Non commencée |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
-| v0.19 | Le sous-pixel | Non commencée |
-| v0.20 | L'état du monde : les collections persistantes | Non commencée |
-| v0.21 | Le texte adressable : le dialogue piloté par la donnée | Non commencée |
-| v0.22 | Menus, listes et curseur | Non commencée |
-| v0.23 | Ce qu'un boss demande | Non commencée |
-| v0.24 | Le projet à l'échelle d'une équipe | Non commencée |
 
-Les six dernières viennent de la revue « projet de production » du 2026-08-19, dont l'ordre
-recommandé — **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 → v0.22** — est justifié dans sa
-section, juste avant la v1.0. Un numéro reste une identité, pas un rang.
+Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
+de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
+dans sa section, juste après la v0.8 : **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 → v0.22**.
+Les sections plus bas dans ce document suivent ce même ordre. Les jalons restants (v0.9 à v0.18,
+hors ceux déjà cités) n'ont pas de priorité tranchée entre eux et restent dans leur ordre
+numérique, à la suite du bloc priorisé.
+
+Un numéro de version reste une **identité**, pas un rang : il n'est pas renuméroté quand
+l'ordre de traitement change. Seul l'ordre de LECTURE de ce document — et l'ordre dans lequel
+les chantiers seront ouverts — suit désormais l'ordre de traitement.
 
 ---
 
@@ -2979,6 +2986,704 @@ personnalisée non-`static`), `codegen/grit_conversion.py` (`referenced_sound_na
 
 ---
 
+## Ce que la revue « projet de production » a relevé (2026-08-19)
+
+Les six versions qui suivent viennent d'une seule séance : la relecture du logiciel du point
+de vue d'un **projet cible** — un metroidvania à composante RPG (dialogues denses, arbre de
+compétences, physique fine) et à combats de boss scénarisés (phases, projectiles, effets,
+ambiance), mené par une **équipe de trois** : un programmeur, un sound designer, un pixel
+artiste, avec une cartouche réelle au bout.
+
+Ce ne sont pas des idées de fonctionnalités. Chacune est un point où ce projet-là **s'arrête**,
+ou paie un prix qui ne se rattrape plus en fin de production. Elles passent avant la v1.0
+parce que la v1.0 affirme « le logiciel absorbe un projet 2D de production », et qu'elle
+déclare le platformer et le metroidvania « atteignables aujourd'hui » : la revue dit où c'est
+faux.
+
+**L'ordre recommandé n'est pas l'ordre des numéros** — un numéro est une identité, pas un
+rang :
+
+| Rang | Version | Pourquoi là |
+| --- | --- | --- |
+| 1 | **v0.14** — Diagnostic | Un combat de boss est l'endroit exact où le budget de frame se perd. Sans mesure, tout le reste se règle à l'aveugle. |
+| 2 | **v0.19** — Le sous-pixel | Décide si le genre est faisable. Touche la structure `Actor` : plus il arrive tard, plus il casse de projets. |
+| 3 | **v0.24** — Le projet à l'échelle d'une équipe | Les formats non fusionnables plafonnent l'outil au travail solitaire **dès la première semaine**, pas à la v1.0. |
+| 4 | **v0.20** — Collections persistantes | Sans elle, l'état d'un monde metroidvania s'écrit à la main, une variable par coffre. |
+| 5 | **v0.23** — Ce qu'un boss demande | Trois manques déjà connus, réunis par un seul cas d'usage. |
+| 6 | **v0.21** — Le texte adressable | Débloque le dialogue dense ; la v0.9 (traduction) en dépend. |
+| 7 | **v0.22** — Menus, listes et curseur | Le plus gros chantier, et le seul dont la forme reste ouverte. |
+
+---
+
+## v0.14 — Diagnostic — ce que le jeu fait, et ce qu'il coûte — **LIVRÉE**
+
+> **Priorité relevée le 2026-08-19.** La revue « projet de production » (juste avant la v1.0)
+> la place **en tête** de tout ce qui reste : un combat de boss — projectiles, effets,
+> blending, musique — est l'endroit exact où le budget de frame se perd, et c'est aussi le seul
+> endroit qu'on ne peut pas régler à l'œil. Toutes les autres versions se décident mieux une
+> fois qu'on sait mesurer.
+>
+> **Livrée le 2026-08-20**, réduite au périmètre réellement mesurable (cf. « Ouvert »
+> ci-dessous) : `debug.log`, le toggle Debug/Release du projet, et le budget frame + OAM,
+> tous par le journal mGBA. Vérifié par un build complet de bout en bout (Pong, debug ET
+> release) — le C émis compile, et le stub release retire réellement le coût (main.o : +582
+> octets de code et +264 octets de RAM en debug, zéro en release).
+
+Le pipeline sait construire un jeu ; il ne sait rien dire de ce que ce jeu fait une fois
+lancé. Les deux manques sont vécus quotidiennement par qui développe, et aucun n'est couvert.
+
+### Le problème
+
+- **Rien ne permet de déboguer.** L'auteur écrit du Lua, qui devient du C, qui tourne sur du
+  matériel. Quand un acteur ne bouge pas, il n'a ni trace, ni journal, ni point d'arrêt.
+  `display.print` a été retiré en v0.3.2 et rien ne l'a remplacé **pour le développeur** —
+  `text.draw` s'adresse au joueur, ce qui n'est pas la même chose : il consomme des tuiles de
+  police, il passe par la table de textes, il est traduisible. Aucun de ces traits ne convient
+  à une trace de mise au point.
+- **Rien ne dit ce que la frame coûte.** Côté build, l'outillage est bon : VRAM et palettes
+  sont alloués, vérifiés, et le budget est signalé en erreur bloquante. Côté exécution, il n'y
+  a rien. « Le jeu tombe à 40 fps avec douze acteurs » n'a aucune réponse dans le logiciel, et
+  c'est le mur qu'on prend au troisième mois de projet.
+
+### Décisions verrouillées
+
+- **La trace de débogage sort de la ROM, pas de l'écran.** mGBA expose un canal de journal
+  qu'une ROM peut écrire ; c'est là que va `debug.log`, pas dans un coin de l'affichage. Le
+  jeu n'a donc rien à sacrifier pour être débogué — ni tuiles, ni palette, ni calque — et la
+  trace survit à un écran plein.
+- **`debug.*` disparaît des builds de release.** Sinon la mise au point coûte de la ROM et des
+  cycles dans le jeu livré. Un appel retiré à la compilation, pas une fonction qui teste un
+  drapeau au runtime.
+- **Le budget se mesure sur la CIBLE, jamais estimé par l'éditeur.** Un chiffre de coût qui
+  viendrait d'un modèle Python serait faux dès la première divergence, et faux en silence.
+  C'est la même règle que pour l'aperçu du rasteriseur en v3.0 : ce qui prétend décrire le
+  matériel vient du matériel.
+- **`debug.log` concatène des valeurs déjà converties, il ne formate rien.**
+  `debug.log("hp=", hp, " x=", x)` — pas de chaîne de format façon `printf`, ce que le moteur
+  évite partout ailleurs. Chaque argument est déjà une chaîne ou converti en chaîne avant
+  l'appel ; aucun formateur n'entre en ROM. *(Tranché le 2026-08-20.)*
+- **Le budget n'existe que dans le journal mGBA, jamais superposé à l'écran du jeu.** Même
+  canal que `debug.log`, lu en direct dans la console de l'émulateur ou après coup. Un HUD de
+  debug consommerait de l'affichage et fausserait la mesure qu'il montre — écarté pour cette
+  raison. *(Tranché le 2026-08-20.)*
+- **Le budget couvre, dans cette version : le temps de frame et l'occupation OAM.**
+  Le temps de frame se lit sur Timer 3 (libre — Maxmod réserve les timers 0/1 au mixage,
+  cf. `runtime/Makefile` `-lmm`) ; l'OAM se compte en scannant `shadow_oam[]`
+  ([gba_engine.h:520](runtime/include/gba_engine.h:520)), qui existe déjà pour l'émission
+  sprite. Les deux sont de VRAIES lectures sur la cible. *(Tranché le 2026-08-20.)*
+
+### Ouvert (rouvert le 2026-08-20)
+
+- **Canaux sonores et charge DMA ne sont pas mesurables avec le SDK installé.**
+  L'API publique de Maxmod (`maxmod.h`) n'expose que `mmActive()`/`mmActiveSub()` — un
+  booléen « un module/jingle joue », pas un compte de canaux occupés ; l'état interne du
+  mixeur n'est ni documenté ni garanti stable d'une version à l'autre. Et le moteur
+  n'utilise pas le DMA matériel pour ses propres copies — `copy16` (gba_engine.h) est une
+  boucle CPU, seul Maxmod déclenche du DMA, de façon opaque au jeu. Fabriquer un chiffre
+  irait contre la décision verrouillée « le budget se mesure sur la cible, jamais estimé » :
+  écarté de cette version, à rouvrir si un besoin réel et une vraie source de mesure
+  apparaissent.
+
+---
+
+## v0.19 — Le sous-pixel — **LIVRÉE**
+
+> **Livrée le 2026-08-20.** Vérifiée par un build complet de Pong (le C généré inspecté à la
+> main pour `debug.log`, `self:apply_velocity`, `self.position`/`self.velocity`), et par la
+> migration réelle de `Ball.lua` — le seul script du projet démo qui touchait `self.velocity`
+> — au nouvel idiome. `PaddlePlayer.lua`/`PaddleAuto.lua` n'utilisaient que `self.position` :
+> rien à migrer, comportement inchangé, exactement ce que la décision verrouillée promettait.
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+La position et la vélocité d'un acteur sont des **pixels entiers** :
+
+```c
+typedef struct Actor {
+    int x, y;              /* position monde */
+    int vx, vy;            /* vélocité */
+```
+([actor_types_static.h:33](runtime/include/actor_types_static.h:33))
+
+Ce que ça interdit, et qui n'a rien d'exotique : une vitesse de marche plus lente que
+**1 px/frame, soit 60 px/s** ; une gravité qui s'incrémente autrement que par pixel entier ;
+un saut à hauteur variable ; une décélération douce ; un recul de dégâts crédible. Ce sont les
+cinq premières choses qu'on règle dans un platformer, et aucune n'est réglable ici.
+
+Deux faits qui décident de la forme du chantier :
+
+- **La convention existe déjà dans la même structure.** `scale_x/y` et `sprite_scale_x/y` sont
+  en **Q8** (`256 = 100%`, [actor_types_static.h:71](runtime/include/actor_types_static.h:71)).
+  Le point fixe n'est donc pas une notion à introduire dans le moteur — il n'a simplement
+  jamais atteint la position.
+- **Le contournement en Lua existe, et il est mauvais.** Un auteur peut tenir un accumulateur
+  `×256` dans une variable de script et écrire `self.position` chaque frame. Mais `self:move`,
+  `self:move_to`, `self:add_velocity`, `self.grounded` et toute la résolution de pentes
+  (v0.6.3) travaillent en entiers : il tiendrait alors **deux positions**, dont l'une ment.
+  C'est la définition d'une fonctionnalité qui doit vivre dans le moteur.
+
+### Décisions verrouillées
+
+- **Le sous-pixel vit dans la STRUCTURE, pas dans le langage.** `x/y/vx/vy` deviennent du Q8
+  en interne ; le sous-ensemble Lua reste **entier**, sans virgule flottante. La règle
+  « que des entiers » (SCRIPTING.md) n'est pas négociée ici : elle est la raison pour laquelle
+  la ROM est rapide.
+- **`self.position` continue de rendre des pixels.** Un projet existant ne change pas de
+  comportement, et un auteur qui n'a pas besoin de sous-pixel n'en entend jamais parler. C'est
+  la même politique que `screen_space` : le défaut doit rester littéralement gratuit.
+- **L'arrondi se fait à UN seul endroit** — l'émission OAM et l'entrée de la collision. Deux
+  arrondis, c'est un acteur qui se dessine un pixel à côté de là où il touche.
+- **La caméra arrondit après avoir suivi, jamais avant.** Un suivi qui tronque avant de
+  soustraire fait trembler le décor d'un pixel ; c'est le défaut classique de ce chantier, et
+  il ne se voit qu'en mouvement lent — donc après coup.
+- **`self.velocity` change de SENS (Q8), pas de nom.** Rupture assumée pour tout script
+  existant qui lit/écrit `self.velocity` — pas de second nom (`self.velocity_q8`) à côté du
+  premier, ce que le projet refuse ailleurs (naming conventions). `self.position` n'est PAS
+  concernée : elle reste pixels, inchangée. *(Tranché le 2026-08-20.)*
+- **Q8, pas Q4.** Une seule convention de point fixe dans tout le moteur — celle qui existe
+  déjà pour `scale_x/y`. *(Tranché le 2026-08-20.)*
+- **`math.lerp`/`math.ease` ne changent pas.** Un Q8 EST un entier ; ils interpolent l'un ou
+  l'autre sans le savoir. Seul SCRIPTING.md gagne une phrase pour le dire. *(Tranché le
+  2026-08-20.)*
+- **Un appel manquant, découvert en ouvrant le chantier : `self:apply_velocity()`.** Sans lui,
+  le sous-pixel n'a nulle part où s'accumuler — `self.position = self.position +
+  self.velocity` mélange pixels et Q8 dès que `self.velocity` change de sens. Il ajoute la
+  vélocité Q8 directement à `x`/`y` (Q8 eux aussi), donc sans rien convertir — c'est
+  littéralement l'acte d'accumulation.
+
+### Ce que ça a touché
+
+[actor_types_static.h](runtime/include/actor_types_static.h) (la structure — commentaires,
+aucun champ ajouté : `x/y/vx/vy` étaient déjà des `int`),
+[actor_api_static.h](runtime/include/actor_api_static.h) (`actor_get/set_position`,
+`actor_get/set_velocity`, `actor_move`, `actor_move_to`, `actor_add_velocity`, le nouvel
+`actor_apply_velocity`), [main_gen.py](editor/codegen/runtime_codegen/main_gen.py)
+(`resolve_actor_tiles` — généré, pas dans `gba_engine.h` comme supposé avant d'ouvrir le
+chantier —, l'émission OAM, la cible de la caméra, `actor.spawn`, l'init des acteurs de scène,
+l'ancrage de texte sur un acteur), [api.py](editor/scripting/api.py) (`self.position`,
+`self.velocity`, `self:add_velocity`, le nouvel `self:apply_velocity`), et SCRIPTING.md.
+
+`resolve_actor_tiles` reste un cas à part : toute sa géométrie (tuiles, boxes, pentes)
+continue de travailler en PIXELS, inchangée depuis la v0.6.3 — un seul arrondi à l'entrée
+(`_px=a->x>>8`) et un seul à la sortie, qui RÉINJECTE la fraction Q8 d'avant l'appel
+(`a->x=(_px<<8)|_fx`) plutôt que de la remettre à zéro à chaque frame. Sans ça, un acteur
+avec des boxes de collision solides — donc tout personnage de plateforme — perdrait son
+sous-pixel toutes les frames, l'exact problème que ce chantier existe pour résoudre.
+
+---
+
+## v0.24 — Le projet à l'échelle d'une équipe — **EN COURS**
+
+> **Volets « formats » et « build » livrés le 2026-08-20.** Le projet démo passe de 14 444 à
+> 3 679 lignes de JSON, donnée pour donnée (vérifié par un aller-retour save/reload comparant
+> les modèles, et par un build complet dont la ROM ne bouge pas). Le **rebuild à chaud** passe
+> de 9,09 s à 6,56 s, dont `make` de 3,50 s à 0,17 s : plus aucun des 41 fichiers générés
+> n'est réécrit quand rien n'a changé. Restent le **cache de conversion des assets** (~1 s,
+> devenu le plus petit poste) et le **chargement paresseux** — que la mesure repousse
+> explicitement, cf. « Ouvert ».
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+Trois points, dont un est déjà écrit en v1.0 — et c'est **la date qui change**, pas le
+constat.
+
+- **Les formats.** « Des formats que git sait relire » est le deuxième des quatre prérequis de
+  la v1.0. Mais il ne se comporte pas comme un prérequis de v1.0 : à trois personnes, deux
+  commits sur la même scène ne se fusionnent **pas**, et l'historique devient inexploitable dès
+  la première semaine. Ce n'est pas une finition, c'est un préalable — et plus il est repoussé,
+  plus l'historique qu'il faudra traverser est illisible.
+- **Le build.** `make` est appelé sans `-j`
+  ([rom_build.py:813](editor/codegen/rom_build.py:813)) : la compilation est **sérielle**. Et
+  rien ne met en cache la conversion des assets — chaque build repasse grit sur tout le
+  catalogue. Le temps d'itération grandit donc linéairement avec le nombre d'assets, alors que
+  l'itération est exactement ce qui fait ou défait un combat de boss.
+- **Le chargement.** `Project.load()` charge tout, tout de suite (déjà noté en v1.0). Pong et
+  ses 118 fichiers vont bien ; quarante scènes et deux cents sprites, personne n'en sait rien.
+
+### Décisions verrouillées
+
+- **Les formats d'abord, et il n'y a rien à concevoir.** La correction est déjà écrite en
+  v1.0 : une ligne de texte par rangée de grille — ce que `tileset` fait déjà, et c'est de loin
+  la partie la plus lisible du sidecar — et les couleurs en hexadécimal (`#39A8FF`), **les deux
+  formes acceptées en lecture**. Il reste à le faire, et à le faire avant que le projet cible
+  n'accumule un historique qu'on ne relira jamais.
+- **L'écriture bascule TOUT DE SUITE, la lecture accepte les deux pour de bon.** Aucun
+  convertisseur à lancer : le premier enregistrement d'un fichier le réécrit. À plusieurs,
+  l'ancienne forme n'est pas dans le passé mais **dans la branche d'à côté** — c'est ce qui
+  justifie de garder deux lecteurs, alors que le projet refusait jusqu'ici toute migration de
+  format (cf. l'en-tête de `core/project.py`, corrigé en conséquence). *(Tranché le
+  2026-08-20.)*
+- **La mise en page ne dépend QUE du nom de la clé.** Une règle « compact tant que la ligne
+  fait moins de N caractères » ferait re-couler tout un fichier au premier changement de
+  valeur — soit exactement le diff illisible qu'on cherche à supprimer. Les clés concernées
+  sont listées une fois, dans `core/project_json.py`. *(Tranché le 2026-08-20.)*
+
+### La mesure a contredit la justification (2026-08-20)
+
+Le constat d'ouverture disait « deux commits sur la même scène ne se fusionnent **pas** ».
+**C'est faux, et c'est l'inverse qui est vrai.** `git merge-file` travaille à la ligne : un
+scalaire par ligne offrait donc la granularité *maximale*. Sur `Arena.json`, douze scénarios
+de modifications concurrentes (cellules voisines, zones 4×4 côte à côte, bandes, colonnes) —
+l'ancien format plat fusionne proprement dans **tous**, le format en rangées fait conflit dès
+que deux personnes touchent la même rangée.
+
+La décision verrouillée a quand même été maintenue, mais pour **l'autre** raison — la seule
+qui tienne à la mesure :
+
+- **Ce qui est gagné : l'historique se relit.** Un diff disait « ligne 347 : 0 → 1 », ce dont
+  personne ne tire rien. Il montre maintenant la rangée entière, à sa place dans la carte. Et
+  le projet démo passe de **14 444 à 3 679 lignes de JSON** (police : 2 251 → 235 ; scène :
+  794 → 174) sans qu'une seule donnée change.
+- **Ce qui est perdu, et assumé : la fusion automatique d'une même rangée.** Deux personnes
+  qui peignent la même bande de carte se chevauchent réellement ; l'ancien format leur rendait
+  en silence une carte que ni l'une ni l'autre n'avait voulue. Le conflit est désormais
+  visible — et résoluble à l'œil, puisque la rangée se lit.
+
+C'est la trace de ce qu'il ne faut pas re-supposer : sur ce sujet, « plus compact » et « mieux
+fusionné » tirent en sens **opposés**.
+- **`-j` n'est pas un réglage.** Le nombre de cœurs se lit ; le build en profite. Une case de
+  plus à expliquer n'achèterait rien.
+- **Le cache de conversion se fait sur l'EMPREINTE de la source et des options, pas sur la
+  date.** Une date de fichier change à chaque `git checkout` : un cache daté serait inutile
+  exactement là où il sert le plus, c'est-à-dire en changeant de branche à trois.
+- **On ne réécrit pas un fichier identique.** Corollaire de la règle ci-dessus, appliqué un
+  cran plus haut : plutôt que de construire un cache À CÔTÉ du compilateur, on rend au
+  compilateur le seul signal dont il a besoin pour utiliser le sien. Tout ce que le build
+  dépose dans `build/` passe par `codegen/build_output.py`. *(Tranché le 2026-08-20.)*
+- **Le ménage se fait à la FIN, par balayage, pas au début par `rmtree`.** Ce que ce build-ci
+  n'a pas produit n'a plus lieu d'être compilé — même garantie qu'avant contre un `.c` périmé
+  ramassé au glob par le Makefile, sans dater à neuf tout ce qui n'a pas bougé. Un outil
+  externe qui écrit lui-même (grit) doit DÉCLARER sa sortie (`build_output.claim`), sinon le
+  balayage la prend pour un reste. *(Tranché le 2026-08-20.)*
+
+### Le vrai coût d'une itération n'était pas là où on le cherchait (2026-08-20)
+
+Le constat d'ouverture visait la conversion des assets (« chaque build repasse grit sur tout
+le catalogue »). La mesure dit autre chose : un rebuild où **rien n'a changé** coûtait 9,09 s
+contre 10,08 s à froid — l'itération ne profitait de rien.
+
+La cause n'était pas dans `make`, qui faisait exactement son travail. Sur 41 fichiers générés,
+**36 avaient un contenu identique au build précédent, et 32 voyaient leur date réécrite** :
+
+- `Project.prepare_build()` faisait `rmtree` sur `src/` et `grit_out/` à chaque build. Le
+  risque auquel il répondait est réel (le Makefile ramasse `src/*.c` au glob, donc un asset
+  retiré laissait derrière lui un `.c` toujours compilé et lié) — mais le prix était de
+  recompiler l'intégralité du projet à chaque itération.
+- `grit` estampille l'heure d'export dans un commentaire de ses `.c/.h`. Ce seul commentaire
+  rendait ses fichiers « différents » à chaque passage — et les faisait apparaître modifiés
+  dans `git status` sans qu'un octet de donnée ait bougé. *(Troisième défaut de grit relevé
+  par ce projet, après `-fa` multi-fichier et `-pn` ignoré sous `-pS`.)*
+
+Résultat, sur Pong, 4 cœurs :
+
+| | Avant | Après |
+| --- | --- | --- |
+| Build à froid | 12,29 s | 10,95 s |
+| **Rebuild à chaud** | **9,09 s** | **6,56 s** |
+| dont `make` à chaud | 3,50 s | **0,17 s** |
+| Fichiers générés réécrits à chaud | 32 / 41 | **0 / 41** |
+
+Vérifié aussi dans l'autre sens : un `.c` périmé déposé à la main dans `src/` est bien retiré
+par le balayage, et le build reste vert.
+
+### Ce que ça touche
+
+Volet **formats** (fait) : [project_json.py](editor/core/project_json.py) — nouveau, il
+possède à lui seul la mise en page et la forme des grilles —,
+[gba_color.py](editor/core/gba_color.py) (la forme écrite d'une couleur),
+[background.py](editor/core/models/background.py),
+[sprite.py](editor/core/models/sprite.py),
+[palette.py](editor/core/models/palette.py),
+[resource_store.py](editor/core/resource_store.py) et
+[project.py](editor/core/project.py). `scene.py` n'a **pas** été touché :
+`collision_map` était déjà une liste de rangées, seule son écriture l'éclatait — pareil pour
+les `glyphs` d'une police. Deux des quatre formats se sont donc corrigés sans toucher au
+schéma, donc sans rien à relire de neuf.
+
+Volet **build** (fait) : [build_output.py](editor/codegen/build_output.py) — nouveau, il
+possède seul la règle « ne pas réécrire un fichier identique » et le balayage de fin —,
+[rom_build.py](editor/codegen/rom_build.py) (`-j`, le balayage),
+[project.py](editor/core/project.py) (`prepare_build` n'efface plus), et les huit émetteurs
+qui écrivent dans `build/` : `grit_conversion`, `runtime_codegen/{headers, main_gen,
+lua_compiler, data_tables}`, `scripting/{globals, constants}`.
+
+Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/project.py).
+
+### Ouvert
+
+- ~~**Le temps de build réel n'est pas mesuré.**~~ **Mesuré le 2026-08-20**, sur Pong, 4 cœurs :
+
+  | Poste | Sériel | Après `-j4` |
+  | --- | --- | --- |
+  | `make` | 6,14 s (**50 %**) | 3,64 s |
+  | mmutil | 0,63 s | — |
+  | grit (fonds) | 0,37 s | — |
+  | `Project.load()` | **0,08 s** | — |
+  | **Total** | **12,29 s** | **9,92 s** |
+
+  Trois choses que la mesure tranche : `make` est le seul poste qui vaille la peine (`-j` est
+  **livré**, 1,7× dessus) ; **le chargement n'est pas un problème** — 173 fichiers en 80 ms,
+  soit 0,6 % du build, donc le chantier « chargement paresseux » n'a aucune justification
+  mesurée à cette échelle et attendra un projet où il en aura une ; et le cache de conversion
+  ne peut plus rapporter qu'**environ 1 s**, ce qui le fait passer derrière le reste.
+  Reste à refaire la mesure sur un projet gonflé artificiellement — c'est là que les pentes
+  se croisent, pas sur Pong.
+
+- **Le cache de conversion des assets reste à faire, et il ne vaut plus qu'environ 1 s.**
+  Ce qui reste à chaud, une fois `make` réduit à 0,17 s : mmutil 0,66 s, grit sprites, bin2s
+  0,19 s. C'est exactement le périmètre de la décision verrouillée « empreinte de la source
+  et des options » — mais c'est désormais le PLUS PETIT des postes, et le mesurer sur un
+  projet à deux cents assets doit précéder de l'écrire.
+- ~~**Quand cesse-t-on d'ÉCRIRE l'ancien format ?**~~ **Tranché le 2026-08-20** : tout de
+  suite, lecture des deux à vie, aucun convertisseur (cf. décisions verrouillées).
+- **Le chargement paresseux, par collection ou par écran ?** La seconde est plus simple et
+  suffit peut-être. À décider sur la mesure, pas avant — et la mesure du 2026-08-20 dit
+  **pas encore** : 0,08 s pour tout charger. La question se rouvre sur un projet qui a le
+  volume, pas sur celui-ci.
+
+---
+
+## v0.20 — L'état du monde : les collections persistantes
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+La sauvegarde **ne connaît que des variables scalaires** — c'est une décision verrouillée de
+la v0.5, et elle était juste pour ce qu'elle visait. Le type d'une globale est
+`int|bool|u8|u16|s8|s16` ([settings.py:62](editor/core/models/settings.py:62)) ; les tableaux
+de la v0.7.1 sont des variables **de script**, qui ne traversent ni la sauvegarde, ni un
+changement de scène quand leur propriétaire est poolé ; et il n'existe **aucun opérateur
+binaire** dans le langage (SCRIPTING.md), donc pas même le paquetage à la main.
+
+Un metroidvania, c'est 200 à 400 booléens de monde : coffres ouverts, portes déverrouillées,
+raccourcis activés, boss vaincus, dialogues déjà vus, compétences acquises. Aujourd'hui, c'est
+**une ligne dans la table GLOBALS par booléen**, écrite à la main, et une constante nommée à
+tenir d'accord avec le coffre correspondant.
+
+C'est exactement le cas que la v0.5 avait laissé en réserve : *« à rouvrir seulement si une
+donnée volumineuse — une carte explorée, un journal — devient persistable »*. Elle l'est.
+
+### Décisions verrouillées
+
+- **Ce qui manque est un TABLEAU persistant, pas un système de drapeaux.** Un `flag.set(id)`
+  serait un domaine de plus pour un seul usage ; un tableau global persistant sert aussi bien
+  les coffres, l'inventaire, les niveaux de compétence et le journal de quêtes.
+- **Le format de sauvegarde ne change pas de principe.** Chaque valeur reste rangée avec l'id
+  opaque de sa variable (v0.5) : un tableau s'écrit avec son id, sa longueur, puis ses
+  éléments. Une longueur qui change entre deux versions du jeu se relit en tronquant ou en
+  complétant par le défaut — **même tolérance que pour un scalaire absent**, et c'est ce qui
+  garantit qu'ajouter dix coffres n'efface pas les parties des joueurs.
+- **Le paquetage est une décision d'ÉMISSION, jamais une notion d'auteur.** Un tableau de
+  `bool` tient huit valeurs par octet en SRAM parce que le codegen le décide, pas parce que
+  l'auteur manipule des bits. Sinon on réintroduit les opérateurs binaires par la porte de
+  la sauvegarde, après les avoir refusés par la porte du langage.
+- **Le plafond reste vérifié au build.** 32 Kio, et la place occupée se calcule déjà (v0.5).
+  Un tableau est le premier objet capable d'approcher la limite : c'est ce qui rend
+  l'indicateur « X octets sur 32 Kio » enfin utile — il était noté « sans intérêt » en v0.5,
+  faute de quoi que ce soit d'assez gros.
+
+### Ce que ça touche
+
+[settings.py](editor/core/models/settings.py) (une globale porte une taille),
+[project_variables.py](editor/core/project_variables.py),
+[globals.py](editor/scripting/globals.py),
+[gba_engine.h](runtime/include/gba_engine.h) (`save_write` / `save_read`),
+[codegen.py](editor/scripting/codegen.py), l'écran des variables, et `validator.py`.
+
+### Ouvert
+
+- **Comment une globale-tableau se lit dans un script.** `GLOBAL_COFFRES[i] = 1` est ce qu'on
+  attend en lisant du Lua ; `global.set_at("coffres", i, 1)` est ce que la grammaire actuelle
+  impose (une globale se traverse par accesseurs). À trancher **avec la v0.16**, qui range
+  l'API : décider ici en solitaire, c'est se contredire deux versions plus loin.
+- **Une valeur par défaut de tableau** : une seule valeur pour toutes les cases, ou une liste
+  authorée ? La première suffit aux coffres, pas à un inventaire de départ.
+- Les métadonnées de sauvegarde (nom, chapitre, temps de jeu) ne sont **pas** ici : elles vont
+  avec l'écran qui les affiche, en v0.22.
+
+---
+
+## v0.23 — Ce qu'un boss demande
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+Trois manques déjà connus séparément, que **le même cas d'usage** réunit : un combat de boss à
+phases, avec des projectiles et des parties mobiles.
+
+1. **Une attente reste refusée dans un `if` ou une boucle.** C'est une limite dite et assumée
+   de la v0.7.7, avec sa condition de réouverture écrite noir sur blanc : *« à rouvrir
+   seulement si une cinématique réelle bute dessus »*. Le cas réel est là : un pattern
+   d'attaque, c'est `3 × (tirer, attendre 20)`. Aujourd'hui il s'éclate en séquences nommées —
+   c'est-à-dire que la fonctionnalité écrite pour rendre l'attente lisible redevient illisible
+   exactement là où on l'emploie le plus.
+2. **Pas de hiérarchie d'acteurs.** Un acteur porte un sprite — le codegen prend le
+   **premier** `SpriteComponent`
+   ([main_gen.py:1007](editor/codegen/runtime_codegen/main_gen.py:1007)) — et **rien ne relie
+   deux acteurs entre eux**. Un boss segmenté — bras, tête, points faibles, queue — est donc N
+   acteurs recalés à la main en `math.sin`/`math.cos` dans le script du corps, à chaque frame,
+   avec autant d'occasions de désynchroniser une partie qu'il y a de parties. Le moteur sait
+   pourtant déjà faire exactement ce calcul : il le fait entre un acteur et son sprite
+   (ARCHITECTURE.md, « Le modèle affine »). Il ne sait simplement pas le faire un cran plus
+   haut.
+3. **La collision scène↔scène est déroulée en O(n²) au build.** `col_pairs` prend **toutes**
+   les paires dont au moins un côté porte un script
+   ([main_gen.py:3290](editor/codegen/runtime_codegen/main_gen.py:3290)), et chaque paire
+   produit son bloc de C. Il n'existe aucune matrice : on ne peut pas déclarer que les
+   projectiles du joueur n'entrent jamais en collision avec ceux du boss. Le coût grandit en
+   carré — en taille de ROM **et** en temps de frame — précisément dans la salle où il y a le
+   plus de choses à l'écran.
+
+### Décisions verrouillées
+
+- **Pour (1) : la levée se limite à la BOUCLE BORNÉE**, `for i = 1, n`. Une boucle bornée se
+  découpe sans continuation : un compteur de plus dans l'état de la séquence, et un `case` qui
+  revient en arrière — le `switch` émis se relit toujours avec les mots du Lua. **Le `if`
+  autour d'une attente reste refusé** : lui demanderait la transformation en continuations que
+  la v0.7.7 a chiffrée et refusée, et son prix n'a pas changé.
+- **Pour (2) : une hiérarchie d'ACTEURS, parce que `un acteur = un OBJ` doit rester vrai.**
+  Décidé le 2026-08-20, **contre la première rédaction de cette version**, qui proposait
+  plusieurs `SpriteComponent` par acteur. Le multi-sprite achetait la même chose en cassant
+  trois invariants d'un coup : le garde-fou des 128 compte des **acteurs**
+  ([main_gen.py:2965](editor/codegen/runtime_codegen/main_gen.py:2965)), un slot affine est
+  réservé par **acteur** (`_compute_affine_info`, 32 au maximum), et une box de collision est
+  relative au pivot de l'**acteur**. La preuve que c'était la mauvaise découpe tient dans une
+  question que cette section laissait ouverte faute de bonne réponse — *« le hitbox d'un bras
+  suit-il le sprite ou l'acteur ? »* : avec un acteur par partie, elle ne se pose pas. Le
+  hitbox du bras appartient au bras.
+- **Ce n'est pas de l'héritage, c'est un REPÈRE**, et le mot doit être tenu. `Actor.parent` dit
+  « ma position est exprimée dans le repère de celui-là », pas « je reprends sa définition ».
+  L'héritage d'une définition existe déjà dans le logiciel, il s'appelle un **prefab**, et
+  laisser les deux sens du même mot cohabiter coûterait plus cher que la fonctionnalité.
+- **La composition est celle qui est DÉJÀ écrite, d'un cran plus haut.** Le modèle affine
+  compose déjà monde × local : rotation = **somme** des degrés, scale = **produit** Q8, offset
+  = `R(rotation)·S(scale)·offset` exprimé dans le repère du parent, position = parent + offset
+  composé (ARCHITECTURE.md, « Le modèle affine » ; `_affine_oam_lines_dynamic`). Un enfant est
+  exactement ça, l'`Actor` parent tenant la place que tenait l'acteur pour son sprite. **Aucune
+  règle nouvelle à apprendre, ni à écrire** — et c'est ce qui rend le chantier petit. Une seule
+  précaution si la v0.19 passe avant, ce qui est l'ordre recommandé : la composition se fait
+  **dans l'unité de la position** (Q8), l'arrondi restant à l'émission OAM. Un arrondi par
+  niveau ferait dériver un bras d'un pixel par cran de profondeur.
+- **L'ordre se décide au BUILD, par tri de profondeur.** C'était l'objection à la hiérarchie —
+  « un ordre de mise à jour, des transforms composés, une invalidation » — et elle tombe : les
+  acteurs sont émis **parents avant enfants**, la composition est déroulée dans le `main.c`
+  comme le reste de la frame, et il n'y a **ni ordonnanceur, ni drapeau de salissure, ni
+  invalidation**. L'ordre d'une frame continue de se lire en clair dans le C émis, ce qui était
+  la seule chose à protéger (même règle qu'en v0.7.7 pour les séquences). Un **cycle de
+  parenté** est décidable au build et bloque le build en nommant les acteurs.
+- **Un enfant sans transform propre PARTAGE le slot affine de son parent.** Un slot ne contient
+  que `pa/pb/pc/pd` — donc deux OBJ de même rotation et de même échelle peuvent pointer le même
+  slot, la position n'y étant pour rien. Un boss à six parties qui tourne d'un bloc coûte
+  **un** slot sur 32, pas sept. Une partie qui a sa propre rotation paie le sien, et c'est
+  juste.
+- **`visible` se propage au sous-arbre, comme un panneau d'UI caché cache le sien** (v0.15).
+  Deux endroits du logiciel, une seule règle : cacher un boss cache ses bras.
+- **La parenté est AUTHORÉE, jamais assignée au runtime.** C'est ce qui rend le tri de
+  profondeur possible au build.
+- **Un parent EXTERNE est réservé aux acteurs posés dans la scène.** Un prefab est un template
+  de **projet** : il ne peut pas nommer un acteur d'une **scène**, donc une instance de pool ne
+  s'attache à rien du décor. Conséquence assumée, et elle tombe bien — un projectile qui
+  suivrait le bras qui l'a tiré serait un défaut, pas une fonctionnalité.
+- **Mais un prefab porte son PROPRE sous-arbre**, et c'est le point corrigé le 2026-08-20, à la
+  lecture du modèle de Godot. La première rédaction concluait « une instance de pool n'a pas de
+  parent » ; le motif — *un prefab ne peut pas nommer un acteur de scène* — ne couvrait que le
+  parent **externe**. Un sous-arbre **interne** ne nomme rien d'extérieur : la profondeur reste
+  connue au build, le tri tient, et un ennemi segmenté redevient spawnable — une chenille à cinq
+  anneaux, un mini-boss qui apparaît deux fois. C'est le `PackedScene` de Godot, dont on ne
+  prend que ceci : **un template est un arbre, pas un objet plat.**
+- **Les parties d'un prefab sont des PARTIES, pas d'autres prefabs.** Un sous-arbre imbriquant
+  des templates ferait du dimensionnement de pool un problème de graphe, et d'un pool imbriqué
+  une notion que personne ne tient dans sa tête. Une partie est ce qu'un acteur est déjà : des
+  composants et un transform local.
+- **Le pool se dit en INSTANCES, le build multiplie par les parties.** `max_instances = 8` sur
+  un prefab de quatre parties réserve 32 entrées de `g_actors`, contiguës, et c'est **ce
+  chiffre-là** que la mesure affiche — pas 8. Le dimensionnement de l'état de script des
+  parties, lui, dépend de la question laissée ouverte en **v0.17** (une taille de pool par
+  projet ou par scène) : ce chantier attend sa réponse, il ne la donne pas.
+- **Détruire la racine détruit le sous-arbre.** `self:destroy()` sur le corps libère les slots
+  des bras. C'est la même règle que la propagation de `visible`, et le pendant exact de
+  « `active = false` libère le slot » (v0.17) : sans elle, un boss tué laisserait ses bras dans
+  le pool jusqu'à la fin de la scène.
+- **Un acteur SANS sprite est un marqueur, et il ne coûte aucun OBJ.** C'est le `Marker2D` de
+  Godot — point de tir, point de saisie, ancre de hitbox — et ça marche **déjà** : l'émission
+  OAM est gardée par `if sprite and sprite.asset`
+  ([main_gen.py:2811](editor/codegen/runtime_codegen/main_gen.py:2811)). Ce qui se décide ici
+  n'est donc pas le mécanisme mais le **statut** : l'invariant s'écrit « un acteur = **au plus**
+  un OBJ », un marqueur coûte 144 octets et une entrée dans la boucle de frame, zéro pixel, et
+  l'éditeur doit le **dessiner** dans le canvas (une croix, un nom) — sans quoi la
+  fonctionnalité existe sans pouvoir être authorée.
+- **Le coût, dit en clair.** Chaque partie reste un `Actor` complet : 144 octets dans
+  `g_actors` (mesuré en v0.7.7), une entrée dans la boucle de frame, ses paires de collision,
+  et son slot affine si elle tourne pour son compte. Un boss à six parties, c'est **sept
+  acteurs**. C'est le prix de l'invariant, et il se paie en EWRAM — pas en lisibilité, ni en
+  règles à retenir.
+- **Pour (3) : la matrice est une propriété de PROJET, entre TAGS de boxes.** Les tags existent
+  déjà (`CollisionBoxComponent.tag`), et le build s'en sert pour **ne pas émettre** la paire.
+  Le gain est donc en ROM autant qu'en cycles — ce qu'un filtre au runtime n'aurait pas donné,
+  et c'est la raison de le faire au build comme tout le reste.
+
+### Ce que ça touche
+
+[checker.py](editor/scripting/checker.py) et [codegen.py](editor/scripting/codegen.py) (la
+boucle bornée dans une séquence),
+[scene.py](editor/core/models/scene.py) (le champ `Actor.parent`, et le sous-arbre d'un
+`Prefab`), [headers.py](editor/codegen/runtime_codegen/headers.py) et
+[lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) (un pool dimensionné en
+instances × parties),
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tri de profondeur, la
+composition du transform, `_compute_affine_info` pour le partage de slot, la destruction d'un
+sous-arbre, `col_pairs`),
+[settings.py](editor/core/models/settings.py) (la matrice de collision),
+[api.py](editor/scripting/api.py) (lire son parent, ou ses enfants), l'inspecteur d'acteur et
+le canvas de scène (l'arborescence, et le dessin d'un marqueur qui n'a pas d'image),
+`validator.py` (le cycle de parenté), et SCRIPTING.md.
+
+### Ouvert
+
+- **Le ré-attachement au runtime** — une main qui saisit, un projectile qui se plante dans un
+  bouclier et le suit. Interdit par le tri de profondeur au build, qui est précisément ce qui
+  garde la frame lisible. À rouvrir sur un cas réel, en sachant que la sortie n'est pas
+  évidente : soit la profondeur devient dynamique (et l'ordre quitte le C émis), soit un
+  attachement se déclare à l'authoring et ne fait que **s'activer** au runtime.
+- **La matrice se règle par paire de tags** (n²/2 cases, ça se lit) **ou par masque par tag**
+  (ça s'écrit plus vite, ça se relit mal). À trancher sur le nombre réel de tags d'un projet —
+  chiffre qu'on n'a pas.
+- **Comment une partie se désigne depuis le script de la racine**, et réciproquement.
+  `get_actor("bras")` nomme un acteur de scène ; une partie d'instance poolée n'a pas de nom
+  unique, il y en a huit. C'est la question qui décide si le sous-arbre d'un prefab est
+  scriptable ou seulement géométrique — et elle se tranche avec la forme retenue en **v0.16**
+  (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool).
+- **La profondeur est-elle bornée ?** Une queue segmentée veut une chaîne ; un boss ordinaire
+  veut un seul cran. Rien n'oblige à plafonner — le tri gère n'importe quelle profondeur — mais
+  chaque cran est une composition de plus par frame et par enfant. À mesurer avant de décider
+  s'il faut le dire à l'auteur.
+- **Ce que le canvas fait d'un enfant.** Déplacer le parent déplace le sous-arbre, c'est
+  entendu. Mais sélectionne-t-on un enfant directement, ou passe-t-on par le parent ? Et
+  l'arborescence se montre-t-elle dans la liste des acteurs de la scène — la première hiérarchie
+  visible de l'éditeur ?
+- **Ce que `active = false` fait à un sous-arbre.** `visible` se propage (décidé ci-dessus),
+  mais `active` porte un autre sens depuis la v0.17 : il **libère un slot de pool**. Un acteur
+  posé dans une scène n'en a pas, donc les deux ne se contredisent pas encore ; c'est le jour où
+  un enfant sera poolé que la question se posera — et ce jour n'existe pas, la parenté étant
+  réservée aux acteurs de scène.
+
+---
+
+## v0.21 — Le texte adressable : le dialogue piloté par la donnée
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+`text.draw(tx, ty, id)` prend un **nom résolu au build** — `Param("id", PARAM_STR,
+DOMAIN_TEXT)` ([api.py:858](editor/scripting/api.py:858)). Conséquence : un script ne peut pas
+parcourir une conversation, ni afficher « la réplique *i* », ni tirer un dialogue d'une
+DataTable. Chaque réplique est un appel écrit à la main, et l'enchaînement est une chaîne de
+`if`. Les séquences (v0.7.7) rendent une **cinématique** lisible ; elles ne font rien pour
+cent PNJ.
+
+Et le fait qui décide du coût du chantier : **le C est déjà prêt.**
+
+```c
+void text_draw(int tx, int ty, int id);   /* gba_engine.h:826 */
+const unsigned short *s = g_texts[id];    /* gba_engine.h:1737 */
+```
+
+L'index existe, il est déjà un `int`, et `g_texts[]` est déjà une table. Ce n'est pas le
+runtime qui refuse un id calculé : c'est le Lua qui ne sait pas le nommer autrement que par
+une constante.
+
+### Décisions verrouillées
+
+- **Un id de texte devient une VALEUR.** Une expression entière est acceptée là où une clé
+  l'était. C'est le même écart que celui déjà assumé pour un littéral (`literal_ok`), et il ne
+  coûte **rien** au runtime.
+- **Cette valeur vient d'une colonne de DataTable de type `text`.** La v0.7.2 a la table ; il
+  lui manque ce type de colonne. C'est ce qui rend un dialogue de données **traduisible sans
+  rien inventer** : la table porte des ids, la table de textes porte les langues (v0.9).
+- **Ce n'est PAS un éditeur de dialogue à branches.** La décision de la v0.3.2 tient : le
+  séquencement est du script. Ce qui change, c'est qu'un script peut enfin *parcourir de la
+  donnée* au lieu d'être déroulé à la main.
+- **Le filtre « qui est cité ? » doit suivre, et c'est le vrai piège.** La v0.8.4 a montré que
+  la ROM ne transporte que les ressources effectivement nommées par un script. Un id calculé
+  n'est nommé nulle part : sans traitement, **les textes d'une table disparaîtraient de la
+  ROM**. Une colonne de type `text` doit donc marquer ses entrées comme atteintes — même
+  mécanisme, une source de référence de plus.
+
+### Ce que ça touche
+
+[api.py](editor/scripting/api.py) (le type du paramètre),
+[checker.py](editor/scripting/checker.py), [codegen.py](editor/scripting/codegen.py),
+[data_table.py](editor/core/models/data_table.py) (la colonne `text`), le filtre de ressources
+citées de `rom_build.py`, et l'écran Data.
+
+### Ouvert
+
+- **`text.length` et `text.reading` sur un id calculé** — même question que la v0.18, et même
+  réponse probable : le tampon doit être propre à la zone.
+- **Ce que l'éditeur montre.** Une colonne d'ids de texte doit s'éditer en montrant le texte,
+  pas l'id, sinon la table devient illisible dès la dixième ligne.
+- **Le choix du joueur** (deux ou trois options, un curseur) est la brique qui manque *après*
+  celle-ci. Elle est en v0.22, et c'est là qu'il faut la traiter — pas ici.
+
+---
+
+## v0.22 — Menus, listes et curseur
+
+### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
+
+`UILayout` a trois types d'éléments : texte, panneau, image
+([ui_region.py](editor/core/models/ui_region.py)). **Aucun ne tient une sélection.** Un menu
+s'écrit donc entièrement en script : index courant, bornes, défilement, répétition de touche,
+retour arrière, et le curseur à déplacer. Sans fonction déclarable dans le langage, **chaque
+écran le réécrit en entier**.
+
+La v1.0 le note déjà, en « Ouvert » : *« si les trois genres à menus le rendent pénible, c'est
+ici que ça se verra »*. La revue tranche : pour un RPG à arbre de compétences, à inventaire et
+à équipement, ce n'est pas un confort qu'on jugera après coup — c'est un tiers du contenu du
+jeu, et il est aujourd'hui entièrement à la charge de l'auteur.
+
+Un manque va avec, et il est plus petit : `save.exists(slot)` répond « il y a quelque chose
+ici », rien de plus (v0.5, « Ouvert »). Un écran de sélection de partie ne peut donc afficher
+**ni chapitre, ni temps de jeu, ni nom** — c'est-à-dire rien de ce qu'un joueur regarde pour
+choisir sa partie.
+
+### Décisions verrouillées
+
+- **Le moteur prend la NAVIGATION, pas la mise en page.** Une liste, c'est un `UILayout`
+  existant plus quatre choses : un index courant, des bornes, un pas de défilement, et
+  l'entrée qui les fait bouger. Ce qui s'affiche reste du texte et des images authorées, avec
+  les outils qui existent.
+- **Un item est une LIGNE DE DONNÉE, pas un objet d'interface.** Une liste se lie à un tableau
+  (v0.20) ou à une table (v0.7.2), et l'auteur écrit ce qu'une ligne affiche. L'alternative —
+  un widget par genre de menu — n'a pas de fin, et chaque genre de jeu en redemanderait un.
+- **Le curseur est ce qui existe déjà** : un acteur `screen_space` ou une image d'UI. Pas de
+  troisième chose à apprendre.
+- **L'en-tête de sauvegarde s'étend, et il reste de l'auteur.** Un bloc descriptif par
+  emplacement — les valeurs de N globales que l'auteur désigne — lisible **sans charger la
+  partie**. Le moteur ne décide pas *ce qu'*une partie affiche, comme il ne décide pas où elle
+  reprend (v0.5).
+
+### Ce que ça touche
+
+[ui_region.py](editor/core/models/ui_region.py),
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tick d'UI),
+[api.py](editor/scripting/api.py) (un domaine `list`),
+[gba_engine.h](runtime/include/gba_engine.h) (l'en-tête de sauvegarde), l'inspecteur de scène,
+et `validator.py`.
+
+### Ouvert
+
+- **Où une liste se dessine.** Sur le calque de texte — donc soumise au budget de tuiles d'UI
+  et à la grille de tuiles — ou en sprites, donc dans les 128 OAM ? Les deux chemins existent
+  déjà (v0.3.3) ; il faut dire lequel une liste choisit, et pourquoi.
+- **Le défilement, à la ligne ou au pixel.** À la ligne, le texte reste sur sa grille et rien
+  ne coûte ; au pixel, un inventaire long défile joliment mais demande un redessin partiel à
+  chaque frame.
+- **La répétition de touche** : réglage par liste, ou du projet ? C'est un réglage de game
+  feel, donc probablement par liste — mais trois listes avec trois cadences est une incohérence
+  qu'un joueur sent.
+- **Ce que le moteur fait d'un choix de dialogue** (2–3 options dans une boîte) : est-ce une
+  liste comme les autres, ou la seule forme qui mérite un raccourci ?
+
+---
+
 ## v0.9 — Traduction des jeux créés avec l'éditeur
 
 Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.
@@ -3130,55 +3835,6 @@ la réécriture par offsets de `refactor.py` pour les modifier.
 - Un argument qui référence une variable plutôt qu'un littéral. `FieldValue` traite déjà
   exactement cette question pour les champs de composant (px / tuile / variable) ; c'est la
   même, et sa réponse devrait être la même.
-
----
-
-## v0.14 — Diagnostic — ce que le jeu fait, et ce qu'il coûte
-
-> **Priorité relevée le 2026-08-19.** La revue « projet de production » (juste avant la v1.0)
-> la place **en tête** de tout ce qui reste : un combat de boss — projectiles, effets,
-> blending, musique — est l'endroit exact où le budget de frame se perd, et c'est aussi le seul
-> endroit qu'on ne peut pas régler à l'œil. Toutes les autres versions se décident mieux une
-> fois qu'on sait mesurer.
-
-Le pipeline sait construire un jeu ; il ne sait rien dire de ce que ce jeu fait une fois
-lancé. Les deux manques sont vécus quotidiennement par qui développe, et aucun n'est couvert.
-
-### Le problème
-
-- **Rien ne permet de déboguer.** L'auteur écrit du Lua, qui devient du C, qui tourne sur du
-  matériel. Quand un acteur ne bouge pas, il n'a ni trace, ni journal, ni point d'arrêt.
-  `display.print` a été retiré en v0.3.2 et rien ne l'a remplacé **pour le développeur** —
-  `text.draw` s'adresse au joueur, ce qui n'est pas la même chose : il consomme des tuiles de
-  police, il passe par la table de textes, il est traduisible. Aucun de ces traits ne convient
-  à une trace de mise au point.
-- **Rien ne dit ce que la frame coûte.** Côté build, l'outillage est bon : VRAM et palettes
-  sont alloués, vérifiés, et le budget est signalé en erreur bloquante. Côté exécution, il n'y
-  a rien. « Le jeu tombe à 40 fps avec douze acteurs » n'a aucune réponse dans le logiciel, et
-  c'est le mur qu'on prend au troisième mois de projet.
-
-### Décisions verrouillées
-
-- **La trace de débogage sort de la ROM, pas de l'écran.** mGBA expose un canal de journal
-  qu'une ROM peut écrire ; c'est là que va `debug.log`, pas dans un coin de l'affichage. Le
-  jeu n'a donc rien à sacrifier pour être débogué — ni tuiles, ni palette, ni calque — et la
-  trace survit à un écran plein.
-- **`debug.*` disparaît des builds de release.** Sinon la mise au point coûte de la ROM et des
-  cycles dans le jeu livré. Un appel retiré à la compilation, pas une fonction qui teste un
-  drapeau au runtime.
-- **Le budget se mesure sur la CIBLE, jamais estimé par l'éditeur.** Un chiffre de coût qui
-  viendrait d'un modèle Python serait faux dès la première divergence, et faux en silence.
-  C'est la même règle que pour l'aperçu du rasteriseur en v3.0 : ce qui prétend décrire le
-  matériel vient du matériel.
-
-### Ouvert
-
-- Ce que `debug.log` accepte : une chaîne formatée demande un `printf` en ROM, ce que le
-  moteur évite partout ailleurs. Concaténer des valeurs déjà converties suffit peut-être.
-- Où le budget s'affiche : superposé en jeu (donc il fausse ce qu'il mesure), renvoyé au
-  journal, ou lu par l'éditeur pendant que la ROM tourne ?
-- Ce que le budget couvre au-delà du temps de frame : compte d'OAM, occupation des canaux
-  sonores, cycles DMA. À choisir sur ce qui sature réellement, mesuré, pas supposé.
 
 ---
 
@@ -3623,500 +4279,6 @@ et l'écran Texte, qui doit montrer un aperçu de ce qu'il ne connaît pas.
   (entrée modifiée après coup, traduction ajoutant un `$3`) : un trou de cellule comme un
   glyphe absent, ou zéro ? La règle maison dit trou — « mieux qu'un nombre silencieusement
   faux » (cf. le commentaire de `text_num_cp`).
-
----
-
-## Ce que la revue « projet de production » a relevé (2026-08-19)
-
-Les six versions qui suivent viennent d'une seule séance : la relecture du logiciel du point
-de vue d'un **projet cible** — un metroidvania à composante RPG (dialogues denses, arbre de
-compétences, physique fine) et à combats de boss scénarisés (phases, projectiles, effets,
-ambiance), mené par une **équipe de trois** : un programmeur, un sound designer, un pixel
-artiste, avec une cartouche réelle au bout.
-
-Ce ne sont pas des idées de fonctionnalités. Chacune est un point où ce projet-là **s'arrête**,
-ou paie un prix qui ne se rattrape plus en fin de production. Elles passent avant la v1.0
-parce que la v1.0 affirme « le logiciel absorbe un projet 2D de production », et qu'elle
-déclare le platformer et le metroidvania « atteignables aujourd'hui » : la revue dit où c'est
-faux.
-
-**L'ordre recommandé n'est pas l'ordre des numéros** — un numéro est une identité, pas un
-rang :
-
-| Rang | Version | Pourquoi là |
-| --- | --- | --- |
-| 1 | **v0.14** — Diagnostic | Un combat de boss est l'endroit exact où le budget de frame se perd. Sans mesure, tout le reste se règle à l'aveugle. |
-| 2 | **v0.19** — Le sous-pixel | Décide si le genre est faisable. Touche la structure `Actor` : plus il arrive tard, plus il casse de projets. |
-| 3 | **v0.24** — Le projet à l'échelle d'une équipe | Les formats non fusionnables plafonnent l'outil au travail solitaire **dès la première semaine**, pas à la v1.0. |
-| 4 | **v0.20** — Collections persistantes | Sans elle, l'état d'un monde metroidvania s'écrit à la main, une variable par coffre. |
-| 5 | **v0.23** — Ce qu'un boss demande | Trois manques déjà connus, réunis par un seul cas d'usage. |
-| 6 | **v0.21** — Le texte adressable | Débloque le dialogue dense ; la v0.9 (traduction) en dépend. |
-| 7 | **v0.22** — Menus, listes et curseur | Le plus gros chantier, et le seul dont la forme reste ouverte. |
-
----
-
-## v0.19 — Le sous-pixel
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-La position et la vélocité d'un acteur sont des **pixels entiers** :
-
-```c
-typedef struct Actor {
-    int x, y;              /* position monde */
-    int vx, vy;            /* vélocité */
-```
-([actor_types_static.h:33](runtime/include/actor_types_static.h:33))
-
-Ce que ça interdit, et qui n'a rien d'exotique : une vitesse de marche plus lente que
-**1 px/frame, soit 60 px/s** ; une gravité qui s'incrémente autrement que par pixel entier ;
-un saut à hauteur variable ; une décélération douce ; un recul de dégâts crédible. Ce sont les
-cinq premières choses qu'on règle dans un platformer, et aucune n'est réglable ici.
-
-Deux faits qui décident de la forme du chantier :
-
-- **La convention existe déjà dans la même structure.** `scale_x/y` et `sprite_scale_x/y` sont
-  en **Q8** (`256 = 100%`, [actor_types_static.h:71](runtime/include/actor_types_static.h:71)).
-  Le point fixe n'est donc pas une notion à introduire dans le moteur — il n'a simplement
-  jamais atteint la position.
-- **Le contournement en Lua existe, et il est mauvais.** Un auteur peut tenir un accumulateur
-  `×256` dans une variable de script et écrire `self.position` chaque frame. Mais `self:move`,
-  `self:move_to`, `self:add_velocity`, `self.grounded` et toute la résolution de pentes
-  (v0.6.3) travaillent en entiers : il tiendrait alors **deux positions**, dont l'une ment.
-  C'est la définition d'une fonctionnalité qui doit vivre dans le moteur.
-
-### Décisions verrouillées
-
-- **Le sous-pixel vit dans la STRUCTURE, pas dans le langage.** `x/y/vx/vy` deviennent du Q8
-  en interne ; le sous-ensemble Lua reste **entier**, sans virgule flottante. La règle
-  « que des entiers » (SCRIPTING.md) n'est pas négociée ici : elle est la raison pour laquelle
-  la ROM est rapide.
-- **`self.position` continue de rendre des pixels.** Un projet existant ne change pas de
-  comportement, et un auteur qui n'a pas besoin de sous-pixel n'en entend jamais parler. C'est
-  la même politique que `screen_space` : le défaut doit rester littéralement gratuit.
-- **L'arrondi se fait à UN seul endroit** — l'émission OAM et l'entrée de la collision. Deux
-  arrondis, c'est un acteur qui se dessine un pixel à côté de là où il touche.
-- **La caméra arrondit après avoir suivi, jamais avant.** Un suivi qui tronque avant de
-  soustraire fait trembler le décor d'un pixel ; c'est le défaut classique de ce chantier, et
-  il ne se voit qu'en mouvement lent — donc après coup.
-
-### Ce que ça touche
-
-[actor_types_static.h](runtime/include/actor_types_static.h) (la structure),
-[gba_engine.h](runtime/include/gba_engine.h) (`actor_move`, `actor_move_to`,
-`actor_add_velocity`, `resolve_actor_tiles`, les pentes),
-[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (émission OAM, caméra, streaming),
-[api.py](editor/scripting/api.py) (les propriétés de transform), et SCRIPTING.md, qui doit
-dire en une phrase où le pixel s'arrête.
-
-### Ouvert
-
-- **Comment l'auteur exprime une vélocité fractionnaire.** Trois sorties : `self.velocity`
-  change de sens (rupture pour les projets existants), un second nom cohabite
-  (`self.velocity_q8` — deux façons de dire la même chose, ce que le projet refuse ailleurs),
-  ou une **unité par acteur** déclarée à l'authoring. À trancher en premier : tout le reste en
-  découle.
-- **Q8 ou Q4.** Q8 s'aligne sur `scale` et donne ±8 millions de pixels de course, largement
-  au-delà d'une carte ; Q4 divise par 16 le risque de débordement dans les produits
-  intermédiaires (`vx * cos`). Se tranche par mesure, sur une vraie course de projectile.
-- **Ce que deviennent `math.lerp` et `math.ease`**, qui rendent des entiers et qu'on utilisera
-  désormais pour interpoler des Q8.
-
----
-
-## v0.20 — L'état du monde : les collections persistantes
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-La sauvegarde **ne connaît que des variables scalaires** — c'est une décision verrouillée de
-la v0.5, et elle était juste pour ce qu'elle visait. Le type d'une globale est
-`int|bool|u8|u16|s8|s16` ([settings.py:62](editor/core/models/settings.py:62)) ; les tableaux
-de la v0.7.1 sont des variables **de script**, qui ne traversent ni la sauvegarde, ni un
-changement de scène quand leur propriétaire est poolé ; et il n'existe **aucun opérateur
-binaire** dans le langage (SCRIPTING.md), donc pas même le paquetage à la main.
-
-Un metroidvania, c'est 200 à 400 booléens de monde : coffres ouverts, portes déverrouillées,
-raccourcis activés, boss vaincus, dialogues déjà vus, compétences acquises. Aujourd'hui, c'est
-**une ligne dans la table GLOBALS par booléen**, écrite à la main, et une constante nommée à
-tenir d'accord avec le coffre correspondant.
-
-C'est exactement le cas que la v0.5 avait laissé en réserve : *« à rouvrir seulement si une
-donnée volumineuse — une carte explorée, un journal — devient persistable »*. Elle l'est.
-
-### Décisions verrouillées
-
-- **Ce qui manque est un TABLEAU persistant, pas un système de drapeaux.** Un `flag.set(id)`
-  serait un domaine de plus pour un seul usage ; un tableau global persistant sert aussi bien
-  les coffres, l'inventaire, les niveaux de compétence et le journal de quêtes.
-- **Le format de sauvegarde ne change pas de principe.** Chaque valeur reste rangée avec l'id
-  opaque de sa variable (v0.5) : un tableau s'écrit avec son id, sa longueur, puis ses
-  éléments. Une longueur qui change entre deux versions du jeu se relit en tronquant ou en
-  complétant par le défaut — **même tolérance que pour un scalaire absent**, et c'est ce qui
-  garantit qu'ajouter dix coffres n'efface pas les parties des joueurs.
-- **Le paquetage est une décision d'ÉMISSION, jamais une notion d'auteur.** Un tableau de
-  `bool` tient huit valeurs par octet en SRAM parce que le codegen le décide, pas parce que
-  l'auteur manipule des bits. Sinon on réintroduit les opérateurs binaires par la porte de
-  la sauvegarde, après les avoir refusés par la porte du langage.
-- **Le plafond reste vérifié au build.** 32 Kio, et la place occupée se calcule déjà (v0.5).
-  Un tableau est le premier objet capable d'approcher la limite : c'est ce qui rend
-  l'indicateur « X octets sur 32 Kio » enfin utile — il était noté « sans intérêt » en v0.5,
-  faute de quoi que ce soit d'assez gros.
-
-### Ce que ça touche
-
-[settings.py](editor/core/models/settings.py) (une globale porte une taille),
-[project_variables.py](editor/core/project_variables.py),
-[globals.py](editor/scripting/globals.py),
-[gba_engine.h](runtime/include/gba_engine.h) (`save_write` / `save_read`),
-[codegen.py](editor/scripting/codegen.py), l'écran des variables, et `validator.py`.
-
-### Ouvert
-
-- **Comment une globale-tableau se lit dans un script.** `GLOBAL_COFFRES[i] = 1` est ce qu'on
-  attend en lisant du Lua ; `global.set_at("coffres", i, 1)` est ce que la grammaire actuelle
-  impose (une globale se traverse par accesseurs). À trancher **avec la v0.16**, qui range
-  l'API : décider ici en solitaire, c'est se contredire deux versions plus loin.
-- **Une valeur par défaut de tableau** : une seule valeur pour toutes les cases, ou une liste
-  authorée ? La première suffit aux coffres, pas à un inventaire de départ.
-- Les métadonnées de sauvegarde (nom, chapitre, temps de jeu) ne sont **pas** ici : elles vont
-  avec l'écran qui les affiche, en v0.22.
-
----
-
-## v0.21 — Le texte adressable : le dialogue piloté par la donnée
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-`text.draw(tx, ty, id)` prend un **nom résolu au build** — `Param("id", PARAM_STR,
-DOMAIN_TEXT)` ([api.py:858](editor/scripting/api.py:858)). Conséquence : un script ne peut pas
-parcourir une conversation, ni afficher « la réplique *i* », ni tirer un dialogue d'une
-DataTable. Chaque réplique est un appel écrit à la main, et l'enchaînement est une chaîne de
-`if`. Les séquences (v0.7.7) rendent une **cinématique** lisible ; elles ne font rien pour
-cent PNJ.
-
-Et le fait qui décide du coût du chantier : **le C est déjà prêt.**
-
-```c
-void text_draw(int tx, int ty, int id);   /* gba_engine.h:826 */
-const unsigned short *s = g_texts[id];    /* gba_engine.h:1737 */
-```
-
-L'index existe, il est déjà un `int`, et `g_texts[]` est déjà une table. Ce n'est pas le
-runtime qui refuse un id calculé : c'est le Lua qui ne sait pas le nommer autrement que par
-une constante.
-
-### Décisions verrouillées
-
-- **Un id de texte devient une VALEUR.** Une expression entière est acceptée là où une clé
-  l'était. C'est le même écart que celui déjà assumé pour un littéral (`literal_ok`), et il ne
-  coûte **rien** au runtime.
-- **Cette valeur vient d'une colonne de DataTable de type `text`.** La v0.7.2 a la table ; il
-  lui manque ce type de colonne. C'est ce qui rend un dialogue de données **traduisible sans
-  rien inventer** : la table porte des ids, la table de textes porte les langues (v0.9).
-- **Ce n'est PAS un éditeur de dialogue à branches.** La décision de la v0.3.2 tient : le
-  séquencement est du script. Ce qui change, c'est qu'un script peut enfin *parcourir de la
-  donnée* au lieu d'être déroulé à la main.
-- **Le filtre « qui est cité ? » doit suivre, et c'est le vrai piège.** La v0.8.4 a montré que
-  la ROM ne transporte que les ressources effectivement nommées par un script. Un id calculé
-  n'est nommé nulle part : sans traitement, **les textes d'une table disparaîtraient de la
-  ROM**. Une colonne de type `text` doit donc marquer ses entrées comme atteintes — même
-  mécanisme, une source de référence de plus.
-
-### Ce que ça touche
-
-[api.py](editor/scripting/api.py) (le type du paramètre),
-[checker.py](editor/scripting/checker.py), [codegen.py](editor/scripting/codegen.py),
-[data_table.py](editor/core/models/data_table.py) (la colonne `text`), le filtre de ressources
-citées de `rom_build.py`, et l'écran Data.
-
-### Ouvert
-
-- **`text.length` et `text.reading` sur un id calculé** — même question que la v0.18, et même
-  réponse probable : le tampon doit être propre à la zone.
-- **Ce que l'éditeur montre.** Une colonne d'ids de texte doit s'éditer en montrant le texte,
-  pas l'id, sinon la table devient illisible dès la dixième ligne.
-- **Le choix du joueur** (deux ou trois options, un curseur) est la brique qui manque *après*
-  celle-ci. Elle est en v0.22, et c'est là qu'il faut la traiter — pas ici.
-
----
-
-## v0.22 — Menus, listes et curseur
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-`UILayout` a trois types d'éléments : texte, panneau, image
-([ui_region.py](editor/core/models/ui_region.py)). **Aucun ne tient une sélection.** Un menu
-s'écrit donc entièrement en script : index courant, bornes, défilement, répétition de touche,
-retour arrière, et le curseur à déplacer. Sans fonction déclarable dans le langage, **chaque
-écran le réécrit en entier**.
-
-La v1.0 le note déjà, en « Ouvert » : *« si les trois genres à menus le rendent pénible, c'est
-ici que ça se verra »*. La revue tranche : pour un RPG à arbre de compétences, à inventaire et
-à équipement, ce n'est pas un confort qu'on jugera après coup — c'est un tiers du contenu du
-jeu, et il est aujourd'hui entièrement à la charge de l'auteur.
-
-Un manque va avec, et il est plus petit : `save.exists(slot)` répond « il y a quelque chose
-ici », rien de plus (v0.5, « Ouvert »). Un écran de sélection de partie ne peut donc afficher
-**ni chapitre, ni temps de jeu, ni nom** — c'est-à-dire rien de ce qu'un joueur regarde pour
-choisir sa partie.
-
-### Décisions verrouillées
-
-- **Le moteur prend la NAVIGATION, pas la mise en page.** Une liste, c'est un `UILayout`
-  existant plus quatre choses : un index courant, des bornes, un pas de défilement, et
-  l'entrée qui les fait bouger. Ce qui s'affiche reste du texte et des images authorées, avec
-  les outils qui existent.
-- **Un item est une LIGNE DE DONNÉE, pas un objet d'interface.** Une liste se lie à un tableau
-  (v0.20) ou à une table (v0.7.2), et l'auteur écrit ce qu'une ligne affiche. L'alternative —
-  un widget par genre de menu — n'a pas de fin, et chaque genre de jeu en redemanderait un.
-- **Le curseur est ce qui existe déjà** : un acteur `screen_space` ou une image d'UI. Pas de
-  troisième chose à apprendre.
-- **L'en-tête de sauvegarde s'étend, et il reste de l'auteur.** Un bloc descriptif par
-  emplacement — les valeurs de N globales que l'auteur désigne — lisible **sans charger la
-  partie**. Le moteur ne décide pas *ce qu'*une partie affiche, comme il ne décide pas où elle
-  reprend (v0.5).
-
-### Ce que ça touche
-
-[ui_region.py](editor/core/models/ui_region.py),
-[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tick d'UI),
-[api.py](editor/scripting/api.py) (un domaine `list`),
-[gba_engine.h](runtime/include/gba_engine.h) (l'en-tête de sauvegarde), l'inspecteur de scène,
-et `validator.py`.
-
-### Ouvert
-
-- **Où une liste se dessine.** Sur le calque de texte — donc soumise au budget de tuiles d'UI
-  et à la grille de tuiles — ou en sprites, donc dans les 128 OAM ? Les deux chemins existent
-  déjà (v0.3.3) ; il faut dire lequel une liste choisit, et pourquoi.
-- **Le défilement, à la ligne ou au pixel.** À la ligne, le texte reste sur sa grille et rien
-  ne coûte ; au pixel, un inventaire long défile joliment mais demande un redessin partiel à
-  chaque frame.
-- **La répétition de touche** : réglage par liste, ou du projet ? C'est un réglage de game
-  feel, donc probablement par liste — mais trois listes avec trois cadences est une incohérence
-  qu'un joueur sent.
-- **Ce que le moteur fait d'un choix de dialogue** (2–3 options dans une boîte) : est-ce une
-  liste comme les autres, ou la seule forme qui mérite un raccourci ?
-
----
-
-## v0.23 — Ce qu'un boss demande
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-Trois manques déjà connus séparément, que **le même cas d'usage** réunit : un combat de boss à
-phases, avec des projectiles et des parties mobiles.
-
-1. **Une attente reste refusée dans un `if` ou une boucle.** C'est une limite dite et assumée
-   de la v0.7.7, avec sa condition de réouverture écrite noir sur blanc : *« à rouvrir
-   seulement si une cinématique réelle bute dessus »*. Le cas réel est là : un pattern
-   d'attaque, c'est `3 × (tirer, attendre 20)`. Aujourd'hui il s'éclate en séquences nommées —
-   c'est-à-dire que la fonctionnalité écrite pour rendre l'attente lisible redevient illisible
-   exactement là où on l'emploie le plus.
-2. **Pas de hiérarchie d'acteurs.** Un acteur porte un sprite — le codegen prend le
-   **premier** `SpriteComponent`
-   ([main_gen.py:1007](editor/codegen/runtime_codegen/main_gen.py:1007)) — et **rien ne relie
-   deux acteurs entre eux**. Un boss segmenté — bras, tête, points faibles, queue — est donc N
-   acteurs recalés à la main en `math.sin`/`math.cos` dans le script du corps, à chaque frame,
-   avec autant d'occasions de désynchroniser une partie qu'il y a de parties. Le moteur sait
-   pourtant déjà faire exactement ce calcul : il le fait entre un acteur et son sprite
-   (ARCHITECTURE.md, « Le modèle affine »). Il ne sait simplement pas le faire un cran plus
-   haut.
-3. **La collision scène↔scène est déroulée en O(n²) au build.** `col_pairs` prend **toutes**
-   les paires dont au moins un côté porte un script
-   ([main_gen.py:3290](editor/codegen/runtime_codegen/main_gen.py:3290)), et chaque paire
-   produit son bloc de C. Il n'existe aucune matrice : on ne peut pas déclarer que les
-   projectiles du joueur n'entrent jamais en collision avec ceux du boss. Le coût grandit en
-   carré — en taille de ROM **et** en temps de frame — précisément dans la salle où il y a le
-   plus de choses à l'écran.
-
-### Décisions verrouillées
-
-- **Pour (1) : la levée se limite à la BOUCLE BORNÉE**, `for i = 1, n`. Une boucle bornée se
-  découpe sans continuation : un compteur de plus dans l'état de la séquence, et un `case` qui
-  revient en arrière — le `switch` émis se relit toujours avec les mots du Lua. **Le `if`
-  autour d'une attente reste refusé** : lui demanderait la transformation en continuations que
-  la v0.7.7 a chiffrée et refusée, et son prix n'a pas changé.
-- **Pour (2) : une hiérarchie d'ACTEURS, parce que `un acteur = un OBJ` doit rester vrai.**
-  Décidé le 2026-08-20, **contre la première rédaction de cette version**, qui proposait
-  plusieurs `SpriteComponent` par acteur. Le multi-sprite achetait la même chose en cassant
-  trois invariants d'un coup : le garde-fou des 128 compte des **acteurs**
-  ([main_gen.py:2965](editor/codegen/runtime_codegen/main_gen.py:2965)), un slot affine est
-  réservé par **acteur** (`_compute_affine_info`, 32 au maximum), et une box de collision est
-  relative au pivot de l'**acteur**. La preuve que c'était la mauvaise découpe tient dans une
-  question que cette section laissait ouverte faute de bonne réponse — *« le hitbox d'un bras
-  suit-il le sprite ou l'acteur ? »* : avec un acteur par partie, elle ne se pose pas. Le
-  hitbox du bras appartient au bras.
-- **Ce n'est pas de l'héritage, c'est un REPÈRE**, et le mot doit être tenu. `Actor.parent` dit
-  « ma position est exprimée dans le repère de celui-là », pas « je reprends sa définition ».
-  L'héritage d'une définition existe déjà dans le logiciel, il s'appelle un **prefab**, et
-  laisser les deux sens du même mot cohabiter coûterait plus cher que la fonctionnalité.
-- **La composition est celle qui est DÉJÀ écrite, d'un cran plus haut.** Le modèle affine
-  compose déjà monde × local : rotation = **somme** des degrés, scale = **produit** Q8, offset
-  = `R(rotation)·S(scale)·offset` exprimé dans le repère du parent, position = parent + offset
-  composé (ARCHITECTURE.md, « Le modèle affine » ; `_affine_oam_lines_dynamic`). Un enfant est
-  exactement ça, l'`Actor` parent tenant la place que tenait l'acteur pour son sprite. **Aucune
-  règle nouvelle à apprendre, ni à écrire** — et c'est ce qui rend le chantier petit. Une seule
-  précaution si la v0.19 passe avant, ce qui est l'ordre recommandé : la composition se fait
-  **dans l'unité de la position** (Q8), l'arrondi restant à l'émission OAM. Un arrondi par
-  niveau ferait dériver un bras d'un pixel par cran de profondeur.
-- **L'ordre se décide au BUILD, par tri de profondeur.** C'était l'objection à la hiérarchie —
-  « un ordre de mise à jour, des transforms composés, une invalidation » — et elle tombe : les
-  acteurs sont émis **parents avant enfants**, la composition est déroulée dans le `main.c`
-  comme le reste de la frame, et il n'y a **ni ordonnanceur, ni drapeau de salissure, ni
-  invalidation**. L'ordre d'une frame continue de se lire en clair dans le C émis, ce qui était
-  la seule chose à protéger (même règle qu'en v0.7.7 pour les séquences). Un **cycle de
-  parenté** est décidable au build et bloque le build en nommant les acteurs.
-- **Un enfant sans transform propre PARTAGE le slot affine de son parent.** Un slot ne contient
-  que `pa/pb/pc/pd` — donc deux OBJ de même rotation et de même échelle peuvent pointer le même
-  slot, la position n'y étant pour rien. Un boss à six parties qui tourne d'un bloc coûte
-  **un** slot sur 32, pas sept. Une partie qui a sa propre rotation paie le sien, et c'est
-  juste.
-- **`visible` se propage au sous-arbre, comme un panneau d'UI caché cache le sien** (v0.15).
-  Deux endroits du logiciel, une seule règle : cacher un boss cache ses bras.
-- **La parenté est AUTHORÉE, jamais assignée au runtime.** C'est ce qui rend le tri de
-  profondeur possible au build.
-- **Un parent EXTERNE est réservé aux acteurs posés dans la scène.** Un prefab est un template
-  de **projet** : il ne peut pas nommer un acteur d'une **scène**, donc une instance de pool ne
-  s'attache à rien du décor. Conséquence assumée, et elle tombe bien — un projectile qui
-  suivrait le bras qui l'a tiré serait un défaut, pas une fonctionnalité.
-- **Mais un prefab porte son PROPRE sous-arbre**, et c'est le point corrigé le 2026-08-20, à la
-  lecture du modèle de Godot. La première rédaction concluait « une instance de pool n'a pas de
-  parent » ; le motif — *un prefab ne peut pas nommer un acteur de scène* — ne couvrait que le
-  parent **externe**. Un sous-arbre **interne** ne nomme rien d'extérieur : la profondeur reste
-  connue au build, le tri tient, et un ennemi segmenté redevient spawnable — une chenille à cinq
-  anneaux, un mini-boss qui apparaît deux fois. C'est le `PackedScene` de Godot, dont on ne
-  prend que ceci : **un template est un arbre, pas un objet plat.**
-- **Les parties d'un prefab sont des PARTIES, pas d'autres prefabs.** Un sous-arbre imbriquant
-  des templates ferait du dimensionnement de pool un problème de graphe, et d'un pool imbriqué
-  une notion que personne ne tient dans sa tête. Une partie est ce qu'un acteur est déjà : des
-  composants et un transform local.
-- **Le pool se dit en INSTANCES, le build multiplie par les parties.** `max_instances = 8` sur
-  un prefab de quatre parties réserve 32 entrées de `g_actors`, contiguës, et c'est **ce
-  chiffre-là** que la mesure affiche — pas 8. Le dimensionnement de l'état de script des
-  parties, lui, dépend de la question laissée ouverte en **v0.17** (une taille de pool par
-  projet ou par scène) : ce chantier attend sa réponse, il ne la donne pas.
-- **Détruire la racine détruit le sous-arbre.** `self:destroy()` sur le corps libère les slots
-  des bras. C'est la même règle que la propagation de `visible`, et le pendant exact de
-  « `active = false` libère le slot » (v0.17) : sans elle, un boss tué laisserait ses bras dans
-  le pool jusqu'à la fin de la scène.
-- **Un acteur SANS sprite est un marqueur, et il ne coûte aucun OBJ.** C'est le `Marker2D` de
-  Godot — point de tir, point de saisie, ancre de hitbox — et ça marche **déjà** : l'émission
-  OAM est gardée par `if sprite and sprite.asset`
-  ([main_gen.py:2811](editor/codegen/runtime_codegen/main_gen.py:2811)). Ce qui se décide ici
-  n'est donc pas le mécanisme mais le **statut** : l'invariant s'écrit « un acteur = **au plus**
-  un OBJ », un marqueur coûte 144 octets et une entrée dans la boucle de frame, zéro pixel, et
-  l'éditeur doit le **dessiner** dans le canvas (une croix, un nom) — sans quoi la
-  fonctionnalité existe sans pouvoir être authorée.
-- **Le coût, dit en clair.** Chaque partie reste un `Actor` complet : 144 octets dans
-  `g_actors` (mesuré en v0.7.7), une entrée dans la boucle de frame, ses paires de collision,
-  et son slot affine si elle tourne pour son compte. Un boss à six parties, c'est **sept
-  acteurs**. C'est le prix de l'invariant, et il se paie en EWRAM — pas en lisibilité, ni en
-  règles à retenir.
-- **Pour (3) : la matrice est une propriété de PROJET, entre TAGS de boxes.** Les tags existent
-  déjà (`CollisionBoxComponent.tag`), et le build s'en sert pour **ne pas émettre** la paire.
-  Le gain est donc en ROM autant qu'en cycles — ce qu'un filtre au runtime n'aurait pas donné,
-  et c'est la raison de le faire au build comme tout le reste.
-
-### Ce que ça touche
-
-[checker.py](editor/scripting/checker.py) et [codegen.py](editor/scripting/codegen.py) (la
-boucle bornée dans une séquence),
-[scene.py](editor/core/models/scene.py) (le champ `Actor.parent`, et le sous-arbre d'un
-`Prefab`), [headers.py](editor/codegen/runtime_codegen/headers.py) et
-[lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) (un pool dimensionné en
-instances × parties),
-[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tri de profondeur, la
-composition du transform, `_compute_affine_info` pour le partage de slot, la destruction d'un
-sous-arbre, `col_pairs`),
-[settings.py](editor/core/models/settings.py) (la matrice de collision),
-[api.py](editor/scripting/api.py) (lire son parent, ou ses enfants), l'inspecteur d'acteur et
-le canvas de scène (l'arborescence, et le dessin d'un marqueur qui n'a pas d'image),
-`validator.py` (le cycle de parenté), et SCRIPTING.md.
-
-### Ouvert
-
-- **Le ré-attachement au runtime** — une main qui saisit, un projectile qui se plante dans un
-  bouclier et le suit. Interdit par le tri de profondeur au build, qui est précisément ce qui
-  garde la frame lisible. À rouvrir sur un cas réel, en sachant que la sortie n'est pas
-  évidente : soit la profondeur devient dynamique (et l'ordre quitte le C émis), soit un
-  attachement se déclare à l'authoring et ne fait que **s'activer** au runtime.
-- **La matrice se règle par paire de tags** (n²/2 cases, ça se lit) **ou par masque par tag**
-  (ça s'écrit plus vite, ça se relit mal). À trancher sur le nombre réel de tags d'un projet —
-  chiffre qu'on n'a pas.
-- **Comment une partie se désigne depuis le script de la racine**, et réciproquement.
-  `get_actor("bras")` nomme un acteur de scène ; une partie d'instance poolée n'a pas de nom
-  unique, il y en a huit. C'est la question qui décide si le sous-arbre d'un prefab est
-  scriptable ou seulement géométrique — et elle se tranche avec la forme retenue en **v0.16**
-  (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool).
-- **La profondeur est-elle bornée ?** Une queue segmentée veut une chaîne ; un boss ordinaire
-  veut un seul cran. Rien n'oblige à plafonner — le tri gère n'importe quelle profondeur — mais
-  chaque cran est une composition de plus par frame et par enfant. À mesurer avant de décider
-  s'il faut le dire à l'auteur.
-- **Ce que le canvas fait d'un enfant.** Déplacer le parent déplace le sous-arbre, c'est
-  entendu. Mais sélectionne-t-on un enfant directement, ou passe-t-on par le parent ? Et
-  l'arborescence se montre-t-elle dans la liste des acteurs de la scène — la première hiérarchie
-  visible de l'éditeur ?
-- **Ce que `active = false` fait à un sous-arbre.** `visible` se propage (décidé ci-dessus),
-  mais `active` porte un autre sens depuis la v0.17 : il **libère un slot de pool**. Un acteur
-  posé dans une scène n'en a pas, donc les deux ne se contredisent pas encore ; c'est le jour où
-  un enfant sera poolé que la question se posera — et ce jour n'existe pas, la parenté étant
-  réservée aux acteurs de scène.
-
----
-
-## v0.24 — Le projet à l'échelle d'une équipe
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-Trois points, dont un est déjà écrit en v1.0 — et c'est **la date qui change**, pas le
-constat.
-
-- **Les formats.** « Des formats que git sait relire » est le deuxième des quatre prérequis de
-  la v1.0. Mais il ne se comporte pas comme un prérequis de v1.0 : à trois personnes, deux
-  commits sur la même scène ne se fusionnent **pas**, et l'historique devient inexploitable dès
-  la première semaine. Ce n'est pas une finition, c'est un préalable — et plus il est repoussé,
-  plus l'historique qu'il faudra traverser est illisible.
-- **Le build.** `make` est appelé sans `-j`
-  ([rom_build.py:813](editor/codegen/rom_build.py:813)) : la compilation est **sérielle**. Et
-  rien ne met en cache la conversion des assets — chaque build repasse grit sur tout le
-  catalogue. Le temps d'itération grandit donc linéairement avec le nombre d'assets, alors que
-  l'itération est exactement ce qui fait ou défait un combat de boss.
-- **Le chargement.** `Project.load()` charge tout, tout de suite (déjà noté en v1.0). Pong et
-  ses 118 fichiers vont bien ; quarante scènes et deux cents sprites, personne n'en sait rien.
-
-### Décisions verrouillées
-
-- **Les formats d'abord, et il n'y a rien à concevoir.** La correction est déjà écrite en
-  v1.0 : une ligne de texte par rangée de grille — ce que `tileset` fait déjà, et c'est de loin
-  la partie la plus lisible du sidecar — et les couleurs en hexadécimal (`#39A8FF`), **les deux
-  formes acceptées en lecture**. Il reste à le faire, et à le faire avant que le projet cible
-  n'accumule un historique qu'on ne relira jamais.
-- **`-j` n'est pas un réglage.** Le nombre de cœurs se lit ; le build en profite. Une case de
-  plus à expliquer n'achèterait rien.
-- **Le cache de conversion se fait sur l'EMPREINTE de la source et des options, pas sur la
-  date.** Une date de fichier change à chaque `git checkout` : un cache daté serait inutile
-  exactement là où il sert le plus, c'est-à-dire en changeant de branche à trois.
-
-### Ce que ça touche
-
-[background.py](editor/core/models/background.py) et
-[scene.py](editor/core/models/scene.py) (la sérialisation),
-[gba_color.py](editor/core/gba_color.py),
-[rom_build.py](editor/codegen/rom_build.py),
-[grit_conversion.py](editor/codegen/grit_conversion.py), et
-[project.py](editor/core/project.py) (le chargement).
-
-### Ouvert
-
-- **Le temps de build réel n'est pas mesuré.** Décomposé (grit / make / émission / mmutil), sur
-  la démo puis sur un projet gonflé artificiellement. Sans ce chiffre, « le build est lent »
-  reste une impression, et on optimiserait au hasard — la v0.8.4 a montré ce que vaut une
-  intuition non mesurée (12× d'écart entre la taille source et le coût ROM).
-- **Quand cesse-t-on d'ÉCRIRE l'ancien format ?** La lecture des deux formes est décidée ; le
-  moment où l'écriture bascule ne l'est pas, et il décide s'il faut un convertisseur de projet.
-- **Le chargement paresseux, par collection ou par écran ?** La seconde est plus simple et
-  suffit peut-être. À décider sur la mesure, pas avant.
 
 ---
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .globals import _C_TYPES
+from codegen import build_output
 
 
 def generate_constants_h(constants_) -> str:
@@ -39,5 +40,5 @@ def write_constants(src_dir: Path, constants_) -> list[str]:
     Écrit constants.h dans src_dir depuis la liste de Constant.
     Retourne la liste des noms (utile pour CodegenContext).
     """
-    (src_dir / "constants.h").write_text(generate_constants_h(constants_), encoding="utf-8")
+    build_output.write(src_dir / "constants.h", generate_constants_h(constants_))
     return [c.name for c in constants_]

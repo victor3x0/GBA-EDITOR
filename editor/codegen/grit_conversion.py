@@ -26,6 +26,7 @@ from core.project import Project
 # très courant dans la génération (`sym = bg_layer_sym(...)`), et une locale
 # masquerait la fonction dans toute la portée où elle apparaît.
 from codegen.c_names import sym as c_sym
+from codegen import build_output
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -168,6 +169,12 @@ class GritBackground:
             if quantize:
                 if not remap_tiles_to_bank(Path(out_base + ".c"), colors, self._emit):
                     return False
+            # Chemin LEGACY (fond non compressé) : grit écrit ces deux fichiers
+            # lui-même, donc `build_output` ne les a pas vus passer. Sans cette
+            # déclaration, le balayage de fin de build les prendrait pour des
+            # restes périmés et les supprimerait.
+            for ext in (".c", ".h"):
+                build_output.claim(Path(out_base + ext))
         return True
 
 
@@ -393,7 +400,7 @@ def remap_tiles_to_bank(c_path: Path, bank_colors: list[int], emit: Callable) ->
     pal_m2 = re.search(_ARRAY_RE.format(suffix="Pal"), text)
     text = text[:pal_m2.start(3)] + new_pal_str + text[pal_m2.end(3):]
 
-    c_path.write_text(text)
+    build_output.write(c_path, text)
     return True
 
 
@@ -488,7 +495,16 @@ class GritSprites:
                 self._emit("log_line",
                            f"[palette] {sprite.name} -> {len(bank_colors)} couleurs (indexé)")
 
-            out_base = str(p.grit_out_dir / f"sprite_{c_sym(sprite.name)}")
+            sym = f"sprite_{c_sym(sprite.name)}"
+            # grit écrit LUI-MÊME ses fichiers, donc il en date la sortie à
+            # chaque passage — et il y estampille l'heure d'export, ce qui la
+            # rend différente même à donnée identique (cf. build_output).
+            # On le fait donc écrire à côté, puis on republie par
+            # `build_output.write` : le fichier définitif ne bouge que si son
+            # contenu bouge, et `make` le saute sinon (ROADMAP v0.24).
+            scratch = p.grit_out_dir / "_grit"
+            scratch.mkdir(parents=True, exist_ok=True)
+            out_base = str(scratch / sym)
             self._emit("log_line",
                        f"[grit Actor] {sprite.name} <- {ap.name} "
                        f"({sprite.frame_w}x{sprite.frame_h}px)")
@@ -505,6 +521,11 @@ class GritSprites:
             if bank_colors:
                 if not remap_tiles_to_bank(Path(out_base + ".c"), bank_colors, self._emit):
                     return False
+            for ext in (".c", ".h"):
+                src_f = Path(out_base + ext)
+                if src_f.exists():
+                    build_output.write(p.grit_out_dir / f"{sym}{ext}",
+                                       src_f.read_text(encoding="utf-8", errors="replace"))
         return True
 
 
@@ -716,7 +737,7 @@ class MmutilAudio:
             # mmutil écrit soundbank.h dans build/ — le Makefile ne compile
             # que depuis build/src/ (-Isrc), donc le header doit y être copié
             # pour que le #include "soundbank.h" de main.c le trouve.
-            shutil.copy2(soundbank_h, p.src_dir / "soundbank.h")
+            build_output.copy(soundbank_h, p.src_dir / "soundbank.h")
             self._emit("log_line", "[mmutil] -> src/soundbank.h")
         if ok:
             bin2s = self._bin2s
@@ -740,19 +761,19 @@ class MmutilAudio:
                         self._emit("error_line" if proc.returncode != 0 else "log_line", f"  {line}")
                 if proc is not None and proc.returncode == 0:
                     s_dst = p.src_dir / "soundbank.s"
-                    s_dst.write_text(proc.stdout, encoding="utf-8")
+                    build_output.write(s_dst, proc.stdout)
                     self._emit("log_line", "[bin2s] -> src/soundbank.s")
                     # bin2s ne génère pas de header : déclarer nous-mêmes le
                     # symbole "soundbank_bin" (dérivé de "soundbank.bin" par
                     # bin2s) que main.c référence via mmInitDefault().
                     h_dst = p.src_dir / "soundbank.bin.h"
-                    h_dst.write_text(
+                    build_output.write(
+                        h_dst,
                         "/* Généré par GBA Editor — déclare le symbole produit par bin2s */\n"
                         "#ifndef SOUNDBANK_BIN_H\n"
                         "#define SOUNDBANK_BIN_H\n"
                         "extern const unsigned char soundbank_bin[];\n"
                         "#endif\n",
-                        encoding="utf-8",
                     )
                     self._emit("log_line", "[bin2s] -> src/soundbank.bin.h")
             else:

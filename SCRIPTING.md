@@ -87,6 +87,13 @@ Deux points valent d'être soulignés, parce qu'ils surprennent :
 
 - **La division est entière.** `7 / 2` vaut `3`. Il n'y a pas de nombre à virgule dans le
   moteur — ni ici, ni dans les composants, ni dans la ROM.
+- **`self.position` est en pixels, `self.velocity` est en Q8.** Le sous-pixel (ROADMAP v0.19)
+  vit dans la STRUCTURE de l'acteur, jamais dans le langage — toujours des entiers. `256`
+  vaut 1 pixel/frame de vélocité, `128` un demi-pixel/frame ; `self:apply_velocity()` l'ajoute
+  à la position en gardant la fraction d'une frame à l'autre, ce que
+  `self.position = self.position + self.velocity` ne peut plus faire (les deux membres n'ont
+  plus la même échelle). `math.lerp`/`math.ease` n'ont pas changé : un Q8 est un entier comme
+  un autre, ils interpolent l'un ou l'autre sans le savoir.
 - **Une chaîne n'est pas du texte.** Les guillemets servent à **nommer** quelque chose du
   projet : une animation, une scène, une palette, une clé de texte. Le texte que le joueur
   lit vit dans la **table de textes**, avec sa mise en forme et ses traductions, et s'affiche
@@ -257,7 +264,7 @@ Et les fonctions globales :
 
 | Vous écrivez | Pourquoi non | À la place |
 | --- | --- | --- |
-| `print(x)` | la GBA n'a pas de console | `text.draw` pour le joueur ; une trace de développement n'existe pas encore (v0.14) |
+| `print(x)` | la GBA n'a pas de console | `text.draw` pour le joueur ; `debug.log(...)` pour une trace de développement (journal mGBA, disparaît des builds release) |
 | `pairs(t)` / `ipairs(t)` / `next(t)` | pas de table à parcourir | `for i = 1, #t do` |
 | `type(x)` | le type est connu au build, jamais à l'exécution | — |
 | `tostring(x)` | pas de chaîne manipulable | un marqueur de valeur dans le texte |

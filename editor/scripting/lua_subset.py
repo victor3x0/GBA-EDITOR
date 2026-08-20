@@ -280,10 +280,12 @@ STDLIB_MODULES: dict[str, Refusal] = {
         "il n'y a pas de coroutine : le moteur appelle `on_update` une fois "
         "par frame et reprend la main. Une action étalée dans le temps s'écrit "
         "avec un état — un compteur dans une variable, et le `if` qui le lit."),
-    "debug": Refusal(
-        "debug.traceback()",
-        "il n'y a pas de module `debug` : le script est transpilé en C, il n'y "
-        "a aucune machine virtuelle à inspecter à l'exécution."),
+    # `debug` n'est plus ici : ROADMAP v0.14 en fait un vrai module, avec un
+    # seul membre (`debug.log`). Un autre membre Lua (`debug.traceback()`
+    # notamment) retombe désormais sur `unknown_member_message` — « le
+    # module `debug` n'a pas de `traceback`. Il offre : log. » — plus
+    # précis qu'un refus générique, et ça vient gratuitement du catalogue
+    # (api.py) une fois `debug.log` déclaré là.
     "utf8": Refusal(
         "utf8.char(…)",
         "il n'y a pas de module `utf8` : le moteur n'a pas de chaîne "
@@ -304,8 +306,9 @@ STDLIB: dict[str, Refusal] = {
         "print(x)",
         "`print` n'existe pas : la GBA n'a pas de console. Écrire au JOUEUR se "
         "fait avec `text.draw` (une police, une entrée de la table de textes, "
-        "donc traduisible). Une trace pour le DÉVELOPPEUR, c'est autre chose, "
-        "et ça n'existe pas encore — c'est le sujet de la v0.14."),
+        "donc traduisible). Une trace pour le DÉVELOPPEUR, c'est `debug.log(...)` "
+        "— elle sort par le journal mGBA, pas par l'écran du jeu, et disparaît "
+        "des builds release."),
 
     # ── Itération ─────────────────────────────────────────────────
     "pairs": Refusal(

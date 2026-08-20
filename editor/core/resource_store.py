@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Generic, Iterator, Optional, Type, TypeVar
 
 from core.models.resource import Resource
+from core import project_json
 
 T = TypeVar("T", bound=Resource)
 
@@ -98,7 +99,7 @@ class ResourceStore(Generic[T]):
 
     def save(self, item: T):
         self.dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(self._path(item.name), json.dumps(item.to_dict(), indent=2, ensure_ascii=False))
+        atomic_write(self._path(item.name), project_json.dumps(item.to_dict()))
 
     def save_all(self):
         for item in self.items:

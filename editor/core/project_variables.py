@@ -21,6 +21,7 @@ puisque `project.py` l'importe pour composer la classe.
 import json
 
 from core.resource_store import atomic_write
+from core import project_json
 from core.models.ids import new_id
 from core.models.settings import GlobalVar, Constant
 from scripting.api import DOMAIN_GLOBAL, DOMAIN_CONST
@@ -45,7 +46,7 @@ class ProjectVariablesMixin:
             ],
         }
         self.project_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(self.variables_file, json.dumps(data, indent=2, ensure_ascii=False))
+        atomic_write(self.variables_file, project_json.dumps(data))
 
     def load_variables(self):
         self.globals = []

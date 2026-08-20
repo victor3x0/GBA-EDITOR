@@ -31,6 +31,49 @@ def components_to_bgr555(r5: int, g5: int, b5: int) -> int:
     return ((b5 & 0x1F) << 10) | ((g5 & 0x1F) << 5) | (r5 & 0x1F)
 
 
+# ── La forme ÉCRITE d'une couleur (ROADMAP v0.24) ────────────────────
+# Sur disque, une couleur s'écrit `#39A8FF` et non `20253` : le nombre décimal
+# ne se relit pas — ni en revoyant un diff, ni en ouvrant le fichier — alors
+# que c'est la même donnée. Le passage est EXACTEMENT réversible sur les 32 768
+# valeurs BGR555 (vérifié exhaustivement) : les 3 bits de poids faible que
+# `bgr555_to_rgb888` met à zéro sont ceux que `rgb888_to_bgr555` rejette de
+# toute façon, donc aucune couleur ne se dégrade en traversant le fichier.
+#
+# La LECTURE accepte les deux formes, pour toujours : un projet écrit avant
+# cette version se relit sans conversion préalable, et le premier
+# enregistrement le réécrit au passage.
+
+def bgr555_to_hex(v: int) -> str:
+    r, g, b = bgr555_to_rgb888(int(v) & 0x7FFF)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def hex_to_bgr555(s: str) -> int:
+    h = s.strip().lstrip("#")
+    return rgb888_to_bgr555(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def read_color(v) -> int:
+    """Une couleur relue du disque, quelle que soit sa forme écrite."""
+    return hex_to_bgr555(v) if isinstance(v, str) else int(v) & 0x7FFF
+
+
+def write_colors(colors) -> list[str]:
+    return [bgr555_to_hex(c) for c in colors]
+
+
+def read_colors(values) -> list[int]:
+    return [read_color(c) for c in (values or [])]
+
+
+def write_palettes(palettes) -> list[list[str]]:
+    return [write_colors(p) for p in (palettes or [])]
+
+
+def read_palettes(palettes) -> list[list[int]]:
+    return [read_colors(p) for p in (palettes or [])]
+
+
 
 
 def nearest_bank_color(rgb888: tuple[int, int, int], bank_colors: list[int]) -> int:

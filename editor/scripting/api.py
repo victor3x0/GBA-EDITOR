@@ -344,7 +344,24 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="self:add_velocity", c_func="actor_add_velocity",
         params=[Param("dv", PARAM_VEC2)],
         self_first=True,
-        doc="Ajoute `dv` (un vec2) à la vélocité courante. Utile pour l'accélération ou la gravité, frame après frame.",
+        doc="Ajoute `dv` (un vec2, en Q8 — 256 = 1 px/frame) à la vélocité courante. "
+            "Utile pour l'accélération ou la gravité, frame après frame.",
+    ),
+    # Le pendant manquant de self.velocity depuis que sa réponse à « comment
+    # l'auteur exprime une vélocité fractionnaire » (ROADMAP v0.19,
+    # 2026-08-20) est « self.velocity devient Q8 » : sans cet appel, un
+    # sous-pixel accumulé n'a nulle part où s'appliquer — self.position ne
+    # rend et n'accepte que des pixels entiers, donc `self.position =
+    # self.position + self.velocity` n'a plus de sens dimensionnel. C'est lui
+    # qui possède l'accumulateur (littéralement s->x/s->y en Q8), pas un
+    # nouveau champ caché sur l'Actor.
+    "self:apply_velocity": ApiFunc(
+        lua_name="self:apply_velocity", c_func="actor_apply_velocity",
+        params=[], self_first=True,
+        doc="Ajoute la vélocité courante (self.velocity) à la position, en gardant le "
+            "sous-pixel d'une frame à l'autre — remplace `self.position = self.position "
+            "+ self.velocity`, qui mélangeait deux échelles depuis que self.velocity est "
+            "en Q8. self.position continue de ne rendre que des pixels entiers.",
     ),
 
     # self.grounded (lecture seule) : cf. RUNTIME_PROPS — « y a-t-il un sol
@@ -728,6 +745,24 @@ RUNTIME_API: dict[str, ApiFunc] = {
             "Deux tailles pour une grille — array(20, 12) se lit grille[1..20][1..12]. "
             "La taille est fixée au build ; les tableaux sont indexés à partir de 1, "
             "et #sac vaut leur taille.",
+    ),
+
+    # ── Diagnostic (ROADMAP v0.14) ───────────────────────────────────
+    # Ni int ni string : chaque argument peut être l'un ou l'autre, ce
+    # qu'aucun PARAM_* existant ne décrit — d'où params=[] plutôt qu'un type
+    # inventé qui mentirait sur la moitié des appels. Résolu par codegen, pas
+    # par `_emit_api_call` : la ligne devient une SÉQUENCE d'appels C
+    # (debug_write_str/debug_write_int, un par argument, puis debug_flush),
+    # jamais un unique appel variadique — le moteur n'émet pas de printf.
+    # Disparaît des builds release (cf. runtime/include/gba_debug.h) : un
+    # projet qui n'active jamais le build debug ne paie rien.
+    "debug.log": ApiFunc(
+        lua_name="debug.log", c_func="_debug_log",   # résolu par codegen
+        params=[], variadic=True,
+        doc='Écrit une ligne dans le journal mGBA — jamais à l\'écran du jeu. '
+            'Concatène ses arguments, chacun déjà une chaîne ou un entier : '
+            'debug.log("hp=", hp, " x=", x). Sans effet, et retiré de la ROM, '
+            'hors build debug (réglage du projet).',
     ),
 
     # ── Affichage texte : voir `text.*` (cf. REMOVED_API) ─────────
@@ -1220,8 +1255,10 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
     "self.position": ApiProp(
         lua_name="self.position", c_getter="actor_get_position",
         c_setter="actor_set_position", ptype=PARAM_VEC2, self_first=True,
-        doc="Position monde de l'actor (un vec2, .x/.y). "
-            "self.position = vec2(x, y) la téléporte instantanément.",
+        doc="Position monde de l'actor (un vec2, .x/.y), en PIXELS entiers — "
+            "toujours, même sur un actor qui accumule du sous-pixel via "
+            "self:apply_velocity(). self.position = vec2(x, y) la téléporte "
+            "instantanément et efface le sous-pixel accumulé.",
     ),
     "self.rotation": ApiProp(
         lua_name="self.rotation", c_getter="actor_get_rotation",
@@ -1268,11 +1305,18 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
     ),
 
     # ── Actor — physique ───────────────────────────────────────────
+    # ROADMAP v0.19 (2026-08-20) : unité Q8 (256 = 1 px), pas des pixels — la
+    # rupture assumée qui rend le sous-pixel utilisable sans un second nom
+    # (self.velocity_q8) à côté de self.velocity. 128 = un demi-pixel/frame,
+    # 256 = un pixel/frame, 384 = un pixel et demi/frame. self.position, elle,
+    # reste en pixels (décision verrouillée, inchangée).
     "self.velocity": ApiProp(
         lua_name="self.velocity", c_getter="actor_get_velocity",
         c_setter="actor_set_velocity", ptype=PARAM_VEC2, self_first=True,
-        doc="Vélocité de l'actor (un vec2, .x/.y). Ne déplace pas seule : "
-            "self.position = self.position + self.velocity l'applique.",
+        doc="Vélocité de l'actor (un vec2, .x/.y), en Q8 : 256 = 1 pixel/frame, "
+            "128 = un demi-pixel/frame. Ne déplace pas seule — self:apply_velocity() "
+            "l'ajoute à la position, en conservant le sous-pixel d'une frame à l'autre "
+            "(self.position, elle, ne rend que des pixels entiers).",
     ),
 
     # ── Actor — état général ───────────────────────────────────────

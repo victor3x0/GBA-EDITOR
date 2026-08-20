@@ -63,6 +63,26 @@ class PaletteBank(Resource):
                 self.colors = self.colors[:self.size]
             self.colors[0] = RESERVED_SLOT_COLOR
 
+    # ROADMAP v0.24 : les couleurs s'écrivent en #RRGGBB. Seule raison de
+    # surcharger les deux méthodes génériques de Resource — le reste de la
+    # palette (`name`, `size`) se sérialise très bien tout seul.
+    # Une couleur par ligne, et non les seize sur une seule : deux personnes
+    # qui retouchent deux couleurs d'une même palette doivent pouvoir fusionner.
+    # L'import est LOCAL parce que `gba_color` importe RESERVED_SLOT_COLOR
+    # d'ici : la règle de réserve de l'index 0 est une règle de palette et
+    # reste chez elle (cf. l'en-tête de gba_color.py). Le cycle se coupe donc
+    # du côté qui n'a besoin de l'autre qu'au moment de sérialiser.
+    def to_dict(self) -> dict:
+        from core.gba_color import write_colors
+        d = super().to_dict()
+        d["colors"] = write_colors(self.colors)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PaletteBank":
+        from core.gba_color import read_colors
+        return super().from_dict({**d, "colors": read_colors(d.get("colors", []))})
+
 
 # Sentinel Actor/Prefab.pal_bank et BackgroundLayer.pal_bank : "Sans palette"
 # — l'asset utilise SA PROPRE palette (couleurs du PNG, index 0 transparent),

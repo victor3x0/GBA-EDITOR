@@ -19,6 +19,7 @@ from scripting.codegen import generate as lua_generate, CodegenContext
 from scripting.globals import write_globals
 from scripting.constants import write_constants
 from codegen.c_names import sym as c_sym
+from codegen import build_output
 
 
 def _actor_script(actor: Actor) -> Optional[str]:
@@ -188,7 +189,7 @@ def transpile_all(
             continue
 
         if sp.suffix.lower() == ".c":
-            shutil.copy2(sp, p.src_dir / sp.name)
+            build_output.copy(sp, p.src_dir / sp.name)
             emit("log_line", f"[script] {sp.name} copié (C natif)")
             continue
 
@@ -321,7 +322,7 @@ def transpile_all(
         for w in gen_warnings:
             emit("log_line", f"[warn] {sp.name}: {w}")
         out = p.src_dir / f"actor_{s}.c"
-        out.write_text(c_code, encoding="utf-8")
+        build_output.write(out, c_code)
         emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
 
     # Génération C — prefabs poolés (compilés une seule fois grâce à compiled_prefabs)
@@ -410,7 +411,7 @@ def transpile_all(
         for w in pf_warnings:
             emit("log_line", f"[warn] prefab {pf.name}: {w}")
         out_pf = p.src_dir / f"actor_{pf_sym}.c"
-        out_pf.write_text(pf_c, encoding="utf-8")
+        build_output.write(out_pf, pf_c)
         emit("log_line", f"[lua->c] prefab {pf.name} -> {out_pf.name}")
         # Ce que l'état de script de ce prefab occupe en EWRAM. Le chiffre est
         # dit et non plafonné (cf. ROADMAP v0.7.6) : le plafond de huit entiers
@@ -461,7 +462,7 @@ def transpile_all(
             emit("log_line", f"[warn] {scene_script_file.name}: {w}")
         out_name = f"{scene_s}_scene.c"
         out = p.src_dir / out_name
-        out.write_text(c_code, encoding="utf-8")
+        build_output.write(out, c_code)
         emit("log_line", f"[lua->c] {scene_script_file.name} -> {out_name}")
 
     # Génération C — scripts de CAMÉRA
@@ -544,7 +545,7 @@ def transpile_all(
         for w in cam_warnings:
             emit("log_line", f"[warn] camera {cam.name}: {w}")
         out_cam = p.src_dir / f"{cam_sym}.c"
-        out_cam.write_text(cam_c, encoding="utf-8")
+        build_output.write(out_cam, cam_c)
         emit("log_line", f"[lua->c] {sp.name} -> {out_cam.name}")
 
     return True

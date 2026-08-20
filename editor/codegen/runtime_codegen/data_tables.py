@@ -29,6 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.models.data_table import COLUMN_REFERENCES
+from codegen import build_output
 
 
 def reference_index(p) -> dict[str, dict[str, int]]:
@@ -157,12 +158,10 @@ def write_data_tables(src_dir: Path, p, emit=None) -> list[str]:
     unité de traduction vide n'est pas du C standard, et le Makefile ramasse
     `src/*.c` au glob."""
     tables = list(getattr(p, "data_tables", []))
-    (src_dir / "data_tables.h").write_text(generate_data_tables_h(tables),
-                                           encoding="utf-8")
+    build_output.write(src_dir / "data_tables.h", generate_data_tables_h(tables))
     c_path = src_dir / "data_tables.c"
     if tables:
-        c_path.write_text(generate_data_tables_c(tables, reference_index(p)),
-                          encoding="utf-8")
+        build_output.write(c_path, generate_data_tables_c(tables, reference_index(p)))
         if emit:
             cells = sum(len(t.rows) * len(t.columns) for t in tables)
             emit("log_line", f"[data] {len(tables)} table(s) en ROM "
