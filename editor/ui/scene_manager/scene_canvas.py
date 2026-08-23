@@ -18,7 +18,7 @@ from core.models.tile_codec import unpack_se, hex_to_tile, hex_to_tile8, flip_h,
 
 # Les constantes slope sont aussi importées par canvas_tools — on les garde
 # ici uniquement pour CollisionOverlay._slope_path et _draw_tile.
-from core.history import MoveActorCmd, get_history
+from core.history import MoveActorCmd, MoveActorGroupCmd, get_history
 from core.models.resource import MIME_PREFAB_TEMPLATE
 from core.models.scene import Actor
 from core.models import collision_tiles as CT
@@ -387,6 +387,10 @@ class SpriteItem(QGraphicsPixmapItem):
         # appelé dès la construction (ItemSendsGeometryChanges) et les lit.
         self._drag_origin: tuple[int, int] | None = None
         self._drag_confirmed = False
+        # Sous-arbre (Actor.parent, ROADMAP v0.23) capturé au press, pour le
+        # faire suivre en translation groupée pendant le drag — cf. itemChange.
+        self._drag_descendants: list = []
+        self._drag_desc_origin: list = []
         self._mask_rects: list = []   # découpe par les windows (cf. set_mask_rects)
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
@@ -446,6 +450,9 @@ class SpriteItem(QGraphicsPixmapItem):
         # Capturer la position (résolue en px) avant le début du drag
         self._drag_origin = self.pos_px()
         self._drag_confirmed = False
+        sc = self.scene()
+        self._drag_descendants = sc.descendant_sprite_items(self) if sc is not None else []
+        self._drag_desc_origin = [(it, *it.pos_px()) for it in self._drag_descendants]
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e):
@@ -454,8 +461,16 @@ class SpriteItem(QGraphicsPixmapItem):
             old_x, old_y = self._drag_origin
             new_x, new_y = self.pos_px()
             if (old_x, old_y) != (new_x, new_y):
+                # Le sous-arbre a suivi en direct (itemChange) : réunir ses
+                # déplacements dans la MÊME entrée d'historique que le parent.
+                items = [(self.scene_sprite, old_x, old_y, new_x, new_y)]
+                for it, ox, oy in self._drag_desc_origin:
+                    nx, ny = it.pos_px()
+                    if (ox, oy) != (nx, ny):
+                        items.append((it.scene_sprite, ox, oy, nx, ny))
+                cmd = (MoveActorGroupCmd(items) if len(items) > 1 else
+                       MoveActorCmd(self.scene_sprite, old_x, old_y, new_x, new_y))
                 # Pousser la commande SANS re-exécuter (le drag a déjà modifié actor)
-                cmd = MoveActorCmd(self.scene_sprite, old_x, old_y, new_x, new_y)
                 h = get_history()
                 h._undo.append(cmd)  # bypass execute() — déjà fait par le drag
                 h._redo.clear()
@@ -464,6 +479,8 @@ class SpriteItem(QGraphicsPixmapItem):
                     self._save_fn()
             self._drag_origin = None
             self._drag_confirmed = False
+            self._drag_descendants = []
+            self._drag_desc_origin = []
 
     def item_pos(self) -> tuple[float, float]:
         """Position Qt de l'item = position logique de l'acteur (item origin = ancrage)."""
@@ -492,6 +509,16 @@ class SpriteItem(QGraphicsPixmapItem):
             # L'item (0,0) est directement la position logique de l'acteur
             self.scene_sprite.x = int(x)
             self.scene_sprite.y = int(y)
+            if self._drag_desc_origin:
+                # Translation groupée du sous-arbre (ROADMAP v0.23) : delta
+                # depuis le DÉBUT du drag, pas depuis l'appel précédent — évite
+                # toute dérive par accumulation d'arrondis de snap.
+                ox0, oy0 = self._drag_origin
+                dx, dy = int(x) - ox0, int(y) - oy0
+                for it, ox, oy in self._drag_desc_origin:
+                    it.scene_sprite.x = ox + dx
+                    it.scene_sprite.y = oy + dy
+                    it.setPos(*it.pos_px())
             if self.scene() is not None:
                 self.scene().sprite_moved.emit()
             return QPointF(x, y)
@@ -1391,6 +1418,16 @@ class GBAScene(QGraphicsScene):
     @property
     def collision_overlay(self) -> "CollisionOverlay":
         return self._collision_overlay
+
+    def descendant_sprite_items(self, item: "SpriteItem") -> list:
+        """SpriteItem des acteurs qui descendent de `item.scene_sprite`
+        (`Actor.parent`, ROADMAP v0.23) — pour faire suivre tout le
+        sous-arbre quand on déplace un parent dans le canvas."""
+        from core.models.scene import actor_descendant_names
+        names = actor_descendant_names(
+            [it.scene_sprite for it in self._sprite_items], item.scene_sprite.name)
+        return [it for it in self._sprite_items
+                if it is not item and it.scene_sprite.name in names]
 
     # ── Sélection multiple : membres + item ACTIF ─────────────────
     # Un item sélectionné est « membre » ; parmi eux, un seul est ACTIF —
@@ -3884,30 +3921,44 @@ class SceneEditor(QWidget):
         actifs seulement quand le focus est dans le SceneEditor (donc pas quand
         on tape dans un champ d'un autre panneau)."""
         from PyQt6.QtGui import QShortcut, QKeySequence
+        from core.keybindings import bind
 
         def mk(seq, slot):
+            """Raccourci NON remappable — touche positionnelle (nudge) ou
+            simple alias secondaire (Backspace = Suppr), jamais montré à
+            l'écran Réglages. Cf. core/keybindings.py, tête de fichier."""
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(slot)
             return sc
 
+        def mkb(binding_id, slot):
+            """Raccourci REMAPPABLE — touche posée par core/keybindings.py,
+            éditable depuis Réglages → Shortcuts."""
+            sc = QShortcut(QKeySequence(), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
+            bind(binding_id, sc)
+            return sc
+
         # Bascule d'outil — mêmes lettres que les tooltips de la toolbar
-        mk("S", lambda: self._shortcut_tool("select"))
-        mk("A", lambda: self._shortcut_tool("add"))
-        mk("E", lambda: self._shortcut_tool("erase"))
-        mk("C", lambda: self._shortcut_tool("collision"))
-        mk("B", lambda: self._shortcut_tool("inpaint"))
-        mk("T", lambda: self._shortcut_tool("ui"))
+        mkb("canvas.tool_select",    lambda: self._shortcut_tool("select"))
+        mkb("canvas.tool_add",       lambda: self._shortcut_tool("add"))
+        mkb("canvas.tool_erase",     lambda: self._shortcut_tool("erase"))
+        mkb("canvas.tool_collision", lambda: self._shortcut_tool("collision"))
+        mkb("canvas.tool_inpaint",   lambda: self._shortcut_tool("inpaint"))
+        mkb("canvas.tool_ui",        lambda: self._shortcut_tool("ui"))
         # Vue
-        mk("F", self._fit)
+        mkb("canvas.fit", self._fit)
         # Sélection / édition
-        mk("Escape", self._shortcut_escape)
-        mk("Del", self._shortcut_delete)
-        mk("Backspace", self._shortcut_delete)
-        mk("Ctrl+D", self._shortcut_duplicate)
-        mk("Ctrl+C", self._shortcut_copy)
-        mk("Ctrl+V", self._shortcut_paste)
-        # Nudge de la sélection : 1 px, Shift = 8 px (cran de grille)
+        mkb("canvas.cancel", self._shortcut_escape)
+        mkb("canvas.delete", self._shortcut_delete)
+        mk("Backspace", self._shortcut_delete)   # alias fixe, cf. mk() ci-dessus
+        mkb("canvas.duplicate", self._shortcut_duplicate)
+        mkb("canvas.copy", self._shortcut_copy)
+        mkb("canvas.paste", self._shortcut_paste)
+        # Nudge de la sélection : 1 px, Shift = 8 px (cran de grille) — touches
+        # positionnelles, hors du registre remappable (cf. core/keybindings.py)
         for seq, (dx, dy) in {
             "Left": (-1, 0), "Right": (1, 0), "Up": (0, -1), "Down": (0, 1),
             "Shift+Left": (-8, 0), "Shift+Right": (8, 0),

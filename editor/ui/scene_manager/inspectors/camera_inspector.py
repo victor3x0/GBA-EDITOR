@@ -22,7 +22,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox, QScrollArea,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QScrollArea,
     QSpinBox, QPushButton, QMessageBox, QLineEdit, QInputDialog,
 )
 from PyQt6.QtGui import QFont
@@ -32,7 +32,7 @@ from core.models.camera import Camera, CAM_FIXED, CAM_FOLLOW, CAM_SCRIPT
 from core.models.scene import Scene
 from core.project import Project
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import ScriptSlot, ScriptPickerPopup
+from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard
 
 _MODES = [
     (CAM_FIXED,  "Fixed"),
@@ -68,23 +68,8 @@ class CameraInspector(QWidget):
         layout.setSpacing(10)
         scroll.setWidget(inner)
 
-        f = QFont(T.UI, T.SM)
-        fs = f"color:{C.TEXT_DIM};"
-
-        def _section_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            lbl.setFont(f)
-            lbl.setStyleSheet(fs)
-            return lbl
-
-        def _separator():
-            sep = QFrame()
-            sep.setFrameShape(QFrame.Shape.HLine)
-            sep.setStyleSheet(f"color:{C.BORDER};")
-            layout.addWidget(sep)
-
         # ── Quelle caméra cette scène emploie ─────────────────────
-        layout.addWidget(_section_label("Camera used by this scene:"))
+        camera_card = CollapsibleCard("Camera used by this scene")
         pick_row = QHBoxLayout()
         pick_row.setSpacing(6)
         self._combo_camera = QComboBox()
@@ -109,25 +94,24 @@ class CameraInspector(QWidget):
         self._ed_name.setToolTip("Rename this camera — scripts citing it are rewritten.")
         self._ed_name.editingFinished.connect(self._on_rename)
         pick_row.addWidget(self._ed_name)
-        layout.addLayout(pick_row)
+        camera_card.body_layout.addLayout(pick_row)
 
         self._lbl_users = QLabel("")
         self._lbl_users.setFont(QFont(T.UI, T.XS))
         self._lbl_users.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._lbl_users.setWordWrap(True)
-        layout.addWidget(self._lbl_users)
-
-        _separator()
+        camera_card.body_layout.addWidget(self._lbl_users)
+        layout.addWidget(camera_card)
 
         # ── Mode ──────────────────────────────────────────────────
-        layout.addWidget(_section_label("Mode:"))
+        mode_card = CollapsibleCard("Mode")
         self._mode_combo = QComboBox()
         self._mode_combo.setFont(QFont(T.UI, T.MD))
         self._mode_combo.setStyleSheet(QSS.combobox)
         for _, label in _MODES:
             self._mode_combo.addItem(label)
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        layout.addWidget(self._mode_combo)
+        mode_card.body_layout.addWidget(self._mode_combo)
 
         mode_info = QLabel(
             "Fixed: stays where activation put it.\n"
@@ -137,12 +121,11 @@ class CameraInspector(QWidget):
         mode_info.setFont(QFont(T.UI, T.XS))
         mode_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         mode_info.setWordWrap(True)
-        layout.addWidget(mode_info)
-
-        _separator()
+        mode_card.body_layout.addWidget(mode_info)
+        layout.addWidget(mode_card)
 
         # ── Cadrage de départ (déplacé dans le canvas) ────────────
-        layout.addWidget(_section_label("Framing on activation:"))
+        framing_card = CollapsibleCard("Framing on activation")
         row = QHBoxLayout()
         self._x_lbl = QLabel("X: 0")
         self._y_lbl = QLabel("Y: 0")
@@ -151,7 +134,7 @@ class CameraInspector(QWidget):
             l.setStyleSheet(f"color:{C.TEXT_NORM};")
             row.addWidget(l)
         row.addStretch()
-        layout.addLayout(row)
+        framing_card.body_layout.addLayout(row)
 
         info = QLabel(
             "(Move the yellow rectangle in the canvas.) Applied every time the "
@@ -160,17 +143,13 @@ class CameraInspector(QWidget):
         info.setFont(QFont(T.UI, T.XS))
         info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         info.setWordWrap(True)
-        layout.addWidget(info)
-
-        _separator()
+        framing_card.body_layout.addWidget(info)
+        layout.addWidget(framing_card)
 
         # ── Suivi (visible en mode follow) ────────────────────────
-        self._follow_group = QWidget()
-        fg = QVBoxLayout(self._follow_group)
-        fg.setContentsMargins(0, 0, 0, 0)
-        fg.setSpacing(8)
+        self._follow_group = CollapsibleCard("Follow an Actor")
+        fg = self._follow_group.body_layout
 
-        fg.addWidget(_section_label("Follow an Actor:"))
         self._follow_combo = QComboBox()
         self._follow_combo.setFont(QFont(T.UI, T.MD))
         self._follow_combo.setStyleSheet(QSS.combobox)
@@ -212,7 +191,7 @@ class CameraInspector(QWidget):
         layout.addWidget(self._follow_group)
 
         # ── Bornes du monde (rect : origine + taille) ──────────────
-        layout.addWidget(_section_label("World bounds (0 = unlimited):"))
+        bounds_card = CollapsibleCard("World bounds (0 = unlimited)")
         bounds_row = QHBoxLayout()
         bounds_row.setSpacing(10)
         for label, attr in (("Width:", "_bounds_w"), ("Height:", "_bounds_h")):
@@ -232,7 +211,7 @@ class CameraInspector(QWidget):
             col.addWidget(spin)
             bounds_row.addLayout(col)
         bounds_row.addStretch()
-        layout.addLayout(bounds_row)
+        bounds_card.body_layout.addLayout(bounds_row)
         origin_row = QHBoxLayout()
         origin_row.setSpacing(10)
         for label, attr in (("Origin X:", "_bounds_x"), ("Origin Y:", "_bounds_y")):
@@ -253,7 +232,7 @@ class CameraInspector(QWidget):
             col.addWidget(spin)
             origin_row.addLayout(col)
         origin_row.addStretch()
-        layout.addLayout(origin_row)
+        bounds_card.body_layout.addLayout(origin_row)
         self._bounds_w.valueChanged.connect(self._on_bounds_changed)
         self._bounds_h.valueChanged.connect(self._on_bounds_changed)
         self._bounds_x.valueChanged.connect(self._on_bounds_changed)
@@ -267,7 +246,7 @@ class CameraInspector(QWidget):
             "closest to a parallax speed of 1.0 — stays editable afterwards."
         )
         self._btn_recalc.clicked.connect(self._recalc_bounds)
-        layout.addWidget(self._btn_recalc)
+        bounds_card.body_layout.addWidget(self._btn_recalc)
 
         bounds_info = QLabel(
             "Applied when the camera is activated. A script can redefine them "
@@ -276,12 +255,11 @@ class CameraInspector(QWidget):
         bounds_info.setFont(QFont(T.UI, T.XS))
         bounds_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         bounds_info.setWordWrap(True)
-        layout.addWidget(bounds_info)
-
-        _separator()
+        bounds_card.body_layout.addWidget(bounds_info)
+        layout.addWidget(bounds_card)
 
         # ── Script de caméra ──────────────────────────────────────
-        layout.addWidget(_section_label("Camera script:"))
+        script_card = CollapsibleCard("Camera script")
         self._script_slot = ScriptSlot(
             add_label    = "Add a camera script",
             accent_color = C.ACCENT_ORG,
@@ -292,7 +270,7 @@ class CameraInspector(QWidget):
             on_open  = self._script_open,
             on_clear = self._script_clear,
         )
-        layout.addWidget(self._script_slot)
+        script_card.body_layout.addWidget(self._script_slot)
 
         script_info = QLabel(
             "Runs AFTER the declarative settings above and BEFORE world bounds "
@@ -301,7 +279,8 @@ class CameraInspector(QWidget):
         script_info.setFont(QFont(T.UI, T.XS))
         script_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         script_info.setWordWrap(True)
-        layout.addWidget(script_info)
+        script_card.body_layout.addWidget(script_info)
+        layout.addWidget(script_card)
 
         layout.addStretch()
 

@@ -15,6 +15,7 @@ from core.project import Project
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
 from codegen import build_output
+from codegen.runtime_codegen.main_gen import prefab_group
 
 
 def generate_actor_types(
@@ -71,8 +72,16 @@ def generate_actor_types(
             pf_s = c_sym(pf.name)
             h.append(f"#define TAG_{pf_s.upper()} {pool_offset}  /* prefab pool début */")
             h.append(f"#define POOL_{pf_s.upper()}_START {pool_offset}")
-            h.append(f"#define POOL_{pf_s.upper()}_SIZE {pf.max_instances}")
-            pool_offset += pf.max_instances
+            # ROADMAP v0.23 : le pool se dit en INSTANCES, le build multiplie
+            # par les parties. _SIZE garde son sens — le nombre d'entrées de
+            # `g_actors` réservées, donc ce qui est réellement payé — et deux
+            # constantes s'ajoutent pour que le C émis puisse passer de l'une
+            # à l'autre sans recalculer.
+            _g = prefab_group(pf)
+            h.append(f"#define POOL_{pf_s.upper()}_SIZE {pf.max_instances * _g}")
+            h.append(f"#define POOL_{pf_s.upper()}_GROUP {_g}")
+            h.append(f"#define POOL_{pf_s.upper()}_INSTANCES {pf.max_instances}")
+            pool_offset += pf.max_instances * _g
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]
     build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
@@ -96,7 +105,9 @@ def generate_actor_api(
             build_output.copy(src_h, p.src_dir / static_h)
     _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
 
-    prefab_slots = sum(pf.max_instances for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
+    # Entrées de g_actors, parties comprises (ROADMAP v0.23).
+    prefab_slots = sum(pf.max_instances * prefab_group(pf)
+                       for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
     total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)
 
     a = [

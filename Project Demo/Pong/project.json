@@ -11,5 +11,7 @@
   "cartridge_mib": 4,
   "sfx_sample_rate": 0,
   "sound_channels": 8,
-  "debug_build": true
+  "debug_build": true,
+  "list_repeat_delay": 10,
+  "list_repeat_rate": 4
 }

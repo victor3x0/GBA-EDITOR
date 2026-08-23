@@ -58,6 +58,30 @@ def _compile_script(sp: Path, ctx_check: "BuildContext", emit, label: str):
     return script, True
 
 
+def _child_refs_for_actor(actor, scene_actors) -> dict:
+    """Les enfants d'un acteur de SCÈNE, nom Lua → expression C (ROADMAP v0.23).
+
+    Un enfant est un acteur de la même scène dont `parent` nomme celui-ci ; il
+    a donc son propre TAG_*, et le désigner ne coûte qu'un `#define`."""
+    return {a.name: f"&g_actors[TAG_{c_sym(a.name).upper()}]"
+            for a, _ in scene_actors
+            if getattr(a, "parent", None) == actor.name}
+
+
+def _child_refs_for_prefab(pf) -> dict:
+    """Les enfants d'un PREFAB : un décalage constant dans le groupe de
+    l'instance, la racine étant à l'offset 0 (cf. main_gen, `prefab_group`)."""
+    return {c.name: f"(self + {k})"
+            for k, c in enumerate(getattr(pf, "children", []) or [], start=1)}
+
+
+def _project_lists(p):
+    """Les panneaux marqués LISTE — import local, `main_gen` important déjà ce
+    module par ailleurs."""
+    from codegen.runtime_codegen.main_gen import project_lists
+    return project_lists(p)
+
+
 def transpile_all(
     p: Project,
     scene: Scene,
@@ -224,7 +248,14 @@ def transpile_all(
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
+            # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
+            # tableau d'un scalaire et borner un index écrit en clair.
+            global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
+                             for g in p.globals},
+            child_names  = list(_child_refs_for_actor(actor, scene_actors).keys()),
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = sfx_comp_name,
             text_keys    = text_keys,
@@ -263,7 +294,13 @@ def transpile_all(
                 actor_names  = _actor_names,
             prefab_names = _prefab_names,
                 global_names = list(global_names) if global_names else None,
-                global_types = {g.name: g.type for g in p.globals},
+                ui_list_names = [pn.name for _l, pn in _project_lists(p)],
+            global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
+            # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
+            # tableau d'un scalaire et borner un index écrit en clair.
+            global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
+                             for g in p.globals},
                 const_names  = list(const_names) if const_names else None,
                 # Un script de SCÈNE cite textes et polices autant qu'un script
                 # d'actor : sans ces deux-là le checker se tait, et une clé
@@ -290,6 +327,7 @@ def transpile_all(
         anims = [st.name for st in sprite.states] if sprite and sprite.states else []
         sfx_comp_name, sfx_autoplay = _sfx_component_info(actor)
         ctx  = CodegenContext(
+            child_refs    = _child_refs_for_actor(actor, scene_actors),
             actor_name    = actor.name,
             actor_sym     = s,
             anim_names    = anims,
@@ -311,6 +349,7 @@ def transpile_all(
             font_names    = font_names,
             palette_names = palette_names,
             region_names  = region_names,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             image_names   = image_names,
             element_names = element_names,
             image_states  = image_states,
@@ -362,7 +401,14 @@ def transpile_all(
             actor_names  = _actor_names,
             prefab_names = _prefab_names,
             global_names = list(global_names) if global_names else None,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
+            # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
+            # tableau d'un scalaire et borner un index écrit en clair.
+            global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
+                             for g in p.globals},
+            child_names  = list(_child_refs_for_prefab(pf).keys()),
             const_names  = list(const_names) if const_names else None,
             sfx_component_name = pf_sfx_comp_name,
             region_names = region_names,
@@ -377,6 +423,7 @@ def transpile_all(
         if not ok:
             return False
         ctx_pf  = CodegenContext(
+            child_refs    = _child_refs_for_prefab(pf),
             actor_name    = pf.name,
             actor_sym     = pf_sym,
             anim_names    = pf_anim,
@@ -400,6 +447,7 @@ def transpile_all(
             font_names    = font_names,
             palette_names = palette_names,
             region_names  = region_names,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             image_names   = image_names,
             element_names = element_names,
             image_states  = image_states,
@@ -450,6 +498,7 @@ def transpile_all(
             font_names    = font_names,
             palette_names = palette_names,
             region_names  = region_names,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             image_names   = image_names,
             element_names = element_names,
             image_states  = image_states,
@@ -497,7 +546,13 @@ def transpile_all(
             # caméra marcherait dans une scène et pas dans la suivante — le
             # checker doit le dire, pas le laisser passer.
             global_names = list(global_names) if global_names else None,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
+            # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
+            # tableau d'un scalaire et borner un index écrit en clair.
+            global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
+                             for g in p.globals},
             const_names  = list(const_names) if const_names else None,
             text_keys    = text_keys,
             font_names   = font_names,
@@ -534,6 +589,7 @@ def transpile_all(
             font_names    = font_names,
             palette_names = palette_names,
             region_names  = region_names,
+            ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             image_names   = image_names,
             element_names = element_names,
             image_states  = image_states,

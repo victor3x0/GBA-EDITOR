@@ -4,21 +4,22 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
-    QFrame, QCheckBox, QListWidget, QListWidgetItem, QMenu, QScrollArea, QSizePolicy,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QFrame, QCheckBox, QListWidget, QListWidgetItem, QMenu, QScrollArea,
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtGui import QFont, QCursor, QPixmap, QPainter
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
 from core.models.resource import MIME_SCRIPT
 from core.models.components import component_type_name
-from core.models.scene import Actor, Scene
+from core.models.scene import Actor, Scene, Prefab
 from core.project import Project
 from core.history import get_history, SetFieldCmd, AddComponentCmd, RemoveComponentCmd
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import NotesEdit
+from ui.common.widgets import NotesEdit, CollapsibleCard
 from ui.common.direction_grid import DirectionPicker
 from ui.common import icons
 
@@ -142,6 +143,110 @@ class ComponentListWidget(QListWidget):
 
 
 # ──────────────────────────────────────────────────────────────────
+#  Arbre des CHILDREN d'un prefab (ROADMAP v0.23)
+# ──────────────────────────────────────────────────────────────────
+class _ChildrenTree(QTreeWidget):
+    """Hiérarchie des `children` d'un prefab, dérivée de `Actor.parent` — même
+    principe que `_ActiveSceneTree` (scene_tree_panel.py) pour les acteurs de
+    scène, réduit à ce dont ce panneau a besoin : montrer l'arbre et permettre
+    le reparentage par glisser-déposer. Pas de réordonnancement de frères ici
+    (contrairement au Scene tree) : l'ORDRE de `children` compte pour le spawn
+    groupé au build (ROADMAP v0.23, « le spawn avance d'un groupe à la fois »),
+    et cet arbre n'a pas la logique DFS qui le préserverait sans le corrompre.
+
+    Le double-clic reste la façon d'ouvrir une partie dans l'inspecteur
+    (`itemDoubleClicked`, câblé par `ActorInspector`)."""
+
+    reparented = pyqtSignal()   # une partie a changé de parent depuis l'arbre
+
+    _ROLE_OBJ = Qt.ItemDataRole.UserRole
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._owner = None   # le Prefab dont .children est affiché
+        self.setHeaderHidden(True)
+        self.setIndentation(14)
+        self.setAnimated(False)
+        self.setUniformRowHeights(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(QSS.tree_widget)
+
+    def populate(self, owner):
+        self._owner = owner
+        self.clear()
+        parts = (getattr(owner, "children", []) or []) if owner is not None else []
+        items: dict = {}
+        for part in parts:
+            it = QTreeWidgetItem()
+            it.setText(0, part.name)
+            it.setData(0, self._ROLE_OBJ, part)
+            items[part.name] = it
+        for part in parts:
+            host = items.get(part.parent) if part.parent else None
+            if host is not None and host is not items[part.name]:
+                host.addChild(items[part.name])
+            else:
+                self.addTopLevelItem(items[part.name])
+        for it in items.values():
+            it.setExpanded(True)
+
+    def current_part(self):
+        it = self.currentItem()
+        return it.data(0, self._ROLE_OBJ) if it else None
+
+    def select_part(self, part):
+        for i in range(self.topLevelItemCount()):
+            if self._select_in(self.topLevelItem(i), part):
+                return
+
+    def _select_in(self, item: QTreeWidgetItem, part) -> bool:
+        if item.data(0, self._ROLE_OBJ) is part:
+            self.setCurrentItem(item)
+            return True
+        return any(self._select_in(item.child(i), part) for i in range(item.childCount()))
+
+    # ── Drag & drop : reparentage seulement ─────────────────────────
+
+    def dropEvent(self, event):
+        dragged = self.currentItem()
+        if dragged is None or self._owner is None:
+            event.ignore()
+            return
+        part = dragged.data(0, self._ROLE_OBJ)
+        target = self.itemAt(event.position().toPoint())
+        if target is None:
+            # Lâché dans le vide : reparente à la racine.
+            event.accept()
+            self._reparent(part, None)
+            return
+        Pos = QAbstractItemView.DropIndicatorPosition
+        if self.dropIndicatorPosition() != Pos.OnItem:
+            event.ignore()   # pas de réordonnancement de frères ici (cf. docstring)
+            return
+        event.accept()
+        self._reparent(part, target.data(0, self._ROLE_OBJ))
+
+    def _reparent(self, part, new_parent):
+        if part is None or part is new_parent:
+            return
+        from core.models.scene import actor_descendant_names
+        children = self._owner.children or []
+        new_name = new_parent.name if new_parent is not None else None
+        # Même garde anti-cycle que l'inspecteur (ActorInspector._descendants) :
+        # se poser sur soi-même ou son propre sous-arbre ferait un cycle que le
+        # Build refuserait de toute façon.
+        if new_name and new_name in actor_descendant_names(children, part.name):
+            return
+        if part.parent == new_name:
+            return
+        part.parent = new_name
+        self.reparented.emit()
+
+
+# ──────────────────────────────────────────────────────────────────
 #  ActorInspector
 # ──────────────────────────────────────────────────────────────────
 class ActorInspector(QWidget):
@@ -154,6 +259,16 @@ class ActorInspector(QWidget):
         self._scene: Optional[Scene] = None
         self._blocking = False
         self._is_prefab_template = False
+        # Le Prefab affiché quand `_actor` EST sa racine (`prefab.actor`,
+        # cf. core/models/scene.Prefab) — posé par `load_prefab`, nécessaire
+        # à `_persist` : sauver le prefab prend le Prefab, pas son actor.
+        self._prefab: Optional[Prefab] = None
+        # Le prefab qui POSSÈDE la partie en cours d'édition (ROADMAP v0.23),
+        # ou None quand on n'édite pas une partie. Une partie est un `Actor`,
+        # donc l'inspecteur l'édite avec les mêmes champs qu'un acteur de
+        # scène ; seul l'ENREGISTREMENT diffère — c'est le prefab qu'il faut
+        # sauver, pas la scène.
+        self._child_owner = None
         self.setStyleSheet(f"background:{C.BG_DEEP};")
 
         scroll = QScrollArea()
@@ -182,19 +297,10 @@ class ActorInspector(QWidget):
         cl.setSpacing(5)
 
         # ── NOTE card — partagée Actor/Prefab ────────────────────
-        notes_card = QFrame()
-        notes_card.setObjectName("notes_card")
-        notes_card.setStyleSheet(QSS.card("notes_card"))
-        nl = QVBoxLayout(notes_card)
-        nl.setContentsMargins(8, 6, 8, 8)
-        nl.setSpacing(5)
-        notes_lbl = QLabel("Note")
-        notes_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-        notes_lbl.setStyleSheet(QSS.title_section())
-        nl.addWidget(notes_lbl)
+        notes_card = CollapsibleCard("Note")
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set("notes", text))
-        nl.addWidget(self._notes_edit)
+        notes_card.body_layout.addWidget(self._notes_edit)
         cl.addWidget(notes_card)
 
         # ── Header : preview sprite + nom ────────────────────────
@@ -237,8 +343,9 @@ class ActorInspector(QWidget):
 
         # ── Badge prefab (visible seulement si actor.prefab_name) ──
         self._prefab_badge = QFrame()
+        self._prefab_badge.setFrameShape(QFrame.Shape.NoFrame)
         self._prefab_badge.setStyleSheet(
-            f"background:{C.BG_DEEP}; border-left:3px solid {icons.COLOR_PREFAB}; border-radius:2px;"
+            f"background:{C.BG_DEEP}; border:none; border-left:3px solid {icons.COLOR_PREFAB};"
         )
         self._prefab_badge.setFixedHeight(28)
         pb_layout = QHBoxLayout(self._prefab_badge)
@@ -258,6 +365,36 @@ class ActorInspector(QWidget):
         )
         btn_open_prefab.clicked.connect(self._open_prefab)
         pb_layout.addWidget(btn_open_prefab)
+        _pb_btn_style = (
+            f"QPushButton{{color:{icons.COLOR_PREFAB};background:transparent;border:1px solid {icons.COLOR_PREFAB};"
+            f"border-radius:2px;padding:0 5px;}}"
+            f"QPushButton:disabled{{color:{C.TEXT_MUTED};border-color:{C.BORDER};}}"
+            f"QPushButton:hover:!disabled{{color:{C.TEXT_HI};background:{icons.COLOR_PREFAB};}}"
+        )
+        # « Relink » et « Expose » sont l'aller-retour du statut linked/unlinked
+        # (structure des components + fichier .lua identiques au prefab, cf.
+        # core/models/scene.actor_prefab_linked) : Relink adopte le prefab,
+        # Expose publie CETTE instance comme nouvelle définition du prefab.
+        self._btn_relink = QPushButton("Relink")
+        self._btn_relink.setFont(QFont(T.UI, T.XS))
+        self._btn_relink.setFixedHeight(18)
+        self._btn_relink.setToolTip(
+            "Reload this instance's components/palette/notes from the\n"
+            "prefab's current definition — discards local structural changes."
+        )
+        self._btn_relink.setStyleSheet(_pb_btn_style)
+        self._btn_relink.clicked.connect(self._relink_to_prefab)
+        pb_layout.addWidget(self._btn_relink)
+        self._btn_expose = QPushButton("Expose")
+        self._btn_expose.setFont(QFont(T.UI, T.XS))
+        self._btn_expose.setFixedHeight(18)
+        self._btn_expose.setToolTip(
+            "Push this instance's components/palette/notes up to the prefab —\n"
+            "every OTHER instance of it is updated too."
+        )
+        self._btn_expose.setStyleSheet(_pb_btn_style)
+        self._btn_expose.clicked.connect(self._expose_to_prefab)
+        pb_layout.addWidget(self._btn_expose)
         btn_unlink = QPushButton("×")
         btn_unlink.setFont(QFont(T.UI, T.MD))
         btn_unlink.setFixedSize(18, 18)
@@ -271,6 +408,36 @@ class ActorInspector(QWidget):
         self._prefab_badge.setVisible(False)
         cl.addWidget(self._prefab_badge)
 
+        # ── Ligne « Expose to prefab » (acteur ORDINAIRE, pas déjà une
+        # instance) : promeut cet acteur en nouveau template réutilisable —
+        # l'aller simple qui fait exister le lien que le badge ci-dessus
+        # gère ensuite. Même ligne visuelle que le badge, un seul bouton.
+        self._expose_row = QFrame()
+        self._expose_row.setFrameShape(QFrame.Shape.NoFrame)
+        self._expose_row.setStyleSheet(
+            f"background:{C.BG_DEEP}; border:none; border-left:3px solid {C.BORDER_MID};"
+        )
+        self._expose_row.setFixedHeight(28)
+        er_layout = QHBoxLayout(self._expose_row)
+        er_layout.setContentsMargins(8, 0, 6, 0)
+        er_layout.addStretch(1)
+        btn_expose_new = QPushButton("Expose to prefab")
+        btn_expose_new.setFont(QFont(T.UI, T.XS))
+        btn_expose_new.setFixedHeight(18)
+        btn_expose_new.setToolTip(
+            "Create a new prefab from this actor's current components/palette/\n"
+            "notes — this actor becomes its first linked instance."
+        )
+        btn_expose_new.setStyleSheet(
+            f"QPushButton{{color:{icons.COLOR_PREFAB};background:transparent;border:1px solid {icons.COLOR_PREFAB};"
+            f"border-radius:2px;padding:0 5px;}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI};background:{icons.COLOR_PREFAB};}}"
+        )
+        btn_expose_new.clicked.connect(self._expose_new_prefab)
+        er_layout.addWidget(btn_expose_new)
+        self._expose_row.setVisible(False)
+        cl.addWidget(self._expose_row)
+
         self._active = QCheckBox("Active on start")
         self._active.setFont(QFont(T.UI, T.MD))
         self._active.setStyleSheet(
@@ -282,22 +449,8 @@ class ActorInspector(QWidget):
         cl.addWidget(self._active)
 
         # ── TRANSFORM card ───────────────────────────────────────────
-        self._transform_group = QFrame()
-        self._transform_group.setObjectName("transform_card")
-        # Section à plat par élévation (cf scene_inspector) ; l'identité de
-        # famille passe par la couleur du titre, plus par un liseré.
-        self._transform_group.setStyleSheet(QSS.card("transform_card"))
-        tl = QVBoxLayout(self._transform_group)
-        tl.setContentsMargins(8, 6, 8, 8)
-        tl.setSpacing(7)
-
-        # En-tête section avec barre colorée
-        tg_hdr = QHBoxLayout()
-        tg_lbl = QLabel("Transform")
-        tg_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-        tg_lbl.setStyleSheet(QSS.title_section())
-        tg_hdr.addWidget(tg_lbl); tg_hdr.addStretch()
-        tl.addLayout(tg_hdr)
+        self._transform_group = CollapsibleCard("Transform")
+        tl = self._transform_group.body_layout
 
         from ui.common.widgets import W as _W
 
@@ -324,9 +477,9 @@ class ActorInspector(QWidget):
         # ── Direction initiale : sélecteur 3×3 ───────────────────
         dir_row = QHBoxLayout(); dir_row.setSpacing(8)
         dir_row.setContentsMargins(0, 2, 0, 2)
-        dir_lbl = QLabel("Direction"); dir_lbl.setFont(QFont(T.UI, T.MD))
+        dir_lbl = QLabel("Direction"); dir_lbl.setFont(QFont(T.UI, T.SM))
         dir_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
-        dir_lbl.setFixedWidth(58)
+        dir_lbl.setFixedWidth(_lbl_w)
         dir_row.addWidget(dir_lbl)
         self._dir_picker = DirectionPicker()
         self._dir_picker.changed.connect(self._on_direction)
@@ -355,6 +508,23 @@ class ActorInspector(QWidget):
         _tip(self._tobj_mode, "actor.obj_mode")
         _W.row("Mode window", self._tobj_mode, tl, label_width=_lbl_w)
 
+        # ── Parent (ROADMAP v0.23) ────────────────────────────────
+        # Juste avant « Screen space », pour la même raison que lui : les deux
+        # changent le SENS de X/Y. Screen space les fait passer du monde à
+        # l'écran ; un parent les fait passer du monde à son repère à lui.
+        self._tparent = _W.combobox([])
+        self._tparent.currentIndexChanged.connect(self._on_parent_changed)
+        self._tparent.setToolTip(
+            "<b>Parent</b><br><br>"
+            "L'acteur dans le repère duquel la position de celui-ci est "
+            "exprimée.<br>X/Y, rotation et échelle deviennent alors LOCAUX : "
+            "le parent<br>bouge, tourne ou grandit, et son sous-arbre suit.<br><br>"
+            "Ce n'est pas de l'héritage — la définition n'est pas reprise. Pour "
+            "ça,<br>c'est un prefab. Cacher le parent cache tout son sous-arbre."
+            "<br><br>Un parent se choisit dans la même scène, et un cycle est "
+            "refusé au Build.")
+        _W.row("Parent", self._tparent, tl, label_width=_lbl_w)
+
         # ── Ancrage écran (UI en sprite) ──────────────────────────
         # Juste sous Position : c'est le sens de X/Y qu'il change (monde →
         # écran), pas une propriété de rendu.
@@ -379,19 +549,8 @@ class ActorInspector(QWidget):
         # `affine_transform` réserve un slot de matrice affine OAM (32 max/scène) ;
         # sans lui, rotation/scale (et les self.sprite_* du sprite) n'ont rien où
         # écrire au runtime.
-        self._affine_group = QFrame()
-        self._affine_group.setObjectName("affine_card")
-        self._affine_group.setStyleSheet(QSS.card("affine_card"))
-        al = QVBoxLayout(self._affine_group)
-        al.setContentsMargins(8, 6, 8, 8)
-        al.setSpacing(7)
-
-        _ag_hdr = QHBoxLayout()
-        _ag_lbl = QLabel("Affine")
-        _ag_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-        _ag_lbl.setStyleSheet(QSS.title_section())
-        _ag_hdr.addWidget(_ag_lbl); _ag_hdr.addStretch()
-        al.addLayout(_ag_hdr)
+        self._affine_group = CollapsibleCard("Affine")
+        al = self._affine_group.body_layout
 
         self._taffine = QCheckBox("Affine transform"); self._taffine.setStyleSheet(QSS.checkbox)
         self._taffine.toggled.connect(self._on_affine_toggle)
@@ -402,9 +561,9 @@ class ActorInspector(QWidget):
         # d'où des conteneurs nommés, masqués en mode Prefab (cf. load_prefab).
         self._aff_rot_row = QWidget(); self._aff_rot_row.setStyleSheet("background:transparent;")
         _aff_row = QHBoxLayout(self._aff_rot_row); _aff_row.setContentsMargins(0, 2, 0, 2)
-        _aff_lbl = QLabel("Rotation"); _aff_lbl.setFont(QFont(T.UI, T.MD))
+        _aff_lbl = QLabel("Rotation"); _aff_lbl.setFont(QFont(T.UI, T.SM))
         _aff_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
-        _aff_lbl.setFixedWidth(58)
+        _aff_lbl.setFixedWidth(_lbl_w)
         _aff_row.addWidget(_aff_lbl)
         self._taff_rot = _W.spinbox(0, min_v=0, max_v=359)
         self._taff_rot.valueChanged.connect(lambda v: self._set("rotation", v))
@@ -415,9 +574,9 @@ class ActorInspector(QWidget):
 
         self._aff_scale_row = QWidget(); self._aff_scale_row.setStyleSheet("background:transparent;")
         _scale_row = QHBoxLayout(self._aff_scale_row); _scale_row.setContentsMargins(0, 2, 0, 2)
-        _scale_lbl = QLabel("Scale"); _scale_lbl.setFont(QFont(T.UI, T.MD))
+        _scale_lbl = QLabel("Scale"); _scale_lbl.setFont(QFont(T.UI, T.SM))
         _scale_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
-        _scale_lbl.setFixedWidth(58)
+        _scale_lbl.setFixedWidth(_lbl_w)
         _scale_row.addWidget(_scale_lbl)
         self._taff_sx = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
         self._taff_sy = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
@@ -433,54 +592,21 @@ class ActorInspector(QWidget):
         self._aff_widgets = (self._taff_rot, self._taff_sx, self._taff_sy)
         cl.addWidget(self._affine_group)
 
-        # ── COMPONENTS card ──────────────────────────────────────────
-        _comp_card = QFrame()
-        _comp_card.setObjectName("comp_card")
-        _comp_card.setStyleSheet(QSS.card("comp_card"))
-        _comp_card_l = QVBoxLayout(_comp_card)
-        _comp_card_l.setContentsMargins(0, 0, 0, 0)
-        _comp_card_l.setSpacing(0)
-        cl.addWidget(_comp_card)
-
         _ico_btn = (
             f"QPushButton{{color:{C.TEXT_DIM};background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER_MID};border-radius:3px;"
             f"font-family:{T.UI_STACK};font-size:{T.XL}px;}}"
             f"QPushButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
         )
-        # Template avec slot {c} pour la couleur d'accent
-        _toggle_style = (
-            "QToolButton{color:" + "{c}" + ";border:none;background:transparent;"
-            f"font-family:{T.UI_STACK};font-size:8pt;font-weight:600;"
-            f"text-align:left;padding:4px 8px;letter-spacing:1px;}}"
-            f"QToolButton:hover{{background:{C.BG_HOVER};}}"
-        )
 
-        self._toggle_style_tpl = _toggle_style   # gardé pour _apply_context_color
-
-        # Header COMPONENTS (collapsible)
-        comp_hdr_row = QHBoxLayout()
-        comp_hdr_row.setContentsMargins(0, 0, 4, 0)
-        comp_hdr_row.setSpacing(2)
-        self._comp_toggle = QToolButton()
-        self._comp_toggle.setText(f"▾  COMPONENTS")
-        self._comp_toggle.setStyleSheet(_toggle_style.replace("{c}", icons.COLOR_ACTOR))
-        self._comp_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._comp_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._comp_toggle.setFixedHeight(26)
-
+        # ── COMPONENTS card ──────────────────────────────────────────
+        self._comp_card = CollapsibleCard("Components", color=icons.COLOR_ACTOR)
         btn_add = QPushButton("+"); btn_add.setFixedSize(20, 20)
         btn_add.setStyleSheet(_ico_btn); btn_add.clicked.connect(self._show_add_menu)
         btn_del = QPushButton("−"); btn_del.setFixedSize(20, 20)
         btn_del.setStyleSheet(_ico_btn); btn_del.clicked.connect(self._remove_selected_component)
-        comp_hdr_row.addWidget(self._comp_toggle, 1)
-        comp_hdr_row.addWidget(btn_add); comp_hdr_row.addWidget(btn_del)
-        _comp_card_l.addLayout(comp_hdr_row)
-
-        # Séparateur sous le header de la carte
-        _comp_hdr_sep = QFrame(); _comp_hdr_sep.setFrameShape(QFrame.Shape.HLine)
-        _comp_hdr_sep.setStyleSheet(f"color:{C.BORDER}; margin:0;")
-        _comp_card_l.addWidget(_comp_hdr_sep)
+        self._comp_card.add_header_widget(btn_add)
+        self._comp_card.add_header_widget(btn_del)
 
         self._comp_list = ComponentListWidget()
         self._comp_list.setFixedHeight(100)
@@ -495,44 +621,51 @@ class ActorInspector(QWidget):
         )
         self._comp_list.currentRowChanged.connect(self._on_component_selected)
         self._comp_list.script_dropped.connect(self._on_script_dropped)
-        _comp_card_l.addWidget(self._comp_list)
+        self._comp_card.body_layout.setContentsMargins(0, 0, 0, 0)
+        self._comp_card.body_layout.addWidget(self._comp_list)
+        cl.addWidget(self._comp_card)
 
-        self._comp_toggle.clicked.connect(lambda: self._toggle_section(
-            self._comp_toggle, self._comp_list, "Components", self._ctx_color))
+        # ── CHILDREN card (prefab segmenté — ROADMAP v0.23) ────────────
+        # Visible seulement en mode Prefab : une partie n'a de sens que dans un
+        # template. Le « + » ajoute une ligne tout de suite, sans boîte de
+        # dialogue — on renomme ensuite dans l'inspecteur, comme partout
+        # ailleurs dans ce logiciel.
+        self._children_card = CollapsibleCard("Children", color=icons.COLOR_PREFAB)
+        _pb_add = QPushButton("+"); _pb_add.setFixedSize(20, 20)
+        _pb_add.setStyleSheet(_ico_btn); _pb_add.clicked.connect(self._add_child)
+        _pb_del = QPushButton("−"); _pb_del.setFixedSize(20, 20)
+        _pb_del.setStyleSheet(_ico_btn); _pb_del.clicked.connect(self._remove_selected_child)
+        self._children_card.add_header_widget(_pb_add)
+        self._children_card.add_header_widget(_pb_del)
 
-        # ── ÉDITEUR card ─────────────────────────────────────────────
-        self._editor_card = QFrame()
-        self._editor_card.setObjectName("editor_card")
-        self._editor_card.setStyleSheet(QSS.card("editor_card"))
-        _editor_card_l = QVBoxLayout(self._editor_card)
-        _editor_card_l.setContentsMargins(0, 0, 0, 0)
-        _editor_card_l.setSpacing(0)
-        cl.addWidget(self._editor_card)
+        self._children_tree = _ChildrenTree()
+        self._children_tree.setFixedHeight(92)
+        self._children_tree.setFont(QFont(T.UI, T.MD))
+        self._children_tree.itemDoubleClicked.connect(self._open_selected_child)
+        self._children_tree.reparented.connect(self._on_children_reparented)
+        self._children_tree.setToolTip(chr(10).join([
+            "Les ENFANTS de ce prefab — un boss segmenté, une chenille.",
+            "Chaque enfant est un acteur à part entière : son sprite, ses",
+            "boxes, son transform local. Double-cliquer pour l'éditer,",
+            "glisser-déposer SUR un autre enfant pour le reparenter.",
+            "",
+            "Le pool se dit en INSTANCES : « max instances » × (1 + enfants)",
+            "entrées sont réservées, et c'est ce total qui est payé.",
+        ]))
+        self._children_card.body_layout.setContentsMargins(0, 0, 0, 0)
+        self._children_card.body_layout.addWidget(self._children_tree)
+        cl.addWidget(self._children_card)
+        self._children_card.setVisible(False)
 
-        self._editor_toggle = QToolButton()
-        self._editor_toggle.setText("▾  EDITOR")
-        self._editor_toggle.setStyleSheet(_toggle_style.replace("{c}", icons.COLOR_ACTOR))
-        self._editor_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self._editor_toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self._editor_toggle.setFixedHeight(26)
-        _editor_card_l.addWidget(self._editor_toggle)
-
-        _editor_hdr_sep = QFrame(); _editor_hdr_sep.setFrameShape(QFrame.Shape.HLine)
-        _editor_hdr_sep.setStyleSheet(f"color:{C.BORDER}; margin:0;")
-        _editor_card_l.addWidget(_editor_hdr_sep)
-
+        # ── ÉDITEUR intégré dans la carte Components (sous la liste) ──
         self._editor_container = QWidget()
         self._editor_container.setStyleSheet(f"background:{C.BG_BASE};")
         self._editor_layout = QVBoxLayout(self._editor_container)
         self._editor_layout.setContentsMargins(8, 6, 8, 8)
         self._editor_layout.setSpacing(6)
-        _editor_card_l.addWidget(self._editor_container)
-
-        self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "Editor", self._ctx_color))
+        self._comp_card.body_layout.addWidget(self._editor_container)
 
         self._ctx_color = icons.COLOR_ACTOR   # couleur courante du contexte (actor par défaut)
-        self._editor_section_visible = True   # état mémorisé du toggle ÉDITEUR
 
         cl.addStretch()
 
@@ -549,15 +682,9 @@ class ActorInspector(QWidget):
     _COLOR_SEL_BG_PREFAB = f"{icons.COLOR_PREFAB}15"
 
     def _apply_context_color(self, color: str, sel_bg: str):
-        """Met à jour les toggles COMPONENTS / EDITOR, la bordure de carte et la sélection de liste."""
+        """Met à jour le titre COMPONENTS et la sélection de liste."""
         self._ctx_color = color
-        tpl = self._toggle_style_tpl
-        self._comp_toggle.setStyleSheet(tpl.replace("{c}", color))
-        # Le toggle EDITOR suit la même couleur de famille que COMPONENTS.
-        self._editor_toggle.setStyleSheet(tpl.replace("{c}", color))
-        # Carte ÉDITEUR à plat (élévation) — l'identité passe par la couleur du
-        # toggle (self._ctx_color), plus par un liseré.
-        self._editor_card.setStyleSheet(QSS.card("editor_card"))
+        self._comp_card.set_color(color)
         self._comp_list.setStyleSheet(
             f"QListWidget{{background:{C.BG_DEEP};color:{C.TEXT_NORM};"
             f"border:none;border-radius:0;}}"
@@ -567,83 +694,251 @@ class ActorInspector(QWidget):
             f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
         )
 
-    def load_prefab(self, prefab, project: Project, scene: Optional[Scene] = None):
-        """`scene` : scène active de l'éditeur (contexte d'affichage) — un
-        Prefab n'appartient à aucune scène, mais son champ Palette utilise le
-        même picker qu'un Actor normal : à l'instanciation, il arrive dans une
-        scène et se comporte exactement comme un actor (repli sur le slot 0
-        si le slot assigné n'a pas de palette active dans cette scène-là)."""
-        self._actor = prefab
-        self._project = project
-        self._is_prefab_template = True
-        self._scene = scene
-        self._apply_context_color(self._COLOR_PREFAB, self._COLOR_SEL_BG_PREFAB)
-        if not prefab:
-            self._content.setVisible(False); self._empty.setVisible(True); return
-        self._empty.setVisible(False); self._content.setVisible(True)
-        self._blocking = True
-        self._notes_edit.set_text_silent(getattr(prefab, "notes", ""))
-        self._active.setChecked(True)
-        self._prefab_badge.setVisible(False)   # un prefab n'est pas une instance
-        self._transform_group.setVisible(False)
-        # Le slot affine, si : c'est le prefab qui le réserve pour tout son pool.
-        # Rotation/scale de départ, non : ce sont des valeurs d'instance.
-        self._affine_group.setVisible(True)
-        self._aff_rot_row.setVisible(False)
-        self._aff_scale_row.setVisible(False)
-        self._taffine.setChecked(bool(getattr(prefab, "affine_transform", False)))
-        self._blocking = False
-        self._refresh_component_list()
+    def load_prefab(self, prefab: Optional[Prefab], project: Project, scene: Optional[Scene] = None):
+        """Un prefab EST son actor racine (`prefab.actor`, cf.
+        core/models/scene.Prefab) : ce n'est qu'un raccourci vers `load()`,
+        pas une seconde construction. `scene` : scène active de l'éditeur
+        (contexte d'affichage) — un Prefab n'appartient à aucune scène, mais
+        son champ Palette utilise le même picker qu'un Actor normal : à
+        l'instanciation, il arrive dans une scène et se comporte exactement
+        comme un actor (repli sur le slot 0 si le slot assigné n'a pas de
+        palette active dans cette scène-là)."""
+        self._prefab = prefab
+        self.load(prefab.actor if prefab else None, project, scene, is_prefab_root=True)
 
-    def load(self, actor: Actor, project: Project, scene: Optional[Scene] = None):
+    def load(self, actor: Optional[Actor], project: Project, scene: Optional[Scene] = None,
+              *, is_prefab_root: bool = False):
+        """Constructeur UNIQUE : un acteur de scène et la racine d'un prefab
+        sont tous deux des `Actor`, montrés avec les mêmes champs — seules
+        les quelques différences de nature (un template n'est jamais posé
+        nulle part, porte des enfants) restent des branches locales, pas une
+        seconde méthode qui reconstruirait tout à la main."""
         self._actor = actor
         self._project = project
-        self._is_prefab_template = False
+        self._is_prefab_template = is_prefab_root
         self._scene = scene
-        self._apply_context_color(self._COLOR_ACTOR, self._COLOR_SEL_BG_ACTOR)
+        if not is_prefab_root:
+            self._prefab = None
+        self._child_owner = None      # remis par `load_child` le cas échéant
+        color = self._COLOR_PREFAB if is_prefab_root else self._COLOR_ACTOR
+        sel_bg = self._COLOR_SEL_BG_PREFAB if is_prefab_root else self._COLOR_SEL_BG_ACTOR
+        self._apply_context_color(color, sel_bg)
         if not actor:
             self._content.setVisible(False); self._empty.setVisible(True); return
         self._empty.setVisible(False); self._content.setVisible(True)
         self._blocking = True
         self._notes_edit.set_text_silent(getattr(actor, "notes", ""))
-        # Index dans la scène
-        if scene:
+        if is_prefab_root:
+            self._tag_lbl.setText("Index: (prefab)")
+        elif scene:
             try:
                 idx = scene.actors.index(actor)
                 self._tag_lbl.setText(f"Index: {idx}")
             except ValueError:
                 self._tag_lbl.setText("Index: —")
         else:
-            self._tag_lbl.setText("Index: (prefab)")
-        self._active.setChecked(actor.active)
-        # Badge prefab
-        if actor.prefab_name:
-            self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}")
+            self._tag_lbl.setText("Index: —")
+        # Un template n'est jamais lui-même actif/inactif — seules ses
+        # instances le sont.
+        self._active.setChecked(True if is_prefab_root else actor.active)
+        # Badge « instance de » : sans objet pour un template ou une partie.
+        # Sinon statut linked/unlinked EN DIRECT (core/models/scene.
+        # actor_prefab_linked) : c'est lui qui dit si Relink/Expose changeraient
+        # quelque chose, et si le prochain enregistrement du prefab écraserait
+        # une divergence locale.
+        self._expose_row.setVisible(False)
+        if not is_prefab_root and actor.prefab_name:
+            from core.models.scene import actor_prefab_linked
+            src_prefab = self._project.get_prefab(actor.prefab_name) if self._project else None
+            linked = src_prefab is not None and actor_prefab_linked(actor, src_prefab)
+            if src_prefab is None:
+                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}  (introuvable)")
+                self._prefab_badge_lbl.setStyleSheet(f"color:{C.ACCENT_RED};")
+            elif linked:
+                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}")
+                self._prefab_badge_lbl.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
+            else:
+                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}  — unlinkée")
+                self._prefab_badge_lbl.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            # Relink n'a de sens que s'il y a une DIVERGENCE à annuler — déjà
+            # linkée, le bouton n'apporterait rien à cliquer.
+            self._btn_relink.setVisible(src_prefab is not None and not linked)
+            self._btn_expose.setEnabled(src_prefab is not None)
             self._prefab_badge.setVisible(True)
         else:
             self._prefab_badge.setVisible(False)
-        self._transform_group.setVisible(True)
+            # Ligne « Expose to prefab » : seulement pour un acteur ORDINAIRE
+            # posé dans une scène — pas pour un template, ni pour une partie
+            # de prefab (`load_child` la masque après coup, cf. plus bas).
+            self._expose_row.setVisible(not is_prefab_root)
+        # La POSE (x/y/priorité/parent/écran/direction) n'a de sens que pour
+        # un actor posé quelque part — jamais pour la racine d'un template.
+        self._transform_group.setVisible(not is_prefab_root)
         self._affine_group.setVisible(True)
-        self._aff_rot_row.setVisible(True)
-        self._aff_scale_row.setVisible(True)
-        from core.models.field_value import variables_from_project
-        _vars = variables_from_project(self._project)
-        self._tx.set_variables(_vars); self._ty.set_variables(_vars)
-        self._tx.set_raw(actor.x); self._ty.set_raw(actor.y)
-        self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
-        self._tpriority.setValue(actor.priority)
-        self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
-        self._tscreen.setChecked(bool(getattr(actor, "screen_space", False)))
+        self._aff_rot_row.setVisible(not is_prefab_root)
+        self._aff_scale_row.setVisible(not is_prefab_root)
+        if not is_prefab_root:
+            from core.models.field_value import variables_from_project
+            _vars = variables_from_project(self._project)
+            self._tx.set_variables(_vars); self._ty.set_variables(_vars)
+            self._tx.set_raw(actor.x); self._ty.set_raw(actor.y)
+            self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
+            self._tpriority.setValue(actor.priority)
+            self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
+            self._refresh_parent_choices(actor)
+            self._tscreen.setChecked(bool(getattr(actor, "screen_space", False)))
+        # Les ENFANTS ne se montrent qu'ici : un enfant n'a de sens que dans
+        # un template (ROADMAP v0.23).
+        self._children_card.setVisible(is_prefab_root)
+        if is_prefab_root:
+            self._refresh_children_list()
         self._taffine.setChecked(bool(getattr(actor, "affine_transform", False)))
         self._set_affine_enabled(bool(getattr(actor, "affine_transform", False)))
-        if not self._blocking:
+        if not is_prefab_root and not self._blocking:
             self._taff_rot.setValue(getattr(actor, "rotation", 0))
             self._taff_sx.setValue(getattr(actor, "scale_x", 1.0))
             self._taff_sy.setValue(getattr(actor, "scale_y", 1.0))
         self._tvisible.setChecked(actor.visible)
         self._blocking = False
         self._refresh_component_list()
-        self._refresh_sprite_preview()
+        if not is_prefab_root:
+            self._refresh_sprite_preview()
+
+    # ── Parent (ROADMAP v0.23) ────────────────────────────────────
+
+    def _descendants(self, name: str) -> set:
+        """Les acteurs qui descendent de `name`, lui compris.
+
+        Ils sont retirés de la liste des parents possibles : se choisir
+        soi-même, ou choisir quelqu'un de son propre sous-arbre, fait un cycle.
+        Le Build le refuserait de toute façon — mais l'empêcher ici évite à
+        l'auteur de construire une scène qui ne se compile plus, ce qui est
+        toujours mieux que de le lui apprendre après coup."""
+        # Sur les PARTIES d'un prefab quand on en édite une, sur les acteurs
+        # de la scène sinon — même parcours, deux collections.
+        pool = ((getattr(self._child_owner, "children", []) or [])
+                if self._child_owner is not None
+                else (self._scene.actors if self._scene else None))
+        if pool is None:
+            return {name}
+        from core.models.scene import actor_descendant_names
+        return {name} | actor_descendant_names(pool, name)
+
+    def _refresh_parent_choices(self, actor):
+        self._tparent.blockSignals(True)
+        self._tparent.clear()
+        self._tparent.addItem("— aucun —", None)
+        exclus = self._descendants(actor.name)
+        # Une PARTIE se rattache à une autre partie du même prefab, ou à la
+        # racine (« — aucun — »). Rien d'extérieur n'est nommable : c'est ce
+        # qui garde la profondeur connue au build (ROADMAP v0.23).
+        if self._child_owner is not None:
+            for pt in (getattr(self._child_owner, "children", []) or []):
+                if pt.name not in exclus:
+                    self._tparent.addItem(pt.name, pt.name)
+        else:
+            for a in (self._scene.actors if self._scene else []):
+                if a.name not in exclus:
+                    self._tparent.addItem(a.name, a.name)
+        cur = getattr(actor, "parent", None)
+        i = self._tparent.findData(cur)
+        if cur and i < 0:
+            # Parent disparu (acteur supprimé, scène éditée hors de l'éditeur) :
+            # on le garde VISIBLE plutôt que de le réécrire en silence. Le Build
+            # le nomme déjà comme introuvable ; l'inspecteur doit dire la même
+            # chose que lui.
+            self._tparent.addItem(f"{cur}  (introuvable)", cur)
+            i = self._tparent.findData(cur)
+        self._tparent.setCurrentIndex(max(0, i))
+        self._tparent.blockSignals(False)
+
+    def _on_parent_changed(self, _i: int):
+        if self._blocking or not self._actor:
+            return
+        # Le parent conditionne l'imbrication affichée par l'arbre — celui
+        # de la scène pour un actor, l'arbre CHILDREN de ce même inspecteur
+        # pour une partie de prefab. `_set` persiste déjà l'actor ; il faut
+        # en plus dire à l'arbre concerné de se reconstruire, undo/redo
+        # compris (extra_persist tourne dans les deux sens).
+        self._set("parent", self._tparent.currentData(),
+                  extra_persist=self._refresh_children_list
+                  if self._child_owner is not None
+                  else lambda: get_dispatcher()._emit("actors_list_changed"))
+
+        # ── Enfants d'un prefab (ROADMAP v0.23) ───────────────────────
+
+    def _refresh_children_list(self):
+        self._children_tree.populate(self._prefab)
+
+    def _on_children_reparented(self):
+        """Une partie a changé de parent depuis l'arbre (glisser-déposer) :
+        même geste que tout autre changement de `children` — enregistrer le
+        prefab propriétaire et reconstruire l'arbre affiché."""
+        self._persist()
+        self._refresh_children_list()
+        self.changed.emit()
+
+    def _add_child(self):
+        """Ajoute une partie et l'ouvre tout de suite.
+
+        Pas de boîte de dialogue : le « + » crée la ligne, et le nom se change
+        dans l'inspecteur comme pour tout le reste."""
+        if not self._is_prefab_template or not self._prefab:
+            return
+        from core.models.scene import Actor as _A
+        taken = {pt.name for pt in (self._prefab.children or [])} | {self._prefab.name}
+        base, n = "Part", 1
+        while f"{base}{n}" in taken:
+            n += 1
+        # Posée SUR la racine (0, 0) : un bras se déplace ensuite là où il va,
+        # et une partie qui apparaît au centre se voit — une partie posée hors
+        # écran donnerait l'impression que le « + » n'a rien fait.
+        part = _A(name=f"{base}{n}", x=0, y=0)
+        self._prefab.children.append(part)
+        self._persist()
+        self._refresh_children_list()
+        self._children_tree.select_part(part)
+        self.changed.emit()
+
+    def _remove_selected_child(self):
+        if not self._is_prefab_template or not self._prefab:
+            return
+        part = self._children_tree.current_part()
+        parts = self._prefab.children or []
+        if part not in parts:
+            return
+        parts.remove(part)
+        gone = part.name
+        # Ce qui descendait d'elle remonte à la racine plutôt que de pointer un
+        # nom disparu : le build refuserait un parent introuvable, et l'auteur
+        # n'a pas demandé à casser son prefab en supprimant une pièce.
+        for pt in parts:
+            if getattr(pt, "parent", None) == gone:
+                pt.parent = None
+        self._persist()
+        self._refresh_children_list()
+        self.changed.emit()
+
+    def _open_selected_child(self, item=None, _col=0):
+        """Édite la partie sélectionnée — avec les champs d'un acteur, puisque
+        c'en est un."""
+        if not self._is_prefab_template or not self._prefab:
+            return
+        part = item.data(0, _ChildrenTree._ROLE_OBJ) if item else self._children_tree.current_part()
+        if part is not None:
+            self.load_child(part, self._prefab, self._project, self._scene)
+
+    def load_child(self, part, prefab, project: Project, scene: Optional[Scene] = None):
+        owner = prefab
+        self.load(part, project, scene)
+        # APRÈS `load`, qui remet `_child_owner` à None : c'est lui qui dit à
+        # `_persist` de sauver le PREFAB et non la scène.
+        self._child_owner = owner
+        self._refresh_parent_choices(part)
+        # `load()` l'a montrée (une partie n'est ni un template ni une
+        # instance) : sans objet ici, une partie de prefab ne s'expose pas
+        # elle-même en second prefab.
+        self._expose_row.setVisible(False)
 
     def update_position(self, x: int, y: int):
         if self._blocking or not self._actor: return
@@ -756,8 +1051,14 @@ class ActorInspector(QWidget):
 
     def _persist(self):
         if not self._project or not self._actor: return
-        if self._is_prefab_template:
-            get_dispatcher().save_prefab(self._actor)
+        if self._child_owner is not None:
+            # Une partie n'est pas une ressource : c'est son prefab qui
+            # la contient, donc c'est lui qu'on enregistre.
+            get_dispatcher().save_prefab(self._child_owner)
+        elif self._is_prefab_template:
+            # `self._actor` EST `self._prefab.actor` (cf. load_prefab) : c'est
+            # le Prefab qu'il faut enregistrer, pas son actor racine seul.
+            get_dispatcher().save_prefab(self._prefab)
         else:
             get_dispatcher().save_scene()
             get_dispatcher()._emit("scene_sprites_changed")
@@ -771,22 +1072,65 @@ class ActorInspector(QWidget):
             get_bus().select(prefab)
 
     def _unlink_prefab(self):
-        """Casse le lien prefab — l'actor devient un actor standalone."""
+        """« Unlink » — casse le lien prefab : l'actor devient un actor
+        standalone plein (il porte déjà ses propres components, aucune copie
+        à faire). Contrairement à Relink/Expose, sort DÉFINITIVEMENT cette
+        instance de la propagation de `save_prefab()` — c'est la seule des
+        trois actions qui protège une divergence locale pour de bon."""
         if not self._actor:
             return
         self._actor.prefab_name = None
-        self._prefab_badge.setVisible(False)
         get_dispatcher().save_scene()
+        get_dispatcher()._emit("actors_list_changed")
+        # cf. relink_actor_to_prefab / expose_actor_to_prefab dans
+        # command_dispatcher.py : même badge, le project viewer doit suivre.
+        get_dispatcher()._emit("project_tree_changed")
+        self.load(self._actor, self._project, self._scene)
+        self.changed.emit()
 
-    def _set(self, field, value):
+    def _relink_to_prefab(self):
+        """« Relink to prefab » : recharge cette instance depuis son prefab —
+        cf. CommandDispatcher.relink_actor_to_prefab."""
+        if not self._actor:
+            return
+        if get_dispatcher().relink_actor_to_prefab(self._actor):
+            self.load(self._actor, self._project, self._scene)
+            self.changed.emit()
+
+    def _expose_to_prefab(self):
+        """« Expose to prefab » : publie cette instance comme nouvelle
+        définition du prefab — cf. CommandDispatcher.expose_actor_to_prefab."""
+        if not self._actor:
+            return
+        if get_dispatcher().expose_actor_to_prefab(self._actor):
+            self.load(self._actor, self._project, self._scene)
+            self.changed.emit()
+
+    def _expose_new_prefab(self):
+        """« Expose to prefab » depuis un acteur ordinaire : crée un nouveau
+        prefab — cf. CommandDispatcher.create_prefab_from_actor."""
+        if not self._actor:
+            return
+        prefab = get_dispatcher().create_prefab_from_actor(self._actor)
+        if prefab:
+            self.load(self._actor, self._project, self._scene)
+            self.changed.emit()
+
+    def _set(self, field, value, extra_persist=None):
         if self._blocking or not self._actor: return
         old = getattr(self._actor, field, None)
         if old == value:
             return
+
+        def _do_persist():
+            self._persist()
+            if extra_persist:
+                extra_persist()
+
         get_history().push(SetFieldCmd(
             self._actor, field, old, value,
             label=f"{self._actor.name}.{field}",
-            persist_fn=self._persist,
+            persist_fn=_do_persist,
         ))
         self.changed.emit()
 
@@ -825,16 +1169,6 @@ class ActorInspector(QWidget):
             self._comp_list.setCurrentRow(row)
         else:
             self._build_editor(None)
-
-    def _toggle_section(self, toggle_btn: QToolButton, body: QWidget,
-                        label: str, color: str):
-        visible = not body.isVisible()
-        body.setVisible(visible)
-        arrow = "▾" if visible else "▸"
-        toggle_btn.setText(f"{arrow}  {label}")
-        # Mémoriser l'état pour que _clear_editor puisse le restaurer
-        if body is self._editor_container:
-            self._editor_section_visible = visible
 
     def _show_add_menu(self):
         if not self._actor: return
@@ -955,6 +1289,8 @@ class ActorInspector(QWidget):
     def _clear_editor(self):
         # Détruire le QWidget container et recréer — la seule façon sûre
         # de purger à la fois les widgets ET les QHBoxLayout ajoutés par row().
+        # Le repli/dépli reste géré par self._comp_card (CollapsibleCard) :
+        # remplacer le container n'y touche pas.
         old = self._editor_container
         new_container = QWidget()
         new_container.setStyleSheet(f"background:{C.BG_BASE};")
@@ -962,28 +1298,13 @@ class ActorInspector(QWidget):
         new_layout.setContentsMargins(8, 6, 8, 8)
         new_layout.setSpacing(6)
 
-        # Remplacer dans le layout parent
-        parent_layout = old.parent().layout() if old.parent() else None
-        if parent_layout:
-            idx = parent_layout.indexOf(old)
-            if idx >= 0:
-                parent_layout.insertWidget(idx, new_container)
+        body_layout = self._comp_card.body_layout
+        idx = body_layout.indexOf(old)
+        if idx >= 0:
+            body_layout.insertWidget(idx, new_container)
 
         self._editor_container = new_container
         self._editor_layout    = new_layout
-
-        # Restaurer l'état du toggle (replié/déplié) sur le nouveau container
-        new_container.setVisible(self._editor_section_visible)
-        arrow = "▾" if self._editor_section_visible else "▸"
-        self._editor_toggle.setText(f"{arrow}  EDITOR")
-
-        # Rebrancher le toggle sur le nouveau container
-        try:
-            self._editor_toggle.clicked.disconnect()
-        except RuntimeError:
-            pass
-        self._editor_toggle.clicked.connect(lambda: self._toggle_section(
-            self._editor_toggle, self._editor_container, "Editor", self._ctx_color))
 
         # Supprimer l'ancien (schedules deleteLater pour éviter crash de signal en cours)
         old.hide()

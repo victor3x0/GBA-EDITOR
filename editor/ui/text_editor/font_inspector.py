@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from codegen.font_emit import advance_source, glyph_advance_px
 from core.models.font import TILES_PER_CHARBLOCK, rect_tiles
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.widgets import CollapsibleCard
 from ui.common import icons
 from ui.text_editor.colors import FONT_COLOR
 from ui.text_editor.glyph_paint import key_out
@@ -68,39 +68,30 @@ class FontInspector(QWidget):
         host, lay, self._name_lbl = insp_scroll(FONT_COLOR, "Font")
         root.addWidget(host)
 
+        info_card = CollapsibleCard("Info")
         self._info = QLabel("")
         self._info.setFont(QFont(T.UI, T.SM))
         self._info.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._info.setWordWrap(True)
-        lay.addWidget(self._info)
-
-        W.separator(lay)
+        info_card.body_layout.addWidget(self._info)
+        lay.addWidget(info_card)
 
         # ── Transparence ──────────────────────────────────────────
         # Pipettes plutôt que sélecteur de couleur : la couleur voulue est
         # sous les yeux, dans la planche.
-        tr_lbl = QLabel("Transparency")
-        tr_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        tr_lbl.setStyleSheet(QSS.title_panel)
-        lay.addWidget(tr_lbl)
-
+        transparency_card = CollapsibleCard("Transparency")
         self._swatches: dict[str, QLabel] = {}
         for role, _field, label, tip in self._KEY_ROLES:
-            lay.addLayout(self._key_row(role, label, tip))
+            transparency_card.body_layout.addLayout(self._key_row(role, label, tip))
 
         self._key_hint = QLabel("")
         self._key_hint.setFont(QFont(T.UI, T.XS))
         self._key_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._key_hint.setWordWrap(True)
-        lay.addWidget(self._key_hint)
+        transparency_card.body_layout.addWidget(self._key_hint)
+        lay.addWidget(transparency_card)
 
-        W.separator(lay)
-
-        cs_lbl = QLabel("Charset")
-        cs_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        cs_lbl.setStyleSheet(QSS.title_panel)
-        lay.addWidget(cs_lbl)
-
+        charset_card = CollapsibleCard("Charset")
         self._charset = QTextEdit()
         self._charset.setReadOnly(True)
         self._charset.setFont(QFont(T.CODE, T.MD))
@@ -114,14 +105,10 @@ class FontInspector(QWidget):
             "never stored as such. Glyph-by-glyph editing will come<br>"
             "with the annotated grid."
         )
-        lay.addWidget(self._charset)
+        charset_card.body_layout.addWidget(self._charset)
+        lay.addWidget(charset_card)
 
-        W.separator(lay)
-
-        gl_lbl = QLabel("Selected glyph")
-        gl_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        gl_lbl.setStyleSheet(QSS.title_panel)
-        lay.addWidget(gl_lbl)
+        glyph_card = CollapsibleCard("Selected glyph")
 
         # La case seule, agrandie : c'est ce qu'on regarde pour décider quel
         # caractère lui assigner.
@@ -131,7 +118,7 @@ class FontInspector(QWidget):
         self._glyph_preview.setStyleSheet(
             f"background:{C.BG_INPUT}; border:1px solid {C.BORDER_MID};"
             f"border-radius:3px;")
-        lay.addWidget(self._glyph_preview)
+        glyph_card.body_layout.addWidget(self._glyph_preview)
 
         # Case par case plutôt que le charset entier : corriger celle qu'on a
         # sous les yeux ne décale pas le reste.
@@ -147,13 +134,13 @@ class FontInspector(QWidget):
             "characters."
         )
         self._char_edit.editingFinished.connect(self._commit_char)
-        lay.addWidget(self._char_edit)
+        glyph_card.body_layout.addWidget(self._char_edit)
 
         self._glyph_info = QLabel("No cell selected")
         self._glyph_info.setFont(QFont(T.UI, T.XS))
         self._glyph_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._glyph_info.setWordWrap(True)
-        lay.addWidget(self._glyph_info)
+        glyph_card.body_layout.addWidget(self._glyph_info)
 
         self._hint = QLabel(
             "Glyphs are drawn in your image editor, just like for a "
@@ -163,7 +150,8 @@ class FontInspector(QWidget):
         self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._hint.setWordWrap(True)
-        lay.addWidget(self._hint)
+        glyph_card.body_layout.addWidget(self._hint)
+        lay.addWidget(glyph_card)
 
         lay.addStretch()
 

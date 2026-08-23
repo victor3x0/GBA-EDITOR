@@ -9,8 +9,8 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.history import get_history, SetFieldCmd
 from core.text_markup import parse, resolve, TAGS
-from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.theme import C, T
+from ui.common.widgets import CollapsibleCard
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.inspector_shell import insp_scroll
 
@@ -52,10 +52,7 @@ class TextInspector(QWidget):
 
         # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
         # traducteur et l'identité machine.
-        note_lbl = QLabel("Note for translator")
-        note_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        note_lbl.setStyleSheet(QSS.title_panel)
-        bl.addWidget(note_lbl)
+        note_card = CollapsibleCard("Note for translator")
         self._note_edit = QTextEdit()
         self._note_edit.setFont(QFont(T.UI, T.SM))
         self._note_edit.setStyleSheet(
@@ -70,31 +67,27 @@ class TextInspector(QWidget):
         # Commit au focus-out : une commande par frappe noierait l'historique.
         self._note_edit.focusOutEvent = self._note_focus_out
         self._note_baseline = ""
-        bl.addWidget(self._note_edit)
-
-        W.separator(bl)
+        note_card.body_layout.addWidget(self._note_edit)
+        bl.addWidget(note_card)
 
         # ── Balisage ──────────────────────────────────────────────
         # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
         # balisage n'ont nulle part ailleurs où apparaître avant le build.
-        mk_lbl = QLabel("Markup")
-        mk_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        mk_lbl.setStyleSheet(QSS.title_panel)
-        mk_lbl.setToolTip("<br>".join(
+        markup_card = CollapsibleCard("Markup")
+        markup_card.setToolTip("<br>".join(
             f"<b>[{s.name}{'=…' if s.value else ''}]</b> — {s.doc}"
             for s in TAGS.values()))
-        bl.addWidget(mk_lbl)
         self._markup = QLabel("")
         self._markup.setFont(QFont(T.UI, T.XS))
         self._markup.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._markup.setWordWrap(True)
-        bl.addWidget(self._markup)
+        markup_card.body_layout.addWidget(self._markup)
         self._issues = QLabel("")
         self._issues.setFont(QFont(T.UI, T.XS))
         self._issues.setStyleSheet(f"color:{C.ACCENT_YLW};")
         self._issues.setWordWrap(True)
         self._issues.setVisible(False)
-        bl.addWidget(self._issues)
+        markup_card.body_layout.addWidget(self._issues)
         # Caractères que la police d'aperçu ne sait pas rendre. C'est l'autre
         # moitié de la raison d'être de cet écran : croiser la table et la
         # police, plutôt que de découvrir le trou sur la console.
@@ -103,29 +96,26 @@ class TextInspector(QWidget):
         self._missing.setStyleSheet(f"color:{C.ACCENT_RED};")
         self._missing.setWordWrap(True)
         self._missing.setVisible(False)
-        bl.addWidget(self._missing)
-
-        W.separator(bl)
+        markup_card.body_layout.addWidget(self._missing)
+        bl.addWidget(markup_card)
 
         # Contrepartie visible du renommage automatique : il réécrit les
         # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
-        use_lbl = QLabel("Used by")
-        use_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        use_lbl.setStyleSheet(QSS.title_panel)
-        bl.addWidget(use_lbl)
+        usage_card = CollapsibleCard("Used by")
         self._usage = QLabel("")
         self._usage.setFont(QFont(T.UI, T.XS))
         self._usage.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._usage.setWordWrap(True)
-        bl.addWidget(self._usage)
+        usage_card.body_layout.addWidget(self._usage)
+        bl.addWidget(usage_card)
 
-        W.separator(bl)
-
+        info_card = CollapsibleCard("Info")
         self._meta = QLabel("")
         self._meta.setFont(QFont(T.UI, T.XS))
         self._meta.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._meta.setWordWrap(True)
-        bl.addWidget(self._meta)
+        info_card.body_layout.addWidget(self._meta)
+        bl.addWidget(info_card)
 
         lay.addWidget(self._body)
         lay.addStretch()

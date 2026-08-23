@@ -278,9 +278,36 @@ class DataGridPanel(QWidget):
             item.setText(str(value))
             if col.type in COLUMN_REFERENCES:
                 item.setForeground(QColor(C.ACCENT if value else C.TEXT_DIM))
+                # Une colonne de textes montre une CLÉ, qui ne dit pas ce que
+                # le joueur lira (ROADMAP v0.21). Le contenu vient donc en
+                # infobulle : la cellule garde sa clé — c'est elle que
+                # `_read_item` relit — et l'auteur voit sa réplique sans
+                # ouvrir l'écran Texte.
+                if col.type == "text" and value:
+                    item.setToolTip(self._text_preview(str(value)))
             else:
                 item.setForeground(QColor("#b5cea8"))
         return item
+
+    def _text_preview(self, key: str) -> str:
+        """La réplique que cette clé désigne, telle que le joueur la lira —
+        balisage résolu, constantes cuites, comme à l'aperçu de l'écran Texte."""
+        if not self._project:
+            return key
+        entry = next((x for x in getattr(self._project, "texts", [])
+                      if x.key == key), None)
+        if entry is None:
+            return f"{key}  (introuvable dans la table de textes)"
+        try:
+            from core.text_markup import parse, resolve
+            consts = {c.name: c.value for c in getattr(self._project, "constants", [])}
+            body = resolve(parse(entry.content or ""), consts)
+        except Exception:
+            body = entry.content or ""
+        body = body.replace(chr(10), " ")
+        if len(body) > 160:
+            body = body[:157] + "…"
+        return key + chr(10) + "« " + body + " »"
 
     # ── Écriture d'une cellule ────────────────────────────────────
 

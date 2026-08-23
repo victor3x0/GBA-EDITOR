@@ -11,6 +11,7 @@ from ui.common.theme import C
 from core.models.sprite import AnimState, SpriteAsset, StateDirection
 from core.project import Project
 from core.command_dispatcher import get_dispatcher
+from core.keybindings import bind
 from .frame_canvas import _FrameCanvasPanel, _FrameTimeline, _make_frame_pixmap
 from .spritesheet_viewer import _SpritesheetViewer
 
@@ -81,12 +82,14 @@ class SpriteCenterPanel(QWidget):
         # Shift+X/Y : portés ici (pas sur _FrameCanvas seul) pour marcher
         # aussi bien après un clic dans le canvas que dans le tile picker —
         # WidgetWithChildrenShortcut s'active dès qu'un descendant a le focus.
-        flip_x = QShortcut(QKeySequence("Shift+X"), self)
+        flip_x = QShortcut(QKeySequence(), self)
         flip_x.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         flip_x.activated.connect(self._canvas.flip_brush_x)
-        flip_y = QShortcut(QKeySequence("Shift+Y"), self)
+        bind("sprite.flip_h", flip_x)
+        flip_y = QShortcut(QKeySequence(), self)
         flip_y.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         flip_y.activated.connect(self._canvas.flip_brush_y)
+        bind("sprite.flip_v", flip_y)
 
     # ── API publique ──────────────────────────────────────────────────
 

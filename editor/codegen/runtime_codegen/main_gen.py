@@ -374,13 +374,31 @@ def _log_vram_layout(scene, emit) -> None:
          + (f" — défaut {_dn}" if _dn else "") + ")")
 
 
+def prefab_group(pf) -> int:
+    """Combien d'entrées de `g_actors` UNE instance de ce prefab occupe.
+
+    1 pour un prefab plat — tous ceux d'avant la v0.23. 1 + le nombre de
+    parties sinon : chaque partie reste un `Actor` complet (144 octets, une
+    entrée dans la boucle de frame, ses paires de collision), et c'est le prix
+    de l'invariant « un acteur = au plus un OBJ »."""
+    return 1 + len(getattr(pf, "children", []) or [])
+
+
 def _pool_info(prefabs, pool_start: int) -> list[dict]:
+    """La géométrie des pools. `size` compte les ENTRÉES réservées dans
+    `g_actors`, pas les instances : le pool se dit en instances, et le build
+    multiplie par les enfants (ROADMAP v0.23). C'est `size` — 32 pour huit
+    instances d'un prefab à quatre parties — que la mesure affiche, parce que
+    c'est lui qui est payé."""
     info, offset = [], pool_start
     for pf in prefabs:
         if getattr(pf, "max_instances", 0) > 0:
             s = c_sym(pf.name)
-            info.append({"prefab": pf, "sym": s, "start": offset, "size": pf.max_instances})
-            offset += pf.max_instances
+            g = prefab_group(pf)
+            info.append({"prefab": pf, "sym": s, "start": offset,
+                         "size": pf.max_instances * g,
+                         "instances": pf.max_instances, "group": g})
+            offset += pf.max_instances * g
     return info
 
 
@@ -427,9 +445,15 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
             if _def(s, ev):
                 L.append(sig)
 
+        group = pi.get("group", 1)
         L += [
             f"int spawn_{s}(int x, int y) {{",
-            f"    for(int _i={start}; _i<{start+size}; _i++) {{",
+            # Le pas est le GROUPE, pas 1 (ROADMAP v0.23) : une instance
+            # occupe la racine PUIS ses enfants, contiguës. Chercher de un en
+            # un tomberait sur l'enfant libre d'une instance vivante et
+            # écrirait une racine au milieu d'un boss. Un prefab plat a un
+            # groupe de 1 : la boucle est alors exactement celle d'avant.
+            f"    for(int _i={start}; _i<{start+size}; _i+={group}) {{",
             f"        if(!g_actors[_i].active) {{",
         ]
 
@@ -475,6 +499,51 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
                 f"            g_actors[_i].boxes[{bi}].w=(u8){bw};  g_actors[_i].boxes[{bi}].h=(u8){bh};",
                 f"            g_actors[_i].boxes[{bi}].solid={1 if cb.solid else 0}; g_actors[_i].boxes[{bi}].tag={tag_s};",
             ]
+        # ── Les ENFANTS de l'instance ─────────────────────────────
+        # Posées juste après la racine, dans l'ordre du template. Leur position
+        # n'est pas écrite ici : elle est recomposée depuis la racine dès la
+        # frame courante (cf. `_pool_compose_lines`), et l'écrire deux fois
+        # laisserait croire qu'elle vient d'ici.
+        for k, part in enumerate(getattr(pf, "children", []) or [], start=1):
+            p_sc = _get_sprite_comp(part)
+            p_spr = (p.get_sprite(p_sc.sprite_name)
+                     if (p_sc and p_sc.sprite_name) else None)
+            p_own = list(p_spr.own_palette) if (p_spr and getattr(p_spr, "own_palette", None)) else []
+            p_pal = (obj_layout.bank_index(getattr(part, "pal_bank", OWN_PAL_BANK), p_own)
+                     if obj_layout else 0) or 0
+            p_boxes = [c for c in part.components
+                       if isinstance(c, CollisionBoxComponent) and c.active][:4]
+            L += [
+                # Le slot de matrice appartient à la SCÈNE (scene_init le
+                # pose) ; `(Actor){0}` l'effacerait, comme il effaçait celui de
+                # la racine avant que le même garde-fou soit écrit pour elle.
+                f"            {{ int _affk = g_actors[_i+{k}].affine_slot;",
+                f"            g_actors[_i+{k}] = (Actor){{0}};",
+                f"            g_actors[_i+{k}].affine_slot = _affk; }}",
+                # Échelle neutre avant la première composition : `(Actor){0}`
+                # laisse un scale de ZÉRO, donc une matrice dégénérée si l'OAM
+                # sortait avant le tick qui recompose.
+                f"            g_actors[_i+{k}].scale_x = 256; g_actors[_i+{k}].scale_y = 256;",
+                f"            g_actors[_i+{k}].active   = 1; "
+                f"g_actors[_i+{k}].visible = {1 if getattr(part, 'visible', True) else 0};",
+                f"            g_actors[_i+{k}].pal_bank = {p_pal};",
+                # La partie porte le tag de sa RACINE : un bras de boss touché,
+                # c'est le boss qui est touché. Elle n'est pas un autre type
+                # d'acteur, elle est un enfant de celui-là.
+                f"            g_actors[_i+{k}].tag      = TAG_{s.upper()};",
+                f"            g_actors[_i+{k}].box_count = {len(p_boxes)};",
+            ]
+            for bi, cb in enumerate(p_boxes):
+                tag_s = "BOXTAG_" + c_sym(cb.tag or "body").upper()
+                _vn = _var_names(p)
+                bx, by = _FV.parse(cb.x, _vn).c_expr(), _FV.parse(cb.y, _vn).c_expr()
+                bw, bh = _FV.parse(cb.w, _vn).c_expr(), _FV.parse(cb.h, _vn).c_expr()
+                L += [
+                    f"            g_actors[_i+{k}].boxes[{bi}].x=(s8){bx}; g_actors[_i+{k}].boxes[{bi}].y=(s8){by};",
+                    f"            g_actors[_i+{k}].boxes[{bi}].w=(u8){bw};  g_actors[_i+{k}].boxes[{bi}].h=(u8){bh};",
+                    f"            g_actors[_i+{k}].boxes[{bi}].solid={1 if cb.solid else 0}; "
+                    f"g_actors[_i+{k}].boxes[{bi}].tag={tag_s};",
+                ]
         L.append(f"            {s}_pool_init(&g_actors[_i]);")
         if _def(s, "on_start"):
             L.append(f"            {s}_on_start(&g_actors[_i]);")
@@ -1021,7 +1090,7 @@ def _gen_tile_helpers() -> list[str]:
         "       rapide. On ramène donc le pas au cosinus de la pente qu'il",
         "       gravit, lu dans g_tile_scale.",
         "",
-        "       Deux garde-fous, parce que le moteur DÉFAIT ici une partie de ce",
+        "       Deux garde-fous, parce que le moteur DÉFAIT ici un enfant de ce",
         "       que le script a demandé :",
         "         - il faut être au sol à la frame précédente — un saut, une",
         "           chute ou un vol ne sont pas une marche ;",
@@ -1124,6 +1193,250 @@ def _gen_tile_helpers() -> list[str]:
 
 # ─── Helpers affine / origine ─────────────────────────────────────────────────
 
+def parent_depths(scene_actors: list) -> tuple[dict, list]:
+    """(profondeur de chaque acteur par son nom, erreurs bloquantes).
+
+    Profondeur 0 = pas de parent. C'est ELLE qui donne l'ordre d'émission —
+    parents avant enfants — et c'est ce tri au build qui remplace
+    l'ordonnanceur, le drapeau de salissure et l'invalidation qu'une hiérarchie
+    au runtime aurait demandés (ROADMAP v0.23). L'ordre d'une frame continue de
+    se lire en clair dans le C émis, ce qui était la seule chose à protéger.
+
+    Deux fautes sont bloquantes, et pour la même raison : sans profondeur, il
+    n'y a pas d'ordre, donc pas de composition possible.
+      - un parent qui ne nomme aucun acteur de CETTE scène ;
+      - un cycle, nommé en clair — « A → B → A » se corrige tout de suite,
+        « parenté invalide » ne se corrige pas."""
+    by_name = {a.name: a for a, _ in scene_actors}
+    depths: dict = {}
+    errors: list = []
+    for a, _ in scene_actors:
+        cur, chain = a, []
+        while True:
+            chain.append(cur.name)
+            par = getattr(cur, "parent", None)
+            if not par:
+                break
+            if par not in by_name:
+                errors.append(
+                    f"[error] l'acteur « {a.name} » a pour parent « {par} », "
+                    f"qui n'est pas un acteur de cette scène. Un parent se "
+                    f"choisit dans la même scène.")
+                chain = []
+                break
+            # Contre la CHAÎNE et non contre un ensemble à part : le cycle est
+            # alors nommé au moment où il se referme (« A → B → A ») et non un
+            # cran plus loin, ce qui donnait un chemin qui repassait deux fois.
+            if par in chain:
+                errors.append(
+                    f"[error] parenté circulaire : {' → '.join(chain)} → {par}. "
+                    f"Un acteur ne peut pas descendre de lui-même.")
+                chain = []
+                break
+            cur = by_name[par]
+        if chain:
+            depths[a.name] = len(chain) - 1
+    return depths, errors
+
+
+def _parent_compose_lines(scene_actors: list, actor_offset: int) -> list[str]:
+    """Recompose, chaque frame, le transform monde des acteurs qui ont un parent.
+
+    La formule n'est PAS nouvelle : c'est celle que le modèle affine applique
+    déjà entre un acteur et son sprite (ARCHITECTURE.md, « Le modèle affine »),
+    d'un cran plus haut — l'`Actor` parent tenant la place que tenait l'acteur.
+        rotation = somme des degrés
+        scale    = produit Q8
+        position = parent + R(rotation_parent)·S(scale_parent)·offset_local
+    Aucune règle nouvelle à apprendre, et c'est ce qui rend le chantier petit.
+
+    Le transform LOCAL est une CONSTANTE du build : la parenté est authorée, et
+    la tranche A n'ouvre pas l'accès script aux parties. Un enfant ne porte donc
+    aucun champ de plus dans `g_actors` — le coût annoncé de 144 octets par
+    acteur ne bouge pas.
+
+    **L'auteur pose en coordonnées MONDE ; c'est le build qui en tire le
+    local.** x/y/rotation/scale gardent donc exactement le sens qu'ils avaient
+    au canvas, et un bras se place là où il doit apparaître à l'écran plutôt
+    qu'à un offset qu'il faudrait calculer de tête. La conséquence est que la
+    scène dessinée dans l'éditeur est EXACTEMENT la frame 0 du jeu : le local
+    dérivé ici, recomposé au runtime avec la pose authorée du parent, redonne
+    la position authorée de l'enfant.
+
+    Le prix, assumé pour cette tranche : déplacer un parent dans le canvas ne
+    déplace pas encore ses enfants à l'écran (au runtime, si). Le jour où le
+    canvas saura composer, il pourra montrer du local sans que rien d'autre ne
+    bouge — la conversion faite ici est réversible.
+
+    Tout est en Q8 (ROADMAP v0.19) et l'arrondi reste à l'émission OAM : un
+    arrondi par niveau ferait dériver un bras d'un pixel par cran de
+    profondeur.
+
+    `visible` se propage ici aussi : cacher un boss cache ses bras, comme un
+    panneau d'UI caché cache son sous-arbre (v0.15). Deux endroits du logiciel,
+    une seule règle."""
+    depths, _errs = parent_depths(scene_actors)
+    idx_of = {a.name: actor_offset + j for j, (a, _) in enumerate(scene_actors)}
+    kids = [(a, j) for j, (a, _) in enumerate(scene_actors)
+            if getattr(a, "parent", None) and a.name in depths]
+    if not kids:
+        return []
+    kids.sort(key=lambda t: depths[t[0].name])   # parents avant enfants
+    L = ["    /* Hiérarchie d'acteurs — parents avant enfants, profondeur",
+         "       calculée au build (ROADMAP v0.23). Même composition que celle",
+         "       d'un acteur et de son sprite, d'un cran plus haut. */"]
+    import math
+    by_name = {a.name: a for a, _ in scene_actors}
+    for a, _j in kids:
+        c = idx_of[a.name]
+        p = idx_of[a.parent]
+        par = by_name[a.parent]
+        # ── Du MONDE authoré vers le LOCAL ────────────────────────
+        # L'inverse exact de la composition émise juste en dessous, appliqué
+        # à la POSE AUTHORÉE du parent : on défait sa rotation puis son
+        # échelle. Le résultat, recomposé au runtime avec cette même pose,
+        # redonne la position que l'auteur a vue au canvas.
+        p_rot = float(getattr(par, "rotation", 0) or 0)
+        p_sx = float(getattr(par, "scale_x", 1.0) or 1.0) or 1.0
+        p_sy = float(getattr(par, "scale_y", 1.0) or 1.0) or 1.0
+        dx = float(int(a.x) - int(par.x))
+        dy = float(int(a.y) - int(par.y))
+        th = math.radians(-p_rot)
+        ux = dx * math.cos(th) - dy * math.sin(th)
+        uy = dx * math.sin(th) + dy * math.cos(th)
+        ox = int(round((ux / p_sx) * 256))
+        oy = int(round((uy / p_sy) * 256))
+        rot = int(getattr(a, "rotation", 0) or 0) - int(round(p_rot))
+        sx = int(round(float(getattr(a, "scale_x", 1.0) or 1.0) / p_sx * 256))
+        sy = int(round(float(getattr(a, "scale_y", 1.0) or 1.0) / p_sy * 256))
+        L += [
+            f"    {{   /* {a.name} dans le repère de {a.parent} */",
+            f"        int _pr = g_actors[{p}].rotation;",
+            f"        int _px = g_actors[{p}].scale_x, _py = g_actors[{p}].scale_y;",
+            f"        int _co = gba_cos(_pr), _si = gba_sin(_pr);",
+            f"        int _lx = ({ox} * _px) >> 8, _ly = ({oy} * _py) >> 8;",
+            f"        g_actors[{c}].x = g_actors[{p}].x + ((_lx * _co - _ly * _si) >> 8);",
+            f"        g_actors[{c}].y = g_actors[{p}].y + ((_lx * _si + _ly * _co) >> 8);",
+            f"        g_actors[{c}].rotation = _pr + {rot};",
+            f"        g_actors[{c}].scale_x  = (_px * {sx}) >> 8;",
+            f"        g_actors[{c}].scale_y  = (_py * {sy}) >> 8;",
+            f"        g_actors[{c}].visible  = g_actors[{p}].visible && "
+            f"{1 if getattr(a, 'visible', True) else 0};",
+            f"    }}",
+        ]
+    return L
+
+
+def _pool_compose_lines(pi: list[dict]) -> list[str]:
+    """La composition des enfants d'un prefab segmenté, chaque frame.
+
+    Même formule que pour les acteurs de scène (`_parent_compose_lines`), mais
+    déroulée sur le POOL : une boucle par instance, et les enfants d'une
+    instance sont à un décalage constant de sa racine — le groupe est contigu
+    et sa taille est une constante du build.
+
+    Un enfant ÉTEINT ne se compose pas, et il n'est PAS rallumé par sa racine :
+    sa vie lui appartient (ROADMAP v0.23, tranché le 2026-08-21). Un boss qui
+    perd un bras appelle `MonBras:destroy()`, et le bras disparaît pour de bon —
+    plus d'OAM, plus de collision. Écrire `enfant.active = racine.active` à
+    chaque frame, comme la première version le faisait, annulait cet appel dès
+    la frame suivante et sans un mot. La racine, elle, éteint tout en mourant :
+    c'est la branche du dessus, et les deux règles ne se marchent pas dessus.
+
+    Comme pour un acteur de scène, la pose authorée d'un enfant est du MONDE
+    (elle a été placée par rapport au template posé à l'origine) : le local en
+    est dérivé ici, une fois, au build."""
+    import math
+    L: list[str] = []
+    for p2 in pi:
+        pf = p2["prefab"]
+        parts = list(getattr(pf, "children", []) or [])
+        if not parts:
+            continue
+        group, start, size = p2["group"], p2["start"], p2["size"]
+        by_name = {pt.name: pt for pt in parts}
+        rank = {pt.name: k for k, pt in enumerate(parts, start=1)}
+        L += [f"    /* {pf.name} — sous-arbre de chaque instance (ROADMAP v0.23) */",
+              f"    for(int _b={start}; _b<{start+size}; _b+={group}) {{",
+              # Racine éteinte = groupe RENDU AU POOL. C'est ici, en un seul
+              # endroit, que se tiennent les deux règles : « détruire la racine
+              # détruit le sous-arbre », et « active = false libère tout le
+              # groupe ». Sans cette branche, un boss tué laisserait ses bras
+              # actifs — donc dessinés, et en collision — jusqu'à la fin de la
+              # scène. Le spawn, lui, ne regarde que la racine (il avance d'un
+              # groupe à la fois) : la libérer suffit à rendre l'instance.
+              f"        if(!g_actors[_b].active) {{",
+              f"            for(int _k=1; _k<{group}; _k++) {{",
+              f"                g_actors[_b+_k].active = 0; g_actors[_b+_k].visible = 0;",
+              f"            }}",
+              f"            continue;",
+              f"        }}"]
+        for k, pt in enumerate(parts, start=1):
+            par = by_name.get(getattr(pt, "parent", None) or "")
+            # Parent = une autre partie, sinon la racine du groupe (décalage 0).
+            p_off = rank.get(par.name, 0) if par is not None else 0
+            ref = par if par is not None else pf
+            p_rot = float(getattr(ref, "rotation", 0) or 0)
+            p_sx = float(getattr(ref, "scale_x", 1.0) or 1.0) or 1.0
+            p_sy = float(getattr(ref, "scale_y", 1.0) or 1.0) or 1.0
+            # La racine d'un prefab n'a pas de pose authorée — le template est
+            # posé à l'origine, et c'est `spawn(x, y)` qui décide où. Le monde
+            # d'un enfant se lit donc directement comme un offset au template.
+            rx = int(getattr(ref, "x", 0) or 0) if par is not None else 0
+            ry = int(getattr(ref, "y", 0) or 0) if par is not None else 0
+            dx, dy = float(int(pt.x) - rx), float(int(pt.y) - ry)
+            th = math.radians(-p_rot)
+            ux = dx * math.cos(th) - dy * math.sin(th)
+            uy = dx * math.sin(th) + dy * math.cos(th)
+            ox, oy = int(round(ux / p_sx * 256)), int(round(uy / p_sy * 256))
+            rot = int(getattr(pt, "rotation", 0) or 0) - int(round(p_rot))
+            sx = int(round(float(getattr(pt, "scale_x", 1.0) or 1.0) / p_sx * 256))
+            sy = int(round(float(getattr(pt, "scale_y", 1.0) or 1.0) / p_sy * 256))
+            src = f"_b+{p_off}" if p_off else "_b"
+            L += [
+                f"        if(g_actors[_b+{k}].active) {{"
+                f"   /* {pt.name} dans le repère de "
+                f"{par.name if par is not None else pf.name} */",
+                f"            int _pr = g_actors[{src}].rotation;",
+                f"            int _px = g_actors[{src}].scale_x, _py = g_actors[{src}].scale_y;",
+                f"            int _co = gba_cos(_pr), _si = gba_sin(_pr);",
+                f"            int _lx = ({ox} * _px) >> 8, _ly = ({oy} * _py) >> 8;",
+                f"            g_actors[_b+{k}].x = g_actors[{src}].x + ((_lx * _co - _ly * _si) >> 8);",
+                f"            g_actors[_b+{k}].y = g_actors[{src}].y + ((_lx * _si + _ly * _co) >> 8);",
+                f"            g_actors[_b+{k}].rotation = _pr + {rot};",
+                f"            g_actors[_b+{k}].scale_x  = (_px * {sx}) >> 8;",
+                f"            g_actors[_b+{k}].scale_y  = (_py * {sy}) >> 8;",
+                f"            g_actors[_b+{k}].visible  = g_actors[{src}].visible && "
+                f"{1 if getattr(pt, 'visible', True) else 0};",
+                f"        }}",
+            ]
+        L.append("    }")
+    return L
+
+
+def actor_box_tags(owner) -> list[str]:
+    """Les tags des boxes ACTIVES d'un acteur (ou d'un prefab). « body » par
+    défaut, comme partout ailleurs dans le build."""
+    return [c.tag or "body" for c in getattr(owner, "components", [])
+            if isinstance(c, CollisionBoxComponent) and c.active]
+
+
+def actors_can_collide(p, a, b) -> bool:
+    """Ces deux acteurs ont-ils UNE SEULE combinaison de tags qui se rencontre ?
+
+    Si non, la paire n'est pas émise du tout (ROADMAP v0.23) : ni bloc de C, ni
+    entrée dans `_col_prev`, ni test par frame. Le gain est donc en ROM autant
+    qu'en cycles — c'est la raison de filtrer au BUILD plutôt qu'au runtime.
+
+    Sans box d'un côté, il n'y a rien à filtrer : on laisse passer, et le reste
+    du build décide comme avant. Ne rien dire vaut mieux que deviner."""
+    from core.models.settings import tags_collide
+    ta, tb = actor_box_tags(a), actor_box_tags(b)
+    if not ta or not tb:
+        return True
+    return any(tags_collide(p.settings, x, y) for x in ta for y in tb)
+
+
 def _has_solid_box(owner) -> bool:
     """Cet acteur (ou prefab) a-t-il une box PHYSIQUE ?
 
@@ -1156,7 +1469,7 @@ def _has_col_event(defined, sym: str) -> bool:
                 or defined(sym, "on_collision_exit"))
 
 
-def _affine_entry(actor, sc, slot: int) -> dict | None:
+def _affine_entry(actor, sc, slot: int, force: bool = False) -> dict | None:
     """
     Calcule l'entrée affine d'un Actor + son SpriteComponent.
 
@@ -1173,7 +1486,11 @@ def _affine_entry(actor, sc, slot: int) -> dict | None:
     plus de chemin statique pré-calculé : le rendu lit rotation/scale/offset
     chaque frame (cf. _affine_oam_lines_dynamic).
     """
-    if not bool(getattr(actor, "affine_transform", False)):
+    # `force` : l'enfant d'un parent affine qui PARTAGE son slot (ROADMAP
+    # v0.23). Il n'a pas coché `affine_transform` — il n'en réserve aucun — mais
+    # il lui faut la même entrée pour être émis en OAM affine sur le slot du
+    # parent, avec SES propres décalages de sprite.
+    if not force and not bool(getattr(actor, "affine_transform", False)):
         return None
 
     return {
@@ -1200,6 +1517,7 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
     result: dict = {}
     slot = 0
 
+    idx_of = {a.name: actor_offset + j for j, (a, _) in enumerate(scene_actors)}
     for j, (actor, _) in enumerate(scene_actors):
         if slot >= 32:
             break
@@ -1210,6 +1528,52 @@ def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dic
         if entry:
             result[actor_offset + j] = entry
             slot += 1
+
+    # ── Enfants sans transform propre : ils PARTAGENT le slot du parent ──
+    # Un slot ne contient que pa/pb/pc/pd — la position n'y est pour rien —
+    # donc deux OBJ de même rotation et de même échelle peuvent pointer le
+    # même (ROADMAP v0.23). Un enfant qui n'a ni rotation ni échelle propres
+    # hérite EXACTEMENT du transform de son parent : sa matrice est la même.
+    # Un boss à six parties qui tourne d'un bloc coûte donc UN slot sur 32,
+    # pas sept.
+    #
+    # Sans ce partage, ces enfants seraient émis en OAM normale et ne
+    # tourneraient pas avec leur parent — la composition serait calculée puis
+    # ignorée à l'affichage.
+    #
+    # Deuxième passe, après l'attribution : le parent doit déjà avoir le sien,
+    # et il peut être déclaré APRÈS l'enfant dans la scène.
+    depths, _errs = parent_depths(scene_actors)
+    for _pass in range(max(depths.values(), default=0)):
+        for j, (actor, _) in enumerate(scene_actors):
+            oam = actor_offset + j
+            par = getattr(actor, "parent", None)
+            if oam in result or not par or par not in idx_of:
+                continue
+            if getattr(actor, "affine_transform", False):
+                continue          # il a demandé le sien, il l'a eu (ou pas : 32)
+            if (int(getattr(actor, "rotation", 0) or 0) != 0
+                    or float(getattr(actor, "scale_x", 1.0) or 1.0) != 1.0
+                    or float(getattr(actor, "scale_y", 1.0) or 1.0) != 1.0):
+                continue          # transform propre → matrice différente
+            base = result.get(idx_of[par])
+            sc = _get_sprite_comp(actor)
+            if not base or not sc:
+                continue
+            # Le transform LOCAL du sprite entre AUSSI dans la matrice
+            # (`angle_eff = rotation + sprite_rot`, `scale_eff = scale ×
+            # sprite_scale`) : un enfant dont le sprite a sa propre rotation
+            # n'a pas la même matrice que son parent, malgré un transform
+            # d'acteur neutre. Il paie alors son slot comme les autres.
+            if (int(round(getattr(sc, "rotation", 0) or 0)) != 0
+                    or float(getattr(sc, "scale_x", 1.0) or 1.0) != 1.0
+                    or float(getattr(sc, "scale_y", 1.0) or 1.0) != 1.0):
+                continue
+            # Ses PROPRES décalages de sprite, sur le slot du parent : la
+            # matrice est partagée, pas la pose.
+            entry = _affine_entry(actor, sc, base["slot"], force=True)
+            if entry:
+                result[oam] = entry
 
     for p2 in pi:
         pf = p2["prefab"]
@@ -1498,7 +1862,9 @@ def _palettes_lines(p, emit=None) -> list[str]:
 # si le fichier chargé ne la contient pas).
 
 SAVE_HEADER_BYTES = 12
-SAVE_RECORD_BYTES = 8
+# En-tête d'UN enregistrement : id (4) + taille de la charge (4). La charge
+# suit, de longueur variable depuis la v0.20 — cf. `save_var_bytes`.
+SAVE_RECORD_HEAD_BYTES = 8
 SRAM_BYTES        = 32768
 
 
@@ -1520,8 +1886,19 @@ def save_id32(vid: int) -> int:
     return int(vid) & 0xFFFFFFFF
 
 
+def save_var_bytes(g) -> int:
+    """Ce qu'UNE variable persistante occupe dans un emplacement : l'en-tête de
+    son enregistrement, plus ses cases empaquetées arrondies au mot de 32 bits
+    (ROADMAP v0.20). Un scalaire retombe sur 8 + 4 octets ; un tableau de 400
+    booléens sur 8 + 52, et non 8 + 1600."""
+    from scripting.globals import save_bits
+    n = max(1, int(getattr(g, "count", 1) or 1))
+    payload = ((n * save_bits(g) + 31) // 32) * 4
+    return SAVE_RECORD_HEAD_BYTES + payload
+
+
 def save_slot_size(p) -> int:
-    return SAVE_HEADER_BYTES + SAVE_RECORD_BYTES * len(save_vars(p))
+    return SAVE_HEADER_BYTES + sum(save_var_bytes(g) for _i, g in save_vars(p))
 
 
 def save_fatal(p) -> list[str]:
@@ -1545,11 +1922,21 @@ def save_fatal(p) -> list[str]:
     slots = max(1, int(getattr(p.settings, "save_slots", 1)))
     total = slots * save_slot_size(p)
     if total > SRAM_BYTES:
+        # Depuis la v0.20, une variable peut valoir des centaines de cases :
+        # nommer LA plus grosse vaut mieux qu'un conseil général, parce que
+        # c'est presque toujours elle qui fait déborder, et que l'auteur ne
+        # peut pas deviner le coût empaqueté depuis l'écran des variables.
+        biggest = max(vars_, key=lambda iv: save_var_bytes(iv[1]))[1]
+        n_big = max(1, int(getattr(biggest, "count", 1) or 1))
+        lever = (f" La plus grosse est « {biggest.name} » "
+                 f"({n_big} cases, {save_var_bytes(biggest)} octets par "
+                 f"emplacement)." if n_big > 1 else "")
         out.append(
             f"[error] {slots} emplacement(s) de sauvegarde × {len(vars_)} "
             f"variable(s) demandent {total} octets, soit plus que les "
-            f"{SRAM_BYTES} de la SRAM. Réduire le nombre d'emplacements ou de "
-            f"variables persistantes.")
+            f"{SRAM_BYTES} de la SRAM. Réduire le nombre d'emplacements, le "
+            f"nombre de cases d'un tableau, ou le nombre de variables "
+            f"persistantes.{lever}")
     return out
 
 
@@ -1578,10 +1965,21 @@ def _save_lines(p, emit=None) -> list[str]:
                  + ", ".join(str(i) for i, _g in vars_) + "};")
         L.append("const int g_save_def[] = {"
                  + ", ".join(str(int(g.default)) for _i, g in vars_) + "};")
+        # ROADMAP v0.20 : le nombre de cases, et ce qu'une case coûte en SRAM.
+        # C'est ce couple qui rend l'enregistrement auto-descriptif — donc
+        # relisible par une version du jeu où le tableau a changé de taille.
+        from scripting.globals import save_bits
+        L.append("const unsigned short g_save_len[] = {"
+                 + ", ".join(str(max(1, int(getattr(g, "count", 1) or 1)))
+                             for _i, g in vars_) + "};")
+        L.append("const unsigned char g_save_bits[] = {"
+                 + ", ".join(str(save_bits(g)) for _i, g in vars_) + "};")
     else:
         L += ["const unsigned int   g_save_id[]  = {0};",
               "const unsigned short g_save_idx[] = {0};",
-              "const int            g_save_def[] = {0};"]
+              "const int            g_save_def[] = {0};",
+              "const unsigned short g_save_len[] = {0};",
+              "const unsigned char  g_save_bits[] = {0};"]
     L.append(f"const int g_save_count = {len(vars_)};")
     L.append(f"const int g_save_slots = {slots if vars_ else 0};")
     L.append(f"const int g_save_slot_size = {save_slot_size(p) if vars_ else 0};")
@@ -1700,6 +2098,85 @@ def _ui_element_index(p: Project) -> dict:
     même constante des deux côtés du link."""
     return {e.name: i for i, (_lay, e) in enumerate(
         p.all_elements() if hasattr(p, "all_elements") else [])}
+
+
+def project_lists(p: Project) -> list:
+    """[(mise en page, panneau)] des panneaux marqués LISTE, ordre stable.
+
+    Le même ordre que `all_elements` — mises en page, puis éléments — donc
+    l'index d'une liste est une constante du build, `UILIST_<NOM>`."""
+    from core.models.ui_region import KIND_PANEL
+    out = []
+    for lay, e in (p.all_elements() if hasattr(p, "all_elements") else []):
+        if getattr(e, "kind", "") == KIND_PANEL and getattr(e, "is_list", False):
+            out.append((lay, e))
+    return out
+
+
+def list_rows_of(lay, panel) -> list:
+    """Les RANGÉES d'une liste : ses zones de texte enfants, dans l'ordre de la
+    mise en page. Rien à déclarer — ce qu'on voit dans l'éditeur est ce que la
+    liste parcourt (ROADMAP v0.22)."""
+    from core.models.ui_region import KIND_TEXT
+    return [e for e in lay.elements
+            if getattr(e, "parent", "") == panel.name
+            and getattr(e, "kind", "") == KIND_TEXT]
+
+
+def emit_ui_lists_c(p: Project, emit=None) -> list[str]:
+    """Tables des listes d'interface + leur état vivant (ROADMAP v0.22).
+
+    Émises MÊME VIDES : `gba_engine.h` les déclare `extern` sans condition, et
+    un projet sans liste doit tout de même se lier — c'est `g_ui_list_count`
+    qui dit au moteur qu'il n'y a rien à parcourir. Même règle que les tables
+    de sauvegarde."""
+    from core.models.settings import ProjectSettings
+    lists = project_lists(p)
+    L = ["", "/* Listes d'interface — la navigation, pas la mise en page */"]
+    regions = {name: i for i, name in enumerate(p.region_names())}
+    rows_flat: list[int] = []
+    infos: list[str] = []
+    # Cadence par DÉFAUT du projet, qu'une liste peut surcharger — même
+    # politique d'héritage que la transition de scène (v0.6.2). Trois listes à
+    # trois cadences est une incohérence qu'un joueur sent.
+    d_delay = int(getattr(p.settings, "list_repeat_delay", 10) or 10)
+    d_rate = int(getattr(p.settings, "list_repeat_rate", 4) or 4)
+    for lay, panel in lists:
+        rows = list_rows_of(lay, panel)
+        row0 = len(rows_flat)
+        rows_flat += [regions.get(r.name, -1) for r in rows]
+        delay = int(getattr(panel, "list_repeat_delay", 0) or 0) or d_delay
+        rate = int(getattr(panel, "list_repeat_rate", 0) or 0) or d_rate
+        infos.append(
+            "{" + f"{len(rows)}, "
+            f"{1 if getattr(panel, 'list_axis', 'vertical') == 'horizontal' else 0}, "
+            f"{1 if getattr(panel, 'list_wrap', True) else 0}, "
+            f"{max(0, min(255, delay))}, {max(0, min(255, rate))}, {row0}"
+            + "}" + f"   /* {panel.name} — {len(rows)} rangée(s) */")
+        if emit and not rows:
+            emit("log_line",
+                 f"[warn] liste '{panel.name}' : aucune zone de texte enfant, "
+                 f"donc aucune rangée à afficher. Une liste parcourt les zones "
+                 f"de texte posées DANS son panneau.")
+    n = len(lists)
+    L.append("const UIListInfo g_ui_lists[] = {"
+             + (", ".join(infos) if infos else "{0,0,0,0,0,0}") + "};")
+    L.append("const short g_ui_list_rows[] = {"
+             + (", ".join(str(r) for r in rows_flat) if rows_flat else "0") + "};")
+    L.append(f"const int g_ui_list_count = {n};")
+    z = ", ".join(["0"] * n) if n else "0"
+    one = ", ".join(["1"] * n) if n else "0"
+    L.append(f"int g_ui_list_index[] = {{{one}}};")
+    L.append(f"int g_ui_list_first[] = {{{one}}};")
+    L.append(f"int g_ui_list_total[] = {{{z}}};")
+    L.append(f"int g_ui_list_timer[] = {{{z}}};")
+    for i, (_lay, panel) in enumerate(lists):
+        L.append(f"#define UILIST_{c_sym(panel.name).upper()} {i}")
+    if emit and n:
+        L.insert(1, "")
+        emit("log_line", f"[ui] {n} liste(s) de navigation")
+    L.append("")
+    return L
 
 
 def emit_ui_elements_c(p: Project) -> list[str]:
@@ -2764,8 +3241,20 @@ def _gen_scene_tick(
     # on_update prefabs poolés
     for p2 in pi:
         if _def(p2["sym"], "on_update"):
-            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            # Le pas est le GROUPE : ces trois hooks sont ceux de la RACINE,
+            # et un enfant n'a pas de script propre dans cette tranche (le
+            # dimensionnement de son état attend la réponse de la v0.17).
+            # `resolve_actor_tiles` en particulier DÉPLACE l'acteur : le lancer
+            # sur un enfant se battrait avec la composition qui vient de la
+            # poser. Groupe = 1 pour un prefab plat, boucle inchangée.
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi+={p2.get('group', 1)})")
             L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_update(&g_actors[_pi]);")
+
+    # Hiérarchie : APRÈS les scripts — un `on_update` peut avoir déplacé le
+    # parent, et l'enfant doit suivre DANS la même frame — et AVANT la
+    # collision et l'émission OAM, qui lisent la position monde recomposée.
+    L += _parent_compose_lines(scene_actors, actor_offset)
+    L += _pool_compose_lines(pi)
 
     # Résolution contre la carte de collision — pour TOUTE box solide, et non
     # plus seulement pour les acteurs qui définissent `on_tile_collide` : la
@@ -2786,7 +3275,13 @@ def _gen_scene_tick(
             if not _has_solid_box(p2["prefab"]):
                 continue
             cb = f"{p2['sym']}_on_tile_collide" if _def(p2["sym"], "on_tile_collide") else "NULL"
-            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            # Le pas est le GROUPE : ces trois hooks sont ceux de la RACINE,
+            # et un enfant n'a pas de script propre dans cette tranche (le
+            # dimensionnement de son état attend la réponse de la v0.17).
+            # `resolve_actor_tiles` en particulier DÉPLACE l'acteur : le lancer
+            # sur un enfant se battrait avec la composition qui vient de la
+            # poser. Groupe = 1 pour un prefab plat, boucle inchangée.
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi+={p2.get('group', 1)})")
             L.append(f"        if(g_actors[_pi].active) resolve_actor_tiles(&g_actors[_pi], {cb});")
 
     # Pool→scene collisions
@@ -2798,7 +3293,15 @@ def _gen_scene_tick(
     if pi and col_scene:
         for p2 in pi:
             s, start, size = p2["sym"], p2["start"], p2["size"]
-            np = len(col_scene)
+            # Même filtre que pour les paires de scène (ROADMAP v0.23) : un
+            # prefab dont aucun tag ne rencontre ceux d'un acteur n'a pas de
+            # ligne dans sa table `_pcol_*`, donc pas de test par frame et par
+            # instance. C'est le poste qui grandit le plus vite — pool × acteurs.
+            col_scene_pf = [(idx, a) for idx, a in col_scene
+                            if actors_can_collide(p, p2["prefab"], a)]
+            if not col_scene_pf:
+                continue
+            np = len(col_scene_pf)
             L += [
                 f"    {{",
                 f"        static u8 _pcol_{s}[{size}][{np}]={{{{0}}}};",
@@ -2815,7 +3318,7 @@ def _gen_scene_tick(
             # même souvenir de frame (`_pcol_`), avec les boxes échangées : la
             # `my_box` de l'un est la `other_box` de l'autre.
             pool_reacts = _has_col_event(_def, s)
-            for ci, (sidx, sactor) in enumerate(col_scene):
+            for ci, (sidx, sactor) in enumerate(col_scene_pf):
                 ss = c_sym(sactor.name)
                 s_lua = (sidx in lua_idx) and _has_col_event(_def, ss)
                 if not pool_reacts and not s_lua:
@@ -2890,7 +3393,13 @@ def _gen_scene_tick(
     # on_late_update prefabs
     for p2 in pi:
         if _def(p2["sym"], "on_late_update"):
-            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi++)")
+            # Le pas est le GROUPE : ces trois hooks sont ceux de la RACINE,
+            # et un enfant n'a pas de script propre dans cette tranche (le
+            # dimensionnement de son état attend la réponse de la v0.17).
+            # `resolve_actor_tiles` en particulier DÉPLACE l'acteur : le lancer
+            # sur un enfant se battrait avec la composition qui vient de la
+            # poser. Groupe = 1 pour un prefab plat, boucle inchangée.
+            L.append(f"    for(int _pi={p2['start']}; _pi<{p2['start']+p2['size']}; _pi+={p2.get('group', 1)})")
             L.append(f"        if(g_actors[_pi].active) {p2['sym']}_on_late_update(&g_actors[_pi]);")
 
     # on_late_update scène
@@ -2995,20 +3504,29 @@ def _gen_scene_tick(
     # OAM prefab pool
     for p2 in pi:
         pf = p2["prefab"]
-        _pf_sc = next((c for c in pf.components if isinstance(c, SpriteComponent) and c.sprite_name), None)
-        pf_spr = p.get_sprite(_pf_sc.sprite_name) if _pf_sc else None
-        if not pf_spr:
-            for oam_slot in range(p2["start"], p2["start"] + p2["size"]):
-                L.append(f"    shadow_oam[{oam_slot}].attr0=0x0200;")
-            continue
-        sh = pf_spr.oam_shape; sz = pf_spr.oam_size
-        bt = sprite_offsets.get(pf_spr.name, 0)
-        pf_sc2 = _get_sprite_comp(pf)
-        ox = getattr(pf_sc2, "origin_x", 0) if pf_sc2 else 0
-        oy = getattr(pf_sc2, "origin_y", 0) if pf_sc2 else 0
-        ox_s = (f"-{ox}" if ox > 0 else f"+{-ox}") if ox else ""
-        oy_s = (f"-{oy}" if oy > 0 else f"+{-oy}") if oy else ""
+        group = p2.get("group", 1)
+        # Les MEMBRES d'un groupe, dans l'ordre où le spawn les pose : la
+        # racine puis ses enfants (ROADMAP v0.23). Chacun a son propre sprite —
+        # un bras n'est pas dessiné avec l'image du corps. Un prefab plat n'a
+        # qu'un membre, et le C émis est alors mot pour mot celui d'avant.
+        members = [pf] + list(getattr(pf, "children", []) or [])
         for oam_slot in range(p2["start"], p2["start"] + p2["size"]):
+            owner = members[(oam_slot - p2["start"]) % group]
+            _own_sc = _get_sprite_comp(owner)
+            pf_spr = (p.get_sprite(_own_sc.sprite_name)
+                      if (_own_sc and _own_sc.sprite_name) else None)
+            if not pf_spr or not pf_spr.asset:
+                # Sans sprite, l'enfant est un MARQUEUR : point de tir, ancre
+                # de hitbox. Elle ne coûte aucun OBJ — l'invariant s'écrit « un
+                # acteur = AU PLUS un OBJ ».
+                L.append(f"    shadow_oam[{oam_slot}].attr0=0x0200;")
+                continue
+            sh = pf_spr.oam_shape; sz = pf_spr.oam_size
+            bt = sprite_offsets.get(pf_spr.name, 0)
+            ox = getattr(_own_sc, "origin_x", 0) if _own_sc else 0
+            oy = getattr(_own_sc, "origin_y", 0) if _own_sc else 0
+            ox_s = (f"-{ox}" if ox > 0 else f"+{-ox}") if ox else ""
+            oy_s = (f"-{oy}" if oy > 0 else f"+{-oy}") if oy else ""
             if oam_slot in _aff:
                 _lines_fn = _affine_oam_lines_dynamic
                 inner = _lines_fn(oam_slot, _aff[oam_slot], pf_spr, bt, "0")
@@ -3032,6 +3550,10 @@ def _gen_scene_tick(
     # Après les scripts, avant le flush OAM : une lecture démarrée pendant le
     # tick avance dès cette frame, et les sprites des glyphes animés sont posés
     # avant d'être copiés en OAM.
+    # La navigation AVANT le rendu d'UI : le script a déjà tourné, il a pu
+    # poser le nombre d'items ; l'index bouge donc dans la même frame que
+    # l'appui, et les rangées se dessinent ensuite avec le bon curseur.
+    L.append("    ui_list_tick();")
     L.append("    ui_image_update();")
     L.append("    text_update();")
     L.append("    oam_update();")
@@ -3133,6 +3655,34 @@ def generate_main(
     # même règle que ci-dessus, ça bloque. Une sauvegarde qui déborde ne se
     # verrait qu'à l'exécution, chez le joueur.
     _fatal += save_fatal(p)
+    # Parenté (ROADMAP v0.23) : un parent inconnu ou un cycle empêchent de
+    # calculer une profondeur, donc d'ordonner la frame. Bloquant comme le
+    # budget de tuiles, et pour la même raison — ça ne se verrait qu'en jouant.
+    for _d in all_scene_data:
+        _fatal += parent_depths(_d["scene_actors"])[1]
+    # Un enfant hérite de la rotation et de l'échelle de son parent — mais il
+    # ne peut les AFFICHER que s'il a un slot affine, le sien ou celui du
+    # parent partagé. Il n'en partage pas quand il a un transform propre, et
+    # il n'en réserve pas sans « Affine transform » : la composition serait
+    # alors calculée puis ignorée à l'écran. Un avertissement et non une
+    # erreur — le jeu tourne, c'est l'affichage qui ment.
+    if emit:
+        for _d in all_scene_data:
+            _sa = _d["scene_actors"]
+            _aff = _compute_affine_info(0, _sa, [])
+            _by = {a.name: a for a, _ in _sa}
+            for _j, (_a, _sp) in enumerate(_sa):
+                _par = _by.get(getattr(_a, "parent", None) or "")
+                if not _par or _j in _aff or not _get_sprite_comp(_a):
+                    continue
+                if not bool(getattr(_par, "affine_transform", False)):
+                    continue
+                emit("log_line",
+                     f"[warn] acteur '{_a.name}' : son parent '{_par.name}' peut "
+                     f"tourner ou changer d'échelle, mais '{_a.name}' n'a pas de "
+                     f"slot affine — il ne partage pas celui du parent (il a sa "
+                     f"propre rotation ou échelle) et n'en réserve pas. Cocher "
+                     f"« Affine transform » sur '{_a.name}' pour qu'il suive.")
     if _fatal:
         for _m in _fatal:
             if emit:
@@ -3269,6 +3819,7 @@ def generate_main(
     # (`_ui_element_index`), l'ordre d'émission n'a donc pas à être contraint
     # — placée ici pour rester avec le reste de l'UI.
     L += emit_ui_elements_c(p)
+    L += emit_ui_lists_c(p, emit)
 
     # ── Sauvegarde ────────────────────────────────────────────────
     # Après globals.h (inclus plus haut) : les tables citent les index
@@ -3444,11 +3995,17 @@ def generate_main(
                 if abs_sp and abs_sp.suffix.lower() == ".lua":
                     lua_idx_d.add(act_off + j)
 
+        # La matrice de collision (ROADMAP v0.23) retire ici les paires qui ne
+        # peuvent PAS se rencontrer — « les projectiles du joueur ignorent ceux
+        # du boss ». Elles ne coûtent alors plus rien : c'était le seul poste
+        # qui grandissait en CARRÉ, en taille de ROM comme en temps de frame,
+        # et précisément dans la salle la plus chargée.
         col_pairs_d = [
             (act_off + ii, act_off + jj)
             for ii in range(len(sa))
             for jj in range(ii + 1, len(sa))
-            if (act_off + ii) in lua_idx_d or (act_off + jj) in lua_idx_d
+            if ((act_off + ii) in lua_idx_d or (act_off + jj) in lua_idx_d)
+            and actors_can_collide(p, sa[ii][0], sa[jj][0])
         ]
 
         affine_d = _compute_affine_info(act_off, sa, pi)

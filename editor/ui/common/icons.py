@@ -181,10 +181,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Chrome des widgets — consommées par les QSS via qss_image()
     "spin_up":               ("mdi.menu-up",                 "▲"),
     "spin_down":             ("mdi.menu-down",               "▼"),
-    # Chevrons de repli/dépli des arborescences (QTreeWidget::branch) — même
-    # rôle que le ▾/▸ de FinderSection, matérialisé en PNG pour la QSS.
-    "tree_closed":           ("mdi.chevron-right",           "▸"),
-    "tree_open":             ("mdi.chevron-down",            "▾"),
+    # Flèches de repli/dépli des arborescences (QTreeWidget::branch) : PAS ici
+    # — theme.py les rend via qss_arrow_image() (triangle vectoriel partagé,
+    # cf. plus bas), pour matcher exactement la flèche de FinderSection/
+    # _Section/_SubSection (icons.arrow_icon()).
     # Data Editor — bandeau TABLE : deux actions "+" distinctes côte à côte,
     # la FORME dit ce qui est ajouté (ligne vs colonne), pas juste "+".
     "add_row":                ("mdi.table-row-plus-after",    "+▭"),
@@ -302,6 +302,96 @@ def qss_image(name: str, color: str = COLOR_DEFAULT,
     return path.as_posix()
 
 
+
+# ── Flèche ▾/▸ de repli, PARTAGÉE par tout le chrome de l'appli ─────
+# Un glyphe (MDI ou caractère Unicode ▾/▸) dépend de ce que la police en
+# cours contient et de QUEL moteur Qt le dessine (QLabel texte via
+# QTextLayout ≠ QPainter.drawText hors widget) : deux rendus qui ne se
+# ressemblent jamais vraiment, et le second peut même rester blanc si le
+# fallback de police ne s'y applique pas hors contexte de widget. On dessine
+# donc la flèche nous-mêmes — un simple triangle plein vectoriel — et
+# arrow_icon() / qss_arrow_image() sont les DEUX SEULS points d'entrée pour
+# cette forme dans toute l'appli : FinderSection, _Section, _SubSection
+# (widgets.py / sidebar_widgets.py) et le QSS de QTreeWidget::branch
+# (theme.py) y passent tous, donc un dessin strictement identique partout,
+# sans dépendre d'aucune police.
+_ARROW_NATIVE_PX = 64   # résolution native, mise à l'échelle par l'appelant
+                        # (QSS width/height, ou QIcon + setIconSize)
+_ARROW_FILL = 0.6       # le triangle occupe 60% du côté de sa boîte
+
+
+def _arrow_polygon(direction: str):
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QPolygonF
+    n = _ARROW_NATIVE_PX
+    w = n * _ARROW_FILL          # base du triangle
+    h = w * 0.87                 # hauteur ~ équilatérale
+    cx = cy = n / 2
+    if direction == "right":
+        return QPolygonF([QPointF(cx - h / 2, cy - w / 2),
+                           QPointF(cx - h / 2, cy + w / 2),
+                           QPointF(cx + h / 2, cy)])
+    return QPolygonF([QPointF(cx - w / 2, cy - h / 2),
+                       QPointF(cx + w / 2, cy - h / 2),
+                       QPointF(cx, cy + h / 2)])
+
+
+def _paint_arrow(direction: str, color: str) -> QPixmap:
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QBrush, QColor, QPainter
+    n = _ARROW_NATIVE_PX
+    px = QPixmap(n, n)
+    px.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(px)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QBrush(QColor(color)))
+    painter.drawPolygon(_arrow_polygon(direction))
+    painter.end()
+    return px
+
+
+_pending_arrow: dict[Path, tuple[str, str]] = {}
+
+
+def _render_arrow(path: Path) -> None:
+    """Écrit le PNG de la flèche si possible ; silencieux tant que Qt n'est pas prêt."""
+    if QApplication.instance() is None or path.exists():
+        return
+    direction, color = _pending_arrow[path]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _paint_arrow(direction, color).save(str(path), "PNG")
+    except Exception:
+        pass
+
+
+def qss_arrow_image(direction: str, color: str = COLOR_DEFAULT) -> str:
+    """
+    Chemin POSIX du PNG de la flèche pleine partagée ("right" = repliée,
+    "down" = dépliée), pour la règle `image:` d'une QSS
+    (QTreeWidget::branch) — l'appelant fixe `width`/`height` pour la taille
+    d'affichage, le rendu natif est en 64px pour rester net à l'échelle.
+    """
+    slug = f"arrow_{direction}_{color.lstrip('#')}"
+    path = _CACHE_DIR / f"{slug}.png"
+    _pending_arrow[path] = (direction, color)
+    _render_arrow(path)
+    return path.as_posix()
+
+
+def arrow_icon(direction: str, color: str = COLOR_DEFAULT) -> QIcon:
+    """
+    QIcon de la même flèche pleine partagée, pour un usage direct sur un
+    QLabel/QPushButton (FinderSection, _Section, _SubSection) — exactement le
+    même dessin que qss_arrow_image(), sans passer par le cache disque QSS.
+    L'appelant choisit la taille d'affichage via setIconSize()/pixmap(size).
+    """
+    if QApplication.instance() is None:
+        return QIcon()
+    return QIcon(_paint_arrow(direction, color))
+
+
 def ensure_qss_assets() -> None:
     """
     Rend les PNG demandés par les QSS. À appeler une fois après la création
@@ -309,3 +399,5 @@ def ensure_qss_assets() -> None:
     """
     for path in list(_pending):
         _render(path)
+    for path in list(_pending_arrow):
+        _render_arrow(path)

@@ -569,14 +569,21 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:
-        """Crée un Actor inline depuis un Prefab (copie des Components, aucun lien vivant)."""
-        return Actor(
-            name        = name,
-            prefab_name = prefab.name,
-            active      = True,
-            components  = copy.deepcopy(prefab.components),
-            x=x, y=y,
-        )
+        """Crée un Actor inline depuis un Prefab — copie complète de son actor
+        racine (composants, palette, réservation affine, notes ; aucun lien
+        vivant après la création), reposé aux coordonnées données.
+
+        Un prefab EST son actor racine (cf. core/models/scene.Prefab) :
+        copier CET objet plutôt que de relister champ par champ, c'est ce qui
+        évite l'ancien bug — `pal_bank`/`affine_transform`/`notes` du prefab
+        n'étaient pas reportés sur l'instance, faute d'avoir pensé à les
+        ajouter à cette liste."""
+        actor = copy.deepcopy(prefab.actor)
+        actor.name = name
+        actor.prefab_name = prefab.name
+        actor.active = True
+        actor.x, actor.y = x, y
+        return actor
 
     # ── Build ─────────────────────────────────────────────────────
 
@@ -649,6 +656,12 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             "sfx_sample_rate":   self.settings.sfx_sample_rate,
             "sound_channels":    self.settings.sound_channels,
             "debug_build":       self.settings.debug_build,
+            "list_repeat_delay": self.settings.list_repeat_delay,
+            "list_repeat_rate":  self.settings.list_repeat_rate,
+            # Écrite seulement s'il y a des exceptions : un projet où tout se
+            # heurte — le cas de tous ceux d'avant la v0.23 — ne gagne pas une clé.
+            **({"collision_disabled_pairs": sorted(self.settings.collision_disabled_pairs)}
+               if self.settings.collision_disabled_pairs else {}),
         }
         atomic_write(self.project_file, project_json.dumps(data))
 
@@ -692,6 +705,14 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Antérieur à la v0.14 : `debug.*` n'existait pas encore, donc rien ne
         # change de comportement pour un projet ancien — défaut à True.
         self.settings.debug_build = bool(d.get("debug_build", True))
+        # Antérieur à la v0.22 : les valeurs qui étaient en dur dans
+        # l'émetteur, donc aucun changement de comportement.
+        self.settings.list_repeat_delay = max(0, int(d.get("list_repeat_delay", 10)))
+        self.settings.list_repeat_rate  = max(0, int(d.get("list_repeat_rate", 4)))
+        # Absente = aucune exception, donc tout se heurte : le comportement
+        # d'avant la v0.23, à l'identique.
+        self.settings.collision_disabled_pairs = list(
+            d.get("collision_disabled_pairs") or [])
 
 
 

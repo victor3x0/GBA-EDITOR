@@ -556,8 +556,9 @@ class HomeScreen(QDialog):
         self._on_sel()
 
     def _open_toolchain_dialog(self):
-        from ui.common.build_panel import ToolchainDialog
-        dlg = ToolchainDialog(self._toolchain, self)
+        from ui.common.settings_dialog import SettingsDialog
+        from core.external_tools import ExternalTools
+        dlg = SettingsDialog(self._toolchain, ExternalTools(), "Toolchains", self)
         dlg.exec()
         self._toolchain_status.refresh()
 

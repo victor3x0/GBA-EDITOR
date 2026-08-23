@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox
 from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T, S, QSS
-from ui.common.widgets import W
+from ui.common.widgets import W, CollapsibleCard
 
 from core.models.data_table import DataColumn, COLUMN_TYPES, COLUMN_REFERENCES
 from core.project import Project
@@ -44,34 +44,34 @@ class DataInspectorPanel(QWidget):
         root.setContentsMargins(S.MD, S.MD, S.MD, S.MD)
         root.setSpacing(S.SM)
 
-        root.addWidget(W.title_section("Column"))
+        column_card = CollapsibleCard("Column")
         self._name = QLabel("—")
         self._name.setStyleSheet(f"color:{C.ACCENT}; font-family:{T.CODE}; "
                                  f"font-size:{T.MD}px;")
-        W.row("name", self._name, root)
+        W.row("name", self._name, column_card.body_layout)
 
         self._type = QComboBox()
         self._type.addItems(COLUMN_TYPES)
         self._type.setStyleSheet(QSS.combobox)
         self._type.currentTextChanged.connect(self._on_type_changed)
-        W.row("type", self._type, root)
+        W.row("type", self._type, column_card.body_layout)
 
         W.hint("Renaming a column is done in the grid header — it is written as "
-               "code in scripts, so the rename rewrites them.", root)
+               "code in scripts, so the rename rewrites them.", column_card.body_layout)
+        root.addWidget(column_card)
 
-        W.separator(root)
-
-        root.addWidget(W.title_section("Cell"))
+        cell_card = CollapsibleCard("Cell")
         self._value = QLabel("—")
         self._value.setStyleSheet(f"color:{C.TEXT_HI}; font-family:{T.CODE}; "
                                   f"font-size:{T.MD}px;")
         self._value.setWordWrap(True)
-        W.row("value", self._value, root)
+        W.row("value", self._value, cell_card.body_layout)
 
         self._target = QLabel("")
         self._target.setStyleSheet(f"color:{C.TEXT_DIM}; font-size:{T.SM}px;")
         self._target.setWordWrap(True)
-        root.addWidget(self._target)
+        cell_card.body_layout.addWidget(self._target)
+        root.addWidget(cell_card)
 
         root.addStretch(1)
         self.set_selection(None, None)

@@ -39,6 +39,7 @@ from core.project import Project
 from core.engine_emulation.module_model import load_module
 from core.engine_emulation.module_render import render_module, GBA_MIX_RATE
 from core.history import get_history, DeleteResourceCmd
+from core.keybindings import bind
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -734,9 +735,10 @@ class SoundMixerScreen(QWidget):
         # Double-clic ou Espace : écouter. Le finder ne sait pas ce qu'« activer »
         # veut dire, l'écran si.
         self._finder.activated.connect(lambda _kind, a: self._play_asset(a))
-        sc_play = QShortcut(QKeySequence(Qt.Key.Key_Space), self._finder)
+        sc_play = QShortcut(QKeySequence(), self._finder)
         sc_play.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         sc_play.activated.connect(self._finder.activate_current)
+        bind("sound.play_pause", sc_play)
         split.addWidget(self._finder)
 
         # ── Panneau central : les boîtes à état ───────────────────

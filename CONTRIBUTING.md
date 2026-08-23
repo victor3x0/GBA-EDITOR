@@ -7,7 +7,7 @@ c'est ce qui garde ouverte une porte qui se referme définitivement au premier
 commit accepté sans elle.
 
 **Pourquoi.** Le détenteur des droits peut licencier son propre code comme il
-veut — y compris vendre une licence commerciale à une entreprise que la GPL
+veut, y compris vendre une licence commerciale à une entreprise que la GPL
 dérange, ou repasser le moteur sous d'autres termes si le besoin apparaît. Cette
 liberté disparaît dès qu'une ligne appartient à quelqu'un d'autre sans qu'on
 sache sous quelles conditions elle a été donnée. Le *sign-off* établit cette
@@ -102,6 +102,8 @@ CC=/chemin/vers/gcc python -m pytest tests -q
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explique comment le code est construit, et
-[ROADMAP.md](ROADMAP.md) ce qui est tranché, ce qui est ouvert, et ce qui a été
-écarté — avec les raisons. Les lire évite de proposer quelque chose qui a déjà
-été décidé dans l'autre sens.
+[ROADMAP.md](ROADMAP.md) ce qui reste à faire — scope, décisions déjà tranchées,
+questions ouvertes. Pour ce qui a déjà été livré et pourquoi, voir
+[CHANGELOG.md](CHANGELOG.md) (résumé) et [changelog-archive/](changelog-archive/)
+(détail, avec ce qui a été écarté et les raisons). Les lire évite de proposer
+quelque chose qui a déjà été décidé dans l'autre sens.

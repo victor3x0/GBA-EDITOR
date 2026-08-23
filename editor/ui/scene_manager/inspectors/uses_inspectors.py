@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from core.selection_bus import get_bus
 from ui.common.theme import C, T
+from ui.common.widgets import CollapsibleCard
 from ui.common import icons
 
 
@@ -67,16 +68,9 @@ class _UsesInspectorBase(QWidget):
         tl.addWidget(btn_close)
         root.addWidget(self._top)
 
-        # ── Barre de section (titre + bouton d'action optionnel) ──
-        sec_bar = QFrame()
-        sec_bar.setFixedHeight(28)
-        sec_bar.setStyleSheet(f"background:{C.BG_DEEP}; border-bottom:1px solid {C.BORDER_DARK};")
-        sl = QHBoxLayout(sec_bar)
-        sl.setContentsMargins(10, 0, 8, 0)
-        self._sec_lbl = QLabel(self._SECTION_TITLE)
-        self._sec_lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.Bold))
-        self._sec_lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; letter-spacing:1px;")
-        sl.addWidget(self._sec_lbl, 1)
+        # ── Carte : titre + bouton d'action optionnel + liste ─────
+        self._card = CollapsibleCard(self._SECTION_TITLE, color=self._HEADER_COLOR)
+        self._card.set_expanding(True)
         if self._ACTION_BTN_TEXT:
             self._action_btn = QPushButton(self._ACTION_BTN_TEXT)
             self._action_btn.setFont(QFont(T.UI, T.SM))
@@ -87,8 +81,8 @@ class _UsesInspectorBase(QWidget):
                 f"QPushButton:hover{{color:{C.TEXT_HI};}}"
             )
             self._action_btn.clicked.connect(self._on_action)
-            sl.addWidget(self._action_btn)
-        root.addWidget(sec_bar)
+            self._card.add_header_widget(self._action_btn)
+        root.addWidget(self._card, 1)
 
         # ── Liste des utilisations ────────────────────────────────
         scroll = QScrollArea()
@@ -101,7 +95,8 @@ class _UsesInspectorBase(QWidget):
         self._list_layout.setContentsMargins(0, 4, 0, 8)
         self._list_layout.setSpacing(0)
         scroll.setWidget(self._list_container)
-        root.addWidget(scroll, 1)
+        self._card.body_layout.setContentsMargins(0, 0, 0, 0)
+        self._card.body_layout.addWidget(scroll)
 
     # ── Helpers de construction de liste, communs aux sous-classes ──
 

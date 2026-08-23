@@ -33,6 +33,28 @@ RELABELED: list[str] = []  # libellé du JSON permuté par rapport au catalogue
 _ACTOR_FALLBACK = "Actor"
 _MISC_FALLBACK  = "Autres"
 
+# ─── Groupe de haut niveau ──────────────────────────────────────────
+# Les 22 catégories du JSON se répartissent sous 3 grosses parties, montrées
+# comme 3 sections de la sidebar (Gameplay / Scripting / Hardware). C'est une
+# lecture, pas une seconde hiérarchie de fichiers : chaque catégorie garde son
+# unique `group` dans le JSON, cette table ne sert qu'aux catégories créées en
+# code (fallbacks) qui n'existent pas dans le fichier.
+GROUP_GAMEPLAY  = "gameplay"
+GROUP_LANGUAGE  = "language"
+GROUP_HARDWARE  = "hardware"
+GROUP_LABELS: dict[str, str] = {
+    GROUP_GAMEPLAY: "Gameplay",
+    GROUP_LANGUAGE: "Scripting",
+    GROUP_HARDWARE: "Hardware",
+}
+# Ordre d'affichage des 3 sections — indépendant de l'ordre alphabétique des
+# clés Python.
+GROUP_ORDER: tuple[str, ...] = (GROUP_GAMEPLAY, GROUP_LANGUAGE, GROUP_HARDWARE)
+_FALLBACK_GROUP: dict[str, str] = {
+    _ACTOR_FALLBACK: GROUP_GAMEPLAY,
+    _MISC_FALLBACK:  GROUP_GAMEPLAY,
+}
+
 # Où ranger les PROPRIÉTÉS (RUNTIME_PROPS) : contrairement aux fonctions, un
 # module (`self`) ne suffit pas à dire la catégorie — self.position est du
 # Transform, self.velocity de la Physics. Une petite table à jour à la main,
@@ -144,7 +166,7 @@ def _reconcile(cats: list[dict]) -> list[dict]:
                   else _MISC_FALLBACK)
         cat = by_name.get(target)
         if cat is None:
-            cat = {"name": target, "entries": []}
+            cat = {"name": target, "group": _FALLBACK_GROUP.get(target, GROUP_GAMEPLAY), "entries": []}
             by_name[target] = cat
             out.append(cat)
         cat["entries"].append(api_snippets.entry_dict(name))
@@ -156,7 +178,7 @@ def _reconcile(cats: list[dict]) -> list[dict]:
         target = _PROP_HOME.get(name, _MISC_FALLBACK)
         cat = by_name.get(target)
         if cat is None:
-            cat = {"name": target, "entries": []}
+            cat = {"name": target, "group": _FALLBACK_GROUP.get(target, GROUP_GAMEPLAY), "entries": []}
             by_name[target] = cat
             out.append(cat)
         cat["entries"].append(api_snippets.prop_entry_dict(name))
@@ -174,6 +196,18 @@ def get_categories() -> list[dict]:
         raw = json.loads(_JSON_PATH.read_text(encoding="utf-8")).get("categories", [])
         _cache = _reconcile(raw)
     return _cache
+
+
+def get_categories_by_group() -> list[tuple[str, str, list[dict]]]:
+    """`get_categories()`, éclatée en 3 grosses parties (Gameplay / Scripting /
+    Hardware) — l'ordre de `GROUP_ORDER`, chaque groupe gardant l'ordre du JSON
+    en son sein. Rend `(group_key, label, catégories)` ; un groupe sans
+    catégorie n'apparaît pas (« Hardware » n'existe que le jour où une
+    catégorie y est rangée)."""
+    buckets: dict[str, list[dict]] = {g: [] for g in GROUP_ORDER}
+    for cat in get_categories():
+        buckets.setdefault(cat.get("group", GROUP_GAMEPLAY), []).append(cat)
+    return [(g, GROUP_LABELS.get(g, g), buckets[g]) for g in GROUP_ORDER if buckets[g]]
 
 
 def make_tooltip(entry: dict) -> str:

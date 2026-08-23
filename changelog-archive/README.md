@@ -1,0 +1,27 @@
+# Archive du changelog
+
+Le détail complet de chaque entrée du [CHANGELOG](../CHANGELOG.md) : le pourquoi, les
+décisions verrouillées, les pièges rencontrés, les mesures — extrait de la roadmap au moment
+où chaque version a été livrée, pour que ni l'un ni l'autre ne devienne illisible.
+
+Un fichier par version. Rien n'est perdu : c'est ici qu'on vient rouvrir une décision passée
+avec le contexte complet qui l'a motivée, plutôt que de la retrancher à l'aveugle.
+
+Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste à faire, voir
+[ROADMAP.md](../ROADMAP.md).
+
+| Version | Sujet |
+| --- | --- |
+| [v0.2](v0.2.md) | Gestion des palettes de couleurs |
+| [v0.3](v0.3.md) | Background vivant, texte et interface in-game |
+| [v0.4](v0.4.md) | Animation de décor |
+| [v0.5](v0.5.md) | Sauvegarde (SRAM) |
+| [v0.6](v0.6.md) | Polish de la boucle de jeu |
+| [v0.7](v0.7.md) | Structures de données |
+| [v0.8](v0.8.md) | Son : la musique par scène, les transitions, le mixage |
+| [v0.14](v0.14.md) | Diagnostic — ce que le jeu fait, et ce qu'il coûte |
+| [v0.15](v0.15.md) | Visibilité des éléments d'interface |
+| [v0.19](v0.19.md) | Le sous-pixel |
+| [v0.20](v0.20.md) | L'état du monde : les collections persistantes |
+| [v0.21](v0.21.md) | Le texte adressable : le dialogue piloté par la donnée |
+| [v0.23](v0.23.md) | Ce qu'un boss demande |

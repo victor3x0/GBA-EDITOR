@@ -21,7 +21,7 @@ from ui.scene_manager.scene_canvas import SceneEditor
 from core import asset_encoding
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
-from core.history import get_history
+from core.history import get_history, SetFieldCmd
 from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.models.audio import MUSIC_FILE_EXTS, SFX_FILE_EXTS
@@ -34,7 +34,10 @@ from ui.screens import EditorScreen, ProjectScreen, plugin_screens
 sys.path.insert(0, str(Path(__file__).parent))
 from ui.scene_manager.assets_finder_panel import AssetsFinderPanel
 from ui.scene_manager.scene_tree_panel import SceneTreePanel
-from ui.common.build_panel import BuildPanel, ToolchainBar, ToolchainDialog, AnimatedBuildButton
+from ui.common.build_panel import BuildPanel, ToolchainBar, AnimatedBuildButton
+from ui.common.settings_dialog import SettingsDialog
+from core.external_tools import ExternalTools
+from core.keybindings import bind
 from ui.scene_manager.inspectors import DynamicInspector
 from ui.sound_mixer.sound_panel import SoundMixerScreen
 from ui.script_editor.script_editor import ScriptEditorScreen
@@ -300,6 +303,7 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._startup_project = project_path
         self.toolchain = Toolchain()
+        self._external_tools = ExternalTools()
         self._watcher = ProjectWatcher(self)
         self._history = get_history()
 
@@ -338,7 +342,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(0)
 
         self.toolchain_bar = ToolchainBar(self.toolchain)
-        self.toolchain_bar.configure_requested.connect(self._open_toolchain_dialog)
+        self.toolchain_bar.configure_requested.connect(lambda: self._open_settings("Toolchains"))
         root_layout.addWidget(self.toolchain_bar)
 
         self._screen_stack = QStackedWidget()
@@ -374,14 +378,14 @@ class MainWindow(QMainWindow):
 
     def _screen_catalogue(self) -> list[EditorScreen]:
         return [
-            EditorScreen("Scene Manager",     self._build_scene_manager_screen),
-            EditorScreen("Data Editor",       self._make_data_editor),
-            EditorScreen("Background Editor", self._make_background_editor),
-            EditorScreen("Sprite Editor",     self._make_sprite_editor),
-            EditorScreen("Palette Editor",    self._make_palette_editor),
-            EditorScreen("Text Editor",       self._make_text_editor),
-            EditorScreen("Sound Mixer",       self._make_sound_mixer),
-            EditorScreen("Script Editor",     self._make_script_editor),
+            EditorScreen("Scenes",      self._build_scene_manager_screen),
+            EditorScreen("Datas",       self._make_data_editor),
+            EditorScreen("Backgrounds", self._make_background_editor),
+            EditorScreen("Animations",  self._make_sprite_editor),
+            EditorScreen("Palettes",    self._make_palette_editor),
+            EditorScreen("Texts",       self._make_text_editor),
+            EditorScreen("Sounds",      self._make_sound_mixer),
+            EditorScreen("Scripts",     self._make_script_editor),
         ] + plugin_screens()
 
     @property
@@ -437,8 +441,9 @@ class MainWindow(QMainWindow):
     def _make_script_editor(self) -> QWidget:
         self._script_editor = ScriptEditorScreen()
         self._script_editor.back_requested.connect(
-            lambda: self._switch_screen("Scene Manager")
+            lambda: self._switch_screen("Scenes")
         )
+        self._script_editor.build_panel.cartridge_mib_changed.connect(self._set_cartridge_mib)
         return self._script_editor
 
     def _build_scene_manager_screen(self) -> QWidget:
@@ -488,6 +493,7 @@ class MainWindow(QMainWindow):
 
         self.build_panel = BuildPanel()
         self.build_panel.btn_build.clicked.connect(self._run_build)
+        self.build_panel.cartridge_mib_changed.connect(self._set_cartridge_mib)
         self.build_panel.setMinimumHeight(80)
         self._center_v_split.addWidget(self.build_panel)
         self._center_v_split.setSizes([600, 160])
@@ -532,6 +538,7 @@ class MainWindow(QMainWindow):
         _d.on("scene_sprites_changed", self.scene_editor._reload_sprites)
         _d.on("actors_list_changed",   self.scene_tree_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
+        _d.on("actors_list_changed",   self._refresh_actor_inspector)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
         _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
         _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
@@ -604,22 +611,33 @@ class MainWindow(QMainWindow):
             f"QMenu::item:selected{{background:{C.BG_SEL};}}"
         )
         m_file = mb.addMenu("File")
-        a_new  = QAction("New project",  self); a_new.setShortcut("Ctrl+N")
-        a_open = QAction("Open project", self); a_open.setShortcut("Ctrl+O")
-        a_save = QAction("Save",         self); a_save.setShortcut("Ctrl+S")
+        a_new  = QAction("New project",  self); bind("file.new",  a_new)
+        a_open = QAction("Open project", self); bind("file.open", a_open)
+        a_save = QAction("Save",         self); bind("file.save", a_save)
         a_save.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
-        a_quit = QAction("Quit",         self); a_quit.setShortcut("Ctrl+Q")
+        # Réglages du LOGICIEL (devkitPro/mgba, thème, raccourcis, outils
+        # tiers — un état par machine) : distinct du menu Game → Project
+        # Settings, qui ouvre le projet OUVERT. Même dialogue que le bouton
+        # « ⚙ Configure » de la barre toolchain, une seconde porte vers la
+        # même donnée.
+        a_file_settings = QAction("Settings", self)
+        a_quit = QAction("Quit", self); bind("file.quit", a_quit)
         a_new.triggered.connect(self.assets_finder_panel._prompt_new)
         a_open.triggered.connect(self.assets_finder_panel._prompt_open)
         a_save.triggered.connect(self._save_project)
+        a_file_settings.triggered.connect(self._open_settings)
         a_quit.triggered.connect(self.close)
-        for a in [a_new, a_open, a_save, None, a_quit]:
+        for a in [a_new, a_open, a_save, None, a_file_settings, None, a_quit]:
             if a: m_file.addAction(a)
             else: m_file.addSeparator()
         m_game = mb.addMenu("Game")
-        a_build = QAction("Build & Run", self); a_build.setShortcut("F5")
+        a_build = QAction("Build & Run", self); bind("game.build", a_build)
         a_build.triggered.connect(self._run_build)
         m_game.addAction(a_build)
+        m_game.addSeparator()
+        a_project_settings = QAction("Project Settings", self)
+        a_project_settings.triggered.connect(self._open_project_settings)
+        m_game.addAction(a_project_settings)
         mb.addMenu("View")
         m_help = mb.addMenu("Help")
         a_about = QAction("About", self)
@@ -685,6 +703,16 @@ class MainWindow(QMainWindow):
         tb.addWidget(self._nav_bar)
         self._nav_bar.check_screen(0)
 
+    def _open_project_settings(self):
+        """Menu Game → Project Settings. Rien de nouveau à construire : c'est
+        exactement le panneau que montre déjà `_inspector` quand rien n'est
+        sélectionné (`DynamicInspector.on_selection(None)` → `show_project()`,
+        cf. dynamic_inspector.py) — `_switch_screen` vide le bus en y allant,
+        ce qui déclenche ce même chemin."""
+        if not self.project:
+            return
+        self._switch_screen("Scenes")
+
     def _show_screen(self, index: int):
         # Un seul catalogue : l'index de nav EST l'index du stack, par
         # construction (`_build_screens` monte dans l'ordre de `_screens`).
@@ -728,7 +756,7 @@ class MainWindow(QMainWindow):
         from pathlib import Path
         self._script_editor.load_project(self.project)
         self._script_editor.open_script(Path(path))
-        self._switch_screen("Script Editor")
+        self._switch_screen("Scripts")
 
     def _open_palette_usage(self, kind: str, name: str):
         """Clic sur une ligne de la carte « USAGE » du Palette Editor :
@@ -737,22 +765,22 @@ class MainWindow(QMainWindow):
         if not self.project:
             return
         if kind == "sprite":
-            self._switch_screen("Sprite Editor")
+            self._switch_screen("Animations")
             self._sprite_editor.select_sprite(name)
         elif kind == "background":
-            self._switch_screen("Background Editor")
+            self._switch_screen("Backgrounds")
             self._bg_editor.select_background(name)
         elif kind == "scene":
             index = next((i for i, s in enumerate(self.project.scenes) if s.name == name), None)
             if index is None:
                 return
-            self._switch_screen("Scene Manager")
+            self._switch_screen("Scenes")
             self._on_scene_selected(index)
         elif kind == "prefab":
             prefab = self.project.prefabs.get(name)
             if prefab is None:
                 return
-            self._switch_screen("Scene Manager")
+            self._switch_screen("Scenes")
             self._bus.select(prefab)
 
     # ── Chargement projet ─────────────────────────────────────────
@@ -813,6 +841,9 @@ class MainWindow(QMainWindow):
         self._tb_build_btn.setToolTip(tooltip)
         self.build_panel.btn_build.setEnabled(can_build)
         self.build_panel.btn_build.setToolTip(tooltip)
+        cart_mib = getattr(self.project.settings, "cartridge_mib", 4)
+        self.build_panel.set_cartridge_mib(cart_mib)
+        self._script_editor.build_panel.set_cartridge_mib(cart_mib)
         # Le projet part vers chaque écran, dans l'ordre du catalogue. Le Scene
         # Manager propage à ses trois colonnes (SceneManagerScreen.load_project).
         for spec, widget in zip(self._screens, self._screen_widgets):
@@ -895,6 +926,30 @@ class MainWindow(QMainWindow):
         self.project.save()
         self._status.showMessage("Project saved", 2000)
 
+    def _refresh_actor_inspector(self):
+        """Recharge l'inspecteur d'acteur s'il en montre un — un champ (ex :
+        Parent, posé depuis l'arbre de scène par drag & drop) peut avoir
+        changé ailleurs que par l'inspecteur lui-même."""
+        self._reload_actor_inspector()
+
+    def _reload_actor_inspector(self):
+        """Recharge l'inspecteur d'acteur EN RESPECTANT ce qu'il affiche —
+        acteur de scène, racine d'un prefab, ou partie d'un prefab (ROADMAP
+        v0.23) — pas juste `.load()` à l'aveugle : un prefab EST son actor
+        racine (core/models/scene.Prefab), `.load()` seule ne sait pas
+        retrouver ce contexte depuis l'Actor nu qu'elle affiche déjà."""
+        actor_insp = self._inspector.actor_inspector
+        if not actor_insp._actor:
+            return
+        scene = self.project.active_scene if self.project else None
+        if actor_insp._is_prefab_template and actor_insp._prefab:
+            actor_insp.load_prefab(actor_insp._prefab, self.project, scene)
+        elif actor_insp._child_owner is not None:
+            actor_insp.load_child(actor_insp._actor, actor_insp._child_owner,
+                                   self.project, scene)
+        else:
+            actor_insp.load(actor_insp._actor, self.project, scene)
+
     def _update_gba_bar(self):
         """Met à jour les compteurs hardware GBA (OAM, VRAM, PAL, scanline)."""
         if self.project and self.project.active_scene:
@@ -945,10 +1000,7 @@ class MainWindow(QMainWindow):
         if si._scene:
             si.load(si._scene, self.project)
         # Recharger l'inspector si un actor est sélectionné
-        actor_insp = self._inspector.actor_inspector
-        if actor_insp._actor:
-            actor_insp.load(actor_insp._actor, self.project,
-                            self.project.active_scene)
+        self._reload_actor_inspector()
 
     # ── Réactivité fichiers externes ─────────────────────────────
 
@@ -1079,8 +1131,12 @@ class MainWindow(QMainWindow):
             self._inspector.show_scene(self.project.active_scene, self.project)
             self._status.showMessage(f"Scene reloaded: {active.name}", 2000)
 
-    def _open_toolchain_dialog(self):
-        dlg = ToolchainDialog(self.toolchain, self)
+    def _open_settings(self, category: str = "Toolchains"):
+        """Écran Réglages unique (File → Settings, bouton « ⚙ Configure » de
+        la barre toolchain, et le garde-fou du build quand devkitPro/mgba
+        manquent) — `category` ne fait que présélectionner l'entrée de
+        gauche, les trois autres restent à un clic."""
+        dlg = SettingsDialog(self.toolchain, self._external_tools, category, self)
         dlg.exec()
         self.toolchain_bar.refresh()
         if self.project:
@@ -1101,10 +1157,37 @@ class MainWindow(QMainWindow):
 
     # ── Build ─────────────────────────────────────────────────────
 
+    def _set_cartridge_mib(self, mib: int):
+        """Choix de cartouche fait depuis le mot « ROM » du bandeau — même
+        réglage, même commande annulable que le combo de l'inspecteur de
+        projet (`ProjectInspector._set_setting`) : deux entrées, un seul
+        champ. Les DEUX bandeaux (Scene Manager, Script Editor) se
+        resynchronisent aussitôt, avant même le prochain build."""
+        if not self.project:
+            return
+        settings = self.project.settings
+        old = getattr(settings, "cartridge_mib", 4)
+        if old == mib:
+            return
+        project = self.project
+
+        def _persist():
+            # Resynchronise les DEUX bandeaux sur `execute` ET `undo` — même
+            # règle que `ProjectInspector._persist` pour son combo.
+            project.save()
+            cur = getattr(settings, "cartridge_mib", 4)
+            self.build_panel.set_cartridge_mib(cur)
+            self._script_editor.build_panel.set_cartridge_mib(cur)
+
+        get_history().push(SetFieldCmd(
+            settings, "cartridge_mib", old, mib,
+            label="Projet.cartridge_mib", persist_fn=_persist,
+        ))
+
     def _run_build(self):
         if not self.project or not self.project.active_scene: return
         if not self.toolchain.devkitpro_ok or not self.toolchain.mgba_ok:
-            self._open_toolchain_dialog(); return
+            self._open_settings("Toolchains"); return
 
         self.build_panel.set_building(True)
         self._tb_build_btn.build_started.emit()
@@ -1126,6 +1209,7 @@ class MainWindow(QMainWindow):
         self._worker.on("error_line", lambda m:  self._build_queue.put(("error",    m)))
         self._worker.on("progress",   lambda f:  self._build_queue.put(("progress", f)))
         self._worker.on("finished",   lambda ok: self._build_queue.put(("finished", ok)))
+        self._worker.on("rom_report", lambda r:  self._build_queue.put(("rom_report", r)))
         self._worker.start()
         self._build_drain.start()
 
@@ -1142,6 +1226,9 @@ class MainWindow(QMainWindow):
                     self._script_editor.build_panel.log_error(data)
                 elif kind == "progress":
                     self._tb_build_btn.set_progress(data)
+                elif kind == "rom_report":
+                    self.build_panel.update_rom_report(data)
+                    self._script_editor.build_panel.update_rom_report(data)
                 elif kind == "finished":
                     self._build_drain.stop()
                     self._on_build_finished(data)

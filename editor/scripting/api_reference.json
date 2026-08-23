@@ -2,10 +2,12 @@
   "categories": [
     {
       "name": "Transform",
+      "group": "gameplay",
       "entries": []
     },
     {
       "name": "Movement",
+      "group": "gameplay",
       "entries": [
         {
           "label": "self:move(dir, speed)",
@@ -47,6 +49,7 @@
     },
     {
       "name": "Physics",
+      "group": "gameplay",
       "entries": [
         {
           "label": "self:add_velocity(dv)",
@@ -65,6 +68,7 @@
     },
     {
       "name": "Animation",
+      "group": "gameplay",
       "entries": [
         {
           "label": "self:play_anim(\"name\")",
@@ -83,6 +87,7 @@
     },
     {
       "name": "Input",
+      "group": "gameplay",
       "entries": [
         {
           "label": "input.held(\"btn\")",
@@ -116,6 +121,7 @@
     },
     {
       "name": "Audio",
+      "group": "gameplay",
       "entries": [
         {
           "label": "self:play_sfx()",
@@ -364,6 +370,7 @@
     },
     {
       "name": "Caméra",
+      "group": "gameplay",
       "entries": [
         {
           "label": "camera.follow(target, mx, my)",
@@ -392,6 +399,7 @@
     },
     {
       "name": "Actor",
+      "group": "gameplay",
       "entries": [
         {
           "label": "get_actor(\"name\")",
@@ -430,6 +438,7 @@
     },
     {
       "name": "Variables",
+      "group": "language",
       "entries": [
         {
           "label": "global.get(\"name\")",
@@ -481,6 +490,7 @@
     },
     {
       "name": "Séquences",
+      "group": "language",
       "entries": [
         {
           "label": "sequence.start(name)",
@@ -528,6 +538,7 @@
     },
     {
       "name": "Sauvegarde",
+      "group": "hardware",
       "entries": [
         {
           "label": "save.write(slot)",
@@ -589,6 +600,7 @@
     },
     {
       "name": "Maths",
+      "group": "language",
       "entries": [
         {
           "label": "math.abs(x)",
@@ -747,6 +759,7 @@
     },
     {
       "name": "Tableaux",
+      "group": "language",
       "entries": [
         {
           "label": "array(taille)",
@@ -766,6 +779,7 @@
     },
     {
       "name": "Scène",
+      "group": "gameplay",
       "entries": [
         {
           "label": "scene.switch(name)",
@@ -785,6 +799,7 @@
     },
     {
       "name": "Tile",
+      "group": "gameplay",
       "entries": [
         {
           "label": "tile.get(x, y)",
@@ -809,6 +824,7 @@
     },
     {
       "name": "Layer",
+      "group": "hardware",
       "entries": [
         {
           "label": "layer.show(n, on)",
@@ -984,6 +1000,7 @@
     },
     {
       "name": "Texte",
+      "group": "gameplay",
       "entries": [
         {
           "label": "text.draw(tx, ty, id)",
@@ -1067,6 +1084,7 @@
     },
     {
       "name": "Interface",
+      "group": "gameplay",
       "entries": [
         {
           "label": "ui.image_set(image, state)",
@@ -1149,11 +1167,111 @@
           ],
           "returns": "int",
           "doc_anchor": "ui-image_state"
+        },
+        {
+          "label": "list.count(liste)",
+          "snippet": "list.count(\"liste\")",
+          "description": "Combien d'items cette liste parcourt. C'est le script qui le pose (list.set_count) : un inventaire ne connaît sa longueur qu'en jeu.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "int",
+          "doc_anchor": "list-count"
+        },
+        {
+          "label": "list.set_count(liste, n)",
+          "snippet": "list.set_count(\"liste\", n)",
+          "description": "Dit combien d'items la liste parcourt — #mon_tableau, le nombre de lignes d'une table de données, ou un compte tenu à la main. Tant que c'est 0, la liste ne bouge pas.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "n",
+              "type": "number",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "list-set_count"
+        },
+        {
+          "label": "list.index(liste)",
+          "snippet": "list.index(\"liste\")",
+          "description": "L'item sélectionné, à partir de 1. 0 si la liste est vide.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "int",
+          "doc_anchor": "list-index"
+        },
+        {
+          "label": "list.set_index(liste, i)",
+          "snippet": "list.set_index(\"liste\", i)",
+          "description": "Place le curseur sur l'item i (à partir de 1). La fenêtre se recale d'elle-même pour que l'item soit visible.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "i",
+              "type": "number",
+              "description": ""
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "list-set_index"
+        },
+        {
+          "label": "list.first(liste)",
+          "snippet": "list.first(\"liste\")",
+          "description": "Le premier item AFFICHÉ, à partir de 1 — la position de la fenêtre. L'item de la rangée r est first + r - 1.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "int",
+          "doc_anchor": "list-first"
+        },
+        {
+          "label": "list.row(liste, r)",
+          "snippet": "list.row(\"liste\", r)",
+          "description": "La zone de texte qui porte la rangée r (1 = la première visible), à passer à text.draw_in pour y écrire l'item. -1 hors bornes.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "r",
+              "type": "number",
+              "description": ""
+            }
+          ],
+          "returns": "int",
+          "doc_anchor": "list-row"
         }
       ]
     },
     {
       "name": "Window",
+      "group": "hardware",
       "entries": [
         {
           "label": "window.show(n, on)",
@@ -1302,6 +1420,7 @@
     },
     {
       "name": "Blend",
+      "group": "hardware",
       "entries": [
         {
           "label": "blend.set_layer(side, bg, on)",
@@ -1397,6 +1516,7 @@
     },
     {
       "name": "Palette",
+      "group": "gameplay",
       "entries": [
         {
           "label": "palette.set_bg(bank, p)",
@@ -1440,6 +1560,7 @@
     },
     {
       "name": "Tilemap",
+      "group": "gameplay",
       "entries": [
         {
           "label": "tilemap.set(n, tx, ty, tile)",
@@ -1591,6 +1712,20 @@
             }
           ],
           "doc_anchor": "tilemap-fill"
+        }
+      ]
+    },
+    {
+      "name": "Debug",
+      "group": "language",
+      "entries": [
+        {
+          "label": "debug.log(...)",
+          "snippet": "debug.log(...)",
+          "description": "Écrit une ligne dans le journal mGBA — jamais à l'écran du jeu. Concatène ses arguments, chacun déjà une chaîne ou un entier : debug.log(\"hp=\", hp, \" x=\", x). Sans effet, et retiré de la ROM, hors build debug (réglage du projet).",
+          "params": [],
+          "returns": "",
+          "doc_anchor": "debug-log"
         }
       ]
     }

@@ -47,7 +47,7 @@ from core.models.ui_region import (
 )
 from ui.common import icons
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.widgets import W, CollapsibleCard
 
 _ANCHORS = [
     (ANCHOR_SCREEN, "Screen (fixed)"),
@@ -141,20 +141,20 @@ class UIInspector(QWidget):
         self._layout_lbl = W.hint("", L)
 
         # ── Ancrage (root uniquement — un enfant hérite) ──────────
-        W.section("Anchor", L)
+        anchor_card = CollapsibleCard("Anchor")
         self._anchor = QComboBox()
         self._anchor.setFont(QFont(T.UI, T.MD))
         self._anchor.setStyleSheet(QSS.combobox)
         for _, lab in _ANCHORS:
             self._anchor.addItem(lab)
         self._anchor.currentIndexChanged.connect(self._on_anchor)
-        W.row("Anchor", self._anchor, L)
+        W.row("Anchor", self._anchor, anchor_card.body_layout)
 
         self._actor = QComboBox()
         self._actor.setFont(QFont(T.UI, T.MD))
         self._actor.setStyleSheet(QSS.combobox)
         self._actor.currentIndexChanged.connect(self._on_actor)
-        self._actor_row = W.row("Actor", self._actor, L).parentWidget()
+        self._actor_row = W.row("Actor", self._actor, anchor_card.body_layout).parentWidget()
 
         self._target = QComboBox()
         self._target.setFont(QFont(T.UI, T.MD))
@@ -162,14 +162,14 @@ class UIInspector(QWidget):
         for _, lab in _TARGETS:
             self._target.addItem(lab)
         self._target.currentIndexChanged.connect(self._on_target)
-        self._target_row = W.row("Target", self._target, L).parentWidget()
+        self._target_row = W.row("Target", self._target, anchor_card.body_layout).parentWidget()
 
-        self._frame_why = W.hint("", L)
-
-        W.separator(L)
+        self._frame_why = W.hint("", anchor_card.body_layout)
+        L.addWidget(anchor_card)
 
         # ── Géométrie ─────────────────────────────────────────────
-        self._geom_lbl = W.section("GEOMETRY (PX)", L)
+        geom_card = CollapsibleCard("Geometry (px)")
+        self._geom_lbl = geom_card
 
         # Presets de placement — la grille de Godot, adaptée au matériel : poser
         # une boîte basse sans taper quatre nombres. Les champs restent là pour
@@ -192,7 +192,7 @@ class UIInspector(QWidget):
         # s'étire et les neuf cases se dispersent, or leur disposition EST
         # l'information — elles doivent rester serrées et carrées.
         pg.setColumnStretch(4, 1)
-        W.row("Place", self._presets, L)
+        W.row("Place", self._presets, geom_card.body_layout)
         self._sp = {}
         for key in ("x", "y", "w", "h"):
             s = QSpinBox()
@@ -208,25 +208,25 @@ class UIInspector(QWidget):
         self._sp["w"].setRange(8, 512)
         self._sp["h"].setRange(8, 512)
         W.pair("Position", "X", C.AXIS_X, self._sp["x"],
-               "Y", C.AXIS_Y, self._sp["y"], L)
+               "Y", C.AXIS_Y, self._sp["y"], geom_card.body_layout)
         W.pair("Size", "L", C.AXIS_X, self._sp["w"],
-               "H", C.AXIS_Y, self._sp["h"], L)
-        self._size_lbl = W.hint("", L)
-
-        W.separator(L)
+               "H", C.AXIS_Y, self._sp["h"], geom_card.body_layout)
+        self._size_lbl = W.hint("", geom_card.body_layout)
+        L.addWidget(geom_card)
 
         # ── Visibilité (commune aux trois types) ──────────────────
         # État AUTHORÉ de départ, pas l'état effectif : un enfant sous un parent
         # caché reste coché ici (rien ne lui est arrivé), `_visible_why` dit
         # pourquoi il ne s'affiche quand même pas. Un script bascule cette même
         # valeur au runtime via `ui.show(nom, on)` — cf. models/ui_region.py.
-        self._visible = W.checkbox_row("Visible", "Shown at scene start", L)
+        visible_card = CollapsibleCard("Visibility")
+        self._visible = W.checkbox_row("Visible", "Shown at scene start", visible_card.body_layout)
         self._visible.toggled.connect(self._on_visible)
-        self._visible_why = W.hint("", L)
+        self._visible_why = W.hint("", visible_card.body_layout)
+        L.addWidget(visible_card)
 
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
-        self._text_sep = W.separator(L)
-        self._text_title = W.section("Text", L)
+        self._text_card = CollapsibleCard("Text")
 
         # Contenu ÉDITABLE SUR PLACE d'un texte authoré, pour ne pas avoir à
         # créer l'entrée dans l'écran Texte puis revenir la choisir ici.
@@ -258,9 +258,9 @@ class UIInspector(QWidget):
         self._commit_timer.setInterval(600)
         self._commit_timer.timeout.connect(self._commit_content)
         self._content_baseline = None   # None = rien en cours d'édition
-        L.addWidget(self._content)
+        self._text_card.body_layout.addWidget(self._content)
 
-        self._key_lbl = W.hint("", L)
+        self._key_lbl = W.hint("", self._text_card.body_layout)
 
         self._text_key = QComboBox()
         self._text_key.setFont(QFont(T.UI, T.SM))
@@ -269,7 +269,7 @@ class UIInspector(QWidget):
             "Bind this element to another existing entry — to share one label "
             "between several screens.")
         self._text_key.currentIndexChanged.connect(self._on_text_key)
-        self._text_key_row = W.row("Entry", self._text_key, L).parentWidget()
+        self._text_key_row = W.row("Entry", self._text_key, self._text_card.body_layout).parentWidget()
 
         self._preview = QComboBox()
         self._preview.setFont(QFont(T.UI, T.MD))
@@ -277,13 +277,13 @@ class UIInspector(QWidget):
         self._preview.setToolTip("Editor only: used to measure overflow, "
                                  "never compiled — the script decides the displayed text.")
         self._preview.currentIndexChanged.connect(self._on_preview)
-        self._preview_row = W.row("Preview", self._preview, L).parentWidget()
+        self._preview_row = W.row("Preview", self._preview, self._text_card.body_layout).parentWidget()
 
         self._font = QComboBox()
         self._font.setFont(QFont(T.UI, T.MD))
         self._font.setStyleSheet(QSS.combobox)
         self._font.currentIndexChanged.connect(self._on_font)
-        self._font_row = W.row("Font", self._font, L).parentWidget()
+        self._font_row = W.row("Font", self._font, self._text_card.body_layout).parentWidget()
 
         self._align = QComboBox()
         self._align.setFont(QFont(T.UI, T.MD))
@@ -291,7 +291,7 @@ class UIInspector(QWidget):
         for lab in _ALIGN_LABELS:
             self._align.addItem(lab)
         self._align.currentIndexChanged.connect(self._on_align)
-        self._align_row = W.row("Alignment", self._align, L).parentWidget()
+        self._align_row = W.row("Alignment", self._align, self._text_card.body_layout).parentWidget()
 
         # Couleur du texte : un INDEX dans la banque d'UI de la scène, pas un
         # RGB — le matériel n'offre que des index. 0 = encre d'origine (seul
@@ -307,7 +307,7 @@ class UIInspector(QWidget):
             "Any other value flattens the ink to that single color.<br><br>"
             "Each color used costs one more copy of the scene's glyphs in VRAM."
         )
-        self._color_row = W.row("Color", self._color, L).parentWidget()
+        self._color_row = W.row("Color", self._color, self._text_card.body_layout).parentWidget()
 
         self._anim = QSpinBox()
         self._anim.setFont(QFont(T.MONO, T.MD))
@@ -319,11 +319,11 @@ class UIInspector(QWidget):
             "receive an effect. Reserved for build (counted in the gauge); "
             "beyond that, glyphs fall back to static.")
         self._anim.valueChanged.connect(self._on_anim)
-        self._anim_row = W.row("Anim. gl.", self._anim, L).parentWidget()
+        self._anim_row = W.row("Anim. gl.", self._anim, self._text_card.body_layout).parentWidget()
+        L.addWidget(self._text_card)
 
         # ── Section FOND (conteneur) ──────────────────────────────
-        self._fill_sep = W.separator(L)
-        self._fill_title = W.section("Background", L)
+        self._fill_card = CollapsibleCard("Background")
 
         self._fill_kind = QComboBox()
         self._fill_kind.setFont(QFont(T.UI, T.MD))
@@ -331,7 +331,7 @@ class UIInspector(QWidget):
         for k, lab in _FILL_LABELS:
             self._fill_kind.addItem(lab, k)
         self._fill_kind.currentIndexChanged.connect(self._on_fill_kind)
-        self._fill_kind_row = W.row("Mode", self._fill_kind, L).parentWidget()
+        self._fill_kind_row = W.row("Mode", self._fill_kind, self._fill_card.body_layout).parentWidget()
 
         # Couleur : palette + index + pastille de rendu.
         color_box = QWidget()
@@ -354,13 +354,13 @@ class UIInspector(QWidget):
         self._fill_swatch = QLabel()
         self._fill_swatch.setFixedSize(22, 22)
         cc.addWidget(self._fill_swatch)
-        self._fill_color_row = W.row("Color", color_box, L).parentWidget()
+        self._fill_color_row = W.row("Color", color_box, self._fill_card.body_layout).parentWidget()
 
         self._fill_asset = QComboBox()
         self._fill_asset.setFont(QFont(T.UI, T.SM))
         self._fill_asset.setStyleSheet(QSS.combobox)
         self._fill_asset.currentIndexChanged.connect(self._on_fill_asset)
-        self._fill_asset_row = W.row("Asset", self._fill_asset, L).parentWidget()
+        self._fill_asset_row = W.row("Asset", self._fill_asset, self._fill_card.body_layout).parentWidget()
 
         # ── Fond SPRITE (cible OBJ) ───────────────────────────────
         # Mêmes trois questions que pour une image — quel sprite, quel état —
@@ -373,7 +373,7 @@ class UIInspector(QWidget):
             "its own size: the sprite repeats to cover it, one OAM slot per "
             "cell (the hardware cannot stretch an OBJ without affine mode).")
         self._fill_sprite.currentIndexChanged.connect(self._on_fill_sprite)
-        self._fill_sprite_row = W.row("Sprite", self._fill_sprite, L).parentWidget()
+        self._fill_sprite_row = W.row("Sprite", self._fill_sprite, self._fill_card.body_layout).parentWidget()
 
         self._fill_state = QComboBox()
         self._fill_state.setFont(QFont(T.UI, T.SM))
@@ -383,7 +383,7 @@ class UIInspector(QWidget):
             "ui.image_set — a panel background gets an IMAGE_* constant of its "
             "own, like any image.")
         self._fill_state.currentIndexChanged.connect(self._on_fill_state)
-        self._fill_state_row = W.row("State", self._fill_state, L).parentWidget()
+        self._fill_state_row = W.row("State", self._fill_state, self._fill_card.body_layout).parentWidget()
 
         self._fill_speed = QSpinBox()
         self._fill_speed.setFont(QFont(T.MONO, T.MD))
@@ -398,7 +398,7 @@ class UIInspector(QWidget):
             "Editor, which stays the single source of truth — otherwise fixing "
             "a speed there would silently stop having any effect here.")
         self._fill_speed.valueChanged.connect(self._on_fill_speed)
-        self._fill_speed_row = W.row("Speed", self._fill_speed, L).parentWidget()
+        self._fill_speed_row = W.row("Speed", self._fill_speed, self._fill_card.body_layout).parentWidget()
 
         # Marges de coupe du cadre sélectionné. Elles vivent sur le FOND
         # D'INTERFACE lui-même (`BackgroundAsset.slice_*`), asset PARTAGÉ entre
@@ -427,17 +427,39 @@ class UIInspector(QWidget):
             mrow.addWidget(t)
             mrow.addWidget(sp, 1)
             self._ns_m[key] = sp
-        self._ns_margins_row = W.row("Margins", ns_margins, L).parentWidget()
+        self._ns_margins_row = W.row("Margins", ns_margins, self._fill_card.body_layout).parentWidget()
 
-        self._fill_why = W.hint("", L)
+        self._fill_why = W.hint("", self._fill_card.body_layout)
+        L.addWidget(self._fill_card)
+
+        # ── Section LISTE (ROADMAP v0.22) ─────────────────────────
+        # Une propriété du PANNEAU, pas un quatrième type d'élément : le moteur
+        # prend la navigation, pas la mise en page. Les rangées sont les zones
+        # de texte posées DANS ce panneau — rien à déclarer de plus.
+        self._list_card = CollapsibleCard("Liste")
+        self._list_on = W.checkbox_row(
+            "Navigation", "Ce panneau est une liste", self._list_card.body_layout)
+        self._list_on.toggled.connect(
+            lambda v: (self._set("is_list", bool(v), "List"),
+                       self._sync_list_rows()))
+        self._list_axis = W.combobox(["Verticale", "Horizontale"])
+        self._list_axis.currentIndexChanged.connect(
+            lambda i: self._set("list_axis",
+                                "horizontal" if i == 1 else "vertical", "List axis"))
+        self._list_axis_row = W.row("Axe", self._list_axis, self._list_card.body_layout).parentWidget()
+        self._list_wrap = W.checkbox_row(
+            "Boucle", "Du dernier au premier", self._list_card.body_layout)
+        self._list_wrap.toggled.connect(
+            lambda v: self._set("list_wrap", bool(v), "List wrap"))
+        self._list_why = W.hint("", self._list_card.body_layout)
+        L.addWidget(self._list_card)
 
         # ── Section IMAGE (sprite à état) ─────────────────────────
         # L'élément DÉSIGNE, il ne redéfinit pas : ni vitesse, ni liste de
         # frames, ni direction ici — tout ça vit dans le SpriteAsset et s'édite
         # dans le Sprite Editor. Recopier une vitesse donnerait deux vérités
         # pour un même dessin (cf. models/ui_region.UIImage).
-        self._img_sep = W.separator(L)
-        self._img_title = W.section("Image", L)
+        self._img_card = CollapsibleCard("Image")
 
         self._img_sprite = QComboBox()
         self._img_sprite.setFont(QFont(T.UI, T.MD))
@@ -446,7 +468,7 @@ class UIInspector(QWidget):
             "Sprite asset drawn here. Picking one resizes the element to its "
             "frame — the hardware cannot stretch a sprite.")
         self._img_sprite.currentIndexChanged.connect(self._on_img_sprite)
-        self._img_sprite_row = W.row("Sprite", self._img_sprite, L).parentWidget()
+        self._img_sprite_row = W.row("Sprite", self._img_sprite, self._img_card.body_layout).parentWidget()
 
         self._img_state = QComboBox()
         self._img_state.setFont(QFont(T.UI, T.MD))
@@ -455,7 +477,7 @@ class UIInspector(QWidget):
             "State shown when the scene starts. A script can switch to any "
             "other state of this sprite — ui.image_set(\"name\", \"state\").")
         self._img_state.currentIndexChanged.connect(self._on_img_state)
-        self._img_state_row = W.row("State", self._img_state, L).parentWidget()
+        self._img_state_row = W.row("State", self._img_state, self._img_card.body_layout).parentWidget()
 
         self._img_play = QComboBox()
         self._img_play.setFont(QFont(T.UI, T.MD))
@@ -466,7 +488,7 @@ class UIInspector(QWidget):
             "A frozen image costs no per-frame work and never rewrites the "
             "tilemap — the right default for a static HUD icon.")
         self._img_play.currentIndexChanged.connect(self._on_img_play)
-        self._img_play_row = W.row("Frames", self._img_play, L).parentWidget()
+        self._img_play_row = W.row("Frames", self._img_play, self._img_card.body_layout).parentWidget()
 
         self._img_prio = QSpinBox()
         self._img_prio.setFont(QFont(T.MONO, T.MD))
@@ -476,9 +498,10 @@ class UIInspector(QWidget):
         self._img_prio.setToolTip("0 = frontmost. Carried by the element, not "
                                   "inherited: a gauge and its frame overlap on purpose.")
         self._img_prio.valueChanged.connect(self._on_img_prio)
-        self._img_prio_row = W.row("Priority", self._img_prio, L).parentWidget()
+        self._img_prio_row = W.row("Priority", self._img_prio, self._img_card.body_layout).parentWidget()
 
-        self._img_why = W.hint("", L)
+        self._img_why = W.hint("", self._img_card.body_layout)
+        L.addWidget(self._img_card)
 
         # ── Diagnostic + suppression ──────────────────────────────
         self._warn = W.hint("", L, color=C.ACCENT_YLW)
@@ -558,21 +581,11 @@ class UIInspector(QWidget):
             # La cible est un choix de l'auteur pour tout ce qui DESSINE ; un
             # conteneur, lui, la tient de son root comme le reste de sa branche.
             self._target_row.setVisible(is_text or is_image)
-            for w in (self._text_sep, self._text_title, self._content,
-                      self._key_lbl, self._text_key_row, self._preview_row,
-                      self._font_row, self._align_row, self._color_row,
-                      self._anim_row):
-                w.setVisible(is_text)
-            for w in (self._fill_sep, self._fill_title, self._fill_kind_row,
-                      self._fill_color_row, self._fill_asset_row,
-                      self._fill_sprite_row, self._fill_state_row,
-                      self._fill_speed_row, self._ns_margins_row,
-                      self._fill_why):
-                w.setVisible(is_panel)
-            for w in (self._img_sep, self._img_title, self._img_sprite_row,
-                      self._img_state_row, self._img_play_row,
-                      self._img_prio_row, self._img_why):
-                w.setVisible(is_image)
+            self._text_card.setVisible(is_text)
+            self._fill_card.setVisible(is_panel)
+            self._list_card.setVisible(is_panel)
+            self._sync_list_rows()
+            self._img_card.setVisible(is_image)
             # La taille d'une image est celle de la frame de son sprite : la
             # laisser éditable inviterait à un étirement que le matériel ne sait
             # pas faire. Les presets de PLACEMENT restent actifs (ils ne
@@ -918,11 +931,11 @@ class UIInspector(QWidget):
         step = 8 if eff == TARGET_BG else 1
         for k in ("x", "y", "w", "h"):
             self._sp[k].setSingleStep(step)
-        self._geom_lbl.setText(
-            "GEOMETRY (PX, RELATIVE TO PARENT)" if not is_root
-            else "GEOMETRY (PX, TILE-ALIGNED)" if eff == TARGET_BG
-            else "GEOMETRY (PX, ACTOR OFFSET)" if eff_anchor == ANCHOR_ACTOR
-            else "GEOMETRY (PX)")
+        self._geom_lbl.set_title(
+            "Geometry (px, relative to parent)" if not is_root
+            else "Geometry (px, tile-aligned)" if eff == TARGET_BG
+            else "Geometry (px, actor offset)" if eff_anchor == ANCHOR_ACTOR
+            else "Geometry (px)")
 
     def _sync_visible_hint(self):
         """Dit pourquoi l'élément ne s'affiche pas quand la case est cochée :
@@ -1011,6 +1024,12 @@ class UIInspector(QWidget):
         self._reload_fill_asset()
         self._reload_fill_sprite()
         self._sync_fill()
+        # Navigation (ROADMAP v0.22) — lue depuis le panneau comme le reste.
+        self._list_on.setChecked(bool(getattr(el, "is_list", False)))
+        self._list_axis.setCurrentIndex(
+            1 if getattr(el, "list_axis", "vertical") == "horizontal" else 0)
+        self._list_wrap.setChecked(bool(getattr(el, "list_wrap", True)))
+        self._sync_list_rows()
 
     def _reload_fill_sprite(self):
         """Peuple sprite/état/vitesse du fond sprite. blockSignals : repeupler
@@ -1163,6 +1182,32 @@ class UIInspector(QWidget):
             from core.command_dispatcher import get_dispatcher
             get_dispatcher().save_all()
         self.changed.emit()
+
+    def _sync_list_rows(self):
+        """Montre les réglages de liste quand le panneau en est une, et dit
+        combien de rangées il porte — une liste sans zone de texte enfant
+        n'afficherait rien, et c'est le genre de chose qu'on veut lire ici
+        plutôt que découvrir au Build."""
+        e = self._element
+        on = bool(getattr(e, "is_list", False)) if e is not None else False
+        for w in (self._list_axis_row, self._list_wrap):
+            w.setVisible(on)
+        if not on:
+            self._list_why.setText("")
+            return
+        from core.models.ui_region import KIND_TEXT
+        lay = self._layout_asset
+        rows = [x for x in (lay.elements if lay else [])
+                if getattr(x, "parent", "") == e.name
+                and getattr(x, "kind", "") == KIND_TEXT]
+        if rows:
+            self._list_why.setText(
+                f"{len(rows)} rangée(s) : {', '.join(r.name for r in rows)}. "
+                f"Le script écrit leur contenu — list.row(…) rend la zone.")
+        else:
+            self._list_why.setText(
+                "Aucune rangée : posez des zones de texte DANS ce panneau. "
+                "Ce sont elles que la liste parcourt.")
 
     def _set(self, field: str, value, label: str):
         from core.history import get_history, SetFieldCmd

@@ -81,6 +81,9 @@
     "tiles_reduced": 0,
     "pre_merge_palettes": 1,
     "final_palettes": 1,
-    "unique_tiles": 36
+    "unique_tiles": 36,
+    "src_indexed": true,
+    "src_colors": 7,
+    "src_capped": false
   }
 }

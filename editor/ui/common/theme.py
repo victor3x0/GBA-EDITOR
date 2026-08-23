@@ -201,6 +201,25 @@ def _arrow_rule(selectors: str, name: str, color: str) -> str:
             f"}}")
 
 
+# Flèche ▾/▸ de repli des QTreeWidget — le MÊME triangle vectoriel partagé
+# (icons.arrow_icon() / qss_arrow_image(), voir leur commentaire) que
+# FinderSection/_Section utilisent pour LEUR flèche, à la même taille de
+# boîte (ARROW_BOX_PX = T.MD, importé par widgets.py/sidebar_widgets.py) :
+# sinon les flèches de l'appli (en-tête de section vs branche d'arbre) ne se
+# lisent ni comme la même forme ni comme la même taille.
+ARROW_BOX_PX = T.MD
+
+
+def _tree_arrow_rule(selectors: str, direction: str, color: str) -> str:
+    path = _icons.qss_arrow_image(direction, color)
+    if not path:
+        return ""
+    return (f"{selectors} {{\n"
+            f"    image: url({path}); "
+            f"width: {ARROW_BOX_PX}px; height: {ARROW_BOX_PX}px;\n"
+            f"}}")
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Fragments QSS réutilisables widget par widget
 #
@@ -541,8 +560,8 @@ QTreeWidget::item:hover:!selected {{
 QTreeWidget::branch {{
     background: {C.BG_BASE};
 }}
-{_arrow_rule("QTreeWidget::branch:has-children:closed", "tree_closed", C.TEXT_DIM)}
-{_arrow_rule("QTreeWidget::branch:has-children:open", "tree_open", C.TEXT_DIM)}
+{_tree_arrow_rule("QTreeWidget::branch:has-children:closed", "right", C.TEXT_DIM)}
+{_tree_arrow_rule("QTreeWidget::branch:has-children:open", "down", C.TEXT_DIM)}
 """
 
     @property

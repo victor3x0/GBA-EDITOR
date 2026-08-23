@@ -28,6 +28,7 @@ from core.models.sprite import (
 )
 from core.history import get_history, PaintFrameCmd
 from core.sprite_compose import compose_frame_image
+from core.keybindings import bind
 
 # ── Frame timeline ─────────────────────────────────────────────────────────────
 
@@ -277,12 +278,14 @@ class _FrameTimeline(QWidget):
         outer.addWidget(self._scroll, 1)
 
         # Raccourcis : n'agissent que quand la timeline (ou un enfant) a le focus.
-        dup = QShortcut(QKeySequence("Ctrl+D"), self)
+        dup = QShortcut(QKeySequence(), self)
         dup.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         dup.activated.connect(lambda: self._copy_frame(self._selected))
-        delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
+        bind("sprite.duplicate_frame", dup)
+        delete = QShortcut(QKeySequence(), self)
         delete.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         delete.activated.connect(lambda: self._delete_frame(self._selected))
+        bind("sprite.delete_frame", delete)
 
     # ── API publique ───────────────────────────────────────────────────
 

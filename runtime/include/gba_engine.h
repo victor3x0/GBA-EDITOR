@@ -282,24 +282,41 @@ void palette_set_obj(int bank, int idx) {
      4  u16 version du format
      6  u16 nombre d'enregistrements qui suivent
      8  u32 somme de contrôle des enregistrements
-   Puis `n` enregistrements de 8 octets : u32 id de la variable, s32 valeur. */
+   Puis `n` enregistrements de TAILLE VARIABLE (ROADMAP v0.20) :
+     0  u32 id de la variable
+     4  u32 taille de la charge utile, en octets (multiple de 4)
+     8  la charge utile
+
+   Une variable y écrit ses cases les unes derrière les autres, chacune sur
+   `bits` bits — 1 pour un booléen, 32 pour un int. Un tableau de 400 coffres
+   tient donc en 50 octets et non en 1 600 : c'est le codegen qui décide du
+   paquetage, l'auteur n'en entend jamais parler (décision verrouillée v0.20).
+
+   Un scalaire n'est que le cas `count == 1` : sa charge utile fait 4 octets,
+   exactement la valeur qu'écrivait le format v1. Seul l'en-tête d'enregistrement
+   grandit de 4 octets, d'où la version 2 — un emplacement écrit par une version
+   antérieure est REFUSÉ proprement plutôt que relu de travers. */
 #define SAVE_MAGIC0    'G'
 #define SAVE_MAGIC1    'B'
 #define SAVE_MAGIC2    'S'
 #define SAVE_MAGIC3    'V'
-#define SAVE_VERSION   1
+#define SAVE_VERSION   2
 #define SAVE_HEADER    12
-#define SAVE_RECORD    8
+#define SAVE_REC_HEAD  8
 
 extern const unsigned int   g_save_id[];    /* id opaque de la variable, replié sur 32 bits */
 extern const unsigned short g_save_idx[];   /* son index GLOBAL_* — l'entrée de global_read/write */
-extern const int            g_save_def[];   /* sa valeur par défaut */
+extern const int            g_save_def[];   /* sa valeur par défaut, la même pour toutes ses cases */
+extern const unsigned short g_save_len[];   /* son nombre de CASES (1 = scalaire) */
+extern const unsigned char  g_save_bits[];  /* ce qu'une case coûte en SRAM, en bits */
 extern const int            g_save_count;
 extern const int            g_save_slots;
 extern const int            g_save_slot_size;
 
 extern int  global_read (int i);
 extern void global_write(int i, int v);
+extern int  global_read_at (int i, int k);
+extern void global_write_at(int i, int k, int v);
 
 /* Waitstates SRAM à 8 cycles — la valeur sûre pour toutes les cartouches.
    Appelée une fois par main() avant toute lecture. */
@@ -331,11 +348,67 @@ static int save_slot_base(int slot) {
     return base;
 }
 
-static unsigned int save_sum(int base, int n) {
+static unsigned int save_sum(int base, int nbytes) {
     unsigned int s = 0;
-    for (int i = 0; i < n * SAVE_RECORD; i++)
+    for (int i = 0; i < nbytes; i++)
         s = s * 31u + SRAM_MEM[base + SAVE_HEADER + i];
     return s;
+}
+
+/* ── Cases empaquetées ────────────────────────────────────────────
+   Bit à bit, et non par mots : une case fait 1, 8, 16 ou 32 bits, donc elle
+   ne s'aligne pas. C'est lent (32 opérations par case au pire) et ça n'a
+   aucune importance — on sauvegarde une fois, à la demande du joueur, pas
+   soixante fois par seconde. La clarté vaut mieux ici que la ruse. */
+static void save_put_bits(int byte_base, int bit_pos, int bits, unsigned int v) {
+    for (int b = 0; b < bits; b++) {
+        int p = bit_pos + b;
+        int o = byte_base + (p >> 3);
+        u8 m = (u8)(1 << (p & 7));
+        SRAM_MEM[o] = (u8)(((v >> b) & 1u) ? (SRAM_MEM[o] | m)
+                                           : (SRAM_MEM[o] & (u8)~m));
+    }
+}
+
+static unsigned int save_get_bits(int byte_base, int bit_pos, int bits) {
+    unsigned int v = 0;
+    for (int b = 0; b < bits; b++) {
+        int p = bit_pos + b;
+        if (SRAM_MEM[byte_base + (p >> 3)] & (1 << (p & 7))) v |= 1u << b;
+    }
+    return v;
+}
+
+/* Une valeur relue occupe `bits` bits ; si son type est signé, le bit de poids
+   fort est un signe qu'il faut étendre. On l'étend SANS savoir si le type l'est
+   — pour un type non signé, `global_write_at` recoupe à sa largeur et retrouve
+   la valeur d'origine. Un booléen (1 bit) est laissé tel quel : l'étendre
+   donnerait -1, vrai lui aussi, mais illisible en débogage. */
+static int save_signed(unsigned int v, int bits) {
+    if (bits >= 32 || bits == 1) return (int)v;
+    unsigned int sign = 1u << (bits - 1);
+    return (int)((v ^ sign) - sign);
+}
+
+/* La taille en octets de la charge utile d'une variable — ses cases empaquetées,
+   arrondies au mot de 32 bits pour que l'enregistrement suivant reste aligné. */
+static int save_payload_bytes(int len, int bits) {
+    return ((len * bits + 31) / 32) * 4;
+}
+
+/* Longueur totale des `n` enregistrements présents, ou -1 si le parcours sort
+   de l'emplacement — une SRAM à pile vide rend des tailles arbitraires, et
+   les suivre à l'aveugle ferait lire l'emplacement voisin. */
+static int save_records_bytes(int base, int n) {
+    int room = g_save_slot_size - SAVE_HEADER, off = 0;
+    for (int r = 0; r < n; r++) {
+        if (off + SAVE_REC_HEAD > room) return -1;
+        unsigned int sz = sram_get32(base + SAVE_HEADER + off + 4);
+        if (sz > (unsigned int)room) return -1;
+        off += SAVE_REC_HEAD + (int)sz;
+        if (off > room) return -1;
+    }
+    return off;
 }
 
 /* Vrai si l'emplacement porte une sauvegarde LISIBLE : marque, version et somme
@@ -349,20 +422,33 @@ int save_exists(int slot) {
         return 0;
     if ((SRAM_MEM[base + 4] | (SRAM_MEM[base + 5] << 8)) != SAVE_VERSION) return 0;
     int n = SRAM_MEM[base + 6] | (SRAM_MEM[base + 7] << 8);
-    /* Un nombre d'enregistrements plus grand que l'emplacement ferait lire
+    if (n < 0) return 0;
+    /* Des enregistrements qui débordent de l'emplacement feraient lire
        l'emplacement suivant : la sauvegarde est alors tenue pour illisible. */
-    if (n < 0 || n * SAVE_RECORD > g_save_slot_size - SAVE_HEADER) return 0;
-    return sram_get32(base + 8) == save_sum(base, n);
+    int len = save_records_bytes(base, n);
+    if (len < 0) return 0;
+    return sram_get32(base + 8) == save_sum(base, len);
 }
 
 int save_write(int slot) {
     int base = save_slot_base(slot);
     if (base < 0) return 0;
-    int n = g_save_count;
+    int n = g_save_count, off = 0;
     for (int i = 0; i < n; i++) {
-        int off = base + SAVE_HEADER + i * SAVE_RECORD;
-        sram_put32(off,     g_save_id[i]);
-        sram_put32(off + 4, (unsigned int)global_read(g_save_idx[i]));
+        int len = g_save_len[i], bits = g_save_bits[i];
+        int sz  = save_payload_bytes(len, bits);
+        int rec = base + SAVE_HEADER + off;
+        sram_put32(rec,     g_save_id[i]);
+        sram_put32(rec + 4, (unsigned int)sz);
+        /* La charge est mise à zéro avant d'être remplie : les bits de
+           bourrage du dernier mot n'appartiennent à aucune case, et sans ça
+           ils garderaient ce que la SRAM contenait — donc une somme de
+           contrôle qui change sans que rien n'ait changé. */
+        for (int b = 0; b < sz; b++) SRAM_MEM[rec + SAVE_REC_HEAD + b] = 0;
+        for (int k = 0; k < len; k++)
+            save_put_bits(rec + SAVE_REC_HEAD, k * bits, bits,
+                          (unsigned int)global_read_at(g_save_idx[i], k));
+        off += SAVE_REC_HEAD + sz;
     }
     SRAM_MEM[base]     = SAVE_MAGIC0;
     SRAM_MEM[base + 1] = SAVE_MAGIC1;
@@ -375,7 +461,7 @@ int save_write(int slot) {
     /* La somme est écrite EN DERNIER : une coupure de courant en plein milieu
        laisse alors un emplacement qui ne se relit pas, plutôt qu'une sauvegarde
        à moitié écrite qui se relit très bien. */
-    sram_put32(base + 8, save_sum(base, n));
+    sram_put32(base + 8, save_sum(base, off));
     return 1;
 }
 
@@ -383,19 +469,37 @@ int save_read(int slot) {
     if (!save_exists(slot)) return 0;
     int base = save_slot_base(slot);
     /* Les défauts d'abord : ce qui manque au fichier ne doit pas hériter de la
-       valeur qu'avait la partie en cours. */
+       valeur qu'avait la partie en cours. Toutes les CASES, pas seulement la
+       première — c'est ce qui fait qu'un tableau agrandi depuis la dernière
+       sauvegarde du joueur voit ses cases neuves partir du défaut. */
     for (int i = 0; i < g_save_count; i++)
-        global_write(g_save_idx[i], g_save_def[i]);
+        for (int k = 0; k < g_save_len[i]; k++)
+            global_write_at(g_save_idx[i], k, g_save_def[i]);
     int n = SRAM_MEM[base + 6] | (SRAM_MEM[base + 7] << 8);
+    int off = 0;
     for (int r = 0; r < n; r++) {
-        int off = base + SAVE_HEADER + r * SAVE_RECORD;
-        unsigned int id = sram_get32(off);
+        int rec = base + SAVE_HEADER + off;
+        unsigned int id = sram_get32(rec);
+        int sz = (int)sram_get32(rec + 4);
         for (int i = 0; i < g_save_count; i++)
             if (g_save_id[i] == id) {
-                global_write(g_save_idx[i], (int)sram_get32(off + 4));
+                int bits = g_save_bits[i];
+                /* Ce que le FICHIER contient, borné par ce que le jeu attend
+                   AUJOURD'HUI : un tableau qui a rétréci se tronque, un
+                   tableau qui a grandi garde ses défauts au-delà. Même
+                   tolérance que pour un scalaire absent (v0.5) — c'est elle
+                   qui garantit qu'ajouter dix coffres n'efface pas les parties
+                   déjà commencées. */
+                int stored = bits ? (sz * 8) / bits : 0;
+                if (stored > g_save_len[i]) stored = g_save_len[i];
+                for (int k = 0; k < stored; k++)
+                    global_write_at(g_save_idx[i], k,
+                        save_signed(save_get_bits(rec + SAVE_REC_HEAD,
+                                                  k * bits, bits), bits));
                 break;   /* les ids sont uniques — le build le vérifie */
             }
         /* Un id inconnu est une variable retirée du jeu depuis : on l'ignore. */
+        off += SAVE_REC_HEAD + sz;
     }
     return 1;
 }
@@ -713,6 +817,51 @@ typedef struct UIRegionInfo {
 
 extern const UIRegionInfo g_ui_regions[];
 extern const int g_ui_region_count;
+
+/* ── Listes d'interface (ROADMAP v0.22) ───────────────────────────
+   Le moteur prend la NAVIGATION, pas la mise en page : une liste est un panneau
+   de la mise en page dont on suit l'index courant. Ses RANGÉES sont ses zones
+   de texte enfants, dans l'ordre de l'arbre — rien à déclarer de plus, et ce
+   qu'on voit dans l'éditeur est ce que la liste parcourt.
+
+   Le nombre d'ITEMS n'est pas ici : c'est de la donnée, et un inventaire ne
+   connaît sa longueur qu'en jeu. Le script le pose (`list.set_count`). Tant
+   qu'il vaut 0, la liste ne bouge pas — il n'y a rien à parcourir.
+
+   Ce que la liste NE fait pas : dessiner. Elle dit quel item est sélectionné et
+   lequel s'affiche sur quelle rangée ; c'est le script qui écrit le contenu,
+   avec `text.draw_in` et les outils de texte qui existent déjà. */
+typedef struct UIListInfo {
+    unsigned char rows;        /* rangées visibles = zones de texte enfants */
+    unsigned char axis;        /* 0 = vertical, 1 = horizontal */
+    unsigned char wrap;        /* le curseur repasse-t-il du dernier au premier ? */
+    unsigned char rep_delay;   /* frames avant le premier renvoi */
+    unsigned char rep_rate;    /* frames entre les renvois suivants */
+    short row0;                /* décalage dans g_ui_list_rows */
+} UIListInfo;
+
+/* Posé par la boucle de frame de main.c, une fois par frame. */
+extern u32 _g_keys_held;
+
+extern const UIListInfo g_ui_lists[];
+extern const short      g_ui_list_rows[];   /* index de région, à plat */
+extern const int        g_ui_list_count;
+
+/* État vivant, une entrée par liste — défini par main.c (le compte est une
+   constante du build). Index et premier visible sont comptés À PARTIR DE 1,
+   comme tout ce qui s'indexe dans ce logiciel. */
+extern int g_ui_list_index[];
+extern int g_ui_list_first[];
+extern int g_ui_list_total[];
+extern int g_ui_list_timer[];
+
+int  ui_list_count    (int l);
+void ui_list_set_count(int l, int n);
+int  ui_list_index    (int l);
+void ui_list_set_index(int l, int i);
+int  ui_list_first    (int l);
+int  ui_list_row      (int l, int r);
+void ui_list_tick     (void);
 
 /* ── Images d'interface ───────────────────────────────────────────
    Un SPRITE À ÉTAT posé sur la mise en page. L'élément DÉSIGNE un sprite et
@@ -2677,6 +2826,104 @@ void ui_element_show(int idx, int on) {
     if (idx < 0 || idx >= UI_ELEMENT_MAX) return;
     g_ui_element_vis[idx] = on ? 1 : 0;
     ui_element_sync_text();
+}
+
+/* ── Listes : la navigation, et rien d'autre (ROADMAP v0.22) ──────
+   `l` est un index de `g_ui_lists`, résolu au build depuis le nom du panneau.
+   Hors bornes, tout rend 0 et n'écrit rien : `l` peut venir d'une variable. */
+static int ui_list_ok(int l) { return l >= 0 && l < g_ui_list_count; }
+
+int ui_list_count(int l) { return ui_list_ok(l) ? g_ui_list_total[l] : 0; }
+
+void ui_list_set_count(int l, int n) {
+    if (!ui_list_ok(l)) return;
+    if (n < 0) n = 0;
+    g_ui_list_total[l] = n;
+    /* Une liste qui rétrécit ne doit pas garder un curseur au-delà de sa fin —
+       c'est le cas d'un inventaire dont on jette le dernier objet. */
+    if (g_ui_list_index[l] > n) g_ui_list_index[l] = n;
+    if (g_ui_list_index[l] < 1 && n > 0) g_ui_list_index[l] = 1;
+    if (g_ui_list_first[l] > n) g_ui_list_first[l] = n > 0 ? n : 1;
+    if (g_ui_list_first[l] < 1) g_ui_list_first[l] = 1;
+}
+
+int ui_list_index(int l) { return ui_list_ok(l) ? g_ui_list_index[l] : 0; }
+
+/* Repose la fenêtre pour que l'item courant y soit — la seule chose que le
+   défilement fait, et il la fait À LA LIGNE : le texte reste sur la grille de
+   tuiles, et rien n'est redessiné qui n'ait changé. */
+static void ui_list_reveal(int l) {
+    int rows = g_ui_lists[l].rows;
+    if (rows < 1) rows = 1;
+    if (g_ui_list_index[l] < g_ui_list_first[l])
+        g_ui_list_first[l] = g_ui_list_index[l];
+    if (g_ui_list_index[l] > g_ui_list_first[l] + rows - 1)
+        g_ui_list_first[l] = g_ui_list_index[l] - rows + 1;
+    if (g_ui_list_first[l] < 1) g_ui_list_first[l] = 1;
+}
+
+void ui_list_set_index(int l, int i) {
+    if (!ui_list_ok(l)) return;
+    int n = g_ui_list_total[l];
+    if (n <= 0) { g_ui_list_index[l] = 0; return; }
+    if (i < 1) i = 1;
+    if (i > n) i = n;
+    g_ui_list_index[l] = i;
+    ui_list_reveal(l);
+}
+
+int ui_list_first(int l) { return ui_list_ok(l) ? g_ui_list_first[l] : 0; }
+
+/* La zone de texte qui porte la rangée `r` (1 = la première visible). C'est ce
+   que le script passe à `text.draw_in` pour écrire le contenu de l'item. */
+int ui_list_row(int l, int r) {
+    if (!ui_list_ok(l)) return -1;
+    if (r < 1 || r > g_ui_lists[l].rows) return -1;
+    return g_ui_list_rows[g_ui_lists[l].row0 + r - 1];
+}
+
+/* Un pas dans la liste, répétition comprise. Le compteur est NÉGATIF pendant le
+   délai initial et positif ensuite : un seul entier porte les deux cadences,
+   sans drapeau à côté qui pourrait mentir sur l'état. */
+static void ui_list_step(int l, int dir) {
+    int n = g_ui_list_total[l];
+    if (n <= 0) return;
+    int i = g_ui_list_index[l] + dir;
+    if (i < 1)  i = g_ui_lists[l].wrap ? n : 1;
+    if (i > n)  i = g_ui_lists[l].wrap ? 1 : n;
+    g_ui_list_index[l] = i;
+    ui_list_reveal(l);
+}
+
+void ui_list_tick(void) {
+    for (int l = 0; l < g_ui_list_count; l++) {
+        if (g_ui_list_total[l] <= 0) { g_ui_list_timer[l] = 0; continue; }
+        /* Les constantes de libgba, et non les `BTN_*` du script : ce sont
+           les MÊMES bits du registre de touches, mais `actor_types_static.h`
+           n'est pas visible d'ici — le moteur n'est inclus que par main.c. */
+        int neg, pos;
+        if (g_ui_lists[l].axis) { neg = KEY_LEFT; pos = KEY_RIGHT; }
+        else                    { neg = KEY_UP;   pos = KEY_DOWN;  }
+        int dir = ((_g_keys_held & (u32)pos) ? 1 : 0)
+                - ((_g_keys_held & (u32)neg) ? 1 : 0);
+        if (dir == 0) { g_ui_list_timer[l] = 0; continue; }
+        if (g_ui_list_timer[l] == 0) {
+            /* Premier appui : on bouge tout de suite, puis on attend le délai. */
+            ui_list_step(l, dir);
+            g_ui_list_timer[l] = -(int)g_ui_lists[l].rep_delay - 1;
+            continue;
+        }
+        if (g_ui_list_timer[l] < 0) {
+            g_ui_list_timer[l]++;
+            if (g_ui_list_timer[l] == 0) g_ui_list_timer[l] = 1;   /* délai écoulé */
+            continue;
+        }
+        g_ui_list_timer[l]++;
+        if (g_ui_list_timer[l] > (int)g_ui_lists[l].rep_rate) {
+            ui_list_step(l, dir);
+            g_ui_list_timer[l] = 1;
+        }
+    }
 }
 
 /* ── Chiffres ─────────────────────────────────────────────────────

@@ -1,11 +1,8 @@
-"""BuildPanel, ToolchainBar, ToolchainDialog."""
-
-from pathlib import Path
+"""BuildPanel, ToolchainBar."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QPlainTextEdit, QDialog, QDialogButtonBox, QGroupBox,
-    QLineEdit, QFileDialog, QToolButton,
+    QFrame, QPlainTextEdit, QToolButton,
 )
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QPainter, QPainterPath
 from PyQt6.QtCore import pyqtSignal, pyqtProperty, Qt, QTimer, QPropertyAnimation, QEasingCurve
@@ -13,6 +10,7 @@ from PyQt6.QtStateMachine import QStateMachine, QState
 
 from ui.common.theme import C, T
 from core.toolchain import Toolchain
+from ui.common.rom_budget_bar import RomBudgetBar
 
 
 class AnimatedBuildButton(QToolButton):
@@ -162,6 +160,10 @@ class AnimatedBuildButton(QToolButton):
 
 
 class BuildPanel(QWidget):
+    # Relais du même signal du bandeau ROM — window.py est seul à connaître
+    # le projet, ce panneau n'en garde jamais de référence.
+    cartridge_mib_changed = pyqtSignal(int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -192,7 +194,14 @@ class BuildPanel(QWidget):
             f"background:{C.BG_DEEP}; color:#c8ffc8; border:none; padding:4px;"
         )
         self.console.setMaximumBlockCount(500)
-        layout.addWidget(self.console)
+        layout.addWidget(self.console, 1)
+
+        # Séparé verticalement du journal, et FERRÉ en bas : contrairement au
+        # texte de la console (qui défile et se vide au Clear), ce bandeau
+        # garde le dernier poids mesuré en permanence visible.
+        self.rom_bar = RomBudgetBar()
+        self.rom_bar.cartridge_mib_changed.connect(self.cartridge_mib_changed)
+        layout.addWidget(self.rom_bar, 0)
 
         self.btn_build = QPushButton("▶  Build & Run")
         self.btn_build.setEnabled(False)
@@ -213,6 +222,16 @@ class BuildPanel(QWidget):
     def set_building(self, b):
         self.btn_build.setEnabled(not b)
         self.btn_build.setText("⏳  Building…" if b else "▶  Build & Run")
+
+    def update_rom_report(self, report):
+        """Reçoit le `RomReport` du dernier build (window.py, événement
+        `rom_report`) et le passe au bandeau — ce panneau ne mesure rien."""
+        self.rom_bar.update_report(report)
+
+    def set_cartridge_mib(self, mib: int):
+        """Resynchronise le bandeau ROM sur le réglage RÉEL du projet — au
+        chargement, et après un changement fait ici ou dans l'inspecteur."""
+        self.rom_bar.set_cartridge_mib(mib)
 
 
 class ToolchainBar(QFrame):
@@ -257,67 +276,6 @@ class ToolchainBar(QFrame):
         self._mgba.setStyleSheet(f"color:{C.POWER};" if ok2 else f"color:{C.ACCENT_RED};")
 
 
-class ToolchainDialog(QDialog):
-    def __init__(self, toolchain: Toolchain, parent=None):
-        super().__init__(parent)
-        self.toolchain = toolchain
-        self.setWindowTitle("Toolchain Configuration")
-        self.setMinimumWidth(540)
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        grp = QGroupBox("devkitPro")
-        grp.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
-        grp.setStyleSheet(
-            f"QGroupBox{{color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};border-radius:4px;"
-            "margin-top:6px;padding:8px;}"
-            "QGroupBox::title{subcontrol-origin:margin;left:8px;padding:0 4px;}"
-        )
-        gl = QHBoxLayout(grp)
-        n = QLabel("devkitPro"); n.setFont(QFont(T.UI, T.MD)); n.setFixedWidth(160)
-        self._dkp_edit = QLineEdit(str(toolchain.devkitpro_path or ""))
-        self._dkp_edit.setFont(QFont(T.MONO, T.MD))
-        self._dkp_edit.setStyleSheet(
-            f"background:{C.BG_INPUT};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};"
-            "border-radius:3px;padding:3px;"
-        )
-        btn = QPushButton("Browse…"); btn.setFixedWidth(90)
-        btn.clicked.connect(self._browse_dkp)
-        gl.addWidget(n); gl.addWidget(self._dkp_edit, 1); gl.addWidget(btn)
-        layout.addWidget(grp)
-
-        grp2 = QGroupBox("mgba")
-        grp2.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
-        grp2.setStyleSheet(grp.styleSheet())
-        gl2 = QHBoxLayout(grp2)
-        mn = QLabel("mgba"); mn.setFixedWidth(160); mn.setFont(QFont(T.UI, T.MD))
-        self._mgba_edit = QLineEdit(str(toolchain.mgba_path or ""))
-        self._mgba_edit.setFont(QFont(T.MONO, T.MD))
-        self._mgba_edit.setStyleSheet(self._dkp_edit.styleSheet())
-        btn2 = QPushButton("Browse…"); btn2.setFixedWidth(90)
-        btn2.clicked.connect(self._browse_mgba)
-        gl2.addWidget(mn); gl2.addWidget(self._mgba_edit, 1); gl2.addWidget(btn2)
-        layout.addWidget(grp2)
-
-        bb = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        bb.accepted.connect(self._save)
-        bb.rejected.connect(self.reject)
-        layout.addWidget(bb)
-
-    def _browse_dkp(self):
-        p = QFileDialog.getExistingDirectory(self, "devkitPro")
-        if p: self._dkp_edit.setText(p)
-
-    def _browse_mgba(self):
-        p, _ = QFileDialog.getOpenFileName(self, "mgba executable")
-        if p: self._mgba_edit.setText(p)
-
-    def _save(self):
-        d = self._dkp_edit.text().strip()
-        t = self._mgba_edit.text().strip()
-        if d: self.toolchain.devkitpro_path = Path(d)
-        if t: self.toolchain.mgba_path = Path(t)
-        self.toolchain.save()
-        self.accept()
+## L'ancien ToolchainDialog (OK/Cancel, devkitPro + mgba) vit maintenant comme
+## la catégorie « Toolchains » de ui/common/settings_dialog.py — un seul
+## endroit qui configure le logiciel, plutôt qu'un dialogue par réglage.

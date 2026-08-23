@@ -651,6 +651,31 @@ class UIPanel(RectGeometryMixin):
     # effet ici sans que rien ne le dise. Cf. `UIImage`, qui refuse pour la même
     # raison de recopier frames et vitesses.
     fill_speed: int = 0
+    # ── Navigation : ce panneau EST-IL une liste ? (ROADMAP v0.22) ─
+    # Une propriété du conteneur existant, et non un quatrième type d'élément :
+    # « le moteur prend la NAVIGATION, pas la mise en page ». Le panneau groupe
+    # déjà ses rangées et sait dessiner un fond ; il ne lui manquait qu'un index
+    # courant, des bornes et de quoi les faire bouger.
+    #
+    # Les RANGÉES sont ses enfants de type texte, dans l'ordre de l'arbre. Rien
+    # à déclarer : ce qu'on voit dans la mise en page est ce que la liste
+    # parcourt. Le nombre d'ITEMS, lui, est de la donnée — il se règle au script
+    # (`list.set_count`), parce qu'un inventaire ne connaît sa longueur qu'en
+    # jeu.
+    is_list: bool = False
+    # Axe de parcours. Une liste horizontale est une rangée d'onglets ; la
+    # verticale est le cas courant, donc le défaut.
+    list_axis: str = "vertical"     # vertical | horizontal
+    # Le curseur repasse-t-il du dernier au premier ? Vrai est ce qu'on attend
+    # d'un menu court, faux ce qu'on attend d'un inventaire long.
+    list_wrap: bool = True
+    # Cadence de répétition quand la touche reste enfoncée, en frames :
+    # `list_repeat_delay` avant le premier renvoi, `list_repeat_rate` entre les
+    # suivants. 0 = suivre le réglage du PROJET — même politique d'héritage que
+    # la transition de scène (v0.6.2), et c'est elle qui évite trois listes à
+    # trois cadences dans le même jeu.
+    list_repeat_delay: int = 0
+    list_repeat_rate: int = 0
 
     def to_dict(self) -> dict:
         return {"kind": KIND_PANEL, "name": self.name, "parent": self.parent,
@@ -660,7 +685,15 @@ class UIPanel(RectGeometryMixin):
                 "fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
                 "fill_index": self.fill_index, "fill_asset": self.fill_asset,
                 "fill_sprite": self.fill_sprite, "fill_state": self.fill_state,
-                "fill_speed": self.fill_speed}
+                "fill_speed": self.fill_speed,
+                # Écrits seulement si le panneau est une liste : un conteneur
+                # ordinaire — c'est-à-dire tous ceux d'avant la v0.22 — ne gagne
+                # pas cinq clés.
+                **({"is_list": True, "list_axis": self.list_axis,
+                    "list_wrap": self.list_wrap,
+                    "list_repeat_delay": self.list_repeat_delay,
+                    "list_repeat_rate": self.list_repeat_rate}
+                   if self.is_list else {})}
 
     @classmethod
     def from_dict(cls, d: dict) -> "UIPanel":
@@ -679,7 +712,15 @@ class UIPanel(RectGeometryMixin):
             fill_asset=str(d.get("fill_asset", "")),
             fill_sprite=str(d.get("fill_sprite", "")),
             fill_state=str(d.get("fill_state", "")),
-            fill_speed=max(0, min(255, int(d.get("fill_speed", 0) or 0))))
+            fill_speed=max(0, min(255, int(d.get("fill_speed", 0) or 0))),
+            # Absents = conteneur ordinaire, ce qu'étaient tous les
+            # panneaux avant la v0.22.
+            is_list=bool(d.get("is_list", False)),
+            list_axis=("horizontal" if d.get("list_axis") == "horizontal"
+                       else "vertical"),
+            list_wrap=bool(d.get("list_wrap", True)),
+            list_repeat_delay=max(0, int(d.get("list_repeat_delay", 0) or 0)),
+            list_repeat_rate=max(0, int(d.get("list_repeat_rate", 0) or 0)))
 
     # ── Surface commune avec UIImage (cf. docstring) ──────────────
     # Des propriétés et non des champs : la donnée reste `fill_*`, il n'y a

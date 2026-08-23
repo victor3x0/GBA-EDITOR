@@ -5,7 +5,9 @@ from typing import Optional
 
 from core.models.resource import Resource
 from core.models.palette import OWN_PAL_BANK
-from core.models.components import ComponentOwnerMixin, components_to_list, components_from_list
+from core.models.components import (
+    ComponentOwnerMixin, components_to_list, components_from_list, ScriptComponent,
+)
 from core.models.background import BackgroundLayer, decode_tile_palette_overrides
 
 # Les types de tuiles de collision et leur géométrie vivent dans leur propre
@@ -223,37 +225,95 @@ def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
 @dataclass
 class Prefab(Resource, ComponentOwnerMixin):
     name: str = "Prefab"
-    components: list = field(default_factory=list)
-    pal_bank: int = OWN_PAL_BANK   # -1 = palette propre du sprite (défaut)
+    # Un prefab EST son actor racine : components, palette, réservation
+    # affine, notes — le MÊME `Actor` qu'un acteur de scène, celui que
+    # ActorInspector.load() sait déjà éditer, pas une seconde définition à
+    # tenir d'accord (cf. property de délégation ci-dessous). `Actor` est
+    # défini plus bas dans ce fichier ; le default_factory ne le résout qu'à
+    # la construction, pas à la définition de la classe.
+    #
+    # x/y/rotation/parent/etc de cet actor n'ont pas de sens pour un
+    # template — jamais posé nulle part — et ne sont jamais sérialisés ici
+    # (cf. to_dict) : c'est le TYPE qui est réutilisé, pas le sens de la pose.
+    actor: "Actor" = field(default_factory=lambda: Actor(name="Prefab"))
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
-    # Même décision que `Actor.affine_transform`, portée ici pour TOUTES les
-    # copies du pool : cochée, chaque instance réserve un slot de matrice affine
-    # OAM au build, donc self.rotation/self.scale/self.sprite_* (et les helpers
-    # de juiciness qui les composent) ont où écrire au runtime. Le codegen la
-    # lisait déjà (`_affine_entry`, lua_compiler) ; seul le modèle ne la rangeait
-    # pas, ce qui condamnait tout prefab spawné à l'OAM normale.
-    affine_transform: bool = False
-    notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
+    # Le SOUS-ARBRE du template (ROADMAP v0.23) : un prefab est un arbre, pas
+    # un objet plat — c'est ce que le `PackedScene` de Godot a de bon, et on
+    # n'en prend que ceci. Une chenille à cinq anneaux ou un mini-boss segmenté
+    # redevient spawnable.
+    #
+    # Une partie est un `Actor` : « une partie est ce qu'un acteur est déjà,
+    # des composants et un transform local ». Réutiliser le type plutôt que
+    # d'en écrire un second, c'est aussi réutiliser l'arbre, la profondeur, la
+    # composition et le partage de slot affine déjà écrits pour les acteurs de
+    # scène — un seul modèle à tenir d'accord au lieu de deux.
+    #
+    # `Actor.parent` d'une partie nomme une AUTRE PARTIE, ou vaut vide pour
+    # descendre de la racine. Rien d'extérieur n'est nommable : c'est ce qui
+    # garde la profondeur connue au build, donc le tri possible.
+    #
+    # Les parties ne sont PAS d'autres prefabs — un sous-arbre imbriquant des
+    # templates ferait du dimensionnement de pool un problème de graphe.
+    children: list = field(default_factory=list)   # list[Actor]
+
+    def __post_init__(self):
+        # Cohérence interne seulement (rien ne lit `actor.name` pour un
+        # prefab — codegen/dispatcher lisent `prefab.name`, le champ Resource
+        # ci-dessus, inchangé) : évite qu'un `prefab.actor` inspecté à la main
+        # porte un nom qui ne corresponde à rien.
+        self.actor.name = self.name
+
+    # ── Délégation en LECTURE : le reste du code (codegen, dispatcher,
+    # project_renames…) lit encore prefab.components / .pal_bank /
+    # .affine_transform / .notes — une seule définition, sur l'actor racine,
+    # jamais deux valeurs à resynchroniser à la main (c'était le bug : cf.
+    # l'ancien `instantiate_actor_from_prefab` qui n'en recopiait que 4 sur 5).
+    @property
+    def components(self):
+        return self.actor.components
+
+    @property
+    def pal_bank(self):
+        return self.actor.pal_bank
+
+    @property
+    def affine_transform(self):
+        return self.actor.affine_transform
+
+    @property
+    def notes(self):
+        return self.actor.notes
 
     def to_dict(self) -> dict:
         return {
             "name":             self.name,
-            "components":       components_to_list(self.components),
-            "pal_bank":         self.pal_bank,
+            "components":       components_to_list(self.actor.components),
+            "pal_bank":         self.actor.pal_bank,
             "max_instances":    self.max_instances,
-            "affine_transform": self.affine_transform,
-            "notes":            self.notes,
+            "affine_transform": self.actor.affine_transform,
+            # Absent tant que le prefab est plat — c'est à dire pour tous ceux
+            # d'avant la v0.23.
+            **({"children": [c.to_dict() for c in self.children]} if self.children else {}),
+            "notes":            self.actor.notes,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Prefab":
-        return cls(
-            name             = d.get("name", "Prefab"),
+        name = d.get("name", "Prefab")
+        actor = Actor(
+            name             = name,
             components       = components_from_list(d.get("components", [])),
             pal_bank         = d.get("pal_bank", OWN_PAL_BANK),
-            max_instances    = d.get("max_instances", 0),
             affine_transform = d.get("affine_transform", False),
             notes            = d.get("notes", ""),
+        )
+        return cls(
+            name          = name,
+            actor         = actor,
+            max_instances = d.get("max_instances", 0),
+            # `Actor` est défini plus bas dans ce fichier : la référence n'est
+            # résolue qu'à l'appel, pas à la définition de la classe.
+            children      = [Actor.from_dict(x) for x in (d.get("children") or [])],
         )
 
 
@@ -305,6 +365,22 @@ class Actor(ComponentOwnerMixin):
     # défaut doit rester littéralement gratuit (le C émis est mot pour mot
     # celui d'avant pour un acteur de monde).
     screen_space: bool = False
+    # Nom de l'acteur DE LA MÊME SCÈNE dans le repère duquel ma position est
+    # exprimée (ROADMAP v0.23). Vide = aucun parent, ce qu'étaient tous les
+    # acteurs avant cette version.
+    #
+    # Ce n'est PAS de l'héritage : « ma position est exprimée dans le repère de
+    # celui-là », pas « je reprends sa définition ». L'héritage d'une définition
+    # existe déjà dans ce logiciel et s'appelle un prefab ; laisser les deux sens
+    # du même mot cohabiter coûterait plus cher que la fonctionnalité.
+    #
+    # x/y/rotation/scale gardent leur sens de POSE AUTHORÉE dans l'éditeur ;
+    # au build, ils deviennent le transform LOCAL, et la position monde de
+    # l'acteur est recomposée chaque frame depuis celle du parent (cf.
+    # main_gen, `_parent_compose_lines`). La parenté est authorée et jamais
+    # assignée au runtime : c'est ce qui rend le tri de profondeur possible au
+    # build, donc l'ordre d'une frame lisible dans le C émis.
+    parent: Optional[str] = None
     # Direction initiale discrète (-1|0|1 × -1|0|1) : oriente le sprite affiché
     # dans l'éditeur et initialise dir_x/dir_y de l'Actor au runtime. (0,0)=omni.
     dir_x: int = 0
@@ -330,6 +406,9 @@ class Actor(ComponentOwnerMixin):
             "scale_x":     self.scale_x,
             "scale_y":     self.scale_y,
             "screen_space": self.screen_space,
+            # Écrit seulement s'il y a un parent : un acteur ordinaire — c'est
+            # à dire tous ceux d'avant la v0.23 — ne gagne pas une clé.
+            **({"parent": self.parent} if self.parent else {}),
             "dir_x":       self.dir_x,
             "dir_y":       self.dir_y,
             "notes":       self.notes,
@@ -355,10 +434,52 @@ class Actor(ComponentOwnerMixin):
             scale_x     = float(d.get("scale_x", 1.0)),
             scale_y     = float(d.get("scale_y", 1.0)),
             screen_space = d.get("screen_space", False),
+            parent       = (d.get("parent") or None),
             dir_x       = d.get("dir_x", 0),
             dir_y       = d.get("dir_y", 0),
             notes       = d.get("notes", ""),
         )
+
+
+def actor_descendant_names(actors: list, name: str) -> set:
+    """Noms des acteurs qui descendent de `name` (lui exclu), calculés depuis
+    `Actor.parent`. Source unique pour le garde-fou anti-cycle (inspecteur,
+    drop dans l'arbre de scène) et pour faire suivre un sous-arbre entier
+    quand son parent est déplacé dans le canvas (ROADMAP v0.23)."""
+    children_of: dict = {}
+    for a in actors:
+        par = getattr(a, "parent", None)
+        if par:
+            children_of.setdefault(par, []).append(a.name)
+    out, stack = set(), [name]
+    while stack:
+        for child in children_of.get(stack.pop(), []):
+            if child not in out:
+                out.add(child)
+                stack.append(child)
+    return out
+
+
+def actor_prefab_linked(actor: "Actor", prefab: "Prefab") -> bool:
+    """« Linké » (True) si `actor` reste sur le MÊME chemin de compilation que
+    son prefab, « unlinké » (False) s'il en a dérivé — la distinction que le
+    projet a choisie pour ce statut (ROADMAP, décision du 2026-08-21) : ce qui
+    ne change pas ce qui se compile ne change pas la nature du prefab.
+
+    Ce qui compte : les components eux-mêmes (type, ordre, id — ils décident
+    quel C s'émet, cf. main_gen), et pour un ScriptComponent, le FICHIER .lua
+    cité (c'est littéralement ce qui est compilé, cf. lua_compiler). Le reste
+    — valeurs de champs, exports, offsets, `active`... — sont des PARAMÈTRES
+    d'instance : les changer ne rend pas l'instance « unlinkée »."""
+    a_comps, p_comps = actor.components, prefab.actor.components
+    if len(a_comps) != len(p_comps):
+        return False
+    for ac, pc in zip(a_comps, p_comps):
+        if type(ac) is not type(pc) or ac.id != pc.id:
+            return False
+        if isinstance(ac, ScriptComponent) and ac.script != pc.script:
+            return False
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────

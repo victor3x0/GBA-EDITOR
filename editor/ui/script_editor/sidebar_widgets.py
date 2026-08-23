@@ -125,12 +125,14 @@ class _Section(QWidget):
             f"text-align:left;padding:0 4px 0 4px;}}"
             f"QPushButton:hover{{background:{_BG_HOVER};}}"
         )
-        self._toggle.setText(f"▾  {title}")
+        self._toggle.setIconSize(QSize(T.MD, T.MD))
+        self._toggle.setText(f"  {title}")
         self._toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self._toggle.clicked.connect(self._do_toggle)
         self._color = color
         self._title = title
+        self._set_arrow("down")
         hl.addWidget(self._toggle)
         root.addWidget(hdr)
 
@@ -144,10 +146,32 @@ class _Section(QWidget):
         if not expanded:
             self._do_toggle()
 
+    def _set_arrow(self, direction: str):
+        """direction: "down" (dépliée) ou "right" (repliée) — même triangle
+        vectoriel partagé que FinderSection/QTreeWidget (cf. icons.arrow_icon)."""
+        from ui.common import icons
+        self._toggle.setIcon(icons.arrow_icon(direction, self._color))
+
     def _do_toggle(self):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
-        self._toggle.setText(f"{'▾' if self._expanded else '▸'}  {self._title}")
+        self._set_arrow("down" if self._expanded else "right")
+
+    def set_title_and_color(self, title: str, color: str):
+        """Change le titre et la couleur d'accent du header (ex: EVENTS ↔
+        MODULE selon le contexte du script). Passe par le même chemin que
+        __init__ pour que titre, couleur et flèche restent toujours cohérents
+        — pas de poke direct sur `_toggle` depuis l'extérieur."""
+        self._title = title
+        self._color = color
+        self._toggle.setStyleSheet(
+            f"QPushButton{{color:{color};border:none;background:transparent;"
+            f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
+            f"text-align:left;padding:0 4px 0 4px;}}"
+            f"QPushButton:hover{{background:{_BG_HOVER};}}"
+        )
+        self._toggle.setText(f"  {title}")
+        self._set_arrow("down" if self._expanded else "right")
 
     def add_widget(self, w: QWidget):
         self._body_layout.addWidget(w)
@@ -188,24 +212,49 @@ class _SubSection(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._toggle = QPushButton()
-        self._toggle.setStyleSheet(
-            f"QPushButton{{color:{_C_SUB};border:none;background:{_BG_HDR};"
-            f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
-            f"text-align:left;padding:2px 4px 2px 8px;}}"
-            f"QPushButton:hover{{color:{_TEXT_NORM};background:{_BG_HOVER};}}"
+        # En-tête cliquable en une pièce (arrow + icône + titre) — même
+        # grammaire que FinderSection (widgets.py) : un conteneur qui porte le
+        # survol/le clic, pas un QPushButton dont l'icône serait disputée
+        # entre le dossier et la flèche.
+        hdr = QWidget()
+        hdr.setObjectName("subToggle")
+        hdr.setFixedHeight(20)
+        hdr.setCursor(Qt.CursorShape.PointingHandCursor)
+        hdr.setStyleSheet(
+            f"QWidget#subToggle{{background:{_BG_HDR};}}"
+            f"QWidget#subToggle:hover{{background:{_BG_HOVER};}}"
         )
-        self._toggle.setFixedHeight(20)
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(4, 0, 4, 0)
+        hl.setSpacing(4)
+
+        self._arrow_lbl = QLabel()
+        self._arrow_lbl.setFixedWidth(T.MD)
+        self._arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hl.addWidget(self._arrow_lbl)
+
         if icon_key:
             from ui.common.icons import get as _ico, COLOR_FOLDER
-            self._toggle.setIcon(_ico(icon_key, COLOR_FOLDER))
-            self._toggle.setIconSize(QSize(13, 13))
-        self._toggle.setText(f"▾ {title}")
-        self._toggle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._toggle.clicked.connect(self._do_toggle)
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(_ico(icon_key, COLOR_FOLDER).pixmap(QSize(13, 13)))
+            hl.addWidget(icon_lbl)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(
+            f"color:{_C_SUB};background:transparent;"
+            f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
+        )
+        hl.addWidget(title_lbl, 1)
+
+        # Sans ça, survoler l'icône/le titre enverrait un Leave au conteneur :
+        # survol clignotant (cf. FinderSection, même remarque).
+        for lbl in (self._arrow_lbl, title_lbl):
+            lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        hdr.mousePressEvent = lambda e: self._do_toggle()
+
         self._title = title
-        root.addWidget(self._toggle)
+        self._set_arrow("down")
+        root.addWidget(hdr)
 
         self._body = QWidget()
         self._body.setStyleSheet(f"background:{_BG};")
@@ -217,11 +266,17 @@ class _SubSection(QWidget):
         if not expanded:
             self._do_toggle()
 
+    def _set_arrow(self, direction: str):
+        """direction: "down" (dépliée) ou "right" (repliée) — même triangle
+        vectoriel partagé que FinderSection/QTreeWidget (cf. icons.arrow_icon)."""
+        from ui.common import icons
+        icon = icons.arrow_icon(direction, _C_SUB)
+        self._arrow_lbl.setPixmap(icon.pixmap(QSize(T.MD, T.MD)))
+
     def _do_toggle(self):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
-        arrow = "▾" if self._expanded else "▸"
-        self._toggle.setText(f"{arrow} {self._title}")
+        self._set_arrow("down" if self._expanded else "right")
 
     def add_widget(self, w: QWidget):
         self._body_layout.addWidget(w)

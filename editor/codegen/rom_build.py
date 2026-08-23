@@ -164,6 +164,19 @@ class BuildWorker(EventEmitter, threading.Thread):
                     _pf_sprite = p.get_sprite(_pf_sc.sprite_name)
                     if _pf_sprite:
                         prefab_actor_sprites.append((pf, _pf_sprite))
+                # Les PARTIES d'un prefab segmenté (ROADMAP v0.23) : chacune a
+                # son propre sprite, qui doit être chargé en VRAM comme celui de
+                # la racine. Sans ça, un bras serait émis en OAM sur des tuiles
+                # qui n'ont jamais été copiées. Une partie sans sprite est un
+                # marqueur : rien à charger.
+                for _part in (getattr(pf, "children", []) or []):
+                    _p_sc = next((c for c in _part.components
+                                  if isinstance(c, SpriteComponent) and c.sprite_name), None)
+                    if not _p_sc:
+                        continue
+                    _p_sprite = p.get_sprite(_p_sc.sprite_name)
+                    if _p_sprite:
+                        prefab_actor_sprites.append((_part, _p_sprite))
 
             ok = True
 
@@ -868,6 +881,9 @@ class BuildWorker(EventEmitter, threading.Thread):
             return
         for line in format_report(report):
             self._emit("log_line", line)
+        # Le bandeau du panneau Build (RomBudgetBar) reçoit l'objet mesuré tel
+        # quel, pas les lignes de texte — le rendu graphique ne réanalyse rien.
+        self._emit("rom_report", report)
         if report.over_capacity:
             self._emit("error_line",
                        "[poids] la ROM dépasse la capacité de cartouche déclarée.")

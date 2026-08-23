@@ -9,15 +9,12 @@ Project Demo/*/build/
 # Sortie du build Nuitka — 180 Mo, régénérée par packaging/nuitka_build.py
 build-out/
 
-# Config toolchain locale — chemins devkitPro/mGBA spécifiques à la machine
-editor/core/toolchain.json
-
 # Environnements virtuels locaux. `.venv-build312` reproduit la version de
 # Python de la CI (3.12) pour tester un build de release sans toucher à
-# l'interpréteur du poste — cf. packaging/nuitka_build.py.
+# l'interpréteur du poste cf. packaging/nuitka_build.py.
 .venv*/
 
-# Packaging — sorties générées par le build (voir packaging/), quel que
+# Packaging : sorties générées par le build (voir packaging/), quel que
 # soit le dossier depuis lequel la commande est lancée (racine ou packaging/)
 build/
 dist/

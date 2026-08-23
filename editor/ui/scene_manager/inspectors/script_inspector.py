@@ -15,7 +15,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W, NotesEdit
+from ui.common.widgets import W, NotesEdit, CollapsibleCard
 from ui.common import icons
 from scripting.exports_parser import (
     parse_exports, add_export, remove_export, rename_export,
@@ -76,52 +76,28 @@ class ScriptInspector(QWidget):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
 
-        def _card(accent: str = "") -> tuple:
-            f = QFrame()
-            f.setObjectName("sc_card")
-            f.setStyleSheet(QSS.card("sc_card"))
-            card_inner = QVBoxLayout(f)
-            card_inner.setContentsMargins(10, 8, 10, 10)
-            card_inner.setSpacing(6)
-            return f, card_inner
-
-        def _card_title(text: str, accent: str = None, size: int = T.SM) -> QLabel:
-            # Titre de section unifié périwinkle (brique QSS.title_section) ;
-            # `accent` conservé pour compat mais ignoré.
-            lbl = QLabel(text)
-            lbl.setFont(QFont(T.UI, size, QFont.Weight.DemiBold))
-            lbl.setStyleSheet(
-                QSS.title_section()
-                + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
-            )
-            return lbl
-
         # ── Carte Note ────────────────────────────────────────────
-        notes_card, notes_inner = _card()
-        notes_inner.addWidget(_card_title("Note", C.TEXT_DIM, size=T.XS))
+        notes_card = CollapsibleCard("Note")
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(self._on_note_committed)
-        notes_inner.addWidget(self._notes_edit)
+        notes_card.body_layout.addWidget(self._notes_edit)
         cl.addWidget(notes_card)
 
         # ── Carte Variables exposées ──────────────────────────────
-        vars_card, vars_inner = _card()
-        vars_hdr = QHBoxLayout(); vars_hdr.setContentsMargins(0, 0, 0, 0); vars_hdr.setSpacing(4)
-        vars_hdr.addWidget(_card_title("Exposed variables"), 1)
+        vars_card = CollapsibleCard("Exposed variables")
         self._btn_add_var = W.btn_add("Add an exposed variable")
         self._btn_add_var.clicked.connect(self._on_add_var)
-        vars_hdr.addWidget(self._btn_add_var)
-        vars_inner.addLayout(vars_hdr)
+        vars_card.add_header_widget(self._btn_add_var)
 
         self._vars_list = QVBoxLayout()
         self._vars_list.setContentsMargins(0, 2, 0, 0)
         self._vars_list.setSpacing(3)
-        vars_inner.addLayout(self._vars_list)
+        vars_card.body_layout.addLayout(self._vars_list)
 
         self._vars_empty_hint = QLabel("No exposed variable.")
         self._vars_empty_hint.setFont(QFont(T.UI, T.XS))
         self._vars_empty_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        vars_inner.addWidget(self._vars_empty_hint)
+        vars_card.body_layout.addWidget(self._vars_empty_hint)
 
         cl.addWidget(vars_card)
         cl.addStretch()

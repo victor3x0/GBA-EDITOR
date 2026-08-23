@@ -7,6 +7,7 @@ marchera pas ?*
 | Fichier | Pour qui |
 | --- | --- |
 | [README](README.md) | un visiteur |
+| [CHANGELOG](CHANGELOG.md) | qui veut savoir ce qui a changé |
 | [ROADMAP](ROADMAP.md) | qui décide de la suite |
 | [ARCHITECTURE](ARCHITECTURE.md) | qui modifie l'éditeur |
 | **ce fichier** | qui écrit un script |
@@ -94,6 +95,44 @@ Deux points valent d'être soulignés, parce qu'ils surprennent :
   `self.position = self.position + self.velocity` ne peut plus faire (les deux membres n'ont
   plus la même échelle). `math.lerp`/`math.ease` n'ont pas changé : un Q8 est un entier comme
   un autre, ils interpolent l'un ou l'autre sans le savoir.
+- **Une variable globale peut avoir plusieurs cases.** Déclarée avec une taille dans l'écran
+  des variables, elle s'indexe par son nom — `global.coffres[i] = 1` — comme une table de
+  données (`data.Objets[i].prix`), et à partir de 1 comme tout tableau du langage. Une
+  variable SIMPLE garde ses accesseurs : `global.get("score")` / `global.set("score", v)`.
+  Si elle est marquée persistante, tout le tableau entre dans la sauvegarde, empaqueté —
+  400 booléens y tiennent en 52 octets, sans que le script ait à le savoir.
+- **Un enfant se nomme depuis son parent.** Si un acteur (ou un prefab) a des enfants, on les
+  atteint par leur nom : `local MonBras = self.BrasG`, puis `MonBras:destroy()`,
+  `MonBras.visible = false`… Un point pour désigner, deux points pour agir. C'est résolu au
+  Build — désigner un enfant ne coûte rien à l'exécution. Détruire un enfant ne détruit que
+  lui ; détruire la racine emporte tout son sous-arbre.
+- **Un texte se cite par sa clé, ou par une VALEUR.** `text.draw(2, 16, "village_garde_01")`
+  nomme une entrée de la table ; `text.draw(2, 16, data.Dialogues[i].replique)` en désigne une
+  par un id calculé, tiré d'une colonne de type `text`. C'est ce qui permet de parcourir une
+  conversation au lieu de l'écrire réplique par réplique — et le dialogue reste traduisible,
+  la table portant des ids et la table de textes portant les langues.
+  Quand un id est calculé, la police de la scène est chargée **en entier** : le build ne peut
+  plus savoir quels caractères seront affichés, et il vaut mieux payer les tuiles que rendre
+  un texte troué.
+- **Un menu se navigue tout seul.** Un panneau d'interface dont la case « Liste » est cochée
+  suit un index : le moteur lit la croix directionnelle, borne, fait défiler et répète. Le
+  script dit combien d'items il y a et écrit ce que chaque rangée affiche — les rangées sont
+  les zones de texte posées DANS le panneau :
+
+  ```lua
+  function on_update()
+      list.set_count("Menu", #objets)
+      for r = 1, 3 do
+          local item = list.first("Menu") + r - 1
+          text.draw_in(list.row("Menu", r), data.Objets[item].nom)
+      end
+      if input.pressed("a") then choisir(list.index("Menu")) end
+  end
+  ```
+
+  Le moteur prend la **navigation**, jamais la mise en page : un item est une ligne de donnée,
+  pas un objet d'interface. Le curseur, lui, est ce qui existe déjà — un acteur `screen_space`
+  ou une image d'interface, placé d'après `list.index`.
 - **Une chaîne n'est pas du texte.** Les guillemets servent à **nommer** quelque chose du
   projet : une animation, une scène, une palette, une clé de texte. Le texte que le joueur
   lit vit dans la **table de textes**, avec sa mise en forme et ses traductions, et s'affiche
@@ -138,6 +177,18 @@ Le catalogue complet des fonctions et propriétés du moteur est dans le panneau
 Script Editor, avec la description de chaque argument. Il n'est pas repris ici : il évolue à
 chaque version, et l'éditeur le tient à jour tout seul.
 
+Le panneau range ce catalogue en trois grosses parties, et ce document n'en couvre qu'une :
+
+| Section du panneau | Ce qu'elle contient | Couvert ici |
+| --- | --- | --- |
+| **Gameplay** | acteurs, mouvement, animation, collision, caméra, son, interface, décor… tout ce qui touche à la scène et au jeu | non — voir le panneau API |
+| **Scripting** | ce qui appartient au langage lui-même : variables, séquences, tableaux, `math`, `debug.log` | oui — c'est le sujet de ce document |
+| **Hardware** | ce qui parle directement à un registre ou une puce du matériel — aujourd'hui le rendu bas niveau (`window`, `blend`, `layer`) et la sauvegarde SRAM ; RTC, rumble, gyroscope et accéléromètre sur les PCB qui les portent viendront s'y ranger | non — voir le panneau API, et [ROADMAP](ROADMAP.md) pour ce qui n'existe pas encore |
+
+Une fonction Hardware n'existera que sur la cartouche qui porte la puce correspondante :
+quand ce chantier s'ouvrira, l'éditeur dira quel PCB (MouseBiteLabs, InsideGadgets,
+BennVenn…) répond au besoin, plutôt que de laisser l'auteur le deviner.
+
 ### Séquences — attendre, en ligne droite
 
 Un handler rend la main à chaque frame : pour enchaîner « avance, puis attends, puis parle »,
@@ -173,10 +224,25 @@ Cinq choses à savoir, et une seule surprend :
   un argument n'est pas évalué une fois à l'appel.* En Lua, `wait_until(x >= 120)` calculerait
   `x >= 120` immédiatement et passerait `true` ou `false` ; ici, l'expression est réévaluée
   tant qu'elle est fausse. Écart assumé : sans lui, `wait_until` n'attendrait rien.
-- **Une attente s'écrit seule sur sa ligne, au premier niveau d'une séquence** — pas dans un
-  `if`, pas dans une boucle, pas dans un autre handler. C'est la ligne droite qui permet le
-  découpage. Pour attendre sous condition, mettez la condition **dans** l'attente, ou
-  déclarez une deuxième séquence et démarrez-la depuis le `if`.
+- **Une attente s'écrit seule sur sa ligne, au premier niveau d'une séquence ou dans une
+  boucle bornée** (`for i = 1, n`) — pas dans un `if`, pas dans un `while`, pas dans un autre
+  handler. Un pattern d'attaque s'écrit donc comme on le pense :
+
+  ```lua
+  function on_sequence_attaque()
+      for i = 1, 3 do
+          self:play_anim("tir")
+          wait(20)
+      end
+      self:play_anim("repos")
+  end
+  ```
+
+  Une boucle bornée passe parce qu'on sait d'avance combien de tours elle fait : le compteur
+  vit dans l'état de la séquence, et la tranche revient en arrière tant qu'il en reste. Un
+  `if` demanderait de se souvenir d'**où** reprendre, ce qui n'est pas le même prix. Pour
+  attendre sous condition, mettez la condition **dans** l'attente, ou déclarez une deuxième
+  séquence et démarrez-la depuis le `if`.
 - **Une condition qui ne peut jamais devenir vraie est refusée au Build.** `wait_until(false)`,
   ou une condition qui ne lit que des variables qu'aucune ligne du script n'assigne : la
   séquence resterait bloquée là sans que rien ne le dise en jeu.

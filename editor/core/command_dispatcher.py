@@ -23,8 +23,10 @@ Usage :
     "flush_script_edits"           — le Script Editor doit persister sa frappe
                                      en cours (avant réécriture de scripts)
     "palettes_changed"             — rafraîchir le catalogue de palettes
-    "project_tree_changed"         — un élément a été renommé : repeupler les
-                                     arbres du panneau projet (cf. Project._notify_renamed)
+    "project_tree_changed"         — un élément a été renommé/créé, ou le lien
+                                     prefab d'un actor a changé (Relink/Expose/
+                                     Unlink) : repeupler les arbres du panneau
+                                     projet (cf. Project._notify_renamed)
 """
 from __future__ import annotations
 from pathlib import Path
@@ -448,6 +450,78 @@ class CommandDispatcher(EventEmitter):
         if n:
             msg += f" — {n} scène{'s' if n > 1 else ''} mise{'s' if n > 1 else ''} à jour"
         self._emit("status_message",msg)
+
+    def relink_actor_to_prefab(self, actor: Actor) -> bool:
+        """« Relink to prefab » : recharge `actor` depuis son prefab —
+        composants, palette, réservation affine et notes reviennent à l'état
+        du template (« remettre les valeurs par défaut »). La POSE
+        (x/y/rotation/scale/parent/priorité/...) reste celle de l'instance :
+        elle n'a jamais appartenu au prefab (cf. core/models/scene.Prefab)."""
+        if not self._project or not actor.prefab_name:
+            return False
+        prefab = self._project.get_prefab(actor.prefab_name)
+        if not prefab:
+            return False
+        actor.components = copy.deepcopy(prefab.actor.components)
+        actor.pal_bank = prefab.actor.pal_bank
+        actor.affine_transform = prefab.actor.affine_transform
+        actor.notes = prefab.actor.notes
+        self._save_scene()
+        self._emit("scene_sprites_changed")
+        self._emit("actors_list_changed")
+        # Le project viewer (AssetsFinderPanel) et l'arbre de scène montrent
+        # tous deux cet acteur comme instance d'un prefab (icône, badge) —
+        # une action lancée depuis ce même badge doit les tenir à jour.
+        self._emit("project_tree_changed")
+        self._emit("status_message", f"{actor.name} relinké sur '{prefab.name}'")
+        return True
+
+    def expose_actor_to_prefab(self, actor: Actor) -> bool:
+        """« Expose to prefab » : pousse les composants/palette/réservation
+        affine/notes de CETTE instance vers son prefab — l'inverse de Relink.
+        Passe par `save_prefab()`, qui persiste ET propage à toutes les
+        autres instances liées (même comportement qu'éditer le prefab
+        directement — Expose ne fait qu'y injecter l'état de l'instance
+        d'abord)."""
+        if not self._project or not actor.prefab_name:
+            return False
+        prefab = self._project.get_prefab(actor.prefab_name)
+        if not prefab:
+            return False
+        prefab.actor.components = copy.deepcopy(actor.components)
+        prefab.actor.pal_bank = actor.pal_bank
+        prefab.actor.affine_transform = actor.affine_transform
+        prefab.actor.notes = actor.notes
+        self.save_prefab(prefab)
+        # cf. relink_actor_to_prefab — même badge, même besoin de tenir à
+        # jour le project viewer et l'arbre de scène.
+        self._emit("project_tree_changed")
+        return True
+
+    def create_prefab_from_actor(self, actor: Actor) -> Optional[Prefab]:
+        """« Expose to prefab » depuis un acteur QUI N'EST PAS déjà une
+        instance : crée un nouveau Prefab à partir de son état actuel
+        (composants/palette/réservation affine/notes — la POSE ne fait
+        jamais partie d'un prefab, cf. core/models/scene.Prefab) et fait de
+        cet acteur sa première instance liée."""
+        if not self._project:
+            return None
+        existing = {pf.name for pf in self._project.prefabs}
+        name = unique_name(actor.name, existing)
+        new_actor = copy.deepcopy(actor)
+        new_actor.name = name
+        prefab = Prefab(name=name, actor=new_actor)
+        self._project.prefabs.append(prefab)
+        with self._watcher.suspended():
+            self._project.save_prefab(prefab)
+        actor.prefab_name = name
+        self._save_scene()
+        self._emit("actors_list_changed")
+        # Nouveau prefab : le project viewer doit le lister sans qu'il faille
+        # rouvrir le projet.
+        self._emit("project_tree_changed")
+        self._emit("status_message", f"Prefab créé depuis {actor.name} : '{name}'")
+        return prefab
 
     # ── Saves ─────────────────────────────────────────────────────
 

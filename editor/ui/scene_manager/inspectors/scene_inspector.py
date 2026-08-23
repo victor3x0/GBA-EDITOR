@@ -28,7 +28,7 @@ from core.history import (
 )
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W, ScriptPickerPopup, NotesEdit
+from ui.common.widgets import W, ScriptPickerPopup, NotesEdit, CollapsibleCard
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from ui.common import icons
 
@@ -315,33 +315,9 @@ class SceneInspector(QWidget):
         cl.setContentsMargins(0, 0, 0, 0)
         cl.setSpacing(6)
 
-        def _card(accent: str = "") -> tuple:
-            """Section à plat : léger fond élevé (BG_RAISED sur le BG_PANEL de
-            l'inspecteur), sans bordure ni liseré. Le regroupement se fait par
-            élévation, l'identité par la couleur du titre — plus les cadres
-            empilés jugés « lourds » (voir project_theme_gba_redesign)."""
-            f = QFrame()
-            f.setObjectName("sc_card")
-            f.setStyleSheet(QSS.card("sc_card"))
-            inner = QVBoxLayout(f)
-            inner.setContentsMargins(10, 8, 10, 10)
-            inner.setSpacing(6)
-            return f, inner
-
-        def _card_title(text: str, accent: str = None) -> QLabel:
-            # Titre de section unifié périwinkle (brique QSS.title_section),
-            # plus un filet bas. `accent` conservé pour compat mais ignoré.
-            lbl = QLabel(text)
-            lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-            lbl.setStyleSheet(
-                QSS.title_section()
-                + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
-            )
-            return lbl
-
         # ── Carte Note libre ───────────────────────────────────────
-        notes_card, notes_inner = _card(C.TEXT_DIM)
-        notes_inner.addWidget(_card_title("Note", C.TEXT_NORM))
+        notes_card = CollapsibleCard("Note")
+        notes_inner = notes_card.body_layout
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set_scene_field("notes", text))
         notes_inner.addWidget(self._notes_edit)
@@ -353,8 +329,8 @@ class SceneInspector(QWidget):
         # même logique de garde-fou/pruning qu'avant), les paramètres de la scène
         # (Layer UI, Scrolling) prennent place à sa droite, et le script de scène
         # est rattaché juste en dessous.
-        mode_card, mode_inner = _card(C.ACCENT)
-        mode_inner.addWidget(_card_title("Scene mode", C.ACCENT))
+        mode_card = CollapsibleCard("Scene mode")
+        mode_inner = mode_card.body_layout
 
         mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(12)
         self._btn_mode = QPushButton("Mode 0")
@@ -585,9 +561,8 @@ class SceneInspector(QWidget):
         cl.addWidget(mode_card)
 
         # ── Carte Windows (WIN0/WIN1) ──────────────────────────────
-        win_card, win_inner = _card(C.ACCENT_BLU)
-        win_hdr = QHBoxLayout(); win_hdr.setContentsMargins(0, 0, 0, 0); win_hdr.setSpacing(4)
-        win_hdr.addWidget(_card_title("Windows", C.ACCENT_BLU), 1)
+        win_card = CollapsibleCard("Windows", color=C.ACCENT_BLU)
+        win_inner = win_card.body_layout
         self._btn_win_add = {}
         for region, tip in (
             (0, "Add WIN0"),
@@ -597,8 +572,7 @@ class SceneInspector(QWidget):
             btn = W.btn_add(tip)
             btn.clicked.connect(lambda _c=False, r=region: self._add_window(r))
             self._btn_win_add[region] = btn
-            win_hdr.addWidget(btn)
-        win_inner.addLayout(win_hdr)
+            win_card.add_header_widget(btn)
 
         win_info = QLabel(
             "Screen masks: WIN0/WIN1 are rectangular, the OBJ window is "
@@ -630,8 +604,8 @@ class SceneInspector(QWidget):
         # pour composer ce que les trois effets ne couvrent pas — cibles
         # partielles, EVA+EVB > 16 pour un halo saturé. Un réglage fait là
         # ressort en « Custom » et n'est jamais réécrit par l'effet.
-        blend_card, blend_inner = _card(C.ACCENT_BLU)
-        blend_inner.addWidget(_card_title("Blending", C.ACCENT_BLU))
+        blend_card = CollapsibleCard("Blending", color=C.ACCENT_BLU)
+        blend_inner = blend_card.body_layout
 
         eff_row = QHBoxLayout(); eff_row.setContentsMargins(0, 0, 0, 0); eff_row.setSpacing(8)
         lbl_eff = self._dim_label("Effect:")
@@ -761,15 +735,13 @@ class SceneInspector(QWidget):
         cl.addWidget(blend_card)
 
         # ── Carte Background Asset ────────────────────────────────
-        bg_card, bg_inner = _card(C.ACCENT)
+        bg_card = CollapsibleCard("Background layers")
         self._bg_card = bg_card
+        bg_inner = bg_card.body_layout
 
-        bg_hdr = QHBoxLayout(); bg_hdr.setContentsMargins(0, 0, 0, 0); bg_hdr.setSpacing(4)
-        bg_hdr.addWidget(_card_title("Background layers", C.ACCENT), 1)
         self._btn_bg_add = W.btn_add("Add a BG layer (max 4)")
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
-        bg_hdr.addWidget(self._btn_bg_add)
-        bg_inner.addLayout(bg_hdr)
+        bg_card.add_header_widget(self._btn_bg_add)
 
         # Rows dynamiques des BackgroundLayers (portés par la scène)
         self._bg_layer_rows: list[BgLayerRow] = []
@@ -807,8 +779,8 @@ class SceneInspector(QWidget):
         # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
-        pal_card, pal_inner = _card(C.ACCENT)
-        pal_inner.addWidget(_card_title("Palettes", C.ACCENT))
+        pal_card = CollapsibleCard("Palettes")
+        pal_inner = pal_card.body_layout
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}

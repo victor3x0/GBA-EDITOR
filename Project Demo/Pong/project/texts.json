@@ -135,6 +135,42 @@
       "note": "",
       "scene": "Arena",
       "auto_key": true
+    },
+    {
+      "id": 970900933615,
+      "key": "arena_ui_element3",
+      "path": [
+        "arena_ui",
+        "element3"
+      ],
+      "content": "Exit",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
+    },
+    {
+      "id": 436761036572,
+      "key": "arena_ui_element2",
+      "path": [
+        "arena_ui",
+        "element2"
+      ],
+      "content": "Settings",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
+    },
+    {
+      "id": 638786053981,
+      "key": "arena_ui_element1",
+      "path": [
+        "arena_ui",
+        "element1"
+      ],
+      "content": "Inventory",
+      "note": "",
+      "scene": "Arena",
+      "auto_key": true
     }
   ]
 }

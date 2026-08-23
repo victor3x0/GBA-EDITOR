@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
     QScrollArea, QLineEdit, QComboBox, QPushButton, QSpinBox, QCheckBox,
 )
 from PyQt6.QtGui import QFont, QColor
@@ -27,6 +27,7 @@ from core.history import get_history, SetFieldCmd
 from core.command_dispatcher import get_dispatcher
 from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
 from ui.common.theme import C, T, QSS
+from ui.common.widgets import CollapsibleCard
 from ui.common import icons
 
 
@@ -78,8 +79,8 @@ class ProjectInspector(QWidget):
         scroll.setWidget(inner)
 
         # ── Carte Identité ────────────────────────────────────────
-        id_card, id_inner = self._card()
-        id_inner.addWidget(self._card_title("Identity"))
+        id_card = CollapsibleCard("Identity")
+        id_inner = id_card.body_layout
 
         self._ed_author = QLineEdit()
         self._ed_author.setPlaceholderText("Anonymous")
@@ -288,9 +289,34 @@ class ProjectInspector(QWidget):
 
         layout.addWidget(id_card)
 
+        # ── Carte Collisions (ROADMAP v0.23) ──────────────────────
+        # Une grille TRIANGULAIRE entre tags de boxes : « est-ce que A touche
+        # B ? » se lit à l'intersection, et une seule case par couple — la
+        # question n'a pas d'ordre. Un masque par tag s'écrirait plus vite mais
+        # demanderait de tenir deux champs asymétriques dans sa tête pour
+        # répondre à la même question (le modèle layer/mask de Godot).
+        #
+        # Cochée = les deux se rencontrent, ce qui est le DÉFAUT : la matrice
+        # ne stocke que les exceptions, et un projet où rien n'est décoché se
+        # comporte exactement comme avant la v0.23.
+        col_card = CollapsibleCard("Collisions")
+        col_inner = col_card.body_layout
+        self._col_hint = QLabel()
+        self._col_hint.setFont(QFont(T.UI, T.XS))
+        self._col_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        self._col_hint.setWordWrap(True)
+        col_inner.addWidget(self._col_hint)
+        self._col_grid_host = QWidget()
+        self._col_grid = QGridLayout(self._col_grid_host)
+        self._col_grid.setContentsMargins(0, 4, 0, 0)
+        self._col_grid.setHorizontalSpacing(6)
+        self._col_grid.setVerticalSpacing(2)
+        col_inner.addWidget(self._col_grid_host)
+        layout.addWidget(col_card)
+
         # ── Carte Contenu ─────────────────────────────────────────
-        content_card, content_inner = self._card()
-        content_inner.addWidget(self._card_title("Content"))
+        content_card = CollapsibleCard("Content")
+        content_inner = content_card.body_layout
 
         grid = QGridLayout()
         grid.setContentsMargins(0, 2, 0, 0)
@@ -319,29 +345,6 @@ class ProjectInspector(QWidget):
         layout.addStretch()
 
     # ── Construction ──────────────────────────────────────────────
-
-    def _card(self) -> tuple[QFrame, QVBoxLayout]:
-        """Section à plat : léger fond élevé sur le BG_PANEL de l'inspecteur,
-        sans bordure — même grammaire que SceneInspector (regroupement par
-        élévation, identité par la couleur du titre)."""
-        f = QFrame()
-        f.setObjectName("pj_card")
-        f.setStyleSheet(QSS.card("pj_card"))
-        inner = QVBoxLayout(f)
-        inner.setContentsMargins(10, 8, 10, 10)
-        inner.setSpacing(6)
-        return f, inner
-
-    def _card_title(self, text: str, accent: str = None) -> QLabel:
-        # Titre de section unifié périwinkle (brique QSS.title_section) ;
-        # `accent` conservé pour compat mais ignoré.
-        lbl = QLabel(text)
-        lbl.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-        lbl.setStyleSheet(
-            QSS.title_section()
-            + f"border-bottom:1px solid {C.BORDER};padding-bottom:4px;"
-        )
-        return lbl
 
     def _row(self, label: str, widget: QWidget, layout: QVBoxLayout,
              stretch: bool = True):
@@ -427,6 +430,8 @@ class ProjectInspector(QWidget):
         self._chk_debug.setChecked(getattr(p.settings, "debug_build", True) if p else True)
         self._chk_debug.blockSignals(False)
 
+        self._refresh_collision_matrix()
+
         self._spin_channels.blockSignals(True)
         self._spin_channels.setValue(getattr(p.settings, "sound_channels", 8) if p else 8)
         self._spin_channels.blockSignals(False)
@@ -460,6 +465,76 @@ class ProjectInspector(QWidget):
             f"QPushButton:hover{{border-color:{C.ACCENT};}}"
         )
         self._lbl_backdrop.setText(f"0x{v:04X}")
+
+    # ── Matrice de collision (ROADMAP v0.23) ──────────────────────
+
+    def _project_box_tags(self) -> list[str]:
+        """Tous les tags de boxes du projet, scènes ET prefabs, dans l'ordre
+        alphabétique. C'est la liste qui donne ses lignes et ses colonnes à la
+        grille : un tag qu'aucune box ne porte n'aurait rien à croiser."""
+        from core.models.components import CollisionBoxComponent
+        tags: set = set()
+        p = self._project
+        if not p:
+            return []
+        owners = [a for sc in p.scenes for a in sc.actors] + list(p.prefabs)
+        owners += [ch for pf in p.prefabs for ch in (getattr(pf, "children", []) or [])]
+        for o in owners:
+            for c in getattr(o, "components", []):
+                if isinstance(c, CollisionBoxComponent) and c.active:
+                    tags.add(c.tag or "body")
+        return sorted(tags)
+
+    def _refresh_collision_matrix(self):
+        from core.models.settings import pair_key
+        while self._col_grid.count():
+            it = self._col_grid.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        tags = self._project_box_tags()
+        if len(tags) < 2:
+            self._col_hint.setText(
+                "Il faut au moins deux tags de boxes dans le projet pour qu'une "
+                "matrice ait un sens. Le tag se règle sur le composant Collision "
+                "d'un acteur.")
+            return
+        self._col_hint.setText(
+            "Décochez un couple pour que ces deux tags s'ignorent. La paire "
+            "n'est alors PAS émise : ni code, ni test par frame.")
+        disabled = set(getattr(self._project.settings,
+                               "collision_disabled_pairs", []) or [])
+        for c, tag in enumerate(tags):
+            lbl = QLabel(tag)
+            lbl.setFont(QFont(T.MONO, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+            self._col_grid.addWidget(lbl, 0, c + 1)
+        for r, ta in enumerate(tags):
+            lbl = QLabel(ta)
+            lbl.setFont(QFont(T.MONO, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+            self._col_grid.addWidget(lbl, r + 1, 0)
+            # Triangulaire : le couple (A, B) est le même que (B, A), et
+            # l'afficher deux fois inviterait à en décocher un seul.
+            for c in range(r, len(tags)):
+                tb = tags[c]
+                box = QCheckBox()
+                box.setChecked(pair_key(ta, tb) not in disabled)
+                box.setStyleSheet(QSS.checkbox)
+                box.setToolTip(f"{ta} × {tb}")
+                box.toggled.connect(
+                    lambda on, x=ta, y=tb: self._set_collision_pair(x, y, on))
+                self._col_grid.addWidget(box, r + 1, c + 1)
+
+    def _set_collision_pair(self, tag_a: str, tag_b: str, enabled: bool):
+        if self._blocking or not self._project:
+            return
+        from core.models.settings import pair_key
+        key = pair_key(tag_a, tag_b)
+        cur = list(getattr(self._project.settings,
+                           "collision_disabled_pairs", []) or [])
+        new = [k for k in cur if k != key] if enabled else sorted(set(cur) | {key})
+        self._set_setting("collision_disabled_pairs", new)
 
     def _refresh_counts(self):
         p = self._project

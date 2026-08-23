@@ -46,11 +46,11 @@ from .api import (
     DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE, DOMAIN_MUSIC_BOX_TRIGGER,
     DOMAIN_CAMERA, camera_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE,
-    DOMAIN_PALETTE, DOMAIN_UI_ELEMENT,
+    DOMAIN_PALETTE, DOMAIN_UI_ELEMENT, DOMAIN_UI_LIST, ui_list_constant,
     DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_SEQUENCE,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     text_constant, font_constant, region_constant, anon_text_key, palette_constant,
-    image_constant, image_state_constant, ui_element_constant,
+    image_constant, image_state_constant, ui_element_constant, ui_list_constant,
     SCREEN_CONSTANTS,
 )
 from .checker import check as _lua_check, BuildContext as _BuildContext
@@ -93,6 +93,27 @@ class _Step:
     kind:  str          # "body" | WAIT_FN | WAIT_UNTIL_FN
     stmts: list = field(default_factory=list)   # kind == "body"
     arg:   Any = None                            # l'attente : durée ou condition
+    # Dernière tranche du corps d'une boucle bornée (ROADMAP v0.23) : au lieu
+    # de passer à la tranche suivante, on incrémente le compteur et on REVIENT
+    # en arrière tant qu'il reste des tours. Porté par la tranche plutôt que
+    # par une tranche à part, pour que la boucle ne coûte PAS une frame de
+    # plus par tour — un `case` rend la main, donc un `case` de bouclage se
+    # paierait à chaque itération.
+    loop_back: Any = None    # _LoopBack | None
+
+
+@dataclass
+class _LoopBack:
+    """De quoi refermer une boucle bornée : `for var = start, stop [, step]`.
+
+    `stop` est soit un entier écrit en clair (replié à l'émission), soit le
+    nom du champ d'état où sa valeur a été rangée AU DÉBUT de la boucle — Lua
+    n'évalue la borne qu'une fois, et la ré-évaluer à chaque tour donnerait un
+    comportement différent le jour où elle change en cours de route."""
+    var:   str          # champ d'état du compteur
+    stop:  Any          # int littéral, ou nom de champ d'état
+    step:  int          # le pas, écrit en clair (cf. checker._check_for_step)
+    back:  int          # rang de la tranche où reprendre
 
 
 @dataclass
@@ -177,6 +198,12 @@ class CodegenContext:
     global_names: set[str]       # noms des variables globales (depuis globals.h)
     const_names:  set[str]       # noms des constantes (depuis constants.h)
     all_actor_syms: list[str]    # tous les acteurs de la scène
+    # Les ENFANTS de ce propriétaire, nom Lua → expression C qui les désigne
+    # (ROADMAP v0.23). `self.bras` s'y lit : pour un acteur de scène c'est
+    # une constante `&g_actors[TAG_*]`, pour la racine d'un prefab poolé un
+    # décalage constant dans son groupe (`self + 2`). Résolu au BUILD dans
+    # les deux cas — un enfant se NOMME, il ne se construit pas.
+    child_refs: dict = field(default_factory=dict)
     is_scene: bool = False       # True → script SANS self (scène ou caméra)
     # Famille de propriétaire, quand is_scene : nomme le symbole C émis
     # (`<sym>_scene_on_update` / `<sym>_camera_on_update`). Une caméra a les
@@ -203,6 +230,8 @@ class CodegenContext:
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
     palette_names: list[str] = field(default_factory=list)  # catalogue de couleurs (ordre = index dans g_palettes)
     region_names: list[str] = field(default_factory=list)  # emplacements de texte (ordre = index dans g_ui_regions)
+    # Panneaux marqués LISTE (ordre = index dans g_ui_lists) — ROADMAP v0.22
+    ui_list_names: list[str] = field(default_factory=list)
     image_names:  list[str] = field(default_factory=list)  # images d'interface (ordre = index dans g_ui_images)
     # TOUS les éléments d'UI, tous types confondus (ordre = index dans la table
     # de visibilité plate, UIELEM_*) — cf. Project.all_elements.
@@ -294,6 +323,97 @@ class CodeGen:
 
     # ── Séquences ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _literal_int(e) -> Any:
+        """La valeur d'un littéral entier, signe compris, sinon None. Même
+        lecture que `checker._literal_int` — un `-1` est un moins unaire posé
+        sur un nombre, pas un nombre négatif, et les deux doivent en tirer la
+        même conclusion sous peine de se contredire."""
+        if isinstance(e, ExprNumber):
+            return e.value
+        if (isinstance(e, ExprUnop) and e.op == "-"
+                and isinstance(e.operand, ExprNumber)):
+            return -e.operand.value
+        return None
+
+    @staticmethod
+    def _block_has_wait(stmts) -> bool:
+        """Une attente quelque part dans ce bloc, si profond soit-elle. C'est
+        ce qui distingue une boucle ORDINAIRE — émise telle quelle dans une
+        tranche — d'une boucle qu'il faut dérouler en tranches."""
+        for s in stmts:
+            if wait_call(s) is not None:
+                return True
+            for sub in (getattr(s, "body", None), getattr(s, "then", None),
+                        getattr(s, "else_", None)):
+                if sub and CodeGen._block_has_wait(sub):
+                    return True
+            for _c, b in getattr(s, "elseifs", []) or []:
+                if CodeGen._block_has_wait(b):
+                    return True
+        return False
+
+    def _slice_block(self, stmts, seq: str, steps: list, loop_fields: list):
+        """Découpe un bloc en tranches, en descendant dans les boucles bornées.
+
+        Récursif, et c'est ce qui rend une boucle imbriquée gratuite : chaque
+        niveau referme la sienne sur la dernière tranche de son corps. Une
+        boucle SANS attente n'est pas touchée — elle reste un `for` C ordinaire
+        au milieu d'une tranche, comme avant la v0.23."""
+        buf: list = []
+
+        def flush():
+            if buf:
+                steps.append(_Step("body", stmts=list(buf)))
+                buf.clear()
+
+        for stmt in stmts:
+            w = wait_call(stmt)
+            if w is not None:
+                flush()
+                steps.append(_Step(w[0], arg=w[1]))
+                continue
+            if isinstance(stmt, StmtForNum) and self._block_has_wait(stmt.body):
+                # Le compteur (et la borne, si elle n'est pas écrite en clair)
+                # traversent des attentes : ils vivent dans l'état de la
+                # séquence, comme n'importe quel `local` qui survit.
+                var_field = stmt.var
+                loop_fields.append(var_field)
+                init = [StmtAssign(target=ExprName(stmt.var), value=stmt.start)]
+                stop_lit = self._literal_int(stmt.stop)
+                if stop_lit is None:
+                    bound = f"{stmt.var}_bound_{len(loop_fields)}"
+                    loop_fields.append(bound)
+                    init.append(StmtAssign(target=ExprName(bound), value=stmt.stop))
+                    stop_ref: Any = bound
+                else:
+                    stop_ref = int(stop_lit)
+                # L'initialisation rejoint la tranche EN COURS : elle ne coûte
+                # pas une frame, elle prépare celle qui suit.
+                buf.extend(init)
+                flush()
+                first = len(steps) + 1          # rang 1-based de la 1re tranche du corps
+                self._slice_block(stmt.body, seq, steps, loop_fields)
+                if len(steps) < first:
+                    # Corps vide après découpage : rien à répéter.
+                    continue
+                step_val = 1
+                if stmt.step is not None:
+                    lit = self._literal_int(stmt.step)
+                    if lit is not None:
+                        step_val = int(lit)
+                # Une CHAÎNE et non une seule refermeture : deux boucles
+                # imbriquées se referment sur la même tranche — celle de
+                # l'attente la plus profonde — et c'est la plus INTÉRIEURE qui
+                # doit être testée en premier. Écraser au lieu d'empiler
+                # laissait la boucle intérieure sans fin de course.
+                steps[-1].loop_back = (steps[-1].loop_back or []) + [
+                    _LoopBack(var=stmt.var, stop=stop_ref,
+                              step=step_val, back=first)]
+                continue
+            buf.append(stmt)
+        flush()
+
     def _plan_sequences(self, script: LuaScript):
         """Découpe chaque séquence à ses attentes, et dit quel état elle demande.
 
@@ -304,21 +424,14 @@ class CodeGen:
             name = sequence_name(fn.name)
             if name is None:
                 continue
-            steps, buf = [], []
-            for stmt in fn.body:
-                w = wait_call(stmt)
-                if w is None:
-                    buf.append(stmt)
-                    continue
-                if buf:
-                    steps.append(_Step("body", stmts=buf))
-                    buf = []
-                steps.append(_Step(w[0], arg=w[1]))
-            if buf or not steps:
+            steps: list = []
+            loop_fields: list[str] = []
+            self._slice_block(fn.body, name, steps, loop_fields)
+            if not steps:
                 # Une séquence vide garde une tranche : elle démarre et
                 # s'arrête, plutôt que de rester sur une étape que rien ne fait
                 # avancer.
-                steps.append(_Step("body", stmts=buf))
+                steps.append(_Step("body", stmts=[]))
 
             # Un `local` de la séquence encore regardé après une attente doit
             # survivre : il devient un champ de l'état. Ceux qui vivent et
@@ -336,6 +449,14 @@ class CodeGen:
                     plus_tard |= referenced_names([StmtCall(call=ExprCall(
                         func=ExprName(st.kind), args=[st.arg] if st.arg else []))])
             lifted.reverse()
+            # Le compteur d'une boucle bornée (et sa borne calculée) traversent
+            # forcément une attente — c'est la définition même du chantier
+            # v0.23. Ils rejoignent donc l'état, sans passer par l'analyse
+            # ci-dessus : celle-ci ne voit que les `local`, et un compteur de
+            # `for` n'en est pas un.
+            for f in loop_fields:
+                if f not in lifted:
+                    lifted.append(f)
 
             plan = _SequencePlan(
                 name=name, steps=steps, lifted=lifted,
@@ -456,7 +577,33 @@ class CodeGen:
                 self._w(f"{timer} = 0;")
             else:
                 self._w(f"if (!({self._expr(st.arg)})) break;")
-            self._w(f"{step_ref} = {suivant};{fin}")
+            if not st.loop_back:
+                self._w(f"{step_ref} = {suivant};{fin}")
+            else:
+                # Refermeture des boucles bornées qui finissent sur cette
+                # tranche (ROADMAP v0.23) : on incrémente le compteur puis on
+                # décide où reprendre. Le SENS de la comparaison vient du signe
+                # du pas, écrit en clair — même règle que pour un `for`
+                # ordinaire (checker._check_for_step), et pour la même raison :
+                # rien n'est testé à l'exécution qui puisse l'être au build.
+                # De la plus INTÉRIEURE à la plus extérieure : la boucle du
+                # dessus ne reprend que lorsque celle du dessous a fini.
+                depth = 0
+                for lb in st.loop_back:
+                    counter = self._state_ref(f"seq_{plan.name}_{lb.var}")
+                    stop = (str(lb.stop) if isinstance(lb.stop, int)
+                            else self._state_ref(f"seq_{plan.name}_{lb.stop}"))
+                    cmp_op = "<=" if lb.step >= 0 else ">="
+                    delta = f"+ {lb.step}" if lb.step >= 0 else f"- {-lb.step}"
+                    self._w(f"{counter} = {counter} {delta};")
+                    self._w(f"if ({counter} {cmp_op} {stop}) {{ "
+                            f"{step_ref} = {lb.back}; }} else {{")
+                    self._indent += 1
+                    depth += 1
+                self._w(f"{step_ref} = {suivant};{fin}")
+                for _ in range(depth):
+                    self._indent -= 1
+                    self._w("}")
             self._indent -= 1
             self._w("} break;")
         self._w("}")
@@ -649,6 +796,14 @@ class CodeGen:
             self._w("/* Emplacements de texte */")
             for i, name in enumerate(self.ctx.region_names):
                 self._w(f"#define {region_constant(name)} {i}")
+        # Constantes de LISTE — index dans g_ui_lists (ROADMAP v0.22). Espace
+        # séparé de REGION_*/UIELEM_* : une liste est un panneau, mais son rang
+        # est celui des LISTES, pas celui de tous les éléments.
+        if self.ctx.ui_list_names:
+            self._w("")
+            self._w("/* Listes d'interface (navigation) */")
+            for i, name in enumerate(self.ctx.ui_list_names):
+                self._w(f"#define {ui_list_constant(name)} {i}")
         # Constantes Image — index dans g_ui_images, même espace de noms projet
         # et même raison. Les ÉTATS suivent, indexés par IMAGE : un nom d'état
         # n'existe que dans un sprite, et c'est l'image que le script nomme.
@@ -792,9 +947,16 @@ class CodeGen:
             self._w(f)
         self._indent -= 1
         self._w(f"}} {struct_t};")
-        self._w(f"static {struct_t} g_state_{sym}[POOL_{sym.upper()}_SIZE];")
+        # Un état par INSTANCE, pas par entrée de `g_actors` (ROADMAP v0.23) :
+        # une instance de prefab segmenté occupe un GROUPE d'entrées — la
+        # racine puis ses parties — mais n'exécute qu'un script, celui de la
+        # racine. Diviser par le groupe ramène `self` à son rang d'instance ;
+        # pour un prefab plat, GROUP vaut 1 et le C émis est mot pour mot celui
+        # d'avant.
+        self._w(f"static {struct_t} g_state_{sym}[POOL_{sym.upper()}_INSTANCES];")
         self._w(f"static inline int {sym}_pool_slot(Actor* self) {{ "
-                f"return (int)(self - g_actors) - POOL_{sym.upper()}_START; }}")
+                f"return ((int)(self - g_actors) - POOL_{sym.upper()}_START) "
+                f"/ POOL_{sym.upper()}_GROUP; }}")
         self._w("")
 
     @staticmethod
@@ -1020,6 +1182,14 @@ class CodeGen:
                 and isinstance(s.value, ExprCall)
                 and isinstance(s.value.func, ExprName)
                 and s.value.func.name == "get_actor"
+            ) or (
+                # `local bras = self.bras` tient un acteur, exactement comme
+                # `get_actor(...)` — donc un `Actor*` et non un `int`, sans quoi
+                # `bras:destroy()` ne compilerait pas (ROADMAP v0.23).
+                isinstance(s.value, ExprIndex)
+                and isinstance(s.value.obj, ExprName)
+                and s.value.obj.name == "self"
+                and s.value.field in (self.ctx.child_refs or {})
             )
             # Une RÉFÉRENCE rendue par un appel (`sfx.play`) porte le type C du
             # handle, et le nom est retenu : c'est lui qui dira à `_invoke` que
@@ -1145,6 +1315,23 @@ class CodeGen:
             table = self._data_table_ref(e)
             if table is not None:
                 return f"g_data_{table}"
+            # `global.coffres` → le tableau C émis par globals.c. Ce qui suit —
+            # l'indexation — se compose tout seul via `ExprIndexAt`, exactement
+            # comme pour une table de données (ROADMAP v0.20). Le nom du projet
+            # se cite en clair puis s'indexe : c'est la grammaire déjà LIVRÉE
+            # pour `data.Objets[i].prix`, pas une forme inventée ici.
+            # `global.get` / `global.set` ne passent jamais par là : ce sont des
+            # APPELS, interceptés plus haut par `_call_key`.
+            if (isinstance(e.obj, ExprName) and e.obj.name == "global"
+                    and e.field in self.ctx.global_names):
+                return f"g_{e.field}"
+            # `self.bras` → l'enfant, désigné par une expression CONSTANTE
+            # (ROADMAP v0.23). Même geste que dans Godot : on tient son parent,
+            # on nomme l'enfant. Rien n'est construit, rien n'est cherché au
+            # runtime — c'est un `&g_actors[...]` ou un décalage de groupe.
+            if (isinstance(e.obj, ExprName) and e.obj.name == "self"
+                    and e.field in (self.ctx.child_refs or {})):
+                return self.ctx.child_refs[e.field]
             # module.field — retourne le nom composé pour la résolution ultérieure
             return f"{self._expr(e.obj)}.{e.field}"
         if isinstance(e, ExprIndexAt):
@@ -1373,7 +1560,18 @@ class CodeGen:
         return f"sfx_play({sfx_constant(name)}, {volume}, 0)"
 
     def _emit_destroy(self, args: list, receiver: str) -> str:
-        """self:destroy() → appelle on_destroy() puis désactive l'actor."""
+        """`self:destroy()` → appelle on_destroy() puis désactive l'actor.
+
+        Sur QUELQU'UN D'AUTRE — `other:destroy()`, ou `MonBras:destroy()` depuis
+        la v0.23 — aucun hook n'est appelé, et c'est le seul choix honnête : le
+        symbole du script de la cible n'est pas connu à ce site d'appel (`other`
+        peut être n'importe quel acteur, et un enfant n'a pas de script propre).
+        Le C émis appelait jusqu'ici le `on_destroy` de CELUI QUI DÉTRUIT en lui
+        passant l'acteur d'autrui — donc le mauvais handler, sur la mauvaise
+        cible. Ne rien appeler laisse le hook de la cible muet, ce qui est une
+        limite ; appeler le mauvais était un bug."""
+        if receiver != "self":
+            return f"actor_destroy_internal({receiver})"
         sym = self.ctx.actor_sym
         return f"{sym}_on_destroy({receiver}); actor_destroy_internal({receiver})"
 
@@ -1744,6 +1942,7 @@ _DOMAIN_CONSTANT: dict = {
     DOMAIN_PALETTE: lambda g, name: palette_constant(name),
     DOMAIN_REGION:  lambda g, name: region_constant(name),
     DOMAIN_IMAGE:   lambda g, name: image_constant(name),
+    DOMAIN_UI_LIST: lambda g, name: ui_list_constant(name),
     # Énumérations matérielles : la constante C vient de `HARDWARE_ENUMS`, la
     # même table que celle où le checker a validé le nom. Le C généré porte donc
     # `WINR_OBJ` et non `2` — lisible pour qui relit le build.

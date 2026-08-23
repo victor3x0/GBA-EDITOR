@@ -780,11 +780,14 @@ class FinderSection(QFrame):
         ta_layout.setContentsMargins(S.GUTTER, 0, 0, 0)
         ta_layout.setSpacing(S.SM)
 
-        self._arrow_lbl = QLabel("▾")
+        # Triangle vectoriel partagé (icons.arrow_icon) — pas un glyphe ▾/▸ de
+        # police : c'est le MÊME dessin que la flèche de QTreeWidget::branch
+        # (cf. theme.py::_tree_arrow_rule), à la même taille (T.MD).
+        self._arrow_lbl = QLabel()
         self._arrow_lbl.setFixedWidth(S.LG)
         self._arrow_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._arrow_lbl.setStyleSheet(
-            f"color:{C.TEXT_DIM}; font-size:{T.MD}px; background:transparent;")
+        self._arrow_lbl.setStyleSheet("background:transparent;")
+        self._set_arrow("down")
 
         title_lbl = QLabel(title)
         title_lbl.setStyleSheet(QSS.title_finder(color))
@@ -863,10 +866,16 @@ class FinderSection(QFrame):
     def set_search_visible(self, visible: bool):
         self._btn_search.setVisible(visible)
 
+    def _set_arrow(self, direction: str):
+        """direction: "down" (dépliée) ou "right" (repliée)."""
+        from ui.common import icons
+        icon = icons.arrow_icon(direction, C.TEXT_DIM)
+        self._arrow_lbl.setPixmap(icon.pixmap(QSize(T.MD, T.MD)))
+
     def _toggle(self):
         self._expanded = not self._expanded
         self._body.setVisible(self._expanded)
-        self._arrow_lbl.setText("▾" if self._expanded else "▸")
+        self._set_arrow("down" if self._expanded else "right")
         lay = self.layout()
         m = lay.contentsMargins()
         lay.setContentsMargins(
@@ -932,6 +941,158 @@ class FinderSection(QFrame):
         self._apply_size_policy()
         if self._search_box.text():
             self._apply_filter(self._search_box.text())
+
+
+# ──────────────────────────────────────────────────────────────────
+#  CollapsibleCard — norme des sections d'inspecteur
+# ──────────────────────────────────────────────────────────────────
+#  Chaque groupe de champs d'un inspecteur (Note, Transform, Affine,
+#  Components…) est une carte QSS.card() avec un en-tête chevron ▾/▸ +
+#  titre (même style que W.title_section), cliquable pour replier. Avant
+#  ce widget, ActorInspector dupliquait cette mécanique à la main
+#  (_toggle_section) pour Components/Children/Editor seulement, et laissait
+#  Note/Transform/Affine non repliables — d'où l'incohérence visuelle.
+# ──────────────────────────────────────────────────────────────────
+
+class CollapsibleCard(QFrame):
+    """
+    Carte d'inspecteur repliable. Usage :
+
+        card = CollapsibleCard("Transform")
+        W.row("Priority", spin, card.body_layout)
+        layout.addWidget(card)
+
+    `color` teinte le titre (périwinkle par défaut, via title_section) —
+    réservé aux cartes pilotées par une famille d'asset (ex: couleur actor
+    vs prefab), comme title_section ailleurs. `add_header_widget()` ajoute
+    un bouton (+, −...) à droite du titre, en dehors de la zone cliquable
+    de bascule.
+    """
+
+    toggled = pyqtSignal(bool)   # état déplié après le clic
+
+    _counter = 0   # object names uniques sans que l'appelant en fournisse un
+
+    def __init__(self, title: str, color: str | None = None,
+                 expanded: bool = True, parent=None):
+        super().__init__(parent)
+        CollapsibleCard._counter += 1
+        object_name = f"card_{CollapsibleCard._counter}"
+        self.setObjectName(object_name)
+        self.setStyleSheet(QSS.card(object_name))
+        self._expanded = expanded
+        self._color = color
+        # Par défaut la carte ne vaut que sa hauteur naturelle (Fixed) :
+        # sans ça, un parent qui lui laisse plus de place que nécessaire
+        # (QScrollArea widgetResizable, un addStretch() à facteur 0) la fait
+        # grandir au lieu de laisser le stretch absorber l'espace en trop —
+        # une carte repliée reste alors haute et son en-tête flotte au milieu
+        # plutôt que de rester ferré en haut. `set_expanding(True)` lève cette
+        # contrainte pour une carte dont le corps doit remplir l'espace
+        # restant (ex: une liste défilante, cf. uses_inspectors.py).
+        self._content_grows = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # ── En-tête : zone cliquable (chevron + titre) + boutons à part ──
+        hdr = QWidget()
+        hdr.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(hdr)
+        hl.setContentsMargins(8, 6, 6, 6)
+        hl.setSpacing(4)
+
+        toggle_area = QWidget()
+        toggle_area.setObjectName("cardToggle")
+        toggle_area.setCursor(Qt.CursorShape.PointingHandCursor)
+        toggle_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toggle_area.setStyleSheet(
+            "QWidget#cardToggle { background:transparent; border:none; }"
+            f"QWidget#cardToggle:hover {{ background:{C.BG_HOVER}; }}"
+        )
+        ta_layout = QHBoxLayout(toggle_area)
+        ta_layout.setContentsMargins(0, 0, 0, 0)
+        ta_layout.setSpacing(6)
+
+        self._arrow = QLabel("▾" if expanded else "▸")
+        self._arrow.setFixedWidth(12)
+        self._arrow.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
+        self._title_lbl = QLabel(title)
+        self._title_lbl.setFont(_FONT_UI_SM)
+        self._title_lbl.setStyleSheet(QSS.title_section(color))
+        # Sans ça, survoler chevron/titre enverrait un Leave à toggle_area.
+        for w in (self._arrow, self._title_lbl):
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        ta_layout.addWidget(self._arrow)
+        ta_layout.addWidget(self._title_lbl, 1)
+        toggle_area.mousePressEvent = lambda e: self.set_expanded(not self._expanded)
+
+        hl.addWidget(toggle_area, 1)
+        self._header_row = hl   # add_header_widget y ajoute après toggle_area
+        root.addWidget(hdr)
+
+        self._sep = QFrame(); self._sep.setFrameShape(QFrame.Shape.HLine)
+        self._sep.setStyleSheet(f"color:{C.BORDER}; margin:0;")
+        root.addWidget(self._sep)
+
+        self._body = QWidget()
+        self._body.setStyleSheet("background:transparent;")
+        self.body_layout = QVBoxLayout(self._body)
+        self.body_layout.setContentsMargins(8, 6, 8, 8)
+        self.body_layout.setSpacing(6)
+        # Stretch=1 : un contenu qui grandit (ex: QScrollArea d'une liste)
+        # reçoit l'espace en trop du parent ; un contenu à hauteur naturelle
+        # (des lignes de champs) n'en réclame pas et n'en reçoit pas — la
+        # carte ne s'étire que si son corps sait quoi faire de la place.
+        root.addWidget(self._body, 1)
+
+        self._body.setVisible(expanded)
+        self._sep.setVisible(expanded)
+        self._apply_size_policy()
+
+    def add_header_widget(self, w: QWidget):
+        """Bouton (+ / −...) à droite du titre, hors zone de bascule."""
+        self._header_row.addWidget(w)
+
+    def set_expanded(self, expanded: bool):
+        self._expanded = expanded
+        self._body.setVisible(expanded)
+        self._sep.setVisible(expanded)
+        self._arrow.setText("▾" if expanded else "▸")
+        self._apply_size_policy()
+        # Sans ça, la carte garde parfois sa hauteur d'avant le temps d'un
+        # cycle d'affichage : masquer _body invalide le layout de la carte
+        # (son sizeHint se met à jour aussitôt), mais rien ne dit toujours au
+        # layout du PARENT de recalculer tout de suite — updateGeometry()
+        # force cette remontée.
+        self.updateGeometry()
+        self.toggled.emit(expanded)
+
+    def set_expanding(self, grows: bool):
+        """Une carte dont le corps doit remplir l'espace vertical restant
+        (ex: une liste défilante, cf. uses_inspectors.py) plutôt que de ne
+        prendre que sa hauteur naturelle. Par défaut False — voir la note
+        dans __init__."""
+        self._content_grows = grows
+        self._apply_size_policy()
+
+    def _apply_size_policy(self):
+        grow = self._expanded and self._content_grows
+        self.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Expanding if grow else QSizePolicy.Policy.Fixed,
+        )
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_title(self, text: str):
+        self._title_lbl.setText(text)
+
+    def set_color(self, color: str | None):
+        self._color = color
+        self._title_lbl.setStyleSheet(QSS.title_section(color))
 
 
 # ──────────────────────────────────────────────────────────────────

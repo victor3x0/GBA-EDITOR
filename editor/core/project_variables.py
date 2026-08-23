@@ -36,7 +36,11 @@ class ProjectVariablesMixin:
         data = {
             "globals": [
                 {"id": g.id, "name": g.name, "type": g.type,
-                 "default": g.default, "desc": g.desc, "persist": g.persist}
+                 "default": g.default, "desc": g.desc, "persist": g.persist,
+                 # Écrit seulement s'il y a quelque chose à dire : un scalaire
+                 # (le cas de toutes les variables d'avant la v0.20) ne gagne
+                 # pas une clé dans le fichier de projet.
+                 **({"count": g.count} if g.count > 1 else {})}
                 for g in self.globals
             ],
             "constants": [
@@ -62,6 +66,9 @@ class ProjectVariablesMixin:
                 desc    = g.get("desc", ""),
                 id      = int(g.get("id", 0)),
                 persist = bool(g.get("persist", False)),
+                # Absent = scalaire : c'est ce qu'était toute variable avant la
+                # v0.20, donc un projet existant se relit à l'identique.
+                count   = max(1, int(g.get("count", 1) or 1)),
             )
             for g in d.get("globals", [])
         ]

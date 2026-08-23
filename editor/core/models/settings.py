@@ -1,6 +1,6 @@
 """Settings globaux du projet + variables déclarées explicitement (globals/constants)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -52,6 +52,24 @@ class ProjectSettings:
     # runtime). Vrai par défaut : c'est le comportement qu'avait le logiciel
     # avant que ce réglage existe, un projet existant ne doit rien voir changer.
     debug_build: bool = True
+    # Les couples de TAGS de boxes qui ne se rencontrent PAS (ROADMAP v0.23).
+    # Chaque entrée est une clé `pair_key(a, b)`, donc un couple non ordonné :
+    # « les projectiles du joueur ignorent ceux du boss » se dit une fois.
+    #
+    # On stocke ce qui est INTERDIT, pas ce qui est permis : un projet existant
+    # a une liste vide et tout continue de se heurter, comme avant. C'est aussi
+    # ce qui garde le fichier court — on déclare les exceptions, pas la règle.
+    #
+    # Le build s'en sert pour NE PAS ÉMETTRE la paire : le gain est en ROM
+    # autant qu'en cycles, ce qu'un filtre au runtime n'aurait pas donné.
+    collision_disabled_pairs: list = field(default_factory=list)
+    # Cadence de répétition des listes de menu, en frames (ROADMAP v0.22) —
+    # le DÉFAUT du projet, qu'une liste peut surcharger (UIPanel.list_repeat_*).
+    # Répondre ici une fois évite trois listes à trois cadences dans le même
+    # jeu, ce qu'un joueur sent ; la surcharge laisse un cas particulier
+    # possible. Même politique d'héritage que la transition de scène (v0.6.2).
+    list_repeat_delay: int = 10   # avant le premier renvoi
+    list_repeat_rate: int = 4     # entre les renvois suivants
 
 
 # ── Variables du projet ───────────────────────────────────────────
@@ -82,6 +100,21 @@ class GlobalVar:
     # compatibilité (cf. ROADMAP.md v0.5). C'est l'`id` ci-dessus qui l'identifie
     # dans le fichier de sauvegarde — jamais son rang, jamais son nom.
     persist: bool = False
+    # Combien de CASES cette variable tient (ROADMAP v0.20). 1 = un scalaire,
+    # exactement ce qu'était toute variable avant cette version — un projet
+    # existant ne voit donc rien changer. Au-delà, c'est un tableau, écrit
+    # `global.coffres[i]` dans un script et indexé À PARTIR DE 1 comme tout
+    # tableau du langage (v0.7.1).
+    #
+    # Un tableau plutôt qu'un système de drapeaux : `flag.set(id)` serait un
+    # domaine de plus pour un seul usage, là où un tableau sert aussi bien les
+    # 200 à 400 booléens de monde d'un metroidvania (coffres, portes, boss
+    # vaincus) que l'inventaire, les niveaux de compétence et le journal.
+    #
+    # `default` reste UNE valeur, pour toutes les cases : c'est ce que demande
+    # le cas qui a ouvert le chantier (tout à faux au départ). Un inventaire
+    # de départ se remplit dans `on_start`.
+    count:   int  = 1
 
 
 @dataclass
@@ -92,3 +125,25 @@ class Constant:
     value: int = 0
     desc:  str = ""      # description optionnelle
     id:    int = 0       # opaque, stable à vie
+
+
+# ── La matrice de collision (ROADMAP v0.23) ──────────────────────────
+# Une matrice par PAIRES et non un masque par tag. Le masque s'écrit plus vite
+# mais se relit mal : c'est le modèle « layer / mask » de Godot, où il faut
+# tenir deux champs asymétriques dans sa tête pour répondre à « est-ce que A
+# touche B ? ». La paire répond à cette question-là directement, et c'est la
+# question qu'on se pose. Une grille triangulaire de n tags fait n(n+1)/2
+# cases : dix tags, cinquante-cinq cases — ça se lit d'un coup d'œil.
+
+def pair_key(tag_a: str, tag_b: str) -> str:
+    """La clé d'un couple de tags, indépendante de l'ordre — « A contre B » et
+    « B contre A » sont la même question."""
+    a, b = sorted((tag_a or "body", tag_b or "body"))
+    return f"{a}|{b}"
+
+
+def tags_collide(settings, tag_a: str, tag_b: str) -> bool:
+    """Ces deux tags se rencontrent-ils ? Vrai par défaut : la matrice ne
+    contient que les exceptions."""
+    disabled = getattr(settings, "collision_disabled_pairs", None) or []
+    return pair_key(tag_a, tag_b) not in disabled

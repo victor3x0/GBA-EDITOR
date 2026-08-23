@@ -192,11 +192,32 @@ class _ActiveSceneTree(_Tree):
         self.blockSignals(True)
         self.clear()
         if scene is not None:
+            # Les acteurs se posent en ARBRE depuis la v0.23 : un acteur dont
+            # `parent` nomme un autre acteur de la scène s'accroche sous lui.
+            # Même dérivation que la branche Interface juste en dessous, qui
+            # tire sa hiérarchie des mêmes refs `parent` — une seule façon de
+            # montrer une hiérarchie dans ce panneau.
+            #
+            # Un parent introuvable laisse son acteur à la RACINE plutôt que de
+            # le faire disparaître : le Build le nomme déjà comme une erreur, et
+            # un acteur invisible dans l'arbre serait le pire moment pour
+            # l'apprendre.
+            items: dict = {}
             for actor in scene.actors:
-                a_item = QTreeWidgetItem(self)
+                a_item = QTreeWidgetItem()
                 a_item.setData(0, _ROLE_TYPE, T_ACTOR)
                 a_item.setData(0, _ROLE_OBJ, actor)
                 self._update_actor_item(a_item, actor)
+                items[actor.name] = a_item
+            for actor in scene.actors:
+                par = getattr(actor, "parent", None)
+                host = items.get(par) if par else None
+                if host is not None and host is not items[actor.name]:
+                    host.addChild(items[actor.name])
+                else:
+                    self.addTopLevelItem(items[actor.name])
+            for it in items.values():
+                it.setExpanded(True)
             self._populate_ui_branch(scene, project)
         self.blockSignals(False)
         self._fit()
@@ -314,30 +335,95 @@ class _ActiveSceneTree(_Tree):
             return
 
         if dtype == T_ACTOR:
-            # Un acteur ne se réordonne qu'entre acteurs, jamais sous
-            # « Interface » (pas de nesting) — donc cible et indicateur
-            # doivent tous deux pointer sur un acteur de premier niveau.
+            # Un acteur ne se pose SUR un autre item que si c'est un acteur,
+            # jamais sur la branche « Interface » (pas de nesting) — mais un
+            # lâché hors de tout item (case vide) est accepté : c'est ce qui
+            # retire le parent (l'acteur remonte à la racine).
             Pos = QAbstractItemView.DropIndicatorPosition
-            if target is None or target.data(0, _ROLE_TYPE) != T_ACTOR:
+            if target is not None and target.data(0, _ROLE_TYPE) != T_ACTOR:
                 event.ignore()
                 return
-            if self.dropIndicatorPosition() == Pos.OnItem:
-                event.ignore()
+            if target is not None and self.dropIndicatorPosition() == Pos.OnItem:
+                # Lâché SUR un acteur = reparentage (ROADMAP v0.23), pas un
+                # réordonnancement — Qt ne doit pas y toucher.
+                event.accept()
+                self._reparent_actor(dragged.data(0, _ROLE_OBJ), target.data(0, _ROLE_OBJ))
                 return
-            super().dropEvent(event)   # Qt réordonne visuellement
-            if self._scene is None:
+            if target is None:
+                # Lâché hors de tout item : Qt n'a pas de position où
+                # replacer visuellement l'item (rien à indiquer), donc on le
+                # fait nous-même plutôt que de laisser passer à super().
+                event.accept()
+                self._unparent_actor(dragged.data(0, _ROLE_OBJ))
                 return
-            new_order = [
-                self.topLevelItem(i).data(0, _ROLE_OBJ)
-                for i in range(self.topLevelItemCount())
-                if self.topLevelItem(i).data(0, _ROLE_TYPE) == T_ACTOR
-            ]
+            super().dropEvent(event)   # Qt réordonne/redéplace visuellement
+            if self._scene is None or QTreeWidgetItemIterator is None:
+                return
+            # DFS sur l'arbre ENTIER, pas seulement le premier niveau : un
+            # acteur posé (Actor.parent) apparaît en enfant, et un tour
+            # limité au premier niveau le ferait disparaître de
+            # `scene.actors` — perdu, pas seulement mal trié. On relit aussi
+            # LE PARENT de chaque acteur depuis sa position résultante : Qt
+            # autorise de déposer un acteur imbriqué à côté d'acteurs racine
+            # (indicateur Au-dessus/En dessous plutôt que Sur), et c'est
+            # cette repose qui doit lui retirer son parent — pas seulement un
+            # lâché en case vide.
+            new_order = []
+            reparented = False
+            it = QTreeWidgetItemIterator(self)
+            while it.value():
+                node = it.value()
+                if node.data(0, _ROLE_TYPE) == T_ACTOR:
+                    actor = node.data(0, _ROLE_OBJ)
+                    new_order.append(actor)
+                    host = node.parent()
+                    new_parent = (
+                        host.data(0, _ROLE_OBJ).name
+                        if host is not None and host.data(0, _ROLE_TYPE) == T_ACTOR
+                        else None)
+                    if actor.parent != new_parent:
+                        actor.parent = new_parent
+                        reparented = True
+                it += 1
             self._scene.actors[:] = new_order
             get_dispatcher().save_scene()
+            if reparented:
+                get_dispatcher()._emit("actors_list_changed")
             self._panel.refresh()
             return
 
         event.ignore()
+
+    def _reparent_actor(self, actor: Actor, new_parent: Actor):
+        """Pose `actor` sous `new_parent` (Actor.parent, ROADMAP v0.23).
+
+        Même garde anti-cycle que l'inspecteur (`_descendants` dans
+        actor_inspector.py) : se poser sur soi-même ou sur son propre
+        sous-arbre ferait un cycle que le Build refuserait de toute façon."""
+        if self._scene is None or actor is new_parent:
+            return
+        from core.models.scene import actor_descendant_names
+        if new_parent.name in actor_descendant_names(self._scene.actors, actor.name):
+            return
+        if actor.parent == new_parent.name:
+            return
+        actor.parent = new_parent.name
+        get_dispatcher().save_scene()
+        get_dispatcher()._emit("actors_list_changed")
+
+    def _unparent_actor(self, actor: Actor):
+        """Retire le parent (Actor.parent = None) — l'acteur remonte à la
+        racine de l'arbre, en dernière position parmi les acteurs racine."""
+        if self._scene is None or actor.parent is None:
+            return
+        actor.parent = None
+        # En dernière position racine : sortir de sous un parent n'a pas de
+        # place naturelle ailleurs dans l'ordre, et la fin évite de le
+        # glisser devant des acteurs qui n'ont pas bougé.
+        actors = self._scene.actors
+        actors.append(actors.pop(actors.index(actor)))
+        get_dispatcher().save_scene()
+        get_dispatcher()._emit("actors_list_changed")
 
     def _handle_ui_drop(self, dragged_item, target_item, indicator):
         """Reparente + repositionne un élément d'UI d'après la cible et

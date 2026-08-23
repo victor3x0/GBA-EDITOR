@@ -201,6 +201,51 @@ class MoveActorCmd(Command):
         return False
 
 
+class MoveActorGroupCmd(Command):
+    """Déplacement groupé : un actor et son SOUS-ARBRE (`Actor.parent`, ROADMAP
+    v0.23) glissés ensemble dans le canvas. Bouger un parent translate ses
+    descendants du même delta pour garder leurs positions monde relatives —
+    cf. Actor.parent dans core/models/scene.py : l'auteur pose en coordonnées
+    monde, ce déplacement groupé est ce qui les garde cohérentes dans
+    l'éditeur tant que le canvas ne compose pas encore les transforms
+    (rotation/scale du parent, elles, ne sont visibles qu'au runtime).
+
+    Structurellement un `MoveActorCmd` par acteur du groupe, réunis en une
+    seule entrée d'historique : annuler doit tout ramener en un geste."""
+
+    def __init__(self, items: list, persist_fn=None):
+        # items : [(actor, old_x, old_y, new_x, new_y), ...] — le premier est
+        # l'actor réellement saisi par la souris.
+        self._items = items
+        self.label = f"Déplacer {items[0][0].name}" if items else "Déplacer"
+        self._persist = persist_fn
+
+    def execute(self):
+        for actor, _ox, _oy, nx, ny in self._items:
+            actor.x, actor.y = nx, ny
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        for actor, ox, oy, _nx, _ny in self._items:
+            actor.x, actor.y = ox, oy
+        if self._persist:
+            self._persist()
+
+    def merge(self, newer: "Command") -> bool:
+        if not isinstance(newer, MoveActorGroupCmd):
+            return False
+        if [a for a, *_ in self._items] != [a for a, *_ in newer._items]:
+            return False
+        self._items = [
+            (a, ox, oy, nx2, ny2)
+            for (a, ox, oy, _nx, _ny), (_a2, _ox2, _oy2, nx2, ny2)
+            in zip(self._items, newer._items)
+        ]
+        self._persist = newer._persist
+        return True
+
+
 class MoveUIRegionCmd(Command):
     """Déplacement d'une zone de texte dans le canvas.
 

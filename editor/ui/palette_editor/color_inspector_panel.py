@@ -18,7 +18,7 @@ from PyQt6.QtGui import QFont, QGuiApplication
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.widgets import W, CollapsibleCard
 
 from core.gba_color import (
     bgr555_to_rgb888, bgr555_components, components_to_bgr555, rgb888_to_bgr555,
@@ -100,12 +100,13 @@ class ColorInspectorPanel(QWidget):
         editor.setStyleSheet("background:transparent;")
         el = QVBoxLayout(editor)
         el.setContentsMargins(12, 12, 12, 12)
-        el.setSpacing(14)
+        el.setSpacing(10)
 
         # ── 1. Roue chromatique (élément de sélection principal) ──────
+        wheel_card = CollapsibleCard("Wheel")
         self._wheel = ColorTriangleWheel()
         self._wheel.color_changed.connect(self._on_wheel_changed)
-        el.addWidget(self._wheel, alignment=_CENTER)
+        wheel_card.body_layout.addWidget(self._wheel, alignment=_CENTER)
 
         # ── 2. Ligne d'identité : chip aperçu + HEX éditable + copie ;
         # BGR555 natif GBA (ce qui finit en ROM) + badge « snap » (hex ajusté
@@ -169,7 +170,8 @@ class ColorInspectorPanel(QWidget):
         ident_col.addLayout(bgr_row)
 
         ident.addLayout(ident_col, 1)
-        el.addLayout(ident)
+        wheel_card.body_layout.addLayout(ident)
+        el.addWidget(wheel_card)
 
         # ── 3. Sliders RGB (0-31, natif GBA), rainure dégradée ────────
         self._sliders: dict[str, QSlider] = {}
@@ -177,47 +179,29 @@ class ColorInspectorPanel(QWidget):
         self._hsb_sliders: dict[str, QSlider] = {}
         self._hsb_spins: dict[str, QSpinBox] = {}
 
-        rgb_box = QVBoxLayout()
-        rgb_box.setContentsMargins(0, 0, 0, 0)
-        rgb_box.setSpacing(10)
+        rgb_card = CollapsibleCard("RGB")
         for ch, chan_color in (("r", C.AXIS_X), ("g", C.POWER), ("b", C.AXIS_Y)):
             sl, sp = self._make_channel_row(
-                rgb_box, ch.upper(), chan_color, 0, 31,
+                rgb_card.body_layout, ch.upper(), chan_color, 0, 31,
                 lambda v, ch=ch: self._on_rgb_changed(ch, v),
             )
             self._sliders[ch] = sl
             self._spins[ch] = sp
-        el.addLayout(rgb_box)
+        el.addWidget(rgb_card)
 
-        # ── 4. TSL (dérivé) — repliable : HEX + RGB suffisent le plus souvent ──
-        self._hsb_toggle = QPushButton("▸  HSB")
-        self._hsb_toggle.setCheckable(True)
-        self._hsb_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._hsb_toggle.setStyleSheet(
-            f"QPushButton{{text-align:left;color:{C.TEXT_DIM};background:transparent;"
-            f"border:none;border-top:1px solid {C.BORDER_DARK};padding:6px 0 2px 0;}}"
-            f"QPushButton:hover{{color:{C.TEXT_NORM};}}"
-            f"QPushButton:checked{{color:{C.ACCENT};}}"
-        )
-        self._hsb_toggle.clicked.connect(self._toggle_hsb)
-        el.addWidget(self._hsb_toggle)
-
-        self._hsb_box = QWidget()
-        self._hsb_box.setStyleSheet("background:transparent;")
-        hb = QVBoxLayout(self._hsb_box)
-        hb.setContentsMargins(0, 4, 0, 0)
-        hb.setSpacing(10)
+        # ── 4. TSL (dérivé) — repliée par défaut : HEX + RGB suffisent le
+        # plus souvent.
+        hsb_card = CollapsibleCard("HSB", expanded=False)
         for ch, label, maxv, chan_color in (
             ("h", "H", 359, C.TEXT_DIM), ("s", "S", 100, C.TEXT_DIM), ("v", "L", 100, C.TEXT_DIM),
         ):
             sl, sp = self._make_channel_row(
-                hb, label, chan_color, 0, maxv,
+                hsb_card.body_layout, label, chan_color, 0, maxv,
                 lambda v, ch=ch: self._on_hsb_changed(ch, v),
             )
             self._hsb_sliders[ch] = sl
             self._hsb_spins[ch] = sp
-        self._hsb_box.setVisible(False)
-        el.addWidget(self._hsb_box)
+        el.addWidget(hsb_card)
         el.addStretch(1)
 
         scroll.setWidget(editor)
@@ -251,11 +235,6 @@ class ColorInspectorPanel(QWidget):
         row.addWidget(sp)
         parent_layout.addLayout(row)
         return sl, sp
-
-    def _toggle_hsb(self):
-        on = self._hsb_toggle.isChecked()
-        self._hsb_box.setVisible(on)
-        self._hsb_toggle.setText(("▾  HSB" if on else "▸  HSB"))
 
     # ── API panneau ───────────────────────────────────────────────
 

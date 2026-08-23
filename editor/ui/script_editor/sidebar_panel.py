@@ -11,7 +11,7 @@ from scripting import api_snippets
 from core.models.text import SEP
 from core.text_markup import display_text
 from ui.common.theme import C, T
-from .colors import _BG, _BG_HOVER, _TEXT_DIM, _TEXT_NORM, _C_API, _C_REF, _C_EVENT, _C_BEHAVIOR
+from .colors import _BG, _TEXT_DIM, _TEXT_NORM, _C_API, _C_REF, _C_EVENT, _C_BEHAVIOR
 from .sidebar_widgets import (
     _Section, _EntryButton, _group_label,
     _BTN_BASE, _BTN_API, _BTN_REF, _BTN_BEHAVIOR, _BTN_EVENT_DEFINED, _event_tooltip,
@@ -61,10 +61,15 @@ class SidebarPanel(QWidget):
             self._event_btns[ev] = btn
         self._cl.addWidget(self._sec_events)
 
-        # ── Section API ─────────────────────────────────────────────
-        self._sec_api = _Section("API", _C_API, expanded=False)
-        self._build_api_section()
-        self._cl.addWidget(self._sec_api)
+        # ── Sections API, éclatées en 3 grosses parties ───────────────
+        # Gameplay / Scripting / Hardware — la même API qu'avant sous un seul
+        # « API », désormais rangée par NATURE plutôt que par ordre du JSON
+        # seul. Une section vide (Hardware, tant qu'aucune catégorie n'y est
+        # rangée) ne se crée simplement pas — cf. api_reference.get_categories_by_group().
+        self._api_sections: list[_Section] = []
+        self._build_api_sections()
+        for sec in self._api_sections:
+            self._cl.addWidget(sec)
 
         # ── Section RÉFÉRENCES ──────────────────────────────────────
         self._sec_refs = _Section("References", _C_REF, expanded=False)
@@ -74,20 +79,23 @@ class SidebarPanel(QWidget):
         scroll.setWidget(container)
         outer.addWidget(scroll)
 
-    # ── API section (statique, depuis api_reference.json) ────────────
+    # ── Sections API (statiques, depuis api_reference.json) ───────────
 
-    def _build_api_section(self):
-        from scripting.api_reference import get_categories, make_tooltip
-        for cat in get_categories():
-            sub = self._sec_api.sub_section(cat["name"])
-            for entry in cat.get("entries", []):
-                display = entry['label'].removeprefix("self:")
-                label   = f"  {display}"
-                tooltip = make_tooltip(entry)
-                snippet = entry.get("snippet", entry.get("label", ""))
-                btn = _EntryButton(label, _BTN_API, tooltip)
-                btn.clicked.connect(lambda _, s=snippet: self.snippet_requested.emit(s))
-                sub.add_widget(btn)
+    def _build_api_sections(self):
+        from scripting.api_reference import get_categories_by_group, make_tooltip
+        for _group, label, cats in get_categories_by_group():
+            sec = _Section(label, _C_API, expanded=False)
+            for cat in cats:
+                sub = sec.sub_section(cat["name"])
+                for entry in cat.get("entries", []):
+                    display = entry['label'].removeprefix("self:")
+                    btn_label = f"  {display}"
+                    tooltip   = make_tooltip(entry)
+                    snippet   = entry.get("snippet", entry.get("label", ""))
+                    btn = _EntryButton(btn_label, _BTN_API, tooltip)
+                    btn.clicked.connect(lambda _, s=snippet: self.snippet_requested.emit(s))
+                    sub.add_widget(btn)
+            self._api_sections.append(sec)
 
     # ── Références (dynamique, depuis le projet) ─────────────────────
 
@@ -255,15 +263,7 @@ class SidebarPanel(QWidget):
 
         if context == "behavior":
             # Remplace EVENTS par MODULE
-            self._sec_events._title = "Module"
-            self._sec_events._color = _C_BEHAVIOR
-            self._sec_events._toggle.setStyleSheet(
-                f"QToolButton{{color:{_C_BEHAVIOR};border:none;background:transparent;"
-                f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
-                f"text-align:left;padding:0 4px 0 6px;}}"
-                f"QToolButton:hover{{background:{_BG_HOVER};}}"
-            )
-            self._sec_events._toggle.setText(f"▾  MODULE")
+            self._sec_events.set_title_and_color("MODULE", _C_BEHAVIOR)
 
             hint = QLabel("  No handlers — called via require()")
             hint.setFont(QFont(T.UI, T.XS))
@@ -283,15 +283,7 @@ class SidebarPanel(QWidget):
             self._sec_refs.setVisible(False)
         else:
             # Restore EVENTS header style
-            self._sec_events._title = "Events"
-            self._sec_events._color = _C_EVENT
-            self._sec_events._toggle.setStyleSheet(
-                f"QToolButton{{color:{_C_EVENT};border:none;background:transparent;"
-                f"font-family:{T.UI_STACK};font-size:{T.SM}pt;font-weight:bold;"
-                f"text-align:left;padding:0 4px 0 6px;}}"
-                f"QToolButton:hover{{background:{_BG_HOVER};}}"
-            )
-            self._sec_events._toggle.setText(f"▾  EVENTS")
+            self._sec_events.set_title_and_color("EVENTS", _C_EVENT)
             self._sec_refs.setVisible(True)
 
             # Un script sans `self` (scène ou caméra) a ses propres points

@@ -37,6 +37,7 @@ from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_TEXT, DOMAIN_FONT,
                   DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE, DOMAIN_UI_ELEMENT,
+                  DOMAIN_UI_LIST,
                   DOMAIN_TAG, DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
                   DOMAIN_CONST, DOMAIN_SEQUENCE,
                   DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
@@ -84,6 +85,15 @@ class BuildContext:
     prefab_names: list[str]  = None    # noms de Prefab du projet (pour actor.spawn)
     global_names: list[str]  = None    # noms de GlobalVar déclarées dans le projet
     global_types: dict[str, str] = None  # nom -> type ("int"/"bool"/"u8"/"u16"/"s8"/"s16")
+    # nom -> nombre de cases (ROADMAP v0.20). 1 = scalaire, ce qu'était toute
+    # variable avant cette version ; au-delà, `global.nom[i]` l'indexe.
+    global_counts: dict[str, int] = None
+    # Noms des panneaux marqués LISTE (ROADMAP v0.22).
+    ui_list_names: list = None
+    # Les enfants du propriétaire de ce script (ROADMAP v0.23) : `self.bras`
+    # n'est valide que si « bras » en est un. None = information absente
+    # (appel hors build), et la vérification ne s'applique pas.
+    child_names: list = None
     const_names:  list[str]  = None    # noms de Constant déclarées dans le projet
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     text_keys:    list[str]  = None    # clés de la table de textes du projet
@@ -388,6 +398,71 @@ class Checker:
             "error", f"data.{name} : table de données introuvable ({near})."))
         return False
 
+    def _check_global_array(self, name: str) -> bool:
+        """`global.coffres` — une globale citée par son NOM pour être indexée
+        (ROADMAP v0.20). Deux fautes à dire ici plutôt que sur la ligne C
+        générée : un nom qui n'existe pas, et un SCALAIRE indexé — `g_score[0]`
+        ne compile pas, et l'erreur de gcc parlerait d'un fichier que l'auteur
+        n'a pas écrit."""
+        counts = self.ctx.global_counts
+        if counts is None:
+            return True
+        n = counts.get(name)
+        if n is None:
+            near = ", ".join(sorted(k for k, v in counts.items() if v > 1)[:5])
+            self.errors.append(CheckError(
+                "error",
+                f"global.{name} : variable globale introuvable"
+                + (f" (tableaux du projet : {near})." if near
+                   else " — aucun tableau déclaré dans ce projet.")))
+            return False
+        if n <= 1:
+            self.errors.append(CheckError(
+                "error",
+                f"global.{name} est une variable SIMPLE, pas un tableau : elle "
+                f"se lit `global.get(\"{name}\")` et s'écrit "
+                f"`global.set(\"{name}\", …)`. La forme indexée est réservée aux "
+                f"variables déclarées avec plusieurs cases."))
+            return False
+        return True
+
+    def _check_global_index(self, name: str, index) -> None:
+        """Le rang d'une case, borné quand il est écrit en clair — même règle
+        et même message que pour un tableau de script ou une table de données.
+        Un index calculé ne se vérifie pas au build : il n'est pas plus
+        contrôlé ici qu'ailleurs dans le langage."""
+        counts = self.ctx.global_counts
+        if counts is None:
+            return
+        n = counts.get(name)
+        if not n or n <= 1:
+            return
+        k = self._literal_int(index)
+        if k is None:
+            return
+        if not (1 <= k <= n):
+            self.errors.append(CheckError(
+                "error",
+                f"global.{name}[{k}] : hors bornes — ce tableau va de 1 à {n} "
+                f"(les cases sont numérotées à partir de 1)."))
+
+    def _check_ui_list(self, call_key: str, name: str):
+        """Le nom désigne-t-il un panneau marqué LISTE ?
+
+        Une erreur et non un avertissement : `UILIST_<NOM>` n'existerait pas, et
+        gcc échouerait sur la ligne générée — même sévérité et même raison qu'un
+        élément d'interface inconnu."""
+        known = self.ctx.ui_list_names
+        if known is None:
+            return
+        if name in known:
+            return
+        near = ", ".join(sorted(known)[:5]) or "aucune liste dans le projet"
+        self.errors.append(CheckError(
+            "error",
+            f"{call_key}('{name}') : aucune liste de ce nom ({near}). Une liste "
+            f"est un panneau d'interface dont la case « Liste » est cochée."))
+
     def _check_data_rows(self, table: str, indices: list):
         """Une table s'indexe sur UNE dimension — ses lignes — et le rang est
         borné comme celui d'un tableau, quand il est écrit en clair."""
@@ -597,7 +672,17 @@ class Checker:
         Deux contrôles, et ils ne portent pas sur la même chose : la FORME de
         l'appel (un argument, du bon genre), et la question de fond — cette
         condition peut-elle seulement devenir vraie un jour ?"""
-        for stmt in fn.body:
+        # Les attentes d'une boucle bornée comptent autant que celles du premier
+        # niveau (ROADMAP v0.23) : leur forme se vérifie de la même façon, sans
+        # quoi `wait(x)` dans une boucle passerait sans être relu.
+        def _waits(stmts):
+            for st in stmts:
+                if wait_call(st) is not None:
+                    yield st
+                elif isinstance(st, StmtForNum):
+                    yield from _waits(st.body)
+
+        for stmt in _waits(fn.body):
             w = wait_call(stmt)
             if w is None:
                 continue
@@ -682,7 +767,12 @@ class Checker:
             self._check_for_step(s)
             self._check_expr(s.start)
             self._check_expr(s.stop)
-            self._check_block(s.body)
+            # ROADMAP v0.23 : une boucle BORNÉE laisse passer l'attente, parce
+            # qu'elle se découpe sans continuation — un compteur de plus dans
+            # l'état, et une tranche qui revient en arrière. `if` et `while`
+            # gardent leur refus : eux demanderaient la transformation que la
+            # v0.7.7 a chiffrée puis écartée, et son prix n'a pas changé.
+            self._check_block(s.body, seq_top)
         elif isinstance(s, StmtUnsupported):
             # Un `Function` n'arrive ici que s'il est IMBRIQUÉ : au premier
             # niveau, c'est un handler, et `convert_chunk` le prend. Le nœud est
@@ -703,12 +793,14 @@ class Checker:
         kind, _arg = wait_call(s)
         self.errors.append(CheckError(
             "error",
-            f"{kind}() ne s'écrit qu'au PREMIER NIVEAU d'une séquence "
-            f"({SEQUENCE_PREFIX}<nom>) — pas dans un `if`, une boucle, ni un "
-            f"autre handler. Une séquence se lit en ligne droite : c'est ce qui "
-            f"permet de la découper. Pour attendre sous condition, mettre la "
-            f"condition DANS l'attente ({WAIT_UNTIL_FN}), ou déclarer une "
-            f"deuxième séquence et la démarrer depuis le `if`."))
+            f"{kind}() s'écrit dans une séquence ({SEQUENCE_PREFIX}<nom>), au "
+            f"premier niveau ou dans une boucle BORNÉE (`for i = 1, n`) — pas "
+            f"dans un `if`, pas dans un `while`, pas dans un autre handler. "
+            f"Une boucle bornée se découpe parce qu'on sait d'avance combien de "
+            f"tours elle fait ; un `if` demanderait de se souvenir d'où "
+            f"reprendre. Pour attendre sous condition, mettre la condition DANS "
+            f"l'attente ({WAIT_UNTIL_FN}), ou déclarer une deuxième séquence et "
+            f"la démarrer depuis le `if`."))
 
     def _check_for_step(self, s: StmtForNum):
         """Le SENS de la comparaison est décidé au build (`i <= stop` ou
@@ -753,6 +845,13 @@ class Checker:
             while isinstance(cur, ExprIndexAt):
                 self._check_expr(cur.index)
                 cur = cur.obj
+            # `global.coffres[i]` — la base est un accès pointé sur `global`,
+            # que la branche ExprIndex ci-dessous valide (le nom existe, et
+            # c'est bien un tableau). Ne reste que le rang, borné ici comme
+            # celui d'un tableau de script (ROADMAP v0.20).
+            if (isinstance(e.obj, ExprIndex) and isinstance(e.obj.obj, ExprName)
+                    and e.obj.obj.name == "global"):
+                self._check_global_index(e.obj.field, e.index)
             # La BASE est déjà traitée par `_array_chain` — un nom de tableau
             # comme une table de données. La revisiter dirait deux fois la même
             # erreur sur la même ligne.
@@ -781,6 +880,13 @@ class Checker:
             table = self._data_table_ref(e)
             if table is not None:
                 self._check_data_table(table)
+            elif isinstance(e.obj, ExprName) and e.obj.name == "global":
+                self._check_global_array(e.field)
+            elif (isinstance(e.obj, ExprName) and e.obj.name == "self"
+                  and self.ctx.child_names is not None
+                  and resolve_prop(e) is None
+                  and e.field in self.ctx.child_names):
+                pass          # `self.bras` — un enfant de cet acteur (v0.23)
             elif isinstance(e.obj, ExprIndexAt):
                 owner = self._data_table_ref(e.obj.obj)
                 if owner is not None:
@@ -791,6 +897,16 @@ class Checker:
                     # `self.position`, `camera.bound`… — un accès de propriété.
                     # Le champ qui suit est validé à l'étage d'au-dessus.
                     self._check_prop_read(prop)
+                elif (isinstance(e.obj, ExprName) and e.obj.name == "self"
+                      and self.ctx.child_names is not None):
+                    # Ni une propriété, ni un enfant : le dire ici plutôt que de
+                    # laisser gcc parler d'un champ de struct que l'auteur n'a
+                    # jamais écrit (ROADMAP v0.23).
+                    offre = ", ".join(self.ctx.child_names) or "aucun"
+                    self.errors.append(CheckError(
+                        "error",
+                        f"self.{e.field} : ni une propriété d'acteur, ni un "
+                        f"enfant de celui-ci. Enfants disponibles : {offre}."))
                 else:
                     vt = infer_vec_type(e.obj, self._vec_types)
                     if vt is not None and e.field not in VEC_FIELDS[vt]:
@@ -1492,6 +1608,7 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_REGION:  lambda c, key, val, p, a: c._check_region(key, val),
     DOMAIN_IMAGE:   lambda c, key, val, p, a: c._check_image(key, val),
     DOMAIN_UI_ELEMENT: lambda c, key, val, p, a: c._check_ui_element(key, val),
+    DOMAIN_UI_LIST:    lambda c, key, val, p, a: c._check_ui_list(key, val),
     DOMAIN_IMAGE_STATE: lambda c, key, val, p, a: c._check_image_state(key, val, a),
     DOMAIN_SCENE:   lambda c, key, val, p, a: c._check_scene(key, val),
     DOMAIN_CAMERA:  lambda c, key, val, p, a: c._check_camera(key, val),

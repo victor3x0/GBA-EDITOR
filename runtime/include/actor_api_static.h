@@ -716,6 +716,18 @@ extern int  ui_image_state    (int img);
    — seul `self:show()`/`self:hide()` en émettent un, vers celle-ci. */
 extern void ui_element_show(int idx, int on);
 
+/* ── Listes d'interface (ROADMAP v0.22) ───────────────────────────
+   La NAVIGATION d'un menu, et rien d'autre : le moteur suit un index, le
+   script écrit ce que chaque rangée affiche. `list.row(...)` rend la zone de
+   texte d'une rangée, à passer à `text_draw_in` — un item est une ligne de
+   donnée, pas un objet d'interface. */
+extern int  ui_list_count    (int l);
+extern void ui_list_set_count(int l, int n);
+extern int  ui_list_index    (int l);
+extern void ui_list_set_index(int l, int i);
+extern int  ui_list_first    (int l);
+extern int  ui_list_row      (int l, int r);
+
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,
    3 vers le noir. */

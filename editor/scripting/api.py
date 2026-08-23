@@ -105,6 +105,7 @@ DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
 # DESSINE), celui-ci une table de visibilité qui couvre aussi les panels-
 # groupes purs, qui n'ont sinon aucune identité runtime (cf. ui_region.py).
 DOMAIN_UI_ELEMENT = "ui_element"
+DOMAIN_UI_LIST    = "ui_list"     # panneau marqué LISTE (ROADMAP v0.22)
 DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
 DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
 # Nom de séquence — `sequence.start("intro")` désigne `function on_sequence_intro`.
@@ -499,6 +500,52 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # visibilité effective remonte la chaîne des parents au runtime, elle ne
     # se propage jamais à l'écriture (cf. models/ui_region.UILayout.is_visible,
     # même règle côté éditeur).
+    # ── Listes : la navigation d'un menu (ROADMAP v0.22) ───────────
+    # Le moteur suit un index ; il ne dessine rien. Les rangées sont les zones
+    # de texte du panneau, et c'est le script qui écrit leur contenu — avec
+    # `text.draw_in` et les outils de texte qui existent déjà. Un item est une
+    # LIGNE DE DONNÉE, pas un objet d'interface : c'est ce qui évite un widget
+    # par genre de menu, dont la liste n'aurait pas de fin.
+    "list.count": ApiFunc(
+        lua_name="list.count", c_func="ui_list_count",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST)],
+        ret="int",
+        doc="Combien d'items cette liste parcourt. C'est le script qui le pose "
+            "(list.set_count) : un inventaire ne connaît sa longueur qu'en jeu.",
+    ),
+    "list.set_count": ApiFunc(
+        lua_name="list.set_count", c_func="ui_list_set_count",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST), Param("n", PARAM_INT)],
+        doc="Dit combien d'items la liste parcourt — #mon_tableau, le nombre de "
+            "lignes d'une table de données, ou un compte tenu à la main. Tant "
+            "que c'est 0, la liste ne bouge pas.",
+    ),
+    "list.index": ApiFunc(
+        lua_name="list.index", c_func="ui_list_index",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST)],
+        ret="int",
+        doc="L'item sélectionné, à partir de 1. 0 si la liste est vide.",
+    ),
+    "list.set_index": ApiFunc(
+        lua_name="list.set_index", c_func="ui_list_set_index",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST), Param("i", PARAM_INT)],
+        doc="Place le curseur sur l'item i (à partir de 1). La fenêtre se "
+            "recale d'elle-même pour que l'item soit visible.",
+    ),
+    "list.first": ApiFunc(
+        lua_name="list.first", c_func="ui_list_first",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST)],
+        ret="int",
+        doc="Le premier item AFFICHÉ, à partir de 1 — la position de la "
+            "fenêtre. L'item de la rangée r est first + r - 1.",
+    ),
+    "list.row": ApiFunc(
+        lua_name="list.row", c_func="ui_list_row",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST), Param("r", PARAM_INT)],
+        ret="int",
+        doc="La zone de texte qui porte la rangée r (1 = la première visible), "
+            "à passer à text.draw_in pour y écrire l'item. -1 hors bornes.",
+    ),
     "ui.get": ApiFunc(
         lua_name="ui.get", c_func="_ui_get",   # résolu par codegen
         params=[Param("name", PARAM_STR, DOMAIN_UI_ELEMENT)],
@@ -1984,6 +2031,13 @@ def region_constant(region_name: str) -> str:
 def image_constant(image_name: str) -> str:
     """'coeur_2' → 'IMAGE_COEUR_2' — index dans `g_ui_images`."""
     return f"IMAGE_{c_ident(image_name)}"
+
+
+def ui_list_constant(list_name: str) -> str:
+    """'Inventaire' → 'UILIST_INVENTAIRE' — index dans `g_ui_lists`. Ce n'est
+    PAS l'index d'élément : une liste a sa propre table, et son rang y est
+    celui des panneaux-listes, pas celui de tous les éléments."""
+    return f"UILIST_{c_ident(list_name)}"
 
 
 def ui_element_constant(element_name: str) -> str:
