@@ -145,6 +145,14 @@ def resolve_direction_mirrors(active_dirs, h_mirror: bool, v_mirror: bool) -> di
 #  Tailles de frame valides — contrainte hardware OAM (cf. SpriteAsset.oam_size)
 # ──────────────────────────────────────────────────────────────────
 
+# Les formats d'IMAGE que l'éditeur sait importer — sprites comme fonds, qui
+# passent par le même grit. Déclaré ici pour la même raison que
+# `FONT_FILE_EXTS` (models/font.py) et `SFX_FILE_EXTS` (models/audio.py) : le
+# type d'asset dit lui-même ce qu'il accepte, et rien d'autre n'a le droit d'en
+# tenir une seconde liste — c'est ce qui rendait les polices invisibles au
+# ProjectWatcher, qui épelait la sienne.
+IMAGE_FILE_EXTS = {".png", ".bmp"}
+
 VALID_FRAME_SIZES = {
     8:  [8, 16, 32],
     16: [8, 16, 32],

@@ -84,6 +84,11 @@ DOMAIN_SOUND_BOX_STATE   = "sound_box_state"
 DOMAIN_JINGLE_BOX_STATE  = "jingle_box_state"
 DOMAIN_MUSIC_BOX_TRIGGER = "music_box_trigger"
 DOMAIN_TEXT   = "text"    # TEXT_{key}  — clé de la table de textes du projet
+# LANG_{code} — une langue DÉCLARÉE du projet (ROADMAP v0.9, phase 4).
+# Espace de noms VIDE dans un projet monolingue : `lang.set`/`lang.get` n'ont
+# alors aucun code valide, donc aucun appel ne compile — même mécanique que
+# DOMAIN_SCENE sur un projet sans scène, jamais un cas spécial à écrire.
+DOMAIN_LANG   = "lang"
 DOMAIN_FONT   = "font"    # FONT_{name}
 DOMAIN_PALETTE = "palette"  # PAL_{name} — palette du catalogue de couleurs
 DOMAIN_REGION = "region"  # REGION_{name} — emplacement de texte (UILayout)
@@ -231,9 +236,11 @@ class ApiProp:
 # (`WINR_OBJ` plutôt que `2`).
 #
 # Un `domain` d'énumération se porte indifféremment sur un PARAMÈTRE (`Param`)
-# ou sur une PROPRIÉTÉ (`ApiProp`) : `window.set_layer("win0", ...)` et
+# ou sur une PROPRIÉTÉ (`ApiProp`) : `window.set_layer("MyPanel", ...)` et
 # `self.obj_mode = "window"` passent par la même table. C'est ce qui empêche
 # qu'un réglage retombe sur un entier nu le jour où il devient une propriété.
+# DOMAIN_WIN_REGION fait exception (cf. plus bas) : ses noms rectangle sont
+# propres au projet, la table ne peut donc pas être figée ici.
 
 OBJ_MODES: dict[str, str] = {
     "normal": "OBJ_MODE_NORMAL",   # 0 — sprite dessiné normalement
@@ -255,14 +262,14 @@ DIRECTIONS: dict[str, str] = {
     "north_west": "DIR_NORTH_WEST",  # 8
 }
 
-# Vocabulaire aligné sur celui d'ARCHITECTURE (« Windows — le pochoir ») : les
-# deux rectangles n'ont pas de nom sémantique, seulement un RANG, et ce rang est
-# une priorité câblée — d'où « win0 » / « win1 » plutôt qu'une invention.
+# Les deux SEULS mots-clés fixes de DOMAIN_WIN_REGION (réglé le 2026-08-25,
+# cf. ARCHITECTURE.md « Windows — le pochoir ») : ni géométrie ni rang
+# disputé, jamais alloués. "win0"/"win1" ont disparu — un rectangle se nomme
+# maintenant comme une caméra (`WindowSlot.name`), résolu par
+# `window_region_constant`/`window_alloc.py`, pas par un enum statique.
 WIN_REGIONS: dict[str, str] = {
-    "win0":    "WINR_0",    # rectangle 0 — priorité la plus forte
-    "win1":    "WINR_1",    # rectangle 1
     "object":  "WINR_OBJ",  # fenêtre-objet, découpée par les sprites
-    "outside": "WINR_OUT",  # tout le reste — la plus faible
+    "outside": "WINR_OUT",  # tout le reste
 }
 
 BLEND_MODES: dict[str, str] = {
@@ -286,10 +293,15 @@ EASE_KINDS: dict[str, str] = {
 # Domaine → sa table. DÉRIVÉE des tables ci-dessus, elle sert au checker (le nom
 # est-il dans l'ensemble ?) et au codegen (quelle constante émettre ?) sans
 # qu'aucun des deux ne réécrive les valeurs.
+#
+# DOMAIN_WIN_REGION n'y figure PAS : depuis le 2026-08-25 ce n'est plus un
+# enum statique — "object"/"outside" restent fixes (WIN_REGIONS ci-dessus),
+# mais un nom de `WindowSlot` est propre au PROJET. Validé par
+# `CheckContext.window_names` (miroir de `camera_names`), résolu par
+# `window_region_constant`, pas par `hardware_enum_constant`.
 HARDWARE_ENUMS: dict[str, dict[str, str]] = {
     DOMAIN_OBJ_MODE:   OBJ_MODES,
     DOMAIN_DIRECTION:  DIRECTIONS,
-    DOMAIN_WIN_REGION: WIN_REGIONS,
     DOMAIN_BLEND_MODE: BLEND_MODES,
     DOMAIN_BLEND_SIDE: BLEND_SIDES,
     DOMAIN_EASE:       EASE_KINDS,
@@ -390,8 +402,8 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # scripts la regardent. Au-delà de `duration`, l'effet retombe à son état
     # neutre (scale 100, offset 0, rotation 0, pal 0, visible) tout seul.
     # squash/stretch/bounce/shake/pulse/pop/wobble écrivent sprite_scale,
-    # sprite_offset ou sprite_rotation : comme ces propriétés, ils exigent
-    # "Affine transform" coché sur l'actor, sinon ils sont sans effet
+    # sprite_offset ou sprite_rotation : comme ces propriétés, ils demandent
+    # "Affine transform" coché sur le SpriteComponent, sinon rien ne s'affiche
     # (aucune erreur — même contrat que self.sprite_scale). flash/blink
     # (pal/visible) n'ont pas cette contrainte.
     "self:squash": ApiFunc(
@@ -510,15 +522,18 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="list.count", c_func="ui_list_count",
         params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST)],
         ret="int",
-        doc="Combien d'items cette liste parcourt. C'est le script qui le pose "
-            "(list.set_count) : un inventaire ne connaît sa longueur qu'en jeu.",
+        doc="Combien d'items cette liste parcourt. Vaut le nombre de rangées "
+            "authorées par défaut — un menu statique navigue donc sans rien "
+            "poser. list.set_count le change quand les items dépassent les "
+            "rangées visibles (un inventaire qui défile).",
     ),
     "list.set_count": ApiFunc(
         lua_name="list.set_count", c_func="ui_list_set_count",
         params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST), Param("n", PARAM_INT)],
-        doc="Dit combien d'items la liste parcourt — #mon_tableau, le nombre de "
-            "lignes d'une table de données, ou un compte tenu à la main. Tant "
-            "que c'est 0, la liste ne bouge pas.",
+        doc="Dit combien d'items la liste parcourt, quand ça dépasse les "
+            "rangées visibles — #mon_tableau, le nombre de lignes d'une table "
+            "de données, ou un compte tenu à la main. Un menu statique (autant "
+            "d'items que de rangées) n'en a pas besoin : c'est déjà le défaut.",
     ),
     "list.index": ApiFunc(
         lua_name="list.index", c_func="ui_list_index",
@@ -744,6 +759,28 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="scene.switch", c_func="scene_switch",
         params=[Param("name", PARAM_STR, DOMAIN_SCENE)],
         doc="Passe à une autre scène au début de la prochaine frame.",
+    ),
+
+    # ── Langue (ROADMAP v0.9, phase 4) ───────────────────────────────
+    # Rien de plus que ces deux appels : la police EFFECTIVE (`g_lang_font`,
+    # phase 3.2) et le sous-ensemble de glyphes ÉMIS (union de toutes les
+    # langues, phase 3.3) sont déjà prêts pour n'importe laquelle — changer
+    # `g_lang` n'a donc RIEN d'autre à faire lui-même. Rendre le changement
+    # VISIBLE, en revanche, retraverse la scène courante comme un vrai
+    # changement de scène (mêmes zones réécrites, même transition si le
+    # projet en a une) — `lang_set` le déclenche, pas le script.
+    "lang.set": ApiFunc(
+        lua_name="lang.set", c_func="lang_set",
+        params=[Param("code", PARAM_STR, DOMAIN_LANG)],
+        doc="Change la langue active et recharge la scène courante pour "
+            "l'appliquer (comme un scene.switch vers elle-même — acteurs et "
+            "état de scène repartent à zéro). Ex: lang.set(\"fr\").",
+    ),
+    "lang.get": ApiFunc(
+        lua_name="lang.get", c_func="lang_get",
+        params=[], ret="int",
+        doc="La langue active — un index (0 = la source), comparable à "
+            "LANG_<CODE>. Ex: if lang.get() == LANG_FR then ... end.",
     ),
 
     # ── Variables (globals + constantes) ──────────────────────────
@@ -1122,27 +1159,30 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # Une window ne dessine rien : c'est un pochoir. Elle dit, par région
     # de l'écran, qui a le droit de s'afficher. L'apparence vient de ce
     # qu'on met dedans (tilemap, sprites) — jamais de la window elle-même.
-    # Régions : 0 = WIN0, 1 = WIN1, 2 = window OBJ, 3 = extérieur.
+    # Une région se NOMME (comme une caméra) : "object"/"outside" sont fixes,
+    # tout le reste est un WindowSlot du projet, dont le rang matériel est
+    # décidé par l'allocateur (réglé le 2026-08-25, plus de "win0"/"win1"
+    # ni d'index brut — cf. ARCHITECTURE.md « Windows — le pochoir »).
     "window.show": ApiFunc(
         lua_name="window.show", c_func="window_show",
-        params=[Param("n", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Active (true) ou désactive (false) la window n : 0 et 1 = les deux rectangles, 2 = la window OBJ.",
+        params=[Param("name", PARAM_STR, DOMAIN_WIN_REGION), Param("on", PARAM_BOOL)],
+        doc="Active (true) ou désactive (false) la window : un nom de WindowSlot, ou \"object\".",
     ),
     "window.is_visible": ApiFunc(
         lua_name="window.is_visible", c_func="window_is_visible",
-        params=[Param("n", PARAM_INT)], ret="int",
-        doc="1 si la window n est active, 0 sinon.",
+        params=[Param("name", PARAM_STR, DOMAIN_WIN_REGION)], ret="int",
+        doc="1 si la window est active, 0 sinon.",
     ),
     "window.set": ApiFunc(
         lua_name="window.set", c_func="window_set",
-        params=[Param("n", PARAM_INT), Param("x", PARAM_INT), Param("y", PARAM_INT),
+        params=[Param("name", PARAM_STR, DOMAIN_WIN_REGION), Param("x", PARAM_INT), Param("y", PARAM_INT),
                 Param("w", PARAM_INT), Param("h", PARAM_INT)],
-        doc="Rectangle en pixels écran de la window n (0 ou 1). Clampé à 240×160.",
+        doc="Rectangle en pixels écran d'un WindowSlot nommé. Clampé à 240×160.",
     ),
     "window.set_layer": ApiFunc(
         lua_name="window.set_layer", c_func="window_set_layer",
         params=[Param("region", PARAM_STR, DOMAIN_WIN_REGION), Param("bg", PARAM_INT), Param("on", PARAM_BOOL)],
-        doc="Autorise ou non le layer de fond `bg` dans la région : \"win0\", \"win1\", \"object\" (fenêtre-objet) ou \"outside\".",
+        doc="Autorise ou non le layer de fond `bg` dans la région : un nom de WindowSlot, \"object\" (fenêtre-objet) ou \"outside\".",
     ),
     "window.get_layer": ApiFunc(
         lua_name="window.get_layer", c_func="window_get_layer",
@@ -1188,11 +1228,13 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
 
     # ── Sauvegarde (SRAM) ──────────────────────────────────────────
-    # Écrit ou relit les variables globales MARQUÉES persistantes dans
-    # l'éditeur. Aucun nom de variable en argument : ce qui est sauvé est une
-    # propriété du projet, pas de l'appel — sinon deux endroits du jeu
-    # pourraient sauver deux ensembles différents et la dernière écriture
-    # gagnerait en silence.
+    # save.write/save.load écrivent ou relisent TOUTES les variables globales
+    # MARQUÉES persistantes dans l'éditeur. Aucun nom de variable en argument :
+    # ce qui est sauvé est une propriété du projet, pas de l'appel — sinon deux
+    # endroits du jeu pourraient sauver deux ensembles différents et la
+    # dernière écriture gagnerait en silence. save.read, plus bas, ne relève
+    # pas de cette règle : elle ne touche à AUCUNE globale de la partie en
+    # cours, donc pas de second ensemble en jeu à confondre avec le premier.
     #
     # L'écriture est toujours explicite : le moment où l'on peut sauver est une
     # règle de game design, pas quelque chose que le moteur décide.
@@ -1202,12 +1244,30 @@ RUNTIME_API: dict[str, ApiFunc] = {
         doc="Écrit les variables persistantes dans l'emplacement `slot` "
             "(0 = le premier). Rend 0 si l'emplacement n'existe pas.",
     ),
-    "save.read": ApiFunc(
-        lua_name="save.read", c_func="save_read",
+    "save.load": ApiFunc(
+        lua_name="save.load", c_func="save_read",
         params=[Param("slot", PARAM_INT)], ret="int",
-        doc="Relit l'emplacement `slot` dans les variables persistantes. Rend 0 "
-            "si l'emplacement est vide ou illisible — les variables ne sont "
-            "alors PAS touchées.",
+        doc="Relit l'emplacement `slot` et REMPLACE TOUTES les variables "
+            "persistantes de la partie en cours. Rend 0 si l'emplacement est "
+            "vide ou illisible — les variables ne sont alors PAS touchées. "
+            "Pour lire une seule valeur sans charger la partie, cf. save.read.",
+    ),
+    # Une lecture SANS effet de bord : contrairement à save.load, elle ne
+    # touche à aucune globale de la partie en cours. C'est ce qui manquait
+    # pour peindre un écran de sélection de partie (chapitre, temps de jeu,
+    # nom) sans écraser une partie déjà en cours pour aller regarder les
+    # autres emplacements (ROADMAP v0.22). Même nom que `global_read` en C,
+    # pour le même sens : rendre une valeur par référence, rien d'autre.
+    "save.read": ApiFunc(
+        lua_name="save.read", c_func="_save_read",   # résolu par codegen
+        params=[Param("slot", PARAM_INT), Param("name", PARAM_STR, DOMAIN_GLOBAL)],
+        ret="int",
+        doc="Rend la valeur de la variable persistante `name` dans "
+            "l'emplacement `slot`, SANS toucher à la partie en cours. Rend son "
+            "défaut si l'emplacement est vide, illisible, ou si le fichier ne "
+            "contient pas cette variable (jeu plus récent que la sauvegarde). "
+            "`name` doit être une variable cochée « persist ». "
+            "Ex: save.read(0, \"chapitre\")",
     ),
     "save.exists": ApiFunc(
         lua_name="save.exists", c_func="save_exists",
@@ -1311,36 +1371,38 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
         lua_name="self.rotation", c_getter="actor_get_rotation",
         c_setter="actor_set_rotation", ptype=PARAM_INT, self_first=True,
         doc='Rotation MONDE de cet actor en degrés (0-359), héritée par son sprite. '
-            'Nécessite la case "Affine transform" cochée sur l\'actor lui-même '
-            "(réserve un des 32 slots affines du GBA). Le sprite a sa propre rotation "
-            "locale : self.sprite_rotation (somme des deux à l'écran).",
+            "Se lit et s'écrit toujours ; ne s'AFFICHE que si le SpriteComponent a "
+            '"Affine transform" coché (il réserve un des 32 slots affines du GBA). '
+            "Le sprite a sa propre rotation locale : self.sprite_rotation (somme des "
+            "deux à l'écran).",
     ),
     "self.scale": ApiProp(
         lua_name="self.scale", c_getter="actor_get_scale",
         c_setter="actor_set_scale", ptype=PARAM_VEC2, self_first=True,
         doc="Échelle MONDE de cet actor en pourcent (100 = normal, 50 = moitié) — un vec2 "
-            "(.x, .y), héritée par son sprite. Nécessite \"Affine transform\" coché sur "
-            "l'actor. Le sprite a son propre scale local : self.sprite_scale (produit "
-            "des deux à l'écran).",
+            "(.x, .y), héritée par son sprite. Se lit et s'écrit toujours ; ne s'AFFICHE "
+            "que si le SpriteComponent a \"Affine transform\" coché. Le sprite a son "
+            "propre scale local : self.sprite_scale (produit des deux à l'écran).",
     ),
 
     # ── Actor — transform LOCAL du sprite ─────────────────────────
     # Le sprite n'a pas de position monde : sa position, son échelle et sa rotation
     # sont RELATIVES à son actor, dans le repère local de l'actor (l'offset tourne/
-    # scale avec lui). Valides seulement si l'actor a "Affine transform" coché.
+    # scale avec lui). Ne s'affichent que si le SpriteComponent a "Affine transform"
+    # coché — sans slot de matrice, aucune de ces valeurs n'atteint l'écran.
     "self.sprite_rotation": ApiProp(
         lua_name="self.sprite_rotation", c_getter="actor_get_sprite_rotation",
         c_setter="actor_set_sprite_rotation", ptype=PARAM_INT, self_first=True,
         doc="Rotation LOCAL du sprite en degrés (0-359), composée PAR-DESSUS la rotation "
-            "monde de l'actor (la somme des deux s'affiche). Nécessite \"Affine transform\" "
-            "coché sur l'actor.",
+            "monde de l'actor (la somme des deux s'affiche). Ne s'affiche que si ce "
+            "sprite a \"Affine transform\" coché.",
     ),
     "self.sprite_scale": ApiProp(
         lua_name="self.sprite_scale", c_getter="actor_get_sprite_scale",
         c_setter="actor_set_sprite_scale", ptype=PARAM_VEC2, self_first=True,
         doc="Échelle LOCALE du sprite en pourcent (100 = normal) — un vec2 (.x, .y), "
-            "MULTIPLIÉE par le scale monde de l'actor. Nécessite \"Affine transform\" "
-            "coché sur l'actor.",
+            "MULTIPLIÉE par le scale monde de l'actor. Ne s'affiche que si ce sprite a "
+            "\"Affine transform\" coché.",
     ),
     "self.sprite_offset": ApiProp(
         lua_name="self.sprite_offset", c_getter="actor_get_sprite_offset",
@@ -1348,7 +1410,7 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
         doc="Offset du sprite par rapport à son actor, en pixels, dans le repère LOCAL de "
             "l'actor : il tourne et scale avec lui (hérarchie parent→enfant). Le sprite "
             "n'a pas de position monde — la position monde, c'est self.position. "
-            "Nécessite \"Affine transform\" coché sur l'actor.",
+            "Ne s'applique que si ce sprite a \"Affine transform\" coché.",
     ),
 
     # ── Actor — physique ───────────────────────────────────────────
@@ -1390,6 +1452,58 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
     ),
 
     # ── Actor — animation ──────────────────────────────────────────
+    # Lecture seule, comparable par son nom — symétrique de self:play_anim qui
+    # l'écrit par son nom. Pas de self.anim = "Walk" : changer d'état est un
+    # GESTE (il remet frame/timer à zéro), pas une propriété qu'on assigne.
+    "self.anim": ApiProp(
+        lua_name="self.anim", c_getter="actor_get_anim", ptype=PARAM_INT,
+        self_first=True, read_only=True, domain=DOMAIN_ANIM,
+        doc='État d\'animation courant (lecture seule), comparable par son nom. '
+            'Ex: if self.anim == "Walk" then ... end. Pour le changer, '
+            'self:play_anim(name).',
+    ),
+    "self.anim_speed": ApiProp(
+        lua_name="self.anim_speed", c_getter="actor_get_anim_speed",
+        c_setter="actor_set_anim_speed", ptype=PARAM_INT, self_first=True,
+        doc="Surcharge la vitesse (ticks GBA entre deux frames) de "
+            "l'animation en cours. 0 = la vitesse réglée pour cet état dans "
+            "le Sprite Editor, qui reste la source de vérité. Ne se remet "
+            "pas à 0 tout seul : un effet temporaire (temps ralenti) se "
+            "referme explicitement par le script qui l'a ouvert.",
+    ),
+    "self.anim_length": ApiProp(
+        lua_name="self.anim_length", c_getter="actor_get_anim_length",
+        ptype=PARAM_INT, self_first=True, read_only=True,
+        doc="Nombre de frames de la direction actuellement jouée de l'état "
+            "d'animation courant. Lecture seule.",
+    ),
+    "self.anim_loop": ApiProp(
+        lua_name="self.anim_loop", c_getter="actor_get_anim_loop",
+        ptype=PARAM_BOOL, self_first=True, read_only=True,
+        doc="Vrai si l'état d'animation courant boucle (réglage « Loop » du "
+            "Sprite Editor pour cet état). Lecture seule.",
+    ),
+    "self.anim_finished": ApiProp(
+        lua_name="self.anim_finished", c_getter="actor_get_anim_finished",
+        ptype=PARAM_BOOL, self_first=True, read_only=True,
+        doc="Vrai si l'état d'animation courant NE boucle PAS et a atteint "
+            "sa dernière frame (self.anim_length). Reste vrai tant qu'on ne "
+            "change pas d'état (self:play_anim) — comme self.grounded reste "
+            "vrai tant qu'on ne quitte pas le sol. Toujours faux pour un "
+            "état qui boucle. Lecture seule.",
+    ),
+    "self.frame_w": ApiProp(
+        lua_name="self.frame_w", c_getter="actor_get_frame_w",
+        ptype=PARAM_INT, self_first=True, read_only=True,
+        doc="Largeur d'une frame du sprite, en pixels (réglage du Sprite "
+            "Editor). Lecture seule — la taille de frame est fixée au build.",
+    ),
+    "self.frame_h": ApiProp(
+        lua_name="self.frame_h", c_getter="actor_get_frame_h",
+        ptype=PARAM_INT, self_first=True, read_only=True,
+        doc="Hauteur d'une frame du sprite, en pixels (réglage du Sprite "
+            "Editor). Lecture seule — la taille de frame est fixée au build.",
+    ),
     "self.frame": ApiProp(
         lua_name="self.frame", c_getter="actor_get_frame",
         c_setter="actor_set_frame", ptype=PARAM_INT, self_first=True,
@@ -1418,6 +1532,13 @@ RUNTIME_PROPS: dict[str, ApiProp] = {
         doc='Mode OAM, par son nom : "normal", "blend" (semi-transparent, '
             'réservé au mélange) ou "window" (masque : découpe la '
             'fenêtre-objet). Ex: self.obj_mode = "window"',
+    ),
+    "self.priority": ApiProp(
+        lua_name="self.priority", c_getter="actor_get_priority",
+        c_setter="actor_set_priority", ptype=PARAM_INT, self_first=True,
+        doc="Ordre d'affichage face aux BG layers (0-3) : 0 = devant tous "
+            "les backgrounds, 3 = derrière tous. Même registre OAM que "
+            "self.pal/self.obj_mode.",
     ),
 
     # ── Actor — direction ──────────────────────────────────────────
@@ -1725,7 +1846,7 @@ REMOVED_API: dict[str, str] = {
     # ── requêtes pures → PROPRIÉTÉS (2026-08-15) ───────────────────
     # Une fonction qui ne fait que RENDRE de l'état (pas d'effet) est une
     # propriété (grammaire : identifier.member = état, module.member(...) =
-    # fonction système). Les requêtes indexées (save.read(n), tile.get(x,y),
+    # fonction système). Les requêtes indexées (save.read(slot, "nom"), tile.get(x,y),
     # layer.get_*(n)…) restent des fonctions : une propriété ne prend pas
     # d'argument.
     "input.get_axis":
@@ -1981,6 +2102,25 @@ def scene_constant(scene_name: str) -> str:
 def camera_constant(camera_name: str) -> str:
     """'Boss' → 'CAM_BOSS'"""
     return f"CAM_{c_ident(camera_name)}"
+
+
+def lang_constant(code: str) -> str:
+    """'fr' → 'LANG_FR' — même index que `g_texts[lang]`/`g_lang_font[lang]`
+    (source en 0, puis `settings.languages` dans l'ordre déclaré)."""
+    return f"LANG_{c_ident(code)}"
+
+
+def window_region_constant(name: str) -> str:
+    """"object"/"outside" → les deux mots-clés fixes (jamais disputés, cf.
+    ARCHITECTURE.md « Windows — le pochoir »). Tout autre nom → le nom d'un
+    `WindowSlot` du projet, dérivé comme `camera_constant` ('MyPanel' →
+    'WIN_MYPANEL') : le rang matériel réel est décidé par l'allocateur
+    (`codegen/window_alloc.py`), le `#define` correspondant est émis par
+    `headers.py` — jamais un index brut ici."""
+    low = name.lower()
+    if low in ("object", "outside"):
+        return WIN_REGIONS[low]
+    return f"WIN_{c_ident(name)}"
 
 
 def text_constant(text_key: str) -> str:

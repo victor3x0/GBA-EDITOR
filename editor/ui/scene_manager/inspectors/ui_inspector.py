@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox,
     QScrollArea, QSpinBox, QLineEdit, QTextEdit, QToolButton,
 )
@@ -41,13 +42,16 @@ from core.models.ui_region import (
     KIND_PANEL, KIND_TEXT, KIND_IMAGE,
     FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, FILL_SPRITE, fill_allowed,
     sprite_grid,
-    forced_target, forced_target_reason, surface_conflicts,
+    forced_target,
     image_geometry,
     preset_rect, H_LEFT, H_CENTER, H_RIGHT, V_TOP, V_MIDDLE, V_BOTTOM,
 )
 from ui.common import icons
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, CollapsibleCard
+from ui.common.notice import note, notice, text
+from ui.common.pickers import ColorIndexSlot
+from ui.text_editor.colors import TEXT_COLOR as TEXT_ACCENT
 
 _ANCHORS = [
     (ANCHOR_SCREEN, "Screen (fixed)"),
@@ -55,6 +59,24 @@ _ANCHORS = [
     (ANCHOR_ACTOR,  "Actor (follows)"),
 ]
 _ALIGN_LABELS = ["Left", "Centered", "Right"]
+# Le même choix, dessiné : un alignement se reconnaît à sa forme.
+_ALIGN_ICONS = ("align_left", "align_center", "align_right")
+
+# Style SEGMENTÉ — `QSS.toolbutton_icon` n'a pas d'état `:checked`, et trois
+# boutons dont aucun ne paraît enfoncé ne disent pas quel alignement est posé.
+_SEGMENTED = f"""
+QToolButton {{
+    background: {C.BG_INPUT};
+    border: 1px solid {C.BORDER_MID};
+    border-radius: 3px;
+    padding: 0;
+}}
+QToolButton:hover {{ background: {C.BG_HOVER}; }}
+QToolButton:checked {{
+    background: {C.BG_SEL};
+    border-color: {C.ACCENT};
+}}
+"""
 _TARGETS = [(TARGET_BG, "Background (BG)"), (TARGET_OBJ, "Sprite (OBJ)")]
 _FILL_LABELS = [
     (FILL_NONE,   "None (invisible group)"),
@@ -122,7 +144,6 @@ class UIInspector(QWidget):
         self._element = None
         self._scene = None
         self._blocking = False
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"background:{C.BG_PANEL}; border:none;")
@@ -138,7 +159,11 @@ class UIInspector(QWidget):
         # ── Appartenance ──────────────────────────────────────────
         # La mise en page est un ASSET partagé : modifier ici touche N scènes,
         # et ça se dit en couleur, pas en silence.
-        self._layout_lbl = W.hint("", L)
+        self._layout_lbl = note(L, "ui.layout.name")
+        # Le partage est une INFO de portée, pas un risque : il passe en
+        # périwinkle sur sa propre ligne, au lieu de teinter en jaune la
+        # ligne du nom. Le jaune reste à ce que le build ou l'écran feront.
+        self._layout_shared = note(L, "ui.layout.shared")
 
         # ── Ancrage (root uniquement — un enfant hérite) ──────────
         anchor_card = CollapsibleCard("Anchor")
@@ -164,7 +189,12 @@ class UIInspector(QWidget):
         self._target.currentIndexChanged.connect(self._on_target)
         self._target_row = W.row("Target", self._target, anchor_card.body_layout).parentWidget()
 
-        self._frame_why = W.hint("", anchor_card.body_layout)
+        self._frame_why = note(anchor_card.body_layout)
+        # L'avertissement d'ancrage vit SOUS l'ancrage. Il était au bas de
+        # l'inspecteur, sous toutes les cartes, à côté d'un avertissement de
+        # texte qui n'a rien à voir avec lui : un message ne se lit que s'il
+        # est posé contre le réglage qui le cause.
+        self._anchor_why = note(anchor_card.body_layout, "ui.anchor.no_actor")
         L.addWidget(anchor_card)
 
         # ── Géométrie ─────────────────────────────────────────────
@@ -211,7 +241,6 @@ class UIInspector(QWidget):
                "Y", C.AXIS_Y, self._sp["y"], geom_card.body_layout)
         W.pair("Size", "L", C.AXIS_X, self._sp["w"],
                "H", C.AXIS_Y, self._sp["h"], geom_card.body_layout)
-        self._size_lbl = W.hint("", geom_card.body_layout)
         L.addWidget(geom_card)
 
         # ── Visibilité (commune aux trois types) ──────────────────
@@ -222,7 +251,7 @@ class UIInspector(QWidget):
         visible_card = CollapsibleCard("Visibility")
         self._visible = W.checkbox_row("Visible", "Shown at scene start", visible_card.body_layout)
         self._visible.toggled.connect(self._on_visible)
-        self._visible_why = W.hint("", visible_card.body_layout)
+        self._visible_why = note(visible_card.body_layout, "ui.visible.hidden_parent")
         L.addWidget(visible_card)
 
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
@@ -249,6 +278,21 @@ class UIInspector(QWidget):
         # l'aveugle ici.
         from ui.text_editor.markup_highlighter import MarkupHighlighter
         self._hl = MarkupHighlighter(self._content.document())
+        W.section("CONTENT", self._text_card.body_layout)
+
+        # L'entrée AVANT le champ de saisie : c'est elle qui nomme ce que ce
+        # champ édite. Sous le champ, comme avant, on lisait le nom de la chose
+        # après l'avoir modifiée.
+        self._text_key = QComboBox()
+        self._text_key.setFont(QFont(T.UI, T.SM))
+        self._text_key.setStyleSheet(QSS.combobox)
+        self._text_key.setToolTip(
+            "Bind this element to another existing entry — to share one label "
+            "between several screens.")
+        self._text_key.currentIndexChanged.connect(self._on_text_key)
+        self._text_key_row = W.row("Entry", self._text_key,
+                                   self._text_card.body_layout).parentWidget()
+
         self._content.textChanged.connect(self._on_content_typed)
         self._content.focusOutEvent = self._content_focus_out
         # Commit DIFFÉRÉ : `_persist` sauve le projet et redessine le canvas, ce
@@ -260,24 +304,25 @@ class UIInspector(QWidget):
         self._content_baseline = None   # None = rien en cours d'édition
         self._text_card.body_layout.addWidget(self._content)
 
-        self._key_lbl = W.hint("", self._text_card.body_layout)
+        self._key_lbl = note(self._text_card.body_layout)
+        self._key_shared = note(self._text_card.body_layout, "ui.text.key_shared")
 
-        self._text_key = QComboBox()
-        self._text_key.setFont(QFont(T.UI, T.SM))
-        self._text_key.setStyleSheet(QSS.combobox)
-        self._text_key.setToolTip(
-            "Bind this element to another existing entry — to share one label "
-            "between several screens.")
-        self._text_key.currentIndexChanged.connect(self._on_text_key)
-        self._text_key_row = W.row("Entry", self._text_key, self._text_card.body_layout).parentWidget()
-
+        # L'ÉCHANTILLON ne sert qu'à une zone SANS entrée — c'est écrit dans son
+        # propre tooltip depuis toujours : « editor only, never compiled ». Il
+        # ne s'affiche donc que dans ce cas (cf. `_sync_text_rows`). Les deux
+        # combos étaient jusqu'ici côte à côte, avec la même allure et la même
+        # liste, alors qu'un seul des deux compte à la fois : c'était la
+        # première chose incompréhensible de cette carte.
         self._preview = QComboBox()
         self._preview.setFont(QFont(T.UI, T.MD))
         self._preview.setStyleSheet(QSS.combobox)
         self._preview.setToolTip("Editor only: used to measure overflow, "
                                  "never compiled — the script decides the displayed text.")
         self._preview.currentIndexChanged.connect(self._on_preview)
-        self._preview_row = W.row("Preview", self._preview, self._text_card.body_layout).parentWidget()
+        self._preview_row = W.row("Sample", self._preview, self._text_card.body_layout).parentWidget()
+        self._preview_why = note(self._text_card.body_layout, "ui.text.sample_only")
+
+        W.section("TYPOGRAPHY", self._text_card.body_layout)
 
         self._font = QComboBox()
         self._font.setFont(QFont(T.UI, T.MD))
@@ -285,41 +330,103 @@ class UIInspector(QWidget):
         self._font.currentIndexChanged.connect(self._on_font)
         self._font_row = W.row("Font", self._font, self._text_card.body_layout).parentWidget()
 
-        self._align = QComboBox()
-        self._align.setFont(QFont(T.UI, T.MD))
-        self._align.setStyleSheet(QSS.combobox)
-        for lab in _ALIGN_LABELS:
-            self._align.addItem(lab)
-        self._align.currentIndexChanged.connect(self._on_align)
-        self._align_row = W.row("Alignment", self._align, self._text_card.body_layout).parentWidget()
+        # Trois boutons plutôt qu'un menu déroulant : le choix est court, fermé,
+        # et se DESSINE — l'icône dit le résultat mieux que le mot « Centered ».
+        self._align_group = QButtonGroup(self)
+        self._align_group.setExclusive(True)
+        align_box = QWidget()
+        ab = QHBoxLayout(align_box)
+        ab.setContentsMargins(0, 0, 0, 0)
+        ab.setSpacing(2)
+        for i, (key, lab) in enumerate(zip(_ALIGN_ICONS, _ALIGN_LABELS)):
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setFixedHeight(24)
+            b.setStyleSheet(_SEGMENTED)
+            b.setIcon(icons.get(key, C.TEXT_DIM, TEXT_ACCENT))
+            b.setToolTip(lab)
+            ab.addWidget(b, 1)
+            self._align_group.addButton(b, i)
+        self._align_group.idToggled.connect(self._on_align_toggled)
+        self._align_row = W.row("Alignment", align_box,
+                                self._text_card.body_layout).parentWidget()
 
         # Couleur du texte : un INDEX dans la banque d'UI de la scène, pas un
         # RGB — le matériel n'offre que des index. 0 = encre d'origine (seul
         # moyen de garder une police à contour) ; sinon l'encre est APLATIE,
         # comme avec `[color=n]`.
-        self._color = QComboBox()
-        self._color.setFont(QFont(T.UI, T.MD))
-        self._color.setStyleSheet(QSS.combobox)
-        self._color.currentIndexChanged.connect(self._on_color)
+        W.section("COLORS", self._text_card.body_layout)
+
+        # LA MÊME liste que le fond du conteneur (les banques ACTIVES de la
+        # scène) — mais un texte n'en choisit qu'UNE pour toute la scène, là où
+        # un fond choisit librement PAR élément. Ce n'est pas un manque : le
+        # matériel sélectionne la banque d'un fond tuile par tuile (gratuit),
+        # alors qu'un glyphe est RECOLORÉ en VRAM au chargement, une copie par
+        # INDEX employé — si deux zones choisissaient deux banques, « couleur
+        # 3 » désignerait deux RGB différents pour une seule copie de glyphes.
+        # Réglage de SCÈNE donc (même champ que l'inspecteur de Scène), posé
+        # ici pour qu'il n'y ait plus à changer d'écran pour le voir ou le
+        # poser — l'écart qui rendait Ink/Highlight incompréhensibles à côté
+        # du picker de fond, qui lui semble tout choisir sur place.
+        # Même widget que le picker de fond (`_fill_pal_slot`) — un hôte vide
+        # ici, le slot RECONSTRUIT à chaque `_reload_color` : il capture sa
+        # liste de slots à la construction, et cette liste appartient à la
+        # scène (cf. `_reload_fill_palette`, même raison).
+        self._ui_pal_host = QWidget()
+        self._ui_pal_host.setStyleSheet("background:transparent;")
+        self._ui_pal_box = QVBoxLayout(self._ui_pal_host)
+        self._ui_pal_box.setContentsMargins(0, 0, 0, 0)
+        self._ui_pal_slot = None
+        self._ui_pal_row = W.row("Bank", self._ui_pal_host,
+                                 self._text_card.body_layout).parentWidget()
+        self._ui_pal_host.setToolTip(
+            "<b>UI palette bank</b> — SHARED by every text of this scene.<br><br>"
+            "A background can pick its bank per element (the hardware selects "
+            "it tile by tile, at no cost). Text can't: a glyph is recolored "
+            "into VRAM once per color index, so every text must agree on the "
+            "same bank — one more bank would mean one more full copy.<br><br>"
+            "Same setting as the Scene inspector; changing it here changes it "
+            "for the whole scene.")
+
+        self._color = ColorIndexSlot("Font ink (default)", TEXT_ACCENT)
+        self._color.picked.connect(self._on_color)
         self._color.setToolTip(
-            "<b>Text color</b> — an index in the scene's UI palette bank.<br><br>"
+            "<b>Ink</b> — the color of the glyphs, an index in the scene's UI "
+            "palette bank.<br><br>"
             "<b>Font ink</b> keeps the font's own shades (outline, fill).<br>"
             "Any other value flattens the ink to that single color.<br><br>"
             "Each color used costs one more copy of the scene's glyphs in VRAM."
         )
-        self._color_row = W.row("Color", self._color, self._text_card.body_layout).parentWidget()
+        self._color_row = W.row("Ink", self._color, self._text_card.body_layout).parentWidget()
 
-        self._anim = QSpinBox()
-        self._anim.setFont(QFont(T.MONO, T.MD))
-        self._anim.setStyleSheet(QSS.spinbox)
-        self._anim.setRange(0, 32)
-        self._anim.setKeyboardTracking(False)
-        self._anim.setToolTip(
-            "How many characters, at most, can leave the strip to "
-            "receive an effect. Reserved for build (counted in the gauge); "
-            "beyond that, glyphs fall back to static.")
-        self._anim.valueChanged.connect(self._on_anim)
-        self._anim_row = W.row("Anim. gl.", self._anim, self._text_card.body_layout).parentWidget()
+        # Surlignement — la couleur posée SOUS le texte. Même banque et même
+        # plage que l'encre : la tuile où le texte se compose ne porte qu'UNE
+        # banque de palette, le matériel n'en offre pas deux.
+        self._highlight = ColorIndexSlot("None", TEXT_ACCENT)
+        self._highlight.picked.connect(self._on_highlight)
+        self._highlight.setToolTip(
+            "<b>Highlight</b> — a color laid UNDER the text, on the tiles it "
+            "actually covers.<br><br>"
+            "By default a text already sits on its container's background. A "
+            "highlight <i>overrides</i> it, marker-style, on the written "
+            "extent only.<br><br>"
+            "Composing costs a block of surface tiles for the scene, whatever "
+            "the font — a background or a highlight both pay it once."
+        )
+        self._highlight_row = W.row("Highlight", self._highlight,
+                                    self._text_card.body_layout).parentWidget()
+        self._bank_why = note(self._text_card.body_layout)
+
+        # Ce que la zone COÛTE, sous les réglages qui le font bouger. La ligne
+        # d'empreinte vivait dans la carte Geometry : le contrôle était ici, sa
+        # conséquence deux cartes plus haut.
+        #
+        # Il n'y a plus de champ « glyphes animés » : leur nombre se DÉDUIT du
+        # texte affiché (cf. `Project.region_animated_glyphs`) au lieu d'être
+        # recompté à la main par l'auteur. Il se lit ici, avec le reste du coût.
+        W.section("COSTS", self._text_card.body_layout)
+        self._size_lbl = note(self._text_card.body_layout)
+        self._anim_lbl = note(self._text_card.body_layout)
         L.addWidget(self._text_card)
 
         # ── Section FOND (conteneur) ──────────────────────────────
@@ -333,17 +440,28 @@ class UIInspector(QWidget):
         self._fill_kind.currentIndexChanged.connect(self._on_fill_kind)
         self._fill_kind_row = W.row("Mode", self._fill_kind, self._fill_card.body_layout).parentWidget()
 
-        # Couleur : palette + index + pastille de rendu.
+        # Couleur : palette ACTIVE de la scène + index + pastille de rendu.
+        #
+        # Le slot de sélection partagé (`pickers.palette_picker_slot`) et non
+        # une liste de tout le catalogue : `scene_color_fills` écarte du build
+        # un fond dont la palette n'est pas dans les palettes BG actives de la
+        # scène — il lui faut une banque matérielle. Proposer les autres, c'est
+        # promettre un fond que la ROM n'aura pas.
+        #
+        # Le slot est RECONSTRUIT à chaque chargement (`_reload_fill_palette`) :
+        # il capture sa liste à la construction, et cette liste appartient à la
+        # scène. D'où l'hôte vide posé ici, qui lui, ne bouge pas.
         color_box = QWidget()
         color_box.setStyleSheet("background:transparent;")
         cc = QHBoxLayout(color_box)
         cc.setContentsMargins(0, 0, 0, 0)
         cc.setSpacing(6)
-        self._fill_palette = QComboBox()
-        self._fill_palette.setFont(QFont(T.UI, T.SM))
-        self._fill_palette.setStyleSheet(QSS.combobox)
-        self._fill_palette.currentIndexChanged.connect(self._on_fill_palette)
-        cc.addWidget(self._fill_palette, 1)
+        self._fill_pal_host = QWidget()
+        self._fill_pal_host.setStyleSheet("background:transparent;")
+        self._fill_pal_box = QVBoxLayout(self._fill_pal_host)
+        self._fill_pal_box.setContentsMargins(0, 0, 0, 0)
+        self._fill_pal_slot = None
+        cc.addWidget(self._fill_pal_host, 1)
         self._fill_index = QSpinBox()
         self._fill_index.setFont(QFont(T.MONO, T.MD))
         self._fill_index.setStyleSheet(QSS.spinbox)
@@ -429,7 +547,15 @@ class UIInspector(QWidget):
             self._ns_m[key] = sp
         self._ns_margins_row = W.row("Margins", ns_margins, self._fill_card.body_layout).parentWidget()
 
-        self._fill_why = W.hint("", self._fill_card.body_layout)
+        self._fill_why = note(self._fill_card.body_layout)
+        self._fill_overflow = note(self._fill_card.body_layout,
+                                   "ui.fill.sprite_overflow")
+        # Niveau 2 : la palette citée est un RISQUE AU BUILD, et il porte
+        # sur un champ précis — l'encadré se pose donc contre lui, au lieu
+        # de se perdre au milieu du paragraphe qui décrit le mode.
+        self._fill_pal_why = notice("ui.fill.color_inactive",
+                                    self._fill_color_row,
+                                    self._fill_card.body_layout)
         L.addWidget(self._fill_card)
 
         # ── Section LISTE (ROADMAP v0.22) ─────────────────────────
@@ -451,7 +577,7 @@ class UIInspector(QWidget):
             "Boucle", "Du dernier au premier", self._list_card.body_layout)
         self._list_wrap.toggled.connect(
             lambda v: self._set("list_wrap", bool(v), "List wrap"))
-        self._list_why = W.hint("", self._list_card.body_layout)
+        self._list_why = note(self._list_card.body_layout)
         L.addWidget(self._list_card)
 
         # ── Section IMAGE (sprite à état) ─────────────────────────
@@ -500,12 +626,18 @@ class UIInspector(QWidget):
         self._img_prio.valueChanged.connect(self._on_img_prio)
         self._img_prio_row = W.row("Priority", self._img_prio, self._img_card.body_layout).parentWidget()
 
-        self._img_why = W.hint("", self._img_card.body_layout)
+        self._img_why = note(self._img_card.body_layout)
+        self._img_missing = notice("ui.image.missing", self._img_sprite,
+                                   self._img_card.body_layout)
+        self._img_none = notice("ui.image.none", self._img_sprite,
+                                self._img_card.body_layout)
         L.addWidget(self._img_card)
 
-        # ── Diagnostic + suppression ──────────────────────────────
-        self._warn = W.hint("", L, color=C.ACCENT_YLW)
-
+        # ── Suppression ───────────────────────────────────────────
+        # Il n'y a plus de label d'avertissement ICI : chaque message est posé
+        # sous le réglage qui le cause (`_anchor_why`) plutôt que
+        # dans un bac commun au pied de l'inspecteur, où un message d'ancrage
+        # et un message de texte se ressemblaient.
         W.separator(L)
         self._del = W.btn_ghost("Delete element")
         self._del.setFont(QFont(T.UI, T.SM))
@@ -563,10 +695,11 @@ class UIInspector(QWidget):
             kind = self._kind()
 
             users = project.ui_layout_users(layout_asset.name) if project else []
-            shared = (f"  ·  shared by {len(users)} scenes" if len(users) > 1 else "")
-            self._layout_lbl.setText(f"Layout: {layout_asset.name}{shared}")
-            self._layout_lbl.setStyleSheet(
-                f"color:{C.ACCENT_YLW};" if len(users) > 1 else f"color:{C.TEXT_MUTED};")
+            self._layout_lbl.show_text(name=layout_asset.name)
+            if len(users) > 1:
+                self._layout_shared.show_text(n=len(users))
+            else:
+                self._layout_shared.clear()
 
             self._reload_actors()
             for k in ("x", "y", "w", "h"):
@@ -596,13 +729,15 @@ class UIInspector(QWidget):
 
             if is_text:
                 self._reload_fonts()
-                self._align.setCurrentIndex(
+                btn = self._align_group.button(
                     ALIGNS.index(element.align) if element.align in ALIGNS else 0)
+                if btn is not None:
+                    btn.setChecked(True)
                 self._reload_color()
                 self._reload_previews()
-                self._anim.setValue(int(getattr(element, "animated_glyphs", 0) or 0))
                 self._reload_text_key()
                 self._reload_content()
+                self._sync_text_rows()
             if is_panel:
                 self._reload_fill()
             if is_image:
@@ -725,28 +860,31 @@ class UIInspector(QWidget):
         if el is None or self._kind() != KIND_IMAGE:
             return
         sprite = self._current_sprite()
+        bound = str(getattr(el, "sprite_name", "") or "")
         if sprite is None:
-            self._img_why.setText(
-                "No sprite bound — nothing will be drawn here."
-                if not getattr(el, "sprite_name", "") else
-                f"Sprite “{el.sprite_name}” not found in the project.")
-            self._img_why.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            # Deux messages, pas un ternaire : « rien de choisi » et « le nom
+            # ne répond plus » n'appellent pas le même geste, et un traducteur
+            # ne peut pas deviner qu'une phrase en cache deux.
+            self._img_why.clear()
+            if bound:
+                self._img_missing.show_text(sprite=bound)
+                self._img_none.clear()
+            else:
+                self._img_none.show_text()
+                self._img_missing.clear()
             return
+        self._img_missing.clear()
+        self._img_none.clear()
         frames = self._sprite_frame_count(sprite)
         g = image_geometry(el, frames)
         target = self._layout_asset.resolved_target(el, self._render_mode())
-        n = g["tiles"]
-        tiles = f"{n} tile" + ("s" if n > 1 else "")
         # Une image OBJ ne réserve RIEN : ses tuiles sont celles du sprite, déjà
         # résidentes. Annoncer un coût VRAM là serait compter deux fois le même
         # dessin (cf. models/ui_region.layout_obj_budget).
-        where = (f"1 OAM slot, sharing the sprite's {tiles} already in OBJ VRAM"
-                 if target == TARGET_OBJ
-                 else f"{tiles} in the UI charblock")
-        self._img_why.setText(
-            f"{el.w}×{el.h} px  ·  {frames} frame(s) across all states  ·  {where}. "
-            f"Every state stays resident: a script may switch at any frame.")
-        self._img_why.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        where = text("ui.image.where_obj" if target == TARGET_OBJ
+                     else "ui.image.where_bg", n=g["tiles"])
+        self._img_why.show_text("ui.image.cost", w=el.w, h=el.h,
+                                n=frames, where=where)
 
     def _on_img_sprite(self, i):
         """Choisir un sprite REDIMENSIONNE l'élément sur sa frame — une seule
@@ -807,25 +945,44 @@ class UIInspector(QWidget):
         self._content_baseline = None
         self._sync_key_badge()
 
+    def _sync_text_rows(self):
+        """L'échantillon n'apparaît QUE pour une zone sans entrée.
+
+        Une zone qui a son entrée a déjà un contenu réel à mesurer et à
+        montrer dans le canvas ; lui proposer en plus un « échantillon » tiré
+        de la même liste posait deux fois la même question, dont une seule
+        comptait. Vide, l'échantillon est la seule idée que l'éditeur ait de
+        ce que le script y écrira — et la mesure de débordement s'appuie
+        dessus."""
+        has_entry = bool(getattr(self._element, "text_key", "") or "")
+        self._preview_row.setVisible(not has_entry)
+        if has_entry:
+            self._preview_why.clear()
+        else:
+            self._preview_why.show_text()
+
     def _sync_key_badge(self):
         """Le badge sous l'éditeur : quelle entrée, dérivée ou nommée, partagée
         ou non. Séparé du rechargement du contenu — le reposer pendant que
         l'utilisateur écrit lui remettrait le curseur au début."""
         t = self._current_text()
         if t is None:
-            self._key_lbl.setText("No entry yet — typing here creates one.")
-            self._key_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            self._key_lbl.show_text("ui.text.key_none")
+            self._key_shared.clear()
             return
         users = self._text_users(t.key)
-        shared = f"  ·  shown by {users} other element(s)" if users else ""
-        self._key_lbl.setText(
-            f"key: {t.key}"
-            + ("  ·  auto" if t.auto_key else "  ·  named by hand")
-            + shared)
+        # La clé n'est PLUS répétée ici : le combo « Entry », juste au-dessus du
+        # champ, la porte déjà. Ne reste que ce qu'il ne dit pas — d'où vient la
+        # clé, et qui d'autre affiche cette entrée.
+        self._key_lbl.show_text("ui.text.key_auto" if t.auto_key
+                                else "ui.text.key_manual")
         # Une entrée partagée se corrige en un endroit — mais se casse aussi en
-        # un endroit. Même règle que le badge « mise en page partagée ».
-        self._key_lbl.setStyleSheet(
-            f"color:{C.ACCENT_YLW};" if users else f"color:{C.TEXT_MUTED};")
+        # un endroit. Même règle que le badge « mise en page partagée » : c'est
+        # une portée, donc du périwinkle sur sa propre ligne.
+        if users:
+            self._key_shared.show_text(n=users)
+        else:
+            self._key_shared.clear()
 
     def _text_users(self, key: str) -> int:
         """Autres éléments d'UI du projet qui affichent la même entrée."""
@@ -918,14 +1075,18 @@ class UIInspector(QWidget):
 
         if not is_root:
             root = lay.root_of(e.name)
-            self._frame_why.setText(
-                f"Inherited from root “{root.name if root else '?'}” — anchor {eff_anchor}")
-            self._frame_why.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            self._frame_why.show_text("ui.anchor.inherited",
+                                      root=root.name if root else "?",
+                                      anchor=eff_anchor)
         elif forced:
-            self._frame_why.setText(f"Target forced — {forced_target_reason(eff_anchor, rm)}")
-            self._frame_why.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            # Les DEUX raisons matérielles sont deux messages distincts, et non
+            # une phrase fabriquée dans core/models : une raison qui se compose
+            # à l'exécution ne se traduit pas, et core n'a pas à écrire de la
+            # prose d'interface.
+            self._frame_why.show_text("ui.anchor.forced_actor" if eff_anchor == ANCHOR_ACTOR
+                                      else "ui.anchor.forced_bitmap", mode=rm)
         else:
-            self._frame_why.setText("")
+            self._frame_why.clear()
 
         # Le BG ne peut pas se poser hors grille : le pas des spinbox le dit.
         step = 8 if eff == TARGET_BG else 1
@@ -937,70 +1098,86 @@ class UIInspector(QWidget):
             else "Geometry (px, actor offset)" if eff_anchor == ANCHOR_ACTOR
             else "Geometry (px)")
 
+    def _actor_pos(self, name: str):
+        """(x, y) de l'acteur nommé, ou None — même contrat que
+        `SceneRegionItem._actor_pos` dans scene_canvas.py : passé aux helpers
+        d'ancrage du modèle, qui eux ne connaissent pas la scène."""
+        for a in getattr(self._scene, "actors", []):
+            if a.name == name:
+                return (a.x, a.y)
+        return None
+
     def _sync_visible_hint(self):
         """Dit pourquoi l'élément ne s'affiche pas quand la case est cochée :
         un ancêtre caché l'emporte sans jamais toucher à cette case (cf.
         `UILayout.is_visible`, qui remonte la chaîne au lieu de la propager)."""
         e, lay = self._element, self._layout_asset
         if e is None or lay is None or not self._visible.isChecked():
-            self._visible_why.setText("")
+            self._visible_why.clear()
             return
         hidden_ancestor = next(
             (a for a in lay.ancestors(e.name)
              if not getattr(lay.get(a), "visible", True)), None)
         if hidden_ancestor:
-            self._visible_why.setText(
-                f"Hidden anyway — parent “{hidden_ancestor}” is not visible.")
-            self._visible_why.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            self._visible_why.show_text(parent=hidden_ancestor)
         else:
-            self._visible_why.setText("")
+            self._visible_why.clear()
 
     def _refresh_diagnostics(self):
         """Empreinte + avertissements d'un élément de TEXTE.
 
+        Chaque message part vers la carte du réglage qui le cause : l'ancrage
+        sans acteur sous l'ancrage, le recouvrement de surface sous le texte.
         Une image a sa propre note (`_sync_image_note`) : son empreinte se lit
         dans le sprite, pas dans le rectangle. Un conteneur n'en a aucune."""
+        self._anchor_why.clear()
         if self._kind() == KIND_IMAGE:
-            self._size_lbl.setText("")
-            self._warn.setText("")
+            self._size_lbl.clear()
+            self._anim_lbl.clear()
             self._sync_image_note()
             return
         if self._kind() != KIND_TEXT:
-            self._size_lbl.setText("")
-            self._warn.setText("")
+            self._size_lbl.clear()
+            self._anim_lbl.clear()
             return
         r, rm = self._element, self._render_mode()
         lay = self._layout_asset
         target = lay.resolved_target(r, rm)
         eff_anchor, eff_actor = lay.effective_anchor(r)
         tx, ty, tw, th = r.tile_rect()
-        msgs = []
+        # DÉDUIT du texte affiché, plus déclaré à la main : c'est le parseur qui
+        # compte les portées `[wave]`/`[shake]`, sur toutes les langues.
+        anim = (self._project.region_animated_glyphs(r) if self._project else 0)
         if target == TARGET_OBJ:
             from core.models.ui_region import strip_geometry
-            g = strip_geometry(r)
-            self._size_lbl.setText(
-                f"{tw}×{th} tiles  ·  {g['oam']} OAM and {g['tiles']} OBJ tiles "
-                f"({g['strip_oam']} strip + {g['anim']} animated)")
+            g = strip_geometry(r, anim)
+            self._size_lbl.show_text("ui.text.footprint_obj", w=tw, h=th,
+                                     oam=g["oam"], tiles=g["tiles"])
         else:
-            self._size_lbl.setText(f"{tw}×{th} tiles  ·  {tw * th} tiles footprint")
+            self._size_lbl.show_text("ui.text.footprint_bg", w=tw, h=th, n=tw * th)
+        self._sync_anim_note(anim, target)
 
         if target == TARGET_OBJ and eff_anchor == ANCHOR_ACTOR and not eff_actor:
-            msgs.append("Anchored on an actor (via its root), but no actor "
-                        "chosen: the element will land at the screen origin.")
-        # Aliasing de surface entre slots BG de la MÊME mise en page. `slots` et
-        # non `regions` : un texte authoré compose sur la même surface.
-        others = [o for o in lay.slots
-                  if o is not r and lay.resolved_target(o, rm) == TARGET_BG]
-        if target == TARGET_BG and others:
-            for a, b in surface_conflicts([r] + others):
-                if a is r or b is r:
-                    other = b if a is r else a
-                    msgs.append(
-                        f"Surface overlap with “{other.name}”: in composed "
-                        f"font mode, two zones a multiple of 8 rows apart "
-                        f"share their tiles and erase each other.")
-                    break
-        self._warn.setText("\n\n".join(msgs))
+            self._anchor_why.show_text()
+
+    def _sync_anim_note(self, anim: int, target: str):
+        """Ce que les effets animés réservent — CONSTAT, jamais une question.
+
+        Muet quand il n'y a rien à animer : la ligne n'apparaît que si le texte
+        porte `[wave]` ou `[shake]`. On prévient dans les deux cas où le
+        matériel ne suivra pas — une cible BG, qui n'a pas de sprite pour sortir
+        un glyphe de la bande, et le plafond de capture du runtime."""
+        from core.models.ui_region import ANIM_GLYPH_MAX
+        if not anim:
+            self._anim_lbl.clear()
+            return
+        if target != TARGET_OBJ:
+            self._anim_lbl.show_text("ui.text.anim_bg", n=anim)
+        elif anim >= ANIM_GLYPH_MAX:
+            self._anim_lbl.show_text("ui.text.anim_capped",
+                                     n=anim, max=ANIM_GLYPH_MAX)
+        else:
+            self._anim_lbl.show_text("ui.text.anim_reserved", n=anim)
 
     # ── Fond (conteneur) ──────────────────────────────────────────
     def _reload_fill(self):
@@ -1014,12 +1191,7 @@ class UIInspector(QWidget):
                 item.setEnabled(fill_allowed(self._fill_kind.itemData(i), target))
         fi = self._fill_kind.findData(getattr(el, "fill_kind", FILL_NONE))
         self._fill_kind.setCurrentIndex(fi if fi >= 0 else 0)
-        self._fill_palette.clear()
-        self._fill_palette.addItem("(palette)", "")
-        for p in (self._project.palettes if self._project else []):
-            self._fill_palette.addItem(p.name, p.name)
-        pi = self._fill_palette.findData(getattr(el, "fill_palette", "") or "")
-        self._fill_palette.setCurrentIndex(pi if pi >= 0 else 0)
+        self._reload_fill_palette()
         self._fill_index.setValue(int(getattr(el, "fill_index", 0) or 0))
         self._reload_fill_asset()
         self._reload_fill_sprite()
@@ -1030,6 +1202,36 @@ class UIInspector(QWidget):
             1 if getattr(el, "list_axis", "vertical") == "horizontal" else 0)
         self._list_wrap.setChecked(bool(getattr(el, "list_wrap", True)))
         self._sync_list_rows()
+
+    def _active_bg_palettes(self) -> list[str]:
+        """Noms des palettes BG actives de la scène — celles qui ont une banque
+        matérielle, donc les seules qu'un fond couleur puisse citer."""
+        return list(getattr(self._scene, "active_bg_palettes", []) or [])
+
+    def _reload_fill_palette(self):
+        """(Re)construit le slot de palette du fond, filtré aux palettes BG
+        ACTIVES. Reconstruit et non repeuplé : `palette_picker_slot` capture sa
+        liste à la construction, et cette liste change avec la scène.
+
+        Une palette DÉJÀ posée mais devenue inactive reste AFFICHÉE — l'effacer
+        du slot cacherait la valeur qui est dans le fichier au lieu de dire
+        qu'elle ne sera pas émise ; c'est la note de la carte qui le dit."""
+        from ui.common.pickers import palette_picker_slot
+        from ui.common import icons as _icons
+        actifs = self._active_bg_palettes()
+        banks = [b for n in actifs
+                 if (b := (self._project.get_palette(n) if self._project else None))]
+        cur = getattr(self._element, "fill_palette", "") or ""
+        if self._fill_pal_slot is not None:
+            self._fill_pal_box.removeWidget(self._fill_pal_slot)
+            self._fill_pal_slot.deleteLater()
+        self._fill_pal_slot = palette_picker_slot(
+            banks, cur or None, _icons.COLOR_UI,
+            on_picked=self._on_fill_palette,
+            add_label="Choose a palette", parent=self, allow_none=False)
+        if cur and cur not in actifs:
+            self._fill_pal_slot.set_script(cur)
+        self._fill_pal_box.addWidget(self._fill_pal_slot)
 
     def _reload_fill_sprite(self):
         """Peuple sprite/état/vitesse du fond sprite. blockSignals : repeupler
@@ -1103,19 +1305,36 @@ class UIInspector(QWidget):
             w.setVisible(fk == FILL_SPRITE)
         if fk == FILL_NINE:
             self._reload_ns()
-        note = {
-            FILL_COLOR: "A palette entry (index 0 = transparent on hardware).",
-            FILL_NINE:  "Stretchable frame: fixed corners, repeated edges/center. "
-                        "Margins belong to the UI background — editing them here "
-                        "changes every panel using it.",
-            FILL_BG:    "Tiled background, cropped on bottom/right if the zone is "
-                        "smaller. BG target only.",
-            FILL_SPRITE: self._sprite_fill_note(),
-        }.get(fk, "")
-        self._fill_why.setText(note)
+        if fk == FILL_COLOR:
+            self._sync_color_fill()
+        elif fk == FILL_NINE:
+            self._fill_why.show_text("ui.fill.nine")
+        elif fk == FILL_BG:
+            self._fill_why.show_text("ui.fill.bg")
+        elif fk == FILL_SPRITE:
+            self._sync_sprite_fill()
+        else:
+            self._fill_why.clear()
+        if fk != FILL_COLOR:
+            self._fill_pal_why.clear()
+        if fk != FILL_SPRITE:
+            self._fill_overflow.clear()
         self._update_swatch()
 
-    def _sprite_fill_note(self) -> str:
+    def _sync_color_fill(self):
+        """Ce que le build fera de la palette citée. Une palette hors des BG
+        actives de la scène est ÉCARTÉE à l'émission — c'est le défaut qui a
+        fait qu'un conteneur ne colorait qu'une partie de sa zone, et il ne se
+        voyait nulle part avant le Build. Ce qu'est un aplat se dit toujours
+        (niveau 1) ; le risque, lui, s'encadre contre le champ (niveau 2)."""
+        pal = getattr(self._element, "fill_palette", "") or ""
+        self._fill_why.show_text("ui.fill.color")
+        if pal and pal not in self._active_bg_palettes():
+            self._fill_pal_why.show_text(palette=pal)
+        else:
+            self._fill_pal_why.clear()
+
+    def _sync_sprite_fill(self):
         """Ce que le pavage coûte VRAIMENT, chiffré sur le sprite choisi.
 
         Le nombre de slots OAM est la seule information que l'auteur ne peut pas
@@ -1124,21 +1343,20 @@ class UIInspector(QWidget):
         sprite = (self._project.get_sprite(getattr(self._element, "fill_sprite", "") or "")
                   if self._project else None)
         if sprite is None:
-            return ("Sprite tiled across the panel — the only background that "
-                    "exists on OBJ target, where there is no tilemap.")
+            self._fill_why.show_text("ui.fill.sprite")
+            self._fill_overflow.clear()
+            return
         fw = int(getattr(sprite, "frame_w", 0) or 0)
         fh = int(getattr(sprite, "frame_h", 0) or 0)
         cols, rows = sprite_grid(self._element, fw, fh)
         n = cols * rows
         over = (cols * fw - int(self._element.w), rows * fh - int(self._element.h))
-        txt = (f"{fw}×{fh} tiled {cols}×{rows} = {n} OAM slot"
-               f"{'s' if n > 1 else ''} of the 128 the hardware has, actors "
-               f"included. Tiles cost nothing extra: every cell points at the "
-               f"same frame.")
+        self._fill_why.show_text("ui.fill.sprite_cost", w=fw, h=fh,
+                                 cols=cols, rows=rows, n=n)
         if over[0] or over[1]:
-            txt += (f"\nThe last column/row overflows by {over[0]}×{over[1]} px: "
-                    f"the hardware cannot crop a sprite.")
-        return txt
+            self._fill_overflow.show_text(dx=over[0], dy=over[1])
+        else:
+            self._fill_overflow.clear()
 
     def _current_ns(self):
         """Le fond d'interface cité comme cadre — c'est lui qui porte l'image
@@ -1164,7 +1382,7 @@ class UIInspector(QWidget):
     def _update_swatch(self):
         css = f"background:transparent; border:1px solid {C.BORDER};"
         if self._fill_kind.currentData() == FILL_COLOR and self._project is not None:
-            bank = self._project.get_palette(self._fill_palette.currentData() or "")
+            bank = self._project.get_palette(getattr(self._element, "fill_palette", "") or "")
             idx = self._fill_index.value()
             if bank and 0 <= idx < len(bank.colors):
                 r, g, b = bgr555_to_rgb888(bank.colors[idx])
@@ -1193,7 +1411,7 @@ class UIInspector(QWidget):
         for w in (self._list_axis_row, self._list_wrap):
             w.setVisible(on)
         if not on:
-            self._list_why.setText("")
+            self._list_why.clear()
             return
         from core.models.ui_region import KIND_TEXT
         lay = self._layout_asset
@@ -1201,13 +1419,10 @@ class UIInspector(QWidget):
                 if getattr(x, "parent", "") == e.name
                 and getattr(x, "kind", "") == KIND_TEXT]
         if rows:
-            self._list_why.setText(
-                f"{len(rows)} rangée(s) : {', '.join(r.name for r in rows)}. "
-                f"Le script écrit leur contenu — list.row(…) rend la zone.")
+            self._list_why.show_text("ui.list.rows", n=len(rows),
+                                     names=", ".join(r.name for r in rows))
         else:
-            self._list_why.setText(
-                "Aucune rangée : posez des zones de texte DANS ce panneau. "
-                "Ce sont elles que la liste parcourt.")
+            self._list_why.show_text("ui.list.empty")
 
     def _set(self, field: str, value, label: str):
         from core.history import get_history, SetFieldCmd
@@ -1272,8 +1487,10 @@ class UIInspector(QWidget):
         self._set("visible", bool(on), "Visibility")
         self._sync_visible_hint()
 
-    def _on_align(self, i):
-        if self._blocking or not self._element:
+    def _on_align_toggled(self, i: int, checked: bool):
+        """`idToggled` tire DEUX fois par changement — le bouton qui se relève
+        et celui qui s'enfonce. Seul le second dit le choix."""
+        if not checked or self._blocking or not self._element or not 0 <= i < len(ALIGNS):
             return
         self._set("align", ALIGNS[i], "Alignment")
 
@@ -1282,10 +1499,15 @@ class UIInspector(QWidget):
             return
         self._set("font_name", self._font.currentData() or "", "Font")
 
-    def _on_color(self, i):
-        if self._blocking or not self._element or i < 0:
+    def _on_color(self, index: int):
+        if self._blocking or not self._element:
             return
-        self._set("text_color", int(self._color.currentData() or 0), "Text color")
+        self._set("text_color", int(index), "Text ink")
+
+    def _on_highlight(self, index: int):
+        if self._blocking or not self._element:
+            return
+        self._set("highlight_color", int(index), "Text highlight")
 
     def _ui_bank(self):
         """PaletteBank où le texte de CETTE scène lit ses couleurs, ou None.
@@ -1300,26 +1522,70 @@ class UIInspector(QWidget):
             return None
         return self._project.get_palette(active[slot])
 
+    def _reload_ui_pal_slot(self):
+        """(Re)construit le slot de banque — LA MÊME liste, dans le même
+        ordre, que `SceneInspector._reload_ui_pal` : c'est le même champ, il
+        ne doit pas se présenter différemment selon l'écran d'où on le change.
+        Reconstruit et non repeuplé, pour la même raison que
+        `_reload_fill_palette` : le picker capture sa liste à la construction."""
+        from ui.common.pickers import ui_pal_bank_slot
+        from ui.common import icons as _icons
+        active = list(getattr(self._scene, "active_bg_palettes", []) or []) if self._scene else []
+        cur = int(getattr(self._scene, "ui_pal_bank", -1)) if self._scene else -1
+        if self._ui_pal_slot is not None:
+            self._ui_pal_box.removeWidget(self._ui_pal_slot)
+            self._ui_pal_slot.deleteLater()
+        self._ui_pal_slot = ui_pal_bank_slot(
+            active, cur, _icons.COLOR_UI, on_picked=self._on_ui_pal_bank,
+            project=self._project, parent=self)
+        self._ui_pal_box.addWidget(self._ui_pal_slot)
+
+    def _on_ui_pal_bank(self, new: int):
+        """Écrit `Scene.ui_pal_bank` — un réglage de SCÈNE, posé depuis
+        l'inspecteur d'un ÉLÉMENT : `_set` cible `self._element`, il faut donc
+        sa propre écriture, calquée sur `SceneInspector._on_ui_pal_changed`."""
+        if not self._scene:
+            return
+        from core.history import get_history, SetFieldCmd
+        old = int(getattr(self._scene, "ui_pal_bank", -1))
+        if old == new:
+            return
+        get_history().push(SetFieldCmd(
+            self._scene, "ui_pal_bank", old, new,
+            label="UI palette bank", persist_fn=self._persist))
+        self._reload_color()   # les deux pickers lisent une autre banque désormais
+
     def _reload_color(self):
-        """Remplit la liste des couleurs. Les 15 index sont TOUJOURS proposés
-        (pastille en plus quand la banque est connue) : l'index reste valide
-        même sans banque désignée, les masquer effacerait un choix déjà posé."""
-        self._color.blockSignals(True)
-        self._color.clear()
+        """Repose la banque, l'encre et le surlignement — deux couleurs, une
+        seule banque.
+
+        La liste proposée aux deux pickers est FILTRÉE sur les couleurs que la
+        banque contient vraiment. Les seize index étaient offerts d'office, au
+        motif qu'un index reste valide même sans banque : c'est vrai du
+        STOCKAGE, pas du CHOIX — proposer un index qui ne peint rien fait
+        poser un réglage sans effet, et rien ne le dit ensuite. Un index déjà
+        posé qui sort de la banque, lui, reste montré et signalé
+        (`ColorIndexSlot`) : c'est un choix de quelqu'un, on ne l'efface pas
+        en silence.
+
+        Le surlignement est masqué en cible OBJ : une bande de sprites ne passe
+        pas par la surface BG, rien ne l'y émettrait — on ne propose pas une
+        action impossible (même règle que `_FILL_TARGETS`)."""
+        self._reload_ui_pal_slot()
         bank = self._ui_bank()
-        self._color.addItem("Font ink (default)", 0)
-        for idx in range(1, 16):
-            if bank and idx < len(bank.colors):
-                r, g, b = bgr555_to_rgb888(bank.colors[idx])
-                pm = QPixmap(12, 12)
-                pm.fill(QColor(r, g, b))
-                self._color.addItem(QIcon(pm), f"{idx}", idx)
-            else:
-                self._color.addItem(f"{idx}", idx)
-        cur = int(getattr(self._element, "text_color", 0) or 0)
-        j = self._color.findData(cur)
-        self._color.setCurrentIndex(j if j >= 0 else 0)
-        self._color.blockSignals(False)
+        self._color.set_value(
+            bank, int(getattr(self._element, "text_color", 0) or 0))
+        self._highlight.set_value(
+            bank, int(getattr(self._element, "highlight_color", 0) or 0))
+        target = self._layout_asset.resolved_target(self._element, self._render_mode())
+        self._highlight_row.setVisible(target == TARGET_BG)
+        # Le combo au-dessus dit déjà QUELLE banque ; ce qui reste à dire, c'est
+        # pourquoi les pickers n'ont que des numéros à montrer tant qu'aucune
+        # n'est choisie.
+        if bank:
+            self._bank_why.clear()
+        else:
+            self._bank_why.show_text("ui.text.bank_none")
 
     def _on_preview(self, i):
         if self._blocking or not self._element or i < 0:
@@ -1336,14 +1602,9 @@ class UIInspector(QWidget):
         self._blocking = True
         try:
             self._reload_content()
+            self._sync_text_rows()
         finally:
             self._blocking = False
-        self._refresh_diagnostics()
-
-    def _on_anim(self, v):
-        if self._blocking or not self._element:
-            return
-        self._set("animated_glyphs", int(v), "Zone animated glyphs")
         self._refresh_diagnostics()
 
     # ── Fond : écritures ──────────────────────────────────────────
@@ -1361,11 +1622,11 @@ class UIInspector(QWidget):
         finally:
             self._blocking = False
 
-    def _on_fill_palette(self, i):
-        if self._blocking or not self._fill_editable() or i < 0:
+    def _on_fill_palette(self, name: str):
+        if self._blocking or not self._fill_editable():
             return
-        self._set("fill_palette", self._fill_palette.currentData() or "", "Background palette")
-        self._update_swatch()
+        self._set("fill_palette", name or "", "Background palette")
+        self._sync_fill()
 
     def _on_fill_index(self, v):
         if self._blocking or not self._fill_editable():

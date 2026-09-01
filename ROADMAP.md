@@ -46,9 +46,11 @@ suppositions faites à l'avance.
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
 | v0.22 | Menus, listes et curseur | **En cours** — navigation livrée ; en-tête de sauvegarde à faire |
-| v0.9 | Traduction des jeux | Non commencée |
+| v0.25 | La grammaire de la struct `Actor` | **En cours** |
+| v0.26 | Les trois couleurs de l'interface | **En cours** |
+| v0.9 | Traduction des jeux | **En cours** — déclarer, traduire, émettre et choisir livrés (phases 1-4, `lang.set`/`lang.get`) ; servir (phase 5 — SRAM, écran de choix) à faire |
 | v0.10 | Distribution Linux | Non commencée |
-| v0.11 | Traduction de l'éditeur | Non commencée |
+| v0.11 | Traduction de l'éditeur | **En cours** — gabarit de notices et catalogue livrés ; sélection de langue à faire |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
@@ -64,9 +66,74 @@ v0.22**. Cinq d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21) sont livrées et
 v0.18, hors ceux déjà cités) n'ont pas de priorité tranchée entre eux et restent dans leur ordre
 numérique, à la suite du bloc priorisé.
 
+La **v0.25** ne vient pas de cette revue : elle est née d'une question posée à l'architecture le
+2026-08-23 (« l'API C tient-elle les trois concepts de l'éditeur ? »). Sa section se lit juste
+après le bloc priorisé, et elle se traite tôt : elle touche la struct que tous les autres
+jalons manipulent, donc chaque jalon ouvert après elle est un jalon à ne pas migrer.
+
 Un numéro de version reste une **identité**, pas un rang : il n'est pas renuméroté quand
 l'ordre de traitement change. Seul l'ordre de LECTURE de ce document — et l'ordre dans lequel
 les chantiers seront ouverts — suit désormais l'ordre de traitement.
+
+---
+
+## Correctifs (trouvés en marchant, hors chantier)
+
+Six défauts réels, trouvés en construisant et en jouant les projets démo pendant le chantier
+v0.9, sans rapport avec la traduction elle-même — consignés ici pour ne pas rester invisibles
+faute d'un jalon à qui les rattacher.
+
+- **`_hw_layer_z` — l'ordre de composition du canvas** (`ui/scene_manager/scene_canvas.py`).
+  Un acteur (OBJ) portait un zValue fixe (10) et une zone d'interface un zValue fixe (120) :
+  l'acteur passait donc TOUJOURS sous l'interface dans le canvas, quelle que soit la priorité
+  réelle — le contraire de ce que montre la ROM dès que `text_bg` n'est pas 0 (priorité GBA =
+  `bg_slot` directement, et à priorité égale l'OBJ passe devant le BG). Le canvas reproduit
+  désormais l'ordre matériel plutôt qu'un empilement choisi pour le confort de l'édition.
+  Tests : `test_canvas_draw_order.py`.
+
+- **`BOXTAG_*` absent pour une box portée par un prefab** (`codegen/runtime_codegen/headers.py`).
+  `spawn_<Prefab>()` écrit `boxes[].tag = BOXTAG_<TAG>` pour la box d'un prefab poolé et de ses
+  parties (v0.23, « Ce qu'un boss demande »), mais la génération des `#define` ne parcourait
+  que les acteurs de SCÈNE — un tag porté seulement par un prefab n'avait donc pas de
+  constante, et le C émis ne compilait pas (`'BOXTAG_BODY' undeclared`).
+  `Project.collision_tags()` était déjà la source unique (scènes, prefabs, parties de prefabs)
+  pour le sélecteur de tag et la matrice de Project Settings ; le codegen en était la troisième
+  lecture, et la seule qui mentait. Tests : `test_collision_tags.py`.
+
+- **Glyphes animés d'une zone : dérivés, plus déclarés** (`core/project.py`,
+  `core/models/ui_region.py`). Le nombre de caractères qu'une zone sort de la bande pour les
+  animer était un champ rempli à la main dans l'inspecteur ; il se déduit désormais du texte
+  affiché (`Project.region_animated_glyphs`), au maximum sur TOUTES les langues déclarées (une
+  réservation trop basse fait retomber l'effet en statique sans un mot) et plafonné aux slots
+  OAM disponibles (zéro quand rien n'est animé). Le modèle ne résout pas la table de textes —
+  le compte lui est fourni, comme les frames d'un sprite. Tests : `test_animated_glyphs.py`.
+
+- **Renommer une clé de texte désynchronisait les zones d'interface**
+  (`core/project_renames.py`). `region.text_key` est une COPIE de chaîne, pas l'id stable du
+  texte. Le script Lua qui cite une clé était déjà réécrit par `rename_lua_refs` ; les zones
+  d'interface (`UIText.text_key`), l'autre des deux seuls référents d'une clé (cf.
+  `TextUsage`), ne l'étaient pas — un rangement qui recale une clé automatiquement
+  désynchronisait silencieusement l'écran de scène. Bug réel rencontré sur le projet démo
+  Fonts&Texts (2026-08-27). Tests : `test_text_key_ui_sync.py`.
+
+- **Surface de composition texte partagée entre zones qui ne devraient pas se disputer les
+  tuiles** (`gba_engine.h`, `codegen/font_emit.py`). La surface partagée est adressée modulo
+  et ne couvre que 8 rangées sur les 20 de l'écran : deux zones dont les rangées coïncidaient
+  modulo 8 se disputaient les mêmes tuiles et s'écrasaient en VRAM — un titre en haut et une
+  boîte de dialogue en bas, une mise en page banale, tombait dans ce cas, et aucun garde-fou ne
+  pouvait le rendre acceptable : c'était la mise en page qu'il fallait interdire. Corrigé en
+  allouant un bloc PAR ZONE (`RegionSurf`), à la taille du rectangle ABSOLU (une zone enfant
+  d'un panneau n'occupe pas les tuiles écran de son offset local) ; la surface partagée n'est
+  plus réservée que si un script écrit LIBREMENT (`text.draw`/`text.clear`, qui n'ont pas de
+  rectangle à qui donner un bloc). Tests : `test_text_surface_alloc.py`.
+
+- **`g_ui_list_total` démarrait à 0** (`codegen/runtime_codegen/main_gen.py`). Un panneau
+  « Liste » restait figé tant que le script n'appelait pas `list.set_count`, même avec des
+  rangées visibles posées dans le canvas — contraire au propre texte de l'inspecteur de scène
+  (« place text zones INSIDE this panel — ceux-là sont ce que la liste parcourt »). Le total
+  démarre désormais au compte de rangées AUTHORÉES ; `list.set_count` garde son rôle pour dire
+  un total plus grand que les rangées visibles (un inventaire qui défile), auquel cas il écrase
+  le défaut. Tests : `test_ui_list_default_count.py`.
 
 ---
 
@@ -296,8 +363,15 @@ Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/projec
 > pas utiliser les `BTN_*` du script — `gba_engine.h` ne voit pas les en-têtes d'acteur —, il
 > lit les `KEY_*` de libgba, qui sont les mêmes bits matériels.
 >
-> Reste **l'en-tête de sauvegarde étendu** (chapitre, temps de jeu, nom — lisible sans charger
-> la partie), que la roadmap qualifie elle-même de manque « plus petit ».
+> **L'en-tête de sauvegarde étendu est réglé le 2026-08-23**, par un troisième verbe plutôt
+> qu'un nouveau concept : `save.read(slot, "nom")` rend la valeur d'UNE variable persistante
+> dans un emplacement, sans toucher aux globales de la partie en cours. L'auteur compose son
+> écran de sélection en l'appelant sur chacune des variables qu'il veut montrer — la
+> « désignation » de la décision verrouillée n'est rien d'autre que le choix des variables sur
+> lesquelles l'auteur appelle cette fonction. Au passage, l'ancien `save.read(slot)` — qui
+> remplace TOUTES les persistantes de la partie en cours, un geste bien plus lourd que ce que
+> « lire » suggère — est renommé `save.load(slot)`, le mot qu'un menu affiche déjà
+> (« Charger une partie »).
 
 
 ### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
@@ -333,46 +407,685 @@ choisir sa partie.
   emplacement — les valeurs de N globales que l'auteur désigne — lisible **sans charger la
   partie**. Le moteur ne décide pas *ce qu'*une partie affiche, comme il ne décide pas où elle
   reprend (v0.5).
+- **`save.read(slot, "nom")`, pas un nouveau concept d'« en-tête ».** *(Tranché le
+  2026-08-23.)* Le format SRAM (v0.20) range déjà chaque variable persistante dans son propre
+  enregistrement, retrouvable par balayage indépendamment des autres — `save.read` ne fait que
+  s'arrêter au premier enregistrement qui correspond, sans rejouer tout `save_read` (qui, lui,
+  réécrit TOUTES les globales persistantes). Rien à ajouter au modèle : ni un champ « variable
+  d'en-tête » sur `GlobalVar`, ni un panneau dédié. La désignation que demandait la décision
+  ci-dessus est simplement l'ensemble des variables que l'auteur choisit d'appeler.
+- **`save.read(slot)` devient `save.load(slot)`.** *(Tranché le 2026-08-23, renommage
+  complet.)* Le nom masquait ce que fait l'appel : remplacer TOUTES les globales persistantes
+  de la partie en cours n'est pas ce que « lire » suggère. « Charger » l'est, et c'est déjà le
+  mot que porte le bouton du menu qui l'appelle. Ça libère aussi `save.read` pour ce qu'il
+  désigne réellement ci-dessus : une lecture SANS effet de bord, symétrique de
+  `global_read`/`global_read_at` (déjà ce nom en C, pour exactement ce sens) plutôt qu'un
+  troisième mot (« peek ») pour un concept qui en avait déjà un dans cette base de code.
 
 ### Ce que ça touche
 
 [ui_region.py](editor/core/models/ui_region.py),
 [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tick d'UI),
-[api.py](editor/scripting/api.py) (un domaine `list`),
-[gba_engine.h](runtime/include/gba_engine.h) (l'en-tête de sauvegarde), l'inspecteur de scène,
-et `validator.py`.
+[api.py](editor/scripting/api.py) (un domaine `list`, et le renommage/l'ajout `save.*`),
+[codegen.py](editor/scripting/codegen.py) et
+[checker.py](editor/scripting/checker.py) (résolution et vérification de `save.read`),
+[lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) (le contexte de vérification
+sait désormais quelles variables sont persistantes),
+[gba_engine.h](runtime/include/gba_engine.h) (`save_read_var`, la lecture sans effet de bord)
+et [actor_api_static.h](runtime/include/actor_api_static.h) (son prototype — le piège relevé
+plus haut), l'inspecteur de scène, et `validator.py`.
 
 ### Ouvert
 
-- **Où une liste se dessine.** Sur le calque de texte — donc soumise au budget de tuiles d'UI
-  et à la grille de tuiles — ou en sprites, donc dans les 128 OAM ? Les deux chemins existent
-  déjà (v0.3.3) ; il faut dire lequel une liste choisit, et pourquoi.
-- **Le défilement, à la ligne ou au pixel.** À la ligne, le texte reste sur sa grille et rien
-  ne coûte ; au pixel, un inventaire long défile joliment mais demande un redessin partiel à
-  chaque frame.
-- **La répétition de touche** : réglage par liste, ou du projet ? C'est un réglage de game
-  feel, donc probablement par liste — mais trois listes avec trois cadences est une incohérence
-  qu'un joueur sent.
-- **Ce que le moteur fait d'un choix de dialogue** (2–3 options dans une boîte) : est-ce une
-  liste comme les autres, ou la seule forme qui mérite un raccourci ?
+- ~~**Où une liste se dessine.**~~ **Tranché le 2026-08-21** : sur le calque de texte — ses
+  rangées sont ses zones de texte enfants, dans l'ordre de l'arbre. Le budget de tuiles d'UI et
+  la grille de tuiles restent ceux d'un panneau de texte ordinaire ; rien de neuf à gérer côté
+  OAM.
+- ~~**Le défilement, à la ligne ou au pixel.**~~ **Tranché le 2026-08-21** : à la ligne — le
+  texte reste sur sa grille de tuiles, et l'OAM reste libre pour les acteurs et le curseur.
+- ~~**La répétition de touche.**~~ **Tranché le 2026-08-21** : cadence en défaut de PROJET,
+  surchargeable par liste — le même patron que la transition de scène (v0.6.2), qui répond
+  déjà à l'objection « trois listes à trois cadences, un joueur le sent ».
+- ~~**Ce que le moteur fait d'un choix de dialogue.**~~ **Tranché le 2026-08-21** : une liste
+  comme les autres — un raccourci pour 2-3 options aurait été le premier « widget par genre de
+  menu », dont la liste n'a pas de fin.
+
+Les quatre questions ouvertes sont donc closes, et implémentées de bout en bout (`list.*` dans
+[api.py](editor/scripting/api.py), le tick dans
+[main_gen.py](editor/codegen/runtime_codegen/main_gen.py),
+[gba_engine.h](runtime/include/gba_engine.h) et
+[actor_api_static.h](runtime/include/actor_api_static.h)) — de même que l'en-tête de sauvegarde
+(`save.read`/`save.load`, tranché le 2026-08-23, câblé dans
+[codegen.py](editor/scripting/codegen.py) et
+[checker.py](editor/scripting/checker.py)). Rien ne reste ouvert pour ce jalon.
 
 ---
 
-## v0.9 — Traduction des jeux créés avec l'éditeur
+## v0.25 — La grammaire de la struct `Actor` — **EN COURS**
 
-Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.
+### D'où vient la question
 
-### Périmètre
+Posée le 2026-08-23, en relisant l'architecture : l'éditeur distingue trois choses — un
+**actor** (logique de jeu), un **sprite** (son rendu), un **background** (le décor). Est-ce
+que l'API C tient la même distinction ?
 
-- Tables de chaînes multilingues, basées sur les clés posées en v0.3 — c'est précisément pour
-  éviter un refactor complet ici que les textes sont référencés par clé depuis le début.
-- Sélection de la langue en jeu, persistée par la sauvegarde de la v0.5.
+Non. Côté C il n'existe **qu'une struct**, `Actor`, et elle porte les trois familles à plat :
+la logique (`x, y, vx, vy, timer, tag`), le rendu OBJ (`frame, anim_*, flip_*, pal_bank,
+obj_mode, priority, sprite_rot, sprite_scale_*, offset_*`) et la collision (`boxes, box_count,
+grounded, last_x, slope_acc`). 37 `int` et 4 `CollisionBox`, sans frontière visible.
+
+Le background, lui, n'a **pas** de type C, et c'est correct : le calque **est** le matériel
+(`layer_*(int bg, …)`, `tilemap_*(int bg, …)` et les registres ombres `g_bgcnt_sh[4]`,
+`g_bg_ofs_x/y[4]`). Il y a quatre plans dans la machine ; leur donner un type instanciable
+suggérerait qu'on peut en créer un cinquième. **Ce point ne bouge pas.**
+
+### Ce que ce jalon n'est pas
+
+Il ne sépare **pas** `Actor` en deux structs. Le rapport est 1:1 (un actor porte au plus un
+`SpriteComponent`), et l'indirection coûterait un déréférencement par accès sur un ARM7TDMI
+sans cache. Le merge est **assumé** ; ce qui change, c'est qu'il devient lisible.
+
+### Ce que la lecture du code a écarté, et pourquoi
+
+Trois pistes ouvertes le 2026-08-23, deux refermées le jour même après lecture :
+
+- **« Supprimer la recopie par tick de `anim_length`/`anim_loop`/`anim_finished` ».** Écartée.
+  `anim_length` n'est pas `state_len[state]` : c'est la longueur du bloc de la **direction
+  actuellement jouée**, que `_anim_tick_lines` trouve par un parcours de `anim_dirs[]` avec
+  repli sur la direction omni. La recopie **mémoïse le parcours que le tick fait déjà**.
+  Exposer les tables aux scripts déplacerait la boucle dans chaque lecture de
+  `self.anim_length` — plus lent, pas plus propre. `anim_finished` en dérive.
+  Reste `anim_loop`, seule copie réellement pure : l'effacer coûterait un `const SpriteDef*`
+  de 4 octets pour économiser un `int` de 4 octets, plus une indirection. Gain nul.
+- **« Découpler le slot OAM de l'index d'acteur ».** Hors périmètre par décision existante :
+  c'est le *Chantier transverse — l'allocateur de ressources matérielles*, qui attend son
+  deuxième consommateur, et dont une décision verrouillée dit déjà qu'« un arbitrage OAM par
+  frame est un vrai coût CPU ; il se décide sur un cas mesuré, pas à l'avance ».
+- **`frame_w`/`frame_h` par instance.** Ressemblent à une duplication de
+  `SpriteAsset.frame_w/h`. N'en sont pas : le script d'un prefab poolé est une fonction C
+  partagée par toutes ses instances, elle ne peut pas les recevoir en `#define`.
+
+L'argument mémoire n'existe de toute façon pas : `g_actors` est en EWRAM ordinaire — 128
+entrées de ~172 octets, soit ~22 Ko sur 256.
+
+### Décisions verrouillées
+
+- **Trois blocs, calqués sur les composants de l'éditeur.** Pas une taxonomie inventée pour
+  l'occasion (`render`/`body`) : la décomposition existe déjà, c'est celle que l'inspecteur
+  affiche. `Actor` racine ↔ `Actor` éditeur, `Actor.sprite` ↔ `SpriteComponent`,
+  `Actor.collision` ↔ `CollisionBoxComponent`. Le C émis dit alors la même chose que l'UI —
+  c'est la grammaire unique appliquée à la struct.
+
+  | Bloc | Champs |
+  | --- | --- |
+  | `Actor` | `x, y, vx, vy, timer, tag, active, dir_x, dir_y, rotation, scale_x, scale_y, visible, priority, pal_bank, obj_mode, flip_h, flip_v` |
+  | `Actor.sprite` | `frame, anim_state, anim_speed, anim_length, anim_loop, anim_finished, frame_w, frame_h, auto_dir, rotation, scale_x, scale_y, offset_x, offset_y, affine_slot` |
+  | `Actor.collision` | `grounded, last_x, slope_acc, box_count, boxes[]` |
+
+- **La réservation affine appartient au sprite, pas à l'actor** *(2026-08-25)*. `affine_transform`
+  vivait sur l'`Actor` et s'affichait dans une carte « Affine » à part, dont le commentaire de
+  l'inspecteur disait déjà pourquoi : « ce n'est pas un PLACEMENT mais une capacité de RENDU ».
+  C'est l'argument exact qui la met sur le `SpriteComponent` — le composant de rendu, le seul
+  qui s'affiche aussi sur une racine de prefab. Trois conséquences :
+
+  - la carte « Affine » de l'inspecteur disparaît ; la case passe dans la carte du
+    SpriteComponent, et Rotation/Scale de l'actor remontent dans **Transform** (ils y étaient
+    déjà masqués sur une racine de prefab — rien ne change de ce côté) ;
+  - côté C, `affine_slot` suit le flag et passe dans le bloc `sprite` : c'est le principe même
+    de ce jalon, le C émis dit la même chose que l'UI ;
+  - `Prefab.affine_transform` délègue au SpriteComponent de son actor racine, et les deux
+    recopies manuelles de `command_dispatcher` (Relink/Expose) disparaissent — le
+    `deepcopy(components)` qui les précède transporte déjà le flag.
+
+- **`Actor.rotation`/`scale` sont du STOCKAGE, pas un privilège du slot** *(2026-08-25)*. Les
+  accesseurs étaient gardés par `if (affine_slot >= 0)` : sans slot, setter no-op et getter
+  identité — `self.rotation = self.rotation + 1` n'incrémentait rien, la valeur ne faisait
+  même pas l'aller-retour. Les champs existent dans **chaque** `Actor` de toute façon ; seule
+  l'écriture de la matrice OAM a besoin du slot. Les gardes tombent donc.
+
+  Le checker **garde son contrôle mais descend d'un cran** : `error` → `warning`. Il reste le
+  seul endroit qui voit qu'un script écrit `self.rotation`, et c'est l'oubli réel qu'il faut
+  signaler ; ce qui change est qu'il ne refuse plus le build. Même registre que le cas
+  parent/enfant juste à côté : le jeu tourne, c'est l'affichage qui ment. Une valeur qu'un
+  script peut lire, écrire et relire sans effet visible est un modèle plus simple à expliquer
+  qu'une propriété qui s'évapore. `BuildContext.affine_transform` reste donc, alimenté
+  désormais par le SpriteComponent.
+
+- **Les trois abréviations disparaissent avec le namespace qui les rendait nécessaires.**
+  `sprite_rot` → `sprite.rotation`, `sprite_scale_x/y` → `sprite.scale_x/y`, `offset_x/y` →
+  `sprite.offset_x/y`. Elles n'existaient que parce que la struct était plate. La règle
+  « jamais d'abréviation » redevient tenue sans exception.
+
+- **La surface Lua ne bouge pas d'un caractère.** `self.frame`, `self.sprite_scale`,
+  `self.anim_length` passent tous par les accesseurs de `actor_api_static.h` :
+  `scripting/api.py`, `codegen.py`, `checker.py` et `expr_types.py` ne touchent aucun champ
+  directement. Ce jalon n'est pas une rupture pour les projets existants.
+
+- **Le compilateur est le vérificateur exhaustif.** Un site oublié ne compile pas. La
+  condition est donc de builder réellement la ROM à la fin, pas seulement de lancer les
+  tests — sans quoi la garantie n'est pas encaissée.
+
+### Ce que ça touche
+
+| Fichier | Sites | Nature |
+| --- | --- | --- |
+| [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) | 162 | `g_actors[i].champ` dans des f-strings |
+| [actor_api_static.h](runtime/include/actor_api_static.h) | ~90 | `s->champ` dans les accesseurs |
+| [actor_types_static.h](runtime/include/actor_types_static.h) | 1 | la struct elle-même |
+| [test_affine_model.py](tests/test_affine_model.py) | 3 | assertions sur le C émis |
+| [headers.py](editor/codegen/runtime_codegen/headers.py) | commentaire | l'en-tête de `actor_types.h` |
+
+Et pour la réservation affine passée au sprite :
+
+| Fichier | Nature |
+| --- | --- |
+| [components.py](editor/core/models/components.py) | `SpriteComponent.affine_transform` |
+| [scene.py](editor/core/models/scene.py) | retrait de `Actor.affine_transform`, migration à la lecture, délégation `Prefab` |
+| [actor_inspector.py](editor/ui/scene_manager/inspectors/actor_inspector.py) | carte « Affine » supprimée, Rotation/Scale remontés dans Transform |
+| [component_editors/sprite.py](editor/ui/scene_manager/inspectors/component_editors/sprite.py) | la case, et le grisage qui la lit |
+| [checker.py](editor/scripting/checker.py) | le contrôle passe de `error` à `warning` |
+| [api.py](editor/scripting/api.py) | « Nécessite … sur l'actor » → « ne s'affiche que si le sprite … » (6 docs) |
+| [lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) | le flag se lit sur le sprite (`_affine_reserved`) |
+| [command_dispatcher.py](editor/core/command_dispatcher.py) | les deux recopies Relink/Expose disparaissent |
+| [scene_canvas.py](editor/ui/scene_manager/scene_canvas.py) | le rendu éditeur lit le flag sur le sprite |
 
 ### Ouvert
 
-- Format des tables multilingues non défini.
-- Workflow de traduction pour quelqu'un sans compétence de développement : édition directe
-  dans l'éditeur, ou export/import type tableur ?
+- **`ARCHITECTURE.md` porte les anciens noms plats** (`Actor.obj_mode`, `g_actors[i].rotation`,
+  `Actor.last_x`, `Actor.grounded`…). Ils y sont justes tant que le
+  découpage n'est pas fait : ce fichier décrit le code tel qu'il est. Il devient donc la liste
+  de contrôle du chantier, pas une dette à corriger d'avance.
+
+---
+
+## v0.26 — Les trois couleurs de l'interface — **EN COURS**
+
+### D'où vient la question (2026-08-24)
+
+Un conteneur en fond couleur ne colorait qu'une partie de sa zone. Le diagnostic n'a pas
+trouvé un bug de géométrie mais **deux chemins qui ne s'accordaient pas sur ce qui est
+émis** : `scene_color_fills` écarte un panneau dont la palette n'est pas dans les palettes
+BG actives de la scène (il lui faut une banque matérielle), tandis que `_region_bg_fills` —
+qui donnait aux zones de texte ENFANTS la couleur de leur panneau ancêtre — n'appliquait
+aucune de ces conditions. Résultat : le panneau ne dessinait rien, mais sa couleur
+apparaissait quand même dans la boîte de son texte enfant. Un échec **partiel et joli**, bien
+plus difficile à lire qu'un fond franchement absent.
+
+La cause profonde n'est pas la condition manquante, c'est qu'**une seule notion en portait
+trois** : le fond d'un conteneur, l'encre d'un texte, et la couleur posée sous ce texte
+étaient réglées à deux endroits pour trois effets.
+
+### Décisions verrouillées
+
+- **Trois couleurs nommées, trois champs distincts.** Le fond (`UIPanel.fill_palette` +
+  `fill_index`), l'encre (`UIText.text_color`) et le **surlignement** (`UIText.highlight_color`,
+  nouveau). Trois mots dans l'interface — *Color*, *Ink*, *Highlight* — parce que trois
+  effets différents réglés sous le même mot est précisément ce qui a produit le défaut.
+- **Un texte prend le fond de son conteneur, par défaut et sans rien déclarer.** Écrire ne
+  doit jamais PERCER ce qu'il y a dessous : le chemin tilemap remplacerait la cellule par une
+  tuile de glyphe, dont l'index 0 est transparent. C'est une règle de non-destruction, pas
+  une teinte — la zone ne s'approprie pas la couleur, elle refuse de l'effacer.
+- **Le surlignement SURCHARGE ce fond**, sur l'étendue que le texte écrit. Le fond dit ce
+  qu'il y a dessous, le surlignement ce que l'auteur veut y voir à la place. Les deux
+  coexistent sur une même zone, y compris sous un cadre nine-slice : le marqueur se pose SUR
+  le cadre, il ne le troue pas.
+- **Composer est décidé par le FOND autant que par la police.** Une zone à fond ou surlignée
+  se compose même en police MONO. Le cas nine-slice était déjà censé le faire et ne le
+  faisait pas (`text_is_composited` ne regardait pas la table des fonds) : un texte mono
+  posé sur un cadre le trouait, alors que la donnée pour le recomposer existait. Fermé ici.
+- **Le fond d'un texte est de l'état de SCÈNE, jamais de la table projet.** `RegionFill` est
+  posée par `scene_init`, et son contenu DÉRIVE de `scene_color_fills` / `scene_image_fills`
+  — c'est-à-dire de ce que le build émet réellement. C'est la correction de fond du
+  chantier : l'ancien `_region_bg_fills`, table projet-globale, ne connaissait aucune des
+  conditions d'émission, d'où un panneau écarté du build dont la couleur apparaissait quand
+  même dans la boîte de son texte.
+- **Deux formes de fond, UNE table.** Une carte de tuiles (nine-slice / background) ou un
+  aplat (couleur), distingués par `se == NULL`. C'est une seule question — « qu'y a-t-il sous
+  cette zone ? » — et deux tables auraient permis à une zone d'avoir deux fonds, ou aucun.
+  Même raison pour `region_fill_panel()` : la règle « le fond le plus proche gagne » s'écrit
+  une fois et se lit des deux côtés.
+- **Le surlignement est un index dans la banque d'UI de la scène**, comme l'encre — même
+  référentiel, même plage 0-15, `0` = aucun. Ce n'est PAS une palette + index comme le fond :
+  la surface composée reçoit `g_pal_bank_bg` (une seule banque par tuile, le matériel
+  l'impose), donc une couleur venue d'ailleurs devrait de toute façon être recopiée dans
+  cette banque. Le champ dirait « n'importe quelle couleur » là où le matériel n'en offre
+  que seize.
+- **Le surlignement couvre l'étendue RENDUE du texte**, pas la boîte authorée : un
+  surlignement est un trait de marqueur. La boîte entière reste PRÉPARÉE (c'est ce qui
+  empêche un texte plus court que le précédent de laisser l'encre de l'ancien), mais seule
+  l'étendue écrite reçoit la couleur — origine comprise, de sorte qu'un texte centré ne
+  surligne pas sa marge gauche.
+- **Où vit la couleur d'un aplat dépend de `scene.ui_pal_bank`, et le build tranche seul.**
+  En mode AUTOMATIQUE la banque d'UI appartient à la police : le build y loge la couleur du
+  conteneur, depuis le HAUT (15, 14, …) et en sautant les index que l'encre et les
+  surlignements de la scène occupent déjà — la réservation est PAR SCÈNE, là où l'ancienne
+  était projet-globale et ne pouvait éviter aucune collision. En banque DÉSIGNÉE le build
+  n'écrit rien (ce serait remplacer en douce les couleurs choisies) : l'index du conteneur
+  passe tel quel, et `_check_ui_text_fill_bank` exige que la banque désignée soit celle du
+  conteneur — même contrat que le cadre nine-slice, pour la même raison matérielle.
+- **Cible OBJ : pas de surlignement.** Une zone en bande de sprites ne passe pas par la
+  surface BG ; le champ est masqué plutôt que proposé sans effet — même règle que
+  `_FILL_TARGETS`, qui dit ce que le build ÉMET.
+- **Le fond d'un conteneur se choisit dans les palettes BG ACTIVES de la scène**, par le slot
+  de sélection partagé (`pickers.palette_picker_slot`) et non par une liste de tout le
+  catalogue. Proposer une palette que le build écartera est exactement le défaut d'origine,
+  déplacé dans le widget.
+- **Pas de migration de données, et il n'en faut aucune** : le fond redevenant automatique,
+  les textes qui héritaient retrouvent leur rendu sans qu'un champ soit écrit nulle part.
+  `highlight_color` naît à 0 et ne dit que ce que l'auteur y a mis.
+
+### Ce que ça touche
+
+| Fichier | Nature |
+| --- | --- |
+| [ui_region.py](editor/core/models/ui_region.py) | `UIText.highlight_color` |
+| [gba_engine.h](runtime/include/gba_engine.h) | `UIRegionInfo.bg_fill` → `highlight`, rectangle surligné, `text_layout` rend son origine |
+| [font_emit.py](editor/codegen/font_emit.py) | la table lit le champ de la zone, plus une table annexe |
+| [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) | `_region_bg_fills` remplacé par `region_fill_panel` + `scene_region_colors`, dérivés des fonds émis |
+| [validator.py](editor/core/validator.py) | `_check_ui_text_fill_bank` — le contrat de banque, étendu à l'aplat |
+| [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) | *Ink* / *Highlight*, slot de sélection filtré pour le fond |
+| [scene_canvas.py](editor/ui/scene_manager/scene_canvas.py) | aperçu du surlignement, composition sous un conteneur à fond |
+| [text_layout_probe.c](tests/native/text_layout_probe.c) + [gba_shim_common.h](tests/native/libgba_shim/gba_shim_common.h) | la sonde suit la signature — **et les stubs que la v0.22 lui devait** |
+
+**Le test d'équivalence Python/C était déjà rouge avant ce chantier**, et il ne
+le disait à personne : la sonde ne compilait plus contre `gba_engine.h` depuis
+que la navigation de liste lit les touches (`KEY_*` absents du shim libgba) et
+que six globales plus récentes (`g_ui_list_*`, `g_ui_element*`, `g_save_bits`,
+`g_save_len`, `global_read_at/write_at`) n'avaient pas de stub. Le fichier de
+test lui-même prévient qu'« un saut n'est pas un succès » — ici ce n'était même
+pas un saut, c'était une erreur de compilation avalée par 37 `ERROR` de setup.
+Les stubs sont complétés dans ce chantier parce que c'est exactement
+`text_layout` que la sonde garde, et que je venais d'en changer la signature.
+
+### Ouvert
+
+- **La banque d'UI reste implicite quand `scene.ui_pal_bank` vaut -1** : encre et
+  surlignement désignent alors des index de la banque de police, que l'auteur ne choisit pas.
+  L'inspecteur montre les pastilles quand la banque est désignée, et rien sinon.
+- **Huit fonds de zone par scène** (`TEXT_REGION_FILL_MAX`), aplats et cadres confondus —
+  ils partagent désormais la table. Au-delà, les zones en trop n'ont pas de fond et le
+  percent. Rien ne le signale encore ; le plafond n'a jamais été atteint, mais il est plus
+  facile à atteindre maintenant que le fond est automatique.
+- **Le surlignement n'est pas scriptable.** Comme l'encre, il est authoré. Un menu qui
+  surligne sa ligne courante se fait aujourd'hui en écrivant dans des zones distinctes ; si
+  la v0.22 rend ça pénible, c'est ici que ça se verra.
+
+---
+
+## v0.9 — Traduction des jeux créés avec l'éditeur — **EN COURS**
+
+Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.
+
+Le jalon se traite en **deux temps, dans cet ordre** : d'abord l'écran, ensuite les langues.
+La raison n'est pas cosmétique. La table de textes a été conçue en v0.3 pour être traduite
+(clé de référence, `note` pour le traducteur, contenu séparé du script), mais elle s'affiche
+encore comme un **classeur** : un arbre qu'on déplie pour retrouver une réplique. Traduire,
+c'est le geste inverse — balayer deux cents entrées pour trouver les trous. Ajouter une
+seconde langue à une vue qui ne sait pas déjà montrer les trous d'une seule reviendrait à
+doubler un problème avant de le résoudre.
+
+---
+
+### Temps 1 — L'écran central devient une table de travail
+
+Aucune langue à ce stade, aucun changement de modèle : la même table de textes, regardée
+autrement.
+
+#### Décisions verrouillées
+
+- **La vue est PLATE, comme le stockage.** `texts.json` est une liste dont chaque entrée
+  porte son chemin ; l'arbre en était déjà une vue dérivée. Une table l'est tout autant, mais
+  elle se **trie** et se **compare ligne à ligne**, ce qu'un arbre ne fait pas. Le
+  regroupement ne disparaît pas pour autant : des lignes d'en-tête repliables, optionnelles,
+  redonnent la lecture par catégorie quand on la veut — sans que la structure de données en
+  dépende.
+- **Les trois niveaux du rangement sont trois colonnes, et aucune ne s'appelle « Key ».**
+  Dans le modèle, `key` désigne une chose précise et unique : la poignée que le Lua écrit et
+  que le build résout. Un niveau de chemin n'est jamais résolu ni référencé. Leur donner le
+  même mot dans l'interface ferait croire à deux systèmes de référence là où il n'y en a
+  qu'un — la faute exacte que [le modèle](editor/core/models/text.py) refuse depuis le début.
+  La clé garde donc sa propre colonne, en mono, copiable.
+- **L'usage se compte, et il couvre DEUX sources.** Un texte est cité par les scripts
+  (`DOMAIN_TEXT`) **et** par les mises en page (`UIText.text_key`). N'en compter qu'une
+  afficherait « orphelin » sur un texte posé dans une boîte de dialogue, et quelqu'un le
+  supprimerait. D'où un point unique, `Project.text_usage_index()`, que la table et
+  l'inspecteur partagent — l'inspecteur avait son propre index, scripts seulement : deux
+  vérités pour la même question.
+- **Contenu et usage sont deux axes séparés, jamais une pastille unique.** Un texte peut être
+  écrit et inutilisé, ou référencé et vide. Les fondre dans un seul statut ferait disparaître
+  celui des deux qui n'a pas la priorité, et c'est précisément le croisement qui est
+  intéressant : « référencé mais vide » est un bug, « écrit mais orphelin » est un oubli de
+  ménage, et ce ne sont pas les mêmes gens qui les corrigent.
+- **Pas de statut « traduit » tant qu'il n'y a qu'une langue.** Une pastille verte
+  « Translated » sur un projet monolingue est un mensonge poli : elle dit qu'un travail a été
+  fait alors qu'aucun n'a été demandé. La colonne apparaîtra avec les langues, pas avant.
+
+#### Ce que ça coûte
+
+Le **glisser-déposer entre nœuds** disparaît avec l'arbre. Il est remplacé par l'édition
+directe des cellules de rangement — ce qui range une ligne, mais aussi N lignes d'un coup par
+la sélection multiple, ce que le glisser-déposer ne savait pas faire. Le renommage d'un
+groupe entier reste couvert par `repath_segment`, déclenché depuis la ligne d'en-tête.
+
+---
+
+### Temps 2 — Les langues
+
+Cible **homebrew, cartouche réelle** : toutes les langues sont dans la ROM, choisies au
+build, et il n'y a rien à télécharger ni à chercher au runtime. C'est ce qui décide de toute
+la structure — les fichiers par langue sont un objet d'**authoring** (git, diff, traducteur),
+jamais un objet de moteur. Au build, ils deviennent une dimension de tableau.
+
+```
+project/texts.json      le maître   — id, key, path, note, note de scène, contenu SOURCE
+project/texts_de.json   un side     — la traduction seule, jointe par id
+project/texts_ja.json   un side     — idem
+```
+
+```
+text.draw(TEXT_CLE)   →   g_texts[g_lang][TEXT_CLE]     un index, jamais une recherche
+text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la police du projet
+```
+
+#### Décisions verrouillées
+
+- **La langue est une DIMENSION, pas un chemin de résolution.** Tout se tranche au build,
+  comme le balisage : le moteur ne connaît ni fichier, ni code de langue, ni repli à calculer
+  — il indexe. Un second chemin de résolution au runtime coûterait de la ROM, du temps de
+  frame, et une deuxième façon de se tromper.
+- **Le maître possède la STRUCTURE, le side ne porte que la TRADUCTION.** `id`, `key`, `path`
+  et `note` vivent dans `texts.json` et nulle part ailleurs. Les dupliquer dans huit fichiers
+  donnerait huit vérités à tenir d'accord, et la neuvième serait fausse.
+- **Le side se joint par `id`.** C'est ce que l'id opaque est fait pour faire : renommer une
+  clé ou re-ranger une entrée ne doit pas casser huit traductions. `key` et le texte source
+  sont **échoués** dans le side à côté de chaque entrée, pour qu'un humain puisse le lire et
+  le diffuser — mais ils sont en lecture seule et l'éditeur les recale à chaque écriture. Ce
+  n'est pas un second identifiant : c'est une annotation, et en cas de désaccord c'est le
+  maître qui a raison, jamais l'inverse.
+- **Une entrée absente d'un side n'est pas une chaîne vide, c'est la SOURCE.** Un trou de
+  traduction doit se voir comme un texte de la mauvaise langue — pas comme un écran blanc que
+  personne ne saura interpréter sur console. Le build compte les trous et les nomme.
+- **Une langue n'a pas de police : elle a éventuellement un REMPLACEMENT.** EN, FR, DE, ES
+  partagent la même planche latine — seuls les glyphes accentués changent, et le
+  sous-ensemble par scène les traite déjà un par un. Seul un système d'écriture différent
+  (JA, RU, EL) demande une autre planche. Déclarer une police par langue obligerait à
+  dupliquer la même planche quatre fois pour rien.
+- **`font_de.fnt` est une PRATICITÉ D'IMPORT, jamais une règle.** Le suffixe pré-remplit la
+  déclaration quand on ajoute une langue ; ce qui lie une police à une langue reste la
+  déclaration explicite du projet. Déduire une liaison d'un suffixe de nom, c'est de la magie
+  non vérifiable qui casse au premier renommage — et ça contredit `<asset>_name`, la règle du
+  graphe de dépendances.
+- **Une scène ne change jamais de police selon la langue.** Elle nomme `dialog` ; c'est la
+  RÉSOLUTION de ce nom qui dépend de la langue, par une table de remap. Sans ça, il faudrait
+  réécrire chaque `text.set_font` et chaque zone de mise en page, dans quarante scènes, pour
+  chaque langue ajoutée.
+- **PNG et `.fnt` seulement** — c'est déjà le cas (`font_import.py` refuse même le BMFont
+  binaire), mais ça mérite d'être écrit comme une décision et pas comme un état de fait : une
+  police est un **jeu fini d'images de glyphes**. C'est exactement ce qui rend
+  `scene_codepoints()` calculable, donc le sous-ensemble par scène possible, donc le japonais
+  envisageable. Un TTF rendu au build ne donnerait pas ça.
+- **Le garde-fou VRAM se dimensionne sur la PIRE langue.** La ROM contient N sous-ensembles
+  de glyphes par scène, la VRAM n'en tient qu'un. Un contrôle fait sur la seule langue source
+  laisserait passer un projet qui explose en allemand — c'est-à-dire au moment exact où il
+  est trop tard pour le corriger.
+- **Les littéraux de script deviennent un avertissement NOMMÉ.** `text.draw("Bonjour")` était
+  un raccourci assumé au prix de la traduction (v0.3.2) ; en multilingue, c'est un trou par
+  construction. Le build les liste, avec leur fichier et leur ligne.
+- **La langue vit dans la sauvegarde de la v0.5**, et se lit avant la première scène.
+- **L'ordre des mots appartient à la traduction, pas au script.** Les marqueurs `$nom` — et
+  les positionnels `$1`/`$2` de la [v0.18](#v018--la-valeur-affichée--doù-elle-vient) —
+  vivent DANS l'entrée : une langue qui dit « 3/5 PV » dans l'autre sens réordonne ses
+  marqueurs chez elle, sans que le script sache qu'elle existe. Rien à prévoir de plus ici,
+  mais c'est la raison pour laquelle il ne faut jamais laisser une phrase se composer par
+  concaténation dans un script.
+
+#### Ce que ça coûte, en chiffres
+
+La ROM n'est pas la contrainte, et il vaut mieux le savoir avant de dimensionner quoi que ce
+soit. Un glyphe est **une tuile 4bpp, 32 octets** : une planche latine complète tient en
+3 Ko, et cent mille caractères de dialogue pèsent environ 200 Ko par langue — sur une
+cartouche de 16 Mio, huit langues ne se voient pas.
+
+Ce qui coince est la **VRAM par scène**, et seulement pour les écritures non latines. C'est
+précisément ce que le sous-ensemble par scène rend praticable : une scène qui affiche deux
+cents kanji distincts charge deux cents tuiles, pas une fonte de deux mille.
+
+#### Ouvert
+
+- ~~**Changer de langue en cours de partie.**~~ **Tranché en phase 4 (2026-08-27)** : au prix
+  d'un rechargement de la scène courante — l'option du milieu des trois listées ici. `lang.set`
+  pose `g_lang` puis force la boucle principale à retraverser la scène ACTIVE comme un vrai
+  changement de scène (`g_lang_reload`, consommé au tour suivant, jamais dans `lang_set`
+  lui-même — un acteur peut être en train de s'itérer). Le sous-ensemble de glyphes déjà UNI
+  sur toutes les langues (décision 4, phase 3.3) rendait ce choix bon marché : aucune tuile de
+  police à recharger, seulement les tuiles de texte déjà posées — l'argument qui a tranché
+  contre le rechargement complet des zones (plus de code, pour le même résultat) et contre le
+  redémarrage (trop cher pour un jeu qui a déjà de l'état).
+- **L'écran de choix de la langue et son amorçage.** Afficher « Deutsch / 日本語 » demande les
+  glyphes de deux écritures EN MÊME TEMPS, avant qu'aucune langue ne soit choisie : c'est la
+  seule scène du jeu qui viole la règle « une langue à la fois ». Solutions possibles — un
+  sous-ensemble spécial « endonymes », des noms de langue en latin partout, ou des images.
+- **Workflow pour un traducteur sans compétence de développement** : édition directe dans
+  l'éditeur, ou export/import type tableur ? Le side joint par id rend l'aller-retour sûr,
+  reste à savoir s'il vaut son écran.
+
+**Tranché en phase 2 (2026-08-25)** — « où vit la langue dans l'écran Texte » : le modèle
+POEdit, pas les colonnes. La colonne Content montre toujours la langue ACTIVE (source si rien
+n'est traduit — même repli que `text_content()`, jamais une cellule vide qui mentirait sur ce
+que le joueur verra) ; l'atelier montre la source en lecture seule au-dessus du champ
+éditable. Choisi contre les colonnes parce que la table sert déjà trois autres colonnes
+(rangement × 3, clé, usages) — leur ajouter une colonne par langue meurt après trois langues,
+quand le modèle POEdit encaisse dix langues sans changer de forme. La longueur reste
+vérifiable : c'est l'aperçu écran de l'atelier qui la montre, pas une colonne côte à côte.
+
+**Revu le même jour** : le sélecteur ne vit plus dans la table (« Editing: ‹langue› »), mais
+en ONGLETS dans l'atelier — un par langue déclarée, source comprise, caché entier tant qu'il
+n'y a rien à choisir. Deux raisons : la langue est un contexte D'ÉDITION, pas un filtre
+d'affichage, elle a donc sa place là où on écrit ; et une traduction porte du balisage comme
+la source (`[speed=6]`, `[icon=…]`, `$variable`) — un onglet « Translations » qui listait
+plutôt que d'ouvrir le même atelier complet (barre de balisage, coloration, aperçu écran)
+aurait rendu une traduction moins outillée que la source, alors que c'est elle qui doit
+tenir dans la même zone à l'écran. Chaque onglet de traduction porte son compte de trous en
+badge (`Deutsch (12)`) — le compte affiché dans la bande de langue de la table a disparu avec
+elle. Le fil d'Ariane des trois niveaux de rangement (`ARENA › arena_ui › element1`) a suivi
+le même geste : trois pastilles éditables en place plutôt que trois champs nus, même langage
+visuel que la colonne Category de la table.
+
+#### Le plan, en cinq phases
+
+Chacune laisse le projet **buildable** — aucune ne demande de finir la suivante pour livrer
+une ROM qui marche.
+
+| # | Phase | Ce qu'elle pose | Ce qui ne change pas encore |
+| --- | --- | --- | --- |
+| 1 | **Déclarer** — *livrée* | Les langues dans les paramètres du projet : code, nom, police de remplacement facultative. Création du side vide. | Le build ignore tout : une seule langue est émise. |
+| 2 | **Traduire** — *livrée* | Lecture/écriture des sides, la colonne de langue dans la table, le statut « traduit / manquant / déborde », le compte de trous. | Le build, toujours. On peut traduire tout un jeu avant qu'une ligne de C bouge. |
+| 3 | **Émettre** — *livrée* | La dimension langue dans `g_texts`, le remap de police, le sous-ensemble de glyphes par (scène, langue), et le garde-fou VRAM au pire cas. | La ROM contient N langues mais n'en montre qu'une : `g_lang` est une constante. |
+| 4 | **Choisir** — *livrée* | `lang.set`/`lang.get`, résolus comme `TEXT_*`/`SCENE_IDX_*` (`LANG_<CODE>`, jamais une chaîne au runtime). Rechargement de la scène courante pour rendre le changement visible. | La persistance SRAM (survivre à une coupure de courant) et l'écran de choix lui-même — toujours à la charge du jeu. |
+| 5 | **Servir** | L'amorçage du menu de langue, et l'export/import traducteur si la phase 2 montre qu'il manque. | — |
+
+**Ce que la phase 1 a posé** (2026-08-24) : `Language` dans les paramètres du projet (code,
+nom, remplacements de police), la carte « Languages » de l'inspecteur de projet, et
+`core/project_langs.py` — l'I/O des sides, le repli en un point unique (`text_content`) et
+les deux règles qui décident du sort d'un travail humain : **une traduction orpheline est
+conservée**, et **un side vide et non déclaré est le seul qu'on jette**. Neuf tests dans
+`tests/test_translations.py`.
+
+**Ce que la phase 2 a posé** (2026-08-25) : le sélecteur « Editing » dans la table, la colonne
+Status (Translated/Missing) et le chip de filtre assorti, le compte de trous dans la bande de
+langue, la référence source en lecture seule dans l'atelier. `SetTranslationCmd`
+(`text_commands.py`) écrit dans le side, symétrique de `SetFieldCmd` pour la source — les deux
+FUSIONNENT leurs frappes consécutives, donc un signal par GESTE (déclarer/renommer/retirer
+une langue) et non une liste repoussée en bloc, sans quoi l'annulation ramènerait le projet à
+zéro langue. `_check_text_overflow` (`validator.py`) mesure désormais TOUTES les langues
+déclarées, pas seulement la source — un trou fermé qui existait avant ce chantier : une
+traduction plus longue débordait une zone en silence, la troncature ne se découvrant qu'en
+jouant la ROM dans cette langue. Piège réel rencontré et corrigé : le champ éditable ne doit
+JAMAIS se pré-remplir avec la source en repli — seule la table et le build ont le droit de
+replier, le champ que le traducteur REMPLIT doit rester vide tant que rien n'est écrit, sans
+quoi la moindre retouche commite toute la source comme si elle était traduite. Cinq tests
+dans `tests/test_text_overflow_langs.py`.
+
+L'ordre n'est pas négociable sur un point : **la phase 3 ne s'ouvre pas avant que la phase 2
+ait tourné sur un vrai jeu traduit.** C'est elle qui dira ce que pèsent réellement les
+glyphes d'une langue, et le garde-fou VRAM se conçoit avec ces chiffres-là, pas avec des
+suppositions.
+
+#### Phase 3 — Émettre : le design (2026-08-27)
+
+Condition d'ouverture remplie : le projet démo **Fonts&Texts** porte 8 entrées traduites en
+FR et JAP, table complète — c'est lui qui sert de banc pour les chiffres ci-dessous une fois
+l'étape 3 codée.
+
+**Décisions verrouillées :**
+
+1. **`g_texts` gagne une dimension, `g_lang` reste une CONSTANTE de build.**
+   `g_texts[LANG_COUNT][N_TEXTES]` ; chaque `g_text_<lang>_<i>` est un tableau de codepoints
+   séparé, le balisage résolu par langue exactement comme aujourd'hui pour la source.
+   `g_lang` est un `#define` qui vaut l'index de la langue SOURCE (0) tant que rien ne le
+   change — donc un projet qui n'ouvre pas la phase 4 compile et joue EXACTEMENT comme
+   aujourd'hui, seul le poids ROM change (les N-1 langues supplémentaires voyagent dans la
+   cartouche, invisibles). Pas de champ projet « langue de build » ajouté maintenant : ce
+   serait une notion utile seulement en attendant la phase 4, à retirer aussitôt après.
+2. **L'ordre des langues est fixe et dérivé des settings** : index 0 = `source_lang`, puis
+   `settings.languages` dans l'ordre déclaré. Le même ordre partout — `g_texts`,
+   `g_lang_font`, et les futurs sélecteurs de la phase 4 — une seule vérité, comme le reste
+   du projet.
+3. **Le remap de police lit `Language.fonts`**, posé dès la phase 1
+   ([models/settings.py](editor/core/models/settings.py)) et jamais lu par le build jusqu'ici.
+   `g_lang_font[lang][police]` vaut l'index de la police de remplacement si `Language.fonts`
+   en déclare une pour cette police, sinon l'index de la police elle-même — « pas de
+   remplacement » n'est donc pas un cas spécial à tester au runtime, l'indirection est
+   toujours valide. `text_set_font(FONT)` résout d'abord `FONT`, puis applique le remap : le
+   script continue de nommer `dialog`, jamais une variante par langue.
+4. **`scene_codepoints` prend un paramètre langue**, calculé pour CHAQUE langue déclarée
+   (source comprise) plutôt qu'une fois. Le sous-ensemble ÉMIS dans la ROM pour une scène est
+   l'UNION de tous les sous-ensembles par langue — c'est ce qui permettra à la phase 4 de
+   recharger une scène dans une autre langue sans reconstruire la police en VRAM. La
+   RÉSERVATION, elle, reste dimensionnée sur la langue ACTIVE (`g_lang`, donc la source
+   aujourd'hui) : charger l'union en permanence gâcherait de la VRAM pour des glyphes
+   qu'aucune langue affichée aujourd'hui n'utilise.
+5. **Le garde-fou VRAM (`validator.py`) teste les N langues, pas seulement la source.** Il
+   recalcule le budget d'une scène avec le sous-ensemble de CHAQUE langue (même fonction que
+   la réservation, argument différent) et remonte la PIRE, nommée — « la scène X déborde en
+   allemand (312 tuiles > 256) » même si la source tient. Sans ça, le problème n'apparaît que
+   lorsque quelqu'un teste la ROM dans cette langue-là, au moment le plus cher pour le
+   corriger.
+6. **Les littéraux de script deviennent un avertissement NOMMÉ**, comme annoncé plus haut :
+   `text.draw("Bonjour")` reste compilable (une entrée anonyme, v0.3.2), mais le build liste
+   désormais chaque occurrence avec fichier et ligne — un littéral ne peut être que dans la
+   langue source, donc un trou de traduction garanti dès qu'une deuxième langue est déclarée.
+7. **Rien ne change pour un projet monolingue.** `LANG_COUNT == 1` (aucune langue déclarée) :
+   le code émis est identique à aujourd'hui, `g_texts[1][N]` compile comme `g_texts[N]` d'hier
+   — pas de branche spéciale à maintenir pour ce cas, juste une dimension qui vaut 1.
+
+**Ordre d'implémentation** (chaque étape laisse le projet buildable) :
+
+| # | Étape | Ce qu'elle change | Ce qu'elle NE change PAS |
+| --- | --- | --- | --- |
+| 3.1 | `g_texts[lang][i]` — *livrée* | `font_emit.emit_texts_c` lit `project.text_content(t, code)` par langue déclarée. `g_lang` posé en `extern const int`, toujours 0. | Le rendu : un seul texte lu, celui d'aujourd'hui. |
+| 3.2 | Remap de police — *livrée* | `g_lang_font`, lu par `text_set_font` au lieu de l'index direct. | Tout projet dont `Language.fonts` est vide (cas courant EN/FR/DE/ES **et** une police déjà multilingue, cf. Fonts&Texts) — table = identité. |
+| 3.3 | `scene_codepoints` par langue + union émise — *livrée* | `scene_codepoints_union` — la police d'une scène grossit dès qu'une traduction ajoute des caractères. | La réservation VRAM (toujours la langue active, `scene_codepoints` sans `code`). |
+| 3.4 | Garde-fou VRAM multi-langue — *livrée* | `validator._check_vram_lang_budget` : `scene_text_reservation(p, scene, code)` rejouée par langue, avertit sur la PIRE si elle charge plus de tuiles que la source. | La réservation réelle (toujours la langue active) — c'est un avertissement, `g_lang` reste 0. |
+| 3.5 | Avertissement nommé sur les littéraux — *livrée* | `validator._check_literal_texts` : un `text.draw("...")` liste fichier + ligne, dès qu'une langue est déclarée. | Le comportement runtime (toujours une entrée anonyme valide) ; silencieux en monolingue. |
+
+**Ce que 3.1-3.3 ont posé** (2026-08-27) : les trois validées par un build ROM réel de bout en
+bout (Fonts&Texts ET Pong, `build/` supprimé avant, comme il faut) — pas seulement des tests
+unitaires. 13 tests neufs (`test_text_lang_emit.py`, `test_lang_font_remap.py`,
+`test_scene_codepoints_lang.py`). Piège réel rencontré : le seul projet démo disponible
+(Fonts&Texts) utilise UNE police déjà nativement multilingue (`ark-pixel-10px-monospaced-ja`,
+latin + japonais dans la même planche) — elle ne peut donc prouver ni le remap de police (3.2,
+toujours identité chez elle) ni l'élargissement du sous-ensemble par l'union (3.3, cette police
+est composée donc toujours chargée ENTIÈRE, jamais en sous-ensemble). Les deux chemins sont
+couverts par les tests unitaires sur des cas synthétiques plutôt que par ce projet.
+
+**Ce que 3.4-3.5 ont posé** (2026-08-27) : les deux garde-fous vivent dans `validator.py`,
+même sévérité qu'`_check_text_overflow` (avertissement — `ctx.warn`, jamais bloquant : rien
+n'est cassé dans le build d'aujourd'hui, `g_lang` reste 0) et silencieux en projet monolingue,
+même contrat. `scene_text_reservation` prend désormais un `code` optionnel, rejoué une fois par
+langue par le garde-fou 3.4 SANS toucher au calcul réel (`_apply_vram_layout`/
+`_scene_tile_budgets` continuent de l'appeler sans argument). 7 tests neufs
+(`test_vram_lang_budget.py`, `test_literal_texts_lang.py`) — Fonts&Texts et Pong compilent
+toujours, sans avertissement nouveau (la police composée du premier ne charge aucun glyphe donc
+n'a rien à déborder ; le second n'a que des traductions vides). **Les 5 étapes de la phase 3 sont
+livrées.**
+
+**Fait nouveau pour l'« Ouvert » plus haut** — *changer de langue en cours de partie* : comme
+le sous-ensemble de glyphes ÉMIS est déjà l'union de toutes les langues (décision 4), aucun
+changement de langue n'aura JAMAIS à recharger de tuiles de police, quelle que soit l'option
+choisie en phase 4 — le coût restant est celui du TEXTE déjà posé. **Tranché en phase 4** (voir
+plus bas) : le rechargement de la scène courante, pas le « à chaud » — plus simple à écrire
+pour un coût déjà bas grâce à ce fait-là.
+
+## Ce que la phase 4 a posé (2026-08-27)
+
+`lang.set(code)` / `lang.get()` — l'API tient dans ces deux appels, comme prévu : la police
+effective (3.2) et le sous-ensemble de glyphes (3.3) étaient déjà prêts pour n'importe quelle
+langue, `g_lang` n'avait donc rien d'autre à faire que changer.
+
+**Décisions verrouillées :**
+
+- **`g_lang` cesse d'être une constante de build.** `int g_lang` (non `const`), écrit par
+  `lang_set`. Aucun projet qui n'appelle jamais `lang.set` n'en est affecté — le comportement
+  par défaut reste `g_lang = 0`.
+- **Rendre le changement VISIBLE recharge la scène ACTIVE**, l'option du milieu des trois
+  listées plus haut (ni redémarrage du jeu, ni réécriture zone par zone) : `scene.switch()` vers
+  la scène courante ne faisant RIEN aujourd'hui (`g_next_scene != g_current_scene` gardait déjà
+  un self-switch), `lang_set` pose un drapeau (`g_lang_reload`) que la boucle principale
+  consomme au tour suivant en forçant `g_current_scene = -1` avant son garde-fou existant —
+  zéro code de réinitialisation dupliqué, la scène repart EXACTEMENT comme un vrai changement de
+  scène (acteurs, caméra, musique compris). Contrepartie assumée et documentée : l'état de la
+  scène (dialogue en cours, position d'un acteur) repart à zéro, comme n'importe quelle
+  transition de scène.
+- **Jamais dans `lang_set` lui-même.** Le drapeau, pas un appel direct : `lang_set` peut être
+  invoqué au milieu d'un `on_update`, pendant qu'un acteur s'itère — même précaution que
+  `scene_switch`, qui ne bascule jamais avant le début de la frame suivante.
+- **`lang.set("fr")` résout en `LANG_FR` au build**, exactement comme `scene.switch("Arena")`
+  résout en `SCENE_IDX_ARENA` — jamais une chaîne comparée au runtime. Un code non déclaré
+  refuse de compiler, une liste vide (projet monolingue) refuse tout code : aucun cas spécial,
+  la même mécanique que `DOMAIN_SCENE`.
+- **`lang_set`/`lang_get` ne sont PAS `static inline`**, contrairement à `scene_switch` — piège
+  réel rencontré : `main.c` inclut à la fois `gba_engine.h` et `actor_api_static.h`, qui le
+  redéclare pour les unités de compilation d'acteur/scène ; deux corps `static inline` du même
+  nom dans la même unité de traduction refusent de compiler. Même découpe que `text_set_font` :
+  prototype des deux côtés, IMPLÉMENTATION UNIQUE sous `GBA_ENGINE_IMPL`.
+
+**Validé par build réel** (Fonts&Texts ET Pong, `build/` supprimé avant) : `LangageSelector.lua`
+appelle désormais `lang.set(LANG_EN/LANG_JAP/LANG_FR)` selon l'item choisi — inspection du C
+généré, `lang_set(LANG_FR)` littéral, aucune chaîne. 8 tests neufs (`test_lang_api.py`) côté
+checker/codegen ; le rechargement lui-même (`g_lang_reload`, la boucle principale) n'est vérifié
+que par le build réel — aucun harnais Python ne rejoue la boucle GBA.
+
+**Reste ouvert** (hors phase 4, non retranché) : la persistance SRAM (le choix de langue ne
+survit pas à l'extinction — `save.write`/`save.load` existent déjà, phase 5 ou un chantier
+séparé les y branchera) et l'écran de choix de langue lui-même (« Deutsch / 日本語 » simultanés,
+cf. l'« Ouvert » plus haut) restent à la charge du jeu.
+
+## Garde-fou : couverture de police par langue (2026-08-27)
+
+Trouvé en JOUANT la démo Fonts&Texts, pas en la lisant : une traduction japonaise citait un
+kanji (友) absent des 3831 glyphes de la police du projet. Le moteur fait exactement ce que la
+doc dit — `text_glyph_slot` rend -1, le caractère disparaît de l'affichage, sans un mot au
+build (cf. `gba_engine.h`). Aucun garde-fou existant ne couvrait ce cas : `_check_text_overflow`
+mesure la LARGEUR d'un texte contre sa zone, pas son EXISTENCE dans la police.
+
+`validator._check_font_coverage` comble le trou, même reprise que `_check_text_overflow` :
+DEUX sources (scripts + textes authorés), TOUTES les langues déclarées (`_text_variants`),
+avertissement et non erreur. Une différence assumée avec les deux autres garde-fous de la
+phase 3 (VRAM, littéraux) : ceux-là sont silencieux en projet monolingue, celui-ci vérifie
+la SOURCE même sans aucune langue déclarée — un caractère manquant est un bug de saisie
+qu'aucune traduction n'a besoin d'exister pour révéler.
+
+**Décision verrouillée** : la police jugée est l'EFFECTIVE, pas la déclarée — le remap par
+langue (`Language.fonts`, décision 3.2) peut substituer une autre planche à celle que la zone
+nomme, et c'est celle-là que `text_set_font` charge réellement une fois la langue active. Juger
+la police déclarée aurait produit de faux positifs sur tout projet qui utilise le remap
+justement pour ce genre de cas (un système d'écriture différent).
+
+6 tests neufs (`test_font_coverage_lang.py`), dont un qui prouve que le remap éteint
+l'avertissement quand il couvre vraiment le caractère. Vérifié sur Fonts&Texts (0 avertissement
+après correction de la traduction) et Pong (aucune régression, les deux avertissements restants
+sont ceux, déjà connus, de `_check_literal_texts`).
 
 ---
 
@@ -388,10 +1101,186 @@ distribution).
 
 ---
 
-## v0.11 — Traduction de l'interface de l'éditeur
+## v0.11 — Traduction de l'interface de l'éditeur — **EN COURS**
 
 Complètement indépendant du runtime GBA. Déplaçable librement dans l'ordre : peut être fait
 en parallèle de n'importe quelle autre version.
+
+### D'où vient la question (2026-08-25)
+
+Le jalon ne s'est pas ouvert par la traduction, mais par **le contenu informatif de
+l'interface**. Un inspecteur disait déjà beaucoup de choses — l'empreinte d'une zone de
+texte, un recouvrement de surface, une palette que le build va écarter — et les disait
+**chacune à sa façon** : un `W.hint()` dont l'appelant choisissait la couleur à la main,
+un `setStyleSheet(f"color:{C.ACCENT_YLW}")` recalculé à chaque rafraîchissement, des
+phrases assemblées par concaténation (`"s" if n > 1`, `"frame(s)"`), et deux langues
+mélangées dans le même écran.
+
+Trois défauts, dont un seul se voyait :
+
+- **Rien ne distinguait un constat d'un risque.** Le jaune était posé par jugement de
+  l'appelant, pas par la nature du message. Deux messages de gravité opposée pouvaient
+  sortir de la même ligne de code avec la même couleur.
+- **Rien ne disait à quel point un message était optionnel.** Un avertissement expliquant
+  une contrainte matérielle avait été retiré parce qu'il était « trop précis pour l'interface
+  d'un IDE » — ce qui était juste, mais laissait sans place les explications qu'on veut
+  garder pour qui débute.
+- **Aucun texte n'était traduisible.** Pas un `tr()` dans le dépôt, 103 fichiers d'interface,
+  et des phrases construites en Python à l'exécution — c'est-à-dire la forme exacte qu'une
+  traduction ne peut pas reprendre, l'ordre des mots n'étant pas le même d'une langue à
+  l'autre.
+
+Le premier temps de ce jalon répond aux trois d'un coup : **un gabarit à trois niveaux**, et
+**les textes sortis du code**.
+
+### Le gabarit — trois niveaux, quatre tons
+
+Le NIVEAU dit à quel point le message s'impose, le TON dit ce qu'il annonce. Le niveau est
+choisi par l'appelant (c'est une question de place dans l'écran), le ton est écrit dans le
+catalogue (c'est une propriété du message). Deux sources de vérité distinctes, aucune
+redondance entre elles.
+
+| Niveau | Appel | Forme | Se tait quand |
+| --- | --- | --- | --- |
+| **1** | `note(layout, clé="")` | une ligne sans cadre, sous un `W.section()`, en sous-brillance | son texte est vide |
+| **2** | `notice(clé, ancre, layout)` | **la gravité tranche** : `info`/`accent` → bulle au survol de l'ancre ; `build`/`render` → encadré permanent | son texte est vide |
+| **3** | `tip(clé, layout)` | encadré à ampoule, affiché tout de suite | les astuces sont coupées dans les réglages du projet |
+
+**Le niveau 1 est le seul dont la clé peut changer d'un rafraîchissement à l'autre** — c'est
+sa raison d'être : une ligne d'inspecteur dit tantôt une empreinte, tantôt pourquoi elle est
+vide. D'où sa signature, qui met le LIEU d'abord et la clé en second, facultative. Aux deux
+autres niveaux la clé est fixe : au niveau 2 parce que c'est elle qui décide de la forme, au
+niveau 3 parce qu'une astuce explique une notion et n'a donc aucun état à attendre.
+
+| Ton | Couleur | Ce qu'il annonce |
+| --- | --- | --- |
+| `info` | `TEXT_MUTED` | un constat — une empreinte, un compte, une provenance |
+| `accent` | `ACCENT` périwinkle | un complément qui renvoie à un autre écran ou à une notion de l'éditeur |
+| `build` | `ACCENT_YLW` + ⚠ | ça compile, mais le build va écarter ou rogner ce qui est là |
+| `render` | `ACCENT_YLW` + 👁 | ça compile et ça s'émet, mais la console n'affichera pas ce qui est authoré |
+
+### Décisions verrouillées
+
+- **Le rouge n'entre pas dans le gabarit.** Une seule couleur d'alerte, deux icônes : `build`
+  et `render` sont tous deux jaunes, et c'est la FORME de l'icône qui les distingue — la même
+  règle que les familles d'icônes (« la forme, pas la teinte »). `ACCENT_RED` reste ce qu'il
+  est depuis le thème : les erreurs BLOQUANTES du validateur et la suppression. Un inspecteur
+  qui se met à parler rouge banalise la seule couleur qui devait arrêter quelqu'un.
+- **Une entrée peut porter un `code`** — l'expression Lua que le champ MIROITE
+  (`self.collision.solid`). Elle s'affiche en tête de l'infobulle et **ne part jamais dans un
+  side** : une expression d'API ne se traduit pas, la traduire casserait le script qu'elle
+  donne à recopier. C'est ce qui a permis d'absorber les deux mini-catalogues `_TOOLTIPS`
+  qui existaient déjà — voir plus bas.
+- **Le niveau 2 n'a qu'un appel, et la forme en découle.** `notice(clé, ancre, layout)` :
+  un message de niveau 2 est toujours À PROPOS de quelque chose (l'ancre) et vit toujours
+  QUELQUE PART (la carte). S'il n'a pas d'ancre, c'est qu'il parle du panneau entier — donc
+  ce n'est pas un niveau 2, c'est un niveau 1 ou un niveau 3. La règle tranche les deux à la
+  fois : où le poser, et de quel niveau il relève.
+- **Le niveau 3 est le seul endroit où l'éditeur a le droit d'EXPLIQUER.** Les niveaux 1 et 2
+  restent tenus par la règle qui avait fait retirer l'avertissement de centrage : on dit ce
+  qui est ACTIONNABLE et probablement non voulu, on ne commente pas le matériel. Une
+  explication de concept, une astuce d'optimisation, un rappel de règle : niveau 3, donc
+  coupable d'un interrupteur. C'est ce qui la rend acceptable — elle ne peut pas noyer les
+  deux autres niveaux puisqu'elle n'est pas obligatoire.
+- **L'interrupteur vit dans les réglages de l'APPLICATION**
+  (`core/interface_preferences.py`, catégorie *Interface*), pas dans ceux du projet. Il y a
+  d'abord été posé côté projet, puis déplacé le même jour, pour deux raisons dont la seconde
+  est la vraie : `project.json` est versionné, donc couper les astuces les coupait pour toute
+  l'équipe — y compris pour celui qui arrive et à qui elles s'adressent ; et surtout, un
+  réglage de projet passe par `SetFieldCmd`, donc **annuler une édition de scène pouvait
+  rebasculer une préférence de machine**. Un réglage d'application n'entre pas dans
+  l'historique d'un projet.
+- **Le partage n'est pas un risque, c'est une portée.** « Mise en page partagée par 3
+  scènes » et « entrée montrée par 2 autres éléments » étaient JAUNES ; ils passent en
+  périwinkle, sur leur propre ligne au lieu de teinter la ligne du nom. Rien n'est écarté,
+  rien ne s'affiche mal — c'est un fait sur l'étendue d'une modification, et c'est
+  exactement ce que le périwinkle désigne partout ailleurs. Le jaune y gagne : il ne reste
+  qu'à ce que le build ou l'écran feront vraiment.
+- **Un texte n'est plus écrit dans le code d'interface.** Il vit dans
+  `ui/common/notices/notices.json`, cité par une clé. Le Python passe les VALEURS
+  (`show_text(other=…, n=…)`), jamais des morceaux de phrase — c'est précisément la
+  concaténation qui rend une phrase intraduisible, l'ordre des mots n'étant pas universel.
+- **Le catalogue reprend la grammaire de la table de textes du JEU (v0.9), à une exception
+  près.** Un maître `notices.json` porte la structure (clé, ton, texte source), un side
+  `notices_<code>.json` ne porte que la traduction, jointe par clé ; **une entrée absente vaut
+  la SOURCE, jamais une chaîne vide**. L'exception : ici la clé EST la jointure, là où le jeu
+  utilise un id opaque. La raison est que la clé est écrite dans du Python versionné — un id
+  opaque y serait illisible, et la renommer est un changement de code qui touche le side dans
+  le même commit, ce qu'un renommage fait par l'utilisateur ne pourrait pas garantir.
+- **Le pluriel est déclaré, pas bricolé.** Une entrée peut porter `one`/`other` au lieu de
+  `text` ; c'est l'argument nommé `n` qui choisit. Les `"s" if n > 1` et les `frame(s)` qui
+  traînaient dans les inspecteurs disparaissent — ils n'étaient traduisibles dans aucune
+  langue, y compris en français (« 1 rangée » / « 2 rangées »). Une langue à pluriel plus
+  riche que deux formes demandera une règle par langue : le format peut l'accueillir, la
+  question ne se pose pas avant d'avoir cette langue.
+- **Une phrase composée l'est par CLÉS, pas par fragments.** Le coût d'une image est une
+  entrée, et le morceau « où ça coûte » en est une autre, injectée par `text()`. Chaque
+  morceau reste une phrase entière pour le traducteur.
+- **Le catalogue est vérifié par la CI, dans les deux sens.** `check_architecture.py` relit
+  l'AST de tout `editor/` : toute clé citée doit exister, toute entrée du catalogue doit être
+  citée. Sans ce contrôle, l'extraction se défait toute seule — une clé mal tapée donne un
+  message vide, et un message vide ne se plaint jamais.
+
+### Ce que ça touche
+
+| Fichier | Nature |
+| --- | --- |
+| [notice.py](editor/ui/common/notice.py) | **nouveau** — les trois niveaux, les quatre tons, le catalogue |
+| [notices.json](editor/ui/common/notices/notices.json) | **nouveau** — le catalogue source (langue `en`) |
+| [theme.py](editor/ui/common/theme.py) | `QSS.notice_box(tone)` — l'encadré, une seule définition |
+| [icons.py](editor/ui/common/icons.py) | `info`, `tip` (⚠ et l'œil existaient) |
+| [interface_preferences.py](editor/core/interface_preferences.py) | **nouveau** — les réglages d'affichage, un par machine |
+| [settings_dialog.py](editor/ui/common/settings_dialog.py) | catégorie **Interface** — l'interrupteur des astuces |
+| [toolchain.py](editor/core/toolchain.py) | `_config_dir` → `config_dir` : quatre modules y posent leur fichier |
+| [project_settings_dialog.py](editor/ui/scene_manager/inspectors/project_settings_dialog.py) | l'astuce des Collisions |
+| [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) | 30 messages extraits, plus un seul `setStyleSheet` de couleur |
+| [actor_inspector.py](editor/ui/scene_manager/inspectors/actor_inspector.py) + [collision.py](editor/ui/scene_manager/inspectors/component_editors/collision.py) | les deux `_TOOLTIPS`/`_tip()` locaux **supprimés** |
+| [ui_region.py](editor/core/models/ui_region.py) | `forced_target_reason()` **supprimée** — de la prose d'interface dans `core/models` |
+| [data_inspector_panel.py](editor/ui/data_editor/data_inspector_panel.py) | le dernier `W.hint` statique |
+| [project.py](editor/core/project.py) | `show_tips` n'y est plus lu — clé ignorée, sans migration |
+| [nuitka_build.py](packaging/nuitka_build.py) | le catalogue embarqué dans la distribution |
+| [widgets.py](editor/ui/common/widgets.py) | `W.hint()` **supprimé** — il était le mécanisme d'avant |
+| [check_architecture.py](tools/check_architecture.py) | 7e contrôle — catalogue ↔ code |
+
+### Ce que le chantier a trouvé en chemin
+
+- **Deux mini-catalogues d'infobulles à clés existaient déjà**, dupliqués : un `_TOOLTIPS` +
+  `_tip()` dans `actor_inspector.py`, un autre dans `component_editors/collision.py`, avec la
+  même mécanique recopiée et le `ACCENT_BLU` déprécié en dur. C'était le niveau 2 avant
+  l'heure, en français, et sans personne pour le savoir. Les onze messages rejoignent le
+  catalogue, les deux helpers disparaissent.
+- **Quatre de ces appels citaient une clé absente de leur propre dictionnaire**
+  (`actor.rotation`, `actor.scale`, `actor.obj_mode`, `actor.visible`) : `_tip()` retournait
+  en silence, donc ces quatre champs n'ont JAMAIS eu d'infobulle. Les appels morts sont
+  retirés plutôt que remplis d'un contenu inventé — s'il faut les écrire, c'est une décision
+  d'auteur, pas un effet de bord d'extraction. C'est ce défaut-là qui a fait écrire le
+  contrôle de catalogue, et c'est lui qui l'aurait vu.
+- **`forced_target_reason()` fabriquait de la prose d'interface dans `core/models`** — deux
+  phrases françaises destinées « à être affichées telles quelles », dans la couche qui n'a
+  pas le droit de connaître l'interface. Un seul appelant. Les deux raisons deviennent deux
+  entrées du catalogue et la fonction disparaît.
+- **Trois messages étaient restés en français** dans un écran déjà migré à l'anglais (la
+  carte Liste, le libellé du mode Solid). Ils sont traduits au passage, comme le veut la
+  règle de migration écran par écran.
+
+### Ouvert
+
+- **La sélection de langue n'existe pas encore.** `notice.set_language(code)` est écrit et
+  n'a aucun appelant : c'est la seule pièce délibérément inemployée du chantier, et le premier
+  commit de la suite du jalon (un réglage d'application, pas de projet — l'interface est celle
+  de l'éditeur, pas du jeu). Tant qu'il n'est pas appelé, le maître est la seule source.
+- **Le reste de l'interface n'est pas extrait** : libellés, titres, états vides, menus, et les
+  202 `setToolTip` posés à la main. Le catalogue est fait pour les accueillir sans déménager,
+  mais les notices sont ce qui se traduit le moins bien et se lit le plus mal — d'où l'ordre.
+  Reste à trancher si les libellés partagent le catalogue des notices ou vivent à côté : un
+  libellé n'a ni ton ni niveau.
+- **Les messages du validateur** (`core/validator.py`, ~40 phrases) sont l'autre corpus déjà
+  centralisé, et le plus proche : ils ont une gravité, et le rouge y a un sens. Ils partiront
+  probablement dans le même catalogue avec un ton `error` que le gabarit d'inspecteur n'offre
+  pas — à décider quand ce sera leur tour, pas avant.
+- **Une astuce n'est pas dismissible individuellement.** L'interrupteur est global. Un « ne
+  plus montrer celle-ci » demanderait une liste de clés vues dans le projet ; personne n'a
+  encore dit que c'était le besoin.
 
 ---
 
@@ -710,27 +1599,248 @@ c'est **où il se déclare**.
 - **La mesure, pas de garde-fou** — même règle qu'en v0.7.6 : le build dit ce que les pools de
   la scène coûtent, rien ne bloque.
 
+### La référence rendue, et pourquoi elle tient en UN temps
+
+La forme demandée le 2026-08-26 était en deux temps — un template obtenu, puis instancié :
+
+```lua
+local template = prefab.get("Bullet")     -- n'existera pas
+local inst     = prefab.spawn(template)   -- n'existera pas
+```
+
+Elle ne peut pas exister, et la raison n'est pas la même que celle du spawn dynamique
+ci-dessus. **`spawn_<Prefab>` est une fonction C distincte par prefab**, écrite au build avec
+la plage du pool, la banque de palette, les boîtes de collision et les enfants du template
+cuits dedans (`main_gen.py:549`). Un template tenu dans une variable devrait choisir la
+fonction à l'exécution : il faudrait une table de dispatch prefab → fonction, donc rendre
+adressables des symboles que le build sait résoudre gratuitement. Le codegen l'a d'ailleurs
+toujours refusé — il exige le littéral et le dit (`codegen.py:1815`).
+
+C'est la règle des trois provenances, déjà écrite plus haut : `module.get("Nom")` rend une
+chose **nommée du projet**, et son coût est *un `#define`*. Un prefab n'est pas une chose qu'on
+obtient puis qu'on instancie — **le nom du prefab EST l'argument du spawn**. Les deux temps
+n'achètent rien qu'un temps ne donne déjà.
+
+Ce que l'auteur voulait vraiment — *tenir l'instance et la piloter* — est exactement la
+décision verrouillée ci-dessus, en un temps :
+
+```lua
+local inst = actor.spawn("Bullet", vec2(116, 76))
+if inst ~= nil then          -- le pool peut être plein
+    inst:move_to(x, y)
+end
+```
+
+**La référence est un `Actor*`, pas un indice de slot.** C'est le point à ne pas rater : le
+langage sait déjà tenir un acteur dans une variable — `get_actor("PADDLE")` porte `ret="actor"`
+et le codegen en fait un `Actor*` (`codegen.py:1194`), et `local bras = self.bras` fait pareil
+depuis la v0.23. Rendre un `int` obligerait à écrire `&g_actors[i]` à chaque appel : **deux
+représentations d'un acteur dans le même langage**, pour la même chose. Donc :
+
+- `REF_ACTOR = "actor"` entre dans `REF_TYPES`, et `C_REF_TYPES["actor"] = "Actor*"`
+  (`api.py:56`, `expr_types.py:155`) — le mécanisme générique des références, celui de `sfx`.
+- `spawn_<Prefab>` rend `Actor*` au lieu de `int` (`main_gen.py:549`, `headers.py:298`) ;
+  `NULL` remplace `-1`. `nil` vaut déjà `0` dans le C émis, le test s'écrit donc en Lua.
+- Le cas particulier `is_actor_ref` du codegen (`codegen.py:1174-1187`) **disparaît** : il
+  reconnaît `get_actor` par son nom alors que `ret="actor"` le dit déjà. Une fois `"actor"`
+  dans `REF_TYPES`, `infer_ref_type` le couvre — un chemin au lieu de deux.
+
+> **Incohérence à corriger au passage** : `api.py:489` déclare `actor.spawn` avec `ret="void"`,
+> pendant que `api_reference.json:634` documente « retourne l'index du slot ou -1 ». Les deux
+> sont faux après ce chantier, et ils se contredisent déjà aujourd'hui.
+
+### Ce que l'écran Scene doit montrer
+
+C'est la question qui a ouvert ce chantier : *un script déclare un spawn, et rien dans l'écran
+de scène ne le dit.* Elle a une réponse simple, parce que le nom du prefab est un **littéral
+obligatoire** — donc lisible statiquement, sans exécuter quoi que ce soit.
+
+Le lien existe déjà dans les deux sens, mais aucun ne passe par le spawn :
+`PrefabUsesInspector` compare `actor.prefab_name` (les instances **posées** dans la scène) et
+`ScriptUsesInspector` compare `component.script` (qui **porte** le script) —
+`ui/scene_manager/inspectors/uses_inspectors.py`. Ni l'un ni l'autre ne lit les appels du
+script. Il manque donc un troisième lien, et un seul : **qui SPAWNE ce prefab.**
+
+- La source est `refactor.iter_call_sites(DOMAIN_PREFAB)`, qui existe déjà et sert aux
+  renommages : `DOMAIN_PREFAB` est précisément la déclaration « cet argument cite un prefab du
+  projet » (`api.py:98`). Pas de nouveau parseur, pas de graphe persistant à maintenir — un
+  balayage à la demande, comme le reste de `uses_inspectors.py`.
+- `PrefabUsesInspector` gagne une section « Spawné par », à côté de « Utilisé par ».
+- Et c'est **la même lecture** qui alimente le pool de la scène : les prefabs qu'une scène
+  spawne réellement sont ceux que ses scripts citent. L'éditeur peut donc *proposer* le pool au
+  lieu de le faire deviner — proposer, pas imposer : la taille reste une décision d'auteur.
+
+**À ne pas faire** : lire la table `exports` pour ça. Un `prefab_ref` exposé a été envisagé
+puis écarté — un spawn n'est pas un paramètre d'acteur, c'est un appel. La citation est déjà
+dans le code, la dupliquer en en-tête créerait une seconde source de vérité qui pourrait
+mentir.
+
 ### Ce que ça touche
 
 `core/models/scene.py` (le champ change de classe), `headers.py` (les `POOL_*` deviennent
-per-scène), `main_gen.py` (`_pool_info`, la boucle de spawn), `lua_compiler.py` (le
-dimensionnement de `g_state_*`), `palette_alloc.py`, `rom_build.py`, `validator.py`, et
-l'écran Scene, qui doit désormais montrer les pools de la scène.
+per-scène, et `spawn_X` rend `Actor*`), `main_gen.py` (`_pool_info`, la boucle de spawn, la
+signature), `lua_compiler.py` (le dimensionnement de `g_state_*`), `palette_alloc.py`,
+`rom_build.py`, `validator.py`, et l'écran Scene, qui doit désormais montrer les pools de la
+scène.
+
+Pour la référence rendue : `scripting/api.py` (`REF_ACTOR`, le `ret` de `actor.spawn`),
+`scripting/expr_types.py` (`C_REF_TYPES`), `scripting/codegen.py` (le cas `is_actor_ref` qui
+tombe), `scripting/api_reference.json` (la fiche, aujourd'hui fausse), et `SCRIPTING.md`.
+
+Pour l'écran : `ui/scene_manager/inspectors/scene_inspector.py` (le widget de budget à deux
+champs), `ui/scene_manager/inspectors/uses_inspectors.py` (« Spawné par »), et
+`core/validator.py` (l'avertissement « plus d'acteurs posés que de slots réservés »).
+
+### Tranché (2026-08-26) : les scripts se compilent PAR SCÈNE
+
+Des deux sorties envisagées — dimensionner `g_state_<X>[]` sur le maximum du projet, ou
+compiler par scène — **c'est la seconde**. On récupère tout : les entrées de `g_actors[]` *et*
+l'état de script.
+
+**L'hypothèse qui tombe est plus petite qu'annoncé, et il faut le dire avant de chiffrer le
+chantier.** `transpile_all` reçoit déjà `scene` et ses acteurs : **les scripts d'acteur, de
+scène et de caméra sont DÉJÀ compilés par scène**. Un seul cas échappe à la règle, et c'est
+celui-là qu'on change :
+
+> `compiled_prefabs` (`lua_compiler.py:399`, posé par `rom_build.py:315`) : « la première scène
+> les compile tous, les suivantes n'en recompilent aucun ». Le prefab sort en
+> `actor_<Prefab>.c`, un fichier pour le projet, avec `pool_size = pf.max_instances` cuit
+> dedans. C'est ce `set` de garde qui disparaît — pas une architecture.
+
+Ce que ça impose :
+
+- **Le symbole porte la scène.** `actor_<Scene>_<Prefab>.c`, `<Scene>_<Prefab>_on_update`,
+  `spawn_<Scene>_<Prefab>`. Sans ça, deux scènes qui emploient le même prefab donnent deux
+  définitions du même symbole, et l'édition de liens refuse.
+- **`POOL_<X>_*` devient per-scène**, ce qui est tout l'objet du chantier. `headers.py:63`
+  porte encore la justification inverse (« compilé une fois pour le PROJET et ne peut donc pas
+  connaître ces bornes autrement ») : ce commentaire devient faux et doit partir avec le code.
+- **Le codegen préfixe le spawn.** `_emit_actor_spawn` émet `spawn_{sym}` (`codegen.py:1830`) ;
+  il émettra `spawn_{scene}_{sym}`. Un prefab qui en spawne un autre se résout naturellement —
+  il est désormais compilé *pour une scène*, donc il sait laquelle.
+
+Ce que ça coûte, et il faut l'assumer : **un prefab employé dans N scènes occupe N fois sa
+place en ROM**, et le build le transpile N fois. C'est le prix du per-scène, il est réel, et il
+se mesure comme le reste (règle de la v0.7.6 : le build dit, rien ne bloque). La ROM est la
+ressource la plus large de la machine ; l'EWRAM, celle qu'on récupère, est la plus étroite.
+
+Ce que ça achète, en plus du pool — **deux gains qui ne se voyaient pas depuis la question de
+départ** :
+
+- **Les palettes propres des prefabs se libèrent.** `prefab_own_slots` (`palette_alloc.py:191`)
+  force aujourd'hui la palette propre d'un prefab au **même slot matériel dans TOUTES les
+  scènes**, et la raison écrite est exactement celle qui tombe : « spawn_X est global ». Une
+  fois le spawn per-scène, chaque scène alloue ses seize banques pour elle seule. Une scène de
+  menu cesse de payer la banque de la balle du niveau d'action.
+- **`actor.spawn` dans une scène sans pool devient une ERREUR de build.** Le checker valide
+  aujourd'hui contre la liste du PROJET (`lua_compiler.py:188` : « `actor.spawn("X")` vise la
+  liste entière, pas ce que la scène courante contient »). Avec un pool per-scène, il valide
+  contre **le pool de cette scène** — et attrape une faute qu'aucun outil ne peut voir
+  aujourd'hui, parce que tous les pools existent partout.
+
+**La v0.23 a sa réponse** : l'état de script d'une partie se range là où se range celui de la
+racine, c'est-à-dire dans l'unité de compilation de la scène.
+
+### Tranché (2026-08-26) : le budget d'acteurs de la scène, en deux champs
+
+Le pool se déclare **dans l'inspecteur de scène**, par un widget à deux champs qui partagent
+un total :
+
+```
+Acteurs de la scène   [ 96 ]  slots réservés
+Pool de prefabs       [ 32 ]  slots de spawn
+                      ─────
+                        128   ← la limite OAM, pas un réglage
+```
+
+**Les deux champs sont réglables et se répondent** : monter le pool descend les acteurs, et
+l'inverse. Ce n'est pas une commodité d'interface, c'est la forme exacte de la contrainte —
+il y a **un** budget, et deux façons de le dépenser.
+
+- **Le total est 128 parce que le matériel affiche 128 sprites.** Il ne se règle nulle part,
+  et surtout pas dans Project Settings : ce n'est pas une préférence, c'est l'OAM. L'auteur
+  apprend la vraie limite de la machine en manipulant le widget, ce qui est précisément ce
+  qu'un éditeur de GBA doit enseigner.
+- **Le champ « acteurs » compte des slots RÉSERVÉS, pas des acteurs posés.** C'est ce qui le
+  rend éditable, donc le widget bidirectionnel. L'auteur peut poser moins que ce qu'il
+  réserve ; le validateur avertit s'il pose plus (même famille d'avertissement que les
+  caméras et les windows, cf. « Ouvert » plus bas).
+- **Le pool se dit en INSTANCES, le budget se paie en SLOTS.** Un prefab à sous-arbre coûte
+  instances × parties (v0.23, `POOL_*_INSTANCES` contre `POOL_*_SIZE`). Le widget doit
+  montrer les deux, sans quoi déclarer huit boss à quatre parties consomme trente-deux slots
+  en silence.
+
+**Une simplification est assumée ici, et il faut qu'elle soit écrite** : un acteur **sans
+sprite** ne consomme aucune entrée OAM — le matériel en accepterait donc plus de 128. Le
+budget les compte quand même, parce qu'un seul nombre lisible vaut mieux que deux plafonds
+dont l'auteur devrait suivre lequel s'applique. C'est un choix d'ergonomie contre le
+matériel, le seul de ce chantier, et il se rouvrira si un projet réel bute dessus.
+
+### Livré le 2026-08-26 : la moitié éditeur
+
+Le widget existe et pilote la vraie ROM. Ce qui est en place :
+
+- `Scene.actor_slots` et `Scene.prefab_pools` (`core/models/scene.py`), absents du JSON tant
+  que la scène n'a rien réglé.
+- `codegen/actor_budget.py` — le plafond OAM, la conversion instances → slots, et le budget
+  d'une scène en un seul appel. Source unique : les **huit** sites du build qui lisaient
+  `Prefab.max_instances` passent tous par lui.
+- La carte « Actor budget » dans l'inspecteur de scène, une ligne de pool par prefab.
+- `validator._check_actor_budget` — les deux dépassements, en avertissement.
+- `DEFAULT_ACTOR_SLOTS = 96` — une scène NEUVE naît partagée 96 / 32, écrit aux deux
+  sites de naissance (`command_dispatcher.add_scene`, `Project.create`) et **pas** dans
+  le défaut du dataclass : une scène déjà sur le disque garde son « auto », sinon tout
+  projet existant réserverait 96 entrées par scène du jour au lendemain.
+
+**`Prefab.max_instances` n'est pas supprimé, et c'est délibéré.** Plus rien ne l'édite et
+aucun site du build ne le lit ; il ne sert plus que de **repli** pour un prefab dont aucune
+scène ne déclare de pool. Le supprimer aujourd'hui viderait en silence les pools de tout
+projet antérieur — le Pong compile encore parce que ce repli existe. Il part avec la moitié
+codegen (compilation par scène), pas avant.
+
+**Ce qui n'est donc PAS encore gagné** : la ROM alloue toujours UN pool par prefab, dimensionné
+sur le **maximum** de ce que les scènes demandent (`prefab_pool_instances`), parce que
+`POOL_<X>_SIZE` reste une constante unique pour le projet. L'économie par scène — celle qui
+motive le chantier — arrive avec la compilation par scène. Le widget, lui, dit déjà la vérité
+sur ce que l'auteur demande.
+
+### Ce que ce budget fait apparaître, et qui n'était pas dans le chantier
+
+**`g_actors[]` est dimensionné sur la SOMME des scènes, alors qu'une seule vit à la fois.**
+`n_actors = total_scene_actors + pools` (`main_gen.py:4009`), où `total_scene_actors` est le
+total de **toutes** les scènes concaténées (`main_gen.py:4007`) — chaque scène reçoit une
+tranche, et les tranches des scènes endormies restent allouées en EWRAM pendant toute la
+partie.
+
+Tant que le budget était dérivé, ça se voyait à peine. Avec un plafond de 128 **par scène**,
+un projet de cinq scènes réserve 640 `Actor` pour n'en utiliser jamais plus de 128 à la fois.
+La conclusion logique du per-scène est donc : **dimensionner `g_actors[]` sur la scène la plus
+chargée, pas sur leur somme**, et faire repartir chaque tranche de zéro. Ce n'est pas décidé
+ici — ça touche la résolution des `TAG_*`, qui sont aujourd'hui des offsets globaux à travers
+toutes les scènes — mais c'est le gain le plus large que v0.17 rend accessible, et il ne faut
+pas le perdre de vue en chemin.
 
 ### Ouvert
 
-- **Le vrai coût du chantier, et il n'est pas tranché.** `POOL_<X>_START` / `POOL_<X>_SIZE`
-  sont des constantes de build lues par le **script transpilé**, qui est compilé **une seule
-  fois pour le projet** — c'est écrit tel quel dans `headers.py`. Si la taille devient
-  per-scène, un même script voit deux tailles selon la scène. Deux sorties : dimensionner
-  `g_state_<X>[]` sur le **maximum du projet** (on récupère les entrées de `g_actors[]`, mais
-  pas l'état de script), ou **compiler les scripts par scène** (on récupère tout, au prix du
-  temps de build et d'une hypothèse tenue partout ailleurs qui tombe). À trancher avant
-  d'écrire une ligne. **La v0.23 attend cette réponse** : un prefab qui porte un sous-arbre
-  dimensionne son pool en instances × parties, et l'état de script de chaque partie se range
-  là où celui-ci se range.
-- **Où le pool d'une scène se déclare dans l'éditeur** : dans la liste des acteurs de la
-  scène, ou dans un panneau à part ?
+- **`G_ACTOR_COUNT` n'est plus ce qu'il dit.** `actor_api.h` le fixe au total des acteurs de
+  scène **sans les pools** (`rom_build.py:291`), alors que le tableau réel les inclut
+  (`main_gen.py:4009`). Son seul consommateur documenté était la macro `broadcast`, et
+  `actor_api_static.h:692` note que « broadcast est résolu directement dans le codegen de
+  chaque scène » — la constante semble donc n'avoir plus de lecteur. À vérifier puis à retirer,
+  ou à corriger : une constante qui ment est pire qu'une constante absente.
+- **Les acteurs de scène ont le même défaut de nom, non traité ici.** `actor_{c_sym(nom)}.c`
+  (`lua_compiler.py:386`) et `#define TAG_{NOM}` (`headers.py:58`) sont écrits sans préfixe de
+  scène, alors que `headers.py` parcourt les acteurs de **toutes** les scènes : deux scènes
+  portant chacune un acteur « Player » écrivent le même fichier et redéfinissent le même
+  `#define`. Le préfixe de scène décidé ci-dessus pour les prefabs est la même réponse — à
+  étendre aux acteurs, mais dans son propre chantier, pas dans celui-ci.
+
+  Le projet **sait déjà nommer ce défaut** : `validator._check_cameras` ③ avertit quand deux
+  caméras de scènes différentes portent le même nom, « `camera.switch("Nom")` viserait l'une
+  des deux au hasard du build » — et `_check_window_regions` fait pareil. Les acteurs n'ont pas
+  cet avertissement, alors que leur collision est **plus grave** : elle n'égare pas un appel,
+  elle écrase un fichier généré. Le contrôle manquant coûte quinze lignes calquées sur celui
+  des caméras, et il est utile **avant** le chantier de préfixe, pas après.
 
 ---
 
@@ -951,9 +2061,16 @@ réglé** ; il reste trois.
 ### Chantier transverse — l'allocateur de ressources matérielles
 
 Ne porte pas de numéro de version : il **se déclenche par un événement**, pas par une date —
-le jour où une ressource matérielle a son deuxième consommateur. Le premier candidat est le
-viewport de caméra / l'écran partagé de la v2.0, qui rouvre déjà « une région appartient-elle
-à une caméra, ou l'inverse ? ». Le second est le clipping d'UI.
+le jour où une ressource matérielle a son deuxième consommateur. Le viewport de caméra
+(`Camera.frame_w/h`, réglé le 2026-08-24) a d'abord semblé ne PAS en être un — une seule
+caméra active à la fois, allocation fixe WIN0=caméra/WIN1=scène. **Corrigé le 2026-08-25** :
+c'en était bien un. Le second consommateur n'a pas besoin d'être simultané À L'EXÉCUTION pour
+poser le problème — il suffit que deux INTENTIONS différentes (le cadre d'une caméra, un
+panneau UI) veuillent la même ressource dans la MÊME scène, même si une seule caméra tourne à
+la fois. `codegen/window_alloc.py` est livré : c'est la première instance réelle de ce
+chantier, cf. ARCHITECTURE.md, « Windows — le pochoir ». Le candidat qui reste vraiment ouvert
+est l'**écran partagé** de la v2.0 (plusieurs caméras actives SIMULTANÉMENT — un arbitrage
+différent, à l'exécution).
 
 #### Le problème
 
@@ -992,28 +2109,39 @@ jamais ». Ce jalon est son implémentation.
   de cycles), renoncer au masquage, assigner à la main. Pas de « clipping logiciel » pour un
   calque tuilé en mode 0 : il faudrait réécrire la tilemap. Une liste courte et vraie, sinon
   l'éditeur promet ce que la machine ne fait pas.
+  - **Précisé le 2026-08-25, pour les windows** : « renoncer au masquage » silencieusement est
+    justement le pire cas ici — une région qui ne cache rien à la place d'une région découpée
+    est un bug visuel sans signal. `window_alloc.py` choisit donc l'échec de build NOMMÉ
+    plutôt que ce repli-là : pas de fusion possible (rangs différents, `WINR_0`/`WINR_1` ne
+    sont pas interchangeables), pas de HBlank par scanline (hors périmètre v1), pas
+    d'assignation à la main proposée (ce serait renommer la ressource matérielle). Un futur
+    consommateur d'un AUTRE type de ressource peut légitimement choisir un vrai repli parmi la
+    liste — ce n'est pas une règle générale, c'est ce que « exister matériellement » a donné
+    pour CE cas.
 - **L'assignation matérielle reste visible, dans un panneau avancé.** Le principe « l'auteur
   peut descendre jusqu'au matériel » n'est pas suspendu : il ne nomme plus la ressource pour
   obtenir un masque, mais il peut voir laquelle lui a été donnée, et la forcer.
 
-#### Ce qu'il faut faire AVANT, et qui ne coûte presque rien
+#### Ce qui est fait (2026-08-25) — les windows
 
-L'allocateur complet attend son deuxième client — une abstraction à un seul consommateur se
-dessinerait contre des besoins imaginés. Deux gestes se font en revanche dès maintenant, et
-rendent le reste possible sans rien casser :
-
-1. **Le principe est écrit** (fait — cf. ARCHITECTURE), pour que rien de neuf ne lie un
-   concept de haut niveau à un slot matériel d'ici là.
-2. **Cesser de faire de `WindowSlot.region` un index matériel côté auteur.** C'est une
-   indirection et un renommage, pas un ordonnanceur.
+1. **Le principe est écrit** (cf. ARCHITECTURE), pour que rien de neuf ne lie un concept de
+   haut niveau à un slot matériel.
+2. **`WindowSlot.region` n'est plus un index matériel côté auteur** — renommé `.name`, résolu
+   par `codegen/window_alloc.py`.
+3. **La rupture assumée sur l'API Lua est faite pour les windows** :
+   `window.set`/`window.show`/`window.is_visible` adressent maintenant par nom
+   (`DOMAIN_WIN_REGION`), comme `window.set_layer` le faisait déjà — un seul schéma, plus de
+   numéro matériel brut atteignable depuis un script.
 
 #### Ouvert
 
-- L'API Lua `window.set_layer(r, …)` expose les régions par numéro matériel, et des scripts
-  les adressent déjà ainsi. C'est la partie la plus dure à déplacer, et la maison ne migre
-  pas les formats — à traiter comme une rupture assumée, au bon moment.
-- Jusqu'où va l'allocateur de frame. Un arbitrage OAM par frame est un vrai coût CPU ; il se
-  décide sur un cas mesuré, pas à l'avance.
+- Jusqu'où va l'allocateur de frame (OAM, DMA, matrices affines). Un arbitrage par frame est
+  un vrai coût CPU ; il se décide sur un cas mesuré, pas à l'avance — les windows n'en avaient
+  pas besoin (résolubles au build, cf. ARCHITECTURE.md « Deux allocateurs, pas un »).
+- L'assignation matérielle « visible dans un panneau avancé, et forçable » (décision
+  verrouillée ci-dessus) n'est pas construite pour les windows — l'auteur voit le budget
+  (N/2) mais pas quelle intention a reçu quel rang. À rouvrir si un projet réel en a besoin
+  pour déboguer un recouvrement.
 
 ### v2.0 — Backgrounds affines (« Mode 7 »)
 
@@ -1061,11 +2189,25 @@ tête, il promet une Caméra3D qui n'existera jamais sur GBA — le Mode 7 n'est
 une transformation affine en 2D. Le vrai axe est donc *régulière* contre *affine*, pas 2D
 contre 3D.
 
-Deux choses à traiter à ce moment-là, pas avant : **unifier les mécanismes de caméra
-concurrents** (c'est quand la caméra devient un objet nommé porteur d'un état qu'il devient
-absurde d'en avoir deux), et l'**écran partagé**, qui rouvrira la question « une région
-appartient-elle à une caméra, ou l'inverse ? ». Tant que les caméras sont exclusives, la
-question ne se pose pas.
+Une chose à traiter à ce moment-là, pas avant : l'**écran partagé**, qui rouvrira la question
+« une région appartient-elle à une caméra, ou l'inverse ? ». Tant que les caméras sont
+exclusives (une seule active par scène à la fois), la question ne se pose pas.
+
+*Mise à jour 2026-08-24* : « unifier les mécanismes de caméra concurrents » (l'autre point que
+cette piste listait) est réglé — c'est fait depuis la v0.6.1, et l'objet nommé porteur d'un
+état existe déjà. Ce qui a bougé depuis n'est pas cet axe-là mais la PROPRIÉTÉ de la caméra :
+elle appartient désormais à sa scène plutôt qu'au projet (cf. `changelog-archive/v0.6.md`,
+« Révisé le 2026-08-24 »). Ça ne contredit pas Caméra2D — une caméra reste exclusive, une
+seule active à la fois — et ça ne change rien à ce qui reste ouvert ici.
+
+*Mise à jour 2026-08-24 (suite)* : la question « une région appartient-elle à une caméra, ou
+l'inverse ? » posée ci-dessus est **réglée pour le cas à une seule caméra active** — la
+caméra possède désormais un viewport (`Camera.frame_w/h`, cf. `ARCHITECTURE.md`, « Windows —
+le pochoir ») : WIN0 lui appartient, WIN1 reste à la scène. Une allocation FIXE, décidée une
+fois, pas un arbitrage à l'exécution — donc pas l'allocateur de ressources générique que ce
+chantier réserve. Ce qui reste ouvert ici, sans changement, c'est l'**écran partagé** :
+plusieurs caméras actives SIMULTANÉMENT (split-screen), qui redemanderait de vrais
+arbitrages entre plusieurs propriétaires possibles des mêmes deux rectangles.
 
 ### v2.1 — Physique et collision
 

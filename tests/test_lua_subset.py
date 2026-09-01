@@ -205,16 +205,24 @@ def test_les_scripts_de_la_demo_restent_valides():
         assert errs == [], f"{chemin.name} : {errs}"
 
 
-def test_transform_affine_refuse_sans_la_case_cochee():
-    """Le pendant du filet ci-dessus : sans « Affine transform », aucun slot de
-    matrice n'est réservé au build, et self.rotation/scale n'ont nulle part où
-    écrire. Le refus nomme la case à cocher, pas le matériel."""
+def test_transform_affine_avertit_sans_la_case_cochee():
+    """Le pendant du filet ci-dessus : sans « Affine transform » sur le sprite,
+    aucun slot de matrice n'est réservé au build, et rien n'affiche
+    self.rotation/scale. Un AVERTISSEMENT et non un refus — la valeur, elle,
+    s'écrit et se relit (les accesseurs runtime ne consultent plus le slot).
+    Le message nomme la case à cocher, pas le matériel."""
+    from scripting.parser import parse
+    from scripting.checker import check, BuildContext
+
     for prop in ("rotation", "scale", "sprite_rotation", "sprite_scale",
                  "sprite_offset"):
-        errs = _errors(_in_handler(f"local v = self.{prop}"))
-        assert any("Affine transform" in e for e in errs), (prop, errs)
-        assert _errors(_in_handler(f"local v = self.{prop}"),
-                       affine_transform=True) == []
+        src = _in_handler(f"local v = self.{prop}")
+        found = check(parse(src), BuildContext(actor_name="Ball"))
+        assert any("Affine transform" in e.message and e.level == "warning"
+                   for e in found), (prop, [str(e) for e in found])
+        assert _errors(src) == [], prop
+        assert check(parse(src),
+                     BuildContext(actor_name="Ball", affine_transform=True)) == []
 
 
 # ── 6. Les deux listes qui ne doivent pas diverger ─────────────────

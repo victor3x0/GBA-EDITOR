@@ -23,7 +23,7 @@ from pathlib import Path
 
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from ui.common.theme import QSS
-from ui.common.asset_finder import AssetKind, store_nodes, dir_nodes
+from ui.common.asset_finder import AssetKind, store_nodes, dir_nodes, resource_dir
 
 from core.models.resource import (
     MIME_ANIMATED_BG, MIME_MUSIC, MIME_PREFAB_TEMPLATE, MIME_SCRIPT,
@@ -101,6 +101,7 @@ SCENES = AssetKind(
     delete        = _store_deleter("scenes"),
     delete_prompt = lambda s: f"Delete scene “{s.name}”?\n(Ctrl+Z to undo)",
     add_tooltip   = "New scene",     # l'écran crée (scène active à reporter)
+    dir_of        = resource_dir("scenes_dir"),
 )
 
 PREFABS = AssetKind(
@@ -113,6 +114,7 @@ PREFABS = AssetKind(
     add_tooltip   = "New prefab",
     # Glisser un prefab sur le canvas l'y instancie.
     mime          = (MIME_PREFAB_TEMPLATE, lambda project, pf: pf.name),
+    dir_of        = resource_dir("prefab_dir"),
 )
 
 
@@ -154,6 +156,7 @@ SCRIPTS = AssetKind(
     mime          = (MIME_SCRIPT,
                      lambda project, path: (project.asset_rel(path)
                                             if project else path)),
+    dir_of        = resource_dir("scripts_dir"),
 )
 
 
@@ -190,6 +193,7 @@ SPRITES = AssetKind(
     # Un sprite se crée uniquement par import d'une image : l'écran ouvre le
     # dialogue (il lui faut un parent), le finder ne fait que le demander.
     add_tooltip   = "Import a sprite sheet",
+    dir_of        = resource_dir("sprites_dir"),
 )
 
 
@@ -206,6 +210,7 @@ BACKGROUNDS = AssetKind(
     nodes  = store_nodes("backgrounds", group_by=lambda bg: getattr(bg, "kind", "")),
     rename = _renamer("rename_background"),
     delete = _store_deleter("backgrounds"),
+    dir_of = resource_dir("backgrounds_dir"),
 )
 
 
@@ -227,6 +232,7 @@ def _background_of_kind(bg_kind: str, label: str, add_tooltip: str,
         delete      = _store_deleter("backgrounds"),
         add_tooltip = add_tooltip,      # sans `add` : l'écran ouvre l'import
         mime        = mime,
+        dir_of      = resource_dir("backgrounds_dir"),
     )
 
 
@@ -251,6 +257,7 @@ FONTS = AssetKind(
     nodes      = store_nodes("fonts"),
     rename     = _renamer("rename_font"),
     delete     = _store_deleter("fonts"),
+    dir_of     = resource_dir("fonts_dir"),
     # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
     # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
     empty_text = "No font.\n\nDrop a PNG or a .fnt\ninto assets/fonts/",
@@ -346,6 +353,7 @@ PALETTES = AssetKind(
     add         = _add_palette,
     add_tooltip = "Add a palette (create / import)",
     actions     = (("Duplicate", _duplicate_palette),),
+    dir_of      = resource_dir("palettes_dir"),
 )
 
 
@@ -375,6 +383,7 @@ SFX = AssetKind(
     delete_prompt = lambda a: f"Delete SFX “{a.name}”?\n(Ctrl+Z to undo)",
     add           = _add_sound("sfx", "Sfx", "SFX"),
     add_tooltip   = "Add an SFX",
+    dir_of        = resource_dir("sfx_dir"),
 )
 
 MUSIC = AssetKind(
@@ -389,6 +398,7 @@ MUSIC = AssetKind(
     delete_prompt = lambda a: f"Delete track “{a.name}”?\n(Ctrl+Z to undo)",
     add           = _add_sound("music", "Music", "Track"),
     add_tooltip   = "Add a track",
+    dir_of        = resource_dir("music_dir"),
 )
 
 
@@ -430,7 +440,7 @@ DATA_TABLES = AssetKind(
     delete_prompt = lambda t: f"Delete table “{t.name}”?\n(Ctrl+Z to undo)",
     add           = _add_data_table,
     add_tooltip   = "New table",
-
+    dir_of        = resource_dir("data_tables_dir"),
 )
 
 

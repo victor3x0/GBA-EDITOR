@@ -23,6 +23,7 @@ from typing import Optional
 from core.models.palette import OWN_PAL_BANK
 from core.models.scene import Scene
 from core.project import Project
+from codegen.actor_budget import prefab_pool_instances
 from core.gba_color import extract_palette_from_image
 from core.models.palette import RESERVED_SLOT_COLOR
 from core.palette_presets import DEFAULT_PAL_BANK_COLORS
@@ -178,7 +179,8 @@ def _prefab_own_palettes(p: Project) -> list[list[int]]:
     out: list[list[int]] = []
     seen: set[tuple] = set()
     for pf in p.prefabs:
-        if getattr(pf, "max_instances", 0) <= 0 or getattr(pf, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
+        if (prefab_pool_instances(p, pf) <= 0
+                or getattr(pf, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK):
             continue
         cols = _sprite_own_palette(_prefab_sprite(p, pf))
         key = tuple(cols)
@@ -278,14 +280,12 @@ def bg_animation_sources(p: Project, scene: Scene) -> list:
     return out
 
 
-def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
-    """BackgroundAsset compressés servant de FOND à un conteneur d'UI de la
-    scène (`UIPanel.fill_kind` nine-slice ou background).
-
-    Un fond d'UI s'affiche exactement comme un layer : ses tuiles citent des
-    sous-palettes, il lui faut donc son bloc de banques. Sans cette collecte,
-    une image utilisée UNIQUEMENT comme remplissage n'obtiendrait aucune banque
-    et sortirait avec les couleurs du voisin."""
+def _ui_fill_panels(p: Project, scene: Scene) -> list[tuple]:
+    """(panneau, BackgroundAsset compressé) pour chaque conteneur nine-slice/
+    background de la scène. Extrait commun à `ui_fill_encoded_sources`, qui
+    n'en garde que l'asset (ce dont `scene_bank_layout` a besoin), et à
+    `_ui_container_entries`, qui a aussi besoin du panneau — pour NOMMER
+    l'instance dans la carte « Palettes actives » de l'inspecteur."""
     from core.models.ui_region import KIND_PANEL, FILL_NINE, FILL_BG
     lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
     out = []
@@ -301,8 +301,19 @@ def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
         name = getattr(el, "fill_asset", "")
         ba = p.get_background(name) if name else None
         if ba is not None and getattr(ba, "tileset", None):
-            out.append(ba)
+            out.append((el, ba))
     return out
+
+
+def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
+    """BackgroundAsset compressés servant de FOND à un conteneur d'UI de la
+    scène (`UIPanel.fill_kind` nine-slice ou background).
+
+    Un fond d'UI s'affiche exactement comme un layer : ses tuiles citent des
+    sous-palettes, il lui faut donc son bloc de banques. Sans cette collecte,
+    une image utilisée UNIQUEMENT comme remplissage n'obtiendrait aucune banque
+    et sortirait avec les couleurs du voisin."""
+    return [ba for _el, ba in _ui_fill_panels(p, scene)]
 
 
 def _bg_palettes_key(ba) -> tuple:
@@ -531,26 +542,40 @@ def _bg_instance_pairs(p: Project, scene: Scene) -> list[tuple[tuple, InstanceRe
 
 
 def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
-    """Entrées d'asset pour les fonds COMPRESSÉS des layers de la scène : chacun
-    occupe un BLOC de N banques contiguës (ses N sous-palettes, SE_PALBANK par
-    tuile) — pas un slot unique. Non-overridables (on ne remappe pas un bloc
-    vers une seule palette de scène). Dédupliqués par contenu exact des
-    sous-palettes ; l'affichage échantillonne la 1ère sous-palette."""
+    """Entrées d'asset pour les fonds COMPRESSÉS de la scène : chacun occupe un
+    BLOC de N banques contiguës (ses N sous-palettes, SE_PALBANK par tuile) —
+    pas un slot unique. Non-overridables (on ne remappe pas un bloc vers une
+    seule palette de scène). Dédupliqués par contenu exact des sous-palettes ;
+    l'affichage échantillonne la 1ère sous-palette.
+
+    DEUX sources fusionnées dans le MÊME pool de dédup — layers ET conteneurs
+    d'UI (panneaux nine-slice/background) — exactement comme `scene_bank_
+    layout` fusionne `_bg_encoded_sources` et `ui_fill_encoded_sources` dans un
+    seul `encoded_assets` avant d'allouer : un fond posé À LA FOIS comme layer
+    et comme remplissage de conteneur ne réclame qu'UN bloc, jamais deux. Les
+    tenir à part aurait aussi laissé les conteneurs invisibles ici alors que
+    l'allocateur leur réserve déjà des banques au build."""
     groups: dict[tuple, tuple] = {}   # key -> (ba, [InstanceRef])
     order: list[tuple] = []
+
+    def add(ba, ref: InstanceRef):
+        key = _bg_palettes_key(ba)
+        if key not in groups:
+            groups[key] = (ba, [])
+            order.append(key)
+        groups[key][1].append(ref)
+
     for layer in getattr(scene, "background_layers", []):
         if not getattr(layer, "background_name", ""):
             continue
         ba = p.get_background(layer.background_name)
         if not (ba and getattr(ba, "tileset", None)):
             continue
-        key = _bg_palettes_key(ba)
-        if key not in groups:
-            groups[key] = (ba, [])
-            order.append(key)
-        groups[key][1].append(InstanceRef(
-            "bg_layer", layer, f"BG{layer.bg_slot} ({layer.background_name})",
-            getattr(layer, "pal_bank", OWN_PAL_BANK)))
+        add(ba, InstanceRef("bg_layer", layer, f"BG{layer.bg_slot} ({layer.background_name})",
+                            getattr(layer, "pal_bank", OWN_PAL_BANK)))
+    for el, ba in _ui_fill_panels(p, scene):
+        add(ba, InstanceRef("ui_panel", el, f"{el.name} (conteneur)", OWN_PAL_BANK))
+
     out: list[AssetPaletteEntry] = []
     for key in order:
         ba, refs = groups[key]
@@ -560,6 +585,38 @@ def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
             instances=refs, state="own", ref_slot=None,
             bank_span=max(1, len(pals)), overridable=False,
         ))
+    return out
+
+
+def _ui_image_pairs(p: Project, scene: Scene, pool: str) -> list[tuple[tuple, InstanceRef]]:
+    """(clé couleurs, InstanceRef) pour chaque élément d'UI qui pose un SPRITE
+    dans ce pool — `UIImage` et `UIPanel` à fond sprite (`lay.images`, cf.
+    `UILayout.images`). Le pendant, côté vue éditeur, de `ui_image_own_
+    palettes` côté allocateur — MÊME format de retour que `_obj_instance_
+    pairs`/`_bg_instance_pairs`, pour rejoindre leur pool de dédup : un acteur
+    et une image d'UI aux couleurs identiques partagent une banque au build
+    (`scene_bank_layout` fusionne les deux listes avant de dédupliquer), les
+    tenir à part ici aurait affiché deux entrées pour une seule banque réelle.
+
+    Ni `UIImage` ni `UIPanel` ne portent de `pal_bank` (aucune surcharge
+    possible, contrairement à un acteur ou un layer) : toujours OWN."""
+    from core.models.ui_region import TARGET_BG, KIND_PANEL
+    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    if lay is None:
+        return []
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    want_bg = (pool == "bg")
+    out: list[tuple[tuple, InstanceRef]] = []
+    for im in lay.images:
+        if (lay.resolved_target(im, rm) == TARGET_BG) != want_bg:
+            continue
+        cols = _sprite_own_palette(p.get_sprite(getattr(im, "sprite_name", "") or ""))
+        if not cols:
+            continue
+        key = tuple(_own_bank_content(cols, pool))
+        label = f"{im.name} (conteneur)" if getattr(im, "kind", "") == KIND_PANEL \
+                else f"{im.name} (image UI)"
+        out.append((key, InstanceRef("ui_image", im, label, OWN_PAL_BANK)))
     return out
 
 
@@ -582,6 +639,9 @@ def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
         ))
 
     pairs = _obj_instance_pairs(p, scene) if pool == "obj" else _bg_instance_pairs(p, scene)
+    # Images d'UI (et panneaux à fond sprite) : MÊME pool de dédup que les
+    # acteurs/layers, cf. `_ui_image_pairs`.
+    pairs = pairs + _ui_image_pairs(p, scene, pool)
 
     groups: dict[tuple, list[InstanceRef]] = {}
     order: list[tuple] = []
@@ -601,12 +661,22 @@ def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
             # Toutes overridées : slot de référence commun (elles partagent la
             # même palette propre, donc convergent normalement vers le même).
             state, ref_slot = "override", refs[0].pal_bank
+        # Ni `UIImage` ni `UIPanel` ne portent de `pal_bank` : un groupe
+        # composé UNIQUEMENT d'images d'UI n'a donc rien à overrider — le
+        # bouton mentirait (il changerait un attribut que rien ne relit,
+        # cf. `_ui_image_pairs`). Un groupe MIXÉ (acteur/layer + image de
+        # mêmes couleurs) reste overridable : c'est l'instance overridable
+        # qui compte, l'image suit sans rien casser.
+        overridable = any(r.kind != "ui_image" for r in refs)
         asset_entries.append(AssetPaletteEntry(
             own_colors=list(key), instances=refs, state=state, ref_slot=ref_slot,
+            overridable=overridable,
         ))
 
     # BG compressé : blocs de banques (non-overridables) après les entrées à
-    # slot unique, dans l'ordre des layers.
+    # slot unique, dans l'ordre des layers — `_bg_encoded_entries` y fusionne
+    # aussi les conteneurs d'UI (nine-slice/background), cible BG uniquement
+    # (`FILL_TARGETS` ne leur permet pas l'OBJ, cf. core/models/ui_region.py).
     if pool == "bg":
         asset_entries += _bg_encoded_entries(p, scene)
 

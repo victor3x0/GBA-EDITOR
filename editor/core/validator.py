@@ -122,13 +122,20 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_api_domains(ctx)
     _check_lua_subset(ctx)
     _check_text_overflow(ctx)
+    _check_font_coverage(ctx)
+    _check_vram_lang_budget(ctx)
+    _check_literal_texts(ctx)
     _check_ui_text_key(ctx)
     _check_ui_image(ctx)
     _check_blend(ctx)
     _check_ui_panel_fill(ctx)
     _check_ui_text_backdrop_bank(ctx)
+    _check_ui_text_fill_bank(ctx)
     _check_scene_font(ctx)
     _check_cameras(ctx)
+    _check_window_regions(ctx)
+    _check_actor_name_collisions(ctx)
+    _check_actor_budget(ctx)
     _check_data_column_types(ctx)
     _check_data_tables(ctx)
     _check_screen_space(ctx)
@@ -469,6 +476,32 @@ def _check_bg_text_cbb_conflict(ctx: ValidationContext):
                     f"Change le Layer UI de slot ou vide l'image de ce layer.")
 
 
+def _text_variants(p, text, globals_names: set) -> list:
+    """[(étiquette de langue, ParsedText)] à mesurer pour une entrée.
+
+    **La source seule ne suffit plus dès qu'une langue est déclarée**
+    (ROADMAP v0.9) : une traduction plus longue déborde une zone que la
+    source remplissait tout juste, et rien ne le dirait avant la ROM en jeu.
+    Une langue non encore traduite montre la source — la revérifier
+    produirait le même avertissement une seconde fois, donc elle est exclue
+    par le test d'égalité de contenu, pas par un `if` sur `auto_key` ou autre
+    état qui pourrait diverger de ce que `text_content()` rend réellement."""
+    from core.text_markup import parse, KIND_VALUE
+    out = [("", parse(text.content or ""))]
+    seen = {text.content or ""}
+    for lang in getattr(p.settings, "languages", []):
+        raw = p.translations.get(lang.code, {}).get(text.id, "")
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        out.append((lang.code, parse(raw)))
+    # Un `$global` a une largeur qui ne se connaît qu'en jeu, quelle que soit
+    # la langue — même filtre qu'avant, appliqué à chaque variante.
+    return [(lbl, parsed) for lbl, parsed in out
+            if not any(m.kind == KIND_VALUE and m.value in globals_names
+                      for m in parsed.markers)]
+
+
 def _check_text_overflow(ctx: ValidationContext):
     """Un texte qui ne tient pas dans sa zone est TRONQUÉ au dernier glyphe qui
     tient (cf. runtime `text_glyph_fits`), sans un mot en jeu.
@@ -479,7 +512,10 @@ def _check_text_overflow(ctx: ValidationContext):
     ne doit citer aucun global, `$score` faisant 1 ou 3 caractères selon la
     partie. Une constante, cuite au build, reste mesurable après substitution.
     Le reste appartient à la coupe au runtime : avertir sur une supposition
-    apprendrait à ignorer les avertissements."""
+    apprendrait à ignorer les avertissements.
+
+    Mesuré contre TOUTES les langues traduites, pas seulement la source —
+    cf. `_text_variants`."""
     p = ctx.project
     if not getattr(p, "texts", None) or not getattr(p, "fonts", None):
         return
@@ -521,25 +557,25 @@ def _check_text_overflow(ctx: ValidationContext):
         text   = p.get_text(site.values[DOMAIN_TEXT])
         if region is None or text is None:
             continue          # le checker le dit déjà, et mieux
-        parsed = parse(text.content or "")
-        if any(m.kind == KIND_VALUE and m.value in globals_names
-               for m in parsed.markers):
-            continue          # largeur connue en jeu seulement
-        for font in _fonts_for(region):
-            # La police entre dans la clé de dédup : la même paire mesurée
-            # contre deux défauts de scène donne deux verdicts distincts.
-            trio = (region.name, text.key, font.name)
-            if trio in seen:
-                continue      # la même paire dans dix scripts, un seul message
-            seen.add(trio)
-            _placed, over = layout_text(font, resolve(parsed, consts),
-                                        region.w, region.h)
-            if over:
-                ctx.warn(None,
-                    f"Le texte '{text.key}' déborde de la zone '{region.name}' "
-                    f"({region.w}×{region.h} px, police '{font.name}') — il sera "
-                    f"tronqué au dernier glyphe qui tient. Agrandis la zone, "
-                    f"raccourcis le texte, ou coupe-le en deux entrées.")
+        for lbl, parsed in _text_variants(p, text, globals_names):
+            for font in _fonts_for(region):
+                # La police ET la langue entrent dans la clé de dédup : la
+                # même paire mesurée contre deux défauts de scène — ou deux
+                # traductions — donne deux verdicts distincts.
+                quad = (region.name, text.key, font.name, lbl)
+                if quad in seen:
+                    continue   # la même paire dans dix scripts, un seul message
+                seen.add(quad)
+                _placed, over = layout_text(font, resolve(parsed, consts),
+                                            region.w, region.h)
+                if over:
+                    ctx.warn(None,
+                        f"Le texte '{text.key}'"
+                        + (f" (langue « {lbl} »)" if lbl else "")
+                        + f" déborde de la zone '{region.name}' "
+                        f"({region.w}×{region.h} px, police '{font.name}') — il sera "
+                        f"tronqué au dernier glyphe qui tient. Agrandis la zone, "
+                        f"raccourcis le texte, ou coupe-le en deux entrées.")
 
     # Textes AUTHORÉS : le couple (élément, contenu) est connu sans lire un
     # script, et plus sûr que le cas script — c'est `scene_init` qui l'écrit,
@@ -551,18 +587,199 @@ def _check_text_overflow(ctx: ValidationContext):
         text = p.get_text(getattr(el, "text_key", "") or "")
         if text is None:
             continue          # clé vide ou cassée : _check_ui_text_key le dit
-        parsed = parse(text.content or "")
-        if any(m.kind == KIND_VALUE and m.value in globals_names
-               for m in parsed.markers):
+        for lbl, parsed in _text_variants(p, text, globals_names):
+            for font in _fonts_for(el):
+                _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
+                if over:
+                    ctx.warn(None,
+                        f"Le texte '{text.key}'"
+                        + (f" (langue « {lbl} »)" if lbl else "")
+                        + f" déborde de l'élément '{el.name}' "
+                        f"({el.w}×{el.h} px, police '{font.name}') — il sera tronqué au "
+                        f"dernier glyphe qui tient. Agrandis l'élément dans le canvas, "
+                        f"ou raccourcis le texte.")
+
+
+def _check_font_coverage(ctx: ValidationContext):
+    """Un texte qui cite un caractère ABSENT de sa police est sauté en
+    silence à l'affichage (`text_glyph_slot` rend -1, cf. gba_engine.h) — le
+    pendant `_check_text_overflow` côté GLYPHE plutôt que côté LARGEUR de
+    zone. Bug réel rencontré en jouant la démo Fonts&Texts : une traduction
+    japonaise citait un kanji (友) absent des 3831 glyphes de la police du
+    projet, invisible jusqu'à ce que quelqu'un joue la ROM dans cette
+    langue-là.
+
+    La police jugée est l'EFFECTIVE, pas la déclarée : le remap par langue
+    (`Language.fonts`, phase 3.2) peut substituer une autre planche à celle
+    que la zone nomme — c'est CETTE police-là que `text_set_font` charge
+    réellement une fois la langue active, donc c'est elle qu'il faut
+    vérifier.
+
+    Même reprise que `_check_text_overflow` : DEUX sources (script + textes
+    authorés), TOUTES les langues déclarées (`_text_variants`), dédupliqué
+    par (zone, clé, police EFFECTIVE, langue)."""
+    p = ctx.project
+    if not getattr(p, "texts", None) or not getattr(p, "fonts", None):
+        return
+    from scripting.refactor import find_call_sites_in_project
+    from scripting.api import DOMAIN_REGION, DOMAIN_TEXT
+    from core.text_markup import parse, resolve
+
+    regions = {r.name: r for _lay, r in p.all_regions()}
+    fonts   = {f.name: f for f in p.fonts}
+    globals_names = {g.name for g in getattr(p, "globals", [])}
+    consts = {c.name: c.value for c in getattr(p, "constants", [])}
+    lang_by_code = {l.code: l for l in getattr(p.settings, "languages", [])}
+    # Un jeu de caractères par police, calculé une fois — relire les glyphes
+    # à chaque texte serait quadratique sur un projet qui en a beaucoup.
+    coverage = {f.name: {g.char for g in f.glyphs if g.char} for f in p.fonts}
+
+    from codegen.font_emit import scene_default_font
+    first = p.fonts[0]
+    lay_defaults: dict[str, list] = {}
+    for _scene in p.scenes:
+        _f = fonts.get(scene_default_font(p, _scene)[1]) or first
+        _seen_f = lay_defaults.setdefault(getattr(_scene, "ui_layout", "") or "", [])
+        if not any(x is _f for x in _seen_f):
+            _seen_f.append(_f)
+    region_layout = {r.name: lay.name for lay, r in p.all_regions()}
+
+    def _fonts_for(el) -> list:
+        if getattr(el, "font_name", "") in fonts:
+            return [fonts[el.font_name]]
+        return lay_defaults.get(region_layout.get(el.name, ""), None) or [first]
+
+    def _effective(lbl: str, font):
+        """La police RÉELLEMENT chargée pour `font` dans la langue `lbl` —
+        `Language.fonts` (creux, vide = identité) ou la police telle quelle,
+        exactement la règle de `font_emit.emit_lang_fonts_c`."""
+        if not lbl:
+            return font
+        lang = lang_by_code.get(lbl)
+        target = getattr(lang, "fonts", None) or {} if lang else {}
+        return fonts.get(target.get(font.name, ""), font)
+
+    def _missing(parsed, font) -> list:
+        chars = set(resolve(parsed, consts)) - {"\n"}
+        return sorted(chars - coverage.get(font.name, set()))
+
+    def _warn(key: str, lbl: str, region_kind: str, region_name: str,
+              font_name: str, missing: list):
+        chars = " ".join(missing)
+        ctx.warn(None,
+            f"Le texte '{key}'"
+            + (f" (langue « {lbl} »)" if lbl else "")
+            + f" cite un caractère absent de la police '{font_name}' "
+            f"({region_kind} '{region_name}') : {chars}. Le glyphe manquant "
+            f"sera sauté à l'affichage, sans un mot en jeu. Ajoute-le à la "
+            f"police, ou change la traduction.")
+
+    seen: set = set()
+    for site in find_call_sites_in_project(p, DOMAIN_REGION, DOMAIN_TEXT):
+        region = regions.get(site.values[DOMAIN_REGION])
+        text   = p.get_text(site.values[DOMAIN_TEXT])
+        if region is None or text is None:
             continue
-        for font in _fonts_for(el):
-            _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
-            if over:
-                ctx.warn(None,
-                    f"Le texte '{text.key}' déborde de l'élément '{el.name}' "
-                    f"({el.w}×{el.h} px, police '{font.name}') — il sera tronqué au "
-                    f"dernier glyphe qui tient. Agrandis l'élément dans le canvas, "
-                    f"ou raccourcis le texte.")
+        for lbl, parsed in _text_variants(p, text, globals_names):
+            for font in _fonts_for(region):
+                eff = _effective(lbl, font)
+                quad = (region.name, text.key, eff.name, lbl)
+                if quad in seen:
+                    continue
+                seen.add(quad)
+                missing = _missing(parsed, eff)
+                if missing:
+                    _warn(text.key, lbl, "la zone", region.name, eff.name, missing)
+
+    from core.models.ui_region import KIND_TEXT
+    for _lay, el in p.all_regions():
+        if getattr(el, "kind", "") != KIND_TEXT:
+            continue
+        text = p.get_text(getattr(el, "text_key", "") or "")
+        if text is None:
+            continue
+        for lbl, parsed in _text_variants(p, text, globals_names):
+            for font in _fonts_for(el):
+                eff = _effective(lbl, font)
+                quad = (el.name, text.key, eff.name, lbl)
+                if quad in seen:
+                    continue
+                seen.add(quad)
+                missing = _missing(parsed, eff)
+                if missing:
+                    _warn(text.key, lbl, "l'élément", el.name, eff.name, missing)
+
+
+def _check_vram_lang_budget(ctx: ValidationContext):
+    """Le garde-fou VRAM au PIRE cas des langues (ROADMAP v0.9, phase 3.4) —
+    le pendant `_check_text_overflow` côté GLYPHES plutôt que côté LARGEUR de
+    zone.
+
+    La RÉSERVATION réelle d'une scène (`scene_text_reservation`) reste
+    calculée sur la langue ACTIVE — la source, tant que la phase 4 n'a pas
+    ouvert le choix (décision 4) — donc CETTE ROM ne charge jamais plus que ce
+    qui a été mesuré ici pour `code=""`. Mais une traduction dont le
+    sous-ensemble de glyphes est plus lourd déborderait sur le voisin dès que
+    cette langue serait un jour active, et rien ne le dirait avant que
+    quelqu'un joue la ROM dans cette langue — le moment le plus cher pour le
+    corriger. Avertissement, pas erreur : rien n'est cassé dans le build
+    d'aujourd'hui, contrairement à `_check_bg_tile_budget` (un dépassement
+    RÉEL, lui, bloque)."""
+    p = ctx.project
+    langs = getattr(p.settings, "languages", []) if hasattr(p, "settings") else []
+    if not langs or not getattr(p, "scenes", None):
+        return
+    from codegen.runtime_codegen.main_gen import scene_text_reservation
+
+    for scene in p.scenes:
+        base = scene_text_reservation(p, scene, "").get("mono_tiles", 0)
+        worst_code, worst_name, worst_n = None, "", base
+        for lang in langs:
+            n = scene_text_reservation(p, scene, lang.code).get("mono_tiles", 0)
+            if n > worst_n:
+                worst_code, worst_name, worst_n = lang.code, (lang.name or lang.code), n
+        if worst_code is not None:
+            ctx.warn(None,
+                f"Scène '{scene.name}' : la police en « {worst_name} » charge "
+                f"{worst_n} tuiles de glyphes contre {base} pour la source — "
+                f"ça déborderait sur son voisin en VRAM une fois cette langue "
+                f"active. Réduis les caractères qu'ajoute cette traduction "
+                f"(ROADMAP v0.9, phase 4 — le sujet n'est pas encore actionnable "
+                f"en jeu, mais vaut d'être connu avant de l'ouvrir).")
+
+
+def _check_literal_texts(ctx: ValidationContext):
+    """Un littéral passé à `text.draw("Bonjour")` reste compilable — une
+    entrée ANONYME de la table, comme depuis la v0.3.2, un raccourci hors
+    interface ASSUMÉ au prix de la traduction. Mais dès qu'une langue est
+    déclarée, c'est un trou de traduction GARANTI (ROADMAP v0.9, décision 6) :
+    l'entrée n'a pas de clé dans `texts.json`, donc rien qu'un side puisse
+    joindre par id — aucune langue ne pourra jamais le traduire.
+
+    Silencieux tant que le projet est MONOLINGUE : c'était un prix que
+    personne n'a encore demandé de payer, pas une faute à signaler dans le
+    vide. Un littéral qui référence une clé RÉELLE (`by_key`, cf.
+    `Project.collect_literal_texts`) n'en est pas un — il est déjà couvert."""
+    p = ctx.project
+    if not hasattr(p, "is_multilingual") or not p.is_multilingual():
+        return
+    from scripting.refactor import iter_refs, script_paths
+    from scripting.api import DOMAIN_TEXT, LITERAL_TEXT_CALLS
+    keys = {t.key for t in getattr(p, "texts", [])}
+    for path in script_paths(p):
+        try:
+            src = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for ref in iter_refs(src, path=path, domain=DOMAIN_TEXT):
+            if ref.api_key not in LITERAL_TEXT_CALLS or ref.value in keys:
+                continue
+            ctx.warn(None,
+                f"{path.name}:{ref.line} : le texte littéral « {ref.value} » "
+                f"passé à {ref.api_key}(...) n'est pas traduisible — c'est une "
+                f"entrée ANONYME (v0.3.2), invisible pour chaque langue "
+                f"déclarée. Crée-le dans l'écran Texte pour pouvoir le "
+                f"traduire.")
 
 
 def _check_ui_text_key(ctx: ValidationContext):
@@ -731,15 +948,23 @@ def _check_ui_panel_fill(ctx: ValidationContext):
 def _check_ui_text_backdrop_bank(ctx: ValidationContext):
     """Une zone de texte composée SOUS un panel nine-slice/background
     recompose son encre PAR-DESSUS les vraies tuiles du cadre (cf.
-    `RegionBackdrop` dans gba_engine.h) — ce qui suppose que le glyphe et le
+    `RegionFill` dans gba_engine.h) — ce qui suppose que le glyphe et le
     cadre partagent la MÊME banque de palette : le hardware n'en offre qu'une
     par tuile, impossible d'y mélanger deux jeux de couleurs.
 
     Erreur bloquante et non avertissement : sans ce garde-fou, l'auteur
     verrait un texte aux couleurs n'importe quoi (la banque du cadre lue comme
-    si c'était celle de la police), sans un mot pour expliquer pourquoi."""
+    si c'était celle de la police), sans un mot pour expliquer pourquoi.
+
+    `UI_PAL_BANK_CONTAINER` (« banque du conteneur ») résout tout seul, via
+    `scene_container_ink_bank` — même calcul que l'émission
+    (`resolve_ui_pal_bank`), donc jamais en désaccord avec ce que le build
+    écrit. Il ne reste en erreur que s'il ne résout RIEN (aucun conteneur,
+    ou plusieurs aux banques différentes) : deviner serait pire que demander."""
     p = ctx.project
-    from codegen.runtime_codegen.main_gen import scene_image_fills, scene_region_backdrops
+    from core.models.scene import UI_PAL_BANK_CONTAINER
+    from codegen.runtime_codegen.main_gen import (
+        scene_image_fills, scene_region_backdrops, scene_container_ink_bank)
     from codegen.palette_alloc import scene_bank_layout
     for scene in p.scenes:
         lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
@@ -751,6 +976,9 @@ def _check_ui_text_backdrop_bank(ctx: ValidationContext):
             continue
         bank_layout = scene_bank_layout(p, scene, "bg")
         uib = int(getattr(scene, "ui_pal_bank", -1))
+        auto = uib == UI_PAL_BANK_CONTAINER
+        if auto and scene_container_ink_bank(p, scene) is not None:
+            continue      # résolu, et aligné par construction — rien à dire
         seen: set[str] = set()
         for rb in backdrops:
             f = img_fills[rb["fill"]]
@@ -760,15 +988,75 @@ def _check_ui_text_backdrop_bank(ctx: ValidationContext):
             seen.add(panel.name)
             ba = p.get_background(getattr(panel, "fill_asset", "") or "")
             bank = bank_layout.bg_block_offset(ba) if ba else None
-            if bank is None or uib != bank:
+            if auto or bank is None or uib != bank:
+                want = ("« Banque de palette du texte » ne peut pas résoudre "
+                        "« banque du conteneur » toute seule (aucun bloc alloué, "
+                        "ou plusieurs conteneurs aux banques différentes dans la "
+                        "scène) — désigne-la à la main"
+                        if auto else
+                        f"« Banque de palette du texte » (ui_pal_bank) doit donc "
+                        f"désigner la banque {bank if bank is not None else '(introuvable)'} "
+                        f"de cet asset, pas {'aucune (auto)' if uib < 0 else uib}")
                 ctx.error(None,
                     f"Scène '{scene.name}' : le texte de '{rb['name']}', posé "
                     f"sur le conteneur '{panel.name}' (fond "
                     f"'{getattr(panel, 'fill_asset', '')}'), recompose son "
-                    f"encre par-dessus le cadre — « Banque de palette du "
-                    f"texte » (ui_pal_bank) doit donc désigner la banque "
-                    f"{bank if bank is not None else '(introuvable)'} de cet "
-                    f"asset, pas {'aucune (auto)' if uib < 0 else uib}.")
+                    f"encre par-dessus le cadre — {want}.")
+
+
+def _check_ui_text_fill_bank(ctx: ValidationContext):
+    """Même contrainte matérielle que ci-dessus, pour un conteneur à fond
+    COULEUR : la tuile où le texte se compose ne porte qu'UNE banque de
+    palette, et l'aplat du conteneur doit s'y lire.
+
+    Ne s'applique qu'en banque DÉSIGNÉE. En mode automatique la banque d'UI
+    appartient à la police, et c'est le build qui y loge la couleur (cf.
+    `_gen_scene_init`) — il n'y a rien à demander à l'auteur. Désignée, en
+    revanche, la banque porte des couleurs qu'il a choisies : y écrire en
+    douce les remplacerait, donc l'index du conteneur est lu tel quel et il
+    faut que ce soit la bonne banque.
+
+    `UI_PAL_BANK_CONTAINER` (« banque du conteneur ») résout tout seul, même
+    calcul que l'émission (`resolve_ui_pal_bank`, `scene_container_ink_bank`) —
+    en erreur seulement s'il ne résout RIEN.
+
+    Erreur et non avertissement, pour la même raison que le cadre : sinon le
+    fond du texte prend une couleur arbitraire, sans rien pour l'expliquer."""
+    p = ctx.project
+    from core.models.scene import UI_PAL_BANK_CONTAINER
+    from codegen.runtime_codegen.main_gen import (
+        scene_color_fills, scene_region_colors, scene_container_ink_bank)
+    for scene in p.scenes:
+        uib = int(getattr(scene, "ui_pal_bank", -1))
+        auto = uib == UI_PAL_BANK_CONTAINER
+        if uib < 0 and not auto:
+            continue
+        if auto and scene_container_ink_bank(p, scene) is not None:
+            continue      # résolu, et aligné par construction — rien à dire
+        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+        if lay is None:
+            continue
+        fills, _idx = scene_color_fills(p, scene)
+        by_panel = {f["name"]: f for f in fills}
+        seen: set[str] = set()
+        for rc in scene_region_colors(p, scene, fills):
+            if rc["panel"] in seen:
+                continue
+            seen.add(rc["panel"])
+            bank = by_panel[rc["panel"]]["bank"]
+            if auto or bank != uib:
+                want = ("« Banque de palette du texte » ne peut pas résoudre "
+                        "« banque du conteneur » toute seule (plusieurs "
+                        "conteneurs aux banques différentes dans la scène) — "
+                        "désigne-la à la main"
+                        if auto else
+                        f"« Banque de palette du texte » (ui_pal_bank) doit donc "
+                        f"désigner la banque {bank} de ce conteneur, pas {uib}. "
+                        f"Sinon l'index de sa couleur est lu dans la mauvaise "
+                        f"palette")
+                ctx.error(None,
+                    f"Scène '{scene.name}' : le texte de '{rc['name']}' se "
+                    f"compose sur le fond du conteneur '{rc['panel']}' — {want}.")
 
 
 def _check_data_column_types(ctx: ValidationContext):
@@ -859,38 +1147,145 @@ def _check_data_tables(ctx: ValidationContext):
 
 
 def _check_cameras(ctx: ValidationContext):
-    """Deux références de caméra peuvent mentir, et aucune ne fait échouer le
-    build — d'où deux avertissements plutôt qu'un silence.
+    """Trois choses peuvent mentir sans faire échouer le build — d'où des
+    avertissements plutôt qu'un silence.
 
-    ① La scène désigne une caméra qui n'existe plus : elle retombe sur la
-      caméra par défaut, donc un cadrage à l'origine sans bornes.
-    ② Une caméra en suivi cite un acteur par nom, et les noms d'acteurs sont
-      LOCAUX à une scène : une caméra réutilisée dans une scène où cet acteur
-      n'existe pas y reste immobile, sans que rien ne le dise en jeu."""
+    ① Une caméra en suivi cite un acteur par nom ; comme elle appartient
+      désormais à UNE scène, ce nom doit être un acteur de CETTE scène.
+    ② La scène désigne une caméra qui n'existe plus (dans sa propre liste) :
+      elle retombe sur la caméra par défaut, donc un cadrage à l'origine sans
+      bornes.
+    ③ Deux caméras du projet portent le même nom : `camera.switch("Nom")`
+      n'est pas qualifié par scène, un doublon viserait la mauvaise caméra."""
     p = ctx.project
-    known = {c.name for c in getattr(p, "cameras", [])}
-    # ⓪ Suivre PERSONNE — le mode le plus courant à moitié réglé : la caméra
-    # se comporte exactement comme une caméra fixe, sans que rien ne le dise.
-    for cam in getattr(p, "cameras", []):
-        if cam.mode == "follow" and not cam.follow_target:
-            ctx.warn(None,
-                f"Caméra « {cam.name} » : mode suivi sans acteur cible — elle se "
-                f"comportera comme une caméra fixe.")
+    seen: dict[str, str] = {}   # nom → scène qui l'a vu en premier
     for scene in p.scenes:
+        for cam in scene.cameras:
+            if cam.mode == "follow" and not cam.follow_target:
+                ctx.warn(None,
+                    f"Caméra « {cam.name} » (scène '{scene.name}') : mode suivi sans "
+                    f"acteur cible — elle se comportera comme une caméra fixe.")
+            elif cam.mode == "follow" and not any(
+                    a.name == cam.follow_target for a in scene.actors):
+                ctx.warn(None,
+                    f"Scène '{scene.name}' : la caméra « {cam.name} » suit "
+                    f"« {cam.follow_target} », qui n'est pas un acteur de cette scène — "
+                    f"la caméra y restera immobile.")
+            if cam.name in seen and seen[cam.name] != scene.name:
+                ctx.warn(None,
+                    f"Deux caméras nommées « {cam.name} » (scènes '{seen[cam.name]}' et "
+                    f"'{scene.name}') — camera.switch(\"{cam.name}\") viserait l'une des deux "
+                    f"au hasard du build.")
+            seen.setdefault(cam.name, scene.name)
         want = getattr(scene, "camera", "") or ""
-        if want and want not in known:
+        if want and not any(c.name == want for c in scene.cameras):
             ctx.warn(None,
                 f"Scène '{scene.name}' : la caméra « {want} » n'existe plus — la "
                 f"scène repart de la caméra par défaut (fixe à l'origine, sans bornes).")
-            continue
-        cam = p.get_camera(want) if want else None
-        if cam is None or cam.mode != "follow" or not cam.follow_target:
-            continue
-        if not any(a.name == cam.follow_target for a in getattr(scene, "actors", []) or []):
+
+
+def _check_actor_budget(ctx: ValidationContext):
+    """Le budget d'acteurs d'une scène (ROADMAP v0.17) — deux fautes, qui ne
+    sont pas la même.
+
+    ① La scène POSE plus d'acteurs qu'elle n'en RÉSERVE. La réservation est ce
+      qui dimensionne sa tranche de `g_actors` ; les acteurs en trop n'auraient
+      pas d'entrée.
+    ② Réservation + pools dépassent les 128 entrées de l'OAM. Le matériel
+      n'affichera pas le surplus.
+
+    Avertissements et non erreurs : c'est la règle de mesure de la v0.7.6 — le
+    build dit ce que la scène coûte, il ne l'arbitre pas à la place de
+    l'auteur."""
+    from codegen.actor_budget import scene_actor_budget, OAM_LIMIT
+    p = ctx.project
+    for scene in p.scenes:
+        b = scene_actor_budget(scene, p)
+        if b["over_placed"]:
             ctx.warn(None,
-                f"Scène '{scene.name}' : la caméra « {cam.name} » suit "
-                f"« {cam.follow_target} », qui n'est pas un acteur de cette scène — "
-                f"la caméra y restera immobile.")
+                f"Scène '{scene.name}' : {b['placed']} acteurs posés pour "
+                f"{b['reserved']} slot(s) réservé(s) — les acteurs en trop n'auront "
+                f"pas d'entrée dans g_actors. Monte « Scene actors » dans "
+                f"l'inspecteur de scène, ou repasse-le à 0 (automatique).")
+        if b["over_budget"]:
+            ctx.warn(None,
+                f"Scène '{scene.name}' : {b['used']} slots demandés "
+                f"({b['reserved']} acteurs + {b['pool']} de pool) pour "
+                f"{OAM_LIMIT} entrées OAM — le matériel n'affichera pas le surplus.")
+
+
+def _check_window_regions(ctx: ValidationContext):
+    """Réglé le 2026-08-25 : WIN0/WIN1 sont allouées par intention
+    (`codegen/window_alloc.py`), pas choisies par l'auteur — cf.
+    ARCHITECTURE.md « Windows — le pochoir ».
+
+    ① Une scène qui demande plus de deux intentions (cadre de caméra +
+      `WindowSlot` nommés) fait échouer le build — ERREUR bloquante, pas un
+      warning : il n'existe pas de repli sûr, une région non allouée
+      s'affiche partout au lieu d'être découpée (bug visuel silencieux).
+    ② Un `WindowSlot` sans nom ne peut être ni alloué ni adressé depuis Lua.
+    ③ Deux `WindowSlot` (toutes scènes) partageant un nom : `window.set_layer`
+      n'est pas qualifié par scène, un doublon viserait la mauvaise window —
+      même check que les caméras (`_check_cameras`)."""
+    from codegen.window_alloc import scene_window_layout
+    seen: dict[str, str] = {}   # nom → scène qui l'a vu en premier
+    for scene in ctx.project.scenes:
+        layout = scene_window_layout(ctx.project, scene)
+        if layout.overflow:
+            names = ", ".join(f"« {n} »" for n in layout.overflow)
+            ctx.error(None,
+                f"Scène '{scene.name}' : {names} ne tient/tiennent pas — seules deux "
+                f"windows rectangle sont possibles par scène (cadre de caméra compris). "
+                f"Réduire le nombre de WindowSlot ou agrandir le cadre d'une caméra "
+                f"réduite.")
+        for ws in scene.windows:
+            if ws.is_obj:
+                continue
+            if not ws.name:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : une window rectangle n'a pas de nom — "
+                    f"elle ne peut être ni allouée ni citée depuis un script.")
+                continue
+            if ws.name in seen and seen[ws.name] != scene.name:
+                ctx.warn(None,
+                    f"Deux windows nommées « {ws.name} » (scènes '{seen[ws.name]}' et "
+                    f"'{scene.name}') — window.set_layer(\"{ws.name}\") viserait l'une "
+                    f"des deux au hasard du build.")
+            seen.setdefault(ws.name, scene.name)
+
+
+def _check_actor_name_collisions(ctx: ValidationContext):
+    """Deux acteurs de scènes DIFFÉRENTES portant le même nom se marchent
+    dessus au build — même check que les caméras (`_check_cameras`) et les
+    windows (`_check_window_regions`), pour la même raison : rien n'est
+    qualifié par scène.
+
+    ① Le script transpilé est écrit dans `actor_<sym>.c` (lua_compiler) sans
+      préfixe de scène : la seconde scène écrase le fichier de la première,
+      donc les deux acteurs finissent avec le MÊME comportement.
+    ② `TAG_<SYM>` est émis en parcourant les acteurs de TOUTES les scènes
+      (headers) : deux #define de valeurs différentes, seul le dernier compte.
+
+    Avertissement et non erreur : le build aboutit, la ROM tourne — c'est le
+    comportement qui ment. La collision est comparée sur le SYMBOLE C, pas sur
+    le nom : « Player 1 » et « Player-1 » donnent le même `actor_Player_1.c`."""
+    from codegen.c_names import sym as c_sym
+    seen: dict[str, tuple[str, str]] = {}   # symbole → (nom, scène) vus en premier
+    for scene in ctx.project.scenes:
+        for actor in scene.actors:
+            s = c_sym(actor.name)
+            if s in seen and seen[s][1] != scene.name:
+                first_name, first_scene = seen[s]
+                same = first_name == actor.name
+                quoi = (f"Deux acteurs nommés « {actor.name} »" if same else
+                        f"Les acteurs « {first_name} » et « {actor.name} »")
+                ctx.warn(None,
+                    f"{quoi} (scènes '{first_scene}' et '{scene.name}') "
+                    f"partagent le symbole C `{s}` — le script de la seconde scène "
+                    f"écrase le fichier actor_{s}.c de la première (les deux acteurs "
+                    f"auront le même comportement) et TAG_{s.upper()} est défini deux "
+                    f"fois avec des valeurs différentes. Renommer l'un des deux.")
+            seen.setdefault(s, (actor.name, scene.name))
 
 
 def _check_audio_files(ctx: ValidationContext):
@@ -1275,6 +1670,7 @@ def _check_pal_bank_reference(ctx: ValidationContext):
     - prefabs -> active_obj_palettes de la scène d'ancrage (1ère) ;
     - layers  -> active_bg_palettes de chaque scène utilisant le background."""
     from core.models.palette import OWN_PAL_BANK
+    from codegen.actor_budget import prefab_pool_instances
     p = ctx.project
 
     def _slot_missing(active: list, slot: int) -> bool:
@@ -1311,7 +1707,7 @@ def _check_pal_bank_reference(ctx: ValidationContext):
     anchor = p.scenes[0] if p.scenes else None
     anchor_active = getattr(anchor, "active_obj_palettes", []) if anchor else []
     for pf in p.prefabs:
-        if getattr(pf, "max_instances", 0) <= 0:
+        if prefab_pool_instances(p, pf) <= 0:
             continue
         pb = getattr(pf, "pal_bank", OWN_PAL_BANK)
         if pb == OWN_PAL_BANK:

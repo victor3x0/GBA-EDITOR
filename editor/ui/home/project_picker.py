@@ -23,6 +23,8 @@ from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
 
 from ui.common.theme import C, T, QSS
+from ui.common.widgets import W
+from ui.common.reveal import reveal_in_file_manager
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
 from core.project_templates import (
     ProjectTemplate, TEMPLATES, target_dir as template_target_dir,
@@ -184,6 +186,10 @@ class _ProjectItem(QWidget):
                 "border-radius:3px;padding:1px 5px;"
             )
             hl.addWidget(dead_badge)
+        else:
+            btn_reveal = W.btn_reveal("Open project folder")
+            btn_reveal.clicked.connect(lambda: reveal_in_file_manager(self.path))
+            hl.addWidget(btn_reveal)
 
 
 # ── Widget d'un template téléchargeable ────────────────────────────────

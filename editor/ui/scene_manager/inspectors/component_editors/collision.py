@@ -1,31 +1,13 @@
 """Éditeur du CollisionBoxComponent."""
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QCheckBox, QLineEdit, QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QWidget
 from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W
-from ui.common.theme import C
-
-_TOOLTIPS = {
-    "collision.solid":              ("self.collision.solid",
-                                     "true → arrêté par la carte de collision.\n"
-                                     "false → trigger : la carte l'ignore.\n"
-                                     "Les handlers on_collision_* se déclenchent\n"
-                                     "dans les deux cas."),
-    "collision.tag":                ("self.collision.tag",
-                                     "Label identifiant ce collider. Ex : 'body', 'sword_hitbox'."),
-    "collision.x":                  ("self.collision.x", "Décalage horizontal de la hitbox (px)."),
-    "collision.y":                  ("self.collision.y", "Décalage vertical de la hitbox (px)."),
-    "collision.w":                  ("self.collision.width",  "Largeur AABB (px)."),
-    "collision.h":                  ("self.collision.height", "Hauteur AABB (px)."),
-}
-
-def _tip(w, key):
-    if key in _TOOLTIPS:
-        expr, desc = _TOOLTIPS[key]
-        w.setToolTip(f"<b style='color:{C.ACCENT_BLU}'>{expr}</b><br><br>{desc.replace(chr(10),'<br>')}")
+from ui.common.notice import notice
+from ui.common.theme import C, T, QSS
 
 
 @register("collision_box")
@@ -34,56 +16,67 @@ class CollisionEditor(BaseComponentEditor):
     def build(self, comp, row, layout):
         is_solid = getattr(comp, "solid", True)
 
-        # Rediriger le champ "id" de la meta_bar vers "tag"
-        # (la meta_bar est déjà construite avant build(); on retrouve son QLineEdit)
-        from PyQt6.QtWidgets import QLineEdit as _QLE
-        id_edit = next(
-            (w for w in layout.parentWidget().findChildren(_QLE)
-             if w.placeholderText() == "id…"),
-            None
-        ) if layout.parentWidget() else None
-        if id_edit:
-            id_edit.setText(getattr(comp, "tag", "body"))
-            id_edit.setToolTip(
-                f"<b style='color:{C.ACCENT_BLU}'>BOXTAG</b><br><br>"
-                "Identifiant de cette box dans les callbacks de collision.<br>"
-                "Ex : <b>body</b>, <b>sword</b>, <b>ground_check</b><br>"
-                "→ génère <b>BOXTAG_BODY</b>, <b>BOXTAG_SWORD</b>…"
-            )
-            try: id_edit.editingFinished.disconnect()
-            except RuntimeError: pass
-            id_edit.editingFinished.connect(
-                lambda: (self.set_field(comp, "tag", id_edit.text()),
-                         self.set_field(comp, "id",  id_edit.text()))
-            )
-            self.register_syncer("tag", lambda v, w=id_edit: (
-                w.blockSignals(True), w.setText(str(v)), w.blockSignals(False)))
+        # ── Tag ─────────────────────────────────────────────────────
+        # Distinct de l'"id" de la meta_bar : l'id distingue les boxes de
+        # CET acteur (utile avec plusieurs CollisionBoxComponent, ex.
+        # "head_hurtbox" / "body_hurtbox") ; le tag est le GROUPE de
+        # collision, partagé entre acteurs, celui que lit la matrice de
+        # Project Settings > Collisions et que le codegen émet en
+        # BOXTAG_<TAG> (cf. codegen/runtime_codegen/headers.py). Les deux
+        # étaient confondus avant le tag registry (2026-08-25) — plus
+        # aujourd'hui, chacun peut varier indépendamment.
+        proj = self.insp._project
+        tag_combo = QComboBox()
+        tag_combo.setEditable(True)
+        tag_combo.setStyleSheet(QSS.combobox)
+        current = getattr(comp, "tag", "body") or "body"
+        for t in proj.collision_tags():
+            tag_combo.addItem(t)
+        if tag_combo.findText(current) < 0:
+            tag_combo.addItem(current)
+        tag_combo.setCurrentText(current)
+        notice("collision.tag", tag_combo, layout)
+
+        def _commit_tag():
+            self.set_field(comp, "tag", tag_combo.currentText().strip() or "body")
+
+        tag_combo.lineEdit().editingFinished.connect(_commit_tag)
+        tag_combo.activated.connect(lambda _i: _commit_tag())
+        self.register_syncer("tag", lambda v, w=tag_combo: (
+            w.blockSignals(True), w.setCurrentText(str(v) or "body"), w.blockSignals(False)))
+        W.row("Tag", tag_combo, layout)
 
         # ── Mode Solid / Trigger ──────────────────────────────────
         chk_solid = QCheckBox()
         chk_solid.setChecked(is_solid)
-        _tip(chk_solid, "collision.solid")
+        notice("collision.solid", chk_solid, layout)
 
         mode_lbl = QWidget()
         hl = QHBoxLayout(mode_lbl); hl.setSpacing(6); hl.setContentsMargins(0, 0, 0, 0)
-        lbl = W.hint("Solid  (décocher = Trigger)", hl, color=C.TEXT_NORM)
-        lbl.setParent(None)
+        lbl = QLabel("Solid  (unchecked = Trigger)")
+        lbl.setFont(QFont(T.UI, T.SM))
+        lbl.setStyleSheet(f"color:{C.TEXT_NORM}; background:transparent; border:none;")
         hl.addWidget(chk_solid); hl.addWidget(lbl); hl.addStretch()
         W.row("Mode", mode_lbl, layout)
 
         # ── AABB — champs px/tile ou référence de variable ────────
         # Les valeurs peuvent être un littéral (px/tile) ou pointer une
         # variable déclarée (global g_<nom> / constante CONST_<NOM>).
-        proj = self.insp._project
         vf_x = W.value_field(getattr(comp, "x", 0), project=proj)
         vf_y = W.value_field(getattr(comp, "y", 0), project=proj)
         vf_w = W.value_field(getattr(comp, "w", 16), project=proj, min_px=1)
         vf_h = W.value_field(getattr(comp, "h", 16), project=proj, min_px=1)
 
-        for vf, fname in ((vf_x, "x"), (vf_y, "y"), (vf_w, "w"), (vf_h, "h")):
+        # La clé de notice est ÉCRITE, pas construite : `f"collision.{fname}"`
+        # se lit bien mais échappe au contrôle catalogue ↔ code, qui ne sait
+        # pas à quoi il se résoudra.
+        for vf, fname, key in ((vf_x, "x", "collision.x"),
+                               (vf_y, "y", "collision.y"),
+                               (vf_w, "w", "collision.w"),
+                               (vf_h, "h", "collision.h")):
             vf.changed.connect(lambda raw, f=fname: self.set_field(comp, f, raw))
             self.register_syncer(fname, lambda v, w=vf: w.set_raw(v))
-            _tip(vf, f"collision.{fname}")
+            notice(key, vf, layout)
 
         W.pair("Offset", "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
         W.pair("Taille", "W", C.ACCENT_BLU, vf_w, "H", C.ACCENT_PRP, vf_h, layout)

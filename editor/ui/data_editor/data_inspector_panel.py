@@ -21,6 +21,7 @@ from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T, S, QSS
 from ui.common.widgets import W, CollapsibleCard
+from ui.common.notice import note
 
 from core.models.data_table import DataColumn, COLUMN_TYPES, COLUMN_REFERENCES
 from core.project import Project
@@ -56,8 +57,7 @@ class DataInspectorPanel(QWidget):
         self._type.currentTextChanged.connect(self._on_type_changed)
         W.row("type", self._type, column_card.body_layout)
 
-        W.hint("Renaming a column is done in the grid header — it is written as "
-               "code in scripts, so the rename rewrites them.", column_card.body_layout)
+        note(column_card.body_layout, "data.column_rename").show_text()
         root.addWidget(column_card)
 
         cell_card = CollapsibleCard("Cell")

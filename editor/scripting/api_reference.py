@@ -63,18 +63,26 @@ _PROP_HOME: dict[str, str] = {
     "self.position":  "Transform",
     "self.rotation":  "Transform",
     "self.scale":     "Transform",
-    "self.sprite_rotation": "Transform",
-    "self.sprite_scale":    "Transform",
-    "self.sprite_offset":   "Transform",
     "self.velocity":  "Physics",
     "self.visible":   "Actor",
     "self.active":    "Actor",
     "self.tag":       "Actor",
     "self.frame":     "Animation",
+    "self.anim":      "Animation",
+    "self.anim_speed":    "Animation",
+    "self.anim_length":   "Animation",
+    "self.anim_loop":     "Animation",
+    "self.anim_finished": "Animation",
+    "self.frame_w":   "Animation",
+    "self.frame_h":   "Animation",
     "self.flip_h":    "Animation",
     "self.flip_v":    "Animation",
     "self.pal":       "Animation",
     "self.obj_mode":  "Animation",
+    "self.priority":  "Animation",
+    "self.sprite_rotation": "Animation",
+    "self.sprite_scale":    "Animation",
+    "self.sprite_offset":   "Animation",
     "self.direction": "Movement",
     "self.auto_dir":  "Movement",
     "self.grounded":  "Physics",
@@ -212,15 +220,25 @@ def get_categories_by_group() -> list[tuple[str, str, list[dict]]]:
 
 def make_tooltip(entry: dict) -> str:
     """Génère un tooltip HTML riche pour une entrée API."""
-    sig   = entry.get("label", "")
-    desc  = entry.get("description", "")
+    sig    = entry.get("label", "")
+    desc   = entry.get("description", "")
     params = entry.get("params", [])
-    ret   = entry.get("returns", "")
+    ret    = entry.get("returns", "")
+    access = entry.get("access", "")  # "Read Only" / "Read and Write" — propriétés seulement
 
-    lines = [
-        f"<b style='font-family:Consolas,monospace;color:#4ec9b0'>{sig}</b>",
-        f"<p style='color:#aaaaaa;margin:4px 0'>{desc}</p>",
-    ]
+    lines = [f"<b style='font-family:Consolas,monospace;color:#4ec9b0'>{sig}</b>"]
+    if access:
+        # Read Only en gris (rien à écrire), Read and Write dans l'accent —
+        # la même distinction qu'on lirait dans le mot, juste repérable sans
+        # le lire : ce que le libellé court (`position(Vec2)`) ne dit plus.
+        # `<p>` (bloc), pas `<span>` : sur sa propre ligne, sous la signature.
+        color = "#4ec9b0" if access == "Read and Write" else "#888888"
+        lines.append(
+            f"<p style='color:{color};margin:2px 0 0 0;font-size:9px;"
+            f"font-weight:bold;text-transform:uppercase;letter-spacing:0.5px'>"
+            f"{access}</p>"
+        )
+    lines.append(f"<p style='color:#aaaaaa;margin:4px 0'>{desc}</p>")
 
     if params:
         lines.append("<table cellspacing='2' style='margin-top:4px'>")

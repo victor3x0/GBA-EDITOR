@@ -151,6 +151,17 @@ def build_command(version: str, output_dir: Path) -> list[str]:
         f"=ui/common/fonts"
     )
 
+    # Catalogue des notices (ui/common/notice.py le lit par Path(__file__)).
+    # Même raison que les fontes — `--include-package=ui` n'embarque que du
+    # code — mais une conséquence pire : sans ce dossier, CHAQUE message
+    # informatif de l'éditeur retombe sur sa clé (« ui.text.footprint_bg »
+    # affiché tel quel). C'est visible, au moins, là où une fonte manquante
+    # ne l'était pas. Les sides de langue partiront d'ici aussi (v0.11).
+    cmd.append(
+        f"--include-data-dir={EDITOR_DIR / 'ui' / 'common' / 'notices'}"
+        f"=ui/common/notices"
+    )
+
     # Les flèches ▲▼ des QSpinBox venaient d'assets PNG livrés ici ; elles
     # sortent maintenant de qtawesome comme le reste des icônes (ui.common.
     # icons.qss_image les rend au démarrage dans un cache temporaire).

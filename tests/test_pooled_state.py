@@ -10,8 +10,8 @@ Chaque défaut couvert ici produit du C qui **compile parfaitement** et se tromp
   mesure qui annonce la longueur de l'en-tête du fichier au lieu de l'état ;
 - un tableau de l'état que `pool_init` ne remet pas à zéro → une instance
   respawnée hérite de la précédente ;
-- un tableau d'état dimensionné par un littéral au lieu de `POOL_<SYM>_SIZE` →
-  débordement si les deux divergent.
+- un tableau d'état dimensionné par un littéral au lieu de
+  `POOL_<SYM>_INSTANCES` → débordement si les deux divergent.
 
 Cf. ROADMAP v0.7.6.
 """
@@ -116,12 +116,19 @@ def test_les_types_autrefois_refuses_sont_des_champs(decl, champ, octets):
 def test_la_taille_du_tableau_vient_du_define_pas_d_un_litteral():
     """`main.c` boucle sur la plage du pool avec ses propres bornes. Si le
     tableau d'état était dimensionné par un littéral recalculé ici, un écart
-    entre les deux serait un débordement muet."""
+    entre les deux serait un débordement muet.
+
+    La constante est `POOL_<SYM>_INSTANCES` et non `_SIZE` : depuis la v0.23 une
+    instance de prefab segmenté occupe un GROUPE d'entrées de `g_actors` (la
+    racine puis ses parties) mais n'exécute qu'UN script. `_SIZE` compte les
+    entrées réservées, `_INSTANCES` compte les scripts — c'est le second qui
+    dimensionne l'état, et `_GROUP` qui ramène `self` à son rang d'instance."""
     _errs, code, _n = _pooled(
         "local n = 0\nfunction on_update()\n    n = 1\nend\n", pool_size=16)
-    assert "g_state_Ball[POOL_BALL_SIZE]" in code
+    assert "g_state_Ball[POOL_BALL_INSTANCES]" in code
     assert "g_state_Ball[16]" not in code
     assert "(self - g_actors) - POOL_BALL_START" in code
+    assert "/ POOL_BALL_GROUP" in code
 
 
 def test_pool_init_repose_l_etat_de_depart_en_un_bloc():

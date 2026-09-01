@@ -1,0 +1,218 @@
+{
+  "lang": "en",
+  "notices": {
+    "actor.active": {
+      "tone": "accent",
+      "code": "self.active",
+      "text": "If false, the actor is skipped: no update, no collision, OAM slot released."
+    },
+    "actor.priority": {
+      "tone": "accent",
+      "code": "self.priority",
+      "text": "Drawing order against the BG layers.\n0 = in front of every background, 3 = behind them all.\nGBA: OAM attribute 2, bits 10–11."
+    },
+    "actor.screen_space": {
+      "tone": "accent",
+      "code": "(authored — no Lua equivalent)",
+      "text": "Anchors the actor to the SCREEN instead of the world: it no longer scrolls with the camera. This is UI made of sprites — score, hearts, cursor — with the whole usual SpriteComponent (states, animations, sprite editor).\n\nX and Y become SCREEN pixels (0–239, 0–159), the same frame of reference as screen-anchored interface elements.\n\nGBA: OAM attribute 0, bits 10–11."
+    },
+    "actor.x": {
+      "tone": "accent",
+      "code": "self.position.x",
+      "text": "Horizontal position in pixels (0–239).\nRead: local px = self.position.x\nWrite: self.position = vec2(x, y), or self:move(self.position, speed)"
+    },
+    "actor.y": {
+      "tone": "accent",
+      "code": "self.position.y",
+      "text": "Vertical position in pixels (0–159).\nRead: local py = self.position.y\nWrite: self.position = vec2(x, y), or self:move(self.position, speed)"
+    },
+    "collision.h": {
+      "tone": "accent",
+      "code": "self.collision.height",
+      "text": "AABB height (px)."
+    },
+    "collision.solid": {
+      "tone": "accent",
+      "code": "self.collision.solid",
+      "text": "true → stopped by the collision map.\nfalse → trigger: the map ignores it.\nThe on_collision_* handlers fire either way."
+    },
+    "collision.tag": {
+      "tone": "accent",
+      "code": "self.collision.tag",
+      "text": "Collision group, shared between actors. The matrix in Project Settings ▸ Collisions decides which groups ignore each other; codegen emits it as BOXTAG_<TAG>. Pick an existing tag from the list, or type a new one."
+    },
+    "collision.w": {
+      "tone": "accent",
+      "code": "self.collision.width",
+      "text": "AABB width (px)."
+    },
+    "collision.x": {
+      "tone": "accent",
+      "code": "self.collision.x",
+      "text": "Horizontal offset of the hitbox (px)."
+    },
+    "collision.y": {
+      "tone": "accent",
+      "code": "self.collision.y",
+      "text": "Vertical offset of the hitbox (px)."
+    },
+    "collisions.empty": {
+      "tone": "info",
+      "text": "Declare at least two tags for the matrix to mean something — with the button below, or by tagging an actor's Collision component."
+    },
+    "collisions.symmetry": {
+      "tone": "accent",
+      "text": "Only the checked pairs are tested, and a collision is always symmetric: if A hits B, then B hits A.\nAn unchecked pair is not emitted at all — no code, and no test per frame."
+    },
+    "collisions.usage": {
+      "tone": "info",
+      "text": "Uncheck a pair so those two tags ignore each other. Drag a handle to reorder."
+    },
+    "data.column_rename": {
+      "tone": "info",
+      "text": "Renaming a column is done in the grid header — it is written as code in scripts, so the rename rewrites them."
+    },
+    "settings.tips": {
+      "tone": "info",
+      "text": "Tips are the explanations: what a concept means, where an optimisation is worth it. Warnings about what the build or the screen will do are never hidden by this."
+    },
+    "ui.anchor.forced_actor": {
+      "tone": "build",
+      "text": "Target forced — anchored on an actor: an actor moves by the pixel, the BG grid advances by 8."
+    },
+    "ui.anchor.forced_bitmap": {
+      "tone": "build",
+      "text": "Target forced — scene in mode {mode} (bitmap): there is no tilemap."
+    },
+    "ui.anchor.inherited": {
+      "tone": "info",
+      "text": "Inherited from root “{root}” — anchor {anchor}"
+    },
+    "ui.anchor.no_actor": {
+      "tone": "build",
+      "text": "Anchored on an actor (via its root), but no actor chosen: the element will land at the screen origin."
+    },
+    "ui.fill.bg": {
+      "tone": "info",
+      "text": "Tiled background, cropped on bottom/right if the zone is smaller. BG target only."
+    },
+    "ui.fill.color": {
+      "tone": "info",
+      "text": "A palette entry (index 0 = transparent on hardware). Texts inside the container compose on it instead of punching through it; a text's own Highlight overrides it."
+    },
+    "ui.fill.color_inactive": {
+      "tone": "build",
+      "text": "“{palette}” is not among the scene's active BG palettes: the build drops this background. Add it in the scene inspector, or pick one of the active palettes."
+    },
+    "ui.fill.nine": {
+      "tone": "info",
+      "text": "Stretchable frame: fixed corners, repeated edges/center. Margins belong to the UI background — editing them here changes every panel using it."
+    },
+    "ui.fill.sprite": {
+      "tone": "info",
+      "text": "Sprite tiled across the panel — the only background that exists on OBJ target, where there is no tilemap."
+    },
+    "ui.fill.sprite_cost": {
+      "tone": "info",
+      "one": "{w}×{h} tiled {cols}×{rows} = {n} OAM slot of the 128 the hardware has, actors included. Tiles cost nothing extra: every cell points at the same frame.",
+      "other": "{w}×{h} tiled {cols}×{rows} = {n} OAM slots of the 128 the hardware has, actors included. Tiles cost nothing extra: every cell points at the same frame."
+    },
+    "ui.fill.sprite_overflow": {
+      "tone": "render",
+      "text": "The last column/row overflows by {dx}×{dy} px: the hardware cannot crop a sprite."
+    },
+    "ui.image.cost": {
+      "tone": "info",
+      "one": "{w}×{h} px  ·  {n} frame across all states  ·  {where}. Every state stays resident: a script may switch at any frame.",
+      "other": "{w}×{h} px  ·  {n} frames across all states  ·  {where}. Every state stays resident: a script may switch at any frame."
+    },
+    "ui.image.missing": {
+      "tone": "render",
+      "text": "Sprite “{sprite}” not found in the project."
+    },
+    "ui.image.none": {
+      "tone": "render",
+      "text": "No sprite bound — nothing will be drawn here."
+    },
+    "ui.image.where_bg": {
+      "tone": "info",
+      "one": "{n} tile in the UI charblock",
+      "other": "{n} tiles in the UI charblock"
+    },
+    "ui.image.where_obj": {
+      "tone": "info",
+      "one": "1 OAM slot, sharing the sprite's {n} tile already in OBJ VRAM",
+      "other": "1 OAM slot, sharing the sprite's {n} tiles already in OBJ VRAM"
+    },
+    "ui.layout.name": {
+      "tone": "info",
+      "text": "Layout: {name}"
+    },
+    "ui.layout.shared": {
+      "tone": "accent",
+      "one": "Shared by {n} scene — editing it changes that scene too.",
+      "other": "Shared by {n} scenes — editing it changes them all."
+    },
+    "ui.list.empty": {
+      "tone": "build",
+      "text": "No rows: place text zones INSIDE this panel. Those are what the list walks."
+    },
+    "ui.list.rows": {
+      "tone": "info",
+      "one": "{n} row: {names}. The script writes their content — list.row(…) renders the zone.",
+      "other": "{n} rows: {names}. The script writes their content — list.row(…) renders the zone."
+    },
+    "ui.text.anim_bg": {
+      "tone": "render",
+      "one": "{n} animated glyph in this text, but a background zone cannot animate it — it will render static. Anchor the zone on an actor to get sprites.",
+      "other": "{n} animated glyphs in this text, but a background zone cannot animate them — they will render static. Anchor the zone on an actor to get sprites."
+    },
+    "ui.text.anim_capped": {
+      "tone": "build",
+      "one": "{n} animated glyph reserved — capped at {max}, the rest renders static.",
+      "other": "{n} animated glyphs reserved — capped at {max}, the rest renders static."
+    },
+    "ui.text.anim_reserved": {
+      "tone": "info",
+      "one": "{n} animated glyph reserved (from the text itself).",
+      "other": "{n} animated glyphs reserved (from the text itself)."
+    },
+    "ui.text.bank_none": {
+      "tone": "info",
+      "text": "No slot chosen above: text can't read any color yet, and the pickers below only show numbers. Font ink (index 0) still works — it's the font's own color."
+    },
+    "ui.text.footprint_bg": {
+      "tone": "info",
+      "text": "{w}×{h} tiles  ·  {n} tiles footprint"
+    },
+    "ui.text.footprint_obj": {
+      "tone": "info",
+      "text": "{w}×{h} tiles  ·  {oam} OAM, {tiles} OBJ tiles"
+    },
+    "ui.text.key_auto": {
+      "tone": "info",
+      "text": "auto key, follows the filing  ·  edited in the Text screen too"
+    },
+    "ui.text.key_manual": {
+      "tone": "info",
+      "text": "key named by hand  ·  edited in the Text screen too"
+    },
+    "ui.text.key_none": {
+      "tone": "info",
+      "text": "No entry yet — typing here creates one."
+    },
+    "ui.text.key_shared": {
+      "tone": "accent",
+      "one": "Shown by {n} other element — fixing the entry fixes both, breaking it breaks both.",
+      "other": "Shown by {n} other elements — fixing the entry fixes them all, breaking it breaks them all."
+    },
+    "ui.text.sample_only": {
+      "tone": "info",
+      "text": "No entry: a script writes here. The sample is editor-only — it sizes the box and feeds the canvas, and is never compiled."
+    },
+    "ui.visible.hidden_parent": {
+      "tone": "render",
+      "text": "Hidden anyway — parent “{parent}” is not visible."
+    }
+  }
+}

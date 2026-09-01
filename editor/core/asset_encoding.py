@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.models.background import BackgroundAsset
-from core.models.sprite import SpriteAsset
+from core.models.sprite import SpriteAsset, IMAGE_FILE_EXTS
 from core.models.audio import MUSIC_FILE_EXTS, SFX_FILE_EXTS, WAV_BITS_OK
 
 
@@ -230,13 +230,16 @@ def sync_music_file(project, path: Path):
 
 
 def sync_font_file(project, path: Path) -> Optional[str]:
-    """Appelé quand une planche PNG ou un descripteur `.fnt` apparaît dans
-    assets/fonts/. Crée le Font + son sidecar si absent.
+    """Appelé quand une planche PNG, un descripteur `.fnt` ou un conteneur de
+    police bitmap (`.bdf`/`.pcf`/`.dfont`/`.ttf`) apparaît dans assets/fonts/.
+    Crée le Font + son sidecar si absent.
 
-    Deux points d'entrée, un seul asset : le `.fnt` apporte le mapping des
-    caractères, le PNG nu le fait déduire (grille + charset proposé, corrigeables
-    dans l'écran Police). Une police déjà connue n'est jamais ré-analysée
-    automatiquement — sinon on écraserait les corrections de l'utilisateur.
+    Trois points d'entrée, un seul asset : le `.fnt` apporte le mapping des
+    caractères, le PNG nu le fait déduire (grille + charset proposé,
+    corrigeables dans l'écran Police), le conteneur bitmap l'apporte lui aussi
+    (cmap complet) et en plus GÉNÈRE sa planche, n'en ayant aucune. Une police
+    déjà connue n'est jamais ré-analysée automatiquement — sinon on écraserait
+    les corrections de l'utilisateur.
 
     Renvoie un avertissement d'import, None si tout va bien."""
     from core.models.font import Font
@@ -267,6 +270,11 @@ def sync_font_file(project, path: Path) -> Optional[str]:
                 if page is None:
                     return (f"Police « {name} » : le descripteur ne référence aucune "
                             f"planche PNG trouvable — dépose la planche à côté du .fnt.")
+                font.asset = project.asset_rel(page)
+                font.descriptor = project.asset_rel(path)
+            elif path.suffix.lower() in font_import.FREETYPE_FONT_EXTS:
+                fields = font_import.import_font_freetype(path)
+                page = fields.pop("page_path")
                 font.asset = project.asset_rel(page)
                 font.descriptor = project.asset_rel(path)
             else:
@@ -453,7 +461,7 @@ def reconcile_backgrounds(project):
     RETOUCHÉ éditeur fermé → compression refaite depuis les nouveaux pixels."""
     d = project.background_images_dir
     for f in (sorted(d.glob("*")) if d.exists() else []):
-        if f.is_file() and f.suffix.lower() in (".png", ".bmp"):
+        if f.is_file() and f.suffix.lower() in IMAGE_FILE_EXTS:
             sync_background_png(project, f)
     for ba in list(project.backgrounds):
         img = ba.image_name()
@@ -524,18 +532,30 @@ def reconcile_fonts(project):
 
     Le `.fnt` passe en premier : quand les deux fichiers sont là, c'est lui qui
     fait foi (il porte le mapping des caractères), et il référence sa planche —
-    laquelle ne doit donc pas créer une seconde police en doublon."""
+    laquelle ne doit donc pas créer une seconde police en doublon.
+
+    Rend la liste des avertissements d'import. Elle était jetée : un `.fnt`
+    déposé sans sa planche, un conteneur illisible, une planche dont aucun
+    glyphe ne ressort — `sync_font_file` le disait, et personne ne l'écoutait.
+    L'utilisateur voyait « No font. » sans un mot, dans un panneau qui l'invite
+    justement à déposer un `.fnt`, c'est-à-dire le cas qui échoue seul."""
     from core.models.font import FONT_FILE_EXTS
     if not project.fonts_dir.exists():
-        return
+        return []
     files = [f for f in sorted(project.fonts_dir.glob("*"))
              if f.is_file() and f.suffix.lower() in FONT_FILE_EXTS]
+    warnings: list[str] = []
     pages = set()
     for f in [x for x in files if x.suffix.lower() == ".fnt"]:
-        sync_font_file(project, f)
+        w = sync_font_file(project, f)
+        if w:
+            warnings.append(w)
         font = project.fonts.get(f.stem)
         if font and font.asset:
             pages.add(project.asset_abs(font.asset))
     for f in [x for x in files if x.suffix.lower() != ".fnt"]:
         if f not in pages:
-            sync_font_file(project, f)
+            w = sync_font_file(project, f)
+            if w:
+                warnings.append(w)
+    return warnings

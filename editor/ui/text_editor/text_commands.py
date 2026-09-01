@@ -45,6 +45,48 @@ class RenameTextKeyCmd(Command):
             self._persist()
 
 
+class SetTranslationCmd(Command):
+    """Écrit une entrée dans un fichier de traduction (ROADMAP v0.9, phase 2).
+
+    Symétrique de `SetFieldCmd`, mais le champ n'est pas un attribut d'objet :
+    c'est `project.translations[code][text.id]`. « » (chaîne vide) ET
+    « absent » sont la MÊME chose pour cette commande — une entrée jamais
+    traduite lit "" via `dict.get`, et une traduction vidée par l'utilisateur y
+    redevient "" plutôt que d'être retirée du dict. C'est `text_content()` qui
+    décide qu'une chaîne vide vaut la source ; cette commande n'a pas à
+    connaître cette règle, seulement à la stocker fidèlement.
+    """
+
+    def __init__(self, project, code: str, text, old: str, new: str,
+                 label: str = "", persist_fn=None):
+        self._project = project
+        self._code = code
+        self._text = text
+        self._old = old
+        self._new = new
+        self.label = label or f"Translate {text.key} ({code})"
+        self._persist = persist_fn
+
+    def _write(self, value: str):
+        self._project.translations.setdefault(self._code, {})[self._text.id] = value
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._write(self._new)
+
+    def undo(self):
+        self._write(self._old)
+
+    def merge(self, newer: "Command") -> bool:
+        if (not isinstance(newer, SetTranslationCmd) or self._code != newer._code
+                or self._text is not newer._text):
+            return False
+        self._new = newer._new
+        self._persist = newer._persist
+        return True
+
+
 class CreateTextForElementCmd(Command):
     """Crée une entrée de table ET l'accroche à un élément d'UI, d'un seul geste.
 

@@ -19,17 +19,22 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 
 class CameraSelection:
-    """Marqueur de sélection : l'ICÔNE caméra a été cliquée dans le canvas —
-    distinct d'une sélection de Scene « nue » (qui affiche le SceneInspector,
-    comme Actor/Prefab affichent leur propre inspecteur). Le rectangle de vue
-    240×160 de la caméra n'est qu'un retour visuel, non cliquable ; seule
-    l'icône déclenche ce marqueur (cf. CameraItem.shape() dans scene_canvas.py).
-    Sans lui, impossible de distinguer les deux intentions une fois passées
-    par le bus, puisque les deux portent le même objet Scene."""
-    __slots__ = ("scene",)
+    """Marqueur de sélection : l'ICÔNE caméra a été cliquée dans le canvas (ou
+    une caméra choisie dans le scene tree) — distinct d'une sélection de Scene
+    « nue » (qui affiche le SceneInspector, comme Actor/Prefab affichent leur
+    propre inspecteur). Le rectangle de vue 240×160 de la caméra n'est qu'un
+    retour visuel, non cliquable ; seule l'icône déclenche ce marqueur (cf.
+    CameraItem.shape() dans scene_canvas.py). Sans lui, impossible de
+    distinguer les deux intentions une fois passées par le bus.
 
-    def __init__(self, scene):
+    `camera` désigne PRÉCISÉMENT la caméra visée (la scène peut en posséder
+    plusieurs) ; `None` = état implicite (scène sans caméra encore créée, cf.
+    `Project.ensure_scene_camera`)."""
+    __slots__ = ("scene", "camera")
+
+    def __init__(self, scene, camera=None):
         self.scene = scene
+        self.camera = camera
 
 
 class UIElementSelection:

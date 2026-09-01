@@ -59,18 +59,45 @@ const int            g_save_slots = 0;
 const int            g_save_slot_size = 0;
 const FontInfo       g_fonts[1];
 const int            g_font_count = 0;
-const unsigned short* const g_texts[1] = {0};
-const unsigned short g_text_len[1] = {0};
-const TextEvent* const g_text_events[1] = {0};
-const unsigned short g_text_ev_count[1] = {0};
-const unsigned short g_text_values[1] = {0};
+const unsigned char  g_lang_font_0[1] = {0};
+const unsigned char* const g_lang_font[1] = {g_lang_font_0};
+/* Une langue (la source), aucun texte — mêmes types imbriqués que le vrai
+   codegen (ROADMAP v0.9 phase 3) : la sonde ne rend aucun texte de la table,
+   elle n'a donc besoin que des symboles pour satisfaire l'éditeur de liens. */
+int g_lang = 0;
+int g_lang_reload = 0;
+const unsigned short* const g_texts_0[1] = {0};
+const unsigned short* const* const g_texts[1] = {g_texts_0};
+const unsigned short g_text_len_0[1] = {0};
+const unsigned short* const g_text_len[1] = {g_text_len_0};
+const TextEvent* const g_text_events_0[1] = {0};
+const TextEvent* const* const g_text_events[1] = {g_text_events_0};
+const unsigned short g_text_ev_count_0[1] = {0};
+const unsigned short* const g_text_ev_count[1] = {g_text_ev_count_0};
+const unsigned short g_text_values_0[1] = {0};
+const unsigned short* const g_text_values[1] = {g_text_values_0};
+const unsigned short g_save_len[1]  = {0};
+const unsigned char  g_save_bits[1] = {0};
 const UIRegionInfo   g_ui_regions[1];
+const int            g_ui_region_count = 0;
 const UIImageInfo    g_ui_images[1];
 const int            g_ui_image_count = 0;
+const UIElementInfo  g_ui_elements[1];
+const int            g_ui_element_count = 0;
+const UIListInfo     g_ui_lists[1];
+const short          g_ui_list_rows[1] = {0};
+const int            g_ui_list_count = 0;
+/* État vivant des listes : défini par main.c dans un vrai build, donc à
+   fournir ici. La sonde n'en fait rien — elle interroge `text_layout`, pas la
+   navigation — mais `ui_list_tick` est compilé avec le reste du moteur. */
+int g_ui_list_index[1], g_ui_list_first[1], g_ui_list_total[1], g_ui_list_timer[1];
+u32 _g_keys_held = 0;
 int cam_x, cam_y;
 
 int  global_read (int i)        { (void)i; return 0; }
 void global_write(int i, int v) { (void)i; (void)v; }
+int  global_read_at (int i, int k)        { (void)i; (void)k; return 0; }
+void global_write_at(int i, int k, int v) { (void)i; (void)k; (void)v; }
 
 /* ── Tampons d'entrée ─────────────────────────────────────────── */
 
@@ -188,7 +215,7 @@ int main(void) {
 
     g_cap_max = TEXT_ANIM_MAX;
     g_cap_n   = 0;
-    text_layout(probe_text, slen, 0, 0, wrap, -1, 0, align, 0, 0);
+    text_layout(probe_text, slen, 0, 0, wrap, -1, 0, align, 0, 0, 0);
 
     printf("CAP %d\n", g_cap_n);
     for (int k = 0; k < g_cap_n; k++)
@@ -196,7 +223,7 @@ int main(void) {
 
     int w = 0, h = 0;
     g_cap_max = 0;             /* la mesure ne capture pas : elle ne dessine pas */
-    text_layout(probe_text, slen, 0, 0, wrap, -1, 1, align, &w, &h);
+    text_layout(probe_text, slen, 0, 0, wrap, -1, 1, align, 0, &w, &h);
     printf("SIZE %d %d\n", w, h);
     return 0;
 }

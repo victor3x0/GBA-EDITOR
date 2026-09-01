@@ -6,7 +6,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QFrame, QSplitter, QTreeWidget, QTreeWidgetItem, QAbstractItemView,
-    QMenu, QFileDialog,
+    QMenu, QFileDialog, QToolButton,
     QSlider, QSpinBox, QCheckBox, QScrollArea, QMessageBox,
     QComboBox, QTabWidget, QStackedWidget,
 )
@@ -16,12 +16,13 @@ from PyQt6.QtMultimedia import (
 )
 from PyQt6.QtGui import QFont, QColor, QShortcut, QKeySequence
 from PyQt6.QtCore import (
-    Qt, QUrl, pyqtSignal, QBuffer, QByteArray, QIODevice, QTimer,
+    Qt, QUrl, QSize, pyqtSignal, QBuffer, QByteArray, QIODevice, QTimer,
 )
 
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.icons import get as _ico, COLOR_DEFAULT
+from ui.common import external_editor
 
 from core.asset_encoding import check_audio_file
 from core.models.audio import (
@@ -114,7 +115,43 @@ class AudioPlayer(QWidget):
         self._vol.valueChanged.connect(self._on_volume)
         layout.addWidget(self._vol)
 
+        # Éditer le fichier source dans un logiciel externe — même bouton
+        # standard que le Background Editor / Sprite Editor (cf.
+        # ui/common/external_editor.py) : cette barre écoute, elle ne retouche
+        # pas une forme d'onde.
+        self._btn_edit = QToolButton()
+        self._btn_edit.setIcon(_ico("edit_external", COLOR_DEFAULT))
+        self._btn_edit.setIconSize(QSize(15, 15))
+        self._btn_edit.setFixedSize(24, 22)
+        self._btn_edit.setStyleSheet(
+            f"QToolButton{{border:none;background:transparent;border-radius:3px;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};}}"
+        )
+        self._btn_edit.setToolTip("Edit audio…")
+        self._btn_edit.setEnabled(False)
+        self._btn_edit.clicked.connect(self._on_edit_audio)
+        self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._btn_edit.customContextMenuRequested.connect(self._on_edit_menu)
+        layout.addWidget(self._btn_edit)
+
         self._player.playbackStateChanged.connect(self._on_state)
+
+    def _on_edit_audio(self):
+        if self._current is not None:
+            external_editor.open_audio(self._current, self)
+
+    def _on_edit_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        cur = external_editor.get_configured_editor(external_editor.KIND_AUDIO)
+        act_choose = menu.addAction("Choose editor…")
+        act_default = menu.addAction("Use system default")
+        act_default.setEnabled(bool(cur))
+        chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
+        if chosen == act_choose:
+            external_editor.choose_editor(self, external_editor.KIND_AUDIO)
+        elif chosen == act_default:
+            external_editor.use_system_default(external_editor.KIND_AUDIO)
 
     def load(self, path: Path):
         self._teardown_sink()
@@ -122,6 +159,7 @@ class AudioPlayer(QWidget):
         self._is_module = path.suffix.lower() in MUSIC_FILE_EXTS
         self._lbl.setText(path.name)
         self._btn.setText("▶")
+        self._btn_edit.setEnabled(bool(path and path.exists()))
 
         if self._is_module:
             self._player.stop()

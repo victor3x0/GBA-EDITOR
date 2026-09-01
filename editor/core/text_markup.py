@@ -99,7 +99,7 @@ SENTINEL = "￿"
 VALUE_CP = 0xFFFF
 
 # Balises de portée qui coûtent des glyphes ANIMÉS, donc de l'OAM : c'est ce que
-# `UIRegion.animated_glyphs` budgète.
+# `Project.region_animated_glyphs` compte pour réserver la place.
 ANIMATED_TAGS = frozenset({"wave", "shake"})
 
 

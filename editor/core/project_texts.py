@@ -21,6 +21,7 @@ puisque `project.py` l'importe pour composer la classe.
 """
 
 import json
+from dataclasses import dataclass, field
 from typing import Optional
 
 from core.resource_store import atomic_write
@@ -29,6 +30,59 @@ from core.models.text import (
     Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
     new_id as new_text_id,
 )
+
+
+# ── Qui cite un texte ─────────────────────────────────────────────
+
+
+@dataclass
+class TextUsage:
+    """Les citations d'une entrée de la table, par source.
+
+    **Deux sources, jamais une seule** : un script (`text.draw("clé")`) et une
+    mise en page (`UIText.text_key`). N'en compter qu'une afficherait
+    « orphelin » sur un texte posé dans une boîte de dialogue — et un orphelin,
+    ça se supprime.
+    """
+    scripts: dict = field(default_factory=dict)   # {chemin du .lua: occurrences}
+    regions: list = field(default_factory=list)   # [(mise en page, région)]
+
+    @property
+    def count(self) -> int:
+        return sum(self.scripts.values()) + len(self.regions)
+
+    def summary(self) -> str:
+        """Ce qui tient dans une cellule : « 2 scripts · 1 layout »."""
+        parts = []
+        if self.scripts:
+            parts.append(f"{len(self.scripts)} script"
+                         + ("s" if len(self.scripts) > 1 else ""))
+        if self.regions:
+            parts.append(f"{len(self.regions)} layout"
+                         + ("s" if len(self.regions) > 1 else ""))
+        return " · ".join(parts)
+
+    def detail(self) -> str:
+        """Le détail, pour un survol : un site par ligne."""
+        lines = [f"{p.name} ×{n}" if n > 1 else p.name
+                 for p, n in sorted(self.scripts.items())]
+        lines += [f"{lay} › {reg}" for lay, reg in sorted(self.regions)]
+        return "\n".join(lines)
+
+
+@dataclass
+class TextUsageIndex:
+    """Toutes les citations du projet — et ce qui a réellement pu être lu.
+
+    `scripts_scanned` n'est pas un détail : sans luaparser, un index vide dirait
+    « tout le projet est orphelin », et c'est le genre de réponse sur laquelle on
+    supprime des entrées."""
+    by_key: dict = field(default_factory=dict)
+    scripts_scanned: bool = True
+
+    def get(self, key: str) -> TextUsage:
+        """Jamais None : une clé jamais citée a des usages vides, pas absents."""
+        return self.by_key.get(key) or TextUsage()
 
 
 class ProjectTextsMixin:
@@ -180,14 +234,104 @@ class ProjectTextsMixin:
         old_key = text.key
         if new_key == old_key:
             return True
+        # Import LOCAL, comme partout dans ce fichier : `scripting` importe le
+        # projet, le remonter en tête du module ferait un cycle.
+        from scripting.api import DOMAIN_TEXT
         with self._renaming():
             refs = self.rename_lua_refs(DOMAIN_TEXT, old_key, new_key)
+            # `region.text_key` est une COPIE de chaîne, pas l'id stable du
+            # texte (cf. models/text.py) : sans ce rattrapage, ranger une
+            # entrée ailleurs recale sa clé auto SANS suivre les zones
+            # d'interface qui la citaient, et l'écran de scène affiche
+            # silencieusement le mauvais texte (ou plus rien). Même geste que
+            # `rename_lua_refs` juste au-dessus, pour l'autre des deux seuls
+            # référents d'une clé de texte (cf. TextUsage).
+            touched_layouts = []   # dédupliqué par IDENTITÉ : UILayout n'est pas hashable
+            n_regions = 0
+            for layout, region in self.all_regions():
+                if region.text_key == old_key:
+                    region.text_key = new_key
+                    if not any(layout is L for L in touched_layouts):
+                        touched_layouts.append(layout)
+                    n_regions += 1
+            for layout in touched_layouts:
+                self.ui_layouts.save(layout)
             text.key = new_key
             if manual:
                 text.auto_key = False
-        self._notify_renamed("Text", old_key, new_key, refs)
+        self._notify_renamed("Text", old_key, new_key, refs, n_regions=n_regions)
         return True
 
     def delete_text(self, text: Text):
         if text in self.texts:
             self.texts.remove(text)
+
+    # ── Qui cite un texte ─────────────────────────────────────────
+
+    # ── Ce qu'une zone d'interface affiche ────────────────────────
+
+    def region_text(self, region):
+        """L'entrée de la table qu'une zone d'interface montre, ou None.
+
+        Deux sources dans cet ordre : le contenu AUTHORÉ (`text_key`, posé à
+        l'init), sinon l'ÉCHANTILLON (`preview_text`) — qui n'est jamais
+        compilé mais qui est, pour une zone remplie par un script, la seule
+        idée que l'éditeur ait de ce qui y atterrira."""
+        key = (getattr(region, "text_key", "")
+               or getattr(region, "preview_text", "") or "")
+        return self.get_text(key) if key else None
+
+    def region_animated_glyphs(self, region) -> int:
+        """Glyphes animés à RÉSERVER pour cette zone — dérivé, jamais déclaré.
+
+        Le maximum sur toutes les langues, pas seulement la source : une
+        traduction peut poser `[wave]` sur plus de caractères que l'original,
+        et la ROM contient les deux. Sous-réserver ferait retomber l'effet en
+        statique dans cette langue-là, sans que rien ne l'ait annoncé — même
+        raisonnement que le contrôle de débordement du validateur.
+
+        Plafonné à `ANIM_GLYPH_MAX` : au-delà, le runtime écrête de toute
+        façon (tableaux de capture de taille fixe), et l'éditeur le signale
+        plutôt que de réserver ce que le matériel refuse."""
+        from core.text_markup import parse
+        from core.models.ui_region import ANIM_GLYPH_MAX
+        text = self.region_text(region)
+        if text is None:
+            return 0
+        best = parse(text.content or "").animated_glyphs
+        for lang in getattr(self.settings, "languages", []):
+            raw = self.translations.get(lang.code, {}).get(text.id, "")
+            if raw:
+                best = max(best, parse(raw).animated_glyphs)
+        return min(ANIM_GLYPH_MAX, best)
+
+    def layout_animated_glyphs(self, layout) -> dict:
+        """{nom de zone: glyphes animés} — la forme qu'attend
+        `layout_obj_budget`, qui ne résout pas la table lui-même."""
+        return {r.name: self.region_animated_glyphs(r) for r in layout.slots}
+
+    def text_usage_index(self) -> TextUsageIndex:
+        """{clé: TextUsage} pour tout le projet, en un seul parcours.
+
+        Point UNIQUE de la question « qui utilise ce texte ? ». Elle se posait à
+        deux endroits — la table et l'inspecteur — et l'inspecteur ne regardait
+        que les scripts : une même question, deux réponses.
+
+        Un seul parcours des scripts, parce que luaparser est trop lent pour
+        être relancé à chaque sélection : l'appelant garde l'index et
+        l'invalide sur `scripts_changed`."""
+        idx = TextUsageIndex()
+        try:
+            from scripting.refactor import index_refs_in_project
+            from scripting.api import DOMAIN_TEXT
+            for key, per_script in index_refs_in_project(self, DOMAIN_TEXT).items():
+                idx.by_key.setdefault(key, TextUsage()).scripts.update(per_script)
+        except Exception:
+            # luaparser absent ou scripts illisibles : l'index le DIT. Rendre
+            # zéro ferait passer tout le projet pour orphelin.
+            idx.scripts_scanned = False
+        for layout, region in self.all_regions():
+            if region.text_key:
+                idx.by_key.setdefault(region.text_key, TextUsage()).regions.append(
+                    (layout.name, region.name))
+        return idx

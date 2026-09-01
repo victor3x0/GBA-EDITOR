@@ -34,6 +34,9 @@ class DynamicInspector(QWidget):
     # recomposer ses pixmaps (cf. SceneEditor.refresh_blend).
     blend_changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
+    # Relayé depuis CameraInspector : position/frame édités dans l'inspecteur
+    # (pas par drag canvas) — le canvas doit suivre (cf. window.py).
+    camera_moved = pyqtSignal(object)   # Camera
 
     _MODE_EMPTY       = 0
     _MODE_SCENE       = 1
@@ -92,6 +95,7 @@ class DynamicInspector(QWidget):
         # 3 — caméra
         self._camera_insp = CameraInspector()
         self._camera_insp.changed.connect(self.changed)
+        self._camera_insp.camera_moved.connect(self.camera_moved)
         self._stack.addWidget(self._camera_insp)
 
         # 4 — prefab uses
@@ -138,12 +142,13 @@ class DynamicInspector(QWidget):
     # Kinds dont le NOM se change dans l'en-tête. Les éléments d'interface en
     # font partie depuis que leur inspecteur n'a plus de champ « Name » : le nom
     # se change là où il s'affiche, comme pour une scène ou un acteur.
-    _RENAMABLE = ("scene", "actor", "prefab", "script_asset",
+    _RENAMABLE = ("scene", "actor", "prefab", "camera", "script_asset",
                   "ui_text", "ui_panel", "ui_image", "ui_element")
 
-    def _set_header(self, kind: str, type_text: str, name_text: str):
-        self._header.set_header(kind, type_text, name_text,
-                                editable=kind in self._RENAMABLE)
+    def _set_header(self, kind: str, type_text: str, name_text: str, editable=None):
+        if editable is None:
+            editable = kind in self._RENAMABLE
+        self._header.set_header(kind, type_text, name_text, editable=editable)
         self._header_mode = kind
 
     def _on_header_rename(self, new_name: str):
@@ -169,6 +174,17 @@ class DynamicInspector(QWidget):
                     from core.command_dispatcher import get_dispatcher
                     get_dispatcher()._emit("actors_list_changed")
                 self._header.set_name(actor.name)
+        elif self._header_mode == "camera":
+            cam = self._camera_insp._camera
+            scene = self._camera_insp._scene
+            project = self._camera_insp._project
+            if cam and scene and project and new_name != cam.name:
+                # Collision project-wide refusée en silence par rename_camera
+                # (cf. Project.rename_camera) : cam.name reste inchangé si
+                # refusé, l'en-tête ré-affiche donc l'ancien nom tel quel.
+                project.rename_camera(scene, cam, new_name)
+                self._header.set_name(cam.name)
+                self._camera_insp._refresh()
         elif self._header_mode.startswith("ui_"):
             # `rename` rend le nom RÉELLEMENT appliqué : une collision d'unicité
             # est résolue par le modèle, et l'en-tête doit montrer ce qui a été
@@ -221,7 +237,7 @@ class DynamicInspector(QWidget):
             # Clic sur l'ICÔNE caméra spécifiquement (cf. CameraItem.shape() —
             # le rectangle de vue 240×160 n'est qu'un retour visuel, il ne
             # déclenche jamais ce marqueur) → inspecteur caméra.
-            self.show_camera(obj.scene, self._project)
+            self.show_camera(obj.scene, obj.camera, self._project)
         elif isinstance(obj, Actor):
             scene = self._project.active_scene if self._project else None
             self.show_actor(obj, self._project, scene)
@@ -303,9 +319,13 @@ class DynamicInspector(QWidget):
         self._set_header("prefab", "Prefab", prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
-    def show_camera(self, scene, project):
-        self._camera_insp.load(scene, project)
-        self._set_header("camera", "Camera", "240 × 160")
+    def show_camera(self, scene, camera, project):
+        self._camera_insp.load(scene, camera, project)
+        # Éditable seulement si la caméra existe RÉELLEMENT : l'état implicite
+        # ("(default)", cf. camera_inspector.py) n'a pas de nom à changer —
+        # renommer matérialiserait une caméra par un geste qui n'en a pas l'air.
+        self._set_header("camera", "Camera", camera.name if camera else "(default)",
+                         editable=camera is not None)
         self._stack.setCurrentIndex(self._MODE_CAMERA)
 
     def show_script(self, path, project=None):
@@ -352,6 +372,9 @@ class DynamicInspector(QWidget):
 
     def update_actor_position(self, x: int, y: int):
         self._actor_insp.update_position(x, y)
+
+    def update_camera_position(self, camera, x: int, y: int):
+        self._camera_insp.update_position(camera, x, y)
 
     @property
     def actor_inspector(self) -> ActorInspector:

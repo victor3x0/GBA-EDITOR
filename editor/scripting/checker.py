@@ -35,6 +35,7 @@ from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_
                   DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE,
                   DOMAIN_MUSIC_BOX_TRIGGER,
                   DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_TEXT, DOMAIN_FONT,
+                  DOMAIN_LANG,
                   DOMAIN_PALETTE,
                   DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE, DOMAIN_UI_ELEMENT,
                   DOMAIN_UI_LIST,
@@ -77,7 +78,14 @@ class BuildContext:
     sfx_names:    list[str]  = None    # noms de Sfx dans le projet
     music_names:  list[str]  = None    # noms de Music dans le projet
     scene_names:  list[str]  = None    # noms de scènes du projet
+    # Codes des langues DÉCLARÉES (ROADMAP v0.9, phase 4). `lua_compiler` pose
+    # toujours une LISTE, `[]` dans un projet monolingue — lang.set/lang.get
+    # n'ont alors aucun code valide, donc tout appel est refusé, sans cas
+    # spécial à écrire ici. `None` (l'absence) relâche la vérification, comme
+    # tout le reste de ce contexte.
+    lang_codes:   list[str]  = None
     camera_names: list[str]  = None    # noms de caméras du projet (pour camera.switch)
+    window_names: list[str]  = None    # noms de WindowSlot du projet (pour window.*)
     sound_box_state_names: list[str]  = None  # états des SoundBox du projet
     jingle_box_state_names: list[str] = None  # états des JingleBox du projet
     music_box_trigger_names: list[str] = None  # déclencheurs des MusicBox
@@ -88,6 +96,10 @@ class BuildContext:
     # nom -> nombre de cases (ROADMAP v0.20). 1 = scalaire, ce qu'était toute
     # variable avant cette version ; au-delà, `global.nom[i]` l'indexe.
     global_counts: dict[str, int] = None
+    # nom -> `persist` (ROADMAP v0.22). Sert UNIQUEMENT `save.read` : un nom
+    # qui existe mais n'est pas coché persist ne figure dans aucun fichier de
+    # sauvegarde — l'appel rendrait toujours le défaut, en silence.
+    global_persist: dict[str, bool] = None
     # Noms des panneaux marqués LISTE (ROADMAP v0.22).
     ui_list_names: list = None
     # Les enfants du propriétaire de ce script (ROADMAP v0.23) : `self.bras`
@@ -117,10 +129,11 @@ class BuildContext:
     # persistante n'échoue pas, ça ne fait simplement RIEN — le genre de silence
     # qu'on ne diagnostique pas en regardant son script.
     has_persistent: Optional[bool] = None
-    # SpriteComponent de cet actor/prefab : "Affine transform" est coché sur
-    # l'actor ? C'est ce qui lui réserve un slot de matrice affine au build —
-    # sans lui, self.rotation/self.scale/self.sprite_* n'ont nulle part où
-    # écrire au runtime.
+    # « Affine transform » est-il coché sur le SpriteComponent de cet
+    # actor/prefab ? C'est ce qui lui réserve un slot de matrice affine au
+    # build. self.rotation/self.scale s'écrivent et se relisent sans lui — ce
+    # sont des champs de la struct Actor — mais rien ne les AFFICHE : d'où un
+    # avertissement, et non le refus de build que c'était jusqu'au 2026-08-25.
     affine_transform: bool = False
 
     VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
@@ -576,6 +589,21 @@ class Checker:
         variable) passe sans un mot : mêmes limites qu'ailleurs, on ne valide
         que ce qui est écrit en clair."""
         nom = _prop_label(receiver, p)
+        if p.domain in _RECEIVER_DOMAINS and receiver != "self":
+            # Même piège que pour un ARGUMENT du même domaine (_check_args,
+            # plus haut) : le nom cité appartient au sprite du RÉCEPTEUR, que
+            # ce script ne connaît pas — et le codegen le résout quand même
+            # contre l'acteur courant (`anim_constant(ctx.actor_sym, ...)`),
+            # produisant une constante crédible et fausse. Erreur ici, plutôt
+            # qu'une comparaison à l'animation d'un autre acteur qui mentirait
+            # en silence.
+            self.errors.append(CheckError(
+                "error",
+                f"{nom} {op} ... : « {p.lua_name.split('.', 1)[1]} » nomme un "
+                f"élément du sprite de « {receiver} », et il est résolu "
+                f"contre celui de l'acteur qui exécute ce script. Cette "
+                f"comparaison ne se fait que sur self."))
+            return
         if isinstance(value, ExprNumber):
             valides = HARDWARE_ENUMS.get(p.domain)
             fin = (f" Valeurs valides : {', '.join(sorted(valides))}."
@@ -625,10 +653,10 @@ class Checker:
                 ("rotation", "scale", "sprite_rotation", "sprite_scale", "sprite_offset")
                 and not self.ctx.affine_transform):
             self.errors.append(CheckError(
-                "error",
-                f"{p.lua_name} : coche « Affine transform » sur cet actor — sans lui, "
-                "aucun slot de matrice affine n'est réservé au build, et cette "
-                "propriété n'a rien où lire ni écrire."))
+                "warning",
+                f"{p.lua_name} : le sprite de cet actor n'a pas « Affine transform » "
+                "coché — aucun slot de matrice affine n'est réservé au build. La "
+                "valeur s'écrit et se relit, mais rien ne l'affiche à l'écran."))
 
     # ── Fonctions ─────────────────────────────────────────────────
 
@@ -1460,16 +1488,27 @@ class Checker:
                 f"persistante dans ce projet — l'appel ne sauvera rien. Cocher "
                 f"« persist » sur les variables à conserver."))
         slots = self.ctx.save_slots
-        if not args or slots is None:
-            return
-        val = self._literal_int(args[0])
-        if val is None:
-            return
-        if not (0 <= val < slots):
-            self.errors.append(CheckError(
-                "error",
-                f"{call_key}({val}) : le projet déclare {slots} emplacement(s) "
-                f"de sauvegarde, numérotés de 0 à {slots - 1}."))
+        if args:
+            val = self._literal_int(args[0])
+            if val is not None and slots is not None and not (0 <= val < slots):
+                self.errors.append(CheckError(
+                    "error",
+                    f"{call_key}({val}) : le projet déclare {slots} emplacement(s) "
+                    f"de sauvegarde, numérotés de 0 à {slots - 1}."))
+        # save.read('nom') cite une variable qui n'est pas cochée persist : le
+        # nom existe (sinon `_check_global` l'aurait déjà signalé), mais aucun
+        # fichier de sauvegarde ne la contiendra jamais — l'appel rendrait
+        # toujours son défaut, un silence du même genre que `save.write` sans
+        # variable persistante du tout.
+        if call_key == "save.read" and len(args) >= 2 and isinstance(args[1], ExprString):
+            name = args[1].value
+            persist = self.ctx.global_persist
+            if persist is not None and name in persist and not persist[name]:
+                self.errors.append(CheckError(
+                    "warning",
+                    f"save.read(..., '{name}') : '{name}' n'est pas cochée "
+                    f"« persist » — elle ne sera jamais dans une sauvegarde, "
+                    f"l'appel rendra toujours sa valeur par défaut."))
 
     def _check_const(self, call_key: str, name: str):
         if self.ctx.const_names is not None and name not in self.ctx.const_names:
@@ -1491,6 +1530,18 @@ class Checker:
                 f"Scènes disponibles : {', '.join(self.ctx.scene_names) or 'aucune'}.",
             ))
 
+    def _check_lang(self, call_key: str, name: str):
+        """Même raison que la scène : sans cette langue, le #define LANG_*
+        n'existe pas et gcc échoue sur la ligne générée. Une liste VIDE (projet
+        monolingue) refuse tout code — il n'y a rien à choisir."""
+        if self.ctx.lang_codes is not None and name not in self.ctx.lang_codes:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : langue '{name}' introuvable dans le "
+                f"projet. Langues disponibles : "
+                f"{', '.join(self.ctx.lang_codes) or 'aucune'}.",
+            ))
+
     def _check_camera(self, call_key: str, name: str):
         """Même raison que la scène : sans caméra de ce nom, le #define CAM_*
         n'existe pas et gcc échoue sur la ligne générée. `(default)` n'est pas
@@ -1501,6 +1552,22 @@ class Checker:
                 "error",
                 f"{call_key}('{name}') : caméra '{name}' introuvable dans le projet. "
                 f"Caméras disponibles : {', '.join(self.ctx.camera_names) or 'aucune'}.",
+            ))
+
+    def _check_window(self, call_key: str, name: str):
+        """DOMAIN_WIN_REGION (réglé le 2026-08-25) : "object"/"outside" sont
+        deux mots-clés fixes, jamais disputés (cf. api.WIN_REGIONS) ; tout
+        autre nom doit être un `WindowSlot` du projet — même raison qu'une
+        caméra inconnue, le #define WIN_* n'existerait pas et gcc échouerait
+        sur la ligne générée plutôt que sur sa cause."""
+        if name.lower() in ("object", "outside"):
+            return
+        if self.ctx.window_names is not None and name not in self.ctx.window_names:
+            self.errors.append(CheckError(
+                "error",
+                f"{call_key}('{name}') : ni \"object\"/\"outside\", ni une window "
+                f"'{name}' du projet. Windows disponibles : "
+                f"{', '.join(self.ctx.window_names) or 'aucune'}.",
             ))
 
     def _check_sequence(self, call_key: str, name: str):
@@ -1565,8 +1632,9 @@ class Checker:
             ))
 
     def _check_hw_enum(self, call_key: str, name: str, domain: str):
-        """Valeur d'une énumération matérielle (mode OAM, direction, région de
-        window, mode et côté de mélange).
+        """Valeur d'une énumération matérielle FIXE (mode OAM, direction, mode
+        et côté de mélange, décroissance). DOMAIN_WIN_REGION n'en fait PAS
+        partie depuis le 2026-08-25 — cf. `_check_window`.
 
         L'ensemble valide vient de `HARDWARE_ENUMS`, donc du catalogue : cette
         fonction n'énumère rien elle-même et ne périme pas quand une valeur
@@ -1611,6 +1679,7 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_UI_LIST:    lambda c, key, val, p, a: c._check_ui_list(key, val),
     DOMAIN_IMAGE_STATE: lambda c, key, val, p, a: c._check_image_state(key, val, a),
     DOMAIN_SCENE:   lambda c, key, val, p, a: c._check_scene(key, val),
+    DOMAIN_LANG:    lambda c, key, val, p, a: c._check_lang(key, val),
     DOMAIN_CAMERA:  lambda c, key, val, p, a: c._check_camera(key, val),
     DOMAIN_SOUND_BOX_STATE:  lambda c, key, val, p, a: c._check_box_state(
         key, val, c.ctx.sound_box_state_names),
@@ -1628,7 +1697,7 @@ _DOMAIN_CHECKS: dict = {
     # d'énumération ajouté à `api.py` est donc contrôlé sans qu'on touche ici.
     DOMAIN_OBJ_MODE:   lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_OBJ_MODE),
     DOMAIN_DIRECTION:  lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_DIRECTION),
-    DOMAIN_WIN_REGION: lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_WIN_REGION),
+    DOMAIN_WIN_REGION: lambda c, key, val, p, a: c._check_window(key, val),
     DOMAIN_BLEND_MODE: lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_BLEND_MODE),
     DOMAIN_BLEND_SIDE: lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_BLEND_SIDE),
     DOMAIN_EASE:       lambda c, key, val, p, a: c._check_hw_enum(key, val, DOMAIN_EASE),

@@ -28,8 +28,9 @@ class TextInspector(QWidget):
         self._project = None
         self._text = None
         self._blocking = False
-        # {clé: {script: n}}, un seul parcours pour tout le projet : luaparser
-        # est trop lent pour être relancé à chaque clic. None = à reconstruire.
+        # Index des citations, partagé avec la table : un seul parcours pour
+        # tout le projet, luaparser étant trop lent pour être relancé à chaque
+        # clic. None = à reconstruire.
         self._usage_index = None
         self._font = None       # police d'aperçu, pour les caractères manquants
         self._parsed = None
@@ -221,7 +222,7 @@ class TextInspector(QWidget):
             self.set_parsed(None)
         self._blocking = False
 
-    # ── Utilisations dans les scripts ─────────────────────────────
+    # ── Utilisations ──────────────────────────────────────────────
 
     def invalidate_usages(self):
         """Périme l'index — dès qu'un script bouge (renommage de clé, création,
@@ -229,29 +230,24 @@ class TextInspector(QWidget):
         self._usage_index = None
 
     def _usage_text(self, key: str) -> str:
-        """Résumé « n références dans m scripts » + la liste des fichiers."""
-        if self._usage_index is None:
-            self._usage_index = self._build_usage_index()
-        used_in = self._usage_index.get(key, {})
-        if not used_in:
-            return "no script"
-        n = sum(used_in.values())
-        files = "\n".join(f"  {p.name} ×{c}" if c > 1 else f"  {p.name}"
-                          for p, c in sorted(used_in.items()))
-        return f"{n} reference(s) in {len(used_in)} script(s)\n{files}"
+        """Qui cite cette entrée, et où — un site par ligne.
 
-    def _build_usage_index(self) -> dict:
-        """Parcourt les scripts une fois : {clé: {script: n}}."""
-        if not self._project:
-            return {}
-        try:
-            from scripting.refactor import index_refs_in_project
-            from scripting.api import DOMAIN_TEXT
-            return index_refs_in_project(self._project, DOMAIN_TEXT)
-        except Exception:
-            # luaparser absent ou scripts illisibles : l'inspecteur reste
-            # utilisable, il annonce juste qu'il ne sait pas.
-            return {}
+        L'index vient du projet (`text_usage_index`), pas d'un parcours local :
+        la colonne « Used » de la table pose la même question, et deux comptes
+        différents pour la même clé feraient douter des deux. Il couvre aussi
+        les mises en page, qu'un parcours des seuls scripts manquait — un texte
+        posé dans une boîte de dialogue passait pour orphelin."""
+        if self._usage_index is None and self._project is not None:
+            self._usage_index = self._project.text_usage_index()
+        if self._usage_index is None:
+            return ""
+        if not self._usage_index.scripts_scanned:
+            return "scripts could not be parsed — usage unknown"
+        use = self._usage_index.get(key)
+        if not use.count:
+            return "no script, no layout"
+        lines = [f"  {line}" for line in use.detail().splitlines()]
+        return "\n".join([use.summary()] + lines)
 
     def _note_focus_out(self, e):
         """Commite la note si elle a changé."""

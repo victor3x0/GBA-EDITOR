@@ -1,15 +1,21 @@
-"""Camera — comment l'écran regarde le monde, en tant qu'asset réutilisable.
+"""Camera — comment l'écran regarde le monde.
 
-Une caméra est rangée avec les données PROPRES au projet (`project/cameras/`)
-et non avec les ressources importées : elle ne dépend d'aucun fichier extérieur,
-comme une mise en page d'UI ou une palette.
+Une caméra APPARTIENT à sa scène (`Scene.cameras`, inline dans le JSON de la
+scène — comme `Actor`/`BackgroundLayer`) : ce n'est plus un asset de projet
+partagé entre scènes (révisé le 2026-08-24, cf. `changelog-archive/v0.6.md`).
 
 **Une seule caméra est active à la fois.** La GBA n'a qu'un écran et le
-multijoueur est hors périmètre : « plusieurs caméras » veut donc dire plusieurs
-configurations nommées dont une est active, jamais plusieurs vues simultanées.
-La scène désigne sa caméra de démarrage ; un script en change par appel
-explicite (`camera.switch`), il n'existe pas de bascule automatique par zone —
-un script déclenché par une collision suffit à en faire une.
+multijoueur est hors périmètre : une scène peut posséder plusieurs caméras,
+mais « plusieurs caméras » veut dire plusieurs configurations nommées dont une
+est active, jamais plusieurs vues simultanées. La scène désigne sa caméra de
+démarrage ; un script en change par appel explicite (`camera.switch`), il
+n'existe pas de bascule automatique par zone — un script déclenché par une
+collision suffit à en faire une.
+
+Le nom d'une caméra reste unique à l'échelle du PROJET (pas seulement de sa
+scène) : `camera.switch("Nom")` n'est pas qualifié par scène côté Lua, et
+chaque caméra reçoit une constante C globale `CAM_<NOM>` — deux scènes ne
+peuvent donc pas nommer leur caméra pareil.
 
 Ce que la caméra ne porte PAS, et pourquoi :
 
@@ -20,11 +26,19 @@ Ce que la caméra ne porte PAS, et pourquoi :
 - **la rotation, le zoom, une projection** : un calque régulier ne sait ni
   tourner ni se mettre à l'échelle. Ce sont des calques affines, donc la v2.0.
   Les proposer ici promettrait un rendu que le matériel ne sait pas produire ;
-- **un viewport** : découper l'écran, c'est une window matérielle, et il n'y en
-  a que deux — que la scène authore déjà (cf. `Scene.windows`). Question
-  rouverte en v2.0 avec l'écran partagé ;
 - **les paramètres de secousse** : une secousse est un événement, pas un état.
   Ses valeurs vivent à l'appel (`camera.shake(amplitude, frames)`).
+
+**Le viewport (`frame_w`/`frame_h`) est réglé le 2026-08-24** — la caméra PEUT
+rendre dans une zone plus petite que 240×160. Ce n'était pas possible avant que
+la caméra devienne possédée par sa scène (une seule active à la fois, cf.
+ci-dessus) : découper l'écran est une window matérielle, il n'y en a que deux
+(WIN0/WIN1), et l'allocation est désormais fixe — **WIN0 appartient à la
+caméra active** (`camera_switch()` la pilote), **WIN1 reste à la scène**
+(`Scene.windows`, panneau Windows). Pas de négociation à l'exécution : une
+seule caméra active à la fois veut dire un seul propriétaire de WIN0. Le vrai
+« écran partagé » (plusieurs caméras actives SIMULTANÉMENT) reste v2.0 — cf.
+ARCHITECTURE.md « Windows — le pochoir » et ROADMAP.md (Caméra2D).
 """
 
 from dataclasses import dataclass
@@ -50,11 +64,17 @@ class Camera(Resource):
     # dans la frame même.
     x: int = 0
     y: int = 0
+    # Taille du rendu à l'ÉCRAN (WIN0), en pixels — 240×160 = plein écran, la
+    # window matérielle reste éteinte (comportement identique à avant que ce
+    # champ existe). Plus petit que l'écran → `camera_switch()` pose WIN0 à
+    # (0,0,frame_w,frame_h) et l'active. Ancré à l'origine écran : pas de
+    # frame_x/frame_y, non demandé.
+    frame_w: int = 240
+    frame_h: int = 160
     mode: str = CAM_FIXED
-    # Acteur suivi, par NOM — résolu dans CHAQUE scène qui emploie cette
-    # caméra (cf. project.camera_users). Une caméra est réutilisable, les noms
-    # d'acteurs sont locaux à une scène : une scène sans acteur de ce nom
-    # laisse la caméra immobile, et le validateur le dit.
+    # Acteur suivi, par NOM — résolu dans les acteurs de SA scène (une caméra
+    # n'en possède qu'une). Un nom qui n'y correspond à aucun acteur laisse la
+    # caméra immobile, et le validateur le dit.
     follow_target: str = ""
     # Zone morte : la caméra ne bouge que lorsque la cible s'éloigne de plus de
     # ça du bord de l'écran. 0 = recentrage permanent.

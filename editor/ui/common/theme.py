@@ -176,6 +176,15 @@ class _Colors:
 C = _Colors()
 
 
+def tint(hex_color: str, alpha: float) -> str:
+    """`#9b8cff` + 0.3 → `rgba(155,140,255,0.30)`, pour poser une couleur de
+    rôle en fond ou en filet sans inventer une seconde constante par opacité.
+    Les QSS de Qt lisent `rgba()`, pas le `#rrggbbaa` du CSS moderne."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha:.2f})"
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Petites flèches ▲▼ des QSpinBox / QComboBox — comme le reste de
 #  l'application, elles viennent de l'icon set (ui.common.icons).
@@ -617,6 +626,23 @@ QFrame#{object_name} QFrame {{
     border: none;
 }}
 QFrame#{object_name} QLabel {{
+    background: transparent;
+    border: none;
+}}
+"""
+
+    # Encadré de notice (ui/common/notice.py) — niveau 2 quand la gravité
+    # l'impose, et tout le niveau 3. La teinte du ton porte le cadre ET le
+    # fond, à deux opacités : c'est ce qui le fait lire comme un bloc à part
+    # sans lui donner un aplat opaque de plus dans une carte déjà sombre.
+    def notice_box(self, color: str) -> str:
+        return f"""
+QFrame#noticeBox {{
+    background: {tint(color, 0.07)};
+    border: 1px solid {tint(color, 0.30)};
+    border-radius: 4px;
+}}
+QFrame#noticeBox QLabel {{
     background: transparent;
     border: none;
 }}

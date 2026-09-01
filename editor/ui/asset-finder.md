@@ -23,7 +23,7 @@ partagé :
 | Palette Editor | `palette_finder_panel.py` | palettes | `QTreeWidget` | 291 |
 | Data Editor | `data_finder_panel.py` | datatables | `QTreeWidget` | 216 |
 | Text Editor | `font_finder_panel.py` | fonts | `QListWidget` | 101 |
-| Text Editor | `text_tree_panel.py` | textes | `QTreeWidget` | 988 |
+| Text Editor | `text_table.py` | textes | `QTreeWidget` (mode table) | 520 |
 | Sound Mixer | `sound_panel.py` (section) | sfx, musics | `QTreeWidget` ×2 | — |
 | Background Editor | `background_editor_screen.py` (section) | backgrounds | `FinderSection` | — |
 
@@ -147,9 +147,9 @@ sélection via le bus. Chaque écran déclare ses familles et branche ses signau
 Les scripts gardent un `store` qui parcourt le disque — même interface,
 vérité différente, ce que la description rend explicite.
 
-**Hors périmètre** : `text_tree_panel.py` (988 lignes) ne liste pas des assets
-fichiers mais des entrées d'une table de textes avec sa propre grammaire de
-clés ; et les sous-arbres *métier* (animations d'un sprite, glyphes d'une
+**Hors périmètre** : `text_table.py` ne liste pas des assets fichiers mais des
+entrées d'une table de textes avec sa propre grammaire de clés — et elle a ses
+propres colonnes (rangement, usages) qu'aucun finder n'a ; et les sous-arbres *métier* (animations d'un sprite, glyphes d'une
 police) restent chez eux.
 
 ---

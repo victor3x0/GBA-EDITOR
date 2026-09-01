@@ -114,13 +114,21 @@ static inline void camera_apply_bounds(void) {
 
    `mode` : 0 fixe, 1 suivi, 2 script. La CIBLE du suivi n'est pas ici : elle
    est un index d'acteur, donc propre à chaque scène, et vit dans une table par
-   scène émise à côté du tick. */
+   scène émise à côté du tick.
+
+   `frame_w`/`frame_h` : taille du rendu à l'écran (WIN0), réglée le
+   2026-08-24. 240×160 = plein écran, WIN0 reste éteinte — comportement
+   identique à avant ces deux champs. Plus petit → camera_switch() pose WIN0 et
+   l'active. WIN0 appartient donc à la caméra active ; WIN1 reste authorable
+   par la scène (Scene.windows) — allocation fixe, jamais négociée à
+   l'exécution puisqu'une seule caméra est active à la fois. */
 typedef struct {
     u8  mode;
     u8  margin_x, margin_y;   /* zone morte du suivi */
     s16 x, y;                 /* cadrage posé à l'activation */
     s16 bounds_x, bounds_y;   /* origine de la zone scrollable */
     s16 bounds_w, bounds_h;   /* taille du monde ; 0 = axe illimité */
+    u8  frame_w, frame_h;     /* taille du rendu écran (WIN0) ; 240×160 = plein écran */
     void (*on_start)(void);   /* script de la caméra, ou NULL */
     void (*on_update)(void);
 } Camera;
@@ -128,16 +136,31 @@ typedef struct {
 extern const Camera g_cam_table[];
 extern int g_cam_active;
 
+/* Déclarées en avance : camera_switch() les appelle avant le bloc Windows
+   plus bas (redéclaration légale en C, mêmes signatures — même raison que les
+   constantes WINR_* dupliquées en tête de fichier). */
+extern void window_set (int n, int x, int y, int w, int h);
+extern void window_show(int n, int on);
+
 /* Activer une caméra POSE son cadrage et ses bornes : c'est ce que « caméra
    fixe » veut dire, et une caméra en suivi se recale dans la frame même. Les
    bornes ne sont donc écrites qu'ici — un script qui appelle camera.set_bounds
-   ensuite garde la main jusqu'à la prochaine activation. */
+   ensuite garde la main jusqu'à la prochaine activation. WIN0 suit le même
+   principe pour le cadre écran : posée ici, elle reste telle quelle jusqu'à la
+   prochaine activation (rien d'autre n'y touche, WIN0 n'appartenant plus qu'à
+   la caméra). */
 static inline void camera_switch(int idx) {
     if (idx < 0) return;
     const Camera *c = &g_cam_table[idx];
     g_cam_active = idx;
     cam_x = c->x; cam_y = c->y;
     camera_set_bounds((Rect){ c->bounds_x, c->bounds_y, c->bounds_w, c->bounds_h });
+    if (c->frame_w < SCREEN_W || c->frame_h < SCREEN_H) {
+        window_set(0, 0, 0, c->frame_w, c->frame_h);
+        window_show(0, 1);
+    } else {
+        window_show(0, 0);
+    }
     if (c->on_start) c->on_start();
 }
 
@@ -268,9 +291,23 @@ static inline Vec2 actor_get_velocity(const Actor* s)    { return (Vec2){ s->vx,
 static inline void actor_apply_velocity(Actor* s) { s->x+=s->vx; s->y+=s->vy; }
 
 /* Animation — play_anim reçoit l'index d'état (résolu à la compile par le transpileur) */
-static inline void actor_play_anim(Actor* s, int id) { if(s->anim_state!=id){s->anim_state=id;s->frame=0;s->timer=0;} }
-static inline int  actor_get_frame(const Actor* s)   { return s->frame; }
-static inline void actor_set_frame(Actor* s, int f)  { s->frame=f; }
+static inline void actor_play_anim(Actor* s, int id) { if(s->sprite.anim_state!=id){s->sprite.anim_state=id;s->sprite.frame=0;s->timer=0;} }
+/* État courant, en LECTURE — comparable par son nom (self.anim == "Walk"),
+   symétrique de play_anim qui l'écrit par son nom. Pas de setter : changer
+   d'état est un geste (self:play_anim), pas une propriété qu'on assigne. */
+static inline int  actor_get_anim(const Actor* s)    { return s->sprite.anim_state; }
+static inline int  actor_get_anim_speed(const Actor* s) { return s->sprite.anim_speed; }
+static inline void actor_set_anim_speed(Actor* s, int v) { s->sprite.anim_speed = v; }
+/* Lecture seule : recopiées chaque tick depuis les tables du sprite, cf.
+   Actor.sprite.anim_length/anim_loop/anim_finished (actor_types_static.h). */
+static inline int  actor_get_anim_length(const Actor* s)   { return s->sprite.anim_length; }
+static inline int  actor_get_anim_loop(const Actor* s)     { return s->sprite.anim_loop; }
+static inline int  actor_get_anim_finished(const Actor* s) { return s->sprite.anim_finished; }
+/* Lecture seule : posées à l'init/au spawn, cf. Actor.sprite.frame_w/frame_h. */
+static inline int  actor_get_frame_w(const Actor* s) { return s->sprite.frame_w; }
+static inline int  actor_get_frame_h(const Actor* s) { return s->sprite.frame_h; }
+static inline int  actor_get_frame(const Actor* s)   { return s->sprite.frame; }
+static inline void actor_set_frame(Actor* s, int f)  { s->sprite.frame=f; }
 static inline int  actor_get_visible(const Actor* s) { return s->visible; }
 static inline void actor_set_visible(Actor* s, int v){ s->visible=v; }
 static inline int  actor_get_active(const Actor* s)  { return s->active; }
@@ -286,7 +323,7 @@ static inline void actor_set_flip_v(Actor* s, int v) { s->flip_v = v ? 1 : 0; }
    Champs PAR-ACTOR de la struct Actor (cf. actor_types_static.h), et non des
    globaux par slot : un script de prefab poolé est UNE fonction C partagée par
    toutes ses instances, mais chaque instance a sa propre struct Actor et un
-   slot différent (Actor.affine_slot). Des globaux dans ce header `static`
+   slot différent (Actor.sprite.affine_slot). Des globaux dans ce header `static`
    créaient une COPIE par unité de compilation (main.c vs actor_*.c) — les
    écritures self.rotation/self.scale n'atteignaient jamais le rendu.
    Pas de FPU sur GBA : SIN_LUT est une table degrés→Q8 (×256) écrite en dur.
@@ -326,25 +363,29 @@ static const s16 SIN_LUT[360] = {
 static inline int gba_sin(int deg) { deg = ((deg % 360) + 360) % 360; return SIN_LUT[deg]; }
 static inline int gba_cos(int deg) { return gba_sin(deg + 90); }
 
-/* Un matrix slot est réservé au build quand Actor.affine_transform est coché
-   (cf. main_gen._compute_affine_info) ; affine_slot est alors >= 0 et les
-   champs transform ci-dessous sont lus par le rendu. Sans slot, les getters
-   renvoient l'identité (0° / 100 %) et les setters sont sans effet. */
+/* Un matrix slot est réservé au build quand « Affine transform » est coché sur
+   le SpriteComponent (cf. main_gen._compute_affine_info) ; sprite.affine_slot
+   est alors >= 0 et le rendu écrit une matrice.
+
+   Ces accesseurs ne le CONSULTENT PAS. Ils l'ont fait — setter no-op et getter
+   identité sans slot — et c'était un piège : `self.rotation = self.rotation + 1`
+   n'incrémentait rien, la valeur ne faisait même pas l'aller-retour. Ces champs
+   occupent leur place dans chaque Actor de toute façon ; ils sont donc de
+   l'ÉTAT DE JEU, toujours lisible et écrivable. Sans slot, ils ne s'affichent
+   simplement pas — le build le signale par un avertissement du checker. */
 
 /* Transform MONDE (self.rotation / self.scale). */
 static inline void actor_set_rotation(Actor* s, int deg) {
-    if (s->affine_slot >= 0) s->rotation = deg;
+    s->rotation = deg;
 }
 static inline void actor_set_scale(Actor* s, Vec2 v) {
-    if (s->affine_slot < 0) return;
     s->scale_x = v.x * 256 / 100;
     s->scale_y = v.y * 256 / 100;
 }
 static inline int  actor_get_rotation(const Actor* s) {
-    return (s->affine_slot >= 0) ? s->rotation : 0;
+    return s->rotation;
 }
 static inline Vec2 actor_get_scale(const Actor* s) {
-    if (s->affine_slot < 0) return (Vec2){ 100, 100 };
     return (Vec2){ s->scale_x * 100 / 256, s->scale_y * 100 / 256 };
 }
 
@@ -352,37 +393,33 @@ static inline Vec2 actor_get_scale(const Actor* s) {
    self.sprite_offset), composé par-dessus le monde : la rotation s'AJOUTE,
    le scale se MULTIPLIE, l'offset déplace le sprite dans le repère de l'actor. */
 static inline void actor_set_sprite_rotation(Actor* s, int deg) {
-    if (s->affine_slot >= 0) s->sprite_rot = deg;
+    s->sprite.rotation = deg;
 }
 static inline void actor_set_sprite_scale(Actor* s, Vec2 v) {
-    if (s->affine_slot < 0) return;
-    s->sprite_scale_x = v.x * 256 / 100;
-    s->sprite_scale_y = v.y * 256 / 100;
+    s->sprite.scale_x = v.x * 256 / 100;
+    s->sprite.scale_y = v.y * 256 / 100;
 }
 static inline void actor_set_sprite_offset(Actor* s, Vec2 o) {
-    if (s->affine_slot < 0) return;
-    s->offset_x = o.x;
-    s->offset_y = o.y;
+    s->sprite.offset_x = o.x;
+    s->sprite.offset_y = o.y;
 }
 static inline int  actor_get_sprite_rotation(const Actor* s) {
-    return (s->affine_slot >= 0) ? s->sprite_rot : 0;
+    return s->sprite.rotation;
 }
 static inline Vec2 actor_get_sprite_scale(const Actor* s) {
-    if (s->affine_slot < 0) return (Vec2){ 100, 100 };
-    return (Vec2){ s->sprite_scale_x * 100 / 256, s->sprite_scale_y * 100 / 256 };
+    return (Vec2){ s->sprite.scale_x * 100 / 256, s->sprite.scale_y * 100 / 256 };
 }
 static inline Vec2 actor_get_sprite_offset(const Actor* s) {
-    if (s->affine_slot < 0) return (Vec2){ 0, 0 };
-    return (Vec2){ s->offset_x, s->offset_y };
+    return (Vec2){ s->sprite.offset_x, s->sprite.offset_y };
 }
 
 /* Direction 8-axes pour l'animation (0=override, 1=N..8=NW) */
 static inline int  actor_get_dir(const Actor* s)          { static const s8 _lut[3][3]={{8,1,2},{7,0,3},{6,5,4}}; return _lut[s->dir_y+1][s->dir_x+1]; }
 static inline void actor_set_dir(Actor* s, int dir)       { static const s8 _dx[]={0,0,1,1,1,0,-1,-1,-1}; static const s8 _dy[]={0,-1,-1,0,1,1,1,0,-1}; if(dir>=0&&dir<=8){s->dir_x=_dx[dir];s->dir_y=_dy[dir];} }
-static inline void actor_set_auto_dir(Actor* s, int v)    { s->auto_dir=v?1:0; }
+static inline void actor_set_auto_dir(Actor* s, int v)    { s->sprite.auto_dir=v?1:0; }
 /* La lecture manquait : `auto_dir` s'écrivait sans pouvoir se relire, donc un
    script qui voulait le basculer devait tenir son propre drapeau à côté. */
-static inline int  actor_get_auto_dir(const Actor* s)     { return s->auto_dir; }
+static inline int  actor_get_auto_dir(const Actor* s)     { return s->sprite.auto_dir; }
 
 /* Direction : vecteur discret (-1|0|1) indépendant du flip */
 static inline Vec2 actor_get_direction(const Actor* s) {
@@ -424,12 +461,12 @@ static inline int box_overlap(int ax, int ay, const CollisionBox*ba,
    Écrit les tags BOXTAG_* des boxes impliquées dans *my_box / *other_box. */
 static inline int actors_overlap_boxes(const Actor*a, const Actor*b,
                                         u8*my_box, u8*other_box) {
-    for (int i=0; i<a->box_count; i++)
-        for (int j=0; j<b->box_count; j++)
-            if (box_overlap(a->x,a->y,&a->boxes[i],
-                            b->x,b->y,&b->boxes[j])) {
-                *my_box    = a->boxes[i].tag;
-                *other_box = b->boxes[j].tag;
+    for (int i=0; i<a->collision.box_count; i++)
+        for (int j=0; j<b->collision.box_count; j++)
+            if (box_overlap(a->x,a->y,&a->collision.boxes[i],
+                            b->x,b->y,&b->collision.boxes[j])) {
+                *my_box    = a->collision.boxes[i].tag;
+                *other_box = b->collision.boxes[j].tag;
                 return 1;
             }
     return 0;
@@ -453,6 +490,11 @@ static inline void actor_set_pal(Actor* s, int bank) { s->pal_bank = bank & 0xF;
    blending, pas encore câblé. */
 static inline void actor_set_obj_mode(Actor* s, int mode) { s->obj_mode = mode & 3; }
 static inline int  actor_get_obj_mode(const Actor* s)     { return s->obj_mode; }
+
+/* Ordre d'affichage face aux BG layers (self.priority) — même registre OAM
+   que pal_bank/obj_mode ci-dessus, donc la même liberté de le lire/l'écrire. */
+static inline void actor_set_priority(Actor* s, int p) { s->priority = p & 3; }
+static inline int  actor_get_priority(const Actor* s)  { return s->priority; }
 
 /* Maths */
 static inline int math_abs  (int x)              { return x < 0 ? -x : x; }
@@ -704,6 +746,13 @@ extern void text_clear_in    (int region);
 extern int  text_reading     (int region);
 extern void text_skip        (int region);
 
+/* Langue (ROADMAP v0.9, phase 4) — même découpe que text_set_font juste
+   au-dessus : implémentation unique dans gba_engine.h (GBA_ENGINE_IMPL),
+   redéclarée ici en `extern` pour les unités de compilation qui n'incluent
+   pas le moteur. */
+extern void lang_set(int code);
+extern int  lang_get(void);
+
 /* Images d'interface — un sprite à état posé sur la mise en page. Rien pour
    créer ni déplacer : la géométrie est authorée, seul l'ÉTAT est au script. */
 extern void ui_image_set_state(int img, int state);
@@ -751,11 +800,17 @@ extern void palette_set_obj(int bank, int idx);
    dans l'emplacement `slot`. Rendent 0 si l'emplacement n'existe pas, et
    save_read 0 aussi si ce qui s'y trouve n'est pas relisible (marque, version
    ou somme de contrôle) : le jeu doit pouvoir distinguer « pas de partie » de
-   « partie chargée » sans deviner. */
+   « partie chargée » sans deviner. Lua appelle save_read `save.load` — cf.
+   save_read_var juste dessous pour ce que `save.read` désigne côté Lua. */
 extern int save_write (int slot);
 extern int save_read  (int slot);
 extern int save_exists(int slot);
 extern int save_erase (int slot);
+/* save.read(slot, "nom") côté Lua (ROADMAP v0.22) : la valeur d'UNE variable
+   persistante dans un emplacement, sans toucher aux globales de la partie en
+   cours — contrairement à save_read ci-dessus. `idx` est un GLOBAL_*, résolu
+   par le codegen depuis le nom littéral, comme global.get. */
+extern int save_read_var(int slot, int idx);
 
 extern void tilemap_set        (int bg, int tx, int ty, int tile);
 extern int  tilemap_get        (int bg, int tx, int ty);
@@ -779,6 +834,6 @@ extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
    s'exécute après les `on_update`. C'est le contrat normal d'un état de
    collision, et le seul possible : pendant `on_update`, l'acteur n'a pas encore
    fini de bouger. */
-static inline int actor_on_ground(const Actor*a) { return a->grounded; }
+static inline int actor_on_ground(const Actor*a) { return a->collision.grounded; }
 
 #endif /* ACTOR_API_STATIC_H */

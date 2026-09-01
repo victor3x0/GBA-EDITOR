@@ -2,11 +2,19 @@
 project_watcher.py — Surveillance des fichiers projet en temps réel.
 
 Principe :
-  - assets/  → surveillé récursivement. Tout fichier déposé ou supprimé ici
-               est détecté et notifié via asset_appeared / asset_removed.
-               Les .lua émettent lua_changed directement.
+  - assets/  → surveillé par LISTE de sous-dossiers (cf. watch_project), pas
+               récursivement : QFileSystemWatcher ne descend pas tout seul, et
+               un sous-dossier créé après coup n'est donc pas suivi. Tout
+               fichier déposé ou supprimé dans les dossiers listés est notifié
+               via asset_appeared / asset_removed, à condition que son
+               extension soit dans _ASSET_SUFFIXES. Les .lua émettent
+               lua_changed directement.
+  - les sidecars `.json` d'assets (sprites, backgrounds, fonts, sfx, music)
+               vivent DANS assets/, à côté de leur fichier source, et sont
+               surveillés eux aussi — sidecar_changed. Ils ne l'étaient pas :
+               éditer une police à la main hors de l'éditeur ne se voyait pas.
   - project/ → seuls les JSONs de scènes et prefabs sont surveillés (éditeur
-               interne). Les sidecars sprites/backgrounds vivent dans assets/.
+               interne).
 
 Signaux principaux
 ------------------
@@ -15,6 +23,7 @@ asset_removed(path)   — fichier supprimé de assets/
 asset_modified(path)  — fichier existant modifié dans assets/ (ex. PNG mis à jour)
 lua_changed(path)     — .lua modifié ou créé dans assets/scripts/
 scene_changed(path)   — .json de scène modifié dans project/scenes/
+sidecar_changed(path) — .json d'asset créé ou modifié dans assets/<famille>/
 
 Notes QFileSystemWatcher :
 - fileChanged peut supprimer le fichier de la liste après un save atomique
@@ -30,8 +39,30 @@ from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QFileSystemWatcher
 
 
-# Extensions considérées comme des assets bruts utilisateur
-_ASSET_SUFFIXES = {".png", ".bmp", ".wav", ".mod", ".xm", ".s3m", ".it", ".mp3", ".ogg"}
+# Extensions considérées comme des assets bruts utilisateur — DÉRIVÉES de ce
+# que chaque type d'asset déclare accepter, jamais réépelées ici.
+#
+# Cette liste était tenue à la main, et elle avait divergé en silence : elle
+# portait `.mp3`/`.ogg`, que rien n'importe, et ignorait `.fnt`, `.bdf`, `.pcf`,
+# `.dfont`, `.ttf` — cinq des six formats de police que `FONT_FILE_EXTS`
+# annonce. Conséquence : déposer une police dans assets/fonts/ ne déclenchait
+# rien, et le dossier passait pour non surveillé alors qu'il l'était. Seul le
+# `.png` traversait, par coïncidence entre les deux listes.
+#
+# C'est exactement la panne que la table de routage de `window.py` a déjà connue
+# (cf. son commentaire `_ASSET_ROUTES`) : une seconde liste que rien ne
+# confronte à la première. Une union dérivée ne peut plus diverger.
+from core.models.audio import SFX_FILE_EXTS, MUSIC_FILE_EXTS
+from core.models.font import FONT_FILE_EXTS
+from core.models.sprite import IMAGE_FILE_EXTS
+
+_ASSET_SUFFIXES = IMAGE_FILE_EXTS | SFX_FILE_EXTS | MUSIC_FILE_EXTS | FONT_FILE_EXTS
+
+# Les familles dont le sidecar `.json` vit DANS assets/, à côté du fichier
+# source — le nom du dossier est aussi celui du `ResourceStore` correspondant
+# (`project.fonts`, `project.sprites`…), ce qui évite une table de
+# correspondance de plus.
+_SIDECAR_DIRS = frozenset({"sprites", "backgrounds", "fonts", "sfx", "music"})
 _LUA_SUFFIX     = ".lua"
 _JSON_SUFFIX    = ".json"
 
@@ -49,6 +80,7 @@ class ProjectWatcher(QObject):
     asset_modified = pyqtSignal(str)   # fichier existant modifié dans assets/
     lua_changed    = pyqtSignal(str)   # .lua créé ou modifié dans assets/scripts/
     scene_changed  = pyqtSignal(str)   # .json de scène modifié dans project/scenes/
+    sidecar_changed = pyqtSignal(str)  # .json d'asset créé/modifié dans assets/<famille>/
 
     _DEBOUNCE_MS = 200
 
@@ -171,7 +203,11 @@ class ProjectWatcher(QObject):
             d = assets_root / subdir
             if d.exists():
                 for f in d.iterdir():
-                    if f.is_file() and f.suffix.lower() in (_ASSET_SUFFIXES | {_LUA_SUFFIX}):
+                    # Le `.json` d'un sidecar est suivi comme le fichier source :
+                    # sans lui, éditer une police ou un fond à la main hors de
+                    # l'éditeur ne se voyait jamais.
+                    if f.is_file() and f.suffix.lower() in (
+                            _ASSET_SUFFIXES | {_LUA_SUFFIX, _JSON_SUFFIX}):
                         self._watcher.addPath(str(f))
 
         # JSONs de scènes (éditeur)
@@ -225,6 +261,9 @@ class ProjectWatcher(QObject):
                 self.lua_changed.emit(path_str)
             elif path.suffix.lower() in _ASSET_SUFFIXES:
                 self.asset_appeared.emit(path_str)
+            elif (path.suffix.lower() == _JSON_SUFFIX
+                  and path.parent.name in _SIDECAR_DIRS):
+                self.sidecar_changed.emit(path_str)
 
         # Fichiers disparus
         for path_str in old_snap - new_snap:
@@ -244,5 +283,7 @@ class ProjectWatcher(QObject):
             parent = path.parent.name
             if parent == "scenes":
                 self.scene_changed.emit(path_str)
+            elif parent in _SIDECAR_DIRS:
+                self.sidecar_changed.emit(path_str)
         elif suffix in _ASSET_SUFFIXES:
             self.asset_modified.emit(path_str)

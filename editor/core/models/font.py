@@ -1,11 +1,14 @@
 """Font — police bitmap du jeu, stockée en sidecar à côté de sa planche PNG.
 
-**Un asset, plusieurs points d'entrée.** Deux formats sont acceptés en import :
-une planche PNG nue (la grille et le charset sont alors déduits, corrigeables
-dans l'éditeur) ou un descripteur BMFont `.fnt` + sa page PNG (qui apporte le
-mapping, donc supprime la déduction). Les deux remplissent le MÊME sidecar :
-un format d'entrée n'est qu'une façade, comme `detect_import_mode` pour les
-fonds.
+**Un asset, plusieurs points d'entrée.** Trois formats sont acceptés en
+import : une planche PNG nue (la grille et le charset sont alors déduits,
+corrigeables dans l'éditeur), un descripteur BMFont `.fnt` + sa page PNG (qui
+apporte le mapping, donc supprime la déduction), ou un conteneur de police
+bitmap (`.bdf`/`.pcf`/`.dfont`/`.ttf` à strikes intégrés — cf.
+`font_import.import_font_freetype`), dont la planche est alors GÉNÉRÉE : un
+glyphe par entrée du cmap, rendu à sa taille native. Les trois remplissent le
+MÊME sidecar : un format d'entrée n'est qu'une façade, comme
+`detect_import_mode` pour les fonds.
 
 **Le modèle est à rectangles, pas à grille.** Chaque glyphe porte son propre
 rectangle dans la planche — c'est ce qui permet d'accueillir BMFont, dont les
@@ -290,6 +293,8 @@ class Font(Resource):
         )
 
 
-# Extensions reconnues dans assets/fonts/ — la planche seule, ou le descripteur
-# BMFont (dont la page PNG est référencée à l'intérieur).
-FONT_FILE_EXTS = {".png", ".fnt"}
+# Extensions reconnues dans assets/fonts/ — la planche seule, le descripteur
+# BMFont (dont la page PNG est référencée à l'intérieur), ou un conteneur de
+# police bitmap (BDF/PCF/dfont/TTF à strikes intégrés — cf. font_import.
+# import_font_freetype), dont la planche est alors GÉNÉRÉE à l'import.
+FONT_FILE_EXTS = {".png", ".fnt", ".bdf", ".pcf", ".dfont", ".ttf"}

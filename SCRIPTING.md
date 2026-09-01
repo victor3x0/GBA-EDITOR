@@ -115,13 +115,16 @@ Deux points valent d'être soulignés, parce qu'ils surprennent :
   plus savoir quels caractères seront affichés, et il vaut mieux payer les tuiles que rendre
   un texte troué.
 - **Un menu se navigue tout seul.** Un panneau d'interface dont la case « Liste » est cochée
-  suit un index : le moteur lit la croix directionnelle, borne, fait défiler et répète. Le
-  script dit combien d'items il y a et écrit ce que chaque rangée affiche — les rangées sont
-  les zones de texte posées DANS le panneau :
+  suit un index : le moteur lit la croix directionnelle, borne, fait défiler et répète. Les
+  rangées sont les zones de texte posées DANS le panneau, et le nombre d'items commence par
+  valoir leur compte — un menu STATIQUE (un sélecteur de langue, un menu principal : autant
+  d'items que de rangées, jamais de défilement) navigue donc **sans écrire un `list.set_count`**.
+  `list.set_count` sert dès que les items dépassent les rangées visibles — un inventaire qui
+  défile par fenêtres de 3 :
 
   ```lua
   function on_update()
-      list.set_count("Menu", #objets)
+      list.set_count("Menu", #objets)   -- plus d'items que de rangées visibles : nécessaire ici
       for r = 1, 3 do
           local item = list.first("Menu") + r - 1
           text.draw_in(list.row("Menu", r), data.Objets[item].nom)
@@ -320,7 +323,7 @@ Elle n'existe pas. Aucun de ces modules n'est embarqué dans la ROM :
 | `string.format(…)` | pas de chaîne manipulable | la table de textes et son balisage |
 | `table.insert(t, v)` | un tableau a une taille fixe, décidée au build | `array(n)`, et un compteur si le contenu varie |
 | `os.time()` | pas d'horloge système | `scene.frame` compte les frames |
-| `io.open(…)` | pas de système de fichiers | `save.write` / `save.read` (SRAM) |
+| `io.open(…)` | pas de système de fichiers | `save.write` / `save.load` (SRAM) |
 | `coroutine.create(f)` | le moteur appelle `on_update` et reprend la main | un état dans une variable, et le `if` qui le lit |
 | `debug.traceback()` | il n'y a pas de machine virtuelle à inspecter | — |
 | `utf8.char(…)` | l'encodage est décidé au build | — |

@@ -86,6 +86,219 @@
       ]
     },
     {
+      "name": "Juiciness",
+      "group": "gameplay",
+      "entries": [
+        {
+          "label": "self:squash(t, duration, amount)",
+          "snippet": "self:squash(t, 8, 30)",
+          "description": "Aplatit le sprite (large et bas) puis revient à 100% en `duration` frames. `amount` = intensité en points de %. Ex: impact au sol → self:squash(t, 8, 30).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Intensité, en points de %"
+            }
+          ],
+          "doc_anchor": "self-squash"
+        },
+        {
+          "label": "self:stretch(t, duration, amount)",
+          "snippet": "self:stretch(t, 6, 25)",
+          "description": "Étire le sprite (fin et haut) puis revient à 100% en `duration` frames. `amount` = intensité en points de %. Ex: départ d'un saut → self:stretch(t, 6, 25).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Intensité, en points de %"
+            }
+          ],
+          "doc_anchor": "self-stretch"
+        },
+        {
+          "label": "self:bounce(t, duration, amount)",
+          "snippet": "self:bounce(t, duration, amount)",
+          "description": "Décale le sprite vers le haut puis le laisse retomber (self.sprite_offset.y), `amount` px d'amplitude sur `duration` frames.",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Amplitude, en pixels"
+            }
+          ],
+          "doc_anchor": "self-bounce"
+        },
+        {
+          "label": "self:shake(t, duration, amount)",
+          "snippet": "self:shake(t, duration, amount)",
+          "description": "Fait trembler le sprite (self.sprite_offset aléatoire), `amount` px max, retombant à zéro sur `duration` frames. Écrase tout self.sprite_offset déjà posé.",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Amplitude max, en pixels"
+            }
+          ],
+          "doc_anchor": "self-shake"
+        },
+        {
+          "label": "self:flash(t, duration, pal)",
+          "snippet": "self:flash(t, 4, WHITE_FLASH_BANK)",
+          "description": "Bascule sur la banque palette `pal` (self.pal) tant que t < duration, puis revient à la banque 0. Ex: dégât → self:flash(t, 4, WHITE_FLASH_BANK).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "pal",
+              "type": "number",
+              "description": "Banque palette à afficher pendant l'effet"
+            }
+          ],
+          "doc_anchor": "self-flash"
+        },
+        {
+          "label": "self:blink(t, duration, interval)",
+          "snippet": "self:blink(t, 90, 4)",
+          "description": "Bascule self.visible on/off toutes les `interval` frames tant que t < duration, puis reste visible. Ex: invincibilité → self:blink(t, 90, 4).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "interval",
+              "type": "number",
+              "description": "Frames entre chaque bascule visible/invisible"
+            }
+          ],
+          "doc_anchor": "self-blink"
+        },
+        {
+          "label": "self:pulse(t, duration, amount)",
+          "snippet": "self:pulse(t, 30, 15)",
+          "description": "Grossit puis revient à 100% (self.sprite_scale), `amount` points de % d'amplitude sur `duration` frames. Ex: objet ramassable → self:pulse(t, 30, 15).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Amplitude, en points de %"
+            }
+          ],
+          "doc_anchor": "self-pulse"
+        },
+        {
+          "label": "self:pop(t, duration, amount)",
+          "snippet": "self:pop(t, 15, 20)",
+          "description": "Apparition : grossit de 0% jusqu'à 100+`amount`% puis se stabilise à 100%. Ex: spawn d'un power-up → self:pop(t, 15, 20).",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Dépassement au pic, en points de %"
+            }
+          ],
+          "doc_anchor": "self-pop"
+        },
+        {
+          "label": "self:wobble(t, duration, amount)",
+          "snippet": "self:wobble(t, duration, amount)",
+          "description": "Oscille en rotation autour de 0° (self.sprite_rotation), `amount` degrés max, amplitude retombant à zéro sur `duration` frames.",
+          "params": [
+            {
+              "name": "t",
+              "type": "number",
+              "description": "Frame courante de l'effet, avancée par le script appelant"
+            },
+            {
+              "name": "duration",
+              "type": "number",
+              "description": "Durée totale de l'effet, en frames"
+            },
+            {
+              "name": "amount",
+              "type": "number",
+              "description": "Amplitude max, en degrés"
+            }
+          ],
+          "doc_anchor": "self-wobble"
+        }
+      ]
+    },
+    {
       "name": "Input",
       "group": "gameplay",
       "entries": [
@@ -555,9 +768,9 @@
           "doc_anchor": "save-write"
         },
         {
-          "label": "save.read(slot)",
-          "snippet": "save.read(0)",
-          "description": "Relit un emplacement dans les variables persistantes. Une variable absente du fichier reprend sa valeur par défaut ; si l'emplacement est vide ou illisible, rien n'est touché.",
+          "label": "save.load(slot)",
+          "snippet": "save.load(0)",
+          "description": "Relit un emplacement et REMPLACE TOUTES les variables persistantes de la partie en cours. Une variable absente du fichier reprend sa valeur par défaut ; si l'emplacement est vide ou illisible, rien n'est touché.",
           "params": [
             {
               "name": "slot",
@@ -566,6 +779,25 @@
             }
           ],
           "returns": "number — 1 si la lecture a eu lieu, 0 sinon",
+          "doc_anchor": "save-load"
+        },
+        {
+          "label": "save.read(slot, \"name\")",
+          "snippet": "save.read(0, \"chapitre\")",
+          "description": "Rend la valeur d'UNE variable persistante dans un emplacement, SANS toucher à la partie en cours — de quoi peindre un écran de sélection de partie sans charger les autres. Rend le défaut si l'emplacement est vide/illisible ou si le fichier ne contient pas cette variable.",
+          "params": [
+            {
+              "name": "slot",
+              "type": "number",
+              "description": "Numéro d'emplacement, à partir de 0"
+            },
+            {
+              "name": "name",
+              "type": "string",
+              "description": "Nom d'une variable globale cochée « persist »"
+            }
+          ],
+          "returns": "number — la valeur de la variable dans cet emplacement",
           "doc_anchor": "save-read"
         },
         {
@@ -794,6 +1026,34 @@
           ],
           "returns": "",
           "doc_anchor": "scene-switch"
+        }
+      ]
+    },
+    {
+      "name": "Langue",
+      "group": "gameplay",
+      "entries": [
+        {
+          "label": "lang.set(code)",
+          "snippet": "lang.set(\"fr\")",
+          "description": "Change la langue active et recharge la scène courante pour l'appliquer (comme un scene.switch vers elle-même — acteurs et état de scène repartent à zéro).",
+          "params": [
+            {
+              "name": "code",
+              "type": "string",
+              "description": "Code d'une langue déclarée dans le projet"
+            }
+          ],
+          "returns": "",
+          "doc_anchor": "lang-set"
+        },
+        {
+          "label": "lang.get()",
+          "snippet": "lang.get()",
+          "description": "La langue active — un index (0 = la source), comparable à LANG_<CODE>.",
+          "params": [],
+          "returns": "number — index de langue courant",
+          "doc_anchor": "lang-get"
         }
       ]
     },
@@ -1171,7 +1431,7 @@
         {
           "label": "list.count(liste)",
           "snippet": "list.count(\"liste\")",
-          "description": "Combien d'items cette liste parcourt. C'est le script qui le pose (list.set_count) : un inventaire ne connaît sa longueur qu'en jeu.",
+          "description": "Combien d'items cette liste parcourt. Vaut le nombre de rangées authorées par défaut — un menu statique navigue donc sans rien poser. list.set_count le change quand les items dépassent les rangées visibles (un inventaire qui défile).",
           "params": [
             {
               "name": "liste",
@@ -1185,7 +1445,7 @@
         {
           "label": "list.set_count(liste, n)",
           "snippet": "list.set_count(\"liste\", n)",
-          "description": "Dit combien d'items la liste parcourt — #mon_tableau, le nombre de lignes d'une table de données, ou un compte tenu à la main. Tant que c'est 0, la liste ne bouge pas.",
+          "description": "Dit combien d'items la liste parcourt, quand ça dépasse les rangées visibles — #mon_tableau, le nombre de lignes d'une table de données, ou un compte tenu à la main. Un menu statique (autant d'items que de rangées) n'en a pas besoin : c'est déjà le défaut.",
           "params": [
             {
               "name": "liste",
@@ -1274,14 +1534,14 @@
       "group": "hardware",
       "entries": [
         {
-          "label": "window.show(n, on)",
-          "snippet": "window.show(0, true)",
-          "description": "Active ou désactive une window. Une window ne dessine rien : c'est un pochoir, qui dit par région de l'écran QUI a le droit de s'afficher. L'apparence vient de ce que vous mettez dedans. n : 0 et 1 = les deux rectangles, 2 = la window OBJ. Attention : dès qu'une window est active, la région 3 (extérieur) régit tout le reste de l'écran.",
+          "label": "window.show(name, on)",
+          "snippet": "window.show(\"object\", true)",
+          "description": "Active ou désactive une window. Une window ne dessine rien : c'est un pochoir, qui dit par région de l'écran QUI a le droit de s'afficher. L'apparence vient de ce que vous mettez dedans. Régions réglé le 2026-08-25 : le nom d'un WindowSlot du projet, ou \"object\" (la window OBJ) — plus d'index brut, le rang matériel (WIN0/WIN1) est décidé par l'allocateur. Attention : dès qu'une window est active, \"outside\" régit tout le reste de l'écran.",
           "params": [
             {
-              "name": "n",
-              "type": "number",
-              "description": "0 = window 0, 1 = window 1, 2 = window OBJ"
+              "name": "name",
+              "type": "string",
+              "description": "Un nom de WindowSlot, ou \"object\""
             },
             {
               "name": "on",
@@ -1292,28 +1552,28 @@
           "doc_anchor": "window-show"
         },
         {
-          "label": "window.is_visible(n)",
-          "snippet": "window.is_visible(0)",
-          "description": "Teste si la window n est active.",
+          "label": "window.is_visible(name)",
+          "snippet": "window.is_visible(\"object\")",
+          "description": "Teste si la window est active.",
           "params": [
             {
-              "name": "n",
-              "type": "number",
-              "description": "0, 1 ou 2 (window OBJ)"
+              "name": "name",
+              "type": "string",
+              "description": "Un nom de WindowSlot, ou \"object\""
             }
           ],
           "returns": "number — 1 si active, 0 sinon",
           "doc_anchor": "window-is_visible"
         },
         {
-          "label": "window.set(n, x, y, w, h)",
-          "snippet": "window.set(0, 24, 96, 192, 56)",
-          "description": "Définit le rectangle d'une window, en pixels écran (240×160). Il n'y a que DEUX rectangles disponibles sur GBA, 0 et 1 — c'est une contrainte de la console, pas de l'éditeur. Animer ce rectangle frame après frame donne les transitions (iris, volet, bandeau).",
+          "label": "window.set(name, x, y, w, h)",
+          "snippet": "window.set(\"HudFrame\", 24, 96, 192, 56)",
+          "description": "Définit le rectangle d'une window nommée, en pixels écran (240×160). Il n'y a que DEUX rectangles disponibles sur GBA — c'est une contrainte de la console, pas de l'éditeur ; lequel des deux cette window occupe est décidé par l'allocateur, pas par ce nom. Animer ce rectangle frame après frame donne les transitions (iris, volet, bandeau).",
           "params": [
             {
-              "name": "n",
-              "type": "number",
-              "description": "Window 0 ou 1"
+              "name": "name",
+              "type": "string",
+              "description": "Un nom de WindowSlot du projet (pas \"object\"/\"outside\")"
             },
             {
               "name": "x",
@@ -1339,14 +1599,14 @@
           "doc_anchor": "window-set"
         },
         {
-          "label": "window.set_layer(r, bg, on)",
-          "snippet": "window.set_layer(0, 2, true)",
-          "description": "Autorise ou non un layer de fond à s'afficher dans une région. Régions : 0 = window 0, 1 = window 1, 2 = window OBJ, 3 = tout l'extérieur. Un pixel obéit à la première région qui le contient, dans cet ordre. C'est ainsi qu'un layer plein écran ne se voit que dans un rectangle.",
+          "label": "window.set_layer(region, bg, on)",
+          "snippet": "window.set_layer(\"HudFrame\", 2, true)",
+          "description": "Autorise ou non un layer de fond à s'afficher dans une région. Région : un nom de WindowSlot, \"object\" (window OBJ) ou \"outside\" (tout le reste). Un pixel obéit à la première région qui le contient, dans cet ordre matériel câblé. C'est ainsi qu'un layer plein écran ne se voit que dans un rectangle.",
           "params": [
             {
-              "name": "r",
-              "type": "number",
-              "description": "Région 0-3 (3 = extérieur)"
+              "name": "region",
+              "type": "string",
+              "description": "Un nom de WindowSlot, \"object\" ou \"outside\""
             },
             {
               "name": "bg",
@@ -1362,14 +1622,14 @@
           "doc_anchor": "window-set_layer"
         },
         {
-          "label": "window.get_layer(r, bg)",
-          "snippet": "window.get_layer(0, 2)",
-          "description": "Teste si le layer bg est autorisé dans la région r.",
+          "label": "window.get_layer(region, bg)",
+          "snippet": "window.get_layer(\"HudFrame\", 2)",
+          "description": "Teste si le layer bg est autorisé dans la région.",
           "params": [
             {
-              "name": "r",
-              "type": "number",
-              "description": "Région 0-3"
+              "name": "region",
+              "type": "string",
+              "description": "Un nom de WindowSlot, \"object\" ou \"outside\""
             },
             {
               "name": "bg",
@@ -1381,14 +1641,14 @@
           "doc_anchor": "window-get_layer"
         },
         {
-          "label": "window.set_obj(r, on)",
-          "snippet": "window.set_obj(0, false)",
-          "description": "Autorise ou non les sprites dans la région r. Couper les sprites dans un rectangle empêche un personnage de passer par-dessus une zone d'interface.",
+          "label": "window.set_obj(region, on)",
+          "snippet": "window.set_obj(\"HudFrame\", false)",
+          "description": "Autorise ou non les sprites dans la région. Couper les sprites dans un rectangle empêche un personnage de passer par-dessus une zone d'interface.",
           "params": [
             {
-              "name": "r",
-              "type": "number",
-              "description": "Région 0-3"
+              "name": "region",
+              "type": "string",
+              "description": "Un nom de WindowSlot, \"object\" ou \"outside\""
             },
             {
               "name": "on",
@@ -1399,14 +1659,14 @@
           "doc_anchor": "window-set_obj"
         },
         {
-          "label": "window.set_blend(r, on)",
-          "snippet": "window.set_blend(3, true)",
-          "description": "Autorise ou non le mélange de couleurs dans la région r. Combinaison la plus utile : mélange activé dans la région 3 et coupé dans la région 0, ce qui estompe tout l'écran SAUF votre rectangle — sans dépenser le moindre octet de mémoire vidéo.",
+          "label": "window.set_blend(region, on)",
+          "snippet": "window.set_blend(\"outside\", true)",
+          "description": "Autorise ou non le mélange de couleurs dans la région. Combinaison la plus utile : mélange activé dans \"outside\" et coupé dans votre window, ce qui estompe tout l'écran SAUF votre rectangle — sans dépenser le moindre octet de mémoire vidéo.",
           "params": [
             {
-              "name": "r",
-              "type": "number",
-              "description": "Région 0-3"
+              "name": "region",
+              "type": "string",
+              "description": "Un nom de WindowSlot, \"object\" ou \"outside\""
             },
             {
               "name": "on",

@@ -20,6 +20,7 @@ from scripting.globals import write_globals
 from scripting.constants import write_constants
 from codegen.c_names import sym as c_sym
 from codegen import build_output
+from codegen.actor_budget import prefab_pool_instances
 
 
 def _actor_script(actor: Actor) -> Optional[str]:
@@ -27,12 +28,25 @@ def _actor_script(actor: Actor) -> Optional[str]:
     return comp.script if comp and comp.active else None
 
 
-def _sfx_component_info(owner) -> tuple[Optional[str], bool]:
-    """Retourne (sfx_name, autoplay) depuis le SoundFxComponent d'un actor/prefab, si présent."""
+def _sfx_component_name(owner) -> Optional[str]:
+    """Le Sfx du SoundFxComponent d'un actor/prefab, si présent — ce que
+    `self:play_sfx()` joue. Les triggers AUTOMATIQUES (on_spawn/on_destroy/
+    on_button_*) ne passent plus par ici : `main_gen.py` les injecte
+    directement, cf. `core.models.components.SFX_AUTO_TRIGGERS`."""
     comp = owner.get_component("sound_fx")
     if not comp or not comp.active or not comp.sfx_name:
-        return None, False
-    return comp.sfx_name, comp.trigger == "on_spawn"
+        return None
+    return comp.sfx_name
+
+
+def _affine_reserved(owner) -> bool:
+    """Cet actor/prefab réserve-t-il un slot de matrice affine ? La case vit sur
+    le SpriteComponent (cf. ARCHITECTURE.md « Le modèle affine ») ; sans sprite,
+    rien n'est réservé. Le checker s'en sert pour avertir qu'un `self.rotation`
+    ne se verra pas — il ne refuse plus le build : la valeur, elle, s'écrit et
+    se relit."""
+    comp = owner.get_component("sprite")
+    return bool(comp and comp.affine_transform)
 
 
 def _compile_script(sp: Path, ctx_check: "BuildContext", emit, label: str):
@@ -129,6 +143,13 @@ def transpile_all(
     text_keys   = ([t.key for t in p.build_texts()] if hasattr(p, "build_texts")
                    else [t.key for t in getattr(p, "texts", [])])
     font_names  = [f.name for f in project_fonts(p)]
+    # Langues : source en index 0 puis `settings.languages` dans l'ordre
+    # déclaré — même ordre que `g_texts[lang]`/`g_lang_font[lang]` (ROADMAP
+    # v0.9, phase 4). [] dans un projet monolingue, jamais None : lang.set /
+    # lang.get n'ont alors aucun code valide, refusés comme n'importe quel
+    # nom absent — pas un cas spécial.
+    lang_codes  = ([l.code for l in p.settings.all_languages()]
+                   if hasattr(p, "settings") else [])
     # Palettes : le catalogue ENTIER, dans son ordre. L'ordre devient
     # l'index dans g_palettes (main_gen), comme pour les textes et les
     # polices. Pas de dérivation depuis les scripts : la ROM est assez
@@ -150,7 +171,8 @@ def transpile_all(
     all_syms    = [c_sym(a.name) for a, _ in scene_actors]
     _actor_names = [a.name for a, _ in scene_actors]
     _scene_names = scene_names or []
-    _camera_names = [c.name for c in getattr(p, "cameras", [])]
+    _camera_names = sorted(p.camera_names()) if hasattr(p, "camera_names") else []
+    _window_names = sorted(p.window_names()) if hasattr(p, "window_names") else []
     # Une famille, un espace de noms — depuis que les trois boîtes sont trois
     # assets, rien n'oblige leurs états à se distinguer entre familles.
     from core.models.sound_box import KIND_SOUND, KIND_JINGLE
@@ -231,8 +253,8 @@ def transpile_all(
             for sd in stt.directions
             for fr in sd.frames
         } - {""})
-        sfx_comp_name, _ = _sfx_component_info(actor)
-        _rt_transform = bool(getattr(actor, "affine_transform", False))
+        sfx_comp_name = _sfx_component_name(actor)
+        _rt_transform = _affine_reserved(actor)
         ctx_check = BuildContext(
             actor_name   = actor.name,
             anim_names   = anim_names,
@@ -242,6 +264,7 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            window_names = _window_names,
             sound_box_state_names   = _snd_names,
             jingle_box_state_names  = _jgl_names,
             music_box_trigger_names = _snd_triggers,
@@ -250,6 +273,10 @@ def transpile_all(
             global_names = list(global_names) if global_names else None,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.22 : sert le checker de save.read('nom') — un nom
+            # qui existe mais n'est pas persist ne sera jamais dans un fichier
+            # de sauvegarde.
+            global_persist = {g.name: bool(getattr(g, "persist", False)) for g in p.globals},
             # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
             # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
             # tableau d'un scalaire et borner un index écrit en clair.
@@ -260,6 +287,7 @@ def transpile_all(
             sfx_component_name = sfx_comp_name,
             text_keys    = text_keys,
             font_names   = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names = region_names,
             image_names  = image_names,
@@ -288,6 +316,7 @@ def transpile_all(
                 music_names  = music_names,
                 scene_names  = _scene_names,
                 camera_names = _camera_names,
+                window_names = _window_names,
                 sound_box_state_names   = _snd_names,
                 jingle_box_state_names  = _jgl_names,
                 music_box_trigger_names = _snd_triggers,
@@ -296,6 +325,10 @@ def transpile_all(
                 global_names = list(global_names) if global_names else None,
                 ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.22 : sert le checker de save.read('nom') — un nom
+            # qui existe mais n'est pas persist ne sera jamais dans un fichier
+            # de sauvegarde.
+            global_persist = {g.name: bool(getattr(g, "persist", False)) for g in p.globals},
             # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
             # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
             # tableau d'un scalaire et borner un index écrit en clair.
@@ -307,6 +340,7 @@ def transpile_all(
                 # inconnue n'échoue qu'au `make`, sur un `TEXT_*` indéfini.
                 text_keys    = text_keys,
                 font_names   = font_names,
+                lang_codes   = lang_codes,
                 palette_names = palette_names,
                 region_names = region_names,
                 image_names  = image_names,
@@ -325,7 +359,7 @@ def transpile_all(
     for actor, sprite, script, sp in parsed_scripts:
         s    = c_sym(actor.name)
         anims = [st.name for st in sprite.states] if sprite and sprite.states else []
-        sfx_comp_name, sfx_autoplay = _sfx_component_info(actor)
+        sfx_comp_name = _sfx_component_name(actor)
         ctx  = CodegenContext(
             child_refs    = _child_refs_for_actor(actor, scene_actors),
             actor_name    = actor.name,
@@ -339,7 +373,6 @@ def transpile_all(
             scripts_dir   = p.scripts_dir,
             scene_names   = _scene_names,
             sfx_component_name = sfx_comp_name,
-            sfx_autoplay  = sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
             sound_box_states   = _snd_index,
@@ -347,6 +380,7 @@ def transpile_all(
             music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names  = region_names,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
@@ -370,7 +404,8 @@ def transpile_all(
     # du projet, et il n'est dit que là où il a été calculé.
     pool_state_total = 0
     for pf in prefabs:
-        if getattr(pf, "max_instances", 0) <= 0:
+        pf_instances = prefab_pool_instances(p, pf)
+        if pf_instances <= 0:
             continue
         pf_sym = c_sym(pf.name)
         if compiled_prefabs is not None:
@@ -385,8 +420,8 @@ def transpile_all(
             continue
         pf_spr  = next((c for c in pf.components if hasattr(c, "states")), None)
         pf_anim = [st.name for st in pf_spr.states] if pf_spr and hasattr(pf_spr, "states") else []
-        pf_sfx_comp_name, pf_sfx_autoplay = _sfx_component_info(pf)
-        _pf_rt_transform = bool(getattr(pf, "affine_transform", False))
+        pf_sfx_comp_name = _sfx_component_name(pf)
+        _pf_rt_transform = _affine_reserved(pf)
         ctx_check = BuildContext(
             actor_name   = pf.name,
             anim_names   = pf_anim,
@@ -395,6 +430,7 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            window_names = _window_names,
             sound_box_state_names   = _snd_names,
             jingle_box_state_names  = _jgl_names,
             music_box_trigger_names = _snd_triggers,
@@ -403,6 +439,10 @@ def transpile_all(
             global_names = list(global_names) if global_names else None,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.22 : sert le checker de save.read('nom') — un nom
+            # qui existe mais n'est pas persist ne sera jamais dans un fichier
+            # de sauvegarde.
+            global_persist = {g.name: bool(getattr(g, "persist", False)) for g in p.globals},
             # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
             # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
             # tableau d'un scalaire et borner un index écrit en clair.
@@ -434,10 +474,9 @@ def transpile_all(
             all_actor_syms= all_syms,
             scripts_dir   = p.scripts_dir,
             is_pooled     = True,
-            pool_size     = pf.max_instances,
+            pool_size     = pf_instances,
             scene_names   = _scene_names,
             sfx_component_name = pf_sfx_comp_name,
-            sfx_autoplay  = pf_sfx_autoplay,
             sfx_volumes   = sfx_volumes,
             music_info    = music_info,
             sound_box_states   = _snd_index,
@@ -445,6 +484,7 @@ def transpile_all(
             music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names  = region_names,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
@@ -464,12 +504,12 @@ def transpile_all(
         # Ce que l'état de script de ce prefab occupe en EWRAM. Le chiffre est
         # dit et non plafonné (cf. ROADMAP v0.7.6) : le plafond de huit entiers
         # qu'il remplace était arbitraire, et la ressource ici est arbitrable.
-        pool_state_total += pf_state_bytes * pf.max_instances
+        pool_state_total += pf_state_bytes * pf_instances
         if pf_state_bytes:
             emit("log_line",
                  f"[ewram] prefab {pf.name} : état de script {pf_state_bytes} "
-                 f"octets × {pf.max_instances} instance(s) = "
-                 f"{pf_state_bytes * pf.max_instances} octets")
+                 f"octets × {pf_instances} instance(s) = "
+                 f"{pf_state_bytes * pf_instances} octets")
 
     if pool_state_total:
         emit("log_line",
@@ -496,6 +536,7 @@ def transpile_all(
             music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names  = region_names,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
@@ -516,12 +557,12 @@ def transpile_all(
 
     # Génération C — scripts de CAMÉRA
     #
-    # Compilés une fois pour le PROJET et non par scène (`compiled_cameras`,
-    # même mécanique que les prefabs poolés) : une caméra est un asset partagé,
-    # et n'importe quelle scène peut activer n'importe laquelle par script.
-    # Mêmes points d'entrée qu'un script de scène — `hook_kind="camera"` ne
-    # change que le mot dans le symbole C émis.
-    for cam in getattr(p, "cameras", []):
+    # Une caméra n'appartient qu'à UNE scène (révisé 2026-08-24), mais son
+    # script est compilé comme n'importe quel script de projet : la garde
+    # `compiled_cameras` reste par précaution (même mécanique que les prefabs
+    # poolés) plutôt que par nécessité. Mêmes points d'entrée qu'un script de
+    # scène — `hook_kind="camera"` ne change que le mot dans le symbole C émis.
+    for cam in (c for s in p.scenes for c in s.cameras):
         if not getattr(cam, "script", ""):
             continue
         cam_sym = f"camera_{c_sym(cam.name)}"
@@ -538,16 +579,21 @@ def transpile_all(
             music_names  = music_names,
             scene_names  = _scene_names,
             camera_names = _camera_names,
+            window_names = _window_names,
             sound_box_state_names   = _snd_names,
             jingle_box_state_names  = _jgl_names,
             music_box_trigger_names = _snd_triggers,
-            # Aucun `actor_names` : une caméra est réutilisable entre scènes et
-            # les noms d'acteurs y sont locaux. Citer un acteur depuis une
-            # caméra marcherait dans une scène et pas dans la suivante — le
-            # checker doit le dire, pas le laisser passer.
+            # Aucun `actor_names` : le script d'une caméra n'a pas de `self`
+            # (même contrat qu'un script de scène), donc rien à valider contre
+            # une liste d'acteurs ici — `get_actor("Nom")` reste un appel
+            # générique, non typé par domaine.
             global_names = list(global_names) if global_names else None,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],
             global_types = {g.name: g.type for g in p.globals},
+            # ROADMAP v0.22 : sert le checker de save.read('nom') — un nom
+            # qui existe mais n'est pas persist ne sera jamais dans un fichier
+            # de sauvegarde.
+            global_persist = {g.name: bool(getattr(g, "persist", False)) for g in p.globals},
             # ROADMAP v0.20 : 1 = scalaire, au-delà = tableau indexable par
             # `global.nom[i]`. C'est ce que le checker lit pour distinguer un
             # tableau d'un scalaire et borner un index écrit en clair.
@@ -556,6 +602,7 @@ def transpile_all(
             const_names  = list(const_names) if const_names else None,
             text_keys    = text_keys,
             font_names   = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names = region_names,
             image_names  = image_names,
@@ -587,6 +634,7 @@ def transpile_all(
             music_box_triggers = _trigger_index,
             text_keys     = text_keys,
             font_names    = font_names,
+            lang_codes   = lang_codes,
             palette_names = palette_names,
             region_names  = region_names,
             ui_list_names = [pn.name for _l, pn in _project_lists(p)],

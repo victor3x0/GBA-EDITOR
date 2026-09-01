@@ -274,7 +274,7 @@ STDLIB_MODULES: dict[str, Refusal] = {
         "io.open(…)",
         "il n'y a pas de module `io` : une ROM n'a pas de système de fichiers. "
         "La seule mémoire inscriptible est la sauvegarde (`save.write` / "
-        "`save.read`), et les ressources sont cuites dans la cartouche."),
+        "`save.load`), et les ressources sont cuites dans la cartouche."),
     "coroutine": Refusal(
         "coroutine.create(f)",
         "il n'y a pas de coroutine : le moteur appelle `on_update` une fois "

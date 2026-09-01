@@ -26,6 +26,7 @@ from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from core.models.audio import MUSIC_FILE_EXTS, SFX_FILE_EXTS
 from core.models.font import FONT_FILE_EXTS
+from core.models.sprite import IMAGE_FILE_EXTS
 from core.models.scene import Scene
 from core.project import Project
 from ui.screens import EditorScreen, ProjectScreen, plugin_screens
@@ -177,7 +178,7 @@ class GbaStatusBar(QWidget):
         for r in (layout.slots if layout else []):
             if layout.resolved_target(r, rm) != TARGET_OBJ:
                 continue
-            g = strip_geometry(r)
+            g = strip_geometry(r, project.region_animated_glyphs(r))
             text_oam   += g["oam"]
             text_tiles += g["tiles"]
             # y ÉCRAN résolu par le modèle : offsets cumulés jusqu'au root +
@@ -283,9 +284,9 @@ class MainWindow(QMainWindow):
     # déposer un PNG dans assets/sprites/ levait un AttributeError dans un slot
     # Qt, donc tuait l'éditeur. Une référence directe échoue à l'import.
     _ASSET_ROUTES = [
-        ("sprites",     (".png", ".bmp"), asset_encoding.sync_sprite_png,
+        ("sprites",     IMAGE_FILE_EXTS, asset_encoding.sync_sprite_png,
                                           asset_encoding.remove_sprite_png,     "Sprite"),
-        ("backgrounds", (".png", ".bmp"), asset_encoding.sync_background_png,
+        ("backgrounds", IMAGE_FILE_EXTS, asset_encoding.sync_background_png,
                                           asset_encoding.remove_background_png, "Background"),
         ("sfx",         SFX_FILE_EXTS,    asset_encoding.sync_sfx_file,
                                           asset_encoding.remove_sfx_file,       "SFX"),
@@ -505,9 +506,22 @@ class MainWindow(QMainWindow):
         # ── Colonne 3 : Inspector (pleine hauteur) ────────────────
         self._inspector = DynamicInspector()
         self._inspector.actor_changed.connect(self._on_inspector_actor_changed)
+        # Position/frame édités dans l'inspecteur caméra → le canvas suit (et
+        # l'inverse : drag canvas → l'inspecteur suit, cf. plus bas).
+        self._inspector.camera_moved.connect(self.scene_editor.move_camera_item)
+        self.scene_editor.camera_position_changed.connect(
+            self._inspector.update_camera_position)
         # Une zone éditée dans l'inspecteur doit se redessiner dans le canvas.
         self._inspector.ui_regions_changed.connect(
             self.scene_editor._reload_ui_regions)
+        # `ui_regions_reloaded` : point de convergence des trois origines d'une
+        # mise en page modifiée (dessin/suppression/collage au canvas, édition
+        # dans l'inspecteur ci-dessus, opération depuis l'arbre plus bas) — un
+        # conteneur qui change de fond change l'occupation des banques de
+        # palette (carte Palettes de l'inspecteur de SCÈNE), pas seulement le
+        # dessin du canvas.
+        self.scene_editor.ui_regions_reloaded.connect(
+            self._inspector.refresh_current)
         # Mélange de couleurs : recomposition des pixmaps du canvas, en direct.
         # `refresh_blend` ne relit aucun fichier, on peut donc la brancher sur
         # chaque cran du curseur sans le rendre poussif.
@@ -539,6 +553,15 @@ class MainWindow(QMainWindow):
         _d.on("actors_list_changed",   self.scene_tree_panel.refresh)
         _d.on("actors_list_changed",   self._update_gba_bar)
         _d.on("actors_list_changed",   self._refresh_actor_inspector)
+        # Carte Palettes de l'inspecteur de SCÈNE : un acteur posé (prefab
+        # instancié au canvas compris) ou re-quantifié change l'occupation des
+        # banques (cf. codegen/palette_alloc.scene_palette_view) — jusqu'ici
+        # elle ne se rafraîchissait qu'au changement d'écran (`_refresh_scene_
+        # manager`), invisible tant qu'on ne quittait pas le Scene Manager.
+        _d.on("actors_list_changed",   self._inspector.refresh_current)
+        _d.on("scene_sprites_changed", self._inspector.refresh_current)
+        _d.on("cameras_list_changed",  self.scene_tree_panel.refresh)
+        _d.on("cameras_list_changed",  self.scene_editor.refresh_cameras)
         _d.on("bg_slot_changed",       self.scene_editor.refresh_bg)
         _d.on("inpaint_layer_changed", self.scene_editor.set_inpaint_layer)
         _d.on("bg_layer_visibility",    self.scene_editor.set_layer_visible)
@@ -704,14 +727,47 @@ class MainWindow(QMainWindow):
         self._nav_bar.check_screen(0)
 
     def _open_project_settings(self):
-        """Menu Game → Project Settings. Rien de nouveau à construire : c'est
-        exactement le panneau que montre déjà `_inspector` quand rien n'est
-        sélectionné (`DynamicInspector.on_selection(None)` → `show_project()`,
-        cf. dynamic_inspector.py) — `_switch_screen` vide le bus en y allant,
-        ce qui déclenche ce même chemin."""
+        """Menu Game → Project Settings — cartouche, audio, debug build,
+        transition par défaut, langues, collisions (`ProjectSettingsDialog`,
+        même squelette que `SettingsDialog`). L'identité du projet (auteur,
+        version, scène de départ, backdrop) reste dans `ProjectInspector`,
+        visible en permanence dans le Scene Manager quand rien n'est
+        sélectionné : ce n'est pas un réglage qu'on va chercher, c'est ce
+        qu'on garde sous les yeux."""
         if not self.project:
             return
-        self._switch_screen("Scenes")
+        from ui.scene_manager.inspectors.project_settings_dialog import ProjectSettingsDialog
+        dlg = ProjectSettingsDialog(self.project, parent=self)
+        dlg.exec()
+        self._refresh_settings_dependents()
+
+    def _refresh_settings_dependents(self):
+        """Resynchronise tout ce qui met en cache un champ de `ProjectSettings`
+        et n'est pas déjà branché sur un événement dédié.
+
+        `backdrop_color` n'a pas besoin d'être ici : `VisualPanel` émet déjà
+        `backdrop_changed` sur le dispatcher (`core.command_dispatcher`), et
+        `scene_canvas.refresh_backdrop` l'écoute — le mécanisme EXISTANT et
+        idiomatique du projet pour « ceci a changé, pas au build ». C'est lui
+        qu'il faut étendre champ par champ, PAS le `ProjectWatcher` : il ne
+        suit que des fichiers déposés de l'EXTÉRIEUR (assets, scripts, scènes)
+        et s'appuierait ici sur `project.json`, que ce dialogue vient
+        lui-même d'écrire — s'y abonner obligerait à suspendre le watcher
+        pendant toute l'ouverture de la fenêtre pour éviter l'aller-retour,
+        pour un gain nul face à un appel direct ici.
+
+        Reste donc ce qui n'émet PAS encore un tel événement : les langues
+        (`TextEditorScreen`, une seule ligne suffit, pas la peine d'un
+        événement pour un seul abonné) et la cartouche visée, dupliquée dans
+        les DEUX bandeaux ROM (Scene Manager, Script Editor) — même resynchro
+        que fait déjà `_set_cartridge_mib` quand le choix vient du bandeau
+        lui-même plutôt que de cette fenêtre."""
+        if not self.project:
+            return
+        self._text_editor.refresh()
+        cart_mib = getattr(self.project.settings, "cartridge_mib", 4)
+        self.build_panel.set_cartridge_mib(cart_mib)
+        self._script_editor.build_panel.set_cartridge_mib(cart_mib)
 
     def _show_screen(self, index: int):
         # Un seul catalogue : l'index de nav EST l'index du stack, par
@@ -812,7 +868,16 @@ class MainWindow(QMainWindow):
         push_recent(path)
         self._enter_editor()
         self._refresh_ui()
-        self._status.showMessage(f"Project: {self.project.settings.name}")
+        # Un asset que la réconciliation n'a pas su importer laissait un panneau
+        # vide et rien d'autre. Le dire ici, au seul moment où l'utilisateur
+        # peut faire le lien avec le fichier qu'il vient de déposer.
+        warns = getattr(self.project, "load_warnings", [])
+        if warns:
+            first = warns[0]
+            more = f"  (+{len(warns) - 1} autre(s))" if len(warns) > 1 else ""
+            self._status.showMessage(first + more, 12000)
+        else:
+            self._status.showMessage(f"Project: {self.project.settings.name}")
 
     def _enter_editor(self):
         """Affiche l'éditeur (nav visible) sur le Scene Manager."""
@@ -1014,7 +1079,7 @@ class MainWindow(QMainWindow):
         """
         w = self._watcher
         for sig in (w.asset_appeared, w.asset_removed, w.asset_modified,
-                    w.lua_changed, w.scene_changed):
+                    w.lua_changed, w.scene_changed, w.sidecar_changed):
             try:
                 sig.disconnect()
             except TypeError:
@@ -1024,6 +1089,7 @@ class MainWindow(QMainWindow):
         w.asset_modified.connect(self._on_asset_modified)
         w.lua_changed.connect(self._on_lua_changed)
         w.scene_changed.connect(self._on_scene_file_changed)
+        w.sidecar_changed.connect(self._on_sidecar_changed)
 
     def _match_asset_route(self, p: Path):
         """Trouve la route (sync/remove/label) pour un fichier assets/<dossier>/*.ext."""
@@ -1046,13 +1112,40 @@ class MainWindow(QMainWindow):
         # glyphe, format illisible…) — le taire laisserait un asset muet à
         # l'écran sans que l'utilisateur sache pourquoi. D'autres renvoient la
         # Resource créée (Sfx/Music) : seule une chaîne est un avertissement.
-        result = sync_fn(self.project, p)
+        #
+        # `suspended` : sync_* ÉCRIT le sidecar .json, et depuis que ceux-ci
+        # sont surveillés cette écriture nous reviendrait comme une modification
+        # externe — on rechargerait l'asset qu'on vient de créer.
+        with self._watcher.suspended():
+            result = sync_fn(self.project, p)
         warning = result if isinstance(result, str) else None
         self._refresh_ui()
         if warning:
             self._status.showMessage(warning, 6000)
         else:
             self._status.showMessage(f"{label} imported: {p.name}", 3000)
+
+    def _on_sidecar_changed(self, path: str):
+        """Un sidecar `.json` d'asset a été créé ou modifié hors de l'éditeur.
+
+        Le nom du dossier EST celui du `ResourceStore` (assets/fonts/ →
+        `project.fonts`) : pas de table de correspondance à tenir, la même
+        convention que le watcher applique déjà pour décider quoi surveiller.
+
+        `load_one` recharge cet asset seul depuis le disque. Recharger le
+        projet entier serait plus simple et beaucoup plus brutal — on perdrait
+        la sélection et l'historique pour une police retouchée à la main.
+        """
+        if not self.project:
+            return
+        p = Path(path)
+        store = getattr(self.project, p.parent.name, None)
+        if store is None or not hasattr(store, "load_one"):
+            return
+        if store.load_one(p.stem) is None:
+            return
+        self._refresh_ui()
+        self._status.showMessage(f"{p.parent.name[:-1].capitalize()} reloaded: {p.stem}", 3000)
 
     def _on_asset_removed(self, path: str):
         """Fichier brut supprimé de assets/ — suppression différée du JSON, UI mise à jour."""
@@ -1070,7 +1163,7 @@ class MainWindow(QMainWindow):
     def _on_asset_modified(self, path: str):
         """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""
         p = Path(path)
-        if p.suffix.lower() in (".png", ".bmp") and p.parent.name == "backgrounds":
+        if p.suffix.lower() in IMAGE_FILE_EXTS and p.parent.name == "backgrounds":
             # Un fond ne se contente pas d'un rafraîchissement d'affichage : sa
             # compression (palettes + tuiles) est stockée dans le sidecar, et
             # c'est ELLE que lit le build. Sans ré-encodage, l'ancienne image
@@ -1087,7 +1180,7 @@ class MainWindow(QMainWindow):
             self._status.showMessage(warning or f"Background updated: {p.stem}",
                                      8000 if warning else 3000)
             return
-        if p.suffix.lower() in (".png", ".bmp") and p.parent.name == "sprites":
+        if p.suffix.lower() in IMAGE_FILE_EXTS and p.parent.name == "sprites":
             # Comme un fond : les palettes stockées viennent des pixels, il faut
             # les refaire. La ROM, elle, était juste — grit relit le PNG au
             # build — mais l'éditeur affichait les anciennes couleurs (aperçu

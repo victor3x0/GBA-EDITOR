@@ -132,19 +132,11 @@ def norm_path(path) -> list[str]:
     return [s for s in (str(p).strip() for p in (path or [])) if s][:MAX_DEPTH]
 
 
-# ── Arbre de rangement ────────────────────────────────────────────
-# L'arbre est DÉRIVÉ de la liste plate : `texts.json` reste une liste dont
-# chaque entrée porte son chemin. Rien à garbage-collecter, diffs git lisibles,
-# dep-graph inchangé — mais pas de groupe vide, par construction.
-
-def tree_paths(texts) -> list[tuple[str, ...]]:
-    """Nœuds de rangement dérivés des chemins, triés parent avant enfant.
-
-    L'ordre lexicographique suffit à cette garantie (un préfixe précède ce
-    qu'il préfixe) et rend l'arbre stable d'une reconstruction à l'autre."""
-    prefixes = {tuple(t.path[:n + 1]) for t in texts for n in range(len(t.path))}
-    return sorted(prefixes, key=lambda p: tuple(s.casefold() for s in p))
-
+# ── Rangement ─────────────────────────────────────────────────────
+# Toujours DÉRIVÉ de la liste plate : `texts.json` reste une liste dont chaque
+# entrée porte son chemin. `tree_paths` (les nœuds d'un arbre à reconstruire)
+# a disparu avec `text_tree_panel.py` — la table qui l'a remplacé (ROADMAP
+# v0.9) groupe par catégorie sans en avoir besoin.
 
 def texts_under(texts, path) -> list:
     """Textes rangés dans `path` ou dans un de ses sous-nœuds."""

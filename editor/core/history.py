@@ -560,6 +560,99 @@ class CollisionPaintCmd(Command):
             self._persist()
 
 
+def _collision_tag_owners(project):
+    """Tous les acteurs/prefabs porteurs d'un CollisionBoxComponent — la même
+    liste que la matrice de collision parcourt pour découvrir ses tags
+    (cf. project_settings_dialog.CollisionsPanel)."""
+    return [a for sc in project.scenes for a in sc.actors] + list(project.prefabs) + [
+        ch for pf in project.prefabs for ch in (getattr(pf, "children", []) or [])]
+
+
+class RenameCollisionTagCmd(Command):
+    """Renomme un tag de collision PARTOUT en une seule étape d'annulation :
+    chaque CollisionBoxComponent qui le portait (tag explicite OU vide,
+    donc « body » par défaut), et la clé de chaque paire de la matrice qui
+    le citait (cf. pair_key, models/settings.py). Un tag simplement déclaré
+    (`ProjectSettings.collision_tags`, aucun composant) suit lui aussi."""
+
+    def __init__(self, project, old_name: str, new_name: str, persist_fn=None, label: str = ""):
+        from core.models.components import CollisionBoxComponent
+        self._project = project
+        self._old = old_name
+        self._new = new_name
+        self.label = label or f"Renommer le tag {old_name}"
+        self._persist = persist_fn
+        self._components = [
+            c for o in _collision_tag_owners(project) for c in getattr(o, "components", [])
+            if isinstance(c, CollisionBoxComponent) and (c.tag or "body") == old_name]
+
+    def _apply(self, old: str, new: str):
+        from core.models.settings import pair_key
+        for c in self._components:
+            c.tag = new
+        s = self._project.settings
+        remapped = set()
+        for key in s.collision_disabled_pairs:
+            a, b = key.split("|", 1)
+            remapped.add(pair_key(new if a == old else a, new if b == old else b))
+        s.collision_disabled_pairs = sorted(remapped)
+        if old in s.collision_tags:
+            s.collision_tags = [new if t == old else t for t in s.collision_tags]
+
+    def execute(self):
+        self._apply(self._old, self._new)
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        self._apply(self._new, self._old)
+        if self._persist:
+            self._persist()
+
+
+class RemoveCollisionTagCmd(Command):
+    """Retire un tag de collision : les composants qui le portaient
+    EXPLICITEMENT retombent au défaut (tag vide → « body »), ses paires
+    disparaissent de la matrice, et il quitte la liste des tags déclarés
+    s'il y était. Un composant dont le tag était déjà vide (donc « body »
+    par héritage, pas par choix) n'est pas touché — il n'a rien à perdre.
+    Tout revient à l'identique par l'annulation."""
+
+    def __init__(self, project, tag_name: str, persist_fn=None, label: str = ""):
+        from core.models.components import CollisionBoxComponent
+        self._project = project
+        self._tag = tag_name
+        self.label = label or f"Retirer le tag {tag_name}"
+        self._persist = persist_fn
+        self._components = [
+            c for o in _collision_tag_owners(project) for c in getattr(o, "components", [])
+            if isinstance(c, CollisionBoxComponent) and c.tag == tag_name]
+        self._removed_pairs = {k for k in project.settings.collision_disabled_pairs
+                               if tag_name in k.split("|", 1)}
+        self._was_declared = tag_name in project.settings.collision_tags
+
+    def execute(self):
+        for c in self._components:
+            c.tag = ""
+        s = self._project.settings
+        s.collision_disabled_pairs = [k for k in s.collision_disabled_pairs
+                                      if k not in self._removed_pairs]
+        if self._was_declared:
+            s.collision_tags = [t for t in s.collision_tags if t != self._tag]
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        for c in self._components:
+            c.tag = self._tag
+        s = self._project.settings
+        s.collision_disabled_pairs = sorted(set(s.collision_disabled_pairs) | self._removed_pairs)
+        if self._was_declared and self._tag not in s.collision_tags:
+            s.collision_tags = sorted(set(s.collision_tags) | {self._tag})
+        if self._persist:
+            self._persist()
+
+
 class SceneInpaintingCmd(Command):
     """Stroke d'inpainting de scène (réassignation SE_PALBANK par tuile).
     delta : {(col, row): (old_slot|None, new_slot|None)}.

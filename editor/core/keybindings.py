@@ -17,6 +17,9 @@ Trois familles VOLONTAIREMENT absentes de ce registre, remappables nulle part :
     système d'exploitation, pas un choix de ce projet ; Redo est en plus
     doublement lié (Ctrl+Y ET la touche standard) pour couvrir les deux
     habitudes à la fois. Remapper l'un des deux casserait l'autre en silence.
+    Listés quand même dans l'écran Réglages via `DISPLAY_ONLY` ci-dessous —
+    pour la découvrabilité, pas pour le remappage : lecture seule, aucune
+    entrée dans `BINDINGS`/`_BY_ID`.
   - **Renommer (F2)** (scene_tree_panel.py, asset_finder.py) — le `F2` qui
     apparaît dans ces menus est un LIBELLÉ, pas un branchement : Qt déclenche
     déjà l'édition en place via son trigger natif `EditKeyPressed` sur
@@ -31,7 +34,7 @@ Trois familles VOLONTAIREMENT absentes de ce registre, remappables nulle part :
     pas le priver de son alias.
 
 Persistance : un fichier JSON à côté de `toolchain.json` (même dossier de
-config, cf. `core/toolchain._config_dir`), qui ne porte QUE les
+config, cf. `core/toolchain.config_dir`), qui ne porte QUE les
 SUBSTITUTIONS à la valeur par défaut — un raccourci jamais changé n'y figure
 pas, donc une valeur par défaut modifiée dans une prochaine version profite
 à qui n'a rien personnalisé.
@@ -44,9 +47,9 @@ from dataclasses import dataclass
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut, QAction
 
-from core.toolchain import _config_dir
+from core.toolchain import config_dir
 
-CONFIG_FILE = _config_dir() / "keybindings.json"
+CONFIG_FILE = config_dir() / "keybindings.json"
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,18 @@ BINDINGS: list[Binding] = [
 ]
 
 _BY_ID: dict[str, Binding] = {b.id: b for b in BINDINGS}
+
+
+# ── Affichage seul — pas dans BINDINGS, jamais remappable ──────────────────
+# Insérées, dans l'ordre, juste après le binding_id `insert_after` de leur
+# contexte — ShortcutsPanel s'en sert pour les placer au bon endroit de la
+# table sans dupliquer l'ordre d'affichage ici.
+DISPLAY_ONLY: list[tuple[str, str, str]] = [
+    # (context, label, touche affichée)
+    ("Global", "Undo", "Ctrl+Z"),
+    ("Global", "Redo", "Ctrl+Y"),
+]
+DISPLAY_ONLY_INSERT_AFTER = "file.save"   # binding_id après lequel les insérer
 
 
 class Keybindings(QObject):

@@ -1,29 +1,37 @@
-"""CameraInspector — la caméra de la scène sélectionnée, en tant qu'ASSET.
+"""CameraInspector — une caméra PRÉCISE, possédée par la scène sélectionnée.
 
-Reçoit une scène (le canvas sélectionne le rectangle de caméra, cf.
-`CameraSelection`) et édite la caméra sur laquelle cette scène démarre. Deux
-états, et c'est tout ce qu'il y a à comprendre :
+Reçoit une scène et une caméra (choisie dans le scene tree, ou l'icône cliquée
+dans le canvas — cf. `CameraSelection`) et édite CETTE caméra. Deux états :
 
-- **la scène emploie la caméra par défaut** — fixe à l'origine, sans bornes ni
-  suivi, sans fichier sur le disque. Les réglages sont visibles mais éteints ;
-- **la scène désigne une caméra** — tout est éditable, et la même caméra peut
-  servir à d'autres scènes (c'est un asset, pas un bien de la scène).
+- **`camera` est `None`** — la scène n'a encore aucune caméra, elle est fixe à
+  l'origine, sans bornes ni suivi, sans entrée dans `scene.cameras`. Les
+  réglages sont visibles mais éteints ;
+- **`camera` est un objet réel** — tout est éditable. Elle n'appartient qu'à
+  CETTE scène (révisé le 2026-08-24 — ce n'est plus un asset de projet
+  réutilisable, cf. `changelog-archive/v0.6.md`).
 
-Le passage du premier au second n'est pas un bouton « créer » : il se produit au
-premier réglage, y compris le déplacement du cadre dans le canvas
-(`Project.ensure_scene_camera`). Personne ne crée une caméra d'avance.
+Le passage du premier au second n'est pas un bouton « créer » dans CET
+inspecteur : il se produit au premier réglage, y compris le déplacement du
+cadre dans le canvas (`Project.ensure_scene_camera`) — la création explicite
+se fait depuis le scene tree (bouton **+**).
 
-Ce que l'inspecteur ne propose pas : rotation, zoom, projection, viewport. Un
-calque régulier ne sait ni tourner ni se mettre à l'échelle (ce sont les calques
-affines, v2.0), et découper l'écran est une window matérielle — la scène en
-authore déjà. Les proposer promettrait un rendu que le matériel ne produit pas.
+Le combo « Starting camera » est un contrôle SÉPARÉ : il choisit laquelle des
+caméras de la scène est celle de démarrage (`scene.camera`), indépendamment de
+celle affichée/éditée ici.
+
+Ce que l'inspecteur ne propose pas : rotation, zoom, projection. Un calque
+régulier ne sait ni tourner ni se mettre à l'échelle (ce sont les calques
+affines, v2.0) — les proposer promettrait un rendu que le matériel ne produit
+pas. Le viewport, lui, EST proposé (carte Transform, `frame_w`/`frame_h`,
+réglé le 2026-08-24) : WIN0 appartient désormais à la caméra active, WIN1
+reste à la scène (`Scene.windows`) — cf. `core/models/camera.py`.
 """
 from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QScrollArea,
-    QSpinBox, QPushButton, QMessageBox, QLineEdit, QInputDialog,
+    QSpinBox, QPushButton, QMessageBox, QInputDialog,
 )
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import pyqtSignal
@@ -45,12 +53,16 @@ _DEFAULT_CAMERA = "(default)"
 
 
 class CameraInspector(QWidget):
-    """Édite la caméra de démarrage de la scène sélectionnée."""
+    """Édite une caméra précise, possédée par la scène sélectionnée."""
     changed = pyqtSignal()
+    # Position ou frame édités ICI (pas par drag canvas) — le canvas doit
+    # suivre. Symétrique de `update_position`, qui fait le chemin inverse.
+    camera_moved = pyqtSignal(object)   # Camera
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._scene: Optional[Scene] = None
+        self._camera: Optional[Camera] = None
         self._project: Optional[Project] = None
         self._blocking = False
         self._script_open_fn = None
@@ -68,33 +80,30 @@ class CameraInspector(QWidget):
         layout.setSpacing(10)
         scroll.setWidget(inner)
 
-        # ── Quelle caméra cette scène emploie ─────────────────────
-        camera_card = CollapsibleCard("Camera used by this scene")
-        pick_row = QHBoxLayout()
-        pick_row.setSpacing(6)
+        # ── Quelle caméra démarre la scène ────────────────────────
+        # Renommer CETTE caméra se fait dans l'en-tête partagé (AssetHeaderBar,
+        # cf. DynamicInspector._on_header_rename) — même contrat que
+        # Scene/Actor/Prefab, pas de second champ « name » ici.
+        camera_card = CollapsibleCard("This camera")
+        start_row = QHBoxLayout()
+        start_row.setSpacing(6)
+        start_lbl = QLabel("Starting camera:")
+        start_lbl.setFont(QFont(T.UI, T.XS))
+        start_lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+        start_row.addWidget(start_lbl)
         self._combo_camera = QComboBox()
         self._combo_camera.setFont(QFont(T.UI, T.MD))
         self._combo_camera.setStyleSheet(QSS.combobox)
         self._combo_camera.setToolTip(
-            "<b>Starting camera of this scene</b><br><br>"
-            "A camera is a project asset: the same one can serve several "
-            "scenes.<br>A script switches to another with "
-            "<code>camera.switch</code>.<br><br>"
-            "<b>(default)</b>: fixed at the origin, no bounds, no target — "
-            "no file<br>on disk. Changing any setting below turns it into a "
-            "real camera."
+            "<b>Which of this scene's cameras it starts on</b><br><br>"
+            "A script switches to another with <code>camera.switch</code>.<br>"
+            "Independent of the camera shown above — this only decides "
+            "which one activates first.<br><br>"
+            "<b>(default)</b>: fixed at the origin, no bounds, no target."
         )
         self._combo_camera.currentIndexChanged.connect(self._on_camera_picked)
-        pick_row.addWidget(self._combo_camera, 1)
-        self._ed_name = QLineEdit()
-        self._ed_name.setFont(QFont(T.MONO, T.SM))
-        self._ed_name.setStyleSheet(QSS.lineedit)
-        self._ed_name.setMaximumWidth(120)
-        self._ed_name.setPlaceholderText("rename")
-        self._ed_name.setToolTip("Rename this camera — scripts citing it are rewritten.")
-        self._ed_name.editingFinished.connect(self._on_rename)
-        pick_row.addWidget(self._ed_name)
-        camera_card.body_layout.addLayout(pick_row)
+        start_row.addWidget(self._combo_camera, 1)
+        camera_card.body_layout.addLayout(start_row)
 
         self._lbl_users = QLabel("")
         self._lbl_users.setFont(QFont(T.UI, T.XS))
@@ -124,27 +133,71 @@ class CameraInspector(QWidget):
         mode_card.body_layout.addWidget(mode_info)
         layout.addWidget(mode_card)
 
-        # ── Cadrage de départ (déplacé dans le canvas) ────────────
-        framing_card = CollapsibleCard("Framing on activation")
-        row = QHBoxLayout()
-        self._x_lbl = QLabel("X: 0")
-        self._y_lbl = QLabel("Y: 0")
-        for l in (self._x_lbl, self._y_lbl):
-            l.setFont(QFont(T.MONO, T.MD))
-            l.setStyleSheet(f"color:{C.TEXT_NORM};")
-            row.addWidget(l)
-        row.addStretch()
-        framing_card.body_layout.addLayout(row)
+        # ── Transform : position (canvas ↔ inspecteur) + frame écran ──
+        transform_card = CollapsibleCard("Transform")
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(10)
+        for label, attr in (("Position X:", "_pos_x"), ("Position Y:", "_pos_y")):
+            col = QVBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFont(QFont(T.UI, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+            col.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setFont(QFont(T.MONO, T.MD))
+            spin.setStyleSheet(QSS.spinbox)
+            spin.setRange(0, 32767)   # même plage que les bornes du monde plus bas
+            spin.setSingleStep(8)
+            setattr(self, attr, spin)
+            col.addWidget(spin)
+            pos_row.addLayout(col)
+        pos_row.addStretch()
+        transform_card.body_layout.addLayout(pos_row)
 
-        info = QLabel(
-            "(Move the yellow rectangle in the canvas.) Applied every time the "
-            "camera is activated — scene start, or camera.switch."
+        pos_info = QLabel(
+            "Reflects dragging the yellow rectangle in the canvas — editing here "
+            "moves it too. Applied every time the camera is activated (scene "
+            "start, or camera.switch)."
         )
-        info.setFont(QFont(T.UI, T.XS))
-        info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        info.setWordWrap(True)
-        framing_card.body_layout.addWidget(info)
-        layout.addWidget(framing_card)
+        pos_info.setFont(QFont(T.UI, T.XS))
+        pos_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        pos_info.setWordWrap(True)
+        transform_card.body_layout.addWidget(pos_info)
+
+        frame_row = QHBoxLayout()
+        frame_row.setSpacing(10)
+        for label, attr, maxv in (("Frame W:", "_frame_w", 240), ("Frame H:", "_frame_h", 160)):
+            col = QVBoxLayout()
+            lbl = QLabel(label)
+            lbl.setFont(QFont(T.UI, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+            col.addWidget(lbl)
+            spin = QSpinBox()
+            spin.setFont(QFont(T.MONO, T.MD))
+            spin.setStyleSheet(QSS.spinbox)
+            spin.setRange(1, maxv)
+            setattr(self, attr, spin)
+            col.addWidget(spin)
+            frame_row.addLayout(col)
+        frame_row.addStretch()
+        transform_card.body_layout.addLayout(frame_row)
+
+        self._lbl_win_budget = QLabel("")
+        self._lbl_win_budget.setFont(QFont(T.UI, T.XS))
+        self._lbl_win_budget.setWordWrap(True)
+        transform_card.body_layout.addWidget(self._lbl_win_budget)
+
+        frame_info = QLabel(
+            "Screen size the camera renders into (max 240×160). Smaller than "
+            "full screen → the camera claims one of the scene's two windows "
+            "while active (which one is decided at build — cf. Windows panel, "
+            "Scene inspector)."
+        )
+        frame_info.setFont(QFont(T.UI, T.XS))
+        frame_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        frame_info.setWordWrap(True)
+        transform_card.body_layout.addWidget(frame_info)
+        layout.addWidget(transform_card)
 
         # ── Suivi (visible en mode follow) ────────────────────────
         self._follow_group = CollapsibleCard("Follow an Actor")
@@ -289,22 +342,21 @@ class CameraInspector(QWidget):
             self._mode_combo, self._follow_group, self._margin_x, self._margin_y,
             self._bounds_w, self._bounds_h, self._bounds_x, self._bounds_y,
             self._btn_recalc, self._script_slot,
-            self._ed_name,
+            self._pos_x, self._pos_y, self._frame_w, self._frame_h,
         )
+        self._pos_x.valueChanged.connect(self._on_transform_changed)
+        self._pos_y.valueChanged.connect(self._on_transform_changed)
+        self._frame_w.valueChanged.connect(self._on_transform_changed)
+        self._frame_h.valueChanged.connect(self._on_transform_changed)
 
     def set_script_open_fn(self, fn):
         self._script_open_fn = fn
 
     # ── Chargement ────────────────────────────────────────────────
 
-    @property
-    def _camera(self) -> Optional[Camera]:
-        if not self._scene or not self._project:
-            return None
-        return self._project.scene_camera(self._scene)
-
-    def load(self, scene: Scene, project: Project):
+    def load(self, scene: Scene, camera: Optional[Camera], project: Project):
         self._scene = scene
+        self._camera = camera
         self._project = project
         self._refresh()
 
@@ -312,29 +364,21 @@ class CameraInspector(QWidget):
         self._blocking = True
         try:
             cam = self._camera
-            p = self._project
+            scene = self._scene
 
             self._combo_camera.clear()
             self._combo_camera.addItem(_DEFAULT_CAMERA, "")
-            for c in (p.cameras if p else []):
+            for c in (scene.cameras if scene else []):
                 self._combo_camera.addItem(c.name, c.name)
-            idx = self._combo_camera.findData(cam.name if cam else "")
+            idx = self._combo_camera.findData(getattr(scene, "camera", "") or "")
             self._combo_camera.setCurrentIndex(max(0, idx))
 
             for w in self._editors:
                 w.setEnabled(cam is not None)
-            self._ed_name.setText(cam.name if cam else "")
 
-            if cam is not None and p is not None:
-                users = [s.name for s in p.camera_users(cam.name)]
-                others = [n for n in users if not self._scene or n != self._scene.name]
-                self._lbl_users.setText(
-                    f"Also used by: {', '.join(others)}" if others
-                    else "Used by this scene only."
-                )
-            else:
-                self._lbl_users.setText(
-                    "No file on disk. Any change below creates a real camera.")
+            self._lbl_users.setText(
+                "" if cam is not None else
+                "No camera yet — any change below creates one.")
 
             mode = cam.mode if cam else CAM_FIXED
             self._mode_combo.setCurrentIndex(
@@ -347,8 +391,9 @@ class CameraInspector(QWidget):
                 self._follow_combo.addItem(actor.name)
             target = cam.follow_target if cam else ""
             if target and self._follow_combo.findText(target) < 0:
-                # Cible absente de CETTE scène : la garder visible plutôt que de
-                # la réécrire en silence — la caméra sert peut-être ailleurs.
+                # Cible introuvable dans cette scène (acteur supprimé/renommé
+                # sans passer par ici) : la garder visible plutôt que de la
+                # réécrire en silence — le validateur le signale déjà.
                 self._follow_combo.addItem(f"{target}  (not in this scene)")
                 self._follow_combo.setCurrentIndex(self._follow_combo.count() - 1)
             else:
@@ -361,7 +406,11 @@ class CameraInspector(QWidget):
             self._bounds_h.setValue((cam.bounds_h if cam else 0) or 0)
             self._bounds_x.setValue((cam.bounds_x if cam else 0) or 0)
             self._bounds_y.setValue((cam.bounds_y if cam else 0) or 0)
-            self._update_position_labels()
+            self._pos_x.setValue(cam.x if cam else 0)
+            self._pos_y.setValue(cam.y if cam else 0)
+            self._frame_w.setValue(cam.frame_w if cam else 240)
+            self._frame_h.setValue(cam.frame_h if cam else 160)
+            self._refresh_window_budget()
 
             script = (cam.script if cam else "") or ""
             if script:
@@ -371,53 +420,64 @@ class CameraInspector(QWidget):
         finally:
             self._blocking = False
 
-    def _update_position_labels(self):
-        cam = self._camera
-        self._x_lbl.setText(f"X: {cam.x if cam else 0}")
-        self._y_lbl.setText(f"Y: {cam.y if cam else 0}")
+    def _refresh_window_budget(self):
+        """Même chiffre que la carte Windows du Scene inspector — une seule
+        fonction (`window_alloc.scene_window_budget`), pour que l'auteur voie
+        le coût AVANT de réduire le cadre, pas seulement après un warning."""
+        if not self._scene:
+            self._lbl_win_budget.setText("")
+            return
+        from codegen.window_alloc import scene_window_budget
+        used, total = scene_window_budget(self._scene)
+        over = used > total
+        self._lbl_win_budget.setStyleSheet(
+            f"color:{C.ACCENT_RED if over else C.TEXT_MUTED};")
+        msg = f"{used} / {total} windows used by this scene"
+        if over:
+            msg += " — over budget, build will fail"
+        self._lbl_win_budget.setText(msg)
+
+    def update_position(self, camera, x: int, y: int):
+        """Appelé en direct par le canvas pendant un drag (cf. SceneEditor,
+        même rôle que ActorInspector.update_position) : pas de `_refresh()`
+        complet, juste les deux spinboxes concernées — et seulement si la
+        caméra déplacée est bien celle affichée ici."""
+        if self._blocking or camera is not self._camera:
+            return
+        self._blocking = True
+        self._pos_x.setValue(x)
+        self._pos_y.setValue(y)
+        self._blocking = False
 
     # ── Mutations ─────────────────────────────────────────────────
 
     def _mutable(self) -> Optional[Camera]:
-        """La caméra à éditer, matérialisée si la scène est encore au défaut."""
+        """La caméra à éditer, matérialisée si la scène n'en avait encore
+        aucune (état implicite, `self._camera is None`). Une fois réelle, la
+        référence tenue par l'inspecteur devient cette caméra-là."""
         if not self._scene or not self._project:
             return None
-        return self._project.ensure_scene_camera(self._scene)
+        if self._camera is None:
+            self._camera = self._project.ensure_scene_camera(self._scene)
+        return self._camera
 
     def _commit(self, refresh: bool = True):
-        """Persiste les DEUX côtés : la caméra, et la scène — sa référence a pu
-        naître (matérialisation) ou changer. Ne pas s'en remettre au signal
-        `changed` pour ça : il sert à rafraîchir les vues, personne ne s'y est
-        abonné pour écrire sur le disque."""
-        if self._project:
-            if self._camera:
-                self._project.cameras.save(self._camera)
-            if self._scene:
-                self._project.save_scene(self._scene)
+        """Un seul save : la caméra vit dans le JSON de la scène (plus de
+        fichier séparé). Ne pas s'en remettre au signal `changed` pour ça :
+        il sert à rafraîchir les vues, personne ne s'y est abonné pour
+        écrire sur le disque."""
+        if self._project and self._scene:
+            self._project.save_scene(self._scene)
         self.changed.emit()
         if refresh:
             self._refresh()
 
     def _on_camera_picked(self, idx: int):
+        """Choix de la caméra de DÉMARRAGE de la scène — indépendant de la
+        caméra affichée/éditée par le reste de ce panneau."""
         if self._blocking or not self._scene:
             return
         self._scene.camera = self._combo_camera.itemData(idx) or ""
-        self._commit()
-
-    def _on_rename(self):
-        cam = self._camera
-        if self._blocking or cam is None or not self._project:
-            return
-        new = self._ed_name.text().strip()
-        if not new or new == cam.name:
-            return
-        if self._project.cameras.get(new) is not None:
-            QMessageBox.warning(self, "Rename camera",
-                                f"A camera named '{new}' already exists.")
-            self._ed_name.setText(cam.name)
-            return
-        old = cam.name
-        self._project.rename_camera(old, new)
         self._commit()
 
     def _on_mode_changed(self, idx: int):
@@ -459,6 +519,22 @@ class CameraInspector(QWidget):
         cam.bounds_x = self._bounds_x.value() or None
         cam.bounds_y = self._bounds_y.value() or None
         self._commit(refresh=False)
+
+    def _on_transform_changed(self):
+        """Position et frame : édition faite ICI (pas par drag canvas), donc
+        `camera_moved` est émis en plus de `_commit()` — c'est ce qui fait
+        suivre le rectangle du canvas (cf. SceneEditor.move_camera_item)."""
+        if self._blocking:
+            return
+        cam = self._mutable()
+        if cam is None:
+            return
+        cam.x = self._pos_x.value()
+        cam.y = self._pos_y.value()
+        cam.frame_w = self._frame_w.value()
+        cam.frame_h = self._frame_h.value()
+        self._commit(refresh=False)
+        self.camera_moved.emit(cam)
 
     def _recalc_bounds(self):
         """Pré-remplit depuis le fond le plus proche d'une vitesse de 1.0 dans

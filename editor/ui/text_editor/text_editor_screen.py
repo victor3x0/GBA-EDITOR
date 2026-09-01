@@ -10,14 +10,14 @@ Un seul écran pour deux concepts distincts mais qui se croisent en permanence
 Ils cohabitent parce que `Font.missing_chars()` et l'aperçu d'un texte ont
 besoin des deux sous les yeux ; les modèles, eux, restent séparés.
 
-Trois colonnes : polices à gauche, arbre des textes + atelier d'écriture au
+Trois colonnes : polices à gauche, table des textes + atelier d'écriture au
 centre, inspecteur CONTEXTUEL à droite. Le centre et l'inspecteur basculent par
 la SÉLECTION, jamais par un onglet (police → contexte police, texte ou clic
 dans le vide → contexte texte). Pattern du Scene Manager, mais câblé en signaux
 Qt LOCAUX : le bus global est partagé avec un inspecteur qui ne connaît pas
 `Font`/`Text`.
 
-« Textes », jamais « Dialogue » : l'arbre range, il n'enchaîne pas. Le
+« Textes », jamais « Dialogue » : la table range, elle n'enchaîne pas. Le
 séquencement reste du script — la neutralité de style est une décision de
 ROADMAP v0.3.2.
 
@@ -28,7 +28,9 @@ contexte actif :
   glyph_paint.py          trouage des couleurs-clés + damier
   text_commands.py        commandes annulables (clé, rangement, planche)
   (colonne gauche : AssetFinder — composant partagé, cf. ui/common/asset_finder.py)
-  text_tree_panel.py      colonne centre, contexte Texte — arbre + atelier
+  text_panel.py           colonne centre, contexte Texte — arbitre les deux
+  text_table.py           la table des textes (haut du centre)
+  text_workbench.py       l'atelier d'écriture (bas du centre)
   font_screen_preview.py  aperçu écran GBA (monté par l'atelier)
   markup_toolbar.py       boutons de balisage de l'atelier (dérivés de TAGS)
   glyph_sheet.py          planche de glyphes (canvas)
@@ -49,7 +51,7 @@ from ui.common.theme import C
 from ui.text_editor.colors import TEXT_COLOR
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import FONTS
-from ui.text_editor.text_tree_panel import TextTreePanel
+from ui.text_editor.text_panel import TextPanel
 from ui.text_editor.glyph_sheet_panel import GlyphSheetPanel
 from ui.text_editor.text_inspector import TextInspector
 from ui.text_editor.font_inspector import FontInspector
@@ -85,7 +87,7 @@ class TextEditorScreen(QWidget):
         # Le CENTRE est contextuel lui aussi : une planche fait plusieurs
         # centaines de cases, elle n'aurait pas tenu dans l'inspecteur.
         self._center = QStackedWidget()
-        self._texts = TextTreePanel()
+        self._texts = TextPanel()
         self._sheet = GlyphSheetPanel()
         self._center.addWidget(self._texts)   # _CTX_TEXT
         self._center.addWidget(self._sheet)   # _CTX_FONT
@@ -147,8 +149,12 @@ class TextEditorScreen(QWidget):
 
     def invalidate_script_usages(self):
         """Branché sur « scripts_changed » — recalcul paresseux, à la prochaine
-        sélection (l'écran n'est peut-être même pas affiché)."""
+        sélection (l'écran n'est peut-être même pas affiché).
+
+        Deux vues montrent les usages : la colonne de la table et la section de
+        l'inspecteur. Elles lisent le même index, elles se périment ensemble."""
         self._text_insp.invalidate_usages()
+        self._texts.invalidate_usages()
 
     def _on_identity_changed(self, text):
         """Clé renommée : les scripts viennent d'être réécrits, l'index des
@@ -161,7 +167,7 @@ class TextEditorScreen(QWidget):
         if not self._project:
             return
         self._fonts.refresh()
-        self._texts._reload_preview_fonts()   # polices apparues/disparues
+        self._texts.reload_fonts()            # polices apparues/disparues
         self._texts.refresh()
         # L'inspecteur affiche peut-être une entrée que l'undo a changée, ou
         # qui n'existe plus.
@@ -171,6 +177,7 @@ class TextEditorScreen(QWidget):
         # Un undo de renommage repasse par rename_text_key : les scripts ont
         # rebougé.
         self._text_insp.invalidate_usages()
+        self._texts.invalidate_usages()
         self._text_insp.load(cur, self._project)
 
         # Contexte police : un undo a pu changer un caractère, une couleur-clé

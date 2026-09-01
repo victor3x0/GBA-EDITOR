@@ -91,16 +91,6 @@ class ProjectPathsMixin:
         return self.project_dir / "sound_states"
 
     @property
-    def cameras_dir(self) -> Path:
-        """Caméras — project/cameras/*.json.
-
-        Rangées avec les données propres au projet et non dans `assets/` : une
-        configuration de caméra ne dérive d'aucun fichier importé. Un fichier
-        par caméra, comme les mises en page d'UI — c'est un objet qu'on
-        renomme et qu'on partage entre scènes."""
-        return self.project_dir / "cameras"
-
-    @property
     def data_tables_dir(self) -> Path:
         """Tables de données — project/data/*.json.
 

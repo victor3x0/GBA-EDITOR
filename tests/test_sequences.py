@@ -229,9 +229,14 @@ end
 
 
 @pytest.mark.parametrize("src,attendu", [
+    # Le même refus dans les deux cas : une attente s'écrit au premier niveau
+    # d'une séquence. La v0.23 a ouvert la boucle BORNÉE et reformulé le
+    # message autour d'elle — d'où ce marqueur, et non l'ancien « PREMIER
+    # NIVEAU » qui n'y figure plus.
     ("function on_sequence_a()\n if self.visible then\n wait(10)\n end\nend\n",
-     "PREMIER NIVEAU"),
-    ("function on_update()\n wait(10)\nend\n", "PREMIER NIVEAU"),
+     "au premier niveau ou dans une boucle BORNÉE"),
+    ("function on_update()\n wait(10)\nend\n",
+     "au premier niveau ou dans une boucle BORNÉE"),
     ("function on_sequence_a()\n local n = wait(3)\nend\n", "ne rend aucune valeur"),
     ("function on_sequence_a()\n wait_until(false)\nend\n", "ne peut pas changer"),
     ("local S = 10\nfunction on_sequence_a()\n wait_until(S > 20)\nend\n",

@@ -352,6 +352,34 @@ def _preview_frame_for_actor(sprite, sprite_comp, actor):
 
 
 # ──────────────────────────────────────────────────────────────────
+#  Ordre de composition — UNE règle, celle du hardware, jamais un empilement
+#  choisi pour le confort de l'édition.
+#
+#  Priorité GBA = bg_slot directement pour un fond ET pour le layer d'UI
+#  (0 = devant, 3 = derrière — cf. `main_gen._gen_scene_init`, le commentaire
+#  au-dessus de `bg_cnt_set`). Un acteur (OBJ) porte sa PROPRE priorité
+#  (`Actor.priority`, 0-3, mêmes bornes) — et à priorité ÉGALE entre un OBJ et
+#  un BG, c'est l'OBJ qui passe DEVANT (règle documentée du hardware GBA, pas
+#  un choix de l'éditeur). D'où deux crans par niveau de priorité : le BG,
+#  puis l'OBJ juste au-dessus.
+#
+#  Avant cette fonction, un acteur avait un zValue FIXE (10) et une zone
+#  d'interface un zValue FIXE (120) : l'acteur passait donc TOUJOURS sous
+#  l'interface dans le canvas, quelle que soit la priorité réelle — le
+#  contraire de ce que montre la ROM dès que l'UI vit sur un BG de priorité
+#  supérieure à 0 (le cas courant : text_bg vaut rarement 0).
+# ──────────────────────────────────────────────────────────────────
+
+def _hw_layer_z(priority: int, is_obj: bool) -> float:
+    """zValue Qt qui REPRODUIT l'ordre de composition du hardware, jamais un
+    empilement approché. `priority` est déjà l'échelle GBA (0 devant, 3
+    derrière) — bg_slot pour un fond ou le layer d'UI, `Actor.priority` pour
+    un acteur."""
+    p = max(0, min(3, int(priority)))
+    return float((3 - p) * 2 + (1 if is_obj else 0))
+
+
+# ──────────────────────────────────────────────────────────────────
 #  Item sprite draggable
 # ──────────────────────────────────────────────────────────────────
 class SpriteItem(QGraphicsPixmapItem):
@@ -403,7 +431,9 @@ class SpriteItem(QGraphicsPixmapItem):
             | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
-        self.setZValue(10)
+        # OBJ, priorité de CET acteur — pas un zValue fixe : deux acteurs de
+        # priorités différentes doivent s'empiler comme le hardware le ferait.
+        self.setZValue(_hw_layer_z(getattr(actor, "priority", 0), is_obj=True))
 
         # Décaler le pixmap dans le repère local pour que (0,0) = ancrage (origine)
         self.setOffset(-origin_x, -origin_y)
@@ -650,11 +680,17 @@ class CameraItem(QGraphicsItem):
     """
 
     def __init__(
-        self, canvas_w: int, canvas_h: int, cam_x: int = 0, cam_y: int = 0, parent=None
+        self, canvas_w: int, canvas_h: int, cam_x: int = 0, cam_y: int = 0,
+        frame_w: int = GBA_W, frame_h: int = GBA_H, camera=None, parent=None,
     ):
         super().__init__(parent)
         self._canvas_w = canvas_w
         self._canvas_h = canvas_h
+        # La caméra (modèle) que cet item représente — `None` = état implicite
+        # (scène sans caméra encore créée, cf. Project.ensure_scene_camera).
+        # Une scène peut en posséder plusieurs (révisé 2026-08-24) : chaque
+        # CameraItem porte donc SA référence, distincte du singleton d'avant.
+        self.camera = camera
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -663,17 +699,20 @@ class CameraItem(QGraphicsItem):
         )
         self.setZValue(150)
         self.setPos(cam_x, cam_y)
-        self.setToolTip("GBA Camera — 240×160 px\nDrag to move the view")
         self.setAcceptHoverEvents(True)
         self._hovered = False
 
-        # Zone de vision — enfant non-interactif
+        # Zone de vision — enfant non-interactif. Sa taille EST le frame de la
+        # caméra (Camera.frame_w/h, réglé le 2026-08-24) — plus petite que
+        # GBA_W×GBA_H quand la caméra pilote WIN0 (cf. set_frame_size).
+        self._frame_w = frame_w
+        self._frame_h = frame_h
         pen = QPen(QColor("#ffdd44"))
         pen.setWidth(0)
         pen.setCosmetic(True)  # sans ça, seule l'épaisseur du trait ignore le zoom —
                                 # le motif de tirets s'étire quand même avec la vue
         pen.setStyle(Qt.PenStyle.DashLine)
-        self._view = QGraphicsRectItem(0, 0, GBA_W, GBA_H, self)
+        self._view = QGraphicsRectItem(0, 0, frame_w, frame_h, self)
         self._view.setPen(pen)
         self._view.setBrush(QBrush(QColor(255, 221, 68, 12)))
         self._view.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
@@ -686,6 +725,22 @@ class CameraItem(QGraphicsItem):
         # ÉCRAN, elle suit donc la vue automatiquement (position locale = position
         # dans l'écran GBA), sans recalcul à chaque déplacement de caméra.
         self._window_items: list[QGraphicsRectItem] = []
+        # setToolTip après construction : le tooltip se base sur self.camera,
+        # déjà posé plus haut.
+        self.setToolTip(self._tooltip())
+
+    def _tooltip(self) -> str:
+        name = self.camera.name if self.camera else "(default)"
+        return f"GBA Camera — {name} — {self._frame_w}×{self._frame_h} px\nDrag to move the view"
+
+    def set_frame_size(self, w: int, h: int):
+        """Redimensionne le rectangle de vue — c'est le frame écran de la
+        caméra (`Camera.frame_w/h`), pas juste un aperçu : plus petit que
+        240×160, la caméra pilote WIN0 à l'activation (cf. camera_switch())."""
+        self._frame_w, self._frame_h = w, h
+        self.prepareGeometryChange()
+        self._view.setRect(0, 0, w, h)
+        self.setToolTip(self._tooltip())
 
     # ── Windows (aperçu) ──────────────────────────────────────────
 
@@ -701,22 +756,23 @@ class CameraItem(QGraphicsItem):
                 it.scene().removeItem(it)
         self._window_items = []
 
-        for ws in sorted(windows or [], key=lambda w: w.region):
-            # Fenêtre-objet (région 2) : pas de rectangle — sa forme vient des
-            # pixels opaques des sprites en obj_mode=2, non prévisualisable ici.
-            if int(ws.region) not in (0, 1):
-                continue
+        for i, ws in enumerate(w for w in (windows or []) if not w.is_obj):
+            # Fenêtre-objet : pas de rectangle — sa forme vient des pixels
+            # opaques des sprites en obj_mode=2, non prévisualisable ici.
+            # Quel rang matériel (WIN0/WIN1) chaque window nommée reçoit est
+            # décidé par l'allocateur au build (`window_alloc.py`) — sans
+            # incidence sur cet aperçu, qui montre la géométrie AUTHORÉE.
             x0 = max(0, min(int(ws.x), GBA_W))
             y0 = max(0, min(int(ws.y), GBA_H))
             x1 = max(x0, min(int(ws.x) + int(ws.w), GBA_W))
             y1 = max(y0, min(int(ws.y) + int(ws.h), GBA_H))
 
-            color = QColor(_WIN_COLORS[int(ws.region) % len(_WIN_COLORS)])
+            color = QColor(_WIN_COLORS[i % len(_WIN_COLORS)])
             pen = QPen(color)
             pen.setWidth(0)
             pen.setCosmetic(True)
             # Trait plein = window active au runtime ; pointillé = authorée mais
-            # window_show(region, 0) → invisible sur console.
+            # window_show(…, 0) → invisible sur console.
             pen.setStyle(Qt.PenStyle.SolidLine if ws.visible else Qt.PenStyle.DotLine)
 
             rect = QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0, self)
@@ -729,7 +785,7 @@ class CameraItem(QGraphicsItem):
             rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             rect.setAcceptHoverEvents(False)
             rect.setToolTip(
-                f"WIN{ws.region} — {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
+                f"{ws.name or '(unnamed window)'} — {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
                 + ("" if ws.visible else "\n(inactive — window_show at 0)")
             )
             self._window_items.append(rect)
@@ -1390,7 +1446,8 @@ class GBAScene(QGraphicsScene):
         self._grid_item: Optional[GridItem] = None
         self._border: Optional[ScreenBezelItem] = None
         self._backdrop: Optional[QGraphicsRectItem] = None
-        self._camera: Optional[CameraItem] = None
+        self._camera: Optional[CameraItem] = None   # caméra DE DÉMARRAGE (screen-space, windows)
+        self._extra_cameras: list[CameraItem] = []  # les AUTRES caméras de la scène
         self._windows: list = []   # WindowSlot de la scène (aperçu + masquage BG)
         self._obj_mask_rects: list = []   # découpe OBJ courante (sprites)
         self._ui_region_items: list = []  # zones de texte (UILayout de la scène)
@@ -1564,6 +1621,8 @@ class GBAScene(QGraphicsScene):
             self._backdrop.setRect(0, 0, w, h)
         if self._camera:
             self._camera.set_canvas_size(w, h)
+        for it in self._extra_cameras:
+            it.set_canvas_size(w, h)
         for item in self._sprite_items:
             item.set_canvas_size(w, h)
         if self._grid_item:
@@ -1594,7 +1653,10 @@ class GBAScene(QGraphicsScene):
 
     # ── Caméra ────────────────────────────────────────────────────
 
-    def setup_camera(self, cam_x: int = 0, cam_y: int = 0):
+    def setup_camera(self, cam_x: int = 0, cam_y: int = 0, camera=None):
+        """(Re)crée l'item de la caméra DE DÉMARRAGE — celle qui porte les
+        sprites en espace écran et l'aperçu des windows. `camera` est l'objet
+        modèle qu'elle représente (`None` = état implicite)."""
         if self._camera:
             # Détacher d'abord les sprites d'écran : retirer la caméra de la
             # scène emporterait ses enfants avec elle.
@@ -1604,16 +1666,37 @@ class GBAScene(QGraphicsScene):
                     if it.scene() is None:
                         self.addItem(it)
             self.removeItem(self._camera)
-        self._camera = CameraItem(self._canvas_w, self._canvas_h, cam_x, cam_y)
+        fw = camera.frame_w if camera else GBA_W
+        fh = camera.frame_h if camera else GBA_H
+        self._camera = CameraItem(self._canvas_w, self._canvas_h, cam_x, cam_y,
+                                  frame_w=fw, frame_h=fh, camera=camera)
         self.addItem(self._camera)
         for it in self._sprite_items:
             self.sync_sprite_space(it)
+
+    def setup_extra_cameras(self, cameras: list):
+        """(Re)crée les items des AUTRES caméras de la scène — rectangles
+        déplaçables/sélectionnables comme la caméra de démarrage, mais sans
+        rôle dans le rendu écran (pas de sprites, pas de windows) : la scène
+        n'a qu'UN écran, une seule caméra pilote son espace à la fois."""
+        for it in self._extra_cameras:
+            self.removeItem(it)
+        self._extra_cameras = []
+        for cam in cameras:
+            it = CameraItem(self._canvas_w, self._canvas_h, cam.x, cam.y,
+                            frame_w=cam.frame_w, frame_h=cam.frame_h, camera=cam)
+            self.addItem(it)
+            self._extra_cameras.append(it)
 
     def camera_pos(self) -> tuple[int, int]:
         if self._camera:
             p = self._camera.pos()
             return int(p.x()), int(p.y())
         return 0, 0
+
+    def camera_items(self) -> list:
+        """Tous les items caméra de la scène (démarrage + autres)."""
+        return ([self._camera] if self._camera else []) + list(self._extra_cameras)
 
     def set_windows(self, windows: list):
         """Aperçu des WindowSlot dans le cadre écran (porté par la caméra)."""
@@ -1642,8 +1725,7 @@ class GBAScene(QGraphicsScene):
             return QRectF(cam.x() + x0, cam.y() + y0, x1 - x0, y1 - y0)
 
         # Windows actives et rectangulaires (la fenêtre-objet n'a pas de rect).
-        active = [ws for ws in self._windows
-                  if ws.visible and int(ws.region) in (0, 1)]
+        active = [ws for ws in self._windows if ws.visible and not ws.is_obj]
 
         # Layers BG — bit par layer (WININ bits 0-3).
         for bg_index, item in enumerate(self._bg_items):
@@ -1674,7 +1756,9 @@ class GBAScene(QGraphicsScene):
     # ── BG layers ─────────────────────────────────────────────────
 
     def set_bg(self, bg_index: int, pixmap: Optional[QPixmap]):
-        z = 3 - bg_index
+        # Priorité GBA = bg_slot directement (cf. `_hw_layer_z`) : un fond
+        # n'est jamais OBJ, donc toujours le cran BG de sa priorité.
+        z = _hw_layer_z(bg_index, is_obj=False)
         if self._bg_items[bg_index]:
             self.removeItem(self._bg_items[bg_index])
             self._bg_items[bg_index] = None
@@ -1796,7 +1880,11 @@ class GBAScene(QGraphicsScene):
             z_of = {r.name: i for i, (_d, r) in enumerate(layout_asset.in_tree_order())}
             for r in layout_asset.elements:
                 item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
-                item.setZValue(120 + z_of.get(r.name, 0))
+                # La base (`_hw_layer_z`, posée au constructeur) place la zone
+                # sur son VRAI layer hardware ; l'offset ici ne fait plus que
+                # départager les zones d'un MÊME layer entre elles — trop petit
+                # pour jamais déborder sur le cran suivant (pas 2.0 d'écart).
+                item.setZValue(item.zValue() + z_of.get(r.name, 0) / 1000.0)
                 item.setVisible(self._ui_elements_visible)
                 self.addItem(item)
                 self._ui_region_items.append(item)
@@ -2573,14 +2661,26 @@ class UIRegionItem(QGraphicsRectItem):
             if pix is not None and not pix.isNull():
                 self._img_pixmap = pix
                 self._content_brush = None
-        self.setZValue(120)
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        is_obj_target = self._layout.resolved_target(region, rm) == "obj"
+        target = "sprite (OBJ)" if is_obj_target else "fond (BG)"
+        # Même échelle que les fonds et les acteurs (`_hw_layer_z`) : une zone
+        # OBJ (image, panneau à fond sprite) porte SA priorité (`.priority`,
+        # 0-3, absente = 0 = devant) ; une zone BG vit sur le layer d'UI de la
+        # scène (`text_bg`), à SA priorité — jamais un zValue fixe qui la
+        # placerait toujours devant les acteurs, contrairement à la ROM.
+        # `set_ui_regions` affine ensuite l'ordre ENTRE zones du même layer.
+        if is_obj_target:
+            base_z = _hw_layer_z(getattr(region, "priority", 0), is_obj=True)
+        else:
+            text_bg = getattr(scene, "text_bg", -1)
+            base_z = _hw_layer_z(text_bg if text_bg in (0, 1, 2, 3) else 0, is_obj=False)
+        self.setZValue(base_z)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
             | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
         )
-        rm = int(getattr(scene, "render_mode", 0) or 0)
-        target = "sprite (OBJ)" if self._layout.resolved_target(region, rm) == "obj" else "fond (BG)"
         # L'empreinte en tuiles n'a de sens que pour une zone de texte ; un
         # conteneur ou un texte authoré n'expose pas `tile_rect`.
         tiles = ""
@@ -2622,8 +2722,10 @@ class UIRegionItem(QGraphicsRectItem):
 
     def _fill_brush(self):
         """Pinceau d'aperçu du fond d'un conteneur, ou None (autre type / sans
-        fond). Une couleur = une entrée de PALETTE, résolue en RGB pour l'écran ;
-        un fond d'asset (nine-slice / background) est hachuré en attendant son
+        fond). Une couleur = une entrée de PALETTE, résolue en RGB PLEIN pour
+        l'écran — exactement la teinte que le hardware affichera, jamais une
+        teinte d'édition translucide qui mentirait sur le rendu compilé ; un
+        fond d'asset (nine-slice / background) est hachuré en attendant son
         vrai rendu."""
         el = self._region
         if getattr(el, "kind", "") != "panel":
@@ -2638,9 +2740,7 @@ class UIRegionItem(QGraphicsRectItem):
             if bank and 0 <= idx < len(bank.colors):
                 from core.gba_color import bgr555_to_rgb888
                 r, g, b = bgr555_to_rgb888(bank.colors[idx])
-                c = QColor(r, g, b)
-                c.setAlpha(180)
-                return QBrush(c)
+                return QBrush(QColor(r, g, b))
         # Fond d'asset (ou couleur non résolue) : hachures dans la couleur du type.
         return QBrush(QColor(self._COLOR), Qt.BrushStyle.BDiagPattern)
 
@@ -2829,20 +2929,38 @@ class UIRegionItem(QGraphicsRectItem):
     def _composited(self) -> bool:
         """Le texte se COMPOSE-t-il (pixel) plutôt que de se poser à la tuile ?
 
-        La police décide, sauf si un conteneur ANCÊTRE porte un fond couleur :
-        le moteur compose alors même en mono, pour poser le texte SUR la couleur
-        (cf. `g_ui_fill_bg`). Seul l'offset de ferrage change, mais 7 px de
-        décalage sur un titre centré se voient."""
-        from core.models.ui_region import KIND_PANEL, FILL_COLOR
-        lay = self._layout
-        for name in lay.ancestors(self._region.name):
-            a = lay.get(name)
-            if (a is not None and getattr(a, "kind", "") == KIND_PANEL
-                    and getattr(a, "fill_kind", "") == FILL_COLOR):
-                return True
-        from codegen.font_emit import render_composited
-        f = self._text_font()
-        return bool(f) and render_composited(f)
+        Délègue à `main_gen.region_is_composited` — même règle que le
+        validateur (`_check_ui_text_surf_alias`) : les laisser diverger
+        risquerait qu'un aperçu dise « pas de conflit » sur un cas que le
+        build compose bel et bien. Seul l'offset de ferrage change ici, mais
+        7 px de décalage sur un titre centré se voient."""
+        from codegen.runtime_codegen.main_gen import region_is_composited
+        try:
+            from codegen.font_emit import scene_default_font
+            default_name = scene_default_font(self._project, self._scene)[1]
+        except Exception:
+            default_name = ""
+        return region_is_composited(self._project, self._layout, self._region, default_name)
+
+    def _highlight_color(self):
+        """QColor du surlignement de cette zone, ou None. La couleur est un
+        index dans la banque d'UI de la scène — la même que l'encre, le matériel
+        n'offrant qu'une banque par tuile. Sans banque désignée
+        (`ui_pal_bank` < 0), la police impose la sienne et le canvas n'a rien à
+        résoudre : il ne montre alors aucune couleur plutôt qu'une fausse."""
+        idx = int(getattr(self._region, "highlight_color", 0) or 0)
+        if not idx or self._project is None or self._scene is None:
+            return None
+        active = list(getattr(self._scene, "active_bg_palettes", []) or [])
+        slot = int(getattr(self._scene, "ui_pal_bank", -1))
+        if not 0 <= slot < len(active):
+            return None
+        bank = self._project.get_palette(active[slot])
+        if not bank or idx >= len(bank.colors):
+            return None
+        from core.gba_color import bgr555_to_rgb888
+        r, g, b = bgr555_to_rgb888(bank.colors[idx])
+        return QColor(r, g, b)
 
     def _load_text_sheet(self, font):
         """Planche de glyphes TROUÉE, mise en cache par (chemin, empreinte).
@@ -2895,6 +3013,21 @@ class UIRegionItem(QGraphicsRectItem):
         # Pixel art : jamais d'interpolation, à aucun zoom.
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        # Surlignement SOUS les glyphes, sur l'étendue rendue arrondie à la
+        # TUILE — le moteur peint des tuiles de surface, pas des pixels libres
+        # (cf. `text_surf_seed`). Bornes prises comme les siennes : la plume
+        # (donc la CHASSE, pas la largeur d'encre) à droite, l'INTERLIGNE en
+        # bas. Les mesurer autrement donnerait une tuile d'écart avec la ROM sur
+        # une police dont les glyphes sont plus petits que leur cellule.
+        hl = self._highlight_color()
+        if hl is not None:
+            from codegen.font_emit import glyph_advance_px, font_line_px
+            line = font_line_px(font)
+            x0 = min(gx for _g, gx, _gy in placed) // 8 * 8
+            y0 = min(gy for _g, _gx, gy in placed) // 8 * 8
+            x1 = -(-max(gx + glyph_advance_px(g, font) for g, gx, _gy in placed) // 8) * 8
+            y1 = -(-(max(gy for _g, _gx, gy in placed) + line) // 8) * 8
+            painter.fillRect(QRectF(r.left() + x0, r.top() + y0, x1 - x0, y1 - y0), hl)
         for g, gx, gy in placed:
             painter.drawPixmap(QRectF(r.left() + gx, r.top() + gy, g.w, g.h),
                                sheet, QRectF(g.x, g.y, g.w, g.h))
@@ -2929,24 +3062,21 @@ class UIRegionItem(QGraphicsRectItem):
         self._label.setPos(8.5, y)
 
     def paint(self, painter, option, widget=None):
-        """Bulle réactive — repos / survol / sélection, coins arrondis.
-
-        Le CONTENU réel (couleur de palette, nine-slice, background) prime : la
-        bulle blanche ne se peint que s'il n'y en a pas."""
+        """Le CONTENU réel (couleur de palette PLEINE, nine-slice, background)
+        — exactement ce que le build affichera, jamais une teinte d'édition ;
+        sans contenu déclaré, rien n'est peint que le contour (pas de bulle de
+        remplissage). Coins droits, comme le rendu compilé — le hardware n'a
+        pas de rectangle arrondi."""
         r = self.rect()
         sel = self.isSelected()
         active = getattr(self.scene(), "active_item", None) is self
-        radius = min(3.0, r.width() / 2.0, r.height() / 2.0)
         path = QPainterPath()
-        path.addRoundedRect(r, radius, radius)
+        path.addRect(r)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.save()
 
-        # 1. Contenu réel, ou à défaut la bulle blanche : quasi-transparente au
-        #    repos, pleine au survol/sélection. Clip aux coins arrondis.
-        has_real_content = (self._ns_pixmap is not None or self._bg_pixmap is not None
-                            or self._img_pixmap is not None
-                            or self._content_brush is not None)
+        # 1. Contenu réel seulement — un conteneur SANS fond déclaré ne peint
+        #    rien ici, juste son contour (étape 2 plus bas).
         painter.save()
         painter.setClipPath(path)
         self._paint_nine_slice(painter)
@@ -2955,11 +3085,6 @@ class UIRegionItem(QGraphicsRectItem):
         if self._content_brush is not None:
             painter.setPen(QPen(Qt.PenStyle.NoPen))
             painter.setBrush(self._content_brush)
-            painter.drawRect(r)
-        if not has_real_content:
-            alpha = 205 if sel else (150 if self._hovered else 46)
-            painter.setPen(QPen(Qt.PenStyle.NoPen))
-            painter.setBrush(QBrush(QColor(255, 255, 255, alpha)))
             painter.drawRect(r)
         # Le TEXTE en dernier, et sous le clip : le moteur borne le rendu au
         # rectangle (`text_clip_set`), l'aperçu doit couper au même endroit.
@@ -2976,7 +3101,7 @@ class UIRegionItem(QGraphicsRectItem):
             painter.drawLine(QPointF(r.left(), r.bottom()),
                              QPointF(r.right(), r.bottom()))
 
-        # 2. Contour arrondi — la COULEUR porte le type (cf. _KIND_COLORS). Un
+        # 2. Contour — la COULEUR porte le type (cf. _KIND_COLORS). Un
         #    CONTENEUR est un cadre : tirets au repos. Une ancre non résolue
         #    reste en pointillés (position affichée ≠ position du jeu), et ce
         #    signal prime sur le reste.
@@ -3033,6 +3158,15 @@ class UIRegionItem(QGraphicsRectItem):
         return None
 
     # ── Aimantation d'alignement ─────────────────────────────────
+    def _snap_step(self) -> int:
+        """Pas de grille de cette zone : 8 px (tuile) pour une cible BG — le
+        moteur y écrit des entrées de tilemap, l'origine ne peut pas tomber
+        entre deux tuiles — 1 px (libre) pour une cible OBJ composée pixel par
+        pixel. Recalculé à chaque appel : `render_mode` peut changer sous
+        l'édition."""
+        rm = int(getattr(self._scene, "render_mode", 0) or 0)
+        return 8 if self._layout.resolved_target(self._region, rm) == "bg" else 1
+
     def _axis_snap(self, moving_vals, is_x: bool):
         """(delta, ligne-guide) pour aimanter `moving_vals` (positions scène sur
         un axe) aux bords/centres des autres zones et au cadre écran. Le seuil
@@ -3074,7 +3208,15 @@ class UIRegionItem(QGraphicsRectItem):
             dx, gx = self._axis_snap(candidate_lines(nx, w), True)
             dy, gy = self._axis_snap(candidate_lines(ny, h), False)
             sc.show_align_guides(gx, gy)
-            return QPointF(nx + dx, ny + dy)
+            nx, ny = nx + dx, ny + dy
+            # Aimantation à la grille EN COURS de geste : la boîte reste figée
+            # sur sa case tant que la souris n'a pas franchi la suivante, au
+            # lieu de suivre le pixel puis sauter d'un coup au relâchement.
+            step = self._snap_step()
+            if step > 1:
+                nx = (int(nx) // step) * step
+                ny = (int(ny) // step) * step
+            return QPointF(nx, ny)
         # Position APPLIQUÉE pendant le geste : les enfants suivent du même
         # delta. Leur modèle est relatif au parent, il n'y a donc rien à
         # committer chez eux — c'est un suivi d'écran, pas une écriture.
@@ -3166,10 +3308,10 @@ class UIRegionItem(QGraphicsRectItem):
         if self._press_pos is None:
             return
         start, self._press_pos = self._press_pos, None
-        # Snap tuile pour une cible BG — le moteur y écrit des entrées de
-        # tilemap, l'origine ne peut pas tomber entre deux tuiles.
-        rm = int(getattr(self._scene, "render_mode", 0) or 0)
-        step = 8 if self._layout.resolved_target(self._region, rm) == "bg" else 1
+        # Filet de sécurité : `itemChange` aimante déjà à la grille pendant le
+        # geste (cf. `_snap_step`), donc ce re-snap est normalement un no-op —
+        # sauf pour un setPos programmatique qui aurait contourné `_moving`.
+        step = self._snap_step()
         pre = self.pos()
         nx = int(pre.x()) // step * step
         ny = int(pre.y()) // step * step
@@ -3199,9 +3341,10 @@ class UIRegionItem(QGraphicsRectItem):
         return self._layout.parent_origin(self._region, self._actor_pos)
 
     def _drag_resize(self, scene_pos):
-        """Déplace le(s) bord(s) de la poignée tirée vers la souris, en vivant
-        en flottant : le snap n'intervient qu'au relâchement (`_commit_resize`),
-        comme pour le déplacement."""
+        """Déplace le(s) bord(s) de la poignée tirée vers la souris. Aimante à
+        la grille de la cible (`_snap_step`) PENDANT le geste : le bord suivi
+        reste sur sa case tant que la souris n'a pas franchi la suivante,
+        `_commit_resize` ne fait plus alors qu'appliquer les bornes finales."""
         start_pos, start_rect = self._resize_start
         l = start_pos.x() + start_rect.left()
         t = start_pos.y() + start_rect.top()
@@ -3226,6 +3369,17 @@ class UIRegionItem(QGraphicsRectItem):
         sc = self.scene()
         if sc is not None and hasattr(sc, "show_align_guides"):
             sc.show_align_guides(gx, gy)
+        # Snap à la grille des SEULS bords tirés — les bords fixes viennent de
+        # `_resize_start`, déjà sur la grille depuis le geste précédent. Les
+        # quatre bords arrondissent vers l'EXTÉRIEUR de la boîte (floor à
+        # gauche/haut, ceil à droite/bas) : rogner couperait du texte pour
+        # faire joli, comme `_commit_resize`.
+        step = self._snap_step()
+        if step > 1:
+            if ml: l = (int(l) // step) * step
+            elif mr: rt = ((int(rt) + step - 1) // step) * step
+            if mt: t = (int(t) // step) * step
+            elif mb: b = ((int(b) + step - 1) // step) * step
         # Plancher de 8 px : le bord tiré s'arrête, le bord opposé ne bouge pas.
         if rt - l < 8:
             if ml: l = rt - 8
@@ -3237,12 +3391,11 @@ class UIRegionItem(QGraphicsRectItem):
         self.setRect(0, 0, rt - l, b - t)
 
     def _commit_resize(self):
-        """Fige le geste : snap tuile (cible BG), bornes, puis une seule
-        commande d'historique. L'origine snappe vers l'extérieur (bas/droite
-        arrondis vers le HAUT) — rogner reviendrait à couper du texte pour
-        faire joli, comme `UIRegion.snap_to_tile`."""
-        rm = int(getattr(self._scene, "render_mode", 0) or 0)
-        step = 8 if self._layout.resolved_target(self._region, rm) == "bg" else 1
+        """Fige le geste : bornes, puis une seule commande d'historique. Le
+        snap à la grille est déjà fait en LIVE par `_drag_resize` — ce re-snap
+        est un filet de sécurité (no-op en pratique), comme dans
+        `mouseReleaseEvent` pour le déplacement."""
+        step = self._snap_step()
         l = int(self.pos().x())
         t = int(self.pos().y())
         rt = l + int(self.rect().width())
@@ -3769,6 +3922,19 @@ _clipboard = _CanvasClipboard()
 
 class SceneEditor(QWidget):
     scene_changed = pyqtSignal()  # fin de drag / déplacement caméra → sauvegarder
+    # Position d'une caméra changée PAR DRAG dans le canvas — l'inspecteur
+    # doit suivre (cf. window.py, symétrique de CameraInspector.camera_moved
+    # qui fait le chemin inverse).
+    camera_position_changed = pyqtSignal(object, int, int)   # Camera|None, x, y
+    # `_reload_ui_regions` est le point de convergence des TROIS origines d'une
+    # mise en page modifiée (dessin/suppression/collage au canvas, édition dans
+    # l'inspecteur, opération depuis l'arbre de scène — cf. les branchements de
+    # `regions_changed`/`ui_regions_changed`/`ui_layout_changed` dans window.py)
+    # : un conteneur qui change de fond (nine-slice/background) change
+    # l'occupation des banques de palette (cf. codegen/palette_alloc.
+    # scene_palette_view). window.py y branche le rafraîchissement de la carte
+    # Palettes, une fois pour les trois origines au lieu de trois branchements.
+    ui_regions_reloaded = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4265,6 +4431,7 @@ class SceneEditor(QWidget):
         lay = self._project.scene_ui_layout(scene) if (self._project and scene) else None
         self._gba_scene.set_ui_regions(lay, self._project, scene,
                                        save_fn=self._save_ui_regions)
+        self.ui_regions_reloaded.emit()
 
     def _save_ui_regions(self):
         """Persiste après un déplacement de zone au canvas, et recharge
@@ -4354,10 +4521,7 @@ class SceneEditor(QWidget):
         # Backdrop (sous tous les layers)
         self.refresh_backdrop()
 
-        # Caméra — le cadrage vit dans l'ASSET caméra de la scène ; une scène
-        # au défaut implicite n'en a pas, et se cadre donc à l'origine.
-        _cam = self._project.scene_camera(scene) if (self._project and scene) else None
-        self._gba_scene.setup_camera(_cam.x if _cam else 0, _cam.y if _cam else 0)
+        self._setup_cameras(scene)
 
         # BG layers (sans rescale — taille native)
         shown = set()
@@ -4584,14 +4748,17 @@ class SceneEditor(QWidget):
             # Transform affine MONDE (Actor) × LOCAL (SpriteComponent), comme au
             # runtime : le sprite hérite scale (produit) et rotation (somme) de
             # son actor, et se place en offset dans le repère local de l'actor.
-            # Sans "Affine transform" sur l'actor, tout est identité (0°/100%).
-            _aff = bool(getattr(actor, "affine_transform", False))
+            # Sans "Affine transform" sur le SPRITE, aucun slot n'est réservé au
+            # build : rien de tout ça ne s'affiche, ni le transform de l'actor ni
+            # celui du sprite — le canvas montre donc l'identité (0°/100%), comme
+            # la ROM.
+            _aff = bool(getattr(sprite_comp, "affine_transform", False)) if sprite_comp else False
             asx = getattr(actor, "scale_x", 1.0)  if _aff else 1.0
             asy = getattr(actor, "scale_y", 1.0)  if _aff else 1.0
             arot = getattr(actor, "rotation", 0)  if _aff else 0
-            sx  = (getattr(sprite_comp, "scale_x",  1.0) if sprite_comp else 1.0) * asx
-            sy  = (getattr(sprite_comp, "scale_y",  1.0) if sprite_comp else 1.0) * asy
-            rot = (getattr(sprite_comp, "rotation", 0.0) if sprite_comp else 0.0) + arot
+            sx  = (getattr(sprite_comp, "scale_x",  1.0) if _aff else 1.0) * asx
+            sy  = (getattr(sprite_comp, "scale_y",  1.0) if _aff else 1.0) * asy
+            rot = (getattr(sprite_comp, "rotation", 0.0) if _aff else 0.0) + arot
             off_x = getattr(sprite_comp, "offset_x", 0) if (sprite_comp and _aff) else 0
             off_y = getattr(sprite_comp, "offset_y", 0) if (sprite_comp and _aff) else 0
             # Flip effectif = flip du component XOR flip de la direction miroir
@@ -4621,11 +4788,14 @@ class SceneEditor(QWidget):
         """Appelé quand n'importe quel item de la scène change (position, etc.)."""
         if not self._project or not self._project.active_scene:
             return
-        # Si la caméra est sélectionnée, mettre à jour l'inspecteur avec la nouvelle position
-        if self._gba_scene._camera and self._gba_scene._camera.isSelected():
-            x, y = self._gba_scene.camera_pos()
-            self._write_camera_pos(x, y)
-            self.scene_changed.emit()
+        # Si une caméra est sélectionnée, mettre à jour l'inspecteur avec sa
+        # nouvelle position — n'importe laquelle des caméras de la scène.
+        for item in self._gba_scene.camera_items():
+            if item.isSelected():
+                x, y = int(item.pos().x()), int(item.pos().y())
+                self._write_camera_pos(x, y, item)
+                self.camera_position_changed.emit(item.camera, x, y)
+                self.scene_changed.emit()
 
     # ── Sélection ─────────────────────────────────────────────────
 
@@ -4670,7 +4840,7 @@ class SceneEditor(QWidget):
             if self._project and self._project.active_scene:
                 # Sélectionner n'est pas régler : on ne matérialise pas la
                 # caméra par défaut ici, seulement au premier vrai déplacement.
-                get_bus().select(CameraSelection(self._project.active_scene))
+                get_bus().select(CameraSelection(self._project.active_scene, target.camera))
         elif isinstance(target, SpriteItem):
             get_bus().select(target.scene_sprite)
         elif isinstance(target, UIRegionItem):
@@ -4721,9 +4891,10 @@ class SceneEditor(QWidget):
             # (self._view) clignotait et restait dans un état incohérent avec
             # isSelected(). En NE traitant PAS ce cas ici (tout autre obj), la
             # caméra reste déselectionnée et son overlay disparaît fiablement.
-            cam = self._gba_scene._camera
-            if cam:
-                cam.setSelected(True)
+            item = next((it for it in self._gba_scene.camera_items()
+                        if it.camera is obj.camera), None)
+            if item:
+                item.setSelected(True)
         else:
             # Même raison que la caméra : la zone s'annonce sur le bus AVANT que
             # Qt ne la sélectionne (cf. UIRegionItem.mousePressEvent), et le bus
@@ -4755,32 +4926,71 @@ class SceneEditor(QWidget):
                 return item
         return None
 
-    # ── Sauvegarde position caméra ────────────────────────────────
+    def move_camera_item(self, camera):
+        """Repositionne/redimensionne l'item Qt d'une caméra sans recréer la
+        scène — appelé quand la position ou le frame ont été édités dans
+        l'inspecteur (cf. CameraInspector.camera_moved), symétrique de
+        `move_actor_item`."""
+        for item in self._gba_scene.camera_items():
+            if item.camera is camera:
+                item.setPos(camera.x, camera.y)
+                item.set_frame_size(camera.frame_w, camera.frame_h)
+                return
+
+    # ── Caméras : (re)construction et sauvegarde de position ───────
+
+    def _setup_cameras(self, scene):
+        """(Re)construit tous les items caméra de `scene` : celle de
+        démarrage (`scene.camera` — porte sprites écran + windows) et les
+        autres (rectangles indépendants). Factorisé pour servir à la fois au
+        rechargement complet (`load_project`) et au rafraîchissement léger
+        après ajout/suppression/renommage depuis le scene tree
+        (`refresh_cameras`)."""
+        _cam = self._project.scene_camera(scene) if (self._project and scene) else None
+        self._gba_scene.setup_camera(_cam.x if _cam else 0, _cam.y if _cam else 0, camera=_cam)
+        _others = [c for c in (scene.cameras if scene else []) if c is not _cam]
+        self._gba_scene.setup_extra_cameras(_others)
+
+    def refresh_cameras(self):
+        """Reconstruit uniquement les items caméra — appelé après
+        add_camera/delete_camera/rename_camera (événement
+        `cameras_list_changed`), sans recharger tout le reste de la scène."""
+        if self._project and self._project.active_scene:
+            self._setup_cameras(self._project.active_scene)
 
     def flush_camera_pos(self):
-        """Appelé avant save_scene pour persister le cadrage de la caméra."""
-        if self._project and self._project.active_scene and self._gba_scene._camera:
-            x, y = self._gba_scene.camera_pos()
-            self._write_camera_pos(x, y)
+        """Appelé avant save_scene pour persister le cadrage de TOUTES les
+        caméras dont l'item a bougé (démarrage + autres)."""
+        if not self._project or not self._project.active_scene:
+            return
+        for item in self._gba_scene.camera_items():
+            x, y = int(item.pos().x()), int(item.pos().y())
+            self._write_camera_pos(x, y, item)
 
-    def _write_camera_pos(self, x: int, y: int):
-        """Écrit le cadrage dans l'ASSET caméra de la scène active.
+    def _write_camera_pos(self, x: int, y: int, item):
+        """Écrit le cadrage dans la caméra possédée par la scène active.
 
-        Déplacer le cadre est un réglage : si la scène employait encore la
-        caméra par défaut, c'est ici qu'une vraie caméra naît
-        (`ensure_scene_camera`). Ne rien faire quand la position est déjà celle
-        du défaut évite d'en créer une au premier clic sur le rectangle."""
+        `item.camera is None` désigne l'item de démarrage à l'état implicite :
+        déplacer le cadre est un réglage, c'est ici qu'une vraie caméra naît
+        (`ensure_scene_camera`) — l'item est alors rebranché sur l'objet réel,
+        sinon un second déplacement dans le même geste la matérialiserait à
+        chaque fois sans jamais reconnaître qu'elle existe déjà. Ne rien faire
+        quand la position est déjà celle du défaut évite d'en créer une au
+        premier clic sur le rectangle. Une caméra déjà réelle (démarrage ou
+        non) s'écrit directement, sans matérialisation."""
         scene = self._project.active_scene if self._project else None
         if scene is None:
             return
-        cam = self._project.scene_camera(scene)
-        if cam is None and x == 0 and y == 0:
-            return
-        cam = cam or self._project.ensure_scene_camera(scene)
+        cam = item.camera
+        if cam is None:
+            if x == 0 and y == 0:
+                return
+            cam = self._project.ensure_scene_camera(scene)
+            item.camera = cam
         if (cam.x, cam.y) == (x, y):
             return
         cam.x, cam.y = x, y
-        self._project.cameras.save(cam)
+        self._project.save_scene(scene)
 
     def _on_prefab_template_dropped(self, prefab_name: str, pos: QPointF):
         if not self._project or not self._project.active_scene:

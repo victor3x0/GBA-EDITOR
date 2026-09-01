@@ -350,6 +350,121 @@ def import_font_fnt(fnt_path: Path) -> dict:
             "source_format": "fnt", "page_path": page}
 
 
+# ── Import polices bitmap conteneurisées (BDF / PCF / dfont / TTF) ────────
+# Troisième point d'entrée : ces conteneurs ne portent pas de planche, donc
+# on la GÉNÈRE — un glyphe par entrée du cmap, rendu à sa taille native (pas
+# de mise à l'échelle : une police bitmap n'a qu'une seule taille lisible)
+# puis empaqueté dans un PNG neuf écrit à côté du fichier source. Ce PNG
+# devient `Font.asset` comme n'importe quelle planche ; le conteneur
+# lui-même n'est gardé que comme `Font.descriptor`, pour mémoire.
+#
+# FreeType lit les quatre formats indifféremment (même bibliothèque, un
+# format de conteneur en plus ne change rien à l'import) : pas de parseur
+# dédié par extension, contrairement à BMFont dont le texte est fait main.
+
+FREETYPE_FONT_EXTS = {".bdf", ".pcf", ".dfont", ".ttf"}
+
+_BMP_MAX = 0xFFFF   # cf. font_emit.py : le texte est émis en u16 (BMP seul)
+
+
+def _pack_glyphs(sized: list[tuple[str, int, int]]) -> tuple[int, int, dict[str, tuple[int, int]]]:
+    """Empaquetage en étagères : trie par hauteur décroissante, remplit une
+    ligne en largeur puis passe à la suivante. Suffisant ici — les glyphes
+    d'une police bitmap sont tous proches en hauteur (une seule taille), donc
+    les étagères ne gâchent quasiment pas de place. Retourne la hauteur totale
+    et {char: (x, y)}."""
+    import math
+    total_area = sum(w * h for _, w, h in sized) or 1
+    atlas_w = max(64, min(1024, 1 << math.ceil(math.log2(math.sqrt(total_area) * 1.2 or 1))))
+
+    pos: dict[str, tuple[int, int]] = {}
+    x = y = shelf_h = 0
+    for char, w, h in sorted(sized, key=lambda t: -t[2]):
+        if w == 0 or h == 0:
+            pos[char] = (0, 0)
+            continue
+        if x + w > atlas_w:
+            x, y, shelf_h = 0, y + shelf_h, 0
+        pos[char] = (x, y)
+        x += w
+        shelf_h = max(shelf_h, h)
+    return atlas_w, y + shelf_h, pos
+
+
+def import_font_freetype(path: Path) -> dict:
+    """Lit une police bitmap conteneurisée via FreeType et génère sa planche.
+
+    Énumère le cmap plutôt que de proposer un charset connu : une police CJK
+    porte des milliers de glyphes qu'aucun charset de `propose_charset` ne
+    décrit, et le conteneur les connaît déjà tous — rien à déduire. Coupé au
+    plan multilingue de base (cf. `_BMP_MAX`) : au-delà, `font_emit.py` ne
+    saurait de toute façon pas émettre le texte.
+
+    Chasse et décalages viennent des métriques FreeType : c'est une police
+    d'AUTEUR comme un `.fnt`, elle prime donc sur toute mesure — cf. `Font`,
+    « la chasse est déclarée, jamais devinée ».
+
+    Lève une erreur explicite si le conteneur ne porte aucun strike bitmap
+    (TTF vectoriel) : mettre une police à l'échelle est hors périmètre ici,
+    contrairement à un vrai moteur de rendu de polices."""
+    import freetype
+    from PIL import Image
+
+    face = freetype.Face(str(path))
+    if face.num_fixed_sizes < 1:
+        raise ValueError(
+            f"{path.name} n'a pas de strike bitmap intégré — seules les "
+            "polices bitmap (BDF/PCF/dfont, ou TTF à strikes intégrés) sont "
+            "importables ici.")
+    face.select_size(0)
+    ascender = face.size.ascender / 64
+    line_height = round(face.size.height / 64) or 8
+
+    codepoints: list[int] = []
+    charcode, gindex = face.get_first_char()
+    while gindex:
+        if 0 < charcode <= _BMP_MAX:
+            codepoints.append(charcode)
+        charcode, gindex = face.get_next_char(charcode, gindex)
+
+    rendered: list[dict] = []
+    for cp in codepoints:
+        face.load_char(chr(cp), freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_MONO)
+        g = face.glyph
+        bmp = g.bitmap
+        rendered.append({
+            "char": chr(cp), "w": bmp.width, "h": bmp.rows,
+            "advance": round(g.advance.x / 64),
+            "ox": g.bitmap_left, "oy": round(ascender - g.bitmap_top),
+            "pitch": bmp.pitch, "buffer": bytes(bmp.buffer),
+        })
+
+    atlas_w, atlas_h, pos = _pack_glyphs([(r["char"], r["w"], r["h"]) for r in rendered])
+    page = Image.new("RGBA", (max(atlas_w, 1), max(atlas_h, 1)), (0, 0, 0, 0))
+    px = page.load()
+    glyphs: list[Glyph] = []
+    for r in rendered:
+        x, y = pos[r["char"]]
+        # Bitmap MONO : 1 bit/pixel, ligne alignée à l'octet (pitch). Chaque
+        # bit à 1 devient un pixel d'encre opaque — pas de niveaux de gris à
+        # gérer, une police bitmap n'en a pas.
+        for row in range(r["h"]):
+            byte_row = r["buffer"][row * r["pitch"]:(row + 1) * r["pitch"]]
+            for col in range(r["w"]):
+                if byte_row[col // 8] & (0x80 >> (col % 8)):
+                    px[x + col, y + row] = (0, 0, 0, 255)
+        glyphs.append(Glyph(char=r["char"], x=x, y=y, w=r["w"], h=r["h"],
+                             advance=r["advance"], ox=r["ox"], oy=r["oy"]))
+
+    out_path = path.with_suffix(".png")
+    page.save(out_path)
+    cw = max((gl.w for gl in glyphs), default=8) or 8
+    ch = max((gl.h for gl in glyphs), default=8) or 8
+    return {"cell_w": cw, "cell_h": ch, "line_height": line_height,
+            "glyphs": glyphs, "source_format": path.suffix.lower().lstrip("."),
+            "page_path": out_path}
+
+
 # ── Application au sidecar ────────────────────────────────────────
 
 def apply_font_import(font: Font, fields: dict):

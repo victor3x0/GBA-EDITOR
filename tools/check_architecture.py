@@ -16,6 +16,7 @@ import argparse
 import ast
 import builtins
 import importlib
+import json
 import os
 import sys
 from collections import defaultdict
@@ -163,6 +164,43 @@ def controle_ordre_d_import(mods: dict) -> list[str]:
             if err:
                 echecs.append(f"{mod} seul : {err}")
     return echecs
+
+
+#  Les fonctions qui CITENT une clé de notice, et la position de la clé dans
+#  leurs arguments. `note(layout, clé)` a la sienne en second : c'est le seul
+#  niveau dont la clé peut changer d'un rafraîchissement à l'autre, d'où la
+#  signature qui met le lieu d'abord (cf. ui/common/notice.py).
+CITATIONS_NOTICES = {"note": 1, "notice": 0, "tip": 0, "text": 0, "show_text": 0}
+
+
+def controle_notices(trees: dict) -> list:
+    """Toute clé citée existe dans le catalogue, toute entrée est citée."""
+    catalogue = json.loads(
+        (EDITOR / "ui" / "common" / "notices" / "notices.json").read_text(encoding="utf-8")
+    )["notices"]
+    citees: dict[str, str] = {}     # clé littérale EN POSITION D'APPEL
+    littérales: set[str] = set()    # n'importe quelle chaîne du code
+    for m, t in trees.items():
+        for node in ast.walk(t):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                littérales.add(node.value)
+            if not isinstance(node, ast.Call):
+                continue
+            nom = (node.func.attr if isinstance(node.func, ast.Attribute)
+                   else getattr(node.func, "id", ""))
+            pos = CITATIONS_NOTICES.get(nom)
+            if pos is None or len(node.args) <= pos:
+                continue
+            arg = node.args[pos]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                citees.setdefault(arg.value, f"{m}:{node.lineno}")
+    # Le sens « orpheline » se contente d'une chaîne trouvée n'importe où :
+    # une clé rangée dans un tuple ou une table de correspondance est citée
+    # pour de bon, elle ne passe simplement pas par l'argument d'un appel.
+    return ([f"{clé} citée en {où} — absente du catalogue"
+             for clé, où in sorted(citees.items()) if clé not in catalogue]
+            + [f"{clé} — dans le catalogue, citée nulle part"
+               for clé in sorted(catalogue) if clé not in littérales])
 
 
 def main() -> int:
@@ -393,6 +431,15 @@ def main() -> int:
                     if a.name.startswith("_") and not a.name.startswith("__"):
                         prives.append(f"{m}:{node.lineno} importe `{a.name}` de {node.module}")
     r.section("Frontières respectées", prives)
+
+    # ── 7. Catalogue de notices ↔ code ───────────────────────────
+    # Trouvé ainsi : quatre infobulles d'inspecteur qui citaient une clé absente
+    # de leur propre dictionnaire, et n'affichaient donc RIEN depuis toujours.
+    # Une clé mal tapée donne un message vide, et un message vide ne se plaint
+    # jamais — c'est le seul défaut de ce chantier qu'aucun test ne verrait.
+    # Le contrôle vaut dans les DEUX sens : une entrée que plus personne ne cite
+    # est du texte à traduire pour rien.
+    r.section("Catalogue de notices", controle_notices(trees))
 
     if args.fresh:
         r.section("Ordre d'import (interpréteur neuf par module)",

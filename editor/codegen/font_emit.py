@@ -20,6 +20,7 @@ affiche des tuiles 8×8.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from codegen.c_names import c_ident
@@ -110,10 +111,23 @@ def is_proportional(font) -> bool:
 # un déplacement de rendu invisible à la relecture du code.
 
 def font_line_px(font) -> int:
-    """Interligne effectif, en pixels."""
+    """Interligne effectif, en pixels.
+
+    `line_height` d'abord, `cell_h` seulement en repli — y compris en MONO,
+    où l'ancien code lisait `cell_h` directement. Les deux coïncident pour une
+    planche PNG (l'import y pose `line_height = cell_h`, cf. `font_import.
+    import_font_png`) : rien ne change pour elles. Elles DIVERGENT pour un
+    conteneur bitmap (BDF/PCF/dfont/TTF) : `cell_h` y est le MAX des hauteurs
+    de glyphe rendues (`import_font_freetype`), qu'UN SEUL caractère rare peut
+    gonfler pour toute la police — un signe combinant japonais 20 px de haut
+    dans un jeu de 3829 glyphes de 10 px a ainsi doublé l'interligne d'un texte
+    qui n'en affichait aucun. `line_height` y vient des métriques FreeType
+    (ascender + descender de la police, pas du contenu dessiné) : c'est la
+    valeur que l'auteur de la police a réellement conçue."""
+    lh = int(getattr(font, "line_height", 0) or getattr(font, "cell_h", 0) or 8)
     if is_proportional(font):
-        return int(getattr(font, "line_height", 0) or getattr(font, "cell_h", 0) or 8)
-    return max(1, ((int(getattr(font, "cell_h", 0) or 8)) + 7) // 8) * 8
+        return lh
+    return max(1, (lh + 7) // 8) * 8
 
 
 def font_fallback_adv_px(font) -> int:
@@ -251,6 +265,25 @@ def scene_text_tiles(fonts, names: set[str] | None = None,
                            codepoints)
 
 
+def default_font_name(fonts: list, scene) -> str:
+    """Nom de la police par défaut de `scene`, résolu contre `fonts` — la liste
+    est fournie par l'appelant plutôt que recalculée ici : `project_fonts()`
+    élague désormais aux polices utilisées, et déterminer CE qui est utilisé a
+    justement besoin de la police par défaut de chaque scène. Résoudre contre
+    `project_fonts()` bouclerait donc sur lui-même ; cette fonction reste pure,
+    contre n'importe quelle liste (filtrée ou non).
+
+    Repli sur la première police de la liste si `Scene.font_name` est vide ou
+    introuvable — même règle que `scene_default_font`, dont c'est le cœur."""
+    if not fonts:
+        return ""
+    want = getattr(scene, "font_name", "") or ""
+    for f in fonts:
+        if f.name == want:
+            return f.name
+    return fonts[0].name
+
+
 def scene_default_font(p, scene) -> tuple[int, str]:
     """(index dans `project_fonts`, nom) de la police que `scene_init` charge.
 
@@ -275,11 +308,8 @@ def scene_default_font(p, scene) -> tuple[int, str]:
     fonts = project_fonts(p)
     if not fonts:
         return -1, ""
-    want = getattr(scene, "font_name", "") or ""
-    for i, f in enumerate(fonts):
-        if f.name == want:
-            return i, f.name
-    return 0, fonts[0].name
+    name = default_font_name(fonts, scene)
+    return next(i for i, f in enumerate(fonts) if f.name == name), name
 
 
 def layout_font_names(layout, default_font: str = "") -> set[str]:
@@ -295,13 +325,16 @@ def layout_font_names(layout, default_font: str = "") -> set[str]:
     return names
 
 
-def scene_codepoints(p, scene) -> "set | None":
-    """Codepoints qu'une scène peut afficher, ou None si c'est indécidable.
+def scene_codepoints(p, scene, code: str = "") -> "set | None":
+    """Codepoints qu'une scène peut afficher DANS UNE LANGUE, ou None si c'est
+    indécidable.
 
     Décidable parce qu'une clé de texte est TOUJOURS littérale (le checker le
     garantit, `DOMAIN_TEXT`) : on lit les textes que les scripts de la scène
     citent, on résout leur balisage, on prend les caractères. Un littéral passé
-    à `text.draw` est déjà une entrée anonyme et suit le même chemin.
+    à `text.draw` est déjà une entrée anonyme et suit le même chemin — et reste
+    dans la SOURCE quel que soit `code` : une entrée anonyme n'a pas d'id dans
+    la table, donc pas de traduction possible (ROADMAP v0.9, décision 6).
 
     DEUX sources, exactement comme `scene_font_names` : les scripts ET les
     textes AUTHORÉS de la mise en page, que `_gen_ui_texts` écrit à l'init sans
@@ -312,6 +345,13 @@ def scene_codepoints(p, scene) -> "set | None":
     Les chiffres sont ajoutés d'office : une valeur interpolée (`$score`) ne
     montre son écriture qu'en jeu. Les constantes, elles, sont cuites au build,
     donc déjà dans le texte résolu.
+
+    `code` sélectionne la langue résolue (`""` = la source, via
+    `Project.text_content` s'il existe — sinon `t.content` tel quel). Appelée
+    une fois par langue déclarée pour l'UNION émise dans la ROM
+    (`scene_codepoints_union`, décision 4), une fois pour la source seule pour
+    la RÉSERVATION vram (`scene_text_reservation`, qui reste sur la langue
+    ACTIVE).
 
     Rend None dès qu'un script échappe à l'analyse — même règle et même raison
     que `scene_font_names`."""
@@ -325,6 +365,8 @@ def scene_codepoints(p, scene) -> "set | None":
         return None
     by_key = {t.key: t for t in p.build_texts()}
     consts = {c.name: c.value for c in getattr(p, "constants", [])}
+    content_fn = getattr(p, "text_content", None)
+    _content = (lambda t: content_fn(t, code)) if content_fn else (lambda t: t.content)
 
     cited: set = set()
     for path in paths:
@@ -340,9 +382,27 @@ def scene_codepoints(p, scene) -> "set | None":
         t = by_key.get(name) or by_key.get(anon_text_key(name))
         if t is None:
             return None      # entrée introuvable : on ne parie pas
-        out |= set(ord(c) for c in resolve(parse(t.content or ""), consts))
+        out |= set(ord(c) for c in resolve(parse(_content(t) or ""), consts))
     for t in layout_texts(p, scene):
-        out |= set(ord(c) for c in resolve(parse(t.content or ""), consts))
+        out |= set(ord(c) for c in resolve(parse(_content(t) or ""), consts))
+    return out
+
+
+def scene_codepoints_union(p, scene, lang_codes) -> "set | None":
+    """`scene_codepoints`, UNIE sur toutes les langues déclarées (ROADMAP
+    v0.9, décision 4) — ce qui borne le sous-ensemble de glyphes ÉMIS dans la
+    ROM pour une scène, jamais la réservation VRAM (qui reste sur la langue
+    ACTIVE, `scene_codepoints(p, scene)` sans `code` — cf. son docstring).
+
+    None dès qu'UNE langue est indécidable : émettre un sous-ensemble calculé
+    sur les seules langues décidables mentirait par omission, exactement
+    comme `scene_codepoints` refuse déjà de parier sur une scène seule."""
+    out: set = set()
+    for code in lang_codes:
+        cps = scene_codepoints(p, scene, code)
+        if cps is None:
+            return None
+        out |= cps
     return out
 
 
@@ -427,6 +487,37 @@ def scene_font_names(p, scene, default_font: str = "") -> "set | None":
             return None
         names |= cited
     return names
+
+
+# `text.draw` / `text.clear` écrivent à des COORDONNÉES, sans rectangle
+# auteur — les seules primitives qui aient encore besoin de la surface
+# PARTAGÉE (cf. `RegionSurf` dans gba_engine.h : une zone authorée reçoit son
+# bloc propre). Le `\s*\(` évite d'attraper `text.draw_in`/`text.clear_in`,
+# qui, elles, passent par une zone.
+_FREE_WRITE_RE = re.compile(r"\btext\.(?:draw|clear)\s*\(")
+
+
+def scene_writes_free(p, scene) -> bool:
+    """La scène peut-elle écrire du texte SANS zone (`text.draw`,
+    `text.clear`) ? C'est ce qui décide de réserver — ou non — les 240 tuiles
+    de la surface partagée, en plus des blocs propres aux zones.
+
+    Vrai dès qu'un script échappe à l'analyse, même règle et même raison que
+    `scene_font_names` : réserver pour rien coûte des tuiles, ne pas réserver
+    ce qui sert corrompt l'affichage."""
+    if not hasattr(p, "scene_scripts"):
+        return True
+    paths, opaque = p.scene_scripts(scene)
+    if opaque:
+        return True
+    for path in paths:
+        try:
+            src = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return True        # illisible = indécidable, cf. ci-dessus
+        if _FREE_WRITE_RE.search(src):
+            return True
+    return False
 
 
 # Les scripts des prefabs reviennent dans CHAQUE scène (spawnables de partout)
@@ -679,7 +770,6 @@ def emit_fonts_c(encoded: list[tuple[str, dict]]) -> list[str]:
 def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                       obj_place: dict | None = None,
                       actor_index: dict | None = None,
-                      bg_fill: dict | None = None,
                       elem_index: dict | None = None) -> list[str]:
     """Table des emplacements de texte — `regions` est [(UILayout, UIText)]
     dans l'ordre de `Project.all_regions()`, qui fait l'index.
@@ -727,7 +817,6 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"{sum(c // 8 for c in pl['cols'])}, {pl['rows']}, {pl['anim']}, "
                  f"0, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
-        bgf = (bg_fill or {}).get(r.name, -1)
         elem = (elem_index or {}).get(r.name, -1)
         # En commentaire : d'où vient le contenu. La table seule ne le dit pas,
         # et c'est la première question en relisant le C.
@@ -735,7 +824,8 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
         rows.append(
             f"    {{ {x}, {y}, {w}, {h}, {ALIGNS.index(r.align)}, "
             f"{font_idx}, {1 if target_obj else 0}, {ANCHORS.index(eff_anchor)}, "
-            f"{alloc}, {bgf}, {int(getattr(r, 'text_color', 0) or 0) & 0xF}, {elem} }},"
+            f"{alloc}, {int(getattr(r, 'highlight_color', 0) or 0) & 0xF}, "
+            f"{int(getattr(r, 'text_color', 0) or 0) & 0xF}, {elem} }},"
             f"  /* {r.name} — {origin} */"
         )
         if target_obj and emit and pl:
@@ -753,7 +843,7 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
                  f"'{eff_actor or '(aucun)'}', introuvable — il se posera "
                  f"à l'origine de l'écran.")
     L.append(f"const UIRegionInfo g_ui_regions[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, -1, 0, -1 },   /* aucun texte */"]
+    L += rows or ["    { 0, 0, 240, 32, 0, 255, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -1 },   /* aucun texte */"]
     L.append("};")
     L.append(f"const int g_ui_region_count = {len(rows)};")
     L.append("")
@@ -769,112 +859,205 @@ _EV_KIND = {
 }
 
 
-def emit_texts_c(texts: list, globals_=(), constants=(), emit=None,
-                 fonts=()) -> list[str]:
-    """Tables C des textes : codepoints affichables, piste d'événements et
-    sources à interpoler.
-
-    Le balisage est résolu ICI, une fois pour toutes — c'est ce qui dispense le
-    moteur d'un parseur et garde `text_length` sur la longueur AFFICHÉE. Les
-    `#define TEXT_<CLE>` sont émis par le codegen de script (là où vivent déjà
-    SFX_*/MUSIC_*), pas ici.
-
-    Une constante est cuite dans les codepoints : elle ne change jamais, la
-    lire au runtime coûterait une indirection pour rien. Un global, lui, laisse
-    une place réservée et un pointeur dans `g_text_values`."""
+def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
+                        const_values: dict, global_names: set,
+                        fonts, emit) -> tuple[list[str], int, str, int, list[str]]:
+    """Les lignes C d'UNE entrée dans UNE langue : (lignes, longueur, nom de
+    la table d'événements ou "0", nombre d'événements, symboles de globals
+    cités). Factorisé de `emit_texts_c` (ROADMAP v0.9, phase 3) — même calcul,
+    rejoué une fois par langue déclarée plutôt qu'une fois pour la source
+    seule."""
     from core.text_markup import parse, KIND_VALUE
 
+    parsed = parse(content)
+    # Ce qui n'est pas un global se règle AVANT le découpage en codepoints :
+    # une constante vaut « 7 » comme « 100 », donc décale tout ce qui suit.
+    bake = {}
+    for m in parsed.markers:
+        if m.kind != KIND_VALUE or m.value in bake:
+            continue
+        if m.value in const_values:
+            bake[m.value] = str(const_values[m.value])
+        elif m.value not in global_names:
+            # Rendu littéralement, comme dans l'aperçu de l'éditeur : le
+            # nom apparaît sur la console au lieu d'un trou muet. `$$`
+            # l'échappe, sinon la relecture le reprendrait pour un marqueur.
+            bake[m.value] = f"$${m.value}"
+            if emit:
+                emit("log_line", f"[text] {t.key} : « ${m.value} » n'est ni "
+                                 f"un global ni une constante — écrit tel quel.")
+    if bake:
+        parsed = parse(_bake_values(content, bake))
+
+    for iss in parsed.issues:
+        if emit:
+            emit("log_line", f"[text] {t.key} : {iss.message}")
+    # `[color]` repose sur la composition pixel : le chemin tilemap pose une
+    # tuile DÉJÀ encrée, partagée par toutes ses occurrences, donc la
+    # recolorer recolorerait le texte entier. Si aucune police du projet ne
+    # compose, la couleur ne sortira jamais — autant le dire au build plutôt
+    # que de laisser chercher pourquoi rien ne change.
+    if emit and fonts and parsed.of_kind("color") \
+            and not any(render_composited(f) for f in fonts):
+        emit("log_line",
+             f"[text] {t.key} : « [color] » demande une police composée "
+             f"(proportionnelle, ou trop grosse pour la VRAM) — aucune "
+             f"police du projet ne l'est, la couleur sera ignorée.")
+
+    cps = [ord(c) for c in parsed.display if ord(c) < 0x10000]
+    events = []
+    sources: list[str] = []       # symboles C des globals cités, DANS CETTE LANGUE
+    for m in parsed.markers:
+        kind = _EV_KIND.get(m.kind)
+        if kind is None:            # icon : déjà résolu dans les codepoints
+            continue
+        value = m.value
+        if m.kind == KIND_VALUE:
+            # Dédoublonnées PAR TEXTE ET PAR LANGUE : une traduction peut
+            # réordonner ses `$nom` (ROADMAP), donc citer un global que la
+            # source ne cite pas au même rang — chaque langue tient sa PROPRE
+            # table de sources, jamais une partagée entre langues.
+            sym = f"GLOBAL_{m.value.upper()}"
+            if sym not in sources:
+                sources.append(sym)
+            value = sources.index(sym)
+        events.append(f"    {{ {m.at}, {m.end}, {value or 0}, {kind}, 0 }},")
+
+    L = [f"static const unsigned short g_text_{i_lang}_{i}[{max(1, len(cps))}] = {{"
+         + (",".join(str(c) for c in cps) or "0") + "};"]
+    ev_name = "0"
+    if events:
+        ev_name = f"g_text_ev_{i_lang}_{i}"
+        L.append(f"static const TextEvent {ev_name}[{len(events)}] = {{")
+        L += events
+        L.append("};")
+    return L, len(cps), ev_name, len(events), sources
+
+
+def emit_texts_c(texts: list, lang_codes: list[str], content_fn,
+                 globals_=(), constants=(), emit=None, fonts=()) -> list[str]:
+    """Tables C des textes : codepoints affichables, piste d'événements et
+    sources à interpoler — UNE FOIS PAR LANGUE DÉCLARÉE (ROADMAP v0.9, phase
+    3). `lang_codes[0]` est toujours la source ; un projet qui n'a déclaré
+    aucune langue passe `[""]` et retrouve exactement les tables d'hier, à
+    une dimension de plus qui vaut 1. `g_lang`/`g_lang_reload` (posés ici,
+    une seule fois pour le projet) sont ce que `lang.set` écrit (phase 4) —
+    NON const depuis cette phase, mais ce module n'en a pas besoin : il
+    n'écrit jamais que leur valeur initiale.
+
+    Le balisage est résolu ICI, une fois pour toutes — c'est ce qui dispense
+    le moteur d'un parseur et garde `text_length` sur la longueur AFFICHÉE.
+    Les `#define TEXT_<CLE>` sont émis par le codegen de script (là où
+    vivent déjà SFX_*/MUSIC_*), pas ici.
+
+    Une constante est cuite dans les codepoints : elle ne change jamais, la
+    lire au runtime coûterait une indirection pour rien. Un global, lui,
+    laisse une place réservée et un pointeur dans `g_text_values`.
+
+    `content_fn(text, code)` résout le contenu d'une entrée dans une langue —
+    `Project.text_content`, qui replie sur la source si la traduction est
+    absente (jamais une chaîne vide, cf. `project_langs.py`)."""
     const_values = {c.name: c.value for c in constants}
     global_names = {g.name for g in globals_}
+    n = max(1, len(texts))
 
-    L: list[str] = ["/* ── Textes ──────────────────────────────────────── */"]
-    lengths: list[int] = []
-    ev_names: list[str] = []
-    ev_counts: list[int] = []
-    sources: list[str] = []       # symboles C des globals à lire, dans l'ordre
+    L: list[str] = ["/* ── Textes ──────────────────────────────────────── */",
+                     "int g_lang = 0;", "int g_lang_reload = 0;"]
+    texts_names, len_names, ev_tbl_names, evc_names, values_names = [], [], [], [], []
+    n_sources_total = 0
 
-    for i, t in enumerate(texts):
-        parsed = parse(t.content)
-        # Ce qui n'est pas un global se règle AVANT le découpage en codepoints :
-        # une constante vaut « 7 » comme « 100 », donc décale tout ce qui suit.
-        bake = {}
-        for m in parsed.markers:
-            if m.kind != KIND_VALUE or m.value in bake:
-                continue
-            if m.value in const_values:
-                bake[m.value] = str(const_values[m.value])
-            elif m.value not in global_names:
-                # Rendu littéralement, comme dans l'aperçu de l'éditeur : le
-                # nom apparaît sur la console au lieu d'un trou muet. `$$`
-                # l'échappe, sinon la relecture le reprendrait pour un marqueur.
-                bake[m.value] = f"$${m.value}"
-                if emit:
-                    emit("log_line", f"[text] {t.key} : « ${m.value} » n'est ni "
-                                     f"un global ni une constante — écrit tel quel.")
-        if bake:
-            parsed = parse(_bake_values(t.content, bake))
+    for i_lang, code in enumerate(lang_codes):
+        lengths: list[int] = []
+        ev_names: list[str] = []
+        ev_counts: list[int] = []
+        sources: list[str] = []   # symboles C des globals, DANS CETTE LANGUE
 
-        for iss in parsed.issues:
-            if emit:
-                emit("log_line", f"[text] {t.key} : {iss.message}")
-        # `[color]` repose sur la composition pixel : le chemin tilemap pose une
-        # tuile DÉJÀ encrée, partagée par toutes ses occurrences, donc la
-        # recolorer recolorerait le texte entier. Si aucune police du projet ne
-        # compose, la couleur ne sortira jamais — autant le dire au build plutôt
-        # que de laisser chercher pourquoi rien ne change.
-        if emit and fonts and parsed.of_kind("color") \
-                and not any(render_composited(f) for f in fonts):
-            emit("log_line",
-                 f"[text] {t.key} : « [color] » demande une police composée "
-                 f"(proportionnelle, ou trop grosse pour la VRAM) — aucune "
-                 f"police du projet ne l'est, la couleur sera ignorée.")
-
-        cps = [ord(c) for c in parsed.display if ord(c) < 0x10000]
-        events = []
-        for m in parsed.markers:
-            kind = _EV_KIND.get(m.kind)
-            if kind is None:            # icon : déjà résolu dans les codepoints
-                continue
-            value = m.value
-            if m.kind == KIND_VALUE:
-                # Dédoublonnées : un même global cité par dix textes ne mérite
-                # qu'un pointeur.
-                sym = f"GLOBAL_{m.value.upper()}"
+        for i, t in enumerate(texts):
+            content = content_fn(t, code)
+            lines, length, ev_name, ev_count, used = _emit_one_text_lang(
+                t, content, i_lang, i, const_values, global_names, fonts, emit)
+            L += lines
+            lengths.append(length)
+            ev_names.append(ev_name)
+            ev_counts.append(ev_count)
+            for sym in used:
                 if sym not in sources:
                     sources.append(sym)
-                value = sources.index(sym)
-            events.append(f"    {{ {m.at}, {m.end}, {value or 0}, {kind}, 0 }},")
 
-        L.append(f"static const unsigned short g_text_{i}[{max(1, len(cps))}] = {{"
-                 + (",".join(str(c) for c in cps) or "0") + "};")
-        lengths.append(len(cps))
-        if events:
-            L.append(f"static const TextEvent g_text_ev_{i}[{len(events)}] = {{")
-            L += events
-            L.append("};")
-            ev_names.append(f"g_text_ev_{i}")
-        else:
-            ev_names.append("0")
-        ev_counts.append(len(events))
+        texts_name, len_name = f"g_texts_{i_lang}", f"g_text_len_{i_lang}"
+        evt_name, evc_name = f"g_text_events_{i_lang}", f"g_text_ev_count_{i_lang}"
+        values_name = f"g_text_values_{i_lang}"
 
-    L.append(f"const unsigned short* const g_texts[{max(1, len(texts))}] = {{"
-             + (",".join(f"g_text_{i}" for i in range(len(texts))) or "0") + "};")
-    L.append(f"const unsigned short g_text_len[{max(1, len(texts))}] = {{"
-             + (",".join(str(n) for n in lengths) or "0") + "};")
-    L.append(f"const TextEvent* const g_text_events[{max(1, len(texts))}] = {{"
-             + (",".join(ev_names) or "0") + "};")
-    L.append(f"const unsigned short g_text_ev_count[{max(1, len(texts))}] = {{"
-             + (",".join(str(n) for n in ev_counts) or "0") + "};")
-    # INDEX, et non pointeurs : les globals gardent chacun leur type C (un `u8`
-    # coûte un octet), donc aucun tableau de pointeurs ne peut les contenir sans
-    # mentir sur l'un d'eux — `const int* const` sur un `&g_vies` en u8 ne
-    # compile même pas. Le moteur lit par `global_read(index)`, dont le switch
-    # généré convertit chaque cas correctement.
-    L.append(f"const unsigned short g_text_values[{max(1, len(sources))}] = {{"
-             + (",".join(sources) or "0") + "};")
+        L.append(f"static const unsigned short* const {texts_name}[{n}] = {{"
+                 + (",".join(f"g_text_{i_lang}_{i}" for i in range(len(texts))) or "0") + "};")
+        L.append(f"static const unsigned short {len_name}[{n}] = {{"
+                 + (",".join(str(x) for x in lengths) or "0") + "};")
+        L.append(f"static const TextEvent* const {evt_name}[{n}] = {{"
+                 + (",".join(ev_names) or "0") + "};")
+        L.append(f"static const unsigned short {evc_name}[{n}] = {{"
+                 + (",".join(str(x) for x in ev_counts) or "0") + "};")
+        # INDEX, et non pointeurs : les globals gardent chacun leur type C
+        # (un `u8` coûte un octet), donc aucun tableau de pointeurs ne peut
+        # les contenir sans mentir sur l'un d'eux. Le moteur lit par
+        # `global_read(index)`, dont le switch généré convertit chaque cas.
+        L.append(f"static const unsigned short {values_name}[{max(1, len(sources))}] = {{"
+                 + (",".join(sources) or "0") + "};")
+
+        texts_names.append(texts_name); len_names.append(len_name)
+        ev_tbl_names.append(evt_name); evc_names.append(evc_name)
+        values_names.append(values_name)
+        n_sources_total += len(sources)
+        if emit and sources:
+            tag = f" ({code})" if code else ""
+            emit("log_line", f"[text] {len(sources)} valeur(s) interpolée(s){tag}")
+
+    n_lang = max(1, len(lang_codes))
+    L.append(f"const unsigned short* const* const g_texts[{n_lang}] = {{"
+             + ",".join(texts_names) + "};")
+    L.append(f"const unsigned short* const g_text_len[{n_lang}] = {{"
+             + ",".join(len_names) + "};")
+    L.append(f"const TextEvent* const* const g_text_events[{n_lang}] = {{"
+             + ",".join(ev_tbl_names) + "};")
+    L.append(f"const unsigned short* const g_text_ev_count[{n_lang}] = {{"
+             + ",".join(evc_names) + "};")
+    L.append(f"const unsigned short* const g_text_values[{n_lang}] = {{"
+             + ",".join(values_names) + "};")
     L.append("")
-    if emit and sources:
-        emit("log_line", f"[text] {len(sources)} valeur(s) interpolée(s)")
+    return L
+
+
+def emit_lang_fonts_c(font_names: list[str], languages: list) -> list[str]:
+    """`g_lang_font[lang][police]` — la police EFFECTIVEMENT chargée pour une
+    police du PROJET, dans une langue donnée (ROADMAP v0.9, phase 3.2).
+
+    `font_names` est l'ordre de `project_fonts()` — le même que `g_fonts` et
+    les `#define FONT_*` (`main_gen`/`lua_compiler`, même source de vérité
+    que pour les textes). `languages` est `settings.all_languages()` — [] pour
+    un projet qui n'a rien déclaré, une seule case IDENTITÉ dans ce cas.
+
+    `Language.fonts` ({police du projet: remplacement}) est un dict d'AUTEUR,
+    creux par construction : une entrée absente vaut l'identité, jamais un cas
+    à détecter au runtime. Une police introuvable dans le projet (nom mal
+    tapé, asset supprimé) retombe aussi sur l'identité — c'est au validateur
+    de le signaler à l'auteur, pas à ce module de deviner."""
+    n = max(1, len(font_names))
+    name_to_idx = {name: i for i, name in enumerate(font_names)}
+    langs = list(languages) or [None]   # None = pas de langue déclarée : identité
+
+    L: list[str] = ["/* ── Remap de police par langue ─────────────────── */"]
+    table_names = []
+    for i_lang, lang in enumerate(langs):
+        remap = getattr(lang, "fonts", None) or {}
+        idxs = [name_to_idx.get(remap.get(name, ""), i)
+                for i, name in enumerate(font_names)]
+        tname = f"g_lang_font_{i_lang}"
+        L.append(f"static const unsigned char {tname}[{n}] = {{"
+                 + (",".join(str(x) for x in idxs) or "0") + "};")
+        table_names.append(tname)
+
+    L.append(f"const unsigned char* const g_lang_font[{len(langs)}] = {{"
+             + ",".join(table_names) + "};")
+    L.append("")
     return L
 
 

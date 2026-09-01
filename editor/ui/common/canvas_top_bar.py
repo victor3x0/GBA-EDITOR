@@ -108,6 +108,28 @@ class CanvasTopBar(QFrame):
         self._extras_at += 1
         return b
 
+    def add_action(self, icon_key: str, tip: str, slot=None) -> QToolButton:
+        """Bouton d'action (non cochable) inséré dans la zone du milieu — même
+        emplacement que add_toggle, mais pour un geste ponctuel (ex: ouvrir
+        l'image dans un logiciel externe) plutôt qu'un état d'affichage."""
+        b = QToolButton()
+        b.setIcon(icons.get(icon_key, icons.COLOR_DEFAULT))
+        b.setIconSize(QSize(18, 18))
+        b.setFixedSize(32, 32)
+        b.setToolTip(tip)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        b.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER};background:{C.BG_INPUT};"
+            f"border-radius:4px;padding:0px;margin:0px;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
+        )
+        if slot is not None:
+            b.clicked.connect(slot)
+        self._lay.insertWidget(self._extras_at, b)
+        self._extras_at += 1
+        return b
+
     def add_spacing(self, px: int):
         """Respiration entre deux groupes de toggles."""
         self._lay.insertSpacing(self._extras_at, px)

@@ -7,8 +7,15 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QToolButton
+from PyQt6.QtGui import QFont, QIcon, QPixmap, QColor
+from PyQt6.QtCore import Qt, pyqtSignal
+
 from ui.common.widgets import ScriptSlot, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
+from ui.common.theme import C, T, QSS
+from ui.common import icons
+from core.gba_color import bgr555_to_rgb888
 from core.models.palette import PaletteBank
 
 # Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —
@@ -65,6 +72,135 @@ def palette_picker_slot(
     return slot
 
 
+_UI_BANK_AUTO_LABEL = "Automatic (font palette)"
+_UI_BANK_CONTAINER_LABEL = "Automatic (container's bank)"
+
+
+def ui_pal_bank_slot(
+    active: list,
+    current_index: int,
+    accent: str,
+    on_picked: Callable[[int], None],
+    project=None,
+    parent=None,
+) -> ScriptSlot:
+    """Slot pour choisir la banque d'UI d'une scène — un INDEX dans
+    `active` (jusqu'à 16 entrées, vides comprises), pas un nom.
+
+    Même widget que `palette_picker_slot`, mais l'entrée à choisir est un
+    SLOT de la scène (`Scene.active_bg_palettes[i]`), pas une banque du
+    catalogue : les slots vides sont listés quand même (« (empty) ») — la
+    sélection peut se remplir après coup, et les masquer ferait disparaître
+    un choix déjà posé dans le JSON.
+
+    Trois entrées négatives, pas deux : -1 (police) ET
+    `UI_PAL_BANK_CONTAINER` (la banque du conteneur nine-slice/couleur sur
+    lequel un texte recompose son encre) — sinon désigner la bonne banque
+    exige de connaître un numéro d'allocation, un détail du build qui bouge
+    si un autre asset de la scène change. Cf. `main_gen.resolve_ui_pal_bank`,
+    seul point qui le résout vraiment.
+
+    `ScriptPickerPopup.picked` est typé `str` (chemins de script, son usage
+    d'origine) : l'index voyage donc en texte, comme dans `ColorIndexSlot`."""
+    from core.models.scene import UI_PAL_BANK_CONTAINER
+    slot = ScriptSlot(add_label="Choose the UI bank", accent_color=accent,
+                      show_clear=False)
+
+    def _label_and_icon(i: int):
+        name = active[i] if 0 <= i < len(active) else ""
+        bank = project.get_palette(name) if (project and name) else None
+        return f"{i} — {name or '(empty)'}", (bank_icon(bank) if bank else None)
+
+    def _show(value: int):
+        if value == UI_PAL_BANK_CONTAINER:
+            slot.set_script(_UI_BANK_CONTAINER_LABEL)
+        elif value < 0:
+            slot.set_script(_UI_BANK_AUTO_LABEL)
+        else:
+            lab, icon = _label_and_icon(value)
+            slot.set_script(lab, icon=icon)
+
+    _show(current_index)
+
+    def _open_picker():
+        entries = [(_UI_BANK_AUTO_LABEL, "-1", None),
+                  (_UI_BANK_CONTAINER_LABEL, str(UI_PAL_BANK_CONTAINER), None)]
+        for i in range(16):
+            lab, icon = _label_and_icon(i)
+            entries.append((lab, str(i), icon))
+        popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
+
+        def _picked(raw: str):
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                return
+            _show(value)
+            on_picked(value)
+
+        popup.picked.connect(_picked)
+        popup.show_below(slot)
+
+    slot.set_callbacks(on_add=_open_picker, on_open=_open_picker)
+    return slot
+
+
+_FONT_AUTO_LABEL_BASE = "Automatic (first font)"
+
+
+def font_picker_slot(
+    fonts: list,
+    usable_names: set,
+    current_name: str,
+    accent: str,
+    on_picked: Callable[[str], None],
+    add_label: str = "Choose the scene font",
+    parent=None,
+) -> ScriptSlot:
+    """Slot pour choisir la police par défaut d'une scène — un NOM de `Font`
+    du projet parmi `fonts`, ou `""` pour « Automatic » (comme
+    `Scene.font_name`, cf. `main_gen.project_fonts`).
+
+    Deux nuances propres aux polices, absentes de `sprite_picker_slot` :
+    l'entrée « Automatic » affiche la police qu'elle résoudrait quand elle
+    est sans ambiguïté (une seule police utilisable dans `usable_names`) ;
+    et une police SANS planche exploitable reste listée, dite telle quelle —
+    la masquer ferait disparaître un choix déjà posé dans le JSON."""
+    slot = ScriptSlot(add_label=add_label, accent_color=accent, show_clear=False)
+    icon = icons.get("font", C.TEXT_DIM)
+
+    def _auto_label() -> str:
+        first = sorted(usable_names)[0] if len(usable_names) == 1 else ""
+        return f"Automatic — {first}" if first else _FONT_AUTO_LABEL_BASE
+
+    def _label(name: str) -> str:
+        if not any(f.name == name for f in fonts):
+            return f"{name} (missing)"
+        return name if name in usable_names else f"{name} (no usable sheet)"
+
+    def _show(name: str):
+        slot.set_script(_auto_label() if not name else _label(name), icon=icon)
+
+    _show(current_name)
+
+    def _open_picker():
+        entries = [(_auto_label(), "", icon)]
+        entries += [(_label(f.name), f.name, icon) for f in fonts]
+        if current_name and not any(f.name == current_name for f in fonts):
+            entries.append((_label(current_name), current_name, icon))
+        popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
+
+        def _picked(name: str):
+            _show(name)   # rafraîchit le label avant de notifier
+            on_picked(name)
+
+        popup.picked.connect(_picked)
+        popup.show_below(slot)
+
+    slot.set_callbacks(on_add=_open_picker, on_open=_open_picker)
+    return slot
+
+
 def sprite_picker_slot(
     sprite_names: list[str],
     current_name: Optional[str],
@@ -96,3 +232,154 @@ def sprite_picker_slot(
 
     slot.set_callbacks(on_add=_open_picker, on_open=_open_picker, on_clear=on_cleared)
     return slot
+
+
+# ── Une COULEUR d'une banque, par son index ───────────────────────
+# Même modèle que les slots ci-dessus — popup de recherche + liste — mais pour
+# un INDEX dans une banque, pas pour un asset nommé.
+#
+# Le code hexadécimal est AFFICHÉ et jamais SAISI : sur cette machine une
+# couleur d'interface est un index dans une banque de 16, pas un RGB libre.
+# Un champ où l'on taperait « #93B478 » promettrait une couleur que le matériel
+# ne sait pas produire — et il faudrait alors soit la refuser après coup, soit
+# l'arrondir en silence. On montre donc ce que l'index VAUT (lisible, copiable)
+# et on ne se choisit que dans ce qui existe.
+
+class ColorIndexSlot(QWidget):
+    """Choix d'une couleur par son index dans une banque de palettes.
+
+    `picked(int)` porte l'index retenu. La liste est FILTRÉE sur les couleurs
+    réellement présentes dans la banque : proposer les seize d'office ferait
+    choisir des index qui ne peignent rien.
+
+    Un index déjà posé qui sort de la banque (banque changée depuis) reste
+    montré, signalé comme pendant — l'effacer sans le dire perdrait un choix
+    que quelqu'un a fait."""
+
+    picked = pyqtSignal(int)
+
+    def __init__(self, zero_label: str, accent: str, parent=None):
+        super().__init__(parent)
+        self._zero_label = zero_label
+        self._accent = accent
+        self._bank = None
+        self._index = 0
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        self._swatch = QLabel()
+        self._swatch.setFixedSize(22, 22)
+        self._swatch.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        row.addWidget(self._swatch)
+
+        # Lecture seule, mais SÉLECTIONNABLE : on vient souvent ici pour relire
+        # une couleur et la reporter ailleurs (un fond, une autre zone).
+        self._code = QLabel()
+        self._code.setFont(QFont(T.MONO, T.SM))
+        self._code.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._code.setStyleSheet(f"color:{C.TEXT_NORM};")
+        row.addWidget(self._code, 1)
+
+        self._btn = QToolButton()
+        self._btn.setFixedSize(24, 24)
+        self._btn.setStyleSheet(QSS.toolbutton_icon)
+        self._btn.setIcon(icons.get("palette", C.TEXT_DIM))
+        self._btn.setToolTip("Pick a color from the bank this text reads")
+        self._btn.clicked.connect(self._open)
+        row.addWidget(self._btn)
+
+    # ── Lecture ───────────────────────────────────────────────────
+
+    def set_value(self, bank, index: int):
+        """Repose la banque courante et l'index choisi."""
+        self._bank, self._index = bank, max(0, int(index or 0))
+        self._sync()
+
+    def _color_at(self, idx: int):
+        """(r, g, b) de l'index dans la banque, ou None s'il n'y est pas."""
+        if not self._bank or not (0 <= idx < len(self._bank.colors)):
+            return None
+        return bgr555_to_rgb888(self._bank.colors[idx])
+
+    def _sync(self):
+        """Le swatch est un aplat SEULEMENT quand il montre une vraie couleur.
+
+        Les deux autres états ne SONT pas des couleurs — un rectangle en
+        pointillés transparents (l'ancien rendu de « pas de couleur ») se lit
+        comme un swatch cassé, et un rectangle bordé de jaune sur fond neutre
+        (l'ancien rendu de « index absent de la banque ») se lit d'un coup
+        d'œil comme un aplat de plus, pas comme une alerte. Une icône —
+        police pour l'un, avertissement pour l'autre — ne peut pas être prise
+        pour une couleur."""
+        rgb = self._color_at(self._index)
+        if self._index == 0:
+            self._swatch.setPixmap(icons.get("font", C.TEXT_DIM).pixmap(18, 18))
+            self._swatch.setStyleSheet(
+                f"background:{C.BG_INPUT}; border:1px solid {C.BORDER_MID};"
+                f"border-radius:3px;")
+            self._code.setText(self._zero_label)
+            self._code.setStyleSheet(f"color:{C.TEXT_DIM};")
+            self._code.setToolTip("")
+            return
+        if rgb is None:
+            # Index posé, couleur introuvable : on le DIT plutôt que de le
+            # remettre à zéro dans le dos de l'auteur.
+            self._swatch.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(18, 18))
+            self._swatch.setStyleSheet(
+                f"background:{C.BG_INPUT}; border:1px solid {C.ACCENT_YLW};"
+                f"border-radius:3px;")
+            self._code.setText(f"index {self._index} — not in the bank")
+            self._code.setStyleSheet(f"color:{C.ACCENT_YLW};")
+            self._code.setToolTip(
+                "This index is kept, but the bank this text reads has no such "
+                "color — nothing will be painted with it.")
+            return
+        r, g, b = rgb
+        self._swatch.setPixmap(QPixmap())   # efface une icône posée au tour précédent
+        self._swatch.setStyleSheet(
+            f"background:rgb({r},{g},{b}); border:1px solid {C.BORDER_MID};"
+            f"border-radius:3px;")
+        self._code.setText(f"#{r:02X}{g:02X}{b:02X}")
+        self._code.setStyleSheet(f"color:{C.TEXT_NORM};")
+        self._code.setToolTip(
+            f"Index {self._index} of the bank — the color code is shown, not "
+            f"typed: the hardware only offers the bank's sixteen slots.")
+
+    # ── Choix ─────────────────────────────────────────────────────
+
+    def _entries(self) -> list:
+        """(libellé, valeur, icône) — l'index 0 nommé, puis ce que la banque
+        contient RÉELLEMENT."""
+        out = [(self._zero_label, "0", None)]
+        n = len(self._bank.colors) if self._bank else 0
+        for idx in range(1, n):
+            r, g, b = bgr555_to_rgb888(self._bank.colors[idx])
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(r, g, b))
+            out.append((f"{idx}   #{r:02X}{g:02X}{b:02X}", str(idx), QIcon(pm)))
+        if not self._bank:
+            # Aucune banque désignée : l'index reste un choix valide (la scène
+            # peut en désigner une plus tard), on ne peut simplement pas en
+            # montrer la couleur.
+            out += [(f"{i}", str(i), None) for i in range(1, 16)]
+        return out
+
+    def _open(self):
+        popup = ScriptPickerPopup(self._entries(), self._accent,
+                                  parent=self, new_label=None)
+        popup.picked.connect(self._on_picked)
+        popup.show_below(self)
+
+    def _on_picked(self, value: str):
+        try:
+            idx = int(value)
+        except (TypeError, ValueError):
+            return
+        if idx == self._index:
+            return
+        self._index = idx
+        self._sync()
+        self.picked.emit(idx)

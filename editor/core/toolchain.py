@@ -12,9 +12,12 @@ import sys
 from pathlib import Path
 
 
-def _config_dir() -> Path:
+def config_dir() -> Path:
     """
-    Dossier de config utilisateur, par OS.
+    Dossier de config utilisateur, par OS. PUBLIQUE : trois modules y posent
+    leur fichier (`toolchain.json`, `external_tools.json`, `keybindings.json`,
+    et maintenant `interface.json`). Le tiret bas d'origine disait « ne
+    m'appelle pas de dehors » pendant que trois appelants le faisaient.
 
     Surtout PAS à côté du module : en build onefile, le module vit dans le
     dossier d'extraction temporaire, détruit à la fermeture — les chemins
@@ -31,7 +34,7 @@ def _config_dir() -> Path:
 
 
 # Fichier de config persistant
-CONFIG_FILE = _config_dir() / "toolchain.json"
+CONFIG_FILE = config_dir() / "toolchain.json"
 
 # Ancien emplacement (à côté du module). Encore lu une fois, pour ne pas
 # faire reconfigurer devkitPro aux installations lancées depuis les sources

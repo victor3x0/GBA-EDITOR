@@ -62,12 +62,18 @@ class SpriteComponent:
     sprite_name: Optional[str] = None   # référence SpriteAsset.name
     initial_state: str = "Idle"         # nom de l'AnimState joué au démarrage
     auto_dir: bool = True               # calcule dir depuis vélocité automatiquement
-    # Transform affine LOCAL (cf. ARCHITECTURE.md « Le modèle affine »). Ces
-    # valeurs ne valent QUE si l'Actor qui porte ce composant a `affine_transform`
-    # coché (réservation du slot de matrice affine OAM) : elles se composent alors
-    # par-dessus le transform MONDE de l'actor — rotation locale ajoutée à la
-    # rotation de l'actor, scale local multiplié par le scale de l'actor. Sans
-    # `affine_transform`, elles sont ignorées (aucun slot alloué, OAM normale).
+    # Réserve un des 32 slots de matrice affine OAM de la scène pour ce sprite
+    # (cf. ARCHITECTURE.md « Le modèle affine »), même si rotation/scale valent
+    # leur défaut. C'est une capacité de RENDU : elle vit donc sur le composant
+    # de rendu, et pas sur l'Actor — qui garde son rotation/scale MONDE comme
+    # état de jeu, lisible et écrivable par un script dans tous les cas. Sans
+    # cette case, l'actor tourne pour la logique, pas pour l'écran.
+    affine_transform: bool = False
+    # Transform affine LOCAL. Il se compose par-dessus le transform MONDE de
+    # l'actor — rotation locale ajoutée à la rotation de l'actor, scale local
+    # multiplié par le scale de l'actor. Sans `affine_transform`, aucun slot
+    # n'est alloué et le sprite est émis en OAM normale : ces valeurs ne se
+    # voient pas.
     scale_x: float = 1.0               # affine OAM (1.0 = normal), local
     scale_y: float = 1.0
     rotation: int = 0                  # degrés 0–359 (OAM affine), local
@@ -85,17 +91,35 @@ class SpriteComponent:
         self.offset_y = int(self.offset_y)
 
 
+# Triggers de SoundFxComponent AUTRES que "manual" — tous DÉCLENCHÉS PAR LE
+# MOTEUR, sans qu'aucun script n'existe sur l'actor (ROADMAP, 2026-08-24) :
+# le dispatch est piloté par la DONNÉE du component, pas par la présence d'une
+# fonction Lua compilée. "on_destroy" passe par une table indexée par tag
+# (cf. `actor_destroy_with_sfx`, runtime), les autres sont injectés en clair
+# au site d'appel connu au build (spawn de l'actor, appui bouton).
+SFX_AUTO_TRIGGERS: tuple[str, ...] = (
+    "on_spawn", "on_destroy",
+    "on_button_a", "on_button_b", "on_button_l", "on_button_r",
+    "on_button_start", "on_button_select",
+    "on_button_up", "on_button_down", "on_button_left", "on_button_right",
+)
+
+
 @dataclass
 class SoundFxComponent:
     """
     Associe un Sfx à un actor.
-    trigger="manual"   : ne joue rien automatiquement — appeler self:play_sfx() depuis un script.
-    trigger="on_spawn" : joue automatiquement au démarrage de l'actor (on_start), sans script.
+    trigger="manual"     : ne joue rien automatiquement — appeler self:play_sfx() depuis un script.
+    trigger="on_spawn"   : joue automatiquement au démarrage de l'actor, sans script.
+    trigger="on_destroy" : joue juste avant que l'actor soit désactivé (self:destroy() ou
+                            other:destroy() depuis N'IMPORTE QUEL script), sans script sur CET actor.
+    trigger="on_button_*": joue tant que cet actor est actif et que le bouton est pressé
+                            (front montant), sans script — pratique pour un item de menu.
     """
     id: str = "sound_fx"
     active: bool = True
     sfx_name: Optional[str] = None      # référence Sfx.name
-    trigger: str = "manual"             # "manual" | "on_spawn"
+    trigger: str = "manual"             # "manual" | SFX_AUTO_TRIGGERS
 
 
 @dataclass

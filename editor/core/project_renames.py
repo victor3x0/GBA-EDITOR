@@ -31,7 +31,7 @@ from core.models.scene import Scene
 from core.models.sprite import SpriteAsset
 from scripting.api import (
     DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
-    DOMAIN_ACTOR, DOMAIN_REGION, DOMAIN_IMAGE,
+    DOMAIN_ACTOR, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_WIN_REGION,
 )
 
 
@@ -122,22 +122,43 @@ class ProjectRenameMixin:
             refs = self.rename_lua_refs(DOMAIN_SCENE, old_name, new_name)
         self._notify_renamed("Scene", old_name, new_name, refs)
 
-    def rename_camera(self, old_name: str, new_name: str):
-        """Renomme une caméra et répare ce qui la cite : les scènes qui
-        DÉMARRENT dessus, et les `camera.switch("…")` des scripts. Une caméra
-        est réutilisable entre scènes — la citation est donc partout."""
+    def rename_camera(self, scene: Scene, camera, new_name: str):
+        """Renomme une caméra POSSÉDÉE par `scene` et répare ce qui la cite :
+        le pointeur `scene.camera` s'il la désignait, et les `camera.switch(…)`
+        des scripts — non qualifiés par scène, donc potentiellement n'importe
+        où dans le projet (cf. models/camera.py). Refuse en silence une
+        collision avec une autre caméra du projet — même contrainte que la
+        constante C `CAM_<NOM>` qu'elle recevra."""
         new_name = new_name.strip()
-        cam = self.cameras.get(old_name)
-        if not cam or not new_name or new_name == old_name:
+        old_name = camera.name
+        if (not new_name or new_name == old_name or camera not in scene.cameras
+                or new_name in (self.camera_names() - {old_name})):
             return
         with self._renaming():
-            self.cameras.rename(cam, new_name)
-            for scene in self.scenes:
-                if getattr(scene, "camera", "") == old_name:
-                    scene.camera = new_name
-                    self.save_scene(scene)
+            camera.name = new_name
+            if getattr(scene, "camera", "") == old_name:
+                scene.camera = new_name
+            self.save_scene(scene)
             refs = self.rename_lua_refs(DOMAIN_CAMERA, old_name, new_name)
         self._notify_renamed("Camera", old_name, new_name, refs)
+
+    def rename_window(self, scene: Scene, window, new_name: str):
+        """Renomme un `WindowSlot` rectangle POSSÉDÉ par `scene` et répare les
+        `window.*("…")` des scripts — non qualifiés par scène (cf.
+        models/scene.py, WindowSlot). Refuse en silence une collision avec
+        une autre window du projet OU avec un mot-clé fixe ("object"/
+        "outside") — même contrainte que la constante C `WIN_<NOM>`."""
+        new_name = new_name.strip()
+        old_name = window.name
+        if (not new_name or new_name == old_name or window not in scene.windows
+                or window.is_obj or new_name.lower() in ("object", "outside")
+                or new_name in (self.window_names() - {old_name})):
+            return
+        with self._renaming():
+            window.name = new_name
+            self.save_scene(scene)
+            refs = self.rename_lua_refs(DOMAIN_WIN_REGION, old_name, new_name)
+        self._notify_renamed("Window", old_name, new_name, refs)
 
     def rename_prefab(self, prefab, new_name: str):
         new_name = new_name.strip()
@@ -395,12 +416,15 @@ class ProjectRenameMixin:
             yield
 
     def _notify_renamed(self, label: str, old: str, new: str,
-                        refs: Optional[dict] = None, n_texts: int = 0) -> None:
+                        refs: Optional[dict] = None, n_texts: int = 0,
+                        n_regions: int = 0) -> None:
         """Annonce un renommage et son ampleur : quoi, d'où vers où, quelles
-        références réécrites (`{chemin: nombre}`) et combien de textes touchés.
+        références réécrites (`{chemin: nombre}`), combien de textes touchés
+        (marqueurs `$nom`) et combien de zones d'interface repointées
+        (`region.text_key`, cf. `rename_text_key`).
 
         Émis pour TOUT renommage, même celui qui n'a rien réécrit — sinon
         l'utilisateur n'a aucun retour quand rien ne référençait l'élément.
         Les FAITS seulement : la phrase affichée et les vues à rafraîchir
         regardent l'application, pas le projet."""
-        self.events._emit("renamed", label, old, new, refs or {}, n_texts)
+        self.events._emit("renamed", label, old, new, refs or {}, n_texts, n_regions)

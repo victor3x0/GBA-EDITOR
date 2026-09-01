@@ -146,9 +146,10 @@ def test_les_deux_entetes_saccordent_sur_les_valeurs():
 
 def test_le_c_emis_cite_la_constante_pas_le_nombre():
     _, code = _lua("function on_update(self)\n"
-                   " window.set_layer('win0', 1, true)\n"
-                   " blend.set_layer('top', 2, true)\nend\n")
-    assert "window_set_layer(WINR_0," in code
+                   " window.set_layer('HudFrame', 1, true)\n"
+                   " blend.set_layer('top', 2, true)\nend\n",
+                   window_names=["HudFrame"])
+    assert "window_set_layer(WIN_HUDFRAME," in code
     assert "blend_set_layer(BLD_SIDE_TOP," in code
 
 
@@ -309,13 +310,18 @@ def test_le_json_de_reference_ne_decrit_que_lapi_vivante():
 
 
 def test_toute_entree_du_catalogue_est_rangee_et_aucune_ne_finit_en_vrac():
+    """`doc_anchor` (pas `label`) identifie une entrée : les propriétés
+    l'affichent désormais sous une forme COURTE (`position(Vec2)`, sans son
+    préfixe `self.`), donc parser le libellé ne retrouverait plus le nom
+    complet du catalogue — l'ancre, dérivée du nom complet, si."""
     from scripting import api_reference
     from scripting.api import RUNTIME_API, RUNTIME_PROPS
 
     cats = api_reference.get_categories()
-    labels = {e["label"].split("(")[0].split(" =")[0].strip()
-              for c in cats for e in c["entries"]}
-    manquants = (set(RUNTIME_API) | set(RUNTIME_PROPS)) - labels
+    anchors = {e["doc_anchor"] for c in cats for e in c["entries"]}
+    catalogue = {name: name.replace(":", "-").replace(".", "-")
+                 for name in (*RUNTIME_API, *RUNTIME_PROPS)}
+    manquants = {name for name, anchor in catalogue.items() if anchor not in anchors}
     assert manquants == set(), f"absents de l'écran : {sorted(manquants)}"
     assert not any(c["name"] == "Autres" for c in cats), (
         "une entrée est tombée dans le fourre-tout : donne-lui une catégorie "

@@ -67,6 +67,18 @@ réglages à l'appel. Import des quatre formats que maxmod sait jouer (`.mod`, `
 
 → [détail](changelog-archive/v0.8.md)
 
+## v0.9 — Traduction des jeux créés avec l'éditeur — **EN COURS** (phases 1 à 4 livrées)
+
+L'écran Texte devient une table de travail plate (rangement en trois colonnes, statut
+traduit/manquant, atelier en onglets par langue) puis gagne les langues elles-mêmes : side
+par langue joint par id, remap de police, sous-ensemble de glyphes par (scène, langue), et
+`lang.set`/`lang.get` pour changer de langue en jeu (rechargement de la scène active). Trois
+garde-fous silencieux en projet monolingue : VRAM au pire cas, littéraux non traduits,
+caractères absents de la police effective. Reste ouvert : l'écran de choix de langue et
+l'export pour un traducteur (phase 5).
+
+→ [détail](changelog-archive/v0.9.md)
+
 ## v0.14 — Diagnostic — ce que le jeu fait, et ce qu'il coûte
 
 *Livrée le 2026-08-20.* `debug.log`, le toggle Debug/Release du projet, et le budget frame +

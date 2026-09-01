@@ -46,6 +46,7 @@ from ui.common.theme import C, T, QSS
 from ui.common.palette_bank_strip import PaletteBankStrip
 from ui.common.canvas_top_bar import CanvasTopBar, BAR_HEIGHT
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_ACTIVE, COLOR_UI
+from ui.common import external_editor
 
 
 def _snap8(v) -> int:
@@ -1091,6 +1092,13 @@ class BgInpaintCanvas(QWidget):
         self._chk_grid = self._bar.add_toggle(
             "view_grid", "Grille 8 px (tuile GBA)", self._view.set_grid_visible)
         self._chk_grid.setChecked(True)
+        # Éditer l'image dans un logiciel externe (cf. external_editor) : ce
+        # canvas peint des PALETTES, pas des pixels — pour le dessin, on
+        # délègue plutôt que d'inventer un éditeur d'image dans Qt.
+        self._btn_edit = self._bar.add_action(
+            "edit_external", "Edit image…", self._on_edit_image)
+        self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._btn_edit.customContextMenuRequested.connect(self._on_edit_menu)
         self._view.zoom_changed.connect(self._bar.set_zoom)
         self._view.cursor_moved.connect(self._on_cursor_moved)
         self._bar.set_zoom(self._view._zoom)
@@ -1194,6 +1202,33 @@ class BgInpaintCanvas(QWidget):
 
     def _on_cursor_moved(self, x: int, y: int):
         self._bar.set_cursor_px(*((None, None) if x < 0 else (x, y)))
+
+    # ── Édition externe ──────────────────────────────────────────
+
+    def _source_png_path(self):
+        """PNG source du fond courant (sur disque), ou None."""
+        if not (self._project and self._ba):
+            return None
+        img = self._ba.image_name()
+        return (self._project.background_images_dir / img) if img else None
+
+    def _on_edit_image(self):
+        path = self._source_png_path()
+        if path is not None:
+            external_editor.open_image(path, self)
+
+    def _on_edit_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        cur = external_editor.get_configured_editor()
+        act_choose = menu.addAction("Choose editor…")
+        act_default = menu.addAction("Use system default")
+        act_default.setEnabled(bool(cur))
+        chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
+        if chosen == act_choose:
+            external_editor.choose_editor(self)
+        elif chosen == act_default:
+            external_editor.use_system_default()
 
     def _position_paint_strip(self):
         """Centre le bandeau en bas du panneau. À la sélection d'un fond au
@@ -1359,6 +1394,7 @@ class BgInpaintCanvas(QWidget):
         self.reload_geometry()
         self._bar.set_canvas_size(*self._ctrl.image_size())
         self._bar.set_cursor_px(None, None)
+        self._btn_edit.setEnabled(bool(ba and ba.image_name()))
 
     def set_active_palette(self, idx: int):
         self._ctrl.set_active_palette(idx)

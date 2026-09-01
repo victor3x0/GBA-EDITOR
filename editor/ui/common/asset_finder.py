@@ -40,12 +40,14 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem, QMenu,
     QAbstractItemView, QMessageBox, QSizePolicy, QScrollArea,
 )
+from PyQt6 import sip
 from PyQt6.QtGui import QFont, QColor, QDrag
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QMimeData, QByteArray
 
 from ui.common.theme import C, T, S, QSS, ui_font
 from ui.common.widgets import W, FinderSection
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_FOLDER
+from ui.common.reveal import reveal_in_file_manager
 
 _ROLE_OBJ = Qt.ItemDataRole.UserRole
 
@@ -121,6 +123,11 @@ class AssetKind:
     # Glisser-déposer vers le canvas : (type MIME, asset -> charge utile texte).
     # Une famille sans `mime` n'est pas glissable.
     mime: Optional[tuple] = None
+
+    # projet -> dossier RÉEL de la famille sur le disque, pour le bouton
+    # « Open in file manager » (standardisé, cf. widgets.FinderSection). Une
+    # famille sans `dir_of` n'affiche pas le bouton — cf. `dir_of()` ci-dessous.
+    dir_of: Optional[Callable[[Any], Any]] = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -203,6 +210,17 @@ def dir_nodes(attr: str, suffixes: tuple[str, ...]
             return []
         return walk(Path(directory))
     return build
+
+
+def resource_dir(attr: str) -> Callable[[Any], Optional[Path]]:
+    """Dossier physique d'une famille, pour `AssetKind.dir_of` — même contrat
+    que `store_nodes`/`dir_nodes` (un nom de propriété de `Project`), vers UN
+    chemin plutôt qu'un arbre. `attr` est déjà la source nommée dans le
+    `store_nodes`/`dir_nodes` de la même famille — jamais une copie."""
+    def get(project) -> Optional[Path]:
+        directory = getattr(project, attr, None)
+        return Path(directory) if directory else None
+    return get
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -343,23 +361,42 @@ class _KindTree(QTreeWidget):
         à chaque parcours du disque et ne survivrait pas à un test d'identité."""
         return a is b or (isinstance(a, Path) and isinstance(b, Path) and a == b)
 
-    def select_obj(self, obj) -> bool:
+    def _locate(self, obj) -> Optional[QTreeWidgetItem]:
+        """Retrouve la ligne d'`obj` par IDENTITÉ, sans y toucher — pure lecture."""
         stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
         while stack:
             it = stack.pop()
             if self._same(it.data(0, _ROLE_OBJ), obj):
-                self.setCurrentItem(it)
-                self.scrollToItem(it)
-                return True
+                return it
             stack.extend(it.child(n) for n in range(it.childCount()))
-        return False
+        return None
+
+    def select_obj(self, obj) -> bool:
+        it = self._locate(obj)
+        if it is None:
+            return False
+        self.setCurrentItem(it)
+        # `setCurrentItem` émet `currentItemChanged` SYNCHRONE : pour une
+        # scène, ça remonte jusqu'à `window._on_scene_selected`, qui
+        # rafraîchit ce panneau (`assets_finder_panel.refresh()`) avant de
+        # rendre la main — `it` est alors déjà détruit. Même mise en garde
+        # que `_on_item_changed` plus bas.
+        if not sip.isdeleted(it):
+            self.scrollToItem(it)
+        return True
 
     def edit_obj(self, obj):
         """Ouvre l'édition en place sur `obj` — appelé après une création, pour
         que l'asset naisse nommé et renommable d'un geste, sans pop-up."""
         def go():
-            if self.select_obj(obj):
-                self.editItem(self.currentItem(), 0)
+            if not self.select_obj(obj):
+                return
+            # `select_obj` a pu déclencher le rebuild réentrant décrit
+            # au-dessus : `currentItem()` n'y survit pas forcément — on
+            # retrouve la ligne à froid, sur l'arbre tel qu'il est retombé.
+            it = self._locate(obj)
+            if it is not None:
+                self.editItem(it, 0)
         QTimer.singleShot(0, go)
 
     # ── Renommage en place ────────────────────────────────────────
@@ -416,7 +453,10 @@ class _KindTree(QTreeWidget):
                 menu.addSeparator()
             act = menu.addAction(f"Rename {kind.label.rstrip('s').lower()}")
             act.setShortcut("F2")       # affiché ; géré par EditKeyPressed
-            act.triggered.connect(lambda _=False, it=item: self.editItem(it, 0))
+            # Pas `item` capturé : le menu ouvert laisse tourner la boucle
+            # d'évènements, un refresh de l'arbre peut le détruire avant le
+            # clic. On retrouve la ligne par identité au moment de l'action.
+            act.triggered.connect(lambda _=False, o=obj: self.edit_obj(o))
 
         if kind.delete is not None:
             menu.addSeparator()
@@ -507,6 +547,9 @@ class AssetFinder(QWidget):
             else:
                 section.set_add_tooltip(kind.add_tooltip or f"Add to {kind.label}")
                 section.add_clicked.connect(lambda k=kind: self._add(k))
+            if kind.dir_of is not None:
+                section.set_reveal_visible(True)
+                section.reveal_clicked.connect(lambda k=kind: self._reveal(k))
             self._column.addWidget(section)
 
         self._column.addStretch()
@@ -627,6 +670,13 @@ class AssetFinder(QWidget):
 
     def extra_actions(self, kind_label: str) -> list:
         return self._extra_actions.get(kind_label, [])
+
+    # ── Ouvrir dans l'explorateur du système ─────────────────────────
+
+    def _reveal(self, kind: AssetKind):
+        if self._project is None:
+            return
+        reveal_in_file_manager(kind.dir_of(self._project))
 
     # ── Ajout ─────────────────────────────────────────────────────
 

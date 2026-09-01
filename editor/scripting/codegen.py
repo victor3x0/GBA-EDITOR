@@ -42,14 +42,16 @@ from .api import (
     DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
     DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, DOMAIN_EASE,
     hardware_enum_constant,
-    DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE,
+    DOMAIN_ANIM, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_KEY, DOMAIN_TAG, DOMAIN_SCENE, DOMAIN_LANG,
     DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE, DOMAIN_MUSIC_BOX_TRIGGER,
     DOMAIN_CAMERA, camera_constant,
+    window_region_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE,
     DOMAIN_PALETTE, DOMAIN_UI_ELEMENT, DOMAIN_UI_LIST, ui_list_constant,
     DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_SEQUENCE,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     text_constant, font_constant, region_constant, anon_text_key, palette_constant,
+    lang_constant,
     image_constant, image_state_constant, ui_element_constant, ui_list_constant,
     SCREEN_CONSTANTS,
 )
@@ -213,13 +215,17 @@ class CodegenContext:
     # Prefab poolé : les variables de tête que le script ÉCRIT deviennent un
     # champ de `g_state_<sym>[]`, une entrée par instance (cf. _emit_pool_state).
     # `pool_size` ne sert qu'à CHIFFRER ce que cet état coûte — le C émis, lui,
-    # se dimensionne sur `POOL_<SYM>_SIZE` (headers.py), pour qu'un écart avec la
-    # boucle de pool de main.c soit impossible.
+    # se dimensionne sur `POOL_<SYM>_INSTANCES` (headers.py), pour qu'un écart
+    # avec la boucle de pool de main.c soit impossible.
     is_pooled: bool = False
     pool_size: int = 0
     scene_names: list[str] = field(default_factory=list)  # noms de scènes du projet
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
-    sfx_autoplay: bool = False   # True → SoundFxComponent.trigger == "on_spawn"
+    # Les triggers AUTOMATIQUES (on_spawn/on_destroy/on_button_*) ne passent
+    # plus par ici : `main_gen.py` les injecte directement au site d'appel
+    # connu au build, pour qu'ils marchent aussi sur un actor SANS script (cf.
+    # `SFX_AUTO_TRIGGERS`, core/models/components.py). Seul `self:play_sfx()`
+    # (déclenchement manuel depuis un script) reste résolu ici.
     sfx_volumes: dict = field(default_factory=dict)  # {nom Sfx: volume EN %} — converti à l'émission
     music_info: dict = field(default_factory=dict)
     # {nom d'état: rang dans SA boîte}, par famille, et {déclencheur: rang}
@@ -227,6 +233,7 @@ class CodegenContext:
     jingle_box_states: dict = field(default_factory=dict)
     music_box_triggers: dict = field(default_factory=dict)
     text_keys:  list[str] = field(default_factory=list)  # clés de la table de textes (ordre = index C)
+    lang_codes: list[str] = field(default_factory=list)  # langues déclarées (ordre = index g_lang), [] en monolingue
     font_names: list[str] = field(default_factory=list)  # polices encodables (ordre = index dans g_fonts)
     palette_names: list[str] = field(default_factory=list)  # catalogue de couleurs (ordre = index dans g_palettes)
     region_names: list[str] = field(default_factory=list)  # emplacements de texte (ordre = index dans g_ui_regions)
@@ -772,6 +779,15 @@ class CodeGen:
             self._w("/* Textes */")
             for i, key in enumerate(self.ctx.text_keys):
                 self._w(f"#define {text_constant(key)} {i}")
+        # Constantes Langue — même index que g_texts[lang]/g_lang_font[lang]
+        # (source en 0, puis settings.languages dans l'ordre déclaré). Absent
+        # d'un projet monolingue : lang.set/lang.get n'y compilent alors plus,
+        # ce qui est le comportement voulu (ROADMAP v0.9, phase 4).
+        if self.ctx.lang_codes:
+            self._w("")
+            self._w("/* Langues */")
+            for i, code in enumerate(self.ctx.lang_codes):
+                self._w(f"#define {lang_constant(code)} {i}")
         # Constantes Police — index dans g_fonts (même ordre que main_gen)
         if self.ctx.font_names:
             self._w("")
@@ -888,13 +904,15 @@ class CodeGen:
         pool, un champ par variable de tête que le script écrit.
 
         Le pool est une plage contiguë de `g_actors[]` dont les bornes sont des
-        constantes de build (`POOL_<SYM>_START/SIZE`, émises par headers.py) :
-        le slot d'une instance est donc une soustraction de pointeurs, et rien
-        n'a besoin d'être rangé dans la struct `Actor`.
+        constantes de build (`POOL_<SYM>_START/SIZE/GROUP/INSTANCES`, émises par
+        headers.py) : le slot d'une instance est donc une soustraction de
+        pointeurs, et rien n'a besoin d'être rangé dans la struct `Actor`.
 
-        La taille vient du #define et non d'un littéral recalculé ici : c'est la
-        même constante que la boucle de pool de `main.c`, un écart entre les deux
-        serait un débordement de tableau silencieux."""
+        La taille vient du #define et non d'un littéral recalculé ici : un écart
+        avec la boucle de pool de `main.c` serait un débordement de tableau
+        silencieux. C'est `_INSTANCES` qui la donne, pas `_SIZE` — `_SIZE` compte
+        les entrées de `g_actors` réservées, et une instance segmentée en occupe
+        un GROUPE tout en n'exécutant qu'un script (ROADMAP v0.23)."""
         sym      = self.ctx.actor_sym
         struct_t = f"{sym}State"
         fields, inits, per_instance = [], [], 0
@@ -1080,8 +1098,6 @@ class CodeGen:
         self._w(sig + " {")
         self._indent += 1
         mark = self._open_state_scope()
-        if not self.ctx.is_scene and fn.name == "on_start":
-            self._emit_sfx_autoplay()
         self._emit_block(fn.body)
         if fn.name == "on_update":
             self._emit_sequence_pump()
@@ -1089,17 +1105,6 @@ class CodeGen:
         self._indent -= 1
         self._w("}")
         self._w("")
-
-    def _emit_sfx_autoplay(self):
-        """Injecte l'appel sfx_play() auto au début de on_start si trigger == 'on_spawn'.
-
-        Le volume vient de la ressource, comme partout ailleurs : il MANQUAIT
-        ici, et l'appel à un seul argument n'aurait pas compilé — personne
-        n'avait encore posé un SoundFX en « on_spawn » dans un projet."""
-        if self.ctx.sfx_autoplay and self.ctx.sfx_component_name:
-            name = self.ctx.sfx_component_name
-            volume = volume_to_effect(self.ctx.sfx_volumes.get(name, 100))
-            self._w(f"sfx_play({sfx_constant(name)}, {volume}, 0);")
 
     # ── Blocs et statements ───────────────────────────────────────
 
@@ -1560,20 +1565,25 @@ class CodeGen:
         return f"sfx_play({sfx_constant(name)}, {volume}, 0)"
 
     def _emit_destroy(self, args: list, receiver: str) -> str:
-        """`self:destroy()` → appelle on_destroy() puis désactive l'actor.
+        """`self:destroy()` → appelle on_destroy() (le hook SCRIPTÉ) puis
+        `actor_destroy_with_sfx()`, qui joue le SoundFxComponent en
+        `trigger="on_destroy"` DE LA CIBLE (table indexée par tag, cf.
+        `main_gen._sfx_on_destroy_table`) avant de désactiver l'actor.
 
         Sur QUELQU'UN D'AUTRE — `other:destroy()`, ou `MonBras:destroy()` depuis
-        la v0.23 — aucun hook n'est appelé, et c'est le seul choix honnête : le
-        symbole du script de la cible n'est pas connu à ce site d'appel (`other`
-        peut être n'importe quel acteur, et un enfant n'a pas de script propre).
-        Le C émis appelait jusqu'ici le `on_destroy` de CELUI QUI DÉTRUIT en lui
-        passant l'acteur d'autrui — donc le mauvais handler, sur la mauvaise
-        cible. Ne rien appeler laisse le hook de la cible muet, ce qui est une
-        limite ; appeler le mauvais était un bug."""
+        la v0.23 — le hook SCRIPTÉ n'est pas appelé, et c'est le seul choix
+        honnête : le symbole du script de la cible n'est pas connu à ce site
+        d'appel (`other` peut être n'importe quel acteur, et un enfant n'a pas
+        de script propre). Le C émis appelait jusqu'ici le `on_destroy` de
+        CELUI QUI DÉTRUIT en lui passant l'acteur d'autrui — donc le mauvais
+        handler, sur la mauvaise cible. Ne rien appeler laisse le hook scripté
+        de la cible muet, ce qui est une limite ; appeler le mauvais était un
+        bug. Le SoundFxComponent, lui, JOUE dans les deux cas — c'est piloté
+        par la donnée du tag, pas par un symbole résolu au build."""
         if receiver != "self":
-            return f"actor_destroy_internal({receiver})"
+            return f"actor_destroy_with_sfx({receiver})"
         sym = self.ctx.actor_sym
-        return f"{sym}_on_destroy({receiver}); actor_destroy_internal({receiver})"
+        return f"{sym}_on_destroy({receiver}); actor_destroy_with_sfx({receiver})"
 
     def _emit_ui_element_show(self, args: list, receiver: str) -> str:
         """self:show() → ui_element_show(idx, 1). Un seul point d'entrée
@@ -1841,6 +1851,15 @@ class CodeGen:
             return f"g_{args[0].value} = {val}"
         return "/* global.set : nom non littéral */"
 
+    def _emit_save_read(self, args: list) -> str:
+        """save.read(slot, "nom") → save_read_var(slot, GLOBAL_NOM) — même
+        résolution que global.get, mais le nom reste un second argument : le
+        premier est l'emplacement, pas le récepteur."""
+        if len(args) >= 2 and isinstance(args[1], ExprString):
+            slot = self._expr(args[0])
+            return f"save_read_var({slot}, GLOBAL_{args[1].value.upper()})"
+        return "/* save.read : nom non littéral */"
+
     def _emit_const_get(self, args: list) -> str:
         if args and isinstance(args[0], ExprString):
             return f"CONST_{args[0].value.upper()}"
@@ -1884,14 +1903,7 @@ class CodeGen:
             sig = sig.replace("u8 other_box", "u8 other_box __attribute__((unused))")
             sig = sig.replace("int normal_x", "int normal_x __attribute__((unused))")
             sig = sig.replace("int normal_y", "int normal_y __attribute__((unused))")
-            if event_name == "on_start" and self.ctx.sfx_autoplay and self.ctx.sfx_component_name:
-                self._w(sig + " {")
-                self._indent += 1
-                self._emit_sfx_autoplay()
-                self._indent -= 1
-                self._w("}")
-            else:
-                self._w(sig + " {}")
+            self._w(sig + " {}")
         self._w("")
 
     # ── Émission de lignes ────────────────────────────────────────
@@ -1932,7 +1944,12 @@ _DOMAIN_CONSTANT: dict = {
     DOMAIN_KEY:     lambda g, name: key_constant(name),
     DOMAIN_TAG:     lambda g, name: tag_constant(name),
     DOMAIN_SCENE:   lambda g, name: scene_constant(name),
+    DOMAIN_LANG:    lambda g, name: lang_constant(name),
     DOMAIN_CAMERA:  lambda g, name: camera_constant(name),
+    # Pas `hardware_enum_constant` : depuis le 2026-08-25 la moitié des noms
+    # valides (les WindowSlot du projet) n'existe dans aucune table statique
+    # — même mécanique que DOMAIN_CAMERA, dérivée du nom, pas d'une table.
+    DOMAIN_WIN_REGION: lambda g, name: window_region_constant(name),
     # Une chaîne qui ne matche aucune clé est un LITTÉRAL (`text.draw` seul le
     # permet, cf. Param.literal_ok) : il a sa propre entrée de table, donc le C
     # ne voit qu'un index comme pour tout texte.
@@ -1948,7 +1965,6 @@ _DOMAIN_CONSTANT: dict = {
     # `WINR_OBJ` et non `2` — lisible pour qui relit le build.
     DOMAIN_OBJ_MODE:   lambda g, name: hardware_enum_constant(DOMAIN_OBJ_MODE, name),
     DOMAIN_DIRECTION:  lambda g, name: hardware_enum_constant(DOMAIN_DIRECTION, name),
-    DOMAIN_WIN_REGION: lambda g, name: hardware_enum_constant(DOMAIN_WIN_REGION, name),
     DOMAIN_BLEND_MODE: lambda g, name: hardware_enum_constant(DOMAIN_BLEND_MODE, name),
     DOMAIN_BLEND_SIDE: lambda g, name: hardware_enum_constant(DOMAIN_BLEND_SIDE, name),
     DOMAIN_EASE:       lambda g, name: hardware_enum_constant(DOMAIN_EASE, name),
@@ -1986,6 +2002,7 @@ _CALL_CUSTOM: dict = {
     "get_actor":   CodeGen._emit_get_actor,
     "global.get":  CodeGen._emit_global_get,
     "global.set":  CodeGen._emit_global_set,
+    "save.read":   CodeGen._emit_save_read,
     "const.get":   CodeGen._emit_const_get,
     "actor.spawn": CodeGen._emit_actor_spawn,
     "sequence.start":   CodeGen._emit_sequence_start,

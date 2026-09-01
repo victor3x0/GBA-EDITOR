@@ -27,7 +27,7 @@ from scripting.api import (
     RUNTIME_API, RUNTIME_PROPS, PARAM_STR, PARAM_STR_LITERAL, PARAM_ACTOR, ApiFunc,
     HARDWARE_ENUMS,
 )
-from scripting.expr_types import VEC_FIELDS, VEC_CONSTRUCTORS
+from scripting.expr_types import VEC_FIELDS, VEC_CONSTRUCTORS, C_TYPES
 
 # Marqueur d'exemple dans les `doc` d'api.py. Convention déjà en place là-bas ;
 # la nommer ici évite qu'un troisième lecteur la redevine.
@@ -71,8 +71,12 @@ def call(name: str, **by_domain: str) -> str:
         elif p.domain in HARDWARE_ENUMS:
             # Énumération matérielle : l'ensemble est FIXE et connu ici, donc on
             # propose une vraie valeur plutôt qu'un gabarit. Un gabarit
-            # (`window.set("win0", ...)`) serait refusé par le checker à la
-            # seconde même où l'utilisateur vient de cliquer pour l'insérer.
+            # (`layer.set_blend("mode", ...)`) serait refusé par le checker à
+            # la seconde même où l'utilisateur vient de cliquer pour
+            # l'insérer. DOMAIN_WIN_REGION n'y figure PAS depuis le
+            # 2026-08-25 (noms de WindowSlot propres au projet, pas un enum
+            # fixe) — il retombe sur le gabarit générique ci-dessous, même
+            # traitement que DOMAIN_CAMERA.
             args.append(_lua_str(next(iter(HARDWARE_ENUMS[p.domain]))))
         elif p.ptype in (PARAM_STR, PARAM_STR_LITERAL):
             args.append(_lua_str(p.name))
@@ -118,10 +122,10 @@ def _param_type(p) -> str:
 
 
 def _prop_label(name: str, p) -> str:
-    """Libellé d'une propriété : `self.position` à la lecture, mais une
-    PROPRIÉTÉ enseignée par son ÉCRITURE quand elle en a une — c'est la forme
-    complète, celle qu'on met dans un script. `camera.bound = rect(x, y, w, h)`
-    en dit plus que `camera.bound`."""
+    """Forme complète d'une propriété ÉCRIVABLE, pour le `snippet` inséré au
+    clic (pas le libellé du bouton, cf. `prop_entry_dict`) — une PROPRIÉTÉ
+    s'enseigne par son ÉCRITURE quand elle en a une : `camera.bound =
+    rect(x, y, w, h)` en dit plus que `camera.bound`."""
     if p is None:
         return name
     if p.read_only or p.c_setter is None:
@@ -136,10 +140,25 @@ def _prop_label(name: str, p) -> str:
     return f"{name} = ..."
 
 
+def _short_type(p, enum) -> str:
+    """Type affiché entre parenthèses dans le libellé court d'une propriété,
+    et dans sa bulle : le nom C pour un composite (Vec2/Rect — reconnaissable
+    d'un coup d'œil), « string » pour une énumération matérielle (elle se lit/
+    s'écrit par son NOM, cf. `enum` dans l'appelant), le scalaire brut sinon."""
+    if enum:
+        return "string"
+    return C_TYPES.get(p.ptype, p.ptype)
+
+
 def prop_entry_dict(name: str) -> dict:
     """Entrée au format d'`api_reference.json` pour une PROPRIÉTÉ
     (`RUNTIME_PROPS`) — même forme que `entry_dict`, pour que `make_tooltip`
-    n'ait pas à savoir d'où vient l'entrée qu'il affiche."""
+    n'ait pas à savoir d'où vient l'entrée qu'il affiche.
+
+    Le `label` reste COURT (`position(Vec2)`) : le préfixe (`self.`/`camera.`)
+    et la forme d'écriture complète (`self.position = vec2(x, y)`) ne
+    manquent pas — ils vivent dans le `snippet` (inséré au clic) et dans la
+    bulle, pas dans le nom du bouton qu'on scanne dans la sidebar."""
     p = RUNTIME_PROPS.get(name)
     fields = VEC_FIELDS.get(p.ptype, ()) if p is not None else ()
     # Une propriété COMPOSITE qui porte aussi des noms (`self.direction`) rend un
@@ -147,21 +166,24 @@ def prop_entry_dict(name: str) -> dict:
     # décrite dans sa doc — pas son type de retour.
     enum = (HARDWARE_ENUMS.get(p.domain)
             if p is not None and p.ptype not in VEC_CONSTRUCTORS else None)
-    if p is None or p.read_only:
-        snippet = name
-    else:
-        snippet = _prop_label(name, p)
+    read_only = p is None or p.read_only or p.c_setter is None
+    snippet = name if read_only else _prop_label(name, p)
+    short = name.rsplit(".", 1)[-1]
+    typ = _short_type(p, enum) if p is not None else ""
     return {
-        "label":       _prop_label(name, p),
+        "label":       f"{short}({typ})" if typ else short,
         "snippet":     snippet,
         "description": p.doc if p is not None else "",
+        # Ce que le label court ne dit plus (peut-on ÉCRIRE cette propriété)
+        # devient son propre champ — `make_tooltip` l'affiche en badge.
+        "access":      "Read Only" if read_only else "Read and Write",
         "params": [
             {"name": f, "type": "number", "description": ""} for f in fields
         ],
         # Une propriété d'énumération ne rend pas « int » côté script : elle
-        # rend l'un de ces noms, et c'est ce qu'il faut lire dans l'infobulle.
-        "returns":     " | ".join(f'"{v}"' for v in enum) if enum
-                       else (p.ptype if p is not None else ""),
+        # rend l'un de ces noms, et c'est ce qu'il faut lire dans l'infobulle —
+        # plus précis que le « string » du libellé court, qui n'a pas la place.
+        "returns":     " | ".join(f'"{v}"' for v in enum) if enum else typ,
         "doc_anchor":  name.replace(":", "-").replace(".", "-"),
     }
 

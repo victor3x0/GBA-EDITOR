@@ -1,18 +1,25 @@
 """
-ui/common/settings_dialog.py — Réglages du logiciel : un dialogue, quatre
-catégories dans une colonne de gauche (Toolchains / Theme / Shortcuts /
-External Tools), un panneau à droite. Remplace l'ancien `ToolchainDialog`
+ui/common/settings_dialog.py — Réglages du logiciel : un dialogue, cinq
+catégories dans une colonne de gauche (Toolchains / Theme / Interface /
+Shortcuts / External Tools), un panneau à droite. Remplace l'ancien `ToolchainDialog`
 (OK/Cancel) — ici chaque champ se sauvegarde à l'instant où il change, comme
 `Toolchain`/`Keybindings`/`ExternalTools` le font déjà chacun de leur côté :
 un bouton Close referme l'écran, il n'y a rien à annuler.
 
-Portée des quatre catégories, volontairement inégale (2026-08-23) :
+Portée des catégories, volontairement inégale (2026-08-23) :
 
   - **Toolchains** — devkitPro + mgba, ce qui existait déjà dans l'ancien
     dialogue, réemployé tel quel.
   - **Theme** — un seul thème existe aujourd'hui (indigo/périwinkle,
     cf. ARCHITECTURE.md « Thème GBA redesign ») : l'écran le DIT plutôt que
     de proposer un choix qui n'existe pas.
+  - **Interface** — ce que l'éditeur MONTRE de lui-même
+    (`core/interface_preferences.py`) : aujourd'hui l'affichage des astuces,
+    le niveau 3 des notices (ROADMAP v0.11). Ce réglage a d'abord vécu dans
+    les réglages du PROJET ; il en est sorti parce que `project.json` est
+    versionné — couper les astuces les coupait pour toute l'équipe — et parce
+    qu'un réglage de projet passe par l'historique d'annulation, où une
+    préférence de machine n'a rien à faire.
   - **Shortcuts** — les raccourcis remappables de `core/keybindings.py`.
     Persisté immédiatement ; les sites déjà construits avec `bind()` se
     remettent à jour EN COURS DE SESSION (`Keybindings.changed`), les autres
@@ -30,14 +37,19 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QStackedWidget, QLabel, QLineEdit, QPushButton, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QKeySequenceEdit, QScrollArea,
+    QCheckBox,
 )
 from PyQt6.QtGui import QFont, QKeySequence
 from PyQt6.QtCore import Qt
 
 from ui.common.theme import C, T, QSS
+from ui.common.notice import note, refresh_tips
+from core.interface_preferences import tips_shown, set_tips_shown
 from core.toolchain import Toolchain
 from core.external_tools import ExternalTools, TOOL_KINDS
-from core.keybindings import get_keybindings, BINDINGS
+from core.keybindings import (
+    get_keybindings, Binding, BINDINGS, DISPLAY_ONLY, DISPLAY_ONLY_INSERT_AFTER,
+)
 
 
 def _field_font() -> QFont:
@@ -56,6 +68,7 @@ def _path_row(parent_layout, label_text: str, initial: str,
     edit.setFont(_field_font())
     edit.setStyleSheet(QSS.lineedit)
     btn = QPushButton("Browse…")
+    btn.setStyleSheet(QSS.button_ghost)
     btn.setFixedWidth(90)
     btn.clicked.connect(lambda: browse_fn(edit))
     row.addWidget(n)
@@ -146,12 +159,48 @@ class ThemePanel(QWidget):
         lay.addStretch()
 
 
+# ── Interface ───────────────────────────────────────────────────────────
+
+class InterfacePanel(QWidget):
+    """Ce que l'éditeur montre de lui-même. Une seule entrée pour l'instant :
+    les astuces. Comme partout dans ce dialogue, le réglage se persiste à
+    l'instant où il change — il n'y a rien à annuler."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(14)
+        lay.addWidget(_category_title("Interface"))
+
+        self._chk_tips = QCheckBox("Show tips")
+        self._chk_tips.setFont(QFont(T.UI, T.MD))
+        self._chk_tips.setStyleSheet(QSS.checkbox)
+        self._chk_tips.setChecked(tips_shown())
+        self._chk_tips.toggled.connect(self._on_toggled)
+        lay.addWidget(self._chk_tips)
+
+        note(lay, "settings.tips").show_text()
+        lay.addStretch()
+
+    def _on_toggled(self, value: bool):
+        set_tips_shown(bool(value))
+        # Les astuces DÉJÀ construites ailleurs dans l'application obéissent
+        # tout de suite : sans ça le réglage n'aurait l'air de marcher qu'au
+        # prochain lancement, et on le rebasculerait en croyant l'avoir raté.
+        refresh_tips()
+
+
 # ── Shortcuts ───────────────────────────────────────────────────────────
 
 class ShortcutsPanel(QWidget):
     """Liste + édition des raccourcis de `core/keybindings.BINDINGS`, groupés
     par contexte dans l'ordre du registre. Une substitution est visible tout
-    de suite (fond legèrement teinté) et se remet au défaut d'un clic."""
+    de suite (fond legèrement teinté) et se remet au défaut d'un clic.
+
+    Les entrées de `core.keybindings.DISPLAY_ONLY` (Undo/Redo — touches OS,
+    volontairement hors du registre remappable, cf. keybindings.py) sont
+    intercalées dans la table pour la découvrabilité : touche en lecture
+    seule, pas de bouton reset."""
 
     _COL_CONTEXT, _COL_ACTION, _COL_KEY, _COL_RESET = range(4)
 
@@ -174,7 +223,15 @@ class ShortcutsPanel(QWidget):
         note.setWordWrap(True)
         lay.addWidget(note)
 
-        self._table = QTableWidget(len(BINDINGS), 4)
+        # BINDINGS + DISPLAY_ONLY intercalés dans l'ordre d'affichage — chaque
+        # entrée DISPLAY_ONLY se glisse juste après DISPLAY_ONLY_INSERT_AFTER.
+        rows: list[Binding | tuple[str, str, str]] = []
+        for b in BINDINGS:
+            rows.append(b)
+            if b.id == DISPLAY_ONLY_INSERT_AFTER:
+                rows.extend(DISPLAY_ONLY)
+
+        self._table = QTableWidget(len(rows), 4)
         self._table.setHorizontalHeaderLabels(["Context", "Action", "Shortcut", ""])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
@@ -189,21 +246,30 @@ class ShortcutsPanel(QWidget):
         self._table.setColumnWidth(self._COL_KEY, 150)
         self._table.setColumnWidth(self._COL_RESET, 30)
 
-        for row, b in enumerate(BINDINGS):
-            self._table.setItem(row, self._COL_CONTEXT, self._plain_item(b.context, dim=True))
-            self._table.setItem(row, self._COL_ACTION, self._plain_item(b.label))
+        for row, entry in enumerate(rows):
+            if isinstance(entry, Binding):
+                b = entry
+                self._table.setItem(row, self._COL_CONTEXT, self._plain_item(b.context, dim=True))
+                self._table.setItem(row, self._COL_ACTION, self._plain_item(b.label))
 
-            kse = QKeySequenceEdit(QKeySequence(self._kb.resolve(b.id)))
-            kse.setFont(_field_font())
-            kse.keySequenceChanged.connect(lambda seq, bid=b.id: self._on_edited(bid, seq))
-            self._table.setCellWidget(row, self._COL_KEY, kse)
-            self._edits[b.id] = kse
+                kse = QKeySequenceEdit(QKeySequence(self._kb.resolve(b.id)))
+                kse.setFont(_field_font())
+                kse.keySequenceChanged.connect(lambda seq, bid=b.id: self._on_edited(bid, seq))
+                self._table.setCellWidget(row, self._COL_KEY, kse)
+                self._edits[b.id] = kse
 
-            reset_btn = QPushButton("↺")
-            reset_btn.setFixedWidth(26)
-            reset_btn.setToolTip(f"Reset to {b.default}")
-            reset_btn.clicked.connect(lambda _=False, bid=b.id: self._reset(bid))
-            self._table.setCellWidget(row, self._COL_RESET, reset_btn)
+                reset_btn = QPushButton("↺")
+                reset_btn.setFixedWidth(26)
+                reset_btn.setToolTip(f"Reset to {b.default}")
+                reset_btn.clicked.connect(lambda _=False, bid=b.id: self._reset(bid))
+                self._table.setCellWidget(row, self._COL_RESET, reset_btn)
+            else:
+                context, label, key = entry
+                self._table.setItem(row, self._COL_CONTEXT, self._plain_item(context, dim=True))
+                self._table.setItem(row, self._COL_ACTION, self._plain_item(label))
+                key_item = self._plain_item(key, dim=True)
+                key_item.setToolTip("Touche système, non remappable")
+                self._table.setItem(row, self._COL_KEY, key_item)
 
         lay.addWidget(self._table, 1)
 
@@ -320,7 +386,8 @@ class SettingsDialog(QDialog):
     partout où on y entre (File → Settings, ToolchainBar → Configure,
     Game → build bloqué par un toolchain manquant)."""
 
-    _CATEGORIES = ("Toolchains", "Theme", "Shortcuts", "External Tools")
+    _CATEGORIES = ("Toolchains", "Theme", "Interface", "Shortcuts",
+                   "External Tools")
 
     def __init__(self, toolchain: Toolchain, external_tools: ExternalTools,
                 initial_category: str = "Toolchains", parent=None):
@@ -345,6 +412,7 @@ class SettingsDialog(QDialog):
         panels = [
             ToolchainsPanel(toolchain),
             ThemePanel(),
+            InterfacePanel(),
             ShortcutsPanel(),
             ExternalToolsPanel(external_tools),
         ]

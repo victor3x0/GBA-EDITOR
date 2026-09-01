@@ -116,7 +116,7 @@ class CommandDispatcher(EventEmitter):
         self._emit("status_message", msg)
 
     def _on_project_renamed(self, label: str, old: str, new: str,
-                            refs: dict, n_texts: int):
+                            refs: dict, n_texts: int, n_regions: int = 0):
         """Met en mots un renommage et rafraîchit ce qui affiche le nom."""
         msg = f"{label} renamed: “{old}” → “{new}”"
         if refs:
@@ -126,6 +126,8 @@ class CommandDispatcher(EventEmitter):
                     f"{len(refs)} script(s): {files}")
         if n_texts:
             msg += f" — {n_texts} text(s) updated"
+        if n_regions:
+            msg += f" — {n_regions} UI zone(s) relinked"
         self._emit("project_tree_changed")
         if refs:
             self.notify_scripts_changed()
@@ -311,12 +313,62 @@ class CommandDispatcher(EventEmitter):
         """Crée une nouvelle scène vide et la persiste."""
         if not self._project:
             return None
-        scene = Scene(name=name)
+        # Une scène NEUVE naît avec le budget partagé (ROADMAP v0.17) : 96
+        # entrées pour ce qu'elle pose, les 32 restantes pour ce qu'elle
+        # spawne. Écrit ici et non dans le dataclass — une scène déjà sur le
+        # disque garde son « auto », sinon tout projet existant réserverait 96
+        # entrées par scène sans que personne l'ait demandé.
+        from codegen.actor_budget import DEFAULT_ACTOR_SLOTS
+        scene = Scene(name=name, actor_slots=DEFAULT_ACTOR_SLOTS)
         self._project.scenes.append(scene)
         with self._watcher.suspended():
             self._project.save_scene(scene)
         self._emit("status_message",f"Scène créée : {name}")
         return scene
+
+    # ── Camera ────────────────────────────────────────────────────
+
+    def add_camera(self, name: Optional[str] = None) -> Optional["Camera"]:
+        """Ajoute une caméra à la scène active (avec historique). Nom unique
+        à l'échelle du PROJET (cf. `Project.camera_names` — `camera.switch`
+        n'est pas qualifié par scène)."""
+        from core.history import AddListItemCmd
+        from core.models.camera import Camera
+        from core.selection_bus import CameraSelection
+        if not self._project or not self._project.active_scene:
+            return None
+        scene = self._project.active_scene
+        cam = Camera(name=unique_name(name or "Camera", self._project.camera_names()))
+
+        def persist():
+            self._save_scene()
+            self._emit("cameras_list_changed")
+
+        get_history().push(AddListItemCmd(scene.cameras, cam, persist_fn=persist,
+                                          label=f"Add camera {cam.name}"))
+        get_bus().select(CameraSelection(scene, cam))
+        self._emit("status_message", f"Camera créée : {cam.name}")
+        return cam
+
+    def delete_camera(self, camera):
+        """Supprime une caméra de la scène active (avec historique)."""
+        from core.history import RemoveListItemsCmd
+        from core.selection_bus import CameraSelection
+        if not self._project or not self._project.active_scene:
+            return
+        scene = self._project.active_scene
+        if not any(c is camera for c in scene.cameras):
+            return
+
+        def persist():
+            get_bus().clear()
+            self._save_scene()
+            self._emit("cameras_list_changed")
+
+        get_history().push(RemoveListItemsCmd(
+            scene.cameras, [camera], persist_fn=persist,
+            label=f"Deleted camera {camera.name}"))
+        self._emit("status_message", f"Deleted camera: {camera.name}")
 
     # ── Prefab ────────────────────────────────────────────────────
 
@@ -453,8 +505,9 @@ class CommandDispatcher(EventEmitter):
 
     def relink_actor_to_prefab(self, actor: Actor) -> bool:
         """« Relink to prefab » : recharge `actor` depuis son prefab —
-        composants, palette, réservation affine et notes reviennent à l'état
-        du template (« remettre les valeurs par défaut »). La POSE
+        composants, palette et notes reviennent à l'état du template
+        (« remettre les valeurs par défaut »). La réservation affine suit dans
+        les composants : elle vit sur le SpriteComponent. La POSE
         (x/y/rotation/scale/parent/priorité/...) reste celle de l'instance :
         elle n'a jamais appartenu au prefab (cf. core/models/scene.Prefab)."""
         if not self._project or not actor.prefab_name:
@@ -464,7 +517,6 @@ class CommandDispatcher(EventEmitter):
             return False
         actor.components = copy.deepcopy(prefab.actor.components)
         actor.pal_bank = prefab.actor.pal_bank
-        actor.affine_transform = prefab.actor.affine_transform
         actor.notes = prefab.actor.notes
         self._save_scene()
         self._emit("scene_sprites_changed")
@@ -477,8 +529,9 @@ class CommandDispatcher(EventEmitter):
         return True
 
     def expose_actor_to_prefab(self, actor: Actor) -> bool:
-        """« Expose to prefab » : pousse les composants/palette/réservation
-        affine/notes de CETTE instance vers son prefab — l'inverse de Relink.
+        """« Expose to prefab » : pousse les composants/palette/notes de CETTE
+        instance vers son prefab — l'inverse de Relink (la réservation affine
+        voyage avec le SpriteComponent).
         Passe par `save_prefab()`, qui persiste ET propage à toutes les
         autres instances liées (même comportement qu'éditer le prefab
         directement — Expose ne fait qu'y injecter l'état de l'instance
@@ -490,7 +543,6 @@ class CommandDispatcher(EventEmitter):
             return False
         prefab.actor.components = copy.deepcopy(actor.components)
         prefab.actor.pal_bank = actor.pal_bank
-        prefab.actor.affine_transform = actor.affine_transform
         prefab.actor.notes = actor.notes
         self.save_prefab(prefab)
         # cf. relink_actor_to_prefab — même badge, même besoin de tenir à

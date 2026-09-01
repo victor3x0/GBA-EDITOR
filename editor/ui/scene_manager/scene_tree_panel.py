@@ -23,7 +23,7 @@ from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 
 from core.models.scene import Actor, Scene
 from core.project import Project
-from core.selection_bus import get_bus, UIElementSelection
+from core.selection_bus import get_bus, UIElementSelection, CameraSelection
 from core.command_dispatcher import get_dispatcher, unique_name
 from core.history import (
     get_history, AddListItemCmd, RemoveListItemCmd, UILayoutOrderCmd,
@@ -37,6 +37,7 @@ _ROLE_PATH = Qt.ItemDataRole.UserRole + 2
 
 T_SCENE  = "scene"
 T_ACTOR  = "actor"
+T_CAMERA = "camera"          # une caméra POSSÉDÉE par la scène active
 T_PREFAB = "prefab"
 T_SCRIPT = "script"
 T_FOLDER = "folder"
@@ -59,6 +60,8 @@ def _lua_handle(node_type: str, obj) -> str:
     s'affiche en clair (référençable) ou grisé (authoring)."""
     if node_type == T_ACTOR:
         return f'get_actor("{obj.name}")'
+    if node_type == T_CAMERA:
+        return f'camera.switch("{obj.name}")'
     if node_type == T_UI_ELEM:
         kind = getattr(obj, "kind", "")
         if kind == KIND_TEXT:
@@ -218,6 +221,12 @@ class _ActiveSceneTree(_Tree):
                     self.addTopLevelItem(items[actor.name])
             for it in items.values():
                 it.setExpanded(True)
+            for camera in scene.cameras:
+                c_item = QTreeWidgetItem()
+                c_item.setData(0, _ROLE_TYPE, T_CAMERA)
+                c_item.setData(0, _ROLE_OBJ, camera)
+                self._update_camera_item(c_item, camera)
+                self.addTopLevelItem(c_item)
             self._populate_ui_branch(scene, project)
         self.blockSignals(False)
         self._fit()
@@ -284,8 +293,19 @@ class _ActiveSceneTree(_Tree):
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setForeground(0, QColor(_TEXT))
 
+    def _update_camera_item(self, item: QTreeWidgetItem, camera):
+        handle = _lua_handle(T_CAMERA, camera)
+        item.setIcon(0, _ico("camera", COLOR_DEFAULT))
+        item.setToolTip(0, f"referenceable: {handle}")
+        item.setText(0, camera.name)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setForeground(0, QColor(_TEXT))
+
     def highlight_actor(self, actor: Actor):
         self._highlight(T_ACTOR, actor)
+
+    def highlight_camera(self, camera):
+        self._highlight(T_CAMERA, camera)
 
     def highlight_ui_element(self, element):
         self._highlight(T_UI_ELEM, element)
@@ -311,6 +331,8 @@ class _ActiveSceneTree(_Tree):
         typ = item.data(0, _ROLE_TYPE)
         if typ == T_ACTOR:
             get_bus().select(item.data(0, _ROLE_OBJ))
+        elif typ == T_CAMERA:
+            get_bus().select(CameraSelection(self._scene, item.data(0, _ROLE_OBJ)))
         elif typ == T_UI_ELEM:
             get_bus().select(UIElementSelection(item.data(0, _ROLE_PATH),
                                                 item.data(0, _ROLE_OBJ)))
@@ -425,6 +447,15 @@ class _ActiveSceneTree(_Tree):
         get_dispatcher().save_scene()
         get_dispatcher()._emit("actors_list_changed")
 
+    def _actor_pos(self, name: str):
+        """(x, y) de l'acteur nommé, ou None — même contrat que
+        `SceneRegionItem._actor_pos` dans scene_canvas.py : passé aux helpers
+        d'ancrage du modèle, qui eux ne connaissent pas la scène."""
+        for a in getattr(self._scene, "actors", []):
+            if a.name == name:
+                return (a.x, a.y)
+        return None
+
     def _handle_ui_drop(self, dragged_item, target_item, indicator):
         """Reparente + repositionne un élément d'UI d'après la cible et
         l'indicateur (ON = dernier enfant ; AU-DESSUS = avant la cible ;
@@ -460,7 +491,24 @@ class _ActiveSceneTree(_Tree):
             return
 
         def mutate(name=dragged.name, parent=new_parent, before=before):
-            layout.place_child(name, parent, before)
+            # `place_child` rattache et réordonne, mais ne touche pas x/y —
+            # ce sont des coordonnées RELATIVES AU PARENT (cf.
+            # `UILayout.absolute_origin`). Un changement de parent doit donc
+            # les recalculer, sous peine de garder les anciennes valeurs comme
+            # offset dans le NOUVEAU repère : un texte posé aux coordonnées
+            # écran de son panel, glissé dans ce panel, se retrouverait décalé
+            # de sa propre origine (position doublée), invisible ou hors-cadre.
+            # On préserve la position ÉCRAN — c'est ce que l'œil voit bouger,
+            # pas les nombres.
+            el = layout.get(name)
+            ax = ay = None
+            if el is not None and el.parent != parent:
+                ax, ay, _ = layout.absolute_origin(el, self._actor_pos)
+            if not layout.place_child(name, parent, before):
+                return
+            if ax is not None:
+                px, py = layout.parent_origin(el, self._actor_pos)
+                el.x, el.y = ax - px, ay - py
 
         cmd = UILayoutOrderCmd(layout, mutate, f"Déplacer {dragged.name}",
                                persist_fn=self._panel._after_ui_change)
@@ -491,6 +539,12 @@ class _ActiveSceneTree(_Tree):
             self.add_rename_action(menu, item, "Rename actor")
             menu.addAction("Delete actor").triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
+
+        elif typ == T_CAMERA:
+            camera = item.data(0, _ROLE_OBJ)
+            self.add_rename_action(menu, item, "Rename camera")
+            menu.addAction("Delete camera").triggered.connect(
+                lambda: get_dispatcher().delete_camera(camera))
 
         elif typ == T_UI_LAYOUT:
             layout = item.data(0, _ROLE_OBJ)
@@ -574,8 +628,28 @@ class _ActiveSceneTree(_Tree):
         typ = item.data(0, _ROLE_TYPE)
         if typ == T_ACTOR:
             self._commit_rename_actor(item)
+        elif typ == T_CAMERA:
+            self._commit_rename_camera(item)
         elif typ == T_UI_ELEM:
             self._commit_rename_ui_elem(item)
+
+    def _commit_rename_camera(self, item: QTreeWidgetItem):
+        camera = item.data(0, _ROLE_OBJ)
+        new_name = item.text(0).strip()
+        proj = self._panel._project
+        if not proj or not self._scene or not new_name or new_name == camera.name:
+            self.blockSignals(True)
+            self._update_camera_item(item, camera)
+            self.blockSignals(False)
+            return
+        # `rename_camera` émet "renamed" → "project_tree_changed" en cascade
+        # SYNCHRONE : l'arbre est déjà reconstruit à ce point, `item` déjà
+        # détruit — ne plus y toucher après cet appel (même mise en garde que
+        # `_commit_rename_actor`). Une collision de nom est refusée en
+        # silence par `Project.rename_camera` : le rebuild qui suit remontre
+        # alors l'ancien nom, sans message dédié.
+        proj.rename_camera(self._scene, camera, new_name)
+        get_dispatcher()._emit("cameras_list_changed")
 
     def _commit_rename_ui_elem(self, item: QTreeWidgetItem):
         el = item.data(0, _ROLE_OBJ)
@@ -668,8 +742,16 @@ class SceneTreePanel(QWidget):
         self._scene_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._scene_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
         hl.addWidget(self._scene_lbl, 1)
-        self._btn_add = W.btn_add("Add an actor")
-        self._btn_add.clicked.connect(self._add_actor)
+        # Menu plutôt qu'un clic direct : deux natures d'objet se créent
+        # depuis ce bouton, toutes deux possédées par la scène — un acteur et
+        # une caméra (cf. command_dispatcher.add_camera).
+        self._btn_add = W.btn_add("Add…")
+        add_menu = QMenu(self._btn_add)
+        add_menu.setFont(QFont(T.UI, T.MD))
+        add_menu.addAction(_ico("actor", COLOR_DEFAULT), "Actor").triggered.connect(self._add_actor)
+        add_menu.addAction(_ico("camera", COLOR_DEFAULT), "Camera").triggered.connect(self._add_camera)
+        self._btn_add.setMenu(add_menu)
+        self._btn_add.setPopupMode(self._btn_add.ToolButtonPopupMode.InstantPopup)
         hl.addWidget(self._btn_add)
         layout.addWidget(hdr)
 
@@ -722,6 +804,9 @@ class SceneTreePanel(QWidget):
     def on_selection(self, obj):
         if isinstance(obj, Actor):
             self._tree.highlight_actor(obj)
+        elif isinstance(obj, CameraSelection):
+            if obj.camera is not None:
+                self._tree.highlight_camera(obj.camera)
         elif isinstance(obj, UIElementSelection):
             self._tree.highlight_ui_element(obj.element)
 
@@ -748,13 +833,27 @@ class SceneTreePanel(QWidget):
         self._begin_rename_actor(name)
 
     def _begin_rename_actor(self, name: str):
+        self._begin_rename(T_ACTOR, name)
+
+    # ── Ajout d'une caméra (inline — même geste que l'acteur) ─────
+
+    def _add_camera(self):
+        if not self._project or not self._scene:
+            return
+        cam = get_dispatcher().add_camera()
+        if cam is None:
+            return
+        self.refresh()
+        self._begin_rename(T_CAMERA, cam.name)
+
+    def _begin_rename(self, node_type: str, name: str):
         if QTreeWidgetItemIterator is None:
             return
         def go():
             it = QTreeWidgetItemIterator(self._tree)
             while it.value():
                 item = it.value()
-                if item.data(0, _ROLE_TYPE) == T_ACTOR and item.text(0) == name:
+                if item.data(0, _ROLE_TYPE) == node_type and item.text(0) == name:
                     self._tree.setCurrentItem(item)
                     self._tree.editItem(item, 0)
                     return

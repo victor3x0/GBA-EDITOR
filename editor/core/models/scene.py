@@ -7,8 +7,10 @@ from core.models.resource import Resource
 from core.models.palette import OWN_PAL_BANK
 from core.models.components import (
     ComponentOwnerMixin, components_to_list, components_from_list, ScriptComponent,
+    SpriteComponent,
 )
 from core.models.background import BackgroundLayer, decode_tile_palette_overrides
+from core.models.camera import Camera
 
 # Les types de tuiles de collision et leur géométrie vivent dans leur propre
 # module (feuille, il n'importe rien) : ils sont réclamés par l'outil de
@@ -81,6 +83,17 @@ EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
 # scène — c'est l'absence de surcharge, donc le réglage du projet.
 TRANSITION_INHERIT = ""              # la scène suit ProjectSettings
 TRANSITION_KINDS = (EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE)
+
+# `Scene.ui_pal_bank` — troisième valeur, à côté de -1 (auto police) et d'un
+# index désigné (0-15) : « la banque du conteneur ». Un texte qui recompose
+# son encre sur un fond nine-slice/couleur DOIT lire cette encre dans la même
+# banque que le fond (une tuile de surface n'en porte qu'une, cf.
+# `font_emit.render_composited`) — jusqu'ici il fallait TAPER ce numéro, un
+# détail d'allocation qui bouge si un autre asset de la scène change. Cf.
+# `codegen.runtime_codegen.main_gen.scene_container_ink_bank`, seul point qui
+# résout ce sentinel vers le numéro réel — build et validateur le lisent tous
+# les deux depuis là, jamais recalculé à côté.
+UI_PAL_BANK_CONTAINER = -2
 
 # Musique de la scène (v0.8.2) — TROIS valeurs, pas deux.
 #
@@ -215,6 +228,25 @@ def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
     return [[TILE_EMPTY] * cols for _ in range(rows)]
 
 
+def _components_with_affine_migrated(d: dict) -> list:
+    """Décode `components` en reportant l'ancienne clé `affine_transform`.
+
+    Elle vivait sur l'Actor / le Prefab jusqu'au 2026-08-25 ; elle vit désormais
+    sur le SpriteComponent (cf. ARCHITECTURE.md « Le modèle affine »). Relue une
+    fois à l'ouverture, elle n'est plus jamais réécrite — un projet enregistré
+    depuis cette version ne la porte plus.
+
+    Un actor sans SpriteComponent n'a jamais rien réservé (`_compute_affine_info`
+    passait déjà son tour) : il n'y a rien à reporter."""
+    components = components_from_list(d.get("components", []))
+    if d.get("affine_transform"):
+        for c in components:
+            if isinstance(c, SpriteComponent):
+                c.affine_transform = True
+                break
+    return components
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Prefab — template réutilisable. Stocké dans project/prefab/{name}.json.
 #  Jamais compilé ni placé directement dans une scène.
@@ -236,6 +268,20 @@ class Prefab(Resource, ComponentOwnerMixin):
     # template — jamais posé nulle part — et ne sont jamais sérialisés ici
     # (cf. to_dict) : c'est le TYPE qui est réutilisé, pas le sens de la pose.
     actor: "Actor" = field(default_factory=lambda: Actor(name="Prefab"))
+    # HÉRITÉ (ROADMAP v0.17) — le pool se déclare désormais sur la SCÈNE
+    # (`Scene.prefab_pools`), parce que combien d'exemplaires vivent en même
+    # temps est une propriété du niveau, pas du template.
+    #
+    # Le champ n'est plus édité nulle part et plus aucun site du build ne le
+    # lit : tout passe par `codegen/actor_budget.prefab_pool_instances()`, qui
+    # ne s'en sert QUE comme repli, pour un prefab dont aucune scène ne déclare
+    # de pool. C'est le patron déjà employé par `WindowSlot.is_obj` plus bas —
+    # « ni migré ni cassé, juste un défaut qui lit l'ancienne clé si la nouvelle
+    # est absente » — sans quoi tout projet antérieur verrait ses prefabs cesser
+    # silencieusement d'être spawnables.
+    #
+    # Il disparaîtra avec la moitié codegen de la v0.17 (compilation par scène),
+    # pas avant : le supprimer aujourd'hui viderait les pools existants.
     max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
     # Le SOUS-ARBRE du template (ROADMAP v0.23) : un prefab est un arbre, pas
     # un objet plat — c'est ce que le `PackedScene` de Godot a de bon, et on
@@ -278,7 +324,11 @@ class Prefab(Resource, ComponentOwnerMixin):
 
     @property
     def affine_transform(self):
-        return self.actor.affine_transform
+        """La réservation affine vit sur le SpriteComponent (ARCHITECTURE.md
+        « Le modèle affine ») : un prefab sans sprite n'en a pas."""
+        sc = next((c for c in self.actor.components
+                   if isinstance(c, SpriteComponent)), None)
+        return bool(sc and sc.affine_transform)
 
     @property
     def notes(self):
@@ -290,7 +340,6 @@ class Prefab(Resource, ComponentOwnerMixin):
             "components":       components_to_list(self.actor.components),
             "pal_bank":         self.actor.pal_bank,
             "max_instances":    self.max_instances,
-            "affine_transform": self.actor.affine_transform,
             # Absent tant que le prefab est plat — c'est à dire pour tous ceux
             # d'avant la v0.23.
             **({"children": [c.to_dict() for c in self.children]} if self.children else {}),
@@ -302,9 +351,8 @@ class Prefab(Resource, ComponentOwnerMixin):
         name = d.get("name", "Prefab")
         actor = Actor(
             name             = name,
-            components       = components_from_list(d.get("components", [])),
+            components       = _components_with_affine_migrated(d),
             pal_bank         = d.get("pal_bank", OWN_PAL_BANK),
-            affine_transform = d.get("affine_transform", False),
             notes            = d.get("notes", ""),
         )
         return cls(
@@ -345,13 +393,13 @@ class Actor(ComponentOwnerMixin):
     # window.OBJ (forme libre, animable). Mode 1 (semi-transparent) suppose le
     # blending, pas encore câblé. Modifiable au runtime par self.obj_mode.
     obj_mode: int = 0
-    # Transformation affine MONDE (cf. ARCHITECTURE.md « Le modèle affine ») :
-    # `affine_transform` réserve un slot de matrice affine OAM (32 max/scène) pour
-    # CET actor, même si scale/rotation valent leur défaut — c'est lui qui porte
-    # la décision, plus le SpriteComponent. Une fois coché, l'actor peut avoir un
-    # scale et une rotation (rotation/scale de l'actor, hérités par le sprite), et
-    # le SpriteComponent peut exprimer son propre scale/rotation/offset locaux.
-    affine_transform: bool = False
+    # Transformation affine MONDE (cf. ARCHITECTURE.md « Le modèle affine »).
+    # C'est de l'ÉTAT DE JEU : un script les lit, les écrit et les relit qu'il y
+    # ait un sprite ou non. Ce qui décide si ça se VOIT est ailleurs — la case
+    # `affine_transform` du SpriteComponent, qui réserve un des 32 slots de
+    # matrice affine OAM. Sans elle, l'actor tourne pour la logique, pas pour
+    # l'écran ; le SpriteComponent compose alors son propre scale/rotation/offset
+    # locaux par-dessus ceux-ci, mais rien ne les affiche.
     rotation: int = 0            # degrés 0-359 — rotation monde de l'actor
     scale_x: float = 1.0         # scale monde de l'actor (1.0 = normal)
     scale_y: float = 1.0
@@ -401,7 +449,6 @@ class Actor(ComponentOwnerMixin):
             "pal_bank":    self.pal_bank,
             "visible":     self.visible,
             "obj_mode":    self.obj_mode,
-            "affine_transform": self.affine_transform,
             "rotation":    self.rotation,
             "scale_x":     self.scale_x,
             "scale_y":     self.scale_y,
@@ -420,7 +467,7 @@ class Actor(ComponentOwnerMixin):
             name        = d.get("name", "Actor"),
             prefab_name = d.get("prefab_name"),
             active      = d.get("active", True),
-            components  = components_from_list(d.get("components", [])),
+            components  = _components_with_affine_migrated(d),
             x           = d.get("x", 112),
             y           = d.get("y", 72),
             flip_h      = d.get("flip_h", False),
@@ -429,7 +476,6 @@ class Actor(ComponentOwnerMixin):
             pal_bank    = d.get("pal_bank", OWN_PAL_BANK),
             visible     = d.get("visible", True),
             obj_mode    = d.get("obj_mode", 0),
-            affine_transform = d.get("affine_transform", False),
             rotation    = int(d.get("rotation", 0)),
             scale_x     = float(d.get("scale_x", 1.0)),
             scale_y     = float(d.get("scale_y", 1.0)),
@@ -488,22 +534,26 @@ def actor_prefab_linked(actor: "Actor", prefab: "Prefab") -> bool:
 
 @dataclass
 class WindowSlot:
-    """Une window matérielle GBA (WIN0 ou WIN1) authorée par la scène.
-    `region` est l'index hardware réel (0 ou 1) — PAS la position dans
-    Scene.windows, pour rester correct si l'utilisateur n'a que WIN1 sans
-    WIN0. Rectangle en pixels écran, clampé 240×160 par window_set() au
-    runtime (même fonction que l'API Lua window.set() — un seul point
-    d'écriture, cf. project_camera_abstraction pour le même principe
-    appliqué à la caméra).
+    """Une window matérielle GBA authorée par la scène — une INTENTION nommée,
+    pas un index matériel (révisé le 2026-08-25, cf. `codegen/window_alloc.py`
+    et ARCHITECTURE.md « Windows — le pochoir »). Rectangle en pixels écran,
+    clampé 240×160 par window_set() au runtime (même fonction que l'API Lua
+    window.set() — un seul point d'écriture, même principe que la caméra).
+
+    `is_obj=False` : un rectangle candidat à WIN0/WIN1 — `name` l'identifie
+    (renommable, unique au PROJET, comme une caméra) ; l'allocateur décide
+    seul lequel des deux rangs matériels il reçoit, un slot par scène qui en
+    demande trop échoue au build (nommé), pas de repli silencieux possible.
+    `is_obj=True` : la fenêtre-objet (forme donnée par les sprites en
+    `obj_mode=2`, jamais disputée) — `name` n'a pas de sens, un seul slot OBJ
+    par scène, toujours adressable par le mot-clé fixe "object".
 
     Défaut = tout traverse (visible=False, tous les layers_shown à True,
     obj_shown=True) : ajouter une window sans rien configurer ne doit RIEN
     cacher — l'utilisateur restreint ensuite, jamais l'inverse (neutralité
-    de style, cf. ROADMAP v0.3.2). L'OBJ-window (région 2) et la région
-    "extérieur" (3) n'ont pas de rectangle propre — elles restent 100%
-    scriptables (window.set_obj, window.set_layer(3, ...)), hors périmètre
-    de cette UI géométrique."""
-    region: int = 0     # 0 = WIN0, 1 = WIN1
+    de style, cf. ROADMAP v0.3.2)."""
+    name: str = ""       # identité de l'intention — vide/ignoré si is_obj
+    is_obj: bool = False  # fenêtre-objet (pas de géométrie propre, jamais allouée)
     x: int = 0
     y: int = 0
     w: int = 240
@@ -524,11 +574,36 @@ class Scene(Resource):
     # un BackgroundAsset (sidecar de compression) par son nom d'image.
     background_layers: list = field(default_factory=list)  # list[BackgroundLayer]
     actors: list = field(default_factory=list)  # list[Actor], inline dans le JSON
-    # Caméra de DÉMARRAGE, par nom d'asset (project/cameras/) — un script peut
-    # en changer ensuite (camera.switch). "" = la caméra par défaut : fixe à
-    # (0,0), sans bornes ni suivi. Elle n'existe pas comme fichier ; l'auteur
-    # n'a donc rien à créer pour le cas simple, et la liste des caméras ne se
-    # remplit pas d'une entrée par scène jamais réglée (cf. models/camera.py).
+    # ── Le budget d'acteurs de la scène (ROADMAP v0.17) ────────────
+    # Les 128 entrées OAM du matériel, réparties entre ce que la scène POSE et
+    # ce qu'elle SPAWNE. Deux champs qui partagent un plafond : monter l'un
+    # descend l'autre, parce qu'il n'y a qu'un budget.
+    #
+    # `actor_slots` réserve des entrées pour les acteurs posés — il n'en compte
+    # pas. L'auteur peut poser moins que ce qu'il réserve (le validateur
+    # avertit s'il pose plus) ; c'est ce qui rend le champ réglable, donc les
+    # deux champs solidaires.
+    #
+    # 0 = automatique : la réservation vaut le nombre d'acteurs réellement
+    # posés. C'est le comportement d'avant ce champ, donc celui de toute scène
+    # antérieure — le défaut ne s'invente rien.
+    actor_slots: int = 0
+    # Les pools de CETTE scène : nom de Prefab → nombre d'INSTANCES simultanées.
+    # Le budget, lui, se paie en SLOTS — un prefab à sous-arbre coûte
+    # instances × parties (v0.23). C'est `codegen/actor_budget.py` qui fait la
+    # conversion, en un seul endroit.
+    #
+    # Remplace `Prefab.max_instances` : combien d'exemplaires vivent en même
+    # temps est une propriété du NIVEAU, pas du template.
+    prefab_pools: dict = field(default_factory=dict)  # dict[str, int]
+    # Caméras POSSÉDÉES par cette scène (inline dans le JSON, comme `actors`) —
+    # révisé le 2026-08-24 : une caméra n'est plus un asset de projet partagé
+    # entre scènes (cf. models/camera.py, changelog-archive/v0.6.md).
+    cameras: list = field(default_factory=list)  # list[Camera]
+    # Caméra de DÉMARRAGE, par nom — résolue dans `cameras` ci-dessus. "" = la
+    # caméra par défaut : fixe à (0,0), sans bornes ni suivi, sans entrée dans
+    # `cameras`. L'auteur n'a donc rien à créer pour le cas simple, et la
+    # liste ne se remplit pas d'une entrée par scène jamais réglée.
     camera: str = ""
     # Windows matérielles (WIN0/WIN1) authorées pour cette scène — max 2,
     # une par région (cf. WindowSlot). Liste vide = comportement identique à
@@ -637,11 +712,18 @@ class Scene(Resource):
                 for L in self.background_layers
             ],
             "actors": [a.to_dict() for a in self.actors],
+            # Absents tant que la scène n'a rien réglé : une scène qui n'a
+            # jamais ouvert la carte Actor budget ne gagne pas deux clés
+            # inertes (même règle que transition_* et music ci-dessous).
+            **({"actor_slots": self.actor_slots} if self.actor_slots else {}),
+            **({"prefab_pools": {k: v for k, v in sorted(self.prefab_pools.items()) if v > 0}}
+               if any(v > 0 for v in self.prefab_pools.values()) else {}),
+            "cameras": [c.to_dict() for c in self.cameras],
             "camera": self.camera,
             "windows": [
-                {"region": ws.region, "x": ws.x, "y": ws.y, "w": ws.w, "h": ws.h,
-                 "visible": ws.visible, "layers_shown": ws.layers_shown,
-                 "obj_shown": ws.obj_shown}
+                {"name": ws.name, "is_obj": ws.is_obj, "x": ws.x, "y": ws.y,
+                 "w": ws.w, "h": ws.h, "visible": ws.visible,
+                 "layers_shown": ws.layers_shown, "obj_shown": ws.obj_shown}
                 for ws in self.windows
             ],
             "render_mode": self.render_mode,
@@ -697,15 +779,25 @@ class Scene(Resource):
             name=d.get("name", "Scene"),
             background_layers=bg_layers,
             actors=actors,
-            # Les anciens champs `cam_*` inline ne sont PAS relus : la caméra
-            # est devenue un asset, et la maison ne migre pas les formats (cf.
-            # core/project.py). Une scène antérieure repart de la caméra par
-            # défaut, ce qui était de toute façon le réglage de la quasi-totalité
-            # d'entre elles.
+            actor_slots=int(d.get("actor_slots", 0) or 0),
+            # Les valeurs nulles ne sont pas retenues : un pool à 0 est un pool
+            # qui n'existe pas, et le garder ferait apparaître le prefab dans la
+            # carte de budget d'une scène qui ne le spawne pas.
+            prefab_pools={str(k): int(v) for k, v in (d.get("prefab_pools") or {}).items()
+                          if int(v or 0) > 0},
+            cameras=[Camera.from_dict(c) for c in d.get("cameras", [])],
+            # Les anciens champs `cam_*` inline ne sont PAS relus : la maison
+            # ne migre pas les formats (cf. core/project.py). Une scène
+            # antérieure repart de la caméra par défaut, ce qui était de toute
+            # façon le réglage de la quasi-totalité d'entre elles.
             camera=d.get("camera", ""),
             windows=[
                 WindowSlot(
-                    region=wd.get("region", 0),
+                    name=wd.get("name", ""),
+                    # `is_obj` prend le relais de l'ancien `region` (region==2
+                    # signifiait OBJ) : ni migré ni cassé, juste un défaut qui
+                    # lit l'ancienne clé si la nouvelle est absente.
+                    is_obj=wd.get("is_obj", int(wd.get("region", 0)) == 2),
                     x=wd.get("x", 0), y=wd.get("y", 0),
                     w=wd.get("w", 240), h=wd.get("h", 160),
                     visible=wd.get("visible", False),

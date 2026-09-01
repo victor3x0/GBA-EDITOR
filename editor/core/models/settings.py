@@ -1,6 +1,92 @@
 """Settings globaux du projet + variables déclarées explicitement (globals/constants)."""
 
+import unicodedata
 from dataclasses import dataclass, field
+
+
+# ── Langues (ROADMAP v0.9) ────────────────────────────────────────
+# Une langue DÉCLARÉE, jamais devinée. C'est la déclaration qui lie une langue
+# à son fichier de traduction et à ses polices — pas un suffixe de nom de
+# fichier : `font_de.fnt` est une praticité au moment d'importer, pas une règle
+# de résolution. Une règle tirée d'un nom casse au premier renommage et ne se
+# vérifie nulle part, ce que la convention `<asset>_name` du graphe de
+# dépendances interdit déjà partout ailleurs.
+
+def lang_code(s: str) -> str:
+    """Code de langue utilisable comme nom de fichier : `pt-BR` → `pt_br`.
+
+    Le code n'est pas qu'un libellé : c'est lui qui NOMME le fichier side
+    (`texts_pt_br.json`). Un espace ou un accent y produirait un fichier
+    impossible à retrouver sur un autre système."""
+    s = unicodedata.normalize("NFKD", str(s or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    out = "".join(c.lower() if c.isalnum() else "_" for c in s)
+    while "__" in out:
+        out = out.replace("__", "_")
+    return out.strip("_")[:12]
+
+
+@dataclass
+class Language:
+    """Une langue du jeu : son code, son nom, et ses polices de remplacement."""
+    code: str = ""      # `de` — identité, et le nom du fichier side
+    name: str = ""      # `Deutsch` — libellé lisible
+    # {police du projet: police à lui substituer}. VIDE dans le cas courant :
+    # anglais, français, allemand et espagnol partagent la même planche latine,
+    # seuls leurs glyphes accentués diffèrent — et le sous-ensemble par scène
+    # les traite déjà un par un. Une langue n'a donc pas de police : elle a
+    # éventuellement un REMPLACEMENT, et seul un système d'écriture différent
+    # (japonais, russe, grec) en demande un.
+    fonts: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        d = {"code": self.code, "name": self.name}
+        if self.fonts:
+            d["fonts"] = dict(self.fonts)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Language":
+        return cls(
+            code=lang_code(d.get("code", "")),
+            name=str(d.get("name", "")),
+            fonts={str(k): str(v) for k, v in (d.get("fonts") or {}).items() if v},
+        )
+
+
+# ── Inputs (placeholder — ROADMAP à écrire) ───────────────────────
+# Les 10 boutons physiques du GBA, dans l'ordre du boîtier. Mêmes noms que
+# `VALID_KEYS` (scripting/checker.py, qui valide `input.pressed("A")` etc.) —
+# dupliqués plutôt qu'importés : `core` ne dépend pas de `scripting`
+# (cf. ARCHITECTURE.md, couches).
+BUTTON_NAMES: tuple = ("up", "down", "left", "right", "a", "b", "l", "r", "start", "select")
+
+
+@dataclass
+class InputBinding:
+    """Une action de jeu nommée, liée à un ou plusieurs boutons pressés
+    ENSEMBLE — un combo à un seul bouton est le cas courant, à plusieurs il
+    en fait un vrai combo (ex: {up, a} pour un dash).
+
+    Placeholder : rien ne consomme encore ces bindings, ni le codegen ni le
+    scripting Lua — `input.pressed("A")` continue de lire le bouton physique
+    directement. Cette dataclass ne fait qu'exister et se persister, comme
+    les exports de script avant leur câblage au codegen."""
+    name: str = ""
+    buttons: list = field(default_factory=list)   # sous-ensemble de BUTTON_NAMES
+
+    def to_dict(self) -> dict:
+        d = {"name": self.name}
+        if self.buttons:
+            d["buttons"] = list(self.buttons)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "InputBinding":
+        return cls(
+            name=str(d.get("name", "")),
+            buttons=[b for b in (d.get("buttons") or []) if b in BUTTON_NAMES],
+        )
 
 
 @dataclass
@@ -63,6 +149,13 @@ class ProjectSettings:
     # Le build s'en sert pour NE PAS ÉMETTRE la paire : le gain est en ROM
     # autant qu'en cycles, ce qu'un filtre au runtime n'aurait pas donné.
     collision_disabled_pairs: list = field(default_factory=list)
+    # Tags DÉCLARÉS explicitement, même sans aucun composant qui les porte —
+    # ce qui permet de réserver un nom et de régler ses paires avant de
+    # l'assigner au premier acteur. Les tags simplement TROUVÉS sur des
+    # composants n'ont pas besoin d'y figurer : la matrice les découvre déjà
+    # en parcourant les scènes (cf. CollisionsPanel._all_tags). Union des deux
+    # ensembles à l'affichage, jamais l'un à la place de l'autre.
+    collision_tags: list = field(default_factory=list)
     # Cadence de répétition des listes de menu, en frames (ROADMAP v0.22) —
     # le DÉFAUT du projet, qu'une liste peut surcharger (UIPanel.list_repeat_*).
     # Répondre ici une fois évite trois listes à trois cadences dans le même
@@ -70,6 +163,32 @@ class ProjectSettings:
     # possible. Même politique d'héritage que la transition de scène (v0.6.2).
     list_repeat_delay: int = 10   # avant le premier renvoi
     list_repeat_rate: int = 4     # entre les renvois suivants
+    # ── Langues (ROADMAP v0.9) ────────────────────────────────────
+    # La langue SOURCE est celle qu'on écrit dans `texts.json` : c'est le
+    # fichier maître qui la porte, elle n'a donc jamais de fichier side. La
+    # déclarer sert à la nommer — dans l'éditeur, et plus tard dans le menu de
+    # choix du jeu, où elle est une langue comme les autres.
+    source_lang: Language = field(default_factory=Language)
+    # Les TRADUCTIONS, une par fichier `texts_<code>.json`. La source n'y est
+    # pas : elle y serait une seconde copie de l'anglais, donc une seconde
+    # vérité à tenir d'accord. Liste vide = projet monolingue, exactement ce
+    # qu'était tout projet avant la v0.9.
+    languages: list = field(default_factory=list)
+    # ── Inputs (placeholder) ────────────────────────────────────────
+    # Actions nommées du joueur, chacune liée à un combo de boutons — voir
+    # InputBinding ci-dessus pour ce qui manque encore avant que ça pilote
+    # quoi que ce soit.
+    inputs: list = field(default_factory=list)
+
+    def all_languages(self) -> list:
+        """Source d'abord, puis les traductions — l'ordre du menu de choix.
+
+        Ne rend rien tant que rien n'est déclaré : un projet monolingue n'a pas
+        « une langue », il n'a pas de langues du tout, et c'est ce qui lui
+        permet de ne pas changer de comportement."""
+        if not self.languages and not self.source_lang.code:
+            return []
+        return [self.source_lang] + list(self.languages)
 
 
 # ── Variables du projet ───────────────────────────────────────────

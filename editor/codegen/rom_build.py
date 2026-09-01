@@ -29,6 +29,7 @@ from codegen.grit_conversion import (
     resolve_palette_bank,
 )
 from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
+from codegen.actor_budget import prefab_pool_instances
 from core.app_paths import RUNTIME_DIR
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
@@ -156,7 +157,7 @@ class BuildWorker(EventEmitter, threading.Thread):
             # Prefab sprites (communs à toutes les scènes)
             prefab_actor_sprites: list[tuple[Actor, Optional[SpriteAsset]]] = []
             for pf in self.project.prefabs:
-                if getattr(pf, "max_instances", 0) <= 0:
+                if prefab_pool_instances(self.project, pf) <= 0:
                     continue
                 _pf_sc = next((c for c in pf.components
                                if isinstance(c, SpriteComponent) and c.sprite_name), None)
@@ -771,7 +772,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 _collect_events(c_sym(scene.name) + "_scene", p.asset_abs(scene_script))
 
         for pf in self.project.prefabs:
-            if getattr(pf, "max_instances", 0) <= 0:
+            if prefab_pool_instances(self.project, pf) <= 0:
                 continue
             from core.models.components import ScriptComponent
             sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)

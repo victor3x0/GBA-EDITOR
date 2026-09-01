@@ -17,9 +17,8 @@ Structure de projet :
       behaviors/
 
   project/             ← géré exclusivement par l'éditeur
-    scenes/            ← une scène par JSON (actors inline)
+    scenes/            ← une scène par JSON (actors ET caméras inline)
     prefab/            ← templates d'actors (jamais compilés directement)
-    cameras/           ← une caméra par JSON (réutilisable entre scènes)
 
   project.json         ← settings globaux (nom, scène de démarrage, auteur)
   build/               ← 100 % jetable (regénéré à chaque build)
@@ -73,6 +72,7 @@ from core.palette_presets import seed_default_palettes
 from core.project_paths import ProjectPathsMixin
 from core.project_variables import ProjectVariablesMixin
 from core.project_texts import ProjectTextsMixin
+from core.project_langs import ProjectLangsMixin
 from core.project_renames import ProjectRenameMixin
 
 # ── Le modèle, importé pour l'usage de CE fichier ────────────────────────
@@ -84,7 +84,8 @@ from core.project_renames import ProjectRenameMixin
 # DÉFINI** — y compris quand un module voisin se trouve l'avoir sous la main
 # (`core.models.scene` importe `OWN_PAL_BANK` pour son propre usage ; il ne
 # faut pas le lui emprunter).
-from core.models.settings import ProjectSettings, GlobalVar, Constant
+from core.models.settings import (ProjectSettings, GlobalVar, Constant,
+                                  Language, InputBinding)
 from core.models.text import Text
 from core.models.palette import PaletteBank, OWN_PAL_BANK
 from core.models.sprite import SpriteAsset
@@ -109,7 +110,7 @@ DATA_COLUMN_SOURCES = {
     "sfx":     lambda p: [s.name for s in p.sfx],
     "music":   lambda p: [m.name for m in p.music],
     "scene":   lambda p: [s.name for s in p.scenes],
-    "camera":  lambda p: [c.name for c in p.cameras],
+    "camera":  lambda p: sorted(p.camera_names()),
     "font":    lambda p: [f.name for f in p.fonts],
     "palette": lambda p: [b.name for b in p.palettes],
     "region":  lambda p: p.region_names(),
@@ -122,19 +123,20 @@ DATA_COLUMN_SOURCES = {
 # ──────────────────────────────────────────────────────────────────
 
 class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
-              ProjectRenameMixin):
+              ProjectLangsMixin, ProjectRenameMixin):
     """
     Représente un projet GBA ouvert.
 
     Reste ici ce qui fait de `Project` un tout : ses registres d'assets, la
     scène active, la résolution des chemins d'assets, les recherches, et
-    l'orchestration `save`/`load`/`create`/`open`. Quatre responsabilités
+    l'orchestration `save`/`load`/`create`/`open`. Cinq responsabilités
     volumineuses vivent dans leur propre fichier, sous forme de TRANCHES de
     cette classe et non de collaborateurs :
 
       - `core.project_paths`     — où chaque chose vit sur le disque
       - `core.project_variables` — globals et constantes
       - `core.project_texts`     — la table de textes du joueur
+      - `core.project_langs`     — ses traductions, un fichier par langue
       - `core.project_renames`   — renommer et réparer ce qui cite
 
     Des mixins plutôt que des objets délégués : `project.rename_scene(...)`
@@ -147,6 +149,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.settings = ProjectSettings(name=root.name)
+        # {code de langue: {id du texte: contenu}} — cf. core/project_langs.
+        # Vide tant qu'aucune traduction n'est déclarée.
+        self.translations: dict = {}
 
         # Ce que le projet ANNONCE, et à quoi il se laisse ENTOURER.
         #
@@ -168,13 +173,19 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.backgrounds: ResourceStore[BackgroundAsset] = ResourceStore(self.backgrounds_dir, BackgroundAsset)
         self.sprites:     ResourceStore[SpriteAsset]     = ResourceStore(self.sprites_dir, SpriteAsset)
         self.prefabs:     ResourceStore[Prefab]      = ResourceStore(self.prefab_dir, Prefab)
+        # Avertissements du dernier load() — rempli par la réconciliation
+        # des assets. Toujours présent : un projet fraîchement créé n'a pas
+        # encore chargé, et l'appelant ne doit pas avoir à le vérifier.
+        self.load_warnings: list[str] = []
         self.scenes:      ResourceStore[Scene]       = ResourceStore(self.scenes_dir, Scene)
         self.sfx:         ResourceStore[Sfx]         = ResourceStore(self.sfx_dir, Sfx)
         self.music:       ResourceStore[Music]       = ResourceStore(self.music_dir, Music)
         self.fonts:       ResourceStore[Font]        = ResourceStore(self.fonts_dir, Font)
         self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
-        self.cameras: ResourceStore[Camera] = ResourceStore(self.cameras_dir, Camera)
+        # Pas de ResourceStore pour Camera : une caméra appartient à sa scène
+        # (Scene.cameras), elle se charge/sauve avec elle (cf. camera_names()
+        # ci-dessous pour la vue à plat sur tout le projet).
         # Trois registres et non un : les trois couches du matériel ne se
         # coordonnent pas, et un appel Lua nomme la boîte à qui il parle.
         self.music_boxes: ResourceStore[MusicBox] = ResourceStore(
@@ -255,7 +266,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
-                    self.palettes, self.cameras, self.music_boxes,
+                    self.palettes, self.music_boxes,
                     self.jingle_boxes, self.sound_boxes):
             mgr.commit_deletes()
 
@@ -276,9 +287,6 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def get_ui_layout(self, name: str) -> Optional[UILayout]:
         return self.ui_layouts.get(name)
 
-    def get_camera(self, name: str) -> Optional[Camera]:
-        return self.cameras.get(name)
-
     def get_data_table(self, name: str) -> Optional[DataTable]:
         return self.data_tables.get(name)
 
@@ -296,12 +304,31 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         source = DATA_COLUMN_SOURCES.get(column_type)
         return list(source(self)) if source else []
 
+    def camera_names(self) -> set[str]:
+        """Noms de TOUTES les caméras du projet, toutes scènes confondues.
+
+        Une caméra n'appartient qu'à une scène (`Scene.cameras`), mais son nom
+        doit rester unique au projet : `camera.switch("Nom")` n'est pas
+        qualifié par scène côté Lua, et chaque caméra reçoit une constante C
+        globale `CAM_<NOM>` (cf. models/camera.py)."""
+        return {c.name for s in self.scenes for c in s.cameras}
+
+    def window_names(self) -> set[str]:
+        """Noms de tous les `WindowSlot` rectangle (non-OBJ) du projet, toutes
+        scènes confondues — même contrainte d'unicité que les caméras :
+        `window.set_layer("Nom", …)` n'est pas qualifié par scène, chaque
+        window reçoit une constante C globale `WIN_<NOM>` (cf.
+        codegen/window_alloc.py)."""
+        return {ws.name for s in self.scenes for ws in s.windows if not ws.is_obj}
+
     def scene_camera(self, scene) -> Optional[Camera]:
         """Caméra de démarrage d'une scène, ou None si elle emploie la caméra
         par défaut (nom vide) — ou si la référence est cassée, auquel cas le
         validateur le dit et la scène retombe sur le défaut."""
         name = getattr(scene, "camera", "")
-        return self.cameras.get(name) if name else None
+        if not name:
+            return None
+        return next((c for c in scene.cameras if c.name == name), None)
 
     def ensure_scene_camera(self, scene) -> Camera:
         """La caméra de cette scène, MATÉRIALISÉE si elle emploie encore le
@@ -310,27 +337,21 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         C'est le geste « je veux autre chose que l'origine » : personne ne crée
         de caméra d'avance, elle apparaît au premier réglage (cadrage déplacé
         dans le canvas, mode changé dans l'inspecteur). Sans ça, il faudrait
-        soit créer une caméra par scène à la création — une liste d'assets
-        remplie d'entrées jamais touchées — soit demander à l'auteur d'en créer
-        une avant de pouvoir bouger le cadre."""
+        soit créer une caméra par scène à la création — une liste remplie
+        d'entrées jamais touchées — soit demander à l'auteur d'en créer une
+        avant de pouvoir bouger le cadre."""
         cam = self.scene_camera(scene)
         if cam is not None:
             return cam
+        taken = self.camera_names()
         base = (getattr(scene, "name", "") or "Camera").strip()
         name, n = base, 2
-        while self.cameras.get(name) is not None:
+        while name in taken:
             name, n = f"{base} {n}", n + 1
         cam = Camera(name=name)
-        self.cameras.append(cam)
-        self.cameras.save(cam)
+        scene.cameras.append(cam)
         scene.camera = name
         return cam
-
-    def camera_users(self, name: str) -> list:
-        """Scènes qui DÉMARRENT sur cette caméra. Ne voit pas les activations
-        faites par script : celles-là vivent dans le texte d'un `.lua`, comme
-        toute citation écrite à la main."""
-        return [s for s in self.scenes if getattr(s, "camera", "") == name]
 
     def ui_backgrounds(self, role: str = "") -> list[BackgroundAsset]:
         """Fonds d'INTERFACE du projet, éventuellement filtrés sur leur rôle
@@ -575,9 +596,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
         Un prefab EST son actor racine (cf. core/models/scene.Prefab) :
         copier CET objet plutôt que de relister champ par champ, c'est ce qui
-        évite l'ancien bug — `pal_bank`/`affine_transform`/`notes` du prefab
-        n'étaient pas reportés sur l'instance, faute d'avoir pensé à les
-        ajouter à cette liste."""
+        évite l'ancien bug — `pal_bank`/`notes` du prefab n'étaient pas reportés
+        sur l'instance, faute d'avoir pensé à les ajouter à cette liste."""
         actor = copy.deepcopy(prefab.actor)
         actor.name = name
         actor.prefab_name = prefab.name
@@ -662,6 +682,18 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             # heurte — le cas de tous ceux d'avant la v0.23 — ne gagne pas une clé.
             **({"collision_disabled_pairs": sorted(self.settings.collision_disabled_pairs)}
                if self.settings.collision_disabled_pairs else {}),
+            **({"collision_tags": sorted(self.settings.collision_tags)}
+               if self.settings.collision_tags else {}),
+            # Mêmes égards qu'au-dessus : un projet monolingue — tous ceux
+            # d'avant la v0.9 — ne gagne pas deux clés vides.
+            **({"source_lang": self.settings.source_lang.to_dict()}
+               if self.settings.source_lang.code else {}),
+            **({"languages": [l.to_dict() for l in self.settings.languages]}
+               if self.settings.languages else {}),
+            # Placeholder (cf. InputBinding) : un projet sans input déclaré ne
+            # gagne pas de clé, même politique que languages/collisions.
+            **({"inputs": [i.to_dict() for i in self.settings.inputs]}
+               if self.settings.inputs else {}),
         }
         atomic_write(self.project_file, project_json.dumps(data))
 
@@ -705,6 +737,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Antérieur à la v0.14 : `debug.*` n'existait pas encore, donc rien ne
         # change de comportement pour un projet ancien — défaut à True.
         self.settings.debug_build = bool(d.get("debug_build", True))
+        # `show_tips` des project.json écrits pendant la première passe de la
+        # v0.11 est ignoré : l'affichage des astuces est un réglage
+        # d'APPLICATION (core/interface_preferences.py). Même traitement que
+        # `palette_auto_import_enabled` plus haut — la clé disparaît du fichier
+        # à la prochaine sauvegarde, sans migration.
         # Antérieur à la v0.22 : les valeurs qui étaient en dur dans
         # l'émetteur, donc aucun changement de comportement.
         self.settings.list_repeat_delay = max(0, int(d.get("list_repeat_delay", 10)))
@@ -713,9 +750,44 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # d'avant la v0.23, à l'identique.
         self.settings.collision_disabled_pairs = list(
             d.get("collision_disabled_pairs") or [])
+        # Absents = aucun tag réservé, le cas de tout projet avant que la
+        # déclaration explicite n'existe — la matrice continue de tout
+        # découvrir depuis les composants, comme avant.
+        self.settings.collision_tags = list(d.get("collision_tags") or [])
+        # Absentes = projet monolingue, le cas de tous ceux d'avant la v0.9 :
+        # le maître EST la seule langue et rien ne change.
+        self.settings.source_lang = Language.from_dict(d.get("source_lang") or {})
+        self.settings.languages = [Language.from_dict(x)
+                                   for x in (d.get("languages") or [])
+                                   if (x or {}).get("code")]
+        # Absents = aucun input déclaré, le cas de tout projet avant que ce
+        # placeholder n'existe.
+        self.settings.inputs = [InputBinding.from_dict(x)
+                                for x in (d.get("inputs") or [])
+                                if (x or {}).get("name")]
 
+    def collision_tags(self) -> list:
+        """Tags de collision du projet, DÉCLARÉS d'abord (dans leur ordre —
+        celui que Project Settings > Collisions laisse glisser-déposer),
+        puis ceux seulement TROUVÉS sur un CollisionBoxComponent actif
+        (scènes, prefabs, ET parties de prefabs), triés, à la suite.
 
-
+        Source unique pour ses TROIS lecteurs : le sélecteur de tag du
+        CollisionEditor (ui/.../component_editors/collision.py), la matrice de
+        Project Settings, et les `#define BOXTAG_*` de `actor_types.h`
+        (codegen/runtime_codegen/headers.py). Le codegen refaisait sa propre
+        collecte, limitée aux acteurs de SCÈNE : un tag porté seulement par un
+        prefab poolé n'avait pas de constante, et `spawn_<Prefab>()` — qui
+        l'écrit dans `boxes[].tag` — ne compilait pas."""
+        from core.models.components import CollisionBoxComponent
+        owners = [a for sc in self.scenes for a in sc.actors] + list(self.prefabs)
+        owners += [ch for pf in self.prefabs for ch in (getattr(pf, "children", []) or [])]
+        discovered = {c.tag or "body" for o in owners for c in getattr(o, "components", [])
+                     if isinstance(c, CollisionBoxComponent) and c.active}
+        declared = list(self.settings.collision_tags)
+        seen = set(declared)
+        extra = sorted(t for t in discovered if t not in seen)
+        return declared + extra
 
 
 
@@ -740,7 +812,6 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.music.save_all()
         self.fonts.save_all()
         self.ui_layouts.save_all()
-        self.cameras.save_all()
         self.music_boxes.save_all()
         self.jingle_boxes.save_all()
         self.sound_boxes.save_all()
@@ -773,7 +844,6 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
                     "project/palettes", "project/ui_layouts",
-                    "project/cameras",
                     "project/music_boxes",
                     "project/jingle_boxes",
                     "project/sound_boxes",
@@ -795,6 +865,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         if self.assign_variable_ids():
             self.save_variables()
         self.load_texts()
+        # Après les textes : un side se joint aux entrées du maître.
+        self.load_translations()
         self.palettes.load()
         seed_default_palettes(self)
         self.sprites.load()
@@ -805,11 +877,13 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.music.load()
         asset_encoding.reconcile_sfx_and_music(self)
         self.fonts.load()
-        asset_encoding.reconcile_fonts(self)
+        # Ce que la réconciliation n'a PAS pu importer. Gardé sur le projet
+        # plutôt que jeté : sans ça, une police refusée à l'import laisse un
+        # panneau vide et aucune explication (cf. reconcile_fonts).
+        self.load_warnings = list(asset_encoding.reconcile_fonts(self) or [])
         # Avant les scènes : une scène référence sa mise en page et ses prefabs
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
-        self.cameras.load()
         self._migrate_box_dirs()
         self._migrate_sound_states()
         self.music_boxes.load()
@@ -850,7 +924,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         seed_default_palettes(proj)
 
         # Créer une scène de démarrage par défaut
-        default_scene = Scene(name="Scene_01")
+        # Même budget de départ que toute scène créée ensuite (v0.17) — la
+        # première scène d'un projet n'est pas un cas particulier.
+        from codegen.actor_budget import DEFAULT_ACTOR_SLOTS
+        default_scene = Scene(name="Scene_01", actor_slots=DEFAULT_ACTOR_SLOTS)
         proj.scenes.append(default_scene)
         proj.settings.start_scene = "Scene_01"
         proj.settings.last_scene  = "Scene_01"

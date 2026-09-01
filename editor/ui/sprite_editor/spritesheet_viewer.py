@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButton, QScrollArea
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QToolButton, QScrollArea, QMenu,
+)
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPixmap
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QRect
 
 from ui.common.theme import C, T, QSS
+from ui.common import icons
+from ui.common import external_editor
 
 # ── Viewer du spritesheet source (tile picker) ─────────────────────────────────
 
@@ -216,6 +220,23 @@ class _SpritesheetViewer(QWidget):
         hdr_lay.addWidget(btn_zm)
         hdr_lay.addWidget(btn_zp)
 
+        hdr_lay.addSpacing(12)
+
+        # Éditer le PNG source dans un logiciel externe — même bouton standard
+        # que le Background Editor (cf. ui/common/external_editor.py) : ce
+        # viewer sert au découpage/à la sélection de tuiles, pas au dessin.
+        self._path: Optional[Path] = None
+        self._btn_edit = QToolButton()
+        self._btn_edit.setIcon(icons.get("edit_external", icons.COLOR_DEFAULT))
+        self._btn_edit.setIconSize(QSize(15, 15))
+        self._btn_edit.setStyleSheet(_BTN)
+        self._btn_edit.setToolTip("Edit image…")
+        self._btn_edit.setEnabled(False)
+        self._btn_edit.clicked.connect(self._on_edit_image)
+        self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._btn_edit.customContextMenuRequested.connect(self._on_edit_menu)
+        hdr_lay.addWidget(self._btn_edit)
+
         root.addWidget(hdr_w)
 
         scroll = QScrollArea()
@@ -236,7 +257,26 @@ class _SpritesheetViewer(QWidget):
         self._coord_lbl.setText(f"tuile {cell[0]},{cell[1]}" if cell else "")
 
     def load(self, path: Optional[Path]):
+        self._path = path
+        self._btn_edit.setEnabled(bool(path and path.exists()))
         self._canvas.load(path)
+
+    def _on_edit_image(self):
+        if self._path is not None:
+            external_editor.open_image(self._path, self)
+
+    def _on_edit_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        cur = external_editor.get_configured_editor()
+        act_choose = menu.addAction("Choose editor…")
+        act_default = menu.addAction("Use system default")
+        act_default.setEnabled(bool(cur))
+        chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
+        if chosen == act_choose:
+            external_editor.choose_editor(self)
+        elif chosen == act_default:
+            external_editor.use_system_default()
 
     def clear_selection(self):
         self._canvas.clear_selection()

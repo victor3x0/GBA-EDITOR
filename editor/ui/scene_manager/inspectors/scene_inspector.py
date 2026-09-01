@@ -5,7 +5,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
     QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton,
-    QCheckBox, QSpinBox,
+    QCheckBox, QSpinBox, QLineEdit,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
@@ -26,10 +26,13 @@ from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
     RemoveListItemCmd, SetSceneModeCmd,
 )
-from core.command_dispatcher import get_dispatcher
+from core.command_dispatcher import get_dispatcher, unique_name
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup, NotesEdit, CollapsibleCard
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
+from codegen.actor_budget import (
+    OAM_LIMIT, prefab_group, scene_actor_budget, scene_pool_instances,
+)
 from ui.common import icons
 
 
@@ -167,14 +170,19 @@ MODE_INFO: dict[int, dict] = {
 
 
 # ──────────────────────────────────────────────────────────────────
-#  _WindowSlotRow — une window matérielle (WIN0 ou WIN1) authorée
+#  _WindowSlotRow — une window (une INTENTION nommée, pas un index
+#  matériel — cf. codegen/window_alloc.py)
 # ──────────────────────────────────────────────────────────────────
 class _WindowSlotRow(QFrame):
-    """Rectangle + visibilité + gating de layers pour une WindowSlot.
+    """Nom + rectangle + visibilité + gating de layers pour une WindowSlot.
     Mutation directe de la WindowSlot (pas d'historique par frappe, comme
-    CameraInspector) ; `changed` déclenche la persistance côté SceneInspector."""
+    CameraInspector) ; `changed` déclenche la persistance côté SceneInspector.
+    Le RENOMMAGE passe par un signal dédié (`rename_requested`) : il doit
+    passer par `Project.rename_window` (collision project-wide, réécriture
+    des scripts), pas une simple mutation d'attribut."""
     changed = pyqtSignal()
     remove_requested = pyqtSignal(object)   # (slot,)
+    rename_requested = pyqtSignal(object, str)   # (slot, nouveau nom)
 
     def __init__(self, slot, parent=None):
         super().__init__(parent)
@@ -188,18 +196,31 @@ class _WindowSlotRow(QFrame):
         outer.setContentsMargins(8, 6, 8, 6)
         outer.setSpacing(4)
 
-        is_obj = int(slot.region) == 2
+        is_obj = slot.is_obj
         hdr = QHBoxLayout(); hdr.setSpacing(6)
-        title = QLabel("Window OBJ" if is_obj else f"WIN{slot.region}")
-        title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-        title.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
-        hdr.addWidget(title)
+        if is_obj:
+            title = QLabel("Window OBJ")
+            title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+            title.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
+            hdr.addWidget(title)
+        else:
+            self._ed_name = QLineEdit(slot.name)
+            self._ed_name.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+            self._ed_name.setStyleSheet(QSS.lineedit)
+            self._ed_name.setPlaceholderText("Name (required)")
+            self._ed_name.setToolTip(
+                "Referenced from Lua as window.set_layer(\"Name\", …) — unique "
+                "across the whole project, like a camera.")
+            self._ed_name.editingFinished.connect(
+                lambda: self.rename_requested.emit(self.slot, self._ed_name.text()))
+            hdr.addWidget(self._ed_name, 1)
         self._chk_visible = QCheckBox("Active")
         self._chk_visible.setStyleSheet(QSS.checkbox)
         self._chk_visible.setChecked(slot.visible)
         self._chk_visible.toggled.connect(self._on_field_changed)
         hdr.addWidget(self._chk_visible)
-        hdr.addStretch()
+        if is_obj:
+            hdr.addStretch()
         btn_del = QPushButton("×")
         btn_del.setFixedSize(20, 20)
         btn_del.setStyleSheet(
@@ -396,24 +417,18 @@ class SceneInspector(QWidget):
         # ── Banque de couleurs de l'UI ────────────────────────────
         # Où le texte lit ses couleurs : un SLOT de la sélection BG de la scène.
         # « Automatic » (le défaut) garde le comportement historique, la police
-        # imposant sa propre palette.
+        # imposant sa propre palette. Slot picker plutôt qu'un QComboBox : même
+        # widget que l'inspecteur d'élément d'UI pour ce même champ (cf.
+        # `ui_inspector._reload_ui_pal_slot`) — il ne doit pas se présenter
+        # différemment selon l'écran d'où on le change.
         pal_row = QHBoxLayout(); pal_row.setSpacing(6)
         lbl_pal = QLabel("UI colors:")
         lbl_pal.setFont(QFont(T.UI, T.SM)); lbl_pal.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_pal.setFixedWidth(70)
-        self._combo_ui_pal = QComboBox()
-        self._combo_ui_pal.setFont(QFont(T.UI, T.SM))
-        self._combo_ui_pal.setStyleSheet(QSS.combobox)
-        self._combo_ui_pal.currentIndexChanged.connect(self._on_ui_pal_changed)
-        self._combo_ui_pal.setToolTip(
-            "<b>Palette bank the UI text reads its colors from</b><br><br>"
-            "A slot of this scene's BG selection. Each text slot then picks one "
-            "color in it.<br><br>"
-            "<b>Automatic</b>: the font loads its own palette instead — its "
-            "shades are kept, but two fonts can't have different colors at once."
-        )
+        self._ui_pal_slot = None
+        self._ui_pal_box = QHBoxLayout()
         pal_row.addWidget(lbl_pal)
-        pal_row.addWidget(self._combo_ui_pal, 1)
+        pal_row.addLayout(self._ui_pal_box, 1)
         param_inner.addLayout(pal_row)
 
         # ── Police par défaut de la scène ─────────────────────────
@@ -424,20 +439,10 @@ class SceneInspector(QWidget):
         lbl_font = QLabel("UI font:")
         lbl_font.setFont(QFont(T.UI, T.SM)); lbl_font.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_font.setFixedWidth(70)
-        self._combo_font = QComboBox()
-        self._combo_font.setFont(QFont(T.UI, T.SM))
-        self._combo_font.setStyleSheet(QSS.combobox)
-        self._combo_font.currentIndexChanged.connect(self._on_scene_font_changed)
-        self._combo_font.setToolTip(
-            "<b>Font this scene loads at init</b><br><br>"
-            "What any text without a font of its own gets: a UI element set to "
-            "<i>(scene font)</i>, or a <code>text.draw</code> with no "
-            "<code>text.set_font</code> before it.<br><br>"
-            "<b>Automatic</b>: the first font of the project. There is no "
-            "engine-provided default font — that would be a style choice."
-        )
+        self._font_slot = None
+        self._font_box = QHBoxLayout()
         font_row.addWidget(lbl_font)
-        font_row.addWidget(self._combo_font, 1)
+        font_row.addLayout(self._font_box, 1)
         param_inner.addLayout(font_row)
 
         # ── Backdrop ──────────────────────────────────────────────
@@ -560,24 +565,28 @@ class SceneInspector(QWidget):
 
         cl.addWidget(mode_card)
 
-        # ── Carte Windows (WIN0/WIN1) ──────────────────────────────
+        # ── Carte Windows — deux places matérielles, allouées par intention
+        # (WindowSlot nommé, cadre de caméra) et non par index — cf.
+        # codegen/window_alloc.py, ARCHITECTURE.md « Windows — le pochoir ».
         win_card = CollapsibleCard("Windows", color=C.ACCENT_BLU)
         win_inner = win_card.body_layout
-        self._btn_win_add = {}
-        for region, tip in (
-            (0, "Add WIN0"),
-            (1, "Add WIN1"),
-            (2, "Add the OBJ window (free-form, defined by sprites)"),
-        ):
-            btn = W.btn_add(tip)
-            btn.clicked.connect(lambda _c=False, r=region: self._add_window(r))
-            self._btn_win_add[region] = btn
-            win_card.add_header_widget(btn)
+        btn_add_rect = W.btn_add("Add a window")
+        btn_add_rect.clicked.connect(lambda: self._add_window(is_obj=False))
+        win_card.add_header_widget(btn_add_rect)
+        self._btn_win_add_obj = W.btn_add("Add the OBJ window (free-form, defined by sprites)")
+        self._btn_win_add_obj.clicked.connect(lambda: self._add_window(is_obj=True))
+        win_card.add_header_widget(self._btn_win_add_obj)
+
+        self._lbl_win_budget = QLabel("")
+        self._lbl_win_budget.setFont(QFont(T.UI, T.XS))
+        self._lbl_win_budget.setWordWrap(True)
+        win_inner.addWidget(self._lbl_win_budget)
 
         win_info = QLabel(
-            "Screen masks: WIN0/WIN1 are rectangular, the OBJ window is "
-            "free-form. They frame where a layer or sprite shows — they draw "
-            "nothing themselves. Scriptable too (window.*)."
+            "Screen masks: a window is rectangular and NAMED (like a camera) "
+            "— which of the two hardware slots it gets is decided at build. "
+            "The OBJ window is free-form. They frame where a layer or sprite "
+            "shows — they draw nothing themselves. Scriptable too (window.*)."
         )
         win_info.setFont(QFont(T.UI, T.XS))
         win_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -802,6 +811,67 @@ class SceneInspector(QWidget):
 
         cl.addWidget(pal_card)
 
+        # ── Carte Actor budget — les 128 entrées de l'OAM, réparties ────
+        # Deux postes et UN plafond (ROADMAP v0.17) : ce que la scène POSE et
+        # ce qu'elle SPAWNE se partagent le même matériel.
+        #
+        # Les deux champs se répondent par leur MAXIMUM, pas en s'écrasant l'un
+        # l'autre : monter les pools rabaisse le plafond du champ acteurs, et
+        # réciproquement. Pousser une valeur d'autorité aurait détruit en
+        # silence un pool réglé plus tôt — ici l'auteur voit simplement qu'il
+        # ne reste rien à prendre.
+        budget_card = CollapsibleCard("Actor budget", color=C.ACCENT_ORG)
+        budget_inner = budget_card.body_layout
+
+        self._lbl_actor_budget = QLabel("")
+        self._lbl_actor_budget.setFont(QFont(T.MONO, T.SM))
+        self._lbl_actor_budget.setWordWrap(True)
+        budget_inner.addWidget(self._lbl_actor_budget)
+
+        row_slots = QHBoxLayout()
+        row_slots.setContentsMargins(0, 4, 0, 0); row_slots.setSpacing(8)
+        lbl_slots = self._dim_label("Scene actors:")
+        lbl_slots.setFixedWidth(96)
+        self._spin_actor_slots = QSpinBox()
+        self._spin_actor_slots.setRange(0, OAM_LIMIT)
+        self._spin_actor_slots.setFont(QFont(T.MONO, T.SM))
+        self._spin_actor_slots.setStyleSheet(QSS.spinbox)
+        self._spin_actor_slots.setKeyboardTracking(False)
+        self._spin_actor_slots.setToolTip(
+            "Entries reserved for the actors placed in this scene.\n\n"
+            "0 = automatic: the reservation follows what you actually place. "
+            "Set it higher than the placed count only if you need headroom."
+        )
+        self._spin_actor_slots.valueChanged.connect(self._on_actor_slots_changed)
+        self._lbl_slots_hint = QLabel("")
+        self._lbl_slots_hint.setFont(QFont(T.UI, T.XS))
+        self._lbl_slots_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        row_slots.addWidget(lbl_slots); row_slots.addWidget(self._spin_actor_slots)
+        row_slots.addWidget(self._lbl_slots_hint); row_slots.addStretch(1)
+        budget_inner.addLayout(row_slots)
+
+        # Une ligne par prefab spawnable du projet — le pool se déclare ici,
+        # sur la SCÈNE, parce que combien d'exemplaires vivent en même temps
+        # est une propriété du niveau et non du template.
+        self._pool_spins: dict[str, QSpinBox] = {}
+        self._pool_container = QVBoxLayout()
+        self._pool_container.setContentsMargins(0, 2, 0, 0)
+        self._pool_container.setSpacing(4)
+        budget_inner.addLayout(self._pool_container)
+
+        budget_info = QLabel(
+            "The hardware shows 128 sprites — that ceiling is the OAM, not a "
+            "setting. Placed actors and spawn pools share it. A pool is "
+            "declared in instances but paid in slots: a prefab with parts "
+            "costs instances × parts."
+        )
+        budget_info.setFont(QFont(T.UI, T.XS))
+        budget_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        budget_info.setWordWrap(True)
+        budget_inner.addWidget(budget_info)
+
+        cl.addWidget(budget_card)
+
         cl.addStretch()
         layout.addWidget(self._content)
         layout.addStretch()
@@ -827,6 +897,10 @@ class SceneInspector(QWidget):
         self._reload_ui_pal()
         self._reload_scene_font()
         self._rebuild_window_rows()
+        # La LISTE des prefabs d'abord, les plafonds ensuite : chaque champ se
+        # borne sur ce que les autres ont pris, donc ils doivent tous exister.
+        self._rebuild_actor_budget()
+        self._refresh_actor_budget()
         self._refresh_backdrop()
         # Après `_rebuild_bg_layers` (via _apply_mode_ui) : `_refresh_blend`
         # pilote la visibilité du rôle sur chaque ligne, qui doit exister.
@@ -1389,12 +1463,16 @@ class SceneInspector(QWidget):
         ))
         self.changed.emit()
 
-    # ── Windows (WIN0/WIN1) ──────────────────────────────────────────
+    # ── Windows ────────────────────────────────────────────────────
 
-    def _add_window(self, region: int):
-        if not self._scene or any(ws.region == region for ws in self._scene.windows):
+    def _add_window(self, is_obj: bool):
+        if not self._scene:
             return
-        new_slot = WindowSlot(region=region)
+        if is_obj and any(ws.is_obj for ws in self._scene.windows):
+            return   # un seul slot OBJ par scène, comme avant
+        name = ("" if is_obj else
+                unique_name("Window", self._project.window_names() if self._project else set()))
+        new_slot = WindowSlot(name=name, is_obj=is_obj)
 
         def _refresh():
             self._persist_scene()
@@ -1403,7 +1481,7 @@ class SceneInspector(QWidget):
 
         get_history().push(AddListItemCmd(
             self._scene.windows, new_slot, persist_fn=_refresh,
-            label=f"Ajouter WIN{region}",
+            label=("Ajouter la window OBJ" if is_obj else f"Ajouter {name}"),
         ))
         self.changed.emit()
 
@@ -1418,14 +1496,161 @@ class SceneInspector(QWidget):
 
         get_history().push(RemoveListItemCmd(
             self._scene.windows, slot, persist_fn=_refresh,
-            label=f"Supprimer WIN{slot.region}",
+            label=f"Supprimer {slot.name or 'la window OBJ'}",
         ))
+        self.changed.emit()
+
+    def _rename_window(self, slot, new_name: str):
+        """`_WindowSlotRow.rename_requested` : passe par `Project.rename_window`
+        (collision project-wide, réécriture des scripts) — jamais une simple
+        mutation d'attribut, contrairement aux autres champs de la window."""
+        if not self._project or not self._scene:
+            return
+        self._project.rename_window(self._scene, slot, new_name)
+        self._persist_scene()
+        self._rebuild_window_rows()
+        get_dispatcher()._emit("windows_changed")
         self.changed.emit()
 
     def _on_window_field_changed(self):
         self._persist_scene()
         get_dispatcher()._emit("windows_changed")
+        self._refresh_window_budget()
         self.changed.emit()
+
+    # ── Actor budget — les 128 entrées de l'OAM, réparties ─────────
+
+    def _rebuild_actor_budget(self):
+        """(Re)construit une ligne de pool par prefab du projet.
+
+        Séparée de `_refresh_actor_budget` parce qu'elles ne se déclenchent pas
+        au même moment : la LISTE des prefabs ne change qu'au chargement d'une
+        scène, alors que les plafonds se recalculent à chaque frappe."""
+        while self._pool_container.count():
+            item = self._pool_container.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._pool_spins = {}
+        if not (self._scene and self._project):
+            return
+
+        prefabs = sorted(self._project.prefabs, key=lambda pf: pf.name)
+        if not prefabs:
+            lbl = QLabel("No prefab in this project yet — nothing to pool.")
+            lbl.setFont(QFont(T.UI, T.XS))
+            lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            lbl.setWordWrap(True)
+            self._pool_container.addWidget(lbl)
+            return
+
+        for pf in prefabs:
+            group = prefab_group(pf)
+            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
+            name_lbl = self._dim_label(f"{pf.name}:")
+            name_lbl.setFixedWidth(96)
+            sp = QSpinBox()
+            sp.setRange(0, OAM_LIMIT)
+            sp.setFont(QFont(T.MONO, T.SM))
+            sp.setStyleSheet(QSS.spinbox)
+            sp.setKeyboardTracking(False)
+            sp.setValue(scene_pool_instances(self._scene, pf))
+            tip = [f"How many '{pf.name}' can be alive at once in this scene.",
+                   "0 = this scene never spawns it, and pays nothing for it."]
+            if group > 1:
+                tip.append(f"This prefab has {group - 1} part(s), so one "
+                           f"instance costs {group} slots.")
+            sp.setToolTip("\n\n".join(tip))
+            sp.valueChanged.connect(
+                lambda v, name=pf.name: self._on_pool_changed(name, v))
+            # Ce que l'instance COÛTE — le pool se dit en instances, le budget
+            # se paie en slots, et confondre les deux fait déclarer huit boss
+            # à quatre parties sans voir passer trente-deux entrées.
+            cost = QLabel("")
+            cost.setFont(QFont(T.UI, T.XS))
+            cost.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            r.addWidget(name_lbl); r.addWidget(sp); r.addWidget(cost)
+            r.addStretch(1)
+            holder = QWidget(); holder.setLayout(r)
+            holder.setStyleSheet("background:transparent;")
+            self._pool_container.addWidget(holder)
+            self._pool_spins[pf.name] = (sp, cost, group)
+
+    def _refresh_actor_budget(self):
+        """Recale le compteur et les plafonds.
+
+        C'est ici que les deux postes se répondent : le maximum de chaque champ
+        est ce que les autres laissent. Rien n'est écrasé d'autorité — l'auteur
+        voit qu'il ne reste rien à prendre, il ne découvre pas qu'un pool réglé
+        hier a été rogné dans son dos."""
+        if not (self._scene and self._project):
+            return
+        b = scene_actor_budget(self._scene, self._project)
+        over = b["over_budget"] or b["over_placed"]
+        self._lbl_actor_budget.setStyleSheet(
+            f"color:{C.ACCENT_RED if over else C.TEXT_MUTED};")
+        msg = (f"{b['reserved']} actors + {b['pool']} pool = {b['used']} / "
+               f"{b['total']} slots")
+        if b["over_budget"]:
+            msg += f" — over the {OAM_LIMIT} OAM entries, the surplus won't show"
+        elif b["over_placed"]:
+            msg += (f" — {b['placed']} actors placed for {b['reserved']} reserved")
+        else:
+            msg += f" — {b['free']} free"
+        self._lbl_actor_budget.setText(msg)
+
+        prev, self._blocking = self._blocking, True
+        try:
+            # Le champ acteurs ne peut pas monter au-delà de ce que les pools
+            # laissent ; `placed` est son plancher affiché, pas une borne — on
+            # n'interdit pas de descendre, le validateur le dit.
+            self._spin_actor_slots.setMaximum(max(0, OAM_LIMIT - b["pool"]))
+            self._spin_actor_slots.setValue(self._scene.actor_slots)
+            self._lbl_slots_hint.setText(
+                f"0 = auto ({b['placed']} placed)" if self._scene.actor_slots == 0
+                else f"{b['placed']} placed")
+            others = b["pool"]
+            for name, (sp, cost, group) in self._pool_spins.items():
+                mine = int(self._scene.prefab_pools.get(name, 0) or 0)
+                room = OAM_LIMIT - b["reserved"] - (others - mine * group)
+                sp.setMaximum(max(mine, room // group if group else 0))
+                sp.setValue(mine)
+                cost.setText(f"× {group} = {mine * group} slots" if group > 1
+                             else (f"= {mine} slot(s)" if mine else ""))
+        finally:
+            self._blocking = prev
+
+    def _on_actor_slots_changed(self, value: int):
+        self._set_scene_field("actor_slots", int(value))
+        self._refresh_actor_budget()
+
+    def _on_pool_changed(self, prefab_name: str, value: int):
+        """Un pool se règle par prefab. Le champ écrit un dict NEUF plutôt que
+        de muter celui de la scène : `SetFieldCmd` compare l'avant et l'après,
+        et muter en place lui ferait voir deux fois la même référence — donc un
+        undo qui ne défait rien."""
+        if self._blocking or not self._scene:
+            return
+        pools = dict(self._scene.prefab_pools)
+        if int(value) > 0:
+            pools[prefab_name] = int(value)
+        else:
+            pools.pop(prefab_name, None)
+        self._set_scene_field("prefab_pools", pools)
+        self._refresh_actor_budget()
+
+    def _refresh_window_budget(self):
+        if not self._scene:
+            self._lbl_win_budget.setText("")
+            return
+        from codegen.window_alloc import scene_window_budget
+        used, total = scene_window_budget(self._scene)
+        over = used > total
+        self._lbl_win_budget.setStyleSheet(
+            f"color:{C.ACCENT_RED if over else C.TEXT_MUTED};")
+        msg = f"{used} / {total} windows used"
+        if over:
+            msg += " — over budget, build will fail"
+        self._lbl_win_budget.setText(msg)
 
     def _rebuild_window_rows(self):
         while self._windows_container.count():
@@ -1434,15 +1659,17 @@ class SceneInspector(QWidget):
                 item.widget().deleteLater()
         self._window_rows = []
         windows = list(self._scene.windows) if self._scene else []
-        for slot in sorted(windows, key=lambda ws: ws.region):
+        # OBJ en dernier — c'est un mécanisme à part, pas une des deux
+        # intentions rectangle que l'allocateur arbitre.
+        for slot in sorted(windows, key=lambda ws: ws.is_obj):
             row = _WindowSlotRow(slot)
             row.changed.connect(self._on_window_field_changed)
             row.remove_requested.connect(self._remove_window)
+            row.rename_requested.connect(self._rename_window)
             self._windows_container.addWidget(row)
             self._window_rows.append(row)
-        used_regions = {ws.region for ws in windows}
-        for region, btn in self._btn_win_add.items():
-            btn.setVisible(region not in used_regions)
+        self._btn_win_add_obj.setVisible(not any(ws.is_obj for ws in windows))
+        self._refresh_window_budget()
 
     # ── Palettes actives ────────────────────────────────────────────
 
@@ -1729,69 +1956,68 @@ class SceneInspector(QWidget):
         get_dispatcher()._emit("backdrop_changed")
 
     def _reload_ui_pal(self):
-        """Remplit la liste des banques d'UI depuis la sélection BG de la scène.
+        """(Re)construit le slot de banque d'UI depuis la sélection BG de la
+        scène — LA MÊME liste, dans le même ordre, que
+        `TextInspector._reload_ui_pal_slot` : c'est le même champ, il ne doit
+        pas se présenter différemment selon l'écran d'où on le change.
 
         Les slots VIDES sont listés quand même, mais dits comme tels : la
         sélection peut être remplie après coup, et masquer le slot ferait
-        disparaître un choix déjà fait dans le JSON."""
+        disparaître un choix déjà fait dans le JSON. Reconstruit et non
+        repeuplé : le picker capture sa liste à la construction."""
         if not self._scene:
             return
-        self._combo_ui_pal.blockSignals(True)
-        self._combo_ui_pal.clear()
-        self._combo_ui_pal.addItem("Automatic (font palette)", -1)
+        from ui.common.pickers import ui_pal_bank_slot
         active = list(getattr(self._scene, "active_bg_palettes", []) or [])
-        for i in range(16):
-            name = active[i] if i < len(active) else ""
-            self._combo_ui_pal.addItem(f"{i} — {name or '(empty)'}", i)
         cur = int(getattr(self._scene, "ui_pal_bank", -1))
-        j = self._combo_ui_pal.findData(cur)
-        self._combo_ui_pal.setCurrentIndex(j if j >= 0 else 0)
-        self._combo_ui_pal.blockSignals(False)
+        if self._ui_pal_slot is not None:
+            self._ui_pal_box.removeWidget(self._ui_pal_slot)
+            self._ui_pal_slot.deleteLater()
+        self._ui_pal_slot = ui_pal_bank_slot(
+            active, cur, icons.COLOR_UI, on_picked=self._on_ui_pal_changed,
+            project=self._project, parent=self)
+        self._ui_pal_box.addWidget(self._ui_pal_slot)
 
-    def _on_ui_pal_changed(self):
+    def _on_ui_pal_changed(self, new: int):
         if not self._scene:
             return
-        self._set_scene_field("ui_pal_bank", int(self._combo_ui_pal.currentData()))
+        self._set_scene_field("ui_pal_bank", int(new))
 
     def _reload_scene_font(self):
-        """Remplit la liste des polices du projet.
+        """(Re)construit le slot de police par défaut de la scène.
 
         Une police SANS planche exploitable est listée mais dite telle quelle :
-        elle n'est pas compilée (`project_fonts` la saute), la choisir ferait
-        retomber la scène sur la première du projet. La masquer ferait
-        disparaître un choix déjà posé dans le JSON — même règle que les slots
-        de palette vides juste au-dessus."""
+        elle n'est pas compilée (`encodable_project_fonts` la saute), la
+        choisir ferait retomber la scène sur la première du projet. La masquer
+        ferait disparaître un choix déjà posé dans le JSON — même règle que les
+        slots de palette vides juste au-dessus.
+
+        `encodable_project_fonts`, PAS `project_fonts` : ce dernier élague en
+        plus aux polices déjà utilisées quelque part, et ce picker sert
+        justement à en choisir une pas encore utilisée — `project_fonts`
+        grèserait toute police jamais encore posée nulle part."""
         if not self._scene:
             return
+        from ui.common.pickers import font_picker_slot
         p = self._project
         try:
-            from codegen.runtime_codegen.main_gen import project_fonts
-            usable = {f.name for f in project_fonts(p)} if p else set()
+            from codegen.runtime_codegen.main_gen import encodable_project_fonts
+            usable = {f.name for f in encodable_project_fonts(p)} if p else set()
         except Exception:
             usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()
-        self._combo_font.blockSignals(True)
-        self._combo_font.clear()
-        first = sorted(usable)[0] if len(usable) == 1 else ""
-        self._combo_font.addItem(
-            f"Automatic — {first}" if first else "Automatic (first font)", "")
-        for f in (getattr(p, "fonts", []) or []):
-            self._combo_font.addItem(
-                f.name if f.name in usable else f"{f.name} (no usable sheet)", f.name)
         cur = getattr(self._scene, "font_name", "") or ""
-        j = self._combo_font.findData(cur)
-        if j < 0 and cur:
-            # Police disparue du projet : garder le nom visible plutôt que de
-            # retomber en silence sur « Automatic », ce qui EFFACERAIT le choix
-            # au premier changement d'un autre champ.
-            self._combo_font.addItem(f"{cur} (missing)", cur)
-            j = self._combo_font.count() - 1
-        self._combo_font.setCurrentIndex(j if j >= 0 else 0)
-        self._combo_font.blockSignals(False)
+        if self._font_slot is not None:
+            self._font_box.removeWidget(self._font_slot)
+            self._font_slot.deleteLater()
+        self._font_slot = font_picker_slot(
+            list(getattr(p, "fonts", []) or []), usable, cur, icons.COLOR_UI,
+            on_picked=self._on_scene_font_changed, parent=self)
+        self._font_box.addWidget(self._font_slot)
 
-    def _on_scene_font_changed(self):
+    def _on_scene_font_changed(self, name: str):
         if self._blocking or not self._scene:
             return
-        self._set_scene_field("font_name", self._combo_font.currentData() or "")
+        self._set_scene_field("font_name", name or "")
         self.changed.emit()
 
     def _on_text_bg_changed(self):

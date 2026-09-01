@@ -102,6 +102,12 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "view_boxes":            ("mdi.account-box",             "▭"),
     "view_collision":        ("mdi.wall",                    "▨"),
     "warning":               ("mdi.alert",                   "⚠"),
+    # Notices (ui/common/notice.py) — l'icône dit ce que le message annonce là
+    # où la couleur ne suffit plus : `build` et `render` sont tous deux jaunes,
+    # et ce sont l'alerte et l'œil qui les distinguent. L'ampoule est réservée
+    # au niveau 3, pour qu'une astuce se reconnaisse sans être lue.
+    "info":                  ("mdi.information-outline",     "ⓘ"),
+    "tip":                   ("mdi.lightbulb-on-outline",    "💡"),
     "scroll_h":              ("mdi.arrow-left-right-bold",   "↔"),
     "scroll_v":              ("mdi.arrow-up-down-bold",      "↕"),
     # Project panel — types d'objets
@@ -118,6 +124,9 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "background":            ("mdi.image-multiple-outline",  "▥"),
     "palette":               ("mdi.palette-outline",         "◐"),
     "font":                  ("mdi.format-font",             "A"),
+    "align_left":            ("mdi.format-align-left",       "⇤"),
+    "align_center":          ("mdi.format-align-center",     "↔"),
+    "align_right":           ("mdi.format-align-right",      "⇥"),
     "anim_state":            ("mdi.play-box-outline",        "▶"),
     "sfx":                   ("mdi.volume-high",             "♪"),
     "music":                 ("mdi.music-note",              "♫"),
@@ -189,6 +198,12 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # la FORME dit ce qui est ajouté (ligne vs colonne), pas juste "+".
     "add_row":                ("mdi.table-row-plus-after",    "+▭"),
     "add_column":             ("mdi.table-column-plus-after", "+▯"),
+    # Édition externe — ouvrir un asset image dans le logiciel de dessin
+    # configuré par l'utilisateur (cf. ui/common/external_editor.py).
+    "edit_external":          ("mdi.image-edit-outline",      "✎"),
+    # Finders — révéler le dossier RÉEL d'une famille dans l'explorateur du
+    # système (cf. ui/common/reveal.py). Bouton standardisé, pas un par écran.
+    "reveal_in_files":        ("mdi.folder-open-outline",     "⤢"),
 }
 
 # ── Backend (chargé une seule fois) ──────────────────────────────

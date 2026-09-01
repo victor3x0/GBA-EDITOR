@@ -10,3 +10,4 @@ Pillow
 qtawesome
 numpy
 luaparser
+freetype-py

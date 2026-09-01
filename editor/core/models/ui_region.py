@@ -166,17 +166,6 @@ def forced_target(anchor: str, render_mode: int = 0) -> str | None:
     return None
 
 
-def forced_target_reason(anchor: str, render_mode: int = 0) -> str:
-    """Pourquoi la cible est imposée — destiné à être affiché tel quel.
-    Une contrainte muette se lit comme un bug de l'éditeur."""
-    if anchor == ANCHOR_ACTOR:
-        return ("ancrage sur un actor : un acteur bouge au pixel, "
-                "la grille BG avance par 8")
-    if render_mode in BITMAP_MODES:
-        return f"scène en mode {render_mode} (bitmap) : il n'y a pas de tilemap"
-    return ""
-
-
 class RectGeometryMixin:
     """Géométrie en pixels d'un élément — pure arithmétique sur x/y/w/h.
 
@@ -223,12 +212,18 @@ class RectGeometryMixin:
 # main_gen.scene_text_reservation). Abordable grâce au sous-ensemble par scène.
 TEXT_COLOR_INK = 0     # encre d'origine de la police
 TEXT_COLOR_MAX = 15    # 4bpp : l'index 0 est la transparence
+# Surlignement — la couleur posée SOUS le texte, dans la même banque d'UI et sur
+# la même plage que l'encre. 0 = aucun, et c'est bien le même zéro que celui du
+# matériel : l'index 0 d'une palette 4bpp EST la transparence.
+HIGHLIGHT_NONE = 0
 
 
 def _clamp_color(v) -> int:
-    """Hors plage = encre d'origine. 1..15 est une contrainte MATÉRIELLE
-    (4bpp, index 0 transparent), pas un choix — au-delà, le remappage de
-    `text_recolor` déborderait son mot de 32 bits."""
+    """Ramène un index de couleur d'UI dans sa plage — encre comme
+    surlignement, qui vivent dans la même banque. Hors plage = 0, c'est-à-dire
+    l'encre d'origine pour l'un, aucun surlignement pour l'autre. 1..15 est une
+    contrainte MATÉRIELLE (4bpp, index 0 transparent), pas un choix — au-delà,
+    le remappage de `text_recolor` déborderait son mot de 32 bits."""
     try:
         n = int(v)
     except (TypeError, ValueError):
@@ -268,7 +263,7 @@ class UIText(RectGeometryMixin):
     # Nom de l'élément PARENT dans la même mise en page ("" = racine). L'arbre
     # d'UI se DÉRIVE de ces refs, il ne se stocke pas : la liste `elements` reste
     # plate, exactement comme la table de textes reste plate et l'arbre se
-    # reconstruit des chemins (cf. TextTreePanel). Une ref pendante (parent
+    # reconstruit des chemins (cf. `ui/text_editor/text_table.py`). Une ref pendante (parent
     # supprimé) est traitée comme racine, jamais comme une erreur. Le parent est
     # cité par NOM et non par index : renommer un élément doit donc retargetter
     # les enfants (`UILayout.retarget_parent`), comme un renommage de clé.
@@ -306,19 +301,38 @@ class UIText(RectGeometryMixin):
     preview_text: str = ""
     # Couleur du texte posé ici — cf. TEXT_COLOR_INK.
     text_color: int = TEXT_COLOR_INK
-    # Budget de glyphes ANIMÉS — combien de caractères, au plus, cet élément peut
-    # sortir de la bande pour recevoir un effet par caractère.
+    # Couleur posée SOUS le texte, sur l'étendue qu'il occupe — cf.
+    # HIGHLIGHT_NONE. Index dans la banque d'UI de la scène, comme l'encre :
+    # la tuile de surface où le texte se compose ne porte qu'UNE banque de
+    # palette, le matériel n'en offre pas deux.
     #
-    # DÉCLARÉ, jamais déduit : quel texte y atterrit peut être une décision de
-    # script, prise au runtime, et une portée d'effet (`[wave]…[/wave]`) change
-    # de longueur avec le texte. Le build ne peut donc pas les compter — il peut
-    # seulement réserver ce que l'auteur annonce, et le runtime ÉCRÊTE au-delà
-    # (les glyphes en trop rendent en statique dans la bande). Un effet qui
-    # dégrade est une perte cosmétique ; un dépassement d'OAM corrompt les
-    # sprites des acteurs.
+    # Déclaré ici et nulle part ailleurs : le fond d'un conteneur ancêtre ne
+    # teinte PAS ses textes enfants. Les deux se ressemblaient à l'écran et
+    # n'avaient ni le même propriétaire ni les mêmes conditions d'émission —
+    # d'où un panneau qui ne colorait qu'une partie de sa zone, la boîte de son
+    # texte, quand sa palette n'était pas active dans la scène.
     #
-    # 0 = bande seule, c'est-à-dire exactement ce que fait le moteur aujourd'hui.
-    animated_glyphs: int = 0
+    # Corollaire assumé : un texte SANS surlignement perce le fond de son
+    # conteneur, le chemin tilemap remplaçant la cellule par une tuile de glyphe
+    # dont l'index 0 est transparent. C'est le matériel, montré tel quel.
+    highlight_color: int = HIGHLIGHT_NONE
+    # Les glyphes ANIMÉS — les caractères qui sortent de la bande pour recevoir
+    # un effet (`[wave]`, `[shake]`) — ne sont PAS un champ.
+    #
+    # Ils l'ont été, déclarés à la main dans l'inspecteur, au motif que le texte
+    # affiché peut être une décision de script prise au runtime. Mais dans le
+    # cas COURANT — une zone dont `text_key` est renseigné — le contenu est
+    # connu au build et `ParsedText.animated_glyphs` les compte exactement :
+    # le champ demandait donc de recompter à la main ce que le parseur savait
+    # déjà, et une erreur en moins dégradait l'effet sans un mot.
+    #
+    # Ils se DÉRIVENT désormais du texte que la zone affiche —
+    # `Project.region_animated_glyphs`, qui prend aussi le maximum sur les
+    # traductions (une langue peut animer plus large que la source). Pour une
+    # zone sans entrée, c'est son échantillon (`preview_text`) qui sert de
+    # mesure, et le runtime ÉCRÊTE au-delà comme il l'a toujours fait : un
+    # effet qui dégrade est une perte cosmétique, là où un dépassement d'OAM
+    # corromprait les sprites des acteurs.
 
     # ── Cible ─────────────────────────────────────────────────────
     def resolved_target(self, render_mode: int = 0) -> str:
@@ -339,12 +353,12 @@ class UIText(RectGeometryMixin):
             "name": self.name, "parent": self.parent, "visible": self.visible,
             "anchor": self.anchor,
             "text_color": self.text_color,
+            "highlight_color": self.highlight_color,
             "anchor_actor": self.anchor_actor,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "text_key": self.text_key,
             "font_name": self.font_name, "align": self.align,
             "target": self.target, "preview_text": self.preview_text,
-            "animated_glyphs": self.animated_glyphs,
         }
 
     @classmethod
@@ -369,6 +383,7 @@ class UIText(RectGeometryMixin):
             anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
             anchor_actor = str(d.get("anchor_actor", "")),
             text_color   = _clamp_color(d.get("text_color", TEXT_COLOR_INK)),
+            highlight_color = _clamp_color(d.get("highlight_color", HIGHLIGHT_NONE)),
             x = int(d.get("x", 0)), y = int(d.get("y", 0)),
             w = int(d.get("w", 240 if was_region else 96)),
             h = int(d.get("h", 32 if was_region else 16)),
@@ -376,51 +391,15 @@ class UIText(RectGeometryMixin):
             font_name    = str(d.get("font_name", "")),
             align        = align if align in ALIGNS else "left",
             target       = target if target in TARGETS else "",
+            # `animated_glyphs` d'un ancien fichier est IGNORÉ : la valeur se
+            # dérive du texte désormais. La clé disparaît du JSON au prochain
+            # enregistrement — « une seule forme ÉCRITE », cf. core/project.py.
             preview_text = str(d.get("preview_text", "")),
-            animated_glyphs = max(0, min(ANIM_GLYPH_MAX,
-                                         int(d.get("animated_glyphs", 0) or 0))),
         )
 
 
 def _ceil_tile(px: int) -> int:
     return (max(0, int(px)) + TILE - 1) // TILE
-
-
-# ── Aliasing de la surface de composition ─────────────────────────
-# UNIQUEMENT en chemin composité. En mono, la tilemap pointe directement les
-# glyphes en VRAM : il n'y a pas de surface, donc pas d'aliasing possible.
-#
-# En composité, la tuile de surface d'une case écran est adressée MODULO
-# (TEXT_SURF_W × TEXT_SURF_H) — cf. `text_surf_tile` dans gba_engine.h. Deux
-# régions distantes d'un multiple exact de TEXT_SURF_H rangées partagent donc
-# physiquement leurs tuiles et se corrompent l'une l'autre. Invisible dans un
-# script, évident dans un canvas : c'est précisément ce qu'une géométrie
-# authorée permet enfin de vérifier.
-SURF_W = 30   # doit rester égal à TEXT_SURF_W (gba_engine.h)
-SURF_H = 8    # doit rester égal à TEXT_SURF_H
-
-
-def surface_cells(region: "UIText") -> set[tuple[int, int]]:
-    """Cases de la surface de composition qu'occupe la région."""
-    tx, ty, tw, th = region.tile_rect()
-    return {((tx + c) % SURF_W, (ty + r) % SURF_H)
-            for r in range(th) for c in range(tw)}
-
-
-def surface_conflicts(regions) -> list[tuple["UIText", "UIText"]]:
-    """Paires de régions BG qui se disputeraient les mêmes tuiles de surface.
-
-    Ne filtre pas sur le mode de rendu de la police : l'appelant sait quelles
-    régions sont compositées (`font_emit.render_composited`) et lui passe
-    celles-là. Une région sans police nommée hérite de celle de la scène, que
-    ce module ne connaît pas."""
-    out: list[tuple["UIText", "UIText"]] = []
-    cells = [(r, surface_cells(r)) for r in regions]
-    for i in range(len(cells)):
-        for j in range(i + 1, len(cells)):
-            if cells[i][1] & cells[j][1]:
-                out.append((cells[i][0], cells[j][0]))
-    return out
 
 
 # ── Bande OBJ : géométrie d'allocation ────────────────────────────
@@ -471,16 +450,22 @@ def strip_columns(w: int) -> list[int]:
     return out
 
 
-def strip_geometry(region: "UIText") -> dict:
+def strip_geometry(region: "UIText", animated: int = 0) -> dict:
     """Ce qu'une zone en cible OBJ consomme.
 
     `oam` = nombre de slots OAM, `tiles` = tuiles de VRAM OBJ. Les deux sont
     connus depuis la seule géométrie authorée — c'est ce qui rend la jauge
-    exacte au lieu d'estimée."""
+    exacte au lieu d'estimée.
+
+    `animated` est FOURNI par l'appelant, pas lu sur la zone : le compte de
+    glyphes animés se déduit du texte que la zone affiche, et le modèle ne
+    résout pas la table de textes — même convention que `image_frames` dans
+    `layout_obj_budget`. `Project.region_animated_glyphs` est ce qui le
+    calcule ; 0 par défaut, c'est-à-dire la bande seule."""
     cols = strip_columns(region.w)
     rows = max(1, _ceil_tile(region.y % STRIP_ROW_H + region.h))
     tiles_per_row = sum(c // 8 for c in cols)
-    anim = max(0, min(ANIM_GLYPH_MAX, int(getattr(region, "animated_glyphs", 0) or 0)))
+    anim = max(0, min(ANIM_GLYPH_MAX, int(animated or 0)))
     return {
         "cols": cols,
         "rows": rows,
@@ -547,7 +532,8 @@ def image_geometry(el, n_frames: int = 1,
 
 def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
                       image_frames: dict | None = None,
-                      image_frame_size: dict | None = None) -> dict:
+                      image_frame_size: dict | None = None,
+                      animated_by_name: dict | None = None) -> dict:
     """Budget OBJ d'une mise en page entière, et le placement RELATIF de chaque
     élément dedans.
 
@@ -564,17 +550,20 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
     deux allocations séparées se recouvriraient au premier oubli de chaîner
     leurs bases.
 
-    `image_frames` = {nom: nombre de frames}, `image_frame_size` = {nom: (w, h)}
-    — le modèle ne résout pas les noms d'asset, c'est à l'appelant qui connaît
-    les sprites (le codegen) de les fournir. Absents, une image compte pour une
-    frame et un panneau pour un seul sprite : sous-réserver n'est pas anodin."""
+    `image_frames` = {nom: nombre de frames}, `image_frame_size` = {nom: (w, h)},
+    `animated_by_name` = {nom: glyphes animés} — le modèle ne résout ni les noms
+    d'asset ni la table de textes, c'est à l'appelant qui les connaît (le
+    codegen) de les fournir. Absents, une image compte pour une frame, un
+    panneau pour un seul sprite et une zone pour sa bande seule :
+    sous-réserver n'est pas anodin."""
     frames_by_name = image_frames or {}
     size_by_name = image_frame_size or {}
+    anim_by_name = animated_by_name or {}
     place, oam, tiles = {}, 0, 0
     for r in layout.slots:
         if layout.resolved_target(r, render_mode) != TARGET_OBJ:
             continue
-        g = strip_geometry(r)
+        g = strip_geometry(r, anim_by_name.get(r.name, 0))
         place[r.name] = {"oam_rel": oam, "tile_rel": tiles, **g}
         oam += g["oam"]
         tiles += g["tiles"]
@@ -1239,6 +1228,23 @@ class UILayout(Resource):
                 ox += ap[0]
                 oy += ap[1]
         return ox, oy, resolved
+
+    def absolute_tile_rect(self, element, actor_pos) -> tuple[int, int, int, int]:
+        """(tx, ty, w, h) en TUILES, en écran ABSOLU — même arrondi que
+        `UIText.tile_rect()` (bornes vers l'extérieur), mais résolu à travers
+        la chaîne parent/enfant au lieu du seul offset LOCAL de `element`.
+
+        Ce que l'allocation de la surface de composition doit lire (cf.
+        `scene_text_reservation`, `surf_layout`) : deux enfants d'un même
+        parent décalés localement de quelques pixels occupent des tuiles
+        ÉCRAN très différentes selon où vit ce parent — `tile_rect()` seul
+        (qui ignore les ancêtres) confondrait leur position avec celle du
+        frame."""
+        x, y, resolved = self.absolute_origin(element, actor_pos)
+        tx, ty = x // TILE, y // TILE
+        tw = _ceil_tile(x % TILE + int(element.w))
+        th = _ceil_tile(y % TILE + int(element.h))
+        return tx, ty, max(1, tw), max(1, th)
 
     def parent_origin(self, element, actor_pos) -> tuple[int, int]:
         """(x, y) écran de l'origine du PARENT de `element` — ou le socle du

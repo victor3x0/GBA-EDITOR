@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from core.toolchain import _config_dir
+from core.toolchain import config_dir
 
-CONFIG_FILE = _config_dir() / "external_tools.json"
+CONFIG_FILE = config_dir() / "external_tools.json"
 
 # (clé de config, libellé écran) — dans l'ordre d'affichage.
 TOOL_KINDS: list[tuple[str, str]] = [

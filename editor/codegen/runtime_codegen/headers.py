@@ -8,7 +8,6 @@ from __future__ import annotations
 import shutil
 from typing import Optional
 
-from core.models.components import CollisionBoxComponent
 from core.models.sprite import AnimState, SpriteAsset
 from core.models.scene import Actor
 from core.project import Project
@@ -16,6 +15,7 @@ from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
 from codegen import build_output
 from codegen.runtime_codegen.main_gen import prefab_group
+from codegen.actor_budget import prefab_pool_instances
 
 
 def generate_actor_types(
@@ -37,16 +37,16 @@ def generate_actor_types(
         "",
     ]
 
-    # Tags de boxes de collision
-    box_tags: list[str] = []
-    for actor, _ in scene_actors:
-        for comp in actor.components:
-            if isinstance(comp, CollisionBoxComponent) and comp.active:
-                tag = comp.tag or "body"
-                if tag not in box_tags:
-                    box_tags.append(tag)
-    if not box_tags:
-        box_tags = ["body"]
+    # Tags de boxes de collision — `Project.collision_tags()`, la même liste que
+    # le sélecteur de tag du CollisionEditor et la matrice de Project Settings.
+    #
+    # Cette boucle ne parcourait QUE `scene_actors`, et un tag porté seulement
+    # par un prefab poolé (ou par une PARTIE de prefab, ROADMAP v0.23) n'avait
+    # donc pas de `#define` — alors que `spawn_<Prefab>` l'écrit dans
+    # `boxes[].tag`. Le C émis ne compilait pas : « 'BOXTAG_BODY' undeclared in
+    # function 'spawn_Ball' ». Il ne fallait pas une seconde définition de
+    # « quels tags existent », il fallait la seule qui existait déjà.
+    box_tags = list(p.collision_tags()) or ["body"]
 
     for ti, tag in enumerate(box_tags):
         h.append(f"#define BOXTAG_{c_sym(tag).upper()} {ti}")
@@ -59,7 +59,7 @@ def generate_actor_types(
         h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
 
     # TAG_* pour les prefabs poolés (offset après les actors de scène), et la
-    # géométrie de la plage — POOL_<SYM>_START / POOL_<SYM>_SIZE. Le script
+    # géométrie de la plage — POOL_<SYM>_START / _SIZE / _GROUP / _INSTANCES. Le script
     # transpilé en a besoin pour dimensionner son état par instance et pour
     # retrouver le slot d'un `self` (`self - &g_actors[START]`) ; il est compilé
     # une fois pour le PROJET et ne peut donc pas connaître ces bornes autrement.
@@ -68,7 +68,8 @@ def generate_actor_types(
     # acteurs de TOUTES les scènes.
     pool_offset = len(scene_actors)
     for pf in prefabs:
-        if getattr(pf, "max_instances", 0) > 0:
+        _n = prefab_pool_instances(p, pf)
+        if _n > 0:
             pf_s = c_sym(pf.name)
             h.append(f"#define TAG_{pf_s.upper()} {pool_offset}  /* prefab pool début */")
             h.append(f"#define POOL_{pf_s.upper()}_START {pool_offset}")
@@ -78,10 +79,10 @@ def generate_actor_types(
             # constantes s'ajoutent pour que le C émis puisse passer de l'une
             # à l'autre sans recalculer.
             _g = prefab_group(pf)
-            h.append(f"#define POOL_{pf_s.upper()}_SIZE {pf.max_instances * _g}")
+            h.append(f"#define POOL_{pf_s.upper()}_SIZE {_n * _g}")
             h.append(f"#define POOL_{pf_s.upper()}_GROUP {_g}")
-            h.append(f"#define POOL_{pf_s.upper()}_INSTANCES {pf.max_instances}")
-            pool_offset += pf.max_instances * _g
+            h.append(f"#define POOL_{pf_s.upper()}_INSTANCES {_n}")
+            pool_offset += _n * _g
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]
     build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
@@ -106,8 +107,8 @@ def generate_actor_api(
     _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
 
     # Entrées de g_actors, parties comprises (ROADMAP v0.23).
-    prefab_slots = sum(pf.max_instances * prefab_group(pf)
-                       for pf in prefabs if getattr(pf, "max_instances", 0) > 0)
+    prefab_slots = sum(prefab_pool_instances(p, pf) * prefab_group(pf)
+                       for pf in prefabs)
     total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)
 
     a = [
@@ -265,7 +266,33 @@ def generate_actor_api(
             "{(void)id;(void)loop;(void)volume;}",
         ]
 
-    spawnable = [pf for pf in prefabs if getattr(pf, "max_instances", 0) > 0]
+    # ── destroy() + SoundFxComponent("on_destroy") ─────────────────────
+    # `actor_destroy_internal` (actor_api_static.h) ne connaît que le
+    # matériel : désactiver l'actor. Le SFX déclaré sur le trigger
+    # "on_destroy" est une donnée PAR PROJET (quel Sfx, pour quel TAG), donc
+    # elle vit ici, pas dans le fichier statique partagé entre tous les
+    # projets. Les deux tableaux sont DÉFINIS dans main.c (même patron que
+    # g_sfx_rate), indexés par `Actor.tag` — même TAG que actor_types.h,
+    # cf. main_gen._sfx_on_destroy_table. `self:destroy()` ET `other:destroy()`
+    # passent tous les deux par ce wrapper (scripting/codegen.py,
+    # `_emit_destroy`) : c'est le SEUL endroit commun aux deux, la cible d'un
+    # `other:destroy()` n'étant pas un symbole connu au build.
+    a += [
+        "",
+        "extern const s16 g_sfx_on_destroy_id[];",
+        "extern const u8  g_sfx_on_destroy_vol[];",
+        # `sfx_play` existe dans les deux branches ci-dessus (réel ou stub
+        # sans effet) : ce wrapper n'a donc pas à distinguer has_sound — les
+        # deux tableaux, définis dans main.c, sont tout -1 quand il n'y a
+        # aucun SoundFxComponent en on_destroy dans le projet.
+        "static inline void actor_destroy_with_sfx(Actor* s){",
+        "    int id = g_sfx_on_destroy_id[s->tag];",
+        "    if(id >= 0) sfx_play(id, g_sfx_on_destroy_vol[s->tag], 0);",
+        "    actor_destroy_internal(s);",
+        "}",
+    ]
+
+    spawnable = [pf for pf in prefabs if prefab_pool_instances(p, pf) > 0]
     if spawnable:
         a.append("")
         a.append("/* spawn_X() — défini dans main.c, visible par tous les scripts */")
@@ -328,6 +355,22 @@ def generate_actor_api(
         for i, cam in enumerate(_cams):
             if cam is not None:
                 a.append(f"#define CAM_{c_sym(cam.name).upper()} {i}")
+
+    # Constantes WIN_* — le rang matériel (WINR_0/WINR_1) d'un WindowSlot,
+    # décidé par l'allocateur (`window_alloc.py`, cf. ARCHITECTURE.md
+    # « Windows — le pochoir »). Une window n'appartient qu'à une scène, mais
+    # son nom est unique au PROJET (même contrainte que les caméras) : une
+    # seule passe sur toutes les scènes suffit à émettre le `#define`.
+    from codegen.window_alloc import scene_window_layout
+    _win_lines: list[str] = []
+    for _sc in getattr(p, "scenes", []):
+        _layout = scene_window_layout(p, _sc)
+        for _name, _slot in _layout.slots.items():
+            _win_lines.append(f"#define WIN_{c_sym(_name).upper()} {_slot}")
+    if _win_lines:
+        a.append("")
+        a.append("/* Windows nommées du projet — utilisées par window.* */")
+        a += _win_lines
 
     a += ["", "#endif /* ACTOR_API_H */", ""]
     build_output.write(p.src_dir / "actor_api.h", "\n".join(a))
