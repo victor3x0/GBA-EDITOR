@@ -136,9 +136,15 @@ class TextPanel(QWidget):
         # L'inspecteur montre UNE entrée : sur une sélection multiple, c'est
         # celle par laquelle elle a commencé.
         current = texts[0] if len(texts) == 1 else None
+        # AVANT `set_texts` : ce rechargement ré-analyse le contenu de `current`
+        # et le signale via `parsed` → `_on_parsed`, qui écrit dans la table au
+        # nom de `self._current`. Le mettre à jour après aurait fait recevoir
+        # à l'ANCIENNE ligne le contenu de la NOUVELLE (et l'inverse au clic
+        # suivant) — sans qu'une seule touche n'ait été tapée.
+        emit_change = current is not self._current
+        self._current = current
         self._bench.set_texts(texts)
-        if current is not self._current:
-            self._current = current
+        if emit_change:
             self.text_selected.emit(current)
 
     def _on_parsed(self, parsed):

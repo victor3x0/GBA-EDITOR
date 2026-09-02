@@ -68,7 +68,7 @@ def _event_tooltip(name: str) -> str:
         for p in params:
             lines.append(
                 f"<tr>"
-                f"<td style='font-family:Consolas,monospace;color:{C.ACCENT_ORG}'>{p['name']}</td>"
+                f"<td style='font-family:Consolas,monospace;color:{_C_API}'>{p['name']}</td>"
                 f"<td style='color:{_TEXT_DIM};padding:0 6px'>{p['type']}</td>"
                 f"<td style='color:{_TEXT_DIM}'>{p['description']}</td>"
                 f"</tr>"

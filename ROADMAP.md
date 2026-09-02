@@ -5,10 +5,12 @@ Ce document explique **le pourquoi** derrière les jalons qui restent à ouvrir 
 les décisions déjà verrouillées avant même de commencer, et les questions volontairement
 laissées ouvertes.
 
-Une fois un jalon **livré**, son détail quitte ce fichier : une ligne part au
-[CHANGELOG](CHANGELOG.md), la discussion complète (décisions verrouillées, pièges rencontrés,
-mesures) part dans [changelog-archive/](changelog-archive/), un fichier par version. Rien n'est
-perdu, ça change juste d'endroit — pour rouvrir une décision passée, c'est là qu'elle est.
+Une fois un jalon **livré**, son détail quitte ce fichier : la discussion complète (décisions
+verrouillées, pièges rencontrés, mesures) part dans [changelog-archive/](changelog-archive/), un
+fichier par version — ou par chantier, pour un [chantier technique](#chantiers-techniques). Un
+jalon **produit** gagne en plus une ligne au [CHANGELOG](CHANGELOG.md) ; un chantier technique
+n'y va jamais, il ne concerne que le code. Rien n'est perdu, ça change juste d'endroit — pour
+rouvrir une décision passée, c'est là qu'elle est.
 
 Six documents, six rôles :
 
@@ -25,6 +27,14 @@ Convention : **Décisions verrouillées** = tranché, à implémenter tel quel �
 pas sans raison neuve. **Ouvert** = identifié mais volontairement non tranché : à rouvrir
 quand le chantier démarre réellement, le contexte du moment valant mieux que des
 suppositions faites à l'avance.
+
+Un **jalon produit** porte un numéro (`vX.Y`) : il figure dans le tableau qui suit, et une fois
+livré, une ligne rejoint le [README](README.md) — c'est ce qu'un visiteur vient chercher. Un
+**chantier technique** n'en porte pas : né en cours de route (une question posée à
+l'architecture, une dette relevée en marchant), il ne change rien pour qui joue au jeu produit
+avec l'éditeur, seulement pour qui modifie le code. Il vit dans sa propre section,
+[Chantiers techniques](#chantiers-techniques), à l'écart du tableau et du README — jamais
+numéroté, jamais mélangé aux jalons produit.
 
 ---
 
@@ -46,8 +56,6 @@ suppositions faites à l'avance.
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
 | v0.22 | Menus, listes et curseur | **En cours** — navigation livrée ; en-tête de sauvegarde à faire |
-| v0.25 | La grammaire de la struct `Actor` | **En cours** |
-| v0.26 | Les trois couleurs de l'interface | **En cours** |
 | v0.9 | Traduction des jeux | **En cours** — déclarer, traduire, émettre et choisir livrés (phases 1-4, `lang.set`/`lang.get`) ; servir (phase 5 — SRAM, écran de choix) à faire |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | **En cours** — gabarit de notices et catalogue livrés ; sélection de langue à faire |
@@ -66,10 +74,12 @@ v0.22**. Cinq d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21) sont livrées et
 v0.18, hors ceux déjà cités) n'ont pas de priorité tranchée entre eux et restent dans leur ordre
 numérique, à la suite du bloc priorisé.
 
-La **v0.25** ne vient pas de cette revue : elle est née d'une question posée à l'architecture le
-2026-08-23 (« l'API C tient-elle les trois concepts de l'éditeur ? »). Sa section se lit juste
-après le bloc priorisé, et elle se traite tôt : elle touche la struct que tous les autres
-jalons manipulent, donc chaque jalon ouvert après elle est un jalon à ne pas migrer.
+Le chantier technique *La grammaire de la struct `Actor`* (voir
+[Chantiers techniques](#chantiers-techniques)) ne vient pas de cette revue : il est né d'une
+question posée à l'architecture le 2026-08-23 (« l'API C tient-elle les trois concepts de
+l'éditeur ? »). Il se traite tôt malgré tout : il touche la struct que tous les jalons produit
+manipulent, donc chaque jalon ouvert après lui est un jalon à ne pas migrer avant qu'il se
+referme.
 
 Un numéro de version reste une **identité**, pas un rang : il n'est pas renuméroté quand
 l'ordre de traitement change. Seul l'ordre de LECTURE de ce document — et l'ordre dans lequel
@@ -461,7 +471,23 @@ Les quatre questions ouvertes sont donc closes, et implémentées de bout en bou
 
 ---
 
-## v0.25 — La grammaire de la struct `Actor` — **EN COURS**
+## Chantiers techniques
+
+Un chantier technique ne livre rien de visible pour qui joue au jeu produit avec l'éditeur —
+seulement une réécriture, une clarification ou une garantie côté code. Il n'apparaît ni dans le
+[README](README.md) ni dans le [CHANGELOG](CHANGELOG.md), et ne porte pas de numéro `vX.Y` : une
+fois refermé, son détail rejoint [changelog-archive/](changelog-archive/) comme n'importe quel
+jalon, mais référencé par son nom plutôt que par un numéro.
+
+| Chantier | Ouvert le | État |
+| --- | --- | --- |
+| La grammaire de la struct `Actor` | 2026-08-23 | **En cours** |
+| Les trois couleurs de l'interface | 2026-08-24 | **En cours** |
+| `global.nom` / `const.nom` — l'accès pointé | 2026-09-01 | **Livré** — [archive](changelog-archive/global-const.md) |
+
+---
+
+## La grammaire de la struct `Actor` — **EN COURS**
 
 ### D'où vient la question
 
@@ -598,7 +624,7 @@ Et pour la réservation affine passée au sprite :
 
 ---
 
-## v0.26 — Les trois couleurs de l'interface — **EN COURS**
+## Les trois couleurs de l'interface — **EN COURS**
 
 ### D'où vient la question (2026-08-24)
 
@@ -1469,7 +1495,7 @@ Cinq intentions ordinaires, passées sur les 22 sections. **Quatre échouent.**
 | --- | --- |
 | cacher quelque chose | cinq réponses dans cinq sections — `self.visible` (Animation), `self:hide()` (Interface), `self.active` (Actor), `layer.show` (Layer), `window.show` (Window). Choisir suppose de savoir ce qu'est sa chose **pour le moteur** — précisément ce que l'itération promet de ne pas exiger. Et `self.visible` rangé dans « Animation » ne s'invente pas. |
 | faire sauter mon perso | **Movement** ne contient rien à ce sujet ; la réponse est dans **Physics** (`add_velocity`, `velocity`, `grounded`). Deux sections, un sujet, une frontière indevinable — et on s'arrête raisonnablement à la première. |
-| afficher mon score | **Texte** montre huit fonctions, aucune ne dit que la valeur vient de `global.set` plus un marqueur `$`. La recette traverse deux sections et un écran de l'éditeur. |
+| afficher mon score | **Texte** montre huit fonctions, aucune ne dit que la valeur vient d'une globale écrite au script (`global.score = 12`) plus un marqueur `$`. La recette traverse deux sections et un écran de l'éditeur. |
 | changer mon fond | cinq sections, trente entrées, toutes nommées d'après des **registres**. Et **Tile** (1 entrée) parle de collision, pas de décor : posé à côté de Tilemap, il se lit comme son petit frère. |
 | débuter | **Actor** est la corbeille de repli du réconciliateur (`_ACTOR_FALLBACK`) : la section la plus consultée par un débutant est celle dont le contenu est le moins prévisible. |
 
@@ -1515,7 +1541,8 @@ latérale en déduit un moteur à 22 sous-systèmes de poids comparable. Il en a
   trois versions.
 
 - **Quatre renommages, complets.** `get_actor` → `actor.get` (le verbe passe derrière, comme
-  `ui.get`, `global.get`, `const.get`) ; `ui` → `interface` (une abréviation, que la grammaire
+  `ui.get` — `global.get`/`const.get`, cités ici à l'origine, ont depuis quitté l'API
+  au profit de l'accès pointé, cf. [Chantiers techniques](#chantiers-techniques)) ; `ui` → `interface` (une abréviation, que la grammaire
   de la maison refuse) ; les quatre `text.*_in` → `interface.draw_text` / `clear_text` /
   `reading` / `skip` (elles visent une **zone nommée d'une mise en page**, pas des coordonnées
   libres — c'est ce mélange qui rendait « Texte » illisible) ; les trois boîtes sonores

@@ -1,13 +1,14 @@
 """ui/script_editor/var_table_panel.py — table GLOBALS/CONSTANTS de la sidebar Script Editor."""
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy,
-    QComboBox, QAbstractItemView, QMenu, QInputDialog, QMessageBox,
+    QComboBox, QAbstractItemView, QMenu, QMessageBox,
 )
 from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
 from ui.common.theme import C, T, S, QSS
 from core.models.settings import Constant, GlobalVar
+from core.command_dispatcher import unique_name
 from .colors import _C_GLOBAL, _C_CONST
 
 
@@ -47,7 +48,8 @@ class VarTablePanel(QWidget):
     """
     Tableau nom/type/valeur pour GLOBALS ou CONSTANTS, déclarées dans le
     projet. Double-clic sur une ligne → insère un snippet get (et set pour
-    les globals) au curseur. Clic droit → même menu + Supprimer.
+    les globals) au curseur. Clic droit → même menu + Supprimer, et pour les
+    globals, Array (la cellule Value devient une taille) et Persist (SRAM).
 
     Pas de header propre : posé via FinderSection.set_widget() pour la même
     apparence (flèche + titre coloré + boutons +/recherche) que les autres
@@ -64,31 +66,22 @@ class VarTablePanel(QWidget):
         self._label = "Globals" if kind == "global" else "Constants"
         self._color = _C_GLOBAL if kind == "global" else _C_CONST
         value_col = "default" if kind == "global" else "value"
-        # « cells » et « persist » aux globals seulement : une constante ne
-        # change jamais — rien n'a donc à en survivre à l'extinction de la
-        # console, et un catalogue de valeurs fixes est une table de données
-        # (`data.*`), pas une constante à plusieurs cases.
-        #
-        # « cells » se place APRÈS le type et AVANT le défaut : on lit la ligne
-        # « un bool, 400 fois, valant 0 au départ », qui est l'ordre dans lequel
-        # on y pense. Le défaut vaut pour toutes les cases (ROADMAP v0.20).
-        self._cols = ["name", "type"]
-        if kind == "global":
-            self._cols.append("cells")
-        self._cols.append(value_col)
-        if kind == "global":
-            self._cols.append("persist")
-        # Rang des colonnes optionnelles, pour ne pas les compter à la main à
-        # chaque accès — une colonne insérée décale tout ce qui suit.
-        self._col_cells   = self._cols.index("cells")   if kind == "global" else -1
-        self._col_value   = self._cols.index(value_col)
-        self._col_persist = self._cols.index("persist") if kind == "global" else -1
+        # Name | Type | Value, pour les deux tables — le format d'origine.
+        # « Array » (nombre de cases, ROADMAP v0.20) et « persist » (SRAM,
+        # v0.5) ne sont pas des colonnes : une constante ne change jamais, et
+        # un global n'est qu'exceptionnellement un tableau ou persistant.
+        # Deux propriétés d'exception qui réclameraient leur propre colonne
+        # sur TOUTES les lignes pour ne dire quelque chose que sur quelques-
+        # unes — le clic droit les porte, la cellule Value en montrant l'état
+        # (cf. `_append_row`).
+        self._cols = ["name", "type", value_col]
+        self._col_value = self._cols.index(value_col)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Table : nom / type / défaut ou valeur (+ persist pour les globals)
+        # Table : nom / type / défaut ou valeur.
         self._tbl = QTableWidget(0, len(self._cols))
         self._tbl.setStyleSheet(_TBL_SS)
         self._tbl.setHorizontalHeaderLabels(self._cols)
@@ -97,9 +90,6 @@ class VarTablePanel(QWidget):
             self._tbl.horizontalHeader().setSectionResizeMode(c, QHeaderView.ResizeMode.Fixed)
         self._tbl.setColumnWidth(1, 46)
         self._tbl.setColumnWidth(self._col_value, 46)
-        if kind == "global":
-            self._tbl.setColumnWidth(self._col_cells, 46)
-            self._tbl.setColumnWidth(self._col_persist, 52)
         self._tbl.verticalHeader().setVisible(False)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
@@ -140,16 +130,11 @@ class VarTablePanel(QWidget):
         self._updating = True
         self._tbl.setRowCount(0)
         for e in self._entries():
-            value = e.value if self._kind == "const" else e.default
-            self._append_row(e.name, e.type, str(value),
-                             persist=getattr(e, "persist", False),
-                             count=getattr(e, "count", 1), entry=e)
+            self._append_row(e.name, e.type, entry=e)
         self._updating = False
         self._fit()
 
-    def _append_row(self, name="var", typ="int", default="0", persist=False,
-                    count=1, entry=None):
-        from PyQt6.QtWidgets import QComboBox
+    def _append_row(self, name="var", typ="int", entry=None):
         row = self._tbl.rowCount()
         self._tbl.insertRow(row)
         self._tbl.setRowHeight(row, S.ROW)
@@ -169,53 +154,42 @@ class VarTablePanel(QWidget):
         combo.currentTextChanged.connect(lambda _, r=row: self._sync_to_project())
         self._tbl.setCellWidget(row, 1, combo)
 
-        # Nombre de CASES (ROADMAP v0.20). 1 = une variable simple, ce qu'elles
-        # étaient toutes avant : la colonne montre donc « 1 » partout sur un
-        # projet existant, et il n'y a rien à comprendre tant qu'on n'y touche
-        # pas. Au-delà, la variable s'indexe — `global.nom[i]`.
-        if self._kind == "global":
-            n_item = QTableWidgetItem(str(max(1, int(count or 1))))
-            n_item.setForeground(QColor(C.TEXT_DIM))
-            n_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            n_item.setToolTip(
-                "Nombre de cases.\n"
-                "1 = une variable simple : global.get(\"nom\") / global.set(\"nom\", v).\n"
-                "Plus = un tableau, indexé à partir de 1 : global.nom[i].\n\n"
-                "La valeur par défaut ci-contre vaut pour TOUTES les cases.\n"
-                "Si la variable est persistante, tout le tableau entre dans la\n"
-                "sauvegarde, empaqueté — 400 booléens y tiennent en 52 octets.")
-            self._tbl.setItem(row, self._col_cells, n_item)
-
-        default_item = QTableWidgetItem(str(default))
-        default_item.setForeground(QColor("#b5cea8"))
-        self._tbl.setItem(row, self._col_value, default_item)
-
-        # Persistance : la variable est-elle écrite en SRAM par save.write() ?
-        # Une case à cocher sans texte — la colonne dit déjà ce qu'elle coche.
-        if self._kind == "global":
-            p_item = QTableWidgetItem()
-            p_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-                            | Qt.ItemFlag.ItemIsSelectable)
-            p_item.setCheckState(Qt.CheckState.Checked if persist
-                                 else Qt.CheckState.Unchecked)
-            p_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._tbl.setItem(row, self._col_persist, p_item)
+        # « Array » (ROADMAP v0.20) n'a plus sa propre colonne — clic droit →
+        # Array pour l'activer. Une fois active, cette cellule ne montre plus
+        # le défaut mais la TAILLE, et se tape directement à l'écran ("value
+        # défini sa taille") ; couleur distincte pour ne pas la lire comme un
+        # défaut ordinaire.
+        is_array = self._kind == "global" and entry is not None and entry.count > 1
+        if is_array:
+            shown = entry.count
+        elif self._kind == "global":
+            shown = entry.default if entry is not None else 0
+        else:
+            shown = entry.value if entry is not None else 0
+        value_item = QTableWidgetItem(str(shown))
+        value_item.setForeground(QColor(C.ACCENT) if is_array else QColor("#b5cea8"))
+        if is_array:
+            value_item.setToolTip(
+                "Array size — number of cells, indexed from 1 (global.name[1]..[N]).\n"
+                "Right-click → Array to turn it back into a single value.")
+        self._tbl.setItem(row, self._col_value, value_item)
 
     def _add_var(self):
+        """Pas de boîte de dialogue : un nom automatique, la ligne s'ouvre
+        directement en édition (cf. « inline plutôt que dialogues »)."""
         if not self._project:
             return
-        title = "New global variable" if self._kind == "global" else "New constant"
-        name, ok = QInputDialog.getText(self, title, "Name:")
-        if not ok or not name.strip():
-            return
+        base = "global" if self._kind == "global" else "const"
+        name = unique_name(base, {e.name for e in self._entries()})
         entry = self._project.add_variable(self._kind, name)
         if entry is None:
-            QMessageBox.warning(self, "Duplicate", f"“{name.strip()}” already exists.")
-            return
+            return   # le nom vient d'être garanti libre — ne devrait pas arriver
         self._updating = True
-        self._append_row(name.strip(), entry=entry)
+        self._append_row(entry.name, entry.type, entry=entry)
         self._updating = False
         self.changed.emit()
+        row = self._tbl.rowCount() - 1
+        self._tbl.editItem(self._tbl.item(row, 0))
 
     def _on_item_changed(self, item):
         if self._updating:
@@ -230,11 +204,11 @@ class VarTablePanel(QWidget):
     def _rename_from_cell(self, item):
         """Renomme via le projet, seul chemin qui suit les CITATIONS du nom.
 
-        Écrire `entry.name` directement laisserait derrière chaque appel
-        `global.get("ancien")` et chaque `$ancien` d'un texte — le build
-        échouerait bien plus tard sur un `g_ancien` indéfini, sans rien qui
-        ramène au renommage. `Project.rename_variable` réécrit les deux, refuse
-        un doublon et dit combien de références il a touchées.
+        Écrire `entry.name` directement laisserait derrière chaque
+        `global.ancien` et chaque `$ancien` d'un texte — le build échouerait
+        bien plus tard sur un `g_ancien` indéfini, sans rien qui ramène au
+        renommage. `Project.rename_variable` réécrit les deux, refuse un
+        doublon et dit combien de références il a touchées.
 
         (L'id, lui, ne bouge pas : les fichiers de DONNÉES citent la variable
         par id justement pour ne pas dépendre de son nom, cf. `_sync_to_project`.)"""
@@ -296,19 +270,15 @@ class VarTablePanel(QWidget):
             entry.type = typ
             if self._kind == "const":
                 entry.value = value
+            elif entry.count > 1:
+                # Mode tableau (clic droit → Array, cf. `_ctx_menu`) : cette
+                # cellule montre et édite la TAILLE, pas le défaut — celui-ci
+                # n'est pas touché tant qu'on reste en mode tableau.
+                entry.count = max(1, value)
             else:
                 entry.default = value
-                p_item = self._tbl.item(row, self._col_persist)
-                entry.persist = (p_item is not None
-                                 and p_item.checkState() == Qt.CheckState.Checked)
-                # Une saisie illisible ou nulle retombe sur 1 — une variable
-                # simple — plutôt que de faire échouer l'enregistrement de
-                # toute la table sur une cellule.
-                n_item = self._tbl.item(row, self._col_cells)
-                try:
-                    entry.count = max(1, int((n_item.text() if n_item else "1") or 1))
-                except ValueError:
-                    entry.count = 1
+            # `persist` ne vient plus d'une cellule : `_ctx_menu` le pose
+            # directement sur l'entrée, ce tour de table ne doit pas l'écraser.
             entries.append(entry)
         if self._kind == "const":
             self._project.constants = entries
@@ -318,21 +288,16 @@ class VarTablePanel(QWidget):
         self.changed.emit()
 
     def _snippet_get(self, name: str, count: int = 1) -> str:
+        # Accès pointé (chantier global/const) : nu pour un scalaire, indexé pour un
+        # tableau — les deux compilent, il n'y a plus de forme à écarter.
         if self._kind == "const":
-            return f'const.get("{name}")'
-        # Un tableau ne se lit PAS par accesseur (ROADMAP v0.20) : proposer
-        # `global.get("coffres")` ici enseignerait une forme que le checker
-        # refuse. L'extrait inséré doit être celui qui compile.
-        return f'global.{name}[1]' if count > 1 else f'global.get("{name}")'
+            return f'const.{name}'
+        return f'global.{name}[1]' if count > 1 else f'global.{name}'
 
     def _row_count_cells(self, row) -> int:
-        if self._col_cells < 0:
-            return 1
-        item = self._tbl.item(row, self._col_cells)
-        try:
-            return max(1, int((item.text() if item else "1") or 1))
-        except ValueError:
-            return 1
+        name_item = self._tbl.item(row, 0)
+        entry = name_item.data(Qt.ItemDataRole.UserRole) if name_item else None
+        return max(1, getattr(entry, "count", 1)) if entry is not None else 1
 
     def _on_double_click(self, row, col):
         name_item = self._tbl.item(row, 0)
@@ -348,17 +313,26 @@ class VarTablePanel(QWidget):
         if not name_item:
             return
         name = name_item.text()
+        entry = name_item.data(Qt.ItemDataRole.UserRole)
         n = self._row_count_cells(row)
-        # Un tableau n'a pas d'accesseur d'écriture : `global.set` lui est
-        # refusé par le checker, il ne doit donc pas être proposé ici. Sa
-        # lecture ET son écriture passent par la même forme indexée.
-        write_snippet = (f'global.{name}[1] = ' if n > 1
-                         else f'global.set("{name}", )')
+        write_snippet = f'global.{name}[1] = ' if n > 1 else f'global.{name} = '
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         a_get = menu.addAction(self._snippet_get(name, n))
         a_set = (menu.addAction(write_snippet.rstrip(" ") + "...")
                  if self._kind == "global" else None)
+        # Array et Persist n'ont pas de colonne (cf. `__init__`) : deux cases
+        # à cocher ici, plutôt que deux colonnes vides sur presque toutes les
+        # lignes.
+        a_array = a_persist = None
+        if self._kind == "global" and entry is not None:
+            menu.addSeparator()
+            a_array = menu.addAction("Array")
+            a_array.setCheckable(True)
+            a_array.setChecked(entry.count > 1)
+            a_persist = menu.addAction("Persist (SRAM)")
+            a_persist.setCheckable(True)
+            a_persist.setChecked(entry.persist)
         menu.addSeparator()
         a_del = menu.addAction("Delete")
         action = menu.exec(self._tbl.viewport().mapToGlobal(pos))
@@ -366,8 +340,29 @@ class VarTablePanel(QWidget):
             self.snippet_requested.emit(self._snippet_get(name, n))
         elif a_set is not None and action == a_set:
             self.snippet_requested.emit(write_snippet)
+        elif a_array is not None and action == a_array:
+            self._toggle_array(entry)
+        elif a_persist is not None and action == a_persist:
+            entry.persist = not entry.persist
+            self._project.save_variables()
+            self.changed.emit()
         elif action == a_del:
             self._delete_row(row)
+
+    def _toggle_array(self, entry):
+        """Bascule une variable simple en tableau et inversement.
+
+        La cellule Value change de sens en même temps (défaut ↔ taille,
+        cf. `_append_row`) : un `_reload()` complet est le plus sûr moyen de
+        ne pas laisser l'ancien sens affiché sur la nouvelle cellule."""
+        if entry.count > 1:
+            entry.count = 1
+            entry.default = 0   # la case redevient un défaut, pas une taille périmée
+        else:
+            entry.count = 8     # taille de départ ; l'auteur l'ajuste dans la cellule
+        self._project.save_variables()
+        self.changed.emit()
+        self._reload()
 
     def _delete_row(self, row):
         self._tbl.removeRow(row)

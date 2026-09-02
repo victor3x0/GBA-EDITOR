@@ -148,13 +148,15 @@ class _Colors:
     ACCENT_RED = "#e05050"  # rouge     — erreurs, suppression
     ACCENT_YLW = "#e8c547"  # jaune     — avertissements
 
-    # Legacy — DEPRECATED : encore utilisés comme teintes de pools de palette
-    # (labels OBJ/BG) et divers. À terme, remplacer par les familles de type
-    # (icons.py). Le vert structurel `ACCENT_GRN` a été entièrement migré et
-    # supprimé (→ ACCENT périwinkle, ou POWER pour le live).
-    ACCENT_BLU = "#82aaff"
-    ACCENT_ORG = "#c48b3c"
-    ACCENT_PRP = "#9b7bd5"
+    # Accents GÉNÉRIQUES — pas une famille de type (celles-là vivent dans
+    # icons.py : COLOR_ACTOR, COLOR_SCENE, COLOR_SCRIPT, COLOR_FONT…). Servent
+    # à distinguer DEUX choses posées en vis-à-vis quand aucune famille ne
+    # correspond : le pool matériel OBJ (chaud) vs BG (froid), l'API Lua
+    # (chaud) vs une référence projet (froid) dans le Script Editor, un état
+    # secondaire/sélection (froid). Le vert structurel `ACCENT_GRN` a lui été
+    # entièrement migré et supprimé (→ ACCENT périwinkle, ou POWER pour le live).
+    ACCENT_WARM = "#c48b3c"
+    ACCENT_COOL = "#82aaff"
 
     # Textes — gris légèrement teintés indigo, comme la ramp de fonds
     TEXT_HI    = "#e9e9f2"  # titre, valeurs importantes
@@ -163,8 +165,9 @@ class _Colors:
     TEXT_MUTED = "#48485c"  # très discret
 
     # Axes vecteurs
-    AXIS_X = "#c07070"   # rouge doux — axe X
-    AXIS_Y = "#7090c0"   # bleu doux  — axe Y
+    AXIS_X = "#c07070"   # rouge doux  — axe X
+    AXIS_Y = "#7090c0"   # bleu doux   — axe Y
+    AXIS_Z = "#7aab7a"   # vert doux   — axe Z
 
     # Sélection panel (périwinkle) — SEL_BG aligné sur BG_SEL : un seul
     # fond de sélection dans toute l'app (les deux noms restent pour compat).

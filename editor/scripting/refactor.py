@@ -306,12 +306,15 @@ def index_refs_in_project(project, domain: str) -> dict[str, dict[Path, int]]:
     return index
 
 
-# ── Tables de données — le second type de site ────────────────────
+# ── Tables de données, globals, constantes — le second type de site ──
 #
 # Tout ce qui précède repère une référence dans un ARGUMENT littéral d'appel,
-# et sa table de sites dérive de `RUNTIME_API`. Une table de données, elle, se
-# cite comme du CODE : `data.Objets[i].prix`, sans guillemets et sans appel.
-# Elle est donc invisible à `iter_refs`, et un renommage la laisserait derrière.
+# et sa table de sites dérive de `RUNTIME_API`. Une table de données, une
+# variable globale ou une constante, elles, se citent comme du CODE :
+# `data.Objets[i].prix`, `global.score`, `const.max` — sans guillemets et sans
+# appel (ROADMAP v0.20 pour les tableaux, chantier global/const pour l'accès
+# pointé qui a remplacé global.get/set et const.get). Invisibles à
+# `iter_refs`, un renommage les laisserait derrière.
 #
 # Le repérage reste STRUCTUREL — c'est l'AST qui dit quelles occurrences sont
 # des citations, jamais une recherche de texte. Mais la réécriture ne peut pas
@@ -411,8 +414,8 @@ def _rewrite_data_refs(text: str, refs: list[DataRef], new: str) -> tuple[str, i
 
 def rename_data_table_in_project(project, old: str, new: str) -> dict[Path, int]:
     """Réécrit `data.<old>` en `data.<new>` dans tous les scripts."""
-    return _rename_data(project, new,
-                        lambda text, p: list(iter_data_refs(text, p, table=old)))
+    return _rename_by_position(project, new,
+                               lambda text, p: list(iter_data_refs(text, p, table=old)))
 
 
 def rename_data_column_in_project(project, table: str,
@@ -420,12 +423,16 @@ def rename_data_column_in_project(project, table: str,
     """Réécrit `data.<table>[…].<old>` en `.<new>`. La table est exigée : deux
     tables peuvent avoir une colonne du même nom sans rapport l'une avec
     l'autre."""
-    return _rename_data(project, new,
-                        lambda text, p: list(iter_data_refs(text, p, table=table,
-                                                            column=old)))
+    return _rename_by_position(project, new,
+                               lambda text, p: list(iter_data_refs(text, p, table=table,
+                                                                   column=old)))
 
 
-def _rename_data(project, new: str, find) -> dict[Path, int]:
+def _rename_by_position(project, new: str, find) -> dict[Path, int]:
+    """Cherche puis réécrit, script par script — commun à tout ce qui se
+    renomme par POSITION plutôt que par littéral (tables de données, globals,
+    constantes : `find` rend une liste d'objets `.start`/`.stop`, peu importe
+    leur type exact)."""
     changed: dict[Path, int] = {}
     for p in script_paths(project):
         try:
@@ -439,6 +446,69 @@ def _rename_data(project, new: str, find) -> dict[Path, int]:
         p.write_text(new_text, encoding="utf-8")
         changed[p] = n
     return changed
+
+
+# ── Globals et constantes — même second type de site ──────────────
+#
+# `global.nom` / `global.nom[i]` / `const.nom` (chantier global/const) : le même
+# repérage que `data.Objets`, un seul niveau de namespace en moins. `_ns_field`
+# est `_table_of` généralisé au namespace ("global" ou "const" au lieu de
+# `DATA_NS` figé) ; `iter_var_refs` couvre les TROIS formes d'un coup, parce
+# que `global.nom[i]` porte le même noeud `Index(global, nom)` QUE `global.nom`
+# nu — seul ce qui l'ENTOURE diffère, pas le noeud à renommer.
+
+@dataclass(frozen=True)
+class VarRef:
+    """Une citation de variable globale ou de constante, par IDENTIFIANT."""
+    path: Path
+    ns:   str    # "global" | "const"
+    name: str
+    line: int
+    start: int
+    stop:  int
+
+
+def _ns_field(node, ns: str) -> Optional[str]:
+    """`ns.nom` (ex: global.score) → "score", pour tout autre noeud → None."""
+    if (isinstance(node, _nodes.Index)
+            and node.notation == _nodes.IndexNotation.DOT
+            and isinstance(node.value, _nodes.Name)
+            and node.value.id == ns):
+        return getattr(node.idx, "id", None)
+    return None
+
+
+def iter_var_refs(text: str, path: Path | None = None,
+                  ns: str = "global", name: str | None = None) -> Iterator[VarRef]:
+    """Citations de `ns.<name>` (`ns` = "global" ou "const"). `name` filtre le
+    nom ; sans lui, toutes les citations de ce namespace."""
+    if not _LUAPARSER_OK:
+        return
+    try:
+        tree = _lua_ast.parse(text)
+    except Exception:
+        return
+
+    def _line(off: int) -> int:
+        return text.count("\n", 0, off) + 1
+
+    for node in _lua_ast.walk(tree):
+        found = _ns_field(node, ns)
+        if not found or (name is not None and found != name):
+            continue
+        span = _tail_span(text, node, found)
+        if span:
+            yield VarRef(path=path or Path(""), ns=ns, name=found,
+                        line=_line(span[0]), start=span[0], stop=span[1])
+
+
+def rename_var_in_project(project, ns: str, old: str, new: str) -> dict[Path, int]:
+    """Réécrit `global.<old>` (ou `const.<old>`) en `<new>` dans tous les
+    scripts, quelle que soit la forme (nue, indexée). `Project.rename_variable`
+    l'appelle EN PLUS de `rename_lua_refs(DOMAIN_GLOBAL, …)` — celui-ci reste
+    nécessaire pour `save.read(slot, "nom")`, qui cite le nom en chaîne."""
+    return _rename_by_position(project, new,
+                               lambda text, p: list(iter_var_refs(text, p, ns=ns, name=old)))
 
 
 def rename_in_project(project, domain: str, old: str, new: str) -> dict[Path, int]:

@@ -4,8 +4,11 @@ Le détail complet de chaque entrée du [CHANGELOG](../CHANGELOG.md) : le pourqu
 décisions verrouillées, les pièges rencontrés, les mesures — extrait de la roadmap au moment
 où chaque version a été livrée, pour que ni l'un ni l'autre ne devienne illisible.
 
-Un fichier par version. Rien n'est perdu : c'est ici qu'on vient rouvrir une décision passée
-avec le contexte complet qui l'a motivée, plutôt que de la retrancher à l'aveugle.
+Un fichier par version — et un par [chantier technique](../ROADMAP.md#chantiers-techniques)
+refermé, référencé par son nom plutôt que par un numéro : un chantier technique ne touche ni le
+CHANGELOG ni le README, mais sa discussion se range ici comme les autres. Rien n'est perdu :
+c'est ici qu'on vient rouvrir une décision passée avec le contexte complet qui l'a motivée,
+plutôt que de la retrancher à l'aveugle.
 
 Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste à faire, voir
 [ROADMAP.md](../ROADMAP.md).
@@ -26,3 +29,9 @@ Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste 
 | [v0.20](v0.20.md) | L'état du monde : les collections persistantes |
 | [v0.21](v0.21.md) | Le texte adressable : le dialogue piloté par la donnée |
 | [v0.23](v0.23.md) | Ce qu'un boss demande |
+
+### Chantiers techniques
+
+| Chantier | Sujet |
+| --- | --- |
+| [`global.nom` / `const.nom`](global-const.md) | L'accès pointé remplace les accesseurs |

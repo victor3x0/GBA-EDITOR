@@ -24,7 +24,7 @@ from core.resource_store import atomic_write
 from core import project_json
 from core.models.ids import new_id
 from core.models.settings import GlobalVar, Constant
-from scripting.api import DOMAIN_GLOBAL, DOMAIN_CONST
+from scripting.api import DOMAIN_GLOBAL
 
 
 class ProjectVariablesMixin:
@@ -140,8 +140,17 @@ class ProjectVariablesMixin:
             return False
         old_name = entry.name
         with self._renaming():
-            refs = self.rename_lua_refs(
-                DOMAIN_CONST if kind == "const" else DOMAIN_GLOBAL, old_name, new_name)
+            # `global.nom` / `const.nom` (chantier global/const) se citent par
+            # IDENTIFIANT, pas par chaîne littérale — `rename_var_in_project`
+            # couvre les DEUX. `rename_lua_refs`/DOMAIN_GLOBAL, en plus, pour
+            # `save.read(slot, "nom")` : seul site qui garde un nom entre
+            # guillemets (une CONSTANTE n'a plus aucun site littéral).
+            from scripting.refactor import rename_var_in_project
+            ns = "const" if kind == "const" else "global"
+            refs = (self.rename_lua_refs(DOMAIN_GLOBAL, old_name, new_name)
+                   if kind == "global" else {})
+            for path, n in rename_var_in_project(self, ns, old_name, new_name).items():
+                refs[path] = refs.get(path, 0) + n
             n_texts = self.rename_var_in_texts(old_name, new_name)
             entry.name = new_name
             self.save_variables()

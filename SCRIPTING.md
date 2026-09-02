@@ -95,12 +95,14 @@ Deux points valent d'être soulignés, parce qu'ils surprennent :
   `self.position = self.position + self.velocity` ne peut plus faire (les deux membres n'ont
   plus la même échelle). `math.lerp`/`math.ease` n'ont pas changé : un Q8 est un entier comme
   un autre, ils interpolent l'un ou l'autre sans le savoir.
-- **Une variable globale peut avoir plusieurs cases.** Déclarée avec une taille dans l'écran
-  des variables, elle s'indexe par son nom — `global.coffres[i] = 1` — comme une table de
-  données (`data.Objets[i].prix`), et à partir de 1 comme tout tableau du langage. Une
-  variable SIMPLE garde ses accesseurs : `global.get("score")` / `global.set("score", v)`.
-  Si elle est marquée persistante, tout le tableau entre dans la sauvegarde, empaqueté —
-  400 booléens y tiennent en 52 octets, sans que le script ait à le savoir.
+- **Globals et constantes s'écrivent en accès pointé, pas en accesseur.** `global.score` se
+  lit, `global.score = 12` s'écrit ; `const.max` se lit, jamais ne s'écrit — une constante ne
+  change pas, c'est tout son sens. Une variable globale peut avoir plusieurs cases : déclarée
+  avec une taille dans l'écran des variables, elle s'indexe par son nom — `global.coffres[i] = 1`
+  — comme une table de données (`data.Objets[i].prix`), et à partir de 1 comme tout tableau du
+  langage ; une variable SIMPLE, elle, ne s'indexe jamais. Si elle est marquée persistante,
+  tout le tableau entre dans la sauvegarde, empaqueté — 400 booléens y tiennent en 52 octets,
+  sans que le script ait à le savoir.
 - **Un enfant se nomme depuis son parent.** Si un acteur (ou un prefab) a des enfants, on les
   atteint par leur nom : `local MonBras = self.BrasG`, puis `MonBras:destroy()`,
   `MonBras.visible = false`… Un point pour désigner, deux points pour agir. C'est résolu au
@@ -295,7 +297,7 @@ C'est la question la plus fréquente, alors voici la réponse complète. Pour af
 « Score : 12 » :
 
 1. dans l'écran **Texte**, créez une entrée dont le contenu est `Score : $score_joueur` ;
-2. dans le script, mettez la valeur à jour : `global.set("score_joueur", 12)` ;
+2. dans le script, mettez la valeur à jour : `global.score_joueur = 12` ;
 3. affichez l'entrée : `text.draw(2, 2, "score")`.
 
 La valeur est substituée à l'affichage. Le texte reste traduisible, et le script n'a jamais

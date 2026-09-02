@@ -217,7 +217,7 @@ class BuildPanel(QWidget):
         self.console.ensureCursorVisible()
 
     def log_error(self, t): self.log(t, C.ACCENT_RED)
-    def log_info(self, t):  self.log(t, C.ACCENT_BLU)
+    def log_info(self, t):  self.log(t, C.ACCENT_COOL)
 
     def set_building(self, b):
         self.btn_build.setEnabled(not b)

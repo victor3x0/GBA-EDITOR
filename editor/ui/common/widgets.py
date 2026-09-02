@@ -51,6 +51,51 @@ BTN_DANGER = QSS.toolbutton_danger
 BTN_ICON   = QSS.toolbutton_icon
 
 
+class HoverIconButton(QToolButton):
+    """`QToolButton` dont l'icône se recolore elle-même au survol et, si le
+    bouton est cochable, à l'état coché.
+
+    Un `QIcon` posé par `setIcon` est un pixmap déjà teinté (cf.
+    `ui/common/icons.py`) : la feuille de style peut recolorer du TEXTE au
+    survol (`QToolButton:hover{color:…}`), jamais un pixmap. D'où cette
+    classe plutôt qu'un glyphe de police (`setText("+")`) stylé en CSS — les
+    deux rendaient la même chose à l'écran, mais seul le second réagissait
+    à la souris."""
+
+    def __init__(self, icon_name: str, base: str, hover: str,
+                 checked: str | None = None, parent: QWidget | None = None):
+        super().__init__(parent)
+        from ui.common import icons
+        self._icons = icons
+        self._icon_name = icon_name
+        self._base = base
+        self._hover = hover
+        self._checked_color = checked
+        self._hovered = False
+        if checked is not None:
+            self.toggled.connect(lambda _c: self._sync_icon())
+        self._sync_icon()
+
+    def _sync_icon(self):
+        if self._checked_color is not None and self.isChecked():
+            color = self._checked_color
+        elif self._hovered:
+            color = self._hover
+        else:
+            color = self._base
+        self.setIcon(self._icons.get(self._icon_name, color))
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._hovered = True
+        self._sync_icon()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self._hovered = False
+        self._sync_icon()
+
+
 # ── Factory class (namespace) ─────────────────────────────────────────
 
 class _W:
@@ -68,10 +113,10 @@ class _W:
 
     def btn_danger(self, tooltip: str = "") -> QToolButton:
         """Bouton × danger (supprimer, détacher…). Visible au repos, rouge au survol."""
-        b = QToolButton()
-        b.setText("×")
+        b = HoverIconButton("clear", C.TEXT_NORM, C.ACCENT_RED)
         b.setStyleSheet(BTN_DANGER)
         b.setFixedSize(22, 22)
+        b.setIconSize(QSize(14, 14))
         if tooltip:
             b.setToolTip(tooltip)
         return b
@@ -81,24 +126,19 @@ class _W:
         `icon` : nom logique dans ui/common/icons.py (ex: "add_row") pour
         remplacer le "+" générique quand plusieurs boutons d'ajout se
         cotoient et doivent se distinguer par leur fonction."""
-        b = QToolButton()
+        b = HoverIconButton(icon or "add", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
+        b.setIconSize(QSize(16, 16))
         b.setToolTip(tooltip)
-        if icon is not None:
-            from ui.common import icons
-            b.setIcon(icons.get(icon, C.TEXT_DIM))
-            b.setIconSize(QSize(16, 16))
-        else:
-            b.setText("+")
         return b
 
     def btn_search(self, tooltip: str = "Search") -> QToolButton:
-        """Bouton ⌕ sans bordure, survol vert — style project panel."""
-        b = QToolButton()
-        b.setText("⌕")
+        """Bouton loupe sans bordure, survol accent — style project panel."""
+        b = HoverIconButton("search", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
+        b.setIconSize(QSize(16, 16))
         b.setToolTip(tooltip)
         return b
 
@@ -107,13 +147,11 @@ class _W:
         de finder dans l'explorateur du système (cf. ui/common/reveal.py).
         Standardisé : le même bouton dans tous les finders, visible seulement
         pour les familles qui ont un dossier physique (`AssetKind.dir_of`)."""
-        from ui.common import icons
-        b = QToolButton()
+        b = HoverIconButton("reveal_in_files", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
-        b.setToolTip(tooltip)
-        b.setIcon(icons.get("reveal_in_files", C.TEXT_DIM))
         b.setIconSize(QSize(16, 16))
+        b.setToolTip(tooltip)
         return b
 
     def search_box(self, placeholder: str = "Filter by name…") -> QLineEdit:

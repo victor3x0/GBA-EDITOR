@@ -9,8 +9,8 @@ _BORDER   = C.BORDER      # séparateurs
 _TEXT_DIM   = C.TEXT_DIM  # labels discrets
 _TEXT_NORM  = C.TEXT_NORM # texte courant
 _TEXT_HI    = C.TEXT_HI   # texte mis en avant
-_C_API      = C.ACCENT_ORG  # orange — API Lua
-_C_REF      = C.ACCENT_BLU  # bleu — références projet
+_C_API      = C.ACCENT_WARM  # chaud — API Lua
+_C_REF      = C.ACCENT_COOL  # froid — références projet
 _C_SUB      = C.TEXT_MUTED  # sous-labels grisés
 # Couleurs de catégorie du script editor — centralisées dans ui/common/icons.py
 # (pas de type d'objet dédié dans COMPONENT/PROJECT panel pour ces concepts).

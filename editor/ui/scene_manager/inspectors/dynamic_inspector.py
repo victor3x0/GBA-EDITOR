@@ -84,7 +84,6 @@ class DynamicInspector(QWidget):
         self._scene_insp = SceneInspector()
         self._scene_insp.changed.connect(self.changed)
         self._scene_insp.slot_assigned.connect(self.slot_assigned)
-        self._scene_insp.blend_changed.connect(self.blend_changed)
         self._stack.addWidget(self._scene_insp)
 
         # 2 — actor / prefab

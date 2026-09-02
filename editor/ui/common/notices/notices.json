@@ -72,6 +72,22 @@
       "tone": "info",
       "text": "Renaming a column is done in the grid header — it is written as code in scripts, so the rename rewrites them."
     },
+    "scene.budget.count": {
+      "tone": "info",
+      "text": "{reserved} actors + {pool} pool = {used} / {total} slots — {free} free"
+    },
+    "scene.budget.explain": {
+      "tone": "accent",
+      "text": "The hardware shows 128 sprites — that ceiling is the OAM, not a setting. Placed actors and spawn pools share it. A pool is declared in instances but paid in slots: a prefab with parts costs instances × parts."
+    },
+    "scene.budget.over_oam": {
+      "tone": "build",
+      "text": "{reserved} actors + {pool} pool = {used} / {total} slots — over the {limit} OAM entries, the surplus won't show"
+    },
+    "scene.budget.over_placed": {
+      "tone": "build",
+      "text": "{reserved} actors + {pool} pool = {used} / {total} slots — {placed} actors placed for {reserved} reserved"
+    },
     "settings.tips": {
       "tone": "info",
       "text": "Tips are the explanations: what a concept means, where an optimisation is worth it. Warnings about what the build or the screen will do are never hidden by this."

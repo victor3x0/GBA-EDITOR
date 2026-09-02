@@ -235,7 +235,7 @@ class ActorInspector(QWidget):
         )
         self._sprite_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sprite_preview.setToolTip(
-            f"<b style='color:{C.ACCENT_BLU}'>Starting sprite</b><br><br>"
+            f"<b style='color:{icons.COLOR_SPRITE}'>Starting sprite</b><br><br>"
             "Click to assign a sprite from the project.<br>"
             "First frame of the initial AnimState."
         )

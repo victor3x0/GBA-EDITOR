@@ -254,7 +254,7 @@ class ScriptInspector(QWidget):
             n = 2 if typ == "vec2" else 3
             vals = self._as_nums(var.get("default"), n)
             axes = ["X", "Y", "Z"][:n]
-            colors = [C.AXIS_X, C.AXIS_Y, C.ACCENT_BLU][:n]
+            colors = [C.AXIS_X, C.AXIS_Y, C.AXIS_Z][:n]
             roww = QWidget(); hb = QHBoxLayout(roww)
             hb.setContentsMargins(0, 0, 0, 0); hb.setSpacing(6)
             spins = []

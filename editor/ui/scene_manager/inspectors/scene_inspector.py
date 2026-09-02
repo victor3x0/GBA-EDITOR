@@ -4,31 +4,25 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
-    QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton,
-    QCheckBox, QSpinBox, QLineEdit,
+    QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton, QSpinBox,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 
 from core.models.palette import OWN_PAL_BANK
-from core.models.scene import Scene, WindowSlot
+from core.models.scene import Scene
 from core.project import Project
-from core.models.scene import (
-    BLEND_NONE, BLEND_ALPHA, BLEND_BRIGHTEN, BLEND_DARKEN,
-    BLEND_TOP, BLEND_BOTTOM, BLEND_NEEDS_BOTTOM, blend_role_of,
-    EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE, EFFECT_TRANSLUCENT,
-    EFFECT_CUSTOM, blend_effect_of, blend_amount_of, apply_blend_effect,
-    TRANSITION_INHERIT,
-)
+from core.models.scene import TRANSITION_INHERIT, EFFECT_NONE
 from ui.scene_manager.inspectors.bg_layer_row import BgLayerRow
 from ui.scene_manager.inspectors.project_inspector import TRANSITION_LABELS
 from core.history import (
     get_history, Command, SetFieldCmd, SwapFieldCmd, AddListItemCmd,
     RemoveListItemCmd, SetSceneModeCmd,
 )
-from core.command_dispatcher import get_dispatcher, unique_name
+from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup, NotesEdit, CollapsibleCard
+from ui.common.notice import note, notice, tip
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from codegen.actor_budget import (
     OAM_LIMIT, prefab_group, scene_actor_budget, scene_pool_instances,
@@ -36,44 +30,6 @@ from codegen.actor_budget import (
 from ui.common import icons
 
 
-# ── Blending — libellés ───────────────────────────────────────────
-# Les QUATRE modes du matériel, pas un de plus : `BLDCNT` bits 6-7 n'en code
-# que quatre. Pas de « multiply » ni d'« overlay » — les proposer promettrait
-# un rendu que la GBA ne sait pas produire.
-_BLEND_LABELS = [
-    (BLEND_NONE,     "Normal (no blending)"),
-    (BLEND_ALPHA,    "Alpha (mix with what is behind)"),
-    (BLEND_BRIGHTEN, "Brighten (fade to white)"),
-    (BLEND_DARKEN,   "Darken (fade to black)"),
-]
-_BLEND_ROLE_LABELS = [
-    ("",           "—"),
-    (BLEND_TOP,    "Top (blended)"),
-    (BLEND_BOTTOM, "Bottom (behind)"),
-]
-
-# Ce à quoi on PENSE, par-dessus les registres. « Custom » n'est jamais choisi :
-# c'est ce que l'inspecteur affiche quand le réglage a été composé à la main,
-# et le sélectionner ne réécrit rien (cf. models/scene.apply_blend_effect).
-_EFFECT_LABELS = [
-    (EFFECT_NONE,        "None"),
-    (EFFECT_FADE_BLACK,  "Fade to black (whole screen)"),
-    (EFFECT_FADE_WHITE,  "Fade to white (whole screen)"),
-    (EFFECT_TRANSLUCENT, "Translucent layer"),
-    (EFFECT_CUSTOM,      "Custom (set in Hardware)"),
-]
-# Ce que le pourcentage veut dire, par effet — le libellé change avec lui :
-# « 100 % » ne dit pas la même chose d'un fondu et d'une opacité.
-_AMOUNT_LABELS = {
-    EFFECT_FADE_BLACK:  ("Darkness:", "0 = untouched, 100 = fully black"),
-    EFFECT_FADE_WHITE:  ("Whiteness:", "0 = untouched, 100 = fully white"),
-    EFFECT_TRANSLUCENT: ("Opacity:", "Opacity of the marked layer — 100 = opaque, "
-                                     "so nothing shows through"),
-}
-# Le matériel ne connaît que 17 crans (0-16) : un pourcentage tapé se recale sur
-# le plus proche. Le dire, sinon « 40 » qui devient « 38 » passe pour un bug.
-_AMOUNT_QUANTIZED = ("<br><br>Snaps to the hardware's 17 steps (0-16), so the "
-                     "value may shift by a percent or two.")
 # ── Transition — libellés ─────────────────────────────────────────
 # Les mêmes mots que l'inspecteur de projet (qui les définit, la transition
 # étant d'abord un réglage de projet), plus l'item d'absence de surcharge. Son
@@ -82,14 +38,6 @@ _AMOUNT_QUANTIZED = ("<br><br>Snaps to the hardware's 17 steps (0-16), so the "
 _TRANSITIONS: tuple[tuple[str, str], ...] = (
     (TRANSITION_INHERIT, "From project"),
 ) + TRANSITION_LABELS
-
-# Où un effet FRAÎCHEMENT choisi se pose. À mi-course : assez pour se voir dans
-# le canvas, jamais au point d'éteindre l'écran au moment du clic.
-_EFFECT_DEFAULT_AMOUNT = {
-    EFFECT_FADE_BLACK: 50,
-    EFFECT_FADE_WHITE: 50,
-    EFFECT_TRANSLUCENT: 50,
-}
 
 
 class _ScenePaletteCmd(Command):
@@ -170,140 +118,11 @@ MODE_INFO: dict[int, dict] = {
 
 
 # ──────────────────────────────────────────────────────────────────
-#  _WindowSlotRow — une window (une INTENTION nommée, pas un index
-#  matériel — cf. codegen/window_alloc.py)
-# ──────────────────────────────────────────────────────────────────
-class _WindowSlotRow(QFrame):
-    """Nom + rectangle + visibilité + gating de layers pour une WindowSlot.
-    Mutation directe de la WindowSlot (pas d'historique par frappe, comme
-    CameraInspector) ; `changed` déclenche la persistance côté SceneInspector.
-    Le RENOMMAGE passe par un signal dédié (`rename_requested`) : il doit
-    passer par `Project.rename_window` (collision project-wide, réécriture
-    des scripts), pas une simple mutation d'attribut."""
-    changed = pyqtSignal()
-    remove_requested = pyqtSignal(object)   # (slot,)
-    rename_requested = pyqtSignal(object, str)   # (slot, nouveau nom)
-
-    def __init__(self, slot, parent=None):
-        super().__init__(parent)
-        self.slot = slot
-        self.setObjectName("win_row")
-        self.setStyleSheet(
-            f"QFrame#win_row{{background:{C.BG_INPUT};border:1px solid {C.BORDER_MID};"
-            f"border-radius:4px;}}"
-        )
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 6, 8, 6)
-        outer.setSpacing(4)
-
-        is_obj = slot.is_obj
-        hdr = QHBoxLayout(); hdr.setSpacing(6)
-        if is_obj:
-            title = QLabel("Window OBJ")
-            title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-            title.setStyleSheet(f"color:{C.TEXT_NORM}; letter-spacing:1px;")
-            hdr.addWidget(title)
-        else:
-            self._ed_name = QLineEdit(slot.name)
-            self._ed_name.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
-            self._ed_name.setStyleSheet(QSS.lineedit)
-            self._ed_name.setPlaceholderText("Name (required)")
-            self._ed_name.setToolTip(
-                "Referenced from Lua as window.set_layer(\"Name\", …) — unique "
-                "across the whole project, like a camera.")
-            self._ed_name.editingFinished.connect(
-                lambda: self.rename_requested.emit(self.slot, self._ed_name.text()))
-            hdr.addWidget(self._ed_name, 1)
-        self._chk_visible = QCheckBox("Active")
-        self._chk_visible.setStyleSheet(QSS.checkbox)
-        self._chk_visible.setChecked(slot.visible)
-        self._chk_visible.toggled.connect(self._on_field_changed)
-        hdr.addWidget(self._chk_visible)
-        if is_obj:
-            hdr.addStretch()
-        btn_del = QPushButton("×")
-        btn_del.setFixedSize(20, 20)
-        btn_del.setStyleSheet(
-            f"QPushButton{{color:{C.TEXT_DIM};background:transparent;border:none;font-weight:bold;}}"
-            f"QPushButton:hover{{color:{C.ACCENT_RED};}}"
-        )
-        btn_del.clicked.connect(lambda: self.remove_requested.emit(self.slot))
-        hdr.addWidget(btn_del)
-        outer.addLayout(hdr)
-
-        # La fenêtre-objet n'a pas de rectangle : sa forme vient des pixels
-        # opaques des sprites en mode « fenêtre-objet » (Actor.obj_mode).
-        self._spins = {}
-        if is_obj:
-            note = QLabel("No rectangle: the shape comes from sprites set to\n"
-                          "“Mask (OBJ window)” in the Actor inspector.")
-            note.setFont(QFont(T.UI, T.XS))
-            note.setStyleSheet(f"color:{C.TEXT_MUTED};")
-            note.setWordWrap(True)
-            outer.addWidget(note)
-        else:
-            rect_row = QHBoxLayout(); rect_row.setSpacing(6)
-            for label, attr, maxv in (("X", "x", 240), ("Y", "y", 160), ("L", "w", 240), ("H", "h", 160)):
-                col = QVBoxLayout()
-                lbl = QLabel(label)
-                lbl.setFont(QFont(T.UI, T.XS)); lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-                col.addWidget(lbl)
-                spin = QSpinBox()
-                spin.setFont(QFont(T.MONO, T.SM))
-                spin.setStyleSheet(QSS.spinbox)
-                spin.setRange(0, maxv)
-                spin.setValue(getattr(slot, attr))
-                spin.setFixedWidth(52)
-                spin.valueChanged.connect(self._on_field_changed)
-                self._spins[attr] = spin
-                col.addWidget(spin)
-                rect_row.addLayout(col)
-            rect_row.addStretch()
-            outer.addLayout(rect_row)
-
-        layers_row = QHBoxLayout(); layers_row.setSpacing(6)
-        layers_row.addWidget(self._mk_dim_label("Show through:"))
-        self._chk_bg = []
-        for i in range(4):
-            c = QCheckBox(f"BG{i}")
-            c.setStyleSheet(QSS.checkbox)
-            c.setChecked(bool(slot.layers_shown[i]) if i < len(slot.layers_shown) else True)
-            c.toggled.connect(self._on_field_changed)
-            self._chk_bg.append(c)
-            layers_row.addWidget(c)
-        self._chk_obj = QCheckBox("OBJ")
-        self._chk_obj.setStyleSheet(QSS.checkbox)
-        self._chk_obj.setChecked(slot.obj_shown)
-        self._chk_obj.toggled.connect(self._on_field_changed)
-        layers_row.addWidget(self._chk_obj)
-        layers_row.addStretch()
-        outer.addLayout(layers_row)
-
-    def _mk_dim_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setFont(QFont(T.UI, T.XS))
-        lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-        return lbl
-
-    def _on_field_changed(self, *_):
-        s = self.slot
-        for attr, spin in self._spins.items():   # vide pour la fenêtre-objet
-            setattr(s, attr, spin.value())
-        s.visible = self._chk_visible.isChecked()
-        s.layers_shown = [c.isChecked() for c in self._chk_bg]
-        s.obj_shown = self._chk_obj.isChecked()
-        self.changed.emit()
-
-
-# ──────────────────────────────────────────────────────────────────
 #  SceneInspector
 # ──────────────────────────────────────────────────────────────────
 class SceneInspector(QWidget):
     changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
-    # Le mélange a changé — le canvas doit RECOMPOSER ses pixmaps, pas
-    # seulement se redessiner. Distinct de `changed`, cf. `_emit_blend_changed`.
-    blend_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -387,63 +206,6 @@ class SceneInspector(QWidget):
         self._chk_scroll_h.toggled.connect(self._on_scroll_changed)
         self._chk_scroll_v.toggled.connect(self._on_scroll_changed)
         param_inner.addLayout(scroll_row)
-
-        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
-        lbl_ui = QLabel("UI layer:")
-        lbl_ui.setFont(QFont(T.UI, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_ui.setFixedWidth(70)
-        self._combo_text_bg = QComboBox()
-        self._combo_text_bg.setFont(QFont(T.UI, T.SM))
-        self._combo_text_bg.setStyleSheet(QSS.combobox)
-        for i in range(4):
-            self._combo_text_bg.addItem(f"BG{i}" + (" (default)" if i == 1 else ""), i)
-        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
-        self._combo_text_bg.setToolTip(
-            "<b>Layer reserved for HUD text (TTE)</b><br><br>"
-            "In-game text (score, dialogue…) takes up a whole BG layer.<br>"
-            "Pick a BG that isn't used by a background.<br><br>"
-            "<b>Conflict ⚠</b>: if this BG is already assigned to a background,<br>"
-            "the two overlap and the result is undefined."
-        )
-        self._lbl_text_bg_warn = QLabel()
-        self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
-        self._lbl_text_bg_warn.setVisible(False)
-        ui_row.addWidget(lbl_ui)
-        ui_row.addWidget(self._combo_text_bg)
-        ui_row.addWidget(self._lbl_text_bg_warn)
-        ui_row.addStretch(1)
-        param_inner.addLayout(ui_row)
-
-        # ── Banque de couleurs de l'UI ────────────────────────────
-        # Où le texte lit ses couleurs : un SLOT de la sélection BG de la scène.
-        # « Automatic » (le défaut) garde le comportement historique, la police
-        # imposant sa propre palette. Slot picker plutôt qu'un QComboBox : même
-        # widget que l'inspecteur d'élément d'UI pour ce même champ (cf.
-        # `ui_inspector._reload_ui_pal_slot`) — il ne doit pas se présenter
-        # différemment selon l'écran d'où on le change.
-        pal_row = QHBoxLayout(); pal_row.setSpacing(6)
-        lbl_pal = QLabel("UI colors:")
-        lbl_pal.setFont(QFont(T.UI, T.SM)); lbl_pal.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_pal.setFixedWidth(70)
-        self._ui_pal_slot = None
-        self._ui_pal_box = QHBoxLayout()
-        pal_row.addWidget(lbl_pal)
-        pal_row.addLayout(self._ui_pal_box, 1)
-        param_inner.addLayout(pal_row)
-
-        # ── Police par défaut de la scène ─────────────────────────
-        # Celle que `scene_init` charge, donc celle qu'obtient tout texte qui
-        # n'en nomme pas — un élément d'UI réglé sur « (scene font) », ou un
-        # `text.draw` sans `text.set_font`.
-        font_row = QHBoxLayout(); font_row.setSpacing(6)
-        lbl_font = QLabel("UI font:")
-        lbl_font.setFont(QFont(T.UI, T.SM)); lbl_font.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_font.setFixedWidth(70)
-        self._font_slot = None
-        self._font_box = QHBoxLayout()
-        font_row.addWidget(lbl_font)
-        font_row.addLayout(self._font_box, 1)
-        param_inner.addLayout(font_row)
 
         # ── Backdrop ──────────────────────────────────────────────
         # Couleur de l'index 0 de PAL_BG_RAM : ce que le hardware affiche là où
@@ -553,7 +315,7 @@ class SceneInspector(QWidget):
         from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
         self._scene_script_slot = ScriptSlot(
             add_label    = "Add a scene script",
-            accent_color = C.ACCENT_ORG,
+            accent_color = icons.COLOR_SCRIPT,
             hint         = "on_start · on_update · on_late_update",
         )
         self._scene_script_slot.set_callbacks(
@@ -564,184 +326,6 @@ class SceneInspector(QWidget):
         mode_inner.addWidget(self._scene_script_slot)
 
         cl.addWidget(mode_card)
-
-        # ── Carte Windows — deux places matérielles, allouées par intention
-        # (WindowSlot nommé, cadre de caméra) et non par index — cf.
-        # codegen/window_alloc.py, ARCHITECTURE.md « Windows — le pochoir ».
-        win_card = CollapsibleCard("Windows", color=C.ACCENT_BLU)
-        win_inner = win_card.body_layout
-        btn_add_rect = W.btn_add("Add a window")
-        btn_add_rect.clicked.connect(lambda: self._add_window(is_obj=False))
-        win_card.add_header_widget(btn_add_rect)
-        self._btn_win_add_obj = W.btn_add("Add the OBJ window (free-form, defined by sprites)")
-        self._btn_win_add_obj.clicked.connect(lambda: self._add_window(is_obj=True))
-        win_card.add_header_widget(self._btn_win_add_obj)
-
-        self._lbl_win_budget = QLabel("")
-        self._lbl_win_budget.setFont(QFont(T.UI, T.XS))
-        self._lbl_win_budget.setWordWrap(True)
-        win_inner.addWidget(self._lbl_win_budget)
-
-        win_info = QLabel(
-            "Screen masks: a window is rectangular and NAMED (like a camera) "
-            "— which of the two hardware slots it gets is decided at build. "
-            "The OBJ window is free-form. They frame where a layer or sprite "
-            "shows — they draw nothing themselves. Scriptable too (window.*)."
-        )
-        win_info.setFont(QFont(T.UI, T.XS))
-        win_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        win_info.setWordWrap(True)
-        win_inner.addWidget(win_info)
-
-        self._window_rows: list[_WindowSlotRow] = []
-        self._windows_container = QVBoxLayout()
-        self._windows_container.setContentsMargins(0, 2, 0, 0)
-        self._windows_container.setSpacing(4)
-        win_inner.addLayout(self._windows_container)
-
-        cl.addWidget(win_card)
-
-        # ── Carte Blending ─────────────────────────────────────────
-        # DEUX niveaux, et le premier suffit presque toujours.
-        #
-        # Devant : un EFFET (fondu au noir, fondu au blanc, layer translucide)
-        # et un pourcentage. C'est ce à quoi les gens pensent, et ça pose les
-        # cibles d'office — y compris le backdrop, dont l'oubli est la panne
-        # n°1 du blending GBA.
-        #
-        # Derrière, replié : les registres eux-mêmes (BLDCNT/BLDALPHA/BLDY),
-        # pour composer ce que les trois effets ne couvrent pas — cibles
-        # partielles, EVA+EVB > 16 pour un halo saturé. Un réglage fait là
-        # ressort en « Custom » et n'est jamais réécrit par l'effet.
-        blend_card = CollapsibleCard("Blending", color=C.ACCENT_BLU)
-        blend_inner = blend_card.body_layout
-
-        eff_row = QHBoxLayout(); eff_row.setContentsMargins(0, 0, 0, 0); eff_row.setSpacing(8)
-        lbl_eff = self._dim_label("Effect:")
-        lbl_eff.setFixedWidth(70)
-        self._combo_effect = QComboBox()
-        self._combo_effect.setFont(QFont(T.UI, T.MD))
-        self._combo_effect.setStyleSheet(QSS.combobox)
-        for eff, lab in _EFFECT_LABELS:
-            self._combo_effect.addItem(lab, eff)
-        self._combo_effect.setToolTip(
-            "<b>Fade to black / white</b> — the whole screen, for a transition.<br>"
-            "<b>Translucent layer</b> — one layer mixed with what is behind it;<br>"
-            "mark which one with the ▲ button on its row.<br><br>"
-            "The hardware has one blend mode for the entire screen, so these<br>"
-            "are exclusive. Open <i>Hardware</i> below to compose something else."
-        )
-        self._combo_effect.currentIndexChanged.connect(self._on_blend_effect)
-        eff_row.addWidget(lbl_eff)
-        eff_row.addWidget(self._combo_effect, 1)
-        blend_inner.addLayout(eff_row)
-
-        amt_row = QHBoxLayout(); amt_row.setContentsMargins(0, 0, 0, 0); amt_row.setSpacing(8)
-        self._lbl_amount = self._dim_label("Amount:")
-        self._lbl_amount.setFixedWidth(70)
-        self._blend_amount = QSpinBox()
-        self._blend_amount.setRange(0, 100)
-        self._blend_amount.setSingleStep(5)
-        self._blend_amount.setSuffix(" %")
-        self._blend_amount.setFont(QFont(T.MONO, T.SM))
-        self._blend_amount.setStyleSheet(QSS.spinbox)
-        self._blend_amount.setKeyboardTracking(False)
-        self._blend_amount.valueChanged.connect(self._on_blend_amount)
-        amt_row.addWidget(self._lbl_amount)
-        amt_row.addWidget(self._blend_amount)
-        amt_row.addStretch(1)
-        self._amount_row = QWidget(); self._amount_row.setLayout(amt_row)
-        self._amount_row.setStyleSheet("background:transparent;")
-        blend_inner.addWidget(self._amount_row)
-
-        self._blend_hint = QLabel("")
-        self._blend_hint.setFont(QFont(T.UI, T.XS))
-        self._blend_hint.setWordWrap(True)
-        self._blend_hint.setStyleSheet(f"color:{C.TEXT_DIM}; margin-top:2px;")
-        blend_inner.addWidget(self._blend_hint)
-
-        # ── Repli « Hardware » : les registres tels quels ──────────
-        self._btn_blend_adv = W.btn_ghost("Hardware ▸")
-        self._btn_blend_adv.setFont(QFont(T.UI, T.XS))
-        self._btn_blend_adv.setToolTip(
-            "The BLDCNT / BLDALPHA / BLDY registers as they are — for what the "
-            "three effects above do not cover.")
-        self._btn_blend_adv.clicked.connect(self._toggle_blend_adv)
-        blend_inner.addWidget(self._btn_blend_adv)
-
-        self._blend_adv = QWidget()
-        self._blend_adv.setStyleSheet("background:transparent;")
-        adv = QVBoxLayout(self._blend_adv)
-        adv.setContentsMargins(0, 2, 0, 0); adv.setSpacing(4)
-        self._blend_adv.setVisible(False)
-        blend_inner.addWidget(self._blend_adv)
-
-        bl_row = QHBoxLayout(); bl_row.setContentsMargins(0, 0, 0, 0); bl_row.setSpacing(8)
-        lbl_bl = self._dim_label("Mode:")
-        lbl_bl.setFixedWidth(70)
-        self._combo_blend = QComboBox()
-        self._combo_blend.setFont(QFont(T.UI, T.SM))
-        self._combo_blend.setStyleSheet(QSS.combobox)
-        for m, lab in _BLEND_LABELS:
-            self._combo_blend.addItem(lab, m)
-        self._combo_blend.setToolTip("BLDCNT bits 6-7 — one mode for the whole screen.")
-        self._combo_blend.currentIndexChanged.connect(self._on_blend_mode)
-        bl_row.addWidget(lbl_bl)
-        bl_row.addWidget(self._combo_blend, 1)
-        adv.addLayout(bl_row)
-
-        # Coefficients bruts — EVA/EVB pour l'alpha, EVY pour les fondus. Les
-        # trois existent toujours, seuls ceux qui AGISSENT se montrent.
-        self._blend_ev = {}
-        for key, lab, tip in (
-            ("eva", "EVA", "Weight of the top layer, 0-16 (16 = full)"),
-            ("evb", "EVB", "Weight of the layer behind, 0-16"),
-            ("evy", "EVY", "Fade intensity toward white or black, 0-16"),
-        ):
-            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
-            t = self._dim_label(lab + ":")
-            t.setFixedWidth(70)
-            sp = QSpinBox()
-            sp.setRange(0, 16)          # borne MATÉRIELLE : 5 bits, >16 vaut 16
-            sp.setFont(QFont(T.MONO, T.SM))
-            sp.setStyleSheet(QSS.spinbox)
-            sp.setKeyboardTracking(False)
-            sp.setToolTip(tip)
-            sp.valueChanged.connect(lambda v, k=key: self._on_blend_ev(k, v))
-            r.addWidget(t); r.addWidget(sp); r.addStretch(1)
-            holder = QWidget(); holder.setLayout(r)
-            holder.setStyleSheet("background:transparent;")
-            self._blend_ev[key] = (holder, sp)
-            adv.addWidget(holder)
-
-        # Sprites et backdrop sont deux cibles comme les layers, mais n'ont pas
-        # de ligne dans la liste des layers : leur rôle vit donc ici.
-        self._blend_extra = {}
-        for attr, lab, tip in (
-            ("blend_obj_role", "Sprites",
-             "Actors as a blend target — a sprite in semi-transparent OBJ mode "
-             "is a separate door and blends regardless of this."),
-            ("blend_backdrop_role", "Backdrop",
-             "The backdrop as the layer behind. This is what makes a blend "
-             "work over an empty area — with nothing behind, nothing blends."),
-        ):
-            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
-            t = self._dim_label(lab + ":")
-            t.setFixedWidth(70)
-            cb = QComboBox()
-            cb.setFont(QFont(T.UI, T.SM))
-            cb.setStyleSheet(QSS.combobox)
-            for role, rlab in _BLEND_ROLE_LABELS:
-                cb.addItem(rlab, role)
-            cb.setToolTip(tip)
-            cb.currentIndexChanged.connect(lambda _i, a=attr: self._on_blend_extra(a))
-            r.addWidget(t); r.addWidget(cb, 1)
-            holder = QWidget(); holder.setLayout(r)
-            holder.setStyleSheet("background:transparent;")
-            self._blend_extra[attr] = (holder, cb)
-            adv.addWidget(holder)
-
-        cl.addWidget(blend_card)
 
         # ── Carte Background Asset ────────────────────────────────
         bg_card = CollapsibleCard("Background layers")
@@ -770,7 +354,7 @@ class SceneInspector(QWidget):
         self._btn_bitmap_pick.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_NORM}; background:{C.BG_INPUT};"
             f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px 8px; text-align:left;}}"
-            f"QPushButton:hover{{color:{C.TEXT_HI}; border-color:{C.ACCENT_BLU};}}"
+            f"QPushButton:hover{{color:{C.TEXT_HI}; border-color:{icons.COLOR_BACKGROUND};}}"
         )
         self._btn_bitmap_pick.clicked.connect(self._pick_bitmap_bg)
         bmp_l.addWidget(self._btn_bitmap_pick)
@@ -793,8 +377,8 @@ class SceneInspector(QWidget):
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}
-        for pool, color, title in (("obj", C.ACCENT_ORG, "OBJ (sprites)"),
-                                    ("bg", C.ACCENT_BLU, "BCK (backgrounds)")):
+        for pool, color, title in (("obj", C.ACCENT_WARM, "OBJ (sprites)"),
+                                    ("bg", C.ACCENT_COOL, "BCK (backgrounds)")):
             sub_lbl = QLabel(title)
             sub_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
             sub_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px; margin-top:4px;")
@@ -811,6 +395,74 @@ class SceneInspector(QWidget):
 
         cl.addWidget(pal_card)
 
+        # ── Carte User Interface — HUD texte : layer, couleurs, police ──
+        # Les trois réglages dont dépend tout texte TTE, regroupés ensemble
+        # plutôt qu'éclatés dans la colonne « Scene mode » : ils forment une
+        # même décision (où le HUD s'affiche, avec quoi), pas des paramètres
+        # de rendu du fond.
+        ui_card = CollapsibleCard("User Interface")
+        self._ui_card = ui_card
+        ui_inner = ui_card.body_layout
+
+        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
+        lbl_ui = QLabel("UI layer:")
+        lbl_ui.setFont(QFont(T.UI, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_ui.setFixedWidth(70)
+        self._combo_text_bg = QComboBox()
+        self._combo_text_bg.setFont(QFont(T.UI, T.SM))
+        self._combo_text_bg.setStyleSheet(QSS.combobox)
+        for i in range(4):
+            self._combo_text_bg.addItem(f"BG{i}" + (" (default)" if i == 1 else ""), i)
+        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
+        self._combo_text_bg.setToolTip(
+            "<b>Layer reserved for HUD text (TTE)</b><br><br>"
+            "In-game text (score, dialogue…) takes up a whole BG layer.<br>"
+            "Pick a BG that isn't used by a background.<br><br>"
+            "<b>Conflict ⚠</b>: if this BG is already assigned to a background,<br>"
+            "the two overlap and the result is undefined."
+        )
+        self._lbl_text_bg_warn = QLabel()
+        self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
+        self._lbl_text_bg_warn.setVisible(False)
+        ui_row.addWidget(lbl_ui)
+        ui_row.addWidget(self._combo_text_bg)
+        ui_row.addWidget(self._lbl_text_bg_warn)
+        ui_row.addStretch(1)
+        ui_inner.addLayout(ui_row)
+
+        # ── Banque de couleurs de l'UI ────────────────────────────
+        # Où le texte lit ses couleurs : un SLOT de la sélection BG de la scène.
+        # « Automatic » (le défaut) garde le comportement historique, la police
+        # imposant sa propre palette. Slot picker plutôt qu'un QComboBox : même
+        # widget que l'inspecteur d'élément d'UI pour ce même champ (cf.
+        # `ui_inspector._reload_ui_pal_slot`) — il ne doit pas se présenter
+        # différemment selon l'écran d'où on le change.
+        pal_row = QHBoxLayout(); pal_row.setSpacing(6)
+        lbl_pal = QLabel("UI colors:")
+        lbl_pal.setFont(QFont(T.UI, T.SM)); lbl_pal.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_pal.setFixedWidth(70)
+        self._ui_pal_slot = None
+        self._ui_pal_box = QHBoxLayout()
+        pal_row.addWidget(lbl_pal)
+        pal_row.addLayout(self._ui_pal_box, 1)
+        ui_inner.addLayout(pal_row)
+
+        # ── Police par défaut de la scène ─────────────────────────
+        # Celle que `scene_init` charge, donc celle qu'obtient tout texte qui
+        # n'en nomme pas — un élément d'UI réglé sur « (scene font) », ou un
+        # `text.draw` sans `text.set_font`.
+        font_row = QHBoxLayout(); font_row.setSpacing(6)
+        lbl_font = QLabel("UI font:")
+        lbl_font.setFont(QFont(T.UI, T.SM)); lbl_font.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_font.setFixedWidth(70)
+        self._font_slot = None
+        self._font_box = QHBoxLayout()
+        font_row.addWidget(lbl_font)
+        font_row.addLayout(self._font_box, 1)
+        ui_inner.addLayout(font_row)
+
+        cl.addWidget(ui_card)
+
         # ── Carte Actor budget — les 128 entrées de l'OAM, réparties ────
         # Deux postes et UN plafond (ROADMAP v0.17) : ce que la scène POSE et
         # ce qu'elle SPAWNE se partagent le même matériel.
@@ -820,13 +472,20 @@ class SceneInspector(QWidget):
         # réciproquement. Pousser une valeur d'autorité aurait détruit en
         # silence un pool réglé plus tôt — ici l'auteur voit simplement qu'il
         # ne reste rien à prendre.
-        budget_card = CollapsibleCard("Actor budget", color=C.ACCENT_ORG)
+        budget_card = CollapsibleCard("Actor budget", color=C.ACCENT_WARM)
         budget_inner = budget_card.body_layout
 
-        self._lbl_actor_budget = QLabel("")
+        # Niveau 1 : le compte, toujours affiché. Niveau 2 : un encadré
+        # (ton `build`) quand le budget déborde — deux formes du même
+        # débordement (le matériel refuse, ou l'auteur a réservé moins que ce
+        # qu'il a posé), donc deux clés plutôt qu'une case à cocher qui
+        # changerait le sens du texte sous les yeux.
+        self._lbl_actor_budget = note(budget_inner, "scene.budget.count")
         self._lbl_actor_budget.setFont(QFont(T.MONO, T.SM))
-        self._lbl_actor_budget.setWordWrap(True)
-        budget_inner.addWidget(self._lbl_actor_budget)
+        self._budget_over_oam = notice(
+            "scene.budget.over_oam", self._lbl_actor_budget, budget_inner)
+        self._budget_over_placed = notice(
+            "scene.budget.over_placed", self._lbl_actor_budget, budget_inner)
 
         row_slots = QHBoxLayout()
         row_slots.setContentsMargins(0, 4, 0, 0); row_slots.setSpacing(8)
@@ -859,16 +518,9 @@ class SceneInspector(QWidget):
         self._pool_container.setSpacing(4)
         budget_inner.addLayout(self._pool_container)
 
-        budget_info = QLabel(
-            "The hardware shows 128 sprites — that ceiling is the OAM, not a "
-            "setting. Placed actors and spawn pools share it. A pool is "
-            "declared in instances but paid in slots: a prefab with parts "
-            "costs instances × parts."
-        )
-        budget_info.setFont(QFont(T.UI, T.XS))
-        budget_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        budget_info.setWordWrap(True)
-        budget_inner.addWidget(budget_info)
+        # Niveau 3 : explique le matériel (OAM, coût d'un pool) — coupable en
+        # bloc par Settings ▸ Interface, jamais mêlé aux deux niveaux au-dessus.
+        tip("scene.budget.explain", budget_inner)
 
         cl.addWidget(budget_card)
 
@@ -896,16 +548,12 @@ class SceneInspector(QWidget):
         # la sélection BG, que ce dernier vient de rafraîchir.
         self._reload_ui_pal()
         self._reload_scene_font()
-        self._rebuild_window_rows()
         # La LISTE des prefabs d'abord, les plafonds ensuite : chaque champ se
         # borne sur ce que les autres ont pris, donc ils doivent tous exister.
         self._rebuild_actor_budget()
         self._refresh_actor_budget()
         self._refresh_backdrop()
-        # Après `_rebuild_bg_layers` (via _apply_mode_ui) : `_refresh_blend`
-        # pilote la visibilité du rôle sur chaque ligne, qui doit exister.
         self._apply_mode_ui()
-        self._refresh_blend()
         self._refresh_transition()
         self._refresh_music()
         self._blocking = False
@@ -1038,7 +686,7 @@ class SceneInspector(QWidget):
                 "Importe d'abord une image en mode Bitmap dans le Background Editor.")
             return
         entries = [(b.name, b.name) for b in bitmaps]
-        popup = ScriptPickerPopup(entries, C.ACCENT_BLU, parent=self, new_label=None)
+        popup = ScriptPickerPopup(entries, icons.COLOR_BACKGROUND, parent=self, new_label=None)
         popup.picked.connect(self._set_bitmap_bg)
         popup.show_below(self._btn_bitmap_pick)
 
@@ -1065,8 +713,11 @@ class SceneInspector(QWidget):
             self._rebuild_layer_rows()
         else:
             self._refresh_bitmap_slot(info)
-        # Paramètres (texte TTE + scroll) : tuilé seulement.
+        # Paramètres (texte TTE + scroll) : tuilé seulement — la carte User
+        # Interface sélectionne un BG comme layer HUD, qui n'existe pas en
+        # bitmap (une seule couche, déjà prise par le fond plein écran).
         self._param_col.setVisible(is_tiled)
+        self._ui_card.setVisible(is_tiled)
         # PALETTES : OBJ toujours, BG seulement en tuilé.
         self._pal_sublabels["bg"].setVisible(is_tiled)
         self._pal_grids["bg"].setVisible(is_tiled)
@@ -1114,9 +765,6 @@ class SceneInspector(QWidget):
             row.layer_swap_requested.connect(self._on_layer_swap)
             row.visibility_toggled.connect(self._on_layer_visibility)
             row.inpaint_layer_selected.connect(self._on_inpaint_layer)
-            row.blend_role_changed.connect(
-                lambda _, r, l=layer: self._on_layer_blend_role(l, r))
-            row.set_blend_role(blend_role_of(layer))
             row.set_visible_state(getattr(layer, "visible", True))
             row.set_inpaint_layer(layer.bg_slot == self._inpaint_layer_slot)
             self._bg_layers_container.addWidget(row)
@@ -1124,203 +772,11 @@ class SceneInspector(QWidget):
 
         self._refresh_bound_rows()
         self._refresh_ui_layer_marks()
-        self._sync_layer_blend_rows()
         self._btn_bg_add.setEnabled(len(self._scene.background_layers) < 4)
 
-    # ── Blending ──────────────────────────────────────────────────
-    def _refresh_blend(self):
-        """Repose la carte BLENDING et n'y montre que ce qui AGIT.
-
-        Les modes 2 et 3 n'emploient que le dessus et lisent BLDY : afficher
-        EVA/EVB à côté laisserait composer un réglage sans effet, et chercher
-        ensuite pourquoi il n'en a pas."""
-        sc = self._scene
-        if sc is None:
-            return
-        mode = int(getattr(sc, "blend_mode", BLEND_NONE) or BLEND_NONE)
-        prev, self._blocking = self._blocking, True
-        try:
-            i = self._combo_blend.findData(mode)
-            self._combo_blend.setCurrentIndex(i if i >= 0 else 0)
-            for key, (holder, sp) in self._blend_ev.items():
-                sp.setValue(int(getattr(sc, f"blend_{key}", 0) or 0))
-            on = mode != BLEND_NONE
-            self._blend_ev["eva"][0].setVisible(mode == BLEND_ALPHA)
-            self._blend_ev["evb"][0].setVisible(mode == BLEND_ALPHA)
-            self._blend_ev["evy"][0].setVisible(mode in (BLEND_BRIGHTEN, BLEND_DARKEN))
-            for attr, (holder, cb) in self._blend_extra.items():
-                holder.setVisible(on)
-                j = cb.findData(getattr(sc, attr, "") or "")
-                cb.setCurrentIndex(j if j >= 0 else 0)
-                # « Dessous » n'a de sens qu'en alpha : le griser plutôt que de
-                # le retirer garde un choix déjà posé visible.
-                item = cb.model().item(2)
-                if item is not None:
-                    item.setEnabled(mode in BLEND_NEEDS_BOTTOM)
-            # ── Devant : l'effet et son pourcentage ────────────────
-            eff = blend_effect_of(sc)
-            k = self._combo_effect.findData(eff)
-            self._combo_effect.setCurrentIndex(k if k >= 0 else 0)
-            # « Custom » n'est proposé que lorsqu'on Y EST : c'est un constat,
-            # pas un choix — le sélectionner ne saurait pas quoi écrire.
-            item = self._combo_effect.model().item(len(_EFFECT_LABELS) - 1)
-            if item is not None:
-                item.setEnabled(eff == EFFECT_CUSTOM)
-            lab, tip = _AMOUNT_LABELS.get(eff, ("Amount:", ""))
-            self._lbl_amount.setText(lab)
-            self._blend_amount.setToolTip(tip + _AMOUNT_QUANTIZED if tip else "")
-            self._blend_amount.setValue(blend_amount_of(sc))
-            self._amount_row.setVisible(eff in _AMOUNT_LABELS)
-        finally:
-            self._blocking = prev
-        self._sync_layer_blend_rows()
-        self._refresh_blend_hint()
-
-    def _toggle_blend_adv(self):
-        """Déplie les registres. Le repli n'est pas un état de la scène : c'est
-        une préférence d'affichage, elle ne se sauvegarde pas."""
-        show = not self._blend_adv.isVisible()
-        self._blend_adv.setVisible(show)
-        self._btn_blend_adv.setText("Hardware ▾" if show else "Hardware ▸")
-
-    def _on_blend_effect(self, _i):
-        """Un effet POSE les cibles, pas seulement le mode — c'est tout
-        l'intérêt : le backdrop en seconde cible, qu'on oublie toujours, arrive
-        avec le reste."""
-        if self._blocking or not self._scene:
-            return
-        eff = self._combo_effect.currentData() or EFFECT_NONE
-        if eff == EFFECT_CUSTOM:
-            return
-        # Le pourcentage n'est repris QUE si l'effet ne change pas : les
-        # échelles ne sont pas comparables (100 % d'opacité = rien à voir, 100 %
-        # de fondu = écran noir). Sans ça, passer de l'alpha au fondu éteignait
-        # l'écran au moment même où on choisissait l'effet.
-        amount = (self._blend_amount.value() if blend_effect_of(self._scene) == eff
-                  else _EFFECT_DEFAULT_AMOUNT.get(eff, 50))
-        from core.history import get_history, SceneBlendCmd
-        get_history().push(SceneBlendCmd(
-            self._scene, eff, amount,
-            label=f"Blending — {self._combo_effect.currentText()}",
-            persist_fn=self._persist))
-        self._refresh_blend()
-        self._rebuild_layer_rows()      # les rôles ont changé sous les lignes
-        self._sync_layer_blend_rows()
-        self._emit_blend_changed()
-
-    def _on_blend_amount(self, pct: int):
-        if self._blocking or not self._scene:
-            return
-        eff = blend_effect_of(self._scene)
-        if eff not in _AMOUNT_LABELS:
-            return
-        from core.history import get_history, SceneBlendCmd
-        get_history().push(SceneBlendCmd(
-            self._scene, eff, int(pct),
-            label="Blending amount", persist_fn=self._persist))
-        self._emit_blend_changed()
-
-    def _sync_layer_blend_rows(self):
-        """État de mélange des lignes de layer. Appelé et par `_refresh_blend`
-        et par la reconstruction des lignes : une seule fonction, sinon les deux
-        chemins divergent au premier ajout de layer."""
-        sc = self._scene
-        if sc is None:
-            return
-        # Ce que la ligne propose découle de l'EFFET, pas du mode brut :
-        #   aucun effet        → rien à choisir ;
-        #   fondu d'écran      → tout est pris, rien à choisir non plus ;
-        #   layer translucide  → devant ↔ derrière, deux états ;
-        #   composé à la main  → les trois rôles du registre.
-        eff = blend_effect_of(sc)
-        ui_mode = {EFFECT_NONE: "hidden",
-                   EFFECT_FADE_BLACK: "hidden",
-                   EFFECT_FADE_WHITE: "hidden",
-                   EFFECT_TRANSLUCENT: "toggle"}.get(eff, "full")
-        for row, layer in zip(self._bg_layer_rows, sc.background_layers):
-            row.set_blend_role(blend_role_of(layer))
-            row.set_blend_ui(ui_mode)
-
-    def _refresh_blend_hint(self):
-        """Dit ce que la scène fera, ou pourquoi elle ne fera rien.
-
-        Les deux pannes muettes du blending GBA : un mode sans DESSUS (rien
-        n'est désigné comme mélangé) et un alpha sans DESSOUS (le mélange n'a
-        lieu que là où un pixel du dessus a un pixel du dessous derrière lui).
-        Les taire, c'est laisser chercher dans le mauvais registre."""
-        sc = self._scene
-        mode = int(getattr(sc, "blend_mode", BLEND_NONE) or BLEND_NONE)
-        if mode == BLEND_NONE:
-            self._blend_hint.setText("")
-            return
-        msgs = []
-        if not sc.blend_has_target(BLEND_TOP):
-            # Deux formulations pour la même panne : celle de l'effet dit le
-            # geste à faire, celle des registres dit ce qui manque. Un auteur
-            # qui n'a pas ouvert « Hardware » n'a pas à connaître le mot
-            # « cible » pour comprendre qu'il lui manque un clic.
-            if blend_effect_of(sc) == EFFECT_TRANSLUCENT:
-                msgs.append("Nothing is translucent yet — click the ▲ button on "
-                            "the layer you want to see through.")
-            else:
-                msgs.append("No <b>top</b> target: nothing is being blended, so "
-                            "this mode does nothing. Set a layer (or the "
-                            "sprites) to Top.")
-        elif mode in BLEND_NEEDS_BOTTOM and not sc.blend_has_target(BLEND_BOTTOM):
-            msgs.append("No <b>bottom</b> target: alpha only happens where a top "
-                        "pixel has a bottom pixel behind it. Set the layer behind "
-                        "— or the backdrop — to Bottom.")
-        self._blend_hint.setText("<br>".join(msgs))
-        self._blend_hint.setStyleSheet(
-            f"color:{C.ACCENT_YLW}; margin-top:2px;" if msgs
-            else f"color:{C.TEXT_DIM}; margin-top:2px;")
-
-    def _on_blend_mode(self, _i):
-        if self._blocking or not self._scene:
-            return
-        self._set_scene_field("blend_mode", int(self._combo_blend.currentData() or 0))
-        self._refresh_blend()
-        self._emit_blend_changed()
-
-    def _on_blend_ev(self, key: str, value: int):
-        if self._blocking or not self._scene:
-            return
-        self._set_scene_field(f"blend_{key}", int(value))
-        self._emit_blend_changed()
-
-    def _on_blend_extra(self, attr: str):
-        if self._blocking or not self._scene:
-            return
-        _holder, cb = self._blend_extra[attr]
-        self._set_scene_field(attr, cb.currentData() or "")
-        self._refresh_blend_hint()
-        self._emit_blend_changed()
-
-    def _on_layer_blend_role(self, layer, role: str):
-        if self._blocking or not self._scene:
-            return
-        from core.history import get_history, SetFieldCmd
-        old = blend_role_of(layer)
-        if old == role:
-            return
-        get_history().push(SetFieldCmd(
-            layer, "blend_role", old, role,
-            label=f"BG{layer.bg_slot} blend role", persist_fn=self._persist))
-        self._refresh_blend_hint()
-        self._emit_blend_changed()
-
-    def _emit_blend_changed(self):
-        """Le mélange change des PIXELS : le canvas doit recomposer.
-
-        Un signal DÉDIÉ et non `changed` : ce dernier part à chaque champ de
-        scène, et recomposer à chaque fois ferait payer la composition pour un
-        renommage. Le canvas y répond par `refresh_blend()`, qui ne relit aucun
-        fichier — c'est ce qui rend le curseur suivable."""
-        self.blend_changed.emit()
-
     def _dim_label(self, text: str) -> QLabel:
-        """Libellé de champ en ton atténué — le pendant SceneInspector de celui
-        de `_WindowSlotRow`, qui appartient à cette autre classe."""
+        """Libellé de champ en ton atténué, réutilisé par les cartes qui n'ont
+        pas de style dédié (ex. Actor budget)."""
         lbl = QLabel(text)
         lbl.setFont(QFont(T.UI, T.XS))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
@@ -1463,61 +919,6 @@ class SceneInspector(QWidget):
         ))
         self.changed.emit()
 
-    # ── Windows ────────────────────────────────────────────────────
-
-    def _add_window(self, is_obj: bool):
-        if not self._scene:
-            return
-        if is_obj and any(ws.is_obj for ws in self._scene.windows):
-            return   # un seul slot OBJ par scène, comme avant
-        name = ("" if is_obj else
-                unique_name("Window", self._project.window_names() if self._project else set()))
-        new_slot = WindowSlot(name=name, is_obj=is_obj)
-
-        def _refresh():
-            self._persist_scene()
-            self._rebuild_window_rows()
-            get_dispatcher()._emit("windows_changed")
-
-        get_history().push(AddListItemCmd(
-            self._scene.windows, new_slot, persist_fn=_refresh,
-            label=("Ajouter la window OBJ" if is_obj else f"Ajouter {name}"),
-        ))
-        self.changed.emit()
-
-    def _remove_window(self, slot):
-        if not self._scene or slot not in self._scene.windows:
-            return
-
-        def _refresh():
-            self._persist_scene()
-            self._rebuild_window_rows()
-            get_dispatcher()._emit("windows_changed")
-
-        get_history().push(RemoveListItemCmd(
-            self._scene.windows, slot, persist_fn=_refresh,
-            label=f"Supprimer {slot.name or 'la window OBJ'}",
-        ))
-        self.changed.emit()
-
-    def _rename_window(self, slot, new_name: str):
-        """`_WindowSlotRow.rename_requested` : passe par `Project.rename_window`
-        (collision project-wide, réécriture des scripts) — jamais une simple
-        mutation d'attribut, contrairement aux autres champs de la window."""
-        if not self._project or not self._scene:
-            return
-        self._project.rename_window(self._scene, slot, new_name)
-        self._persist_scene()
-        self._rebuild_window_rows()
-        get_dispatcher()._emit("windows_changed")
-        self.changed.emit()
-
-    def _on_window_field_changed(self):
-        self._persist_scene()
-        get_dispatcher()._emit("windows_changed")
-        self._refresh_window_budget()
-        self.changed.emit()
-
     # ── Actor budget — les 128 entrées de l'OAM, réparties ─────────
 
     def _rebuild_actor_budget(self):
@@ -1585,18 +986,25 @@ class SceneInspector(QWidget):
         if not (self._scene and self._project):
             return
         b = scene_actor_budget(self._scene, self._project)
-        over = b["over_budget"] or b["over_placed"]
-        self._lbl_actor_budget.setStyleSheet(
-            f"color:{C.ACCENT_RED if over else C.TEXT_MUTED};")
-        msg = (f"{b['reserved']} actors + {b['pool']} pool = {b['used']} / "
-               f"{b['total']} slots")
+        # Une seule des trois se montre à la fois — même compte, trois queues
+        # de phrase mutuellement exclusives (cf. notices.json). `over_budget`
+        # est un vrai débordement matériel, `over_placed` un désaccord entre
+        # ce qui est réservé et ce qui est posé : deux fautes différentes,
+        # jamais dites ensemble.
+        common = dict(reserved=b["reserved"], pool=b["pool"],
+                     used=b["used"], total=b["total"])
         if b["over_budget"]:
-            msg += f" — over the {OAM_LIMIT} OAM entries, the surplus won't show"
+            self._lbl_actor_budget.clear()
+            self._budget_over_oam.show_text(limit=OAM_LIMIT, **common)
+            self._budget_over_placed.clear()
         elif b["over_placed"]:
-            msg += (f" — {b['placed']} actors placed for {b['reserved']} reserved")
+            self._lbl_actor_budget.clear()
+            self._budget_over_oam.clear()
+            self._budget_over_placed.show_text(placed=b["placed"], **common)
         else:
-            msg += f" — {b['free']} free"
-        self._lbl_actor_budget.setText(msg)
+            self._lbl_actor_budget.show_text(free=b["free"], **common)
+            self._budget_over_oam.clear()
+            self._budget_over_placed.clear()
 
         prev, self._blocking = self._blocking, True
         try:
@@ -1637,39 +1045,6 @@ class SceneInspector(QWidget):
             pools.pop(prefab_name, None)
         self._set_scene_field("prefab_pools", pools)
         self._refresh_actor_budget()
-
-    def _refresh_window_budget(self):
-        if not self._scene:
-            self._lbl_win_budget.setText("")
-            return
-        from codegen.window_alloc import scene_window_budget
-        used, total = scene_window_budget(self._scene)
-        over = used > total
-        self._lbl_win_budget.setStyleSheet(
-            f"color:{C.ACCENT_RED if over else C.TEXT_MUTED};")
-        msg = f"{used} / {total} windows used"
-        if over:
-            msg += " — over budget, build will fail"
-        self._lbl_win_budget.setText(msg)
-
-    def _rebuild_window_rows(self):
-        while self._windows_container.count():
-            item = self._windows_container.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._window_rows = []
-        windows = list(self._scene.windows) if self._scene else []
-        # OBJ en dernier — c'est un mécanisme à part, pas une des deux
-        # intentions rectangle que l'allocateur arbitre.
-        for slot in sorted(windows, key=lambda ws: ws.is_obj):
-            row = _WindowSlotRow(slot)
-            row.changed.connect(self._on_window_field_changed)
-            row.remove_requested.connect(self._remove_window)
-            row.rename_requested.connect(self._rename_window)
-            self._windows_container.addWidget(row)
-            self._window_rows.append(row)
-        self._btn_win_add_obj.setVisible(not any(ws.is_obj for ws in windows))
-        self._refresh_window_budget()
 
     # ── Palettes actives ────────────────────────────────────────────
 
@@ -2094,7 +1469,7 @@ class SceneInspector(QWidget):
                 rel = str(f.relative_to(self._project.root)).replace("\\", "/")
                 scripts.append((f.name, rel))
 
-        popup = ScriptPickerPopup(scripts, C.ACCENT_ORG, parent=self)
+        popup = ScriptPickerPopup(scripts, icons.COLOR_SCRIPT, parent=self)
         popup.picked.connect(self._scene_script_assign)
         popup.new_requested.connect(self._scene_script_create_new)
         popup.show_below(self._scene_script_slot)

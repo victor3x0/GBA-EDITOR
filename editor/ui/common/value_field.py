@@ -153,7 +153,7 @@ class ValueField(QWidget):
             self._spin.setVisible(False)
             self._chip.setVisible(True)
             self._chip.setText(fv.var_name or "?")
-            col = C.ACCENT if fv.var_src == "global" else C.ACCENT_BLU
+            col = C.ACCENT if fv.var_src == "global" else C.ACCENT_COOL
             self._chip.setStyleSheet(
                 f"QLabel{{color:{col};background:{C.BG_INPUT};"
                 f"border:1px solid {C.BORDER};border-radius:3px;padding:1px 6px;}}"

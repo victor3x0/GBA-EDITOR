@@ -1599,6 +1599,8 @@ class UIInspector(QWidget):
             return
         self._commit_content()
         self._set("text_key", self._text_key.currentData() or "", "Element text")
+        from core.command_dispatcher import get_dispatcher
+        get_dispatcher().notify_ui_text_links_changed()
         self._blocking = True
         try:
             self._reload_content()

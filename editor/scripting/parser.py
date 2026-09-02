@@ -30,7 +30,6 @@ class LuaScript:
     """Racine : liste de déclarations top-level."""
     functions:  list[LuaFunction] = field(default_factory=list)   # handlers d'event
     locals:     list[LuaLocal]    = field(default_factory=list)    # local x = val
-    globals_w:  list[str]         = field(default_factory=list)    # noms des vars globales écrites
     # Table de module d'un behavior : le `M` de `local M = {}` … `function
     # M.update(actor)` … `return M`. C'est une FORME, pas une donnée — elle ne
     # produit rien en C, les fonctions étant inlinées une à une
@@ -276,15 +275,12 @@ class _Converter:
         block = node.body
         functions = []
         locals_   = []
-        globals_w = set()
 
         for stmt in block.body:
             t = type(stmt).__name__
             if t == "Function":
                 fn = self._func(stmt)
                 functions.append(fn)
-                # repérer les writes sur variables non-locales dans le corps
-                self._collect_globals(fn.body, set(fn.params), globals_w)
             elif t == "LocalAssign":
                 for tgt, val in zip(stmt.targets, stmt.values or [None]*len(stmt.targets)):
                     locals_.append(LuaLocal(
@@ -332,7 +328,6 @@ class _Converter:
         return LuaScript(
             functions    = functions,
             locals       = [loc for loc in locals_ if loc.name not in modules],
-            globals_w    = sorted(globals_w),
             module_names = modules,
         )
 
@@ -505,41 +500,6 @@ class _Converter:
         func = self._expr(node.func)
         args = [self._expr(a) for a in (node.args or [])]
         return ExprCall(func=func, args=args)
-
-    def _collect_globals(self, stmts: list, local_names: set[str], out: set[str]):
-        """Collecte les noms écrits (Assign) qui ne sont pas dans local_names,
-        et les noms passés à global.set("name", ...) ."""
-        # Étendue locale : commence par les noms connus, puis accumule les déclarations
-        locals_here = set(local_names)
-        for s in stmts:
-            if isinstance(s, StmtLocalAssign):
-                # Une déclaration locale ne génère pas de global et l'exclut des assigns suivants
-                locals_here.add(s.name)
-            elif isinstance(s, StmtAssign) and isinstance(s.target, ExprName):
-                if s.target.name not in locals_here:
-                    out.add(s.target.name)
-            elif isinstance(s, StmtCall):
-                # global.set("name", value) → déclarer "name" dans globals.h
-                call = s.call
-                if (isinstance(call, ExprCall)
-                        and isinstance(call.func, ExprIndex)
-                        and isinstance(call.func.obj, ExprName)
-                        and call.func.obj.name == "global"
-                        and call.func.field == "set"
-                        and call.args
-                        and isinstance(call.args[0], ExprString)):
-                    out.add(call.args[0].value)
-            elif isinstance(s, StmtIf):
-                self._collect_globals(s.then, locals_here, out)
-                for _, b in s.elseifs:
-                    self._collect_globals(b, locals_here, out)
-                self._collect_globals(s.else_, locals_here, out)
-            elif isinstance(s, StmtWhile):
-                self._collect_globals(s.body, locals_here, out)
-            elif isinstance(s, StmtForNum):
-                # La variable de boucle est LOCALE à la boucle : lui affecter
-                # une valeur dans le corps ne déclare pas une globale du projet.
-                self._collect_globals(s.body, locals_here | {s.var}, out)
 
 
 # ─── Déclaration d'un tableau ─────────────────────────────────────

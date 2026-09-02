@@ -5,7 +5,8 @@ Point unique : c'est la couleur qui dit lequel des deux concepts on regarde,
 du finder à l'inspecteur.
 """
 from ui.common.theme import C
+from ui.common.icons import COLOR_FONT
 
 
-FONT_COLOR = C.ACCENT_ORG    # famille « police » (asset)
+FONT_COLOR = COLOR_FONT      # famille « police » (asset) — icons.py
 TEXT_COLOR = C.ACCENT        # famille « texte » (contenu) — accent primaire

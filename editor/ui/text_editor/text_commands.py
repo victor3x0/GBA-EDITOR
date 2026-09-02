@@ -119,6 +119,7 @@ class CreateTextForElementCmd(Command):
         self._text.content = self._content
         self._element.text_key = self._text.key
         self.label = f"New text {self._text.key}"
+        self._notify_link_changed()
         if self._persist:
             self._persist()
 
@@ -126,8 +127,16 @@ class CreateTextForElementCmd(Command):
         if self._text is not None and self._text in self._project.texts:
             self._project.texts.remove(self._text)
         self._element.text_key = self._old_key
+        self._notify_link_changed()
         if self._persist:
             self._persist()
+
+    def _notify_link_changed(self):
+        # L'écran Texte cache qui cite quoi (`text_usage_index`) : ce geste
+        # accroche l'élément à une entrée sans passer par un script, il doit
+        # périmer ce cache lui aussi (cf. command_dispatcher).
+        from core.command_dispatcher import get_dispatcher
+        get_dispatcher().notify_ui_text_links_changed()
 
     def merge(self, newer: "Command") -> bool:
         """Absorbe la frappe qui SUIT la création.

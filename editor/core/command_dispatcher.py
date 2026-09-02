@@ -20,6 +20,9 @@ Usage :
     "bg_layer_visibility"    (int, bool)     — visibilité viewport d'un layer BG
     "status_message"   (str msg)   — afficher dans la barre de statut
     "scripts_changed"              — rafraîchir la liste des scripts
+    "ui_text_links_changed"        — un élément de mise en page a changé de
+                                     `text_key` (créé ou rebranché) : l'écran
+                                     Texte doit relire qui cite quoi
     "flush_script_edits"           — le Script Editor doit persister sa frappe
                                      en cours (avant réécriture de scripts)
     "palettes_changed"             — rafraîchir le catalogue de palettes
@@ -588,6 +591,13 @@ class CommandDispatcher(EventEmitter):
     def notify_scripts_changed(self):
         """Notifie que la liste des scripts a changé (création, suppression)."""
         self._emit("scripts_changed")
+
+    def notify_ui_text_links_changed(self):
+        """Notifie qu'un élément de mise en page vient de changer de
+        `text_key` — l'écran Texte cache qui cite quoi (`text_usage_index`) et
+        doit l'oublier, sous peine d'afficher « unused » sur une entrée qu'on
+        vient pourtant de brancher."""
+        self._emit("ui_text_links_changed")
 
     def flush_script_edits(self):
         """Demande au Script Editor de persister sa frappe en cours.

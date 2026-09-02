@@ -286,7 +286,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
             if not linked:
                 continue
             found_any = True
-            self._add_group_row("✦", scene.name, C.ACCENT_ORG, count=len(linked))
+            self._add_group_row("✦", scene.name, icons.COLOR_SCENE, count=len(linked))
             for actor in linked:
                 self._add_leaf_row(actor.name, lambda a=actor: get_bus().select(a))
 
@@ -299,7 +299,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
         ]
         if linked_prefabs:
             found_any = True
-            self._add_group_row("◆", "Prefabs", C.ACCENT_BLU)
+            self._add_group_row("◆", "Prefabs", icons.COLOR_PREFAB)
             for pf in linked_prefabs:
                 self._add_leaf_row(pf.name, lambda p=pf: get_bus().select(p))
 
@@ -307,7 +307,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
         linked_scenes = [s for s in project.scenes if Path(s.script or "").name == name]
         if linked_scenes:
             found_any = True
-            self._add_group_row("▤", "SCRIPTS DE SCÈNE", C.ACCENT_ORG)
+            self._add_group_row("▤", "SCRIPTS DE SCÈNE", icons.COLOR_SCRIPT)
             for scene in linked_scenes:
                 self._add_leaf_row(scene.name, lambda s=scene: get_bus().select(s))
 

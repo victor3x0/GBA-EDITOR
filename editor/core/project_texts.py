@@ -319,7 +319,9 @@ class ProjectTextsMixin:
 
         Un seul parcours des scripts, parce que luaparser est trop lent pour
         être relancé à chaque sélection : l'appelant garde l'index et
-        l'invalide sur `scripts_changed`."""
+        l'invalide sur `scripts_changed` ET `ui_text_links_changed` — un
+        `region.text_key` rebranché périme l'index tout autant qu'un script
+        réécrit."""
         idx = TextUsageIndex()
         try:
             from scripting.refactor import index_refs_in_project

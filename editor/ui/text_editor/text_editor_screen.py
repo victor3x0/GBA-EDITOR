@@ -148,8 +148,9 @@ class TextEditorScreen(QWidget):
         self._inspectors.setCurrentIndex(self._CTX_TEXT)
 
     def invalidate_script_usages(self):
-        """Branché sur « scripts_changed » — recalcul paresseux, à la prochaine
-        sélection (l'écran n'est peut-être même pas affiché).
+        """Branché sur « scripts_changed » ET « ui_text_links_changed » —
+        recalcul paresseux, à la prochaine sélection (l'écran n'est peut-être
+        même pas affiché).
 
         Deux vues montrent les usages : la colonne de la table et la section de
         l'inspecteur. Elles lisent le même index, elles se périment ensemble."""

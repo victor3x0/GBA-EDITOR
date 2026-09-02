@@ -104,7 +104,7 @@ MAX_CANVAS_H = 32767
 
 # Aperçu des windows matérielles — une teinte par région (WIN0, WIN1), reprise
 # du bleu de la carte WINDOWS de l'inspecteur de scène.
-_WIN_COLORS = (C.ACCENT_BLU, C.ACCENT_ORG)
+_WIN_COLORS = (C.ACCENT_COOL, C.ACCENT_WARM)
 
 _PLACEHOLDER_SIZE = 16
 _PLACEHOLDER_ICO = 12

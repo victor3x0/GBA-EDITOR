@@ -50,7 +50,7 @@ def _styles(radius: int) -> tuple[str, str, str]:
     mirrored = (
         f"QToolButton{{color:#3a6a8a;background:#0d1a22;"
         f"border:1px dashed #2a4a5a;border-radius:{radius}px;padding:0;}}"
-        f"QToolButton:checked{{color:{C.ACCENT_BLU};border:2px dashed {C.ACCENT_BLU};"
+        f"QToolButton:checked{{color:{C.ACCENT_COOL};border:2px dashed {C.ACCENT_COOL};"
         f"background:#0e1f2e;}}"
     )
     omni = (
@@ -86,7 +86,7 @@ class DirectionButton(QToolButton):
             self.setIcon(_ico(self._icon_key, C.TEXT_DIM, C.ACCENT))
         elif mirrored:
             self.setStyleSheet(self._sty_mirrored)
-            self.setIcon(_ico(self._icon_key, "#3a6a8a", C.ACCENT_BLU))
+            self.setIcon(_ico(self._icon_key, "#3a6a8a", C.ACCENT_COOL))
         else:
             self.setStyleSheet(self._sty_normal)
             self.setIcon(_ico(self._icon_key, C.TEXT_DIM, C.ACCENT))

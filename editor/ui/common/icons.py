@@ -16,16 +16,17 @@ from PyQt6.QtCore import QSize
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import QApplication
 
-# ── Couleurs par type d'asset — 4 FAMILLES (voir project_theme_gba_redesign)
+# ── Couleurs par type d'asset — 6 FAMILLES (voir project_theme_gba_redesign)
 # Une couleur par famille ; l'identité intra-famille passe par la FORME de
 # l'icône (account / puzzle / image…), pas par la teinte. Bande chaude pour
-# Entités/Monde/Logique, teal pour l'Audio — toutes distinctes du périwinkle
-# chrome (C.ACCENT) et du vert power-LED (C.POWER).
+# Entités/Monde/Logique, teal pour l'Audio, violet pour la Police — toutes
+# distinctes du périwinkle chrome (C.ACCENT) et du vert power-LED (C.POWER).
 _FAM_ENTITY = "#f75c3c"   # Entités : actor, prefab, sprite  (rouge vermillon)
 _FAM_WORLD  = "#f5a623"   # Monde   : scene, camera, background  (ambre-orange)
 _FAM_LOGIC  = "#ec4a9a"   # Logique : script  (magenta)
 _FAM_AUDIO  = "#15c9b2"   # Audio   : sfx, music  (teal vif)
 _FAM_UI     = "#4f8ff7"   # Interface : layout, conteneur, texte, zone  (bleu franc)
+_FAM_FONT   = "#9b7bd5"   # Police  : asset Font  (violet)
 
 COLOR_DEFAULT = "#8a8aa0"   # neutre légèrement teinté indigo
 COLOR_ACTIVE  = "#5be08b"   # = C.POWER — état actif / live
@@ -56,6 +57,10 @@ COLOR_UI_LAYOUT = _FAM_UI
 COLOR_UI_PANEL  = _FAM_UI
 COLOR_UI_TEXT   = _FAM_UI
 COLOR_UI_REGION = _FAM_UI
+# Police — asset Font, seule famille sans FORME distinctive (un seul type
+# d'objet), mais qui a besoin de sa propre teinte : elle apparaît à côté des
+# autres familles (jauge ROM, écran Texte) et ne peut pas leur en emprunter une.
+COLOR_FONT      = _FAM_FONT
 
 # ── Registre : nom logique → (qta_key, unicode_fallback) ──────────
 # Pour swapper l'icon set : remplacer les qta_key par les nouveaux.
@@ -204,6 +209,12 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Finders — révéler le dossier RÉEL d'une famille dans l'explorateur du
     # système (cf. ui/common/reveal.py). Bouton standardisé, pas un par écran.
     "reveal_in_files":        ("mdi.folder-open-outline",     "⤢"),
+    # Boutons génériques de barre d'outils (ui/common/widgets.py W.btn_add /
+    # W.btn_search) — un `QIcon` recolorable au survol (cf. `_HoverIconButton`),
+    # jamais un glyphe de police posé par `setText` : la feuille de style ne
+    # peut recolorer que du texte, pas un pixmap déjà teinté.
+    "add":                    ("mdi.plus",                    "+"),
+    "search":                 ("mdi.magnify",                 "⌕"),
 }
 
 # ── Backend (chargé une seule fois) ──────────────────────────────

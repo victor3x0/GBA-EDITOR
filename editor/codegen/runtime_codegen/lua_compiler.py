@@ -283,7 +283,14 @@ def transpile_all(
             global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
                              for g in p.globals},
             child_names  = list(_child_refs_for_actor(actor, scene_actors).keys()),
-            const_names  = list(const_names) if const_names else None,
+            # Une LISTE même vide, jamais None : depuis que `const.nom` est un
+            # accès pointé (chantier global/const), c'est le checker seul qui
+            # juge de l'existence d'une constante — `None` voudrait dire
+            # « je ne sais pas », et un projet sans aucune constante déclarée
+            # laisserait alors passer `const.max` jusqu'au `make`, sur une
+            # erreur de syntaxe C nommant le mot-clé `const`. `global_counts`,
+            # juste au-dessus, est un dict même vide pour la même raison.
+            const_names  = list(const_names),
             sfx_component_name = sfx_comp_name,
             text_keys    = text_keys,
             font_names   = font_names,
@@ -334,7 +341,7 @@ def transpile_all(
             # tableau d'un scalaire et borner un index écrit en clair.
             global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
                              for g in p.globals},
-                const_names  = list(const_names) if const_names else None,
+                const_names  = list(const_names),
                 # Un script de SCÈNE cite textes et polices autant qu'un script
                 # d'actor : sans ces deux-là le checker se tait, et une clé
                 # inconnue n'échoue qu'au `make`, sur un `TEXT_*` indéfini.
@@ -449,7 +456,7 @@ def transpile_all(
             global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
                              for g in p.globals},
             child_names  = list(_child_refs_for_prefab(pf).keys()),
-            const_names  = list(const_names) if const_names else None,
+            const_names  = list(const_names),
             sfx_component_name = pf_sfx_comp_name,
             region_names = region_names,
             image_names  = image_names,
@@ -599,7 +606,7 @@ def transpile_all(
             # tableau d'un scalaire et borner un index écrit en clair.
             global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
                              for g in p.globals},
-            const_names  = list(const_names) if const_names else None,
+            const_names  = list(const_names),
             text_keys    = text_keys,
             font_names   = font_names,
             lang_codes   = lang_codes,

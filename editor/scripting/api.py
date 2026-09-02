@@ -111,8 +111,13 @@ DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
 # groupes purs, qui n'ont sinon aucune identité runtime (cf. ui_region.py).
 DOMAIN_UI_ELEMENT = "ui_element"
 DOMAIN_UI_LIST    = "ui_list"     # panneau marqué LISTE (ROADMAP v0.22)
-DOMAIN_GLOBAL = "global"  # GlobalVar du projet   — global.get/set()
-DOMAIN_CONST  = "const"   # Constant du projet    — const.get()
+DOMAIN_GLOBAL = "global"  # GlobalVar du projet — cité en LITTÉRAL par save.read
+                           # (global.nom lui-même est un accès pointé, résolu
+                           # hors domaine — cf. _check_global_scalar, chantier global/const)
+# Pas de DOMAIN_CONST : const.get (seul site littéral qui le citait) a quitté
+# RUNTIME_API au profit de l'accès pointé (`const.nom`, résolu par
+# `_check_const_scalar`/`ExprIndex`, hors domaine — chantier global/const). Un domaine
+# sans site serait un orphelin — `test_aucun_domaine_declare_nest_orphelin`.
 # Nom de séquence — `sequence.start("intro")` désigne `function on_sequence_intro`.
 # Le SEUL domaine dont l'espace de noms est le SCRIPT et non le projet : checker
 # et codegen reçoivent l'AST, ils collectent les noms eux-mêmes. Conséquence à
@@ -792,27 +797,17 @@ RUNTIME_API: dict[str, ApiFunc] = {
     # `const.*`) plutôt qu'un seul évite justement l'ambiguïté d'un nom
     # partagé — voir la discussion en tête de ce fichier avant d'y toucher.
     #
-    # Le codegen émet un accès direct — variable (g_score) pour l'un,
-    # symbole (CONST_NOM) pour l'autre — plutôt qu'un appel de fonction. Ces
-    # entrées servent surtout au checker. Lecture seule côté constante :
-    # pas de const.set.
-    "global.get": ApiFunc(
-        lua_name="global.get", c_func="_global_get",   # résolu par codegen
-        params=[Param("name", PARAM_STR, DOMAIN_GLOBAL)],
-        ret="int",
-        doc="Lit une variable globale (partagée entre tous les scripts).",
-    ),
-    "global.set": ApiFunc(
-        lua_name="global.set", c_func="_global_set",   # résolu par codegen
-        params=[Param("name", PARAM_STR, DOMAIN_GLOBAL), Param("value", PARAM_INT)],
-        doc="Écrit une variable globale.",
-    ),
-    "const.get": ApiFunc(
-        lua_name="const.get", c_func="_const_get",   # résolu par codegen
-        params=[Param("name", PARAM_STR, DOMAIN_CONST)],
-        ret="int",
-        doc="Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée).",
-    ),
+    # Pas d'entrée de catalogue ici : `global.nom` / `const.nom` ne sont pas
+    # des APPELS mais un accès POINTÉ, comme `self.position` (RUNTIME_PROPS)
+    # ou `data.Objets` — sauf que le membre est un nom de PROJET, pas un nom
+    # de langage fixe, donc ni l'un ni l'autre catalogue ne convient. Le
+    # checker (`_check_global_scalar`/`_check_const_scalar`/
+    # `_check_global_indexed`) et le codegen (`_expr`, branche `ExprIndex`)
+    # les résolvent directement contre `project.globals`/`.constants` — un
+    # accès direct en C (g_nom / CONST_NOM), jamais un appel de fonction.
+    # Lecture seule côté constante : `const.nom = …` est refusé par le
+    # checker (`_check_const_write`). Un tableau (ROADMAP v0.20) s'indexe :
+    # `global.nom[i]`, lecture ET écriture, borné par `_check_global_indexed`.
 
     # ── Tableaux ───────────────────────────────────────────────────
     # `array` n'est pas un appel : c'est la DÉCLARATION d'un tableau, lue par le
@@ -1862,6 +1857,21 @@ REMOVED_API: dict[str, str] = {
     "blend.set_mode":
         'blend.set_mode a été retiré au profit de la propriété blend.mode '
         '— blend.set_mode("alpha") devient blend.mode = "alpha".',
+    # ── global.get/set, const.get → accès pointé (chantier global/const) ────
+    # Même mouvement que les requêtes pures ci-dessus : `global.nom` cite un
+    # nom de PROJET (pas un membre de langage fixe), mais la question posée
+    # est la même — un accès d'état, pas un appel. La forme indexée des
+    # tableaux (`global.nom[i]`, ROADMAP v0.20) n'a jamais eu d'accesseur —
+    # elle ne bouge pas.
+    "global.get":
+        'global.get a été retiré au profit de l\'accès pointé — '
+        'global.get("score") devient global.score.',
+    "global.set":
+        'global.set a été retiré au profit de l\'accès pointé — '
+        'global.set("score", v) devient global.score = v.',
+    "const.get":
+        'const.get a été retiré au profit de l\'accès pointé — '
+        'const.get("max") devient const.max.',
 }
 
 

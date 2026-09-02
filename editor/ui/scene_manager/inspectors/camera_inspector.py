@@ -40,6 +40,7 @@ from core.models.camera import Camera, CAM_FIXED, CAM_FOLLOW, CAM_SCRIPT
 from core.models.scene import Scene
 from core.project import Project
 from ui.common.theme import C, T, QSS
+from ui.common.icons import COLOR_SCRIPT
 from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard
 
 _MODES = [
@@ -315,7 +316,7 @@ class CameraInspector(QWidget):
         script_card = CollapsibleCard("Camera script")
         self._script_slot = ScriptSlot(
             add_label    = "Add a camera script",
-            accent_color = C.ACCENT_ORG,
+            accent_color = COLOR_SCRIPT,
             hint         = "on_start · on_update",
         )
         self._script_slot.set_callbacks(
@@ -584,7 +585,7 @@ class CameraInspector(QWidget):
             for f in sorted(d.glob("*.lua")):
                 rel = str(f.relative_to(self._project.root)).replace("\\", "/")
                 scripts.append((f.name, rel))
-        popup = ScriptPickerPopup(scripts, C.ACCENT_ORG, parent=self)
+        popup = ScriptPickerPopup(scripts, COLOR_SCRIPT, parent=self)
         popup.picked.connect(self._script_assign)
         popup.new_requested.connect(self._script_create_new)
         popup.show_below(self._script_slot)

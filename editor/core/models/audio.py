@@ -103,7 +103,7 @@ def panning_to_hardware(panning: int) -> int:
 #
 # Un pourcentage écrit dans un script peut être un littéral — converti ici, au
 # build, comme les niveaux lus sur une ressource — ou une expression
-# (`global.get("Musique")`), qui n'a de valeur que sur la console. Les deux
+# (`global.Musique`), qui n'a de valeur que sur la console. Les deux
 # formes vivent CÔTE À CÔTE pour qu'aucune ne dérive de l'autre : même
 # constante, même graduation, seul le moment change. Le C tronque là où Python
 # arrondit — un demi-cran sur 255, inaudible, et le dire vaut mieux que de

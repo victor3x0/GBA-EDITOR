@@ -173,7 +173,7 @@ class _StateNode(QGraphicsItem):
         self._meter(painter, y, "Niveau", st.level, 100, C.ACCENT)
         y += _ROW_H
         self._meter(painter, y, st.intensity_target, st.intensity, 200,
-                    C.ACCENT_BLU)
+                    C.ACCENT_COOL)
 
     def _meter(self, painter: QPainter, y: float, label: str,
                value: int, full: int, color: str):

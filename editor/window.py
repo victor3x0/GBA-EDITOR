@@ -267,6 +267,14 @@ class SceneManagerScreen(QWidget):
             self._inspector.show_scene(project.active_scene, project)
 
 
+# Durée d'affichage d'un avertissement déclenché par le watcher (dépôt/retouche
+# d'un fichier HORS de l'éditeur) : l'utilisateur regarde l'explorateur de
+# fichiers, pas la barre de statut, au moment où ça se produit — un délai
+# court disparaît avant d'être vu (cf. bug rapporté 2026-09-01, import TTF
+# vectoriel refusé, jamais remarqué à 6 s).
+_WATCHER_WARNING_MS = 60000
+
+
 # ──────────────────────────────────────────────────────────────────
 #  Fenêtre principale
 # ──────────────────────────────────────────────────────────────────
@@ -575,6 +583,7 @@ class MainWindow(QMainWindow):
         # plus loin dans _setup_ui que ce bloc d'abonnement — résoudre l'attribut
         # au moment de l'émission, pas ici.
         _d.on("scripts_changed",       lambda: self._text_editor.invalidate_script_usages())
+        _d.on("ui_text_links_changed", lambda: self._text_editor.invalidate_script_usages())
         _d.on("flush_script_edits",    lambda: self._script_editor.flush_pending_edits())
         _d.on("palettes_changed",      lambda: self._palette_editor.refresh())
 
@@ -1121,7 +1130,7 @@ class MainWindow(QMainWindow):
         warning = result if isinstance(result, str) else None
         self._refresh_ui()
         if warning:
-            self._status.showMessage(warning, 6000)
+            self._status.showMessage(warning, _WATCHER_WARNING_MS)
         else:
             self._status.showMessage(f"{label} imported: {p.name}", 3000)
 
@@ -1178,7 +1187,7 @@ class MainWindow(QMainWindow):
             self.scene_editor.load_project(self.project)
             self._update_gba_bar()
             self._status.showMessage(warning or f"Background updated: {p.stem}",
-                                     8000 if warning else 3000)
+                                     _WATCHER_WARNING_MS if warning else 3000)
             return
         if p.suffix.lower() in IMAGE_FILE_EXTS and p.parent.name == "sprites":
             # Comme un fond : les palettes stockées viennent des pixels, il faut
@@ -1194,14 +1203,26 @@ class MainWindow(QMainWindow):
             self._inspector.actor_inspector._refresh_sprite_preview()
             self._update_gba_bar()
             self._status.showMessage(warning or f"Sprite updated: {p.stem}",
-                                     8000 if warning else 3000)
+                                     _WATCHER_WARNING_MS if warning else 3000)
             return
         if p.parent.name == "fonts":
             # Planche retouchée : les métriques affichées (glyphes, coût en
             # tuiles) sont dérivées de l'asset, pas du fichier — un refresh
             # suffit, l'asset lui-même n'est jamais ré-analysé automatiquement
-            # (sinon on écraserait les corrections de l'utilisateur).
-            self._text_editor.refresh()
+            # (sinon on écraserait les corrections de l'utilisateur). MAIS
+            # `sync_font_file` est un no-op pour une police déjà connue — il
+            # ne fait un import réel que si `project.fonts.get(name)` est
+            # None, exactement le cas d'un fichier jamais importé avec succès
+            # (import refusé la première fois, puis retouché/redéposé) : sans
+            # cet appel, ce cas retombait dans le message générique tout en
+            # bas, silencieux sur la vraie raison (cf. bug rapporté 2026-09-01).
+            if self.project:
+                with self._watcher.suspended():
+                    warning = asset_encoding.sync_font_file(self.project, p)
+                self._text_editor.refresh()
+                if warning:
+                    self._status.showMessage(warning, _WATCHER_WARNING_MS)
+                    return
         self._inspector.actor_inspector._refresh_sprite_preview()
         self._status.showMessage(f"Asset modified: {Path(path).name}", 2000)
 

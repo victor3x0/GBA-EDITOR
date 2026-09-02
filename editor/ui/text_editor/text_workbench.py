@@ -69,6 +69,11 @@ class _ContentEdit(QTextEdit):
         self._baseline = ""
         self.textChanged.connect(lambda: self.edited.emit(self.toPlainText()))
 
+    def insertFromMimeData(self, source):
+        """Ne colle que du texte brut — la mise en forme du presse-papier
+        (gras, taille...) n'a aucun sens ici et ne doit pas s'afficher."""
+        self.insertPlainText(source.text())
+
     def set_text_silent(self, text: str):
         """Remplit le champ et repose la ligne de base, sans rien émettre."""
         self._baseline = text or ""

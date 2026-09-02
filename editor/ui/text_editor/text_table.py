@@ -40,7 +40,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF
 
 from core.text_markup import parse, resolve
 from ui.common.theme import C, T, S
-from ui.common.widgets import W, BTN_ICON
+from ui.common.widgets import W, BTN_ICON, HoverIconButton
 from ui.common import icons
 from ui.text_editor.colors import TEXT_COLOR
 
@@ -248,11 +248,13 @@ class TextTable(QWidget):
         self._search.textChanged.connect(lambda _q: self._apply_filter())
         hl.addWidget(self._search)
 
-        self._btn_group = QToolButton()
+        # Coché > survolé > au repos — `HoverIconButton` recolore son icône
+        # elle-même aux trois états (cf. ui/common/widgets.py).
+        self._btn_group = HoverIconButton(
+            "folder", C.TEXT_DIM, C.ACCENT, checked=icons.COLOR_FOLDER)
         self._btn_group.setCheckable(True)
         self._btn_group.setFixedSize(22, 22)
         self._btn_group.setStyleSheet(BTN_ICON)
-        self._btn_group.setIcon(icons.get("folder", C.TEXT_DIM))
         self._btn_group.setToolTip(
             "Group by category — folds the table back into its filing.\n"
             "Sorting then applies inside each group.")
@@ -610,8 +612,7 @@ class TextTable(QWidget):
         self._update_footer()
 
     def _on_group_toggled(self, on: bool):
-        self._btn_group.setIcon(
-            icons.get("folder", icons.COLOR_FOLDER if on else C.TEXT_DIM))
+        # L'icône se recolore d'elle-même (`HoverIconButton`, cf. `_build_bar`).
         # Grouper trie d'abord par catégorie : un tri sur une autre colonne ne
         # survivrait pas au regroupement, autant repartir du rangement.
         self._tree.setRootIsDecorated(on)

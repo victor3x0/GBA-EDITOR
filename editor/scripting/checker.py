@@ -40,7 +40,7 @@ from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_
                   DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE, DOMAIN_UI_ELEMENT,
                   DOMAIN_UI_LIST,
                   DOMAIN_TAG, DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
-                  DOMAIN_CONST, DOMAIN_SEQUENCE,
+                  DOMAIN_SEQUENCE,
                   DOMAIN_OBJ_MODE, DOMAIN_DIRECTION, DOMAIN_WIN_REGION,
                   DOMAIN_BLEND_MODE, DOMAIN_BLEND_SIDE, DOMAIN_EASE, HARDWARE_ENUMS,
                   API_MODULES, module_members, REF_TYPES)
@@ -411,15 +411,63 @@ class Checker:
             "error", f"data.{name} : table de données introuvable ({near})."))
         return False
 
-    def _check_global_array(self, name: str) -> bool:
-        """`global.coffres` — une globale citée par son NOM pour être indexée
-        (ROADMAP v0.20). Deux fautes à dire ici plutôt que sur la ligne C
-        générée : un nom qui n'existe pas, et un SCALAIRE indexé — `g_score[0]`
-        ne compile pas, et l'erreur de gcc parlerait d'un fichier que l'auteur
-        n'a pas écrit."""
+    def _check_global_scalar(self, name: str) -> None:
+        """`global.nom` cité SEUL — comme valeur lue, ou comme cible d'une
+        assignation (chantier global/const, remplace global.get/set). Un tableau ne
+        s'y prête pas : il n'existe qu'indexé, cf. `_check_global_indexed`."""
         counts = self.ctx.global_counts
         if counts is None:
-            return True
+            return
+        n = counts.get(name)
+        if n is None:
+            near = ", ".join(sorted(counts)[:5])
+            self.errors.append(CheckError(
+                "error",
+                f"global.{name} : variable globale introuvable"
+                + (f" (déclarées dans le projet : {near})." if near
+                   else " — aucune variable globale déclarée dans ce projet.")))
+            return
+        if n > 1:
+            self.errors.append(CheckError(
+                "error",
+                f"global.{name} est un TABLEAU ({n} cases) : il se lit et "
+                f"s'écrit indexé, jamais nu — global.{name}[i]."))
+
+    def _check_const_scalar(self, name: str) -> None:
+        """`const.nom` cité seul — la seule forme qui existe, une constante ne
+        s'indexe jamais (chantier global/const, remplace const.get)."""
+        names = self.ctx.const_names
+        if names is None:
+            return
+        if name not in names:
+            near = ", ".join(sorted(names)[:5])
+            self.errors.append(CheckError(
+                "error",
+                f"const.{name} : constante introuvable"
+                + (f" (déclarées dans le projet : {near})." if near
+                   else " — aucune constante déclarée dans ce projet.")))
+
+    def _check_const_write(self, target) -> None:
+        """`const.nom = …` — une constante ne s'écrit jamais, c'est ce qui la
+        distingue d'une variable globale. `_check_expr(target)` valide déjà le
+        NOM (via `_check_const_scalar`) ; ne reste que l'écriture elle-même."""
+        if (isinstance(target, ExprIndex) and isinstance(target.obj, ExprName)
+                and target.obj.name == "const"):
+            self.errors.append(CheckError(
+                "error",
+                f"const.{target.field} = … : une constante ne s'écrit jamais "
+                f"— déclare une variable globale si elle doit changer."))
+
+    def _check_global_indexed(self, name: str, index) -> None:
+        """`global.nom[i]` — la base d'un tableau (ROADMAP v0.20). Trois
+        fautes à dire ici plutôt que sur la ligne C générée : un nom qui
+        n'existe pas, un SCALAIRE indexé (`g_score[0]` ne compile pas), et un
+        rang hors bornes quand il est écrit en clair. Un index calculé ne se
+        vérifie pas au build : il n'est pas plus contrôlé ici qu'ailleurs dans
+        le langage."""
+        counts = self.ctx.global_counts
+        if counts is None:
+            return
         n = counts.get(name)
         if n is None:
             near = ", ".join(sorted(k for k, v in counts.items() if v > 1)[:5])
@@ -428,27 +476,14 @@ class Checker:
                 f"global.{name} : variable globale introuvable"
                 + (f" (tableaux du projet : {near})." if near
                    else " — aucun tableau déclaré dans ce projet.")))
-            return False
+            return
         if n <= 1:
             self.errors.append(CheckError(
                 "error",
                 f"global.{name} est une variable SIMPLE, pas un tableau : elle "
-                f"se lit `global.get(\"{name}\")` et s'écrit "
-                f"`global.set(\"{name}\", …)`. La forme indexée est réservée aux "
+                f"se lit et s'écrit sans crochets — global.{name} / "
+                f"global.{name} = …. La forme indexée est réservée aux "
                 f"variables déclarées avec plusieurs cases."))
-            return False
-        return True
-
-    def _check_global_index(self, name: str, index) -> None:
-        """Le rang d'une case, borné quand il est écrit en clair — même règle
-        et même message que pour un tableau de script ou une table de données.
-        Un index calculé ne se vérifie pas au build : il n'est pas plus
-        contrôlé ici qu'ailleurs dans le langage."""
-        counts = self.ctx.global_counts
-        if counts is None:
-            return
-        n = counts.get(name)
-        if not n or n <= 1:
             return
         k = self._literal_int(index)
         if k is None:
@@ -780,6 +815,8 @@ class Checker:
         elif isinstance(s, StmtAssign):
             self._check_data_write(s.target)
             self._check_prop_write(s.target, s.value)
+            self._check_const_write(s.target)
+            self._check_global_write_value(s.target, s.value)
             self._check_expr(s.target)     # `t[i] = v` : la CIBLE aussi s'indexe
             self._check_expr(s.value)
         elif isinstance(s, StmtIf):
@@ -873,17 +910,22 @@ class Checker:
             while isinstance(cur, ExprIndexAt):
                 self._check_expr(cur.index)
                 cur = cur.obj
-            # `global.coffres[i]` — la base est un accès pointé sur `global`,
-            # que la branche ExprIndex ci-dessous valide (le nom existe, et
-            # c'est bien un tableau). Ne reste que le rang, borné ici comme
-            # celui d'un tableau de script (ROADMAP v0.20).
-            if (isinstance(e.obj, ExprIndex) and isinstance(e.obj.obj, ExprName)
-                    and e.obj.obj.name == "global"):
-                self._check_global_index(e.obj.field, e.index)
-            # La BASE est déjà traitée par `_array_chain` — un nom de tableau
-            # comme une table de données. La revisiter dirait deux fois la même
-            # erreur sur la même ligne.
-            if not isinstance(cur, ExprName) and self._data_table_ref(cur) is None:
+            # `global.coffres[i]` — nom, tableau-ness et rang, tout d'un coup
+            # (ROADMAP v0.20 pour les tableaux, chantier global/const pour
+            # l'accès pointé). `_check_global_indexed` remplace ici ce
+            # que la branche ExprIndex ci-dessous ferait pour un accès NU —
+            # d'où le `is_global_index` qui l'empêche de repasser dessus.
+            is_global_index = (isinstance(e.obj, ExprIndex)
+                               and isinstance(e.obj.obj, ExprName)
+                               and e.obj.obj.name == "global")
+            if is_global_index:
+                self._check_global_indexed(e.obj.field, e.index)
+            # La BASE est déjà traitée : par `_array_chain` pour un tableau de
+            # script ou une table de données, par `_check_global_indexed`
+            # ci-dessus pour `global.nom[i]`. La revisiter dirait deux fois la
+            # même erreur sur la même ligne.
+            if (not is_global_index and not isinstance(cur, ExprName)
+                    and self._data_table_ref(cur) is None):
                 self._check_expr(cur)
         elif isinstance(e, (ExprInvoke, ExprCall)):
             self._check_call_expr(e)
@@ -909,7 +951,9 @@ class Checker:
             if table is not None:
                 self._check_data_table(table)
             elif isinstance(e.obj, ExprName) and e.obj.name == "global":
-                self._check_global_array(e.field)
+                self._check_global_scalar(e.field)
+            elif isinstance(e.obj, ExprName) and e.obj.name == "const":
+                self._check_const_scalar(e.field)
             elif (isinstance(e.obj, ExprName) and e.obj.name == "self"
                   and self.ctx.child_names is not None
                   and resolve_prop(e) is None
@@ -1109,11 +1153,10 @@ class Checker:
             # vérifiés par leur domaine dans `_check_args`, comme tout autre
             # argument nommé — ces appels n'ont donc plus de chemin à part.
             # Ne restent ici que les contrôles qui portent sur autre chose que
-            # le nom : la valeur d'un `global.set`, le numéro d'emplacement
-            # d'un `save.*`. Aucun `return` : le reste des vérifications
-            # (nombre d'arguments compris) doit suivre.
-            if key == "global.set":
-                self._check_global_set_value(e.args)
+            # le nom : le numéro d'emplacement d'un `save.*` (la valeur d'un
+            # `global.nom = v` est vérifiée à l'ASSIGNATION, pas ici — cf.
+            # `_check_global_write_value`, chantier global/const). Aucun `return` : le
+            # reste des vérifications (nombre d'arguments compris) doit suivre.
             if key.startswith("save."):
                 self._check_save(key, e.args)
                 # pas de `return` : le nombre d'arguments reste à vérifier
@@ -1431,19 +1474,22 @@ class Checker:
                 f"Ajoutez-la dans le panneau Globals de l'éditeur.",
             ))
 
-    def _check_global_set_value(self, args: list):
-        """La VALEUR d'un `global.set` — ce que le domaine ne dit pas.
+    def _check_global_write_value(self, target, value) -> None:
+        """La VALEUR d'un `global.nom = v` — ce que la cible seule ne dit pas
+        (chantier global/const, remplace la valeur d'un `global.set`).
 
-        Le nom, lui, est vérifié par `_check_global` comme tout autre argument
-        porteur d'un domaine. Un nom inconnu n'a pas de type déclaré, donc
-        `_check_global_range` se tait de lui-même : pas besoin de séquencer les
-        deux contrôles."""
-        if len(args) < 2 or not isinstance(args[0], ExprString):
+        Seule la forme SCALAIRE est bornée ici : une case de tableau
+        (`global.nom[i] = v`) ne l'a jamais été — même geste que le reste du
+        langage, où un index calculé n'est pas plus contrôlé qu'ailleurs. Le
+        nom, lui, est vérifié par `_check_global_scalar` (appelé sur cette
+        même cible via `_check_expr(s.target)`) ; un nom inconnu n'a pas de
+        type déclaré, donc `_check_global_range` se tait de lui-même."""
+        if not (isinstance(target, ExprIndex) and isinstance(target.obj, ExprName)
+                and target.obj.name == "global"):
             return
         if self.ctx.global_types is None:
             return
-        name = args[0].value
-        self._check_global_range(name, self.ctx.global_types.get(name), args[1])
+        self._check_global_range(target.field, self.ctx.global_types.get(target.field), value)
 
     @staticmethod
     def _literal_int(expr) -> Optional[int]:
@@ -1468,7 +1514,7 @@ class Checker:
         if not (lo <= val <= hi):
             self.errors.append(CheckError(
                 "warning",
-                f"global.set('{name}', {val}) : valeur hors plage pour le type '{typ}' "
+                f"global.{name} = {val} : valeur hors plage pour le type '{typ}' "
                 f"({lo} à {hi}) — sera tronquée/wrap au build (comportement natif GBA/C), "
                 f"pas d'erreur mais probablement pas ce que tu voulais.",
             ))
@@ -1509,14 +1555,6 @@ class Checker:
                     f"save.read(..., '{name}') : '{name}' n'est pas cochée "
                     f"« persist » — elle ne sera jamais dans une sauvegarde, "
                     f"l'appel rendra toujours sa valeur par défaut."))
-
-    def _check_const(self, call_key: str, name: str):
-        if self.ctx.const_names is not None and name not in self.ctx.const_names:
-            self.errors.append(CheckError(
-                "warning",
-                f"{call_key}('{name}') : constante '{name}' non déclarée dans le projet. "
-                f"Ajoutez-la dans le panneau Constants de l'éditeur.",
-            ))
 
     def _check_scene(self, call_key: str, name: str):
         """Une scène inconnue est une ERREUR, pas un avertissement : le
@@ -1690,7 +1728,6 @@ _DOMAIN_CHECKS: dict = {
     DOMAIN_ACTOR:   lambda c, key, val, p, a: c._check_actor(key, val),
     DOMAIN_TAG:     lambda c, key, val, p, a: c._check_tag(key, val),
     DOMAIN_GLOBAL:  lambda c, key, val, p, a: c._check_global(key, val),
-    DOMAIN_CONST:   lambda c, key, val, p, a: c._check_const(key, val),
     DOMAIN_SEQUENCE: lambda c, key, val, p, a: c._check_sequence(key, val),
     # Énumérations matérielles : une seule vérification pour les six, puisque
     # `HARDWARE_ENUMS` porte déjà l'ensemble valide de chacune. Un domaine
@@ -1708,8 +1745,9 @@ _DOMAIN_CHECKS: dict = {
 # seconde fonction prenant le même domaine n'aurait rien déclenché, et
 # `actor.spawn` n'était vérifié nulle part. Ils sont maintenant vérifiés par
 # leur domaine, comme les autres. Ce qui reste accroché à un appel précis dans
-# `_check_call_expr` ne porte plus sur un nom : la VALEUR d'un `global.set`, le
-# numéro d'emplacement d'un `save.*`.
+# `_check_call_expr` ne porte plus sur un nom : le numéro d'emplacement d'un
+# `save.*` (`global.get`/`set` et `const.get` ont depuis quitté RUNTIME_API,
+# remplacés par l'accès pointé — chantier global/const).
 
 # Domaines connus mais délibérément NON validés — la troisième case du contrôle
 # de couverture (`validator._check_api_domains`), qui distingue « traité

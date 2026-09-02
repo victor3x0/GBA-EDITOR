@@ -48,7 +48,7 @@ from .api import (
     window_region_constant,
     DOMAIN_TEXT, DOMAIN_FONT, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_IMAGE_STATE,
     DOMAIN_PALETTE, DOMAIN_UI_ELEMENT, DOMAIN_UI_LIST, ui_list_constant,
-    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST, DOMAIN_SEQUENCE,
+    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_SEQUENCE,
     anim_constant, sfx_constant, music_constant, key_constant, tag_constant, scene_constant,
     text_constant, font_constant, region_constant, anon_text_key, palette_constant,
     lang_constant,
@@ -1320,16 +1320,22 @@ class CodeGen:
             table = self._data_table_ref(e)
             if table is not None:
                 return f"g_data_{table}"
-            # `global.coffres` → le tableau C émis par globals.c. Ce qui suit —
-            # l'indexation — se compose tout seul via `ExprIndexAt`, exactement
-            # comme pour une table de données (ROADMAP v0.20). Le nom du projet
-            # se cite en clair puis s'indexe : c'est la grammaire déjà LIVRÉE
-            # pour `data.Objets[i].prix`, pas une forme inventée ici.
-            # `global.get` / `global.set` ne passent jamais par là : ce sont des
-            # APPELS, interceptés plus haut par `_call_key`.
+            # `global.nom` → la variable C émise par globals.c — NU (scalaire,
+            # chantier global/const) ou base d'une indexation qui se compose toute
+            # seule via `ExprIndexAt` (tableau, ROADMAP v0.20), exactement
+            # comme pour une table de données. Le nom du projet se cite en
+            # clair : c'est la grammaire déjà LIVRÉE pour `data.Objets[i].prix`,
+            # pas une forme inventée ici. Le checker a déjà refusé un nom
+            # inconnu (`_check_global_scalar`/`_check_global_indexed`).
             if (isinstance(e.obj, ExprName) and e.obj.name == "global"
                     and e.field in self.ctx.global_names):
                 return f"g_{e.field}"
+            # `const.nom` → le symbole émis par constants.h — toujours nu, une
+            # constante ne s'indexe jamais. Même geste, même garde côté
+            # checker (`_check_const_scalar`).
+            if (isinstance(e.obj, ExprName) and e.obj.name == "const"
+                    and self.ctx.const_names and e.field in self.ctx.const_names):
+                return f"CONST_{e.field.upper()}"
             # `self.bras` → l'enfant, désigné par une expression CONSTANTE
             # (ROADMAP v0.23). Même geste que dans Godot : on tient son parent,
             # on nomme l'enfant. Rien n'est construit, rien n'est cherché au
@@ -1616,7 +1622,7 @@ class CodeGen:
 
         Plié au build quand c'est un littéral — le C reste lisible et l'arrondi
         est exact — et converti à l'exécution sinon, parce qu'un niveau peut
-        venir d'une variable (`global.get("Volume")`). Les deux formes de
+        venir d'une variable (`global.Volume`). Les deux formes de
         conversion vivent côte à côte dans `models/audio.py`, pour qu'aucune ne
         dérive de l'autre.
         """
@@ -1840,30 +1846,16 @@ class CodeGen:
             px, py = f"({e}).x", f"({e}).y"
         return f"spawn_{sym}({px}, {py})"
 
-    def _emit_global_get(self, args: list) -> str:
-        if args and isinstance(args[0], ExprString):
-            return f"g_{args[0].value}"
-        return "/* global.get : nom non littéral */"
-
-    def _emit_global_set(self, args: list) -> str:
-        if len(args) >= 2 and isinstance(args[0], ExprString):
-            val = self._expr(args[1])
-            return f"g_{args[0].value} = {val}"
-        return "/* global.set : nom non littéral */"
-
     def _emit_save_read(self, args: list) -> str:
-        """save.read(slot, "nom") → save_read_var(slot, GLOBAL_NOM) — même
-        résolution que global.get, mais le nom reste un second argument : le
-        premier est l'emplacement, pas le récepteur."""
+        """save.read(slot, "nom") → save_read_var(slot, GLOBAL_NOM) — le nom
+        reste un second argument LITTÉRAL ici (pas un accès pointé comme
+        `global.nom`) : le premier argument est l'emplacement, pas le
+        récepteur, et c'est GLOBAL_NOM (l'id de sauvegarde) qu'il faut, pas
+        g_nom (la variable en mémoire vive)."""
         if len(args) >= 2 and isinstance(args[1], ExprString):
             slot = self._expr(args[0])
             return f"save_read_var({slot}, GLOBAL_{args[1].value.upper()})"
         return "/* save.read : nom non littéral */"
-
-    def _emit_const_get(self, args: list) -> str:
-        if args and isinstance(args[0], ExprString):
-            return f"CONST_{args[0].value.upper()}"
-        return "/* const.get : nom non littéral */"
 
     def _emit_stub(self, event_name: str):
         """Stub vide pour un event non défini dans le script.
@@ -1978,7 +1970,7 @@ _DOMAIN_EMITTED_ELSEWHERE: frozenset = frozenset({
     # Résolus par les émetteurs des trois boîtes : l'index est le RANG de
     # l'état dans sa boîte, pas une constante par nom.
     DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE, DOMAIN_MUSIC_BOX_TRIGGER,
-    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL, DOMAIN_CONST,
+    DOMAIN_PREFAB, DOMAIN_ACTOR, DOMAIN_GLOBAL,
     # Une séquence n'a pas de constante C : son nom désigne une variable
     # d'état, que `_emit_sequence_start/stop/running` écrit ou teste.
     DOMAIN_SEQUENCE,
@@ -2000,10 +1992,7 @@ def covered_domains() -> frozenset:
 _CALL_CUSTOM: dict = {
     "array":       CodeGen._emit_array_misuse,
     "get_actor":   CodeGen._emit_get_actor,
-    "global.get":  CodeGen._emit_global_get,
-    "global.set":  CodeGen._emit_global_set,
     "save.read":   CodeGen._emit_save_read,
-    "const.get":   CodeGen._emit_const_get,
     "actor.spawn": CodeGen._emit_actor_spawn,
     "sequence.start":   CodeGen._emit_sequence_start,
     "sequence.stop":    CodeGen._emit_sequence_stop,

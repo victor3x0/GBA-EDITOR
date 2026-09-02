@@ -809,7 +809,8 @@ extern int save_erase (int slot);
 /* save.read(slot, "nom") côté Lua (ROADMAP v0.22) : la valeur d'UNE variable
    persistante dans un emplacement, sans toucher aux globales de la partie en
    cours — contrairement à save_read ci-dessus. `idx` est un GLOBAL_*, résolu
-   par le codegen depuis le nom littéral, comme global.get. */
+   par le codegen depuis le nom littéral (contrairement à global.nom, résolu
+   par accès pointé — chantier global/const). */
 extern int save_read_var(int slot, int idx);
 
 extern void tilemap_set        (int bg, int tx, int ty, int tile);

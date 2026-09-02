@@ -14,7 +14,8 @@ choisit, parce que c'est une question de place dans l'écran :
 
     note(layout, clé="")          1 — une ligne sans cadre, en sous-brillance
     notice(clé, ancre, layout)    2 — la GRAVITÉ tranche la forme (voir plus bas)
-    tip(clé, layout)              3 — un encadré à ampoule, coupable par réglage
+    tip(clé, layout)              3 — un encadré (icône du TON), coupable par
+                                     réglage ET par une croix au coup par coup
 
 Le TON dit ce que le message annonce ; il est écrit dans le catalogue, parce
 que c'est une propriété du message et non du lieu où il s'affiche :
@@ -41,7 +42,9 @@ concept, une optimisation, une règle). Les niveaux 1 et 2 disent ce qui est
 actionnable et probablement non voulu, ils ne commentent pas le matériel.
 C'est l'interrupteur — `core/interface_preferences.py`, un réglage
 d'APPLICATION et non de projet — qui rend le niveau 3 acceptable : il ne peut
-pas noyer les deux autres puisqu'il est optionnel.
+pas noyer les deux autres puisqu'il est optionnel. Chaque astuce porte en plus
+sa propre croix (`NoticeBox._dismiss`) : fermée au coup par coup, en session,
+sans toucher au réglage qui gouverne toutes les autres.
 
 ── Le catalogue ──────────────────────────────────────────────────
 
@@ -71,7 +74,7 @@ import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget,
+    QApplication, QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget,
 )
 from PyQt6.QtCore import QSize, Qt
 
@@ -240,15 +243,20 @@ class NoticeBox(QFrame):
     """L'encadré : icône du ton + texte. Sert au niveau 2 quand la gravité
     l'impose (`build`/`render`), et à TOUT le niveau 3 — une astuce est
     toujours encadrée, c'est ce qui la rend reconnaissable d'un coup d'œil, et
-    donc ignorable par qui n'en veut pas."""
+    donc ignorable par qui n'en veut pas.
+
+    **L'icône vient du TON, jamais du niveau** : une astuce `build`/`render`
+    montre le même avertissement (⚠/👁) qu'un niveau 2 — c'en est un, en plus
+    pédagogique — et une astuce `info`/`accent` n'en réclame aucune de plus
+    qu'un niveau 2 du même ton. Pas d'ampoule à part : une troisième forme
+    d'icône pour ce qui reste par ailleurs le même vocabulaire."""
 
     def __init__(self, key: str, is_tip: bool, parent: QWidget | None = None):
         super().__init__(parent)
         self.key = key
         self.is_tip = is_tip
+        self._dismissed = False
         color, icon_name = TONES[tone_of(key)]
-        if is_tip:
-            icon_name = "tip"
         self.setObjectName("noticeBox")
         self.setStyleSheet(QSS.notice_box(color))
 
@@ -256,11 +264,12 @@ class NoticeBox(QFrame):
         row.setContentsMargins(S.MD, S.MD, S.MD, S.MD)
         row.setSpacing(S.MD)
 
-        ico = QLabel()
-        ico.setPixmap(icons.get(icon_name, color).pixmap(QSize(14, 14)))
-        ico.setAlignment(Qt.AlignmentFlag.AlignTop)
-        ico.setFixedWidth(14)
-        row.addWidget(ico)
+        if icon_name:
+            ico = QLabel()
+            ico.setPixmap(icons.get(icon_name, color).pixmap(QSize(14, 14)))
+            ico.setAlignment(Qt.AlignmentFlag.AlignTop)
+            ico.setFixedWidth(14)
+            row.addWidget(ico)
 
         # SANS cadre, la couleur est portée par le texte ; AVEC cadre, par le
         # cadre et l'icône. Un encadré dont le corps reprendrait la teinte du
@@ -274,6 +283,25 @@ class NoticeBox(QFrame):
             f"color:{C.TEXT_NORM}; background:transparent; border:none;")
         row.addWidget(self._body, 1)
 
+        # Une astuce se ferme au coup par coup — l'interrupteur d'application
+        # (Settings ▸ Interface) reste le seul geste qui les coupe TOUTES.
+        # Un niveau 2 ne porte pas cette croix : il rend compte d'un état
+        # (le build va rogner ceci), le fermer laisserait croire que l'état a
+        # changé alors que seul l'affichage s'est tu.
+        if is_tip:
+            close = QToolButton()
+            close.setIcon(icons.get("clear", C.TEXT_MUTED))
+            close.setIconSize(QSize(11, 11))
+            close.setFixedSize(16, 16)
+            close.setAutoRaise(True)
+            close.setCursor(Qt.CursorShape.PointingHandCursor)
+            close.setToolTip("Dismiss this tip")
+            close.setStyleSheet(
+                "QToolButton{border:none; background:transparent;}"
+                f"QToolButton:hover{{background:{C.BG_HOVER};border-radius:3px;}}")
+            close.clicked.connect(self._dismiss)
+            row.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
+
         self.setVisible(False)
 
     def show_text(self, **args):
@@ -284,11 +312,17 @@ class NoticeBox(QFrame):
         self._body.setText("")
         self.refresh()
 
+    def _dismiss(self):
+        self._dismissed = True
+        self.refresh()
+
     def refresh(self):
-        """Visible si elle a quelque chose à dire ET si le projet en veut.
-        `refresh_tips()` rappelle cette méthode sans connaître le premier
-        terme, d'où la relecture du texte plutôt qu'un booléen passé."""
+        """Visible si elle a quelque chose à dire, si le projet en veut, et si
+        elle n'a pas été fermée. `refresh_tips()` rappelle cette méthode sans
+        connaître les deux premiers termes, d'où la relecture plutôt qu'un
+        booléen passé."""
         self.setVisible(bool(self._body.text())
+                        and not self._dismissed
                         and (tips_enabled() if self.is_tip else True))
 
 

@@ -511,8 +511,9 @@ int save_read(int slot) {
    regarder le chapitre ou le temps de jeu d'un autre emplacement ne doit pas
    écraser la partie que le joueur est peut-être déjà en train de jouer.
 
-   `idx` est un index GLOBAL_* (résolu par le codegen depuis le nom, comme
-   global.get) — pas un rang dans les tables g_save_*, d'où le tour par
+   `idx` est un index GLOBAL_* (résolu par le codegen depuis le nom LITTÉRAL de
+   cet appel — contrairement à global.nom, résolu par accès pointé, cf.
+   chantier global/const) — pas un rang dans les tables g_save_*, d'où le tour par
    g_save_idx pour retrouver la bonne entrée. Même tolérance qu'ailleurs dans
    ce fichier : emplacement vide/illisible ou variable absente du fichier
    rendent le défaut, jamais une valeur inventée. */

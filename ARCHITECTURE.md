@@ -244,7 +244,8 @@ ombres `g_bgcnt_sh[4]` et `g_bg_ofs_x/y[4]`. Il y a quatre plans dans la machine
 un type instanciable suggérerait qu'on peut en créer un cinquième. Les seules structs BG sont
 `BgAnim` et `BgTileAnim`, qui sont des **états d'animation**, pas des backgrounds.
 
-**Le merge ne dispense pas de nommer ses parties (ROADMAP v0.25).** La struct porte trois
+**Le merge ne dispense pas de nommer ses parties** (ROADMAP — chantier technique *La grammaire
+de la struct `Actor`*). La struct porte trois
 familles, et ses deux blocs sont exactement les composants de l'éditeur — pour que le C émis
 se lise avec le vocabulaire de l'inspecteur, et pas un second :
 
@@ -271,7 +272,8 @@ vit dans `actor_{sym}.c`. Mais la vraie raison est ailleurs : `anim_length` n'es
 `state_len[state]`, c'est la longueur du bloc de la **direction actuellement jouée**, que le
 tick trouve par un parcours de `anim_dirs[]` avec repli sur la direction omni. Les trois
 champs **mémoïsent ce parcours** — un script qui lit `self.anim_length` ne le refait pas.
-Exposer les tables aux scripts a été évalué puis écarté en v0.25 : ça déplacerait la boucle
+Exposer les tables aux scripts a été évalué puis écarté dans le chantier technique *La grammaire
+de la struct `Actor`* (ROADMAP) : ça déplacerait la boucle
 dans chaque lecture. Le tick d'animation (`main_gen._anim_tick_lines`) les écrit donc CHAQUE
 frame, comme `resolve_actor_tiles` écrit `collision.grounded`. Même raison pour
 `self.frame_w`/`self.frame_h` : posées une fois à l'init/au spawn depuis
@@ -334,8 +336,8 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 
 - **`parser.py`** — modélise la grammaire Lua en dataclasses Python (`StmtIf`, `ExprInvoke` pour `self:method()`, etc.). Spécifique à Lua : remplacer le langage de script demanderait de réécrire ce fichier (et une partie du pattern-matching de `checker.py`/`codegen.py` sur ces formes syntaxiques), mais pas le reste de la chaîne.
 - **`api.py`** (`RUNTIME_API`) — source de vérité unique pour toute fonction Lua exposée au runtime : nom Lua, fonction C cible, types de paramètres, domaine de résolution des chaînes (`DOMAIN_ANIM`, `DOMAIN_SFX`, `DOMAIN_SCENE`...). Utilisé à la fois par `checker.py` (valider un appel connu) et `codegen.py` (générer l'appel C générique via `_emit_api_call`).
-- **`checker.py`** — parcourt l'AST et valide les appels contre `RUNTIME_API` (fonction connue, bon nombre d'arguments — y compris les fonctions variadiques comme `display.print`, nom de ressource existant). Ne bloque le build que sur les erreurs (`CheckError.level == "error"`) ; les avertissements (ex. valeur littérale hors plage pour un `global.set` typé) sont journalisés sans empêcher la compilation. Appliqué uniformément aux scripts actor, scène et prefab via `lua_compiler.py::_compile_script` — un prefab avec une erreur bloque désormais le build comme un actor, plutôt que d'être silencieusement sauté. Les behaviors (`require("behaviors/x")`, inlinés par `codegen.py::_emit_inlined_behaviors`) passent par le même checker avec `check_event_names=False` (leurs fonctions top-level sont des noms de méthode arbitraires, pas des handlers d'événement) ; fichier manquant ou erreur de parse y remontent comme avertissement plutôt que de casser silencieusement ou de lever une exception Python brute.
-- **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`global.get`/`set` → accès direct à la variable C, `self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation.
+- **`checker.py`** — parcourt l'AST et valide les appels contre `RUNTIME_API` (fonction connue, bon nombre d'arguments — y compris les fonctions variadiques comme `display.print`, nom de ressource existant). Ne bloque le build que sur les erreurs (`CheckError.level == "error"`) ; les avertissements (ex. valeur littérale hors plage écrite dans une globale typée, `global.score = 70000` sur un `u16`) sont journalisés sans empêcher la compilation. Appliqué uniformément aux scripts actor, scène et prefab via `lua_compiler.py::_compile_script` — un prefab avec une erreur bloque désormais le build comme un actor, plutôt que d'être silencieusement sauté. Les behaviors (`require("behaviors/x")`, inlinés par `codegen.py::_emit_inlined_behaviors`) passent par le même checker avec `check_event_names=False` (leurs fonctions top-level sont des noms de méthode arbitraires, pas des handlers d'événement) ; fichier manquant ou erreur de parse y remontent comme avertissement plutôt que de casser silencieusement ou de lever une exception Python brute.
+- **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation. `global.nom`/`const.nom` ne sont ni l'un ni l'autre (chantier global/const) : ce sont des accès POINTÉS, pas des appels — comme `self.position` (RUNTIME_PROPS) ou `data.Objets`, résolus directement dans la branche `ExprIndex` de `_expr` (accès direct à la variable C `g_nom` / au symbole `CONST_NOM`), et validés côté checker par `_check_global_scalar`/`_check_global_indexed`/`_check_const_scalar` plutôt que par le catalogue.
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 - **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
 - **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (`changelog-archive/v0.7.md`, v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge.
@@ -378,6 +380,14 @@ La règle de décision pour TOUTE API future, dérivée des définitions ci-dess
 
 Deux cas hors des trois formes : les **fonctions libres** (`get_actor(name)`,
 `array`) et les **constructeurs** (`vec2(x, y)`) — ni instance, ni module.
+
+`global.nom` / `const.nom` (chantier global/const) sont de la forme PROPRIÉTÉ — lues et
+écrites comme `identifier.member` — sans compiler en getter/setter : `nom` est
+un nom de PROJET, pas un membre de langage fixe, donc pas d'entrée
+`RUNTIME_PROPS` possible (une par variable déclarée serait un catalogue qui se
+régénère à chaque édition de l'écran Variables). Elles compilent en accès
+direct — `g_nom` / `CONST_NOM` — validé par nom via `BuildContext.global_counts`
+/ `.const_names` plutôt que par catalogue figé, même schéma que `data.Objets`.
 
 Deux conséquences qui se paient cher si on les oublie :
 
@@ -496,10 +506,14 @@ Cinq domaines étaient vérifiés par un contrôle accroché au nom de l'appel �
   bien pire.
 
 Ce qui reste accroché à un appel précis dans `_check_call_expr` ne porte plus
-sur un nom : la **valeur** d'un `global.set` (plage du type déclaré) et le
-numéro d'emplacement d'un `save.*`. Ces contrôles n'interrompent plus la suite —
-d'où un effet de bord bienvenu : le **nombre d'arguments** de ces quatre appels
-est désormais vérifié lui aussi, alors qu'un `return` prématuré le sautait.
+sur un nom : le numéro d'emplacement d'un `save.*`. Ce contrôle n'interrompt
+plus la suite — d'où un effet de bord bienvenu : le **nombre d'arguments** de
+ces appels est désormais vérifié lui aussi, alors qu'un `return` prématuré le
+sautait. La **valeur** d'un `global.nom = v` (plage du type déclaré) n'est
+plus accrochée à un appel : `global.get`/`set` et `const.get` ont quitté
+`RUNTIME_API` au profit de l'accès pointé (chantier global/const) — cette valeur se
+vérifie désormais à l'ASSIGNATION (`_check_global_write_value`, branchée sur
+`StmtAssign`), pas sur un appel qui n'existe plus.
 
 `BuildContext.prefab_names` porte la liste, remplie par `lua_compiler` depuis le
 projet entier — un prefab est poolé au niveau projet, pas au niveau scène.
@@ -1090,9 +1104,9 @@ s'arrête au premier enregistrement du même format qui porte son id — sans ja
 `global_write_at`, donc sans toucher aux globales de la partie en cours. C'est le geste
 qui manquait pour peindre un écran de sélection de partie (chapitre, temps de jeu, nom)
 sans écraser une partie déjà en cours pour aller regarder les autres emplacements. Côté
-codegen, `save.read` suit exactement le mécanisme de `global.get` : le nom, littéral,
-résout à `GLOBAL_<NOM>` à la compilation (`codegen._emit_save_read`), jamais passé en
-chaîne au runtime.
+codegen, le nom de `save.read` reste un argument LITTÉRAL (contrairement à `global.nom`,
+résolu par accès pointé depuis le chantier global/const) : il résout à `GLOBAL_<NOM>` à la
+compilation (`codegen._emit_save_read`), jamais passé en chaîne au runtime.
 
 Côté build (`main_gen._save_lines`) : trois tableaux parallèles (`g_save_id`, `g_save_idx`,
 `g_save_def`), émis **même vides** parce que `gba_engine.h` les déclare sans condition —
@@ -1762,7 +1776,8 @@ Le seed de scène écrit donc les valeurs de départ dans les champs de la struc
 
 Ils l'ont été — `if (affine_slot >= 0)`, setter no-op et getter identité — et le checker
 refusait en plus au build tout `self.rotation` sur un actor sans « Affine transform ». Les
-deux sont tombés (ROADMAP v0.25) : ces champs occupent leur place dans **chaque** `Actor`
+deux sont tombés (ROADMAP — chantier technique *La grammaire de la struct `Actor`*) : ces champs
+occupent leur place dans **chaque** `Actor`
 qu'un slot soit réservé ou non, et un `self.rotation = self.rotation + 1` qui n'incrémente
 rien — la valeur ne faisant même pas l'aller-retour — est un piège plus coûteux que le
 diagnostic qu'il achetait. Seule l'écriture de la matrice OAM demande le slot.

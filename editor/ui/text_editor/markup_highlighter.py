@@ -47,8 +47,8 @@ class MarkupHighlighter(QSyntaxHighlighter):
             # Une balise est une INSTRUCTION, pas du texte : elle se lit d'un
             # coup d'œil comme telle, et on voit du même geste ce qui ne sera
             # pas affiché.
-            TOK_TAG:    fmt(C.ACCENT_BLU, bold=True),
-            TOK_CLOSE:  fmt(C.ACCENT_BLU),
+            TOK_TAG:    fmt(C.ACCENT_COOL, bold=True),
+            TOK_CLOSE:  fmt(C.ACCENT_COOL),
             # Même couleur que les globals ailleurs dans l'éditeur : c'est la
             # même chose qu'on désigne.
             TOK_VALUE:  fmt(COLOR_GLOBAL, bold=True),

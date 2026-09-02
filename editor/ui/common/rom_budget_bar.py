@@ -27,27 +27,31 @@ from PyQt6.QtGui import QFont, QPainter, QColor, QCursor
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from ui.common.theme import C, T
-from ui.common.icons import COLOR_SFX, COLOR_BACKGROUND, COLOR_SPRITE, COLOR_UI, COLOR_SCRIPT, COLOR_DEFAULT
+from ui.common.icons import (
+    COLOR_SFX, COLOR_BACKGROUND, COLOR_SPRITE, COLOR_UI, COLOR_SCRIPT,
+    COLOR_FONT, COLOR_DEFAULT,
+)
 from codegen.rom_report import RomReport, CARTRIDGE_SIZES_MIB
 
 _WARN_RATIO = 0.75  # même seuil que GbaStatusBar / SoundBudgetBar
 
 # Une couleur par catégorie de `rom_report.CATEGORY_ORDER`. Réutilise les
 # teintes de FAMILLE déjà établies (icons.py) là où le rapprochement est
-# direct (Audio, Fonds↔Background, Sprites, Interface↔UI, Collision↔Logique) ;
-# le reste pioche dans les accents neutres du thème plutôt que d'inventer une
-# couleur. Code/Reste ne sont pas des assets : les deux teintes les plus
+# direct (Audio, Fonds↔Background, Sprites, Interface↔UI, Collision↔Logique,
+# Polices↔Font) ; Palettes et Tables de données ne sont pas des types d'asset
+# (aucune famille ne les couvre) et prennent les accents génériques du thème ;
+# Code/Reste ne sont pas des assets non plus : les deux teintes les plus
 # discrètes du thème, pour qu'ils ne rivalisent pas visuellement avec ce sur
 # quoi l'auteur peut agir.
 _CATEGORY_COLORS: dict[str, str] = {
     "Audio":              COLOR_SFX,
-    "Polices":            C.ACCENT_PRP,
+    "Polices":            COLOR_FONT,
     "Fonds":               COLOR_BACKGROUND,
     "Sprites":            COLOR_SPRITE,
-    "Palettes":           C.ACCENT_ORG,
+    "Palettes":           C.ACCENT_WARM,
     "Textes":             C.ACCENT,
     "Interface":          COLOR_UI,
-    "Tables de données":  C.ACCENT_BLU,
+    "Tables de données":  C.ACCENT_COOL,
     "Collision":          COLOR_SCRIPT,
     "Code":               C.TEXT_DIM,
     "Reste":              C.TEXT_MUTED,

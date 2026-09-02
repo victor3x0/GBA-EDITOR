@@ -650,58 +650,6 @@
       ]
     },
     {
-      "name": "Variables",
-      "group": "language",
-      "entries": [
-        {
-          "label": "global.get(\"name\")",
-          "snippet": "global.get(\"score\")",
-          "description": "Lit une variable globale entière partagée entre tous les scripts.",
-          "params": [
-            {
-              "name": "name",
-              "type": "string",
-              "description": "Nom de la variable globale"
-            }
-          ],
-          "returns": "number — valeur entière courante",
-          "doc_anchor": "global-get"
-        },
-        {
-          "label": "global.set(\"name\", value)",
-          "snippet": "global.set(\"score\", 0)",
-          "description": "Écrit une variable globale entière partagée entre tous les scripts.",
-          "params": [
-            {
-              "name": "name",
-              "type": "string",
-              "description": "Nom de la variable globale"
-            },
-            {
-              "name": "value",
-              "type": "number",
-              "description": "Valeur entière à stocker"
-            }
-          ],
-          "doc_anchor": "global-set"
-        },
-        {
-          "label": "const.get(\"name\")",
-          "snippet": "const.get(\"max_lives\")",
-          "description": "Lit une constante (valeur fixe déclarée dans le projet, jamais modifiée — pas de const.set).",
-          "params": [
-            {
-              "name": "name",
-              "type": "string",
-              "description": "Nom de la constante"
-            }
-          ],
-          "returns": "number — valeur fixe",
-          "doc_anchor": "const-get"
-        }
-      ]
-    },
-    {
       "name": "Séquences",
       "group": "language",
       "entries": [

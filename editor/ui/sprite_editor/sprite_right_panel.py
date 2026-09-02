@@ -118,7 +118,7 @@ class SpriteRightPanel(QWidget):
         # PAL_BANK du sprite — dérivées du PNG grisées + overridables, « + » pour
         # ajouter une banque du catalogue. La palette active de PEINTURE/preview se
         # choisit dans la bande en tête du canvas.
-        self._pal_grid = PaletteSlotGridAsset(C.ACCENT_ORG)
+        self._pal_grid = PaletteSlotGridAsset(C.ACCENT_WARM)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
         self._pal_grid.scene_remove.connect(self._on_pal_remove)

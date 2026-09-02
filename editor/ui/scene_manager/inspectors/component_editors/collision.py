@@ -79,7 +79,7 @@ class CollisionEditor(BaseComponentEditor):
             notice(key, vf, layout)
 
         W.pair("Offset", "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
-        W.pair("Taille", "W", C.ACCENT_BLU, vf_w, "H", C.ACCENT_PRP, vf_h, layout)
+        W.pair("Taille", "W", C.AXIS_X, vf_w, "H", C.AXIS_Y, vf_h, layout)
 
         def _on_solid(v):
             self.set_field(comp, "solid", v)
