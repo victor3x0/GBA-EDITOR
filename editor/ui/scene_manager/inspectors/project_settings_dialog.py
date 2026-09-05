@@ -503,10 +503,31 @@ class LanguagesPanel(QWidget):
     def __init__(self, project: Project, parent=None):
         super().__init__(parent)
         self._project = project
+        self._blocking = False
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
         lay.addWidget(_category_title("Languages"))
+
+        # ── Police de repli (« Default Font ») ────────────────────
+        # Comble les trous de COUVERTURE : un caractère absent de la police
+        # active (remap de langue inclus), ou une traduction manquante dont la
+        # source ne se rend pas dans la police active — un mot latin laissé non
+        # traduit sous une police japonaise, par exemple. « (none) » = pas de
+        # repli, un glyphe manquant reste simplement sauté.
+        self._combo_fallback = QComboBox()
+        self._combo_fallback.setFont(QFont(T.UI, T.MD))
+        self._combo_fallback.setStyleSheet(QSS.combobox)
+        self._combo_fallback.setToolTip(
+            "<b>Default font</b><br><br>"
+            "Fills coverage holes: a character the active font does not carry<br>"
+            "(a Latin word left untranslated under a Japanese font, say), or any<br>"
+            "glyph missing from the scene's font.<br><br>"
+            "It may be imperfect — a character missing from BOTH the active font<br>"
+            "and this one is still reported, as usual. «(none)» keeps the old<br>"
+            "behavior: a missing glyph is simply skipped, drawing nothing.")
+        self._combo_fallback.currentIndexChanged.connect(self._on_fallback_changed)
+        _row("Default font", self._combo_fallback, lay)
 
         self._card = LanguagesCard()
         self._card.set_expanded(True)   # dépliée d'office : c'est tout l'écran ici
@@ -518,6 +539,42 @@ class LanguagesPanel(QWidget):
         lay.addStretch()
 
         self._card.load(project)
+        self._refresh_fallback()
+
+    # ── Police de repli ───────────────────────────────────────────
+
+    def _refresh_fallback(self):
+        """(Re)synchronise le combo depuis settings.fallback_font — au chargement
+        ET après chaque mutation (donc aussi après un undo)."""
+        self._blocking = True
+        try:
+            self._combo_fallback.clear()
+            self._combo_fallback.addItem("(none)", "")
+            for f in self._project.fonts:
+                self._combo_fallback.addItem(f.name, f.name)
+            cur = getattr(self._project.settings, "fallback_font", "") or ""
+            idx = self._combo_fallback.findData(cur)
+            if idx < 0 and cur:
+                # Police disparue (renommée/supprimée hors d'ici) : la garder
+                # visible plutôt que de la réécrire silencieusement.
+                self._combo_fallback.addItem(f"{cur}  (not found)", cur)
+                idx = self._combo_fallback.findData(cur)
+            self._combo_fallback.setCurrentIndex(idx if idx >= 0 else 0)
+        finally:
+            self._blocking = False
+
+    def _on_fallback_changed(self, _idx: int):
+        if self._blocking:
+            return
+        value = self._combo_fallback.currentData() or ""
+        old = getattr(self._project.settings, "fallback_font", "") or ""
+        if old == value:
+            return
+        get_history().push(SetFieldCmd(
+            self._project.settings, "fallback_font", old, value,
+            label="Projet.fallback_font",
+            persist_fn=lambda: (self._persist(), self._refresh_fallback()),
+        ))
 
     def _persist(self):
         self._project.save_settings()

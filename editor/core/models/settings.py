@@ -174,6 +174,15 @@ class ProjectSettings:
     # vérité à tenir d'accord. Liste vide = projet monolingue, exactement ce
     # qu'était tout projet avant la v0.9.
     languages: list = field(default_factory=list)
+    # Police de REPLI globale (« Default Font ») — celle qui comble les trous de
+    # COUVERTURE : un caractère absent de la police active (y compris après un
+    # remap de langue), ou une traduction manquante dont la source ne se rend pas
+    # dans la police active. Référencée par NOM comme tout asset. Vide = aucun
+    # repli, le comportement d'avant (glyphe manquant simplement sauté). Une
+    # scène peut la surcharger (`Scene.fallback_font`) ; elle peut être imparfaite
+    # et il lui manquer des caractères — le validateur signale ce qu'aucune des
+    # deux ne couvre, comme d'habitude.
+    fallback_font: str = ""
     # ── Inputs (placeholder) ────────────────────────────────────────
     # Actions nommées du joueur, chacune liée à un combo de boutons — voir
     # InputBinding ci-dessus pour ce qui manque encore avant que ça pilote

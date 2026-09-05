@@ -743,6 +743,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
                if self.settings.source_lang.code else {}),
             **({"languages": [l.to_dict() for l in self.settings.languages]}
                if self.settings.languages else {}),
+            # Police de repli globale (« Default Font ») — absente tant qu'aucune
+            # n'est choisie, comme languages : un projet qui n'en veut pas ne
+            # gagne pas de clé, et rien ne change pour lui.
+            **({"fallback_font": self.settings.fallback_font}
+               if self.settings.fallback_font else {}),
             # Placeholder (cf. InputBinding) : un projet sans input déclaré ne
             # gagne pas de clé, même politique que languages/collisions.
             **({"inputs": [i.to_dict() for i in self.settings.inputs]}
@@ -813,6 +818,9 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.settings.languages = [Language.from_dict(x)
                                    for x in (d.get("languages") or [])
                                    if (x or {}).get("code")]
+        # Absente = aucun repli, le cas de tout projet d'avant que « Default
+        # Font » existe : un glyphe manquant reste simplement sauté, comme avant.
+        self.settings.fallback_font = d.get("fallback_font", "")
         # Absents = aucun input déclaré, le cas de tout projet avant que ce
         # placeholder n'existe.
         self.settings.inputs = [InputBinding.from_dict(x)

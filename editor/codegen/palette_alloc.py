@@ -327,7 +327,7 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
     if not fonts:
         return []
     by_name = {f.name: f for f in fonts}
-    default = default_font_name(fonts, scene)
+    default = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
 
     # Polices à usage LIBRE : celles d'un texte hors conteneur à fond. Un texte
     # sans `font_name` prend la police par défaut de la scène.
@@ -564,7 +564,7 @@ def scene_font_runtime_banks(p: Project, scene: Scene) -> dict:
     if not fonts:
         return {}
     by_name = {f.name: f for f in fonts}
-    default = default_font_name(fonts, scene)
+    default = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
     layout = scene_bank_layout(p, scene, "bg")
 
     free = {name: (pb, cols) for name, pb, cols in _scene_font_palettes(p, scene)}

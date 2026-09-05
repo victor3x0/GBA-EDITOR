@@ -150,20 +150,26 @@ def font_picker_slot(
     on_picked: Callable[[str], None],
     add_label: str = "Choose the scene font",
     parent=None,
+    project_default: str = "",
 ) -> ScriptSlot:
     """Slot pour choisir la police par défaut d'une scène — un NOM de `Font`
     du projet parmi `fonts`, ou `""` pour « Automatic » (comme
     `Scene.font_name`, cf. `main_gen.project_fonts`).
 
     Deux nuances propres aux polices, absentes de `sprite_picker_slot` :
-    l'entrée « Automatic » affiche la police qu'elle résoudrait quand elle
-    est sans ambiguïté (une seule police utilisable dans `usable_names`) ;
-    et une police SANS planche exploitable reste listée, dite telle quelle —
-    la masquer ferait disparaître un choix déjà posé dans le JSON."""
+    l'entrée « Automatic » affiche la police qu'elle résoudrait ; et une police
+    SANS planche exploitable reste listée, dite telle quelle — la masquer ferait
+    disparaître un choix déjà posé dans le JSON.
+
+    Ce que « Automatic » résout suit `font_emit.default_font_name` : la « Default
+    Font » du projet (`project_default`) si elle est posée et utilisable, sinon la
+    seule police utilisable s'il n'y en a qu'une — sinon indécidable ici."""
     slot = ScriptSlot(add_label=add_label, accent_color=accent, show_clear=False)
     icon = icons.get("font", C.TEXT_DIM)
 
     def _auto_label() -> str:
+        if project_default and project_default in usable_names:
+            return f"Automatic — {project_default}"
         first = sorted(usable_names)[0] if len(usable_names) == 1 else ""
         return f"Automatic — {first}" if first else _FONT_AUTO_LABEL_BASE
 

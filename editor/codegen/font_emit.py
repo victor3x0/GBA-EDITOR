@@ -265,7 +265,7 @@ def scene_text_tiles(fonts, names: set[str] | None = None,
                            codepoints)
 
 
-def default_font_name(fonts: list, scene) -> str:
+def default_font_name(fonts: list, scene, project_default: str = "") -> str:
     """Nom de la police par défaut de `scene`, résolu contre `fonts` — la liste
     est fournie par l'appelant plutôt que recalculée ici : `project_fonts()`
     élague désormais aux polices utilisées, et déterminer CE qui est utilisé a
@@ -273,14 +273,24 @@ def default_font_name(fonts: list, scene) -> str:
     `project_fonts()` bouclerait donc sur lui-même ; cette fonction reste pure,
     contre n'importe quelle liste (filtrée ou non).
 
-    Repli sur la première police de la liste si `Scene.font_name` est vide ou
-    introuvable — même règle que `scene_default_font`, dont c'est le cœur."""
+    Trois niveaux, du plus spécifique au plus général :
+    - la police que la scène NOMME (`Scene.font_name`), si elle existe — un choix
+      explicite l'emporte toujours ;
+    - sinon la police par DÉFAUT DU PROJET (`project_default`, « Default Font » —
+      `ProjectSettings.fallback_font`), si elle est fournie et présente : c'est le
+      défaut que le projet a choisi, préféré à un ordre d'import arbitraire ;
+    - sinon la première police de la liste, l'ultime repli quand rien n'est
+      configuré (le comportement d'avant la « Default Font »)."""
     if not fonts:
         return ""
     want = getattr(scene, "font_name", "") or ""
     for f in fonts:
         if f.name == want:
             return f.name
+    if project_default:
+        for f in fonts:
+            if f.name == project_default:
+                return f.name
     return fonts[0].name
 
 
@@ -308,8 +318,27 @@ def scene_default_font(p, scene) -> tuple[int, str]:
     fonts = project_fonts(p)
     if not fonts:
         return -1, ""
-    name = default_font_name(fonts, scene)
+    name = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
     return next(i for i, f in enumerate(fonts) if f.name == name), name
+
+
+def scene_fallback_font(p, scene) -> str:
+    """Nom de la police de REPLI effective d'une scène (« Default Font »), ou ""
+    si aucune.
+
+    POINT UNIQUE — le chargement VRAM (5ᵉ source de `scene_font_names`), le rendu
+    par glyphe et le validateur de couverture lisent tous ceci, exactement comme
+    `scene_default_font` pour la police par défaut. La scène surcharge le projet.
+
+    "" = pas de repli, jamais un repli INVENTÉ : un projet qui n'a pas choisi de
+    « Default Font » se comporte comme avant (un glyphe manquant reste sauté).
+    Contrairement à la police par défaut, on ne retombe donc PAS sur la première
+    police du projet — le repli est un filet explicite, pas un défaut imposé. Un
+    nom introuvable est laissé tel quel : c'est au validateur de le dire."""
+    scene_fb = (getattr(scene, "fallback_font", "") or "").strip()
+    if scene_fb:
+        return scene_fb
+    return (getattr(getattr(p, "settings", None), "fallback_font", "") or "").strip()
 
 
 def layout_font_names(layout, default_font: str = "") -> set[str]:
@@ -458,13 +487,18 @@ def build_font_subset(e: dict, codepoints: "set | None") -> "dict | None":
 def scene_font_names(p, scene, default_font: str = "") -> "set | None":
     """Polices qu'une scène peut avoir en VRAM, ou None si c'est indécidable.
 
-    Trois sources :
+    Quatre sources :
     - la police par défaut, TOUJOURS — `scene_init` émet `text_set_font(0)`,
       donc elle est chargée même dans une scène sans une ligne de texte ;
     - les polices nommées par les zones de la mise en page ;
     - celles que chargent les scripts de la scène (`text.set_font`), repérées
       par DOMAINE — une zone n'a pas besoin de les nommer pour qu'elles
-      arrivent en VRAM.
+      arrivent en VRAM ;
+    - les CIBLES de remap des langues déclarées (v0.9, phase 3.2) : une langue
+      peut remplacer une police que la scène nomme (`Language.fonts`), et cette
+      cible doit être chargée comme l'original — sinon la scène rend, dans cette
+      langue, avec une police jamais copiée en VRAM. Même lecture de
+      `Language.fonts` que `emit_lang_fonts_c`, une seule vérité.
 
     Rend None dès qu'un script choisit sa police au runtime ou n'est pas
     analysable : mieux vaut réserver pour tout le projet que trop peu."""
@@ -483,6 +517,20 @@ def scene_font_names(p, scene, default_font: str = "") -> "set | None":
         if dynamic:
             return None
         names |= cited
+    # 4ᵉ source : le remap par langue. `scene_codepoints_union` compte déjà les
+    # codepoints de toutes les langues, mais le sous-ensemble ne sert à rien si
+    # la police cible n'entre pas dans l'ensemble chargé — d'où l'expansion ici.
+    for lang in getattr(getattr(p, "settings", None), "languages", []):
+        remap = getattr(lang, "fonts", None) or {}
+        names |= {remap[n] for n in list(names) if n in remap}
+    # 5ᵉ source : la police de REPLI (« Default Font ») comble les trous de
+    # couverture, elle doit donc être chargée et palettée comme les autres. Après
+    # le remap, jamais avant : le repli est le dernier recours, il ne se remplace
+    # pas lui-même par langue. Le sous-ensemble émis le dimensionne ensuite sur
+    # les codepoints de la scène, comme toute police chargée.
+    fb = scene_fallback_font(p, scene)
+    if fb:
+        names.add(fb)
     return names
 
 

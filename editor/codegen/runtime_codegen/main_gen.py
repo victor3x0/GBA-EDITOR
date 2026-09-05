@@ -1922,9 +1922,10 @@ def project_used_font_names(p) -> "set | None":
     silence — même arbitrage que `scene_font_names`."""
     from codegen.font_emit import scene_font_names, default_font_name
     all_fonts = encodable_project_fonts(p)
+    _proj_default = getattr(p.settings, "fallback_font", "")
     names: set = set()
     for scene in getattr(p, "scenes", []):
-        default_font = default_font_name(all_fonts, scene)
+        default_font = default_font_name(all_fonts, scene, _proj_default)
         sn = scene_font_names(p, scene, default_font)
         if sn is None:
             return None
@@ -3304,6 +3305,18 @@ def _gen_scene_init(
             if _bo is not None:
                 L.append(f"    text_set_font_pal({_fi}, {_bo[0]}, {_bo[1]});"
                          f"   /* {_f.name} */")
+        # Police de REPLI de la scène (« Default Font », v0.9) — après les
+        # bases/sous-ensembles/palettes dont elle dépend, et avant text_set_font
+        # (elle n'altère pas l'active). -1 quand la scène n'en a pas : émise à
+        # CHAQUE scène, donc aucune n'hérite du repli de la précédente. Le remap
+        # de langue est écarté côté moteur (text_set_fallback_font) — le repli est
+        # le dernier recours, il ne se remplace pas lui-même par langue.
+        from codegen.font_emit import scene_fallback_font as _sfb
+        _fb_name = _sfb(p, scene)
+        _fb_idx = next((i for i, f in enumerate(project_fonts(p))
+                        if f.name == _fb_name), -1) if _fb_name else -1
+        L.append(f"    text_set_fallback_font({_fb_idx});"
+                 + (f"   /* {_fb_name} */" if _fb_idx >= 0 else ""))
         # Police par défaut de la SCÈNE — le même calcul que la réservation
         # VRAM et les sous-ensembles (cf. font_emit.scene_default_font).
         # Réserver pour une police et en charger une autre écrirait le texte

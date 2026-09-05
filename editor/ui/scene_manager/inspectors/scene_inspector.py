@@ -466,6 +466,20 @@ class SceneInspector(QWidget):
         font_row.addLayout(self._font_box, 1)
         ui_inner.addLayout(font_row)
 
+        # ── Police de REPLI de la scène (« Default Font ») ────────
+        # Surcharge par scène du repli de couverture du projet
+        # (settings.fallback_font) : ce qui comble un caractère absent de la
+        # police active. Vide = hérite du projet, comme la transition/backdrop.
+        fb_row = QHBoxLayout(); fb_row.setSpacing(6)
+        lbl_fb = QLabel("Fallback font:")
+        lbl_fb.setFont(QFont(T.UI, T.SM)); lbl_fb.setStyleSheet(f"color:{C.TEXT_DIM};")
+        lbl_fb.setFixedWidth(70)
+        self._fb_slot = None
+        self._fb_box = QHBoxLayout()
+        fb_row.addWidget(lbl_fb)
+        fb_row.addLayout(self._fb_box, 1)
+        ui_inner.addLayout(fb_row)
+
         cl.addWidget(ui_card)
 
         # ── Carte Actor budget — les 128 entrées de l'OAM, réparties ────
@@ -553,6 +567,7 @@ class SceneInspector(QWidget):
         # la sélection BG, que ce dernier vient de rafraîchir.
         self._reload_ui_pal()
         self._reload_scene_font()
+        self._reload_scene_fallback()
         # La LISTE des prefabs d'abord, les plafonds ensuite : chaque champ se
         # borne sur ce que les autres ont pris, donc ils doivent tous exister.
         self._rebuild_actor_budget()
@@ -1161,7 +1176,8 @@ class SceneInspector(QWidget):
         `font_pal_banks` s'y résout (cf. `font_pal_key`)."""
         from codegen.runtime_codegen.main_gen import encodable_project_fonts
         from codegen.font_emit import default_font_name
-        return default_font_name(encodable_project_fonts(self._project), self._scene)
+        return default_font_name(encodable_project_fonts(self._project), self._scene,
+                                 getattr(self._project.settings, "fallback_font", ""))
 
     def _entry_targets(self, entry) -> tuple[list, list]:
         """(instances à muter par `pal_bank`, clés `font_pal_banks` à muter) d'une
@@ -1439,13 +1455,45 @@ class SceneInspector(QWidget):
             self._font_slot.deleteLater()
         self._font_slot = font_picker_slot(
             list(getattr(p, "fonts", []) or []), usable, cur, icons.COLOR_UI,
-            on_picked=self._on_scene_font_changed, parent=self)
+            on_picked=self._on_scene_font_changed, parent=self,
+            project_default=getattr(p.settings, "fallback_font", "") if p else "")
         self._font_box.addWidget(self._font_slot)
 
     def _on_scene_font_changed(self, name: str):
         if self._blocking or not self._scene:
             return
         self._set_scene_field("font_name", name or "")
+        self.changed.emit()
+
+    def _reload_scene_fallback(self):
+        """(Re)construit le slot de police de REPLI de la scène — surcharge du
+        `settings.fallback_font` du projet. « Automatic » = hériter du projet
+        (le picker affiche la police héritée), un choix = surcharger pour cette
+        scène. Même widget et mêmes règles que `_reload_scene_font`."""
+        if not self._scene:
+            return
+        from ui.common.pickers import font_picker_slot
+        p = self._project
+        try:
+            from codegen.runtime_codegen.main_gen import encodable_project_fonts
+            usable = {f.name for f in encodable_project_fonts(p)} if p else set()
+        except Exception:
+            usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()
+        cur = getattr(self._scene, "fallback_font", "") or ""
+        if self._fb_slot is not None:
+            self._fb_box.removeWidget(self._fb_slot)
+            self._fb_slot.deleteLater()
+        self._fb_slot = font_picker_slot(
+            list(getattr(p, "fonts", []) or []), usable, cur, icons.COLOR_UI,
+            on_picked=self._on_scene_fallback_changed,
+            add_label="Choose a fallback font for this scene", parent=self,
+            project_default=getattr(p.settings, "fallback_font", "") if p else "")
+        self._fb_box.addWidget(self._fb_slot)
+
+    def _on_scene_fallback_changed(self, name: str):
+        if self._blocking or not self._scene:
+            return
+        self._set_scene_field("fallback_font", name or "")
         self.changed.emit()
 
     def _on_text_bg_changed(self):

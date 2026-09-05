@@ -67,15 +67,17 @@ réglages à l'appel. Import des quatre formats que maxmod sait jouer (`.mod`, `
 
 → [détail](changelog-archive/v0.8.md)
 
-## v0.9 — Traduction des jeux créés avec l'éditeur — **EN COURS** (phases 1 à 4 livrées)
+## v0.9 — Traduction des jeux créés avec l'éditeur
 
 L'écran Texte devient une table de travail plate (rangement en trois colonnes, statut
 traduit/manquant, atelier en onglets par langue) puis gagne les langues elles-mêmes : side
 par langue joint par id, remap de police, sous-ensemble de glyphes par (scène, langue), et
-`lang.set`/`lang.get` pour changer de langue en jeu (rechargement de la scène active). Trois
-garde-fous silencieux en projet monolingue : VRAM au pire cas, littéraux non traduits,
-caractères absents de la police effective. Reste ouvert : l'écran de choix de langue et
-l'export pour un traducteur (phase 5).
+`lang.set`/`lang.get` pour changer de langue en jeu (rechargement de la scène active). Une
+**police par défaut** du projet (« Default Font ») sert à la fois de police de scène par défaut
+et de repli de couverture, surchargeable par scène : un caractère absent de la police active —
+un mot resté dans la langue source sous une écriture qui n'a pas ses lettres — se rend depuis
+elle plutôt que de disparaître. Garde-fous silencieux, même en projet monolingue : VRAM au pire
+cas, littéraux non traduits, caractère qu'aucune police (ni l'active ni le repli) ne porte.
 
 → [détail](changelog-archive/v0.9.md)
 

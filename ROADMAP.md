@@ -56,7 +56,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
 | v0.22 | Menus, listes et curseur | **En cours** — navigation et en-tête de sauvegarde livrés ; la liste devient un type, curseur et grille à faire |
-| v0.9 | Traduction des jeux | **En cours** — les cinq phases codées ; reste le build ROM réel qui les valide (cf. phase 5) |
+| v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | **En cours** — gabarit de notices et catalogue livrés ; sélection de langue à faire |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
@@ -72,9 +72,9 @@ Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangée
 de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
 dans sa section, juste après ce tableau : **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 →
 v0.22**. Cinq d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21) sont livrées et archivées ; seules
-**v0.24** et **v0.22** restent détaillées plus bas, dans cet ordre. Les jalons restants (v0.9 à
-v0.18, hors ceux déjà cités) n'ont pas de priorité tranchée entre eux et restent dans leur ordre
-numérique, à la suite du bloc priorisé.
+**v0.24** et **v0.22** restent détaillées plus bas, dans cet ordre. Les jalons restants (v0.10 à
+v0.18, hors ceux déjà cités ; v0.9 est désormais livrée) n'ont pas de priorité tranchée entre eux
+et restent dans leur ordre numérique, à la suite du bloc priorisé.
 
 Le chantier technique *La grammaire de la struct `Actor`* (voir
 [Chantiers techniques](#chantiers-techniques)) ne vient pas de cette revue : il est né d'une
@@ -1227,7 +1227,7 @@ déjà tout ce qu'il faut, on ne fait que le câbler à une balise.
 
 ---
 
-## v0.9 — Traduction des jeux créés avec l'éditeur — **EN COURS**
+## v0.9 — Traduction des jeux créés avec l'éditeur — **LIVRÉE**
 
 Sujet **séparé** de la traduction de l'éditeur (v0.11) : deux chantiers indépendants.
 
@@ -1733,10 +1733,20 @@ Chaque étape laisse le projet buildable.
   souvenir »), vérifiée en la compilant telle qu'elle est écrite : zéro message de checker,
   `lang_set(LANG_FR)` et `lang_set(save_read_var(0, GLOBAL_LANGUE))` dans le C émis.
 
-**Ce qui manque pour clore la v0.9** : le **build ROM réel**. La règle du projet — ne pas
-croire un chantier qui touche la VRAM sur des tests unitaires seuls — n'est pas tenable tant
-que `Project Demo/` est vide. 5.1 change le placement en VRAM de TOUTE scène d'un projet
-multilingue : c'est exactement le genre de changement qui se valide en jouant, pas en lisant.
+**Validée par le jeu réel (2026-09-05).** La règle du projet — ne pas croire un chantier qui
+touche la VRAM sur des tests unitaires seuls — a été tenue : un vrai projet multilingue (source
+EN, traductions FR et JA non-latine, écran de choix de langue, bascule `lang.set` en jeu) a été
+buildé et joué. Ce que le jeu a révélé et qui a été corrigé : la réservation VRAM comptait bien
+l'union des codepoints (5.1) mais **l'ensemble des polices chargées ignorait les cibles de remap
+de langue** — une scène rendait, dans une langue, avec une police jamais copiée. Corrigé en
+faisant de `scene_font_names` une 4ᵉ source (les cibles de remap).
+
+Dans la foulée, une **police par défaut du projet (« Default Font »)** a été ajoutée : à la fois
+police de scène par défaut et **repli de couverture** (surchargeable par scène). Un caractère
+absent de la police active — typiquement un texte laissé dans la langue source, latin, sous une
+écriture japonaise qui n'a pas ses lettres — se rend depuis le repli au lieu de disparaître ; le
+repli n'est **jamais remappé** par la langue (c'est le dernier recours), et le garde-fou de
+couverture n'avertit que si ni l'active ni le repli ne portent le caractère.
 
 ---
 
