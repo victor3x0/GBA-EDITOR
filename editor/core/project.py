@@ -263,7 +263,29 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     # chercher.
 
     def commit_all_removals(self):
-        """Efface définitivement tous les JSONs en attente (appeler à la fermeture)."""
+        """Rend définitives les suppressions différées (appeler à la fermeture).
+
+        Pour les familles adossées à un fichier source, on efface AUSSI ce
+        fichier, pas seulement le sidecar JSON : sinon `reconcile_*` retrouverait
+        le PNG / `.fnt` / module au prochain lancement et recréerait la ressource
+        (cf. asset_encoding). C'est ce qui manquait pour qu'une suppression depuis
+        le finder tienne au rechargement, et non un défaut du soft_delete lui-même.
+
+        La source n'est touchée qu'ICI, à la fermeture — pendant la session elle
+        reste en place, et le Ctrl+Z (restore) suffit à ramener la ressource."""
+        for store, source_paths in (
+            (self.sprites,     asset_encoding.sprite_source_paths),
+            (self.backgrounds, asset_encoding.background_source_paths),
+            (self.sfx,         asset_encoding.sound_source_paths),
+            (self.music,       asset_encoding.sound_source_paths),
+            (self.fonts,       asset_encoding.font_source_paths),
+        ):
+            for item in store.pending_deletes():
+                for path in source_paths(self, item):
+                    try:
+                        Path(path).unlink(missing_ok=True)
+                    except OSError:
+                        pass   # fichier verrouillé (indexeur, AV) : le reste passe
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
                     self.fonts, self.scenes, self.prefabs, self.ui_layouts,
                     self.palettes, self.music_boxes,
@@ -356,7 +378,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def ui_backgrounds(self, role: str = "") -> list[BackgroundAsset]:
         """Fonds d'INTERFACE du projet, éventuellement filtrés sur leur rôle
         (`UI_ROLE_NINE` / `UI_ROLE_BG`). C'est ce que propose le menu de fond
-        d'un `UIPanel` — d'où le filtre : un cadre étirable et une image posée
+        d'un `UIContainer` — d'où le filtre : un cadre étirable et une image posée
         ne s'étalent pas pareil, les mélanger dans une liste unique laisserait
         choisir un cadre sans marges."""
         from core.models.background import KIND_UI
@@ -367,12 +389,42 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         from core.models.background import KIND_ANIMATED
         return [b for b in self.backgrounds if b.kind == KIND_ANIMATED]
 
+    def scene_ui_layouts(self, scene) -> list:
+        """Les nœuds `Interface` d'une scène (v0.25), dans l'ordre où elle les
+        référence. Les refs cassées sont sautées — un nom qui ne résout plus ne
+        doit pas faire tomber le chargement, le validateur le signalera."""
+        out = []
+        for name in getattr(scene, "ui_layouts", []) or []:
+            lay = self.ui_layouts.get(name)
+            if lay is not None:
+                out.append(lay)
+        return out
+
     def scene_ui_layout(self, scene) -> Optional[UILayout]:
-        """Mise en page d'une scène, ou None si elle n'en référence aucune (ou
-        si la référence est cassée — un nom qui ne résout plus ne doit pas
-        faire tomber le chargement, le validateur le signalera)."""
-        name = getattr(scene, "ui_layout", "")
-        return self.ui_layouts.get(name) if name else None
+        """Le nœud `Interface` PRIMAIRE de la scène (le premier référencé), ou
+        None. Réponse volontairement singulière pour le seul cas où « un défaut »
+        suffit. L'outil widget du canvas, lui, préfère désormais le DERNIER nœud
+        sélectionné et ne retombe sur le premier qu'à défaut (cf.
+        `scene_canvas._ensure_layout`). Tout ce qui doit couvrir TOUS les nœuds
+        passe par `scene_ui_layouts` (ou `scene_ui_slots`/`_images`/`_elements`)."""
+        layouts = self.scene_ui_layouts(scene)
+        return layouts[0] if layouts else None
+
+    def scene_ui_slots(self, scene) -> list:
+        """[(UILayout, slot de texte)] de TOUS les nœuds `Interface` d'une scène
+        (v0.25), dans l'ordre des nœuds puis des slots. Le pendant par-scène de
+        `all_regions`, pour les émetteurs qui réservent/initialisent PAR scène —
+        et qui itéraient jusqu'ici l'unique `scene_ui_layout`."""
+        return [(lay, r) for lay in self.scene_ui_layouts(scene) for r in lay.slots]
+
+    def scene_ui_images(self, scene) -> list:
+        """[(UILayout, UIImage)] de tous les nœuds `Interface` d'une scène."""
+        return [(lay, im) for lay in self.scene_ui_layouts(scene) for im in lay.images]
+
+    def scene_ui_elements(self, scene) -> list:
+        """[(UILayout, élément)] de tous les nœuds `Interface` d'une scène, tous
+        types confondus."""
+        return [(lay, e) for lay in self.scene_ui_layouts(scene) for e in lay.elements]
 
     def all_regions(self) -> list:
         """[(UILayout, élément de texte)] de tout le projet, ordre STABLE.
@@ -583,10 +635,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             pass
 
     def ui_layout_users(self, name: str) -> list:
-        """Scènes qui référencent cette mise en page. Alimente le badge
-        « partagée — N scènes » : éditer une région depuis le canvas modifie un
+        """Scènes qui référencent ce nœud `Interface`. Alimente le badge
+        « partagée — N scènes » : éditer un élément depuis le canvas modifie un
         objet commun, et le taire casserait N scènes en un geste."""
-        return [s for s in self.scenes if getattr(s, "ui_layout", "") == name]
+        return [s for s in self.scenes
+                if name in (getattr(s, "ui_layouts", []) or [])]
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:

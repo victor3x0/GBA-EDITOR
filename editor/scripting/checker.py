@@ -100,7 +100,7 @@ class BuildContext:
     # qui existe mais n'est pas coché persist ne figure dans aucun fichier de
     # sauvegarde — l'appel rendrait toujours le défaut, en silence.
     global_persist: dict[str, bool] = None
-    # Noms des panneaux marqués LISTE (ROADMAP v0.22).
+    # Noms des conteneurs marqués LISTE (ROADMAP v0.22).
     ui_list_names: list = None
     # Les enfants du propriétaire de ce script (ROADMAP v0.23) : `self.bras`
     # n'est valide que si « bras » en est un. None = information absente
@@ -113,7 +113,7 @@ class BuildContext:
     palette_names: list[str] = None    # palettes du catalogue de couleurs
     region_names: list[str]  = None    # emplacements de texte (toutes mises en page)
     image_names:  list[str]  = None    # images d'interface (toutes mises en page)
-    # TOUS les éléments d'UI, tous types confondus (pour ui.get) — texte, panel
+    # TOUS les éléments d'UI, tous types confondus (pour ui.get) — texte, container
     # et image y figurent, contrairement à region_names/image_names qui ne
     # couvrent que ce qui dessine.
     element_names: list[str] = None
@@ -179,6 +179,17 @@ class Checker:
         # inconnus refuserait aussi les seuls appels légitimes hors catalogue.
         self._require_aliases: set[str] = set()
         self._module_functions: dict[str, list[str]] = {}
+        # Tout ce qu'un nom NU a le droit d'être : un `local` (où qu'il soit
+        # déclaré), un paramètre de fonction, une variable de boucle. Ce
+        # langage n'a pas de variable de script implicite — une globale
+        # s'écrit `global.nom` —, donc un nom hors de cet ensemble ne désigne
+        # rien et le C émis citerait un identifiant qui n'existe pas.
+        self._local_names: set[str] = set()
+        # Un nom inconnu se dit UNE fois par script, pas une fois par
+        # occurrence : `curpos = curpos + 1` le rencontre trois fois (la cible,
+        # la cible relue comme expression, l'opérande) et trois lignes
+        # identiques donneraient à chercher trois fautes.
+        self._bare_said: set[str] = set()
         # Remplis par `check()` — cf. les commentaires là-bas.
         self._sequences: list[str] = []
         self._assigned:  set[str]  = set()
@@ -187,6 +198,7 @@ class Checker:
         self._collect_arrays(script)
         self._collect_local_types(script)
         self._collect_namespaces(script)
+        self._collect_local_names(script)
         # Les séquences déclarées par CE script : l'espace de noms de
         # `sequence.start` est le script, pas le projet (cf. DOMAIN_SEQUENCE).
         # Et les noms qu'aucune ligne n'assigne, pour le refus du `wait_until`
@@ -269,6 +281,38 @@ class Checker:
         for loc in script.locals:
             note(loc.name, loc.value)
         for fn in script.functions:
+            walk(fn.body)
+
+    def _collect_local_names(self, script: LuaScript):
+        """Les noms qu'un nom NU a le droit de porter — quatrième parcours à
+        plat, même forme et même approximation que ses trois jumeaux : pas de
+        portée, un `local` déclaré dans un `if` compte pour tout le script.
+
+        Assumé, et dans le bon sens : cette liste sert à REFUSER, donc trop
+        large ne produit qu'un silence là où on aurait pu parler, tandis que
+        trop étroite refuserait du code juste. Les paramètres et les variables
+        de boucle en font partie — un behavior reçoit `actor` en paramètre, et
+        `for i = 1, 3` déclare `i`."""
+        def walk(stmts):
+            for s in stmts:
+                if isinstance(s, StmtLocalAssign):
+                    self._local_names.add(s.name)
+                elif isinstance(s, StmtIf):
+                    walk(s.then)
+                    for _, b in s.elseifs:
+                        walk(b)
+                    walk(s.else_)
+                elif isinstance(s, StmtWhile):
+                    walk(s.body)
+                elif isinstance(s, StmtForNum):
+                    self._local_names.add(s.var)
+                    walk(s.body)
+
+        for loc in script.locals:
+            self._local_names.add(loc.name)
+        self._local_names |= set(script.module_names or [])
+        for fn in script.functions:
+            self._local_names |= set(fn.params or [])
             walk(fn.body)
 
     # ── Espaces de noms appelables ────────────────────────────────
@@ -447,6 +491,80 @@ class Checker:
                 + (f" (déclarées dans le projet : {near})." if near
                    else " — aucune constante déclarée dans ce projet.")))
 
+    # Ce qu'un nom NU peut être SANS être une variable : un espace de noms.
+    # `_check_expr` visite `e.obj` en fin de branche `ExprIndex`, donc le
+    # `global` de `global.score` et le `camera` de `camera.bound` passent par
+    # là. `API_MODULES` porte les modules du catalogue ; les quatre autres sont
+    # des espaces résolus hors catalogue (accès pointé du chantier global/const,
+    # tables de données, constantes d'écran) et `self`/`other` sont des
+    # récepteurs. Un nom d'ACTEUR est légitime aussi (`paddle.position`) : il
+    # vient du projet, donc du contexte de build.
+    _NAMESPACES: frozenset = frozenset(API_MODULES) | frozenset({
+        "global", "const", "data", "screen", "self", "other",
+    })
+
+    def _known_bare_name(self, name: str) -> bool:
+        if name in self._local_names or name in self._NAMESPACES:
+            return True
+        if name in self._require_aliases or name in self._module_functions:
+            return True
+        for liste in (self.ctx.actor_names, self.ctx.prefab_names):
+            if liste and name in liste:
+                return True
+        return False
+
+    def _check_bare_name(self, name: str, ecrit: bool) -> None:
+        """Un nom nu qui ne désigne rien (2026-09-02).
+
+        Ce langage n'a pas de variable de script implicite : une valeur qui
+        traverse les frames est un `local` de tête, une valeur partagée est
+        `global.nom`. Un nom hors des deux ne désignait RIEN et traversait le
+        checker sans un mot — le codegen émettait `curpos = (curpos + 1);`,
+        et gcc parlait d'un identifiant inexistant dans un fichier que l'auteur
+        n'a jamais écrit. C'est le piège le plus coûteux de cette chaîne.
+
+        AVERTISSEMENT et non erreur, pour l'instant : le contrôle s'applique à
+        tous les scripts de tous les projets, et un cas légitime oublié
+        bloquerait un build qui marche. À durcir en erreur une fois éprouvé."""
+        if self._known_bare_name(name) or name in self._bare_said:
+            return
+        self._bare_said.add(name)
+        geste = ("s'écrit" if ecrit else "se lit")
+        self.errors.append(CheckError(
+            "warning",
+            f"« {name} » ne désigne rien : ce nom n'est ni un `local` de ce "
+            f"script, ni un paramètre. Une valeur qui traverse les frames "
+            f"{geste} `local {name} = 0` en tête de fichier ; une valeur "
+            f"partagée entre scripts s'écrit `global.{name}` (déclare-la dans "
+            f"l'écran Variables)."))
+
+    # ── Références d'élément d'interface ──────────────────────────
+    # `ui.get("X")` rend une référence qui sait DEUX choses, et rien d'autre :
+    # se montrer et se cacher. Elle n'a AUCUN champ — la position d'une image
+    # se pose par `ui.image_move` (cf. ROADMAP v0.22), et la géométrie d'une
+    # zone ou d'un conteneur ne s'ouvre pas au runtime.
+    _UI_ELEMENT_METHODS: tuple = ("show", "hide")
+
+    def _is_ui_element(self, e) -> bool:
+        """`ui.get(...)` — la seule expression qui rende une référence
+        d'élément. Reconnue par sa FORME et non par `REF_TYPES` : l'y inscrire
+        ferait chercher les méthodes sous la clé `ui_element:show`, alors
+        qu'elles vivent sous `self:show` — et casserait le `ui.get("x"):show()`
+        qui marche aujourd'hui."""
+        from .parser import ExprCall
+        return isinstance(e, ExprCall) and self._call_key(e.func) == "ui.get"
+
+    def _check_ui_element_field(self, e) -> None:
+        """`ui.get("Cursor").y` — accepté en silence jusqu'ici, et produisant
+        `UIELEM_CURSOR.y` en C : `.y` sur un `#define` entier, refusé par gcc
+        sur une ligne que l'auteur n'a pas écrite."""
+        self.errors.append(CheckError(
+            "warning",
+            f"ui.get(...).{e.field} : une référence d'élément d'interface n'a "
+            f"pas de champ — elle sait seulement :show() et :hide(). Pour "
+            f"déplacer une image, ui.image_move(nom, dx, dy) ; la géométrie "
+            f"d'une zone de texte ou d'un conteneur, elle, est authorée."))
+
     def _check_const_write(self, target) -> None:
         """`const.nom = …` — une constante ne s'écrit jamais, c'est ce qui la
         distingue d'une variable globale. `_check_expr(target)` valide déjà le
@@ -495,7 +613,7 @@ class Checker:
                 f"(les cases sont numérotées à partir de 1)."))
 
     def _check_ui_list(self, call_key: str, name: str):
-        """Le nom désigne-t-il un panneau marqué LISTE ?
+        """Le nom désigne-t-il une LISTE d'interface ?
 
         Une erreur et non un avertissement : `UILIST_<NOM>` n'existerait pas, et
         gcc échouerait sur la ligne générée — même sévérité et même raison qu'un
@@ -509,7 +627,8 @@ class Checker:
         self.errors.append(CheckError(
             "error",
             f"{call_key}('{name}') : aucune liste de ce nom ({near}). Une liste "
-            f"est un panneau d'interface dont la case « Liste » est cochée."))
+            f"est un élément d'interface de type Liste, posé dans une mise en "
+            f"page."))
 
     def _check_data_rows(self, table: str, indices: list):
         """Une table s'indexe sur UNE dimension — ses lignes — et le rang est
@@ -808,7 +927,11 @@ class Checker:
                 if not seq_top:
                     self._refuse_misplaced_wait(s)
                 return
-            self._check_call_expr(s.call)
+            # `_check_expr` et non `_check_call_expr` : posé seul, un appel doit
+            # descendre exactement comme en expression — ses arguments, et le
+            # RÉCEPTEUR d'un `:méthode()` quand c'en est un autre
+            # (`ui.get("Cusor"):show()` ne validait rien du tout).
+            self._check_expr(s.call)
         elif isinstance(s, StmtLocalAssign):
             self._check_array_decl(s.name, s.value)
             self._check_expr(s.value)
@@ -817,6 +940,8 @@ class Checker:
             self._check_prop_write(s.target, s.value)
             self._check_const_write(s.target)
             self._check_global_write_value(s.target, s.value)
+            if isinstance(s.target, ExprName):
+                self._check_bare_name(s.target.name, ecrit=True)
             self._check_expr(s.target)     # `t[i] = v` : la CIBLE aussi s'indexe
             self._check_expr(s.value)
         elif isinstance(s, StmtIf):
@@ -931,6 +1056,13 @@ class Checker:
             self._check_call_expr(e)
             for a in e.args:
                 self._check_expr(a)
+            # Le RÉCEPTEUR d'un `:méthode()`, quand ce n'est pas un simple nom.
+            # `ui.get("Cusor"):show()` ne validait rien du tout : ni le nom de
+            # l'élément (que la même expression posée seule refuse pourtant),
+            # ni la méthode. `_check_call_expr` s'arrête à un récepteur
+            # `ExprName`, et personne ne descendait dans le reste.
+            if isinstance(e, ExprInvoke) and not isinstance(e.obj, ExprName):
+                self._check_expr(e.obj)
         elif isinstance(e, ExprBinop):
             self._check_expr(e.left)
             self._check_expr(e.right)
@@ -943,6 +1075,12 @@ class Checker:
         elif isinstance(e, ExprTable):
             for v in e.items:
                 self._check_expr(v)
+        elif isinstance(e, ExprName):
+            # La branche qui manquait : un nom nu ne rencontrait AUCUN cas et
+            # traversait le checker sans un mot. Elle est atteinte aussi par le
+            # `_check_expr(e.obj)` qui clôt la branche `ExprIndex` ci-dessous —
+            # d'où les espaces de noms dans `_known_bare_name`.
+            self._check_bare_name(e.name, ecrit=False)
         elif isinstance(e, ExprIndex):
             # `data.Objets` seul, ou la COLONNE de `data.Objets[i].prix` : les
             # deux formes sont un accès pointé, et c'est ce qu'il y a DESSOUS
@@ -959,6 +1097,10 @@ class Checker:
                   and resolve_prop(e) is None
                   and e.field in self.ctx.child_names):
                 pass          # `self.bras` — un enfant de cet acteur (v0.23)
+            elif self._is_ui_element(e.obj):
+                self._check_ui_element_field(e)
+                self._check_expr(e.obj)      # les ARGUMENTS de ui.get(...)
+                return
             elif isinstance(e.obj, ExprIndexAt):
                 owner = self._data_table_ref(e.obj.obj)
                 if owner is not None:
@@ -1062,7 +1204,21 @@ class Checker:
             # devenait `actor_set_position(other, p)`, qui compile et marche,
             # donc une API retirée qui survit tant qu'on ne l'écrit pas sur
             # `self`.
-            if isinstance(e.obj, ExprName):
+            if self._is_ui_element(e.obj):
+                # Récepteur = `ui.get(...)`. `_check_call_expr` s'arrêtait à un
+                # récepteur `ExprName`, donc la méthode n'était jamais jugée :
+                # `ui.get("X"):bouge()` traversait, et `codegen._invoke` émettait
+                # `actor_bouge(UIELEM_X)` — du C qui ne compile pas, sur une
+                # ligne que l'auteur n'a pas écrite.
+                if e.method not in self._UI_ELEMENT_METHODS:
+                    self.errors.append(CheckError(
+                        "warning",
+                        f"ui.get(...):{e.method}() : une référence d'élément "
+                        f"d'interface ne sait que "
+                        f"{', '.join(':' + m + '()' for m in self._UI_ELEMENT_METHODS)}. "
+                        f"Pour déplacer une image, ui.image_move(nom, dx, dy) ; "
+                        f"pour changer son état, ui.image_set(nom, état)."))
+            elif isinstance(e.obj, ExprName):
                 receiver = e.obj.name
                 # Un récepteur qui tient une RÉFÉRENCE (`local pas =
                 # sfx.play(...)`) a son propre jeu de méthodes : la clé porte
@@ -1428,7 +1584,7 @@ class Checker:
         """Même sévérité et même raison que `_check_region`/`_check_image` :
         sans l'élément, le `#define UIELEM_*` n'existerait pas. Espace de noms
         plus large que les deux autres — tout élément d'une mise en page, pas
-        seulement ce qui dessine (un panel-groupe pur y figure aussi)."""
+        seulement ce qui dessine (un container-groupe pur y figure aussi)."""
         if self.ctx.element_names is not None and name not in self.ctx.element_names:
             near = (", ".join(sorted(self.ctx.element_names)[:5])
                     or "aucun élément d'interface dans le projet — dessines-en un "
@@ -1471,7 +1627,7 @@ class Checker:
             self.errors.append(CheckError(
                 "warning",
                 f"{call_key}('{name}') : variable globale '{name}' non déclarée dans le projet. "
-                f"Ajoutez-la dans le panneau Globals de l'éditeur.",
+                f"Ajoutez-la dans le conteneur Globals de l'éditeur.",
             ))
 
     def _check_global_write_value(self, target, value) -> None:

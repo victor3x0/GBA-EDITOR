@@ -12,6 +12,7 @@ from .camera_inspector import CameraInspector
 from .project_inspector import ProjectInspector
 from .script_inspector import ScriptInspector
 from .ui_inspector import UIInspector
+from .ui_node_inspector import UINodeInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector
 
 
@@ -47,6 +48,7 @@ class DynamicInspector(QWidget):
     _MODE_PROJECT     = 6
     _MODE_SCRIPT      = 7
     _MODE_UI          = 8
+    _MODE_UI_NODE     = 9
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,6 +128,13 @@ class DynamicInspector(QWidget):
         self._ui_insp.renamed.connect(self._header.set_name)
         self._stack.addWidget(self._ui_insp)
 
+        # 9 — nœud « Interface » (l'asset UILayout : ancrage + cible du sous-arbre)
+        self._ui_node_insp = UINodeInspector()
+        self._ui_node_insp.changed.connect(self.changed)
+        self._ui_node_insp.changed.connect(self.ui_regions_changed)
+        self._ui_node_insp.renamed.connect(self._header.set_name)
+        self._stack.addWidget(self._ui_node_insp)
+
         self._stack.setCurrentIndex(self._MODE_EMPTY)
 
         from core.selection_bus import get_bus
@@ -142,7 +151,8 @@ class DynamicInspector(QWidget):
     # font partie depuis que leur inspecteur n'a plus de champ « Name » : le nom
     # se change là où il s'affiche, comme pour une scène ou un acteur.
     _RENAMABLE = ("scene", "actor", "prefab", "camera", "script_asset",
-                  "ui_text", "ui_panel", "ui_image", "ui_element")
+                  "ui_text", "ui_container", "ui_list", "ui_image", "ui_element",
+                  "ui_layout")
 
     def _set_header(self, kind: str, type_text: str, name_text: str, editable=None):
         if editable is None:
@@ -184,6 +194,12 @@ class DynamicInspector(QWidget):
                 project.rename_camera(scene, cam, new_name)
                 self._header.set_name(cam.name)
                 self._camera_insp._refresh()
+        elif self._header_mode == "ui_layout":
+            # Le NŒUD Interface (l'asset), pas un de ses éléments — sa route de
+            # renommage est distincte (fichier + refs des scènes).
+            applied = self._ui_node_insp.rename(new_name)
+            if applied:
+                self._header.set_name(applied)
         elif self._header_mode.startswith("ui_"):
             # `rename` rend le nom RÉELLEMENT appliqué : une collision d'unicité
             # est résolue par le modèle, et l'en-tête doit montrer ce qui a été
@@ -225,11 +241,14 @@ class DynamicInspector(QWidget):
         """Reçu du bus — afficher le bon panneau selon le type de l'objet."""
         from pathlib import Path as _P
         from core.models.scene import Actor, Prefab, Scene
-        from core.selection_bus import CameraSelection, UIRegionSelection
+        from core.selection_bus import (
+            CameraSelection, UIRegionSelection, UILayoutSelection)
         if obj is None:
             # Mode par défaut : aperçu du projet (pas le message d'aide vide) —
             # cf. clic hors de la zone active du canvas.
             self.show_project()
+        elif isinstance(obj, UILayoutSelection):
+            self.show_ui_node(obj.layout, obj.scene, self._project)
         elif isinstance(obj, UIRegionSelection):
             self.show_ui_element(obj.layout, obj.element, self._project)
         elif isinstance(obj, CameraSelection):
@@ -255,12 +274,14 @@ class DynamicInspector(QWidget):
         """Élément d'UI (texte, conteneur, image) → l'inspecteur adaptatif. Le
         bandeau prend le kind exact (même famille bleue Interface, titre par
         type) et devient l'endroit où le nom se change."""
-        from core.models.ui_region import KIND_PANEL, KIND_TEXT, KIND_IMAGE
+        from core.models.ui_region import (
+            KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE)
         kind = getattr(element, "kind", KIND_TEXT)
         scene = project.active_scene if project else None
         self._ui_insp.load(layout_asset, element, project, scene)
         header_kind, title = {
-            KIND_PANEL: ("ui_panel", "Container"),
+            KIND_CONTAINER: ("ui_container", "Container"),
+            KIND_LIST:  ("ui_list",  "List"),
             KIND_TEXT:  ("ui_text",  "Text"),
             KIND_IMAGE: ("ui_image", "Image"),
         }.get(kind, ("ui_element", "UI element"))
@@ -270,6 +291,14 @@ class DynamicInspector(QWidget):
     def show_ui_region(self, layout_asset, region, project):
         """Alias historique — même route que tout élément d'UI."""
         self.show_ui_element(layout_asset, region, project)
+
+    def show_ui_node(self, layout, scene, project):
+        """Le nœud « Interface » (l'asset) → l'inspecteur de chemin matériel. Le
+        bandeau devient l'endroit où le nom du nœud se change."""
+        scene = scene or (project.active_scene if project else None)
+        self._ui_node_insp.load(layout, scene, project)
+        self._set_header("ui_layout", "Interface", layout.name if layout else "")
+        self._stack.setCurrentIndex(self._MODE_UI_NODE)
 
     def refresh_current(self):
         """Recharge le panneau courant depuis les données projet — capte les

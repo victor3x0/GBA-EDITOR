@@ -8,7 +8,11 @@ Principe :
                fichier déposé ou supprimé dans les dossiers listés est notifié
                via asset_appeared / asset_removed, à condition que son
                extension soit dans _ASSET_SUFFIXES. Les .lua émettent
-               lua_changed directement.
+               lua_changed directement. Une disparition et une apparition de
+               MÊME empreinte dans le même événement sont un RENOMMAGE, et
+               n'émettent ni l'un ni l'autre mais asset_renamed (cf.
+               pair_renames) — un asset renommé doit suivre son fichier, pas
+               mourir et renaître vierge.
   - les sidecars `.json` d'assets (sprites, backgrounds, fonts, sfx, music)
                vivent DANS assets/, à côté de leur fichier source, et sont
                surveillés eux aussi — sidecar_changed. Ils ne l'étaient pas :
@@ -20,6 +24,7 @@ Signaux principaux
 ------------------
 asset_appeared(path)  — nouveau fichier brut dans assets/ (PNG, WAV, MOD…)
 asset_removed(path)   — fichier supprimé de assets/
+asset_renamed(a, b)   — fichier brut renommé dans assets/ : `a` est devenu `b`
 asset_modified(path)  — fichier existant modifié dans assets/ (ex. PNG mis à jour)
 lua_changed(path)     — .lua modifié ou créé dans assets/scripts/
 scene_changed(path)   — .json de scène modifié dans project/scenes/
@@ -43,11 +48,11 @@ from PyQt6.QtCore import QObject, pyqtSignal, QTimer, QFileSystemWatcher
 # que chaque type d'asset déclare accepter, jamais réépelées ici.
 #
 # Cette liste était tenue à la main, et elle avait divergé en silence : elle
-# portait `.mp3`/`.ogg`, que rien n'importe, et ignorait `.fnt`, `.bdf`, `.pcf`,
-# `.dfont`, `.ttf` — cinq des six formats de police que `FONT_FILE_EXTS`
-# annonce. Conséquence : déposer une police dans assets/fonts/ ne déclenchait
-# rien, et le dossier passait pour non surveillé alors qu'il l'était. Seul le
-# `.png` traversait, par coïncidence entre les deux listes.
+# portait `.mp3`/`.ogg`, que rien n'importe, et ignorait le `.fnt` que
+# `FONT_FILE_EXTS` annonce. Conséquence : déposer un descripteur de police dans
+# assets/fonts/ ne déclenchait rien, et le dossier passait pour non surveillé
+# alors qu'il l'était. Seul le `.png` traversait, par coïncidence entre les
+# deux listes.
 #
 # C'est exactement la panne que la table de routage de `window.py` a déjà connue
 # (cf. son commentaire `_ASSET_ROUTES`) : une seconde liste que rien ne
@@ -67,6 +72,40 @@ _LUA_SUFFIX     = ".lua"
 _JSON_SUFFIX    = ".json"
 
 
+def pair_renames(before: dict[str, tuple[int, int]],
+                 after: dict[str, tuple[int, int]]) -> list[tuple[str, str]]:
+    """Les renommages entre deux instantanés de dossier, en [(avant, après)].
+
+    Un renommage arrive comme une disparition ET une apparition dans le MÊME
+    événement, et il ne touche ni au contenu ni à la date : deux fichiers dont
+    l'un s'en va et l'autre arrive avec la même taille et la même date à la
+    nanoseconde sont le même fichier sous un autre nom. Deux fichiers
+    DIFFÉRENTS qui partageraient les deux, ça ne se produit pas.
+
+    Seuls les fichiers SOURCES sont appariés : un `.lua` est déjà suivi par son
+    chemin, et un sidecar `.json` renommé à la main se rattrape au chargement
+    (cf. `ResourceStore.load`) — ni l'un ni l'autre ne mérite un second signal.
+
+    Écrite à part et non dans `_on_dir_changed` : c'est la seule règle du
+    module qui se juge sur deux dictionnaires, sans dossier réel ni Qt autour.
+    """
+    def sources(snap):
+        return {p: st for p, st in snap.items()
+                if Path(p).suffix.lower() in _ASSET_SUFFIXES}
+
+    gone = {p: st for p, st in sources(before).items() if p not in after}
+    born = {p: st for p, st in sources(after).items() if p not in before}
+
+    pairs: list[tuple[str, str]] = []
+    for new_path, stamp in born.items():
+        old_path = next((p for p, s in gone.items() if s == stamp), None)
+        if old_path is None:
+            continue
+        del gone[old_path]      # un fichier disparu n'est renommé qu'une fois
+        pairs.append((old_path, new_path))
+    return pairs
+
+
 class ProjectWatcher(QObject):
     """
     Surveille le répertoire d'un projet et notifie les changements de fichiers.
@@ -77,6 +116,7 @@ class ProjectWatcher(QObject):
 
     asset_appeared = pyqtSignal(str)   # nouveau fichier brut dans assets/
     asset_removed  = pyqtSignal(str)   # fichier supprimé de assets/
+    asset_renamed  = pyqtSignal(str, str)  # fichier brut renommé : (avant, après)
     asset_modified = pyqtSignal(str)   # fichier existant modifié dans assets/
     lua_changed    = pyqtSignal(str)   # .lua créé ou modifié dans assets/scripts/
     scene_changed  = pyqtSignal(str)   # .json de scène modifié dans project/scenes/
@@ -104,8 +144,8 @@ class ProjectWatcher(QObject):
         self._suppress_timer.timeout.connect(self._clear_suppress)
 
         # snapshot des fichiers connus dans chaque dossier surveillé
-        # dir_str -> set[file_str]
-        self._dir_snapshots: dict[str, set[str]] = {}
+        # dir_str -> {file_str: (taille, date_ns)} — cf. _scan_dir
+        self._dir_snapshots: dict[str, dict[str, tuple[int, int]]] = {}
 
     # ── API publique ────────────────────────────────────────────────
 
@@ -174,14 +214,33 @@ class ProjectWatcher(QObject):
 
     # ── Interne ─────────────────────────────────────────────────────
 
-    def _scan_dir(self, d: Path) -> set[str]:
-        """Retourne l'ensemble des fichiers pertinents présents dans d (non-récursif)."""
+    def _scan_dir(self, d: Path) -> dict[str, tuple[int, int]]:
+        """Les fichiers pertinents présents dans `d` (non-récursif), chacun avec
+        sa TAILLE et sa DATE à la nanoseconde.
+
+        Ces deux nombres ne servent qu'à une chose : reconnaître un RENOMMAGE.
+        Renommer ne touche ni au contenu ni à la date — un fichier qui disparaît
+        et un fichier qui apparaît dans le même événement avec la même empreinte
+        sont le même fichier sous un autre nom (cf. `_on_dir_changed`). Deux
+        fichiers DIFFÉRENTS qui partageraient la taille ET la date à la
+        nanoseconde près, ça ne se produit pas.
+
+        Une empreinte, pas un hachage : lire le contenu de chaque fichier à
+        chaque frémissement d'un dossier d'assets coûterait à chaque
+        sauvegarde, pour la même réponse."""
+        out: dict[str, tuple[int, int]] = {}
         if not d.exists():
-            return set()
-        return {
-            str(f) for f in d.iterdir()
-            if f.is_file() and f.suffix.lower() in (_ASSET_SUFFIXES | {_LUA_SUFFIX, _JSON_SUFFIX})
-        }
+            return out
+        for f in d.iterdir():
+            if not (f.is_file()
+                    and f.suffix.lower() in (_ASSET_SUFFIXES | {_LUA_SUFFIX, _JSON_SUFFIX})):
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue    # disparu entre l'itération et le stat
+            out[str(f)] = (st.st_size, st.st_mtime_ns)
+        return out
 
     def _clear(self):
         paths = self._watcher.files() + self._watcher.directories()
@@ -241,7 +300,7 @@ class ProjectWatcher(QObject):
     def _on_dir_changed(self, dir_str: str):
         """Un fichier a été créé ou supprimé dans un répertoire surveillé."""
         d = Path(dir_str)
-        old_snap = self._dir_snapshots.get(dir_str, set())
+        old_snap = self._dir_snapshots.get(dir_str, {})
 
         if not d.exists():
             # Dossier lui-même supprimé
@@ -253,8 +312,22 @@ class ProjectWatcher(QObject):
         new_snap = self._scan_dir(d)
         self._dir_snapshots[dir_str] = new_snap
 
+        appeared = [p for p in new_snap if p not in old_snap]
+        vanished = [p for p in old_snap if p not in new_snap]
+
+        # Renommages — retirés des deux listes AVANT qu'elles ne soient
+        # parcourues : un renommage n'est ni une création ni une suppression,
+        # et le traiter comme les deux revenait à détruire l'asset pour en
+        # créer un neuf sous le nouveau nom.
+        for old_path, new_path in pair_renames(old_snap, new_snap):
+            appeared.remove(new_path)
+            vanished.remove(old_path)
+            self._watcher.removePath(old_path)
+            self._watcher.addPath(new_path)
+            self.asset_renamed.emit(old_path, new_path)
+
         # Fichiers apparus
-        for path_str in new_snap - old_snap:
+        for path_str in appeared:
             path = Path(path_str)
             self._watcher.addPath(path_str)
             if path.suffix.lower() == _LUA_SUFFIX:
@@ -266,7 +339,7 @@ class ProjectWatcher(QObject):
                 self.sidecar_changed.emit(path_str)
 
         # Fichiers disparus
-        for path_str in old_snap - new_snap:
+        for path_str in vanished:
             path = Path(path_str)
             self._watcher.removePath(path_str)
             if path.suffix.lower() in _ASSET_SUFFIXES:

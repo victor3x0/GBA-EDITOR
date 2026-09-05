@@ -171,11 +171,12 @@ class GbaStatusBar(QWidget):
         # il ne dépend que de la géométrie authorée (cf. models/ui_region).
         from core.models.ui_region import strip_geometry, TARGET_OBJ
         rm = int(getattr(scene, "render_mode", 0) or 0)
-        layout = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
         text_oam = text_tiles = 0
         def _actor_pos(name):
             return next(((a.x, a.y) for a in scene.actors if a.name == name), None)
-        for r in (layout.slots if layout else []):
+        slots = (project.scene_ui_slots(scene)
+                 if hasattr(project, "scene_ui_slots") else [])
+        for layout, r in slots:
             if layout.resolved_target(r, rm) != TARGET_OBJ:
                 continue
             g = strip_geometry(r, project.region_animated_glyphs(r))
@@ -279,8 +280,8 @@ _WATCHER_WARNING_MS = 60000
 #  Fenêtre principale
 # ──────────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
-    # Routage assets/<dossier>/*.ext → (fonction sync, fonction remove, label)
-    # — une seule table pour _on_asset_appeared/_removed, qui n'était avant
+    # Routage assets/<dossier>/*.ext → (sync, remove, rename, label) — une seule
+    # table pour _on_asset_appeared/_removed/_renamed, qui n'était avant
     # dupliquée qu'avec "sync_"/"remove_" échangés.
     #
     # Les FONCTIONS d'`asset_encoding`, pas leurs noms. La table portait des
@@ -293,15 +294,20 @@ class MainWindow(QMainWindow):
     # Qt, donc tuait l'éditeur. Une référence directe échoue à l'import.
     _ASSET_ROUTES = [
         ("sprites",     IMAGE_FILE_EXTS, asset_encoding.sync_sprite_png,
-                                          asset_encoding.remove_sprite_png,     "Sprite"),
+                                          asset_encoding.remove_sprite_png,
+                                          asset_encoding.rename_sprite_png,     "Sprite"),
         ("backgrounds", IMAGE_FILE_EXTS, asset_encoding.sync_background_png,
-                                          asset_encoding.remove_background_png, "Background"),
+                                          asset_encoding.remove_background_png,
+                                          asset_encoding.rename_background_png, "Background"),
         ("sfx",         SFX_FILE_EXTS,    asset_encoding.sync_sfx_file,
-                                          asset_encoding.remove_sfx_file,       "SFX"),
+                                          asset_encoding.remove_sfx_file,
+                                          asset_encoding.rename_sfx_file,       "SFX"),
         ("music",       MUSIC_FILE_EXTS,  asset_encoding.sync_music_file,
-                                          asset_encoding.remove_music_file,     "Music"),
+                                          asset_encoding.remove_music_file,
+                                          asset_encoding.rename_music_file,     "Music"),
         ("fonts",       FONT_FILE_EXTS,   asset_encoding.sync_font_file,
-                                          asset_encoding.remove_font_file,      "Font"),
+                                          asset_encoding.remove_font_file,
+                                          asset_encoding.rename_font_file,      "Font"),
     ]
 
     def __init__(self, project_path: Path = None):
@@ -1087,7 +1093,8 @@ class MainWindow(QMainWindow):
         par déclencher le handler N fois après N ouvertures de projet.
         """
         w = self._watcher
-        for sig in (w.asset_appeared, w.asset_removed, w.asset_modified,
+        for sig in (w.asset_appeared, w.asset_removed, w.asset_renamed,
+                    w.asset_modified,
                     w.lua_changed, w.scene_changed, w.sidecar_changed):
             try:
                 sig.disconnect()
@@ -1095,17 +1102,19 @@ class MainWindow(QMainWindow):
                 pass   # aucune connexion existante — rien à faire
         w.asset_appeared.connect(self._on_asset_appeared)
         w.asset_removed.connect(self._on_asset_removed)
+        w.asset_renamed.connect(self._on_asset_renamed)
         w.asset_modified.connect(self._on_asset_modified)
         w.lua_changed.connect(self._on_lua_changed)
         w.scene_changed.connect(self._on_scene_file_changed)
         w.sidecar_changed.connect(self._on_sidecar_changed)
 
     def _match_asset_route(self, p: Path):
-        """Trouve la route (sync/remove/label) pour un fichier assets/<dossier>/*.ext."""
+        """Trouve la route (sync/remove/rename/label) pour un fichier
+        assets/<dossier>/*.ext."""
         suffix, parent = p.suffix.lower(), p.parent.name
-        for folder, exts, sync_fn, remove_fn, label in self._ASSET_ROUTES:
+        for folder, exts, sync_fn, remove_fn, rename_fn, label in self._ASSET_ROUTES:
             if parent == folder and suffix in exts:
-                return sync_fn, remove_fn, label
+                return sync_fn, remove_fn, rename_fn, label
         return None
 
     def _on_asset_appeared(self, path: str):
@@ -1116,7 +1125,7 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        sync_fn, _, label = route
+        sync_fn, _, _, label = route
         # Certains sync_* renvoient un avertissement d'import (police sans
         # glyphe, format illisible…) — le taire laisserait un asset muet à
         # l'écran sans que l'utilisateur sache pourquoi. D'autres renvoient la
@@ -1164,10 +1173,42 @@ class MainWindow(QMainWindow):
         route = self._match_asset_route(p)
         if not route:
             return
-        _, remove_fn, label = route
+        _, remove_fn, _, label = route
         remove_fn(self.project, p)
         self._refresh_ui()
         self._status.showMessage(f"{label} removed: {p.name}", 3000)
+
+    def _on_asset_renamed(self, old: str, new: str):
+        """Fichier brut renommé dans assets/ — l'asset SUIT son fichier.
+
+        Le watcher apparie la disparition et l'apparition ; sans lui, ce geste
+        arrivait ici en deux temps, et l'asset était détruit avec tout ce qui
+        avait été authoré dessus pendant qu'un asset vierge naissait du nouveau
+        nom.
+
+        `suspended` pour la même raison que dans `_on_asset_appeared` : les
+        `rename_*` écrivent le sidecar, et depuis que ceux-ci sont surveillés
+        l'écriture nous reviendrait comme une modification externe."""
+        if not self.project:
+            return
+        old_p, new_p = Path(old), Path(new)
+        route = self._match_asset_route(new_p)
+        if not route:
+            # L'extension a changé pour une que cette famille ne connaît pas :
+            # ce n'est plus un renommage de son point de vue, c'est une
+            # disparition.
+            self._on_asset_removed(old)
+            return
+        _, _, rename_fn, label = route
+        with self._watcher.suspended():
+            result = rename_fn(self.project, old_p, new_p)
+        warning = result if isinstance(result, str) else None
+        self._refresh_ui()
+        if warning:
+            self._status.showMessage(warning, _WATCHER_WARNING_MS)
+        else:
+            self._status.showMessage(
+                f"{label} renamed: {old_p.name} → {new_p.name}", 3000)
 
     def _on_asset_modified(self, path: str):
         """Fichier existant modifié dans assets/ (ex. PNG retouché) — rafraîchir la preview."""

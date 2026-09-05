@@ -117,13 +117,13 @@ def font_line_px(font) -> int:
     où l'ancien code lisait `cell_h` directement. Les deux coïncident pour une
     planche PNG (l'import y pose `line_height = cell_h`, cf. `font_import.
     import_font_png`) : rien ne change pour elles. Elles DIVERGENT pour un
-    conteneur bitmap (BDF/PCF/dfont/TTF) : `cell_h` y est le MAX des hauteurs
-    de glyphe rendues (`import_font_freetype`), qu'UN SEUL caractère rare peut
-    gonfler pour toute la police — un signe combinant japonais 20 px de haut
-    dans un jeu de 3829 glyphes de 10 px a ainsi doublé l'interligne d'un texte
-    qui n'en affichait aucun. `line_height` y vient des métriques FreeType
-    (ascender + descender de la police, pas du contenu dessiné) : c'est la
-    valeur que l'auteur de la police a réellement conçue."""
+    `.fnt` : `cell_h` y est le MAX des hauteurs de glyphe (`font_import.
+    _finish`), qu'UN SEUL caractère rare peut gonfler pour toute la police —
+    un signe combinant japonais 20 px de haut dans un jeu de 3829 glyphes de
+    10 px a ainsi doublé l'interligne d'un texte qui n'en affichait aucun.
+    `line_height` y vient du `lineHeight` déclaré par le descripteur : c'est la
+    valeur que l'auteur de la police a réellement conçue, pas un constat sur ce
+    que la planche contient."""
     lh = int(getattr(font, "line_height", 0) or getattr(font, "cell_h", 0) or 8)
     if is_proportional(font):
         return lh
@@ -347,11 +347,11 @@ def scene_codepoints(p, scene, code: str = "") -> "set | None":
     donc déjà dans le texte résolu.
 
     `code` sélectionne la langue résolue (`""` = la source, via
-    `Project.text_content` s'il existe — sinon `t.content` tel quel). Appelée
-    une fois par langue déclarée pour l'UNION émise dans la ROM
-    (`scene_codepoints_union`, décision 4), une fois pour la source seule pour
-    la RÉSERVATION vram (`scene_text_reservation`, qui reste sur la langue
-    ACTIVE).
+    `Project.text_content` s'il existe — sinon `t.content` tel quel). Jamais
+    appelée seule par le build : ses deux lecteurs passent tous deux par
+    `scene_codepoints_union`, une fois par langue déclarée — le sous-ensemble
+    ÉMIS dans la ROM (`_emit_font_subsets`) et la place RÉSERVÉE pour
+    l'accueillir (`scene_text_reservation`). Cf. ROADMAP v0.9, phase 5.1.
 
     Rend None dès qu'un script échappe à l'analyse — même règle et même raison
     que `scene_font_names`."""
@@ -391,8 +391,8 @@ def scene_codepoints(p, scene, code: str = "") -> "set | None":
 def scene_codepoints_union(p, scene, lang_codes) -> "set | None":
     """`scene_codepoints`, UNIE sur toutes les langues déclarées (ROADMAP
     v0.9, décision 4) — ce qui borne le sous-ensemble de glyphes ÉMIS dans la
-    ROM pour une scène, jamais la réservation VRAM (qui reste sur la langue
-    ACTIVE, `scene_codepoints(p, scene)` sans `code` — cf. son docstring).
+    ROM pour une scène, ET la place réservée pour l'accueillir : le runtime
+    charge cette union entière, quelle que soit la langue active (phase 5.1).
 
     None dès qu'UNE langue est indécidable : émettre un sous-ensemble calculé
     sur les seules langues décidables mentirait par omission, exactement
@@ -416,12 +416,9 @@ def layout_texts(p, scene) -> list:
     from core.models.ui_region import KIND_TEXT
     if not hasattr(p, "build_texts"):
         return []
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None:
-        return []
     by_key = {t.key: t for t in p.build_texts()}
     out = []
-    for el in lay.slots:
+    for _lay, el in p.scene_ui_slots(scene):
         if getattr(el, "kind", "") != KIND_TEXT:
             continue
         t = by_key.get(getattr(el, "text_key", "") or "")
@@ -471,9 +468,9 @@ def scene_font_names(p, scene, default_font: str = "") -> "set | None":
 
     Rend None dès qu'un script choisit sa police au runtime ou n'est pas
     analysable : mieux vaut réserver pour tout le projet que trop peu."""
-    names = layout_font_names(
-        p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None,
-        default_font)
+    names: set = set()
+    for lay in p.scene_ui_layouts(scene):     # N nœuds `Interface` (v0.25)
+        names |= layout_font_names(lay, default_font)
     if default_font:
         names.add(default_font)
     if not hasattr(p, "scene_scripts"):
@@ -571,6 +568,68 @@ def _tile_words(idx: list[int]) -> list[int]:
     return [sum((idx[r * 8 + i] & 0xF) << (4 * i) for i in range(8)) for r in range(8)]
 
 
+def _font_ink_colors(font, rgb, ink) -> tuple[list, "str | None"]:
+    """(couleurs d'encre retenues [RGB], avertissement|None) d'une planche DÉJÀ
+    chargée : les ≤15 plus fréquentes, hors couleurs-clés (déjà retirées de
+    `ink`). Cœur PARTAGÉ — `encode_font` en tire palette + LUT de remap, et
+    `font_palette` la banque seule. Les tenir à part ferait diverger la palette
+    ÉMISE de celle que l'éditeur montre et alloue."""
+    import numpy as np
+    if ink.any():
+        flat = rgb[ink].reshape(-1, 3)
+        colors, counts = np.unique(flat, axis=0, return_counts=True)
+        order = np.argsort(-counts)
+        kept = [tuple(int(v) for v in colors[i]) for i in order[:_MAX_INK_COLORS]]
+        warning = (f"Police « {font.name} » : {len(colors)} couleurs, "
+                   f"réduites aux {_MAX_INK_COLORS} plus fréquentes."
+                   if len(colors) > _MAX_INK_COLORS else None)
+        return kept, warning
+    keys = font.key_colors() if hasattr(font, "key_colors") else []
+    warning = (f"Police « {font.name} » : les couleurs transparentes couvrent "
+               f"toute la planche — repique-les dans l'écran Police."
+               if keys else
+               f"Police « {font.name} » : planche entièrement vide.")
+    return [], warning
+
+
+# Palette propre d'une police, mémoïsée par (chemin, mtime, couleurs-clés) —
+# jumelle de `palette_alloc.own_palette` pour un fond. Sert la vue éditeur et
+# l'allocateur, appelés à chaque rafraîchissement de l'inspecteur : recharger
+# la planche à chaque fois y serait sensible.
+_FONT_PAL_CACHE: dict = {}
+
+
+def font_palette(font, png_path) -> list[int]:
+    """Contenu de banque (16 slots BGR555, index 0 transparent) de la palette
+    PROPRE d'une police — exactement les couleurs qu'`encode_font` retient. []
+    si la planche est absente, illisible ou vide (aucune encre). C'est cette
+    liste que l'allocateur traite comme la palette propre d'un asset (comme
+    `sprite.own_palette`), et que la grille montre grisée."""
+    import numpy as np
+    from PIL import Image
+    p = Path(png_path)
+    keys = tuple(tuple(k) for k in font.key_colors()) if hasattr(font, "key_colors") else ()
+    try:
+        cache_key = (str(p), p.stat().st_mtime, keys)
+    except OSError:
+        return []
+    cached = _FONT_PAL_CACHE.get(cache_key)
+    if cached is None:
+        try:
+            arr = np.array(Image.open(p).convert("RGBA"))
+            rgb = arr[:, :, :3]
+            ink = arr[:, :, 3] > 0
+            for k in keys:
+                ink &= ~np.all(rgb == np.array(k, dtype=rgb.dtype), axis=2)
+            kept, _w = _font_ink_colors(font, rgb, ink)
+            pal = [0] + [_bgr555(c) for c in kept]
+            cached = (pal + [0] * (16 - len(pal))) if kept else []
+        except Exception:
+            cached = []
+        _FONT_PAL_CACHE[cache_key] = cached
+    return cached
+
+
 def encode_font(font, png_path: Path) -> dict:
     """Encode une police en tuiles 4bpp + table de correspondance.
 
@@ -596,21 +655,10 @@ def encode_font(font, png_path: Path) -> dict:
     keys = font.key_colors() if hasattr(font, "key_colors") else []
     for k in keys:
         ink &= ~np.all(rgb == np.array(k, dtype=rgb.dtype), axis=2)
-    warning = None
-    if ink.any():
-        flat = rgb[ink].reshape(-1, 3)
-        colors, counts = np.unique(flat, axis=0, return_counts=True)
-        order = np.argsort(-counts)
-        kept = [tuple(int(v) for v in colors[i]) for i in order[:_MAX_INK_COLORS]]
-        if len(colors) > _MAX_INK_COLORS:
-            warning = (f"Police « {font.name} » : {len(colors)} couleurs, "
-                       f"réduites aux {_MAX_INK_COLORS} plus fréquentes.")
-    else:
-        kept = []
-        warning = (f"Police « {font.name} » : les couleurs transparentes couvrent "
-                   f"toute la planche — repique-les dans l'écran Police."
-                   if keys else
-                   f"Police « {font.name} » : planche entièrement vide.")
+    # Sélection d'encre PARTAGÉE avec `font_palette` (que l'allocateur et la
+    # grille lisent) : la palette émise ici et celle montrée par l'éditeur ne
+    # peuvent pas diverger.
+    kept, warning = _font_ink_colors(font, rgb, ink)
 
     # index 0 = transparent, 1..15 = encre
     palette = [0] + [_bgr555(c) for c in kept]
@@ -799,13 +847,17 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
         # un panel n'a plus d'ancrage propre.
         target_obj = (_lay.resolved_target(r) == TARGET_OBJ)
         eff_anchor, eff_actor = _lay.effective_anchor(r)
-        x, y, w, h = r.x, r.y, r.w, r.h
+        # Position SOMMÉE à travers les parents (x/y d'un enfant sont RELATIFS à
+        # son conteneur). `actor_pos=None` : la somme s'arrête à la racine du
+        # nœud, SANS ajouter le socle acteur — le runtime l'ajoute au rendu.
+        # Vaut pour les DEUX cibles : en OBJ, un enfant sans cette somme se
+        # posait à son seul offset local, ignorant où vit son conteneur — c'est
+        # ce qui faisait « disparaître » un libellé imbriqué. Pour un root la
+        # somme se réduit à x/y (comportement d'avant inchangé).
+        x, y, _res = _lay.absolute_origin(r, None)
+        w, h = r.w, r.h
         if not target_obj:
-            # Position ÉCRAN absolue : x/y d'un enfant sont RELATIFS à son
-            # parent, mais le runtime lit des cases écran. Pour un root, la
-            # somme se réduit à x/y — comportement d'avant inchangé.
-            x, y, _res = _lay.absolute_origin(r, None)
-            # Copie alignée — le modèle de l'auteur n'est pas modifié.
+            # Cible BG : le runtime lit des cases écran, on aligne à la tuile.
             x -= x % 8
             y -= y % 8
             w = max(8, ((w + 7) // 8) * 8)
@@ -813,9 +865,13 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
         font_idx = font_names.index(r.font_name) if r.font_name in font_names else 255
         pl = (obj_place or {}).get(r.name) if target_obj else None
         ai = (actor_index or {}).get(r.name, -1)
+        # Priorité : -1 (hérité, le défaut) émis en 255, la sentinelle que
+        # `ui_obj_prio` résout à la volée sur l'acteur ancré (sinon 0) ; 0-3 =
+        # surcharge de l'auteur. Même mappage que les images (cf. `_gen_ui_images`).
+        prio = 255 if int(getattr(r, "priority", -1)) < 0 else (r.priority & 3)
         alloc = (f"{ai}, {pl['oam_rel']}, {pl['oam']}, {pl['tile_rel']}, "
                  f"{sum(c // 8 for c in pl['cols'])}, {pl['rows']}, {pl['anim']}, "
-                 f"0, {FONT_PAL_BANK}"
+                 f"{prio}, {FONT_PAL_BANK}"
                  if pl else "-1, 0, 0, 0, 0, 0, 0, 0, 0")
         elem = (elem_index or {}).get(r.name, -1)
         # En commentaire : d'où vient le contenu. La table seule ne le dit pas,
@@ -1012,6 +1068,13 @@ def emit_texts_c(texts: list, lang_codes: list[str], content_fn,
             emit("log_line", f"[text] {len(sources)} valeur(s) interpolée(s){tag}")
 
     n_lang = max(1, len(lang_codes))
+    # La DIMENSION des cinq tables ci-dessous, émise pour que le moteur puisse
+    # la borner : `lang_set` reçoit un entier depuis la phase 5.2 (une globale
+    # relue d'une sauvegarde, pas seulement un `LANG_*` résolu au build), et un
+    # code hors bornes indexerait `g_texts` hors de la table. Même rôle et même
+    # forme que `g_font_count` pour `text_set_font`. Vaut 1 en projet
+    # monolingue, comme la dimension elle-même.
+    L.append(f"const int g_lang_count = {n_lang};")
     L.append(f"const unsigned short* const* const g_texts[{n_lang}] = {{"
              + ",".join(texts_names) + "};")
     L.append(f"const unsigned short* const g_text_len[{n_lang}] = {{"

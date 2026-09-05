@@ -107,10 +107,10 @@ DOMAIN_ACTOR  = "actor"   # nom d'Actor de la scène — get_actor()
 # UIELEM_{name} — N'IMPORTE QUEL élément d'une mise en page (texte, panel,
 # image), tous types confondus — ui.get(). Distinct de DOMAIN_REGION et
 # DOMAIN_IMAGE : ces deux-là indexent g_ui_regions/g_ui_images (ce qui
-# DESSINE), celui-ci une table de visibilité qui couvre aussi les panels-
+# DESSINE), celui-ci une table de visibilité qui couvre aussi les conteneurs-
 # groupes purs, qui n'ont sinon aucune identité runtime (cf. ui_region.py).
 DOMAIN_UI_ELEMENT = "ui_element"
-DOMAIN_UI_LIST    = "ui_list"     # panneau marqué LISTE (ROADMAP v0.22)
+DOMAIN_UI_LIST    = "ui_list"     # élément d'interface de type LISTE (v0.22)
 DOMAIN_GLOBAL = "global"  # GlobalVar du projet — cité en LITTÉRAL par save.read
                            # (global.nom lui-même est un accès pointé, résolu
                            # hors domaine — cf. _check_global_scalar, chantier global/const)
@@ -507,13 +507,13 @@ RUNTIME_API: dict[str, ApiFunc] = {
     ),
 
     # ── Visibilité des éléments d'interface ──────────────────────────
-    # N'IMPORTE QUEL élément d'une mise en page (texte, panel, image), par son
+    # N'IMPORTE QUEL élément d'une mise en page (texte, conteneur, image), par son
     # nom d'authoring. Même schéma que get_actor : une référence, résolue à la
     # compilation, puis appelée en colon — pas de fonction par type
     # (`ui.image_show` a disparu) ni d'identifiant nu (un nom d'élément
     # collisionnerait avec les namespaces `ui`/`text`/`camera`…).
     #
-    # Cacher un panel cache tout son sous-arbre SANS toucher ses enfants : la
+    # Cacher un conteneur cache tout son sous-arbre SANS toucher ses enfants : la
     # visibilité effective remonte la chaîne des parents au runtime, elle ne
     # se propage jamais à l'écriture (cf. models/ui_region.UILayout.is_visible,
     # même règle côté éditeur).
@@ -565,6 +565,22 @@ RUNTIME_API: dict[str, ApiFunc] = {
         ret="int",
         doc="La zone de texte qui porte la rangée r (1 = la première visible), "
             "à passer à text.draw_in pour y écrire l'item. -1 hors bornes.",
+    ),
+    "list.active": ApiFunc(
+        lua_name="list.active", c_func="ui_list_active",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST)],
+        ret="bool",
+        doc="Cette liste prend-elle la croix directionnelle ? C'est la "
+            "SÉLECTION, pas l'affichage : une liste inactive reste à l'écran "
+            "et garde son item courant.",
+    ),
+    "list.set_active": ApiFunc(
+        lua_name="list.set_active", c_func="ui_list_set_active",
+        params=[Param("liste", PARAM_STR, DOMAIN_UI_LIST), Param("on", PARAM_BOOL)],
+        doc="Donne ou retire la main à cette liste. C'est ce qui permet un menu "
+            "et son sous-menu à l'écran en même temps : sans ça, les deux "
+            "bougent au même appui. Cacher la liste (ui.get(...):hide()) est "
+            "autre chose — elle disparaît.",
     ),
     "ui.get": ApiFunc(
         lua_name="ui.get", c_func="_ui_get",   # résolu par codegen
@@ -1150,6 +1166,41 @@ RUNTIME_API: dict[str, ApiFunc] = {
             'Ex: if ui.image_state("coeur_1") == 0 then ... end',
     ),
 
+    # ── Déplacer une image (ROADMAP v0.22, 2026-09-02) ─────────────
+    # Un APPEL DE MODULE et non une propriété (`ui.get("Cursor").y = 40`),
+    # contrairement au premier réflexe : la forme propriété suppose un
+    # récepteur que le langage TIENT — `resolve_prop` exige littéralement un
+    # `ExprName`, et une référence « ne se calcule pas, on n'en prend pas de
+    # champ » (cf. `expr_types.infer_ref_type`). Une image est adressée par son
+    # NOM à travers un module, comme un effet sonore ou une liste : la forme
+    # voisine est `list.set_index("Menu", i)`, livrée par ce même jalon.
+    #
+    # Le décalage est RELATIF à la position authorée, qui reste la vérité :
+    # (0, 0) rend l'image à sa mise en page sans que le script ait mémorisé
+    # d'où elle venait. Même repère qu'elle — relatif au parent —, donc une
+    # image ancrée au monde ou sur un acteur se déplace dans son propre cadre.
+    "ui.image_move": ApiFunc(
+        lua_name="ui.image_move", c_func="ui_image_move",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE),
+                Param("dx", PARAM_INT), Param("dy", PARAM_INT)],
+        doc="Décale une image de la mise en page, en pixels, RELATIVEMENT à la "
+            "position posée dans le canvas — (0, 0) l'y ramène. En cible BG "
+            "l'origine se cale sur la grille de 8 px ; pour un déplacement au "
+            "pixel, l'ancrage du conteneur racine doit donner la cible OBJ. "
+            'Ex: ui.image_move("Curseur", 0, 16 * list.index("Menu"))',
+    ),
+    "ui.image_dx": ApiFunc(
+        lua_name="ui.image_dx", c_func="ui_image_dx",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE)], ret="int",
+        doc="Le décalage horizontal courant d'une image (0 = à sa place "
+            'authorée). Ex: ui.image_move("Curseur", ui.image_dx("Curseur") + 1, 0)',
+    ),
+    "ui.image_dy": ApiFunc(
+        lua_name="ui.image_dy", c_func="ui_image_dy",
+        params=[Param("image", PARAM_STR, DOMAIN_IMAGE)], ret="int",
+        doc="Le décalage vertical courant d'une image (0 = à sa place authorée).",
+    ),
+
     # ── Window ─────────────────────────────────────────────────────
     # Une window ne dessine rien : c'est un pochoir. Elle dit, par région
     # de l'écran, qui a le droit de s'afficher. L'apparence vient de ce
@@ -1689,11 +1740,11 @@ REMOVED_API: dict[str, str] = {
         "self:set_pos(x, y) devient self.position = vec2(x, y).",
     # ── Visibilité généralisée aux trois types d'élément (2026-08-17) ──
     # ui.image_show ne concernait que les images ; les zones de texte et les
-    # panels n'avaient rien d'équivalent. Remplacé par un mécanisme unique,
+    # conteneurs n'avaient rien d'équivalent. Remplacé par un mécanisme unique,
     # par référence plutôt que par nom à chaque appel — cf. ui.get.
     "ui.image_show":
         "ui.image_show a été retiré : la visibilité couvre maintenant les "
-        "trois types d'élément (texte, panel, image), pas seulement les "
+        "trois types d'élément (texte, conteneur, image), pas seulement les "
         'images. Remplace ui.image_show("alerte", true) par '
         'ui.get("alerte"):show() (ou :hide() pour false).',
     # ── vec2/vec3 dans l'API position/vélocité/input (2026-08-14) ──
@@ -2192,7 +2243,7 @@ def ui_list_constant(list_name: str) -> str:
 
 def ui_element_constant(element_name: str) -> str:
     """'alerte' → 'UIELEM_ALERTE' — index dans la table de visibilité plate,
-    qui couvre TOUS les éléments d'une mise en page (texte, panel, image),
+    qui couvre TOUS les éléments d'une mise en page (texte, conteneur, image),
     contrairement à REGION_*/IMAGE_* qui n'indexent que ce qui dessine."""
     return f"UIELEM_{c_ident(element_name)}"
 

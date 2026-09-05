@@ -65,6 +65,22 @@ class UIElementSelection:
 UIRegionSelection = UIElementSelection
 
 
+class UILayoutSelection:
+    """Marqueur de sélection : le NŒUD `Interface` lui-même (la racine de la
+    branche dans l'arbre de scène), distinct d'un de ses éléments.
+
+    C'est lui qui porte le chemin matériel du sous-arbre — ancrage + cible
+    (v0.25) — d'où un inspecteur propre, là où le clic sur le nœud ne faisait
+    rien. Porte la `scene` en plus du `layout` : le badge « partagée — N scènes »
+    et l'acteur suivi (ancrage actor) se lisent dans le contexte de la scène,
+    exactement comme `CameraSelection` porte la sienne."""
+    __slots__ = ("layout", "scene")
+
+    def __init__(self, layout, scene):
+        self.layout = layout
+        self.scene = scene
+
+
 class SelectionBus(QObject):
     """
     Singleton de sélection. Émet changed(obj) à chaque changement.

@@ -38,7 +38,7 @@ def projet(tmp_path):
     t = p.new_text(content="Hi", path=["Dialogue", "Greet"])
     zone.text_key = t.key
 
-    scene = Scene(name="Main", ui_layout="hud")
+    scene = Scene(name="Main", ui_layouts=["hud"])
     p.scenes.append(scene)
 
     p.settings.source_lang = Language(code="en", name="English")

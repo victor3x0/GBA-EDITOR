@@ -1059,10 +1059,8 @@ class _CanvasFloatingToolbar(QFrame):
         layout.setContentsMargins(8, 6, 6, 6)
         layout.setSpacing(4)
 
-        handle = QLabel("⋮⋮")
-        handle.setStyleSheet("color:#3a3a3a;font-size:14px;letter-spacing:-2px;")
-        handle.setFixedWidth(16)
-        layout.addWidget(handle)
+        from ui.common.widgets import DragHandle
+        layout.addWidget(DragHandle(Qt.Orientation.Horizontal))
 
         def _sep():
             s = QFrame()

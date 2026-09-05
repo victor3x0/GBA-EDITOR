@@ -61,7 +61,12 @@ def _compile_script(sp: Path, ctx_check: "BuildContext", emit, label: str):
     try:
         script = lua_parse(sp.read_text(encoding="utf-8"))
     except LuaParseError as e:
-        emit("error_line", f"[error] {label} — parse: {e}")
+        # `fichier:ligne`, comme les messages qui citent une ligne ailleurs
+        # (`_check_literal_texts`) — la ligne manque quand la faute est
+        # LEXICALE et qu'aucun faux ami connu ne l'explique (cf. `parser.
+        # _syntax_message`) ; le nom du fichier reste alors le seul repère.
+        ou = f"{label}:{e.line}" if e.line else label
+        emit("error_line", f"[error] {ou} : {e}")
         return None, False
     errors = lua_check(script, ctx_check)
     for err in errors:

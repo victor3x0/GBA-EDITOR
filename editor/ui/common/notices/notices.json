@@ -100,13 +100,9 @@
       "tone": "build",
       "text": "Target forced — scene in mode {mode} (bitmap): there is no tilemap."
     },
-    "ui.anchor.inherited": {
-      "tone": "info",
-      "text": "Inherited from root “{root}” — anchor {anchor}"
-    },
     "ui.anchor.no_actor": {
       "tone": "build",
-      "text": "Anchored on an actor (via its root), but no actor chosen: the element will land at the screen origin."
+      "text": "Anchored on an actor, but no actor chosen: the interface will land at the screen origin."
     },
     "ui.fill.bg": {
       "tone": "info",
@@ -122,11 +118,11 @@
     },
     "ui.fill.nine": {
       "tone": "info",
-      "text": "Stretchable frame: fixed corners, repeated edges/center. Margins belong to the UI background — editing them here changes every panel using it."
+      "text": "Stretchable frame: fixed corners, repeated edges/center. Margins belong to the UI background — editing them here changes every container using it."
     },
     "ui.fill.sprite": {
       "tone": "info",
-      "text": "Sprite tiled across the panel — the only background that exists on OBJ target, where there is no tilemap."
+      "text": "Sprite tiled across the container — the only background that exists on OBJ target, where there is no tilemap."
     },
     "ui.fill.sprite_cost": {
       "tone": "info",
@@ -169,9 +165,17 @@
       "one": "Shared by {n} scene — editing it changes that scene too.",
       "other": "Shared by {n} scenes — editing it changes them all."
     },
+    "ui.list.cursor_missing": {
+      "tone": "build",
+      "text": "Cursor \"{name}\" is not an image of this layout — the list will navigate without one."
+    },
     "ui.list.empty": {
       "tone": "build",
-      "text": "No rows: place text zones INSIDE this panel. Those are what the list walks."
+      "text": "No rows: place text zones INSIDE this list. Those are what it walks."
+    },
+    "ui.list.grid": {
+      "tone": "info",
+      "text": "{shape} — {order}."
     },
     "ui.list.rows": {
       "tone": "info",
@@ -196,6 +200,14 @@
     "ui.text.bank_none": {
       "tone": "info",
       "text": "No slot chosen above: text can't read any color yet, and the pickers below only show numbers. Font ink (index 0) still works — it's the font's own color."
+    },
+    "ui.text.bank_inherited": {
+      "tone": "info",
+      "text": "Bank inherited from '{container}' — a text inside a filled container reads its ink there, not the scene bank. To change it, change the container's fill."
+    },
+    "ui.priority.bg": {
+      "tone": "info",
+      "text": "Priority applies when this element renders as a sprite (its node follows an actor). Here it sits on a BG layer, so its depth is the layer's."
     },
     "ui.text.footprint_bg": {
       "tone": "info",

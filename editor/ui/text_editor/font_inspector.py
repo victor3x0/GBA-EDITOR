@@ -21,6 +21,19 @@ from ui.text_editor.glyph_sheet import GlyphSheet
 from ui.text_editor.inspector_shell import insp_scroll
 
 
+class _CharsetEdit(QTextEdit):
+    """QTextEdit qui signale la fin d'édition à la perte du focus, comme le fait
+    `QLineEdit.editingFinished` — le charset n'est validé qu'en quittant la
+    zone, jamais à chaque frappe (une frappe intermédiaire n'est pas un charset
+    valide)."""
+
+    editing_finished = pyqtSignal()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.editing_finished.emit()
+
+
 class FontInspector(QWidget):
     """Contexte « police » : compteurs, couleurs-clés, charset et case courante.
 
@@ -29,6 +42,7 @@ class FontInspector(QWidget):
     """
 
     glyph_char_changed = pyqtSignal(object, str, str)   # (glyph, avant, après)
+    charset_edited     = pyqtSignal(str)                # charset réécrit d'un bloc
     pick_asked         = pyqtSignal(str, str)           # (rôle, libellé)
     key_color_cleared  = pyqtSignal(str)                # rôle
 
@@ -92,8 +106,7 @@ class FontInspector(QWidget):
         lay.addWidget(transparency_card)
 
         charset_card = CollapsibleCard("Charset")
-        self._charset = QTextEdit()
-        self._charset.setReadOnly(True)
+        self._charset = _CharsetEdit()
         self._charset.setFont(QFont(T.CODE, T.MD))
         self._charset.setStyleSheet(
             f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI};"
@@ -102,10 +115,23 @@ class FontInspector(QWidget):
         self._charset.setFixedHeight(80)
         self._charset.setToolTip(
             "Characters covered by this font — derived from the glyphs,<br>"
-            "never stored as such. Glyph-by-glyph editing will come<br>"
-            "with the annotated grid."
+            "never stored as such.<br><br>"
+            "Editable: leaving the box reassigns characters to the cells<br>"
+            "in order (character 1 → cell 1, …). One cell holds one<br>"
+            "character, so a ligature (e.g. “...”) is set cell by cell,<br>"
+            "not here."
         )
+        self._charset.editing_finished.connect(self._commit_charset)
         charset_card.body_layout.addWidget(self._charset)
+
+        charset_hint = QLabel(
+            "Editing reassigns characters to cells in order. Extra cells keep "
+            "their character; ligatures are set cell by cell."
+        )
+        charset_hint.setFont(QFont(T.UI, T.XS))
+        charset_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        charset_hint.setWordWrap(True)
+        charset_card.body_layout.addWidget(charset_hint)
         lay.addWidget(charset_card)
 
         glyph_card = CollapsibleCard("Selected glyph")
@@ -352,3 +378,16 @@ class FontInspector(QWidget):
             self._char_edit.setText(self._glyph.char)
             return
         self.glyph_char_changed.emit(self._glyph, self._glyph.char, new)
+
+    def _commit_charset(self):
+        """Valide le charset réécrit d'un bloc — l'écran en fera une commande.
+
+        Les retours à la ligne ne sont pas des glyphes (cf. `Font`) : on les
+        retire pour qu'un saut de ligne tapé par mégarde ne décale pas
+        l'assignation."""
+        if self._blocking or not self._font:
+            return
+        new = self._charset.toPlainText().replace("\n", "").replace("\r", "")
+        if new == self._font.charset:
+            return
+        self.charset_edited.emit(new)

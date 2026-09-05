@@ -157,7 +157,7 @@ class ProjectSettings:
     # ensembles à l'affichage, jamais l'un à la place de l'autre.
     collision_tags: list = field(default_factory=list)
     # Cadence de répétition des listes de menu, en frames (ROADMAP v0.22) —
-    # le DÉFAUT du projet, qu'une liste peut surcharger (UIPanel.list_repeat_*).
+    # le DÉFAUT du projet, qu'une liste peut surcharger (UIContainer.list_repeat_*).
     # Répondre ici une fois évite trois listes à trois cadences dans le même
     # jeu, ce qu'un joueur sent ; la surcharge laisse un cas particulier
     # possible. Même politique d'héritage que la transition de scène (v0.6.2).

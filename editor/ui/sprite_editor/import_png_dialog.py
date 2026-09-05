@@ -29,7 +29,7 @@ def import_new_sprite(project, parent=None) -> Optional[Path]:
     """Choisit un fichier, le COPIE tel quel dans assets/sprites/, crée le sprite
     et l'encode (Validator → Encodage). Retourne le chemin ou None."""
     path, _ = QFileDialog.getOpenFileName(
-        parent, "Importer une image", "", "Images (*.png *.bmp)")
+        parent, "Importer une image", "", "Images (*.png)")
     if not path:
         return None
     dst = project.import_asset(Path(path), "sprites")   # copie le source intact
@@ -45,7 +45,7 @@ def replace_sprite_image(project, sprite, parent=None) -> bool:
     if not sprite:
         return False
     path, _ = QFileDialog.getOpenFileName(
-        parent, "Choisir une image", "", "Images (*.png *.bmp)")
+        parent, "Choisir une image", "", "Images (*.png)")
     if not path:
         return False
     dst_dir = project.assets_dir / "sprites"

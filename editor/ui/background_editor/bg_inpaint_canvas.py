@@ -1005,11 +1005,8 @@ class BgInpaintToolbar(QFrame):
         # QFrame n'est jamais dimensionné à son contenu et les boutons sont écrasés.
         layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetFixedSize)
 
-        handle = QLabel("⋮⋮")
-        handle.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        handle.setStyleSheet("color:#3a3a3a; font-size:10px; letter-spacing:-2px;")
-        handle.setFixedHeight(12)
-        layout.addWidget(handle)
+        from ui.common.widgets import DragHandle
+        layout.addWidget(DragHandle(Qt.Orientation.Vertical))
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)

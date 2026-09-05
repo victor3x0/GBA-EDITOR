@@ -750,16 +750,20 @@ void text_set_subset(int font, const FontSubset *sub);
    (main_gen.scene_text_reservation). */
 void text_set_font_base(int font, int base);
 
-/* Banque de palette où le texte lit ses couleurs, posée par scene_init.
+/* Banque d'encre d'UNE police pour cette scène, posée par scene_init — jumelle
+   de `text_set_font_base` : une police est un asset qui porte ses couleurs comme
+   un sprite, et sa banque se traque dans la sélection de la scène.
 
-   `bg`/`obj` sont des SLOTS de la sélection de la scène — les deux pools sont
-   distincts sur GBA (une bande de texte OBJ lit `PAL_OBJ_RAM`, un glyphe de
-   tilemap `PAL_BG_RAM`). Négatif = comportement historique : la police charge
-   sa PROPRE palette dans `FONT_PAL_BANK`.
+   `bank` = un SLOT de la sélection BG de la scène. `own` : 1 = la police charge
+   sa PROPRE palette PNG dans cette banque (usage LIBRE en mode propre) ; 0 = elle
+   lit une banque déjà remplie (police overridée sur une palette de scène, ou dont
+   tous les textes sont enfants d'un conteneur — le conteneur possède la banque).
 
-   Au RUNTIME et pas dans `g_ui_regions`, table partagée par toutes les scènes :
-   la même zone peut servir deux scènes aux palettes différentes. */
-void text_set_pal_bank(int bg, int obj);
+   Au RUNTIME et par police (pas dans `g_ui_regions`, projet-globale) : la même
+   police n'a pas la même banque d'une scène à l'autre. Un texte ENFANT d'un
+   conteneur à fond ignore ceci et prend la banque du conteneur (RegionFill.bank,
+   posée par `text_set_region_backdrop`/`text_set_region_color`). */
+void text_set_font_pal(int font, int bank, int own);
 
 extern const FontInfo g_fonts[];
 extern const int      g_font_count;   /* taille de g_fonts, émise */
@@ -779,6 +783,13 @@ extern const unsigned char* const g_lang_font[];
    projet qui n'a jamais déclaré de langue compile et joue identique à
    avant, seules les tables ci-dessous gagnent une dimension qui vaut 1. */
 extern int g_lang;
+
+/* Nombre de langues émises — la DIMENSION de `g_texts` & co (`font_emit`).
+   Vaut 1 en projet monolingue. C'est ce qui borne `lang_set` depuis la phase
+   5.2 : le code qu'il reçoit peut venir d'une globale relue d'une sauvegarde,
+   pas seulement d'un `LANG_*` résolu au build. Même rôle que `g_font_count`
+   pour `text_set_font`. */
+extern const int g_lang_count;
 
 /* Réinitialisation de la scène courante DEMANDÉE par `lang_set`, consommée
    par la boucle principale (`main_gen`) au prochain tour — jamais dans
@@ -883,7 +894,7 @@ typedef struct UIRegionInfo {
     unsigned char pal_bank; /* banque de palette OBJ */
     /* Surlignement : index dans la banque d'UI que la surface composée reçoit
        SOUS le texte, 0 = aucun. Déclaré sur la zone elle-même — le fond d'un
-       panel ancêtre ne teinte plus ses enfants, les deux n'avaient ni le même
+       conteneur ancêtre ne teinte plus ses enfants, les deux n'avaient ni le même
        propriétaire ni les mêmes conditions d'émission. Non nul, le texte se
        COMPOSE (même en police mono), cf. g_ui_highlight. */
     unsigned char highlight;
@@ -901,7 +912,7 @@ extern const UIRegionInfo g_ui_regions[];
 extern const int g_ui_region_count;
 
 /* ── Listes d'interface (ROADMAP v0.22) ───────────────────────────
-   Le moteur prend la NAVIGATION, pas la mise en page : une liste est un panneau
+   Le moteur prend la NAVIGATION, pas la mise en page : une liste est un conteneur
    de la mise en page dont on suit l'index courant. Ses RANGÉES sont ses zones
    de texte enfants, dans l'ordre de l'arbre — rien à déclarer de plus, et ce
    qu'on voit dans l'éditeur est ce que la liste parcourt.
@@ -910,16 +921,42 @@ extern const int g_ui_region_count;
    connaît sa longueur qu'en jeu. Le script le pose (`list.set_count`). Tant
    qu'il vaut 0, la liste ne bouge pas — il n'y a rien à parcourir.
 
-   Ce que la liste NE fait pas : dessiner. Elle dit quel item est sélectionné et
-   lequel s'affiche sur quelle rangée ; c'est le script qui écrit le contenu,
-   avec `text.draw_in` et les outils de texte qui existent déjà. */
+   Ce que la liste NE fait pas : ÉCRIRE. Elle dit quel item est sélectionné et
+   lequel s'affiche sur quelle rangée ; c'est le script qui pose le contenu,
+   avec `text.draw_in` et les outils de texte qui existent déjà. Elle DESSINE en
+   revanche deux choses, et seulement celles-là : son curseur, qu'elle déplace,
+   et le style de la rangée choisie — cf. plus bas.
+
+   La GRILLE tient en deux champs. `columns` dit de combien un pas transverse
+   avance, `major` dans quel sens les index se suivent : une seule colonne fait
+   une liste verticale, une seule ligne une rangée d'onglets, et N colonnes une
+   grille parcourue en Z (`major` = rangée) ou en W (`major` = colonne). Un
+   énuméré à quatre modes aurait de toute façon dû s'accompagner de `columns` —
+   sans lui, le pas transverse ne se calcule pas. */
 typedef struct UIListInfo {
     unsigned char rows;        /* rangées visibles = zones de texte enfants */
-    unsigned char axis;        /* 0 = vertical, 1 = horizontal */
+    unsigned char columns;     /* colonnes de la grille (1 = liste simple) */
+    unsigned char major;       /* 0 = les index descendent une colonne, 1 = ils suivent une rangée */
     unsigned char wrap;        /* le curseur repasse-t-il du dernier au premier ? */
     unsigned char rep_delay;   /* frames avant le premier renvoi */
     unsigned char rep_rate;    /* frames entre les renvois suivants */
     short row0;                /* décalage dans g_ui_list_rows */
+    /* Le CURSEUR appartient à la liste : elle nomme une image de sa mise en
+       page et le moteur la pose sur la rangée choisie, par le même chemin que
+       `ui.image_move` — un décalage RELATIF à la position authorée. L'auteur
+       place donc son curseur en face de la PREMIÈRE rangée, et la liste le
+       déplace de la distance qui sépare cette rangée de la rangée choisie.
+       -1 = aucun curseur, la sélection se lit alors au style ci-dessous. */
+    short cursor;
+    unsigned char cursor_mode;  /* 0 = posé, 1 = glissant */
+    unsigned char cursor_speed; /* pixels par frame en mode glissant */
+    /* Style de la rangée CHOISIE — les deux réglages qu'une zone porte déjà
+       (`UIRegionInfo.color`, `.highlight`), appliqués en suivant l'index au
+       lieu d'être réécrits par le script à chaque déplacement. 0 = la zone
+       garde le sien. Les deux à 0 = la liste ne restyle rien, et ne coûte alors
+       pas un redessin. */
+    unsigned char selected_color;
+    unsigned char selected_highlight;
 } UIListInfo;
 
 /* Posé par la boucle de frame de main.c, une fois par frame. */
@@ -928,6 +965,13 @@ extern u32 _g_keys_held;
 extern const UIListInfo g_ui_lists[];
 extern const short      g_ui_list_rows[];   /* index de région, à plat */
 extern const int        g_ui_list_count;
+/* Le TEXTE posé sur chaque rangée, même découpage à plat que `g_ui_list_rows`
+   (-1 = rien d'écrit). Retenu par `text_draw_in` pour la seule chose qui a
+   besoin de le relire : restyler une rangée quand la sélection la quitte ou
+   l'atteint. Une table par RANGÉE et non par zone, parce que c'est la liste qui
+   redessine — le plafond des têtes de lecture (`TEXT_READ_MAX`) est global au
+   projet et laisserait dehors le troisième menu d'un jeu. */
+extern short            g_ui_list_row_text[];
 
 /* État vivant, une entrée par liste — défini par main.c (le compte est une
    constante du build). Index et premier visible sont comptés À PARTIR DE 1,
@@ -936,6 +980,15 @@ extern int g_ui_list_index[];
 extern int g_ui_list_first[];
 extern int g_ui_list_total[];
 extern int g_ui_list_timer[];
+/* La liste consomme-t-elle la croix directionnelle ? C'est la SÉLECTION qu'on
+   coupe, pas l'affichage : une liste inactive reste dessinée, garde son index
+   et garde son curseur en place. Sans ça, un menu et son sous-menu affichés
+   ensemble bougent au même appui — `ui_list_tick` les parcourait tous, faute de
+   savoir lequel a la main. La valeur authorée n'est que le départ. */
+extern int g_ui_list_active[];
+/* Rangée AFFICHÉE qui porte la sélection au dernier restyle (1 = la première,
+   0 = aucune). Sert à savoir laquelle rendre à son style d'origine. */
+extern int g_ui_list_shown[];
 
 int  ui_list_count    (int l);
 void ui_list_set_count(int l, int n);
@@ -943,6 +996,8 @@ int  ui_list_index    (int l);
 void ui_list_set_index(int l, int i);
 int  ui_list_first    (int l);
 int  ui_list_row      (int l, int r);
+int  ui_list_active   (int l);
+void ui_list_set_active(int l, int on);
 void ui_list_tick     (void);
 
 /* ── Images d'interface ───────────────────────────────────────────
@@ -981,7 +1036,7 @@ typedef struct UIImageInfo {
     unsigned char tiles_per_frame;
     short oam_rel;          /* cible OBJ : slot OAM relatif à la base de la scène */
     unsigned char priority;
-    /* PAVAGE — un fond de panneau répète la même frame pour couvrir un
+    /* PAVAGE — un fond de conteneur répète la même frame pour couvrir un
        rectangle plus grand qu'elle (un OBJ ne s'étire pas sans mode affine).
        Une image vaut toujours 1×1. Les N sprites pointent la MÊME frame : le
        pavage coûte des slots OAM, pas une tuile de plus. */
@@ -998,8 +1053,8 @@ extern const int g_ui_image_count;
 
 /* ── Visibilité des éléments d'interface ────────────────────────────
    Table PLATE, PROJET-GLOBALE, qui couvre TOUS les éléments d'une mise en
-   page — texte, panel, image confondus — contrairement à g_ui_regions/
-   g_ui_images qui n'indexent que ce qui DESSINE. Un panel-groupe pur (fond
+   page — texte, conteneur, image confondus — contrairement à g_ui_regions/
+   g_ui_images qui n'indexent que ce qui DESSINE. Un conteneur-groupe pur (fond
    `none`) n'a sinon aucune identité runtime.
 
    `visible` est l'état AUTHORÉ de départ (`ui.get(...):show()/:hide()` le
@@ -1034,13 +1089,34 @@ void ui_image_set_bg_base(int img, int tile);   /* cible BG : base dans le charb
 void ui_image_set_bank(int img, int bank);
 
 /* Groupe ÉCRITURE — le pendant exact de `text_draw_in` pour un sprite. Aucune
-   fonction ne crée ni ne déplace une image : la géométrie est authorée, et la
-   rouvrir au runtime reprendrait ce que la mise en page existe pour fermer. */
+   fonction ne CRÉE une image : la mise en page décide de ce qui existe, de sa
+   taille, de son sprite, de son ancrage, de son parent et de sa profondeur, et
+   rouvrir ça au runtime reprendrait ce qu'elle existe pour fermer.
+
+   Le DÉPLACEMENT, lui, a été rouvert (ROADMAP v0.22, 2026-09-02) : c'était une
+   même phrase pour deux choses. `ui_image_move` pose un décalage RELATIF à la
+   position authorée, qui reste la vérité — (0,0) rend l'image à sa mise en
+   page, sans que le script ait rien mémorisé. La géométrie n'est donc pas
+   rendue au script : elle est ANIMÉE, comme `self.position` anime un acteur
+   sans que la scène cesse de décider où il commence. Et le moteur déplaçait
+   déjà des images de lui-même — `ui_image_origin` retranche la caméra pour une
+   image ancrée au monde et suit l'acteur pour une bulle : « une image ne se
+   déplace pas » n'a jamais été vrai, seul le script en était tenu à l'écart. */
 void ui_image_set_state(int img, int state);
 void ui_image_play(int img, int on);
 /* Visibilité : ui_element_show(idx, on), cf. plus haut — plus de fonction
-   par type, une image partage l'index avec le texte et les panels. */
+   par type, une image partage l'index avec le texte et les conteneurs. */
 int  ui_image_state(int img);
+/* POSITION — un décalage RELATIF à la position authorée, dans le même repère
+   qu'elle (relatif au parent). (0,0) rend l'image à sa mise en page.
+
+   Le déménagement lui-même n'est pas ici : `ui_image_update` compare l'origine
+   à celle de la frame précédente et, en cible BG, efface l'ancienne empreinte
+   avant de réécrire — le même chemin qu'une image ancrée au monde qui défile.
+   Écrire la position ne coûte donc que deux `short`. */
+void ui_image_move (int img, int dx, int dy);
+int  ui_image_dx   (int img);
+int  ui_image_dy   (int img);
 void ui_image_update(void);   /* une fois par frame, avant oam_update */
 
 void text_set_layer(int bg);        /* posé par scene_init depuis Scene.text_bg */
@@ -1082,17 +1158,19 @@ void text_clear_in    (int region);             /* vide une zone, BG ou OBJ */
    les postes de texte (cf. `_gen_scene_init`). `text_clear_region_fills` vide
    la table de la scène précédente. Deux façons d'y enregistrer une zone, selon
    ce que son conteneur lui prête : `text_set_region_backdrop` pour la CARTE
-   d'un panel nine-slice/background (`se`/`stride` sont ceux du panel entier
+   d'un conteneur nine-slice/background (`se`/`stride` sont ceux du conteneur entier
    émis pour cette scène, `(dx, dy)` recale sur le coin de la zone, `tile_base`
    est la base VRAM où l'asset source a été copié CETTE scène) ;
-   `text_set_region_color` pour l'APLAT d'un panel couleur, un index dans la
-   banque d'UI. */
+   `text_set_region_color` pour l'APLAT d'un conteneur couleur, un index dans la
+   banque d'UI. Les deux portent `bank` : la banque de palette du conteneur, où
+   le texte enfant lit son encre — il PREND la palette du conteneur (défaut du
+   moteur), au lieu que sa police occupe un slot à elle. */
 void text_clear_region_fills(void);
 void text_set_region_backdrop(int region, const unsigned short *se, int stride,
-                              int dx, int dy, int tile_base);
-void text_set_region_color(int region, int index);
+                              int dx, int dy, int tile_base, int bank);
+void text_set_region_color(int region, int index, int bank);
 void text_obj_set_base(int oam, int tile);   /* posé par scene_init */
-void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int));
+void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int), int (*fp)(int));
 
 void tilemap_set        (int bg, int tx, int ty, int tile);
 int  tilemap_get        (int bg, int tx, int ty);
@@ -1100,7 +1178,7 @@ void tilemap_set_palette(int bg, int tx, int ty, int bank);
 void tilemap_set_flip   (int bg, int tx, int ty, int fh, int fv);
 void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
 
-/* Fond de conteneur d'UI (UIPanel) — statique, posé par scene_init sur le calque
+/* Fond de conteneur d'UI (UIContainer) — statique, posé par scene_init sur le calque
    UI, AVANT que les scripts ne posent le texte par-dessus.
    `ui_fill_load_solid` grave une tuile PLEINE (64 px d'un même index de palette)
    dans le charblock UI ; `ui_fill_rect` la repose sur un rectangle de tuiles avec
@@ -1462,16 +1540,12 @@ static const FontSubset *g_font_sub = 0;
 /* Banque où le texte lit ses couleurs. Négatif = mode AUTOMATIQUE : la police
    charge sa propre palette dans FONT_PAL_BANK. C'est le défaut, le retirer
    d'office changerait la couleur du texte de tout projet existant. */
+/* Banque d'encre COURANTE — celle de la police active (posée par text_set_font
+   depuis g_font_bank), qu'un texte enfant de conteneur remplace le temps de son
+   rendu par celle du conteneur (cf. text_render_region_cp). g_font_bank /
+   g_font_own / text_set_font_pal vivent plus bas, après g_font_loaded. */
 static int g_pal_bank_bg  = FONT_PAL_BANK;
 static int g_pal_bank_obj = FONT_PAL_BANK;
-static int g_pal_own      = 1;   /* 1 = la police impose ses couleurs */
-
-void text_set_pal_bank(int bg, int obj) {
-    g_pal_own     = (bg < 0);
-    g_pal_bank_bg  = (bg  >= 0 && bg  < 16) ? bg  : FONT_PAL_BANK;
-    g_pal_bank_obj = (obj >= 0 && obj < 16) ? obj : g_pal_bank_bg;
-    g_font = 0;   /* la palette change : cf. text_set_font */
-}
 
 /* Base de chaque police dans le bloc du texte, et lesquelles y sont DÉJÀ.
    Le masque est ce qui rend l'alternance titre/corps gratuite : une police
@@ -1487,11 +1561,29 @@ void text_set_font_base(int font, int base) {
     g_font = 0;
 }
 
+/* Banque + « charge sa palette » de chaque police cette scène — jumelles de
+   g_font_base, posées par text_set_font_pal. Défaut (au clear) = banque 15, la
+   police impose ses couleurs : le comportement historique pour une police que
+   scene_init ne configure pas explicitement (donc jamais dessinée). */
+static short g_font_bank[TEXT_MAX_FONTS];
+static unsigned char g_font_own[TEXT_MAX_FONTS];
+
+void text_set_font_pal(int font, int bank, int own) {
+    if (font < 0 || font >= TEXT_MAX_FONTS) return;
+    g_font_bank[font] = (short)((bank >= 0 && bank < 16) ? bank : FONT_PAL_BANK);
+    g_font_own[font]  = (unsigned char)(own ? 1 : 0);
+    g_font_loaded &= ~(1u << font);   /* palette/banque changent : recharger */
+    g_font = 0;                       /* cf. text_set_font */
+}
+
 /* Les deux remettent `g_font` à zéro, comme `text_set_tile_base` : changer le
    sous-ensemble change CE QUI EST en VRAM, et la garde d'idempotence de
    `text_set_font` sauterait sinon la recopie. */
 void text_clear_subsets(void) {
-    for (int i = 0; i < TEXT_MAX_FONTS; i++) { g_subsets[i] = 0; g_font_base[i] = 0; }
+    for (int i = 0; i < TEXT_MAX_FONTS; i++) {
+        g_subsets[i] = 0; g_font_base[i] = 0;
+        g_font_bank[i] = FONT_PAL_BANK; g_font_own[i] = 1;
+    }
     g_font_loaded = 0;
     g_font = 0;
 }
@@ -1568,6 +1660,14 @@ static inline u32 text_recolor(u32 row) {
 }
 
 void lang_set(int code) {
+    /* Borné sur le compte ÉMIS, comme `text_set_font` sur `g_font_count` :
+       depuis la phase 5.2 le code peut être une VALEUR (`lang.set(global.
+       langue)`, relue d'une sauvegarde) et pas seulement un `LANG_*` résolu
+       au build. Hors bornes, `g_texts[g_lang]` lirait un pointeur au hasard.
+       Refus SILENCIEUX plutôt que repli sur 0 : une sauvegarde d'une version
+       du jeu qui avait plus de langues doit laisser celle en cours en place,
+       pas ramener le joueur à la langue source sans qu'il l'ait demandé. */
+    if (code < 0 || code >= g_lang_count) return;
     if (code == g_lang) return;   /* idempotent : rien à recharger */
     g_lang = code;
     g_lang_reload = 1;
@@ -1581,9 +1681,14 @@ void text_set_font(int f) {
     /* Remap par langue (phase 3.2) : le script nomme toujours la police du
        PROJET (`FONT_DIALOG`, résolu au build) — c'est ici, et seulement ici,
        que la langue active peut la remplacer. `g_lang_font` est émis avec le
-       même compte que `g_fonts`, donc la valeur relue reste dans les bornes
-       déjà vérifiées ci-dessus ; pas de second garde-fou à écrire. */
+       même compte que `g_fonts`, donc la valeur relue EST dans les bornes. */
     f = g_lang_font[g_lang][f];
+    /* Re-borné après le remap. `g_lang_font[..][..]` est un `unsigned char` :
+       le compilateur ne peut pas savoir que sa valeur reste < g_font_count (elle
+       l'est), et sans ce garde `-Warray-bounds` croit `g_fonts[f]` hors table.
+       Il le PROUVE (g_font_count est une constante = taille de `g_fonts`) et
+       couvre une ROM produite autrement, comme les autres gardes du fichier. */
+    if (f < 0 || f >= g_font_count) return;
     const FontInfo *fi = &g_fonts[f];
     /* Idempotent : recharger la police DÉJÀ résidente ne fait rien. Sans cette
        garde, une zone qui déclare sa police (`text_draw_in`) recopierait tous
@@ -1597,6 +1702,11 @@ void text_set_font(int f) {
     g_font = fi;
     g_font_sub  = (f >= 0 && f < TEXT_MAX_FONTS) ? g_subsets[f] : 0;
     g_base_cur  = (f >= 0 && f < TEXT_MAX_FONTS) ? g_font_base[f] : 0;
+    /* Banque d'encre de CETTE police (index REMAPPÉ par la langue, comme
+       g_base_cur ci-dessus). Un texte enfant de conteneur la remplacera le temps
+       de son rendu (text_render_region_cp). */
+    g_pal_bank_bg  = (f >= 0 && f < TEXT_MAX_FONTS) ? g_font_bank[f] : FONT_PAL_BANK;
+    g_pal_bank_obj = g_pal_bank_bg;
     if (g_text_layer < 0 || !fi->tiles) return;
     /* Déjà à sa base : rien à recopier. Chaque police ayant sa propre place,
        revenir à la précédente ne coûte plus que ce test. */
@@ -1629,10 +1739,11 @@ void text_set_font(int f) {
             copy16(dst, fi->tiles, fi->n_tiles * 32);
         }
     }
-    /* La police n'impose ses couleurs QUE si la scène n'a désigné aucune
-       banque : sinon écraser la banque ici y remettrait les couleurs du PNG,
-       et la seconde police chargée repeindrait la première. */
-    if (g_pal_own) {
+    /* La police ne charge sa palette PNG que si elle est en mode PROPRE cette
+       scène (usage libre, pas overridée, pas seulement dans un conteneur) :
+       sinon la banque appartient à une palette de scène ou à un conteneur, et
+       l'y écraser des couleurs du PNG effacerait ce que le texte doit lire. */
+    if ((f >= 0 && f < TEXT_MAX_FONTS) ? g_font_own[f] : 1) {
         copy16(PAL_BG_RAM + g_pal_bank_bg * 16, fi->pal, 32);
         /* Même palette côté sprites : une bande de texte OBJ lit PAL_OBJ_RAM.
            32 octets copiés toujours, moins cher que de savoir si une zone
@@ -1822,6 +1933,14 @@ static void blit_use_bg_surface(void) {
    `UIRegionInfo.highlight`, remis à 0 après. */
 static int g_ui_highlight = 0;
 
+/* Style imposé à la zone en cours de rendu par la LISTE qui la porte, le temps
+   d'un redessin de rangée : -1 = la zone garde le sien. Deux globales et non
+   deux champs mutables dans `g_ui_regions` — la table est en ROM, et le style
+   de la rangée choisie n'est pas un état de la zone mais de la sélection, qui
+   appartient à la liste. Même patron que `g_ui_highlight` juste au-dessus. */
+static int g_row_color = -1;
+static int g_row_highlight = -1;
+
 /* Étendue à surligner, en tuiles LOCALES à la zone (le même (0,0) que `dx,dy`
    d'un `RegionFill`). Préparer et surligner ne couvrent pas les mêmes
    tuiles : la boîte ENTIÈRE est préparée — sinon un texte plus court que le
@@ -1838,9 +1957,9 @@ static short g_hl_x = 0, g_hl_y = 0, g_hl_w = 0, g_hl_h = 0;
 
    Deux formes, UNE table, parce que c'est UNE question (« qu'y a-t-il sous
    cette zone ? ») :
-     - un panel Nine-slice/Background prête sa CARTE — il faut les vrais
+     - un conteneur Nine-slice/Background prête sa CARTE — il faut les vrais
        pixels du cadre, aucun aplat ne les remplacerait ;
-     - un panel Color prête un APLAT — `color`, un index dans la banque d'UI.
+     - un conteneur Color prête un APLAT — `color`, un index dans la banque d'UI.
    `se == NULL` distingue les deux, plutôt qu'un drapeau à tenir d'accord.
 
    Le SURLIGNEMENT d'une zone (`g_ui_highlight`) passe devant, sur l'étendue
@@ -1850,7 +1969,7 @@ static short g_hl_x = 0, g_hl_y = 0, g_hl_w = 0, g_hl_h = 0;
    Table posée par `scene_init`, donc SCÈNE-SPÉCIFIQUE : la base VRAM d'un
    cadre comme l'index d'un aplat dépendent de la scène, là où `UIRegionInfo`
    est projet-globale. C'est aussi ce qui garantit qu'un fond ne s'affiche sous
-   un texte que dans les scènes où le panneau est RÉELLEMENT émis — l'inverse
+   un texte que dans les scènes où le conteneur est RÉELLEMENT émis — l'inverse
    (une table projet-globale qui ne connaissait pas ces conditions) a produit
    un conteneur qui ne colorait qu'une partie de sa zone, la boîte de son
    texte. Scannée linéairement plutôt qu'indexée par région : peu de zones ont
@@ -1858,21 +1977,27 @@ static short g_hl_x = 0, g_hl_y = 0, g_hl_w = 0, g_hl_h = 0;
    gaspillerait pour rien.
 
    Un seul mot par pixel : la tuile de surface reçoit la MÊME banque de
-   palette pour le fond recopié et pour l'encre du glyphe (`g_pal_bank_bg`) —
-   le hardware n'en offre qu'une par tuile. C'est un contrat d'auteur (le build
-   le vérifie) : `scene.ui_pal_bank` doit désigner la banque du panneau, et
-   l'encre du texte être une couleur déjà présente dans cette même banque. En
-   mode automatique, où la banque d'UI appartient à la police, c'est le build
-   qui y loge la couleur de l'aplat (cf. `_gen_scene_init`). */
+   palette pour le fond recopié et pour l'encre du glyphe — le hardware n'en
+   offre qu'une par tuile. C'est pourquoi un texte enfant d'un conteneur PREND
+   la banque du conteneur (`RegionFill.bank`, posée par scene_init) : son encre y
+   lit ses couleurs, déjà présentes avec le fond. `text_render_region_cp` place
+   cette banque dans `g_pal_bank_bg` le temps du rendu, puis la rend à la police.
+   La police du texte n'occupe donc AUCUNE banque à elle tant qu'elle n'est
+   utilisée que dans des conteneurs (cf. chantier « la police, une palette
+   d'asset »). L'index d'encre (`UIRegionInfo.color`) désigne une couleur de
+   CETTE banque — celle du conteneur. */
 #define TEXT_REGION_FILL_MAX 8
 
 typedef struct {
     short region;                 /* index dans g_ui_regions */
-    const unsigned short *se;     /* carte du PANEL ENTIER, ou NULL = aplat */
-    short stride;                 /* largeur du panel, en tuiles */
-    short dx, dy;                 /* coin de la zone DANS le panel, en tuiles */
+    const unsigned short *se;     /* carte du CONTENEUR ENTIER, ou NULL = aplat */
+    short stride;                 /* largeur du conteneur, en tuiles */
+    short dx, dy;                 /* coin de la zone DANS le conteneur, en tuiles */
     short tile_base;              /* où l'asset source a été copié cette scène */
     short color;                  /* aplat : index dans la banque d'UI */
+    short bank;                   /* banque de palette du CONTENEUR — la zone y
+                                     lit son encre (le texte enfant PREND la
+                                     palette du conteneur). -1 = suivre la police. */
 } RegionFill;
 
 static RegionFill g_region_fill[TEXT_REGION_FILL_MAX];
@@ -1883,6 +2008,13 @@ static int g_region_fill_n = 0;
    fond : `text_surf_prepare`/`text_clear` retombent sur le surlignement, ou
    sur du transparent. */
 static const RegionFill *g_ui_fill = 0;
+
+/* Composition par AJOUT : 1 = ne pas re-semer la surface avant de composer.
+   Posé par `text_update` le temps d'une frappe qui GRANDIT (cf. son commentaire),
+   remis à 0 tout de suite après. La surface a déjà été semée au premier rendu du
+   texte ; les caractères ne font que s'ajouter, donc re-semer n'effacerait que
+   pour reposer — ce vide d'une frame est ce qui faisait clignoter le texte. */
+static int g_text_no_prepare = 0;
 
 /* Vide la table — posé par `scene_init`, au même titre que
    `text_read_reset_all` : sans lui une zone de la scène PRÉCÉDENTE resterait
@@ -1895,20 +2027,24 @@ static RegionFill *text_region_fill_new(int r) {
     RegionFill *b = &g_region_fill[g_region_fill_n++];
     b->region = (short)r;
     b->se = 0; b->stride = 0; b->dx = b->dy = 0; b->tile_base = 0; b->color = 0;
+    b->bank = -1;
     return b;
 }
 
 void text_set_region_backdrop(int r, const unsigned short *se, int stride,
-                              int dx, int dy, int tile_base) {
+                              int dx, int dy, int tile_base, int bank) {
     RegionFill *b = text_region_fill_new(r);
     if (!b) return;
     b->se = se;        b->stride = (short)stride;
     b->dx = (short)dx; b->dy = (short)dy;   b->tile_base = (short)tile_base;
+    b->bank = (short)((bank >= 0 && bank < 16) ? bank : -1);
 }
 
-void text_set_region_color(int r, int index) {
+void text_set_region_color(int r, int index, int bank) {
     RegionFill *b = text_region_fill_new(r);
-    if (b) b->color = (short)(index & 0xF);
+    if (!b) return;
+    b->color = (short)(index & 0xF);
+    b->bank  = (short)((bank >= 0 && bank < 16) ? bank : -1);
 }
 
 static const RegionFill *text_region_fill(int r) {
@@ -2155,8 +2291,8 @@ int text_length(int id) {
      1. le SURLIGNEMENT, si la case tombe dans l'étendue rendue — un marqueur se
         pose SUR le fond, il ne le troue pas ;
      2. le FOND de la zone (`g_ui_fill`) : les VRAIS pixels du cadre pour un
-        panel nine-slice/background (flip de la SE source baké en pixels, la
-        tuile de surface elle-même n'en portant pas), l'aplat pour un panel
+        conteneur nine-slice/background (flip de la SE source baké en pixels, la
+        tuile de surface elle-même n'en portant pas), l'aplat pour un conteneur
         couleur ;
      3. du transparent — zone sans conteneur qui lui prête quoi que ce soit.
 
@@ -2495,7 +2631,7 @@ static void text_render_cp_al(const unsigned short *s, int slen,
        `tx`/`ty` sont déjà ses tuiles d'origine (cf. `text_render_region_cp`),
        donc une zone ancrée acteur ou monde suit son ancre. */
     if (g_surf_cur) { g_blit_ox = tx; g_blit_oy = ty; }
-    if (text_is_composited()) {
+    if (text_is_composited() && !g_text_no_prepare) {
         /* Préparer AVANT de composer : la composition ne pose que de l'encre,
            elle n'efface pas ce qui était là. La zone préparée doit couvrir le
            texte ALIGNÉ, d'où le même `align` dans les deux passes. Zone à
@@ -2579,6 +2715,20 @@ static void text_render_obj(const unsigned short *s, int slen,
    pour deux entiers. */
 static int (*g_actor_x_fn)(int) = 0;
 static int (*g_actor_y_fn)(int) = 0;
+/* Profondeur de l'acteur, même détour par pointeur que la position — pour que
+   l'UI ancrée hérite de sa priorité OBJ sans que ce fichier connaisse `Actor`. */
+static int (*g_actor_prio_fn)(int) = 0;
+
+/* Priorité OBJ effective d'un élément d'UI. 0-3 = valeur explicite (surcharge) ;
+   255 = HÉRITE : sous un nœud ancré à un acteur, on prend SA priorité en direct
+   (elle suit un `self.priority` de script), sinon 0 (devant les fonds). Résolue
+   ici, au moment de poser le sprite, et non figée au build : c'est ce qui fait
+   vivre le libellé à la profondeur de sa cible. */
+static inline int ui_obj_prio(unsigned char prio, unsigned char anchor, short actor) {
+    if (prio != 255) return prio & 3;
+    return (anchor == 2 && actor >= 0 && g_actor_prio_fn)
+           ? (g_actor_prio_fn(actor) & 3) : 0;
+}
 
 /* Caméra — définies dans le main.c généré, déjà déclarées par
    actor_api_static.h pour l'API `camera.*`. Deux entiers, pas un type généré :
@@ -2628,7 +2778,7 @@ typedef struct TextRead {
     /* Dernière visibilité EFFECTIVE connue de cette zone (cf. `ui_element_
        is_visible`) — posée par `text_draw_in` et par le balayage de
        `ui_element_show`. Sert à ne redessiner/effacer QUE ce qui a
-       réellement changé quand un panel ancêtre bascule. */
+       réellement changé quand un conteneur ancêtre bascule. */
     unsigned char last_visible;
 } TextRead;
 
@@ -2672,14 +2822,19 @@ static void text_clear_region_at(const UIRegionInfo *R, int r, int ox, int oy) {
        lieu de le repeindre. Le fond image, lui, reste — c'est du décor, pas du
        texte. */
     int w = R->w >> 3, h = R->h >> 3;
-    g_ui_highlight = R->highlight;
+    g_ui_highlight = (g_row_highlight >= 0) ? g_row_highlight : R->highlight;
     g_hl_w = 0;
     g_ui_fill = text_region_fill(r);
+    /* Même banque qu'au rendu : re-semer le fond du conteneur dans sa propre
+       banque, sinon la tuile de surface reçoit une banque et le fond une autre. */
+    int _save_bank = g_pal_bank_bg;
+    if (g_ui_fill && g_ui_fill->bank >= 0) g_pal_bank_bg = g_ui_fill->bank;
     /* Même bloc qu'au rendu, sinon on viderait les tuiles de la surface
        PARTAGÉE — donc celles d'une autre zone — en laissant les siennes
        encrées. Même raison que la reprise du surlignement juste au-dessus. */
     g_surf_cur = text_region_surf(r);
     text_clear(ox >> 3, oy >> 3, w > 0 ? w : 1, h > 0 ? h : 1);
+    g_pal_bank_bg = _save_bank;
     g_surf_cur = 0;
     g_ui_highlight = 0;
     g_ui_fill = 0;
@@ -2692,10 +2847,13 @@ static void text_render_region_cp(const unsigned short *s, int slen,
     if (!g_font) return;
     /* Variante de couleur DE CE SLOT — résolue après `text_set_font`, qui vient
        de poser le sous-ensemble dont dépend la correspondance couleur→variante. */
-    g_var_cur = text_var_for(R->color);
+    /* La liste qui restyle sa rangée choisie passe par ici (`g_row_color`) :
+       même chemin de rendu, même résolution de variante, rien de parallèle. */
+    int ink = (g_row_color >= 0) ? g_row_color : R->color;
+    g_var_cur = text_var_for(ink);
     /* Chemin composé : la couleur du slot devient l'encre par défaut. Une
        police mono, elle, la reçoit par sa variante — d'où les deux lignes. */
-    g_zone_ink = (g_var_cur || !g_font_sub) ? R->color : 0;
+    g_zone_ink = (g_var_cur || !g_font_sub) ? ink : 0;
     int ox, oy;
     text_region_origin(R, &ox, &oy);
     /* Retenu AVANT de dessiner, pour les deux cibles : une fois la caméra ou
@@ -2711,16 +2869,24 @@ static void text_render_region_cp(const unsigned short *s, int slen,
        zone ancrée monde se coupe sur elle-même, pas sur sa position de départ. */
     text_clip_set(ox, oy, R->w, R->h);
     /* Surlignement et fond image de la zone le temps du rendu : la surface se
-       compose sur cette couleur là où le texte est écrit — et, sous un panel
+       compose sur cette couleur là où le texte est écrit — et, sous un conteneur
        nine-slice/background, sur les tuiles du cadre partout ailleurs
        (cf. text_surf_prepare/text_clear) — puis on remet les deux à vide. */
-    g_ui_highlight = R->highlight;
+    g_ui_highlight = (g_row_highlight >= 0) ? g_row_highlight : R->highlight;
     g_ui_fill = text_region_fill(r);
+    /* Un texte enfant d'un conteneur à fond PREND la banque du conteneur : son
+       encre y lit ses couleurs, et le fond partage la même tuile de surface
+       (une seule banque de palette par tuile sur le matériel). Une zone libre
+       garde la banque de sa police. Restaurée après le rendu, pour ne pas la
+       léguer à la zone — ou à l'écriture libre — suivante. */
+    int _save_bank = g_pal_bank_bg;
+    if (g_ui_fill && g_ui_fill->bank >= 0) g_pal_bank_bg = g_ui_fill->bank;
     /* Bloc de surface propre à CETTE zone, s'il lui en a été alloué un : c'est
        ce qui l'empêche de partager ses tuiles avec une zone voisine (cf.
        `RegionSurf`). Absent = repli sur la surface partagée, comme avant. */
     g_surf_cur = text_region_surf(r);
     text_render_cp_al(s, slen, ox >> 3, oy >> 3, R->w >> 3, n, R->align, R->h >> 3);
+    g_pal_bank_bg = _save_bank;
     g_surf_cur = 0;
     g_ui_highlight = 0;
     g_ui_fill = 0;
@@ -2780,6 +2946,10 @@ void text_read_reset_all(void) {
     g_reads_init = 1;
 }
 
+/* Défini avec les listes, plus bas : `text_draw_in` doit le connaître ici, et
+   la fonction appartient à la liste, pas au texte. */
+static void ui_list_note_draw(int r, int id);
+
 void text_draw_in(int r, int id) {
     const unsigned short *s; const TextEvent *e; int ne;
     int len = text_materialize(id, &s, &e, &ne);
@@ -2797,6 +2967,9 @@ void text_draw_in(int r, int id) {
        cf. `ui_element_show`) : c'est ce qui permet à `self:show()` de
        révéler exactement ce qui aurait dû s'afficher, sans qu'un script
        ait à rappeler `text.draw_in` après coup. */
+    /* Retenu AVANT le test de visibilité : une rangée écrite pendant que son
+       menu est caché doit pouvoir être restylée quand il s'ouvre. */
+    ui_list_note_draw(r, id);
     int elem = (r >= 0) ? g_ui_regions[r].elem : -1;
     int vis  = ui_element_is_visible(elem);
     if (r >= 0 && r < TEXT_READ_MAX) {
@@ -2860,6 +3033,7 @@ void text_update(void) {
         if (moved && RI->target == 0)
             text_clear_region_at(RI, r, R->sx, R->sy);
         if (R->active) {
+            short prev_n = R->n;
             if (R->wait > 0) R->wait--;
             /* `while` et non `if` : [speed=0] révèle tout d'un trait, ce qui
                est exactement ce qu'un auteur écrit pour couper le tempo au
@@ -2869,9 +3043,39 @@ void text_update(void) {
                 if (R->n >= R->len) { R->n = R->len; R->active = 0; break; }
                 R->wait = (short)text_tempo_at(e, ne, R->n, &R->speed);
             }
-            text_render_region(R->id, r, R->active ? R->n : -1);
+            /* Ne redessiner que si quelque chose a CHANGÉ : un caractère de plus
+               (ou la lecture qui s'achève), l'ancre qui a suivi, ou des glyphes
+               animés qui remuent à chaque frame. Sinon, pendant les frames
+               d'ATTENTE, on ne touchait à rien à tort. */
+            if (R->n != prev_n || !R->active || moved || RI->anim > 0) {
+                /* Frappe qui GRANDIT sur une zone déjà semée (même texte, fond
+                   inchangé, sans surlignement ni glyphes animés) : composer par
+                   AJOUT, sans re-semer (cf. `g_text_no_prepare`). Re-semer
+                   effacerait l'encre déjà posée pour la reposer aussitôt — ce vide
+                   d'une frame, attrapé par le faisceau hors VBlank, EST le blink.
+                   Les caractères déjà révélés se recomposent à l'identique, le
+                   nouveau s'ajoute : aucune tuile ne repasse par le fond nu.
+                   Surligné/animé/ancre déplacée : re-semer reste nécessaire (une
+                   étendue de surlignement ou un glyphe animé qui recule laisserait
+                   sinon une traînée), et ces cas-là gardent le rendu plein. */
+                g_text_no_prepare = (R->n > prev_n && RI->highlight == 0
+                                     && RI->anim == 0 && !moved) ? 1 : 0;
+                text_render_region(R->id, r, R->active ? R->n : -1);
+                g_text_no_prepare = 0;
+            }
         } else if (RI->anim > 0 || moved) {
+            /* Un simple DÉPLACEMENT en cible OBJ (zone qui suit son ancre,
+               contenu inchangé, sans glyphes animés) : composer par AJOUT, sans
+               re-vider la bande (`g_text_no_prepare`). Les tuiles se réécrivent à
+               l'identique et l'OAM se repositionne au pixel — plus de passage par
+               le vide, donc plus de clignotement. Les glyphes ANIMÉS changent de
+               place dans la bande et gardent l'effacement ; une zone BG qui bouge
+               (monde) a déjà été effacée à son ancienne origine, elle se recompose
+               pleinement à la nouvelle. */
+            if (moved && RI->anim == 0 && RI->target == 1)
+                g_text_no_prepare = 1;
             text_render_region(R->id, r, -1);
+            g_text_no_prepare = 0;
         }
     }
 }
@@ -2886,9 +3090,10 @@ void text_update(void) {
    allocation qui en dépendrait ne serait pas calculable au build. */
 
 /* Injecté par le code généré au démarrage — cf. `g_actor_x_fn`. */
-void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int)) {
+void text_obj_set_actor_fn(int (*fx)(int), int (*fy)(int), int (*fp)(int)) {
     g_actor_x_fn = fx;
     g_actor_y_fn = fy;
+    g_actor_prio_fn = fp;
 }
 
 static int g_obj_oam_base  = -1;   /* 1er slot OAM réservé au texte */
@@ -2943,10 +3148,16 @@ static void text_render_obj(const unsigned short *s, int slen,
     g_blit_ox    = ox >> 3;
     g_blit_oy    = oy >> 3;
 
-    /* Vider la bande : la composition ne pose que de l'encre. */
-    for (int t = 0; t < tiles_row * rows; t++) {
-        volatile u32 *p = (volatile u32*)OBJ_VRAM + (tile0 + t) * 8;
-        for (int k = 0; k < 8; k++) p[k] = 0;
+    /* Vider la bande : la composition ne pose que de l'encre. Sauté sur un simple
+       DÉPLACEMENT (`g_text_no_prepare`) : le contenu ne change pas, les tuiles de
+       la bande sont composées à l'IDENTIQUE (la position au pixel est portée par
+       l'OAM, pas par les tuiles), et re-vider puis reposer les mêmes glyphes hors
+       VBlank faisait clignoter le texte à chaque frame où l'ancre bouge. */
+    if (!g_text_no_prepare) {
+        for (int t = 0; t < tiles_row * rows; t++) {
+            volatile u32 *p = (volatile u32*)OBJ_VRAM + (tile0 + t) * 8;
+            for (int k = 0; k < 8; k++) p[k] = 0;
+        }
     }
 
     /* Les glyphes réservés sont CAPTURÉS plutôt que dessinés dans la bande :
@@ -2975,7 +3186,7 @@ static void text_render_obj(const unsigned short *s, int slen,
             shadow_oam[slot].attr0 = sy | (0 << 10) | (text_strip_shape(cw) << 14);
             shadow_oam[slot].attr1 = sx | (text_strip_size(cw) << 14);
             shadow_oam[slot].attr2 = ((tile0 + r * tiles_row + tcol) & 0x3FF)
-                                   | (R->priority << 10) | (g_pal_bank_obj << 12);
+                                   | (ui_obj_prio(R->priority, R->anchor, R->actor) << 10) | (g_pal_bank_obj << 12);
             slot++; strip_slots++;
             tcol += cw >> 3;
         }
@@ -3029,7 +3240,7 @@ static void text_render_obj(const unsigned short *s, int slen,
         shadow_oam[slot].attr0 = (by & 0xFF) | (0 << 14);      /* carré */
         shadow_oam[slot].attr1 = (bx & 0x1FF) | (1 << 14);     /* taille 1 = 16×16 */
         shadow_oam[slot].attr2 = (t & 0x3FF)
-                               | (R->priority << 10) | (g_pal_bank_obj << 12);
+                               | (ui_obj_prio(R->priority, R->anchor, R->actor) << 10) | (g_pal_bank_obj << 12);
         slot++;
     }
 
@@ -3069,7 +3280,7 @@ static void text_hide_region_visual(int r) {
        couvre une zone plus étroite qu'un glyphe, qui déborde à l'affichage
        (cf. text_scan_line) et doit donc s'effacer sur au moins une case. */
     /* Fond de la zone le temps de l'effacement : sans lui, `text_clear`
-       remettrait du transparent au lieu de la couleur du panel — même garde
+       remettrait du transparent au lieu de la couleur du conteneur — même garde
        que `text_render_region_cp`. */
     int ox, oy;
     text_region_origin(R, &ox, &oy);
@@ -3126,7 +3337,7 @@ void ui_element_show(int idx, int on) {
 }
 
 /* ── Listes : la navigation, et rien d'autre (ROADMAP v0.22) ──────
-   `l` est un index de `g_ui_lists`, résolu au build depuis le nom du panneau.
+   `l` est un index de `g_ui_lists`, résolu au build depuis le nom du conteneur.
    Hors bornes, tout rend 0 et n'écrit rien : `l` peut venir d'une variable. */
 static int ui_list_ok(int l) { return l >= 0 && l < g_ui_list_count; }
 
@@ -3146,17 +3357,32 @@ void ui_list_set_count(int l, int n) {
 
 int ui_list_index(int l) { return ui_list_ok(l) ? g_ui_list_index[l] : 0; }
 
+/* Colonnes de la grille, jamais 0 — une liste simple en a une. */
+static int ui_list_cols(int l) {
+    int c = g_ui_lists[l].columns;
+    return c < 1 ? 1 : c;
+}
+
 /* Repose la fenêtre pour que l'item courant y soit — la seule chose que le
    défilement fait, et il la fait À LA LIGNE : le texte reste sur la grille de
-   tuiles, et rien n'est redessiné qui n'ait changé. */
+   tuiles, et rien n'est redessiné qui n'ait changé.
+
+   Dans une grille, une LIGNE vaut `columns` items, et la fenêtre s'aligne sur
+   elle : faire défiler d'un item décalerait les colonnes d'un cran à chaque pas,
+   et la grille dessinée ne serait plus celle que l'auteur a posée. Avec une
+   seule colonne, c'est exactement le calcul d'avant. */
 static void ui_list_reveal(int l) {
-    int rows = g_ui_lists[l].rows;
-    if (rows < 1) rows = 1;
-    if (g_ui_list_index[l] < g_ui_list_first[l])
-        g_ui_list_first[l] = g_ui_list_index[l];
-    if (g_ui_list_index[l] > g_ui_list_first[l] + rows - 1)
-        g_ui_list_first[l] = g_ui_list_index[l] - rows + 1;
-    if (g_ui_list_first[l] < 1) g_ui_list_first[l] = 1;
+    int cells = g_ui_lists[l].rows;
+    if (cells < 1) cells = 1;
+    int cols = ui_list_cols(l);
+    int lines = cells / cols;
+    if (lines < 1) lines = 1;
+    int line = (g_ui_list_index[l] - 1) / cols;
+    int first = (g_ui_list_first[l] - 1) / cols;
+    if (line < first) first = line;
+    if (line > first + lines - 1) first = line - lines + 1;
+    if (first < 0) first = 0;
+    g_ui_list_first[l] = first * cols + 1;
 }
 
 void ui_list_set_index(int l, int i) {
@@ -3179,47 +3405,192 @@ int ui_list_row(int l, int r) {
     return g_ui_list_rows[g_ui_lists[l].row0 + r - 1];
 }
 
+int ui_list_active(int l) { return ui_list_ok(l) ? g_ui_list_active[l] : 0; }
+
+void ui_list_set_active(int l, int on) {
+    if (!ui_list_ok(l)) return;
+    g_ui_list_active[l] = on ? 1 : 0;
+    /* Rien d'autre à faire : la liste garde son index, son curseur et le style
+       de sa rangée. Rendre la main, ce n'est pas fermer le menu — c'est le
+       laisser à l'écran pendant qu'un autre le recouvre. */
+}
+
+/* Retient ce qu'une rangée affiche, pour pouvoir la redessiner au changement de
+   style. Balayage et non table inverse : les rangées d'un projet se comptent en
+   dizaines, et c'est appelé quand un script écrit du texte, pas à chaque frame. */
+static void ui_list_note_draw(int r, int id) {
+    if (r < 0) return;
+    for (int l = 0; l < g_ui_list_count; l++) {
+        int row0 = g_ui_lists[l].row0;
+        for (int k = 0; k < (int)g_ui_lists[l].rows; k++)
+            if (g_ui_list_rows[row0 + k] == (short)r)
+                g_ui_list_row_text[row0 + k] = (short)id;
+    }
+}
+
+/* Cette liste restyle-t-elle sa rangée choisie ? Les deux réglages à zéro
+   veulent dire « la zone garde le sien », et la liste ne redessine alors rien —
+   un menu qui marque sa sélection au curseur seul ne paie pas ce chemin. */
+static int ui_list_restyles(int l) {
+    return g_ui_lists[l].selected_color || g_ui_lists[l].selected_highlight;
+}
+
+/* Pose la surcharge de style de CETTE liste. Un réglage à 0 veut dire « la zone
+   garde le sien » — ce n'est donc pas 0 qu'on pousse, c'est -1, sans quoi
+   « aucune couleur imposée » deviendrait « impose l'encre d'origine » et
+   écraserait la couleur que l'auteur a posée sur la zone. */
+static void ui_list_push_style(int l) {
+    g_row_color = g_ui_lists[l].selected_color
+                ? g_ui_lists[l].selected_color : -1;
+    g_row_highlight = g_ui_lists[l].selected_highlight
+                    ? g_ui_lists[l].selected_highlight : -1;
+}
+
+/* Redessine UNE rangée (1 = la première) avec ou sans le style de sélection.
+   Passe par `text_render_region`, le chemin de rendu ordinaire : la surcharge
+   n'ajoute pas un second rendu, elle change deux valeurs le temps de celui-ci. */
+static void ui_list_style_row(int l, int row, int selected) {
+    if (row < 1 || row > (int)g_ui_lists[l].rows) return;
+    int at = g_ui_lists[l].row0 + row - 1;
+    int r = g_ui_list_rows[at];
+    int id = g_ui_list_row_text[at];
+    if (r < 0 || id < 0) return;             /* rangée sans zone, ou rien d'écrit */
+    if (!ui_element_is_visible(g_ui_regions[r].elem)) return;
+    /* Effacer AVANT de reposer, avec le style que la rangée a ENCORE : le
+       surlignement qui s'en va vit dans les tuiles de surface de la zone, et
+       réécrire par-dessus laisserait sa couleur sous les pixels transparents
+       des glyphes. La rangée qu'on quitte porte encore celui de la sélection,
+       celle qu'on rejoint porte encore le sien. */
+    if (!selected) ui_list_push_style(l);
+    text_hide_region_visual(r);
+    if (selected) ui_list_push_style(l);
+    else { g_row_color = -1; g_row_highlight = -1; }
+    text_render_region(id, r, -1);
+    g_row_color = -1;
+    g_row_highlight = -1;
+}
+
+/* La rangée AFFICHÉE qui porte l'item courant (1 = la première), 0 si la liste
+   est vide. C'est l'index MOINS le premier visible : le défilement déplace la
+   fenêtre, pas la sélection dans la fenêtre. */
+static int ui_list_shown_row(int l) {
+    int n = g_ui_list_total[l];
+    if (n <= 0) return 0;
+    int row = g_ui_list_index[l] - g_ui_list_first[l] + 1;
+    if (row < 1) row = 1;
+    if (row > (int)g_ui_lists[l].rows) row = g_ui_lists[l].rows;
+    return row;
+}
+
+/* Rend l'ancienne rangée à son style et marque la nouvelle. Appelé une fois par
+   frame : le défilement change la rangée affichée sans que l'index bouge. */
+static void ui_list_sync_style(int l) {
+    if (!ui_list_restyles(l)) return;
+    int row = ui_list_shown_row(l);
+    if (row == g_ui_list_shown[l]) return;
+    if (g_ui_list_shown[l] > 0) ui_list_style_row(l, g_ui_list_shown[l], 0);
+    g_ui_list_shown[l] = row;
+    if (row > 0) ui_list_style_row(l, row, 1);
+}
+
+/* Rapproche `v` de `target` d'au plus `step` — le glissement du curseur, sans
+   dépassement. */
+static int ui_list_approach(int v, int target, int step) {
+    if (v < target) { v += step; if (v > target) v = target; }
+    else if (v > target) { v -= step; if (v < target) v = target; }
+    return v;
+}
+
+/* Pose le curseur sur la rangée choisie. Un DÉCALAGE relatif à la position
+   authorée (cf. `UIListInfo.cursor`) : l'auteur place son curseur en face de la
+   première rangée, et la liste le déplace de ce qui sépare cette rangée de la
+   rangée courante. Appelé même pour une liste inactive — rendre la main ne
+   déplace pas le curseur. */
+static void ui_list_cursor_follow(int l) {
+    int img = g_ui_lists[l].cursor;
+    if (img < 0) return;
+    int row = ui_list_shown_row(l);
+    if (row < 1) return;
+    int row0 = g_ui_lists[l].row0;
+    int r_first = g_ui_list_rows[row0];
+    int r_here  = g_ui_list_rows[row0 + row - 1];
+    if (r_first < 0 || r_here < 0) return;
+    int tx = g_ui_regions[r_here].x - g_ui_regions[r_first].x;
+    int ty = g_ui_regions[r_here].y - g_ui_regions[r_first].y;
+    if (!g_ui_lists[l].cursor_mode) { ui_image_move(img, tx, ty); return; }
+    int sp = g_ui_lists[l].cursor_speed;
+    if (sp < 1) sp = 1;
+    ui_image_move(img, ui_list_approach(ui_image_dx(img), tx, sp),
+                       ui_list_approach(ui_image_dy(img), ty, sp));
+}
+
 /* Un pas dans la liste, répétition comprise. Le compteur est NÉGATIF pendant le
    délai initial et positif ensuite : un seul entier porte les deux cadences,
-   sans drapeau à côté qui pourrait mentir sur l'état. */
-static void ui_list_step(int l, int dir) {
+   sans drapeau à côté qui pourrait mentir sur l'état.
+
+   `cross` = le pas qui CHANGE DE LIGNE, donc de `columns` items. Il n'existe
+   que si la grille a plus d'une ligne : sans cette garde, une liste verticale
+   (une colonne) répondrait aussi à gauche/droite — qui valent ±1 quand il n'y a
+   qu'une colonne — et la croix entière piloterait un menu qui n'a qu'un axe,
+   privant le jeu de l'autre.
+
+   Le rebouclage se fait sur l'index PLAT : les items sont une suite, la grille
+   n'est que la façon dont elle est posée à l'écran. */
+static void ui_list_step(int l, int dir, int cross) {
     int n = g_ui_list_total[l];
     if (n <= 0) return;
-    int i = g_ui_list_index[l] + dir;
-    if (i < 1)  i = g_ui_lists[l].wrap ? n : 1;
-    if (i > n)  i = g_ui_lists[l].wrap ? 1 : n;
+    int cols = ui_list_cols(l);
+    if (cross && (cols < 2 || n <= cols)) return;
+    int i = g_ui_list_index[l] + dir * (cross ? cols : 1);
+    if (i < 1 || i > n) {
+        if (!g_ui_lists[l].wrap) i = (i < 1) ? 1 : n;
+        else i = ((i - 1) % n + n) % n + 1;
+    }
     g_ui_list_index[l] = i;
     ui_list_reveal(l);
 }
 
 void ui_list_tick(void) {
     for (int l = 0; l < g_ui_list_count; l++) {
-        if (g_ui_list_total[l] <= 0) { g_ui_list_timer[l] = 0; continue; }
-        /* Les constantes de libgba, et non les `BTN_*` du script : ce sont
-           les MÊMES bits du registre de touches, mais `actor_types_static.h`
-           n'est pas visible d'ici — le moteur n'est inclus que par main.c. */
-        int neg, pos;
-        if (g_ui_lists[l].axis) { neg = KEY_LEFT; pos = KEY_RIGHT; }
-        else                    { neg = KEY_UP;   pos = KEY_DOWN;  }
-        int dir = ((_g_keys_held & (u32)pos) ? 1 : 0)
-                - ((_g_keys_held & (u32)neg) ? 1 : 0);
-        if (dir == 0) { g_ui_list_timer[l] = 0; continue; }
-        if (g_ui_list_timer[l] == 0) {
-            /* Premier appui : on bouge tout de suite, puis on attend le délai. */
-            ui_list_step(l, dir);
-            g_ui_list_timer[l] = -(int)g_ui_lists[l].rep_delay - 1;
-            continue;
+        /* Inactive ou vide : plus de navigation, mais le curseur et le style
+           restent posés — c'est la sélection qu'on coupe, pas l'affichage. */
+        if (g_ui_list_total[l] <= 0 || !g_ui_list_active[l]) {
+            g_ui_list_timer[l] = 0;
+        } else {
+            /* Les constantes de libgba, et non les `BTN_*` du script : ce sont
+               les MÊMES bits du registre de touches, mais `actor_types_static.h`
+               n'est pas visible d'ici — le moteur n'est inclus que par main.c. */
+            int h = ((_g_keys_held & (u32)KEY_RIGHT) ? 1 : 0)
+                  - ((_g_keys_held & (u32)KEY_LEFT)  ? 1 : 0);
+            int v = ((_g_keys_held & (u32)KEY_DOWN)  ? 1 : 0)
+                  - ((_g_keys_held & (u32)KEY_UP)    ? 1 : 0);
+            /* L'axe MAJEUR est celui où les index se suivent ; l'autre change de
+               ligne. Il a la priorité quand les deux sont tenus : c'est celui
+               que l'auteur a choisi comme sens de lecture de sa liste. */
+            int dir, cross;
+            if (g_ui_lists[l].major) { dir = h; cross = v; }
+            else                     { dir = v; cross = h; }
+            int step = dir ? dir : cross;
+            int is_cross = dir ? 0 : 1;
+            if (step == 0) {
+                g_ui_list_timer[l] = 0;
+            } else if (g_ui_list_timer[l] == 0) {
+                /* Premier appui : on bouge tout de suite, puis le délai. */
+                ui_list_step(l, step, is_cross);
+                g_ui_list_timer[l] = -(int)g_ui_lists[l].rep_delay - 1;
+            } else if (g_ui_list_timer[l] < 0) {
+                g_ui_list_timer[l]++;
+                if (g_ui_list_timer[l] == 0) g_ui_list_timer[l] = 1;  /* délai écoulé */
+            } else {
+                g_ui_list_timer[l]++;
+                if (g_ui_list_timer[l] > (int)g_ui_lists[l].rep_rate) {
+                    ui_list_step(l, step, is_cross);
+                    g_ui_list_timer[l] = 1;
+                }
+            }
         }
-        if (g_ui_list_timer[l] < 0) {
-            g_ui_list_timer[l]++;
-            if (g_ui_list_timer[l] == 0) g_ui_list_timer[l] = 1;   /* délai écoulé */
-            continue;
-        }
-        g_ui_list_timer[l]++;
-        if (g_ui_list_timer[l] > (int)g_ui_lists[l].rep_rate) {
-            ui_list_step(l, dir);
-            g_ui_list_timer[l] = 1;
-        }
+        ui_list_sync_style(l);
+        ui_list_cursor_follow(l);
     }
 }
 
@@ -3275,6 +3646,11 @@ typedef struct UIImageState {
        via `I->elem` (cf. `ui_element_is_visible`), une seule fois pour les
        trois types d'élément — ce champ dupliquait ce que `self:hide()`
        écrit maintenant ailleurs. */
+    /* Déplacement demandé par le script (`ui.image_move`), RELATIF à la
+       position authorée — jamais à sa place : `I->x/y` reste la valeur que
+       l'auteur a posée dans le canvas, et remettre (0,0) rend l'image à sa
+       mise en page sans que le script ait eu à la mémoriser. */
+    short         dx, dy;
     short         bg_base;  /* cible BG : 1re tuile dans le charblock d'UI */
     short         sx, sy;   /* dernière origine écran dessinée (cible BG) */
     unsigned char drawn;    /* 1 = des tuiles sont posées à (sx, sy) */
@@ -3318,6 +3694,10 @@ void ui_images_reset(void) {
         g_ui_img[i].bg_base = 0;
         g_ui_img[i].bank = 0;
         g_ui_img[i].sx = g_ui_img[i].sy = 0;
+        /* Le décalage du script meurt avec la scène : sans ça, revenir dans un
+           menu retrouverait le curseur là où on l'avait laissé, alors que tout
+           le reste de la scène repart de sa mise en page. */
+        g_ui_img[i].dx = g_ui_img[i].dy = 0;
         g_ui_img[i].drawn = 0;
         /* 255 et non `fs` : « aucune frame posée ». Sans ça, revenir dans une
            scène retrouverait `last == frame` et sauterait le premier dessin. */
@@ -3346,14 +3726,34 @@ void ui_image_play(int img, int on) {
     if (img >= 0 && img < UI_IMAGE_MAX) g_ui_img[img].playing = on ? 1 : 0;
 }
 
+/* Bornées sur `UI_IMAGE_MAX` comme leurs voisines : au-delà du plafond, une
+   image n'a pas d'état RAM du tout — elle ne s'anime pas et ne se déplace pas,
+   dégradation visible plutôt qu'écriture hors tableau. */
+void ui_image_move(int img, int dx, int dy) {
+    if (img < 0 || img >= UI_IMAGE_MAX) return;
+    g_ui_img[img].dx = (short)dx;
+    g_ui_img[img].dy = (short)dy;
+}
+int ui_image_dx(int img) {
+    return (img >= 0 && img < UI_IMAGE_MAX) ? g_ui_img[img].dx : 0;
+}
+int ui_image_dy(int img) {
+    return (img >= 0 && img < UI_IMAGE_MAX) ? g_ui_img[img].dy : 0;
+}
+
 int ui_image_state(int img) {
     return (img >= 0 && img < UI_IMAGE_MAX) ? g_ui_img[img].state : 0;
 }
 
 /* Origine ÉCRAN — même règle que `text_region_origin`, et pour la même raison :
    monde = décalé de la caméra, acteur = suivi au pixel. */
-static void ui_image_origin(const UIImageInfo *I, int *ox, int *oy) {
-    *ox = I->x; *oy = I->y;
+static void ui_image_origin(const UIImageInfo *I, const UIImageState *S,
+                            int *ox, int *oy) {
+    /* Le décalage du script s'ajoute à la position AUTHORÉE, avant l'ancrage :
+       il est dans le même repère qu'elle — relatif au parent —, donc une image
+       ancrée au monde ou sur un acteur se déplace dans son propre cadre sans
+       que le script ait à connaître la caméra ni l'acteur. */
+    *ox = I->x + S->dx; *oy = I->y + S->dy;
     if (I->anchor == 1) { *ox -= cam_x; *oy -= cam_y; }
     else if (I->anchor == 2 && I->actor >= 0 && g_actor_x_fn) {
         *ox += g_actor_x_fn(I->actor);
@@ -3427,14 +3827,14 @@ void ui_image_update(void) {
         }
 
         /* Visibilité EFFECTIVE (soi-même ET tous les ancêtres) — consultée
-           CHAQUE frame, donc une image dont le panel parent bascule suit
+           CHAQUE frame, donc une image dont le conteneur parent bascule suit
            sans qu'aucune propagation n'ait eu à s'écrire au moment du
            `self:hide()`. Au plus une frame de latence, comme `ui_image_
            play` avant elle. */
         int visible = ui_element_is_visible(I->elem);
 
         int sx, sy;
-        ui_image_origin(I, &sx, &sy);
+        ui_image_origin(I, S, &sx, &sy);
 
         if (I->target == 0) {
             /* Cible BG : n'écrire que si quelque chose a CHANGÉ. Une icône de
@@ -3459,7 +3859,7 @@ void ui_image_update(void) {
                scene_init réserve à l'interface — la même que la bande de texte,
                dont l'allocation chaîne les deux.
 
-               Tous les slots lisent la MÊME frame : le fond d'un panneau est un
+               Tous les slots lisent la MÊME frame : le fond d'un conteneur est un
                motif répété, pas N animations indépendantes. Une case décalée
                d'une frame donnerait une vague, ce que personne n'a demandé. */
             if (g_obj_oam_base < 0) continue;
@@ -3477,7 +3877,7 @@ void ui_image_update(void) {
                     shadow_oam[slot].attr1 = (u16)((px & 0x1FF)
                                            | (ui_image_size(I->w, I->h) << 14));
                     shadow_oam[slot].attr2 = (u16)((ti & 0x3FF)
-                                           | ((I->priority & 3) << 10)
+                                           | (ui_obj_prio(I->priority, I->anchor, I->actor) << 10)
                                            | ((S->bank & 15) << 12));
                 }
             }

@@ -1,7 +1,15 @@
 """UILayout — géométrie AUTHORÉE des éléments d'interface d'une scène.
 
-**Trois types, pas quatre.** Un `UIText` (là où du texte se pose), un `UIPanel`
-(le conteneur, seul à dessiner un fond) et un `UIImage` (un sprite à état).
+**Quatre types.** Un `UIText` (là où du texte se pose), un `UIContainer` (le
+conteneur), un `UIList` (un conteneur qui se PARCOURT) et un `UIImage` (un sprite
+à état). Les deux conteneurs dessinent un fond — c'est une CAPACITÉ (`FillMixin`,
+`can_fill`), pas un type.
+
+`UIList` a d'abord été un drapeau du conteneur (`is_list`, v0.22). Le
+motif tenait — « le moteur prend la NAVIGATION, pas la mise en page » — mais pas
+le rangement : le C avait déjà `UIListInfo` et ses sept fonctions, l'API disait
+déjà `list.*`, et `to_dict` écrivait cinq clés selon un booléen. Un objet qui n'a
+pas la même forme selon un champ est un type qui s'ignore. Cf. `UIList`.
 
 Le type « zone de texte » a existé à côté de `UIText` et a été RETIRÉ : les deux
 portaient la même géométrie, le même ancrage, la même allocation OBJ et la même
@@ -27,7 +35,10 @@ authoré est posé une fois à l'init ; tout ce qui CHANGE reste au Lua
 de devenir un éditeur de dialogue par accident, refus tenu depuis ROADMAP
 v0.3.2.
 
-**L'ancrage n'est pas un champ libre : il contraint la mémoire.**
+**L'ancrage et la cible appartiennent au nœud, pas à l'élément (v0.25).** Un nœud
+`Interface` (`UILayout`) porte UN `anchor` + UN `target` ; tout son sous-arbre en
+hérite. Une scène qui a besoin de deux chemins matériels pose deux nœuds. Ces
+deux réglages ne sont pas libres : ils contraignent la mémoire.
 
   écran  — fixe sur 240×160. Cible BG. C'est ce que `Scene.text_bg` est déjà.
   monde  — défile avec la caméra. Cible BG, mais le cas le plus dur : la région
@@ -35,9 +46,9 @@ v0.3.2.
   actor  — suit un acteur à l'offset près. **Cible OBJ, sans alternative** : un
            actor bouge au pixel, la grille BG avance par 8, une bulle en texte
            BG sauterait donc par crans de 8 px. Ce n'est pas une préférence de
-           qualité, c'est une impossibilité — d'où `forced_target()`, et
-           l'inspecteur affiche la cible dérivée au lieu de laisser composer une
-           combinaison qui ne peut pas exister.
+           qualité, c'est une impossibilité — d'où `forced_target()`, calculé une
+           fois sur le nœud, et l'inspecteur affiche la cible imposée au lieu de
+           laisser composer une combinaison qui ne peut pas exister.
 
 **Tout est stocké en PIXELS**, une seule unité, comme `WindowSlot`. Le BG exige
 un alignement à la tuile : c'est `snap_to_tile()` qui le pose, pas le format de
@@ -63,7 +74,7 @@ TILE = 8
 
 # ── Ancrages ──────────────────────────────────────────────────────
 ANCHOR_SCREEN = "screen"   # fixe sur l'écran (HUD, boîte de dialogue basse)
-ANCHOR_WORLD  = "world"    # défile avec la caméra (panneau posé dans le décor)
+ANCHOR_WORLD  = "world"    # défile avec la caméra (conteneur posé dans le décor)
 ANCHOR_ACTOR  = "actor"    # suit un acteur (bulle) — impose la cible OBJ
 
 ANCHORS = (ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR)
@@ -84,18 +95,33 @@ ALIGNS = ("left", "center", "right")
 # Une mise en page contient PLUSIEURS types dans une seule liste ordonnée
 # (`UILayout.elements`) — l'ordre fixe l'empilement (z-order) et l'ordre des
 # frères dans l'arbre. Chaque type porte un `kind` (sérialisé) et une capacité
-# `can_contain` : seul un conteneur accueille des enfants, une feuille (texte,
-# image) jamais. Le « root » n'est pas un type : c'est le RÔLE d'un élément de
-# premier niveau, qui porte alors l'ancrage de son sous-arbre.
-KIND_PANEL  = "panel"    # conteneur qui peut dessiner un FOND ; racine = ancrage
+# `can_contain` : CE QUE le type accueille, en tuple de kinds — vide pour une
+# feuille (texte, image), tous les kinds pour un conteneur, le seul `KIND_TEXT`
+# pour une liste dont les enfants SONT les rangées. Un booléen y a suffi tant
+# qu'un seul type accueillait n'importe quoi ; il laissait déposer une image dans
+# une liste, que le build ignorait ensuite en silence. Le « root » n'est pas un
+# type : c'est le RÔLE d'un élément de premier niveau, qui porte alors l'ancrage
+# de son sous-arbre.
+KIND_CONTAINER  = "container"  # groupe ; racine = ancrage
+KIND_LIST   = "list"     # conteneur qui se PARCOURT — ses enfants sont ses rangées
 KIND_TEXT   = "text"     # texte (authoré ET/OU écrit par un script) — feuille
 KIND_IMAGE  = "image"    # sprite à état posé sur l'interface — feuille
 
-# `kind` HÉRITÉ de l'ancienne « zone de texte », gardé pour la seule relecture
-# des fichiers d'avant la fusion : il se désérialise en `UIText` (cf.
-# `_ELEMENT_FROM_DICT`) et n'est jamais réécrit. Aucun code neuf ne doit le
-# tester — un élément lu depuis un vieux JSON ressort avec `kind == KIND_TEXT`.
+# Tous les kinds ÉCRITS, dans l'ordre où l'auteur les rencontre. `KIND_REGION`
+# n'en est pas : il ne se lit que dans les anciens fichiers (cf. juste en dessous).
+KINDS = (KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE)
+
+# `kind`s HÉRITÉS, gardés pour la seule relecture des fichiers anciens : ils se
+# désérialisent en type courant (cf. `_ELEMENT_FROM_DICT`) et ne sont jamais
+# réécrits. Aucun code neuf ne doit les tester.
+#   region → `UIText` : la « zone de texte » d'avant la fusion, qui ne différait
+#            d'un texte que par un `text_key` vide.
+#   panel  → `UIContainer` : le conteneur s'est appelé « panel » jusqu'au
+#            2026-09-02. Un seul mot par concept — et celui-là entrait en
+#            collision avec les conteneurs de l'ÉDITEUR (`AssetsFinderPanel`,
+#            `sound_panel`), qui sont une autre chose et gardent le mot.
 KIND_REGION = "region"
+KIND_PANEL_LEGACY = "panel"
 
 # Types qui occupent une entrée de `g_ui_regions`, c'est-à-dire qui ont une
 # géométrie où du TEXTE se pose. Un seul depuis la fusion — le tuple reste
@@ -104,8 +130,9 @@ KIND_REGION = "region"
 KIND_SLOTS = (KIND_TEXT,)
 
 # ── Fonds de conteneur ────────────────────────────────────────────
-# Le fond d'un `UIPanel` est un champ polymorphe (« à quoi ressemble la zone »),
-# séparé de la géométrie (« où »). Un panel sans fond est un groupe invisible.
+# Le fond d'un CONTENEUR (`UIContainer`, `UIList` — cf. `FillMixin`) est un champ
+# polymorphe (« à quoi ressemble la zone »), séparé de la géométrie (« où »). Un
+# conteneur sans fond est un groupe invisible.
 #   couleur     : une ENTRÉE DE PALETTE (nom + index), pas du RGB libre — c'est
 #                 le hardware qui l'impose (cf. project_palette_system_design).
 #   nine-slice  : un cadre tuilé (coins fixes, bords/centre répétés) — quasi
@@ -144,6 +171,40 @@ _FILL_TARGETS = {
 def fill_allowed(fill_kind: str, target: str) -> bool:
     """Ce mode de fond est-il compatible avec cette cible de rendu ?"""
     return target in _FILL_TARGETS.get(fill_kind, ())
+
+
+def can_fill(el) -> bool:
+    """Cet élément peut-il dessiner un FOND ? (les conteneurs : conteneur, liste)
+
+    La question que posent l'allocateur de palettes, le validateur et les
+    émetteurs de fond. Ils la posaient sous la forme `kind == KIND_CONTAINER`, ce qui
+    demandait le TYPE pour obtenir la CAPACITÉ — juste tant qu'un seul type en
+    portait une, et faux le jour où la liste a gagné un fond. Cf. `FillMixin`."""
+    return bool(getattr(el, "can_fill", False))
+
+
+def region_fill_container(lay, el):
+    """Le conteneur dont CETTE zone de texte prend le fond, ou None.
+
+    Le fond le plus PROCHE gagne, d'où l'arrêt au premier ancêtre qui en porte
+    un : un conteneur Color posé entre la zone et un nine-slice plus lointain
+    masque ce dernier de ses tuiles pleines, et recomposer le cadre sous le
+    texte montrerait un cadre que rien n'affiche.
+
+    Un seul endroit pour cette règle — le codegen l'émet (`scene_region_colors`
+    pour un aplat, `scene_region_backdrops` pour une carte), la banque de
+    palettes la lit (`palette_alloc`) et l'inspecteur la montre : c'est AUSSI la
+    banque d'encre qu'un texte imbriqué PREND (RegionFill.bank au runtime), là où
+    un texte libre lit celle de sa police. La laisser réécrire ailleurs, c'est se
+    garantir qu'un jour une zone ait deux fonds, ou aucun."""
+    for anc_name in lay.ancestors(el.name):
+        anc = lay.get(anc_name)
+        if not can_fill(anc):
+            continue
+        if getattr(anc, "fill_kind", FILL_NONE) == FILL_NONE:
+            continue
+        return anc
+    return None
 
 # Modes vidéo bitmap : la VRAM BG est un framebuffer, il n'y a plus de tilemap
 # où écrire des glyphes. Le texte BG y est impossible — le texte sprite n'est
@@ -200,8 +261,27 @@ class RectGeometryMixin:
         return tw * th
 
 
-# Couleur d'un slot de texte : un INDEX dans la banque d'UI de la scène
-# (`Scene.ui_pal_bank`), pas un RGB — le matériel n'offre que des index.
+# Priorité OBJ HÉRITÉE. Une valeur 0-3 est explicite (0 devant, 3 derrière) ;
+# -1 dit « hérite de l'acteur ancré », résolu EN DIRECT par le runtime
+# (`ui_obj_prio`) au moment de poser le sprite — un libellé flottant vit donc à
+# la profondeur de sa cible, et la suit si un script change `self.priority`. Le
+# codegen émet -1 en 255 (sentinelle sur un `unsigned char`), 0-3 tels quels.
+PRIORITY_INHERIT = -1
+
+
+def _clamp_priority(v) -> int:
+    """Ramène une priorité dans {-1, 0, 1, 2, 3} — hors plage = -1 (hérite)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return PRIORITY_INHERIT
+    return n if -1 <= n <= 3 else PRIORITY_INHERIT
+
+
+# Couleur d'un slot de texte : un INDEX dans la banque d'encre de la zone, pas
+# un RGB — le matériel n'offre que des index. La banque est celle de la police
+# (usage libre) ou celle du CONTENEUR quand le texte y est imbriqué : l'index
+# désigne une couleur de cette banque-là.
 #
 # 0 = encre d'ORIGINE : le glyphe garde les teintes de sa police, seul moyen de
 # ne pas perdre une police à plusieurs encres. 1..15 aplatit toute l'encre sur
@@ -258,7 +338,7 @@ class UIText(RectGeometryMixin):
     débordement, lui, est signalé par le validateur.
     """
     kind = KIND_TEXT         # attribut de classe (pas un champ dataclass)
-    can_contain = False      # feuille : n'accueille jamais d'enfants
+    can_contain = ()         # feuille : n'accueille jamais d'enfants
     name:   str = "text"
     # Nom de l'élément PARENT dans la même mise en page ("" = racine). L'arbre
     # d'UI se DÉRIVE de ces refs, il ne se stocke pas : la liste `elements` reste
@@ -272,12 +352,12 @@ class UIText(RectGeometryMixin):
     # EFFECTIVE (celle qui compte pour le rendu) se calcule à la lecture, elle
     # ne se stocke jamais ici : cf. `UILayout.is_visible`. Un script bascule
     # cette valeur au runtime via `ui.show(nom, on)`, même mécanisme pour les
-    # trois types (cf. `UIPanel.visible`, `UIImage.visible`).
+    # trois types (cf. `UIContainer.visible`, `UIImage.visible`).
     visible: bool = True
-    anchor: str = ANCHOR_SCREEN
-    anchor_actor: str = ""   # nom de l'Actor suivi — seulement si anchor == actor
-    # Géométrie en PIXELS. Pour un ancrage actor, x/y sont un OFFSET par rapport
-    # à l'origine de l'acteur (donc signés) ; sinon une position absolue.
+    # Géométrie en PIXELS, dans le repère du parent (l'écran, ou l'offset de
+    # l'acteur, pour un élément racine — cf. `UILayout.absolute_origin`). Ancrage
+    # et cible ne vivent PLUS sur l'élément : ils appartiennent au nœud
+    # `Interface` (`UILayout`), qui les porte pour tout son sous-arbre (v0.25).
     x: int = 0
     y: int = 0
     w: int = 96
@@ -289,9 +369,6 @@ class UIText(RectGeometryMixin):
     # l'empreinte VRAM de la scène calculable (cf. font_emit.scene_text_tiles).
     font_name: str = ""
     align: str = "left"
-    # "" = cible dérivée de l'ancrage. Ne porte une valeur que lorsque l'auteur
-    # a fait un choix RÉEL — donc jamais quand `forced_target()` tranche.
-    target: str = ""
     # Texte de MESURE, éditeur seulement, jamais compilé : ce que le canvas pose
     # dans le rectangle quand `text_key` est vide, pour voir le débordement à la
     # conception. Le mesureur existe déjà (FontScreenPreview rejoue text_layout
@@ -309,13 +386,19 @@ class UIText(RectGeometryMixin):
     # Déclaré ici et nulle part ailleurs : le fond d'un conteneur ancêtre ne
     # teinte PAS ses textes enfants. Les deux se ressemblaient à l'écran et
     # n'avaient ni le même propriétaire ni les mêmes conditions d'émission —
-    # d'où un panneau qui ne colorait qu'une partie de sa zone, la boîte de son
+    # d'où un conteneur qui ne colorait qu'une partie de sa zone, la boîte de son
     # texte, quand sa palette n'était pas active dans la scène.
     #
     # Corollaire assumé : un texte SANS surlignement perce le fond de son
     # conteneur, le chemin tilemap remplaçant la cellule par une tuile de glyphe
     # dont l'index 0 est transparent. C'est le matériel, montré tel quel.
     highlight_color: int = HIGHLIGHT_NONE
+    # Priorité OBJ quand la zone est rendue en sprites (nœud ancré acteur, ou
+    # scène bitmap) — -1 = PRIORITY_INHERIT (hérite de l'acteur, le défaut),
+    # 0-3 = surcharge. Sans effet en cible BG, où la profondeur est celle du
+    # layer d'UI. Même champ que `UIImage.priority` / `FillMixin.priority` :
+    # chaque élément d'UI porte SA priorité, éditée dans la carte Geometry.
+    priority: int = PRIORITY_INHERIT
     # Les glyphes ANIMÉS — les caractères qui sortent de la bande pour recevoir
     # un effet (`[wave]`, `[shake]`) — ne sont PAS un champ.
     #
@@ -334,31 +417,22 @@ class UIText(RectGeometryMixin):
     # effet qui dégrade est une perte cosmétique, là où un dépassement d'OAM
     # corromprait les sprites des acteurs.
 
-    # ── Cible ─────────────────────────────────────────────────────
-    def resolved_target(self, render_mode: int = 0) -> str:
-        forced = forced_target(self.anchor, render_mode)
-        if forced:
-            return forced
-        return self.target if self.target in TARGETS else TARGET_BG
-
-    def target_is_locked(self, render_mode: int = 0) -> bool:
-        return forced_target(self.anchor, render_mode) is not None
-
     # ── Géométrie ─────────────────────────────────────────────────
     # snap_to_tile / tile_rect / footprint_tiles viennent de RectGeometryMixin.
+    # La cible (BG/OBJ) n'est plus une question posée à l'élément : elle appartient
+    # au nœud, cf. `UILayout.resolved_target`.
 
     def to_dict(self) -> dict:
         return {
             "kind": KIND_TEXT,
             "name": self.name, "parent": self.parent, "visible": self.visible,
-            "anchor": self.anchor,
             "text_color": self.text_color,
             "highlight_color": self.highlight_color,
-            "anchor_actor": self.anchor_actor,
+            "priority": self.priority,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "text_key": self.text_key,
             "font_name": self.font_name, "align": self.align,
-            "target": self.target, "preview_text": self.preview_text,
+            "preview_text": self.preview_text,
         }
 
     @classmethod
@@ -371,26 +445,26 @@ class UIText(RectGeometryMixin):
         Les défauts de taille suivent le `kind` LU et non la classe : une zone
         d'avant la fusion vaut 240×32 (une boîte basse), un texte 96×16 (une
         ligne de libellé). Prendre un seul défaut redimensionnerait en silence
-        les éléments d'un fichier qui ne portait pas le champ."""
-        anchor = d.get("anchor", ANCHOR_SCREEN)
+        les éléments d'un fichier qui ne portait pas le champ.
+
+        `anchor`/`anchor_actor`/`target` d'un ancien fichier sont IGNORÉS ici :
+        ils ont migré vers le nœud `Interface`, que `UILayout.from_dict` remonte
+        depuis les racines avant de perdre l'info (cf. `_migrate_anchor_target`)."""
         align  = d.get("align", "left")
-        target = d.get("target", "")
         was_region = d.get("kind") == KIND_REGION
         return cls(
             name         = str(d.get("name", "region" if was_region else "text")),
             parent       = str(d.get("parent", "")),
             visible      = bool(d.get("visible", True)),
-            anchor       = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
-            anchor_actor = str(d.get("anchor_actor", "")),
             text_color   = _clamp_color(d.get("text_color", TEXT_COLOR_INK)),
             highlight_color = _clamp_color(d.get("highlight_color", HIGHLIGHT_NONE)),
+            priority     = _clamp_priority(d.get("priority", PRIORITY_INHERIT)),
             x = int(d.get("x", 0)), y = int(d.get("y", 0)),
             w = int(d.get("w", 240 if was_region else 96)),
             h = int(d.get("h", 32 if was_region else 16)),
             text_key     = str(d.get("text_key", "")),
             font_name    = str(d.get("font_name", "")),
             align        = align if align in ALIGNS else "left",
-            target       = target if target in TARGETS else "",
             # `animated_glyphs` d'un ancien fichier est IGNORÉ : la valeur se
             # dérive du texte désormais. La clé disparaît du JSON au prochain
             # enregistrement — « une seule forme ÉCRITE », cf. core/project.py.
@@ -494,25 +568,25 @@ def sprite_grid(el, frame_w: int, frame_h: int) -> tuple[int, int]:
     """(colonnes, rangées) de frames pour couvrir `el`.
 
     Un `UIImage` fait toujours (1, 1) : sa taille EST celle de la frame
-    (`sync_size_from`). Un `UIPanel` à fond sprite, lui, garde son rectangle de
+    (`sync_size_from`). Un `UIContainer` à fond sprite, lui, garde son rectangle de
     conteneur — le fond le PAVE, parce qu'un OBJ ne s'étire pas sans mode
-    affine et qu'un panneau dont la taille serait dictée par son fond ne serait
+    affine et qu'un conteneur dont la taille serait dictée par son fond ne serait
     plus un conteneur. La dernière colonne/rangée déborde plutôt que d'être
     rognée : le matériel ne sait pas couper un sprite, et un fond qui s'arrête
     3 px trop tôt se voit plus qu'un fond qui dépasse sous ses voisins."""
     fw = max(1, int(frame_w or 1))
     fh = max(1, int(frame_h or 1))
-    if getattr(el, "kind", "") != KIND_PANEL:
+    if not can_fill(el):
         return 1, 1
     return (max(1, -(-int(el.w) // fw)), max(1, -(-int(el.h) // fh)))
 
 
 def image_geometry(el, n_frames: int = 1,
                    frame_w: int = 0, frame_h: int = 0) -> dict:
-    """Ce qu'une image (ou un fond sprite de panneau) consomme. `n_frames` =
+    """Ce qu'une image (ou un fond sprite de conteneur) consomme. `n_frames` =
     total des frames du sprite, que seul l'appelant connaît (le modèle ne résout
     pas les noms d'asset) ; `frame_w`/`frame_h` = taille de la frame, à donner
-    pour un panneau dont le rectangle n'est pas celui de la frame.
+    pour un conteneur dont le rectangle n'est pas celui de la frame.
 
     `oam` vaut 0 en cible BG et `cols * rows` en OBJ — mais `tiles` compte
     pareil dans les deux cas : le chemin BG copie les mêmes tuiles dans le
@@ -544,8 +618,8 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
 
     **L'ordre d'allocation EST l'ordre de profondeur.** Un slot OAM bas passe
     devant un slot haut, donc : les bandes de texte d'abord, les images ensuite,
-    les FONDS de panneau en dernier — un fond doit être derrière ce que son
-    panneau contient, et la priorité OBJ seule n'y suffirait pas (elle ne
+    les FONDS de conteneur en dernier — un fond doit être derrière ce que son
+    conteneur contient, et la priorité OBJ seule n'y suffirait pas (elle ne
     départage pas deux OBJ de même priorité). Une seule numérotation continue :
     deux allocations séparées se recouvriraient au premier oubli de chaîner
     leurs bases.
@@ -554,7 +628,7 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
     `animated_by_name` = {nom: glyphes animés} — le modèle ne résout ni les noms
     d'asset ni la table de textes, c'est à l'appelant qui les connaît (le
     codegen) de les fournir. Absents, une image compte pour une frame, un
-    panneau pour un seul sprite et une zone pour sa bande seule :
+    conteneur pour un seul sprite et une zone pour sa bande seule :
     sous-réserver n'est pas anodin."""
     frames_by_name = image_frames or {}
     size_by_name = image_frame_size or {}
@@ -567,9 +641,8 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
         place[r.name] = {"oam_rel": oam, "tile_rel": tiles, **g}
         oam += g["oam"]
         tiles += g["tiles"]
-    # Images puis fonds de panneau — cf. l'ordre de profondeur ci-dessus.
-    for im in sorted(layout.images,
-                     key=lambda e: getattr(e, "kind", "") == KIND_PANEL):
+    # Images puis fonds de conteneur — cf. l'ordre de profondeur ci-dessus.
+    for im in sorted(layout.images, key=can_fill):
         if layout.resolved_target(im, render_mode) != TARGET_OBJ:
             continue
         fw, fh = size_by_name.get(im.name, (0, 0))
@@ -584,50 +657,61 @@ def layout_obj_budget(layout: "UILayout", render_mode: int = 0,
     return {"place": place, "oam": oam, "tiles": tiles}
 
 
-# ── Mise en page ──────────────────────────────────────────────────
+# ── Navigation d'une liste ────────────────────────────────────────
+# Le SENS dans lequel les index se suivent dans la grille. Avec `nav_columns`,
+# ces deux valeurs couvrent les quatre parcours qu'un menu demande, sans qu'un
+# seul champ ait à encoder deux choses indépendantes :
+#
+#   verticale     nav_columns = 1, majeur indifférent (une seule colonne)
+#   horizontale   nav_columns = nombre de rangées, majeur = rangée
+#   en Z          nav_columns = N, majeur = rangée   (gauche→droite puis dessous)
+#   en W          nav_columns = N, majeur = colonne  (haut→bas puis à droite)
+#
+# Un énuméré à quatre valeurs aurait de toute façon dû s'accompagner du compte de
+# colonnes — sans lui, le moteur ne sait pas de combien sauter en changeant de
+# rangée, et le parcours ne se calcule pas.
+NAV_ROW    = "row"       # les index avancent le long d'une rangée
+NAV_COLUMN = "column"    # les index avancent le long d'une colonne
+NAV_MAJORS = (NAV_ROW, NAV_COLUMN)
+
+# Comment le curseur rejoint la rangée choisie. « Posé » est le curseur de menu
+# classique, « glissant » celui qui parcourt la distance — d'où une vitesse, sans
+# laquelle un glissement n'est pas défini.
+CURSOR_SNAP  = "snap"
+CURSOR_SLIDE = "slide"
+CURSOR_MODES = (CURSOR_SNAP, CURSOR_SLIDE)
+
+
+# ── Le fond, en capacité plutôt qu'en type ────────────────────────
 
 @dataclass
-class UIPanel(RectGeometryMixin):
-    """Conteneur, et seul type à pouvoir dessiner un FOND. Au premier niveau il
-    joue le RÔLE de root et porte l'ancrage du sous-arbre. Sans fond
-    (`fill_kind == FILL_NONE`), c'est un simple groupe invisible.
+class FillMixin:
+    """Les champs de FOND, portés par les deux conteneurs — `UIContainer` et `UIList`.
 
-    **Le fond est un champ polymorphe**, séparé de la géométrie :
-      couleur     → une ENTRÉE de palette : `fill_palette` (nom de PaletteBank) +
-                    `fill_index` (0-15). Pas de RGB libre — le hardware l'impose.
-      nine-slice  → `fill_asset` = un asset de cadre tuilé (à créer).
-      background  → `fill_asset` = un fond tuilé, rogné bas/droite si la zone est
-                    plus petite ; cible BG seulement (cf. `fill_allowed`).
-      sprite      → `fill_sprite` (+ `fill_state`, `fill_speed`) = un SpriteAsset
-                    PAVÉ sur le rectangle. Cible OBJ seulement — c'est le seul
-                    fond qui existe là où il n'y a pas de tilemap.
+    **Une capacité (`can_fill`), pas un type.** Le code qui alloue les palettes,
+    valide les assets et émet les tuiles demande « est-ce que ça peut dessiner un
+    fond ? » ; il l'a longtemps demandé sous la forme `kind == KIND_CONTAINER`, ce qui
+    a marché tant qu'un seul type en portait un, et aurait laissé la liste dehors
+    sans rien dire. Le pendant de `RectGeometryMixin`, qui range de la même façon
+    la géométrie commune aux quatre types.
+
+    La sérialisation vit ici aussi : deux copies des sept clés auraient divergé au
+    premier mode de fond ajouté.
 
     **Le fond sprite est une image de plus dans `g_ui_images`.** Il n'a pas sa
-    propre table : un panneau à fond sprite et un `UIImage` demandent la même
-    chose au moteur (un sprite, un état, une animation, une banque de palette),
-    à la répétition près. D'où la surface d'accès commune ci-dessous
-    (`sprite_name`, `state_name`, `playing`, `priority`, `state_index`) : le
-    codegen n'a pas à savoir lequel des deux types il tient. Bénéfice non
-    cherché mais réel : un script peut changer l'état du fond d'un panneau comme
-    celui d'une image, `IMAGE_<nom du panneau>` existant lui aussi.
+    propre table : un conteneur à fond sprite et un `UIImage` demandent la même
+    chose au moteur (un sprite, un état, une animation, une banque de palette), à
+    la répétition près. D'où la surface d'accès commune en fin de classe
+    (`sprite_name`, `state_name`, `playing`, `state_index`) : le codegen n'a pas à
+    savoir lequel des deux types il tient. Bénéfice non cherché mais réel : un
+    script peut changer l'état du fond d'un conteneur comme celui d'une image,
+    `IMAGE_<nom du conteneur>` existant lui aussi.
 
-    Géométrie en pixels comme la zone. `anchor`/`anchor_actor` ne comptent que
-    lorsque le panel est racine."""
-    kind = KIND_PANEL
-    can_contain = True
-    name: str = "panel"
-    parent: str = ""
-    # Cf. `UIText.visible` — même contrat. Un panel caché cache tout son
-    # sous-arbre : c'est `UILayout.is_visible` qui remonte la chaîne, pas ce
-    # champ qui se propage aux enfants.
-    visible: bool = True
-    x: int = 0
-    y: int = 0
-    w: int = 64
-    h: int = 32
-    anchor: str = ANCHOR_SCREEN
-    anchor_actor: str = ""
-    # ── Fond (polymorphe selon fill_kind) ─────────────────────────
+    Ces accès-là sont des PROPRIÉTÉS et non des champs : la donnée reste `fill_*`,
+    il n'y a jamais deux valeurs à tenir d'accord. Vides quand le fond n'est pas
+    un sprite, donc l'élément sort du chemin d'émission de lui-même. `priority`,
+    elle, EST un champ (`UIImage` en a un aussi) : elle se surcharge par élément."""
+    can_fill = True
     fill_kind: str = FILL_NONE
     fill_palette: str = ""   # nom de PaletteBank (fond couleur)
     fill_index: int = 0      # index 0-15 dans la palette (fond couleur)
@@ -640,81 +724,31 @@ class UIPanel(RectGeometryMixin):
     # effet ici sans que rien ne le dise. Cf. `UIImage`, qui refuse pour la même
     # raison de recopier frames et vitesses.
     fill_speed: int = 0
-    # ── Navigation : ce panneau EST-IL une liste ? (ROADMAP v0.22) ─
-    # Une propriété du conteneur existant, et non un quatrième type d'élément :
-    # « le moteur prend la NAVIGATION, pas la mise en page ». Le panneau groupe
-    # déjà ses rangées et sait dessiner un fond ; il ne lui manquait qu'un index
-    # courant, des bornes et de quoi les faire bouger.
-    #
-    # Les RANGÉES sont ses enfants de type texte, dans l'ordre de l'arbre. Rien
-    # à déclarer : ce qu'on voit dans la mise en page est ce que la liste
-    # parcourt. Le nombre d'ITEMS, lui, est de la donnée — il se règle au script
-    # (`list.set_count`), parce qu'un inventaire ne connaît sa longueur qu'en
-    # jeu.
-    is_list: bool = False
-    # Axe de parcours. Une liste horizontale est une rangée d'onglets ; la
-    # verticale est le cas courant, donc le défaut.
-    list_axis: str = "vertical"     # vertical | horizontal
-    # Le curseur repasse-t-il du dernier au premier ? Vrai est ce qu'on attend
-    # d'un menu court, faux ce qu'on attend d'un inventaire long.
-    list_wrap: bool = True
-    # Cadence de répétition quand la touche reste enfoncée, en frames :
-    # `list_repeat_delay` avant le premier renvoi, `list_repeat_rate` entre les
-    # suivants. 0 = suivre le réglage du PROJET — même politique d'héritage que
-    # la transition de scène (v0.6.2), et c'est elle qui évite trois listes à
-    # trois cadences dans le même jeu.
-    list_repeat_delay: int = 0
-    list_repeat_rate: int = 0
+    # Priorité OBJ du fond sprite — surchargeable comme celle d'une image
+    # (-1 = PRIORITY_INHERIT, hérite de l'acteur ancré ; 0-3 explicite). Un champ
+    # et non plus une propriété figée : chaque élément d'UI porte SA priorité, et
+    # l'inspecteur l'édite dans la carte Geometry. Cf. `UIImage.priority`.
+    priority: int = PRIORITY_INHERIT
 
-    def to_dict(self) -> dict:
-        return {"kind": KIND_PANEL, "name": self.name, "parent": self.parent,
-                "visible": self.visible,
-                "x": self.x, "y": self.y, "w": self.w, "h": self.h,
-                "anchor": self.anchor, "anchor_actor": self.anchor_actor,
-                "fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
+    def fill_to_dict(self) -> dict:
+        return {"fill_kind": self.fill_kind, "fill_palette": self.fill_palette,
                 "fill_index": self.fill_index, "fill_asset": self.fill_asset,
                 "fill_sprite": self.fill_sprite, "fill_state": self.fill_state,
-                "fill_speed": self.fill_speed,
-                # Écrits seulement si le panneau est une liste : un conteneur
-                # ordinaire — c'est-à-dire tous ceux d'avant la v0.22 — ne gagne
-                # pas cinq clés.
-                **({"is_list": True, "list_axis": self.list_axis,
-                    "list_wrap": self.list_wrap,
-                    "list_repeat_delay": self.list_repeat_delay,
-                    "list_repeat_rate": self.list_repeat_rate}
-                   if self.is_list else {})}
+                "fill_speed": self.fill_speed, "priority": self.priority}
 
-    @classmethod
-    def from_dict(cls, d: dict) -> "UIPanel":
-        anchor = d.get("anchor", ANCHOR_SCREEN)
+    @staticmethod
+    def fill_from_dict(d: dict) -> dict:
+        """Les clés de fond en kwargs, prêtes pour un `cls(...)`."""
         fk = d.get("fill_kind", FILL_NONE)
-        return cls(
-            name=str(d.get("name", "panel")), parent=str(d.get("parent", "")),
-            visible=bool(d.get("visible", True)),
-            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
-            w=int(d.get("w", 64)), h=int(d.get("h", 32)),
-            anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
-            anchor_actor=str(d.get("anchor_actor", "")),
-            fill_kind=fk if fk in FILL_KINDS else FILL_NONE,
-            fill_palette=str(d.get("fill_palette", "")),
-            fill_index=int(d.get("fill_index", 0) or 0),
-            fill_asset=str(d.get("fill_asset", "")),
-            fill_sprite=str(d.get("fill_sprite", "")),
-            fill_state=str(d.get("fill_state", "")),
-            fill_speed=max(0, min(255, int(d.get("fill_speed", 0) or 0))),
-            # Absents = conteneur ordinaire, ce qu'étaient tous les
-            # panneaux avant la v0.22.
-            is_list=bool(d.get("is_list", False)),
-            list_axis=("horizontal" if d.get("list_axis") == "horizontal"
-                       else "vertical"),
-            list_wrap=bool(d.get("list_wrap", True)),
-            list_repeat_delay=max(0, int(d.get("list_repeat_delay", 0) or 0)),
-            list_repeat_rate=max(0, int(d.get("list_repeat_rate", 0) or 0)))
+        return {"fill_kind": fk if fk in FILL_KINDS else FILL_NONE,
+                "fill_palette": str(d.get("fill_palette", "")),
+                "fill_index": int(d.get("fill_index", 0) or 0),
+                "fill_asset": str(d.get("fill_asset", "")),
+                "fill_sprite": str(d.get("fill_sprite", "")),
+                "fill_state": str(d.get("fill_state", "")),
+                "fill_speed": max(0, min(255, int(d.get("fill_speed", 0) or 0))),
+                "priority": _clamp_priority(d.get("priority", PRIORITY_INHERIT))}
 
-    # ── Surface commune avec UIImage (cf. docstring) ──────────────
-    # Des propriétés et non des champs : la donnée reste `fill_*`, il n'y a
-    # jamais deux valeurs à tenir d'accord. Vides quand le fond n'est pas un
-    # sprite, donc l'élément sort du chemin d'émission de lui-même.
     @property
     def sprite_name(self) -> str:
         return self.fill_sprite if self.fill_kind == FILL_SPRITE else ""
@@ -734,13 +768,6 @@ class UIPanel(RectGeometryMixin):
         # ici doublerait ce que l'état dit déjà.
         return True
 
-    @property
-    def priority(self) -> int:
-        # Derrière ce qu'il contient. La priorité OBJ ne suffirait pas à elle
-        # seule (l'ordre OAM tranche à priorité égale) : c'est
-        # `layout_obj_budget` qui met les fonds en DERNIER, donc au fond.
-        return 3
-
     def state_index(self, sprite) -> int:
         """Index de l'état nommé — même règle que `UIImage.state_index`."""
         states = list(getattr(sprite, "states", []) or [])
@@ -748,6 +775,191 @@ class UIPanel(RectGeometryMixin):
             return 0
         return next((i for i, s in enumerate(states)
                      if s.name == self.fill_state), 0)
+
+
+# ── Mise en page ──────────────────────────────────────────────────
+
+@dataclass
+class UIContainer(RectGeometryMixin, FillMixin):
+    """Conteneur — grouper un sous-arbre, dessiner un fond.
+
+    **Il ne se PARCOURT pas** : la navigation a son type depuis le 2026-09-02
+    (`UIList`). Elle a été un champ d'ici (`is_list` et quatre compagnons), et
+    l'en-tête du module dit pourquoi ça ne tenait pas. Le conteneur garde tout son
+    sens sans elle.
+
+    Sans fond (`fill_kind == FILL_NONE`), c'est un simple groupe invisible ; les
+    quatre modes de fond et leur surface commune avec `UIImage` sont décrits dans
+    `FillMixin`.
+
+    Géométrie en pixels comme la zone. L'ancrage et la cible ne sont plus portés
+    ici : ils appartiennent au nœud `Interface` (`UILayout`), pour tout le
+    sous-arbre (v0.25)."""
+    kind = KIND_CONTAINER
+    can_contain = KINDS      # n'importe quel type d'enfant
+    name: str = "container"
+    parent: str = ""
+    # Cf. `UIText.visible` — même contrat. Un conteneur caché cache tout son
+    # sous-arbre : c'est `UILayout.is_visible` qui remonte la chaîne, pas ce
+    # champ qui se propage aux enfants.
+    visible: bool = True
+    x: int = 0
+    y: int = 0
+    w: int = 64
+    h: int = 32
+
+    def to_dict(self) -> dict:
+        return {"kind": KIND_CONTAINER, "name": self.name, "parent": self.parent,
+                "visible": self.visible,
+                "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+                **self.fill_to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "UIContainer":
+        return cls(
+            name=str(d.get("name", "container")), parent=str(d.get("parent", "")),
+            visible=bool(d.get("visible", True)),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 64)), h=int(d.get("h", 32)),
+            **cls.fill_from_dict(d))
+
+
+@dataclass
+class UIList(RectGeometryMixin, FillMixin):
+    """Un conteneur qui se PARCOURT — la navigation d'un menu, d'un inventaire ou
+    d'une grille, prise en charge par le moteur.
+
+    **Ses RANGÉES sont ses enfants**, des zones de texte, dans l'ordre de l'arbre :
+    rien à déclarer, ce qu'on voit dans la mise en page est ce que la liste
+    parcourt. Le nombre d'ITEMS, lui, est de la donnée — il se règle au script
+    (`list.set_count`), parce qu'un inventaire ne connaît sa longueur qu'en jeu ;
+    à défaut il vaut le nombre de rangées, ce qui suffit à un menu statique.
+
+    **Ce que la liste ne fait PAS : dessiner.** Elle dit quel item est sélectionné
+    et lequel s'affiche sur quelle rangée ; le contenu reste écrit par le script
+    (`text.draw_in(list.row(...), ...)`), avec les outils de texte qui existent.
+    C'est la même frontière que partout ailleurs ici — un item est une ligne de
+    DONNÉE, pas un objet d'interface, et c'est ce qui fait qu'un inventaire, un
+    arbre de compétences et un menu de sauvegarde partagent un seul mécanisme.
+
+    Elle dessine un fond comme le conteneur (`FillMixin`) : une liste est presque
+    toujours posée dans un cadre, et l'obliger à s'emboîter dans un conteneur pour
+    l'obtenir aurait ajouté un élément par menu sans rien dire de plus."""
+    kind = KIND_LIST
+    # Ses enfants SONT ses rangées. Accueillir une image reviendrait à poser dans
+    # la liste un élément qu'elle ne parcourt pas et que le build ignore — ce que
+    # l'arbre laissait faire tant que la liste était un drapeau du conteneur.
+    can_contain = (KIND_TEXT,)
+    name: str = "list"
+    parent: str = ""
+    # Cf. `UIText.visible` — même contrat, même remontée par `UILayout.is_visible`.
+    # C'est L'AFFICHAGE ; ne pas le confondre avec `active` juste en dessous, qui
+    # est la sélection.
+    visible: bool = True
+    x: int = 0
+    y: int = 0
+    w: int = 96
+    h: int = 48
+    # Ancrage et cible appartiennent au nœud `Interface` (`UILayout`), plus à la
+    # liste — cf. `UIText` (v0.25).
+
+    # ── Navigation ────────────────────────────────────────────────
+    # La liste consomme-t-elle la croix directionnelle ? C'est la SÉLECTION qu'on
+    # coupe, pas l'affichage : une liste inactive reste dessinée et garde son
+    # index. Sans ce champ, deux listes visibles — un menu et son sous-menu —
+    # bougent ensemble au même appui, ce que `ui_list_tick` faisait faute de
+    # savoir laquelle a la main. Le script bascule (`list.set_active`), parce que
+    # c'est lui qui sait quel écran est au premier plan.
+    active: bool = True
+    # La GRILLE en deux nombres — cf. `NAV_ROW`/`NAV_COLUMN` pour les quatre
+    # parcours qu'ils couvrent et pourquoi un énuméré n'y suffisait pas.
+    nav_columns: int = 1
+    nav_major: str = NAV_COLUMN
+    # Le curseur repasse-t-il du dernier au premier ? Vrai est ce qu'on attend
+    # d'un menu court, faux ce qu'on attend d'un inventaire long.
+    wrap: bool = True
+    # Cadence de répétition quand la touche reste enfoncée, en frames :
+    # `repeat_delay` avant le premier renvoi, `repeat_rate` entre les suivants.
+    # 0 = suivre le réglage du PROJET — même politique d'héritage que la
+    # transition de scène (v0.6.2), et c'est elle qui évite trois listes à trois
+    # cadences dans le même jeu.
+    repeat_delay: int = 0
+    repeat_rate: int = 0
+
+    # ── Curseur ───────────────────────────────────────────────────
+    # La liste POSSÈDE son curseur : elle NOMME un `UIImage` de la même mise en
+    # page et le moteur le pose sur la rangée choisie. Ce n'est pas un enfant
+    # (les enfants sont les rangées) et ce n'est pas un type de plus — « le
+    # curseur est ce qui existe déjà » (v0.22). Le déplacement passe par le même
+    # chemin que `ui.image_move` : une implémentation, deux portes.
+    #
+    # "" = aucun curseur ; la sélection se lit alors au surlignement plus bas.
+    cursor_image: str = ""
+    cursor_mode: str = CURSOR_SNAP
+    # Vitesse du mode glissant, en pixels par frame — un glissement sans vitesse
+    # n'est pas défini. Sans objet en mode posé.
+    cursor_speed: int = 2
+
+    # ── Style de la rangée choisie ────────────────────────────────
+    # Ce que la rangée SÉLECTIONNÉE affiche en plus : exactement les deux réglages
+    # qu'une zone de texte porte déjà (`UIText.text_color`, `.highlight_color`),
+    # appliqués par le moteur en suivant l'index au lieu d'être réécrits par le
+    # script à chaque déplacement. Même plage, même banque d'UI, même zéro.
+    #
+    # Une ANIMATION sur la rangée choisie n'est pas offerte : sur cible BG elle
+    # réécrirait des tuiles à chaque frame, et ce coût-là se mesure avant de se
+    # promettre.
+    selected_text_color: int = TEXT_COLOR_INK
+    selected_highlight_color: int = HIGHLIGHT_NONE
+
+    def to_dict(self) -> dict:
+        return {"kind": KIND_LIST, "name": self.name, "parent": self.parent,
+                "visible": self.visible,
+                "x": self.x, "y": self.y, "w": self.w, "h": self.h,
+                "active": self.active,
+                "nav_columns": self.nav_columns, "nav_major": self.nav_major,
+                "wrap": self.wrap,
+                "repeat_delay": self.repeat_delay,
+                "repeat_rate": self.repeat_rate,
+                "cursor_image": self.cursor_image,
+                "cursor_mode": self.cursor_mode,
+                "cursor_speed": self.cursor_speed,
+                "selected_text_color": self.selected_text_color,
+                "selected_highlight_color": self.selected_highlight_color,
+                **self.fill_to_dict()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "UIList":
+        """Relit AUSSI un `{"kind": "panel", "is_list": true}` d'avant le
+        2026-09-02 — même recette que `KIND_REGION`, et jamais réécrit sous cette
+        forme. `list_wrap`/`list_repeat_*` y perdent leur préfixe, redondant sur
+        un type qui EST une liste ; `list_axis` disparaît au profit de la grille,
+        et le cas horizontal se termine dans `UILayout.from_dict`, seul endroit à
+        connaître le nombre de rangées."""
+        major = d.get("nav_major", NAV_COLUMN)
+        mode = d.get("cursor_mode", CURSOR_SNAP)
+        return cls(
+            name=str(d.get("name", "list")), parent=str(d.get("parent", "")),
+            visible=bool(d.get("visible", True)),
+            x=int(d.get("x", 0)), y=int(d.get("y", 0)),
+            w=int(d.get("w", 96)), h=int(d.get("h", 48)),
+            active=bool(d.get("active", True)),
+            nav_columns=max(1, int(d.get("nav_columns", 1) or 1)),
+            nav_major=major if major in NAV_MAJORS else NAV_COLUMN,
+            # `list_*` : les noms d'avant le 2026-09-02, lus une dernière fois.
+            wrap=bool(d.get("wrap", d.get("list_wrap", True))),
+            repeat_delay=max(0, int(d.get("repeat_delay",
+                                          d.get("list_repeat_delay", 0)) or 0)),
+            repeat_rate=max(0, int(d.get("repeat_rate",
+                                         d.get("list_repeat_rate", 0)) or 0)),
+            cursor_image=str(d.get("cursor_image", "")),
+            cursor_mode=mode if mode in CURSOR_MODES else CURSOR_SNAP,
+            cursor_speed=max(1, min(255, int(d.get("cursor_speed", 2) or 2))),
+            selected_text_color=_clamp_color(
+                d.get("selected_text_color", TEXT_COLOR_INK)),
+            selected_highlight_color=_clamp_color(
+                d.get("selected_highlight_color", HIGHLIGHT_NONE)),
+            **cls.fill_from_dict(d))
 
 
 @dataclass
@@ -771,12 +983,12 @@ class UIImage(RectGeometryMixin):
     la boucle des acteurs prend en repli. Ajouter un champ « direction »
     exposerait au HUD une notion qui n'a de sens que dans le monde.
 
-    Cible BG ou OBJ, dérivée du root comme pour un texte (cf. `UILayout.
-    resolved_target`) : sous un conteneur ancré à l'écran l'image est écrite dans
-    la tilemap et ne coûte aucun OAM ; sous un root ancré sur un acteur elle
+    Cible BG ou OBJ, dérivée du nœud `Interface` comme pour un texte (cf.
+    `UILayout.resolved_target`) : sous un nœud ancré à l'écran l'image est écrite
+    dans la tilemap et ne coûte aucun OAM ; sous un nœud ancré sur un acteur elle
     passe en sprite, seule façon de se poser au pixel."""
     kind = KIND_IMAGE
-    can_contain = False
+    can_contain = ()         # feuille : n'accueille jamais d'enfants
     name: str = "image"
     parent: str = ""
     # Cf. `UIText.visible` — même contrat, même remontée par `UILayout.
@@ -790,11 +1002,11 @@ class UIImage(RectGeometryMixin):
     # qu'à l'élément fraîchement dessiné, avant qu'un sprite soit choisi.
     w: int = 16
     h: int = 16
-    anchor: str = ANCHOR_SCREEN
-    anchor_actor: str = ""
+    # Ancrage et cible appartiennent au nœud `Interface` (`UILayout`) — cf.
+    # `UIText` (v0.25).
     sprite_name: str = ""    # nom d'un SpriteAsset du projet
     state_name: str = ""     # "" = premier état du sprite
-    # Pendant de `UIPanel.fill_speed` : une image ne surcharge pas la vitesse de
+    # Pendant de `UIContainer.fill_speed` : une image ne surcharge pas la vitesse de
     # l'état, elle DÉSIGNE un sprite. Propriété constante plutôt que champ, pour
     # que le codegen lise la même chose sur les deux types.
     anim_speed = 0
@@ -802,32 +1014,32 @@ class UIImage(RectGeometryMixin):
     # d'icônes qui ne bougent pas, et les faire tourner coûterait un tick et une
     # réécriture de tilemap par image et par frame.
     playing: bool = True
-    # Priorité OBJ / BG (0 = devant). Portée par l'élément et non héritée : deux
-    # images du même conteneur se recouvrent souvent à dessein (jauge + cadre).
-    priority: int = 0
+    # Priorité OBJ (0 = devant, 3 = derrière). -1 = PRIORITY_INHERIT : l'image
+    # prend, en cible OBJ, la priorité de l'acteur auquel son nœud est ancré —
+    # elle vit à la profondeur de cet acteur, en direct (un `self.priority` en
+    # jeu l'emporte). Une valeur explicite 0-3 SURCHARGE cet héritage : deux
+    # images d'un même conteneur qui se recouvrent à dessein (jauge + cadre)
+    # gardent ainsi leur ordre. Sous un nœud écran/monde, hériter retombe sur 0.
+    priority: int = PRIORITY_INHERIT
 
     def to_dict(self) -> dict:
         return {"kind": KIND_IMAGE, "name": self.name, "parent": self.parent,
                 "visible": self.visible,
                 "x": self.x, "y": self.y, "w": self.w, "h": self.h,
-                "anchor": self.anchor, "anchor_actor": self.anchor_actor,
                 "sprite_name": self.sprite_name, "state_name": self.state_name,
                 "playing": bool(self.playing), "priority": self.priority}
 
     @classmethod
     def from_dict(cls, d: dict) -> "UIImage":
-        anchor = d.get("anchor", ANCHOR_SCREEN)
         return cls(
             name=str(d.get("name", "image")), parent=str(d.get("parent", "")),
             visible=bool(d.get("visible", True)),
             x=int(d.get("x", 0)), y=int(d.get("y", 0)),
             w=int(d.get("w", 16)), h=int(d.get("h", 16)),
-            anchor=anchor if anchor in ANCHORS else ANCHOR_SCREEN,
-            anchor_actor=str(d.get("anchor_actor", "")),
             sprite_name=str(d.get("sprite_name", "")),
             state_name=str(d.get("state_name", "")),
             playing=bool(d.get("playing", True)),
-            priority=max(0, min(3, int(d.get("priority", 0) or 0))))
+            priority=_clamp_priority(d.get("priority", PRIORITY_INHERIT)))
 
     # ── Taille asservie au sprite ─────────────────────────────────
     def sync_size_from(self, sprite) -> bool:
@@ -863,36 +1075,52 @@ class UIImage(RectGeometryMixin):
 # généralisation multi-types : que des zones de texte, donc `UIText`. Même
 # entrée que `KIND_REGION`, pour la même raison.
 _ELEMENT_FROM_DICT = {
-    KIND_REGION: UIText.from_dict,     # hérité — cf. KIND_REGION
-    KIND_PANEL:  UIPanel.from_dict,
-    KIND_TEXT:   UIText.from_dict,
-    KIND_IMAGE:  UIImage.from_dict,
+    KIND_REGION:       UIText.from_dict,       # hérités — cf. KIND_REGION
+    KIND_PANEL_LEGACY: UIContainer.from_dict,
+    KIND_CONTAINER:    UIContainer.from_dict,
+    KIND_LIST:         UIList.from_dict,
+    KIND_TEXT:         UIText.from_dict,
+    KIND_IMAGE:        UIImage.from_dict,
 }
 
 
 def element_from_dict(d: dict):
-    """Désérialise un élément selon son `kind` (texte par défaut, format hérité)."""
-    return _ELEMENT_FROM_DICT.get(d.get("kind", KIND_REGION),
-                                  UIText.from_dict)(d)
+    """Désérialise un élément selon son `kind` (texte par défaut, format hérité).
+
+    Deux formes anciennes se lisent ici, et aucune ne se réécrit :
+      • `{"kind": "panel", "is_list": true}` d'avant le 2026-09-02 ressort en
+        `UIList` — le drapeau ÉTAIT le type, il devient le type ;
+      • `{"kind": "panel"}` tout court ressort en `UIContainer`, qui portait ce
+        nom jusqu'au même jour.
+    Le prochain enregistrement porte `"list"` ou `"container"`, et rien n'est
+    perdu au passage."""
+    kind = d.get("kind", KIND_REGION)
+    if kind == KIND_PANEL_LEGACY and d.get("is_list"):
+        kind = KIND_LIST
+    return _ELEMENT_FROM_DICT.get(kind, UIText.from_dict)(d)
 
 
 @dataclass
 class UILayout(Resource):
-    """Un jeu de régions, référencé par une scène via `Scene.ui_layout`.
+    """Le nœud `Interface` : un jeu d'éléments d'UI, avec SON chemin matériel.
 
     **Un asset, pas une donnée de scène.** Rangé dans `project/ui_layouts/` et
     référencé par NOM : une boîte de dialogue dessinée une fois sert les
     quarante scènes du jeu et se corrige en un endroit. Stockée dans la scène,
-    elle serait à redessiner — et à recorriger — quarante fois.
+    elle serait à redessiner — et à recorriger — quarante fois. Une scène en
+    référence plusieurs (v0.25) : un HUD fixe en BG et une bulle actor-OBJ sont
+    deux nœuds `Interface`, chacun son couple ancrage/cible.
 
-    Contrepartie à assumer dans l'UI : éditer une région depuis le canvas d'une
-    scène modifie un objet PARTAGÉ. Le dire à l'écran (« mise en page partagée
-    — N scènes ») fait partie de la feature, sans quoi on casse N scènes en
-    croyant en ajuster une.
+    Contrepartie à assumer dans l'UI : éditer un élément depuis le canvas d'une
+    scène modifie un objet PARTAGÉ. Le dire à l'écran (« partagée — N scènes »)
+    fait partie de la feature, sans quoi on casse N scènes en croyant en ajuster
+    une.
 
-    **Une seule mise en page par scène, contenant N régions** — pas une liste de
-    mises en page. Passer de 1 à N plus tard est additif ; l'inverse ne l'est
-    pas.
+    **Le nœud possède `anchor` + `target`, source de vérité unique** (v0.25). Ils
+    vivaient sur chaque élément racine (`forced_target()` par élément) ; ils sont
+    remontés ici, et tout le sous-arbre en hérite. Une capacité qui se lisait
+    comme un cas particulier de chaque élément devient une propriété de son
+    propriétaire — même réparation que « la liste devient un TYPE ».
 
     `name` est la clé de référence, comme partout ailleurs dans le projet
     (`<asset>_name`), donc ce qui entre dans le graphe de dépendances.
@@ -902,6 +1130,15 @@ class UILayout(Resource):
     # fixe l'empilement et l'ordre des frères. `slots` et `images` en exposent
     # les vues par type, chacune faisant l'index d'une table C.
     elements: list = field(default_factory=list)
+    # ── Chemin matériel du nœud (v0.25) ───────────────────────────
+    # `anchor` : screen (fixe 240×160) / world (défile) / actor (suit un acteur).
+    # `anchor_actor` : nom de l'Actor suivi, seulement si anchor == actor.
+    # `target` : BG / OBJ. "" = dérivée de l'ancrage (cf. `resolved_target`) ;
+    #   ne porte une valeur que lorsque l'auteur a fait un choix RÉEL — donc
+    #   jamais quand `forced_target()` tranche.
+    anchor:       str = ANCHOR_SCREEN
+    anchor_actor: str = ""
+    target:       str = ""
     notes:   str = ""
 
     @property
@@ -920,10 +1157,10 @@ class UILayout(Resource):
         """Éléments qui posent un SPRITE, dans l'ordre de `elements` — l'index de
         `g_ui_images`, donc des constantes `IMAGE_*`.
 
-        Deux types y entrent : un `UIImage`, et un `UIPanel` dont le fond est un
+        Deux types y entrent : un `UIImage`, et un `UIContainer` dont le fond est un
         sprite. Ce n'est pas un raccourci d'implémentation — ils demandent au
         moteur exactement la même chose (un sprite, un état, une animation, une
-        banque de palette), à la répétition près, que `UIPanel` expose par la
+        banque de palette), à la répétition près, que `UIContainer` expose par la
         même surface d'accès. Une seconde table aurait dupliqué `ui_image_update`
         pour en changer deux lignes.
 
@@ -933,17 +1170,25 @@ class UILayout(Resource):
         runtime qui teste le kind à chaque frame."""
         return [e for e in self.elements
                 if getattr(e, "kind", "") == KIND_IMAGE
-                or (getattr(e, "kind", "") == KIND_PANEL
-                    and getattr(e, "fill_kind", "") == FILL_SPRITE)]
+                or (can_fill(e) and getattr(e, "fill_kind", "") == FILL_SPRITE)]
 
     def get(self, name: str):
         """N'importe quel élément par son nom (tous types confondus)."""
         return next((e for e in self.elements if e.name == name), None)
 
-    def can_contain(self, name: str) -> bool:
-        """Un élément existant et conteneur peut-il accueillir un enfant ?"""
+    def can_contain(self, name: str, kind: str = "") -> bool:
+        """`name` peut-il accueillir un enfant — et, si `kind` est donné, un
+        enfant DE CE TYPE ?
+
+        Sans `kind` la question reste « est-ce un conteneur ? », ce qu'elle a
+        toujours été. Avec, elle vaut aussi pour une liste, qui n'accueille que
+        des zones de texte : ses enfants SONT ses rangées, et une image déposée
+        là serait ignorée par le build sans que rien ne l'ait dit."""
         e = self.get(name)
-        return e is not None and getattr(e, "can_contain", False)
+        if e is None:
+            return False
+        accepted = getattr(e, "can_contain", ())
+        return bool(accepted) and (not kind or kind in accepted)
 
     def region_names(self) -> list[str]:
         """Noms des emplacements de texte — ceux qui se résolvent en `REGION_*`."""
@@ -1140,7 +1385,8 @@ class UILayout(Resource):
         e = self.get(name)
         if e is None:
             return False
-        if new_parent and not self.can_contain(new_parent):
+        if new_parent and not self.can_contain(new_parent,
+                                               getattr(e, "kind", "")):
             return False
         if self.would_cycle(name, new_parent):
             return False
@@ -1172,17 +1418,17 @@ class UILayout(Resource):
                 n += 1
         return n
 
-    # ── Ancrage & origine : remontée au ROOT ──────────────────────
-    # L'ancrage n'est plus une propriété de chaque élément mais du ROOT (élément
-    # top-level de la branche) : un enfant hérite du frame de son root et se
-    # positionne en pixels RELATIFS à son parent. Ces helpers font la remontée ;
-    # un élément sans parent est son propre root, donc le comportement d'avant
-    # (tout est root) est un cas particulier — rien ne change pour les données
-    # plates existantes.
+    # ── Ancrage & origine : portés par le NŒUD ────────────────────
+    # L'ancrage et la cible appartiennent au nœud `Interface` (self), plus à
+    # chaque élément racine (v0.25) : tout le sous-arbre les partage. Un enfant
+    # se positionne en pixels RELATIFS à son parent, et ces helpers remontent la
+    # chaîne des offsets — mais le socle (écran, ou position de l'acteur suivi) est
+    # celui du nœud, une seule fois.
 
     def root_of(self, name: str):
         """Élément top-level de la branche de `name` (remontée des parents, sûre
-        face aux cycles et aux refs pendantes). C'est lui qui porte l'ancrage."""
+        face aux cycles et aux refs pendantes). Helper d'arbre pur — l'ancrage,
+        lui, vit sur le nœud (cf. `effective_anchor`), plus sur ce root."""
         cur = self.get(name)
         seen: set[str] = set()
         while cur is not None and cur.parent and cur.name not in seen:
@@ -1193,35 +1439,34 @@ class UILayout(Resource):
             cur = nxt
         return cur
 
-    def effective_anchor(self, element) -> tuple[str, str]:
-        """(anchor, anchor_actor) hérités du root de `element`."""
-        r = self.root_of(element.name) or element
-        return getattr(r, "anchor", ANCHOR_SCREEN), getattr(r, "anchor_actor", "")
+    def effective_anchor(self, element=None) -> tuple[str, str]:
+        """(anchor, anchor_actor) DU NŒUD — tout élément les partage. `element`
+        est accepté pour la compatibilité des appelants et ignoré ; l'argument
+        disparaîtra quand codegen et inspecteur seront repris (v0.25, temps 3/4)."""
+        return self.anchor, self.anchor_actor
 
-    def resolved_target(self, element, render_mode: int = 0) -> str:
-        """Cible BG/OBJ dérivée de l'ancrage du ROOT — plus de l'élément
-        lui-même : un enfant hérite du frame de son root."""
-        r = self.root_of(element.name) or element
-        forced = forced_target(getattr(r, "anchor", ANCHOR_SCREEN), render_mode)
+    def resolved_target(self, element=None, render_mode: int = 0) -> str:
+        """Cible BG/OBJ DU NŒUD : imposée par `forced_target()` (ancrage actor, ou
+        scène bitmap), sinon le choix de l'auteur, sinon BG. `element` accepté et
+        ignoré — cf. `effective_anchor`."""
+        forced = forced_target(self.anchor, render_mode)
         if forced:
             return forced
-        t = getattr(r, "target", "")
-        return t if t in TARGETS else TARGET_BG
+        return self.target if self.target in TARGETS else TARGET_BG
 
     def absolute_origin(self, element, actor_pos) -> tuple[int, int, bool]:
         """(x, y, resolved) : position ÉCRAN de l'origine de `element`, en sommant
-        les offsets jusqu'au root, puis en ajoutant le socle du frame — (0,0) en
-        écran/monde, la position de l'acteur en ancrage actor. `actor_pos` =
-        callable nom→(x,y) ou None. `resolved` est faux si l'acteur du root est
+        les offsets jusqu'à la racine, puis en ajoutant le socle du NŒUD — (0,0)
+        en écran/monde, la position de l'acteur en ancrage actor. `actor_pos` =
+        callable nom→(x,y) ou None. `resolved` est faux si l'acteur du nœud est
         introuvable (la position affichée n'est alors pas celle du jeu)."""
         chain = [element] + [self.get(a) for a in self.ancestors(element.name)]
         chain = [e for e in chain if e is not None]
         ox = sum(int(e.x) for e in chain)
         oy = sum(int(e.y) for e in chain)
-        root = chain[-1] if chain else element
         resolved = True
-        if getattr(root, "anchor", "") == ANCHOR_ACTOR:
-            ap = actor_pos(getattr(root, "anchor_actor", "")) if actor_pos else None
+        if self.anchor == ANCHOR_ACTOR:
+            ap = actor_pos(self.anchor_actor) if actor_pos else None
             if ap is None:
                 resolved = False
             else:
@@ -1252,8 +1497,8 @@ class UILayout(Resource):
         du canvas en coordonnées RELATIVES au parent, au relâchement d'un geste."""
         parent = self.get(element.parent) if element.parent else None
         if parent is None:
-            if getattr(element, "anchor", "") == ANCHOR_ACTOR:
-                ap = actor_pos(getattr(element, "anchor_actor", "")) if actor_pos else None
+            if self.anchor == ANCHOR_ACTOR:
+                ap = actor_pos(self.anchor_actor) if actor_pos else None
                 return (ap[0], ap[1]) if ap else (0, 0)
             return (0, 0)
         ax, ay, _ = self.absolute_origin(parent, actor_pos)
@@ -1300,6 +1545,9 @@ class UILayout(Resource):
     def to_dict(self) -> dict:
         return {
             "name": self.name,
+            "anchor": self.anchor,
+            "anchor_actor": self.anchor_actor,
+            "target": self.target,
             "elements": [e.to_dict() for e in self.elements],
             "notes": self.notes,
         }
@@ -1311,11 +1559,57 @@ class UILayout(Resource):
         raw = d.get("elements")
         if raw is None:
             raw = d.get("regions", [])
-        return cls(
+        anchor = d.get("anchor")
+        anchor_actor = d.get("anchor_actor")
+        target = d.get("target")
+        if anchor is None:                      # forme d'avant v0.25
+            anchor, anchor_actor, target = cls._anchor_from_roots(raw)
+        lay = cls(
             name     = str(d.get("name", "ui_layout")),
+            anchor   = anchor if anchor in ANCHORS else ANCHOR_SCREEN,
+            anchor_actor = str(anchor_actor or ""),
+            target   = target if target in TARGETS else "",
             elements = [element_from_dict(e) for e in raw],
             notes    = str(d.get("notes", "")),
         )
+        lay._migrate_list_axis(raw)
+        return lay
+
+    @staticmethod
+    def _anchor_from_roots(raw: list) -> tuple[str, str, str]:
+        """Remonte `anchor`/`anchor_actor`/`target` d'un fichier d'avant v0.25, où
+        ils vivaient sur chaque élément RACINE, vers le nœud. La PREMIÈRE racine
+        décide : un nœud n'a qu'un couple, et le cas multi-racines à ancrages
+        divergents — rare — se règle désormais en plusieurs nœuds `Interface`, pas
+        en une seule mise en page. `target` prend celui de la première racine qui
+        en porte un (seul un `UIText` en avait). Champs relus une fois, jamais
+        réécrits — « une forme ancienne se lit, une seule s'écrit »."""
+        dicts = [e for e in raw if isinstance(e, dict)]
+        names = {str(e.get("name", "")) for e in dicts}
+        roots = [e for e in dicts
+                 if not e.get("parent") or e.get("parent") not in names]
+        first = roots[0] if roots else {}
+        anchor = first.get("anchor", ANCHOR_SCREEN)
+        anchor_actor = first.get("anchor_actor", "")
+        target = next((e.get("target") for e in roots if e.get("target")), "")
+        return anchor, anchor_actor, target
+
+    def _migrate_list_axis(self, raw: list) -> None:
+        """`list_axis: "horizontal"` d'avant le 2026-09-02 → une grille d'une
+        seule rangée. La conversion se termine ICI et pas dans `UIList.from_dict`
+        parce qu'elle a besoin du nombre de RANGÉES, c'est-à-dire des enfants —
+        que l'élément seul ne connaît pas. Une liste verticale n'a rien à
+        convertir : elle est déjà le défaut (`nav_columns == 1`)."""
+        horizontal = {str(e.get("name", "")) for e in raw
+                      if isinstance(e, dict) and e.get("list_axis") == "horizontal"}
+        if not horizontal:
+            return
+        for e in self.elements:
+            if getattr(e, "kind", "") != KIND_LIST or e.name not in horizontal:
+                continue
+            e.nav_columns = max(1, len([c for c in self.children(e.name)
+                                        if getattr(c, "kind", "") == KIND_TEXT]))
+            e.nav_major = NAV_ROW
 
 
 # ── Presets de placement ──────────────────────────────────────────

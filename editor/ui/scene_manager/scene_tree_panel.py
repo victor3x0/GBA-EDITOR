@@ -23,12 +23,14 @@ from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 
 from core.models.scene import Actor, Scene
 from core.project import Project
-from core.selection_bus import get_bus, UIElementSelection, CameraSelection
+from core.selection_bus import (
+    get_bus, UIElementSelection, CameraSelection, UILayoutSelection)
 from core.command_dispatcher import get_dispatcher, unique_name
 from core.history import (
     get_history, AddListItemCmd, RemoveListItemCmd, UILayoutOrderCmd,
+    DeleteInterfaceCmd,
 )
-from core.models.ui_region import KIND_PANEL, KIND_TEXT, KIND_IMAGE
+from core.models.ui_region import KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE
 
 # ── Rôles QTreeWidgetItem ─────────────────────────────────────────
 _ROLE_TYPE = Qt.ItemDataRole.UserRole
@@ -46,8 +48,13 @@ T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/t
 
 # Icône par type d'élément UI (la couleur reste celle de la famille Interface —
 # le type se lit à la FORME, cf. project_theme_gba_redesign).
-_UI_ELEM_ICON = {KIND_PANEL: "ui_panel", KIND_TEXT: "ui_text", KIND_IMAGE: "ui_image"}
-_UI_ELEM_LABEL = {KIND_PANEL: "container", KIND_TEXT: "text", KIND_IMAGE: "image"}
+_UI_ELEM_ICON = {KIND_CONTAINER: "ui_container", KIND_LIST: "ui_list",
+                 KIND_TEXT: "ui_text", KIND_IMAGE: "ui_image"}
+_UI_ELEM_LABEL = {KIND_CONTAINER: "container", KIND_LIST: "list",
+                  KIND_TEXT: "text", KIND_IMAGE: "image"}
+# Les types proposés à la création, dans l'ordre où l'auteur les rencontre.
+_UI_ELEM_ADD = ((KIND_TEXT, "Text"), (KIND_CONTAINER, "Container"),
+                (KIND_LIST, "List"), (KIND_IMAGE, "Image"))
 
 
 def _lua_handle(node_type: str, obj) -> str:
@@ -68,6 +75,8 @@ def _lua_handle(node_type: str, obj) -> str:
             return f'text.draw_in("{obj.name}", …)'
         if kind == KIND_IMAGE:
             return f'ui.image_set("{obj.name}", …)'
+        if kind == KIND_LIST:
+            return f'list.index("{obj.name}")'
     return ""
 
 # ── Thème ─── surfaces indigo centralisées (cf. project_theme_gba_redesign) ──
@@ -133,19 +142,28 @@ class _Tree(QTreeWidget):
         return act
 
     def _fit(self):
-        h = self.sizeHintForRow(0) if self.topLevelItemCount() else 0
+        # Compter les lignes VISIBLES : un nœud, plus les descendants de chaque
+        # parent déplié.
         total = 0
-        it = QTreeWidgetItem.__new__(QTreeWidgetItem)
-        i = self.invisibleRootItem()
-        stack = [i.child(n) for n in range(i.childCount())]
+        root = self.invisibleRootItem()
+        stack = [root.child(n) for n in range(root.childCount())]
         while stack:
             item = stack.pop()
             total += 1
             if item.isExpanded():
                 stack.extend(item.child(n) for n in range(item.childCount()))
-        # S.ROW = hauteur d'une ligne dans QSS.tree_widget : les deux doivent
-        # rester d'accord, sinon l'arbre se coupe ou traîne du vide.
-        self.setFixedHeight(max(total * S.ROW, 4))
+        # Mesurer la hauteur d'une ligne plutôt que de la supposer égale à
+        # S.ROW : `setUniformRowHeights` donne à TOUTES les lignes celle de la
+        # première, et une ligne d'UI (ui_font(T.LG) + icône) dépasse S.ROW.
+        # Provisionner `total * S.ROW` sous-dimensionnait alors la colonne d'un
+        # ou deux pixels par ligne — invisible d'abord, puis coupant le bas de
+        # la hiérarchie dès qu'assez de lignes s'accumulent. `sizeHintForRow`
+        # rend la valeur réellement utilisée ; S.ROW ne sert que de repli tant
+        # que la vue n'est pas encore posée (hint < 0).
+        row = self.sizeHintForRow(0) if total else 0
+        if row <= 0:
+            row = S.ROW
+        self.setFixedHeight(max(total * row, 4))
 
     def sizeHint(self):
         return QSize(self.width(), self.minimumHeight())
@@ -232,33 +250,40 @@ class _ActiveSceneTree(_Tree):
         self._fit()
 
     def _populate_ui_branch(self, scene: Scene, project: Project):
-        """Ajoute, en tête de liste, la mise en page UI de la scène (si elle
-        en référence une) : un nœud racine « Interface » puis la hiérarchie
-        des éléments dérivée des refs `parent` (`in_tree_order`)."""
-        lay = project.scene_ui_layout(scene) if hasattr(project, "scene_ui_layout") else None
-        if lay is None:
-            return
-        users = project.ui_layout_users(lay.name) if hasattr(project, "ui_layout_users") else []
-        shared = len(users) > 1
-        root_item = QTreeWidgetItem(self)
-        root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
-        root_item.setData(0, _ROLE_OBJ, lay)
-        root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
-        root_item.setText(0, f"Interface  ·  {len(users)} scenes" if shared else "Interface")
-        root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
-        root_item.setFont(0, ui_font(T.MD, bold=True))
-        root_item.setToolTip(
-            0, f"Layout “{lay.name}”"
-               + (f"\nSHARED by {len(users)} scenes — editing it affects all of them."
-                  if shared else ""))
-        items: dict[str, QTreeWidgetItem] = {}
-        for _depth, el in lay.in_tree_order():
-            parent_item = items.get(el.parent, root_item)
-            e_item = QTreeWidgetItem(parent_item)
-            self._update_ui_elem_item(e_item, el, lay)
-            e_item.setExpanded(self._expand_overrides.get(id(el), True))
-            items[el.name] = e_item
-        root_item.setExpanded(self._expand_overrides.get(id(lay), True))
+        """Ajoute, en tête de liste, les nœuds `Interface` de la scène (une LISTE
+        depuis v0.25) : un nœud racine par mise en page référencée, puis la
+        hiérarchie de ses éléments (`in_tree_order`).
+
+        Étiquette : « Interface » tant qu'il n'y en a qu'un (le cas courant),
+        le NOM de chaque nœud dès qu'il y en a plusieurs — sinon deux racines
+        homonymes seraient impossibles à distinguer dans l'arbre."""
+        layouts = (project.scene_ui_layouts(scene)
+                   if hasattr(project, "scene_ui_layouts") else [])
+        many = len(layouts) > 1
+        for lay in layouts:
+            users = (project.ui_layout_users(lay.name)
+                     if hasattr(project, "ui_layout_users") else [])
+            shared = len(users) > 1
+            root_item = QTreeWidgetItem(self)
+            root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
+            root_item.setData(0, _ROLE_OBJ, lay)
+            root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
+            base = lay.name if many else "Interface"
+            root_item.setText(0, f"{base}  ·  {len(users)} scenes" if shared else base)
+            root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
+            root_item.setFont(0, ui_font(T.MD, bold=True))
+            root_item.setToolTip(
+                0, f"Interface “{lay.name}”"
+                   + (f"\nSHARED by {len(users)} scenes — editing it affects all of them."
+                      if shared else ""))
+            items: dict[str, QTreeWidgetItem] = {}
+            for _depth, el in lay.in_tree_order():
+                parent_item = items.get(el.parent, root_item)
+                e_item = QTreeWidgetItem(parent_item)
+                self._update_ui_elem_item(e_item, el, lay)
+                e_item.setExpanded(self._expand_overrides.get(id(el), True))
+                items[el.name] = e_item
+            root_item.setExpanded(self._expand_overrides.get(id(lay), True))
 
     def _update_ui_elem_item(self, item: QTreeWidgetItem, el, layout):
         """Peuple la ligne d'un élément UI : icône de type (forme), nom éditable,
@@ -336,9 +361,10 @@ class _ActiveSceneTree(_Tree):
         elif typ == T_UI_ELEM:
             get_bus().select(UIElementSelection(item.data(0, _ROLE_PATH),
                                                 item.data(0, _ROLE_OBJ)))
-        # T_UI_LAYOUT (nœud « Interface ») : pas d'inspecteur propre, et la
-        # scène qu'il porte est déjà celle affichée par ce panneau — rien à
-        # faire de plus qu'un clic sans effet.
+        elif typ == T_UI_LAYOUT:
+            # Le nœud « Interface » porte l'ancrage + la cible de son sous-arbre
+            # (v0.25) : son propre inspecteur, dans le contexte de la scène.
+            get_bus().select(UILayoutSelection(item.data(0, _ROLE_OBJ), self._scene))
 
     # ── Drag & drop : acteurs OU éléments d'UI ────────────────────
 
@@ -550,11 +576,20 @@ class _ActiveSceneTree(_Tree):
             layout = item.data(0, _ROLE_OBJ)
             add = menu.addMenu("Add a widget")
             add.setFont(QFont(T.UI, T.MD))
-            for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
-                                (KIND_IMAGE, "Image")):
+            for kind, label in _UI_ELEM_ADD:
                 act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                 act.triggered.connect(
                     lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
+            menu.addSeparator()
+            # Un nœud partagé ne perd que sa référence dans CETTE scène ; le seul
+            # à le référencer emporte l'asset avec lui. Le libellé le dit, pour ne
+            # pas laisser croire qu'on détruit une interface utilisée ailleurs.
+            proj = self._panel._project
+            users = proj.ui_layout_users(layout.name) if proj else []
+            shared = len(users) > 1
+            label = "Remove from this scene" if shared else "Delete interface"
+            menu.addAction(label).triggered.connect(
+                lambda _, lay=layout, sh=shared: self._delete_interface(lay, sh))
 
         elif typ == T_UI_ELEM:
             el = item.data(0, _ROLE_OBJ)
@@ -571,12 +606,15 @@ class _ActiveSceneTree(_Tree):
                 a.setEnabled(on)
                 a.triggered.connect(
                     lambda _, d=direction, e=el, lay=layout: self._move_ui_elem(lay, e, d))
-            if getattr(el, "can_contain", False):
+            accepted = getattr(el, "can_contain", ())
+            if accepted:
                 menu.addSeparator()
                 sub = menu.addMenu("Add a child")
                 sub.setFont(QFont(T.UI, T.MD))
-                for kind, label in ((KIND_TEXT, "Text"), (KIND_PANEL, "Container"),
-                                    (KIND_IMAGE, "Image")):
+                # Ce que CE parent accueille : une liste ne prend que des
+                # textes, ses enfants étant ses rangées. Offrir une image ici
+                # ferait poser un élément que le build ignore ensuite.
+                for kind, label in (kl for kl in _UI_ELEM_ADD if kl[0] in accepted):
                     act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
                     act.triggered.connect(
                         lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
@@ -593,11 +631,14 @@ class _ActiveSceneTree(_Tree):
         if proj is None:
             return
         from core.models.ui_region import (
-            UIPanel, UIText, UIImage, unique_element_name)
+            UIContainer, UIList, UIText, UIImage, unique_element_name)
         taken = set(layout.element_names()) | set(proj.ui_element_names())
-        if kind == KIND_PANEL:
-            el = UIPanel(name=unique_element_name(taken, "container"),
+        if kind == KIND_CONTAINER:
+            el = UIContainer(name=unique_element_name(taken, "container"),
                          parent=parent_name, x=8, y=8, w=96, h=48)
+        elif kind == KIND_LIST:
+            el = UIList(name=unique_element_name(taken, "list"),
+                        parent=parent_name, x=8, y=8, w=96, h=48)
         elif kind == KIND_IMAGE:
             el = UIImage(name=unique_element_name(taken, "image"),
                          parent=parent_name, x=8, y=8, w=16, h=16)
@@ -620,6 +661,20 @@ class _ActiveSceneTree(_Tree):
         get_history().push(RemoveListItemCmd(
             layout.elements, element, persist_fn=self._panel._after_ui_change,
             label=f"Delete {element.name}"))
+        get_bus().clear()
+
+    def _delete_interface(self, layout, shared: bool):
+        """Retire un nœud `Interface` de la scène. Partagé → seule la référence
+        de cette scène part ; sinon l'asset aussi (sans quoi ses `REGION_*`/
+        `IMAGE_*` resteraient dans les tables — `all_regions` itère TOUT le
+        projet, pas les seuls nœuds référencés)."""
+        proj = self._panel._project
+        if proj is None or self._scene is None:
+            return
+        get_history().push(DeleteInterfaceCmd(
+            proj.ui_layouts, layout, self._scene.ui_layouts,
+            delete_asset=not shared,
+            persist_fn=self._panel._after_ui_change))
         get_bus().clear()
 
     # ── Renommage / réordonnancement d'un acteur ───────────────────
@@ -750,6 +805,7 @@ class SceneTreePanel(QWidget):
         add_menu.setFont(QFont(T.UI, T.MD))
         add_menu.addAction(_ico("actor", COLOR_DEFAULT), "Actor").triggered.connect(self._add_actor)
         add_menu.addAction(_ico("camera", COLOR_DEFAULT), "Camera").triggered.connect(self._add_camera)
+        add_menu.addAction(_ico("ui_layout", COLOR_UI), "Interface").triggered.connect(self._add_interface)
         self._btn_add.setMenu(add_menu)
         self._btn_add.setPopupMode(self._btn_add.ToolButtonPopupMode.InstantPopup)
         hl.addWidget(self._btn_add)
@@ -834,6 +890,27 @@ class SceneTreePanel(QWidget):
 
     def _begin_rename_actor(self, name: str):
         self._begin_rename(T_ACTOR, name)
+
+    # ── Ajout d'un nœud « Interface » (nouvel asset, comme un acteur) ──
+
+    def _add_interface(self):
+        """Crée un nouveau nœud `Interface` (asset `UILayout`) et le pose dans la
+        scène. Comme un acteur : un nouvel asset, pas une copie d'un existant. Le
+        nom se change ensuite dans l'en-tête (l'inspecteur du nœud), pas en place
+        dans l'arbre — la ligne y affiche « Interface », jamais le nom du .json."""
+        if not self._project or not self._scene:
+            return
+        from core.models.ui_region import UILayout
+        base, name, n = (self._scene.name or "ui"), (self._scene.name or "ui"), 2
+        while self._project.get_ui_layout(name) is not None:
+            name = f"{base}_{n:02d}"
+            n += 1
+        lay = UILayout(name=name)
+        self._project.ui_layouts.append(lay)
+        self._scene.ui_layouts.append(name)
+        get_dispatcher().save_all()      # persiste l'asset neuf ET la scène
+        self._after_ui_change()
+        get_bus().select(UILayoutSelection(lay, self._scene))
 
     # ── Ajout d'une caméra (inline — même geste que l'acteur) ─────
 

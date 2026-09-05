@@ -340,7 +340,7 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation. `global.nom`/`const.nom` ne sont ni l'un ni l'autre (chantier global/const) : ce sont des accès POINTÉS, pas des appels — comme `self.position` (RUNTIME_PROPS) ou `data.Objets`, résolus directement dans la branche `ExprIndex` de `_expr` (accès direct à la variable C `g_nom` / au symbole `CONST_NOM`), et validés côté checker par `_check_global_scalar`/`_check_global_indexed`/`_check_const_scalar` plutôt que par le catalogue.
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 - **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
-- **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (`changelog-archive/v0.7.md`, v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge.
+- **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (`changelog-archive/v0.7.md`, v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge. Ce qui n'atteint même pas l'AST — une faute de SYNTAXE — est le seul refus que le parser prononce lui-même, et il le prononce dans la même langue : `LuaParseError` porte sa `line` et une phrase, reconstruites depuis la chaîne d'exceptions d'antlr que luaparser jette en formatant son `syntax errors: None` (cf. `_syntax_message`, et la table de faux amis qui ne se balaie qu'après un échec).
 - **`expr_types.py`** — les deux exceptions au sous-ensemble Lua entièrement scalaire (ROADMAP v0.7.3 et v0.8.6) : `vec2(x, y)`/`vec3(x, y, z)` sont des constructeurs de langage, pas des entrées `RUNTIME_API`. `checker.py` et `codegen.py` partagent ce module pour savoir si une expression EST un vec2/vec3 (locals `self._vec_types`, remplie au fil d'un même parcours à plat dans les deux fichiers — même approximation que `self._arrays`) plutôt que de laisser chacun réinventer sa propre inférence. `+`/`-`/`*` (par un entier) s'y traduisent en appels `vec2_add`/`vec2_sub`/`vec2_scale` (`actor_api_static.h`) : le C n'a pas d'opérateur sur les structs. La seconde exception sont les **références** — ce qu'un appel REND (`local pas = sfx.play("Pas")`) : une valeur composée se copie, une référence DÉSIGNE un slot pris dans un pool du matériel, mais les deux répondent à la même question (« quel type porte ce nom ? ») et deux modules y auraient fini par répondre différemment. Le module s'appelait `vec_types.py` tant qu'il n'y avait qu'une exception.
 
 ### La grammaire de l'API — trois formes, une par nature
@@ -1055,6 +1055,26 @@ sur `Project` jusqu'à ce que les passe-plats correspondants soient retirés de
 PNG dans `assets/sprites/` levait un `AttributeError` dans un slot Qt, donc
 tuait l'éditeur. La table porte désormais les fonctions elles-mêmes.
 
+Elle a **trois** fonctions par famille, pas deux : créer, supprimer, **renommer**.
+Un renommage n'est pas la somme des deux autres. Il arrive du système de
+fichiers comme une disparition ET une apparition dans le même événement, et le
+watcher les **apparie** avant de prévenir la fenêtre — même taille, même date à
+la nanoseconde, ce que seul un renommage préserve (`project_watcher.pair_renames`).
+Sans cet appariement, renommer une planche dans l'explorateur pendant que
+l'éditeur tourne détruisait l'asset avec tout ce qui avait été authoré dessus
+(la découpe en frames d'un sprite, les caractères d'une planche de police) pour
+faire naître un asset vierge sous le nouveau nom. Avec, l'asset **suit son
+fichier** : `asset_encoding.rename_*` appelle le `Project.rename_*` de la
+famille — celui-là même que le finder utilise —, donc le sidecar se déplace et
+les scènes, prefabs et scripts qui citent l'asset sont réécrits.
+
+C'est le pendant en séance de la règle appliquée au chargement : **le nom de
+fichier fait foi**. `ResourceStore.load` adopte le stem du fichier quand le
+champ `name` a dérivé, et `asset_encoding._relink_source` raccroche un asset
+dont le fichier cité a disparu à celui qui porte son nom. Les trois lectures
+d'une même identité — nom de sidecar, champ `name`, fichier cité — ne peuvent
+plus se perdre de vue.
+
 ---
 
 ## Sauvegarde — variables persistantes en SRAM
@@ -1389,21 +1409,29 @@ et sa page ne doit pas créer une seconde police en doublon.
 
 ---
 
-## Éléments d'interface — `UIText` / `UIPanel` / `UIImage` dans un `UILayout`
+## Éléments d'interface — `UIText` / `UIContainer` / `UIList` / `UIImage` dans un `UILayout`
 
 `core/models/ui_region.py`, stockage dans `project/ui_layouts/<nom>.json`. Un élément de
 texte répond à **où** le texte se pose ; il remplace les arguments de géométrie que
 `text_draw_box` prenait dans le script, donc invisibles depuis l'éditeur et incalculables
 avant le build.
 
-**Trois types, pas quatre.** `UIText` (là où du texte se pose), `UIPanel` (le conteneur,
-seul à dessiner un fond) et `UIImage` (un sprite à état). Le type « zone de texte » a
+**Quatre types.** `UIText` (là où du texte se pose), `UIContainer` (le groupe), `UIList`
+(un conteneur qui se PARCOURT) et `UIImage` (un sprite à état). Le type « zone de texte » a
 existé à côté de `UIText` et a été RETIRÉ : les deux portaient la même géométrie, le même
 ancrage, la même allocation OBJ et la même entrée de `g_ui_regions`, et ne différaient que
 par l'écrivain — le script pour l'une, `scene_init` pour l'autre. Ce n'était pas deux types
 mais un type et un champ vide : **un `UIText` sans `text_key` EST une zone qu'un script
 remplit**. `KIND_REGION` ne survit que comme alias de désérialisation ; l'espace de
 constantes reste `REGION_*`.
+
+**Deux capacités traversent ces types, et ce sont elles que le code interroge.**
+`can_contain` dit ce qu'un type accueille (un tuple de kinds : rien pour une feuille, tout
+pour un conteneur, `KIND_TEXT` seul pour une liste dont les enfants SONT les rangées) ;
+`can_fill` (le mixin `FillMixin`) dit ce qui dessine un fond. Les émetteurs demandaient
+`kind == KIND_PANEL` — juste tant qu'un seul type portait un fond, faux le jour où la liste
+en a gagné un. Une capacité se déclare sur le type et se lit partout ; un test de type se
+réécrit à huit endroits et en oublie un.
 
 **Une zone ne dessine rien.** Même contrat que la window matérielle : elle dit où, jamais
 à quoi ça ressemble. C'est pour ça que le mot est « région » et non « frame » — dans
@@ -1414,24 +1442,36 @@ que le moteur ne fait pas (et collisionnerait avec les frames d'animation).
 dit quel texte s'affiche quand, ni sur quel événement — c'est ce qui empêche l'objet de
 devenir un éditeur de dialogue par accident.
 
-### L'ancrage n'est pas un champ libre : il contraint la mémoire
+### Le chemin matériel appartient au NŒUD, pas à l'élément (v0.25)
+
+L'ancrage (`anchor`) et la cible (`target`) ne vivent plus sur chaque élément : ils sont
+portés par le nœud `Interface` (`UILayout`), une seule fois, et **tout le sous-arbre en
+hérite**. C'est la réparation jumelle de « la liste devient un TYPE » — une capacité qui se
+lisait comme un cas particulier de chaque élément devient une propriété de son propriétaire,
+à source de vérité unique. `effective_anchor()` / `resolved_target()` lisent le nœud ;
+l'élément ne porte plus que sa géométrie.
+
+Ces deux réglages ne sont pas libres — ils contraignent la mémoire :
 
 | Ancrage | Comportement | Cible |
 | --- | --- | --- |
 | `screen` | fixe sur 240×160 (HUD, boîte basse) | BG |
-| `world` | défile avec la caméra (panneau posé dans le décor) | BG |
+| `world` | défile avec la caméra (conteneur posé dans le décor) | BG |
 | `actor` | suit un acteur à l'offset près (bulle) | **OBJ, sans alternative** |
 
 Un actor bouge au pixel, la grille BG avance par 8 : une bulle en texte BG sauterait par
 crans de 8 px. Ce n'est pas une préférence de qualité, c'est une impossibilité — d'où
-`forced_target()`, et `forced_target_reason()` qui rend la contrainte **affichable** (une
-contrainte muette se lit comme un bug de l'éditeur). Même mécanique pour une scène en mode
-bitmap : plus de tilemap du tout, donc OBJ. `target` ne porte une valeur que lorsque
-l'auteur a fait un choix réel.
+`forced_target()`, calculé **une fois sur le nœud** ; l'inspecteur du nœud (`UINodeInspector`)
+affiche la cible imposée ET sa raison via les notices `ui.anchor.forced_*` (une contrainte
+muette se lit comme un bug de l'éditeur). Même mécanique pour une scène en mode bitmap : plus
+de tilemap du tout, donc OBJ. `target` ne porte une valeur que lorsque l'auteur a fait un
+choix réel.
 
-Basculer une zone d'une cible à l'autre transfère la charge entre **deux budgets
-disjoints** — VRAM BG (64 Ko, arbitrée par `codegen/vram_alloc.py`) et VRAM OBJ (32 Ko).
-C'est l'échappatoire quand un charblock est plein.
+Une scène qui a besoin de deux chemins pose **deux nœuds** `Interface` (un HUD fixe en BG,
+une bulle actor-OBJ) — cf. plus bas. Basculer un nœud d'une cible à l'autre transfère la
+charge entre **deux budgets disjoints** — VRAM BG (64 Ko, arbitrée par
+`codegen/vram_alloc.py`) et VRAM OBJ (32 Ko). C'est l'échappatoire quand un charblock est
+plein.
 
 ### Tout en pixels, une seule unité
 
@@ -1451,16 +1491,28 @@ position calculée reste possible par `text.draw(x, y, …)`, qui ne disparaît 
 `w` est **aussi** la largeur de coupe. Un champ séparé garantirait qu'un jour les deux
 divergent.
 
-### Une mise en page est un asset, pas une donnée de scène
+### Un nœud est un asset, pas une donnée de scène — et une scène en référence PLUSIEURS
 
-`UILayout` est rangée dans `project/ui_layouts/` et référencée par nom via
-`Scene.ui_layout` : une boîte dessinée une fois sert les quarante scènes du jeu et se
-corrige en un endroit. Contrepartie à assumer dans l'UI — éditer une zone depuis le canvas
-d'une scène modifie un objet **partagé**, et `ui_layout_users()` alimente le badge
-« partagée — N scènes » : le taire casserait N scènes en croyant en ajuster une.
+`UILayout` est rangé dans `project/ui_layouts/` et référencé par nom. Une scène en référence
+une **liste** (`Scene.ui_layouts`, v0.25) : chaque nœud porte son couple ancrage/cible, une
+même scène peut donc poser un HUD-BG et une bulle actor-OBJ côte à côte. Une boîte dessinée
+une fois sert les quarante scènes du jeu et se corrige en un endroit — d'où le partage :
+éditer un élément depuis le canvas modifie un objet **partagé**, et `ui_layout_users()`
+alimente le badge « partagée — N scènes », sans quoi on casserait N scènes en croyant en
+ajuster une.
 
-**Une seule mise en page par scène, contenant N zones.** Passer de 1 à N plus tard est
-additif ; l'inverse ne l'est pas.
+Le passage 1→N est celui qu'annonçait la v0.3 (« additif ; l'inverse ne l'est pas ») :
+`Scene.ui_layout` (nom unique) se relit désormais emballé dans `ui_layouts`, et ne se
+réécrit que sous la forme liste — la recette *une forme ancienne se lit, une seule s'écrit*.
+
+`Project.scene_ui_layouts(scene)` résout la liste ; `scene_ui_slots` / `scene_ui_images` /
+`scene_ui_elements` en donnent les paires `(nœud, élément)` que les émetteurs **par scène**
+itèrent (codegen, validateur, jauge OAM). `scene_ui_layout` (singulier) subsiste pour le seul
+cas où « un défaut » suffit — l'outil widget dépose un élément dessiné dans le nœud PRIMAIRE
+(le premier). Les tables projet-globales (`all_regions` / `all_images` / `all_elements`)
+itèrent, elles, TOUS les nœuds du projet : un nœud orphelin (référencé par aucune scène)
+émettrait donc quand même ses `REGION_*`/`IMAGE_*` — c'est pourquoi supprimer le dernier
+usage d'un nœud emporte l'asset (`DeleteInterfaceCmd`).
 
 ### Du canvas à la ROM
 
@@ -1469,7 +1521,10 @@ additif ; l'inverse ne l'est pas.
 Un nom de zone inconnu est une **erreur** de checker (`DOMAIN_REGION`), pas un
 avertissement.
 
-Le runtime a deux chemins, choisis par `UIRegionInfo.target` :
+Le runtime a deux chemins, choisis par `UIRegionInfo.target` — un drapeau **par entrée**,
+émis au build en résolvant `resolved_target()` du NŒUD porteur (v0.25) : le runtime ne
+connaît aucune notion de « nœud », juste des entrées à la cible déjà tranchée. N nœuds par
+scène ne changent donc rien à la ROM sinon le nombre d'appels de setup dans `scene_init`.
 
 - **BG** — `text_render_cp_al()` avec la position, la largeur de coupe et l'alignement de
   la zone. Rien de spécifique : c'est le chemin libre avec une géométrie qui vient d'une
@@ -1529,29 +1584,39 @@ l'encre en place.
 
 Côté éditeur : outil « Widget d'interface » (T) au canvas de scène — un bouton, trois
 types au dropdown (zone / conteneur / texte, comme collision et inpainting), même geste
-rectangle pour les trois, et création de la mise en page à la volée si la scène n'en a
-pas (`UIWidgetTool` + `UIRegionController.create_element`). `UIRegionItem` déplaçable
-avec snap 8 px en BG et 1 px en OBJ, dans la couleur de la famille Interface
+rectangle pour les trois, et création du nœud à la volée si la scène n'en a pas
+(`UIWidgetTool` + `create_element`, qui dépose dans le nœud primaire). `UIRegionItem`
+déplaçable avec snap 8 px en BG et 1 px en OBJ, dans la couleur de la famille Interface
 (`icons.COLOR_UI`, le type se lit à la forme d'icône posée à côté du nom) ; les
 descendants d'un conteneur suivent visuellement pendant le drag (leur modèle est relatif
-au parent, rien à réécrire) ; `MoveUIRegionCmd` annulable et fusionnable ; UN inspecteur
-adaptatif (`UIInspector`, grammaire `W`) routé par le `selection_bus`, sections par type.
+au parent, rien à réécrire) ; `MoveUIRegionCmd` annulable et fusionnable.
 
-**L'arbre de la mise en page vit dans l'arbre de SCÈNE** (`_SceneTree`,
-`assets_finder_panel.py`), pas dans un panneau séparé : sous chaque scène, une sous-branche
-« Interface » (marquée « — N scènes » car `UILayout` est un asset partagé, à la façon d'une
-scène instanciée Godot) déploie la hiérarchie des éléments. Objectif : l'arbre montre d'un
+**Deux inspecteurs, deux niveaux (v0.25).** Le NŒUD (`UINodeInspector`, sélection
+`UILayoutSelection`) porte ancrage + cible + le badge de partage — clic sur la racine
+« Interface ». L'ÉLÉMENT (`UIInspector`, sélection `UIRegionSelection`) porte la géométrie
+et le reste ; il ne fait plus que **lire** la cible héritée du nœud (`resolved_target`) pour
+adapter le pas de grille et le fond, sans menu qui la changerait. Les deux sont routés par le
+`selection_bus`, le nom se change dans l'en-tête partagé (`AssetHeaderBar`) pour l'un comme
+pour l'autre.
+
+**L'arbre vit dans l'arbre de SCÈNE** (`scene_tree_panel.py`), pas dans un panneau séparé :
+sous chaque scène, un nœud racine par `Interface` référencé (`_populate_ui_branch` itère
+`scene_ui_layouts`) — étiqueté « Interface » tant qu'il n'y en a qu'un, par son NOM dès
+qu'il y en a plusieurs, badge « — N scènes » quand partagé. Objectif : l'arbre montre d'un
 coup d'œil ce qu'un **script Lua peut référencer** — un actor (`get_actor`) et une zone
-(`text.draw_in` / `REGION_*`) s'affichent en clair, un conteneur ou un texte authoré (pas de
-domaine, cf. `api.py`) en grisé. Création / réordonnancement / renommage / suppression des
-éléments s'y font (menu contextuel + drag), et `AssetsFinderPanel.ui_layout_changed`
-déclenche sauvegarde + redessin du canvas. Le renommage passe par `Project.rename_ui_element`
-(unicité `REGION_*` projet-globale, `retarget_parent` des enfants, refactor des scripts pour
-les seules zones).
+(`text.draw_in` / `REGION_*`) s'affichent en clair, un conteneur ou un texte authoré en grisé.
+Le **+** crée un nouveau nœud (nouvel asset, comme un acteur — `_add_interface`) ; le menu
+contextuel du nœud ajoute un widget ou le supprime (`DeleteInterfaceCmd` : retire la référence
+de la scène, et emporte l'asset si plus aucune scène ne l'emploie). Création /
+réordonnancement / renommage / suppression des éléments s'y font aussi (menu + drag), et
+`ui_layout_changed` déclenche sauvegarde + redessin. Le renommage d'un élément passe par
+`Project.rename_ui_element`, celui d'un nœud par `Project.rename_ui_layout` (fichier + refs
+`Scene.ui_layouts` de toutes les scènes).
 
 **Z-order = ordre de `elements`** (frère tardif au-dessus), lu par trois consommateurs :
-l'arbre (`children`), le canvas (`setZValue(120 + index in_tree_order)` — parent sous ses
-enfants) et le codegen (ordre de dessin des fonds). Un réordonnancement — menu contextuel
+l'arbre (`children`), le canvas (base `_hw_layer_z` du layer matériel, plus un offset qui
+départage — l'indice du NŒUD dans la scène, puis l'ordre d'arbre en fraction : parent sous
+ses enfants) et le codegen (ordre de dessin des fonds). Un réordonnancement — menu contextuel
 Monter/Descendre, ou drop entre deux frères — réécrit `elements` en DFS canonique via
 `UILayout.move_sibling` / `place_child`, sous une commande snapshot `UILayoutOrderCmd`
 (ordre + refs `parent`), pour que les trois s'accordent. Le drop porte à la fois le parent
@@ -1578,6 +1643,50 @@ ensemble inconnu sont deux choses différentes ; les confondre ferait réserver 
 
 Même raisonnement pour `scene_codepoints`, qui restreint le sous-ensemble de glyphes chargé.
 
+**Ce qui est réservé est ce qui est chargé, et ça se dérive d'un seul calcul.** Le
+sous-ensemble de glyphes d'une scène est l'UNION de toutes les langues déclarées
+(`scene_codepoints_union`, ROADMAP v0.9) : c'est ce qui permet à `lang.set` de recharger une
+scène dans une autre langue sans reconstruire la police en VRAM. Or `text_set_font` recopie ce
+sous-ensemble **entier** (`n_var × n_load`), quelle que soit la langue active — la réservation
+compte donc la même union, sur la même liste de langues (`main_gen._declared_lang_codes`,
+point unique). Les deux ont divergé entre les phases 3.3 et 5.1 du jalon, la réservation
+comptant la seule langue SOURCE : une scène réservait 12 tuiles pour 24 chargées, et le
+chargement écrasait les bases des polices voisines, la surface composée et les sprites en
+cible BG. C'est la raison d'être du point unique — pas une précaution théorique.
+
+### Ce qu'une mise en page garde, et ce qu'un script peut animer
+
+La géométrie d'une mise en page est **authorée** : ce qui existe, sa taille, son sprite, son
+ancrage, son parent et sa profondeur se décident dans le canvas, jamais au runtime. Rouvrir ça
+au script reprendrait ce que la mise en page existe pour fermer.
+
+La **position d'une image** fait exception depuis la v0.22 (2026-09-02), et la nuance est la
+raison d'être de l'exception : `ui.image_move` pose un décalage **relatif** à la position
+authorée, qui reste la vérité — `(0, 0)` rend l'image à sa mise en page sans que le script ait
+mémorisé quoi que ce soit. La géométrie n'est pas rendue au script, elle est **animée**, comme
+`self.position` anime un acteur sans que la scène cesse de décider où il commence. Le moteur
+déplaçait d'ailleurs déjà des images de lui-même : `ui_image_origin` retranche la caméra pour
+une image ancrée au monde et suit l'acteur pour une bulle — seul le script en était tenu à
+l'écart.
+
+Deux `short` (`dx`, `dy`) dans `UIImageState`, remis à zéro par `ui_images_reset` comme le
+reste de l'état de scène. Rien à écrire côté déménagement : `ui_image_update` comparait déjà
+l'origine à celle de la frame précédente et, en cible BG, effaçait l'ancienne empreinte avant
+de réécrire (`ui_image_clear_bg`).
+
+**Une zone de texte et un panneau ne se déplacent pas**, et ce n'est pas une omission : le bloc
+de composition d'une zone est alloué à un rectangle fixe par `scene_init` (`RegionSurf`), et le
+fond d'un panneau est peint une fois dans la tilemap. `DOMAIN_IMAGE` ne connaît que les images,
+donc citer autre chose est refusé au build sans qu'un contrôle dédié existe.
+
+**Pourquoi un appel de module et non une propriété** (`ui.get("X").y = 40`) : la forme
+propriété suppose un récepteur que le langage TIENT — `expr_types.resolve_prop` exige
+littéralement un `ExprName`, et une référence « ne se calcule pas, on n'en prend pas de champ »
+(`infer_ref_type`). Une image est adressée par son NOM à travers un module, comme un effet
+sonore, une liste ou une scène ; la forme voisine est `list.set_index("Menu", i)`. C'est aussi
+ce qui fait que ces trois entrées n'ont demandé **aucune ligne** de checker ni de codegen : un
+argument porteur d'un domaine déjà couvert passe par les chemins génériques.
+
 ### UI en sprite — `Actor.screen_space`
 
 L'autre moitié de l'interface : un `UIImage` est un dessin posé dans une mise en page, un
@@ -1603,8 +1712,9 @@ acteur d'écran est un **acteur de jeu** (script, composants, logique) qui ne d�
   devant. Aucune règle implicite ajoutée par-dessus.
 - **Ce qui continue de lire le monde**, et que `validator._check_screen_space` signale :
   une CollisionBox (carte de collision en pixels de monde), une caméra qui suit cet acteur
-  (elle resterait immobile), un élément d'UI ancré sur lui (`text_region_origin()`
-  retrancherait le scroll une seconde fois). Trois cas, trois corrections évidentes.
+  (elle resterait immobile), un NŒUD d'interface ancré sur lui (l'ancrage est celui du nœud
+  depuis v0.25 ; `text_region_origin()` retrancherait le scroll une seconde fois). Trois cas,
+  trois corrections évidentes.
 
 ### Trois couleurs, trois champs — fond, encre, surlignement
 
@@ -1616,7 +1726,7 @@ par un second chemin qui n'appliquait pas les mêmes conditions.
 
 | | Champ | Référentiel | Qui la dessine |
 | --- | --- | --- | --- |
-| **Fond** | `UIPanel.fill_palette` + `fill_index` | une palette BG **active** de la scène | `ui_fill_rect` — des tuiles pleines dans la tilemap |
+| **Fond** | `FillMixin.fill_palette` + `fill_index` | une palette BG **active** de la scène | `ui_fill_rect` — des tuiles pleines dans la tilemap |
 | **Encre** | `UIText.text_color` | index 0-15 de la **banque d'UI** | une VARIANTE des glyphes (`scene_text_colors`) |
 | **Surlignement** | `UIText.highlight_color` | index 0-15 de la **banque d'UI** | `text_surf_seed` — le fond des tuiles de surface |
 
@@ -1667,9 +1777,57 @@ par un second chemin qui n'appliquait pas les mêmes conditions.
   surface BG. L'inspecteur masque le champ plutôt que de le proposer sans effet — même règle
   que `_FILL_TARGETS`, qui dit ce que le build ÉMET.
 
+### `UIList` — la navigation, pas la mise en page
+
+`UIList` porte ce qu'un menu demande au MOTEUR : un index courant, des bornes, un pas et de
+quoi le faire bouger. Ses RANGÉES sont ses enfants de type texte, dans l'ordre de l'arbre —
+rien à déclarer, ce qu'on voit dans l'éditeur est ce que la liste parcourt. Le nombre
+d'ITEMS reste de la donnée (`list.set_count`), à défaut le compte de rangées, ce qui suffit
+à un menu statique. Ce qu'elle ne fait pas : ÉCRIRE. Le contenu d'une rangée est posé par
+le script (`text.draw_in(list.row(...), ...)`), parce qu'un item est une ligne de donnée et
+non un objet d'interface — c'est ce qui fait qu'un inventaire, un arbre de compétences et
+un menu de sauvegarde partagent un seul mécanisme.
+
+Elle a été un DRAPEAU du conteneur (`is_list`) jusqu'au 2026-09-02. Le principe
+tenait, son rangement non : le C avait déjà `UIListInfo` et ses sept fonctions, l'API disait
+déjà `list.*`, et `to_dict` écrivait cinq clés selon un booléen. Un `{"kind": "panel",
+"is_list": true}` se relit encore et ne se réécrit jamais — même recette que `KIND_REGION`.
+
+- **La grille tient en deux nombres**, `nav_columns` et `nav_major`, et non en quatre modes :
+  un parcours en Z ou en W a besoin de savoir DE COMBIEN sauter en changeant de ligne, donc
+  un énuméré aurait de toute façon dû s'accompagner du compte. Une colonne = liste verticale,
+  une ligne = rangée d'onglets. Le pas transverse **n'existe pas** quand la grille n'a qu'une
+  ligne : sinon la croix entière piloterait un menu à un seul axe, et le jeu perdrait l'autre.
+- **Le défilement est à la LIGNE.** Dans une grille, une ligne vaut `nav_columns` items et la
+  fenêtre s'aligne dessus — avancer d'un item décalerait les colonnes d'un cran à chaque pas.
+- **`active` est la sélection, pas l'affichage.** Une liste inactive reste dessinée, garde son
+  index et son curseur, et cesse de lire la croix. Sans ce champ, `ui_list_tick` faisait
+  bouger toutes les listes au même appui — un menu et son sous-menu à l'écran ensemble était
+  donc impossible.
+- **La liste possède son CURSEUR** : elle nomme un `UIImage` de la même mise en page, et le
+  moteur le déplace par le chemin de `ui.image_move` — un décalage RELATIF à la position
+  authorée. L'auteur pose son curseur en face de la première rangée ; la liste l'écarte de la
+  distance qui sépare cette rangée de la rangée courante. Une implémentation, deux portes :
+  l'authoring pour le cas courant, l'appel de script pour le reste.
+- **Le style de la rangée choisie, c'est `highlight` et `color`, rien d'autre** — les deux
+  réglages qu'une zone porte déjà, appliqués en suivant l'index. Le redessin passe par
+  `text_render_region`, avec deux globales de surcharge (`g_row_color`, `g_row_highlight`) le
+  temps du rendu : pas de second chemin de dessin. Le texte à reposer vient de
+  `g_ui_list_row_text`, une table par RANGÉE remplie par `text_draw_in` — et non des têtes de
+  lecture (`TEXT_READ_MAX`), dont le plafond est global au projet et laisserait dehors le
+  troisième menu d'un jeu. Une ANIMATION sur la rangée choisie n'est pas offerte : sur cible
+  BG elle réécrirait des tuiles à chaque frame.
+
+Vérification : `tests/test_ui_list_type.py` (le type, la relecture, ce que le build émet) et
+`tests/test_ui_list_native.py`, qui fait tourner le VRAI `ui_list_tick` compilé — le pas en
+grille et le défilement sont de l'arithmétique entière sans sortie visible avant qu'une ROM
+tourne.
+
 ### Fond d'un conteneur — deux chemins que la CIBLE choisit
 
-`UIPanel.fill_kind` est polymorphe, et `_FILL_TARGETS` dit ce que le build ÉMET, pas ce qui
+`FillMixin.fill_kind` est polymorphe — porté par les DEUX types qui dessinent un fond,
+le conteneur et la liste —
+et `_FILL_TARGETS` dit ce que le build ÉMET, pas ce qui
 serait concevable : couleur / nine-slice / background posent des tuiles et écrivent une
 carte, donc **BG seulement** (`scene_color_fills`, `scene_image_fills`) ; sprite pave des
 OBJ, donc **OBJ seulement**. La table promettait autrefois couleur et nine-slice sur OBJ,
@@ -1680,8 +1838,8 @@ que rien n'émettait — un mode permis mais jamais émis est pire qu'un mode ab
   serait plus un conteneur. La dernière colonne/rangée déborde plutôt que d'être rognée — le
   matériel ne sait pas couper un sprite. Coût : des slots OAM, **aucune tuile de plus**
   (toutes les cases pointent la même frame).
-- **Aucune table de plus** : le panneau entre dans `g_ui_images` avec les `UIImage`, et
-  `UIPanel` expose la surface commune (`sprite_name`, `state_name`, `playing`, `priority`,
+- **Aucune table de plus** : le conteneur entre dans `g_ui_images` avec les `UIImage`, et
+  `FillMixin` expose la surface commune (`sprite_name`, `state_name`, `playing`, `priority`,
   `state_index`) en propriétés dérivées de ses champs `fill_*`. Les deux types demandent la
   même chose au moteur à la répétition près ; `UIImageInfo` ne gagne que `cols`/`rows` et
   `speed`. Corollaire : `IMAGE_<nom du panneau>` existe, un script anime le fond comme une

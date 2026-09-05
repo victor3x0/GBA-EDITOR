@@ -50,9 +50,12 @@ def _renamer(method: str):
 
 
 def _store_deleter(attr: str):
-    """Suppression annulable d'un asset d'un `ResourceStore` (Ctrl+Z)."""
+    """Bâtit la suppression annulable d'un asset d'un `ResourceStore` (Ctrl+Z).
+
+    Rend la commande SANS la pousser : le finder la pousse seule, ou groupe tout
+    un lot dans un seul `MacroCmd` pour un unique Ctrl+Z (cf. AssetKind.delete)."""
     def delete(project, obj):
-        get_history().push(DeleteResourceCmd(getattr(project, attr), obj))
+        return DeleteResourceCmd(getattr(project, attr), obj)
     return delete
 
 
@@ -147,7 +150,7 @@ SCRIPTS = AssetKind(
     icon_of       = _script_icon,
     nodes         = dir_nodes("scripts_dir", (".lua", ".c")),
     rename        = _rename_script,
-    delete        = lambda project, path: get_history().push(DeleteFileCmd(path)),
+    delete        = lambda project, path: DeleteFileCmd(path),
     delete_prompt = lambda p: f"Delete “{p.name}”?\n(Ctrl+Z to undo)",
     add_tooltip   = "New script",
     # Glisser un script sur un actor lui attache un ScriptComponent. La charge

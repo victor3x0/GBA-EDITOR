@@ -123,14 +123,12 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_lua_subset(ctx)
     _check_text_overflow(ctx)
     _check_font_coverage(ctx)
-    _check_vram_lang_budget(ctx)
     _check_literal_texts(ctx)
+    _check_translation_holes(ctx)
     _check_ui_text_key(ctx)
     _check_ui_image(ctx)
     _check_blend(ctx)
-    _check_ui_panel_fill(ctx)
-    _check_ui_text_backdrop_bank(ctx)
-    _check_ui_text_fill_bank(ctx)
+    _check_ui_container_fill(ctx)
     _check_scene_font(ctx)
     _check_cameras(ctx)
     _check_window_regions(ctx)
@@ -539,9 +537,12 @@ def _check_text_overflow(ctx: ValidationContext):
     lay_defaults: dict[str, list] = {}
     for _scene in p.scenes:
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
-        _seen_f = lay_defaults.setdefault(getattr(_scene, "ui_layout", "") or "", [])
-        if not any(x is _f for x in _seen_f):
-            _seen_f.append(_f)
+        # La police par défaut de la scène s'applique à CHACUN de ses nœuds
+        # `Interface` (v0.25 : une scène en référence plusieurs).
+        for _lname in (getattr(_scene, "ui_layouts", []) or []):
+            _seen_f = lay_defaults.setdefault(_lname, [])
+            if not any(x is _f for x in _seen_f):
+                _seen_f.append(_f)
     region_layout = {r.name: lay.name for lay, r in p.all_regions()}
 
     def _fonts_for(el) -> list:
@@ -639,9 +640,12 @@ def _check_font_coverage(ctx: ValidationContext):
     lay_defaults: dict[str, list] = {}
     for _scene in p.scenes:
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
-        _seen_f = lay_defaults.setdefault(getattr(_scene, "ui_layout", "") or "", [])
-        if not any(x is _f for x in _seen_f):
-            _seen_f.append(_f)
+        # La police par défaut de la scène s'applique à CHACUN de ses nœuds
+        # `Interface` (v0.25 : une scène en référence plusieurs).
+        for _lname in (getattr(_scene, "ui_layouts", []) or []):
+            _seen_f = lay_defaults.setdefault(_lname, [])
+            if not any(x is _f for x in _seen_f):
+                _seen_f.append(_f)
     region_layout = {r.name: lay.name for lay, r in p.all_regions()}
 
     def _fonts_for(el) -> list:
@@ -710,44 +714,6 @@ def _check_font_coverage(ctx: ValidationContext):
                     _warn(text.key, lbl, "l'élément", el.name, eff.name, missing)
 
 
-def _check_vram_lang_budget(ctx: ValidationContext):
-    """Le garde-fou VRAM au PIRE cas des langues (ROADMAP v0.9, phase 3.4) —
-    le pendant `_check_text_overflow` côté GLYPHES plutôt que côté LARGEUR de
-    zone.
-
-    La RÉSERVATION réelle d'une scène (`scene_text_reservation`) reste
-    calculée sur la langue ACTIVE — la source, tant que la phase 4 n'a pas
-    ouvert le choix (décision 4) — donc CETTE ROM ne charge jamais plus que ce
-    qui a été mesuré ici pour `code=""`. Mais une traduction dont le
-    sous-ensemble de glyphes est plus lourd déborderait sur le voisin dès que
-    cette langue serait un jour active, et rien ne le dirait avant que
-    quelqu'un joue la ROM dans cette langue — le moment le plus cher pour le
-    corriger. Avertissement, pas erreur : rien n'est cassé dans le build
-    d'aujourd'hui, contrairement à `_check_bg_tile_budget` (un dépassement
-    RÉEL, lui, bloque)."""
-    p = ctx.project
-    langs = getattr(p.settings, "languages", []) if hasattr(p, "settings") else []
-    if not langs or not getattr(p, "scenes", None):
-        return
-    from codegen.runtime_codegen.main_gen import scene_text_reservation
-
-    for scene in p.scenes:
-        base = scene_text_reservation(p, scene, "").get("mono_tiles", 0)
-        worst_code, worst_name, worst_n = None, "", base
-        for lang in langs:
-            n = scene_text_reservation(p, scene, lang.code).get("mono_tiles", 0)
-            if n > worst_n:
-                worst_code, worst_name, worst_n = lang.code, (lang.name or lang.code), n
-        if worst_code is not None:
-            ctx.warn(None,
-                f"Scène '{scene.name}' : la police en « {worst_name} » charge "
-                f"{worst_n} tuiles de glyphes contre {base} pour la source — "
-                f"ça déborderait sur son voisin en VRAM une fois cette langue "
-                f"active. Réduis les caractères qu'ajoute cette traduction "
-                f"(ROADMAP v0.9, phase 4 — le sujet n'est pas encore actionnable "
-                f"en jeu, mais vaut d'être connu avant de l'ouvrir).")
-
-
 def _check_literal_texts(ctx: ValidationContext):
     """Un littéral passé à `text.draw("Bonjour")` reste compilable — une
     entrée ANONYME de la table, comme depuis la v0.3.2, un raccourci hors
@@ -780,6 +746,47 @@ def _check_literal_texts(ctx: ValidationContext):
                 f"entrée ANONYME (v0.3.2), invisible pour chaque langue "
                 f"déclarée. Crée-le dans l'écran Texte pour pouvoir le "
                 f"traduire.")
+
+
+def _check_translation_holes(ctx: ValidationContext):
+    """Ce qu'une langue déclarée n'a pas traduit (ROADMAP v0.9, phase 5.3).
+
+    Décision verrouillée à l'ouverture du jalon — « le build compte les trous
+    et les nomme » — et restée sans implémentation jusqu'ici : le compte
+    existait dans l'ÉDITEUR (le badge par onglet de l'atelier, phase 2), pas
+    là où quelqu'un fabrique une cartouche.
+
+    Un trou n'est pas une erreur : une entrée absente d'un side rend la SOURCE
+    (`project_langs.py`), donc le jeu affiche un texte de la mauvaise langue
+    plutôt qu'un écran blanc — c'est délibéré, et c'est ce qui laisse traduire
+    un jeu par étapes. Ce qui manquait, c'est de le SAVOIR avant de graver.
+
+    Silencieux en projet monolingue, même contrat que `_check_literal_texts` :
+    sans langue déclarée, il n'y a pas de trou, il y a un jeu dans sa langue.
+    Les entrées ANONYMES (littéraux de script) ne sont pas comptées ici — elles
+    n'ont pas d'id qu'un side puisse joindre, et `_check_literal_texts` les
+    nomme déjà une par une, avec leur fichier et leur ligne."""
+    p = ctx.project
+    if not hasattr(p, "is_multilingual") or not p.is_multilingual():
+        return
+    textes = [t for t in getattr(p, "texts", []) if (t.content or "").strip()]
+    if not textes:
+        return
+    for lang in p.settings.languages:
+        side = p.translations.get(lang.code, {})
+        trous = [t for t in textes if not (side.get(t.id) or "").strip()]
+        if not trous:
+            continue
+        # Les clés, pas les ids : c'est ce que l'auteur lit dans l'écran Texte
+        # et ce que ses scripts citent. Trois, parce qu'un message qui déroule
+        # deux cents clés ne se lit pas — le compte porte l'ampleur, l'écran
+        # porte la liste.
+        apercu = ", ".join(t.key for t in trous[:3])
+        reste = f", et {len(trous) - 3} autre(s)" if len(trous) > 3 else ""
+        ctx.warn(None,
+            f"Langue « {lang.name or lang.code} » : {len(trous)} entrée(s) sur "
+            f"{len(textes)} ne sont pas traduites — elles s'afficheront dans la "
+            f"langue source ({apercu}{reste}).")
 
 
 def _check_ui_text_key(ctx: ValidationContext):
@@ -855,11 +862,11 @@ def _check_ui_image(ctx: ValidationContext):
     p = ctx.project
     if not hasattr(p, "all_images"):
         return
-    from core.models.ui_region import KIND_PANEL
+    from core.models.ui_region import can_fill
     for lay, im in p.all_images():
-        # `all_images` porte aussi les panneaux à fond sprite : même table, même
+        # `all_images` porte aussi les conteneurs à fond sprite : même table, même
         # panne, seul le mot change pour que le message désigne le bon objet.
-        what = ("le fond du conteneur" if getattr(im, "kind", "") == KIND_PANEL
+        what = ("le fond du conteneur" if can_fill(im)
                 else "l'image")
         name = getattr(im, "sprite_name", "") or ""
         if not name:
@@ -877,9 +884,9 @@ def _check_ui_image(ctx: ValidationContext):
                 f"le premier état.")
 
 
-def _check_ui_panel_fill(ctx: ValidationContext):
+def _check_ui_container_fill(ctx: ValidationContext):
     """Le canvas peint le fond d'un conteneur d'UI quoi qu'il arrive ; le build,
-    lui, n'en émet qu'une partie. Un panneau hors de ce cadre disparaît entre
+    lui, n'en émet qu'une partie. Un conteneur hors de ce cadre disparaît entre
     l'éditeur et la ROM, sans une ligne de log.
 
     Deux chemins depuis que les fonds OBJ existent, et le mode DIT lequel :
@@ -892,17 +899,14 @@ def _check_ui_panel_fill(ctx: ValidationContext):
     Avertissement et non erreur : le texte de la zone s'affiche quand même, il
     lui manque son fond."""
     p = ctx.project
-    from core.models.ui_region import (KIND_PANEL, FILL_NONE, FILL_COLOR,
+    from core.models.ui_region import (can_fill, FILL_NONE, FILL_COLOR,
                                        FILL_SPRITE, ANCHOR_SCREEN, TARGET_BG,
                                        fill_allowed)
     for scene in p.scenes:
-        lay = p.scene_ui_layout(scene)
-        if lay is None:
-            continue
         rm = int(getattr(scene, "render_mode", 0) or 0)
         active = list(getattr(scene, "active_bg_palettes", []) or [])
-        for el in lay.elements:
-            if getattr(el, "kind", "") != KIND_PANEL:
+        for lay, el in p.scene_ui_elements(scene):
+            if not can_fill(el):
                 continue
             fk = getattr(el, "fill_kind", FILL_NONE)
             if fk == FILL_NONE:
@@ -943,120 +947,6 @@ def _check_ui_panel_fill(ctx: ValidationContext):
                     f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
                     f"Le canvas le montre quand même : c'est l'éditeur qui "
                     f"promet plus que le build ne tient.")
-
-
-def _check_ui_text_backdrop_bank(ctx: ValidationContext):
-    """Une zone de texte composée SOUS un panel nine-slice/background
-    recompose son encre PAR-DESSUS les vraies tuiles du cadre (cf.
-    `RegionFill` dans gba_engine.h) — ce qui suppose que le glyphe et le
-    cadre partagent la MÊME banque de palette : le hardware n'en offre qu'une
-    par tuile, impossible d'y mélanger deux jeux de couleurs.
-
-    Erreur bloquante et non avertissement : sans ce garde-fou, l'auteur
-    verrait un texte aux couleurs n'importe quoi (la banque du cadre lue comme
-    si c'était celle de la police), sans un mot pour expliquer pourquoi.
-
-    `UI_PAL_BANK_CONTAINER` (« banque du conteneur ») résout tout seul, via
-    `scene_container_ink_bank` — même calcul que l'émission
-    (`resolve_ui_pal_bank`), donc jamais en désaccord avec ce que le build
-    écrit. Il ne reste en erreur que s'il ne résout RIEN (aucun conteneur,
-    ou plusieurs aux banques différentes) : deviner serait pire que demander."""
-    p = ctx.project
-    from core.models.scene import UI_PAL_BANK_CONTAINER
-    from codegen.runtime_codegen.main_gen import (
-        scene_image_fills, scene_region_backdrops, scene_container_ink_bank)
-    from codegen.palette_alloc import scene_bank_layout
-    for scene in p.scenes:
-        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-        if lay is None:
-            continue
-        img_fills, _assets = scene_image_fills(p, scene)
-        backdrops = scene_region_backdrops(p, scene, img_fills)
-        if not backdrops:
-            continue
-        bank_layout = scene_bank_layout(p, scene, "bg")
-        uib = int(getattr(scene, "ui_pal_bank", -1))
-        auto = uib == UI_PAL_BANK_CONTAINER
-        if auto and scene_container_ink_bank(p, scene) is not None:
-            continue      # résolu, et aligné par construction — rien à dire
-        seen: set[str] = set()
-        for rb in backdrops:
-            f = img_fills[rb["fill"]]
-            panel = lay.get(f["name"])
-            if panel is None or panel.name in seen:
-                continue
-            seen.add(panel.name)
-            ba = p.get_background(getattr(panel, "fill_asset", "") or "")
-            bank = bank_layout.bg_block_offset(ba) if ba else None
-            if auto or bank is None or uib != bank:
-                want = ("« Banque de palette du texte » ne peut pas résoudre "
-                        "« banque du conteneur » toute seule (aucun bloc alloué, "
-                        "ou plusieurs conteneurs aux banques différentes dans la "
-                        "scène) — désigne-la à la main"
-                        if auto else
-                        f"« Banque de palette du texte » (ui_pal_bank) doit donc "
-                        f"désigner la banque {bank if bank is not None else '(introuvable)'} "
-                        f"de cet asset, pas {'aucune (auto)' if uib < 0 else uib}")
-                ctx.error(None,
-                    f"Scène '{scene.name}' : le texte de '{rb['name']}', posé "
-                    f"sur le conteneur '{panel.name}' (fond "
-                    f"'{getattr(panel, 'fill_asset', '')}'), recompose son "
-                    f"encre par-dessus le cadre — {want}.")
-
-
-def _check_ui_text_fill_bank(ctx: ValidationContext):
-    """Même contrainte matérielle que ci-dessus, pour un conteneur à fond
-    COULEUR : la tuile où le texte se compose ne porte qu'UNE banque de
-    palette, et l'aplat du conteneur doit s'y lire.
-
-    Ne s'applique qu'en banque DÉSIGNÉE. En mode automatique la banque d'UI
-    appartient à la police, et c'est le build qui y loge la couleur (cf.
-    `_gen_scene_init`) — il n'y a rien à demander à l'auteur. Désignée, en
-    revanche, la banque porte des couleurs qu'il a choisies : y écrire en
-    douce les remplacerait, donc l'index du conteneur est lu tel quel et il
-    faut que ce soit la bonne banque.
-
-    `UI_PAL_BANK_CONTAINER` (« banque du conteneur ») résout tout seul, même
-    calcul que l'émission (`resolve_ui_pal_bank`, `scene_container_ink_bank`) —
-    en erreur seulement s'il ne résout RIEN.
-
-    Erreur et non avertissement, pour la même raison que le cadre : sinon le
-    fond du texte prend une couleur arbitraire, sans rien pour l'expliquer."""
-    p = ctx.project
-    from core.models.scene import UI_PAL_BANK_CONTAINER
-    from codegen.runtime_codegen.main_gen import (
-        scene_color_fills, scene_region_colors, scene_container_ink_bank)
-    for scene in p.scenes:
-        uib = int(getattr(scene, "ui_pal_bank", -1))
-        auto = uib == UI_PAL_BANK_CONTAINER
-        if uib < 0 and not auto:
-            continue
-        if auto and scene_container_ink_bank(p, scene) is not None:
-            continue      # résolu, et aligné par construction — rien à dire
-        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-        if lay is None:
-            continue
-        fills, _idx = scene_color_fills(p, scene)
-        by_panel = {f["name"]: f for f in fills}
-        seen: set[str] = set()
-        for rc in scene_region_colors(p, scene, fills):
-            if rc["panel"] in seen:
-                continue
-            seen.add(rc["panel"])
-            bank = by_panel[rc["panel"]]["bank"]
-            if auto or bank != uib:
-                want = ("« Banque de palette du texte » ne peut pas résoudre "
-                        "« banque du conteneur » toute seule (plusieurs "
-                        "conteneurs aux banques différentes dans la scène) — "
-                        "désigne-la à la main"
-                        if auto else
-                        f"« Banque de palette du texte » (ui_pal_bank) doit donc "
-                        f"désigner la banque {bank} de ce conteneur, pas {uib}. "
-                        f"Sinon l'index de sa couleur est lu dans la mauvaise "
-                        f"palette")
-                ctx.error(None,
-                    f"Scène '{scene.name}' : le texte de '{rc['name']}' se "
-                    f"compose sur le fond du conteneur '{rc['panel']}' — {want}.")
 
 
 def _check_data_column_types(ctx: ValidationContext):
@@ -1612,8 +1502,9 @@ def _check_screen_space(ctx: ValidationContext):
 
     Toutes les scènes, pas seulement l'active : le build les compile toutes."""
     p = ctx.project
+    from core.models.ui_region import ANCHOR_ACTOR
     for scene in p.scenes:
-        ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+        layouts = p.scene_ui_layouts(scene)
         for actor in getattr(scene, "actors", []) or []:
             if not getattr(actor, "screen_space", False):
                 continue
@@ -1634,25 +1525,19 @@ def _check_screen_space(ctx: ValidationContext):
                     f"Scène '{scene.name}' : la caméra '{_cam.name}' suit '{actor.name}', "
                     f"qui est ancré à l'écran — sa position ne bouge pas avec le monde, "
                     f"la caméra restera donc immobile. Cibler un acteur de monde.")
-            # ③ Zone d'UI ancrée SUR cet acteur — `text_region_origin()` retranche
-            # la caméra pour une ancre acteur (elle la suppose dans le monde) ;
-            # sur un acteur d'écran ça décale la zone du scroll courant.
-            if ui is None:
-                continue
-            from core.models.ui_region import ANCHOR_ACTOR
-            for el in getattr(ui, "elements", []) or []:
-                # Sur les ROOTS seulement : un enfant hérite de l'ancrage de son
-                # root (cf. effective_anchor), le signaler pour tout un
-                # sous-arbre répéterait le même défaut autant de fois.
-                if getattr(el, "parent", ""):
-                    continue
-                if (getattr(el, "anchor", "") == ANCHOR_ACTOR
-                        and getattr(el, "anchor_actor", "") == actor.name):
+            # ③ Nœud Interface ancré SUR cet acteur — `text_region_origin()`
+            # retranche la caméra pour une ancre acteur (elle la suppose dans le
+            # monde) ; sur un acteur d'écran ça décale le nœud du scroll courant.
+            # L'ancrage est celui du NŒUD (v0.25) : un avertissement par nœud, plus
+            # par élément racine.
+            for lay in layouts:
+                if (getattr(lay, "anchor", "") == ANCHOR_ACTOR
+                        and getattr(lay, "anchor_actor", "") == actor.name):
                     ctx.warn(actor,
-                        f"Scène '{scene.name}' : l'élément d'interface '{el.name}' "
+                        f"Scène '{scene.name}' : le nœud d'interface '{lay.name}' "
                         f"est ancré sur '{actor.name}', lui-même ancré à l'écran — "
                         f"l'ancrage acteur suppose une position de monde et "
-                        f"retranchera le scroll une seconde fois. Ancrer l'élément "
+                        f"retranchera le scroll une seconde fois. Ancrer le nœud "
                         f"à l'ÉCRAN : les deux sont déjà dans le même repère.")
 
 

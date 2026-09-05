@@ -758,8 +758,11 @@ extern int  lang_get(void);
 extern void ui_image_set_state(int img, int state);
 extern void ui_image_play     (int img, int on);
 extern int  ui_image_state    (int img);
+extern void ui_image_move     (int img, int dx, int dy);
+extern int  ui_image_dx       (int img);
+extern int  ui_image_dy       (int img);
 
-/* Visibilité — commune aux trois types d'élément (texte, panel, image) :
+/* Visibilité — commune aux trois types d'élément (texte, conteneur, image) :
    `ui.get("nom")` résout au NOM d'élément DIRECTEMENT en `UIELEM_*` (cf.
    ui_element_constant), donc AUCUN appel de fonction pour `ui.get` lui-même
    — seul `self:show()`/`self:hide()` en émettent un, vers celle-ci. */
@@ -776,6 +779,10 @@ extern int  ui_list_index    (int l);
 extern void ui_list_set_index(int l, int i);
 extern int  ui_list_first    (int l);
 extern int  ui_list_row      (int l, int r);
+/* La main, pas l'affichage : une liste inactive reste dessinée et garde son
+   index. C'est ce qui permet un menu et son sous-menu à l'écran ensemble. */
+extern int  ui_list_active   (int l);
+extern void ui_list_set_active(int l, int on);
 
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,

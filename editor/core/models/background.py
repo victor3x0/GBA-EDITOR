@@ -23,7 +23,7 @@ from core.project_json import write_grid, read_grid
 #
 # Ce qui change n'est donc pas la nature de l'asset mais son EMPLOI :
 #   scene    — décor : posé en layer par une scène, repeint par tuile (inpainting).
-#   ui       — interface : sert de fond à un `UIPanel`, soit en cadre étirable
+#   ui       — interface : sert de fond à un `UIContainer`, soit en cadre étirable
 #              (nine-slice), soit en image posée. Cf. `ui_role`.
 #   animated — planche de frames : découpée en grille et jouée en boucle, puis
 #              POSÉE sur un fond hôte (cf. `BackgroundAnimation`).
@@ -40,7 +40,7 @@ BG_KIND_LABELS = {
 }
 
 # ── Rôle d'un fond d'INTERFACE ────────────────────────────────────
-# Les valeurs sont volontairement CELLES de `UIPanel.fill_kind` (FILL_NINE /
+# Les valeurs sont volontairement CELLES de `UIContainer.fill_kind` (FILL_NINE /
 # FILL_BG, cf. core/models/ui_region.py) : l'inspecteur d'UI filtre son menu
 # d'assets sur ce champ, et une seconde nomenclature obligerait à traduire
 # dans les deux sens à chaque lecture.
@@ -186,7 +186,7 @@ class BackgroundAnimation:
     # partagent un unique compteur ; l'éditeur ne propose donc pas ces champs.
     start_frame: int = 0
     # SURCHARGE de la cadence de l'animé, en ticks 60 Hz. 0 = celle de l'animé —
-    # même convention que `UIPanel.fill_speed` vis-à-vis du sprite qu'il pave.
+    # même convention que `UIContainer.fill_speed` vis-à-vis du sprite qu'il pave.
     # Deux copies à des vitesses différentes se désynchronisent durablement, là
     # où deux images de départ distinctes gardent le même rythme.
     speed: int = 0
@@ -268,7 +268,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
     kind: str = KIND_SCENE
 
     # ── kind == ui : fond d'interface ─────────────────────────────
-    # `ui_role` dit COMMENT le `UIPanel` étale l'image ; les marges ne comptent
+    # `ui_role` dit COMMENT le `UIContainer` étale l'image ; les marges ne comptent
     # qu'en nine-slice. En pixels, comme la géométrie d'UI — mais le build les
     # ramène à la TUILE (une tilemap ne coupe pas un cadre à 3 px, cf.
     # main_gen.scene_ui_fills), d'où le défaut à 8 : une marge d'une tuile est

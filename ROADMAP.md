@@ -43,7 +43,7 @@ numéroté, jamais mélangé aux jalons produit.
 | Version | Sujet | État |
 | --- | --- | --- |
 | v0.2 | Palettes de couleurs | **Livrée**, quelques finitions — [archive](changelog-archive/v0.2.md) |
-| v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé — [archive](changelog-archive/v0.3.md) |
+| v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé, [balisage rouvert pour `[font=nom]`](#le-balisage-rouvert--fontnom-changer-de-police-en-cours-de-texte--en-cours) — [archive](changelog-archive/v0.3.md) |
 | v0.4 | Animation de décor | **Livrée** — [archive](changelog-archive/v0.4.md) |
 | v0.5 | Sauvegarde | **Livrée** — [archive](changelog-archive/v0.5.md) |
 | v0.6 | Polish de la boucle de jeu | **Livrée**, rouverte pour le game feel — [archive](changelog-archive/v0.6.md) |
@@ -55,8 +55,8 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.20 | L'état du monde : les collections persistantes | **Livrée** — [archive](changelog-archive/v0.20.md) |
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
-| v0.22 | Menus, listes et curseur | **En cours** — navigation livrée ; en-tête de sauvegarde à faire |
-| v0.9 | Traduction des jeux | **En cours** — déclarer, traduire, émettre et choisir livrés (phases 1-4, `lang.set`/`lang.get`) ; servir (phase 5 — SRAM, écran de choix) à faire |
+| v0.22 | Menus, listes et curseur | **En cours** — navigation et en-tête de sauvegarde livrés ; la liste devient un type, curseur et grille à faire |
+| v0.9 | Traduction des jeux | **En cours** — les cinq phases codées ; reste le build ROM réel qui les valide (cf. phase 5) |
 | v0.10 | Distribution Linux | Non commencée |
 | v0.11 | Traduction de l'éditeur | **En cours** — gabarit de notices et catalogue livrés ; sélection de langue à faire |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
@@ -65,6 +65,8 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
 | v0.17 | Le pool par scène | Non commencée |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
+| v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
+| v0.26 | Les polices : de la source au pixel | **Conception figée, non commencée** — voir plus bas |
 
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
 de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
@@ -89,7 +91,7 @@ les chantiers seront ouverts — suit désormais l'ordre de traitement.
 
 ## Correctifs (trouvés en marchant, hors chantier)
 
-Six défauts réels, trouvés en construisant et en jouant les projets démo pendant le chantier
+Dix défauts réels, trouvés en construisant et en jouant les projets démo pendant le chantier
 v0.9, sans rapport avec la traduction elle-même — consignés ici pour ne pas rester invisibles
 faute d'un jalon à qui les rattacher.
 
@@ -136,6 +138,51 @@ faute d'un jalon à qui les rattacher.
   d'un panneau n'occupe pas les tuiles écran de son offset local) ; la surface partagée n'est
   plus réservée que si un script écrit LIBREMENT (`text.draw`/`text.clear`, qui n'ont pas de
   rectangle à qui donner un bloc). Tests : `test_text_surface_alloc.py`.
+
+- **Trois trous du checker, fermés en avertissement** (`scripting/checker.py`, 2026-09-02).
+  Trois défauts de la même famille, trouvés en écrivant un écran de sélection de langue : le
+  script traverse le checker sans un mot, le codegen émet du C, et gcc parle d'un fichier que
+  l'auteur n'a jamais écrit — le piège que l'ARCHITECTURE nomme le plus coûteux de cette
+  chaîne. (1) **Un nom NU non déclaré** : `curpos = curpos + 1` émettait
+  `curpos = (curpos + 1);`, un identifiant qui n'existe pas. `_check_expr` n'avait
+  simplement AUCUNE branche `ExprName`. Le contrôle s'appuie sur un quatrième parcours à plat
+  (`_collect_local_names`, même forme et même approximation que ses trois jumeaux) et sur la
+  liste des espaces de noms, parce que la fin de la branche `ExprIndex` visite `e.obj` — le
+  `global` de `global.score` passe par là. (2) **Les membres d'une référence d'élément
+  d'interface** : `ui_element` est déclaré comme type de retour mais absent de `REF_TYPES`,
+  donc `.y`, `.foo` et `:bouge()` passaient tous. Reconnue par sa FORME (`ui.get(...)`) et non
+  en l'inscrivant dans `REF_TYPES` — l'y mettre ferait chercher les méthodes sous
+  `ui_element:show` alors qu'elles vivent sous `self:show`, et casserait le `ui.get(x):show()`
+  qui marche. (3) **Les arguments d'un appel utilisé comme RÉCEPTEUR** :
+  `ui.get("Cusor"):show()` ne validait rien, alors que la même expression posée seule était
+  refusée — `_check_call_expr` s'arrête à un récepteur `ExprName`. Corrigé en faisant descendre
+  un appel posé seul par `_check_expr` comme n'importe quelle expression.
+
+  **Avertissement pour (1) et (2)**, à durcir une fois éprouvés : ils s'appliquent à tous les
+  scripts de tous les projets, et un cas légitime oublié bloquerait un build qui marche. **(3)
+  garde la sévérité des contrôles existants** — il ne fait que les laisser passer, et un nom
+  d'élément inconnu ne produit aucun `#define` : ce build-là échouait déjà au `make`.
+  Tests : `test_checker_holes.py`, dont la moitié tient ce que les contrôles ne doivent PAS
+  refuser.
+
+- **Une faute de syntaxe disait « None »** (`scripting/parser.py`). Le parse est le PREMIER
+  filtre de la chaîne, et c'était le seul message qui ne disait pas où regarder :
+  `[error] Titre.lua — parse: syntax errors: None`, quelle que soit la faute. Le contraire de
+  ce que la v0.7.5 a établi partout ailleurs — le checker nomme sa ligne, `lua_subset` nomme
+  le nœud refusé ET la phrase à écrire à la place. Rien n'était perdu, c'était jeté au
+  FORMATAGE : luaparser lève sa `SyntaxException` depuis un `except`, donc Python garde la
+  `ParseCancellationException` d'antlr dans `__context__`, laquelle porte l'exception réelle
+  avec son jeton fautif et ses jetons attendus. Deux décisions : le jeton **trouvé** n'est
+  jamais rapporté — antlr le désigne là où il a renoncé, pas là où l'auteur s'est trompé (sur
+  `if x(...) :`, il nomme la parenthèse de l'appel) —, et un « end » manquant se dit comme
+  tel plutôt que d'envoyer l'auteur regarder la dernière ligne du fichier, qui est presque
+  toujours correcte. S'y ajoute une table de **faux amis** (`+=` et les affectations
+  composées, `++`, `:` au lieu de `then`, `!=`, `&&`, `||`, `elif`, `#` en commentaire…) balayée SEULEMENT après un échec, donc jamais sur
+  un script valide, et hors chaînes et commentaires — un `!=` dans une réplique de dialogue
+  n'est pas une faute de syntaxe. Elle n'est pas dans `lua_subset.REFUSED` : celui-là range
+  des nœuds d'AST, et ces fautes-là empêchent l'AST d'exister. `LuaParseError` porte
+  désormais sa `line`, que le build cite comme le reste (`Titre.lua:2 : …`).
+  Tests : `test_parse_errors.py`.
 
 - **`g_ui_list_total` démarrait à 0** (`codegen/runtime_codegen/main_gen.py`). Un panneau
   « Liste » restait figé tant que le script n'appelait pas `list.set_count`, même avec des
@@ -349,10 +396,13 @@ Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/projec
 
 ## v0.22 — Menus, listes et curseur — **EN COURS**
 
-> **La navigation est livrée le 2026-08-21.** Un panneau d'interface peut être une LISTE :
-> une propriété du conteneur existant, pas un quatrième type d'élément — « le moteur prend la
-> navigation, pas la mise en page ». Ses rangées sont ses zones de texte enfants, dans l'ordre
-> de l'arbre : rien à déclarer, ce qu'on voit dans l'éditeur est ce que la liste parcourt.
+> **La navigation est livrée le 2026-08-21.** Ses rangées sont ses zones de texte enfants, dans
+> l'ordre de l'arbre : rien à déclarer, ce qu'on voit dans l'éditeur est ce que la liste
+> parcourt — « le moteur prend la navigation, pas la mise en page ».
+>
+> **Elle était alors une PROPRIÉTÉ du conteneur (`is_list`), et ne l'est plus depuis le
+> 2026-09-02** : le principe tient, son rangement non — cf. « La liste devient un TYPE » plus
+> bas. `UIList` est un quatrième type d'élément.
 >
 > Les quatre questions ouvertes sont tranchées, trois d'entre elles depuis les règles déjà
 > écrites du projet : **rangées sur le calque de texte et défilement À LA LIGNE** (le texte
@@ -467,7 +517,231 @@ Les quatre questions ouvertes sont donc closes, et implémentées de bout en bou
 [actor_api_static.h](runtime/include/actor_api_static.h)) — de même que l'en-tête de sauvegarde
 (`save.read`/`save.load`, tranché le 2026-08-23, câblé dans
 [codegen.py](editor/scripting/codegen.py) et
-[checker.py](editor/scripting/checker.py)). Rien ne reste ouvert pour ce jalon.
+[checker.py](editor/scripting/checker.py)).
+
+### Le curseur qui se déplace — ouvert le 2026-09-02
+
+Le jalon s'appelle « Menus, listes et **curseur** », et il ne sait pas déplacer un curseur.
+La navigation livrée surligne la rangée choisie (`UIRegionInfo.highlight`), ce qui suffit à un
+menu sobre ; un curseur qui GLISSE d'une entrée à l'autre, lui, demande de bouger un sprite
+d'interface — et **aucune API ne donne accès à la position d'une image**. Trouvé en écrivant
+un écran de choix de langue : `ui.get("Cursor").y = …` traverse le checker sans un mot et
+produit `UIELEM_CURSOR.y` en C, `.y` sur un entier, refusé par gcc sur un fichier que l'auteur
+n'a pas écrit.
+
+#### Ce que la lecture du runtime a montré
+
+Le moteur est **déjà construit pour ça**, il n'y manque qu'une case en RAM.
+`ui_image_origin()` recompose l'origine à chaque frame, ancrage compris (monde retranche la
+caméra, acteur ajoute la position de l'acteur) ; et le chemin BG sait déjà déménager —
+`ui_image_clear_bg` porte le commentaire « Nécessaire avant tout déplacement », et
+`ui_image_update` teste `moved`, efface l'ancienne empreinte et réécrit. Le chemin OBJ repose
+son slot chaque frame de toute façon. Le seul manque : `I->x`/`I->y` viennent de
+`g_ui_images`, table `const` en ROM.
+
+#### Décisions verrouillées
+
+1. **Un appel de module, pas une propriété — `ui.image_move("Cursor", x, y)`.** La forme
+   propriété (`ui.get("Cursor").y = 40`) a été retenue puis ÉCARTÉE à la lecture du code, et
+   la raison mérite d'être écrite parce qu'elle vaut pour toute API future : la règle « un
+   état s'écrit en propriété » suppose un récepteur que le LANGAGE TIENT — `self`, `camera`,
+   `scene`, un acteur nommé. `resolve_prop` l'impose littéralement (le récepteur doit être un
+   `ExprName`), et `infer_ref_type` écrit noir sur blanc qu'une référence « ne se calcule pas
+   — on n'en prend pas de champ » : elle porte des méthodes, jamais des champs. Une image
+   d'interface n'est pas tenue par le langage, elle est **adressée par son nom à travers un
+   module** — exactement comme un effet sonore, une liste ou une scène. Et la forme voisine
+   existe déjà, livrée par ce même jalon : `list.set_index("Menu", i)` pose un état par un
+   appel de module à nom vérifié par domaine. `ui.image_set`/`ui.image_play` ont survécu à la
+   migration vers les propriétés (v0.7.4) pour cette raison-là, pas par oubli.
+
+   La forme propriété aurait coûté deux changements de grammaire — un récepteur qui soit une
+   expression, et des champs sur les références — pour une ergonomie PIRE : `resolve_prop`
+   exigeant un nom, il aurait fallu passer par `local c = ui.get("Cursor")` avant d'écrire
+   `c.y`, soit deux lignes là où l'appel en demande une.
+
+2. **`.x` et `.y`, jamais `.position`.** `self.position` d'un acteur est en **Q8 sous-pixel**
+   depuis la v0.19 ; donner le même mot à une position d'interface en pixels entiers mettrait
+   deux échelles derrière un mot, et `pos.x + 1` ne voudrait plus dire la même chose selon
+   l'objet. Deux scalaires entiers.
+
+3. **Le nom se résout au BUILD, par `DOMAIN_IMAGE`.** Le domaine porte déjà l'espace de noms
+   des images et sa constante (`image_constant` → `IMAGE_<NOM>`, index dans `g_ui_images`),
+   employée par `ui.image_set`. Un nom inconnu est donc refusé sans qu'une ligne de contrôle
+   soit écrite pour l'occasion, et `refactor.py` suit le renommage d'une image dans les
+   scripts par la même mécanique — c'est ce que porter un domaine veut dire.
+
+   Piège écarté au passage : `ui.get("X")` rend `UIELEM_X`, un index dans `g_ui_elements` — la
+   table de **visibilité**, qui couvre les trois types — et **pas** l'index dans `g_ui_images`.
+   Aucune table inverse n'existe, et il ne faut pas en ajouter : passer par `DOMAIN_IMAGE`
+   évite entièrement la question.
+
+4. **Seule une IMAGE se déplace, et le domaine suffit à le dire.** La géométrie d'une zone de
+   texte vit dans `g_ui_regions`, avec son bloc de surface alloué à un rectangle fixe par
+   `scene_init` ; le fond d'un panneau est peint une fois dans la tilemap. Ni l'une ni l'autre
+   ne se déplace à moindre coût, et `DOMAIN_IMAGE` ne connaît que les images : citer une zone
+   de texte est refusé au build, nommément, sans contrôle dédié.
+
+5. **La cible BG se cale sur 8 px, et ça se DIT.** `ui_image_update` fait `sx -= sx % 8` : sur
+   une image BG, `.y = 33` s'affiche à 32. Ni contournement ni arrondi silencieux — c'est
+   documenté, et l'auteur qui veut un déplacement au pixel bascule l'ancrage de son root pour
+   passer en OBJ. Pour un curseur qui glisse, OBJ est de toute façon la bonne cible. Le
+   matériel façonne le langage ; il ne se cache pas derrière lui.
+
+6. **La position écrite est RELATIVE au parent**, comme celle que l'auteur pose dans le canvas
+   (`UILayout.absolute_origin` somme déjà la chaîne jusqu'au root). Un seul sens pour le champ,
+   qu'il vienne de l'éditeur ou du script.
+
+#### Ce que ça coûte
+
+Deux `short` (`dx`, `dy`) dans `UIImageState` : **64 octets de RAM** au plafond de 16 images,
+et une addition par image et par frame dans `ui_image_origin`.
+
+#### Ce que ça touche
+
+[gba_engine.h](runtime/include/gba_engine.h) (les deux champs, `ui_image_set_pos`, les
+lectures) et [actor_api_static.h](runtime/include/actor_api_static.h) (les prototypes — le
+piège relevé plus haut dans ce jalon),
+[api.py](editor/scripting/api.py) (trois entrées `RUNTIME_API` portant `DOMAIN_IMAGE`),
+[SCRIPTING.md](SCRIPTING.md), [ARCHITECTURE.md](ARCHITECTURE.md) et les tests. Ni `checker.py`
+ni `codegen.py` : un appel de module à argument porteur d'un domaine déjà couvert se valide et
+s'émet par les chemins génériques — c'est précisément ce que la forme propriété aurait coûté
+en plus.
+
+### La liste devient un TYPE — ouvert le 2026-09-02
+
+#### Ce que le modèle disait, et ce que tout le reste disait
+
+Le 2026-08-21, la liste a été posée comme une PROPRIÉTÉ du conteneur (`is_list` plus
+quatre champs), au motif que « le moteur prend la navigation, pas la mise en page ». **Le motif
+reste juste ; le rangement, non** — et ce n'est pas une préférence de goût, c'est le reste de
+la base de code qui le dit :
+
+- **Le C a déjà le type.** `UIListInfo`, `g_ui_lists`, `g_ui_list_index/first/total/timer` et
+  sept fonctions `ui_list_*` : côté moteur, une liste EST une chose, avec sa table et son état
+  vivant. `project_lists()` ne fait que reconstruire cette population en refiltrant les
+  panneaux. Le modèle Python était le seul endroit du projet à ne pas croire qu'elle existe.
+- **L'API dit `list.*`** — six fonctions dans un domaine qui porte son nom — et l'auteur qui
+  les cherche dans l'éditeur trouve une case à cocher dans l'inspecteur de conteneur.
+- **`to_dict` écrivait cinq clés conditionnelles**, c'est-à-dire un objet qui n'a pas la même
+  forme selon un booléen : la définition d'un type qui s'ignore.
+- **L'inspecteur de conteneur portait une carte « Liste »** que la quasi-totalité des
+  conteneurs n'emploient jamais.
+
+La décision du 2026-08-21 n'est donc pas renversée, sa mise en œuvre l'est : le moteur prend
+toujours la navigation et pas la mise en page — mais la navigation a un propriétaire, et ce
+propriétaire est un type.
+
+#### Ce que la lecture du runtime a montré
+
+`ui_list_tick()` parcourt **toutes** les listes à chaque frame, sans notion de liste courante :
+son seul garde-fou est `g_ui_list_total[l] <= 0`, et le total vaut par défaut le nombre de
+rangées authorées. Deux listes visibles — un menu et son sous-menu — bougent donc ensemble sur
+le même appui. Le drapeau `active` ci-dessous ne rajoute pas un confort, il ferme ce défaut.
+
+#### Décisions verrouillées
+
+1. **`UIList` est un quatrième type** (`KIND_LIST`), à côté de `UIText`, `UIContainer` et
+   `UIImage`. Il porte sa géométrie, son fond, ses enfants et sa navigation. Le conteneur garde
+   tout son sens sans lui : grouper, ancrer un sous-arbre, dessiner un fond.
+
+2. **Ses enfants sont des zones de TEXTE, et l'arbre le fait respecter.** C'est déjà ce que
+   `list_rows_of` calcule (il filtre `KIND_TEXT`) ; ce qui change, c'est qu'aujourd'hui l'arbre
+   accepte qu'on y dépose une image et l'ignore ensuite en silence. `can_contain` cesse d'être
+   un booléen pour dire CE QUE le type accueille.
+
+3. **Le fond devient une CAPACITÉ, pas un type.** `kind == KIND_PANEL` est testé à huit
+   endroits et y veut dire deux choses différentes : « ça peut dessiner un fond »
+   ([palette_alloc.py](editor/codegen/palette_alloc.py), [validator.py](editor/core/validator.py),
+   les quatre émetteurs de fond de [main_gen.py](editor/codegen/runtime_codegen/main_gen.py)) et
+   « ça accueille des enfants » (l'arbre, déjà porté par `can_contain`). La liste gardant un
+   fond, les huit tests du premier sens deviennent `can_fill`, et les champs `fill_*` passent
+   dans un `FillMixin` — le patron de `RectGeometryMixin`, déjà dans ce fichier.
+
+   **Pas d'héritage `UIList(UIContainer)`.** Dans l'arbre et dans l'inspecteur, une liste n'est
+   justement PLUS un conteneur ; le dire par la porte du langage rouvrirait ce que le modèle
+   vient de séparer, et le premier `isinstance` écrit ailleurs le figerait.
+
+4. **`visible` n'est pas redéclaré.** Tous les éléments l'ont et `UILayout.is_visible` remonte
+   déjà la chaîne des parents. Un `show/hide` propre à la liste aurait été une deuxième source
+   de vérité pour la même question.
+
+5. **`active` est la SÉLECTION, pas l'affichage.** Une liste inactive reste dessinée, garde son
+   index, et cesse de consommer la croix directionnelle — c'est ce qui permet un menu et son
+   sous-menu à l'écran en même temps, le cas qui casse aujourd'hui. Le script bascule
+   (`list.set_active`), parce que c'est lui qui sait quel écran a la main.
+
+6. **La grille se dit en `nav_columns` + `nav_major`, pas en quatre modes.** Une navigation en
+   Z ou en W demande de savoir DE COMBIEN sauter en changeant de rangée : sans compte de
+   colonnes, le mode ne se calcule pas. Deux nombres couvrent les quatre cas — verticale = 1
+   colonne, horizontale = 1 rangée, Z = N colonnes en majeur-rangée, W = N colonnes en
+   majeur-colonne. Un énuméré à quatre valeurs aurait de toute façon dû s'accompagner du
+   compte, et aurait encodé deux choses indépendantes dans un seul champ.
+
+   `list_axis` disparaît : il n'est que le cas `nav_columns == 1`. Le défilement reste **à la
+   ligne** (tranché le 2026-08-21) — dans une grille, une ligne vaut `nav_columns` items.
+
+7. **La liste POSSÈDE son curseur.** `cursor_image` désigne un `UIImage` de la même mise en
+   page, `cursor_mode` dit s'il se POSE sur la rangée choisie ou s'il y GLISSE. Le moteur le
+   déplace en appelant le même chemin interne que `ui.image_move` — une implémentation, deux
+   portes : l'authoring pour le cas courant, l'appel de script pour ce que l'auteur veut mener
+   lui-même. La décision 1 de « Le curseur qui se déplace » n'est pas annulée, elle devient la
+   couche basse de celle-ci.
+
+   Le curseur n'est **pas un enfant** de la liste (décision 2 : les enfants sont des textes) :
+   c'est un élément de la mise en page que la liste NOMME. Et un curseur qui glisse veut la
+   cible OBJ, pour la raison déjà écrite en décision 5 du curseur — le chemin BG se cale sur
+   8 px.
+
+8. **L'effet sur la rangée choisie, c'est `highlight` et `color`, rien d'autre.** Les deux
+   existent déjà par région (`UIRegionInfo.highlight`, `.color`) ; la liste les porte pour la
+   rangée SÉLECTIONNÉE et le moteur les applique en suivant l'index. Ce qui est refusé pour
+   l'instant : une animation (ondulation, pulsation) sur la rangée choisie — sur cible BG elle
+   réécrirait des tuiles à chaque frame, et ce coût-là se mesure avant de se promettre.
+
+#### La lecture des projets existants
+
+Un `{"kind": "panel", "is_list": true}` se désérialise en `UIList` et n'est jamais réécrit sous
+cette forme : la recette exacte de `KIND_REGION`, déjà dans ce fichier. `list_axis:
+"horizontal"` devient `nav_columns` = le nombre de rangées, en majeur-rangée. Les scripts ne
+cassent pas — `list.*` s'adresse par nom d'élément, et le nom ne change pas.
+
+#### Ce que ça touche
+
+Modèle et build : [ui_region.py](editor/core/models/ui_region.py) (le type, le `FillMixin`, la
+lecture des anciens JSON), [main_gen.py](editor/codegen/runtime_codegen/main_gen.py)
+(`project_lists`, `emit_ui_lists_c`, les quatre émetteurs de fond),
+[palette_alloc.py](editor/codegen/palette_alloc.py), [validator.py](editor/core/validator.py),
+[project_renames.py](editor/core/project_renames.py).
+Interface : [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) (la carte
+« Liste » devient l'inspecteur d'un type),
+[dynamic_inspector.py](editor/ui/scene_manager/inspectors/dynamic_inspector.py),
+[scene_tree_panel.py](editor/ui/scene_manager/scene_tree_panel.py),
+[scene_canvas.py](editor/ui/scene_manager/scene_canvas.py), [icons.py](editor/ui/icons.py).
+Moteur : [gba_engine.h](runtime/include/gba_engine.h) (`active`, `columns`, le pas en grille,
+le déplacement du curseur) et [actor_api_static.h](runtime/include/actor_api_static.h) (les
+prototypes — le piège relevé plus haut dans ce jalon).
+Script : [api.py](editor/scripting/api.py) et
+[api_reference.json](editor/scripting/api_reference.json) (`list.set_active` / `list.active`).
+Enfin [ARCHITECTURE.md](ARCHITECTURE.md) et les tests.
+
+#### `UIPanel` devient `UIContainer` — tranché le 2026-09-02
+
+La classe s'appelait `UIPanel`, l'éditeur créait un « container », l'inspecteur affichait
+« Conteneur » : un concept, deux mots. Le troisième argument est celui qui décide — **« panel »
+était déjà pris** : les panneaux de l'ÉDITEUR (`AssetsFinderPanel`, `SpriteFinderPanel`,
+`sound_panel.py`, `scene_tree_panel.py`) sont une tout autre chose, et ils gardent le mot. Un
+élément d'interface et un dock de l'éditeur ne peuvent pas porter le même nom dans une base de
+code où l'on cherche par nom.
+
+Le renommage va jusqu'à la **valeur sérialisée** (`"kind": "panel"` → `"container"`) : la
+laisser en place aurait gardé l'ancien mot dans chaque fichier de projet et dans chaque
+discussion à propos d'eux. `KIND_PANEL_LEGACY` la relit et ne la réécrit jamais — la troisième
+occurrence de cette recette, après `KIND_REGION` et `is_list`, et elle commence à mériter d'être
+appelée par son nom : *une forme ancienne se lit, une seule forme s'écrit.*
+
+Ce qui n'a PAS été renommé : les panneaux de l'éditeur (ci-dessus), et les entrées de
+[CHANGELOG](CHANGELOG.md) et de [changelog-archive/](changelog-archive/), qui disent ce qui a
+été livré à une date — un journal ne se réécrit pas.
 
 ---
 
@@ -484,6 +758,9 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | La grammaire de la struct `Actor` | 2026-08-23 | **En cours** |
 | Les trois couleurs de l'interface | 2026-08-24 | **En cours** |
 | `global.nom` / `const.nom` — l'accès pointé | 2026-09-01 | **Livré** — [archive](changelog-archive/global-const.md) |
+| L'identité d'un asset et son fichier | 2026-09-02 | **Livré** — [archive](changelog-archive/asset-identity.md) |
+| Les formats acceptés à l'import | 2026-09-03 | **Livré** — [archive](changelog-archive/import-formats.md) |
+| La police, une palette d'asset comme les autres | 2026-09-03 | **En cours** |
 
 ---
 
@@ -643,7 +920,7 @@ trois** : le fond d'un conteneur, l'encre d'un texte, et la couleur posée sous 
 
 ### Décisions verrouillées
 
-- **Trois couleurs nommées, trois champs distincts.** Le fond (`UIPanel.fill_palette` +
+- **Trois couleurs nommées, trois champs distincts.** Le fond (`FillMixin.fill_palette` +
   `fill_index`), l'encre (`UIText.text_color`) et le **surlignement** (`UIText.highlight_color`,
   nouveau). Trois mots dans l'interface — *Color*, *Ink*, *Highlight* — parce que trois
   effets différents réglés sous le même mot est précisément ce qui a produit le défaut.
@@ -735,6 +1012,218 @@ Les stubs sont complétés dans ce chantier parce que c'est exactement
 - **Le surlignement n'est pas scriptable.** Comme l'encre, il est authoré. Un menu qui
   surligne sa ligne courante se fait aujourd'hui en écrivant dans des zones distinctes ; si
   la v0.22 rend ça pénible, c'est ici que ça se verra.
+
+---
+
+## La police, une palette d'asset comme les autres — **EN COURS**
+
+### D'où vient la question (2026-09-03)
+
+La carte **Palettes** de l'inspecteur de scène traque deux pools : OBJ (les sprites) et BCK
+(les fonds). Chacun montre les palettes de la scène (éditables), puis les palettes **propres**
+des assets — grisées, comptées dans les seize banques, et remplaçables par une palette de scène
+d'un clic. La **police** manque à l'appel.
+
+Elle ne devrait pas. Une police possède ses couleurs exactement comme un sprite : `g_font_*_pal`,
+seize entrées, index 0 transparent. En mode automatique elle les charge en silence dans la
+banque 15 (`FONT_PAL_BANK`) — une banque que la grille ne montre pas et ne compte pas. C'est le
+point resté **Ouvert** du chantier *Les trois couleurs de l'interface* : « la banque d'UI reste
+implicite quand `scene.ui_pal_bank` vaut -1 ». L'auteur ne voit pas la banque que la police
+prend, et ne peut pas la rediriger avec le geste qui sert à tous les autres assets.
+
+### Ce que la lecture du code a trouvé (2026-09-03)
+
+- **La banque de police est décidée par le runtime, pas par l'allocateur.** `FONT_PAL_BANK = 15`
+  est cuit dans `text_set_font` ([gba_engine.h](runtime/include/gba_engine.h)), alors que
+  `scene_bank_layout` ([palette_alloc.py](editor/codegen/palette_alloc.py)) est la source de
+  vérité des seize banques. Elle ignore donc qu'une police en occupe une, et la grille ne peut
+  pas l'afficher.
+- **Le runtime est déjà paramétré par la banque.** `text_set_pal_bank(bg, obj)` pose où le texte
+  lit son encre ; négatif = automatique (palette propre → 15). Seule la banque automatique est
+  en dur — le reste du chemin sait déjà lire n'importe quel slot.
+- **La table par police existe déjà, pour la VRAM.** `text_set_font_base(f, base)` + `g_font_base[]`
+  donnent à un titre et à un corps de texte chacun leur base de tuiles, pour qu'ils ne s'écrasent
+  plus. La palette réclame **exactement la même forme** — une banque par police — et c'est
+  précisément parce qu'elle ne l'a pas que deux polices se repeignent aujourd'hui l'une l'autre
+  dans la banque 15.
+- **L'override existe déjà, mais à côté.** C'est le scalaire `Scene.ui_pal_bank`, câblé à un
+  sélecteur séparé (le slot « UI colors » de la carte User Interface), à l'échelle de la scène
+  entière et aveugle à *quelle* police il concerne.
+
+### Décisions verrouillées
+
+- **Parité totale avec les sprites.** Une police en mode propre entre dans la **même** allocation
+  ascendante que les acteurs et les calques, dédupliquée par couleurs, et reçoit une banque libre
+  — pas un 15 épinglé. Plusieurs polices → plusieurs banques, chacune une entrée grisée dans BCK.
+- **La palette suit l'ARBRE, pas seulement la police** *(2026-09-03)*. Comportement PAR DÉFAUT :
+  un texte **enfant** d'un conteneur à fond (nine-slice / background / couleur) reprend la banque de
+  CE conteneur — sa police ne prend alors **aucun** slot, elle lit son encre dans la palette du fond.
+  La règle « le fond le plus proche gagne » existe déjà, c'est `region_fill_container`, partagée avec
+  `scene_region_colors` / `scene_region_backdrops`. Un texte posé PAR-DESSUS un conteneur **sans en
+  être l'enfant** garde sa propre palette et écrase le fond. Trois conséquences :
+  - une police n'occupe une banque que pour ses usages **libres** ; utilisée seulement dans des
+    conteneurs, elle n'apparaît pas dans la grille — le conteneur, lui, y est déjà (fond couleur =
+    une palette de scène, nine-slice/background = son bloc de banques) ;
+  - la banque d'encre est résolue **par zone** (imbriquée → banque du conteneur ; libre → banque de
+    la police), et non plus par le scalaire scène-global qu'était `ui_pal_bank` — le runtime pose
+    donc la banque au dessin de la zone, pas une fois pour tout l'écran ;
+  - cela **renverse pour la BANQUE** la décision de *Les trois couleurs de l'interface* (« le fond
+    d'un conteneur ancêtre ne teinte pas ses textes enfants »). Le **surlignement**, lui, reste
+    par-texte : c'est une couleur SOUS le texte, pas la banque de l'encre.
+- **L'état vit sur la scène, par police : `Scene.font_pal_banks: dict[str, int]`.** L'analogue
+  exact de `Actor.pal_bank` / `BackgroundLayer.pal_bank`, keyé par **nom de police** faute
+  d'instance posée. Absent de la map (ou `OWN_PAL_BANK`) = palette propre dans une banque allouée ;
+  un slot 0-15 = lit l'encre dans cette palette de scène. Le scalaire `ui_pal_bank` est **migré à
+  la lecture** (`from_dict`) sur la police par défaut de la scène — les projets existants gardent
+  leurs couleurs — et le sentinel `UI_PAL_BANK_CONTAINER` survit comme valeur par police.
+- **Une seule source, deux surfaces d'édition** *(décision : garder les deux)*. `font_pal_banks`
+  est l'état. La grille de palettes override l'entrée de **n'importe quelle** police, exactement
+  comme un sprite. Le sélecteur « UI colors » de la carte User Interface reste, désormais lié à
+  l'entrée de la **police par défaut** dans cette même map — un raccourci pour le cas le plus
+  courant, jamais une seconde vérité.
+- **Le runtime gagne une table banque+propre par police, jumelle de `g_font_base`.**
+  `text_set_font(f)` lit la banque de la police et ne copie sa palette propre que si cette police
+  est en mode propre ; l'override force le slot de scène sans copie. Le placement des couleurs de
+  conteneur (`region_colors`) lit la banque **résolue** de la police au lieu de 15.
+
+### Ce que ça touche
+
+| Fichier | Nature |
+| --- | --- |
+| [scene.py](editor/core/models/scene.py) | `font_pal_banks` remplace `ui_pal_bank` ; migration à la lecture |
+| [palette_alloc.py](editor/codegen/palette_alloc.py) | la police entre comme source de palette propre BG (allocation `scene_bank_layout` + vue éditeur `scene_palette_view`) |
+| [font_emit.py](editor/codegen/font_emit.py) | `FONT_PAL_BANK` cesse d'être le défaut ; la police déclare son contenu de banque |
+| [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) | banque d'encre RÉSOLUE PAR ZONE (imbriquée → conteneur via `region_fill_container`, libre → police) ; table banque+propre par police |
+| [ui_region.py](editor/core/models/ui_region.py) | le commentaire de `UIText` (« le fond d'un ancêtre ne teinte pas ») est renversé pour la BANQUE |
+| [gba_engine.h](runtime/include/gba_engine.h) | banque d'encre PAR ZONE + `g_font_bank`/`g_font_own` + `text_set_font_pal`, jumeaux de `g_font_base` |
+| [validator.py](editor/core/validator.py) | les deux contrôles d'`ui_pal_bank` lisent la map par police |
+| [scene_inspector.py](editor/ui/scene_manager/inspectors/scene_inspector.py) | la grille override la police ; le picker « UI colors » édite l'entrée par défaut |
+| [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) / [scene_canvas.py](editor/ui/scene_manager/scene_canvas.py) | contexte d'élément et aperçu lisent la map |
+| [pickers.py](editor/ui/common/pickers.py) | le sélecteur de banque d'UI cible une entrée de la map |
+| [project_renames.py](editor/core/project_renames.py) | renommer une police suit ses clés dans `font_pal_banks` |
+
+### Ouvert
+
+- **La cible OBJ.** Une police se copie aussi dans `PAL_OBJ_RAM` pour le texte rendu en sprites.
+  La traquer aussi dans la grille OBJ, ou seulement dans BCK, se décide quand le chemin du texte
+  OBJ sera revu — le runtime copie déjà dans les deux, rien ne casse d'ici là.
+- **L'attribution des écritures libres.** `text.draw(x, y, …)` (sans zone) et un script au choix
+  de police dynamique (`scene_font_names` indécidable) ne disent pas SUR quel conteneur ils
+  écrivent : ils sont donc traités comme des usages LIBRES de la police par défaut (repli sûr —
+  une police libre de trop coûte une banque, une manquante rend le texte en couleurs voisines).
+- **`ARCHITECTURE.md` décrit encore `Scene.ui_pal_bank`, un `FONT_PAL_BANK` fixe et « le fond d'un
+  conteneur ne teinte pas ses enfants ».** Il devient la liste de contrôle du chantier, corrigé
+  quand le code atterrit — même règle que *La grammaire de la struct `Actor`*.
+
+---
+
+## Le balisage rouvert — `[font=nom]`, changer de police en cours de texte — **EN COURS**
+
+Réouverture de **v0.3.2** (le balisage), pas un jalon neuf : la grammaire, la piste
+d'événements et le catalogue de balises existent déjà et sont clos. On y ajoute UNE balise. Pas
+de numéro — le balisage a le sien.
+
+### D'où vient la question (2026-09-04)
+
+« Dans notre balisage, peut-on changer de police dynamiquement ? » La réponse était **non** : le
+catalogue s'arrête à `speed`, `pause`, `icon`, `wave`, `shake`, `color`
+([text_markup.py:66](editor/core/text_markup.py:66)). La seule bascule typographique en cours de
+chaîne est l'ENCRE (`[color=n]`), dans la sous-palette de la police déjà en place — jamais un
+autre jeu de glyphes. La police est fixée un cran au-dessus : une zone porte UN `font_name`
+([ui_region.py:329](editor/core/models/ui_region.py:329)), et la mise en page prend UNE police
+([text_layout.py:47](editor/core/engine_emulation/text_layout.py:47)). Une scène affiche déjà
+plusieurs polices — mais par zones, jamais au sein d'une chaîne.
+
+La lecture du runtime a montré que l'ajout est **incrémental**, pas un sous-système : le moteur a
+déjà tout ce qu'il faut, on ne fait que le câbler à une balise.
+
+### Décisions verrouillées
+
+- **Balise de PORTÉE, symétrique à `[color]`.** `[font=nom]…[/font]`, valeur `VALUE_NAME`. Elle
+  entre au catalogue `TAGS` et rien d'autre : l'analyse est générique, `_close_scope`,
+  l'imbrication croisée et l'avertissement de portée non refermée la couvrent déjà. Une balise
+  ponctuelle (« change jusqu'à nouvel ordre ») est **écartée** plus bas.
+- **Un ÉVÉNEMENT de plus, pas un mécanisme de plus.** `[font]` sort un `TEXT_EV_FONT` sur
+  `[at, end)`, exactement comme `wave`/`shake`/`color`
+  ([font_emit.py:972](editor/codegen/font_emit.py:972)). `value` = index de la police LOGIQUE
+  (ordre de `project_fonts()`, le même que `g_fonts` et `g_lang_font`), résolu au build comme
+  `[icon]` résout son glyphe.
+- **La bascule passe par `text_set_font`, donc honore la LANGUE.** Franchir un `TEXT_EV_FONT`
+  appelle `text_set_font(value)`, qui remappe déjà par langue
+  (`f = g_lang_font[g_lang][f]`, [gba_engine.h:1686](runtime/include/gba_engine.h:1686)). Une
+  `[font=titre]` suit donc la traduction sans une ligne de plus — même brique que `text.set_font`
+  (v0.9). Aucun nouveau chemin de chargement.
+- **Le coût est un RE-POINTAGE, pas une recopie.** Les polices sont co-résidentes en VRAM :
+  chacune a sa base (`g_font_base[f]`) et un bit dans `g_font_loaded`
+  ([gba_engine.h:1699](runtime/include/gba_engine.h:1699),
+  [1708](runtime/include/gba_engine.h:1708)). Revenir à une police déjà chargée ne coûte qu'un
+  test et une copie de palette (64 o). Le seul coût MATÉRIEL réel, ce sont les tuiles du
+  sous-ensemble de la police appelée, comptées au build comme n'importe quelle police. C'est ce
+  qui rend la balise abordable : sans co-résidence, elle aurait recopié la VRAM par segment.
+- **La police citée devient RÉSIDENTE de la scène.** `scene_font_names` gagne une QUATRIÈME
+  source, après la défaut, les zones et les scripts
+  ([font_emit.py:461](editor/codegen/font_emit.py:461)) : les `[font=nom]` des textes que la
+  scène peut afficher. Pas de nouvel allocateur — le sous-ensemble et la base par scène hébergent
+  déjà N polices.
+- **Le sous-ensemble suit la police ACTIVE, glyphe par glyphe.** Le glyphe du caractère `i`
+  appartient à la police en vigueur en `i` (défaut de zone, ou dernière `[font]` ouverte). Le
+  constructeur de sous-ensemble parcourt donc la piste d'événements — le même parcours que la
+  mise en page. Chaque police n'embarque que les glyphes réellement atteints sous elle.
+- **L'imbrication tombe juste toute seule.** `[color=3]` sous `[font=X]` = encre 3 de la
+  sous-palette de X (la couleur se résout à la frappe contre la police courante). `[icon=y]` sous
+  `[font=X]` = glyphe y de X (l'icône devient des codepoints, appariés à la mise en page sous la
+  police active). Rien de spécial à écrire : les deux se résolvent déjà par position.
+
+### Ce qui a été écarté, et pourquoi
+
+- **Une balise PONCTUELLE `[font=X]` sans fermeture** (changer jusqu'à nouvel ordre). Elle
+  rouvrirait ce que la portée a résolu : un effet sans borne est indécidable côté sous-ensemble
+  (jusqu'où réserver ?) et laisse l'état d'un texte fuir sur le suivant. La forme fermée dit
+  exactement où la police revient.
+- **Recharger la VRAM à chaque bascule** (le chemin naïf où `text_set_font` recopie les
+  glyphes). La co-résidence déjà en place l'écarte : inutile de payer une DMA par segment quand
+  chaque police a sa place.
+- **Une police par langue portée par la BALISE** (`[font=X:ja]`). La langue REMAPPE déjà la
+  police (`g_lang_font`) — la substitution vit là, pas dans la source balisée. Même règle que
+  « une langue n'a pas de police, elle a éventuellement un remplacement » (v0.9).
+
+### Ce que ça touche
+
+- [text_markup.py](editor/core/text_markup.py) : une entrée `TagSpec("font", True, VALUE_NAME, …)`
+  au catalogue. Rien d'autre — l'analyse ne connaît pas les balises une à une.
+- [font_emit.py](editor/codegen/font_emit.py) : `_EV_KIND` gagne `"font": "TEXT_EV_FONT"` ;
+  l'émission résout le nom en index de `project_fonts()` et VALIDE que la police existe (comme
+  `[icon]` valide son glyphe) ; `scene_font_names` scanne les `[font]` des textes de la scène ;
+  le constructeur de sous-ensemble attribue chaque glyphe à la police active.
+- [text_layout.py](editor/core/engine_emulation/text_layout.py) : `layout_text` devient conscient
+  de la police PAR POSITION — chasse et appariement au plus long (ligatures) lus dans la police
+  active, pas dans un unique argument. C'est le vrai travail : l'aperçu de l'éditeur doit tomber
+  juste, sinon il ment sur le rendu ROM (la raison d'être du point unique `text_markup`).
+- [gba_engine.h](runtime/include/gba_engine.h) : `TEXT_EV_FONT` à l'énum ; la boucle de dessin
+  appelle `text_set_font(value)` en franchissant l'événement et REPOSE la police de zone en
+  sortie de portée. `text_color_at`/`text_fx_at` ont déjà le modèle « quel événement couvre `i` »
+  à recopier.
+- l'écran Texte : la barre de balisage (`markup_toolbar`) et la coloration (`markup_highlighter`)
+  prennent la balise gratuitement (dérivées de `TAGS`) ; l'aperçu écran doit charger la 2ᵉ police.
+
+### Ouvert
+
+- **La hauteur de ligne quand deux polices se partagent une ligne.** Interligne et ligne de base
+  ne coïncident pas entre deux planches. À trancher : la ligne prend le MAX des hauteurs (jamais
+  de chevauchement, mais le texte « saute »), ou la police de zone impose l'interligne (régulier,
+  mais une grande police déborde). À rouvrir avec un cas réel sous les yeux.
+- **La couverture par langue d'une police APPELÉE.** `Font.missing_chars` doit se vérifier contre
+  la police active PAR SEGMENT, pas contre la seule police de zone — sinon un `[font=X]` sur un
+  caractère que X ne porte pas passe le garde-fou de couverture (v0.9). Le parcours par événement
+  de la décision « sous-ensemble » le donne ; reste à le brancher au garde-fou.
+- **`[color]` sous une `[font]` NON composée.** `[color]` exige une police composée
+  ([font_emit.py:948](editor/codegen/font_emit.py:948)) ; si `[font=X]` bascule vers une planche
+  mono, la couleur du segment sera ignorée. Avertir au build (le message existe, il faut le rendre
+  conscient du segment) ou l'assumer — à trancher.
+- **Cerner les textes d'une scène pour la 4ᵉ source.** `scene_font_names` sait déjà rendre None
+  quand c'est indécidable (script opaque) ; reste à confirmer que l'ensemble des textes
+  atteignables par une scène est aussi bien cerné que ses polices de zone, ou à retomber sur la
+  réservation projet quand il ne l'est pas.
 
 ---
 
@@ -836,20 +1325,30 @@ text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la po
   sous-ensemble par scène les traite déjà un par un. Seul un système d'écriture différent
   (JA, RU, EL) demande une autre planche. Déclarer une police par langue obligerait à
   dupliquer la même planche quatre fois pour rien.
+  <br>↳ **Remplacée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** (2026-09-04) :
+  la substitution passe de « par langue » à « par couverture », sur le `FontAsset`.
 - **`font_de.fnt` est une PRATICITÉ D'IMPORT, jamais une règle.** Le suffixe pré-remplit la
   déclaration quand on ajoute une langue ; ce qui lie une police à une langue reste la
   déclaration explicite du projet. Déduire une liaison d'un suffixe de nom, c'est de la magie
   non vérifiable qui casse au premier renommage — et ça contredit `<asset>_name`, la règle du
   graphe de dépendances.
+  <br>↳ **Sans objet depuis la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : il n'y a
+  plus de police par langue à pré-remplir.
 - **Une scène ne change jamais de police selon la langue.** Elle nomme `dialog` ; c'est la
   RÉSOLUTION de ce nom qui dépend de la langue, par une table de remap. Sans ça, il faudrait
   réécrire chaque `text.set_font` et chaque zone de mise en page, dans quarante scènes, pour
   chaque langue ajoutée.
+  <br>↳ **Amendée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : la scène nomme
+  toujours `dialog`, mais `g_lang_font` disparaît — la résolution est la chaîne de couverture,
+  pas un remap par langue.
 - **PNG et `.fnt` seulement** — c'est déjà le cas (`font_import.py` refuse même le BMFont
   binaire), mais ça mérite d'être écrit comme une décision et pas comme un état de fait : une
   police est un **jeu fini d'images de glyphes**. C'est exactement ce qui rend
   `scene_codepoints()` calculable, donc le sous-ensemble par scène possible, donc le japonais
   envisageable. Un TTF rendu au build ne donnerait pas ça.
+  <br>↳ **Remplacée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : les sources
+  vectorielles sont acceptées via `FontRasterizer` ; le « jeu fini de glyphes » se déplace de la
+  source vers la **sortie de build** (le sous-ensemble requis), et l'argument tient toujours.
 - **Le garde-fou VRAM se dimensionne sur la PIRE langue.** La ROM contient N sous-ensembles
   de glyphes par scène, la VRAM n'en tient qu'un. Un contrôle fait sur la seule langue source
   laisserait passer un projet qui explose en allemand — c'est-à-dire au moment exact où il
@@ -928,7 +1427,7 @@ une ROM qui marche.
 | 2 | **Traduire** — *livrée* | Lecture/écriture des sides, la colonne de langue dans la table, le statut « traduit / manquant / déborde », le compte de trous. | Le build, toujours. On peut traduire tout un jeu avant qu'une ligne de C bouge. |
 | 3 | **Émettre** — *livrée* | La dimension langue dans `g_texts`, le remap de police, le sous-ensemble de glyphes par (scène, langue), et le garde-fou VRAM au pire cas. | La ROM contient N langues mais n'en montre qu'une : `g_lang` est une constante. |
 | 4 | **Choisir** — *livrée* | `lang.set`/`lang.get`, résolus comme `TEXT_*`/`SCENE_IDX_*` (`LANG_<CODE>`, jamais une chaîne au runtime). Rechargement de la scène courante pour rendre le changement visible. | La persistance SRAM (survivre à une coupure de courant) et l'écran de choix lui-même — toujours à la charge du jeu. |
-| 5 | **Servir** | L'amorçage du menu de langue, et l'export/import traducteur si la phase 2 montre qu'il manque. | — |
+| 5 | **Servir** — *codée, build ROM réel en attente* | La réservation VRAM sur l'union, `lang_set` borné pour relire une langue sauvegardée, le compte des trous au build, et la recette du menu de langue dans SCRIPTING.md. | — |
 
 **Ce que la phase 1 a posé** (2026-08-24) : `Language` dans les paramètres du projet (code,
 nom, remplacements de police), la carte « Languages » de l'inspecteur de projet, et
@@ -1112,6 +1611,285 @@ justement pour ce genre de cas (un système d'écriture différent).
 l'avertissement quand il couvre vraiment le caractère. Vérifié sur Fonts&Texts (0 avertissement
 après correction de la traduction) et Pong (aucune régression, les deux avertissements restants
 sont ceux, déjà connus, de `_check_literal_texts`).
+
+## Phase 5 — Servir : le design (2026-09-02)
+
+Condition d'ouverture remplie : les phases 1 à 4 sont livrées, un projet peut déclarer ses
+langues, les traduire, les émettre et en changer en jeu. Ce qui reste tient à la question
+« et maintenant, comment un JOUEUR s'en sert ? » — plus l'ardoise que la lecture du code a
+révélée en ouvrant le chantier.
+
+### Ce que la lecture du code a trouvé, et qui n'était pas dans le plan
+
+**La réservation VRAM est calculée sur la SOURCE, alors que le runtime charge l'UNION.**
+La décision 4 de la phase 3.3 disait : le sous-ensemble ÉMIS est l'union de toutes les langues,
+la RÉSERVATION reste sur la langue active. Les deux moitiés de cette phrase sont vraies
+séparément et fausses ensemble : `text_set_font` copie `n_var × n_load` tuiles depuis le
+`FontSubset` de la scène — donc l'union, **quelle que soit la valeur de `g_lang`** — pendant que
+`scene_text_reservation` dimensionne le bloc avec `scene_codepoints(p, scene, "")`, la source
+seule.
+
+Mesuré sur un cas synthétique (une scène, une police, une zone, un side qui ajoute 12 glyphes) :
+**24 tuiles chargées, 12 réservées**. Le bloc de texte fait la moitié de ce qui s'y écrit ; les
+bases des polices suivantes, le bloc de surface composée et les sprites en cible BG sont posés
+derrière et se font écraser. Et `res["total"]` alimentant `scene_layout`, le garde-fou de budget
+— celui qui BLOQUE — compte faux lui aussi.
+
+Deux corollaires qui corrigent des phrases déjà écrites plus haut :
+
+- la justification de la phase 3.4 (« avertissement et non erreur : rien n'est cassé dans le
+  build d'aujourd'hui, `g_lang` reste 0 ») est **fausse**. C'est cassé à `g_lang = 0`, dès
+  qu'une traduction ajoute un caractère à une scène ;
+- `_check_vram_lang_budget` sous-estime aussi : il compare langue par langue (22 tuiles dans le
+  cas ci-dessus) là où le chargement réel est l'union (24). Il repère la bonne famille de cas,
+  jamais la bonne quantité.
+
+### Décisions verrouillées
+
+1. **La réservation se dimensionne sur l'UNION, exactement comme le chargement.**
+   `scene_text_reservation` appelle `scene_codepoints_union` — le même calcul que
+   `_emit_font_subsets`, ce que son propre docstring réclamait déjà (« les laisser diverger
+   validerait un budget que le placement ne tient pas »). Son paramètre `code` disparaît avec son
+   dernier appelant : la réservation ne dépend plus d'une langue, elle les tient toutes.
+
+2. **`_check_vram_lang_budget` disparaît avec la question qu'il posait.** « Quelle langue
+   chargerait le plus de glyphes ? » n'a plus de sens quand la scène charge l'union en
+   permanence : il n'y a plus de pire langue, il y a un coût, et c'est le budget de tuiles
+   existant — **bloquant**, pas un avertissement — qui le juge sur des chiffres désormais
+   justes. Un garde-fou de moins pour une garantie plus forte ; son fichier de tests est
+   réécrit pour prouver l'égalité `réservé == chargé` plutôt que l'ancienne comparaison.
+
+3. **L'écran de choix de la langue ne demande RIEN au moteur.** La question ouverte depuis
+   l'ouverture du jalon (« afficher “Deutsch / 日本語” demande deux écritures avant tout choix »)
+   se referme d'elle-même une fois la décision 1 appliquée : un endonyme est une entrée de la
+   table comme une autre, l'union par scène couvre donc les deux écritures, la réservation les
+   tient, et `_check_font_coverage` nomme un glyphe absent de la planche. Ce qui reste est une
+   **recette** dans [SCRIPTING.md](SCRIPTING.md), pas du code — avec sa règle : les entrées
+   d'endonymes se laissent NON TRADUITES, pour que le menu se lise pareil quelle que soit la
+   langue active (le repli sur la source, décision d'origine, fait exactement ce travail).
+
+4. **La langue n'est pas un état du moteur : elle reste une globale persistante.** Le moteur ne
+   connaît ni scène courante ni position d'acteur — il n'a pas de raison de connaître une
+   langue, et lui donner sa propre zone de SRAM créerait un second format de sauvegarde à tenir.
+   L'aller-retour s'écrit déjà avec ce qui existe : `global.langue = lang.get()` puis
+   `save.write(slot)`, et au démarrage `lang.set(global.langue)` — **qui compile déjà**
+   (`_check_args` laisse passer un argument non littéral, `_resolve_arg` retombe sur `_expr`, le
+   C émis est `lang_set(g_langue)`). Ce qui manque n'est donc pas une API, c'est **une borne** :
+   `lang_set` accepte aujourd'hui n'importe quel entier et `g_texts[g_lang]` sortirait de la
+   table. D'où `g_lang_count` émis à côté de `g_font_count`, et un refus silencieux d'un code
+   hors bornes — même geste que `text_set_font`, qui borne déjà sur `g_font_count`.
+   Contrepartie assumée, à documenter : le choix de langue vit dans un emplacement de
+   sauvegarde, donc effacer cet emplacement l'oublie. Dédier un emplacement aux préférences
+   est un choix de jeu, pas une règle du moteur.
+
+5. **Le build compte les trous et les nomme** — décision verrouillée à l'ouverture du jalon,
+   jamais implémentée. `validator._check_translation_holes`, même contrat que ses deux voisins
+   de la phase 3 : avertissement, silencieux en projet monolingue, un message par langue qui
+   donne le compte et cite les premières clés. Le compte existait déjà dans l'ÉDITEUR (le badge
+   par onglet, phase 2) ; il manquait là où quelqu'un fabrique une cartouche.
+
+6. **Pas d'export/import tableur pour le traducteur** — la question ouverte se ferme par un
+   refus écrit, pas par un report. Les sides sont déjà du JSON joint par id, diffable en git et
+   relisible par un humain ; et l'atelier de la phase 2 donne au traducteur le balisage, la
+   coloration et l'aperçu écran qu'un tableur ne rendra jamais. Un aller-retour CSV serait un
+   **second chemin d'écriture** dans la même donnée, sans moyen de garantir qu'un `[speed=6]`
+   ou un `$variable` en revienne valide — c'est-à-dire le risque de casser du texte pour gagner
+   un confort que l'écran couvre déjà. À rouvrir le jour où un vrai traducteur extérieur le
+   demande, avec ses contraintes à lui.
+
+### Ordre d'implémentation
+
+Chaque étape laisse le projet buildable.
+
+| # | Étape | Ce qu'elle change | Ce qu'elle NE change PAS |
+| --- | --- | --- | --- |
+| 5.1 | La réservation sur l'union | `scene_text_reservation` perd son `code` et compte l'union ; `_check_vram_lang_budget` est retiré | Un projet monolingue : union = source, chiffres identiques |
+| 5.2 | `lang_set` borné | `g_lang_count` émis, `lang_set` refuse un code hors bornes | `lang.set("fr")` littéral, résolu au build comme avant |
+| 5.3 | Le compte des trous | `_check_translation_holes` | Le build lui-même — c'est un avertissement |
+| 5.4 | La recette du menu | SCRIPTING.md : choisir sa langue, la sauver, la relire | Aucune ligne de moteur |
+
+**Ce que la phase 5 a posé** (2026-09-02) : les quatre étapes sont codées et couvertes par
+25 tests (`test_vram_lang_budget.py` réécrit, `test_translation_holes.py` neuf,
+`test_lang_api.py` étendu) — 380 au total, aucun régressé.
+
+- **5.1** — `scene_text_reservation` perd son paramètre `code` et compte
+  `scene_codepoints_union` sur `_declared_lang_codes(p)`, le point unique que partage désormais
+  `_emit_font_subsets`. `_check_vram_lang_budget` retiré : sa question (« quelle langue
+  chargerait le plus ? ») n'existe plus, et le budget de tuiles — **bloquant** — la remplace
+  sur des chiffres justes. Le fichier de tests correspondant ne compare plus deux langues, il
+  prouve l'égalité `réservé == chargé`, ce que rien ne protégeait.
+- **5.2** — `g_lang_count` émis à côté de la dimension de `g_texts`, et `lang_set` refuse un
+  code hors bornes en SILENCE (garder la langue en cours plutôt que ramener le joueur à la
+  source : une sauvegarde peut venir d'une version du jeu qui avait plus de langues). Fait
+  découvert en ouvrant l'étape et qui l'a réduite de moitié : **`lang.set(global.langue)`
+  compilait déjà** — `_check_args` laisse passer tout argument non littéral, `_resolve_arg`
+  retombe sur `_expr`, le C émis est `lang_set(g_langue)`. Il n'y avait donc pas d'API à
+  ajouter, seulement une borne à poser et une forme à nommer dans les tests pour qu'un futur
+  durcissement des domaines ne la retire pas sans le savoir.
+- **5.3** — `validator._check_translation_holes` : un message par langue, le compte et les
+  trois premières clés. Une entrée dont la SOURCE est vide n'est pas comptée — il n'y a rien à
+  traduire, et l'écran Texte le montre déjà en colonne Content.
+- **5.4** — la recette dans [SCRIPTING.md](SCRIPTING.md) (« Choisir sa langue, et s'en
+  souvenir »), vérifiée en la compilant telle qu'elle est écrite : zéro message de checker,
+  `lang_set(LANG_FR)` et `lang_set(save_read_var(0, GLOBAL_LANGUE))` dans le C émis.
+
+**Ce qui manque pour clore la v0.9** : le **build ROM réel**. La règle du projet — ne pas
+croire un chantier qui touche la VRAM sur des tests unitaires seuls — n'est pas tenable tant
+que `Project Demo/` est vide. 5.1 change le placement en VRAM de TOUTE scène d'un projet
+multilingue : c'est exactement le genre de changement qui se valide en jouant, pas en lisant.
+
+---
+
+## v0.26 — Les polices : de la source au pixel
+
+> **Conception figée le 2026-09-04, non commencée.** Le système de police actuel tient dans une
+> seule classe `Font` qui mélange trois natures : l'intrinsèque de la source (glyphes, rects,
+> métriques), de la config de traitement (`bg_color`, `space_color`), et rien de l'usage projet
+> — cet usage vit ailleurs, éclaté (couleur sur `UIRegion`, langue sur `g_lang_font`, layout sur
+> `text_layout`). Et une police y est verrouillée à un **jeu fini d'images de glyphes** : PNG ou
+> `.fnt`, jamais une source vectorielle. Ce jalon sépare proprement les couches et rend le
+> pipeline **indépendant du format de la source** — sans perdre ce que le jeu fini rendait
+> possible (le sous-ensemble par scène, le garde-fou VRAM, le CJK).
+
+### La chaîne, en une ligne
+
+```
+Font (source) → Glyph → RasterGlyph → représentation GBA
+```
+
+Chaque flèche est une couche, et chacune ignore les suivantes. Le `Glyph` est le caractère et
+ses métriques ; le `RasterGlyph` est sa forme rasterisée, **indépendante du format GBA** ; la
+conversion en tuiles et palette n'arrive qu'à l'export. Le bitmap est une représentation de
+**rendu**, jamais le modèle principal du texte.
+
+### Les couches, et où chacune vit
+
+| Couche | Nature | Où | État |
+| --- | --- | --- | --- |
+| **`Font`** | source de glyphes — l'intrinsèque *disponible* dans le fichier (glyphes présents, codepoints, métriques) | sidecar `.json` à côté de la source, dans `assets/fonts/` (inchangé) | existe (`core/models/font.py`), à **dégraisser** |
+| **`Glyph`** | caractère + métriques (rect ou vectoriel, `advance`, `ox/oy`) | dans le sidecar `Font` | existe |
+| **`FontAsset`** | usage projet : sources par variante (regular / bold / italic / bold italic), ordre de fallback, params de traitement (taille de rendu, cellule cible, bpp, seuil/dither, chasse) | un `.json` par asset, dans `project/fonts_assets/` | **neuf** |
+| **`RasterGlyph`** | forme bitmap d'un glyphe, **grille de couverture** (gris/alpha), sans index GBA | calculé **au build** (et pour l'aperçu) | existe en creux dans le chemin composé de `font_emit`, à **nommer** |
+| **`Text` / `TextStyle` / `Layout` / `TextEffect`** | contenu / apparence / placement / transformations | en aval — **hors de ce jalon** | partiels |
+| **Build** | résout `FontAsset` → sous-ensemble requis → rasterise → tuiles + palette | codegen | existe (`font_emit`), à réorganiser autour de `RasterGlyph` |
+
+**Le `FontAsset` ne duplique jamais les données intrinsèques d'un `Font`.** Le sidecar décrit la
+ressource ; le `FontAsset` décrit son usage. C'est pourquoi `bg_color` / `space_color` — qui
+disent *comment lire* une planche bitmap — quittent `Font` pour devenir des params de traitement
+du `FontAsset`, spécifiques aux sources bitmap : une source vectorielle n'a ni fond à trouer ni
+chasse à mesurer, le rasterizer lui donne couverture et métriques directement.
+
+### La chaîne de couverture — et pourquoi la langue en sort
+
+Un `FontAsset` est une **police logique** qui résout **chaque codepoint requis** par une
+**chaîne ordonnée de sources**. Un codepoint prend la première source de la chaîne qui sait le
+rendre :
+
+```
+dialog (FontAsset)
+  1. source primaire   (regular / bold / italic…)   ← couvre le Latin
+  2. fallback          (ark-pixel-ja)                ← couvre ce que 1 ne couvre pas
+```
+
+L'axe n'est **pas la langue**, c'est la **couverture de glyphes** ; la langue ne fait qu'induire
+quels codepoints sont requis — ce que `scene_codepoints()` calcule déjà, sur l'union des langues.
+Une police Unicode « juste marche » (la chaîne ne retombe jamais) ; une police pixel Latin-only
+reçoit un fallback pour les écritures qu'elle ne couvre pas, sans qu'on nomme jamais une langue.
+
+**C'est ce qui retire `g_lang_font`** (v0.9, phase 3.2) : le remap de police par langue était le
+meilleur modèle *avant* que `FontAsset` existe ; la chaîne de couverture le subsume. La scène
+nomme toujours `dialog` — c'est la *résolution* de ce nom qui change, par couverture et non par
+langue.
+
+### Le rasterizer vit au build, et la preview l'appelle
+
+`FontRasterizer` est une **fonction pure** `(source, glyphe, params) → RasterGlyph`, et **le
+build comme l'aperçu de l'éditeur appellent la même** — jamais deux implémentations. C'est la
+règle qu'on tient déjà ailleurs (`is_proportional()` partagé par l'émetteur et l'aperçu,
+`key_out()` qui reflète `key_colors()`) : si l'aperçu et l'émetteur divergent, le canvas ment
+sur ce qui part en ROM.
+
+- **La rasterisation est résolue au BUILD, jamais au runtime.** Le jeu ne comprend aucun TTF/OTF
+  — il ne manipule que des données de police déjà préparées pour la GBA. Le `RasterGlyph` n'est
+  calculé que pour le **sous-ensemble requis** (clés de texte littérales, imposées par le
+  checker) : la propriété « jeu fini d'images de glyphes » ne vit plus dans la *source* mais dans
+  la *sortie de build* — et c'est suffisant pour garder le sous-ensemble par scène, le garde-fou
+  VRAM et le CJK.
+- **`RasterGlyph` = grille de couverture, pas d'index GBA.** Une source vectorielle produit de
+  l'anti-crénelage naturel ; une source bitmap indexée donne une couverture binaire. La
+  **quantisation couverture → N index de palette** (seuil ou dither) est l'étape *export GBA*.
+  C'est cette grille abstraite, gardée jusqu'au dernier moment, qui rendra les couleurs, styles
+  et effets simples à implémenter dans leur jalon à eux.
+- **La preview ne persiste rien.** La différence nette avec le point d'entrée FreeType supprimé
+  le 2026-09-03 (chantier *Les formats acceptés à l'import*) : ce hack rasterisait **à l'import**
+  et **écrivait un PNG comme asset**. `FontRasterizer` rasterise **à la demande** (build +
+  aperçu) et ne persiste que le `.json` du `FontAsset`. Ce n'est pas une ré-addition du hack,
+  c'est un étage de première classe qui le remplace — et il ramène `freetype-py`, cette fois
+  comme dépendance de **build**, documentée.
+
+### Décisions verrouillées
+
+- **Séparation stricte des couches.** `Font` ne connaît ni traductions, ni effets, ni layout, ni
+  couleurs. `FontAsset` ne duplique pas l'intrinsèque de `Font`. `RasterGlyph` ignore le format
+  GBA. La conversion GBA vit au build, et nulle part avant.
+- **La résolution passe par la couverture, pas par la langue.** Un `FontAsset` = une chaîne
+  ordonnée de sources ; un codepoint prend la première qui le couvre.
+- **La primaire du `FontAsset` gouverne l'interligne** ; les glyphes de fallback s'y alignent.
+  Une ligne mixte (rare — une traduction est presque toujours mono-script) reste donc régulière.
+  Un override par plage de codepoints est une **porte** laissée ouverte, pas une fonctionnalité
+  de ce jalon.
+- **Un seul `FontRasterizer`, appelé par le build ET l'aperçu.** Résolution au build, jamais au
+  runtime ; aucune persistance d'asset généré.
+- **Deux dossiers, deux natures.** Les sources restent dans `assets/fonts/` (inchangé) — le
+  fichier importé et son sidecar `Font`, l'intrinsèque. Les `FontAsset` vivent dans
+  `project/fonts_assets/`, un fichier par asset, avec identité et référençables par nom, comme
+  une palette. `assets/` = source décrite, `project/` = objet moteur ; aucune migration.
+- **Bold / italic = faces NATIVES de la source, pas de synthèse.** Si la source vectorielle
+  porte nativement ses faces bold / italic / bold-italic, le rasterizer les rend ; sinon la
+  variante n'existe pas — une planche PNG n'a pas de style. Pas de faux-gras ni de cisaillement
+  (le faux-gras sur une police pixel est laid). La synthèse reste une **porte** ultérieure
+  (« pour l'instant »).
+
+### Ce que ce jalon renverse dans la v0.9
+
+Trois décisions verrouillées de la v0.9 (section Traduction) sont **remplacées** ici — signalées
+là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes :
+
+- « Une langue n'a pas de police : elle a éventuellement un REMPLACEMENT » → la substitution
+  n'est plus par langue, elle est par **couverture** sur le `FontAsset`.
+- « Une scène ne change jamais de police selon la langue… par une table de remap » → la scène
+  nomme toujours `dialog`, mais `g_lang_font` disparaît ; la résolution est la chaîne de
+  couverture. `font_de.fnt` comme praticité d'import disparaît avec (plus de police par langue à
+  pré-remplir).
+- « PNG et `.fnt` seulement… un TTF rendu au build ne donnerait pas ça » → les sources
+  vectorielles sont acceptées via `FontRasterizer` ; le « jeu fini de glyphes » se déplace de la
+  source vers la sortie de build, et l'argument tient toujours.
+
+### Ouvert
+
+- **Le seuil / dither** couverture → index : réglage par `FontAsset`, ou déduit du bpp cible ?
+- **`TextStyle` / `TextEffect`** : leur propre jalon, en aval — ce qu'il faut, c'est que la
+  grille de couverture reste manipulable jusqu'à l'export pour qu'ils restent simples.
+
+### Ce que ça touche (annoncé avant implémentation)
+
+| Fichier | Ce qui change |
+| --- | --- |
+| `core/models/font_asset.py` | **création** — `FontAsset` (chaîne de sources, variantes, params de traitement) |
+| `core/font_rasterizer.py` | **création** — `FontRasterizer` (fonction pure) + `RasterGlyph` |
+| `core/models/font.py` | dégraissage : `bg_color`/`space_color` sortent vers `FontAsset` ; `Font` devient source intrinsèque, vectorielle ou bitmap |
+| `core/font_import.py` | lecture de source + extraction cmap/métriques ; plus aucun point d'entrée qui *fabrique* une planche |
+| `codegen/font_emit.py` | réorganisé autour de `RasterGlyph` ; **`emit_lang_fonts_c` retiré** |
+| `codegen/runtime_codegen/main_gen.py` | l'appel à `emit_lang_fonts_c` retiré |
+| `core/models/settings.py` | `Language.fonts` retiré |
+| `ui/scene_manager/inspectors/languages_card.py` | la carte « font replacement » retirée |
+| `runtime/include/gba_engine.h` | `g_lang_font` (table, `extern`, ligne de remap de `text_set_font`) retiré |
+| `core/project_paths.py` | `fonts_assets_dir` ajouté (`project/fonts_assets/`) ; `assets/fonts/` inchangé |
+| `core/project.py` | `ResourceStore[FontAsset]` monté sur `fonts_assets_dir` |
+| `core/asset_encoding.py` | synchro : sidecar `Font` (`assets/fonts/`) distinct du `FontAsset` (`project/fonts_assets/`) |
+| `tests/` | `test_lang_font_remap.py` supprimé, sondes natives nettoyées ; tests neufs `FontRasterizer`/`FontAsset`/couverture |
+| `requirements.txt` | `freetype-py` revient comme dépendance de build |
+| `ARCHITECTURE.md` | la section police réécrite autour des couches (fait à l'étape suivante) |
 
 ---
 

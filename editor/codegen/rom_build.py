@@ -28,12 +28,14 @@ from codegen.grit_conversion import (
     bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
     resolve_palette_bank,
 )
-from codegen.palette_alloc import scene_bank_layout, effective_palette_colors
+from codegen.palette_alloc import (
+    scene_bank_layout, effective_palette_colors, ui_image_sprite_pools,
+)
 from codegen.actor_budget import prefab_pool_instances
 from core.app_paths import RUNTIME_DIR
 from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
-from codegen.runtime_codegen.main_gen import generate_main
+from codegen.runtime_codegen.main_gen import generate_main, ui_image_sprites
 from core.models.palette import OWN_PAL_BANK
 from core.models.components import SpriteComponent
 from core.models.sprite import SpriteAsset
@@ -276,6 +278,25 @@ class BuildWorker(EventEmitter, threading.Thread):
                         p, getattr(pf, "pal_bank", OWN_PAL_BANK), p.asset_abs(sprite.asset),
                         anchor_obj, own_pal=sprite.own_palette)
                     unique_sprites.append((pf, sprite, colors))
+            # Sprites des IMAGES d'interface : ni acteur ni prefab ne les
+            # porte, mais `main_gen` leur donne une base en VRAM OBJ et émet
+            # leur copie de tuiles comme pour un acteur (cf.
+            # `ui_image_sprites`). Sans ce passage, grit ne produit pas leur
+            # `sprite_X.c/.h` et le C ne trouve pas `sprite_XTiles`. La banque
+            # est celle du SPRITE (une image n'a pas de `pal_bank` propre), et
+            # elle se résout sur la scène ancre comme pour un prefab.
+            anchor_bg = anchor_scene.active_bg_palettes if anchor_scene else []
+            ui_pools = ui_image_sprite_pools(p)
+            for _, sprite in ui_image_sprites(p):
+                if sprite and sprite.asset and sprite.name not in seen_sprites:
+                    seen_sprites.add(sprite.name)
+                    pool = ui_pools.get(sprite.name, "obj")
+                    colors = effective_palette_colors(
+                        p, getattr(sprite, "pal_bank", OWN_PAL_BANK),
+                        p.asset_abs(sprite.asset),
+                        anchor_bg if pool == "bg" else anchor_obj,
+                        own_pal=sprite.own_palette)
+                    unique_sprites.append((None, sprite, colors))
             if ok and unique_sprites:
                 ok = ok and self._step_grit_actors(p, unique_sprites)
             if ok: self._emit("progress", 0.35)

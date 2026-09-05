@@ -326,3 +326,35 @@ class MergeGlyphsCmd(Command):
         self._font.glyphs = list(self._before)
         if self._persist:
             self._persist()
+
+
+class SetCharsetCmd(Command):
+    """Réécrit tout le charset d'un bloc, par assignation POSITIONNELLE.
+
+    Le charset n'est pas stocké (cf. `Font`) : l'éditer revient à réécrire les
+    `Glyph.char` un à un, dans l'ordre de la planche — caractère i → case i.
+    Une case reçoit exactement un caractère, donc une ligature existante est
+    aplatie (elle se répare case par case). Les cases au-delà de la chaîne
+    gardent leur caractère, les caractères au-delà des cases sont ignorés.
+    """
+
+    def __init__(self, font, charset: str, persist_fn=None):
+        self._font = font
+        self._before = [g.char for g in font.glyphs]
+        self._after = list(self._before)
+        for i in range(min(len(self._after), len(charset))):
+            self._after[i] = charset[i]
+        self.label = "Éditer le charset"
+        self._persist = persist_fn
+
+    def execute(self):
+        for g, ch in zip(self._font.glyphs, self._after):
+            g.char = ch
+        if self._persist:
+            self._persist()
+
+    def undo(self):
+        for g, ch in zip(self._font.glyphs, self._before):
+            g.char = ch
+        if self._persist:
+            self._persist()

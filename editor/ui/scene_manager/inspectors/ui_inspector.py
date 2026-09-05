@@ -16,11 +16,14 @@ seul capable de le changer.
 Écrit dans la grammaire `W` (labels à gauche, paires d'axes colorées) — la même
 que tous les autres inspecteurs, pour que l'UI ne soit pas un écran étranger.
 
+**L'ancrage et la cible ne sont PLUS ici (v0.25)** : ils appartiennent au nœud
+`Interface`, édités dans `UINodeInspector` (clic sur la racine « Interface » de
+l'arbre). L'inspecteur d'élément ne fait que LIRE la cible héritée
+(`layout.resolved_target`) pour adapter le fond et le pas de grille — il n'offre
+aucun menu qui la changerait.
+
 Les invariants métier restent ceux des modèles (models/ui_region.py) :
   • l'élément porte la GÉOMÉTRIE, jamais l'enchaînement (pas d'éditeur de dialogue) ;
-  • l'ancrage n'est éditable que sur un ROOT — un enfant l'hérite ;
-  • la cible n'est pas un menu quand elle est contrainte (actor → OBJ, bitmap →
-    OBJ) : le champ affiche la valeur ET sa raison ;
   • la taille d'une image n'est pas libre — c'est la frame de son sprite.
 """
 from __future__ import annotations
@@ -38,11 +41,11 @@ from core.project import Project
 from core.text_markup import display_text
 from core.gba_color import bgr555_to_rgb888
 from core.models.ui_region import (
-    ANCHOR_SCREEN, ANCHOR_WORLD, ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ,
-    KIND_PANEL, KIND_TEXT, KIND_IMAGE,
+    ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ, PRIORITY_INHERIT,
+    KIND_LIST, KIND_TEXT, KIND_IMAGE, can_fill,
+    NAV_ROW, NAV_COLUMN, CURSOR_SNAP, CURSOR_SLIDE,
     FILL_NONE, FILL_COLOR, FILL_NINE, FILL_BG, FILL_SPRITE, fill_allowed,
     sprite_grid,
-    forced_target,
     image_geometry,
     preset_rect, H_LEFT, H_CENTER, H_RIGHT, V_TOP, V_MIDDLE, V_BOTTOM,
 )
@@ -53,11 +56,6 @@ from ui.common.notice import note, notice, text
 from ui.common.pickers import ColorIndexSlot
 from ui.text_editor.colors import TEXT_COLOR as TEXT_ACCENT
 
-_ANCHORS = [
-    (ANCHOR_SCREEN, "Screen (fixed)"),
-    (ANCHOR_WORLD,  "World (scrolls)"),
-    (ANCHOR_ACTOR,  "Actor (follows)"),
-]
 _ALIGN_LABELS = ["Left", "Centered", "Right"]
 # Le même choix, dessiné : un alignement se reconnaît à sa forme.
 _ALIGN_ICONS = ("align_left", "align_center", "align_right")
@@ -77,7 +75,6 @@ QToolButton:checked {{
     border-color: {C.ACCENT};
 }}
 """
-_TARGETS = [(TARGET_BG, "Background (BG)"), (TARGET_OBJ, "Sprite (OBJ)")]
 _FILL_LABELS = [
     (FILL_NONE,   "None (invisible group)"),
     (FILL_COLOR,  "Color (palette)"),
@@ -165,37 +162,11 @@ class UIInspector(QWidget):
         # ligne du nom. Le jaune reste à ce que le build ou l'écran feront.
         self._layout_shared = note(L, "ui.layout.shared")
 
-        # ── Ancrage (root uniquement — un enfant hérite) ──────────
-        anchor_card = CollapsibleCard("Anchor")
-        self._anchor = QComboBox()
-        self._anchor.setFont(QFont(T.UI, T.MD))
-        self._anchor.setStyleSheet(QSS.combobox)
-        for _, lab in _ANCHORS:
-            self._anchor.addItem(lab)
-        self._anchor.currentIndexChanged.connect(self._on_anchor)
-        W.row("Anchor", self._anchor, anchor_card.body_layout)
-
-        self._actor = QComboBox()
-        self._actor.setFont(QFont(T.UI, T.MD))
-        self._actor.setStyleSheet(QSS.combobox)
-        self._actor.currentIndexChanged.connect(self._on_actor)
-        self._actor_row = W.row("Actor", self._actor, anchor_card.body_layout).parentWidget()
-
-        self._target = QComboBox()
-        self._target.setFont(QFont(T.UI, T.MD))
-        self._target.setStyleSheet(QSS.combobox)
-        for _, lab in _TARGETS:
-            self._target.addItem(lab)
-        self._target.currentIndexChanged.connect(self._on_target)
-        self._target_row = W.row("Target", self._target, anchor_card.body_layout).parentWidget()
-
-        self._frame_why = note(anchor_card.body_layout)
-        # L'avertissement d'ancrage vit SOUS l'ancrage. Il était au bas de
-        # l'inspecteur, sous toutes les cartes, à côté d'un avertissement de
-        # texte qui n'a rien à voir avec lui : un message ne se lit que s'il
-        # est posé contre le réglage qui le cause.
-        self._anchor_why = note(anchor_card.body_layout, "ui.anchor.no_actor")
-        L.addWidget(anchor_card)
+        # L'ancrage et la cible ne vivent plus sur l'élément (v0.25) : ils sont
+        # portés par le NŒUD `Interface`, édités dans `UINodeInspector` (clic sur
+        # la racine « Interface » de l'arbre). L'inspecteur d'élément ne fait plus
+        # que LIRE la cible héritée (`layout.resolved_target`) pour adapter le fond
+        # et l'empreinte — il n'offre aucun menu qui la changerait.
 
         # ── Géométrie ─────────────────────────────────────────────
         geom_card = CollapsibleCard("Geometry (px)")
@@ -252,6 +223,25 @@ class UIInspector(QWidget):
         self._visible = W.checkbox_row("Visible", "Shown at scene start", visible_card.body_layout)
         self._visible.toggled.connect(self._on_visible)
         self._visible_why = note(visible_card.body_layout, "ui.visible.hidden_parent")
+        # Priorité OBJ — portée par CHAQUE élément (texte, image, fond de
+        # conteneur), surchargeable, héritée par défaut. -1 = « Auto » : la
+        # profondeur de l'acteur ancré, en direct. Sa place est ici, avec la
+        # visibilité : les deux disent OÙ et SI l'élément se voit, pas sa forme.
+        # N'a d'effet qu'en cible OBJ ; en BG la profondeur est celle du layer,
+        # d'où la note conditionnelle plutôt qu'un champ qu'on croirait sans effet.
+        self._prio = QSpinBox()
+        self._prio.setFont(QFont(T.MONO, T.MD))
+        self._prio.setStyleSheet(QSS.spinbox)
+        self._prio.setRange(-1, 3)
+        self._prio.setSpecialValueText("Auto (actor)")
+        self._prio.setKeyboardTracking(False)
+        self._prio.setToolTip(
+            "OBJ depth, when this element renders as a sprite (its node follows "
+            "an actor).<br><br><b>Auto</b> inherits the actor's depth, live.<br>"
+            "0 = frontmost … 3 = backmost overrides it.")
+        self._prio.valueChanged.connect(self._on_prio)
+        self._prio_row = W.row("Priority", self._prio, visible_card.body_layout).parentWidget()
+        self._prio_why = note(visible_card.body_layout)
         L.addWidget(visible_card)
 
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
@@ -368,6 +358,11 @@ class UIInspector(QWidget):
         # ici pour qu'il n'y ait plus à changer d'écran pour le voir ou le
         # poser — l'écart qui rendait Ink/Highlight incompréhensibles à côté
         # du picker de fond, qui lui semble tout choisir sur place.
+        # Ceci vaut pour un texte LIBRE. Un texte imbriqué dans un conteneur à
+        # fond ne choisit pas : il prend la banque de son conteneur (cf.
+        # `_ink_bank`), et l'hôte porte alors une étiquette en lecture seule à
+        # la place du slot — la banque de scène ne le régit pas.
+        #
         # Même widget que le picker de fond (`_fill_pal_slot`) — un hôte vide
         # ici, le slot RECONSTRUIT à chaque `_reload_color` : il capture sa
         # liste de slots à la construction, et cette liste appartient à la
@@ -559,25 +554,132 @@ class UIInspector(QWidget):
         L.addWidget(self._fill_card)
 
         # ── Section LISTE (ROADMAP v0.22) ─────────────────────────
-        # Une propriété du PANNEAU, pas un quatrième type d'élément : le moteur
-        # prend la navigation, pas la mise en page. Les rangées sont les zones
-        # de texte posées DANS ce panneau — rien à déclarer de plus.
-        self._list_card = CollapsibleCard("Liste")
-        self._list_on = W.checkbox_row(
-            "Navigation", "Ce panneau est une liste", self._list_card.body_layout)
-        self._list_on.toggled.connect(
-            lambda v: (self._set("is_list", bool(v), "List"),
+        # L'inspecteur d'un TYPE depuis le 2026-09-02, et non plus une case à
+        # cocher posée sur chaque conteneur : le moteur prend toujours la
+        # navigation et pas la mise en page, mais la navigation a un
+        # propriétaire. Les rangées restent les zones de texte posées DANS la
+        # liste — rien à déclarer de plus.
+        self._list_card = CollapsibleCard("List")
+        W.section("NAVIGATION", self._list_card.body_layout)
+
+        self._list_active = W.checkbox_row(
+            "Selection", "Takes the D-pad", self._list_card.body_layout)
+        self._list_active.setToolTip(
+            "<b>Selection</b> — whether this list reads the D-pad.<br><br>"
+            "An inactive list stays on screen and keeps its current item; it "
+            "just stops moving. That is what lets a menu and its submenu show "
+            "at once — without it, both walk on the same press.<br><br>"
+            "Hiding the list is a different thing: it disappears.")
+        self._list_active.toggled.connect(
+            lambda v: self._set("active", bool(v), "List selection"))
+
+        # La GRILLE en deux nombres : sans compte de colonnes, un parcours en Z
+        # ou en W ne se calcule pas — le moteur ne saurait pas de combien
+        # sauter en changeant de ligne. Cf. `NAV_ROW`/`NAV_COLUMN`.
+        self._list_cols = QSpinBox()
+        self._list_cols.setFont(QFont(T.MONO, T.SM))
+        self._list_cols.setStyleSheet(QSS.spinbox)
+        self._list_cols.setRange(1, 64)
+        self._list_cols.setKeyboardTracking(False)
+        self._list_cols.setToolTip(
+            "<b>Columns</b> — how wide one line of the grid is.<br><br>"
+            "1 column is a plain vertical list. Set it to the number of rows "
+            "for a row of tabs, or to any width for a grid.<br><br>"
+            "Scrolling moves by a whole LINE, so the columns an author laid "
+            "out stay where they are.")
+        self._list_cols.valueChanged.connect(
+            lambda v: (self._set("nav_columns", int(v), "List columns"),
                        self._sync_list_rows()))
-        self._list_axis = W.combobox(["Verticale", "Horizontale"])
-        self._list_axis.currentIndexChanged.connect(
-            lambda i: self._set("list_axis",
-                                "horizontal" if i == 1 else "vertical", "List axis"))
-        self._list_axis_row = W.row("Axe", self._list_axis, self._list_card.body_layout).parentWidget()
+        W.row("Columns", self._list_cols, self._list_card.body_layout)
+
+        self._list_major = W.combobox(["Column first (W)", "Row first (Z)"])
+        self._list_major.setToolTip(
+            "<b>Order</b> — the direction item numbers run in.<br><br>"
+            "<b>Column first</b>: top to bottom, then the next column.<br>"
+            "<b>Row first</b>: left to right, then the line below.<br><br>"
+            "With a single column both describe the same walk; the other axis "
+            "of the D-pad is then left to the game.")
+        self._list_major.currentIndexChanged.connect(
+            lambda i: (self._set("nav_major", NAV_ROW if i == 1 else NAV_COLUMN,
+                                 "List order"),
+                       self._sync_list_rows()))
+        W.row("Order", self._list_major, self._list_card.body_layout)
+
         self._list_wrap = W.checkbox_row(
-            "Boucle", "Du dernier au premier", self._list_card.body_layout)
+            "Wrap", "Last back to first", self._list_card.body_layout)
         self._list_wrap.toggled.connect(
-            lambda v: self._set("list_wrap", bool(v), "List wrap"))
+            lambda v: self._set("wrap", bool(v), "List wrap"))
         self._list_why = note(self._list_card.body_layout)
+        self._list_shape = note(self._list_card.body_layout)
+
+        # ── Curseur — la liste le POSSÈDE ─────────────────────────
+        # Elle NOMME une image de la même mise en page ; le moteur la déplace
+        # par le chemin de `ui.image_move`, un décalage relatif à la position
+        # authorée. L'auteur pose donc son curseur en face de la PREMIÈRE
+        # rangée, et n'a rien à écrire pour qu'il suive la sélection.
+        W.section("CURSOR", self._list_card.body_layout)
+        self._list_cursor = W.combobox([])
+        self._list_cursor.setToolTip(
+            "<b>Cursor</b> — an Image of this layout that the list moves onto "
+            "the selected row.<br><br>"
+            "Place it facing the FIRST row: the engine offsets it by the "
+            "distance between that row and the current one, so the layout "
+            "stays the truth.<br><br>"
+            "No cursor is a valid choice — the selected row can be marked by "
+            "its style instead.")
+        self._list_cursor.currentIndexChanged.connect(self._on_list_cursor)
+        W.row("Image", self._list_cursor, self._list_card.body_layout)
+
+        self._list_cursor_mode = W.combobox(["Snap", "Slide"])
+        self._list_cursor_mode.setToolTip(
+            "<b>Motion</b> — <b>Snap</b> puts the cursor on the row at once; "
+            "<b>Slide</b> travels the distance at the speed below.")
+        self._list_cursor_mode.currentIndexChanged.connect(
+            lambda i: (self._set("cursor_mode",
+                                 CURSOR_SLIDE if i == 1 else CURSOR_SNAP,
+                                 "Cursor motion"),
+                       self._sync_list_cursor()))
+        W.row("Motion", self._list_cursor_mode, self._list_card.body_layout)
+
+        self._list_cursor_speed = QSpinBox()
+        self._list_cursor_speed.setFont(QFont(T.MONO, T.SM))
+        self._list_cursor_speed.setStyleSheet(QSS.spinbox)
+        self._list_cursor_speed.setRange(1, 64)
+        self._list_cursor_speed.setSuffix(" px/frame")
+        self._list_cursor_speed.setKeyboardTracking(False)
+        self._list_cursor_speed.valueChanged.connect(
+            lambda v: self._set("cursor_speed", int(v), "Cursor speed"))
+        self._list_cursor_speed_row = W.row(
+            "Speed", self._list_cursor_speed,
+            self._list_card.body_layout).parentWidget()
+        self._list_cursor_why = note(self._list_card.body_layout,
+                                     "ui.list.cursor_missing")
+
+        # ── Style de la rangée choisie ────────────────────────────
+        # Les deux réglages qu'une zone porte déjà, appliqués par le moteur en
+        # suivant l'index : même banque, même plage, même zéro. Une ANIMATION
+        # n'est pas offerte — sur cible BG elle réécrirait des tuiles à chaque
+        # frame, et ce coût se mesure avant de se promettre.
+        W.section("SELECTED ROW", self._list_card.body_layout)
+        self._list_ink = ColorIndexSlot("Same as the row", TEXT_ACCENT)
+        self._list_ink.picked.connect(
+            lambda i: self._set("selected_text_color", int(i), "Selected ink"))
+        self._list_ink.setToolTip(
+            "<b>Ink</b> of the SELECTED row — an index in the scene's UI "
+            "palette bank, like a text's own ink.<br><br>"
+            "Leaving it at the default keeps whatever each row already uses. "
+            "Each color costs one more copy of the scene's glyphs in VRAM.")
+        W.row("Ink", self._list_ink, self._list_card.body_layout)
+
+        self._list_hl = ColorIndexSlot("None", TEXT_ACCENT)
+        self._list_hl.picked.connect(
+            lambda i: self._set("selected_highlight_color", int(i),
+                                "Selected highlight"))
+        self._list_hl.setToolTip(
+            "<b>Highlight</b> of the SELECTED row — a color laid under its "
+            "text, on the extent it covers.<br><br>"
+            "The classic way to mark a menu selection without a cursor.")
+        W.row("Highlight", self._list_hl, self._list_card.body_layout)
         L.addWidget(self._list_card)
 
         # ── Section IMAGE (sprite à état) ─────────────────────────
@@ -616,15 +718,8 @@ class UIInspector(QWidget):
         self._img_play.currentIndexChanged.connect(self._on_img_play)
         self._img_play_row = W.row("Frames", self._img_play, self._img_card.body_layout).parentWidget()
 
-        self._img_prio = QSpinBox()
-        self._img_prio.setFont(QFont(T.MONO, T.MD))
-        self._img_prio.setStyleSheet(QSS.spinbox)
-        self._img_prio.setRange(0, 3)
-        self._img_prio.setKeyboardTracking(False)
-        self._img_prio.setToolTip("0 = frontmost. Carried by the element, not "
-                                  "inherited: a gauge and its frame overlap on purpose.")
-        self._img_prio.valueChanged.connect(self._on_img_prio)
-        self._img_prio_row = W.row("Priority", self._img_prio, self._img_card.body_layout).parentWidget()
+        # La priorité n'est plus ici : elle vit dans la carte Geometry
+        # (`self._prio`), portée par chaque élément d'UI, pas seulement l'image.
 
         self._img_why = note(self._img_card.body_layout)
         self._img_missing = notice("ui.image.missing", self._img_sprite,
@@ -635,9 +730,8 @@ class UIInspector(QWidget):
 
         # ── Suppression ───────────────────────────────────────────
         # Il n'y a plus de label d'avertissement ICI : chaque message est posé
-        # sous le réglage qui le cause (`_anchor_why`) plutôt que
-        # dans un bac commun au pied de l'inspecteur, où un message d'ancrage
-        # et un message de texte se ressemblaient.
+        # sous le réglage qui le cause (empreinte sous le texte, fond sous le
+        # fond) plutôt que dans un bac commun au pied de l'inspecteur.
         W.separator(L)
         self._del = W.btn_ghost("Delete element")
         self._del.setFont(QFont(T.UI, T.SM))
@@ -701,23 +795,30 @@ class UIInspector(QWidget):
             else:
                 self._layout_shared.clear()
 
-            self._reload_actors()
             for k in ("x", "y", "w", "h"):
                 self._sp[k].setValue(int(getattr(element, k, 0)))
+            self._prio.setValue(int(getattr(element, "priority", PRIORITY_INHERIT)))
+            # La priorité OBJ n'agit qu'en cible OBJ : sous un nœud écran/monde
+            # (BG), la profondeur est celle du layer. On le DIT plutôt que de
+            # cacher un champ que l'auteur a demandé sur chaque élément.
+            if self._layout_asset.resolved_target(element, self._render_mode()) != TARGET_BG:
+                self._prio_why.clear()
+            else:
+                self._prio_why.show_text("ui.priority.bg")
             self._visible.setChecked(bool(getattr(element, "visible", True)))
             self._sync_visible_hint()
 
             # Sections par type — tout se montre/cache ICI, une seule fois.
             is_text  = kind == KIND_TEXT
-            is_panel = kind == KIND_PANEL
+            is_list  = kind == KIND_LIST
             is_image = kind == KIND_IMAGE
-            # La cible est un choix de l'auteur pour tout ce qui DESSINE ; un
-            # conteneur, lui, la tient de son root comme le reste de sa branche.
-            self._target_row.setVisible(is_text or is_image)
+            # Le FOND suit la capacité et non le type : les deux conteneurs en
+            # dessinent un (cf. `FillMixin`), et demander le type ici ferait
+            # disparaître la carte de la liste sans que rien ne le dise.
+            has_fill = can_fill(element)
             self._text_card.setVisible(is_text)
-            self._fill_card.setVisible(is_panel)
-            self._list_card.setVisible(is_panel)
-            self._sync_list_rows()
+            self._fill_card.setVisible(has_fill)
+            self._list_card.setVisible(is_list)
             self._img_card.setVisible(is_image)
             # La taille d'une image est celle de la frame de son sprite : la
             # laisser éditable inviterait à un étirement que le matériel ne sait
@@ -738,12 +839,14 @@ class UIInspector(QWidget):
                 self._reload_text_key()
                 self._reload_content()
                 self._sync_text_rows()
-            if is_panel:
+            if has_fill:
                 self._reload_fill()
+            if is_list:
+                self._reload_list()
             if is_image:
                 self._reload_image()
 
-            self._sync_frame()
+            self._sync_geom()
             self._refresh_diagnostics()
         finally:
             self._blocking = False
@@ -755,25 +858,7 @@ class UIInspector(QWidget):
     def _render_mode(self) -> int:
         return int(getattr(self._scene, "render_mode", 0) or 0)
 
-    def _is_root(self) -> bool:
-        """Un élément de premier niveau (sans parent, ou parent pendant) : c'est
-        LUI qui porte l'ancrage. Un enfant l'hérite et n'y touche pas."""
-        e = self._element
-        return not e.parent or self._layout_asset.get(e.parent) is None
-
     # ── Rechargements de combos ───────────────────────────────────
-    def _reload_actors(self):
-        self._actor.clear()
-        names = [a.name for a in getattr(self._scene, "actors", [])] if self._scene else []
-        self._actor.addItems(names or ["(no actor)"])
-        e = self._element
-        anchor, actor = self._layout_asset.effective_anchor(e) if e else ("", "")
-        self._anchor.setCurrentIndex(
-            next((i for i, (a, _) in enumerate(_ANCHORS) if a == anchor), 0))
-        if e and actor in names:
-            self._actor.setCurrentIndex(names.index(actor))
-        self._actor_row.setVisible(anchor == ANCHOR_ACTOR)
-
     def _reload_fonts(self):
         self._font.clear()
         self._font.addItem("(scene font)", "")
@@ -821,7 +906,6 @@ class UIInspector(QWidget):
             self._reload_image_states()
             j = self._img_play.findData(bool(getattr(self._element, "playing", True)))
             self._img_play.setCurrentIndex(j if j >= 0 else 0)
-            self._img_prio.setValue(int(getattr(self._element, "priority", 0) or 0))
         finally:
             self._blocking = prev
         self._sync_image_note()
@@ -925,10 +1009,12 @@ class UIInspector(QWidget):
         self._set("playing", bool(self._img_play.currentData()), "Image playback")
         self._sync_image_note()
 
-    def _on_img_prio(self, v):
+    def _on_prio(self, v):
+        """Priorité OBJ de N'IMPORTE quel élément d'UI (texte, image, fond de
+        conteneur) — le champ vit dans Geometry. -1 = héritée."""
         if self._blocking or not self._element:
             return
-        self._set("priority", int(v), "Image priority")
+        self._set("priority", int(v), "Priority")
 
     # ── Contenu (édite l'entrée de table, pas l'élément) ──────────
     def _current_text(self):
@@ -1055,45 +1141,23 @@ class UIInspector(QWidget):
         finally:
             self._blocking = False
 
-    # ── Frame : ancrage + cible + pas de grille ───────────────────
-    def _sync_frame(self):
-        """Verrouille ancrage/cible selon le rôle (root ou enfant) et le
-        matériel, et le DIT : une contrainte muette se lit comme un bug."""
+    # ── Géométrie : pas de grille selon la cible HÉRITÉE du nœud ───
+    def _sync_geom(self):
+        """Adapte le pas des spinbox et le titre à la cible héritée du nœud
+        `Interface` (v0.25) — l'élément ne CHOISIT plus sa cible, il la subit :
+        un BG ne se pose pas hors grille (pas de 8), un enfant se place relativement
+        à son parent. Aucun contrôle d'ancrage/cible ici, ils sont sur le nœud."""
         e, rm = self._element, self._render_mode()
         lay = self._layout_asset
-        is_root = self._is_root()
+        is_child = bool(e.parent) and lay.get(e.parent) is not None
         eff_anchor, _ = lay.effective_anchor(e)
-        forced = forced_target(eff_anchor, rm)
         eff = lay.resolved_target(e, rm)
 
-        self._anchor.setEnabled(is_root)
-        self._actor.setEnabled(is_root)
-        if self._kind() in (KIND_TEXT, KIND_IMAGE):
-            self._target.setCurrentIndex(
-                next((i for i, (t, _) in enumerate(_TARGETS) if t == eff), 0))
-            self._target.setEnabled(is_root and forced is None)
-
-        if not is_root:
-            root = lay.root_of(e.name)
-            self._frame_why.show_text("ui.anchor.inherited",
-                                      root=root.name if root else "?",
-                                      anchor=eff_anchor)
-        elif forced:
-            # Les DEUX raisons matérielles sont deux messages distincts, et non
-            # une phrase fabriquée dans core/models : une raison qui se compose
-            # à l'exécution ne se traduit pas, et core n'a pas à écrire de la
-            # prose d'interface.
-            self._frame_why.show_text("ui.anchor.forced_actor" if eff_anchor == ANCHOR_ACTOR
-                                      else "ui.anchor.forced_bitmap", mode=rm)
-        else:
-            self._frame_why.clear()
-
-        # Le BG ne peut pas se poser hors grille : le pas des spinbox le dit.
         step = 8 if eff == TARGET_BG else 1
         for k in ("x", "y", "w", "h"):
             self._sp[k].setSingleStep(step)
         self._geom_lbl.set_title(
-            "Geometry (px, relative to parent)" if not is_root
+            "Geometry (px, relative to parent)" if is_child
             else "Geometry (px, tile-aligned)" if eff == TARGET_BG
             else "Geometry (px, actor offset)" if eff_anchor == ANCHOR_ACTOR
             else "Geometry (px)")
@@ -1126,11 +1190,11 @@ class UIInspector(QWidget):
     def _refresh_diagnostics(self):
         """Empreinte + avertissements d'un élément de TEXTE.
 
-        Chaque message part vers la carte du réglage qui le cause : l'ancrage
-        sans acteur sous l'ancrage, le recouvrement de surface sous le texte.
-        Une image a sa propre note (`_sync_image_note`) : son empreinte se lit
-        dans le sprite, pas dans le rectangle. Un conteneur n'en a aucune."""
-        self._anchor_why.clear()
+        L'empreinte va sous le texte ; l'alerte « ancré sur un acteur sans acteur
+        choisi » vit désormais sur le NŒUD (`UINodeInspector`), l'ancrage n'étant
+        plus un réglage de l'élément (v0.25). Une image a sa propre note
+        (`_sync_image_note`) : son empreinte se lit dans le sprite, pas dans le
+        rectangle. Un conteneur n'en a aucune."""
         if self._kind() == KIND_IMAGE:
             self._size_lbl.clear()
             self._anim_lbl.clear()
@@ -1143,7 +1207,6 @@ class UIInspector(QWidget):
         r, rm = self._element, self._render_mode()
         lay = self._layout_asset
         target = lay.resolved_target(r, rm)
-        eff_anchor, eff_actor = lay.effective_anchor(r)
         tx, ty, tw, th = r.tile_rect()
         # DÉDUIT du texte affiché, plus déclaré à la main : c'est le parseur qui
         # compte les portées `[wave]`/`[shake]`, sur toutes les langues.
@@ -1156,9 +1219,6 @@ class UIInspector(QWidget):
         else:
             self._size_lbl.show_text("ui.text.footprint_bg", w=tw, h=th, n=tw * th)
         self._sync_anim_note(anim, target)
-
-        if target == TARGET_OBJ and eff_anchor == ANCHOR_ACTOR and not eff_actor:
-            self._anchor_why.show_text()
 
     def _sync_anim_note(self, anim: int, target: str):
         """Ce que les effets animés réservent — CONSTAT, jamais une question.
@@ -1196,12 +1256,6 @@ class UIInspector(QWidget):
         self._reload_fill_asset()
         self._reload_fill_sprite()
         self._sync_fill()
-        # Navigation (ROADMAP v0.22) — lue depuis le panneau comme le reste.
-        self._list_on.setChecked(bool(getattr(el, "is_list", False)))
-        self._list_axis.setCurrentIndex(
-            1 if getattr(el, "list_axis", "vertical") == "horizontal" else 0)
-        self._list_wrap.setChecked(bool(getattr(el, "list_wrap", True)))
-        self._sync_list_rows()
 
     def _active_bg_palettes(self) -> list[str]:
         """Noms des palettes BG actives de la scène — celles qui ont une banque
@@ -1294,7 +1348,7 @@ class UIInspector(QWidget):
 
     def _sync_fill(self):
         """Montre les champs du mode courant + une note ; met à jour la pastille."""
-        if self._kind() != KIND_PANEL:
+        if not can_fill(self._element):
             return
         fk = self._fill_kind.currentData()
         self._fill_color_row.setVisible(fk == FILL_COLOR)
@@ -1401,17 +1455,84 @@ class UIInspector(QWidget):
             get_dispatcher().save_all()
         self.changed.emit()
 
+    def _reload_list(self):
+        """Repose les réglages de navigation, le curseur et le style de la
+        rangée choisie."""
+        el = self._element
+        self._list_active.setChecked(bool(getattr(el, "active", True)))
+        self._list_cols.setValue(max(1, int(getattr(el, "nav_columns", 1) or 1)))
+        self._list_major.setCurrentIndex(
+            1 if getattr(el, "nav_major", NAV_COLUMN) == NAV_ROW else 0)
+        self._list_wrap.setChecked(bool(getattr(el, "wrap", True)))
+        self._reload_list_cursor()
+        # Le style de sélection vit dans la MÊME banque que l'encre d'une zone
+        # (`Scene.ui_pal_bank`) : le matériel ne charge qu'une banque d'UI par
+        # scène, et deux banques feraient dire deux couleurs au même index.
+        bank = self._ui_bank()
+        self._list_ink.set_value(
+            bank, int(getattr(el, "selected_text_color", 0) or 0))
+        self._list_hl.set_value(
+            bank, int(getattr(el, "selected_highlight_color", 0) or 0))
+        self._sync_list_rows()
+
+    def _reload_list_cursor(self):
+        """(Re)peuple le choix de curseur avec les IMAGES de cette mise en page.
+
+        Seulement celles-ci : une liste qui déplacerait l'image d'une autre page
+        bougerait quelque chose que l'auteur ne voit pas à côté d'elle. Un nom
+        posé qui n'y est plus reste montré et signalé, jamais effacé en
+        silence — même règle que `ColorIndexSlot` pour un index hors banque."""
+        from core.models.ui_region import KIND_IMAGE
+        el, lay = self._element, self._layout_asset
+        cur = str(getattr(el, "cursor_image", "") or "")
+        names = [x.name for x in (lay.elements if lay else [])
+                 if getattr(x, "kind", "") == KIND_IMAGE]
+        if cur and cur not in names:
+            names.append(cur)
+        was = self._blocking
+        self._blocking = True
+        try:
+            self._list_cursor.clear()
+            self._list_cursor.addItem("— none —", "")
+            for n in names:
+                self._list_cursor.addItem(n, n)
+            i = self._list_cursor.findData(cur)
+            self._list_cursor.setCurrentIndex(i if i >= 0 else 0)
+        finally:
+            self._blocking = was
+        self._sync_list_cursor()
+
+    def _on_list_cursor(self, _i: int):
+        if self._blocking or self._element is None:
+            return
+        self._set("cursor_image", str(self._list_cursor.currentData() or ""),
+                  "List cursor")
+        self._sync_list_cursor()
+
+    def _sync_list_cursor(self):
+        """La vitesse ne compte qu'en mode glissant, et un curseur introuvable
+        se dit ici plutôt qu'au Build."""
+        from core.models.ui_region import KIND_IMAGE
+        el, lay = self._element, self._layout_asset
+        if el is None:
+            return
+        cur = str(getattr(el, "cursor_image", "") or "")
+        self._list_cursor_speed_row.setVisible(
+            getattr(el, "cursor_mode", CURSOR_SNAP) == CURSOR_SLIDE)
+        self._list_cursor_speed.setValue(
+            max(1, int(getattr(el, "cursor_speed", 2) or 2)))
+        target = lay.get(cur) if (lay and cur) else None
+        if cur and getattr(target, "kind", "") != KIND_IMAGE:
+            self._list_cursor_why.show_text("ui.list.cursor_missing", name=cur)
+        else:
+            self._list_cursor_why.clear()
+
     def _sync_list_rows(self):
-        """Montre les réglages de liste quand le panneau en est une, et dit
-        combien de rangées il porte — une liste sans zone de texte enfant
-        n'afficherait rien, et c'est le genre de chose qu'on veut lire ici
-        plutôt que découvrir au Build."""
+        """Dit combien de rangées la liste porte et quelle grille elles font —
+        une liste sans zone de texte enfant n'afficherait rien, et c'est le
+        genre de chose qu'on veut lire ici plutôt que découvrir au Build."""
         e = self._element
-        on = bool(getattr(e, "is_list", False)) if e is not None else False
-        for w in (self._list_axis_row, self._list_wrap):
-            w.setVisible(on)
-        if not on:
-            self._list_why.clear()
+        if e is None or self._kind() != KIND_LIST:
             return
         from core.models.ui_region import KIND_TEXT
         lay = self._layout_asset
@@ -1423,6 +1544,24 @@ class UIInspector(QWidget):
                                      names=", ".join(r.name for r in rows))
         else:
             self._list_why.show_text("ui.list.empty")
+        # La forme obtenue, dite en clair : deux nombres se lisent moins bien
+        # qu'un « 2 × 3 », et c'est la grille que l'auteur a en tête.
+        cols = max(1, int(getattr(e, "nav_columns", 1) or 1))
+        n = len(rows)
+        lines = max(1, n // cols) if n else 0
+        row_first = getattr(e, "nav_major", NAV_COLUMN) == NAV_ROW
+        if not n:
+            self._list_shape.clear()
+            return
+        if cols == 1:
+            shape, order = f"{n} rows, one column", "top to bottom"
+        elif lines <= 1:
+            shape, order = f"{n} columns, one line", "left to right"
+        else:
+            shape = f"{lines} \u00d7 {cols} grid"
+            order = ("left to right, then the line below" if row_first
+                     else "top to bottom, then the next column")
+        self._list_shape.show_text("ui.list.grid", shape=shape, order=order)
 
     def _set(self, field: str, value, label: str):
         from core.history import get_history, SetFieldCmd
@@ -1451,29 +1590,6 @@ class UIInspector(QWidget):
             self._persist()
             self.renamed.emit(applied)
         return applied
-
-    def _on_anchor(self, i):
-        if self._blocking or not self._element:
-            return
-        self._set("anchor", _ANCHORS[i][0], "Anchor")
-        self._blocking = True
-        try:
-            self._reload_actors()
-            self._sync_frame()
-            self._refresh_diagnostics()
-        finally:
-            self._blocking = False
-
-    def _on_actor(self, i):
-        if self._blocking or not self._element or i < 0:
-            return
-        self._set("anchor_actor", self._actor.currentText(), "Element actor")
-
-    def _on_target(self, i):
-        if self._blocking or not self._element:
-            return
-        self._set("target", _TARGETS[i][0], "Zone target")
-        self._refresh_diagnostics()
 
     def _on_geom(self, key: str, val: int):
         if self._blocking or not self._element:
@@ -1522,9 +1638,61 @@ class UIInspector(QWidget):
             return None
         return self._project.get_palette(active[slot])
 
+    def _ink_bank(self):
+        """La banque où l'encre et le surlignement du texte s'indexent VRAIMENT
+        quand il est imbriqué dans un conteneur à FOND — ou None quand il lit la
+        banque de scène (`ui_pal_bank`), le cas du texte libre.
+
+        Un texte enfant d'un conteneur à fond PREND la banque de ce conteneur
+        (RegionFill.bank au runtime), pas le `ui_pal_bank` de la scène. Plutôt
+        que de reconstruire ici les conditions d'émission (cible BG, ancrage
+        écran, palette active, 8bpp, débordement de zone), on DEMANDE au codegen
+        ce qu'il émet pour CETTE zone : `scene_region_colors` /
+        `scene_region_backdrops` ne l'y listent que si le build la lie vraiment à
+        un conteneur, et à quelle banque. C'est la même vérité que la ROM, pas
+        une copie qui divergera.
+
+        Renvoie `(banque, nom_de_banque, nom_du_conteneur)` ou None — `banque`
+        porte `.colors`, ce qu'attend `ColorIndexSlot`."""
+        from core.models.ui_region import KIND_TEXT
+        if not (self._project and self._scene and self._element):
+            return None
+        if getattr(self._element, "kind", "") != KIND_TEXT:
+            return None
+        from codegen.runtime_codegen.main_gen import region_ink_bank
+        resolved = region_ink_bank(self._project, self._scene, self._element)
+        if resolved is None:
+            return None      # le build ne lie pas cette zone : texte → police
+        bank_off, container = resolved
+
+        # Les couleurs réellement chargées dans cette banque HW — même calcul que
+        # l'émission (`slot_colors[bank]`).
+        from codegen.palette_alloc import scene_bank_layout
+        from types import SimpleNamespace
+        layout = scene_bank_layout(self._project, self._scene, "bg")
+        if not 0 <= bank_off < len(layout.slot_colors):
+            return None
+        cols = layout.slot_colors[bank_off]
+        if not cols:
+            return None
+        cont_el = self._layout_asset.get(container)
+        label = (getattr(cont_el, "fill_palette", "")
+                 or getattr(cont_el, "fill_asset", "") or container)
+        return (SimpleNamespace(colors=list(cols)), label, container)
+
+    def _clear_ui_pal_host(self):
+        """Vide la ligne « Bank » — elle porte tantôt le slot ÉDITABLE (texte
+        libre), tantôt une étiquette en LECTURE SEULE (banque héritée d'un
+        conteneur). Un seul hôte, deux contenus selon le contexte."""
+        while self._ui_pal_box.count():
+            w = self._ui_pal_box.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        self._ui_pal_slot = None
+
     def _reload_ui_pal_slot(self):
-        """(Re)construit le slot de banque — LA MÊME liste, dans le même
-        ordre, que `SceneInspector._reload_ui_pal` : c'est le même champ, il
+        """(Re)construit le slot de banque ÉDITABLE — LA MÊME liste, dans le
+        même ordre, que `SceneInspector._reload_ui_pal` : c'est le même champ, il
         ne doit pas se présenter différemment selon l'écran d'où on le change.
         Reconstruit et non repeuplé, pour la même raison que
         `_reload_fill_palette` : le picker capture sa liste à la construction."""
@@ -1532,13 +1700,26 @@ class UIInspector(QWidget):
         from ui.common import icons as _icons
         active = list(getattr(self._scene, "active_bg_palettes", []) or []) if self._scene else []
         cur = int(getattr(self._scene, "ui_pal_bank", -1)) if self._scene else -1
-        if self._ui_pal_slot is not None:
-            self._ui_pal_box.removeWidget(self._ui_pal_slot)
-            self._ui_pal_slot.deleteLater()
+        self._clear_ui_pal_host()
         self._ui_pal_slot = ui_pal_bank_slot(
             active, cur, _icons.COLOR_UI, on_picked=self._on_ui_pal_bank,
             project=self._project, parent=self)
         self._ui_pal_box.addWidget(self._ui_pal_slot)
+
+    def _show_inherited_bank(self, name: str):
+        """Remplace le slot éditable par le nom de la banque HÉRITÉE, en lecture
+        seule : un texte imbriqué ne CHOISIT pas sa banque, il la prend de son
+        conteneur (cf. `_ink_bank`). Le « pourquoi » va dans la note en dessous
+        (`ui.text.bank_inherited`), la couleur des pastilles vient de cette
+        banque-là."""
+        self._clear_ui_pal_host()
+        lbl = QLabel(name)
+        lbl.setFont(QFont(T.MONO, T.MD))
+        lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent;")
+        lbl.setToolTip(
+            "Read-only: this text sits in a filled container and reads its ink "
+            "from the container's bank. Change it through the container's fill.")
+        self._ui_pal_box.addWidget(lbl)
 
     def _on_ui_pal_bank(self, new: int):
         """Écrit `Scene.ui_pal_bank` — un réglage de SCÈNE, posé depuis
@@ -1570,22 +1751,34 @@ class UIInspector(QWidget):
 
         Le surlignement est masqué en cible OBJ : une bande de sprites ne passe
         pas par la surface BG, rien ne l'y émettrait — on ne propose pas une
-        action impossible (même règle que `_FILL_TARGETS`)."""
-        self._reload_ui_pal_slot()
-        bank = self._ui_bank()
+        action impossible (même règle que `_FILL_TARGETS`).
+
+        **Une banque HÉRITÉE prend le pas sur celle de scène.** Un texte imbriqué
+        dans un conteneur à fond lit son encre dans la banque du CONTENEUR
+        (cf. `_ink_bank`), pas dans `ui_pal_bank` : le champ passe alors en
+        lecture seule et les deux pastilles montrent les couleurs de cette
+        banque-là. Le texte libre, lui, garde le réglage de scène, éditable."""
+        inherited = self._ink_bank()
+        if inherited is not None:
+            bank, bank_name, container = inherited
+            self._show_inherited_bank(bank_name)
+            self._bank_why.show_text("ui.text.bank_inherited", container=container)
+        else:
+            self._reload_ui_pal_slot()
+            bank = self._ui_bank()
+            # Le combo au-dessus dit déjà QUELLE banque ; ce qui reste à dire,
+            # c'est pourquoi les pickers n'ont que des numéros à montrer tant
+            # qu'aucune n'est choisie.
+            if bank:
+                self._bank_why.clear()
+            else:
+                self._bank_why.show_text("ui.text.bank_none")
         self._color.set_value(
             bank, int(getattr(self._element, "text_color", 0) or 0))
         self._highlight.set_value(
             bank, int(getattr(self._element, "highlight_color", 0) or 0))
         target = self._layout_asset.resolved_target(self._element, self._render_mode())
         self._highlight_row.setVisible(target == TARGET_BG)
-        # Le combo au-dessus dit déjà QUELLE banque ; ce qui reste à dire, c'est
-        # pourquoi les pickers n'ont que des numéros à montrer tant qu'aucune
-        # n'est choisie.
-        if bank:
-            self._bank_why.clear()
-        else:
-            self._bank_why.show_text("ui.text.bank_none")
 
     def _on_preview(self, i):
         if self._blocking or not self._element or i < 0:
@@ -1611,7 +1804,10 @@ class UIInspector(QWidget):
 
     # ── Fond : écritures ──────────────────────────────────────────
     def _fill_editable(self) -> bool:
-        return bool(self._element) and self._kind() == KIND_PANEL
+        # La CAPACITÉ, pas le type : les deux conteneurs dessinent un fond, et
+        # tester le seul panneau ici rendrait la carte de la liste inerte —
+        # visible, éditable en apparence, sans rien écrire.
+        return bool(self._element) and can_fill(self._element)
 
     def _on_fill_kind(self, i):
         if self._blocking or not self._fill_editable():

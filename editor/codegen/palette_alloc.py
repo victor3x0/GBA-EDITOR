@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.models.palette import OWN_PAL_BANK
-from core.models.scene import Scene
+from core.models.scene import Scene, scene_font_pal_bank
 from core.project import Project
 from codegen.actor_budget import prefab_pool_instances
 from core.gba_color import extract_palette_from_image
@@ -140,19 +140,41 @@ def ui_image_own_palettes(p: Project, scene: Scene, pool: str) -> list[list[int]
     OBJ lit `PAL_OBJ_RAM`. Les deux pools sont disjoints sur GBA, réclamer dans
     le mauvais laisserait le trou exactement où il était."""
     from core.models.ui_region import TARGET_BG
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None:
-        return []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     want_bg = (pool == "bg")
     out: list[list[int]] = []
-    for im in lay.images:
+    for lay, im in p.scene_ui_images(scene):
         if (lay.resolved_target(im, rm) == TARGET_BG) != want_bg:
             continue
         sp = p.get_sprite(getattr(im, "sprite_name", "") or "")
         cols = _sprite_own_palette(sp)
         if cols:
             out.append(cols)
+    return out
+
+
+def ui_image_sprite_pools(p: Project) -> dict:
+    """{nom de sprite: "bg"|"obj"} — le pool où atterrit chaque sprite posé par
+    une image d'interface.
+
+    grit convertit un sprite UNE fois pour tout le projet, mais une palette
+    RÉFÉRENCÉE ne se lit pas au même endroit selon la cible : `active_bg_
+    palettes` ou `active_obj_palettes`, deux listes différentes au même index.
+    Quantifier vers la mauvaise donne des tuiles calées sur des couleurs que la
+    banque affichée ne contient pas.
+
+    Première cible rencontrée gagne : un même sprite posé dans les deux pools
+    ne peut de toute façon être quantifié que vers un seul. C'est au validateur
+    de le dire, pas à la conversion de choisir en silence."""
+    from core.models.ui_region import TARGET_BG
+    out: dict[str, str] = {}
+    for scene in p.scenes:
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        for lay, im in p.scene_ui_images(scene):
+            name = getattr(im, "sprite_name", "") or ""
+            if name and name not in out:
+                out[name] = ("bg" if lay.resolved_target(im, rm) == TARGET_BG
+                             else "obj")
     return out
 
 
@@ -280,17 +302,71 @@ def bg_animation_sources(p: Project, scene: Scene) -> list:
     return out
 
 
-def _ui_fill_panels(p: Project, scene: Scene) -> list[tuple]:
-    """(panneau, BackgroundAsset compressé) pour chaque conteneur nine-slice/
+def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
+    """(nom de police, pal_bank, contenu de banque) pour chaque police dont la
+    scène a un usage LIBRE — un texte qui n'est enfant d'aucun conteneur à fond.
+
+    Une police est un asset qui porte ses couleurs comme un sprite
+    (`font_palette`), et sa banque se traque dans la sélection de la scène. Mais
+    un texte ENFANT d'un conteneur à fond hérite de la banque de ce conteneur
+    (cf. `region_fill_container`, « le fond le plus proche gagne ») : sa police ne
+    prend alors AUCUN slot. Une police utilisée uniquement dans des conteneurs
+    n'apparaît donc pas ici — le conteneur, lui, est déjà tracé (fond couleur =
+    une palette de scène, nine-slice/background = son bloc de banques).
+
+    `pal_bank` = `OWN_PAL_BANK` (palette propre à allouer) ou un slot de scène
+    (override), lu via `scene_font_pal_bank`. Police par défaut d'abord (ordre
+    stable). Une écriture libre (`text.draw`) ou un script indécidable comptent
+    comme un usage libre de la police PAR DÉFAUT — repli sûr (cf. ROADMAP)."""
+    from codegen.runtime_codegen.main_gen import (
+        encodable_project_fonts, region_fill_container)
+    from codegen.font_emit import (
+        scene_font_names, default_font_name, font_palette, scene_writes_free)
+
+    fonts = encodable_project_fonts(p)
+    if not fonts:
+        return []
+    by_name = {f.name: f for f in fonts}
+    default = default_font_name(fonts, scene)
+
+    # Polices à usage LIBRE : celles d'un texte hors conteneur à fond. Un texte
+    # sans `font_name` prend la police par défaut de la scène.
+    free: set[str] = set()
+    for lay, el in p.scene_ui_slots(scene):
+        if region_fill_container(lay, el) is None:
+            free.add(getattr(el, "font_name", "") or default)
+    # Écriture libre (`text.draw`) ou script indécidable : la police d'init
+    # (défaut) a un usage libre potentiel, celui qu'obtient un `text.draw` sans
+    # `text.set_font`.
+    if default and (scene_writes_free(p, scene)
+                    or scene_font_names(p, scene, default) is None):
+        free.add(default)
+
+    ordered = ([default] if default in free and default in by_name else []) \
+        + sorted(n for n in free if n != default and n in by_name)
+
+    out: list[tuple] = []
+    for name in ordered:
+        f = by_name[name]
+        png = p.asset_abs(f.asset) if f.asset else None
+        if not png:
+            continue
+        cols = font_palette(f, png)
+        if cols:
+            out.append((name, scene_font_pal_bank(scene, name, default), cols))
+    return out
+
+
+def _ui_fill_containers(p: Project, scene: Scene) -> list[tuple]:
+    """(conteneur, BackgroundAsset compressé) pour chaque conteneur nine-slice/
     background de la scène. Extrait commun à `ui_fill_encoded_sources`, qui
     n'en garde que l'asset (ce dont `scene_bank_layout` a besoin), et à
-    `_ui_container_entries`, qui a aussi besoin du panneau — pour NOMMER
+    `_ui_container_entries`, qui a aussi besoin du conteneur — pour NOMMER
     l'instance dans la carte « Palettes actives » de l'inspecteur."""
-    from core.models.ui_region import KIND_PANEL, FILL_NINE, FILL_BG
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    from core.models.ui_region import can_fill, FILL_NINE, FILL_BG
     out = []
-    for el in (lay.elements if lay else []):
-        if getattr(el, "kind", "") != KIND_PANEL:
+    for _lay, el in p.scene_ui_elements(scene):
+        if not can_fill(el):
             continue
         fk = getattr(el, "fill_kind", "")
         if fk not in (FILL_BG, FILL_NINE):
@@ -307,13 +383,13 @@ def _ui_fill_panels(p: Project, scene: Scene) -> list[tuple]:
 
 def ui_fill_encoded_sources(p: Project, scene: Scene) -> list:
     """BackgroundAsset compressés servant de FOND à un conteneur d'UI de la
-    scène (`UIPanel.fill_kind` nine-slice ou background).
+    scène (`UIContainer.fill_kind` nine-slice ou background).
 
     Un fond d'UI s'affiche exactement comme un layer : ses tuiles citent des
     sous-palettes, il lui faut donc son bloc de banques. Sans cette collecte,
     une image utilisée UNIQUEMENT comme remplissage n'obtiendrait aucune banque
     et sortirait avec les couleurs du voisin."""
-    return [ba for _el, ba in _ui_fill_panels(p, scene)]
+    return [ba for _el, ba in _ui_fill_containers(p, scene)]
 
 
 def _bg_palettes_key(ba) -> tuple:
@@ -332,16 +408,31 @@ def _find_free_block(slots: list, n: int) -> Optional[int]:
     return None
 
 
+def _sprite_bank_content(cols) -> list[int]:
+    """Contenu de banque pour une palette propre de SPRITE — `sprite.own_palette`,
+    stockée SANS le slot 0 réservé (cf. own_palette_from_source : "index 1..N,
+    index 0 transparent implicite, pas inclus").
+
+    Le préfixe ne dépend PAS du pool : l'index 0 d'une tuile 4bpp est
+    transparent en BG comme en OBJ, et c'est cette forme 16-slots que
+    `effective_palette_colors` rend à grit, donc celle sur laquelle
+    `remap_tiles_to_bank` cale les index des tuiles. Écrire la banque sans le
+    préfixe alors que les tuiles ont été remappées avec décale chaque pixel
+    d'un cran : le sprite sort en couleurs voisines."""
+    return [RESERVED_SLOT_COLOR] + list(cols)
+
+
 def _own_bank_content(cols, pool: str) -> list[int]:
-    """Contenu à écrire dans une banque matérielle pour une palette propre.
-    `sprite.own_palette` (pool OBJ) est stocké SANS le slot 0 réservé (cf.
-    own_palette_from_source : "index 1..N, index 0 transparent implicite, pas
-    inclus") — il faut le préfixer ici, sous peine que la 1ère couleur du sprite
-    atterrisse en position 0 de la banque, où le hardware OBJ la rend
-    transparente quoi qu'il arrive (couleur jamais affichée). Le BG legacy
-    (`own_palette()`, extract_palette_from_image) inclut déjà ce slot — ne pas
-    le préfixer une 2e fois."""
-    return [RESERVED_SLOT_COLOR] + list(cols) if pool == "obj" else list(cols)
+    """Contenu à écrire dans une banque matérielle pour une palette propre,
+    quand la FORME de `cols` se déduit du pool : métadonnées sprite en OBJ
+    (sans slot 0, à préfixer), extraction PNG en BG (`own_palette()`,
+    extract_palette_from_image, qui inclut déjà ce slot — ne pas le préfixer
+    une 2e fois).
+
+    Cette déduction ne vaut donc que là où le pool BG ne reçoit QUE du BG
+    legacy. Un sprite posé en cible BG (image d'UI) est l'exception : sa liste
+    vient des métadonnées, pas d'une extraction — `_sprite_bank_content`."""
+    return _sprite_bank_content(cols) if pool == "obj" else list(cols)
 
 
 def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
@@ -350,16 +441,32 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     des prefabs poolés à leur slot GLOBAL (cf. prefab_own_slots — même partout
     car spawn_X est global) ; (3) palettes propres des acteurs/layers de la
     scène dans les slots restants (dédup par couleurs)."""
+    # (clé de dédup, contenu de banque) : la clé reste la liste BRUTE — c'est
+    # elle que `bank_index` reçoit de ses appelants — mais le contenu écrit dans
+    # la banque dépend de la FORME de la source, cf. `_own_bank_content`.
     if pool == "obj":
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
-        own_color_lists = (_actor_own_palettes(p, scene)          # métadonnées sprite
-                           + ui_image_own_palettes(p, scene, "obj"))
+        own_color_lists = [
+            (c, _own_bank_content(c, "obj"))                      # métadonnées sprite
+            for c in (_actor_own_palettes(p, scene)
+                      + ui_image_own_palettes(p, scene, "obj"))]
         pf_slots = prefab_own_slots(p)
         encoded_assets = []
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
-        own_color_lists = ([own_palette(png) for png in _bg_own_sources(p, scene)]  # BG legacy: extraction
-                           + ui_image_own_palettes(p, scene, "bg"))
+        # Deux formes se croisent ici : le BG legacy porte déjà son slot 0
+        # (extraction PNG), le sprite d'une image d'UI ne le porte pas
+        # (métadonnées). D'où deux constructeurs de contenu et non un seul.
+        own_color_lists = (
+            [(c, _own_bank_content(c, "bg"))                      # BG legacy: extraction
+             for c in (own_palette(png) for png in _bg_own_sources(p, scene))]
+            + [(c, _sprite_bank_content(c))                       # métadonnées sprite
+               for c in ui_image_own_palettes(p, scene, "bg")]
+            # Polices en mode propre : `font_palette` rend DÉJÀ le contenu de
+            # banque (index 0 transparent + encre), donc clé de dédup = contenu.
+            # Une police partageant ses couleurs avec un fond partage sa banque.
+            + [(cols, cols) for _n, pb, cols in _scene_font_palettes(p, scene)
+               if pb == OWN_PAL_BANK])
         pf_slots = {}
         # Layers + animés posés dessus + fonds de conteneurs d'UI : tous
         # affichent des tuiles qui citent des sous-palettes, tous ont donc besoin
@@ -414,7 +521,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
                 slots[start + i] = list(key[i])
 
     # Acteurs/layers de la scène : slots restants.
-    for cols in own_color_lists:
+    for cols, bank_cols in own_color_lists:
         if not cols:
             continue
         key = tuple(cols)
@@ -423,7 +530,7 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         free = next((j for j in range(16) if slots[j] is None), None)
         own_slot[key] = free
         if free is not None:
-            slots[free] = _own_bank_content(cols, pool)
+            slots[free] = list(bank_cols)
 
     # Banque 0 de secours : si la scène a du contenu palette mais que le slot 0
     # est resté vide, on le remplit d'une palette déterministe — un asset
@@ -434,6 +541,51 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         slots[0] = list(DEFAULT_PAL_BANK_COLORS)
 
     return SceneBankLayout(slots, own_slot, bg_block)
+
+
+def scene_font_runtime_banks(p: Project, scene: Scene) -> dict:
+    """{nom de police: (banque, own)} à poser par `text_set_font_pal` dans
+    `scene_init`, pour les polices que la scène CHARGE. Trois cas :
+
+    - usage LIBRE en mode propre → (banque allouée par `scene_bank_layout`, 1) :
+      la police charge sa palette PNG dans sa banque, comme un sprite ;
+    - usage LIBRE overridé      → (slot de scène, 0) : elle lit une palette de la
+      scène, sans rien charger ;
+    - usage SEULEMENT imbriqué   → (15, 0) : elle ne charge rien, chaque texte
+      prenant la banque de son conteneur (cf. `text_set_region_backdrop/color`).
+
+    Une police absente d'ici (substitut de langue, ou non chargée) garde le défaut
+    historique côté runtime (charge sa palette en banque 15) — le codegen n'émet
+    alors rien pour elle. Source unique lue par l'émission de `scene_init`."""
+    from codegen.font_emit import scene_font_names, default_font_name, FONT_PAL_BANK
+    from codegen.runtime_codegen.main_gen import encodable_project_fonts
+
+    fonts = encodable_project_fonts(p)
+    if not fonts:
+        return {}
+    by_name = {f.name: f for f in fonts}
+    default = default_font_name(fonts, scene)
+    layout = scene_bank_layout(p, scene, "bg")
+
+    free = {name: (pb, cols) for name, pb, cols in _scene_font_palettes(p, scene)}
+    names = scene_font_names(p, scene, default)
+    if names is None:
+        names = {default} if default else set()
+
+    out: dict = {}
+    for name in set(names) | set(free):
+        if name not in by_name:
+            continue
+        if name in free:
+            pb, cols = free[name]
+            if pb >= 0:
+                out[name] = (pb, 0)                  # override → palette de scène
+            else:
+                bank = layout.bank_index(OWN_PAL_BANK, cols)   # mode propre
+                out[name] = (bank if bank is not None else 0, 1)
+        else:
+            out[name] = (FONT_PAL_BANK, 0)           # seulement imbriqué : rien à charger
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -450,13 +602,18 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
 
 @dataclass
 class InstanceRef:
-    """Une instance de scène (acteur ou layer BG) qui apporte une palette
-    propre. `obj` est l'Actor / BackgroundLayer réel — muter `obj.pal_bank`
-    override (ou restaure) cette instance."""
-    kind: str          # "actor" | "bg_layer"
-    obj: object
-    label: str         # nom lisible (acteur / "BG{slot}")
-    pal_bank: int      # état courant : OWN_PAL_BANK ou slot scène référencé
+    """Un consommateur de palette propre dans la scène. Selon `kind`, `obj` et la
+    façon de l'overrider diffèrent :
+    - "actor" / "bg_layer" : `obj` est l'Actor / BackgroundLayer réel — muter
+      `obj.pal_bank` override (ou restaure) cette instance ;
+    - "ui_image" / "ui_container" : élément d'UI qui pose un sprite — pas de
+      `pal_bank`, jamais overridable (toujours OWN) ;
+    - "font" : `obj` est le NOM de la police — l'override vit sur la scène
+      (`Scene.font_pal_banks`, clé résolue par `font_pal_key`), pas sur `obj`."""
+    kind: str          # "actor" | "bg_layer" | "ui_image" | "ui_container" | "font"
+    obj: object        # l'objet à muter, ou le nom de police pour kind "font"
+    label: str         # nom lisible (acteur / "BG{slot}" / "{police} (police)")
+    pal_bank: int      # état courant : OWN_PAL_BANK, slot scène, ou sentinel conteneur
 
 
 @dataclass
@@ -549,7 +706,7 @@ def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
     l'affichage échantillonne la 1ère sous-palette.
 
     DEUX sources fusionnées dans le MÊME pool de dédup — layers ET conteneurs
-    d'UI (panneaux nine-slice/background) — exactement comme `scene_bank_
+    d'UI (conteneurs nine-slice/background) — exactement comme `scene_bank_
     layout` fusionne `_bg_encoded_sources` et `ui_fill_encoded_sources` dans un
     seul `encoded_assets` avant d'allouer : un fond posé À LA FOIS comme layer
     et comme remplissage de conteneur ne réclame qu'UN bloc, jamais deux. Les
@@ -573,8 +730,8 @@ def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
             continue
         add(ba, InstanceRef("bg_layer", layer, f"BG{layer.bg_slot} ({layer.background_name})",
                             getattr(layer, "pal_bank", OWN_PAL_BANK)))
-    for el, ba in _ui_fill_panels(p, scene):
-        add(ba, InstanceRef("ui_panel", el, f"{el.name} (conteneur)", OWN_PAL_BANK))
+    for el, ba in _ui_fill_containers(p, scene):
+        add(ba, InstanceRef("ui_container", el, f"{el.name} (conteneur)", OWN_PAL_BANK))
 
     out: list[AssetPaletteEntry] = []
     for key in order:
@@ -590,7 +747,7 @@ def _bg_encoded_entries(p: Project, scene: Scene) -> list[AssetPaletteEntry]:
 
 def _ui_image_pairs(p: Project, scene: Scene, pool: str) -> list[tuple[tuple, InstanceRef]]:
     """(clé couleurs, InstanceRef) pour chaque élément d'UI qui pose un SPRITE
-    dans ce pool — `UIImage` et `UIPanel` à fond sprite (`lay.images`, cf.
+    dans ce pool — `UIImage` et `UIContainer` à fond sprite (`lay.images`, cf.
     `UILayout.images`). Le pendant, côté vue éditeur, de `ui_image_own_
     palettes` côté allocateur — MÊME format de retour que `_obj_instance_
     pairs`/`_bg_instance_pairs`, pour rejoindre leur pool de dédup : un acteur
@@ -598,23 +755,22 @@ def _ui_image_pairs(p: Project, scene: Scene, pool: str) -> list[tuple[tuple, In
     (`scene_bank_layout` fusionne les deux listes avant de dédupliquer), les
     tenir à part ici aurait affiché deux entrées pour une seule banque réelle.
 
-    Ni `UIImage` ni `UIPanel` ne portent de `pal_bank` (aucune surcharge
+    Ni `UIImage` ni `UIContainer` ne portent de `pal_bank` (aucune surcharge
     possible, contrairement à un acteur ou un layer) : toujours OWN."""
-    from core.models.ui_region import TARGET_BG, KIND_PANEL
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None:
-        return []
+    from core.models.ui_region import TARGET_BG, can_fill
     rm = int(getattr(scene, "render_mode", 0) or 0)
     want_bg = (pool == "bg")
     out: list[tuple[tuple, InstanceRef]] = []
-    for im in lay.images:
+    for lay, im in p.scene_ui_images(scene):
         if (lay.resolved_target(im, rm) == TARGET_BG) != want_bg:
             continue
         cols = _sprite_own_palette(p.get_sprite(getattr(im, "sprite_name", "") or ""))
         if not cols:
             continue
-        key = tuple(_own_bank_content(cols, pool))
-        label = f"{im.name} (conteneur)" if getattr(im, "kind", "") == KIND_PANEL \
+        # Palette de SPRITE dans les deux pools — cf. `_sprite_bank_content` ;
+        # la vue montre alors la banque 16 slots que la ROM écrit vraiment.
+        key = tuple(_sprite_bank_content(cols))
+        label = f"{im.name} (conteneur)" if can_fill(im) \
                 else f"{im.name} (image UI)"
         out.append((key, InstanceRef("ui_image", im, label, OWN_PAL_BANK)))
     return out
@@ -639,9 +795,15 @@ def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
         ))
 
     pairs = _obj_instance_pairs(p, scene) if pool == "obj" else _bg_instance_pairs(p, scene)
-    # Images d'UI (et panneaux à fond sprite) : MÊME pool de dédup que les
+    # Images d'UI (et conteneurs à fond sprite) : MÊME pool de dédup que les
     # acteurs/layers, cf. `_ui_image_pairs`.
     pairs = pairs + _ui_image_pairs(p, scene, pool)
+    # Polices : la scène traque leur palette comme celle d'un sprite. Cible BG
+    # seulement — une bande de texte OBJ se décide plus tard (cf. ROADMAP). MÊME
+    # pool de dédup : une police et un fond aux mêmes couleurs partagent la banque.
+    if pool == "bg":
+        pairs = pairs + [(tuple(cols), InstanceRef("font", name, f"{name} (police)", pb))
+                         for name, pb, cols in _scene_font_palettes(p, scene)]
 
     groups: dict[tuple, list[InstanceRef]] = {}
     order: list[tuple] = []
@@ -661,7 +823,7 @@ def scene_palette_view(p: Project, scene: Scene, pool: str) -> ScenePaletteView:
             # Toutes overridées : slot de référence commun (elles partagent la
             # même palette propre, donc convergent normalement vers le même).
             state, ref_slot = "override", refs[0].pal_bank
-        # Ni `UIImage` ni `UIPanel` ne portent de `pal_bank` : un groupe
+        # Ni `UIImage` ni `UIContainer` ne portent de `pal_bank` : un groupe
         # composé UNIQUEMENT d'images d'UI n'a donc rien à overrider — le
         # bouton mentirait (il changerait un attribut que rien ne relit,
         # cf. `_ui_image_pairs`). Un groupe MIXÉ (acteur/layer + image de

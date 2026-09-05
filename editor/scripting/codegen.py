@@ -674,7 +674,8 @@ class CodeGen:
             try:
                 beh_ast = lua_parse(beh_src)
             except LuaParseError as ex:
-                msg = f"behavior '{stem}' : erreur de parse Lua : {ex}"
+                ou = f"{stem}.lua:{ex.line}" if ex.line else f"behavior '{stem}'"
+                msg = f"{ou} : {ex}"
                 self._w(f"/* {msg} */")
                 self.warnings.append(msg)
                 continue

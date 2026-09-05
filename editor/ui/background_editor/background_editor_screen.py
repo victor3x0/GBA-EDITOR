@@ -301,7 +301,7 @@ class BgPropertiesPanel(QWidget):
 
         # ── UI ROLE (kind == ui) : comment le panneau étale l'image ──
         #    Deux façons, et une seule paire de valeurs pour les deux côtés :
-        #    ce champ EST `UIPanel.fill_kind` (cf. UI_ROLES). Les marges ne
+        #    ce champ EST `UIContainer.fill_kind` (cf. UI_ROLES). Les marges ne
         #    comptent qu'en cadre étirable, et se règlent aussi au canvas — les
         #    champs et les guides écrivent le même modèle.
         self._ui_widgets: list = []
@@ -1158,7 +1158,7 @@ class BgPropertiesPanel(QWidget):
         if not self._project or not self._ba:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose an image", "", "Images (*.png *.bmp)")
+            self, "Choose an image", "", "Images (*.png)")
         if not path:
             return
         import shutil
@@ -1344,7 +1344,7 @@ class BackgroundEditorScreen(QWidget):
         title = {KIND_SCENE: "Import a background",
                  KIND_UI: "Import a UI background",
                  KIND_ANIMATED: "Import an animation sheet"}.get(kind, "Import a background")
-        path, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png *.bmp)")
+        path, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png)")
         if not path:
             return
         dst = self._project.import_asset(Path(path), "backgrounds")

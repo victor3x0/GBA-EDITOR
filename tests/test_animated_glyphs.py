@@ -94,7 +94,7 @@ def test_la_geometrie_recoit_le_compte_elle_ne_le_lit_pas(projet):
 def test_le_budget_de_la_mise_en_page_prend_le_dictionnaire(projet):
     from core.models.ui_region import layout_obj_budget, TARGET_OBJ
     p, lay, zone, _t = projet
-    zone.target = TARGET_OBJ
+    lay.target = TARGET_OBJ          # la cible appartient au nœud (v0.25)
     place = layout_obj_budget(
         lay, animated_by_name=p.layout_animated_glyphs(lay))["place"]
     assert place[zone.name]["anim"] == len("there")

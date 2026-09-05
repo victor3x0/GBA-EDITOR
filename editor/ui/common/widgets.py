@@ -21,8 +21,8 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QComboBox, QScrollArea, QApplication, QTreeWidget, QTreeWidgetItem,
     QTableWidget, QHBoxLayout, QVBoxLayout, QSizePolicy, QSpacerItem, QPlainTextEdit,
 )
-from PyQt6.QtGui import QFont, QIcon
-from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
+from PyQt6.QtGui import QFont, QIcon, QColor, QPainter
+from PyQt6.QtCore import Qt, QPoint, QPointF, QSize, pyqtSignal
 
 from ui.common.theme import C, T, S, QSS
 
@@ -94,6 +94,60 @@ class HoverIconButton(QToolButton):
         super().leaveEvent(event)
         self._hovered = False
         self._sync_icon()
+
+
+class DragHandle(QWidget):
+    """Poignée de déplacement d'une barre flottante — le MÊME motif partout.
+
+    Une grille de points PEINTE au `QPainter`, pas un glyphe `⋮⋮` posé en
+    `QLabel` : un caractère dépend de la police et du moteur Qt qui le rend,
+    d'où les rendus qui différaient d'une barre à l'autre (Scene Manager,
+    Background Editor, Sprite Editor). Même raison, même solution que la
+    flèche de repli partagée de `ui/common/icons.py`.
+
+    `orientation` = l'axe de la barre : `Vertical` pour une barre en colonne
+    (poignée en haut, points sur une ligne), `Horizontal` pour une barre en
+    ligne (poignée à gauche, points sur une colonne). La poignée est
+    transparente à la souris : c'est le cadre de la barre qui gère le drag,
+    et l'attraper « par la poignée » revient à attraper le cadre dessous.
+    """
+
+    _DOT = 2      # diamètre d'un point
+    _GAP = 4      # pas entre centres
+    _BAND = 12    # épaisseur de la bande (hauteur si Vertical, largeur si Horizontal)
+
+    def __init__(self, orientation: Qt.Orientation = Qt.Orientation.Vertical,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._orientation = orientation
+        if orientation == Qt.Orientation.Vertical:
+            self.setFixedHeight(self._BAND)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        else:
+            self.setFixedWidth(self._BAND)
+            self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _e):
+        # 3 points le long de l'axe de la barre, 2 en travers.
+        if self._orientation == Qt.Orientation.Vertical:
+            cols, rows = 3, 2
+        else:
+            cols, rows = 2, 3
+        grid_w = (cols - 1) * self._GAP
+        grid_h = (rows - 1) * self._GAP
+        x0 = (self.width() - grid_w) / 2
+        y0 = (self.height() - grid_h) / 2
+        r = self._DOT / 2
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(C.TEXT_MUTED))
+        for c in range(cols):
+            for row in range(rows):
+                p.drawEllipse(QPointF(x0 + c * self._GAP, y0 + row * self._GAP), r, r)
+        p.end()
 
 
 # ── Factory class (namespace) ─────────────────────────────────────────
@@ -1227,7 +1281,8 @@ class AssetHeaderBar(QWidget):
                 "project": kind_colors(C.ACCENT),
                 # Interface — un kind par type d'élément (même famille bleue) ;
                 # "ui_element" reste en repli pour les appels génériques.
-                "ui_panel":   kind_colors(icons.COLOR_UI),
+                "ui_container":   kind_colors(icons.COLOR_UI),
+                "ui_list":    kind_colors(icons.COLOR_UI),
                 "ui_text":    kind_colors(icons.COLOR_UI),
                 "ui_image":   kind_colors(icons.COLOR_UI),
                 "ui_element": kind_colors(icons.COLOR_UI),

@@ -43,6 +43,31 @@ class Command(ABC):
         return False
 
 
+class MacroCmd(Command):
+    """Plusieurs commandes réunies en UNE entrée d'historique.
+
+    Supprimer un LOT d'assets d'un geste doit s'annuler d'un seul Ctrl+Z, pas
+    d'un par asset. Les commandes sont DÉJÀ construites : chaque famille sait
+    bâtir sa propre suppression (`DeleteResourceCmd`, `DeleteFileCmd`), on ne
+    fait que les grouper — aucune logique n'est redite ici.
+
+    `execute` rejoue dans l'ordre, `undo` défait en ordre INVERSE : l'annulation
+    d'un lot doit retrouver l'état d'avant exactement comme si les commandes
+    s'étaient empilées une à une."""
+
+    def __init__(self, cmds: list, label: str):
+        self._cmds = list(cmds)
+        self.label = label
+
+    def execute(self):
+        for cmd in self._cmds:
+            cmd.execute()
+
+    def undo(self):
+        for cmd in reversed(self._cmds):
+            cmd.undo()
+
+
 # ── Commandes concrètes ────────────────────────────────────────────
 
 class SetFieldCmd(Command):
@@ -466,6 +491,49 @@ class AddResourceCmd(Command):
         self._mgr.soft_delete(self._item)
         if self._refresh:
             self._refresh()
+
+
+class DeleteInterfaceCmd(Command):
+    """Retire un nœud `Interface` d'une scène (v0.25).
+
+    Sa référence quitte `Scene.ui_layouts` ; et SI plus aucune scène ne le
+    référence (`delete_asset`), l'asset lui-même part — `soft_delete`, donc le
+    JSON n'est effacé qu'à la fermeture et `restore` le ramène à l'annulation.
+    Un nœud PARTAGÉ ne perd que sa référence dans CETTE scène, jamais l'asset :
+    le supprimer casserait les autres scènes. Deux gestes, une seule annulation —
+    l'historique n'a pas de macro, d'où cette commande dédiée."""
+
+    def __init__(self, store, layout, ref_list: list, delete_asset: bool,
+                 persist_fn=None, refresh_fn=None):
+        self._store = store
+        self._layout = layout
+        self._refs = ref_list
+        self._delete_asset = delete_asset
+        self._index = (ref_list.index(layout.name)
+                       if layout.name in ref_list else len(ref_list))
+        self.label = f"Supprimer l'interface {layout.name}"
+        self._persist = persist_fn
+        self._refresh = refresh_fn
+
+    def _after(self):
+        if self._persist:
+            self._persist()
+        if self._refresh:
+            self._refresh()
+
+    def execute(self):
+        if self._layout.name in self._refs:
+            self._refs.remove(self._layout.name)
+        if self._delete_asset:
+            self._store.soft_delete(self._layout)
+        self._after()
+
+    def undo(self):
+        if self._delete_asset:
+            self._store.restore(self._layout)
+        if self._layout.name not in self._refs:
+            self._refs.insert(min(self._index, len(self._refs)), self._layout.name)
+        self._after()
 
 
 class SetPaletteColorCmd(Command):

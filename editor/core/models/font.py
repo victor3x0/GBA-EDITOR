@@ -1,13 +1,10 @@
 """Font — police bitmap du jeu, stockée en sidecar à côté de sa planche PNG.
 
-**Un asset, plusieurs points d'entrée.** Trois formats sont acceptés en
-import : une planche PNG nue (la grille et le charset sont alors déduits,
-corrigeables dans l'éditeur), un descripteur BMFont `.fnt` + sa page PNG (qui
-apporte le mapping, donc supprime la déduction), ou un conteneur de police
-bitmap (`.bdf`/`.pcf`/`.dfont`/`.ttf` à strikes intégrés — cf.
-`font_import.import_font_freetype`), dont la planche est alors GÉNÉRÉE : un
-glyphe par entrée du cmap, rendu à sa taille native. Les trois remplissent le
-MÊME sidecar : un format d'entrée n'est qu'une façade, comme
+**Un asset, deux points d'entrée.** Deux formats sont acceptés en import,
+volontairement pas plus : une planche PNG nue (la grille et le charset sont
+alors déduits, corrigeables dans l'éditeur), ou un descripteur BMFont `.fnt` +
+sa page PNG (qui apporte le mapping, donc supprime la déduction). Les deux
+remplissent le MÊME sidecar : un format d'entrée n'est qu'une façade, comme
 `detect_import_mode` pour les fonds.
 
 **Le modèle est à rectangles, pas à grille.** Chaque glyphe porte son propre
@@ -31,8 +28,12 @@ que l'utilisateur devrait rattraper case par case — alors que du mono régulie
 est toujours lisible.
 
 Le charset n'est pas un champ : c'est `"".join(g.char for g in glyphs)`. Une
-seule source de vérité, et l'écran Police édite directement `Glyph.char` case
-par case plutôt qu'une chaîne de 95 caractères.
+seule source de vérité — les `Glyph.char`. L'écran Police les édite case par
+case ; il accepte aussi de réécrire toute la chaîne d'un bloc, mais cette
+saisie n'est qu'une assignation POSITIONNELLE (caractère i → case i) reversée
+sur les mêmes `Glyph.char`, pas un second champ stocké. Une case = un
+caractère : ce chemin ne sait pas exprimer une ligature, qui reste du ressort
+de l'édition case par case.
 """
 
 from dataclasses import dataclass, field
@@ -114,6 +115,19 @@ class Glyph:
             ox      = int(d.get("ox", 0)),
             oy      = int(d.get("oy", 0)),
         )
+
+
+def _source_format(value) -> str:
+    """Relit `Font.source_format` en n'admettant que les deux formats d'entrée.
+
+    Un projet importé quand l'éditeur acceptait encore les conteneurs bitmap
+    porte `"ttf"`, `"bdf"`… dans son sidecar. Sa planche générée est toujours
+    sur le disque et le sidecar la cite : la police reste bonne, c'est une
+    police PNG comme une autre. Seul l'étiquetage était périmé — et il ne se
+    lisait nulle part en aval (`font_emit.advance_source` et l'inspecteur de
+    police ne connaissent que `png` et `fnt`). On le corrige à la lecture
+    plutôt que par une migration : aucun fichier de projet à réécrire."""
+    return value if value in ("png", "fnt") else "png"
 
 
 @dataclass
@@ -283,7 +297,7 @@ class Font(Resource):
             name        = d.get("name", "font"),
             asset       = d.get("asset"),
             descriptor  = d.get("descriptor"),
-            source_format = d.get("source_format", "png"),
+            source_format = _source_format(d.get("source_format")),
             cell_w      = int(d.get("cell_w", 8)),
             cell_h      = int(d.get("cell_h", 8)),
             line_height = int(d.get("line_height", d.get("cell_h", 8))),
@@ -293,8 +307,12 @@ class Font(Resource):
         )
 
 
-# Extensions reconnues dans assets/fonts/ — la planche seule, le descripteur
-# BMFont (dont la page PNG est référencée à l'intérieur), ou un conteneur de
-# police bitmap (BDF/PCF/dfont/TTF à strikes intégrés — cf. font_import.
-# import_font_freetype), dont la planche est alors GÉNÉRÉE à l'import.
-FONT_FILE_EXTS = {".png", ".fnt", ".bdf", ".pcf", ".dfont", ".ttf"}
+# Extensions reconnues dans assets/fonts/ — la planche seule, ou le descripteur
+# BMFont (dont la page PNG est référencée à l'intérieur).
+#
+# Il y en avait six : `.bdf`, `.pcf`, `.dfont` et `.ttf` passaient par un
+# troisième point d'entrée qui RENDAIT la planche au lieu de la lire. Retirés
+# (cf. ROADMAP, « Les formats acceptés à l'import ») — ils contredisaient ce que
+# ce module et ARCHITECTURE.md affirmaient tous les deux, et `source_format` en
+# recevait des valeurs que rien en aval ne savait relire.
+FONT_FILE_EXTS = {".png", ".fnt"}

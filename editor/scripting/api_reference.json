@@ -1377,6 +1377,57 @@
           "doc_anchor": "ui-image_state"
         },
         {
+          "label": "ui.image_move(image, dx, dy)",
+          "snippet": "ui.image_move(\"Curseur\", 0, 16)",
+          "description": "Décale une image RELATIVEMENT à la position posée dans le canvas — (0, 0) l'y ramène. En cible BG l'origine se cale sur la grille de 8 px ; le pixel demande la cible OBJ.",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": "Nom de l'image de la mise en page"
+            },
+            {
+              "name": "dx",
+              "type": "number",
+              "description": "Décalage horizontal en pixels"
+            },
+            {
+              "name": "dy",
+              "type": "number",
+              "description": "Décalage vertical en pixels"
+            }
+          ],
+          "doc_anchor": "ui-image_move"
+        },
+        {
+          "label": "ui.image_dx(image)",
+          "snippet": "ui.image_dx(\"Curseur\")",
+          "description": "Le décalage horizontal courant (0 = à sa place authorée).",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": "Nom de l'image"
+            }
+          ],
+          "returns": "number — décalage en pixels",
+          "doc_anchor": "ui-image_dx"
+        },
+        {
+          "label": "ui.image_dy(image)",
+          "snippet": "ui.image_dy(\"Curseur\")",
+          "description": "Le décalage vertical courant (0 = à sa place authorée).",
+          "params": [
+            {
+              "name": "image",
+              "type": "string",
+              "description": "Nom de l'image"
+            }
+          ],
+          "returns": "number — décalage en pixels",
+          "doc_anchor": "ui-image_dy"
+        },
+        {
           "label": "list.count(liste)",
           "snippet": "list.count(\"liste\")",
           "description": "Combien d'items cette liste parcourt. Vaut le nombre de rangées authorées par défaut — un menu statique navigue donc sans rien poser. list.set_count le change quand les items dépassent les rangées visibles (un inventaire qui défile).",
@@ -1474,6 +1525,38 @@
           ],
           "returns": "int",
           "doc_anchor": "list-row"
+        },
+        {
+          "label": "list.active(liste)",
+          "snippet": "list.active(\"liste\")",
+          "description": "Cette liste prend-elle la croix directionnelle ? C'est la SÉLECTION, pas l'affichage : une liste inactive reste à l'écran et garde son item courant.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            }
+          ],
+          "returns": "bool",
+          "doc_anchor": "list-active"
+        },
+        {
+          "label": "list.set_active(liste, on)",
+          "snippet": "list.set_active(\"liste\", true)",
+          "description": "Donne ou retire la main à cette liste. C'est ce qui permet un menu et son sous-menu à l'écran en même temps : sans ça, les deux bougent au même appui. Cacher la liste est autre chose — elle disparaît.",
+          "params": [
+            {
+              "name": "liste",
+              "type": "string",
+              "description": ""
+            },
+            {
+              "name": "on",
+              "type": "boolean",
+              "description": ""
+            }
+          ],
+          "doc_anchor": "list-set_active"
         }
       ]
     },

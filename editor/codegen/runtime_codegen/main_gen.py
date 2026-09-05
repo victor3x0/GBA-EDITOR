@@ -17,6 +17,10 @@ from core.models.scene import Actor, Scene
 from core.project import Project
 from core.models.field_value import (FieldValue as _FV,
                                      var_names_from_project as _var_names)
+# `region_fill_container` vit dans le modèle (règle de mise en page pure) et se
+# réexporte ici : `palette_alloc` l'importe de ce module depuis toujours, et
+# ROADMAP le cite sous ce nom. Cf. `core.models.ui_region`.
+from core.models.ui_region import region_fill_container
 from codegen.palette_alloc import scene_bank_layout
 from codegen.window_alloc import scene_window_layout
 # `prefab_group` est réexporté : `headers.py` l'importe depuis ce module depuis
@@ -250,10 +254,20 @@ def scene_text_colors(p, scene, font_name: str) -> list:
     build ne connaît pas : sa couleur compte alors pour toutes les polices de la
     scène. Une copie de trop coûte des tuiles ; une de moins ferait tomber la
     couleur en silence."""
-    from core.models.ui_region import KIND_SLOTS
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    from core.models.ui_region import KIND_SLOTS, KIND_LIST
     colors: set = set()
-    for el in (lay.elements if lay is not None else []):
+    for _lay, el in p.scene_ui_elements(scene):
+        # Une LISTE réclame la couleur de sa rangée choisie, au même titre qu'un
+        # slot réclame la sienne : le moteur la résout en VARIANTE au rendu
+        # (`text_var_for`), et une variante non chargée fait retomber la rangée
+        # sur son encre sans que rien ne le dise. La liste ne déclare pas de
+        # police — sa couleur compte donc pour toutes celles de la scène, même
+        # règle qu'un slot qui n'en déclare pas.
+        if getattr(el, "kind", "") == KIND_LIST:
+            c = int(getattr(el, "selected_text_color", 0) or 0)
+            if 1 <= c <= 15:
+                colors.add(c)
+            continue
         if getattr(el, "kind", "") not in KIND_SLOTS:
             continue
         c = int(getattr(el, "text_color", 0) or 0)
@@ -265,17 +279,37 @@ def scene_text_colors(p, scene, font_name: str) -> list:
     return [0] + sorted(colors)
 
 
-def scene_text_reservation(p, scene, code: str = "") -> dict:
+def _declared_lang_codes(p) -> list[str]:
+    """Codes des langues déclarées, source en tête — `[""]` si le projet n'en
+    déclare aucune.
+
+    Un point unique parce que DEUX lecteurs doivent voir la même liste : le
+    sous-ensemble de glyphes ÉMIS pour une scène (`_emit_font_subsets`) et la
+    place RÉSERVÉE pour l'accueillir (`scene_text_reservation`). Les laisser
+    calculer leur liste chacun de son côté est exactement ce qui a produit le
+    décalage réparé en phase 5.1 : le runtime chargeait l'union, le build
+    réservait la source."""
+    langs = p.settings.all_languages() if hasattr(p, "settings") else []
+    return [l.code for l in langs] or [""]
+
+
+def scene_text_reservation(p, scene) -> dict:
     """Tuiles à réserver au texte dans le charblock d'UI de CETTE scène.
 
-    Un seul calcul pour trois lecteurs : le placement (`_apply_vram_layout`),
-    le garde-fou de budget (`pipeline._scene_tile_budgets`) — tous deux
-    TOUJOURS sur `code=""`, la langue ACTIVE (ROADMAP v0.9, décision 4 — la
-    réservation réelle ne varie pas tant que la phase 4 n'a pas ouvert le
-    choix) — et le garde-fou MULTI-LANGUE (`validator._check_vram_lang_budget`,
-    phase 3.4), qui rejoue ce même calcul une fois par langue déclarée pour
-    savoir laquelle chargerait le plus de glyphes. Les laisser diverger
-    validerait un budget que le placement ne tient pas.
+    Un seul calcul pour deux lecteurs : le placement (`_apply_vram_layout`) et
+    le garde-fou de budget (`pipeline._scene_tile_budgets`). Les laisser
+    diverger validerait un budget que le placement ne tient pas.
+
+    **Dimensionnée sur l'UNION des langues déclarées** (ROADMAP v0.9, phase
+    5.1), parce que c'est ce que le RUNTIME charge : `text_set_font` copie
+    `n_var × n_load` tuiles depuis le `FontSubset` de la scène, et ce
+    sous-ensemble est l'union (`_emit_font_subsets`, décision 4 de la phase
+    3.3) — quelle que soit la valeur de `g_lang`. Compter la seule langue
+    source réservait la moitié du bloc dans le cas mesuré (12 tuiles pour 24
+    chargées) et laissait le chargement écraser ce qui suit : les bases des
+    polices voisines, le bloc de surface composée, les sprites en cible BG.
+    Un projet monolingue n'en voit rien — l'union d'une seule langue est
+    cette langue.
 
     Quatre postes, dans l'ordre où ils occupent le charblock :
     - les fonds COULEUR puis les fonds IMAGE (nine-slice, background) — ils
@@ -292,7 +326,7 @@ def scene_text_reservation(p, scene, code: str = "") -> dict:
       poste le plus récent, donc celui dont l'absence ne doit rien décaler dans
       un projet qui n'emploie pas d'image."""
     from codegen.font_emit import (scene_text_tiles, scene_font_names,
-                                   scene_codepoints, mono_vram_tiles,
+                                   scene_codepoints_union, mono_vram_tiles,
                                    scene_default_font, TEXT_SURF_TILES)
     fonts = project_fonts(p)
     # `scene_init` émet toujours un `text_set_font` : la police par défaut de la
@@ -302,7 +336,7 @@ def scene_text_reservation(p, scene, code: str = "") -> dict:
 
     fills, fill_indices = scene_color_fills(p, scene)
     img_fills, img_assets = scene_image_fills(p, scene)
-    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
+    scene_slots = p.scene_ui_slots(scene)     # (nœud, slot) sur les N `Interface`
     # Trois raisons de composer, donc de réserver un bloc de surface : la zone
     # a un FOND (l'aplat d'un conteneur couleur, ou la carte d'un conteneur
     # nine-slice/background) ou elle est SURLIGNÉE. Dans les trois cas le texte
@@ -312,11 +346,13 @@ def scene_text_reservation(p, scene, code: str = "") -> dict:
     needs_surface = bool(scene_region_colors(p, scene, fills)) \
         or bool(scene_region_backdrops(p, scene, img_fills)) \
         or any(int(getattr(r, "highlight_color", 0) or 0)
-               for r in (lay_ui.slots if lay_ui else []))
+               for _l, r in scene_slots)
 
     # Ce que la scène AFFICHE borne ce qu'elle charge. `None` = indécidable,
-    # donc la police entière (et pas de sous-ensemble émis non plus).
-    cps = scene_codepoints(p, scene, code)
+    # donc la police entière (et pas de sous-ensemble émis non plus). Le MÊME
+    # appel que `_emit_font_subsets`, avec les mêmes langues : la réservation
+    # et le sous-ensemble émis sont deux lectures d'un seul calcul.
+    cps = scene_codepoints_union(p, scene, _declared_lang_codes(p))
 
     # ── Où chaque police se charge ────────────────────────────────
     # Chacune a SA base : un titre et un corps de texte coexistent à l'écran, et
@@ -366,8 +402,8 @@ def scene_text_reservation(p, scene, code: str = "") -> dict:
     slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
     surf_layout: list[dict] = []
     base = 0
-    if needs_surface and lay_ui is not None:
-        for el in lay_ui.slots:
+    if needs_surface:
+        for lay_ui, el in scene_slots:
             if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
                 continue
             if lay_ui.resolved_target(el, rm) != TARGET_BG:
@@ -409,6 +445,11 @@ def scene_text_reservation(p, scene, code: str = "") -> dict:
         "img_fills": img_fills, "img_assets": img_assets,
         "mono_tiles": mono_tiles, "needs_surface": needs_surface,
         "surf_layout": surf_layout, "shared_surf_tiles": shared_surf_tiles,
+        # Tuiles RÉELLEMENT occupées par la surface : le bloc partagé (0 si la
+        # scène n'écrit pas librement) PLUS les blocs propres des zones. C'est ce
+        # qui sépare le texte des images ; l'émission doit lire CE nombre, pas le
+        # plafond `TEXT_SURF_TILES` (cf. `_gen_ui_images`).
+        "surf_tiles": surf_tiles,
         "font_names": names, "codepoints": cps, "font_layout": font_layout,
         "default_font": default_font,
         "ui_images": ui_images, "img_layout": img_layout,
@@ -739,13 +780,10 @@ def scene_ui_images(p: Project, scene) -> list[dict]:
     déjà. Réserver pour elles décalerait la base des suivantes à chaque frappe
     dans le champ « Sprite »."""
     from core.models.ui_region import TARGET_BG
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None:
-        return []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     index = {im.name: i for i, (_l, im) in enumerate(p.all_images())}
     out: list[dict] = []
-    for im in lay.images:
+    for lay, im in p.scene_ui_images(scene):
         sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
         if sprite is None or not sprite.asset or im.name not in index:
             continue
@@ -764,11 +802,11 @@ def scene_ui_images(p: Project, scene) -> list[dict]:
 
 
 def ui_item_geometry(el, sprite, frames: int = 1) -> dict:
-    """Géométrie d'un élément qui pose un sprite, image ou fond de panneau.
+    """Géométrie d'un élément qui pose un sprite, image ou fond de conteneur.
 
     Le modèle ne résout pas les noms d'asset : c'est ici qu'on lui donne la
     taille de frame, seule inconnue qui sépare un `UIImage` (dont le rectangle
-    EST la frame) d'un `UIPanel` à fond sprite (dont le rectangle se pave)."""
+    EST la frame) d'un `UIContainer` à fond sprite (dont le rectangle se pave)."""
     from core.models.ui_region import image_geometry
     return image_geometry(el, frames,
                           int(getattr(sprite, "frame_w", 0) or 0),
@@ -788,7 +826,7 @@ def _obj_text_alloc(p: Project) -> dict:
         # Les frames ET la taille de frame par image : `layout_obj_budget` ne
         # résout pas les noms d'asset, et sous-réserver ferait écrire une image
         # dans les tuiles de la suivante. La taille de frame commande en plus le
-        # PAVAGE d'un fond de panneau, donc son nombre de slots OAM.
+        # PAVAGE d'un fond de conteneur, donc son nombre de slots OAM.
         frames, sizes = {}, {}
         for im in lay.images:
             sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
@@ -1417,7 +1455,7 @@ def _parent_compose_lines(scene_actors: list, actor_offset: int) -> list[str]:
     profondeur.
 
     `visible` se propage ici aussi : cacher un boss cache ses bras, comme un
-    panneau d'UI caché cache son sous-arbre (v0.15). Deux endroits du logiciel,
+    conteneur d'UI caché cache son sous-arbre (v0.15). Deux endroits du logiciel,
     une seule règle."""
     depths, _errs = parent_depths(scene_actors)
     idx_of = {a.name: actor_offset + j for j, (a, _) in enumerate(scene_actors)}
@@ -1925,10 +1963,12 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
     ni pour une scène indécidable (police entière, déjà réservée).
 
     Le sous-ensemble ÉMIS couvre TOUTES les langues déclarées, UNIES
-    (`scene_codepoints_union`, ROADMAP v0.9 décision 4) — la réservation VRAM
-    (`scene_text_reservation`), elle, reste sur la seule langue active. C'est
-    ce qui permettra à la phase 4 de recharger une scène dans une autre langue
-    sans reconstruire la police en VRAM."""
+    (`scene_codepoints_union`, ROADMAP v0.9 décision 4) : c'est ce qui permet
+    à `lang.set` (phase 4) de recharger une scène dans une autre langue sans
+    reconstruire la police en VRAM. La RÉSERVATION (`scene_text_reservation`)
+    compte la même union, sur la même liste de langues
+    (`_declared_lang_codes`) — depuis la phase 5.1, où les deux divergeaient :
+    le runtime chargeait l'union, le build réservait la source."""
     from codegen.font_emit import (build_font_subset, scene_codepoints_union,
                                    scene_font_names, scene_default_font)
     from codegen.c_names import c_ident
@@ -1936,8 +1976,7 @@ def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
     if not fonts or not encoded:
         return []
     by_name = {name: (i, e) for i, (name, e) in enumerate(encoded)}
-    lang_codes = ([l.code for l in p.settings.all_languages()]
-                  if hasattr(p, "settings") else []) or [""]
+    lang_codes = _declared_lang_codes(p)
 
     L: list[str] = ["/* ── Sous-ensembles de glyphes (par scène) ───────── */"]
     any_line = False
@@ -2220,10 +2259,9 @@ def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
     l'union des sprites faite — donc bien plus tard dans le pipeline."""
     images = p.all_images() if hasattr(p, "all_images") else []
     if emit and images:
-        from core.models.ui_region import KIND_PANEL
+        from core.models.ui_region import can_fill
         n_bound = sum(1 for _l, im in images if getattr(im, "sprite_name", ""))
-        n_fill = sum(1 for _l, im in images
-                     if getattr(im, "kind", "") == KIND_PANEL)
+        n_fill = sum(1 for _l, im in images if can_fill(im))
         emit("log_line", f"[ui] {len(images)} sprite(s) d'interface "
                          f"(dont {n_fill} fond(s) de conteneur), "
                          f"{n_bound} relié(s) à un sprite")
@@ -2259,9 +2297,11 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
         eff_anchor, eff_actor = lay.effective_anchor(im)
         from core.models.ui_region import ANCHORS, TARGET_OBJ
         target_obj = lay.resolved_target(im) == TARGET_OBJ
-        x, y = im.x, im.y
+        # Position SOMMÉE à travers les parents, sans le socle acteur (le runtime
+        # l'ajoute) — cf. `emit_ui_regions_c`. En OBJ aussi : un enfant sans cette
+        # somme ignorait l'offset de son conteneur et se posait au mauvais endroit.
+        x, y, _res = lay.absolute_origin(im, None)
         if not target_obj:
-            x, y, _res = lay.absolute_origin(im, None)
             x -= x % 8
             y -= y % 8
         elem = (elem_index or {}).get(im.name, -1)
@@ -2281,15 +2321,19 @@ def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
         oam_rel = pl["oam_rel"] if pl else 0
         # `w`/`h` de la table sont ceux de la FRAME, pas du rectangle : c'est ce
         # que le matériel dessine, et le pavage se dit en `cols`/`rows`. Pour un
-        # UIImage les deux coïncident (cf. sync_size_from) ; pour un panneau non.
+        # UIImage les deux coïncident (cf. sync_size_from) ; pour un conteneur non.
         g = ui_item_geometry(im, sprite, 1)
+        # Priorité HÉRITÉE : -1 (défaut / fond de container) devient 255, la
+        # sentinelle que `ui_obj_prio` résout à la volée sur l'acteur ancré ;
+        # 0-3 restent une surcharge explicite. Cf. `UIImage.priority`.
+        prio = 255 if int(getattr(im, "priority", -1)) < 0 else (im.priority & 3)
         rows.append(
             f"    {{ {x}, {y}, {g['frame_w']}, {g['frame_h']}, "
             f"{1 if target_obj else 0}, "
             f"{ANCHORS.index(eff_anchor)}, {(actor_index or {}).get(im.name, -1)}, "
             f"{ss}_anim_dirs, {ss}_state_start, {ss}_state_speed, {ss}_state_loop, "
             f"{n_states}, {st0}, {1 if im.playing else 0}, "
-            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {im.priority}, "
+            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {prio}, "
             f"{g['cols']}, {g['rows']}, {int(getattr(im, 'anim_speed', 0) or 0)}, "
             f"{elem} }},"
             f"  /* {im.name} — {sprite.name}"
@@ -2323,25 +2367,23 @@ def _ui_element_index(p: Project) -> dict:
 
 
 def project_lists(p: Project) -> list:
-    """[(mise en page, panneau)] des panneaux marqués LISTE, ordre stable.
+    """[(mise en page, liste)] des `UIList` du projet, ordre stable.
 
     Le même ordre que `all_elements` — mises en page, puis éléments — donc
     l'index d'une liste est une constante du build, `UILIST_<NOM>`."""
-    from core.models.ui_region import KIND_PANEL
-    out = []
-    for lay, e in (p.all_elements() if hasattr(p, "all_elements") else []):
-        if getattr(e, "kind", "") == KIND_PANEL and getattr(e, "is_list", False):
-            out.append((lay, e))
-    return out
+    from core.models.ui_region import KIND_LIST
+    return [(lay, e) for lay, e in
+            (p.all_elements() if hasattr(p, "all_elements") else [])
+            if getattr(e, "kind", "") == KIND_LIST]
 
 
-def list_rows_of(lay, panel) -> list:
+def list_rows_of(lay, lst) -> list:
     """Les RANGÉES d'une liste : ses zones de texte enfants, dans l'ordre de la
     mise en page. Rien à déclarer — ce qu'on voit dans l'éditeur est ce que la
     liste parcourt (ROADMAP v0.22)."""
     from core.models.ui_region import KIND_TEXT
     return [e for e in lay.elements
-            if getattr(e, "parent", "") == panel.name
+            if getattr(e, "parent", "") == lst.name
             and getattr(e, "kind", "") == KIND_TEXT]
 
 
@@ -2359,44 +2401,71 @@ def emit_ui_lists_c(p: Project, emit=None) -> list[str]:
     répété une information déjà posée dans le canvas. `list.set_count` garde
     tout son sens dès que le total dépasse les rangées visibles (inventaire
     qui défile) : il écrase ce défaut, il ne comble plus un zéro."""
-    from core.models.settings import ProjectSettings
+    from core.models.ui_region import KIND_IMAGE, NAV_ROW, CURSOR_SLIDE
     lists = project_lists(p)
     L = ["", "/* Listes d'interface — la navigation, pas la mise en page */"]
     regions = {name: i for i, name in enumerate(p.region_names())}
+    # Index d'IMAGE, celui de `g_ui_images` et donc de `IMAGE_*` : c'est par là
+    # que la liste désigne son curseur. Le même ordre que `emit_ui_images_c`,
+    # sans quoi elle en déplacerait un autre.
+    images = {im.name: i for i, (_l, im) in
+              enumerate(p.all_images() if hasattr(p, "all_images") else [])}
     rows_flat: list[int] = []
     row_counts: list[int] = []
+    actives: list[int] = []
     infos: list[str] = []
     # Cadence par DÉFAUT du projet, qu'une liste peut surcharger — même
     # politique d'héritage que la transition de scène (v0.6.2). Trois listes à
     # trois cadences est une incohérence qu'un joueur sent.
     d_delay = int(getattr(p.settings, "list_repeat_delay", 10) or 10)
     d_rate = int(getattr(p.settings, "list_repeat_rate", 4) or 4)
-    for lay, panel in lists:
-        rows = list_rows_of(lay, panel)
+    for lay, lst in lists:
+        rows = list_rows_of(lay, lst)
         row0 = len(rows_flat)
         rows_flat += [regions.get(r.name, -1) for r in rows]
         row_counts.append(len(rows))
-        delay = int(getattr(panel, "list_repeat_delay", 0) or 0) or d_delay
-        rate = int(getattr(panel, "list_repeat_rate", 0) or 0) or d_rate
+        actives.append(1 if getattr(lst, "active", True) else 0)
+        delay = int(getattr(lst, "repeat_delay", 0) or 0) or d_delay
+        rate = int(getattr(lst, "repeat_rate", 0) or 0) or d_rate
+        # Le curseur est un `UIImage` de LA MÊME mise en page : une liste qui
+        # bougerait l'image d'une autre page déplacerait quelque chose que
+        # l'auteur ne voit pas à côté d'elle. -1 = pas de curseur, la sélection
+        # se lit alors au surlignement.
+        cur_name = str(getattr(lst, "cursor_image", "") or "")
+        cur_el = lay.get(cur_name) if cur_name else None
+        cursor = images.get(cur_name, -1) \
+            if getattr(cur_el, "kind", "") == KIND_IMAGE else -1
+        if emit and cur_name and cursor < 0:
+            emit("log_line",
+                 f"[warn] liste '{lst.name}' : curseur '{cur_name}' introuvable "
+                 f"dans la mise en page '{lay.name}' — la liste navigue sans "
+                 f"curseur.")
         infos.append(
             "{" + f"{len(rows)}, "
-            f"{1 if getattr(panel, 'list_axis', 'vertical') == 'horizontal' else 0}, "
-            f"{1 if getattr(panel, 'list_wrap', True) else 0}, "
-            f"{max(0, min(255, delay))}, {max(0, min(255, rate))}, {row0}"
-            + "}" + f"   /* {panel.name} — {len(rows)} rangée(s) */")
+            f"{max(1, min(255, int(getattr(lst, 'nav_columns', 1) or 1)))}, "
+            f"{1 if getattr(lst, 'nav_major', '') == NAV_ROW else 0}, "
+            f"{1 if getattr(lst, 'wrap', True) else 0}, "
+            f"{max(0, min(255, delay))}, {max(0, min(255, rate))}, {row0}, "
+            f"{cursor}, "
+            f"{1 if getattr(lst, 'cursor_mode', '') == CURSOR_SLIDE else 0}, "
+            f"{max(1, min(255, int(getattr(lst, 'cursor_speed', 2) or 2)))}, "
+            f"{int(getattr(lst, 'selected_text_color', 0) or 0)}, "
+            f"{int(getattr(lst, 'selected_highlight_color', 0) or 0)}"
+            + "}" + f"   /* {lst.name} — {len(rows)} rangée(s) */")
         if emit and not rows:
             emit("log_line",
-                 f"[warn] liste '{panel.name}' : aucune zone de texte enfant, "
+                 f"[warn] liste '{lst.name}' : aucune zone de texte enfant, "
                  f"donc aucune rangée à afficher. Une liste parcourt les zones "
-                 f"de texte posées DANS son panneau.")
+                 f"de texte posées DANS son conteneur.")
     n = len(lists)
     L.append("const UIListInfo g_ui_lists[] = {"
-             + (", ".join(infos) if infos else "{0,0,0,0,0,0}") + "};")
+             + (", ".join(infos) if infos else "{0,1,0,0,0,0,0,-1,0,1,0,0}") + "};")
     L.append("const short g_ui_list_rows[] = {"
              + (", ".join(str(r) for r in rows_flat) if rows_flat else "0") + "};")
     L.append(f"const int g_ui_list_count = {n};")
     z = ", ".join(["0"] * n) if n else "0"
     one = ", ".join(["1"] * n) if n else "0"
+    act = ", ".join(str(a) for a in actives) if actives else "0"
     # Le total démarre au compte de RANGÉES authorées, pas à 0 : un menu
     # STATIQUE (items == rangées, jamais de défilement — un sélecteur de
     # langue, un menu principal) navigue alors sans une ligne de script.
@@ -2408,8 +2477,21 @@ def emit_ui_lists_c(p: Project, emit=None) -> list[str]:
     L.append(f"int g_ui_list_first[] = {{{one}}};")
     L.append(f"int g_ui_list_total[] = {{{totals}}};")
     L.append(f"int g_ui_list_timer[] = {{{z}}};")
-    for i, (_lay, panel) in enumerate(lists):
-        L.append(f"#define UILIST_{c_sym(panel.name).upper()} {i}")
+    # `active` est un état VIVANT comme l'index : la valeur authorée n'est que
+    # son point de départ, `list.set_active` décide ensuite. Une liste inactive
+    # reste dessinée — c'est la sélection qu'on coupe, pas l'affichage.
+    L.append(f"int g_ui_list_active[] = {{{act}}};")
+    # Rangée affichée qui porte la sélection au dernier restyle, 0 = aucune :
+    # `ui_list_sync_style` s'en sert pour rendre l'ancienne à son style. Zéro au
+    # départ, la première frame posant le style de la rangée courante.
+    L.append(f"int g_ui_list_shown[] = {{{z}}};")
+    # Le texte posé sur chaque rangée, à plat comme `g_ui_list_rows` (-1 = rien
+    # d'écrit). Rempli par `text_draw_in` — c'est ce qui permet à la liste de
+    # redessiner une rangée quand la sélection la quitte ou l'atteint.
+    L.append("short g_ui_list_row_text[] = {"
+             + (", ".join(["-1"] * len(rows_flat)) if rows_flat else "-1") + "};")
+    for i, (_lay, container) in enumerate(lists):
+        L.append(f"#define UILIST_{c_sym(container.name).upper()} {i}")
     if emit and n:
         L.insert(1, "")
         emit("log_line", f"[ui] {n} liste(s) de navigation")
@@ -2453,43 +2535,19 @@ def _region_actor_index(p: Project) -> dict:
     out: dict = {}
     offset = 0
     for scene in p.scenes:
-        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
         actors = [a for a in getattr(scene, "actors", [])]
-        if lay is not None:
-            names = {a.name: offset + i for i, a in enumerate(actors)}
-            # Textes ET images : toutes deux se posent au pixel quand elles
-            # suivent un acteur, et un second index les ferait diverger.
-            for r in lay.slots + lay.images:
-                # L'ancrage vient du ROOT (un enfant en hérite), plus de
-                # l'élément lui-même — cohérent avec l'éditeur.
-                eff_anchor, eff_actor = lay.effective_anchor(r)
-                if eff_anchor == "actor" and r.name not in out:
-                    out[r.name] = names.get(eff_actor, -1)
+        names = {a.name: offset + i for i, a in enumerate(actors)}
+        # Textes ET images de TOUS les nœuds `Interface` de la scène : toutes deux
+        # se posent au pixel quand elles suivent un acteur, et un second index les
+        # ferait diverger.
+        for lay, r in p.scene_ui_slots(scene) + p.scene_ui_images(scene):
+            # L'ancrage vient du NŒUD (un enfant en hérite), plus de l'élément
+            # lui-même — cohérent avec l'éditeur.
+            eff_anchor, eff_actor = lay.effective_anchor(r)
+            if eff_anchor == "actor" and r.name not in out:
+                out[r.name] = names.get(eff_actor, -1)
         offset += len(actors)
     return out
-
-
-def region_fill_panel(lay, el):
-    """Le panneau dont CETTE zone prend le fond, ou None.
-
-    Le fond le plus PROCHE gagne, d'où l'arrêt au premier ancêtre qui en porte
-    un : un panel Color posé entre la zone et un nine-slice plus lointain masque
-    ce dernier de ses tuiles pleines, et recomposer le cadre sous le texte
-    montrerait un cadre que rien n'affiche.
-
-    Un seul endroit pour cette règle, lu par les deux formes de fond (`scene_
-    region_backdrops` pour une carte, `scene_region_colors` pour un aplat) : les
-    laisser la réécrire chacune, c'est se garantir qu'un jour une zone ait deux
-    fonds ou aucun."""
-    from core.models.ui_region import KIND_PANEL, FILL_NONE
-    for anc_name in lay.ancestors(el.name):
-        anc = lay.get(anc_name)
-        if getattr(anc, "kind", "") != KIND_PANEL:
-            continue
-        if getattr(anc, "fill_kind", FILL_NONE) == FILL_NONE:
-            continue
-        return anc
-    return None
 
 
 def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
@@ -2498,7 +2556,7 @@ def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
     (gba_engine.h) : surlignée, posée dans un conteneur à FOND, ou police
     composée — le fond/surlignement forcent la composition même en police
     MONO, pour se poser SUR ce qui est dessous sans le percer (cf.
-    `region_fill_panel`).
+    `region_fill_container`).
 
     Un seul endroit pour cette règle, lu par le canvas (`SceneRegionItem.
     _composited`) et le validateur (`_check_ui_text_surf_alias`) : les
@@ -2506,7 +2564,7 @@ def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
     un cas que le build compose bel et bien."""
     if int(getattr(el, "highlight_color", 0) or 0):
         return True
-    if region_fill_panel(lay, el) is not None:
+    if region_fill_container(lay, el) is not None:
         return True
     from codegen.font_emit import render_composited
     fname = getattr(el, "font_name", "") or default_font_name
@@ -2515,73 +2573,75 @@ def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
 
 
 def scene_region_colors(p: Project, scene, fills: list[dict]) -> list[dict]:
-    """Zones de texte composées sur l'APLAT d'un panel couleur.
+    """Zones de texte composées sur l'APLAT d'un container couleur.
 
     `fills` est ce que `scene_color_fills` a retenu pour CETTE scène — donc
     déjà filtré par toutes les conditions d'émission (cible BG, root ancré
     écran, palette active, calque d'UI). Dériver d'elle plutôt que de refaire la
     recherche est la correction de fond de ce chantier : deux calculs
-    indépendants avaient produit un panneau écarté du build dont la couleur
+    indépendants avaient produit un conteneur écarté du build dont la couleur
     apparaissait quand même dans la boîte de son texte enfant.
 
-    Renvoie `{region, name, panel, index, color}` — `index` est l'index dans la
-    palette du panneau, `color` sa valeur BGR555. C'est l'ÉMETTEUR qui décide où
-    cette couleur vit dans la banque d'UI, la réponse dépendant de
-    `scene.ui_pal_bank`."""
+    Renvoie `{region, name, container, index, color, bank}` — `index` est l'index
+    de l'aplat dans la palette du conteneur, `bank` la banque de ce conteneur
+    (le texte enfant y lit son encre, il PREND la palette du conteneur), `color`
+    la valeur BGR555 (pour l'aperçu éditeur)."""
     from core.models.ui_region import KIND_TEXT, FILL_COLOR
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None or not fills:
+    if not fills:
         return []
-    by_panel = {f["name"]: f for f in fills}
+    by_container = {f["name"]: f for f in fills}
     slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
     out: list[dict] = []
-    for el in lay.slots:
+    for lay, el in p.scene_ui_slots(scene):
         if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
             continue
-        panel = region_fill_panel(lay, el)
-        if panel is None or getattr(panel, "fill_kind", "") != FILL_COLOR:
+        container = region_fill_container(lay, el)
+        if container is None or getattr(container, "fill_kind", "") != FILL_COLOR:
             continue
-        if panel.name not in by_panel:
-            continue          # panneau écarté du build : rien à teinter
-        bank = p.get_palette(getattr(panel, "fill_palette", "") or "")
-        idx = int(getattr(panel, "fill_index", 0) or 0)
-        if not bank or not 0 <= idx < len(bank.colors):
+        if container.name not in by_container:
+            continue          # conteneur écarté du build : rien à teinter
+        pal = p.get_palette(getattr(container, "fill_palette", "") or "")
+        idx = int(getattr(container, "fill_index", 0) or 0)
+        if not pal or not 0 <= idx < len(pal.colors):
             continue
         out.append({"region": slot_idx[el.name], "name": el.name,
-                    "panel": panel.name, "index": idx,
-                    "color": int(bank.colors[idx])})
+                    "container": container.name, "index": idx,
+                    "color": int(pal.colors[idx]),
+                    # Banque du conteneur (sa place dans active_bg_palettes) — le
+                    # texte enfant y lit son encre. `scene_color_fills` l'a déjà
+                    # calculée ; on la reprend plutôt que de la refaire.
+                    "bank": by_container[container.name]["bank"]})
     return out
 
 
 def scene_region_backdrops(p: Project, scene, img_fills: list[dict]) -> list[dict]:
-    """Zones de texte composées SOUS un panel nine-slice/background : sans
+    """Zones de texte composées SOUS un container nine-slice/background : sans
     ça, `text_surf_prepare` composerait sur du transparent et effacerait le
     cadre à cet endroit au lieu de le garder sous l'encre. Une couleur n'y
     suffirait pas — ce sont les VRAIS pixels du cadre qu'il faut à cet endroit.
 
     Renvoie une entrée par zone concernée : `{region, fill, dx, dy}` — `fill`
-    est l'INDEX de son panel ancêtre dans `img_fills` (déjà émis par
+    est l'INDEX de son container ancêtre dans `img_fills` (déjà émis par
     `scene_image_fills`, réutilisé tel quel, jamais dupliqué) ; `dx, dy` le
-    coin de la zone DANS la carte de ce panel, en tuiles. Le runtime lit
-    directement la carte du panel avec cet offset (cf. `RegionFill` dans
+    coin de la zone DANS la carte de ce container, en tuiles. Le runtime lit
+    directement la carte du container avec cet offset (cf. `RegionFill` dans
     `gba_engine.h`) plutôt que de recevoir une carte à la taille de la zone :
     une donnée, pas deux à tenir d'accord."""
     from core.models.ui_region import KIND_TEXT, FILL_NINE, FILL_BG
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None or not img_fills:
+    if not img_fills:
         return []
-    by_panel = {f["name"]: i for i, f in enumerate(img_fills)}
+    by_container = {f["name"]: i for i, f in enumerate(img_fills)}
     slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
     out: list[dict] = []
-    for el in lay.slots:
+    for lay, el in p.scene_ui_slots(scene):
         if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
             continue
-        panel = region_fill_panel(lay, el)
-        if panel is None or getattr(panel, "fill_kind", "") not in (FILL_NINE, FILL_BG):
+        container = region_fill_container(lay, el)
+        if container is None or getattr(container, "fill_kind", "") not in (FILL_NINE, FILL_BG):
             continue
-        if panel.name not in by_panel:
+        if container.name not in by_container:
             continue
-        fi = by_panel[panel.name]
+        fi = by_container[container.name]
         f = img_fills[fi]
         rx, ry, _ = lay.absolute_origin(el, lambda _n: None)
         rx -= rx % 8
@@ -2590,13 +2650,37 @@ def scene_region_backdrops(p: Project, scene, img_fills: list[dict]) -> list[dic
         rw = max(1, (el.w + 7) // 8)
         rh = max(1, (el.h + 7) // 8)
         dx, dy = rtx - f["tx"], rty - f["ty"]
-        # Zone qui déborde de son panel (authoring incohérent) : rien à
-        # enregistrer, `_check_ui_text_backdrop_bank` (validator) le signale.
+        # Zone qui déborde de son container (authoring incohérent) : rien à
+        # enregistrer — le texte retombe alors sur la banque de sa police.
         if dx < 0 or dy < 0 or dx + rw > f["w"] or dy + rh > f["h"]:
             continue
         out.append({"region": slot_idx[el.name], "name": el.name,
                     "fill": fi, "dx": dx, "dy": dy})
     return out
+
+
+def region_ink_bank(p: Project, scene, el) -> "tuple[int, str] | None":
+    """La banque HW (0-15) où l'encre ET le surlignement de CETTE zone
+    s'indexent quand le build la lie à un conteneur à fond, avec le nom du
+    conteneur — ou None si la zone lit la banque de sa police (texte libre).
+
+    C'est `RegionFill.bank` du runtime, exposé pour ses relecteurs de l'éditeur
+    (l'inspecteur et l'aperçu du canvas) : plutôt que de reconstruire les
+    conditions d'émission (cible BG, ancrage écran, palette active, 8bpp,
+    débordement de zone), on lit ce que `scene_region_colors` /
+    `scene_region_backdrops` émettent VRAIMENT pour elle. Une seule vérité,
+    celle de la ROM."""
+    name = el.name
+    cfills, _ = scene_color_fills(p, scene)
+    for rc in scene_region_colors(p, scene, cfills):
+        if rc["name"] == name:
+            return rc["bank"], rc["container"]
+    ifills, _ = scene_image_fills(p, scene)
+    for rb in scene_region_backdrops(p, scene, ifills):
+        if rb["name"] == name:
+            fi = ifills[rb["fill"]]
+            return fi["bank"], fi["name"]
+    return None
 
 
 def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
@@ -2612,9 +2696,6 @@ def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
     """
     from core.models.ui_region import KIND_TEXT, ANCHOR_ACTOR, TARGET_OBJ
 
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None:
-        return []
     # Index PROJET-GLOBAUX : `g_ui_regions` suit l'ordre de `all_regions()`,
     # `g_texts` celui de `build_texts()`. Recalculés ici plutôt que reçus, pour
     # lire les mêmes listes que les émetteurs de tables — deux vues divergentes
@@ -2625,7 +2706,7 @@ def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
     rm = int(getattr(scene, "render_mode", 0) or 0)
 
     L: list[str] = []
-    for el in lay.slots:
+    for lay, el in p.scene_ui_slots(scene):
         if getattr(el, "kind", "") != KIND_TEXT:
             continue
         key = getattr(el, "text_key", "") or ""
@@ -2741,12 +2822,15 @@ def _gen_ui_images(p: Project, scene, text_cbb: int, sprite_offsets: dict,
     base0 = getattr(text_base, "text_base", 0) if text_base is not None else 0
     res = getattr(scene, "_ui_reservation", {}) or {}
     # Les images viennent APRÈS tous les autres postes du bloc de texte — cf.
-    # `scene_text_reservation`, dont l'ordre fait foi.
-    from codegen.font_emit import TEXT_SURF_TILES
+    # `scene_text_reservation`, dont l'ordre fait foi. La surface compte pour ce
+    # qu'elle OCCUPE (`surf_tiles`, comme le placement des zones et le total
+    # réservé), pas pour le plafond `TEXT_SURF_TILES` : réserver 240 tuiles pour
+    # une scène qui n'en compose que 58 poussait l'image hors du charblock (au-
+    # delà de la SBB de sa tilemap), et l'image disparaissait sans une erreur.
     head = (len(res.get("fill_indices", []))
             + sum(a["tiles"] for a in res.get("img_assets", []))
             + res.get("mono_tiles", 0)
-            + (TEXT_SURF_TILES if res.get("needs_surface") else 0))
+            + res.get("surf_tiles", 0))
     # Banque de palette par image, résolue par l'allocateur du POOL de sa cible
     # — les deux pools sont disjoints sur GBA. Sans ça l'image lisait la banque
     # d'interface, celle de la POLICE : une silhouette aux couleurs du texte.
@@ -2788,22 +2872,21 @@ def _gen_ui_images(p: Project, scene, text_cbb: int, sprite_offsets: dict,
 def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
     """Fonds COULEUR des conteneurs d'une scène → (fills, indices).
 
-    1re tranche : uniquement les panels à fond `color`, cible BG, root ancré
+    1re tranche : uniquement les conteneurs à fond `color`, cible BG, root ancré
     ÉCRAN (position fixe — le monde défile, l'OBJ n'a pas de tilemap). Chaque
     fond : rectangle en TUILES (résolu écran), index de couleur, banque de
     palette (= sa place dans `scene.active_bg_palettes`). `indices` = index
     distincts, un par tuile pleine à graver dans le charblock UI."""
     from core.models.ui_region import (
-        KIND_PANEL, FILL_COLOR, ANCHOR_SCREEN, TARGET_BG)
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None or getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+        can_fill, FILL_COLOR, ANCHOR_SCREEN, TARGET_BG)
+    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
         return [], []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     active = list(getattr(scene, "active_bg_palettes", []) or [])
     fills: list[dict] = []
     indices: list[int] = []
-    for el in lay.elements:
-        if getattr(el, "kind", "") != KIND_PANEL:            continue
+    for lay, el in p.scene_ui_elements(scene):
+        if not can_fill(el):                                continue
         if getattr(el, "fill_kind", "") != FILL_COLOR:       continue
         if lay.resolved_target(el, rm) != TARGET_BG:         continue
         if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
@@ -2831,7 +2914,7 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     """Fonds IMAGE (nine-slice, background) des conteneurs d'une scène.
 
     Renvoie (fills, assets) :
-      fills  — un par panneau : rectangle en TUILES + la liste des screen
+      fills  — un par conteneur : rectangle en TUILES + la liste des screen
                entries à écrire (palette déjà rebasée sur les banques HW).
       assets — les BackgroundAsset sources, dédupliqués et ORDONNÉS ; le codegen
                leur attribue une base de tuiles dans le charblock d'UI, dans cet
@@ -2842,13 +2925,12 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     défile et l'OBJ n'a pas de tilemap. Les marges d'un nine-slice sont ramenées
     à la TUILE — une tilemap ne sait pas couper un cadre à 3 px."""
     from core.models.ui_region import (
-        KIND_PANEL, FILL_NINE, FILL_BG, ANCHOR_SCREEN, TARGET_BG)
+        can_fill, FILL_NINE, FILL_BG, ANCHOR_SCREEN, TARGET_BG)
     from core.nine_slice import nine_slice_rects
     from core.models.tile_codec import unpack_se, pack_se
     from codegen.palette_alloc import scene_bank_layout
 
-    lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    if lay is None or getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
         return [], []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     bank_layout = scene_bank_layout(p, scene, "bg")
@@ -2856,8 +2938,8 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     assets: list[dict] = []
     by_name: dict[str, int] = {}      # nom d'asset -> index dans `assets`
 
-    for el in lay.elements:
-        if getattr(el, "kind", "") != KIND_PANEL:            continue
+    for lay, el in p.scene_ui_elements(scene):
+        if not can_fill(el):                                continue
         fk = getattr(el, "fill_kind", "")
         if fk not in (FILL_NINE, FILL_BG):                   continue
         if lay.resolved_target(el, rm) != TARGET_BG:         continue
@@ -2921,65 +3003,8 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
             assets.append({"name": ba.name, "sym": f"ui_bg_{c_sym(ba.name)}",
                            "words": words, "tiles": len(words) // 8})
         fills.append({"name": el.name, "tx": tx, "ty": ty, "w": w, "h": h,
-                      "asset": by_name[ba.name], "se": se})
+                      "asset": by_name[ba.name], "se": se, "bank": pal_offset})
     return fills, assets
-
-
-def scene_container_ink_bank(p: Project, scene) -> Optional[int]:
-    """Résout `Scene.UI_PAL_BANK_CONTAINER` : la banque de palette où un texte
-    recomposé sur un conteneur doit lire son encre — celle du fond qu'il
-    recouvre, qu'il n'a donc plus à désigner à la main.
-
-    Deux formes de fond, deux sources : COULEUR (`scene_color_fills`, banque =
-    place dans `active_bg_palettes`) et IMAGE compressée (`scene_image_fills`,
-    banque = bloc alloué par `scene_bank_layout`). Chacune filtrée par le MÊME
-    calcul que son validateur (`scene_region_colors`/`scene_region_backdrops`) :
-    un panneau qu'aucune zone ne recouvre ne réclame rien.
-
-    Une tuile de surface ne porte qu'UNE banque : `None` si aucun conteneur
-    n'est concerné, ou si plusieurs en réclament des DIFFÉRENTES — le sentinel
-    ne peut alors rien résoudre, et l'appelant (validateur, émission) retombe
-    sur l'erreur qui nomme le conflit plutôt que de deviner."""
-    from codegen.palette_alloc import scene_bank_layout
-
-    banks: set[int] = set()
-
-    color_fills, _idx = scene_color_fills(p, scene)
-    by_color_panel = {f["name"]: f for f in color_fills}
-    for rc in scene_region_colors(p, scene, color_fills):
-        banks.add(by_color_panel[rc["panel"]]["bank"])
-
-    img_fills, _assets = scene_image_fills(p, scene)
-    if img_fills:
-        lay = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-        bank_layout = scene_bank_layout(p, scene, "bg")
-        seen: set[str] = set()
-        for rb in scene_region_backdrops(p, scene, img_fills):
-            f = img_fills[rb["fill"]]
-            if f["name"] in seen:
-                continue
-            seen.add(f["name"])
-            panel = lay.get(f["name"]) if lay else None
-            ba = p.get_background(getattr(panel, "fill_asset", "") or "") if panel else None
-            bank = bank_layout.bg_block_offset(ba) if ba else None
-            if bank is not None:
-                banks.add(bank)
-
-    return banks.pop() if len(banks) == 1 else None
-
-
-def resolve_ui_pal_bank(p: Project, scene) -> int:
-    """`Scene.ui_pal_bank` tel qu'il faut l'ÉMETTRE : le sentinel
-    `UI_PAL_BANK_CONTAINER` résolu vers son numéro réel, -1 s'il ne résout
-    rien (aucun conteneur concerné, ou plusieurs en désaccord — le
-    validateur bloque déjà ce cas avant que ce point ne soit atteint, ce
-    repli n'est qu'un filet)."""
-    from core.models.scene import UI_PAL_BANK_CONTAINER
-    raw = int(getattr(scene, "ui_pal_bank", -1))
-    if raw != UI_PAL_BANK_CONTAINER:
-        return raw
-    resolved = scene_container_ink_bank(p, scene)
-    return resolved if resolved is not None else -1
 
 
 def _scene_music_lines(p: Project, scene: Scene, sound_assets: dict | None) -> list[str]:
@@ -3046,7 +3071,7 @@ def _gen_scene_init(
     L: list[str] = []
     # ── Données des fonds IMAGE, en amont de la fonction ───────────
     # Les tuiles de l'asset source et la carte de screen entries de chaque
-    # panneau sont des CONSTANTES : calculées par l'éditeur (cf.
+    # conteneur sont des CONSTANTES : calculées par l'éditeur (cf.
     # `scene_image_fills`), elles n'ont aucune raison d'être reconstruites au
     # runtime. `scene_init` ne fait plus qu'une copie et une écriture de map.
     for _a in (getattr(scene, "_ui_img_assets", []) or []):
@@ -3229,7 +3254,7 @@ def _gen_scene_init(
     L.append("    text_set_surf_base(0);")
     # Fonds COULEUR des conteneurs : les tuiles pleines occupent le DÉBUT du
     # bloc UI (le texte se décale de `len(indices)`), puis on les repose sur le
-    # rectangle de chaque panel. Statique : posé une fois, avant le texte.
+    # rectangle de chaque container. Statique : posé une fois, avant le texte.
     for i, idx in enumerate(fill_indices):
         L.append(f"    ui_fill_load_solid({text_cbb}, {text_base + i}, {idx});"
                  f"   /* tuile pleine, index {idx} */")
@@ -3260,20 +3285,25 @@ def _gen_scene_init(
         for _fl in getattr(scene, "_ui_reservation", {}).get("font_layout", []):
             L.append(f"    text_set_font_base({_fl['index']}, {_fl['base']});"
                      f"   /* {_fl['name']} : {_fl['tiles']} tuile(s) */")
-        # Banque de couleurs de l'UI. -1 = automatique (la police impose sa
-        # palette dans FONT_PAL_BANK) ; sinon un slot de la sélection de la
-        # scène, et deux polices ne se repeignent plus l'une l'autre.
-        # `resolve_ui_pal_bank` absorbe le sentinel « banque du conteneur ».
-        _uib = resolve_ui_pal_bank(p, scene)
-        _uib_obj = _uib if _uib < 0 or _uib < len(
-            getattr(scene, "active_obj_palettes", []) or []) else -1
-        L.append(f"    text_set_pal_bank({_uib}, {_uib_obj});")
         # Sous-ensembles AVANT text_set_font : c'est lui qui copie les glyphes,
         # il doit déjà savoir lesquels. Une police sans sous-ensemble déclaré se
         # charge entière.
         L.append("    text_clear_subsets();")
         for _fi, _sub_sym in sorted(getattr(scene, "_ui_font_subsets", {}).items()):
             L.append(f"    text_set_subset({_fi}, &{_sub_sym});")
+        # Banque d'encre de CHAQUE police (text_set_font_pal), après le clear qui
+        # les remet au défaut. `own=1` = la police charge sa palette propre dans
+        # une banque allouée (usage libre, comme un sprite) ; `own=0` = elle lit
+        # une palette de scène (override) ou n'a que des usages imbriqués — le
+        # conteneur possède alors la banque (cf. text_set_region_*). Une police
+        # absente de la table garde le défaut historique (sa palette en banque 15).
+        from codegen.palette_alloc import scene_font_runtime_banks
+        _fpb = scene_font_runtime_banks(p, scene)
+        for _fi, _f in enumerate(project_fonts(p)):
+            _bo = _fpb.get(_f.name)
+            if _bo is not None:
+                L.append(f"    text_set_font_pal({_fi}, {_bo[0]}, {_bo[1]});"
+                         f"   /* {_f.name} */")
         # Police par défaut de la SCÈNE — le même calcul que la réservation
         # VRAM et les sous-ensembles (cf. font_emit.scene_default_font).
         # Réserver pour une police et en charger une autre écrirait le texte
@@ -3297,7 +3327,7 @@ def _gen_scene_init(
     # cellule par une tuile de glyphe (index 0 transparent) et perce le fond.
     # Deux formes, une table côté runtime (`RegionFill`/`text_surf_seed`).
     #
-    # IMAGE d'abord : la carte déjà émise ci-dessus pour le panneau est
+    # IMAGE d'abord : la carte déjà émise ci-dessus pour le conteneur est
     # réutilisée telle quelle, jamais dupliquée pour la zone.
     region_backdrops = scene_region_backdrops(p, scene, img_fills)
     for rb in region_backdrops:
@@ -3305,48 +3335,20 @@ def _gen_scene_init(
         L.append(
             f"    text_set_region_backdrop({rb['region']}, "
             f"{sym}_uimap_{c_sym(f['name'])}, {f['w']}, {rb['dx']}, {rb['dy']}, "
-            f"{asset_base[f['asset']]});"
+            f"{asset_base[f['asset']]}, {f['bank']});"
             f"   /* '{rb['name']}' recompose le fond '{f['name']}' */")
     # COULEUR ensuite. `scene_region_colors` DÉRIVE de `fills`, la liste que le
-    # build émet réellement : un panneau écarté (palette non active, ancrage,
-    # cible) ne peut donc plus teinter le texte qu'il contient. C'est l'erreur
-    # que ce chantier corrige — deux calculs indépendants donnaient un fond
-    # visible dans la seule boîte du texte.
+    # build émet réellement : un conteneur écarté (palette non active, ancrage,
+    # cible) ne peut donc plus teinter le texte qu'il contient.
     #
-    # Reste à savoir OÙ cette couleur vit dans la banque d'UI, la tuile de
-    # surface n'en portant qu'une :
-    #   - banque DÉSIGNÉE : c'est celle du panneau (contrat vérifié par
-    #     `_check_ui_text_fill_bank`), l'index passe tel quel, rien à écrire ;
-    #   - mode AUTOMATIQUE : la banque appartient à la police, et le build y
-    #     loge la couleur — depuis le HAUT (15, 14, …), en sautant les index que
-    #     l'encre et les surlignements de cette scène occupent déjà. Après
-    #     `text_set_font`, qui vient de recopier toute la palette de la police.
+    # Le texte enfant PREND la banque du conteneur (`text_set_region_color` la
+    # porte) : `index` est celui de l'aplat DANS cette banque, sans plus loger la
+    # couleur chez la police — c'est le comportement par défaut du chantier
+    # « la police, une palette d'asset ».
     region_colors = scene_region_colors(p, scene, fills)
-    lay_ui = p.scene_ui_layout(scene) if hasattr(p, "scene_ui_layout") else None
-    slots_ui = list(lay_ui.slots) if lay_ui else []
-    _uib_now = resolve_ui_pal_bank(p, scene)
-    ui_index: dict[int, int] = {}          # couleur BGR555 -> index dans la banque
-    if region_colors and _uib_now < 0:
-        pris = {int(getattr(r, "text_color", 0) or 0) for r in slots_ui}
-        pris |= {int(getattr(r, "highlight_color", 0) or 0) for r in slots_ui}
-        libre = [i for i in range(15, 0, -1) if i not in pris]
-        from codegen.font_emit import FONT_PAL_BANK
-        for rc in region_colors:
-            if rc["color"] in ui_index or not libre:
-                continue
-            ui_index[rc["color"]] = libre.pop(0)
-        for col, idx in sorted(ui_index.items(), key=lambda kv: kv[1], reverse=True):
-            L.append(f"    PAL_BG_RAM[{FONT_PAL_BANK} * 16 + {idx}] = "
-                     f"0x{col:04X};   /* fond de conteneur, sous le texte */")
     for rc in region_colors:
-        if _uib_now < 0:
-            idx = ui_index.get(rc["color"])
-            if idx is None:
-                continue      # banque de police pleine : rien plutôt qu'une couleur fausse
-        else:
-            idx = rc["index"]
-        L.append(f"    text_set_region_color({rc['region']}, {idx});"
-                 f"   /* '{rc['name']}' sur le fond de '{rc['panel']}' */")
+        L.append(f"    text_set_region_color({rc['region']}, {rc['index']}, {rc['bank']});"
+                 f"   /* '{rc['name']}' sur le fond de '{rc['container']}' */")
     # La SURFACE composée : réclamée par un fond comme par un surlignement,
     # puisque les deux font composer le texte même en police mono — et par une
     # police composée, qui n'a nulle part ailleurs où ranger ses pixels. Bloc
@@ -3374,7 +3376,7 @@ def _gen_scene_init(
     # Bande de sprites du texte : après les sprites d'acteurs (tuiles) et après
     # tous les slots d'acteurs et de pools (OAM). -1 = aucune zone en cible OBJ.
     if obj_text_oam >= 0:
-        L.append(f"    text_obj_set_actor_fn(_txt_actor_x, _txt_actor_y);")
+        L.append(f"    text_obj_set_actor_fn(_txt_actor_x, _txt_actor_y, _txt_actor_prio);")
         L.append(f"    text_obj_set_base({obj_text_oam}, {obj_text_tile});")
     # Textes AUTHORÉS de la mise en page. En DERNIER des postes de texte : le
     # rendu lit la police, la base de tuiles, la surface composée, les couleurs
@@ -4071,8 +4073,8 @@ def generate_main(
     #
     # Ces deux dépassements n'étaient que journalisés — `generate_main` rendait
     # `True` quoi qu'il arrive, donc la ROM se construisait avec des slots hors
-    # des 128 du matériel : rien à l'écran, aucune erreur. Le fond de panneau en
-    # sprites rend le cas trivial à atteindre (un panneau de 224×48 pavé d'une
+    # des 128 du matériel : rien à l'écran, aucune erreur. Le fond de conteneur en
+    # sprites rend le cas trivial à atteindre (un conteneur de 224×48 pavé d'une
     # frame 8×8 réclame 168 slots à lui seul), d'où le passage en erreur — même
     # règle que le budget de tuiles BG, qui bloque déjà.
     _fatal: list[str] = []
@@ -4175,6 +4177,16 @@ def generate_main(
                 _add_inc(f'#include "sprite_{c_sym(sprite.name)}.h"')
 
     for _, sprite in prefab_actor_sprites:
+        if sprite and sprite.asset:
+            _add_inc(f'#include "sprite_{c_sym(sprite.name)}.h"')
+
+    # Les sprites des IMAGES d'interface ne sont portés par aucun acteur ni
+    # prefab, mais leurs tuiles partent en VRAM OBJ par le même chemin (cf.
+    # `ui_image_sprites`) : leur header grit doit être inclus au même titre.
+    # Sans ça, un sprite utilisé UNIQUEMENT par une image d'UI compilait sur
+    # « 'sprite_XTiles' undeclared » — le cas restait masqué tant qu'un acteur
+    # partageait le sprite et amenait l'include avec lui.
+    for _, sprite in ui_image_sprites(p):
         if sprite and sprite.asset:
             _add_inc(f'#include "sprite_{c_sym(sprite.name)}.h"')
 
@@ -4388,9 +4400,10 @@ def generate_main(
     # pointeur de fonction plutôt qu'une dépendance inversée.
     if obj_text_oam >= 0:
         L += [
-            "/* ── Position d'acteur pour les zones de texte ancrées ─── */",
+            "/* ── Position et profondeur d'acteur pour l'UI ancrée ─── */",
             "static int _txt_actor_x(int i) { return g_actors[i].x>>8; }",
             "static int _txt_actor_y(int i) { return g_actors[i].y>>8; }",
+            "static int _txt_actor_prio(int i) { return g_actors[i].priority; }",
             "",
         ]
 

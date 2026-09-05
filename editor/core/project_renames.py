@@ -32,6 +32,7 @@ from core.models.sprite import SpriteAsset
 from scripting.api import (
     DOMAIN_SCENE, DOMAIN_CAMERA, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_MUSIC, DOMAIN_FONT,
     DOMAIN_ACTOR, DOMAIN_REGION, DOMAIN_IMAGE, DOMAIN_WIN_REGION,
+    DOMAIN_UI_LIST,
 )
 
 
@@ -204,10 +205,12 @@ class ProjectRenameMixin:
 
         Les enfants pointant le parent par NOM, on les rebranche
         (`retarget_parent`) AVANT de figer le nouveau nom. Le domaine Lua suit
-        le type — un conteneur n'en a pas, rien à réécrire. Retourne le nom
-        RÉELLEMENT appliqué (peut différer si collision)."""
+        le type — un conteneur n'en a pas, rien à réécrire ; une LISTE, si
+        (`list.count("Menu")`), ce qu'un panneau-liste ne disait pas et qui
+        cassait les scripts en silence. Retourne le nom RÉELLEMENT appliqué
+        (peut différer si collision)."""
         from core.models.ui_region import (
-            KIND_TEXT, KIND_IMAGE, unique_element_name)
+            KIND_TEXT, KIND_IMAGE, KIND_LIST, unique_element_name)
         new_name = new_name.strip()
         if not new_name or new_name == element.name:
             return element.name
@@ -215,15 +218,58 @@ class ProjectRenameMixin:
         if new_name in taken:
             new_name = unique_element_name(taken, new_name)
         kind = getattr(element, "kind", KIND_TEXT)
-        domain = {KIND_TEXT: DOMAIN_REGION, KIND_IMAGE: DOMAIN_IMAGE}.get(kind)
-        label = {KIND_TEXT: "Text", KIND_IMAGE: "Image"}.get(kind, "UI element")
+        domain = {KIND_TEXT: DOMAIN_REGION, KIND_IMAGE: DOMAIN_IMAGE,
+                  KIND_LIST: DOMAIN_UI_LIST}.get(kind)
+        label = {KIND_TEXT: "Text", KIND_IMAGE: "Image",
+                 KIND_LIST: "List"}.get(kind, "UI element")
         old_name = element.name
         with self._renaming():
             layout.retarget_parent(old_name, new_name)
+            # Le curseur d'une liste DÉSIGNE une image par son nom, comme un
+            # enfant désigne son parent : renommer l'image sans rebrancher
+            # laisserait la liste pointer dans le vide, et le build se
+            # contenterait d'un avertissement.
+            if kind == KIND_IMAGE:
+                for el in layout.elements:
+                    if getattr(el, "cursor_image", "") == old_name:
+                        el.cursor_image = new_name
             element.name = new_name
             refs = self.rename_lua_refs(domain, old_name, new_name) if domain else {}
             self.ui_layouts.save_all()
         self._notify_renamed(label, old_name, new_name, refs)
+        return new_name
+
+    def rename_ui_layout(self, layout, new_name: str) -> str:
+        """Renomme un nœud `Interface` (l'asset `UILayout`, `project/ui_layouts/
+        <nom>.json`) et répare les scènes qui le citent.
+
+        Une scène référence ses nœuds par NOM (`Scene.ui_layouts`, v0.25) : le
+        renommage remplace le nom EN PLACE dans chaque liste, pour ne pas changer
+        l'ordre des nœuds d'une scène. Aucun domaine Lua — un nœud ne se cite pas
+        depuis un script (seuls ses éléments le font, via `REGION_*`/`IMAGE_*`).
+        Retourne le nom RÉELLEMENT appliqué (peut différer si collision)."""
+        new_name = new_name.strip()
+        if not new_name or new_name == layout.name:
+            return layout.name
+        taken = {l.name for l in self.ui_layouts} - {layout.name}
+        if new_name in taken:
+            base, n = new_name, 2
+            while new_name in taken:
+                new_name = f"{base}_{n:02d}"
+                n += 1
+        old_name = layout.name
+        with self._renaming():
+            self.ui_layouts.rename(layout, new_name)
+            for scene in self.scenes:
+                names = getattr(scene, "ui_layouts", None) or []
+                touched = False
+                for i, n in enumerate(names):
+                    if n == old_name:
+                        names[i] = new_name
+                        touched = True
+                if touched:
+                    self.save_scene(scene)
+        self._notify_renamed("Interface", old_name, new_name)
         return new_name
 
     def rename_sound(self, asset, new_name: str):

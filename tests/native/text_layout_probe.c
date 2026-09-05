@@ -66,6 +66,10 @@ const unsigned char* const g_lang_font[1] = {g_lang_font_0};
    elle n'a donc besoin que des symboles pour satisfaire l'éditeur de liens. */
 int g_lang = 0;
 int g_lang_reload = 0;
+/* Compte des langues ÉMISES (`font_emit`), sur lequel `lang_set` se borne. La
+   sonde ne change pas de langue, mais `lang_set` n'est pas statique : elle est
+   compilée, et l'éditeur de liens réclame le symbole. */
+const int g_lang_count = 1;
 const unsigned short* const g_texts_0[1] = {0};
 const unsigned short* const* const g_texts[1] = {g_texts_0};
 const unsigned short g_text_len_0[1] = {0};
@@ -91,6 +95,11 @@ const int            g_ui_list_count = 0;
    fournir ici. La sonde n'en fait rien — elle interroge `text_layout`, pas la
    navigation — mais `ui_list_tick` est compilé avec le reste du moteur. */
 int g_ui_list_index[1], g_ui_list_first[1], g_ui_list_total[1], g_ui_list_timer[1];
+/* `active` et `shown` sont du même bois : l'état vivant d'une liste, posé par
+   main.c depuis la valeur authorée. `row_text` retient ce qu'une rangée
+   affiche, pour la redessiner au changement de style. */
+int g_ui_list_active[1], g_ui_list_shown[1];
+short g_ui_list_row_text[1] = {-1};
 u32 _g_keys_held = 0;
 int cam_x, cam_y;
 

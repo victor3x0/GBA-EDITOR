@@ -84,16 +84,51 @@ EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
 TRANSITION_INHERIT = ""              # la scène suit ProjectSettings
 TRANSITION_KINDS = (EFFECT_NONE, EFFECT_FADE_BLACK, EFFECT_FADE_WHITE)
 
-# `Scene.ui_pal_bank` — troisième valeur, à côté de -1 (auto police) et d'un
-# index désigné (0-15) : « la banque du conteneur ». Un texte qui recompose
-# son encre sur un fond nine-slice/couleur DOIT lire cette encre dans la même
-# banque que le fond (une tuile de surface n'en porte qu'une, cf.
-# `font_emit.render_composited`) — jusqu'ici il fallait TAPER ce numéro, un
-# détail d'allocation qui bouge si un autre asset de la scène change. Cf.
-# `codegen.runtime_codegen.main_gen.scene_container_ink_bank`, seul point qui
-# résout ce sentinel vers le numéro réel — build et validateur le lisent tous
-# les deux depuis là, jamais recalculé à côté.
-UI_PAL_BANK_CONTAINER = -2
+# `Scene.font_pal_banks` — banque de palette d'une police, PAR NOM, l'analogue
+# de `Actor.pal_bank` pour un asset sans instance posée. Deux familles de valeur :
+#   - absente / `OWN_PAL_BANK` : la police charge sa PROPRE palette dans une
+#     banque allouée (comme un sprite, cf. `codegen.palette_alloc`) ;
+#   - 0-15 : la police lit son encre dans cette palette de scène (override).
+#
+# La « banque du conteneur » N'EST PLUS une valeur à poser : un texte enfant d'un
+# conteneur à fond PREND automatiquement la banque de ce conteneur (par zone, cf.
+# `RegionFill.bank` runtime). `font_pal_banks` ne concerne donc que les usages
+# LIBRES d'une police.
+#
+# La clé `""` désigne la police PAR DÉFAUT de la scène (stable quel que soit son
+# nom, cible unique du sélecteur « UI colors ») ; toute autre clé est un nom de
+# police. `font_pal_key()` fait la correspondance, `scene_font_pal_bank()` la
+# lecture. Remplace l'ancien scalaire `ui_pal_bank`, migré à la lecture sur cette
+# clé par défaut.
+
+
+def font_pal_key(font_name: str, default_font_name: str) -> str:
+    """Clé de `Scene.font_pal_banks` pour une police. La police PAR DÉFAUT de la
+    scène passe par la clé `""` — stable quand son nom change, et cible unique du
+    sélecteur « UI colors » ; une police nommée non-défaut passe par son nom. Une
+    police héritée (`font_name` vide) EST la police par défaut, donc `""` aussi."""
+    return "" if font_name == default_font_name else font_name
+
+
+def scene_font_pal_bank(scene, font_name: str, default_font_name: str) -> int:
+    """Banque de palette d'une police dans une scène : un override (slot 0-15),
+    ou `OWN_PAL_BANK` par défaut (palette propre à allouer). Source unique lue
+    par l'allocateur, le codegen et l'aperçu — jamais recalculée à côté. Un texte
+    imbriqué dans un conteneur ignore ceci et prend la banque du conteneur."""
+    banks = getattr(scene, "font_pal_banks", None) or {}
+    return int(banks.get(font_pal_key(font_name, default_font_name), OWN_PAL_BANK))
+
+
+def _font_pal_banks_from_dict(d: dict) -> dict:
+    """Lit `font_pal_banks`, ou migre l'ancien scalaire `ui_pal_bank` sur la
+    police par défaut (clé `""`). Seul un SLOT désigné (0-15) se migre : `-1`
+    (automatique) comme l'ancien sentinel « banque du conteneur » (-2, désormais
+    automatique par zone) n'ont rien à porter — absents de la map = OWN."""
+    raw = d.get("font_pal_banks")
+    if isinstance(raw, dict):
+        return {str(k): int(v) for k, v in raw.items()}
+    legacy = int(d.get("ui_pal_bank", OWN_PAL_BANK))
+    return {"": legacy} if 0 <= legacy < 16 else {}
 
 # Musique de la scène (v0.8.2) — TROIS valeurs, pas deux.
 #
@@ -629,10 +664,13 @@ class Scene(Resource):
     music: str = MUSIC_INHERIT
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
     text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
-    # Mise en page d'UI référencée par NOM (project/ui_layouts/<nom>.json) —
-    # la géométrie authorée des zones de texte. "" = aucune, le script place
-    # alors tout lui-même via text.draw(id, tx, ty). cf. models/ui_region.py
-    ui_layout: str = ""
+    # Nœuds `Interface` de la scène, référencés par NOM (project/ui_layouts/
+    # <nom>.json). Une LISTE depuis v0.25 : chaque nœud porte SON couple
+    # ancrage/cible, et une scène peut en poser plusieurs (un HUD fixe en BG et
+    # une bulle qui suit un acteur en OBJ sont deux nœuds). Vide = aucune, le
+    # script place alors tout lui-même via text.draw(id, tx, ty).
+    # cf. models/ui_region.py
+    ui_layouts: list = field(default_factory=list)   # list[str] (noms)
     # Police chargée par `scene_init`, celle qu'obtient tout texte qui n'en
     # nomme pas (zone sans `font_name`, `text.draw` sans `text.set_font`).
     # Référencée par NOM comme tout asset.
@@ -643,14 +681,12 @@ class Scene(Resource):
     # v0.3.2 refuse explicitement. Un nom introuvable retombe sur la même
     # première police, et le validateur le dit.
     font_name: str = ""
-    # Banque de palette où le texte lit ses couleurs — un SLOT de la sélection
-    # de la scène (`active_bg_palettes` en cible BG, `active_obj_palettes` en
-    # OBJ), donc les couleurs de l'UI sont celles que la scène a choisies.
-    #
-    # -1 = automatique : la police charge sa PROPRE palette dans la banque 15,
-    # comportement historique. C'est le défaut, le retirer d'office changerait
-    # en silence la couleur du texte de tout projet existant.
-    ui_pal_bank: int = -1
+    # Banque de palette de CHAQUE police, par nom (cf. `font_pal_banks` en tête
+    # de module). Absente = la police charge sa propre palette dans une banque
+    # allouée (comme un sprite) ; un slot = elle lit son encre dans une palette
+    # de scène. La clé `""` est la police par défaut. Remplace l'ancien scalaire
+    # `ui_pal_bank`, migré à la lecture (`_font_pal_banks_from_dict`).
+    font_pal_banks: dict = field(default_factory=dict)  # dict[str, int]
     collision_layer: int = 0  # index BG (0-3) portant la carte de collisions
     # Grille de collision en tiles 8×8 — list[row][col] de TILE_* constants
     collision_map: list = field(default_factory=list)
@@ -738,9 +774,13 @@ class Scene(Resource):
             "scroll_v": self.scroll_v,
             "script": self.script,
             "text_bg": self.text_bg,
-            "ui_layout": self.ui_layout,
+            "ui_layouts": self.ui_layouts,
             "font_name": self.font_name,
-            "ui_pal_bank": self.ui_pal_bank,
+            # Absent tant qu'aucune police n'est overridée : une scène en tout
+            # automatique ne gagne pas la clé (même règle que blend/music).
+            **({"font_pal_banks": {k: self.font_pal_banks[k]
+                                   for k in sorted(self.font_pal_banks)}}
+               if self.font_pal_banks else {}),
             "collision_layer": self.collision_layer,
             "collision_map": self.collision_map,
             "active_obj_palettes": self.active_obj_palettes,
@@ -818,9 +858,12 @@ class Scene(Resource):
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),
             text_bg=d.get("text_bg", 1),
-            ui_layout=d.get("ui_layout", ""),
+            # `ui_layouts` (liste, v0.25) ou l'ancien `ui_layout` (nom unique)
+            # emballé dans une liste — une forme ancienne se lit, une seule s'écrit.
+            ui_layouts=list(d.get("ui_layouts")
+                            or ([d["ui_layout"]] if d.get("ui_layout") else [])),
             font_name=d.get("font_name", ""),
-            ui_pal_bank=int(d.get("ui_pal_bank", -1)),
+            font_pal_banks=_font_pal_banks_from_dict(d),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),
             active_obj_palettes=d.get("active_obj_palettes", []),

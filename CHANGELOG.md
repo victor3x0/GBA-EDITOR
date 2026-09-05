@@ -128,3 +128,13 @@ gardant son sprite et ses collisions), et une matrice de collision entre tags qu
 build les paires qui ne se rencontrent jamais.
 
 → [détail](changelog-archive/v0.23.md)
+
+## v0.25 — L'interface possède son chemin matériel
+
+*Livrée le 2026-09-03.* Un nœud « Interface » se pose dans l'arbre de scène (comme un
+acteur) et porte, à un seul endroit, l'ancrage (écran / monde / acteur) et la cible matérielle
+(BG ou sprite) de tout son contenu ; ses textes et images en héritent. Une scène peut en poser
+plusieurs — un HUD fixe en fond, une bulle qui suit un acteur en sprite — chacun son chemin. Un
+inspecteur dédié affiche le réglage et sa raison quand le matériel l'impose.
+
+→ [détail](changelog-archive/v0.25.md)

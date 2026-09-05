@@ -43,8 +43,9 @@ _TRANSITIONS: tuple[tuple[str, str], ...] = (
 class _ScenePaletteCmd(Command):
     """Mutation undoable de l'allocation palette d'un pool ("obj"|"bg") de la
     scène. Snapshot COMPLET (active_*_palettes + pal_bank de toutes les
-    instances du pool) → undo/redo fidèles, couvre uniformément replace / add /
-    remove (avec réindexation des références) / override / restore.
+    instances du pool + `font_pal_banks` de la scène) → undo/redo fidèles, couvre
+    uniformément replace / add / remove (avec réindexation des références) /
+    override / restore — d'un acteur, d'un calque OU d'une police.
 
     `mutate_fn` applique la nouvelle configuration ; le snapshot avant (pris à
     la construction) et après (pris au 1er execute) suffisent à rejouer sans
@@ -70,13 +71,17 @@ class _ScenePaletteCmd(Command):
 
     def _snapshot(self):
         return (list(self._active()),
-                [(o, getattr(o, "pal_bank", OWN_PAL_BANK)) for o in self._instances()])
+                [(o, getattr(o, "pal_bank", OWN_PAL_BANK)) for o in self._instances()],
+                dict(getattr(self._scene, "font_pal_banks", {}) or {}))
 
     def _restore(self, snap):
-        active, banks = snap
+        active, banks, font_banks = snap
         self._active()[:] = active
         for o, pb in banks:
             o.pal_bank = pb
+        # `font_pal_banks` : une police overridée/restaurée depuis la grille en
+        # fait partie. Réassigné en bloc, comme la liste active.
+        self._scene.font_pal_banks = dict(font_banks)
 
     def _finish(self):
         if self._persist:
@@ -1151,20 +1156,47 @@ class SceneInspector(QWidget):
                     o.pal_bank = pb - 1
         self._push_palette_cmd(pool, mutate, f"Remove scene palette [{slot}]")
 
+    def _default_font_name(self) -> str:
+        """Nom de la police par défaut de la scène — la clé "" de
+        `font_pal_banks` s'y résout (cf. `font_pal_key`)."""
+        from codegen.runtime_codegen.main_gen import encodable_project_fonts
+        from codegen.font_emit import default_font_name
+        return default_font_name(encodable_project_fonts(self._project), self._scene)
+
+    def _entry_targets(self, entry) -> tuple[list, list]:
+        """(instances à muter par `pal_bank`, clés `font_pal_banks` à muter) d'une
+        entrée d'asset — un acteur/calque porte son `pal_bank`, une police porte
+        sa banque sur la scène (clé résolue par `font_pal_key`)."""
+        from core.models.scene import font_pal_key
+        objs, fkeys = [], []
+        default = None
+        for i in entry.instances:
+            if i.kind == "font":
+                if default is None:
+                    default = self._default_font_name()
+                fkeys.append(font_pal_key(i.obj, default))
+            elif getattr(i, "obj", None) is not None:
+                objs.append(i.obj)
+        return objs, fkeys
+
     def _on_asset_override(self, pool: str, entry, name: str):
         """Override la palette propre d'un groupe d'assets vers une palette du
         CATALOGUE de l'éditeur (comme une couleur normale, pas seulement les
         palettes déjà actives de la scène) : réutilise le slot actif existant
         si `name` y figure déjà, sinon l'ajoute au premier slot libre (même
-        logique que `_on_scene_add`) — jamais deux slots pour la même palette."""
+        logique que `_on_scene_add`) — jamais deux slots pour la même palette.
+
+        Le groupe peut mêler acteurs/calques (leur `pal_bank`) et polices (leur
+        entrée dans `Scene.font_pal_banks`) : les deux pointent vers le même
+        slot."""
         if self._blocking or not self._scene:
             return
         active = self._active_list(pool)
-        targets = [i.obj for i in entry.instances if getattr(i, "obj", None) is not None]
-        if not targets:
+        objs, fkeys = self._entry_targets(entry)
+        if not objs and not fkeys:
             return
 
-        def mutate(a=active, n=name, objs=targets):
+        def mutate(a=active, n=name, objs=objs, fkeys=fkeys):
             try:
                 slot = a.index(n)
             except ValueError:
@@ -1179,19 +1211,25 @@ class SceneInspector(QWidget):
                     slot = free
             for o in objs:
                 o.pal_bank = slot
+            for k in fkeys:
+                self._scene.font_pal_banks[k] = slot
         self._push_palette_cmd(pool, mutate, f"Override asset → {name}")
 
     def _on_asset_restore(self, pool: str, entry):
-        """Revient à la palette d'origine (propre) du groupe d'assets."""
+        """Revient à la palette d'origine (propre) du groupe d'assets — un
+        acteur/calque repasse en `OWN_PAL_BANK`, une police perd son entrée de
+        `font_pal_banks` (absente = propre)."""
         if self._blocking or not self._scene:
             return
-        targets = [i.obj for i in entry.instances if getattr(i, "obj", None) is not None]
-        if not targets:
+        objs, fkeys = self._entry_targets(entry)
+        if not objs and not fkeys:
             return
 
-        def mutate(objs=targets):
+        def mutate(objs=objs, fkeys=fkeys):
             for o in objs:
                 o.pal_bank = OWN_PAL_BANK
+            for k in fkeys:
+                self._scene.font_pal_banks.pop(k, None)
         self._push_palette_cmd(pool, mutate, "Restaurer palette d'origine")
 
     def _instances_for(self, pool: str) -> list:
@@ -1344,7 +1382,10 @@ class SceneInspector(QWidget):
             return
         from ui.common.pickers import ui_pal_bank_slot
         active = list(getattr(self._scene, "active_bg_palettes", []) or [])
-        cur = int(getattr(self._scene, "ui_pal_bank", -1))
+        # Le picker édite l'entrée de la police PAR DÉFAUT (clé "") de
+        # `font_pal_banks` — l'un des deux chemins vers le même réglage, l'autre
+        # étant la grille de palettes.
+        cur = int((getattr(self._scene, "font_pal_banks", {}) or {}).get("", -1))
         if self._ui_pal_slot is not None:
             self._ui_pal_box.removeWidget(self._ui_pal_slot)
             self._ui_pal_slot.deleteLater()
@@ -1354,9 +1395,21 @@ class SceneInspector(QWidget):
         self._ui_pal_box.addWidget(self._ui_pal_slot)
 
     def _on_ui_pal_changed(self, new: int):
+        """Override de la police par défaut vers un slot de scène (clé "" de
+        `font_pal_banks`), ou retour à sa palette propre (-1 = absent de la map).
+        Écrit un dict NEUF — `SetFieldCmd` compare avant/après, muter en place lui
+        montrerait deux fois la même référence (cf. `_on_pool_changed`)."""
         if not self._scene:
             return
-        self._set_scene_field("ui_pal_bank", int(new))
+        banks = dict(getattr(self._scene, "font_pal_banks", {}) or {})
+        if 0 <= int(new) < 16:
+            banks[""] = int(new)
+        else:
+            banks.pop("", None)
+        self._set_scene_field("font_pal_banks", banks)
+        # La grille reflète le même réglage : la police par défaut y passe de
+        # « propre » (grisée) à « override » (marqueur), ou l'inverse.
+        self._palette_refresh("bg")
 
     def _reload_scene_font(self):
         """(Re)construit le slot de police par défaut de la scène.

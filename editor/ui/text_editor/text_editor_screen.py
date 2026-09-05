@@ -56,7 +56,7 @@ from ui.text_editor.glyph_sheet_panel import GlyphSheetPanel
 from ui.text_editor.text_inspector import TextInspector
 from ui.text_editor.font_inspector import FontInspector
 from ui.text_editor.text_commands import (
-    SetKeyColorCmd, ResliceFontCmd, MergeGlyphsCmd,
+    SetKeyColorCmd, ResliceFontCmd, MergeGlyphsCmd, SetCharsetCmd,
 )
 
 class TextEditorScreen(QWidget):
@@ -136,6 +136,8 @@ class TextEditorScreen(QWidget):
         # Deux chemins d'édition, une seule commande : frappe sur la planche
         # et champ de l'inspecteur passent par le même _on_glyph_edited.
         self._font_insp.glyph_char_changed.connect(self._on_glyph_edited)
+        # Charset réécrit d'un bloc : assignation positionnelle sur les cases.
+        self._font_insp.charset_edited.connect(self._on_charset_edited)
 
     def load_project(self, project):
         """Ouvre un projet — l'écran repart en contexte Texte."""
@@ -230,6 +232,17 @@ class TextEditorScreen(QWidget):
         get_history().push(SetFieldCmd(
             glyph, "char", before, after,
             label=f"Glyphe « {after} »",
+            persist_fn=lambda: self._after_glyph_change(font),
+        ))
+
+    def _on_charset_edited(self, charset: str):
+        """Charset réécrit d'un bloc : une seule commande réassigne les cases
+        dans l'ordre de la planche (cf. SetCharsetCmd)."""
+        font = self._font_insp._font
+        if not font:
+            return
+        get_history().push(SetCharsetCmd(
+            font, charset,
             persist_fn=lambda: self._after_glyph_change(font),
         ))
 

@@ -151,7 +151,14 @@ def resolve_direction_mirrors(active_dirs, h_mirror: bool, v_mirror: bool) -> di
 # type d'asset dit lui-même ce qu'il accepte, et rien d'autre n'a le droit d'en
 # tenir une seconde liste — c'est ce qui rendait les polices invisibles au
 # ProjectWatcher, qui épelait la sienne.
-IMAGE_FILE_EXTS = {".png", ".bmp"}
+#
+# Un seul format, et c'est délibéré (cf. ROADMAP, « Les formats acceptés à
+# l'import ») : `.bmp` était accepté ici sans qu'aucun écran, aucun document ni
+# aucun test ne s'y réfère — une seconde entrée dans la chaîne d'encodage que
+# personne n'empruntait, donc que rien ne vérifiait. Une liste d'un seul élément
+# reste une LISTE : c'est elle que le watcher, la table de routage de window.py
+# et les passes `reconcile_*` lisent, jamais la chaîne « .png ».
+IMAGE_FILE_EXTS = {".png"}
 
 VALID_FRAME_SIZES = {
     8:  [8, 16, 32],

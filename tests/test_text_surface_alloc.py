@@ -62,7 +62,7 @@ def projet(tmp_path):
     layout.elements += [titre, boite]
     p.ui_layouts.append(layout)
 
-    scene = Scene(name="S1", text_bg=1, ui_layout="hud", font_name="grosse")
+    scene = Scene(name="S1", text_bg=1, ui_layouts=["hud"], font_name="grosse")
     p.scenes.append(scene)
     return p, scene, layout, titre, boite
 
@@ -100,9 +100,9 @@ def test_le_bloc_suit_le_rectangle_absolu(projet):
     """Une zone ENFANT d'un panneau occupe les tuiles de sa position écran, pas
     celles de son offset local — sans quoi le bloc serait dimensionné sur la
     mauvaise géométrie."""
-    from core.models.ui_region import UIPanel
+    from core.models.ui_region import UIContainer
     p, scene, layout, _titre, boite = projet
-    panneau = UIPanel(name="cadre", x=16, y=96, w=208, h=56)
+    panneau = UIContainer(name="cadre", x=16, y=96, w=208, h=56)
     layout.elements.insert(0, panneau)
     boite.parent = "cadre"
     boite.x, boite.y = 8, 8            # → absolu (24, 104), inchangé

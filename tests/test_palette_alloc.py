@@ -23,6 +23,7 @@ from core.palette_presets import DEFAULT_PAL_BANK_COLORS
 from core.project import Project
 from codegen.palette_alloc import (
     SceneBankLayout, scene_bank_layout, _find_free_block, _own_bank_content,
+    _sprite_bank_content,
 )
 
 
@@ -123,6 +124,46 @@ def test_le_pool_bg_ne_le_reserve_pas():
     cran."""
     cols = [RESERVED_SLOT_COLOR, 1, 2, 3]
     assert _own_bank_content(cols, "bg") == cols
+
+
+def test_une_palette_de_sprite_reserve_le_slot_zero_dans_LES_DEUX_pools():
+    """Le préfixe se décide sur la FORME de la source, pas sur le pool.
+
+    `_own_bank_content` peut trancher sur le pool parce que le pool BG n'y
+    reçoit que du BG legacy, dont la liste porte déjà son slot 0. Un SPRITE posé
+    en cible BG (image d'interface) casse cette équivalence : sa liste vient des
+    métadonnées, sans slot 0, alors que l'index 0 d'une tuile 4bpp est
+    transparent en BG comme en OBJ. Il lui faut donc le même préfixe.
+
+    Ce que ça coûtait de se tromper : grit remappe les tuiles sur la forme
+    16 slots rendue par `effective_palette_colors` (préfixée), la banque était
+    écrite sans — chaque pixel lisait un cran plus loin, et l'image sortait aux
+    couleurs de ses voisines."""
+    cols = [1, 2, 3]
+    assert _sprite_bank_content(cols) == [RESERVED_SLOT_COLOR, 1, 2, 3]
+    assert _sprite_bank_content(cols) == _own_bank_content(cols, "obj")
+
+
+def test_le_sprite_d_une_image_d_UI_en_cible_BG_garde_son_slot_reserve(projet):
+    """Le même piège, vu de bout en bout : la banque que la ROM écrira.
+
+    Passe par `scene_bank_layout` plutôt que par le seul helper, parce que c'est
+    l'assemblage qui se trompait — le pool BG mêle deux formes de liste et ne
+    peut pas les traiter d'un seul geste."""
+    from core.models.sprite import SpriteAsset
+    from core.models.ui_region import UIImage, UILayout
+
+    couleurs = _couleurs(7)[:8]          # forme « métadonnées » : sans slot 0
+    projet.sprites.append(SpriteAsset(name="Selector", asset="selector.png",
+                                      own_palette=list(couleurs)))
+    lay = UILayout(name="Menu", elements=[UIImage(name="Cusor",
+                                                 sprite_name="Selector")])
+    projet.ui_layouts.append(lay)
+    scene = Scene(name="Titre", ui_layouts=["Menu"])
+
+    layout = scene_bank_layout(projet, scene, "bg")
+    banque = layout.slot_colors[layout.bank_index(OWN_PAL_BANK, list(couleurs))]
+    assert banque == [RESERVED_SLOT_COLOR] + list(couleurs)
 
 
 # ── Lecture du résultat ───────────────────────────────────────────

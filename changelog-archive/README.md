@@ -29,9 +29,12 @@ Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste 
 | [v0.20](v0.20.md) | L'état du monde : les collections persistantes |
 | [v0.21](v0.21.md) | Le texte adressable : le dialogue piloté par la donnée |
 | [v0.23](v0.23.md) | Ce qu'un boss demande |
+| [v0.25](v0.25.md) | L'interface possède son chemin matériel |
 
 ### Chantiers techniques
 
 | Chantier | Sujet |
 | --- | --- |
 | [`global.nom` / `const.nom`](global-const.md) | L'accès pointé remplace les accesseurs |
+| [L'identité d'un asset et son fichier](asset-identity.md) | Le nom de fichier fait foi, et un renommage n'est pas une suppression |
+| [Les formats acceptés à l'import](import-formats.md) | `.png` pour les images, `.fnt` en plus pour les polices — rien d'autre |

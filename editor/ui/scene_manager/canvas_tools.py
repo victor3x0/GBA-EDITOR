@@ -445,7 +445,7 @@ class UIWidgetTool(BaseTool):
     # Taille au simple clic, par type — multiples de 8.
     _DEFAULTS = {
         "text":  (128, 32),    # une boîte de dialogue basse plausible
-        "panel": (96, 48),     # un cadre de menu
+        "container": (96, 48),  # un cadre de menu
         "image": (16, 16),     # une icône de HUD ; le sprite choisi la recalera
     }
 

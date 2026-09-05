@@ -197,15 +197,15 @@ class SidebarPanel(QWidget):
                          f"<i>{where}</i><br>« {excerpt} »", text=t.key)
 
         # ── Zones de texte ─────────────────────────────────────────
-        # Celles de la mise en page de la scène active — comme les Actors, et
-        # pour la même raison : une zone d'une autre scène a des coordonnées
-        # réelles mais aucune surface réservée là où on écrirait.
-        layout = (project.scene_ui_layout(project.active_scene)
-                  if project.active_scene and hasattr(project, "scene_ui_layout")
-                  else None)
-        if layout is not None and layout.slots:
+        # Celles des nœuds `Interface` de la scène active (v0.25) — comme les
+        # Actors, et pour la même raison : une zone d'une autre scène a des
+        # coordonnées réelles mais aucune surface réservée là où on écrirait.
+        slots = (project.scene_ui_slots(project.active_scene)
+                 if project.active_scene and hasattr(project, "scene_ui_slots")
+                 else [])
+        if slots:
             sub = self._sec_refs.sub_section("Text zones")
-            for r in layout.slots:
+            for layout, r in slots:
                 # Une zone propose son texte d'aperçu ; un texte AUTHORÉ porte
                 # directement sa clé, et reste adressable (cf. KIND_SLOTS) pour
                 # être remplacé en cours de jeu.
@@ -214,7 +214,7 @@ class SidebarPanel(QWidget):
                 if key:
                     doms["text"] = key
                 _add(sub, r.name, "text.draw_in",
-                     f"Layout <i>{layout.name}</i>"
+                     f"Interface <i>{layout.name}</i>"
                      + (f" — preview “{escape(key)}”" if key else ""), **doms)
 
         # ── Polices ────────────────────────────────────────────────

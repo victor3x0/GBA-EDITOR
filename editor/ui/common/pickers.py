@@ -72,8 +72,7 @@ def palette_picker_slot(
     return slot
 
 
-_UI_BANK_AUTO_LABEL = "Automatic (font palette)"
-_UI_BANK_CONTAINER_LABEL = "Automatic (container's bank)"
+_UI_BANK_AUTO_LABEL = "Own palette (automatic)"
 
 
 def ui_pal_bank_slot(
@@ -84,8 +83,8 @@ def ui_pal_bank_slot(
     project=None,
     parent=None,
 ) -> ScriptSlot:
-    """Slot pour choisir la banque d'UI d'une scène — un INDEX dans
-    `active` (jusqu'à 16 entrées, vides comprises), pas un nom.
+    """Slot pour choisir la banque d'encre de la police PAR DÉFAUT d'une scène —
+    un INDEX dans `active` (jusqu'à 16 entrées, vides comprises), pas un nom.
 
     Même widget que `palette_picker_slot`, mais l'entrée à choisir est un
     SLOT de la scène (`Scene.active_bg_palettes[i]`), pas une banque du
@@ -93,16 +92,14 @@ def ui_pal_bank_slot(
     sélection peut se remplir après coup, et les masquer ferait disparaître
     un choix déjà posé dans le JSON.
 
-    Trois entrées négatives, pas deux : -1 (police) ET
-    `UI_PAL_BANK_CONTAINER` (la banque du conteneur nine-slice/couleur sur
-    lequel un texte recompose son encre) — sinon désigner la bonne banque
-    exige de connaître un numéro d'allocation, un détail du build qui bouge
-    si un autre asset de la scène change. Cf. `main_gen.resolve_ui_pal_bank`,
-    seul point qui le résout vraiment.
+    Deux natures de valeur : -1 = la police garde sa PROPRE palette (une banque
+    lui est allouée, comme à un sprite) ; 0-15 = elle lit son encre dans cette
+    palette de scène. La « banque du conteneur » N'EST PLUS un choix : un texte
+    imbriqué dans un conteneur à fond la prend automatiquement (cf. le chantier
+    « la police, une palette d'asset »).
 
     `ScriptPickerPopup.picked` est typé `str` (chemins de script, son usage
     d'origine) : l'index voyage donc en texte, comme dans `ColorIndexSlot`."""
-    from core.models.scene import UI_PAL_BANK_CONTAINER
     slot = ScriptSlot(add_label="Choose the UI bank", accent_color=accent,
                       show_clear=False)
 
@@ -112,9 +109,7 @@ def ui_pal_bank_slot(
         return f"{i} — {name or '(empty)'}", (bank_icon(bank) if bank else None)
 
     def _show(value: int):
-        if value == UI_PAL_BANK_CONTAINER:
-            slot.set_script(_UI_BANK_CONTAINER_LABEL)
-        elif value < 0:
+        if value < 0:
             slot.set_script(_UI_BANK_AUTO_LABEL)
         else:
             lab, icon = _label_and_icon(value)
@@ -123,8 +118,7 @@ def ui_pal_bank_slot(
     _show(current_index)
 
     def _open_picker():
-        entries = [(_UI_BANK_AUTO_LABEL, "-1", None),
-                  (_UI_BANK_CONTAINER_LABEL, str(UI_PAL_BANK_CONTAINER), None)]
+        entries = [(_UI_BANK_AUTO_LABEL, "-1", None)]
         for i in range(16):
             lab, icon = _label_and_icon(i)
             entries.append((lab, str(i), icon))

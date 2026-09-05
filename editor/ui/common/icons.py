@@ -80,7 +80,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # Interface — types d'éléments d'une mise en page (arbre, toolbar, canvas).
     # Un type = une FORME : la couleur est celle de la famille (COLOR_UI).
     "ui_layout":             ("mdi.view-dashboard-outline",  "⊞"),
-    "ui_panel":              ("mdi.card-outline",            "▭"),
+    "ui_container":              ("mdi.card-outline",            "▭"),
+    # Liste : un conteneur qui se PARCOURT — d'où des rangées et pas un cadre
+    # vide, la forme disant ce que le type fait de plus que le conteneur.
+    "ui_list":               ("mdi.format-list-bulleted",    "☰"),
     "ui_text":               ("mdi.format-text",             "T"),
     # Image : le pictogramme d'image, pas celui de sprite — c'est un ÉLÉMENT
     # d'interface qui affiche un sprite, pas le sprite lui-même (qui garde son

@@ -97,6 +97,15 @@ class ResourceStore(Generic[T]):
     def _path(self, name: str) -> Path:
         return self.dir / f"{safe_filename(name)}.json"
 
+    def path_of(self, item: T) -> Path:
+        """Le JSON dans lequel CET item se sauvegarde.
+
+        `item.name` décide du nom de fichier (cf. `_path`) : un appelant qui
+        veut savoir si le sidecar d'une ressource existe doit le demander ici,
+        et non le déduire du nom d'un fichier source voisin — les deux se
+        ressemblent tant que personne n'a renommé, puis divergent en silence."""
+        return self._path(item.name)
+
     def save(self, item: T):
         self.dir.mkdir(parents=True, exist_ok=True)
         atomic_write(self._path(item.name), project_json.dumps(item.to_dict()))
@@ -112,7 +121,19 @@ class ResourceStore(Generic[T]):
         for f in sorted(self.dir.glob("*.json")):
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
-                self.items.append(self.cls.from_dict(d))
+                item = self.cls.from_dict(d)
+                # LE NOM DE FICHIER EST L'IDENTITÉ. `save` écrit toujours dans
+                # `<name>.json` : un fichier qui ne porte pas le nom qu'il
+                # contient a été renommé sur le disque, et c'est le champ qui
+                # est périmé, pas le fichier. Le garder ferait exister la même
+                # ressource sous deux identités — le rattrapage à l'ouverture
+                # cherche l'asset par le STEM de son fichier source, ne le
+                # trouverait pas, et en créerait un SECOND à côté du premier,
+                # lequel pointe désormais dans le vide (cf.
+                # asset_encoding.sync_font_file).
+                if safe_filename(item.name) != f.stem:
+                    item.name = f.stem
+                self.items.append(item)
             except Exception as e:
                 print(f"[project] erreur lecture {self.cls.__name__} {f.name}: {e}")
 
@@ -124,6 +145,11 @@ class ResourceStore(Generic[T]):
         try:
             d = json.loads(path.read_text(encoding="utf-8"))
             new_item = self.cls.from_dict(d)
+            # Même règle qu'à `load` : le fichier nomme la ressource. Sans ça,
+            # un sidecar dont le champ `name` a dérivé n'est jamais reconnu
+            # comme celui qu'on recharge, et vient s'AJOUTER à la liste.
+            if safe_filename(new_item.name) != safe_filename(name):
+                new_item.name = name
             for i, item in enumerate(self.items):
                 if item.name == name:
                     self.items[i] = new_item
@@ -154,6 +180,16 @@ class ResourceStore(Generic[T]):
         if item not in self.items:
             self.items.append(item)
         self.save(item)
+
+    def pending_deletes(self) -> list[T]:
+        """Les items `soft_delete`és pas encore committés — lecture seule.
+
+        Une famille adossée à un fichier source les relit à la fermeture pour
+        emporter AUSSI ce fichier, pas seulement le sidecar : sans quoi le
+        `reconcile_*` le retrouverait au prochain lancement et recréerait la
+        ressource (cf. project.commit_all_removals). Le store, lui, ne connaît
+        que ses JSONs — il n'a pas à savoir ce qu'est un fichier source."""
+        return list(self._pending_delete)
 
     def commit_deletes(self):
         """Efface définitivement les JSONs en attente (appeler à la fermeture)."""

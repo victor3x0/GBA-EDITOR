@@ -103,6 +103,10 @@ Deux points valent d'être soulignés, parce qu'ils surprennent :
   langage ; une variable SIMPLE, elle, ne s'indexe jamais. Si elle est marquée persistante,
   tout le tableau entre dans la sauvegarde, empaqueté — 400 booléens y tiennent en 52 octets,
   sans que le script ait à le savoir.
+- **Un nom nu est toujours un `local`.** Ce langage n'a pas de variable de script implicite :
+  écrire `curpos = 1` sans avoir déclaré `curpos` ne crée rien. Une valeur qui traverse les
+  frames est un `local` déclaré **en tête de fichier** (`local curpos = 0`), une valeur
+  partagée entre scripts est une globale du projet (`global.curpos`). Le Build le signale.
 - **Un enfant se nomme depuis son parent.** Si un acteur (ou un prefab) a des enfants, on les
   atteint par leur nom : `local MonBras = self.BrasG`, puis `MonBras:destroy()`,
   `MonBras.visible = false`… Un point pour désigner, deux points pour agir. C'est résolu au
@@ -254,6 +258,84 @@ Cinq choses à savoir, et une seule surprend :
 
 Chaque attente coûte une frame de plus qu'une exécution en ligne droite — invisible sur une
 cinématique, à savoir si vous comptez les frames.
+
+### Choisir sa langue, et s'en souvenir
+
+Toutes les langues déclarées dans les paramètres du projet sont **dans la cartouche** : il n'y
+a rien à charger, rien à chercher. Deux appels suffisent — `lang.set(code)` change la langue
+active et **recharge la scène courante** pour l'appliquer (acteurs et état de scène repartent
+à zéro, comme n'importe quel changement de scène), `lang.get()` rend la langue active, un
+index comparable à `LANG_FR`, `LANG_JAP`…
+
+**Un écran de choix de langue n'a rien de spécial** : c'est un menu comme un autre. Posez une
+**Liste** dans la mise en page et mettez-y une zone de texte par langue — ses rangées sont ses
+enfants, il n'y a rien d'autre à déclarer —, et le moteur prend la navigation (haut/bas,
+répétition, surlignage de la rangée choisie). Le script n'a plus qu'à lire l'item au moment du
+choix :
+
+```lua
+function on_update()
+    if input.pressed("a") then
+        local choix = list.index("Langues")
+        if     choix == 1 then lang.set("en")
+        elseif choix == 2 then lang.set("fr")
+        else                   lang.set("jap") end
+    end
+end
+```
+
+Si vous voulez un **curseur** plutôt que le surlignage, posez une image dans la mise en page
+et désignez-la dans la carte *Cursor* de la liste : le moteur la pose (ou la fait glisser) sur
+la rangée choisie, sans une ligne de script. Placez-la en face de la PREMIÈRE rangée — la liste
+l'écarte ensuite de ce qui sépare cette rangée de la rangée courante.
+
+Pour un curseur que vous pilotez vous-même, `ui.image_move("Curseur", 0, 16 * list.index("Langues"))`
+fait le même déplacement à la main. Dans les deux cas le décalage est **relatif à la position
+posée dans le canvas**, qui reste la vérité — `(0, 0)` l'y ramène, sans que le script ait
+mémorisé d'où elle venait.
+
+Deux choses à savoir, et la première surprend :
+
+- **en cible BG, l'origine se cale sur la grille de 8 px** — `.y = 33` s'affiche à 32. La
+  tilemap ne se pose pas entre deux tuiles. Pour un déplacement au pixel, il faut la cible OBJ,
+  que l'ancrage du conteneur racine décide (ancré sur un acteur, elle est imposée) ;
+- **une image se déplace, une zone de texte et un conteneur non.** Leur géométrie est allouée
+  une fois au chargement de la scène — le bloc de composition d'une zone, la carte du fond d'un
+  conteneur. `ui.image_move` ne connaît que les images, et citer autre chose est refusé au
+  Build.
+
+`ui.get(...)`, lui, rend une référence qui sait `:show()` et `:hide()` — pas une position.
+
+Une seule règle, et elle est dans l'écran **Texte**, pas dans le script : **laissez les entrées
+d'endonymes non traduites**. « Deutsch », « 日本語 » et « Français » s'écrivent pareil dans
+toutes les langues ; une entrée non traduite retombe sur la source, donc le menu se lit
+identique quelle que soit la langue active. Les glyphes des deux écritures sont chargés
+ensemble — le sous-ensemble d'une scène est l'union de toutes ses langues —, et si un
+caractère manque à votre police, le Build le dit avant que vous graviez quoi que ce soit.
+
+**Pour que le choix survive à l'extinction**, rangez-le dans une variable globale marquée
+« persist » : la langue n'est pas un état du moteur, c'est une donnée de votre jeu, sauvée
+comme le reste.
+
+```lua
+-- au moment du choix
+global.langue = lang.get()
+save.write(0)
+
+-- au démarrage du jeu
+if save.exists(0) then
+    lang.set(save.read(0, "langue"))
+end
+```
+
+`lang.set` accepte donc **un code littéral ou une valeur** : pas de chaîne de `if` à rallonger
+à chaque langue ajoutée. Une valeur hors de ce que le projet déclare est ignorée — le jeu
+garde la langue en cours plutôt que de ramener le joueur à la langue source sans qu'il l'ait
+demandé, ce qui arrive si une sauvegarde vient d'une version du jeu qui avait plus de langues.
+
+Le choix vit dans un **emplacement de sauvegarde** : effacer cet emplacement l'oublie. Si vous
+voulez qu'il survive à un effacement de partie, dédiez-lui un emplacement à part — c'est un
+choix de jeu, pas une règle du moteur.
 
 ---
 

@@ -78,7 +78,6 @@ from PyQt6.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
-    QLabel,
     QPushButton,
     QStyle,
     QStyleOptionGraphicsItem,
@@ -945,14 +944,17 @@ class FloatingToolbar(QFrame):
     _UI_MODES = [
         ("ui_text", "ui_text", "Text",
          "Text — authored here, or left empty for a script to write into"),
-        ("ui_panel", "ui_panel", "Container",
+        ("ui_container", "ui_container", "Container",
          "Container / group — anchor root, can draw a background"),
+        ("ui_list", "ui_list", "List",
+         "List — a container the engine walks: rows, cursor, selection"),
         ("ui_image", "ui_image", "Image",
          "Image — a sprite whose state a script can switch"),
     ]
     _UI_ICON_KEYS = {
         "ui_text": "ui_text",
-        "ui_panel": "ui_panel",
+        "ui_container": "ui_container",
+        "ui_list": "ui_list",
         "ui_image": "ui_image",
     }
 
@@ -991,11 +993,8 @@ class FloatingToolbar(QFrame):
         layout.setContentsMargins(5, 10, 5, 10)
         layout.setSpacing(2)
 
-        handle = QLabel("⋮⋮")
-        handle.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        handle.setStyleSheet("color:#3a3a3a; font-size:10px; letter-spacing:-2px;")
-        handle.setFixedHeight(12)
-        layout.addWidget(handle)
+        from ui.common.widgets import DragHandle
+        layout.addWidget(DragHandle(Qt.Orientation.Vertical))
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -1844,21 +1843,26 @@ class GBAScene(QGraphicsScene):
 
     # ── Zones de texte ────────────────────────────────────────────
 
-    def set_ui_regions(self, layout_asset, project, scene, save_fn=None):
-        """Redessine les zones de la mise en page référencée par la scène.
+    def set_ui_regions(self, layouts, project, scene, save_fn=None):
+        """Redessine les éléments de TOUS les nœuds `Interface` de la scène (une
+        liste depuis v0.25 ; un layout seul ou None est toléré).
 
-        Reconstruction complète plutôt que mise à jour en place : une zone peut
+        Reconstruction complète plutôt que mise à jour en place : un élément peut
         avoir changé d'ancrage (donc d'origine), de taille ou de cible, et
         recalculer chaque cas séparément multiplierait les chemins pour un
         nombre d'items qui se compte sur les doigts.
 
         La reconstruction ne doit PAS coûter la sélection : détruire l'item
         sélectionné fait émettre à Qt une sélection vide, que le canvas traduit
-        en « clic dans le vide » → l'inspecteur de la zone se refermait à chaque
-        frappe dans une spinbox. On note la zone sélectionnée, on tait les
-        signaux le temps du remplacement, et on la re-sélectionne sur son
+        en « clic dans le vide » → l'inspecteur de l'élément se refermait à chaque
+        frappe dans une spinbox. On note l'élément sélectionné, on tait les
+        signaux le temps du remplacement, et on le re-sélectionne sur son
         nouvel item."""
-        # Identité, pas égalité : deux zones peuvent avoir les mêmes champs.
+        if layouts is None:
+            layouts = []
+        elif not isinstance(layouts, (list, tuple)):
+            layouts = [layouts]        # tolère un layout seul (appelants anciens)
+        # Identité, pas égalité : deux éléments peuvent avoir les mêmes champs.
         kept = [it._region for it in self._ui_region_items if it.isSelected()]
         was_blocked = self.signalsBlocked()
         self.blockSignals(True)
@@ -1867,29 +1871,30 @@ class GBAScene(QGraphicsScene):
                 if it.scene():
                     self.removeItem(it)
             self._ui_region_items = []
-            if layout_asset is None:
-                return
-            # TOUS les éléments (zones, conteneurs, textes), pas seulement les
-            # zones : chacun a une géométrie à dessiner et à manipuler.
-            #
-            # Le z-order suit l'ORDRE D'ARBRE (DFS) : un parent sous ses enfants
-            # (le texte au-dessus du fond de son conteneur), un frère tardif
-            # au-dessus du précédent. On le pose explicitement — sans ça tous les
-            # items partageraient un z constant et l'empilement dépendrait du seul
-            # ordre d'insertion, invisible à réordonner.
-            z_of = {r.name: i for i, (_d, r) in enumerate(layout_asset.in_tree_order())}
-            for r in layout_asset.elements:
-                item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
-                # La base (`_hw_layer_z`, posée au constructeur) place la zone
-                # sur son VRAI layer hardware ; l'offset ici ne fait plus que
-                # départager les zones d'un MÊME layer entre elles — trop petit
-                # pour jamais déborder sur le cran suivant (pas 2.0 d'écart).
-                item.setZValue(item.zValue() + z_of.get(r.name, 0) / 1000.0)
-                item.setVisible(self._ui_elements_visible)
-                self.addItem(item)
-                self._ui_region_items.append(item)
-                if any(r is k for k in kept):
-                    item.setSelected(True)
+            # Les nœuds s'empilent dans l'ORDRE où la scène les référence : un pas
+            # d'un cran entre nœuds, l'ordre d'arbre départageant à l'intérieur.
+            for li, layout_asset in enumerate(layouts):
+                # TOUS les éléments (zones, conteneurs, textes), pas seulement les
+                # zones : chacun a une géométrie à dessiner et à manipuler.
+                #
+                # Le z-order suit l'ORDRE D'ARBRE (DFS) : un parent sous ses enfants
+                # (le texte au-dessus du fond de son conteneur), un frère tardif
+                # au-dessus du précédent. On le pose explicitement — sans ça tous
+                # les items partageraient un z constant et l'empilement dépendrait
+                # du seul ordre d'insertion, invisible à réordonner.
+                z_of = {r.name: i for i, (_d, r) in enumerate(layout_asset.in_tree_order())}
+                for r in layout_asset.elements:
+                    item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
+                    # La base (`_hw_layer_z`, posée au constructeur) place l'élément
+                    # sur son VRAI layer hardware ; l'offset ici ne fait plus que
+                    # départager les éléments d'un MÊME layer entre eux — trop
+                    # petit pour jamais déborder sur le cran suivant (pas 2.0).
+                    item.setZValue(item.zValue() + (li + z_of.get(r.name, 0) / 1000.0))
+                    item.setVisible(self._ui_elements_visible)
+                    self.addItem(item)
+                    self._ui_region_items.append(item)
+                    if any(r is k for k in kept):
+                        item.setSelected(True)
         finally:
             self.blockSignals(was_blocked)
 
@@ -2553,6 +2558,16 @@ _HANDLE_GRAB_PX = 6.0
 # sauvegarde et retrouer une planche (numpy) à ce rythme se sentirait.
 _TEXT_SHEETS: dict = {}
 
+# Planches APLATIES sur une encre : {(cacheKey de la planche, (r,g,b)): QPixmap}.
+# L'encre d'index 1-15 remplace toute la couleur de la police par une seule
+# (cf. `UIText.text_color`) ; recolorer l'atlas à chaque repaint (survol, zoom,
+# pan) se sentirait, d'où ce cache jumeau de `_TEXT_SHEETS`.
+_FLAT_SHEETS: dict = {}
+
+# Sentinelle « pas encore calculé » pour le cache de banque d'un item (une valeur
+# None étant, elle, un résultat légitime — « pas de banque »).
+_UNSET = object()
+
 
 class UIRegionItem(QGraphicsRectItem):
     """Une zone de texte dessinée dans le canvas — sélectionnable, déplaçable,
@@ -2577,10 +2592,14 @@ class UIRegionItem(QGraphicsRectItem):
     # Ailleurs (arbre, finders) le type reste porté par la FORME.
     _KIND_COLORS = {
         "text":   "#4f8ff7",   # texte (bleu, famille Interface)
-        "panel":  "#b388ff",   # conteneur (lavande — structure/groupe)
+        "container": "#b388ff",   # conteneur (lavande — structure/groupe)
+        # La liste est un conteneur : même famille que lui, teinte plus soutenue
+        # — ce qu'elle ajoute est un comportement, pas une autre nature.
+        "list":   "#8c6bff",
         "image":  "#ffb454",   # image (ambre — un dessin, pas une structure)
     }
-    _KIND_ICONS = {"panel": "ui_panel", "text": "ui_text", "image": "ui_image"}
+    _KIND_ICONS = {"container": "ui_container", "list": "ui_list",
+                   "text": "ui_text", "image": "ui_image"}
 
     def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
         super().__init__(0, 0, max(8, region.w), max(8, region.h), parent)
@@ -2635,9 +2654,10 @@ class UIRegionItem(QGraphicsRectItem):
         # répétée sur le rectangle (cf. `_paint_sprite_fill`). Le drapeau tient
         # la différence, la source du dessin étant identique.
         self._tile_fill = False
-        from core.models.ui_region import FILL_NINE, FILL_BG, FILL_SPRITE
+        from core.models.ui_region import (
+            FILL_NINE, FILL_BG, FILL_SPRITE, KIND_CONTAINER)
         _fk = getattr(region, "fill_kind", "")
-        if getattr(region, "kind", "") == "panel":
+        if getattr(region, "kind", "") == KIND_CONTAINER:
             if _fk == FILL_NINE:
                 pix, ns = self._load_nine_slice()
                 if pix is not None and not pix.isNull():
@@ -2650,7 +2670,7 @@ class UIRegionItem(QGraphicsRectItem):
                     self._content_brush = None
             elif _fk == FILL_SPRITE:
                 # `_load_image_frame` lit `sprite_name`/`state_index`, que
-                # `UIPanel` expose comme `UIImage` — rien à dupliquer.
+                # `UIContainer` expose comme `UIImage` — rien à dupliquer.
                 pix = self._load_image_frame()
                 if pix is not None and not pix.isNull():
                     self._img_pixmap = pix
@@ -2671,7 +2691,21 @@ class UIRegionItem(QGraphicsRectItem):
         # placerait toujours devant les acteurs, contrairement à la ROM.
         # `set_ui_regions` affine ensuite l'ordre ENTRE zones du même layer.
         if is_obj_target:
-            base_z = _hw_layer_z(getattr(region, "priority", 0), is_obj=True)
+            # Priorité HÉRITÉE (-1) : on résout comme le runtime (`ui_obj_prio`)
+            # — la profondeur de l'acteur ancré, à défaut 0 (devant). Un aperçu
+            # qui montrerait le fond de container au fond alors que la ROM le
+            # pose à la profondeur de sa mouche, c'est justement le décalage à
+            # éviter. Une valeur 0-3 explicite reste une surcharge.
+            prio = int(getattr(region, "priority", -1))
+            if prio < 0:
+                anchor, actor_name = self._layout.effective_anchor(region)
+                prio = 0
+                if anchor == "actor" and actor_name and self._scene:
+                    a = next((x for x in getattr(self._scene, "actors", [])
+                              if getattr(x, "name", "") == actor_name), None)
+                    if a is not None:
+                        prio = int(getattr(a, "priority", 0) or 0)
+            base_z = _hw_layer_z(prio, is_obj=True)
         else:
             text_bg = getattr(scene, "text_bg", -1)
             base_z = _hw_layer_z(text_bg if text_bg in (0, 1, 2, 3) else 0, is_obj=False)
@@ -2727,10 +2761,10 @@ class UIRegionItem(QGraphicsRectItem):
         teinte d'édition translucide qui mentirait sur le rendu compilé ; un
         fond d'asset (nine-slice / background) est hachuré en attendant son
         vrai rendu."""
+        from core.models.ui_region import FILL_NONE, FILL_COLOR, KIND_CONTAINER
         el = self._region
-        if getattr(el, "kind", "") != "panel":
+        if getattr(el, "kind", "") != KIND_CONTAINER:
             return None
-        from core.models.ui_region import FILL_NONE, FILL_COLOR
         fk = getattr(el, "fill_kind", FILL_NONE)
         if fk == FILL_NONE:
             return None
@@ -2942,24 +2976,65 @@ class UIRegionItem(QGraphicsRectItem):
             default_name = ""
         return region_is_composited(self._project, self._layout, self._region, default_name)
 
-    def _highlight_color(self):
-        """QColor du surlignement de cette zone, ou None. La couleur est un
-        index dans la banque d'UI de la scène — la même que l'encre, le matériel
-        n'offrant qu'une banque par tuile. Sans banque désignée
-        (`ui_pal_bank` < 0), la police impose la sienne et le canvas n'a rien à
-        résoudre : il ne montre alors aucune couleur plutôt qu'une fausse."""
-        idx = int(getattr(self._region, "highlight_color", 0) or 0)
-        if not idx or self._project is None or self._scene is None:
+    def _bank_colors(self):
+        """Les couleurs (r,g,b) de la banque où l'encre ET le surlignement de
+        cette zone s'indexent — mis en cache pour la VIE de l'item.
+
+        La résolution (`_compute_bank_colors`) coûte ~15 ms (elle rejoue
+        l'allocation de palettes de la scène) ; l'appeler à chaque repaint —
+        survol, zoom, pan — étranglerait le canvas. Un item est reconstruit dès
+        qu'un réglage de palette/couleur change (inspecteur `changed` →
+        `_reload_ui_regions` → `set_ui_regions`), donc le cache ne survit jamais à
+        ce qu'il devrait refléter."""
+        cached = getattr(self, "_bank_colors_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        cols = self._compute_bank_colors()
+        self._bank_colors_cache = cols
+        return cols
+
+    def _compute_bank_colors(self):
+        """Résout la banque, sans cache. Même vérité que l'inspecteur
+        (`_ink_bank`) et le build (`region_ink_bank`, `slot_colors[bank]`) :
+        conteneur si le build lie la zone, sinon banque d'UI de la scène, None si
+        aucune. Enveloppé de `try` pour les stubs de test, comme `_composited`."""
+        p, scene = self._project, self._scene
+        if p is None or scene is None:
             return None
-        active = list(getattr(self._scene, "active_bg_palettes", []) or [])
-        slot = int(getattr(self._scene, "ui_pal_bank", -1))
-        if not 0 <= slot < len(active):
+        off = None
+        try:
+            from codegen.runtime_codegen.main_gen import region_ink_bank
+            resolved = region_ink_bank(p, scene, self._region)
+            if resolved is not None:
+                off = resolved[0]
+        except Exception:
+            off = None
+        if off is None:      # texte libre : la banque d'UI de la scène
+            slot = int(getattr(scene, "ui_pal_bank", -1))
+            active = list(getattr(scene, "active_bg_palettes", []) or [])
+            off = slot if 0 <= slot < len(active) else None
+        if off is None:
             return None
-        bank = self._project.get_palette(active[slot])
-        if not bank or idx >= len(bank.colors):
+        try:
+            from codegen.palette_alloc import scene_bank_layout
+            cols = scene_bank_layout(p, scene, "bg").slot_colors[off]
+        except Exception:
+            return None
+        if not cols:
             return None
         from core.gba_color import bgr555_to_rgb888
-        r, g, b = bgr555_to_rgb888(bank.colors[idx])
+        return [bgr555_to_rgb888(c) for c in cols]
+
+    def _highlight_color(self):
+        """QColor du surlignement de cette zone, ou None — l'index
+        `highlight_color` dans la banque résolue (cf. `_bank_colors`)."""
+        idx = int(getattr(self._region, "highlight_color", 0) or 0)
+        if not idx:
+            return None
+        cols = self._bank_colors()
+        if not cols or idx >= len(cols):
+            return None
+        r, g, b = cols[idx]
         return QColor(r, g, b)
 
     def _load_text_sheet(self, font):
@@ -2989,6 +3064,29 @@ class UIRegionItem(QGraphicsRectItem):
         _TEXT_SHEETS[key] = sheet
         return sheet
 
+    @staticmethod
+    def _flatten_sheet(sheet, color):
+        """Planche recolorée : les pixels d'encre prennent `color`, l'alpha (la
+        forme des glyphes, et les trous) est gardé. Le pendant canvas de la
+        recoloration VRAM de l'encre au chargement (`text_recolor`). Mise en
+        cache par (planche, couleur) — cf. `_FLAT_SHEETS`."""
+        ck = (sheet.cacheKey(), (color.red(), color.green(), color.blue()))
+        hit = _FLAT_SHEETS.get(ck)
+        if hit is not None:
+            return hit
+        out = QPixmap(sheet.size())
+        out.fill(Qt.GlobalColor.transparent)
+        pnt = QPainter(out)
+        pnt.drawPixmap(0, 0, sheet)
+        # SourceIn : garde l'alpha de la planche, remplace sa couleur par l'aplat.
+        pnt.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        pnt.fillRect(out.rect(), color)
+        pnt.end()
+        if len(_FLAT_SHEETS) > 32:
+            _FLAT_SHEETS.clear()
+        _FLAT_SHEETS[ck] = out
+        return out
+
     def _paint_text(self, painter) -> bool:
         """Dessine les VRAIS glyphes dans le rectangle. Retourne True si le texte
         déborde (tronqué par le moteur au dernier glyphe qui tient).
@@ -3002,6 +3100,15 @@ class UIRegionItem(QGraphicsRectItem):
         sheet = self._load_text_sheet(font)
         if sheet is None:
             return False
+        # Encre APLATIE : un index 1-15 remplace toute la couleur de la police
+        # par la couleur de la banque résolue (cf. `UIText.text_color`) ; l'index
+        # 0 garde les teintes d'origine de la police, on ne touche donc rien.
+        ink = int(getattr(self._region, "text_color", 0) or 0)
+        if ink:
+            cols = self._bank_colors()
+            if cols and ink < len(cols):
+                r, g, b = cols[ink]
+                sheet = self._flatten_sheet(sheet, QColor(r, g, b))
         from core.engine_emulation.text_layout import layout_text
         r = self.rect()
         placed, over = layout_text(font, text, int(r.width()), int(r.height()),
@@ -3444,6 +3551,21 @@ class UIRegionController(QObject):
         super().__init__(parent)
         self._project: Optional[Project] = None
         self._scene = None
+        # Dernier nœud `Interface` que la sélection a désigné : récepteur par
+        # défaut d'un widget dessiné quand la scène en compte plusieurs
+        # (v0.25, cf. `_ensure_layout`). Suivi par le BUS et pas par un clic
+        # sur le canvas — sélectionner le nœud dans l'arbre de scène doit
+        # compter tout autant que cliquer un de ses éléments.
+        self._active_layout = None
+        get_bus().changed.connect(self._track_selected_layout)
+
+    def _track_selected_layout(self, obj):
+        # UILayoutSelection (le nœud lui-même) comme UIElementSelection (un de
+        # ses éléments) portent `.layout` ; un acteur ou une caméra, non — donc
+        # sélectionner autre chose n'efface pas le dernier nœud retenu.
+        lay = getattr(obj, "layout", None)
+        if lay is not None:
+            self._active_layout = lay
 
     def set_context(self, project: Optional[Project], scene):
         self._project, self._scene = project, scene
@@ -3454,16 +3576,25 @@ class UIRegionController(QObject):
 
     def _ensure_layout(self):
         from core.models.ui_region import UILayout
-        lay = self._project.scene_ui_layout(self._scene)
-        if lay is not None:
-            return lay
+        # La scène référence une LISTE de nœuds `Interface` (v0.25). Le
+        # récepteur d'un widget dessiné est le DERNIER nœud sélectionné s'il
+        # appartient encore à la scène active ; sinon le premier (défaut
+        # stable) ; sinon un nœud neuf créé à la volée — dessiner dans une
+        # scène vierge reste le cas d'usage principal.
+        layouts = self._project.scene_ui_layouts(self._scene)
+        if layouts:
+            for lay in layouts:
+                if lay is self._active_layout:
+                    return lay
+            return layouts[0]
         base = getattr(self._scene, "name", "") or "ui"
         name, n = base, 2
         while self._project.get_ui_layout(name) is not None:
             name = f"{base}_{n:02d}"; n += 1
         lay = UILayout(name=name)
         self._project.ui_layouts.append(lay)
-        self._scene.ui_layout = name
+        if name not in self._scene.ui_layouts:
+            self._scene.ui_layouts.append(name)
         return lay
 
     def create_element(self, kind: str, x: int, y: int, w: int, h: int):
@@ -3477,7 +3608,8 @@ class UIRegionController(QObject):
         alors sur sa frame. Lui en attribuer un d'office (« le premier du
         projet ») poserait un dessin que personne n'a demandé."""
         from core.models.ui_region import (
-            UIPanel, UIText, UIImage, KIND_PANEL, KIND_IMAGE, unique_element_name,
+            UIContainer, UIList, UIText, UIImage,
+            KIND_CONTAINER, KIND_LIST, KIND_IMAGE, unique_element_name,
         )
         from core.history import get_history, AddListItemCmd
         if not self.ready:
@@ -3485,10 +3617,14 @@ class UIRegionController(QObject):
         lay = self._ensure_layout()
         x, y, w, h = int(x), int(y), int(w), int(h)
         taken = set(lay.element_names()) | set(self._project.ui_element_names())
-        if kind == KIND_PANEL:
-            el = UIPanel(name=unique_element_name(taken, "container"),
+        if kind == KIND_CONTAINER:
+            el = UIContainer(name=unique_element_name(taken, "container"),
                          x=x, y=y, w=w, h=h)
             label = "container"
+        elif kind == KIND_LIST:
+            el = UIList(name=unique_element_name(taken, "list"),
+                        x=x, y=y, w=w, h=h)
+            label = "list"
         elif kind == KIND_IMAGE:
             el = UIImage(name=unique_element_name(taken, "image"),
                          x=x, y=y, w=w, h=h)
@@ -3514,29 +3650,56 @@ class UIRegionController(QObject):
 
     # ── Dupliquer / coller ────────────────────────────────────────
 
+    def _layout_of(self, element):
+        """Le nœud `Interface` qui CONTIENT `element`, parmi les N de la scène
+        active (v0.25). Par identité — deux éléments de nœuds différents peuvent
+        porter le même nom d'un projet à l'autre, mais pas le même objet."""
+        if not self._project:
+            return None
+        scene = self._project.active_scene
+        for lay in (self._project.scene_ui_layouts(scene) if scene else []):
+            if any(e is element for e in lay.elements):
+                return lay
+        return None
+
+    def _group_by_layout(self, elements) -> list:
+        """[(nœud, [éléments])] — répartit une sélection (potentiellement à cheval
+        sur plusieurs nœuds) sur son nœud propriétaire, dans l'ordre rencontré."""
+        order: list = []
+        by_id: dict = {}
+        for e in elements:
+            lay = self._layout_of(e)
+            if lay is None:
+                continue
+            if id(lay) not in by_id:
+                by_id[id(lay)] = (lay, [])
+                order.append(id(lay))
+            by_id[id(lay)][1].append(e)
+        return [by_id[k] for k in order]
+
     def subtree_of(self, element) -> list:
         """L'élément et TOUT son sous-arbre, racine en tête — l'unité que
         copient le presse-papier et le dupliquer."""
-        lay = self._project.scene_ui_layout(self._scene) if self.ready else None
+        lay = self._layout_of(element) if self.ready else None
         if lay is None:
             return [element]
         return [element] + lay.descendants(element.name)
 
     def duplicate_elements(self, elements: list, dx: int = 8, dy: int = 8) -> list:
-        """Duplique des éléments de la mise en page de la scène, sous-arbres
-        compris, décalés de (dx, dy). Une seule entrée d'historique.
+        """Duplique des éléments (sous-arbres compris) décalés de (dx, dy), chacun
+        dans SON nœud `Interface`.
 
         Un élément dont un ANCÊTRE est du lot est ignoré : son sous-arbre est
         déjà emporté par la copie de cet ancêtre."""
         if not self.ready or not elements:
             return []
-        lay = self._project.scene_ui_layout(self._scene)
-        if lay is None:
-            return []
-        picked = {e.name for e in elements}
-        roots = [e for e in elements if not (set(lay.ancestors(e.name)) & picked)]
-        groups = [self.subtree_of(e) for e in roots]
-        return self._add_element_copies(lay, groups, dx, dy, "Duplicated")
+        out: list = []
+        for lay, els in self._group_by_layout(elements):
+            picked = {e.name for e in els}
+            roots = [e for e in els if not (set(lay.ancestors(e.name)) & picked)]
+            groups = [self.subtree_of(e) for e in roots]
+            out += self._add_element_copies(lay, groups, dx, dy, "Duplicated")
+        return out
 
     def paste_elements(self, groups: list, dx: int = 0, dy: int = 0) -> list:
         """Colle des sous-arbres venus du presse-papier du canvas (chacun sa
@@ -3559,21 +3722,23 @@ class UIRegionController(QObject):
         from core.history import get_history, RemoveListItemsCmd
         if not self.ready or not elements:
             return []
-        lay = self._project.scene_ui_layout(self._scene)
-        if lay is None:
-            return []
-        victims: list = []
-        for el in elements:
-            for e in [el] + lay.descendants(el.name):
-                if not any(v is e for v in victims):
-                    victims.append(e)
-        if not victims:
-            return []
-        n = len(elements)
-        get_history().push(RemoveListItemsCmd(
-            lay.elements, victims, persist_fn=self.regions_changed.emit,
-            label=f"Deleted {n} interface element{'s' if n > 1 else ''}"))
-        return victims
+        # Une sélection peut être à cheval sur plusieurs nœuds : chaque victime
+        # part de la liste de SON nœud, une commande par nœud touché.
+        all_victims: list = []
+        for lay, els in self._group_by_layout(elements):
+            victims: list = []
+            for el in els:
+                for e in [el] + lay.descendants(el.name):
+                    if not any(v is e for v in victims):
+                        victims.append(e)
+            if not victims:
+                continue
+            n = len(els)
+            get_history().push(RemoveListItemsCmd(
+                lay.elements, victims, persist_fn=self.regions_changed.emit,
+                label=f"Deleted {n} interface element{'s' if n > 1 else ''}"))
+            all_victims += victims
+        return all_victims
 
     def _add_element_copies(self, lay, groups: list, dx: int, dy: int,
                             verb: str) -> list:
@@ -4257,13 +4422,12 @@ class SceneEditor(QWidget):
         if not actors and not elements:
             return
         # Même règle qu'à la duplication : un élément dont un ancêtre est du
-        # lot voyage dans le sous-arbre de celui-ci, pas en double.
-        lay = (self._project.scene_ui_layout(self._project.active_scene)
-               if self._project else None)
+        # lot voyage dans le sous-arbre de celui-ci, pas en double. Chaque nœud
+        # `Interface` touché est traité à part (v0.25).
         groups = []
-        if lay is not None and elements:
-            picked = {e.name for e in elements}
-            for e in elements:
+        for lay, els in self._group_by_layout(elements):
+            picked = {e.name for e in els}
+            for e in els:
                 if set(lay.ancestors(e.name)) & picked:
                     continue
                 groups.append([e] + lay.descendants(e.name))
@@ -4418,7 +4582,7 @@ class SceneEditor(QWidget):
             case t if t.startswith("ui_"):
                 from ui.scene_manager.canvas_tools import UIWidgetTool
 
-                # "ui_text" | "ui_panel" | "ui_image" → kind du modèle
+                # "ui_text" | "ui_container" | "ui_image" → kind du modèle
                 self._gba_view.set_tool(UIWidgetTool(self._gba_view, t[3:]))
             case _:
                 self._gba_view.set_tool(SelectTool(self._gba_view))
@@ -4426,10 +4590,12 @@ class SceneEditor(QWidget):
         self._canvas_container.set_inpaint_strip_visible(tool_id.startswith("inpaint"))
 
     def _reload_ui_regions(self):
-        """(Re)dessine les zones de la scène active."""
+        """(Re)dessine les éléments de TOUS les nœuds `Interface` de la scène
+        active (v0.25)."""
         scene = self._project.active_scene if self._project else None
-        lay = self._project.scene_ui_layout(scene) if (self._project and scene) else None
-        self._gba_scene.set_ui_regions(lay, self._project, scene,
+        layouts = (self._project.scene_ui_layouts(scene)
+                   if (self._project and scene) else [])
+        self._gba_scene.set_ui_regions(layouts, self._project, scene,
                                        save_fn=self._save_ui_regions)
         self.ui_regions_reloaded.emit()
 
@@ -4458,10 +4624,11 @@ class SceneEditor(QWidget):
         if not self._project:
             return
         from core.selection_bus import get_bus, UIRegionSelection
+        from core.models.ui_region import KIND_CONTAINER
         get_bus().select(UIRegionSelection(layout, region))
         users = self._project.ui_layout_users(layout.name)
         shared = f" — shared by {len(users)} scenes" if len(users) > 1 else ""
-        kind_label = {"panel": "Container", "image": "Image"}.get(
+        kind_label = {KIND_CONTAINER: "Container", "image": "Image"}.get(
             getattr(region, "kind", "text"), "Text")
         # L'empreinte en tuiles ne se dit que pour ce qui occupe la tilemap ;
         # une image l'annonce dans son inspecteur, d'après son sprite.

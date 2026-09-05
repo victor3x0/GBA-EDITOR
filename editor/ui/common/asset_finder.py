@@ -48,6 +48,7 @@ from ui.common.theme import C, T, S, QSS, ui_font
 from ui.common.widgets import W, FinderSection
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_FOLDER
 from ui.common.reveal import reveal_in_file_manager
+from core.history import get_history, MacroCmd
 
 _ROLE_OBJ = Qt.ItemDataRole.UserRole
 
@@ -108,8 +109,10 @@ class AssetKind:
 
     # (projet, asset, nouveau_nom) -> nom RÉELLEMENT appliqué ("" si refusé).
     rename: Optional[Callable[[Any, Any, str], str]] = None
-    # (projet, asset) -> None. Doit pousser dans l'historique (Ctrl+Z).
-    delete: Optional[Callable[[Any, Any], None]] = None
+    # (projet, asset) -> Command de suppression, PAS encore poussée. Le finder
+    # la pousse (une seule ligne), ou groupe tout un lot dans un `MacroCmd` pour
+    # un unique Ctrl+Z. La bâtir sans l'exécuter est ce qui rend le lot possible.
+    delete: Optional[Callable[[Any, Any], Any]] = None
     delete_prompt: Optional[Callable[[Any], str]] = None
     # Le « + » de la section. Une famille sait se créer elle-même (`add`), ou
     # délègue à l'écran (`add_tooltip` seul -> signal `add_requested`) quand
@@ -239,7 +242,11 @@ class _KindTree(QTreeWidget):
         self.setUniformRowHeights(True)
         self.setIconSize(QSize(14, 14))
         self.setStyleSheet(QSS.tree_widget)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Sélection multiple pour agir sur un LOT (supprimer plusieurs assets
+        # d'un geste). L'ASSET COURANT reste unitaire — c'est lui qui pilote ce
+        # que l'écran montre (`_on_current_changed`) ; le lot ne sert qu'aux
+        # opérations du menu contextuel, jamais au contexte d'édition.
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Renommage en place, jamais de dialogue modal : clic sur un item déjà
         # sélectionné, ou F2. Même geste que partout ailleurs dans l'éditeur.
@@ -425,14 +432,32 @@ class _KindTree(QTreeWidget):
 
     # ── Menu contextuel ───────────────────────────────────────────
 
+    def _selected_objs(self) -> list:
+        """Les assets sélectionnés — les dossiers (obj None) sont ignorés : un
+        lot n'opère que sur de vrais assets."""
+        out = []
+        for it in self.selectedItems():
+            obj = it.data(0, _ROLE_OBJ)
+            if obj is not None:
+                out.append(obj)
+        return out
+
     def _on_ctx_menu(self, pos):
         item = self.itemAt(pos)
-        if not item:
-            return
-        obj = item.data(0, _ROLE_OBJ)
-        if obj is None:
-            return                      # dossier : rien à proposer pour l'instant
-        self.setCurrentItem(item)
+        if not item or item.data(0, _ROLE_OBJ) is None:
+            return                      # rien, ou un dossier : rien à proposer
+        # Clic HORS sélection : la sélection retombe sur cette seule ligne, comme
+        # dans un gestionnaire de fichiers. Clic DEDANS : on garde le lot, pour
+        # agir dessus. `setCurrentItem` en mode Extended remplace la sélection.
+        if item not in self.selectedItems():
+            self.setCurrentItem(item)
+        objs = self._selected_objs()
+        if len(objs) > 1:
+            self._multi_menu(objs, pos)
+        else:
+            self._single_menu(objs[0], pos)
+
+    def _single_menu(self, obj, pos):
         kind, project = self._kind, self._panel.project
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
@@ -466,6 +491,21 @@ class _KindTree(QTreeWidget):
         if not menu.isEmpty():
             menu.exec(self.viewport().mapToGlobal(pos))
 
+    def _multi_menu(self, objs, pos):
+        """Menu d'un LOT : seules les actions qui ont un sens sur plusieurs
+        assets. Le renommage est mono-ligne (édition en place), les actions par
+        asset ne sont pas encore pensées pour le lot — reste la suppression,
+        justement ce que la multi-sélection sert d'abord."""
+        kind = self._kind
+        if kind.delete is None:
+            return                      # rien à proposer sur ce lot
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        menu.setFont(QFont(T.UI, T.MD))
+        menu.addAction(f"Delete {len(objs)} {kind.label.lower()}").triggered.connect(
+            lambda _=False, os=list(objs): self._delete_many(os))
+        menu.exec(self.viewport().mapToGlobal(pos))
+
     def _delete(self, obj):
         kind, project = self._kind, self._panel.project
         if project is None:
@@ -478,7 +518,26 @@ class _KindTree(QTreeWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
-        kind.delete(project, obj)
+        get_history().push(kind.delete(project, obj))
+        self._panel.refresh()
+        self._panel.emptied.emit(kind.label)
+
+    def _delete_many(self, objs):
+        """Supprime un lot en UNE entrée d'historique (`MacroCmd`) : un seul
+        Ctrl+Z ramène tout. Chaque famille bâtit sa propre commande — on ne fait
+        que les grouper."""
+        kind, project = self._kind, self._panel.project
+        if project is None or not objs:
+            return
+        n = len(objs)
+        if QMessageBox.question(
+            self, "Delete",
+            f"Delete these {n} items?\n(Ctrl+Z to undo)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        cmds = [kind.delete(project, o) for o in objs]
+        get_history().push(MacroCmd(cmds, f"Delete {n} {kind.label.lower()}"))
         self._panel.refresh()
         self._panel.emptied.emit(kind.label)
 

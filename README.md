@@ -107,6 +107,7 @@ tient à l'échelle d'un vrai projet.
 - **v0.22** : Menus, listes et curseur — le moteur prend la navigation, la mise en page reste authorée
 - **v0.23** ✅ : Ce qu'un boss demande — attendre dans une boucle bornée (`for i = 1, 3 do tirer() ; wait(20) end`), une hiérarchie d'acteurs (un boss segmenté se déplace d'un bloc, chaque enfant gardant son sprite et ses collisions — y compris pour un ennemi spawné, dont le prefab porte son propre arbre — et un enfant se nomme depuis son parent : `local MonBras = self.BrasG`), et une matrice de collision entre tags qui retire du build les paires qui ne se rencontrent jamais
 - **v0.24** (en cours) : Le projet à l'échelle d'une équipe — des fichiers de projet que git sait relire (le jeu de démo passe de 14 444 à 3 679 lignes, couleurs en `#RRGGBB`, une ligne par rangée de carte), et un build qui ne refait que ce qui a changé : rebuild à chaud de 9,1 s à 6,6 s, dont `make` de 3,5 s à 0,17 s
+- **v0.25** ✅ : L'interface possède son chemin matériel — un nœud « Interface » se pose dans la scène et fixe, à un seul endroit, l'ancrage (écran / monde / acteur) et le chemin matériel (fond ou sprite) de tout son contenu ; une scène peut en poser plusieurs, un HUD fixe en fond et une bulle qui suit un acteur en sprite, chacun son chemin
 
 Les six dernières viennent d'une revue du logiciel du point de vue d'un projet de production
 mené à plusieurs ; la [ROADMAP](ROADMAP.md) en donne l'ordre recommandé, qui n'est pas celui
