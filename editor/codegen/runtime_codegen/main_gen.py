@@ -611,6 +611,12 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         if _sp_aff:
             L.append(f"            int _aff = g_actors[_i].sprite.affine_slot;")
         L.append(f"            g_actors[_i] = (Actor){{0}};")
+        # Échelle neutre par défaut, comme pour les PARTIES plus bas : `(Actor){0}`
+        # laisse scale à ZÉRO. Pour un prefab racine non-affine servant de parent,
+        # ce zéro écraserait ses enfants à la composition (même règle d'héritage
+        # que côté scène). La branche affine ci-dessous la remplace au besoin par
+        # l'échelle authorée du template.
+        L.append(f"            g_actors[_i].scale_x = 256; g_actors[_i].scale_y = 256;")
         if _sp_aff:
             L += [
                 f"            g_actors[_i].sprite.affine_slot = _aff;",
@@ -1445,10 +1451,11 @@ def _parent_compose_lines(scene_actors: list, actor_offset: int) -> list[str]:
     dérivé ici, recomposé au runtime avec la pose authorée du parent, redonne
     la position authorée de l'enfant.
 
-    Le prix, assumé pour cette tranche : déplacer un parent dans le canvas ne
-    déplace pas encore ses enfants à l'écran (au runtime, si). Le jour où le
-    canvas saura composer, il pourra montrer du local sans que rien d'autre ne
-    bouge — la conversion faite ici est réversible.
+    La conversion faite ici est réversible, et le canvas s'en sert désormais :
+    déplacer un parent y recompose son sous-arbre, et les enfants suivent à
+    l'écran comme au runtime. L'auteur voit donc la même hiérarchie vivante des
+    deux côtés. (Le champ Position de l'inspecteur reflète aussi ce déplacement
+    depuis 2026-09-05 — cf. actor_inspector `_sync_transform_from_canvas`.)
 
     Tout est en Q8 (ROADMAP v0.19) et l'arrondi reste à l'émission OAM : un
     arrondi par niveau ferait dériver un bras d'un pixel par cran de
@@ -3478,6 +3485,17 @@ def _gen_scene_init(
             f"    g_actors[{idx}].sprite.frame_w = {sprite.frame_w if sprite else 0};",
             f"    g_actors[{idx}].sprite.frame_h = {sprite.frame_h if sprite else 0};",
             f"    g_actors[{idx}].tag     = TAG_{s.upper()};",
+            # Transform MONDE : émise pour TOUT acteur, affine ou non. Un acteur
+            # non-affine ne l'AFFICHE pas (aucun slot de matrice), mais un enfant
+            # en HÉRITE par la composition parent→enfant — un enfant hérite des
+            # propriétés de son parent direct, puis les override. Sans ça, un
+            # parent non-affine restait à scale 0 (le zéro-init) et écrasait la
+            # position ET l'échelle affine de ses enfants (matrice dégénérée).
+            # Défaut 256 = ×1 ; la branche affine ci-dessous ne rajoute que le
+            # slot et la transform LOCALE du sprite.
+            f"    g_actors[{idx}].rotation     = {int(round(getattr(actor, 'rotation', 0) or 0))};",
+            f"    g_actors[{idx}].scale_x      = {int(round(float(getattr(actor, 'scale_x', 1.0) or 1.0) * 256))};",
+            f"    g_actors[{idx}].scale_y      = {int(round(float(getattr(actor, 'scale_y', 1.0) or 1.0) * 256))};",
             f"    g_actors[{idx}].collision.box_count = {len(boxes)};",
         ]
         _aff_i = (affine_info or {}).get(idx)
@@ -3485,9 +3503,6 @@ def _gen_scene_init(
             _aslot = _aff_i["slot"]
             L += [
                 f"    g_actors[{idx}].sprite.affine_slot = {_aslot};",
-                f"    g_actors[{idx}].rotation     = {_aff_i['rotation']};",
-                f"    g_actors[{idx}].scale_x      = {_aff_i['scale_x']};",
-                f"    g_actors[{idx}].scale_y      = {_aff_i['scale_y']};",
                 f"    g_actors[{idx}].sprite.rotation   = {_aff_i['sprite_rotation']};",
                 f"    g_actors[{idx}].sprite.scale_x = {_aff_i['sprite_scale_x']};",
                 f"    g_actors[{idx}].sprite.scale_y = {_aff_i['sprite_scale_y']};",

@@ -554,6 +554,14 @@ class ActorInspector(QWidget):
         layout.addStretch()
         self._content.setVisible(False)
 
+        # Pont canvas → carte Transform. Le canvas déplace un acteur en écrivant
+        # directement `actor.x/y` pendant le drag (cf. scene_canvas.itemChange),
+        # sans repasser par `load()` : les champs Position restaient donc sur
+        # l'ancienne valeur jusqu'à une re-sélection. `get_history().changed` est
+        # émis à chaque commande (fin de drag, undo, redo) — on re-synchronise la
+        # Position à ce moment-là.
+        get_history().changed.connect(self._sync_transform_from_canvas)
+
     # ── Chargement ───────────────────────────────────────────────
 
     # Couleurs de contexte (cohérentes avec assets_finder_panel et InspectorPanel)
@@ -574,6 +582,26 @@ class ActorInspector(QWidget):
             f"border-left:2px solid {color};}}"
             f"QListWidget::item:hover:!selected{{background:{C.BG_HOVER};}}"
         )
+
+    def _sync_transform_from_canvas(self):
+        """Re-synchronise la Position de la carte Transform depuis le modèle
+        quand l'historique change. Un enfant suit son parent au drag (le canvas
+        recompose son sous-arbre) : ses `x/y` bougent aussi, et le pont les
+        reflète — parent comme enfant.
+
+        Léger et ciblé : uniquement quand un acteur de scène est réellement
+        affiché (`_transform_group` visible — donc ni une racine de template, ni
+        un autre mode de l'inspecteur). `set_raw` n'émet rien (`emit=False`),
+        aucune boucle ; `_blocking` reste par prudence."""
+        a = self._actor
+        if a is None or not self._transform_group.isVisible():
+            return
+        self._blocking = True
+        try:
+            self._tx.set_raw(a.x)
+            self._ty.set_raw(a.y)
+        finally:
+            self._blocking = False
 
     def load_prefab(self, prefab: Optional[Prefab], project: Project, scene: Optional[Scene] = None):
         """Un prefab EST son actor racine (`prefab.actor`, cf.
