@@ -3,4 +3,11 @@
 # produite par packaging/nuitka_build.py, dont le contenu est copié dans
 # AppDir/usr/bin/ par le workflow CI.
 HERE="$(dirname "$(readlink -f "${0}")")"
+# Le plugin de plateforme Qt "xcb" (Qt 6.5+) charge dynamiquement
+# libxcb-cursor.so.0. Nuitka embarque le plugin mais pas cette dependance
+# transitive : la CI la place dans usr/bin/, et on l'expose ici via
+# LD_LIBRARY_PATH — la seule voie qui couvre les resolutions dlopen du plugin
+# (le DT_RUNPATH de l'exe ne s'applique pas transitivement). Sans ca, l'appli
+# meurt au demarrage : "Could not load the Qt platform plugin xcb".
+export LD_LIBRARY_PATH="$HERE/usr/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$HERE/usr/bin/GBA Editor" "$@"

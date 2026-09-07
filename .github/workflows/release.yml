@@ -164,6 +164,12 @@ jobs:
           # Nuitka produit un dossier (standalone) et non un fichier unique :
           # on copie tout son contenu, exe + données + libs, dans usr/bin/.
           cp -r build-out/GBAEditor/. AppDir/usr/bin/
+          # Le plugin xcb (Qt 6.5+) charge libxcb-cursor.so.0, que Nuitka
+          # n'embarque pas (chargée par le plugin, hors de son scan). On la copie
+          # depuis le runner à côté des libs Nuitka ; AppRun l'expose via
+          # LD_LIBRARY_PATH. Sans elle : « Could not load the Qt platform plugin
+          # xcb » et abandon au démarrage. -L déréférence le lien vers le vrai .so.
+          cp -L "$(dpkg -L libxcb-cursor0 | grep -m1 'libxcb-cursor\.so\.0')" AppDir/usr/bin/
           cp packaging/linux/AppRun AppDir/AppRun
           chmod +x AppDir/AppRun AppDir/usr/bin/"GBA Editor"
           cp packaging/linux/gba-editor.desktop AppDir/gba-editor.desktop
