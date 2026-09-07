@@ -125,10 +125,14 @@ jobs:
       - name: Dépendances système (Qt6 headless + compilateur)
         run: |
           sudo apt-get update
+          # Le plugin de plateforme Qt "xcb" tire toute une famille de libs xcb :
+          # elles doivent être présentes ICI pour que `ldd` les résolve et qu'on
+          # les copie dans l'AppImage (étape « Assembler l'AppDir »). libxkbcommon-x11
+          # et libxcb-xkb manquaient — sans elles libqxcb.so ne se charge pas.
           sudo apt-get install -y \
             patchelf ccache \
-            libegl1 libopengl0 libxkbcommon0 libxcb-cursor0 \
-            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libegl1 libopengl0 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-xkb1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
             libxcb-xinerama0 libnss3 libxdamage1 libfontconfig1
 
@@ -164,12 +168,29 @@ jobs:
           # Nuitka produit un dossier (standalone) et non un fichier unique :
           # on copie tout son contenu, exe + données + libs, dans usr/bin/.
           cp -r build-out/GBAEditor/. AppDir/usr/bin/
-          # Le plugin xcb (Qt 6.5+) charge libxcb-cursor.so.0, que Nuitka
-          # n'embarque pas (chargée par le plugin, hors de son scan). On la copie
-          # depuis le runner à côté des libs Nuitka ; AppRun l'expose via
-          # LD_LIBRARY_PATH. Sans elle : « Could not load the Qt platform plugin
-          # xcb » et abandon au démarrage. -L déréférence le lien vers le vrai .so.
-          cp -L "$(dpkg -L libxcb-cursor0 | grep -m1 'libxcb-cursor\.so\.0')" AppDir/usr/bin/
+          # Le plugin de plateforme Qt "xcb" (libqxcb.so) dépend de toute une
+          # famille de libs xcb/xkbcommon que Nuitka n'embarque PAS (elles sont
+          # chargées par le plugin, hors de son scan) : sans elles, « Could not
+          # load the Qt platform plugin xcb » et abandon au démarrage.
+          # On copie la fermeture réelle — ce que ldd résout — plutôt qu'une liste
+          # à la main : ldd donne les chemins par SONAME (le nom exact que
+          # l'éditeur de liens réclame), et on saute ce que Nuitka a déjà posé.
+          # Les libs atterrissent à côté des libs Nuitka, exposées par
+          # LD_LIBRARY_PATH (AppRun).
+          plugin="$(find AppDir/usr/bin -name libqxcb.so | head -1)"
+          # Garde-fou : une dépendance « not found » sur le runner ne sera pas
+          # copiée et l'AppImage sortirait cassé. On échoue le build ici, fort,
+          # plutôt que de le découvrir au démarrage sur la machine d'un utilisateur
+          # — le correctif étant d'ajouter le paquet manquant à l'étape apt.
+          if ldd "$plugin" | grep -q "not found"; then
+            echo "::error::Dépendances du plugin xcb non résolues sur le runner :"
+            ldd "$plugin" | grep "not found"
+            exit 1
+          fi
+          ldd "$plugin" | awk '/=> \// {print $3}' | while read -r lib; do
+            base="$(basename "$lib")"
+            [ -e "AppDir/usr/bin/$base" ] || cp -L "$lib" "AppDir/usr/bin/$base"
+          done
           cp packaging/linux/AppRun AppDir/AppRun
           chmod +x AppDir/AppRun AppDir/usr/bin/"GBA Editor"
           cp packaging/linux/gba-editor.desktop AppDir/gba-editor.desktop
