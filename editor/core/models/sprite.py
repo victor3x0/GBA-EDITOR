@@ -6,7 +6,7 @@ from typing import Optional
 
 from core.models.resource import Resource
 from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
-from core.gba_color import write_colors, read_colors, write_palettes, read_palettes
+from core.models.gba_color import write_colors, read_colors, write_palettes, read_palettes
 
 
 @dataclass
@@ -376,7 +376,7 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
         # dérive sa PAL_BANK de son `own_palette` (forme banque hardware : index 0
         # réservé + couleurs propres). Idempotent (persisté au save).
         if not sprite.palettes and sprite.own_palette:
-            from core.models.palette import RESERVED_SLOT_COLOR
+            from core.models.gba_color import RESERVED_SLOT_COLOR
             bank = ([RESERVED_SLOT_COLOR] + list(sprite.own_palette))[:16]
             bank += [0] * (16 - len(bank))
             sprite.palettes = [bank]

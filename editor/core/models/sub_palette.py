@@ -48,7 +48,7 @@ class SubPaletteAssetMixin:
         """Vide la sous-palette `idx` (ne garde que l'index 0 réservé). Ne retire
         pas la palette (indices inchangés), contrairement à remove_palette."""
         if 0 <= idx < len(self.palettes):
-            from core.models.palette import RESERVED_SLOT_COLOR
+            from core.models.gba_color import RESERVED_SLOT_COLOR
             self.palettes[idx] = [RESERVED_SLOT_COLOR] + [0] * 15
 
     def remove_palette(self, idx: int) -> None:

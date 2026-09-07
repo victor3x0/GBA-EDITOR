@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.resource_store import atomic_write
-from core import project_json
+from core.models import project_json
 from core.models.text import (
     Text, key_from_path as text_key_from_path, norm_path as norm_text_path,
     new_id as new_text_id,

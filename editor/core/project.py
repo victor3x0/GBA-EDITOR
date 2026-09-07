@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.events import EventEmitter
-from core import project_json
+from core.models import project_json
 from core import asset_encoding
 from core.app_paths import IS_FROZEN
 from core.resource_store import ResourceStore, atomic_write

@@ -32,10 +32,28 @@ def register_validator(fn: Callable) -> Callable:
 
 
 @dataclass
+class DiagnosticTarget:
+    """Où mène un diagnostic quand on le clique (cf. panneau Diagnostics).
+
+    Volontairement en CHAÎNES, pas en références de modèle : le message reste de
+    la donnée pure, et c'est l'interface qui résout le nom au moment du clic (par
+    `Project.all_elements`), comme le journal résout un `fichier.lua:ligne`.
+
+    Un seul `kind` pour l'instant — `ui_element` : la zone/le panneau/l'image
+    d'une mise en page, que rien ne rendait cliquable jusqu'ici (un acteur passe
+    déjà par son nom, un script par le `fichier.lua:ligne` de son message). Le
+    vocabulaire s'étendra si un autre écran gagne une cible (cf. TodoTechnique)."""
+    kind: str            # "ui_element"
+    name: str = ""       # nom de l'élément
+    layout: str = ""     # mise en page qui le contient (désambiguïse `all_elements`)
+
+
+@dataclass
 class ValidationMessage:
     level: str      # "warning" | "error"
     actor: str      # nom de l'actor ou "" si global
     message: str
+    target: Optional[DiagnosticTarget] = None   # cible cliquable, ou None
 
     def __str__(self):
         prefix = f"[{self.actor}] " if self.actor else ""
@@ -84,13 +102,13 @@ class ValidationContext:
                 self._scripts[key] = set()
         return self._scripts[key]
 
-    def warn(self, actor_or_name, message: str):
+    def warn(self, actor_or_name, message: str, target: Optional[DiagnosticTarget] = None):
         name = getattr(actor_or_name, "name", str(actor_or_name)) if actor_or_name else ""
-        self._msgs.append(ValidationMessage("warning", name, message))
+        self._msgs.append(ValidationMessage("warning", name, message, target))
 
-    def error(self, actor_or_name, message: str):
+    def error(self, actor_or_name, message: str, target: Optional[DiagnosticTarget] = None):
         name = getattr(actor_or_name, "name", str(actor_or_name)) if actor_or_name else ""
-        self._msgs.append(ValidationMessage("error", name, message))
+        self._msgs.append(ValidationMessage("error", name, message, target))
 
     @property
     def warnings(self) -> list[ValidationMessage]:
@@ -253,90 +271,58 @@ def _check_lua_subset(ctx: ValidationContext):
 
 
 def _check_api_prototypes(ctx: ValidationContext):
-    """Une fonction du MOTEUR exposée en Lua doit être déclarée DEUX fois.
+    """Ce que l'API exposée exige des en-têtes du runtime, HORS prototypes.
 
-    `gba_engine.h` porte l'implémentation ; `actor_api_static.h` redéclare la
-    même chose pour les unités de compilation de scène et d'actor, qui n'incluent
-    pas le moteur. Une fonction ajoutée d'un seul côté franchit tout le chemin —
-    checker vert, C émis correct — pour échouer au `make` sur un « implicit
-    declaration of function », message qui pointe la ligne générée et jamais la
-    cause. C'est ce qu'a fait `text_clear_in` : écrite dans le moteur, jamais
-    redéclarée, donc inexposable en Lua sans casser le build.
+    Les prototypes ne sont plus surveillés : ils sont désormais GÉNÉRÉS dans
+    `runtime_api.h` à partir de `gba_engine.h`, pour le seul sous-ensemble exposé
+    par le catalogue (cf. codegen/runtime_codegen/api_prototypes — le « 4e
+    lecteur »). Une fonction exposée ne peut donc plus manquer de déclaration : la
+    surveillance « présent dans le moteur, absent de la façade » n'a plus d'objet.
 
-    La règle est DÉRIVÉE, pas listée : est exigé dans le second en-tête ce qui
-    est déjà présent dans le premier. Les fonctions résolues ailleurs (méthodes
-    d'actor, `scene_switch`, `sfx_play`, helpers de globals — générés dans
-    `actor_api.h`) ne sont donc pas testées, sans
-    qu'on ait à les énumérer ni à maintenir une liste d'exceptions.
-
-    Erreur et non avertissement : le lien est garanti perdu, autant le dire
-    avant de lancer la chaîne C que dans son log."""
+    Restent deux contrôles que la génération ne couvre pas :
+      - l'ACCORD de VALEUR des énums entre `api.py` (leur source, désormais) et
+        `gba_engine.h` (qui en redéfinit certaines à la main côté moteur) ;
+      - l'ORDRE des arguments entre `api.py` et `gba_engine.h` : une permutation
+        (mêmes noms, autre ordre) compile proprement — tout est `int` — et range
+        chaque valeur dans le mauvais paramètre. Le seul désaccord de la chaîne
+        qui n'échoue ni au checker ni au compilateur."""
     import re
     from core.app_paths import RUNTIME_DIR
     from scripting.api import RUNTIME_API
 
     engine = RUNTIME_DIR / "include" / "gba_engine.h"
-    facade = RUNTIME_DIR / "include" / "actor_api_static.h"
+    facade = RUNTIME_DIR / "include" / "runtime_api_inline.h"
     if not (engine.exists() and facade.exists()):
-        ctx.warn(None, "En-têtes du runtime introuvables — prototypes non vérifiés.")
+        ctx.warn(None, "En-têtes du runtime introuvables — API non vérifiée.")
         return
     eng = engine.read_text(encoding="utf-8", errors="ignore")
     fac = facade.read_text(encoding="utf-8", errors="ignore")
 
-    def declared(src: str, fn: str) -> bool:
-        return re.search(r"\b" + re.escape(fn) + r"\s*\(", src) is not None
+    # ── Les CONSTANTES d'énum : leur VALEUR doit s'accorder avec le moteur ──
+    # Les `#define` d'énums sont désormais GÉNÉRÉS depuis `api.py`
+    # (`build_enum_defines`), donc leur existence côté script n'est plus en
+    # question. Reste un accord que rien ne garantissait : certaines (`BLD_MODE_*`,
+    # `BLD_SIDE_*`) sont AUSSI définies à la main dans `gba_engine.h`, côté moteur.
+    # Si les deux valeurs divergeaient, le codegen émettrait le symbole, les
+    # scripts verraient la valeur d'api.py et `main.c` celle du moteur — un
+    # décalage silencieux. On vérifie donc l'accord de VALEUR, pour les seules
+    # constantes présentes des deux côtés (les autres n'ont qu'une source, api.py).
+    from scripting.api import hardware_enum_defines
 
-    missing = sorted({
-        f.c_func for f in RUNTIME_API.values()
-        if f.c_func and declared(eng, f.c_func) and not declared(fac, f.c_func)
-    })
-    if missing:
+    def engine_value(name: str):
+        m = re.search(r"^\s*#\s*define\s+" + re.escape(name) + r"\s+(-?\d+)\b", eng, re.M)
+        return int(m.group(1)) if m else None
+
+    mismatched = []
+    for sym, value in hardware_enum_defines():
+        ev = engine_value(sym)
+        if ev is not None and ev != value:
+            mismatched.append(f"{sym} (api.py={value}, gba_engine.h={ev})")
+    if mismatched:
         ctx.error(None,
-                  "Fonctions du moteur exposées en Lua mais non déclarées dans "
-                  f"actor_api_static.h : {', '.join(missing)}. Le C généré les "
-                  "appellera sans prototype et le build échouera.")
-
-    # Les PROPRIÉTÉS (RUNTIME_PROPS) reposent sur les mêmes deux en-têtes : un
-    # getter/setter ajouté au moteur sans être redéclaré ferait échouer chaque
-    # script qui lit/écrit la propriété, au même endroit et pour la même raison
-    # que les fonctions ci-dessus. Même règle dérivée.
-    from scripting.api import RUNTIME_PROPS
-    missing_props = sorted({
-        fn for p in RUNTIME_PROPS.values()
-        for fn in (p.c_getter, p.c_setter)
-        if fn and declared(eng, fn) and not declared(fac, fn)
-    })
-    if missing_props:
-        ctx.error(None,
-                  "Fonctions de propriétés du moteur non déclarées dans "
-                  f"actor_api_static.h : {', '.join(missing_props)}. Le C généré "
-                  "les appellera sans prototype et le build échouera.")
-
-    # ── Les CONSTANTES tombent dans le même trou que les prototypes ──
-    # Le codegen émet `WINR_0` plutôt que `2` (c'est tout l'intérêt des
-    # énumérations nommées), et ce symbole doit exister dans l'unité qui
-    # compile le script — donc dans `actor_api_static.h`, pas seulement dans le
-    # moteur. `WINR_*`, `BLD_MODE_*` et `BLD_SIDE_*` n'y étaient pas : tout
-    # `window.set_layer` / `blend.set_layer` écrit depuis un script échouait au
-    # `make`. Contrôle DÉRIVÉ de `HARDWARE_ENUMS`, comme le reste : une
-    # énumération ajoutée au catalogue est exigée ici sans qu'on touche à ce
-    # fichier.
-    from scripting.api import HARDWARE_ENUMS
-
-    def defined(src: str, name: str) -> bool:
-        return re.search(r"^\s*#\s*define\s+" + re.escape(name) + r"\b", src, re.M) is not None
-
-    missing_consts = sorted({
-        c for table in HARDWARE_ENUMS.values()
-        for c in table.values()
-        if not defined(fac, c)
-    })
-    if missing_consts:
-        ctx.error(None,
-                  "Constantes d'énumération citées par l'API Lua mais non "
-                  f"définies dans actor_api_static.h : {', '.join(missing_consts)}. "
-                  "Le C généré les émettra et le build échouera sur un "
-                  "identifiant inconnu.")
+                  "Valeurs d'énumération incohérentes entre api.py et "
+                  f"gba_engine.h : {', '.join(mismatched)}. Le symbole émis "
+                  "vaudrait deux choses selon l'unité — décalage silencieux.")
 
     # ── Ordre des arguments : Lua ↔ C ─────────────────────────────
     # `codegen._emit_api_call` mappe les arguments par POSITION. Si l'ordre des
@@ -833,7 +819,8 @@ def _check_ui_text_key(ctx: ValidationContext):
         if key and p.get_text(key) is None:
             ctx.error(None,
                 f"Le texte '{el.name}' (mise en page '{lay.name}') pointe la clé "
-                f"'{key}', qui n'existe plus dans la table de textes.")
+                f"'{key}', qui n'existe plus dans la table de textes.",
+                DiagnosticTarget("ui_element", el.name, lay.name))
 
 
 def _check_blend(ctx: ValidationContext):
@@ -900,14 +887,16 @@ def _check_ui_image(ctx: ValidationContext):
         if p.get_sprite(name) is None:
             ctx.error(None,
                 f"{what.capitalize()} '{im.name}' (mise en page '{lay.name}') "
-                f"pointe le sprite '{name}', qui n'existe plus dans le projet.")
+                f"pointe le sprite '{name}', qui n'existe plus dans le projet.",
+                DiagnosticTarget("ui_element", im.name, lay.name))
         elif im.state_name and not any(
                 s.name == im.state_name
                 for s in getattr(p.get_sprite(name), "states", []) or []):
             ctx.warn(None,
                 f"{what.capitalize()} '{im.name}' demande l'état "
                 f"'{im.state_name}', absent du sprite '{name}' — il affichera "
-                f"le premier état.")
+                f"le premier état.",
+                DiagnosticTarget("ui_element", im.name, lay.name))
 
 
 def _check_ui_container_fill(ctx: ValidationContext):
@@ -949,7 +938,8 @@ def _check_ui_container_fill(ctx: ValidationContext):
                     f"Scène '{scene.name}' : le fond du conteneur '{el.name}' "
                     f"est en mode « {fk} », qui n'existe pas en cible "
                     f"{target.upper()} — rien ne sera dessiné. Sur cette cible, "
-                    f"choisir {quoi}.")
+                    f"choisir {quoi}.",
+                    DiagnosticTarget("ui_element", el.name, lay.name))
                 continue
             why = []
             if fk == FILL_SPRITE:
@@ -972,7 +962,8 @@ def _check_ui_container_fill(ctx: ValidationContext):
                     f"Scène '{scene.name}' : le fond du conteneur "
                     f"'{el.name}' ne sera PAS dans la ROM — {' ; '.join(why)}. "
                     f"Le canvas le montre quand même : c'est l'éditeur qui "
-                    f"promet plus que le build ne tient.")
+                    f"promet plus que le build ne tient.",
+                    DiagnosticTarget("ui_element", el.name, lay.name))
 
 
 def _check_data_column_types(ctx: ValidationContext):
@@ -1497,7 +1488,7 @@ def _check_scene_font(ctx: ValidationContext):
     `project_fonts` la saute et le `#define FONT_*` n'existe pas non plus.
     Distinguer les deux évite de faire chercher un fichier pour un nom mort."""
     p = ctx.project
-    from codegen.runtime_codegen.main_gen import project_fonts
+    from codegen.font_emit import project_fonts
     from codegen.font_emit import scene_default_font
     encodable = {f.name for f in project_fonts(p)}
     known = {f.name for f in getattr(p, "fonts", [])}

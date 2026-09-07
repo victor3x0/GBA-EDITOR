@@ -87,6 +87,22 @@ class LuaEditor(QPlainTextEdit):
                 self.ensureCursorVisible()
                 return
 
+    def goto_line(self, line: int):
+        """Place le curseur sur la ligne `line` (1-indexée) et la centre.
+
+        Sert au saut depuis le journal de build (`fichier.lua:ligne` cliqué).
+        Une ligne hors plage retombe sur la dernière — un message peut citer une
+        ligne au-delà de la fin sur un fichier tronqué."""
+        doc = self.document()
+        block = doc.findBlockByNumber(max(0, line - 1))
+        if not block.isValid():
+            block = doc.lastBlock()
+        cur = QTextCursor(block)
+        cur.movePosition(QTextCursor.MoveOperation.EndOfLine)
+        self.setTextCursor(cur)
+        self.centerCursor()
+        self.setFocus()
+
     def insert_at_cursor(self, text: str):
         """Insère text à la position courante du curseur."""
         cur = self.textCursor()

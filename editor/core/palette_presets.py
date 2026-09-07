@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import colorsys
 
-from core.gba_color import rgb888_to_bgr555
-from core.models.palette import RESERVED_SLOT_COLOR
+from core.models.gba_color import rgb888_to_bgr555
+from core.models.gba_color import RESERVED_SLOT_COLOR
 
 
 def hsb_ramp_bgr555(hue_deg: float, sat: float, steps: int = 16) -> list[int]:
@@ -231,7 +231,7 @@ def _reduce_to(
     """Réduit `colors` à `n` couleurs EXACTES (fusion des paires les plus
     proches). Brique déplacée dans gba_color (partagée avec l'indexation
     des sprites)."""
-    from core.gba_color import reduce_nearest_pair
+    from core.models.gba_color import reduce_nearest_pair
 
     return reduce_nearest_pair(colors, n)
 

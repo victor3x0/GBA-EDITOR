@@ -5,60 +5,23 @@
    recopié dans le projet de l'utilisateur au build, puis compilé dans sa ROM :
    le jeu produit lui appartient entièrement, il peut le vendre, et il n'a
    aucune notice à joindre à sa ROM. */
-/* actor_api_static.h — implémentations inline de l'API acteur (partie non générée).
-   Inclus depuis actor_api.h (généré par build.py).
+/* runtime_api_inline.h — la moitié INLINE de l'API runtime que voient les scripts
+   (actor/camera/math/input/collision), plus les `extern` de l'état runtime posé
+   par main.c. Écrit à la main (l'autre moitié — prototypes, énums, régions de
+   window — est GÉNÉRÉE dans runtime_api.h, qui inclut ce fichier ensuite).
+   Recompilé dans chaque unité de scène/acteur, d'où `static inline`.
    Dépend de : actor_types.h (inclus avant ce fichier). */
-#ifndef ACTOR_API_STATIC_H
-#define ACTOR_API_STATIC_H
+#ifndef RUNTIME_API_INLINE_H
+#define RUNTIME_API_INLINE_H
 
-/* Modes OAM et directions, nommés — le Lua les cite par leur nom
-   (`self:set_dir("north")`), le codegen émet ces constantes. Voir
-   scripting/api.py, « Énumérations matérielles ».
-   Les directions suivent l'ordre des tables de actor_set_dir : 0 = aucune,
-   puis dans le sens horaire depuis le nord. */
-#define OBJ_MODE_NORMAL   0
-#define OBJ_MODE_BLEND    1
-#define OBJ_MODE_WINDOW   2
+/* Les constantes que voient les unités de script — énumérations matérielles
+   nommées (modes OAM, directions, blending, ease) ET régions de window
+   (`WINR_*`) — ne sont PLUS ici : leurs `#define` sont GÉNÉRÉS dans `runtime_api.h`
+   (cf. api_prototypes — les énums depuis api.py, les WINR extraites de
+   gba_engine.h), qui inclut ce fichier juste après. Les impls inline ci-dessous
+   les voient donc, et il n'y a plus de valeur à tenir d'accord à la main. */
 
-#define DIR_NONE          0
-#define DIR_NORTH         1
-#define DIR_NORTH_EAST    2
-#define DIR_EAST          3
-#define DIR_SOUTH_EAST    4
-#define DIR_SOUTH         5
-#define DIR_SOUTH_WEST    6
-#define DIR_WEST          7
-#define DIR_NORTH_WEST    8
 
-/* Courbes d'accélération de math.ease() — mêmes noms qu'en Lua. */
-#define EASE_IN           0
-#define EASE_OUT          1
-#define EASE_IN_OUT       2
-
-/* Régions de window et cibles de blending. Elles DOUBLENT celles de
-   `gba_engine.h`, pour la même raison que les prototypes plus bas : le moteur
-   n'est inclus que par main.c, alors que les scènes et les acteurs — qui sont
-   ceux qui écrivent `window.set_layer("win0", ...)` — ne voient que ce
-   fichier-ci. Manquantes ici, elles passaient checker et codegen pour échouer
-   au `make` sur un identifiant inconnu, sur la ligne générée et jamais sur sa
-   cause.
-
-   Les deux listes sont comparées au build (`validator._check_api_prototypes`,
-   dérivé de `HARDWARE_ENUMS`), et une valeur qui divergerait entre les deux
-   fichiers ferait crier le préprocesseur dans main.c, qui les voit toutes
-   les deux. */
-#define WINR_0            0
-#define WINR_1            1
-#define WINR_OBJ          2
-#define WINR_OUT          3
-
-#define BLD_MODE_NONE     0
-#define BLD_MODE_ALPHA    1
-#define BLD_MODE_BRIGHTEN 2
-#define BLD_MODE_DARKEN   3
-
-#define BLD_SIDE_TOP      0
-#define BLD_SIDE_BOTTOM   1
 
 /* Globaux définis dans main.c, visibles par tous les scripts */
 extern Actor g_actors[];
@@ -139,8 +102,6 @@ extern int g_cam_active;
 /* Déclarées en avance : camera_switch() les appelle avant le bloc Windows
    plus bas (redéclaration légale en C, mêmes signatures — même raison que les
    constantes WINR_* dupliquées en tête de fichier). */
-extern void window_set (int n, int x, int y, int w, int h);
-extern void window_show(int n, int on);
 
 /* Activer une caméra POSE son cadrage et ses bornes : c'est ce que « caméra
    fixe » veut dire, et une caméra en suivi se recale dans la frame même. Les
@@ -684,7 +645,7 @@ static inline void camera_follow(Vec2 target, int mx, int my) {
     if (ty - cam_y > SCREEN_H - my)   cam_y = ty - (SCREEN_H - my);
 }
 
-/* Envoi d'event à tous les actors actifs (G_ACTOR_COUNT défini dans actor_api.h) */
+/* Envoi d'event à tous les actors actifs (G_ACTOR_COUNT défini dans runtime_api.h) */
 /* La fn C cible (event_handler) est appelée si l'actor est actif. */
 /* broadcast("on_receive", 42) → tous les on_receive reçoivent (0, 42) */
 /* Implémenté comme macro pour éviter les pointeurs de fonction sur GBA. */
@@ -699,37 +660,16 @@ static inline void camera_follow(Vec2 target, int mx, int my) {
 
 /* Layers BG vivants — définis dans main.c via GBA_ENGINE_IMPL (gba_engine.h).
    `bg` = bg_slot 0-3 ; tx/ty en tuiles dans la map du layer. */
-extern void layer_show        (int bg, int on);
-extern int  layer_is_visible  (int bg);
-extern void layer_set_priority(int bg, int prio);
-extern int  layer_get_priority(int bg);
-extern void layer_set_scroll  (int bg, int x, int y);
-extern void layer_scroll_by   (int bg, int dx, int dy);
-extern int  layer_get_scroll_x(int bg);
-extern int  layer_get_scroll_y(int bg);
-extern void layer_set_map     (int bg, int sbb);
-extern int  layer_get_map     (int bg);
 
 /* Windows — pochoirs par région d'écran (r : 0=WIN0, 1=WIN1, 2=fenêtre-objet,
    3=extérieur). Ne dessinent rien : autorisent ou non l'affichage. */
-extern void window_show      (int n, int on);
-extern int  window_is_visible(int n);
-extern void window_set       (int n, int x, int y, int w, int h);
-extern void window_set_layer (int r, int bg, int on);
-extern int  window_get_layer (int r, int bg);
-extern void window_set_obj   (int r, int on);
-extern void window_set_blend (int r, int on);
 
 /* Texte — le texte vit sur LE layer d'UI de la scène (Scene.text_bg) : les
    glyphes sont chargés dans le charblock de ce layer, d'où l'absence de
    paramètre `layer`. tx/ty en tuiles. `n` = nombre de caractères révélés
    (machine à écrire) ; le rythme appartient au script. */
-extern void text_set_font (int f);
-extern int  text_length   (int id);
-extern void text_clear    (int tx, int ty, int w, int h);
 /* GRAMMAIRE : position ou conteneur d'abord, contenu ensuite — même ordre qu'en
    Lua (cf. api.py, section Texte). */
-extern void text_draw     (int tx, int ty, int id);
 /* Rendu dans une zone dessinée dans le canvas de scène : elle porte position,
    largeur de coupe, alignement et police. Remplace `text_draw_box`, dont la
    géométrie vivait dans le script (donc invisible dans l'éditeur).
@@ -740,27 +680,15 @@ extern void text_draw     (int tx, int ty, int id);
    échoue au `make` sur un « implicit declaration » qui ne dit rien de la cause.
    `validate_project` compare donc les deux listes plutôt que de compter sur
    la vigilance. */
-extern void text_draw_in     (int region, int id);
-extern void text_clear_in    (int region);
 /* Groupe LECTURE — état d'un texte à tempo dans sa zone. */
-extern int  text_reading     (int region);
-extern void text_skip        (int region);
 
 /* Langue (ROADMAP v0.9, phase 4) — même découpe que text_set_font juste
    au-dessus : implémentation unique dans gba_engine.h (GBA_ENGINE_IMPL),
    redéclarée ici en `extern` pour les unités de compilation qui n'incluent
    pas le moteur. */
-extern void lang_set(int code);
-extern int  lang_get(void);
 
 /* Images d'interface — un sprite à état posé sur la mise en page. Rien pour
    créer ni déplacer : la géométrie est authorée, seul l'ÉTAT est au script. */
-extern void ui_image_set_state(int img, int state);
-extern void ui_image_play     (int img, int on);
-extern int  ui_image_state    (int img);
-extern void ui_image_move     (int img, int dx, int dy);
-extern int  ui_image_dx       (int img);
-extern int  ui_image_dy       (int img);
 
 /* Visibilité — commune aux trois types d'élément (texte, conteneur, image) :
    `ui.get("nom")` résout au NOM d'élément DIRECTEMENT en `UIELEM_*` (cf.
@@ -773,35 +701,18 @@ extern void ui_element_show(int idx, int on);
    script écrit ce que chaque rangée affiche. `list.row(...)` rend la zone de
    texte d'une rangée, à passer à `text_draw_in` — un item est une ligne de
    donnée, pas un objet d'interface. */
-extern int  ui_list_count    (int l);
-extern void ui_list_set_count(int l, int n);
-extern int  ui_list_index    (int l);
-extern void ui_list_set_index(int l, int i);
-extern int  ui_list_first    (int l);
-extern int  ui_list_row      (int l, int r);
 /* La main, pas l'affichage : une liste inactive reste dessinée et garde son
    index. C'est ce qui permet un menu et son sous-menu à l'écran ensemble. */
-extern int  ui_list_active   (int l);
-extern void ui_list_set_active(int l, int on);
 
 /* Blending — `side` 0 = le dessus (ce qui est mélangé), 1 = le dessous (ce
    avec quoi, situé derrière). Modes : 0 aucun, 1 alpha, 2 vers le blanc,
    3 vers le noir. */
-extern void blend_set_mode    (int mode);
-extern int  blend_get_mode    (void);
-extern void blend_set_layer   (int side, int bg, int on);
-extern void blend_set_obj     (int side, int on);
-extern void blend_set_backdrop(int side, int on);
-extern void blend_set_alpha   (int eva, int evb);
-extern void blend_set_fade    (int evy);
 
 /* Palettes au runtime — remplace les seize couleurs d'une banque matérielle.
    Là où le mélange ci-dessus agit sur un CALQUE entier et seulement vers le
    blanc ou le noir, une banque ne concerne que les tuiles qui la citent : on
    peut refroidir un décor en gardant ses lanternes allumées. Les deux pools
    sont physiquement distincts, d'où deux fonctions. */
-extern void palette_set_bg (int bank, int idx);
-extern void palette_set_obj(int bank, int idx);
 
 /* Sauvegarde — écrit ou relit les variables globales marquées persistantes
    dans l'emplacement `slot`. Rendent 0 si l'emplacement n'existe pas, et
@@ -809,10 +720,6 @@ extern void palette_set_obj(int bank, int idx);
    ou somme de contrôle) : le jeu doit pouvoir distinguer « pas de partie » de
    « partie chargée » sans deviner. Lua appelle save_read `save.load` — cf.
    save_read_var juste dessous pour ce que `save.read` désigne côté Lua. */
-extern int save_write (int slot);
-extern int save_read  (int slot);
-extern int save_exists(int slot);
-extern int save_erase (int slot);
 /* save.read(slot, "nom") côté Lua (ROADMAP v0.22) : la valeur d'UNE variable
    persistante dans un emplacement, sans toucher aux globales de la partie en
    cours — contrairement à save_read ci-dessus. `idx` est un GLOBAL_*, résolu
@@ -820,11 +727,6 @@ extern int save_erase (int slot);
    par accès pointé — chantier global/const). */
 extern int save_read_var(int slot, int idx);
 
-extern void tilemap_set        (int bg, int tx, int ty, int tile);
-extern int  tilemap_get        (int bg, int tx, int ty);
-extern void tilemap_set_palette(int bg, int tx, int ty, int bank);
-extern void tilemap_set_flip   (int bg, int tx, int ty, int fh, int fv);
-extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
 
 /* Fonctions texte HUD — définies dans main.c via GBA_ENGINE_IMPL (wrappers TTE) */
 /* draw_printf / draw_clear retirés avec libtonc TTE — cf. gba_engine.h.
@@ -844,4 +746,4 @@ extern void tilemap_fill       (int bg, int tx, int ty, int w, int h, int tile);
    fini de bouger. */
 static inline int actor_on_ground(const Actor*a) { return a->collision.grounded; }
 
-#endif /* ACTOR_API_STATIC_H */
+#endif /* RUNTIME_API_INLINE_H */

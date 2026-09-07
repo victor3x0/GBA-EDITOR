@@ -8,7 +8,7 @@ sont une ressource explicite du projet (project.globals).
 
 from __future__ import annotations
 from pathlib import Path
-from codegen import build_output
+import codegen.build_output as build_output
 
 
 _C_TYPES = {

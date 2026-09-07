@@ -110,7 +110,7 @@ def test_le_fond_couleur_dune_liste_est_emis(tmp_path):
     from core.models.scene import Scene
     from core.models.palette import PaletteBank
     from core.models.ui_region import UILayout, UIList
-    from codegen.runtime_codegen.main_gen import scene_color_fills
+    from codegen.runtime_codegen.gen_text import scene_color_fills
 
     p = Project(tmp_path / "jeu")
     p.project_dir.mkdir(parents=True, exist_ok=True)
@@ -182,7 +182,7 @@ def projet(tmp_path):
 
 
 def test_la_grille_le_curseur_et_le_style_partent_dans_la_table(projet):
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lay, _lst = projet
     src = "\n".join(emit_ui_lists_c(p))
     rows, cols, major, wrap = _row(src)[:4]
@@ -197,7 +197,7 @@ def test_une_liste_sans_curseur_est_un_cas_normal(projet):
     surlignement, ou qu'un script pilote lui-même, n'en désigne aucun. Rien à
     signaler, donc — un avertissement ici ferait passer un choix pour un oubli,
     et pousserait à poser une image dont le jeu n'a pas besoin."""
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lay, lst = projet
     lst.cursor_image = ""
     logs: list[str] = []
@@ -208,7 +208,7 @@ def test_une_liste_sans_curseur_est_un_cas_normal(projet):
 
 
 def test_un_curseur_introuvable_ne_fait_pas_echouer_le_build(projet):
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lay, lst = projet
     lst.cursor_image = "Absent"
     logs: list[str] = []
@@ -218,7 +218,7 @@ def test_un_curseur_introuvable_ne_fait_pas_echouer_le_build(projet):
 
 
 def test_letat_actif_authore_part_dans_son_tableau_vivant(projet):
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lay, lst = projet
     lst.active = False
     src = "\n".join(emit_ui_lists_c(p))
@@ -229,7 +229,7 @@ def test_la_couleur_de_selection_est_chargee_par_la_scene(projet):
     """Sans ça, `text_var_for` ne trouve pas la variante et la rangée choisie
     reste à son encre — un réglage posé, sans effet, et rien qui le dise."""
     from core.models.scene import Scene
-    from codegen.runtime_codegen.main_gen import scene_text_colors
+    from codegen.runtime_codegen.gen_text import scene_text_colors
     p, _lay, _lst = projet
     scene = Scene(name="Titre", ui_layouts=["hud"])
     p.scenes.append(scene)

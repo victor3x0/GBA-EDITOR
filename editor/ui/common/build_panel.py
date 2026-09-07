@@ -1,8 +1,10 @@
 """BuildPanel, ToolchainBar."""
 
+import re
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QPlainTextEdit, QToolButton,
+    QFrame, QPlainTextEdit, QToolButton, QTabWidget, QListWidget, QListWidgetItem,
 )
 from PyQt6.QtGui import QFont, QColor, QTextCharFormat, QTextCursor, QPainter, QPainterPath
 from PyQt6.QtCore import pyqtSignal, pyqtProperty, Qt, QTimer, QPropertyAnimation, QEasingCurve
@@ -11,6 +13,147 @@ from PyQt6.QtStateMachine import QStateMachine, QState
 from ui.common.theme import C, T
 from core.toolchain import Toolchain
 from ui.common.rom_budget_bar import RomBudgetBar
+
+
+# Un emplacement `fichier.lua:ligne` dans une ligne de journal. Le codegen émet
+# le nom du fichier tel quel (`Titre.lua:2`) ou entre parenthèses pour un prefab/
+# une caméra (`prefab Ball (Ball.lua):3`) — le `\)?` couvre la parenthèse
+# fermante avant le `:`. La ligne peut manquer (faute lexicale sans jeton) :
+# c'est alors une simple mention sans saut, non capturée ici.
+_LUA_LOCATION = re.compile(r"([\w\-.]+\.lua)\)?:(\d+)")
+
+
+def parse_build_location(text: str):
+    """(nom_de_fichier, ligne) du PREMIER `fichier.lua:ligne` d'une ligne de
+    journal, ou None. Fonction pure — c'est elle que teste la couche UI, pas le
+    widget."""
+    m = _LUA_LOCATION.search(text)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+class BuildConsole(QPlainTextEdit):
+    """La console du journal de build, rendue cliquable : une ligne qui cite un
+    `fichier.lua:ligne` s'ouvre au bon endroit d'un clic (le contenu des
+    messages porte déjà la position — il ne manquait que le lien).
+
+    Le clic est traité À LA LIGNE, pas au jeton : un journal se lit vite, et
+    exiger de viser les quelques caractères du nom de fichier gênerait plus que
+    ça n'aiderait. Le curable main apparaît au survol d'une ligne qui a une
+    cible, pour que le lien se voie."""
+
+    location_activated = pyqtSignal(str, int)   # (nom_de_fichier, ligne)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMouseTracking(True)   # pour changer le curseur au survol
+
+    def _location_at(self, pos):
+        cursor = self.cursorForPosition(pos)
+        return parse_build_location(cursor.block().text())
+
+    def mouseMoveEvent(self, e):
+        over = self._location_at(e.pos()) is not None
+        self.viewport().setCursor(
+            Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.IBeamCursor)
+        super().mouseMoveEvent(e)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            loc = self._location_at(e.pos())
+            if loc:
+                self.location_activated.emit(loc[0], loc[1])
+                e.accept()
+                return
+        super().mousePressEvent(e)
+
+
+class DiagnosticsView(QWidget):
+    """La liste des problèmes du validateur, séparée du bruit du journal :
+    chaque ligne cliquable saute à sa source. Le validateur sait déjà tout
+    (`core.validator`) ; il ne manquait qu'un endroit où le lire calmement.
+
+    Deux formes de saut, sans enrichir le modèle : un message qui cite un
+    `fichier.lua:ligne` ouvre le script (comme la console), un message attaché à
+    un acteur de la scène active le sélectionne. Les autres (fond, palette,
+    police, global) s'affichent sans cible — la navigation viendra quand le
+    modèle portera une, cf. TodoTechnique."""
+
+    refresh_requested = pyqtSignal()
+    location_activated = pyqtSignal(str, int)   # fichier.lua, ligne (comme la console)
+    actor_activated = pyqtSignal(str)           # nom d'acteur (scène active)
+    element_activated = pyqtSignal(str, str)    # mise en page, nom d'élément d'UI
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        bar = QFrame()
+        bar.setFixedHeight(26)
+        bar.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(8, 0, 8, 0)
+        self._btn_refresh = QPushButton("⟳ Refresh")
+        self._btn_refresh.setFont(QFont(T.UI, T.SM))
+        self._btn_refresh.setFixedHeight(20)
+        self._btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_refresh.clicked.connect(lambda: self.refresh_requested.emit())
+        h.addWidget(self._btn_refresh)
+        self._summary = QLabel("—")
+        self._summary.setFont(QFont(T.UI, T.SM))
+        self._summary.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        h.addWidget(self._summary)
+        h.addStretch()
+        v.addWidget(bar)
+
+        self._list = QListWidget()
+        self._list.setFont(QFont(T.UI, T.SM))
+        self._list.setStyleSheet(
+            f"QListWidget{{background:{C.BG_DEEP};border:none;padding:2px;}}"
+            f"QListWidget::item{{padding:3px 6px;}}"
+            f"QListWidget::item:hover{{background:{C.BG_HOVER};}}"
+        )
+        self._list.itemClicked.connect(self._on_row)
+        v.addWidget(self._list, 1)
+
+        self._msgs: list = []   # ValidationMessage, dans l'ordre affiché
+
+    def set_diagnostics(self, warnings: list, errors: list):
+        """Peuple la liste — erreurs d'abord (ce qui bloque le build), puis
+        avertissements."""
+        self._list.clear()
+        self._msgs = list(errors) + list(warnings)
+        for m in self._msgs:
+            it = QListWidgetItem(str(m))
+            it.setForeground(QColor(C.ACCENT_RED if m.level == "error" else C.ACCENT_YLW))
+            self._list.addItem(it)
+        if not self._msgs:
+            self._summary.setText("No problems")
+        else:
+            self._summary.setText(
+                f"{len(warnings)} warning(s) · {len(errors)} error(s)")
+
+    def _on_row(self, item):
+        i = self._list.row(item)
+        if not (0 <= i < len(self._msgs)):
+            return
+        m = self._msgs[i]
+        # La cible structurée du message d'abord (une zone d'UI aujourd'hui) ;
+        # sinon l'heuristique — un `fichier.lua:ligne` dans le texte, puis un
+        # nom d'acteur. `getattr` en canard : la vue n'importe pas le validateur.
+        target = getattr(m, "target", None)
+        if target is not None and target.kind == "ui_element":
+            self.element_activated.emit(target.layout, target.name)
+            return
+        loc = parse_build_location(m.message)
+        if loc:
+            self.location_activated.emit(loc[0], loc[1])
+        elif m.actor:
+            self.actor_activated.emit(m.actor)
 
 
 class AnimatedBuildButton(QToolButton):
@@ -187,14 +330,29 @@ class BuildPanel(QWidget):
         hl.addWidget(btn_clear)
         layout.addWidget(header)
 
-        self.console = QPlainTextEdit()
-        self.console.setReadOnly(True)
+        self.console = BuildConsole()
         self.console.setFont(QFont(T.MONO, T.SM))
         self.console.setStyleSheet(
             f"background:{C.BG_DEEP}; color:#c8ffc8; border:none; padding:4px;"
         )
-        self.console.setMaximumBlockCount(500)
-        layout.addWidget(self.console, 1)
+        # Plafond haut : un dump gcc verbeux ne doit pas pousser la VRAIE cause
+        # (souvent la première erreur) hors du tampon.
+        self.console.setMaximumBlockCount(5000)
+
+        # Console (le journal) et Diagnostics (la liste du validateur) partagent
+        # l'emplacement : deux onglets, le budget ROM reste dessous.
+        self.diagnostics = DiagnosticsView()
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setStyleSheet(
+            f"QTabBar::tab{{background:{C.BG_RAISED};color:{C.TEXT_MUTED};"
+            f"padding:3px 10px;border:none;font-family:{T.UI_STACK};font-size:{T.SM}px;}}"
+            f"QTabBar::tab:selected{{color:{C.TEXT_NORM};border-bottom:2px solid {C.ACCENT};}}"
+            f"QTabWidget::pane{{border:none;}}"
+        )
+        tabs.addTab(self.console, "Console")
+        tabs.addTab(self.diagnostics, "Diagnostics")
+        layout.addWidget(tabs, 1)
 
         # Séparé verticalement du journal, et FERRÉ en bas : contrairement au
         # texte de la console (qui défile et se vide au Clear), ce bandeau

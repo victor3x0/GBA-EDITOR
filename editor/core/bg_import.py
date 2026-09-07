@@ -17,10 +17,10 @@ exacte vis-à-vis du hardware.
 from __future__ import annotations
 from typing import Optional
 
-from core.gba_color import (
+from core.models.gba_color import (
     reduce_colors, nearest_rgb, rgb888_to_bgr555, bgr555_to_rgb888,
 )
-from core.models.palette import RESERVED_SLOT_COLOR
+from core.models.gba_color import RESERVED_SLOT_COLOR
 
 # Le format binaire lui-même (tuile <-> hex, miroirs, entrée de carte) vit
 # dans son propre module : les modèles, la génération et le canvas en ont

@@ -1174,7 +1174,7 @@ class SceneInspector(QWidget):
     def _default_font_name(self) -> str:
         """Nom de la police par défaut de la scène — la clé "" de
         `font_pal_banks` s'y résout (cf. `font_pal_key`)."""
-        from codegen.runtime_codegen.main_gen import encodable_project_fonts
+        from codegen.font_emit import encodable_project_fonts
         from codegen.font_emit import default_font_name
         return default_font_name(encodable_project_fonts(self._project), self._scene,
                                  getattr(self._project.settings, "fallback_font", ""))
@@ -1343,7 +1343,7 @@ class SceneInspector(QWidget):
         return self._project.settings.backdrop_color if self._project else 0
 
     def _refresh_backdrop(self):
-        from core.gba_color import bgr555_to_rgb888
+        from core.models.gba_color import bgr555_to_rgb888
         v = self._effective_backdrop()
         r, g, b = bgr555_to_rgb888(v)
         self._btn_backdrop.setStyleSheet(
@@ -1357,7 +1357,7 @@ class SceneInspector(QWidget):
 
     def _pick_backdrop(self):
         from PyQt6.QtWidgets import QColorDialog
-        from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
+        from core.models.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
         if not self._scene:
             return
         r, g, b = bgr555_to_rgb888(self._effective_backdrop())
@@ -1445,7 +1445,7 @@ class SceneInspector(QWidget):
         from ui.common.pickers import font_picker_slot
         p = self._project
         try:
-            from codegen.runtime_codegen.main_gen import encodable_project_fonts
+            from codegen.font_emit import encodable_project_fonts
             usable = {f.name for f in encodable_project_fonts(p)} if p else set()
         except Exception:
             usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()
@@ -1475,7 +1475,7 @@ class SceneInspector(QWidget):
         from ui.common.pickers import font_picker_slot
         p = self._project
         try:
-            from codegen.runtime_codegen.main_gen import encodable_project_fonts
+            from codegen.font_emit import encodable_project_fonts
             usable = {f.name for f in encodable_project_fonts(p)} if p else set()
         except Exception:
             usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()

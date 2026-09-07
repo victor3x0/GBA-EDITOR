@@ -21,7 +21,7 @@ puisque `project.py` l'importe pour composer la classe.
 import json
 
 from core.resource_store import atomic_write
-from core import project_json
+from core.models import project_json
 from core.models.ids import new_id
 from core.models.settings import GlobalVar, Constant
 from scripting.api import DOMAIN_GLOBAL

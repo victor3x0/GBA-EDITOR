@@ -38,7 +38,7 @@ code, pas comme une chaîne.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any
 
 from core.models.resource import Resource
@@ -98,7 +98,7 @@ class DataTable(Resource):
     def to_dict(self) -> dict:
         return {
             "name":    self.name,
-            "columns": [{"name": c.name, "type": c.type} for c in self.columns],
+            "columns": [asdict(c) for c in self.columns],   # dérivé des champs de DataColumn
             "rows":    list(self.rows),
         }
 

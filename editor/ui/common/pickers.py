@@ -15,7 +15,7 @@ from ui.common.widgets import ScriptSlot, ScriptPickerPopup
 from ui.common.palette_swatch import bank_icon
 from ui.common.theme import C, T, QSS
 from ui.common import icons
-from core.gba_color import bgr555_to_rgb888
+from core.models.gba_color import bgr555_to_rgb888
 from core.models.palette import PaletteBank
 
 # Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —

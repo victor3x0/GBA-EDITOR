@@ -955,7 +955,7 @@ class _FrameCanvas(QWidget):
         #   mode 'png'     -> couleurs compressées (own_palette telle quelle)
         #   mode 'indexed' -> index de own_palette recolorés par la banque preview
         if self._own_palette:
-            from core.gba_color import render_indexed, recolor_indexed
+            from core.models.gba_color import render_indexed, recolor_indexed
             p_img = render_indexed(img, self._own_palette)
             if self._preview_indexed and self._tint_bank:
                 img = recolor_indexed(p_img, self._tint_bank)

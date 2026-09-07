@@ -1,4 +1,4 @@
-"""`_hw_layer_z` — l'ordre de composition du canvas doit REPRODUIRE celui du
+"""`hw_layer_z` — l'ordre de composition du canvas doit REPRODUIRE celui du
 hardware GBA, jamais un empilement choisi pour le confort de l'édition.
 
 Avant ce correctif, un acteur (OBJ) avait un zValue fixe (10) et une zone
@@ -17,8 +17,8 @@ import pytest
 
 def _z():
     sys.path.insert(0, "editor")
-    from ui.scene_manager.scene_canvas import _hw_layer_z
-    return _hw_layer_z
+    from ui.scene_manager.canvas.canvas_items import hw_layer_z
+    return hw_layer_z
 
 
 def test_priorite_0_est_devant_priorite_3():

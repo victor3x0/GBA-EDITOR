@@ -73,14 +73,12 @@ def _nom_decorateur(node: ast.AST) -> str:
 # Ces deux-là sont donc ACCEPTÉES, pas ignorées : elles apparaissent dans le
 # rapport avec leur raison, et toute boucle NOUVELLE fait échouer la commande.
 # Retirer une ligne d'ici le jour où la boucle est cassée.
-BOUCLES_ACCEPTEES = {
-    frozenset({"codegen.font_emit", "codegen.runtime_codegen.main_gen"}):
-        "2026-08-12 — main_gen expose `project_fonts` dont font_emit a besoin, "
-        "et lui emprunte huit fonctions en retour. Une seule fonction est à "
-        "contresens ; à déplacer quand on touchera l'émission des polices.",
-    frozenset({"ui.scene_manager.canvas_tools", "ui.scene_manager.scene_canvas"}):
-        "2026-08-12 — l'outil de sélection connaît la vue, la vue instancie "
-        "l'outil. Se dénouera avec la découpe de scene_canvas.py (4 800 lignes).",
+BOUCLES_ACCEPTEES: dict = {
+    # 2026-09-07 — la boucle canvas_tools ↔ scene_canvas est DÉNOUÉE par la
+    # découpe (A3) : `GBAView` vit dans canvas_view et n'est plus importée par
+    # canvas_tools qu'en TYPE_CHECKING ; `SpriteItem` vient de canvas_items. Plus
+    # aucune boucle acceptée. Ajouter une entrée ici seulement pour une boucle
+    # documentée et inévitable.
 }
 
 

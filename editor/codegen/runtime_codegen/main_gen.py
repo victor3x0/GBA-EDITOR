@@ -22,6 +22,55 @@ from core.models.field_value import (FieldValue as _FV,
 # ROADMAP le cite sous ce nom. Cf. `core.models.ui_region`.
 from core.models.ui_region import region_fill_container
 from codegen.palette_alloc import scene_bank_layout
+# Les requêtes de police vivent désormais dans font_emit (leur domaine) — main_gen
+# les CONSOMME. Import de haut niveau : font_emit ne remonte plus vers main_gen,
+# le cycle d'autrefois est rompu (cf. TodoTechnique).
+from codegen.font_emit import project_fonts, encodable_project_fonts
+# Émission de la sauvegarde (SRAM) — extraite dans son sous-module (A3). main_gen
+# n'en consomme que le contrôle bloquant et les tables.
+from codegen.runtime_codegen.gen_save import save_fatal, save_lines
+# Table des caméras et suivi — extraite (A3). `project_cameras` est RÉ-EXPORTÉ ici :
+# data_tables.py et headers.py l'importent depuis main_gen (l'ordre de vérité de la
+# table runtime). `camera_target_index` reste privé à gen_camera.
+from codegen.runtime_codegen.gen_camera import (
+    camera_sym, project_cameras, scene_camera_index, camera_follow_lines)
+# Palettes en RAM (scène) + catalogue — extraites (A3). `_layout_palette_words`
+# reste privé à gen_palette.
+from codegen.runtime_codegen.gen_palette import (
+    resolve_backdrop_color, scene_obj_palette_words, scene_bg_palette_words,
+    palettes_lines)
+# Couche de REQUÊTES partagée (A3) — analyse d'acteurs/collision/arbre, rendue de
+# la donnée, jamais du C. Base des couches : les émetteurs de domaine (affine,
+# sprite, ui…) l'importeront aussi, vers le bas, sans cycle.
+from codegen.runtime_codegen.gen_scene_query import (
+    parent_depths, actors_can_collide, has_solid_box, scene_has_cmap,
+    get_sprite_comp, has_col_event,
+    bg_info, scene_world_size, scene_anim_descriptors,
+    sprite_offsets_for, obj_tiles_used, ui_image_sprites, scene_ui_images,
+    ui_item_geometry)
+# Slots de matrice affine OAM — extraits (A3), au-dessus de la couche de requêtes.
+# `affine_oam_lines_dynamic` émet du C ; les deux autres rendent de la donnée.
+from codegen.runtime_codegen.gen_affine import (
+    affine_entry, compute_affine_info, affine_oam_lines_dynamic)
+# Domaine sprite/animation — extrait (A3), au-dessus des requêtes (n'en dépend pas).
+# `frame_action_ids`/`frame_sfx_syms` rendent la donnée par frame ; les trois autres
+# émettent le C des tables et du tick.
+from codegen.runtime_codegen.gen_sprite import (
+    frame_action_ids, frame_sfx_syms, actor_frame_event_lines,
+    anim_tables_for, anim_tick_lines)
+# Tables d'interface au niveau PROJET — extraites (A3), au-dessus des requêtes.
+# `_ui_images_lines` reste ici (glue vers `obj_text_alloc`) et appelle
+# `emit_ui_images_c` d'ici ; `region_actor_index`/`ui_element_index` sont aussi
+# consommés par `fonts_and_texts_lines` (domaine texte, resté).
+from codegen.runtime_codegen.gen_ui import (
+    emit_ui_images_c, emit_ui_lists_c, emit_ui_elements_c,
+    region_actor_index, ui_element_index)
+# Domaine texte/police — extrait (A3). Réservation VRAM du texte, analyse des
+# fonds de conteneur, émission des tables de polices/textes/zones. `main_gen`
+# n'en consomme que ce que son orchestration et ses émetteurs de scène relisent.
+from codegen.runtime_codegen.gen_text import (
+    scene_text_reservation, obj_text_alloc, fonts_and_texts_lines,
+    scene_region_colors, scene_region_backdrops, gen_ui_texts)
 from codegen.window_alloc import scene_window_layout
 # `prefab_group` est réexporté : `headers.py` l'importe depuis ce module depuis
 # toujours, et sa définition a rejoint le budget d'acteurs (v0.17) — l'éditeur
@@ -29,11 +78,10 @@ from codegen.window_alloc import scene_window_layout
 from codegen.actor_budget import prefab_group, prefab_pool_instances
 from codegen.grit_conversion import (
     count_frames, sprite_unique_frames, seq_key,
-    bg_layer_sym, bg_layer_sym_for, bg_map_geometry, bg_map_sbb_count,
 )
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
-from codegen import build_output
+import codegen.build_output as build_output
 
 
 _BTN_MAP = [
@@ -105,123 +153,6 @@ def _sfx_on_destroy_table(p: Project, all_scene_data: list[dict], pi: list[dict]
     ]
 
 
-def bg_info(p: Project, scene) -> list[dict]:
-    """Un CBB (16 Ko) par layer = bg_slot ; sa map occupe les derniers SBB de ce
-    CBB. Chaque layer de la scène référence une image ; sa compression vient du
-    BackgroundAsset (sidecar) keyé par ce nom. cf. pipeline._check_bg_tile_budget."""
-    result = []
-    for layer in getattr(scene, "background_layers", []):
-        if not layer.background_name:
-            continue
-        ba = p.get_background(layer.background_name)
-        # Fond bitmap (Mode 4) : non supporté au build (increment 2) — ignoré ici
-        # (sinon il serait traité comme un fond tuilé legacy → symbole manquant).
-        if ba is not None and getattr(ba, "mode", "tiled") == "bitmap":
-            continue
-        bg_slot = layer.bg_slot
-        speed = int(layer.scroll_speed * 256)
-        sym = bg_layer_sym(layer.background_name, bg_slot)
-        if ba and ba.tileset:
-            # Fond COMPRESSÉ (métadonnées) — 16 palettes via g_pal_bg, tuiles/map
-            # depuis le C émis par pipeline._emit_encoded_bg. Un axe >64 tuiles
-            # dépasse la fenêtre hardware -> streaming (map résidente 64 sur cet axe).
-            # Symbole PROPRE À LA SCÈNE si le layer est peint (map d'overrides,
-            # cf. bg_layer_sym_for / pipeline._emit_encoded_bg).
-            sym = bg_layer_sym_for(scene, layer)
-            tw, th = ba.tiles_w, ba.tiles_h
-            stream_h = tw > 64
-            stream_v = th > 64
-            win_w = 64 if stream_h else tw
-            win_h = 64 if stream_v else th
-            ms = (1 if win_w > 32 else 0) | (2 if win_h > 32 else 0)
-            map_sbb_count = bg_map_sbb_count(ms)
-            result.append({
-                "bg": bg_slot, "stem": ba.name, "sym": sym,
-                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
-                "map_size": ms, "map_sbb_count": map_sbb_count,
-                "speed": speed, "pal_bank": layer.pal_bank, "compressed": True,
-                "stream": stream_h or stream_v, "stream_h": stream_h, "stream_v": stream_v,
-                "win_w": win_w, "win_h": win_h,
-                "bpp8": getattr(ba, "bpp", 4) == 8,   # BGxCNT bit 7 (256/1)
-            })
-        else:
-            # Image non compressée -> taille depuis le PNG (chemin legacy).
-            ap = p.background_images_dir / (ba.asset if ba and ba.asset else f"{layer.background_name}.png")
-            try:
-                from PIL import Image
-                with Image.open(ap) as img:
-                    w, h = img.size
-            except Exception:
-                w, h = 240, 160
-            tw, th, ms = bg_map_geometry(w, h)
-            map_sbb_count = bg_map_sbb_count(ms)
-            result.append({
-                "bg": bg_slot, "stem": ap.stem, "sym": sym,
-                "tw": tw, "th": th, "sbb": bg_slot * 8 + (8 - map_sbb_count),
-                "map_size": ms, "map_sbb_count": map_sbb_count,
-                "speed": speed, "pal_bank": layer.pal_bank,
-            })
-    _apply_vram_layout(p, scene, result)
-    return result
-
-
-def scene_world_size(p: Project, scene) -> tuple[int, int]:
-    """Taille du monde de la scène en pixels — le canvas : le plus grand des
-    fonds posés, 240×160 par défaut. C'est ce que `scene.size.w/.h` expose aux
-    scripts (posé au runtime par scene_init dans g_scene_w/g_scene_h)."""
-    w, h = 240, 160
-    for bi in bg_info(p, scene):
-        tw, th = bi.get("tw") or 0, bi.get("th") or 0
-        if tw:
-            w = max(w, tw * 8)
-        if th:
-            h = max(h, th * 8)
-    return min(w, 32767), min(h, 32767)
-
-
-def scene_anim_descriptors(p, scene, bgi: list[dict]) -> list[dict]:
-    """Placements de fonds animés de la scène, enrichis de ce que seul le codegen
-    connaît : le screenblock et la taille de la carte du calque hôte.
-
-    L'ordre est celui de `bg_anim.scene_animations`, le même que `pipeline` a
-    utilisé pour nommer les tables — les deux le recalculent séparément, ils
-    doivent tomber d'accord (cf. bg_anim.anim_table_sym)."""
-    from codegen.bg_anim import scene_animations, anim_table_sym, shared_table_sym
-    by_slot = {bi["bg"]: bi for bi in bgi}
-    out = []
-    seen_shared: set[int] = set()
-    for a in scene_animations(p, scene):
-        bi = by_slot.get(a["layer"].bg_slot)
-        if bi is None:
-            continue    # calque non émis (bitmap, image manquante) : rien à animer
-        g = a["geom"]
-        if a["shared"]:
-            # UN descripteur par fusion, pas par copie : le bloc de pixels est
-            # partagé, deux descripteurs y écriraient la même chose deux fois.
-            if a["table_index"] in seen_shared:
-                continue
-            seen_shared.add(a["table_index"])
-            out.append({
-                "shared": True,
-                "table": shared_table_sym(scene, a["table_index"]),
-                # 8 mots de 32 bits par tuile 4bpp = 16 u16.
-                "cbb": bi["bg"], "vram_ofs": a["block"].tile_base * 16,
-                "words": g.cells * 8,
-                "frames": g.frames, "speed": g.speed, "loop": 1 if g.loop else 0,
-            })
-            continue
-        f0, t0 = g.start_state()
-        out.append({
-            "shared": False,
-            "table": anim_table_sym(scene, a["table_index"]),
-            "sbb": bi["sbb"], "ms": bi["map_size"],
-            "col": g.col, "row": g.row, "cols": g.cols, "rows": g.rows,
-            "frames": g.frames, "speed": g.speed, "loop": 1 if g.loop else 0,
-            "f0": f0, "t0": t0,
-        })
-    return out
-
-
 def _layer_tiles_used(p, bi: dict) -> int:
     """Tuiles réellement générées pour un layer. Deux sources selon le chemin :
     le sidecar pour un fond compressé (connu sans grit), l'en-tête grit sinon."""
@@ -242,234 +173,23 @@ def _layer_tiles_used(p, bi: dict) -> int:
     return 512
 
 
-def scene_text_colors(p, scene, font_name: str) -> list:
-    """Couleurs à charger pour cette police dans cette scène, variante 0 d'abord.
-
-    La variante 0 est l'encre d'ORIGINE : une police à plusieurs teintes garde
-    les siennes tant qu'aucun slot ne demande de couleur. Les autres sont les
-    index réclamés par les slots, chacun coûtant une copie des glyphes — d'où le
-    tri, pour que l'ordre ne dépende pas de l'itération.
-
-    Un slot qui ne DÉCLARE pas de police écrit avec la police courante, que le
-    build ne connaît pas : sa couleur compte alors pour toutes les polices de la
-    scène. Une copie de trop coûte des tuiles ; une de moins ferait tomber la
-    couleur en silence."""
-    from core.models.ui_region import KIND_SLOTS, KIND_LIST
-    colors: set = set()
-    for _lay, el in p.scene_ui_elements(scene):
-        # Une LISTE réclame la couleur de sa rangée choisie, au même titre qu'un
-        # slot réclame la sienne : le moteur la résout en VARIANTE au rendu
-        # (`text_var_for`), et une variante non chargée fait retomber la rangée
-        # sur son encre sans que rien ne le dise. La liste ne déclare pas de
-        # police — sa couleur compte donc pour toutes celles de la scène, même
-        # règle qu'un slot qui n'en déclare pas.
-        if getattr(el, "kind", "") == KIND_LIST:
-            c = int(getattr(el, "selected_text_color", 0) or 0)
-            if 1 <= c <= 15:
-                colors.add(c)
-            continue
-        if getattr(el, "kind", "") not in KIND_SLOTS:
-            continue
-        c = int(getattr(el, "text_color", 0) or 0)
-        if not 1 <= c <= 15:
-            continue
-        declared = getattr(el, "font_name", "")
-        if not declared or declared == font_name:
-            colors.add(c)
-    return [0] + sorted(colors)
-
-
-def _declared_lang_codes(p) -> list[str]:
-    """Codes des langues déclarées, source en tête — `[""]` si le projet n'en
-    déclare aucune.
-
-    Un point unique parce que DEUX lecteurs doivent voir la même liste : le
-    sous-ensemble de glyphes ÉMIS pour une scène (`_emit_font_subsets`) et la
-    place RÉSERVÉE pour l'accueillir (`scene_text_reservation`). Les laisser
-    calculer leur liste chacun de son côté est exactement ce qui a produit le
-    décalage réparé en phase 5.1 : le runtime chargeait l'union, le build
-    réservait la source."""
-    langs = p.settings.all_languages() if hasattr(p, "settings") else []
-    return [l.code for l in langs] or [""]
-
-
-def scene_text_reservation(p, scene) -> dict:
-    """Tuiles à réserver au texte dans le charblock d'UI de CETTE scène.
-
-    Un seul calcul pour deux lecteurs : le placement (`_apply_vram_layout`) et
-    le garde-fou de budget (`pipeline._scene_tile_budgets`). Les laisser
-    diverger validerait un budget que le placement ne tient pas.
-
-    **Dimensionnée sur l'UNION des langues déclarées** (ROADMAP v0.9, phase
-    5.1), parce que c'est ce que le RUNTIME charge : `text_set_font` copie
-    `n_var × n_load` tuiles depuis le `FontSubset` de la scène, et ce
-    sous-ensemble est l'union (`_emit_font_subsets`, décision 4 de la phase
-    3.3) — quelle que soit la valeur de `g_lang`. Compter la seule langue
-    source réservait la moitié du bloc dans le cas mesuré (12 tuiles pour 24
-    chargées) et laissait le chargement écraser ce qui suit : les bases des
-    polices voisines, le bloc de surface composée, les sprites en cible BG.
-    Un projet monolingue n'en voit rien — l'union d'une seule langue est
-    cette langue.
-
-    Quatre postes, dans l'ordre où ils occupent le charblock :
-    - les fonds COULEUR puis les fonds IMAGE (nine-slice, background) — ils
-      précèdent les glyphes, qui se décalent d'autant ;
-    - les GLYPHES, restreints aux polices que cette scène peut charger
-      (`font_emit.scene_font_names`) ;
-    - la SURFACE composée : un bloc PROPRE par zone, à la taille de son
-      rectangle, plus les 240 tuiles de la surface partagée SI la scène peut
-      écrire librement (`text.draw`). Jamais à l'adresse des glyphes (cf.
-      runtime `g_surf_tile_base`, `RegionSurf`) ;
-    - les SPRITES des images en cible BG, TOUTES frames comprises : un script
-      peut changer d'état à n'importe quelle frame, et recopier depuis la ROM à
-      cet instant-là ferait clignoter l'image. En dernier parce que c'est le
-      poste le plus récent, donc celui dont l'absence ne doit rien décaler dans
-      un projet qui n'emploie pas d'image."""
-    from codegen.font_emit import (scene_text_tiles, scene_font_names,
-                                   scene_codepoints_union, mono_vram_tiles,
-                                   scene_default_font, TEXT_SURF_TILES)
-    fonts = project_fonts(p)
-    # `scene_init` émet toujours un `text_set_font` : la police par défaut de la
-    # scène est en VRAM même si la scène n'écrit pas une lettre.
-    _, default_font = scene_default_font(p, scene)
-    names = scene_font_names(p, scene, default_font)
-
-    fills, fill_indices = scene_color_fills(p, scene)
-    img_fills, img_assets = scene_image_fills(p, scene)
-    scene_slots = p.scene_ui_slots(scene)     # (nœud, slot) sur les N `Interface`
-    # Trois raisons de composer, donc de réserver un bloc de surface : la zone
-    # a un FOND (l'aplat d'un conteneur couleur, ou la carte d'un conteneur
-    # nine-slice/background) ou elle est SURLIGNÉE. Dans les trois cas le texte
-    # se compose même en police mono — poser une tuile de glyphe percerait ce
-    # qu'il y a dessous. Les mêmes fonctions que l'émetteur, sinon la
-    # réservation et le placement ne parleraient pas de la même scène.
-    needs_surface = bool(scene_region_colors(p, scene, fills)) \
-        or bool(scene_region_backdrops(p, scene, img_fills)) \
-        or any(int(getattr(r, "highlight_color", 0) or 0)
-               for _l, r in scene_slots)
-
-    # Ce que la scène AFFICHE borne ce qu'elle charge. `None` = indécidable,
-    # donc la police entière (et pas de sous-ensemble émis non plus). Le MÊME
-    # appel que `_emit_font_subsets`, avec les mêmes langues : la réservation
-    # et le sous-ensemble émis sont deux lectures d'un seul calcul.
-    cps = scene_codepoints_union(p, scene, _declared_lang_codes(p))
-
-    # ── Où chaque police se charge ────────────────────────────────
-    # Chacune a SA base : un titre et un corps de texte coexistent à l'écran, et
-    # la réservation devient une SOMME (abordable grâce au sous-ensemble).
-    #
-    # Si l'ensemble des polices est indécidable, on ne sait pas lesquelles
-    # coexistent et sommer tout le projet réserverait un charblock pour rien :
-    # repli sur le modèle « une seule résidente, base 0 », donc le MAXIMUM.
-    from codegen.font_emit import render_composited
-    scene_fonts = [(i, f) for i, f in enumerate(fonts)
-                   if names is None or f.name in names]
-    font_layout: list[dict] = []
-    if names is not None:
-        base = 0
-        for i, f in scene_fonts:
-            if render_composited(f):
-                continue          # ne charge aucun glyphe : c'est la surface qui coûte
-            n = mono_vram_tiles(f, cps)
-            colors = scene_text_colors(p, scene, f.name)
-            font_layout.append({"index": i, "name": f.name, "base": base,
-                                "tiles": n * len(colors), "colors": colors})
-            base += n * len(colors)
-        mono_tiles = base
-    else:
-        mono_tiles = scene_text_tiles(fonts, names, cps)
-
-    # Une police COMPOSÉE range ses pixels dans la surface, comme une zone à
-    # fond : sans ça `blit_use_bg_surface` retombe sur la base des glyphes et
-    # écrase la police mono voisine.
-    needs_surface = needs_surface or any(render_composited(f) for _i, f in scene_fonts)
-
-    img_tiles = sum(a["tiles"] for a in img_assets)
-
-    # ── Où chaque ZONE compose ────────────────────────────────────
-    # Un bloc PROPRE par zone composée, à la taille de son rectangle, plutôt
-    # que la surface partagée adressée modulo : celle-ci ne couvre que
-    # TEXT_SURF_H rangées sur 20, donc deux boîtes éloignées à l'écran s'y
-    # écrasaient (un titre en haut, un dialogue en bas — une mise en page
-    # banale). Cf. `RegionSurf` dans gba_engine.h.
-    #
-    # Même motif que `font_layout` juste au-dessus et `img_layout` juste en
-    # dessous : une base RELATIVE au bloc de la scène, dans l'ordre de la
-    # mise en page.
-    from codegen.font_emit import scene_writes_free
-    from core.models.ui_region import KIND_TEXT, TARGET_BG
-    rm = int(getattr(scene, "render_mode", 0) or 0)
-    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
-    surf_layout: list[dict] = []
-    base = 0
-    if needs_surface:
-        for lay_ui, el in scene_slots:
-            if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
-                continue
-            if lay_ui.resolved_target(el, rm) != TARGET_BG:
-                continue      # une bande OBJ a déjà son bloc propre
-            if not region_is_composited(p, lay_ui, el, default_font):
-                continue      # chemin tilemap : pas de surface du tout
-            _tx, _ty, tw, th = lay_ui.absolute_tile_rect(el, lambda _n: None)
-            surf_layout.append({"region": slot_idx[el.name], "name": el.name,
-                                "base": base, "w": tw, "h": th})
-            base += tw * th
-    region_surf_tiles = base
-
-    # La surface PARTAGÉE ne subsiste que pour l'écriture libre, qui n'a pas de
-    # rectangle à qui donner un bloc. Une scène qui n'écrit que dans ses zones
-    # ne la paie plus.
-    shared_surf_tiles = (TEXT_SURF_TILES
-                         if needs_surface and scene_writes_free(p, scene) else 0)
-    surf_tiles = shared_surf_tiles + region_surf_tiles
-
-    # Images en cible BG : chacune sa base RELATIVE au bloc, dans l'ordre de la
-    # mise en page. Relative comme le reste (glyphes, surface) — la base absolue
-    # est celle que l'allocateur donne à la scène, et une même mise en page sert
-    # plusieurs scènes qui ne l'ont pas au même endroit.
-    ui_images = scene_ui_images(p, scene)
-    img_layout: list[dict] = []
-    base = 0
-    for info in ui_images:
-        if not info["bg"]:
-            continue
-        img_layout.append({"index": info["index"], "name": info["el"].name,
-                           "base": base, "tiles": info["tiles"],
-                           "sprite": info["sprite"].name,
-                           "tiles_per_frame": info["tiles_per_frame"]})
-        base += info["tiles"]
-    sprite_tiles = base
-
-    return {
-        "fills": fills, "fill_indices": fill_indices,
-        "img_fills": img_fills, "img_assets": img_assets,
-        "mono_tiles": mono_tiles, "needs_surface": needs_surface,
-        "surf_layout": surf_layout, "shared_surf_tiles": shared_surf_tiles,
-        # Tuiles RÉELLEMENT occupées par la surface : le bloc partagé (0 si la
-        # scène n'écrit pas librement) PLUS les blocs propres des zones. C'est ce
-        # qui sépare le texte des images ; l'émission doit lire CE nombre, pas le
-        # plafond `TEXT_SURF_TILES` (cf. `_gen_ui_images`).
-        "surf_tiles": surf_tiles,
-        "font_names": names, "codepoints": cps, "font_layout": font_layout,
-        "default_font": default_font,
-        "ui_images": ui_images, "img_layout": img_layout,
-        "sprite_tiles": sprite_tiles,
-        "total": (len(fill_indices) + img_tiles + mono_tiles + surf_tiles
-                  + sprite_tiles),
-    }
-
-
-def _apply_vram_layout(p, scene, bgi: list[dict]) -> None:
+def _apply_vram_layout(p, scene, bgi: list[dict], res: dict) -> None:
     """Remplace le placement historique des maps par celui de l'allocateur.
 
     Écrit `sbb` sur place, et mémorise le placement du texte sur la scène pour
     que `_gen_scene_init` le retrouve — les deux doivent voir EXACTEMENT la même
     allocation, sinon les tuiles et la map du texte partent à des adresses qui
-    ne se correspondent plus."""
+    ne se correspondent plus.
+
+    `res` (la réservation de texte) est CALCULÉE PAR L'APPELANT et passée ici :
+    la place vidéo dépend de ce que le texte réserve, mais ce module ne connaît
+    pas le domaine texte. C'est ce qui garde `bg_info` (une requête pure de
+    géométrie) et cette pose VRAM à l'écart de `scene_text_reservation` et de
+    tout le sous-système d'analyse UI qu'il tire — la soudure BG↔texte est
+    rompue au profit d'une dépendance explicite, orchestrée d'en haut."""
     from codegen.vram_alloc import scene_layout
     slots = {bi["bg"]: _layer_tiles_used(p, bi) for bi in bgi}
     maps  = {bi["bg"]: bi["map_sbb_count"] for bi in bgi}
-    res = scene_text_reservation(p, scene)
     lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), res["total"])
     for bi in bgi:
         bi["sbb"] = lay.map_sbb[bi["bg"]]
@@ -607,7 +327,7 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         # Le slot appartient à la SCÈNE (il change d'une scène à l'autre) : on le
         # préserve. L'échelle et la rotation appartiennent au PREFAB : on les
         # repose comme au scene_init, c'est-à-dire à l'état neutre du template.
-        _sp_aff = _affine_entry(pf, sp, 0) if sp else None
+        _sp_aff = affine_entry(pf, sp, 0) if sp else None
         if _sp_aff:
             L.append(f"            int _aff = g_actors[_i].sprite.affine_slot;")
         L.append(f"            g_actors[_i] = (Actor){{0}};")
@@ -656,7 +376,7 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         # frame courante (cf. `_pool_compose_lines`), et l'écrire deux fois
         # laisserait croire qu'elle vient d'ici.
         for k, part in enumerate(getattr(pf, "children", []) or [], start=1):
-            p_sc = _get_sprite_comp(part)
+            p_sc = get_sprite_comp(part)
             p_spr = (p.get_sprite(p_sc.sprite_name)
                      if (p_sc and p_sc.sprite_name) else None)
             p_own = list(p_spr.own_palette) if (p_spr and getattr(p_spr, "own_palette", None)) else []
@@ -715,425 +435,6 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
             "",
         ]
     return L
-
-
-# ─── helpers multi-scène ──────────────────────────────────────────────────────
-
-def _sprite_offsets_for(p: Project, sprites: list) -> tuple[dict, dict]:
-    """Calcule tile_offset et nframes pour une liste (actor, sprite), sans doublons."""
-    offsets, nframes = {}, {}
-    tile_offset = 0
-    for _, sprite in sprites:
-        if not sprite or not sprite.asset or sprite.name in offsets:
-            continue
-        nf = count_frames(p, sprite)
-        offsets[sprite.name] = tile_offset
-        nframes[sprite.name] = nf
-        tile_offset += sprite.tiles_per_frame * nf
-    return offsets, nframes
-
-
-def _obj_tiles_used(p: Project, sprites: list) -> int:
-    """Tuiles de VRAM OBJ occupées par les sprites — donc la 1re tuile libre.
-
-    Recalcule l'accumulation de `_sprite_offsets_for` plutôt que de lui faire
-    rendre un total de plus : les deux doivent packer à l'identique, et un
-    second compteur à tenir à jour finirait par diverger."""
-    seen, total = set(), 0
-    for _, sprite in sprites:
-        if not sprite or not sprite.asset or sprite.name in seen:
-            continue
-        seen.add(sprite.name)
-        total += sprite.tiles_per_frame * count_frames(p, sprite)
-    return total
-
-
-def ui_image_sprites(p: Project) -> list:
-    """[(None, SpriteAsset)] des sprites que les IMAGES d'UI réclament.
-
-    Rendu sous la forme de paires `(actor, sprite)` pour se verser tel quel dans
-    `all_sprite_pairs` : les tuiles d'un sprite d'interface arrivent alors en
-    VRAM OBJ par le même chemin que celles d'un acteur, et `_sprite_offsets_for`
-    lui donne une base dans la même numérotation. Un chemin de chargement à part
-    aurait dupliqué le packing — donc, tôt ou tard, l'aurait fait diverger.
-
-    Vaut aussi pour une image en cible BG : ses tuiles sont recopiées dans le
-    charblock d'UI, mais le sprite reste résident en OBJ. Le doublon est assumé
-    — il n'y a pas de « désallouer une plage OBJ » dans ce packing, et une image
-    de HUD partage presque toujours son sprite avec un acteur."""
-    out, seen = [], set()
-    for _lay, im in (p.all_images() if hasattr(p, "all_images") else []):
-        name = getattr(im, "sprite_name", "") or ""
-        if not name or name in seen:
-            continue
-        sprite = p.get_sprite(name)
-        if sprite is None or not sprite.asset:
-            continue
-        seen.add(name)
-        out.append((None, sprite))
-    return out
-
-
-def scene_ui_images(p: Project, scene) -> list[dict]:
-    """Ce que chaque image de la mise en page d'une scène demande au build.
-
-    Un dict par image RÉSOLUE (sprite existant) : index global dans
-    `g_ui_images`, sprite, nombre de frames, cible, et le nombre de tuiles à
-    réserver dans le charblock d'UI si elle s'écrit dans la tilemap.
-
-    Les images NON résolues (aucun sprite, ou nom cassé) sont omises et non pas
-    réservées à zéro : elles n'existent pas à l'écran, et le validateur le dit
-    déjà. Réserver pour elles décalerait la base des suivantes à chaque frappe
-    dans le champ « Sprite »."""
-    from core.models.ui_region import TARGET_BG
-    rm = int(getattr(scene, "render_mode", 0) or 0)
-    index = {im.name: i for i, (_l, im) in enumerate(p.all_images())}
-    out: list[dict] = []
-    for lay, im in p.scene_ui_images(scene):
-        sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
-        if sprite is None or not sprite.asset or im.name not in index:
-            continue
-        frames = count_frames(p, sprite)
-        g = ui_item_geometry(im, sprite, frames)
-        out.append({
-            "el": im, "index": index[im.name], "sprite": sprite,
-            "frames": frames, "tiles": g["tiles"],
-            "tiles_per_frame": sprite.tiles_per_frame,
-            "map_tiles": g["map_tiles"],
-            "cols": g["cols"], "rows": g["rows"],
-            "frame_w": g["frame_w"], "frame_h": g["frame_h"],
-            "bg": lay.resolved_target(im, rm) == TARGET_BG,
-        })
-    return out
-
-
-def ui_item_geometry(el, sprite, frames: int = 1) -> dict:
-    """Géométrie d'un élément qui pose un sprite, image ou fond de conteneur.
-
-    Le modèle ne résout pas les noms d'asset : c'est ici qu'on lui donne la
-    taille de frame, seule inconnue qui sépare un `UIImage` (dont le rectangle
-    EST la frame) d'un `UIContainer` à fond sprite (dont le rectangle se pave)."""
-    from core.models.ui_region import image_geometry
-    return image_geometry(el, frames,
-                          int(getattr(sprite, "frame_w", 0) or 0),
-                          int(getattr(sprite, "frame_h", 0) or 0))
-
-
-def _obj_text_alloc(p: Project) -> dict:
-    """Placement OBJ de chaque zone : {nom: {oam_rel, tile_rel, ...}}.
-
-    Relatif à sa MISE EN PAGE, pas au projet : deux mises en page se partagent
-    la même plage réservée puisqu'une seule est active par scène. Sans ça, cinq
-    boîtes de dialogue dans cinq mises en page réserveraient cinq fois la place
-    alors qu'on n'en voit jamais qu'une."""
-    from core.models.ui_region import layout_obj_budget
-    out = {}
-    for lay in getattr(p, "ui_layouts", []):
-        # Les frames ET la taille de frame par image : `layout_obj_budget` ne
-        # résout pas les noms d'asset, et sous-réserver ferait écrire une image
-        # dans les tuiles de la suivante. La taille de frame commande en plus le
-        # PAVAGE d'un fond de conteneur, donc son nombre de slots OAM.
-        frames, sizes = {}, {}
-        for im in lay.images:
-            sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
-            if sprite is not None and sprite.asset:
-                frames[im.name] = count_frames(p, sprite)
-                sizes[im.name] = (int(getattr(sprite, "frame_w", 0) or 0),
-                                  int(getattr(sprite, "frame_h", 0) or 0))
-        # Idem pour les glyphes animés : ils se comptent dans le TEXTE que
-        # chaque zone affiche (toutes langues confondues), que le modèle ne
-        # résout pas davantage que les sprites.
-        bud = layout_obj_budget(lay, image_frames=frames, image_frame_size=sizes,
-                                animated_by_name=p.layout_animated_glyphs(lay))
-        for name, place in bud["place"].items():
-            out[name] = place
-    return out
-
-
-def _frame_action_ids(p: Project, sprite: SpriteAsset) -> list[int]:
-    """L'ACTION de chaque frame du sprite, dans l'ordre ABSOLU des frames.
-
-    Source de vérité unique pour la table émise et pour le test du stepper : les
-    deux doivent voir exactement la même liste, sinon on émet un test qui lit
-    une table absente.
-
-    Une frame nomme une action (« pas »), jamais un effet : c'est l'état
-    courant de la SoundBox qui dit vers quel échantillon elle pointe. L'index
-    vient de `Project.sound_action_names()`, COMMUN au projet — une frame ne
-    sait pas quelle SoundBox sera active quand elle se jouera.
-
-    Un nom qu'aucun graphe ne déclare rend -1. C'est le cas le plus courant
-    aujourd'hui (aucun graphe n'existe encore) et c'est volontairement le
-    comportement le plus inoffensif : silencieux plutôt que faux. Le validateur,
-    lui, le signale — pour que « silencieux » ne veuille pas dire « invisible ».
-    """
-    actions = p.sound_action_names("sound_box")
-    index = {name: i for i, name in enumerate(actions)}
-    _, ordered = sprite_unique_frames(sprite)
-    return [index.get(getattr(fr, "action_name", "") or "", -1)
-            for fr, _fh, _fv in ordered]
-
-
-def _frame_sfx_syms(p: Project, sprite: SpriteAsset) -> list[tuple[str, int]]:
-    """Le Sfx DIRECT de chaque frame du sprite (ROADMAP v0.8.9), dans l'ordre
-    ABSOLU des frames — même patron que `_frame_action_ids`, mais résolu au
-    nom du Sfx lui-même : pas d'indirection par un espace de noms d'actions,
-    `AnimFrame.direct_sfx_name` VISE déjà un Sfx du projet. La constante `SFX_*`
-    existe forcément (cf. `referenced_sound_names`, source ⑤) puisque
-    `resolve_sound_assets` garde tout Sfx cité par une frame.
-
-    Retourne (symbole C du volume, ou "-1") — le volume vient de la ressource
-    Sfx elle-même, même lecture que `self:play_sfx()`/`sfx.play()`
-    (`Sfx.volume` → `volume_to_effect`), pas d'un réglage propre à la frame.
-
-    Un nom qui ne correspond à aucun Sfx du projet rend ("-1", 0) — signalé
-    par le validateur (`_check_sound_boxes`), silencieux ici plutôt que faux.
-    """
-    from codegen.c_names import c_ident
-    from core.models.audio import volume_to_effect
-    by_name = {s.name: s for s in getattr(p, "sfx", [])}
-    _, ordered = sprite_unique_frames(sprite)
-    out = []
-    for fr, _fh, _fv in ordered:
-        name = getattr(fr, "direct_sfx_name", "") or ""
-        sfx = by_name.get(name)
-        if sfx is not None:
-            out.append((f"SFX_{c_ident(name)}", volume_to_effect(sfx.volume)))
-        else:
-            out.append(("-1", 0))
-    return out
-
-
-_actor_fn_cache: dict = {}
-
-
-def _actor_script_functions(p: Project, actor: Actor) -> set[str]:
-    """Les noms de fonctions top-level déclarées dans le script Lua de cet
-    actor — même lecture que `ValidationContext.script_functions`
-    (core/validator.py), mais indépendante : le build n'a pas de
-    ValidationContext sous la main ici. Cache module-level : plusieurs actors
-    de la même scène partagent parfois le même fichier de script."""
-    comp = actor.get_component("script")
-    if not comp or not comp.active or not comp.script:
-        return set()
-    sp = p.asset_abs(comp.script)
-    if not sp or not sp.exists():
-        return set()
-    key = str(sp)
-    if key not in _actor_fn_cache:
-        from scripting.parser import parse as lua_parse, LuaParseError
-        try:
-            script = lua_parse(sp.read_text(encoding="utf-8"))
-            _actor_fn_cache[key] = {fn.name for fn in script.functions}
-        except (LuaParseError, OSError):
-            _actor_fn_cache[key] = set()
-    return _actor_fn_cache[key]
-
-
-def _actor_frame_event_lines(p: Project, actor: Actor, sprite: SpriteAsset) -> tuple[list[str], bool]:
-    """Table de pointeurs de fonction EventCall pour CET actor (ROADMAP
-    v0.8.9) — PAS pour son sprite : contrairement à `_frame_action_ids`/
-    `_frame_sfx_syms`, la cible d'un EventCall est une fonction du script de
-    l'actor, donc deux actors qui partagent le même sprite peuvent résoudre
-    le même `event_name` vers deux fonctions différentes (ou aucune). La
-    table est donc nommée par ACTOR (`{actor_sym}_frame_event`), pas par
-    sprite, et régénérée pour chaque actor qui en a besoin.
-
-    Un event qui ne correspond à aucune fonction déclarée dans le script
-    résout vers NULL — averti par le validateur (`_check_frame_events`),
-    silencieux ici comme les deux autres emplacements plutôt que de casser
-    le lien."""
-    declared = _actor_script_functions(p, actor)
-    if not declared:
-        return [], False
-    asym = c_sym(actor.name)
-    _, ordered = sprite_unique_frames(sprite)
-    entries: list[str] = []
-    used: set[str] = set()
-    for fr, _fh, _fv in ordered:
-        name = getattr(fr, "event_name", "") or ""
-        if name and name in declared:
-            entries.append(f"&{asym}_{name}")
-            used.add(name)
-        else:
-            entries.append("0")
-    if not used:
-        return [], False
-    L = [f"extern void {asym}_{name}(Actor*);" for name in sorted(used)]
-    L.append(f"static void (* const {asym}_frame_event[])(Actor*) = {{{','.join(entries)}}};")
-    return L, True
-
-
-def _anim_tables_for(p: Project, sprite: SpriteAsset) -> list[str]:
-    """Génère les tables C d'animation pour un SpriteAsset.
-
-    Produit :
-      {sym}_anim_dirs[]   — {dir, frame_start, frame_count} par état+direction
-      {sym}_state_start[] — index dans anim_dirs où commence chaque état
-      {sym}_state_speed[] — speed (ticks) par état
-      {sym}_state_loop[]  — loop (0/1) par état
-    """
-    sym = f"sprite_{c_sym(sprite.name)}"
-    entries: list[str] = []          # "{dir,start,count}"
-    state_starts: list[int] = []
-    state_speeds: list[int] = []
-    state_loops: list[int] = []
-
-    # seq_starts fait autorité sur le layout du sheet : chaque direction occupe
-    # un bloc contigu [start, start+count) — le runtime joue frame=start+k.
-    seq_starts, _ = sprite_unique_frames(sprite)
-
-    for state in sprite.states:
-        state_starts.append(len(entries))
-        state_speeds.append(state.speed)
-        state_loops.append(1 if state.loop else 0)
-        dir_map = {sd.dir: sd for sd in state.directions}
-        for sd in state.directions:
-            src_sd = dir_map.get(sd.mirror_of, sd) if sd.mirror_of is not None else sd
-            start = seq_starts[seq_key(src_sd, sd.flip_h, sd.flip_v)]
-            count = len(src_sd.frames)
-            entries.append(f"{{{sd.dir},{start},{count}}}")
-        entries.append("{255,0,0}")   # sentinel de fin d'état
-
-    # Effets posés sur les frames. `ordered` fait autorité sur l'index absolu de
-    # frame — le même layout que le sheet reconstruit — donc la table s'indexe
-    # directement par `Actor.frame`.
-    #
-    # Conséquence ASSUMÉE de la déduplication par séquence : une source et son
-    # miroir partagent leur bloc, donc leur effet. C'est voulu (le pas est le
-    # même à gauche et à droite) ; deux états identiques le partagent aussi, et
-    # qui veut les différencier renonce au miroir (ROADMAP v0.8.5).
-    frame_actions = _frame_action_ids(p, sprite)
-
-    L: list[str] = [
-        f"static const u8 __attribute__((unused)) {sym}_anim_dirs[][3] = {{",
-        "    " + ",".join(entries),
-        "};",
-        f"static const u8 __attribute__((unused)) {sym}_state_start[] = {{{','.join(str(x) for x in state_starts)}}};",
-        f"static const u8 __attribute__((unused)) {sym}_state_speed[] = {{{','.join(str(x) for x in state_speeds)}}};",
-        f"static const u8 __attribute__((unused)) {sym}_state_loop[]  = {{{','.join(str(x) for x in state_loops)}}};",
-    ]
-    # Émise SEULEMENT si au moins une frame porte un emplacement : une table de
-    # -1 serait de la ROM dépensée pour rien, et un test par frame pour rien.
-    #
-    # Ce qui est émis est un id d'EMPLACEMENT, pas un effet : c'est l'état
-    # courant de la machine SFX qui dit vers quel échantillon il pointe, et le
-    # runtime le lit dans `g_sound_box_action[]`. C'est ce qui permet au même cycle de
-    # marche de sonner « sable » ou « cailloux » sans être authoré deux fois.
-    if any(a >= 0 for a in frame_actions):
-        L += [
-            "/* Emplacement joué en arrivant sur la frame — -1 = aucun. */",
-            f"static const s16 {sym}_frame_action[] = {{{','.join(str(a) for a in frame_actions)}}};",
-        ]
-    # Sfx DIRECT par frame (ROADMAP v0.8.9) — même garde qu'au-dessus : une
-    # table de -1 ne vaut pas la ROM qu'elle coûterait.
-    frame_sfx = _frame_sfx_syms(p, sprite)
-    if any(s != "-1" for s, _v in frame_sfx):
-        L += [
-            "/* Sfx joué directement en arrivant sur la frame — -1 = aucun. */",
-            f"static const s16 {sym}_frame_sfx[] = {{{','.join(s for s, _v in frame_sfx)}}};",
-            f"static const u8  {sym}_frame_sfxv[] = {{{','.join(str(v) for _s, v in frame_sfx)}}};",
-        ]
-    return L
-
-
-def _anim_tick_lines(idx: int, sym: str, has_frame_sfx: bool = False,
-                     has_frame_direct_sfx: bool = False,
-                     event_lines: Optional[list[str]] = None,
-                     has_frame_events: bool = False,
-                     actor_sym: str = "") -> list[str]:
-    """Génère le bloc C de tick d'animation pour un acteur (dans scene_tick).
-
-    `has_frame_sfx` dit si le sprite porte des ACTIONS de SoundBox sur ses
-    frames (`{sym}_frame_action[]`), `has_frame_direct_sfx` s'il porte des Sfx
-    DIRECTS (`{sym}_frame_sfx[]`, ROADMAP v0.8.9) — deux tables indépendantes,
-    chacune son propre test, pour ne pas payer une comparaison par frame et
-    par acteur sur les sprites qui n'en portent aucune.
-
-    `event_lines`/`has_frame_events`/`actor_sym` : EventCall (ROADMAP v0.8.9).
-    Contrairement aux deux précédents, la table (`{actor_sym}_frame_event`,
-    cf. `_actor_frame_event_lines`) est par ACTOR et non par sprite — deux
-    actors qui partagent un sprite peuvent résoudre le même `event_name` vers
-    deux fonctions différentes. Elle est donc déclarée `static` ICI, en
-    portée LOCALE à ce bloc (un `static` de fonction est légal en C, même
-    patron que `_dlut` juste en dessous), plutôt qu'au niveau fichier.
-    """
-    return [
-        f"    if(g_actors[{idx}].sprite.auto_dir&&(g_actors[{idx}].vx||g_actors[{idx}].vy)){{",
-        f"        g_actors[{idx}].dir_x=(g_actors[{idx}].vx>0)-(g_actors[{idx}].vx<0);",
-        f"        g_actors[{idx}].dir_y=(g_actors[{idx}].vy>0)-(g_actors[{idx}].vy<0);",
-        f"    }}",
-        # dir_x/dir_y → indice 1-8 (NW=8,N=1,NE=2,W=7,0=0,E=3,SW=6,S=5,SE=4)
-        f"    {{",
-        *([f"        {line}" for line in event_lines] if has_frame_events and event_lines else []),
-        f"        static const s8 _dlut[3][3]={{{{8,1,2}},{{7,0,3}},{{6,5,4}}}};",
-        f"        int _ad=_dlut[g_actors[{idx}].dir_y+1][g_actors[{idx}].dir_x+1];",
-        f"        int _st=g_actors[{idx}].sprite.anim_state;",
-        f"        int _b={sym}_state_start[_st];",
-        f"        int _fs=0,_fc=1,_fb=-1,_fbc=1;",
-        f"        for(int _e=_b;{sym}_anim_dirs[_e][0]!=255;_e++){{",
-        f"            if({sym}_anim_dirs[_e][0]==_ad){{_fs={sym}_anim_dirs[_e][1];_fc={sym}_anim_dirs[_e][2];goto _af{idx};}}",
-        f"            if({sym}_anim_dirs[_e][0]==0){{_fb={sym}_anim_dirs[_e][1];_fbc={sym}_anim_dirs[_e][2];}}",
-        f"        }}",
-        f"        if(_fb>=0){{_fs=_fb;_fc=_fbc;}}",
-        f"        _af{idx}:;",
-        # RESYNC : `frame` peut être hors de [_fs, _fs+_fc) — self:play_anim
-        # le remet à 0 (frame ABSOLUE dans le sheet dédupliqué du sprite en
-        # entier), qui ne tombe dans le bloc du nouvel état que si celui-ci
-        # commence pile à 0 ; il en va de même en tournant vers une direction
-        # dont le bloc de frames diffère. Sans ce recalage, `_fi` ci-dessous
-        # part négatif et l'animation affiche des frames d'un AUTRE état le
-        # temps de quelques ticks de vitesse, avant de reconverger par hasard.
-        f"        if(g_actors[{idx}].sprite.frame<_fs||g_actors[{idx}].sprite.frame>=_fs+_fc){{",
-        f"            g_actors[{idx}].sprite.frame=_fs; g_actors[{idx}].timer=0;",
-        f"        }}",
-        f"        g_actors[{idx}].timer++;",
-        # self.anim_speed surcharge la vitesse de l'état ; 0 = celle du sprite
-        # (même règle que UIImageInfo.speed, cf. ARCHITECTURE.md « Animation »).
-        f"        int _asp=g_actors[{idx}].sprite.anim_speed?g_actors[{idx}].sprite.anim_speed:{sym}_state_speed[_st];",
-        f"        if(g_actors[{idx}].timer>=_asp){{",
-        f"            g_actors[{idx}].timer=0;",
-        f"            int _fi=g_actors[{idx}].sprite.frame-_fs;",
-        f"            int _fprev=g_actors[{idx}].sprite.frame;",
-        f"            if({sym}_state_loop[_st]) g_actors[{idx}].sprite.frame=_fs+(_fc>1?(_fi+1)%_fc:0);",
-        f"            else if(_fi<_fc-1) g_actors[{idx}].sprite.frame=_fs+_fi+1;",
-        # L'effet se déclenche en ARRIVANT sur la frame, donc seulement quand
-        # elle change — sinon une animation d'une seule frame, ou arrêtée sur
-        # sa dernière, rejouerait le son à chaque tick de vitesse.
-        *(([f"            if(g_actors[{idx}].sprite.frame!=_fprev){{"]
-           + ([f"                int _ac={sym}_frame_action[g_actors[{idx}].sprite.frame];",
-               # L'indirection : l'emplacement, puis ce vers quoi l'état courant le
-               # résout. Un emplacement non réglé dans cet état vaut -1 et ne joue
-               # rien — « pas de bruit de pas en vol » se dit sans réglage dédié.
-               f"                if(_ac>=0&&g_sound_box_action[_ac]>=0)",
-               f"                    sfx_play(g_sound_box_action[_ac],g_sound_box_action_vol[_ac],0);"]
-              if has_frame_sfx else [])
-           + ([f"                int _as={sym}_frame_sfx[g_actors[{idx}].sprite.frame];",
-               f"                if(_as>=0) sfx_play(_as,{sym}_frame_sfxv[g_actors[{idx}].sprite.frame],0);"]
-              if has_frame_direct_sfx else [])
-           + ([f"                void (*_ev)(Actor*)={actor_sym}_frame_event[g_actors[{idx}].sprite.frame];",
-               f"                if(_ev) _ev(&g_actors[{idx}]);"]
-              if has_frame_events else [])
-           + [f"            }}"]) if (has_frame_sfx or has_frame_direct_sfx or has_frame_events)
-          else [f"            (void)_fprev;"]),
-        f"        }}",
-        # self.anim_length / anim_loop / anim_finished (recopiés à CHAQUE
-        # tick, pas seulement quand la frame avance) : {sym}_state_loop[] est
-        # `static` dans ce fichier, invisible d'un script — c'est ce qui force
-        # à recopier sur l'Actor plutôt que d'exposer les tables telles
-        # quelles. Le recalage ci-dessus garantit `frame` dans [_fs,_fs+_fc) :
-        # « finished » se lit donc directement dessus — vrai dès que la
-        # position dans la séquence (frame-_fs, 0-based) a atteint la
-        # DERNIÈRE case de sa longueur (anim_length), et reste vrai tant que
-        # l'état ne change pas, comme `grounded` reste vrai tant qu'on ne
-        # quitte pas le sol. Toujours faux pour un état qui boucle : il n'a
-        # pas de dernière frame, il n'a qu'une case suivante.
-        f"        g_actors[{idx}].sprite.anim_length = _fc;",
-        f"        g_actors[{idx}].sprite.anim_loop = {sym}_state_loop[_st];",
-        f"        g_actors[{idx}].sprite.anim_finished = !{sym}_state_loop[_st] "
-        f"&& (g_actors[{idx}].sprite.frame - _fs) >= _fc - 1;",
-        f"    }}",
-    ]
 
 
 def _gen_tile_helpers() -> list[str]:
@@ -1381,52 +682,6 @@ def _gen_tile_helpers() -> list[str]:
 
 # ─── Helpers affine / origine ─────────────────────────────────────────────────
 
-def parent_depths(scene_actors: list) -> tuple[dict, list]:
-    """(profondeur de chaque acteur par son nom, erreurs bloquantes).
-
-    Profondeur 0 = pas de parent. C'est ELLE qui donne l'ordre d'émission —
-    parents avant enfants — et c'est ce tri au build qui remplace
-    l'ordonnanceur, le drapeau de salissure et l'invalidation qu'une hiérarchie
-    au runtime aurait demandés (ROADMAP v0.23). L'ordre d'une frame continue de
-    se lire en clair dans le C émis, ce qui était la seule chose à protéger.
-
-    Deux fautes sont bloquantes, et pour la même raison : sans profondeur, il
-    n'y a pas d'ordre, donc pas de composition possible.
-      - un parent qui ne nomme aucun acteur de CETTE scène ;
-      - un cycle, nommé en clair — « A → B → A » se corrige tout de suite,
-        « parenté invalide » ne se corrige pas."""
-    by_name = {a.name: a for a, _ in scene_actors}
-    depths: dict = {}
-    errors: list = []
-    for a, _ in scene_actors:
-        cur, chain = a, []
-        while True:
-            chain.append(cur.name)
-            par = getattr(cur, "parent", None)
-            if not par:
-                break
-            if par not in by_name:
-                errors.append(
-                    f"[error] l'acteur « {a.name} » a pour parent « {par} », "
-                    f"qui n'est pas un acteur de cette scène. Un parent se "
-                    f"choisit dans la même scène.")
-                chain = []
-                break
-            # Contre la CHAÎNE et non contre un ensemble à part : le cycle est
-            # alors nommé au moment où il se referme (« A → B → A ») et non un
-            # cran plus loin, ce qui donnait un chemin qui repassait deux fois.
-            if par in chain:
-                errors.append(
-                    f"[error] parenté circulaire : {' → '.join(chain)} → {par}. "
-                    f"Un acteur ne peut pas descendre de lui-même.")
-                chain = []
-                break
-            cur = by_name[par]
-        if chain:
-            depths[a.name] = len(chain) - 1
-    return depths, errors
-
-
 def _parent_compose_lines(scene_actors: list, actor_offset: int) -> list[str]:
     """Recompose, chaque frame, le transform monde des acteurs qui ont un parent.
 
@@ -1603,666 +858,8 @@ def _pool_compose_lines(pi: list[dict]) -> list[str]:
     return L
 
 
-def actor_box_tags(owner) -> list[str]:
-    """Les tags des boxes ACTIVES d'un acteur (ou d'un prefab). « body » par
-    défaut, comme partout ailleurs dans le build."""
-    return [c.tag or "body" for c in getattr(owner, "components", [])
-            if isinstance(c, CollisionBoxComponent) and c.active]
-
-
-def actors_can_collide(p, a, b) -> bool:
-    """Ces deux acteurs ont-ils UNE SEULE combinaison de tags qui se rencontre ?
-
-    Si non, la paire n'est pas émise du tout (ROADMAP v0.23) : ni bloc de C, ni
-    entrée dans `_col_prev`, ni test par frame. Le gain est donc en ROM autant
-    qu'en cycles — c'est la raison de filtrer au BUILD plutôt qu'au runtime.
-
-    Sans box d'un côté, il n'y a rien à filtrer : on laisse passer, et le reste
-    du build décide comme avant. Ne rien dire vaut mieux que deviner."""
-    from core.models.settings import tags_collide
-    ta, tb = actor_box_tags(a), actor_box_tags(b)
-    if not ta or not tb:
-        return True
-    return any(tags_collide(p.settings, x, y) for x in ta for y in tb)
-
-
-def _has_solid_box(owner) -> bool:
-    """Cet acteur (ou prefab) a-t-il une box PHYSIQUE ?
-
-    C'est ce qui lui donne droit à la résolution contre la carte de collision —
-    la définition que le modèle donne déjà de `solid` (cf. components.py)."""
-    return any(getattr(c, "solid", False) and getattr(c, "active", True)
-               and hasattr(c, "w") for c in getattr(owner, "components", []))
-
-
-def _scene_has_cmap(scene) -> bool:
-    """Carte de collision réellement peuplée — une grille de zéros n'est pas une
-    carte, et n'a rien à faire heurter."""
-    cmap = getattr(scene, "collision_map", None) or []
-    return any(v != 0 for row in cmap for v in row)
-
-
-def _get_sprite_comp(actor) -> "SpriteComponent | None":
-    """Retourne le SpriteComponent d'un Actor/Prefab, ou None."""
-    for c in getattr(actor, "components", []):
-        if isinstance(c, SpriteComponent):
-            return c
-    return None
-
-
-def _has_col_event(defined, sym: str) -> bool:
-    """Ce script réagit-il à une collision ? `defined` est le prédicat local
-    `_def(symbole, événement)` de la génération de scène (il rend True quand le
-    script n'a pas été analysé, cf. `_gen_scene_tick`)."""
-    return bool(defined(sym, "on_collision_enter") or defined(sym, "on_collide")
-                or defined(sym, "on_collision_exit"))
-
-
-def _affine_entry(actor, sc, slot: int, force: bool = False) -> dict | None:
-    """
-    Calcule l'entrée affine d'un Actor + son SpriteComponent.
-
-    Retourne None si l'actor ne réserve pas de slot affine.
-
-    La décision est portée par `SpriteComponent.affine_transform` (cf.
-    ARCHITECTURE.md « Le modèle affine ») : coché → un des 32 slots hardware est
-    réservé, même si scale/rotation valent leur défaut. Sans lui, aucun slot
-    n'est alloué et le sprite est émis en OAM normale — les champs de transform
-    gardent leur valeur, mais rien ne les affiche.
-
-    Au runtime la matrice est TOUJOURS calculée à partir des champs transform de
-    la struct Actor (monde + local composés, cf. actor_types_static.h) — il n'y a
-    plus de chemin statique pré-calculé : le rendu lit rotation/scale/offset
-    chaque frame (cf. _affine_oam_lines_dynamic).
-    """
-    # `force` : l'enfant d'un parent affine qui PARTAGE son slot (ROADMAP
-    # v0.23). Il n'a pas coché `affine_transform` — il n'en réserve aucun — mais
-    # il lui faut la même entrée pour être émis en OAM affine sur le slot du
-    # parent, avec SES propres décalages de sprite.
-    if not force and not bool(getattr(sc, "affine_transform", False)):
-        return None
-
-    return {
-        "slot": slot,
-        # Valeurs de départ des champs Actor, écrites au scene_init. Monde sur
-        # l'actor, local sur le sprite ; le rendu compose rotation (somme) et
-        # scale (produit), l'offset étant transformé par la matrice de l'actor.
-        "rotation":   int(round(getattr(actor, "rotation", 0))),
-        "scale_x":    int(round(getattr(actor, "scale_x", 1.0) * 256)),
-        "scale_y":    int(round(getattr(actor, "scale_y", 1.0) * 256)),
-        "sprite_rotation":   int(round(getattr(sc, "rotation", 0))),
-        "sprite_scale_x":    int(round(getattr(sc, "scale_x", 1.0) * 256)),
-        "sprite_scale_y":    int(round(getattr(sc, "scale_y", 1.0) * 256)),
-        "offset_x":    int(getattr(sc, "offset_x", 0)),
-        "offset_y":    int(getattr(sc, "offset_y", 0)),
-    }
-
-
-def _compute_affine_info(actor_offset: int, scene_actors: list, pi: list) -> dict:
-    """
-    Retourne {oam_idx: entry} pour tout actor dont le SpriteComponent a
-    `affine_transform` coché.
-    Limité à 32 slots (contrainte hardware GBA OAM).
-    """
-    result: dict = {}
-    slot = 0
-
-    idx_of = {a.name: actor_offset + j for j, (a, _) in enumerate(scene_actors)}
-    for j, (actor, _) in enumerate(scene_actors):
-        if slot >= 32:
-            break
-        sc = _get_sprite_comp(actor)
-        if not sc:
-            continue
-        entry = _affine_entry(actor, sc, slot)
-        if entry:
-            result[actor_offset + j] = entry
-            slot += 1
-
-    # ── Enfants sans transform propre : ils PARTAGENT le slot du parent ──
-    # Un slot ne contient que pa/pb/pc/pd — la position n'y est pour rien —
-    # donc deux OBJ de même rotation et de même échelle peuvent pointer le
-    # même (ROADMAP v0.23). Un enfant qui n'a ni rotation ni échelle propres
-    # hérite EXACTEMENT du transform de son parent : sa matrice est la même.
-    # Un boss à six parties qui tourne d'un bloc coûte donc UN slot sur 32,
-    # pas sept.
-    #
-    # Sans ce partage, ces enfants seraient émis en OAM normale et ne
-    # tourneraient pas avec leur parent — la composition serait calculée puis
-    # ignorée à l'affichage.
-    #
-    # Deuxième passe, après l'attribution : le parent doit déjà avoir le sien,
-    # et il peut être déclaré APRÈS l'enfant dans la scène.
-    depths, _errs = parent_depths(scene_actors)
-    for _pass in range(max(depths.values(), default=0)):
-        for j, (actor, _) in enumerate(scene_actors):
-            oam = actor_offset + j
-            par = getattr(actor, "parent", None)
-            if oam in result or not par or par not in idx_of:
-                continue
-            base = result.get(idx_of[par])
-            sc = _get_sprite_comp(actor)
-            if not base or not sc:
-                continue
-            if getattr(sc, "affine_transform", False):
-                continue          # il a demandé le sien, il l'a eu (ou pas : 32)
-            if (int(getattr(actor, "rotation", 0) or 0) != 0
-                    or float(getattr(actor, "scale_x", 1.0) or 1.0) != 1.0
-                    or float(getattr(actor, "scale_y", 1.0) or 1.0) != 1.0):
-                continue          # transform propre → matrice différente
-            # Le transform LOCAL du sprite entre AUSSI dans la matrice
-            # (`angle_eff = rotation + sprite_rot`, `scale_eff = scale ×
-            # sprite_scale`) : un enfant dont le sprite a sa propre rotation
-            # n'a pas la même matrice que son parent, malgré un transform
-            # d'acteur neutre. Il paie alors son slot comme les autres.
-            if (int(round(getattr(sc, "rotation", 0) or 0)) != 0
-                    or float(getattr(sc, "scale_x", 1.0) or 1.0) != 1.0
-                    or float(getattr(sc, "scale_y", 1.0) or 1.0) != 1.0):
-                continue
-            # Ses PROPRES décalages de sprite, sur le slot du parent : la
-            # matrice est partagée, pas la pose.
-            entry = _affine_entry(actor, sc, base["slot"], force=True)
-            if entry:
-                result[oam] = entry
-
-    for p2 in pi:
-        pf = p2["prefab"]
-        sc = _get_sprite_comp(pf)
-        if not sc:
-            continue
-        for oam_idx in range(p2["start"], p2["start"] + p2["size"]):
-            if slot >= 32:
-                break
-            entry = _affine_entry(pf, sc, slot)
-            if entry:
-                result[oam_idx] = entry
-                slot += 1
-
-    return result
-
-
-def _layout_palette_words(layout) -> list[int]:
-    """256 valeurs BGR555 (16 banques x 16 couleurs) depuis un SceneBankLayout
-    — inclut les palettes référencées ET les palettes propres auto-allouées
-    (cf. codegen/palette_alloc.py)."""
-    words = [0] * 256
-    for i, colors in enumerate(layout.slot_colors):
-        if not colors:
-            continue
-        for j, c in enumerate(colors[:16]):
-            words[i * 16 + j] = c
-    return words
-
-
-def _resolve_backdrop_color(p: Project, scene: Scene) -> int:
-    """Scene.backdrop_color surcharge ProjectSettings.backdrop_color si
-    défini (None = hérite du projet)."""
-    v = getattr(scene, "backdrop_color", None)
-    return v if v is not None else p.settings.backdrop_color
-
-
-def _scene_obj_palette_words(p: Project, scene: Scene) -> list[int]:
-    """PAL_OBJ_RAM de la scène — layout OBJ (référencées + propres allouées)."""
-    return _layout_palette_words(scene_bank_layout(p, scene, "obj"))
-
-
-def _scene_bg_palette_words(p: Project, scene: Scene) -> list[int]:
-    """PAL_BG_RAM de la scène — layout BG (référencées + propres, y compris
-    les blocs de banques des fonds compressés, cf. palette_alloc). words[0]
-    forcé à la couleur de backdrop."""
-    words = _layout_palette_words(scene_bank_layout(p, scene, "bg"))
-    words[0] = _resolve_backdrop_color(p, scene)
-    return words
-
-
-def camera_sym(name: str) -> str:
-    """Symbole C d'une caméra — préfixé, les caméras et les acteurs partageant
-    le même espace de noms C."""
-    return f"camera_{c_sym(name)}"
-
-
-def project_cameras(p) -> list:
-    """Les caméras du projet dans l'ordre de la TABLE runtime, `None` en tête.
-
-    Ce `None` est la caméra par défaut : fixe à l'origine, sans bornes ni
-    suivi, et sans entrée dans aucune scène — une scène qui n'en désigne
-    aucune tombe dessus. La donner comme entrée 0 plutôt que comme cas
-    particulier évite un `if` à chaque endroit qui active une caméra.
-
-    Une caméra appartient à sa scène (révisé 2026-08-24, cf.
-    `changelog-archive/v0.6.md`) : cette table APLATIT toutes les scènes, dans
-    leur ordre puis celui de `Scene.cameras` — ordre déterministe, condition
-    pour que `headers.py` (les `#define CAM_*`) et `lua_compiler.py` en
-    dérivent la MÊME liste que celle-ci (sinon `camera.switch` viserait la
-    mauvaise caméra)."""
-    return [None] + [c for s in p.scenes for c in s.cameras]
-
-
-def scene_camera_index(p, scene) -> int:
-    """Index de la caméra de démarrage d'une scène dans la table runtime.
-
-    Un nom qui ne résout pas retombe sur 0 (la caméra par défaut) plutôt que de
-    faire échouer le build : le validateur signale la référence cassée, et un
-    jeu qui compile encore reste débuggable."""
-    name = getattr(scene, "camera", "")
-    if not name:
-        return 0
-    cams = project_cameras(p)
-    return next((i for i, c in enumerate(cams) if c is not None and c.name == name), 0)
-
-
-def camera_target_index(camera, scene_actors: list, actor_offset: int) -> int:
-    """Index dans `g_actors` de l'acteur suivi par cette caméra, ou -1.
-
-    Simplifié le 2026-08-24 : une caméra n'appartient plus qu'à UNE scène, sa
-    cible se résout donc toujours dans les acteurs de CETTE scène — plus de
-    couple (scène, caméra) à lever, `scene_actors` est déjà la bonne liste."""
-    if camera is None or camera.mode != "follow" or not camera.follow_target:
-        return -1
-    local = next((j for j, (a, _) in enumerate(scene_actors)
-                  if a.name == camera.follow_target), None)
-    return -1 if local is None else actor_offset + local
-
-
-def _camera_follow_lines(p, scene, scene_actors: list, actor_offset: int) -> list[str]:
-    """Le suivi déclaratif de la frame, pour la caméra ACTIVE.
-
-    Un `switch` plutôt qu'une table de cibles lue au runtime : la cible et la
-    zone morte deviennent des constantes. Un seul cas par caméra DE CETTE
-    SCÈNE (une caméra n'en possède qu'une, cf. `camera_target_index`) ; une
-    scène où aucune caméra n'a de cible n'émet rien du tout."""
-    index_of = {id(c): i for i, c in enumerate(project_cameras(p)) if c is not None}
-    cases: list[str] = []
-    for cam in scene.cameras:
-        t = camera_target_index(cam, scene_actors, actor_offset)
-        if t < 0:
-            continue
-        i = index_of[id(cam)]
-        # Axe désactivé (scroll_h/scroll_v) : la cible sur cet axe devient
-        # cam_x/cam_y lui-même → écart nul → camera_follow ne le bouge pas.
-        # cam_x/cam_y restent en pixels (ROADMAP v0.19 : « la caméra arrondit
-        # après avoir suivi, jamais avant » — un seul arrondi, ICI, à la
-        # frontière acteur→caméra ; tout le reste du suivi/scroll/streaming
-        # continue en pixels, inchangé).
-        tx = f"(g_actors[{t}].x>>8)" if scene.scroll_h else "cam_x"
-        ty = f"(g_actors[{t}].y>>8)" if scene.scroll_v else "cam_y"
-        cases.append(f"        case {i}: camera_follow((Vec2){{{tx}, {ty}}}, "
-                     f"{int(cam.margin_x)}, {int(cam.margin_y)}); break;"
-                     f"   /* {cam.name} → {cam.follow_target} */")
-    if not cases:
-        return []
-    return ["    switch(g_cam_active){"] + cases + ["        default: break;", "    }"]
-
-
-def encodable_project_fonts(p) -> list:
-    """Polices encodables (planche présente sur disque), AVANT tout élagage
-    par usage. Base commune à `project_fonts()` et à `project_used_font_names()`
-    — cette dernière doit résoudre la police par défaut de chaque scène contre
-    une liste non filtrée, sinon elle boucle sur `project_fonts()`. C'est aussi
-    la liste que l'éditeur doit montrer dans un sélecteur de police pas encore
-    posé (`scene_inspector._reload_scene_font`) : une police y est « utilisable »
-    dès qu'elle est encodable, la CHOISIR étant justement ce qui la rendrait
-    utilisée."""
-    out = []
-    for f in getattr(p, "fonts", []):
-        if f.asset and f.glyphs and p.asset_abs(f.asset) and p.asset_abs(f.asset).exists():
-            out.append(f)
-    return out
-
-
-def project_used_font_names(p) -> "set | None":
-    """Noms des polices RÉELLEMENT utilisées quelque part dans le projet, ou
-    `None` si c'est indécidable (repli de sûreté, comme `scene_font_names`
-    dont c'est l'union sur toutes les scènes).
-
-    Trois sources, pas deux :
-    - ce que chaque scène peut charger (mise en page + `text.set_font`),
-      TOUJOURS complété par sa police par défaut (`scene_init` la charge même
-      sans une ligne de texte) ;
-    - les polices de REMPLACEMENT par langue (`Language.fonts`) : jamais
-      citées par un script, substituées au runtime — les oublier élaguerait la
-      police japonaise/russe/grecque d'un projet qui ne l'emploie qu'en JA/RU/EL.
-
-    Une seule scène indécidable (script au choix de police dynamique, ou
-    illisible) fait retomber sur `None` pour le PROJET entier : mieux vaut de
-    la ROM payée pour une police jamais atteinte qu'une police manquante en
-    silence — même arbitrage que `scene_font_names`."""
-    from codegen.font_emit import scene_font_names, default_font_name
-    all_fonts = encodable_project_fonts(p)
-    _proj_default = getattr(p.settings, "fallback_font", "")
-    names: set = set()
-    for scene in getattr(p, "scenes", []):
-        default_font = default_font_name(all_fonts, scene, _proj_default)
-        sn = scene_font_names(p, scene, default_font)
-        if sn is None:
-            return None
-        names |= sn
-    for lang in getattr(getattr(p, "settings", None), "languages", []):
-        names |= set(getattr(lang, "fonts", {}).values())
-    return names
-
-
-def project_fonts(p) -> list:
-    """Polices réellement encodables (planche présente sur disque) ET
-    utilisées quelque part dans le projet (cf. `project_used_font_names`).
-
-    Source de vérité partagée : `main_gen` émet les tables dans cet ordre et
-    `lua_compiler` en dérive les `#define FONT_*` — les deux doivent voir la
-    même liste, sinon un script pointerait sur la mauvaise police.
-
-    `project_used_font_names()` à `None` (usage indécidable) → repli sur
-    TOUTES les polices encodables, sans élagage."""
-    all_fonts = encodable_project_fonts(p)
-    used = project_used_font_names(p)
-    if used is None:
-        return all_fonts
-    return [f for f in all_fonts if f.name in used]
-
-
-def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:
-    """Tableaux C des sous-ensembles de glyphes, une entrée par (scène, police).
-
-    Émis ici parce que c'est le seul endroit qui tient les polices ENCODÉES : un
-    sous-ensemble parle en index de glyphe encodé, pas en glyphe de la planche.
-    Le nom des descripteurs est mémorisé sur la scène, relu par
-    `_gen_scene_init` pour poser les `text_set_subset`.
-
-    Pas de sous-ensemble pour une police composée (elle ne charge aucun glyphe)
-    ni pour une scène indécidable (police entière, déjà réservée).
-
-    Le sous-ensemble ÉMIS couvre TOUTES les langues déclarées, UNIES
-    (`scene_codepoints_union`, ROADMAP v0.9 décision 4) : c'est ce qui permet
-    à `lang.set` (phase 4) de recharger une scène dans une autre langue sans
-    reconstruire la police en VRAM. La RÉSERVATION (`scene_text_reservation`)
-    compte la même union, sur la même liste de langues
-    (`_declared_lang_codes`) — depuis la phase 5.1, où les deux divergeaient :
-    le runtime chargeait l'union, le build réservait la source."""
-    from codegen.font_emit import (build_font_subset, scene_codepoints_union,
-                                   scene_font_names, scene_default_font)
-    from codegen.c_names import c_ident
-    fonts = project_fonts(p)
-    if not fonts or not encoded:
-        return []
-    by_name = {name: (i, e) for i, (name, e) in enumerate(encoded)}
-    lang_codes = _declared_lang_codes(p)
-
-    L: list[str] = ["/* ── Sous-ensembles de glyphes (par scène) ───────── */"]
-    any_line = False
-    for scene in p.scenes:
-        scene._ui_font_subsets = {}
-        cps = scene_codepoints_union(p, scene, lang_codes)
-        if cps is None:
-            if emit:
-                emit("log_line",
-                     f"[font] scène '{scene.name}' : polices chargées ENTIÈRES "
-                     f"— ce qu'elle affiche n'est pas déterminable au build")
-            continue
-        names = scene_font_names(p, scene, scene_default_font(p, scene)[1])
-        for fname in sorted(names or [f.name for f in fonts]):
-            if fname not in by_name:
-                continue
-            fi, e = by_name[fname]
-            sub = build_font_subset(e, cps)
-            if sub is None or not sub["load"]:
-                continue
-            colors = scene_text_colors(p, scene, fname)
-            sym = f"g_fsub_{c_ident(scene.name)}_{c_ident(fname)}"
-            L.append(f"static const unsigned short {sym}_slot[{len(sub['slot'])}] = {{"
-                     + ",".join(str(v) for v in sub["slot"]) + "};")
-            L.append(f"static const unsigned short {sym}_load[{len(sub['load'])}] = {{"
-                     + ",".join(str(v) for v in sub["load"]) + "};")
-            L.append(f"static const unsigned char {sym}_var[{len(colors)}] = {{"
-                     + ",".join(str(c) for c in colors) + "};")
-            L.append(f"static const FontSubset {sym} = {{ {sym}_slot, {sym}_load, "
-                     f"{len(sub['load'])}, {len(colors)}, {sym}_var }};")
-            scene._ui_font_subsets[fi] = sym
-            any_line = True
-            if emit:
-                extra = ("" if len(colors) == 1 else
-                         f", ×{len(colors)} couleurs {colors[1:]}")
-                emit("log_line",
-                     f"[font] scène '{scene.name}' : '{fname}' réduite à "
-                     f"{len(sub['load'])} tuile(s) sur {e['n_tiles']}{extra}")
-    return L + [""] if any_line else []
-
-
-def _fonts_and_texts_lines(p, emit=None) -> list[str]:
-    """Tables C des polices, des textes et des zones (cf. codegen/font_emit)."""
-    from codegen.font_emit import (encode_font, emit_fonts_c, emit_texts_c,
-                                   emit_lang_fonts_c, emit_ui_regions_c)
-
-    kept = project_fonts(p)
-    if emit:
-        kept_names = {f.name for f in kept}
-        skipped = [f.name for f in encodable_project_fonts(p) if f.name not in kept_names]
-        if skipped:
-            emit("log_line", f"[font] {len(skipped)} police(s) non utilisée(s) "
-                             f"écartée(s) de la ROM : {', '.join(skipped)}")
-
-    encoded = []
-    for f in kept:
-        try:
-            e = encode_font(f, p.asset_abs(f.asset))
-        except Exception as exc:
-            if emit:
-                emit("error_line", f"[font] {f.name} : encodage impossible ({exc})")
-            continue
-        if e.get("warning") and emit:
-            emit("log_line", f"[font] {e['warning']}")
-        if emit:
-            # Le CHEMIN de rendu autant que le coût VRAM : une police composée
-            # ne charge aucune tuile, c'est la surface qui coûte. Sans ça un
-            # basculement automatique (police trop grosse) passe inaperçu.
-            from codegen.font_emit import render_composited, font_vram_tiles
-            mode = "composition" if render_composited(f) else "tilemap"
-            emit("log_line", f"[font] {f.name} -> {e['n_tiles']} tuiles, "
-                             f"{len(e['codepoints'])} glyphes, rendu {mode}, "
-                             f"{font_vram_tiles(f)} tuiles VRAM")
-        encoded.append((f.name, e))
-
-    # Même liste que celle dont `lua_compiler` dérive les `#define` : l'ordre
-    # fait l'index.
-    texts = list(p.build_texts() if hasattr(p, "build_texts")
-                 else getattr(p, "texts", []))
-    if emit and texts:
-        emit("log_line", f"[text] {len(texts)} entrée(s) de texte")
-
-    regions = p.all_regions() if hasattr(p, "all_regions") else []
-    if emit and regions:
-        from core.models.ui_region import KIND_TEXT
-        n_auth = sum(1 for _l, r in regions if getattr(r, "kind", "") == KIND_TEXT)
-        detail = f", dont {n_auth} texte(s) authoré(s)" if n_auth else ""
-        emit("log_line", f"[text] {len(regions)} slot(s) de texte{detail} "
-                         f"({len(p.ui_layouts)} mise(s) en page)")
-    font_names = [f.name for f in project_fonts(p)]
-    subset_lines = _emit_font_subsets(p, encoded, emit)
-    # Une entrée par langue déclarée, source en index 0 — `[""]` pour un
-    # projet monolingue (aucune langue déclarée), qui retrouve alors
-    # exactement les tables d'avant la v0.9 phase 3, à une dimension de plus
-    # qui vaut 1 (cf. `emit_texts_c`).
-    all_langs = p.settings.all_languages() if hasattr(p, "settings") else []
-    lang_codes = [l.code for l in all_langs] or [""]
-    content_fn = p.text_content if hasattr(p, "text_content") else (lambda t, c: t.content)
-    return (emit_fonts_c(encoded) + subset_lines
-            + emit_texts_c(texts, lang_codes, content_fn, p.globals, p.constants,
-                           emit, fonts=project_fonts(p))
-            + emit_lang_fonts_c(font_names, all_langs)
-            + emit_ui_regions_c(regions, font_names, emit,
-                                obj_place=_obj_text_alloc(p),
-                                actor_index=_region_actor_index(p),
-                                elem_index=_ui_element_index(p))
-            + _palettes_lines(p, emit))
-
-
-def _palettes_lines(p, emit=None) -> list[str]:
-    """Table `g_palettes` — le catalogue de couleurs, pour `palette.set_bg/obj`.
-
-    Le catalogue ENTIER, dans son ordre, celui-là même dont `lua_compiler` dérive
-    les `#define PAL_*` : les deux doivent voir la même liste ou l'index désigne
-    une autre palette.
-
-    Émis en entier plutôt que dérivé des scripts — contrairement aux polices, où
-    la réservation doit être calculée parce qu'elle coûte de la mémoire vidéo.
-    Une palette pèse 32 octets en ROM ; réserver pour tout le catalogue est moins
-    cher que le risque de réserver trop peu, qui ferait basculer vers une palette
-    absente sans erreur avant l'exécution."""
-    banks = list(getattr(p, "palettes", []))
-    L = ["", "/* Palettes du catalogue — palette.set_bg / palette.set_obj */"]
-    L.append(f"const unsigned short g_palettes[{max(1, len(banks))}][16] = {{")
-    for b in banks:
-        cols = list(b.colors or [])[:16]
-        cols += [0] * (16 - len(cols))
-        L.append("    {" + ",".join(f"0x{c & 0xFFFF:04X}" for c in cols) + "},")
-    if not banks:
-        L.append("    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},")
-    L.append("};")
-    L.append(f"const int g_palette_count = {max(1, len(banks))};")
-    L.append("")
-    if emit and banks:
-        emit("log_line", f"[palette] {len(banks)} palette(s) du catalogue en ROM "
-                         f"({len(banks) * 32} octets)")
-    return L
-
-
-# ── Sauvegarde (SRAM) ─────────────────────────────────────────────
-# Trois tableaux parallèles, une entrée par variable globale marquée
-# persistante : son id (l'identité qui traverse les versions du jeu), son index
-# GLOBAL_* (par où le moteur la lit et l'écrit) et son défaut (ce qu'elle vaut
-# si le fichier chargé ne la contient pas).
-
-SAVE_HEADER_BYTES = 12
-# En-tête d'UN enregistrement : id (4) + taille de la charge (4). La charge
-# suit, de longueur variable depuis la v0.20 — cf. `save_var_bytes`.
-SAVE_RECORD_HEAD_BYTES = 8
-SRAM_BYTES        = 32768
-
-
-def save_vars(p) -> list[tuple[int, object]]:
-    """Les globales persistantes, avec leur INDEX dans `p.globals` — celui-là
-    même dont `globals.h` tire `GLOBAL_<NOM>`. Les deux listes doivent voir le
-    même ordre ou l'index désigne une autre variable."""
-    return [(i, g) for i, g in enumerate(getattr(p, "globals", []))
-            if getattr(g, "persist", False)]
-
-
-def save_id32(vid: int) -> int:
-    """L'id opaque replié sur 32 bits. Il en fait 12 chiffres (jusqu'à ~2^40) et
-    la SRAM se lit par mots de 32 bits : c'est un repli DÉTERMINISTE, pas un
-    hachage — deux builds du même projet donnent le même. Une collision entre
-    deux variables persistantes bloque le build (cf. `save_fatal`), sinon elle
-    ne se verrait qu'en jeu, sous la forme d'une variable qui prend la valeur
-    d'une autre."""
-    return int(vid) & 0xFFFFFFFF
-
-
-def save_var_bytes(g) -> int:
-    """Ce qu'UNE variable persistante occupe dans un emplacement : l'en-tête de
-    son enregistrement, plus ses cases empaquetées arrondies au mot de 32 bits
-    (ROADMAP v0.20). Un scalaire retombe sur 8 + 4 octets ; un tableau de 400
-    booléens sur 8 + 52, et non 8 + 1600."""
-    from scripting.globals import save_bits
-    n = max(1, int(getattr(g, "count", 1) or 1))
-    payload = ((n * save_bits(g) + 31) // 32) * 4
-    return SAVE_RECORD_HEAD_BYTES + payload
-
-
-def save_slot_size(p) -> int:
-    return SAVE_HEADER_BYTES + sum(save_var_bytes(g) for _i, g in save_vars(p))
-
-
-def save_fatal(p) -> list[str]:
-    """Ce qui rend la sauvegarde impossible à émettre. Bloquant, comme le budget
-    de tuiles : une sauvegarde qui déborde de la SRAM n'échouerait qu'à
-    l'exécution, chez le joueur."""
-    out: list[str] = []
-    vars_ = save_vars(p)
-    if not vars_:
-        return out
-    seen: dict[int, str] = {}
-    for _i, g in vars_:
-        k = save_id32(g.id)
-        if k in seen:
-            out.append(
-                f"[error] les variables persistantes « {seen[k]} » et "
-                f"« {g.name} » retombent sur le même identifiant de sauvegarde. "
-                f"Renommer n'y changera rien — recréer l'une des deux lui donne "
-                f"un nouvel identifiant.")
-        seen[k] = g.name
-    slots = max(1, int(getattr(p.settings, "save_slots", 1)))
-    total = slots * save_slot_size(p)
-    if total > SRAM_BYTES:
-        # Depuis la v0.20, une variable peut valoir des centaines de cases :
-        # nommer LA plus grosse vaut mieux qu'un conseil général, parce que
-        # c'est presque toujours elle qui fait déborder, et que l'auteur ne
-        # peut pas deviner le coût empaqueté depuis l'écran des variables.
-        biggest = max(vars_, key=lambda iv: save_var_bytes(iv[1]))[1]
-        n_big = max(1, int(getattr(biggest, "count", 1) or 1))
-        lever = (f" La plus grosse est « {biggest.name} » "
-                 f"({n_big} cases, {save_var_bytes(biggest)} octets par "
-                 f"emplacement)." if n_big > 1 else "")
-        out.append(
-            f"[error] {slots} emplacement(s) de sauvegarde × {len(vars_)} "
-            f"variable(s) demandent {total} octets, soit plus que les "
-            f"{SRAM_BYTES} de la SRAM. Réduire le nombre d'emplacements, le "
-            f"nombre de cases d'un tableau, ou le nombre de variables "
-            f"persistantes.{lever}")
-    return out
-
-
-def _save_lines(p, emit=None) -> list[str]:
-    """Tables de sauvegarde + chaîne de détection du support.
-
-    Les tableaux sont émis MÊME VIDES (une entrée neutre) : le pilote de
-    `gba_engine.h` les déclare `extern` sans condition, et un projet sans
-    variable persistante doit tout de même se lier. C'est `g_save_count == 0`
-    qui dit au moteur de ne pas toucher la SRAM."""
-    vars_ = save_vars(p)
-    slots = max(1, int(getattr(p.settings, "save_slots", 1)))
-    L = ["", "/* Sauvegarde — variables globales marquées persistantes */"]
-    if vars_:
-        # La chaîne que cherchent émulateurs et linkers pour savoir de quel type
-        # de sauvegarde la cartouche dispose. Émise SEULEMENT si le projet sauve
-        # quelque chose : un jeu sans sauvegarde ne doit pas faire naître un
-        # fichier .sav vide chez le joueur. `used` parce que rien ne la
-        # référence — sans ça l'éditeur de liens la retire et la détection
-        # échoue silencieusement.
-        L += ['static const char __attribute__((used, aligned(4)))',
-              '    g_save_type[] = "SRAM_V113";', ""]
-        L.append("const unsigned int g_save_id[] = {"
-                 + ", ".join(f"0x{save_id32(g.id):08X}" for _i, g in vars_) + "};")
-        L.append("const unsigned short g_save_idx[] = {"
-                 + ", ".join(str(i) for i, _g in vars_) + "};")
-        L.append("const int g_save_def[] = {"
-                 + ", ".join(str(int(g.default)) for _i, g in vars_) + "};")
-        # ROADMAP v0.20 : le nombre de cases, et ce qu'une case coûte en SRAM.
-        # C'est ce couple qui rend l'enregistrement auto-descriptif — donc
-        # relisible par une version du jeu où le tableau a changé de taille.
-        from scripting.globals import save_bits
-        L.append("const unsigned short g_save_len[] = {"
-                 + ", ".join(str(max(1, int(getattr(g, "count", 1) or 1)))
-                             for _i, g in vars_) + "};")
-        L.append("const unsigned char g_save_bits[] = {"
-                 + ", ".join(str(save_bits(g)) for _i, g in vars_) + "};")
-    else:
-        L += ["const unsigned int   g_save_id[]  = {0};",
-              "const unsigned short g_save_idx[] = {0};",
-              "const int            g_save_def[] = {0};",
-              "const unsigned short g_save_len[] = {0};",
-              "const unsigned char  g_save_bits[] = {0};"]
-    L.append(f"const int g_save_count = {len(vars_)};")
-    L.append(f"const int g_save_slots = {slots if vars_ else 0};")
-    L.append(f"const int g_save_slot_size = {save_slot_size(p) if vars_ else 0};")
-    L.append("")
-    if emit and vars_:
-        emit("log_line",
-             f"[save] {len(vars_)} variable(s) persistante(s), {slots} "
-             f"emplacement(s) de {save_slot_size(p)} octets "
-             f"({slots * save_slot_size(p)} sur {SRAM_BYTES} de SRAM)")
-    return L
-
-
 def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
-    """Table des images + leurs constantes. Séparée de `_fonts_and_texts_lines`
+    """Table des images + leurs constantes. Séparée de `fonts_and_texts_lines`
     parce qu'elle a besoin de `sprite_offsets`, qui n'est connu qu'une fois
     l'union des sprites faite — donc bien plus tard dans le pipeline."""
     images = p.all_images() if hasattr(p, "all_images") else []
@@ -2273,479 +870,9 @@ def _ui_images_lines(p, sprite_offsets: dict, emit=None) -> list[str]:
         emit("log_line", f"[ui] {len(images)} sprite(s) d'interface "
                          f"(dont {n_fill} fond(s) de conteneur), "
                          f"{n_bound} relié(s) à un sprite")
-    return emit_ui_images_c(p, sprite_offsets, _obj_text_alloc(p),
-                            actor_index=_region_actor_index(p),
-                            elem_index=_ui_element_index(p), emit=emit)
-
-
-def emit_ui_images_c(p: Project, sprite_offsets: dict, obj_place: dict,
-                     actor_index: dict | None = None,
-                     elem_index: dict | None = None, emit=None) -> list[str]:
-    """Table `g_ui_images` — une entrée par image du projet, dans l'ordre de
-    `Project.all_images()`, qui fait l'index (donc la constante `IMAGE_*`).
-
-    Ce que l'entrée porte, et ce qu'elle NE porte pas : la géométrie, la cible,
-    l'état de départ, et des POINTEURS vers les tables d'animation du sprite —
-    les mêmes que celles des acteurs (`sprite_X_anim_dirs`, `_state_start`,
-    `_state_speed`, `_state_loop`). Ni vitesse ni liste de frames recopiées :
-    l'image désigne un sprite, elle ne le redéfinit pas.
-
-    La base de tuiles est celle de l'OBJ VRAM (`sprite_offsets`), valable pour
-    une image en cible OBJ. Une image BG lit une AUTRE base, posée par
-    `scene_init` (`ui_image_set_bg_base`) : elle dépend du charblock alloué à la
-    scène, et la table, elle, est partagée par toutes les scènes.
-
-    Une image sans sprite résoluble sort une entrée NEUTRE plutôt que d'être
-    omise : l'index doit rester celui de `all_images()`, sinon `IMAGE_*` désigne
-    l'élément d'à côté. Le runtime la voit `n_states == 0` et ne dessine rien."""
-    rows: list[str] = []
-    images = p.all_images() if hasattr(p, "all_images") else []
-    for lay, im in images:
-        sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
-        eff_anchor, eff_actor = lay.effective_anchor(im)
-        from core.models.ui_region import ANCHORS, TARGET_OBJ
-        target_obj = lay.resolved_target(im) == TARGET_OBJ
-        # Position SOMMÉE à travers les parents, sans le socle acteur (le runtime
-        # l'ajoute) — cf. `emit_ui_regions_c`. En OBJ aussi : un enfant sans cette
-        # somme ignorait l'offset de son conteneur et se posait au mauvais endroit.
-        x, y, _res = lay.absolute_origin(im, None)
-        if not target_obj:
-            x -= x % 8
-            y -= y % 8
-        elem = (elem_index or {}).get(im.name, -1)
-        if sprite is None or not sprite.asset:
-            rows.append(f"    {{ {x}, {y}, {im.w}, {im.h}, 0, 0, -1, "
-                        f"0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, {elem} }},"
-                        f"  /* {im.name} — aucun sprite */")
-            if emit:
-                emit("log_line", f"[ui] image '{im.name}' : aucun sprite — "
-                                 f"rien ne sera dessiné à cet endroit.")
-            continue
-        ss = f"sprite_{c_sym(sprite.name)}"
-        n_states = max(1, len(getattr(sprite, "states", []) or []))
-        st0 = im.state_index(sprite)
-        base = sprite_offsets.get(sprite.name, 0)
-        pl = obj_place.get(im.name) if target_obj else None
-        oam_rel = pl["oam_rel"] if pl else 0
-        # `w`/`h` de la table sont ceux de la FRAME, pas du rectangle : c'est ce
-        # que le matériel dessine, et le pavage se dit en `cols`/`rows`. Pour un
-        # UIImage les deux coïncident (cf. sync_size_from) ; pour un conteneur non.
-        g = ui_item_geometry(im, sprite, 1)
-        # Priorité HÉRITÉE : -1 (défaut / fond de container) devient 255, la
-        # sentinelle que `ui_obj_prio` résout à la volée sur l'acteur ancré ;
-        # 0-3 restent une surcharge explicite. Cf. `UIImage.priority`.
-        prio = 255 if int(getattr(im, "priority", -1)) < 0 else (im.priority & 3)
-        rows.append(
-            f"    {{ {x}, {y}, {g['frame_w']}, {g['frame_h']}, "
-            f"{1 if target_obj else 0}, "
-            f"{ANCHORS.index(eff_anchor)}, {(actor_index or {}).get(im.name, -1)}, "
-            f"{ss}_anim_dirs, {ss}_state_start, {ss}_state_speed, {ss}_state_loop, "
-            f"{n_states}, {st0}, {1 if im.playing else 0}, "
-            f"{base}, {sprite.tiles_per_frame}, {oam_rel}, {prio}, "
-            f"{g['cols']}, {g['rows']}, {int(getattr(im, 'anim_speed', 0) or 0)}, "
-            f"{elem} }},"
-            f"  /* {im.name} — {sprite.name}"
-            + (f", pavage {g['cols']}×{g['rows']}"
-               if g['cols'] * g['rows'] > 1 else "") + " */")
-        if emit and eff_anchor == "actor" and (actor_index or {}).get(im.name, -1) < 0:
-            # Même angle mort que pour une zone de texte : sans acteur résolu,
-            # l'image se pose à l'origine de l'écran, ce qui ressemble à un bug
-            # de placement plutôt qu'à une référence introuvable.
-            emit("log_line",
-                 f"[warn] image '{im.name}' : ancrée sur l'actor "
-                 f"'{eff_actor or '(aucun)'}', introuvable dans la scène — elle "
-                 f"se posera à l'origine de l'écran.")
-    L = ["/* ── Images d'interface (UILayout) ─────────────── */"]
-    L.append(f"const UIImageInfo g_ui_images[{max(1, len(rows))}] = {{")
-    L += rows or ["    { 0, 0, 8, 8, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,"
-                  " 1, 1, 0, -1 },   /* aucune image */"]
-    L.append("};")
-    L.append(f"const int g_ui_image_count = {len(rows)};")
-    L.append("")
-    return L
-
-
-def _ui_element_index(p: Project) -> dict:
-    """{nom d'élément : index dans `Project.all_elements()`} — l'index de la
-    table de visibilité plate (`UIELEM_*`, `g_ui_elements`). Même ordre que
-    celui utilisé par `codegen.py` pour les `#define` de script, donc la
-    même constante des deux côtés du link."""
-    return {e.name: i for i, (_lay, e) in enumerate(
-        p.all_elements() if hasattr(p, "all_elements") else [])}
-
-
-def project_lists(p: Project) -> list:
-    """[(mise en page, liste)] des `UIList` du projet, ordre stable.
-
-    Le même ordre que `all_elements` — mises en page, puis éléments — donc
-    l'index d'une liste est une constante du build, `UILIST_<NOM>`."""
-    from core.models.ui_region import KIND_LIST
-    return [(lay, e) for lay, e in
-            (p.all_elements() if hasattr(p, "all_elements") else [])
-            if getattr(e, "kind", "") == KIND_LIST]
-
-
-def list_rows_of(lay, lst) -> list:
-    """Les RANGÉES d'une liste : ses zones de texte enfants, dans l'ordre de la
-    mise en page. Rien à déclarer — ce qu'on voit dans l'éditeur est ce que la
-    liste parcourt (ROADMAP v0.22)."""
-    from core.models.ui_region import KIND_TEXT
-    return [e for e in lay.elements
-            if getattr(e, "parent", "") == lst.name
-            and getattr(e, "kind", "") == KIND_TEXT]
-
-
-def emit_ui_lists_c(p: Project, emit=None) -> list[str]:
-    """Tables des listes d'interface + leur état vivant (ROADMAP v0.22).
-
-    Émises MÊME VIDES : `gba_engine.h` les déclare `extern` sans condition, et
-    un projet sans liste doit tout de même se lier — c'est `g_ui_list_count`
-    qui dit au moteur qu'il n'y a rien à parcourir. Même règle que les tables
-    de sauvegarde.
-
-    `g_ui_list_total` initial = le nombre de RANGÉES authorées, pas 0 — sinon
-    un menu STATIQUE (un sélecteur de langue, un menu principal : items ==
-    rangées, jamais de défilement) resterait figé tant que le script n'a pas
-    répété une information déjà posée dans le canvas. `list.set_count` garde
-    tout son sens dès que le total dépasse les rangées visibles (inventaire
-    qui défile) : il écrase ce défaut, il ne comble plus un zéro."""
-    from core.models.ui_region import KIND_IMAGE, NAV_ROW, CURSOR_SLIDE
-    lists = project_lists(p)
-    L = ["", "/* Listes d'interface — la navigation, pas la mise en page */"]
-    regions = {name: i for i, name in enumerate(p.region_names())}
-    # Index d'IMAGE, celui de `g_ui_images` et donc de `IMAGE_*` : c'est par là
-    # que la liste désigne son curseur. Le même ordre que `emit_ui_images_c`,
-    # sans quoi elle en déplacerait un autre.
-    images = {im.name: i for i, (_l, im) in
-              enumerate(p.all_images() if hasattr(p, "all_images") else [])}
-    rows_flat: list[int] = []
-    row_counts: list[int] = []
-    actives: list[int] = []
-    infos: list[str] = []
-    # Cadence par DÉFAUT du projet, qu'une liste peut surcharger — même
-    # politique d'héritage que la transition de scène (v0.6.2). Trois listes à
-    # trois cadences est une incohérence qu'un joueur sent.
-    d_delay = int(getattr(p.settings, "list_repeat_delay", 10) or 10)
-    d_rate = int(getattr(p.settings, "list_repeat_rate", 4) or 4)
-    for lay, lst in lists:
-        rows = list_rows_of(lay, lst)
-        row0 = len(rows_flat)
-        rows_flat += [regions.get(r.name, -1) for r in rows]
-        row_counts.append(len(rows))
-        actives.append(1 if getattr(lst, "active", True) else 0)
-        delay = int(getattr(lst, "repeat_delay", 0) or 0) or d_delay
-        rate = int(getattr(lst, "repeat_rate", 0) or 0) or d_rate
-        # Le curseur est un `UIImage` de LA MÊME mise en page : une liste qui
-        # bougerait l'image d'une autre page déplacerait quelque chose que
-        # l'auteur ne voit pas à côté d'elle. -1 = pas de curseur, la sélection
-        # se lit alors au surlignement.
-        cur_name = str(getattr(lst, "cursor_image", "") or "")
-        cur_el = lay.get(cur_name) if cur_name else None
-        cursor = images.get(cur_name, -1) \
-            if getattr(cur_el, "kind", "") == KIND_IMAGE else -1
-        if emit and cur_name and cursor < 0:
-            emit("log_line",
-                 f"[warn] liste '{lst.name}' : curseur '{cur_name}' introuvable "
-                 f"dans la mise en page '{lay.name}' — la liste navigue sans "
-                 f"curseur.")
-        infos.append(
-            "{" + f"{len(rows)}, "
-            f"{max(1, min(255, int(getattr(lst, 'nav_columns', 1) or 1)))}, "
-            f"{1 if getattr(lst, 'nav_major', '') == NAV_ROW else 0}, "
-            f"{1 if getattr(lst, 'wrap', True) else 0}, "
-            f"{max(0, min(255, delay))}, {max(0, min(255, rate))}, {row0}, "
-            f"{cursor}, "
-            f"{1 if getattr(lst, 'cursor_mode', '') == CURSOR_SLIDE else 0}, "
-            f"{max(1, min(255, int(getattr(lst, 'cursor_speed', 2) or 2)))}, "
-            f"{int(getattr(lst, 'selected_text_color', 0) or 0)}, "
-            f"{int(getattr(lst, 'selected_highlight_color', 0) or 0)}"
-            + "}" + f"   /* {lst.name} — {len(rows)} rangée(s) */")
-        if emit and not rows:
-            emit("log_line",
-                 f"[warn] liste '{lst.name}' : aucune zone de texte enfant, "
-                 f"donc aucune rangée à afficher. Une liste parcourt les zones "
-                 f"de texte posées DANS son conteneur.")
-    n = len(lists)
-    L.append("const UIListInfo g_ui_lists[] = {"
-             + (", ".join(infos) if infos else "{0,1,0,0,0,0,0,-1,0,1,0,0}") + "};")
-    L.append("const short g_ui_list_rows[] = {"
-             + (", ".join(str(r) for r in rows_flat) if rows_flat else "0") + "};")
-    L.append(f"const int g_ui_list_count = {n};")
-    z = ", ".join(["0"] * n) if n else "0"
-    one = ", ".join(["1"] * n) if n else "0"
-    act = ", ".join(str(a) for a in actives) if actives else "0"
-    # Le total démarre au compte de RANGÉES authorées, pas à 0 : un menu
-    # STATIQUE (items == rangées, jamais de défilement — un sélecteur de
-    # langue, un menu principal) navigue alors sans une ligne de script.
-    # `list.set_count` reste le seul moyen de dire un total PLUS GRAND que
-    # les rangées visibles (un inventaire qui défile) — il écrase ce défaut
-    # au lieu de partir de zéro, jamais un cas spécial à distinguer ici.
-    totals = ", ".join(str(n) for n in row_counts) if row_counts else "0"
-    L.append(f"int g_ui_list_index[] = {{{one}}};")
-    L.append(f"int g_ui_list_first[] = {{{one}}};")
-    L.append(f"int g_ui_list_total[] = {{{totals}}};")
-    L.append(f"int g_ui_list_timer[] = {{{z}}};")
-    # `active` est un état VIVANT comme l'index : la valeur authorée n'est que
-    # son point de départ, `list.set_active` décide ensuite. Une liste inactive
-    # reste dessinée — c'est la sélection qu'on coupe, pas l'affichage.
-    L.append(f"int g_ui_list_active[] = {{{act}}};")
-    # Rangée affichée qui porte la sélection au dernier restyle, 0 = aucune :
-    # `ui_list_sync_style` s'en sert pour rendre l'ancienne à son style. Zéro au
-    # départ, la première frame posant le style de la rangée courante.
-    L.append(f"int g_ui_list_shown[] = {{{z}}};")
-    # Le texte posé sur chaque rangée, à plat comme `g_ui_list_rows` (-1 = rien
-    # d'écrit). Rempli par `text_draw_in` — c'est ce qui permet à la liste de
-    # redessiner une rangée quand la sélection la quitte ou l'atteint.
-    L.append("short g_ui_list_row_text[] = {"
-             + (", ".join(["-1"] * len(rows_flat)) if rows_flat else "-1") + "};")
-    for i, (_lay, container) in enumerate(lists):
-        L.append(f"#define UILIST_{c_sym(container.name).upper()} {i}")
-    if emit and n:
-        L.insert(1, "")
-        emit("log_line", f"[ui] {n} liste(s) de navigation")
-    L.append("")
-    return L
-
-
-def emit_ui_elements_c(p: Project) -> list[str]:
-    """Table `g_ui_elements` — un `{parent, visible}` par élément du projet,
-    dans l'ordre de `Project.all_elements()`, qui fait l'index (`UIELEM_*`).
-
-    `parent` référence un AUTRE index de CETTE MÊME table (-1 = racine) : la
-    visibilité effective se recalcule au runtime en la remontant
-    (`ui_element_is_visible`), elle n'est jamais stockée — même règle que le
-    modèle Python (`UILayout.is_visible`, jamais propagée aux enfants)."""
-    elements = p.all_elements() if hasattr(p, "all_elements") else []
-    index = _ui_element_index(p)
-    rows: list[str] = []
-    for lay, e in elements:
-        parent = getattr(e, "parent", "") or ""
-        parent_idx = index.get(parent, -1) if lay.get(parent) is not None else -1
-        rows.append(f"    {{ {parent_idx}, {1 if getattr(e, 'visible', True) else 0} }},"
-                    f"  /* {e.name} */")
-    L = ["/* ── Visibilité des éléments d'interface (UILayout) ───────── */"]
-    L.append(f"const UIElementInfo g_ui_elements[{max(1, len(rows))}] = {{")
-    L += rows or ["    { -1, 1 },   /* aucun élément */"]
-    L.append("};")
-    L.append(f"const int g_ui_element_count = {len(rows)};")
-    L.append("")
-    return L
-
-
-def _region_actor_index(p: Project) -> dict:
-    """{nom de zone: index global dans g_actors} pour les zones ancrées actor.
-
-    Résolu contre la PREMIÈRE scène qui référence la mise en page. Une mise en
-    page partagée par deux scènes où l'acteur n'a pas le même index global
-    donnerait deux réponses ; on prend la première et on le signale, plutôt que
-    d'ajouter une indirection par scène pour un cas qui n'existe pas encore
-    (une bulle est en pratique dans la mise en page de sa scène)."""
-    out: dict = {}
-    offset = 0
-    for scene in p.scenes:
-        actors = [a for a in getattr(scene, "actors", [])]
-        names = {a.name: offset + i for i, a in enumerate(actors)}
-        # Textes ET images de TOUS les nœuds `Interface` de la scène : toutes deux
-        # se posent au pixel quand elles suivent un acteur, et un second index les
-        # ferait diverger.
-        for lay, r in p.scene_ui_slots(scene) + p.scene_ui_images(scene):
-            # L'ancrage vient du NŒUD (un enfant en hérite), plus de l'élément
-            # lui-même — cohérent avec l'éditeur.
-            eff_anchor, eff_actor = lay.effective_anchor(r)
-            if eff_anchor == "actor" and r.name not in out:
-                out[r.name] = names.get(eff_actor, -1)
-        offset += len(actors)
-    return out
-
-
-def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
-    """Cette zone compose-t-elle pixel à pixel (surface) plutôt que de poser
-    des tuiles ? MÊME règle que `text_is_composited()` côté runtime
-    (gba_engine.h) : surlignée, posée dans un conteneur à FOND, ou police
-    composée — le fond/surlignement forcent la composition même en police
-    MONO, pour se poser SUR ce qui est dessous sans le percer (cf.
-    `region_fill_container`).
-
-    Un seul endroit pour cette règle, lu par le canvas (`SceneRegionItem.
-    _composited`) et le validateur (`_check_ui_text_surf_alias`) : les
-    laisser diverger, c'est risquer qu'un aperçu dise « pas de conflit » sur
-    un cas que le build compose bel et bien."""
-    if int(getattr(el, "highlight_color", 0) or 0):
-        return True
-    if region_fill_container(lay, el) is not None:
-        return True
-    from codegen.font_emit import render_composited
-    fname = getattr(el, "font_name", "") or default_font_name
-    font = p.fonts.get(fname) if fname else None
-    return bool(font) and render_composited(font)
-
-
-def scene_region_colors(p: Project, scene, fills: list[dict]) -> list[dict]:
-    """Zones de texte composées sur l'APLAT d'un container couleur.
-
-    `fills` est ce que `scene_color_fills` a retenu pour CETTE scène — donc
-    déjà filtré par toutes les conditions d'émission (cible BG, root ancré
-    écran, palette active, calque d'UI). Dériver d'elle plutôt que de refaire la
-    recherche est la correction de fond de ce chantier : deux calculs
-    indépendants avaient produit un conteneur écarté du build dont la couleur
-    apparaissait quand même dans la boîte de son texte enfant.
-
-    Renvoie `{region, name, container, index, color, bank}` — `index` est l'index
-    de l'aplat dans la palette du conteneur, `bank` la banque de ce conteneur
-    (le texte enfant y lit son encre, il PREND la palette du conteneur), `color`
-    la valeur BGR555 (pour l'aperçu éditeur)."""
-    from core.models.ui_region import KIND_TEXT, FILL_COLOR
-    if not fills:
-        return []
-    by_container = {f["name"]: f for f in fills}
-    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
-    out: list[dict] = []
-    for lay, el in p.scene_ui_slots(scene):
-        if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
-            continue
-        container = region_fill_container(lay, el)
-        if container is None or getattr(container, "fill_kind", "") != FILL_COLOR:
-            continue
-        if container.name not in by_container:
-            continue          # conteneur écarté du build : rien à teinter
-        pal = p.get_palette(getattr(container, "fill_palette", "") or "")
-        idx = int(getattr(container, "fill_index", 0) or 0)
-        if not pal or not 0 <= idx < len(pal.colors):
-            continue
-        out.append({"region": slot_idx[el.name], "name": el.name,
-                    "container": container.name, "index": idx,
-                    "color": int(pal.colors[idx]),
-                    # Banque du conteneur (sa place dans active_bg_palettes) — le
-                    # texte enfant y lit son encre. `scene_color_fills` l'a déjà
-                    # calculée ; on la reprend plutôt que de la refaire.
-                    "bank": by_container[container.name]["bank"]})
-    return out
-
-
-def scene_region_backdrops(p: Project, scene, img_fills: list[dict]) -> list[dict]:
-    """Zones de texte composées SOUS un container nine-slice/background : sans
-    ça, `text_surf_prepare` composerait sur du transparent et effacerait le
-    cadre à cet endroit au lieu de le garder sous l'encre. Une couleur n'y
-    suffirait pas — ce sont les VRAIS pixels du cadre qu'il faut à cet endroit.
-
-    Renvoie une entrée par zone concernée : `{region, fill, dx, dy}` — `fill`
-    est l'INDEX de son container ancêtre dans `img_fills` (déjà émis par
-    `scene_image_fills`, réutilisé tel quel, jamais dupliqué) ; `dx, dy` le
-    coin de la zone DANS la carte de ce container, en tuiles. Le runtime lit
-    directement la carte du container avec cet offset (cf. `RegionFill` dans
-    `gba_engine.h`) plutôt que de recevoir une carte à la taille de la zone :
-    une donnée, pas deux à tenir d'accord."""
-    from core.models.ui_region import KIND_TEXT, FILL_NINE, FILL_BG
-    if not img_fills:
-        return []
-    by_container = {f["name"]: i for i, f in enumerate(img_fills)}
-    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
-    out: list[dict] = []
-    for lay, el in p.scene_ui_slots(scene):
-        if getattr(el, "kind", "") != KIND_TEXT or el.name not in slot_idx:
-            continue
-        container = region_fill_container(lay, el)
-        if container is None or getattr(container, "fill_kind", "") not in (FILL_NINE, FILL_BG):
-            continue
-        if container.name not in by_container:
-            continue
-        fi = by_container[container.name]
-        f = img_fills[fi]
-        rx, ry, _ = lay.absolute_origin(el, lambda _n: None)
-        rx -= rx % 8
-        ry -= ry % 8
-        rtx, rty = rx // 8, ry // 8
-        rw = max(1, (el.w + 7) // 8)
-        rh = max(1, (el.h + 7) // 8)
-        dx, dy = rtx - f["tx"], rty - f["ty"]
-        # Zone qui déborde de son container (authoring incohérent) : rien à
-        # enregistrer — le texte retombe alors sur la banque de sa police.
-        if dx < 0 or dy < 0 or dx + rw > f["w"] or dy + rh > f["h"]:
-            continue
-        out.append({"region": slot_idx[el.name], "name": el.name,
-                    "fill": fi, "dx": dx, "dy": dy})
-    return out
-
-
-def region_ink_bank(p: Project, scene, el) -> "tuple[int, str] | None":
-    """La banque HW (0-15) où l'encre ET le surlignement de CETTE zone
-    s'indexent quand le build la lie à un conteneur à fond, avec le nom du
-    conteneur — ou None si la zone lit la banque de sa police (texte libre).
-
-    C'est `RegionFill.bank` du runtime, exposé pour ses relecteurs de l'éditeur
-    (l'inspecteur et l'aperçu du canvas) : plutôt que de reconstruire les
-    conditions d'émission (cible BG, ancrage écran, palette active, 8bpp,
-    débordement de zone), on lit ce que `scene_region_colors` /
-    `scene_region_backdrops` émettent VRAIMENT pour elle. Une seule vérité,
-    celle de la ROM."""
-    name = el.name
-    cfills, _ = scene_color_fills(p, scene)
-    for rc in scene_region_colors(p, scene, cfills):
-        if rc["name"] == name:
-            return rc["bank"], rc["container"]
-    ifills, _ = scene_image_fills(p, scene)
-    for rb in scene_region_backdrops(p, scene, ifills):
-        if rb["name"] == name:
-            fi = ifills[rb["fill"]]
-            return fi["bank"], fi["name"]
-    return None
-
-
-def _gen_ui_texts(p: Project, scene, text_bg: int, emit=None) -> list[str]:
-    """Appels `text_draw_in` des textes AUTHORÉS de la mise en page d'une scène.
-
-    Le build émet exactement l'appel que l'auteur aurait tapé — même fonction,
-    même table, même index. Pas de chemin de rendu « statique » séparé : un
-    script peut réécrire le même slot ensuite (`text.draw_in`), dernier
-    écrivain gagne.
-
-    Posé une seule fois, à l'init : un texte qui doit CHANGER est le travail
-    d'un script.
-    """
-    from core.models.ui_region import KIND_TEXT, ANCHOR_ACTOR, TARGET_OBJ
-
-    # Index PROJET-GLOBAUX : `g_ui_regions` suit l'ordre de `all_regions()`,
-    # `g_texts` celui de `build_texts()`. Recalculés ici plutôt que reçus, pour
-    # lire les mêmes listes que les émetteurs de tables — deux vues divergentes
-    # écriraient le bon texte dans la mauvaise zone, sans casser le link.
-    slot_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
-    text_idx = {t.key: i for i, t in enumerate(
-        p.build_texts() if hasattr(p, "build_texts") else getattr(p, "texts", []))}
-    rm = int(getattr(scene, "render_mode", 0) or 0)
-
-    L: list[str] = []
-    for lay, el in p.scene_ui_slots(scene):
-        if getattr(el, "kind", "") != KIND_TEXT:
-            continue
-        key = getattr(el, "text_key", "") or ""
-        if not key:
-            continue          # le validateur le signale déjà, et mieux
-        if key not in text_idx or el.name not in slot_idx:
-            if emit:
-                emit("log_line", f"[warn] texte '{el.name}' : clé '{key}' "
-                                 f"introuvable dans la table — rien ne sera écrit.")
-            continue
-        target = lay.resolved_target(el, rm)
-        # Cible BG sans layer de texte : `text_set_layer(-1)` fait sortir le
-        # rendu sans un mot, et l'élément disparaît entre le canvas et la ROM.
-        if target != TARGET_OBJ and text_bg not in (0, 1, 2, 3):
-            if emit:
-                emit("log_line",
-                     f"[warn] texte '{el.name}' : la scène '{scene.name}' n'a "
-                     f"aucun layer de texte (Text BG), il ne s'affichera pas.")
-            continue
-        if lay.effective_anchor(el)[0] == ANCHOR_ACTOR:
-            if emit:
-                emit("log_line",
-                     f"[warn] texte '{el.name}' : ancré sur un acteur mais posé "
-                     f"une seule fois à l'init — il ne suivra pas l'acteur. "
-                     f"Utilise une zone et un script pour ça.")
-        L.append(f"    text_draw_in({slot_idx[el.name]}, {text_idx[key]});"
-                 f"   /* texte authoré '{el.name}' = '{key}' */")
-    if L and emit:
-        emit("log_line", f"[text] scène '{scene.name}' : {len(L)} texte(s) "
-                         f"authoré(s) écrit(s) à l'init")
-    return L
+    return emit_ui_images_c(p, sprite_offsets, obj_text_alloc(p),
+                            actor_index=region_actor_index(p),
+                            elem_index=ui_element_index(p), emit=emit)
 
 
 def _gen_scene_blend(scene, emit=None) -> list[str]:
@@ -2875,144 +1002,6 @@ def _gen_ui_images(p: Project, scene, text_cbb: int, sprite_offsets: dict,
                  f"{ss}Tiles, {ss}TilesLen);"
                  f"   /* image '{info['el'].name}' : {info['frames']} frame(s) */")
     return L
-
-
-def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
-    """Fonds COULEUR des conteneurs d'une scène → (fills, indices).
-
-    1re tranche : uniquement les conteneurs à fond `color`, cible BG, root ancré
-    ÉCRAN (position fixe — le monde défile, l'OBJ n'a pas de tilemap). Chaque
-    fond : rectangle en TUILES (résolu écran), index de couleur, banque de
-    palette (= sa place dans `scene.active_bg_palettes`). `indices` = index
-    distincts, un par tuile pleine à graver dans le charblock UI."""
-    from core.models.ui_region import (
-        can_fill, FILL_COLOR, ANCHOR_SCREEN, TARGET_BG)
-    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
-        return [], []
-    rm = int(getattr(scene, "render_mode", 0) or 0)
-    active = list(getattr(scene, "active_bg_palettes", []) or [])
-    fills: list[dict] = []
-    indices: list[int] = []
-    for lay, el in p.scene_ui_elements(scene):
-        if not can_fill(el):                                continue
-        if getattr(el, "fill_kind", "") != FILL_COLOR:       continue
-        if lay.resolved_target(el, rm) != TARGET_BG:         continue
-        if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
-        pal = getattr(el, "fill_palette", "")
-        if pal not in active:                                continue  # non active
-        x, y, _ = lay.absolute_origin(el, lambda _n: None)
-        tx, ty = x // 8, y // 8
-        tw = max(1, (x - tx * 8 + el.w + 7) // 8)
-        th = max(1, (y - ty * 8 + el.h + 7) // 8)
-        idx = int(getattr(el, "fill_index", 0) or 0) & 0xF
-        if idx not in indices:
-            indices.append(idx)
-        fills.append({"name": el.name, "tx": tx, "ty": ty, "w": tw, "h": th,
-                      "index": idx, "bank": active.index(pal)})
-    return fills, indices
-
-
-# Cellule « rien à dessiner » d'un fond image. Doit rester égale à UI_SE_EMPTY
-# de gba_engine.h : le runtime y reconnaît la sentinelle AVANT d'ajouter la base
-# de tuiles, et pose une case vide.
-UI_SE_EMPTY = 0xFFFF
-
-
-def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
-    """Fonds IMAGE (nine-slice, background) des conteneurs d'une scène.
-
-    Renvoie (fills, assets) :
-      fills  — un par conteneur : rectangle en TUILES + la liste des screen
-               entries à écrire (palette déjà rebasée sur les banques HW).
-      assets — les BackgroundAsset sources, dédupliqués et ORDONNÉS ; le codegen
-               leur attribue une base de tuiles dans le charblock d'UI, dans cet
-               ordre, et les `se` citent des index LOCAUX que le runtime décale
-               de cette base.
-
-    Même périmètre que `scene_color_fills` (cible BG, root écran) : le monde
-    défile et l'OBJ n'a pas de tilemap. Les marges d'un nine-slice sont ramenées
-    à la TUILE — une tilemap ne sait pas couper un cadre à 3 px."""
-    from core.models.ui_region import (
-        can_fill, FILL_NINE, FILL_BG, ANCHOR_SCREEN, TARGET_BG)
-    from core.nine_slice import nine_slice_rects
-    from core.models.tile_codec import unpack_se, pack_se
-    from codegen.palette_alloc import scene_bank_layout
-
-    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
-        return [], []
-    rm = int(getattr(scene, "render_mode", 0) or 0)
-    bank_layout = scene_bank_layout(p, scene, "bg")
-    fills: list[dict] = []
-    assets: list[dict] = []
-    by_name: dict[str, int] = {}      # nom d'asset -> index dans `assets`
-
-    for lay, el in p.scene_ui_elements(scene):
-        if not can_fill(el):                                continue
-        fk = getattr(el, "fill_kind", "")
-        if fk not in (FILL_NINE, FILL_BG):                   continue
-        if lay.resolved_target(el, rm) != TARGET_BG:         continue
-        if lay.effective_anchor(el)[0] != ANCHOR_SCREEN:     continue
-
-        # Source : le fond cité, dans les deux modes. Un cadre étirable est un
-        # BackgroundAsset de kind `ui` qui porte ses propres marges de découpe —
-        # il n'y a plus d'asset de cadre à déréférencer entre les deux.
-        src_name = getattr(el, "fill_asset", "")
-        ba = p.get_background(src_name) if src_name else None
-        if ba is None or not getattr(ba, "tileset", None):    continue
-        if getattr(ba, "bpp", 4) == 8:                        continue  # cf. layers 8bpp
-        pal_offset = bank_layout.bg_block_offset(ba)
-        if pal_offset is None:                                continue  # pas de banques
-
-        x, y, _ = lay.absolute_origin(el, lambda _n: None)
-        tx, ty = x // 8, y // 8
-        w = max(1, (x - tx * 8 + el.w + 7) // 8)
-        h = max(1, (y - ty * 8 + el.h + 7) // 8)
-        sw, sh = max(1, ba.tiles_w), max(1, ba.tiles_h)
-        src_map = ba.effective_tilemap()
-
-        def src_se(sc: int, sr: int) -> int:
-            """SE source rebasée sur les banques HW, ou UI_SE_EMPTY hors image.
-
-            Sentinelle plutôt que 0 : le runtime AJOUTE la base de tuiles de
-            l'asset, donc un 0 y désignerait sa PREMIÈRE tuile au lieu de
-            « rien à dessiner »."""
-            if not (0 <= sc < sw and 0 <= sr < sh):
-                return UI_SE_EMPTY
-            cell = sr * sw + sc
-            if cell >= len(src_map):
-                return UI_SE_EMPTY
-            tid, pb, fh, fv = unpack_se(src_map[cell])
-            return pack_se(tid, pb + pal_offset, fh, fv)
-
-        se = [UI_SE_EMPTY] * (w * h)
-        if fk == FILL_BG:
-            # Image posée en haut-gauche, ROGNÉE bas/droite — une fenêtre sur le
-            # fond, jamais un étirement (même règle que l'aperçu éditeur).
-            for r in range(h):
-                for c in range(w):
-                    se[r * w + c] = src_se(c, r)
-        else:
-            # Coins fixes, bords/centre RÉPÉTÉS. La géométrie est celle de
-            # `core.nine_slice`, en unités de TUILE plutôt qu'en pixels.
-            ml, mr, mt, mb = ba.slice_margins_tiles()
-            for z in nine_slice_rects(sw, sh, ml, mr, mt, mb, w, h):
-                sx, sy, s_w, s_h = z["src"]
-                dx, dy, d_w, d_h = z["dst"]
-                for r in range(d_h):
-                    for c in range(d_w):
-                        cc = (c % s_w) if z["tile"] else min(c, s_w - 1)
-                        rr = (r % s_h) if z["tile"] else min(r, s_h - 1)
-                        se[(dy + r) * w + (dx + c)] = src_se(sx + cc, sy + rr)
-
-        if ba.name not in by_name:
-            from codegen.bg_emit import tileset_words
-            words = tileset_words(ba.tileset, 4)   # 8 mots u32 = 1 tuile 4bpp
-            by_name[ba.name] = len(assets)
-            assets.append({"name": ba.name, "sym": f"ui_bg_{c_sym(ba.name)}",
-                           "words": words, "tiles": len(words) // 8})
-        fills.append({"name": el.name, "tx": tx, "ty": ty, "w": w, "h": h,
-                      "asset": by_name[ba.name], "se": se, "bank": pal_offset})
-    return fills, assets
 
 
 def _scene_music_lines(p: Project, scene: Scene, sound_assets: dict | None) -> list[str]:
@@ -3153,7 +1142,7 @@ def _gen_scene_init(
     _cam_name = getattr(scene, "camera", "") or "(default)"
     L.append(f"    camera_switch({_cam_idx});   /* {_cam_name} */")
     # Cmap dispatch
-    if _scene_has_cmap(scene):
+    if scene_has_cmap(scene):
         L.append(f"    g_active_cmap = g_cmap_{sym};")
         L.append(f"    g_cmap_w = CMAP_W_{sym.upper()};")
         L.append(f"    g_cmap_h = CMAP_H_{sym.upper()};")
@@ -3222,7 +1211,7 @@ def _gen_scene_init(
     # l'occupation du slot 0 ci-dessus, qui ne copie que les slots occupés :
     # une scène sans aucune palette BG active doit quand même pouvoir
     # afficher une couleur de fond).
-    L.append(f"    PAL_BG_RAM[0] = 0x{_resolve_backdrop_color(p, scene):04X};")
+    L.append(f"    PAL_BG_RAM[0] = 0x{resolve_backdrop_color(p, scene):04X};")
     # Texte (text.*) — le layer d'UI porte les glyphes ; la 1ère police du
     # projet est chargée par défaut, `text.set_font()` en change.
     #
@@ -3402,7 +1391,7 @@ def _gen_scene_init(
     # rendu lit la police, la base de tuiles, la surface composée, les couleurs
     # de fond et la base OBJ — tout ce qui précède. Avant dispcnt_set, qui
     # n'écrit que des registres d'affichage.
-    L += _gen_ui_texts(p, scene, text_bg, emit)
+    L += gen_ui_texts(p, scene, text_bg, emit)
     # Images de l'interface, APRÈS les postes de texte : elles réutilisent la
     # même base OAM (`text_obj_set_base`, dont l'allocation chaîne les deux) et
     # se logent après les glyphes dans le charblock d'UI.
@@ -3477,7 +1466,7 @@ def _gen_scene_init(
             f"    g_actors[{idx}].pal_bank= {pal if pal is not None else 0};",
             f"    g_actors[{idx}].obj_mode= {int(getattr(actor, 'obj_mode', 0)) & 3};",
             f"    g_actors[{idx}].priority= {int(getattr(actor, 'priority', 0)) & 3};",
-            f"    g_actors[{idx}].sprite.auto_dir= {1 if getattr(_get_sprite_comp(actor),'auto_dir',True) else 0};",
+            f"    g_actors[{idx}].sprite.auto_dir= {1 if getattr(get_sprite_comp(actor),'auto_dir',True) else 0};",
             f"    g_actors[{idx}].sprite.anim_state=0;",
             # self.frame_w/frame_h : posées une fois ici depuis le sprite,
             # jamais recalculées — un acteur sans sprite (rare, cf. `sprite`
@@ -3578,76 +1567,6 @@ def _gen_scene_init(
     return L
 
 
-def _affine_oam_lines_dynamic(idx: int, aff: dict, sprite, bt: int, priority_expr: str,
-                               screen_space: bool = False) -> list[str]:
-    """Lignes C (intérieur du if actif) pour un sprite affine : PA/PB/PC/PD et
-    position recalculés CHAQUE FRAME depuis les champs transform de la struct
-    Actor via gba_sin/gba_cos (cf. actor_api_static.h), même formule que la
-    matrice GBA 8.8 (PA=cos/scale_x, PB=sin/scale_x, PC=-sin/scale_y,
-    PD=cos/scale_y, évaluée en C avec des Q8).
-
-    Composition du transform MONDE de l'actor (self.rotation/self.scale) et du
-    transform LOCAL du sprite (self.sprite_*), cf. ARCHITECTURE.md « Le modèle
-    affine » :
-        angle_eff     = rotation + sprite_rot            (somme)
-        scale_eff     = scale_x * sprite_scale_x / 256   (produit, Q8)
-        position_eff  = actor.position + R(rotation)·S(scale)·offset
-    L'offset vit dans le repère local de l'actor : il tourne ET scale avec lui.
-    C'est lui qui décale le sprite par rapport à la position monde (l'actor n'a
-    pas l'offset ; le sprite n'a pas de position monde).
-
-    `screen_space` retire la soustraction de caméra (cf. Actor.screen_space)."""
-    aslot = aff["slot"]
-    W, H   = sprite.frame_w, sprite.frame_h
-    sh, sz = sprite.oam_shape, sprite.oam_size
-    tpf    = sprite.tiles_per_frame
-    dx, dy = -(W // 2), -(H // 2)
-
-    # ROADMAP v0.19 : x/y sont en Q8 en interne (256 = 1 px) ; l'émission OAM
-    # est UN des deux seuls points d'arrondi du chantier (l'autre est l'entrée
-    # de la collision, cf. resolve_actor_tiles). >>8 tronque vers -inf sur un
-    # entier signé avec ce compilateur (ARM/GCC, décalage arithmétique) —
-    # cohérent, pas de saut à la traversée de 0.
-    base_x = f"(g_actors[{idx}].x>>8)" + ("" if screen_space else "-cam_x")
-    base_y = f"(g_actors[{idx}].y>>8)" + ("" if screen_space else "-cam_y")
-
-    return [
-        # Transform monde + local composés
-        f"        int _arot=g_actors[{idx}].rotation;",
-        f"        int _srot=g_actors[{idx}].sprite.rotation;",
-        f"        int _ang=_arot+_srot; int _cosA=gba_cos(_ang); int _sinA=gba_sin(_ang);",
-        f"        int _asx=g_actors[{idx}].scale_x; int _asy=g_actors[{idx}].scale_y;",
-        f"        int _ssx=g_actors[{idx}].sprite.scale_x; int _ssy=g_actors[{idx}].sprite.scale_y;",
-        f"        int _sxq=_asx*_ssx/256; int _syq=_asy*_ssy/256;",
-        f"        int _fh=g_actors[{idx}].flip_h; int _fv=g_actors[{idx}].flip_v;",
-        f"        int _sxs=_fh?-_sxq:_sxq; int _sys=_fv?-_syq:_syq;",
-        # Matrice 8.8 (base, sans flip)
-        f"        int _pa=_sxq?_cosA*256/_sxq:0; int _pb=_sxq?_sinA*256/_sxq:0;",
-        f"        int _pc=_syq?-_sinA*256/_syq:0; int _pd=_syq?_cosA*256/_syq:0;",
-        f"        if(!_pa&&!_pb){{_pa=1;}}",
-        f"        if(!_pc&&!_pd){{_pd=1;}}",
-        # Offset local transformé par la matrice de l'ACTOR (hérarchie) :
-        #   ox = R(rotation)·S(scale)·offset, avec le flip déjà dans le signe.
-        f"        int _acos=gba_cos(_arot); int _asin=gba_sin(_arot);",
-        f"        int _asxs=_fh?-_asx:_asx; int _asys=_fv?-_asy:_asy;",
-        f"        int _ofx=(_acos*_asxs*g_actors[{idx}].sprite.offset_x - _asin*_asys*g_actors[{idx}].sprite.offset_y)/65536;",
-        f"        int _ofy=(_asin*_asxs*g_actors[{idx}].sprite.offset_x + _acos*_asys*g_actors[{idx}].sprite.offset_y)/65536;",
-        # Position : pivot de rotation au centre texture ; l'offset s'ajoute au monde.
-        f"        int _ocx=({base_x})+_ofx; int _ocy=({base_y})+_ofy;",
-        f"        int _u=(_cosA*_sxs*({dx}))/65536-(_sinA*_sys*({dy}))/65536;",
-        f"        int _v=(_sinA*_sxs*({dx}))/65536+(_cosA*_sys*({dy}))/65536;",
-        f"        int sx=_ocx+(-{W}-_u); int sy=_ocy+(-{H}-_v);",
-        f"        u16 ti=(u16)({bt}+g_actors[{idx}].sprite.frame*{tpf});",
-        f"        shadow_oam[{aslot*4+0}].dummy=(u16)(s16)(_fh?-_pa:_pa);",
-        f"        shadow_oam[{aslot*4+1}].dummy=(u16)(s16)(_fh?-_pb:_pb);",
-        f"        shadow_oam[{aslot*4+2}].dummy=(u16)(s16)(_fv?-_pc:_pc);",
-        f"        shadow_oam[{aslot*4+3}].dummy=(u16)(s16)(_fv?-_pd:_pd);",
-        f"        shadow_oam[{idx}].attr0=(sy&0xFF)|(1<<8)|(1<<9)|(g_actors[{idx}].obj_mode<<10)|({sh}<<14);",
-        f"        shadow_oam[{idx}].attr1=(sx&0x1FF)|({aslot}<<9)|({sz}<<14);",
-        f"        shadow_oam[{idx}].attr2=(ti&0x3FF)|({priority_expr}<<10)|(g_actors[{idx}].pal_bank<<12);",
-    ]
-
-
 def _gen_scene_tick(
     p: Project,
     scene: Scene,
@@ -3706,10 +1625,10 @@ def _gen_scene_tick(
     # résolution DÉPLACE l'acteur, le hook ne fait que prévenir. C'est aussi ce
     # que le modèle promet depuis toujours (« solid=True → résolution physique »).
     # Rien n'est émis si la scène n'a pas de carte : il n'y aurait rien à heurter.
-    if _scene_has_cmap(scene):
+    if scene_has_cmap(scene):
         for j in range(len(scene_actors)):
             actor, _ = scene_actors[j]
-            if not _has_solid_box(actor):
+            if not has_solid_box(actor):
                 continue
             idx = actor_offset + j
             s = c_sym(actor.name)
@@ -3717,7 +1636,7 @@ def _gen_scene_tick(
             L.append(f"    if(g_actors[{idx}].active) resolve_actor_tiles(&g_actors[{idx}], {cb});")
 
         for p2 in pi:
-            if not _has_solid_box(p2["prefab"]):
+            if not has_solid_box(p2["prefab"]):
                 continue
             cb = f"{p2['sym']}_on_tile_collide" if _def(p2["sym"], "on_tile_collide") else "NULL"
             # Le pas est le GROUPE : ces trois hooks sont ceux de la RACINE,
@@ -3762,10 +1681,10 @@ def _gen_scene_tick(
             # lui. Les deux appels partagent le même test de recouvrement et le
             # même souvenir de frame (`_pcol_`), avec les boxes échangées : la
             # `my_box` de l'un est la `other_box` de l'autre.
-            pool_reacts = _has_col_event(_def, s)
+            pool_reacts = has_col_event(_def, s)
             for ci, (sidx, sactor) in enumerate(col_scene_pf):
                 ss = c_sym(sactor.name)
-                s_lua = (sidx in lua_idx) and _has_col_event(_def, ss)
+                s_lua = (sidx in lua_idx) and has_col_event(_def, ss)
                 if not pool_reacts and not s_lua:
                     continue
                 L += [
@@ -3897,7 +1816,7 @@ def _gen_scene_tick(
     # Le tout lit `g_cam_active` : c'est ce qui permet à un script de changer de
     # caméra en cours de partie (camera.switch) sans que le tick soit regénéré.
     L.append("    camera_shake_undo();")
-    L += _camera_follow_lines(p, scene, scene_actors, actor_offset)
+    L += camera_follow_lines(p, scene, scene_actors, actor_offset)
     L.append("    if(g_cam_table[g_cam_active].on_update) g_cam_table[g_cam_active].on_update();")
     L.append("    camera_apply_bounds();")
     L.append("    camera_shake_apply();")
@@ -3930,10 +1849,10 @@ def _gen_scene_tick(
     for idx, actor, sprite in anim_actors:
         # Le test d'effet par frame n'est émis que si le sprite en porte —
         # même source de vérité que la table, `sprite_unique_frames`.
-        _has_fx = any(a >= 0 for a in _frame_action_ids(p, sprite))
-        _has_dfx = any(s != "-1" for s, _v in _frame_sfx_syms(p, sprite))
-        _evt_lines, _has_evt = _actor_frame_event_lines(p, actor, sprite)
-        L += _anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx, _has_dfx,
+        _has_fx = any(a >= 0 for a in frame_action_ids(p, sprite))
+        _has_dfx = any(s != "-1" for s, _v in frame_sfx_syms(p, sprite))
+        _evt_lines, _has_evt = actor_frame_event_lines(p, actor, sprite)
+        L += anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx, _has_dfx,
                               _evt_lines, _has_evt, c_sym(actor.name))
 
     _aff = affine_info or {}
@@ -3946,7 +1865,7 @@ def _gen_scene_tick(
         if sprite and sprite.asset:
             sh = sprite.oam_shape; sz = sprite.oam_size
             bt = sprite_offsets.get(sprite.name, 0)
-            sc  = _get_sprite_comp(actor)
+            sc  = get_sprite_comp(actor)
             ox  = getattr(sc, "origin_x", 0) if sc else 0
             oy  = getattr(sc, "origin_y", 0) if sc else 0
             ox_s = (f"-{ox}" if ox > 0 else f"+{-ox}") if ox else ""
@@ -3958,7 +1877,7 @@ def _gen_scene_tick(
             _cx = "" if _ss else "-cam_x"
             _cy = "" if _ss else "-cam_y"
             if idx in _aff:
-                _lines_fn = _affine_oam_lines_dynamic
+                _lines_fn = affine_oam_lines_dynamic
                 inner = _lines_fn(idx, _aff[idx], sprite, bt,
                                   f"g_actors[{idx}].priority", screen_space=_ss)
                 L += [
@@ -3989,7 +1908,7 @@ def _gen_scene_tick(
         members = [pf] + list(getattr(pf, "children", []) or [])
         for oam_slot in range(p2["start"], p2["start"] + p2["size"]):
             owner = members[(oam_slot - p2["start"]) % group]
-            _own_sc = _get_sprite_comp(owner)
+            _own_sc = get_sprite_comp(owner)
             pf_spr = (p.get_sprite(_own_sc.sprite_name)
                       if (_own_sc and _own_sc.sprite_name) else None)
             if not pf_spr or not pf_spr.asset:
@@ -4005,7 +1924,7 @@ def _gen_scene_tick(
             ox_s = (f"-{ox}" if ox > 0 else f"+{-ox}") if ox else ""
             oy_s = (f"-{oy}" if oy > 0 else f"+{-oy}") if oy else ""
             if oam_slot in _aff:
-                _lines_fn = _affine_oam_lines_dynamic
+                _lines_fn = affine_oam_lines_dynamic
                 inner = _lines_fn(oam_slot, _aff[oam_slot], pf_spr, bt,
                                   f"g_actors[{oam_slot}].priority")
                 L += [
@@ -4089,14 +2008,14 @@ def generate_main(
     # acteur : sans ceci, ses tuiles ne partiraient jamais en VRAM.
     all_sprite_pairs += ui_image_sprites(p)
 
-    sprite_offsets, sprite_nframes = _sprite_offsets_for(p, all_sprite_pairs)
+    sprite_offsets, sprite_nframes = sprite_offsets_for(p, all_sprite_pairs)
 
     # Bases de la bande de texte OBJ : la queue de ce que les sprites occupent.
-    _obj_alloc = _obj_text_alloc(p)
+    _obj_alloc = obj_text_alloc(p)
     _obj_need  = max((pl["oam_rel"] + pl["oam"] for pl in _obj_alloc.values()),
                      default=0)
     obj_text_oam  = n_actors if _obj_need else -1
-    obj_text_tile = _obj_tiles_used(p, all_sprite_pairs)
+    obj_text_tile = obj_tiles_used(p, all_sprite_pairs)
     # Débordement OBJ : BLOQUANT, et calculé même sans `emit`.
     #
     # Ces deux dépassements n'étaient que journalisés — `generate_main` rendait
@@ -4147,13 +2066,13 @@ def generate_main(
     if emit:
         for _d in all_scene_data:
             _sa = _d["scene_actors"]
-            _aff = _compute_affine_info(0, _sa, [])
+            _aff = compute_affine_info(0, _sa, [])
             _by = {a.name: a for a, _ in _sa}
             for _j, (_a, _sp) in enumerate(_sa):
                 _par = _by.get(getattr(_a, "parent", None) or "")
-                if not _par or _j in _aff or not _get_sprite_comp(_a):
+                if not _par or _j in _aff or not get_sprite_comp(_a):
                     continue
-                _par_sc = _get_sprite_comp(_par)
+                _par_sc = get_sprite_comp(_par)
                 if not bool(getattr(_par_sc, "affine_transform", False)):
                     continue
                 emit("log_line",
@@ -4180,7 +2099,7 @@ def generate_main(
 
     _add_inc('#define GBA_ENGINE_IMPL')
     _add_inc('#include "gba_engine.h"')
-    _add_inc('#include "actor_api.h"')
+    _add_inc('#include "runtime_api.h"')
     _add_inc('#include "globals.h"')
     _add_inc('#include "constants.h"')
     _add_inc('#include "gba_debug.h"')   # mesure de budget par frame — ROADMAP v0.14
@@ -4191,6 +2110,7 @@ def generate_main(
 
     for d in all_scene_data:
         bgi_d = bg_info(p, d["scene"])
+        _apply_vram_layout(p, d["scene"], bgi_d, scene_text_reservation(p, d["scene"]))
         _log_vram_layout(d["scene"], emit)
         for bi in bgi_d:
             _add_inc(f'#include "{bi["sym"]}.h"')
@@ -4286,7 +2206,7 @@ def generate_main(
     L += ["};", ""]
 
     # ── Polices + table des textes ───────────────────────────────
-    L += _fonts_and_texts_lines(p, emit)
+    L += fonts_and_texts_lines(p, emit)
 
     # ── Tables d'animation par SpriteAsset (dédupliquées) ────────
     # Les sprites des IMAGES d'interface en font partie : `g_ui_images` pointe
@@ -4300,7 +2220,7 @@ def generate_main(
     for _, sprite in _all_sprites_flat:
         if sprite and sprite.asset and sprite.name not in done_anim:
             done_anim.add(sprite.name)
-            L += _anim_tables_for(p, sprite)
+            L += anim_tables_for(p, sprite)
             L.append("")
 
     # ── Images d'interface ────────────────────────────────────────
@@ -4309,7 +2229,7 @@ def generate_main(
     # ── Visibilité des éléments d'interface ──────────────────────
     # APRÈS g_ui_regions/g_ui_images : les deux référencent un index de
     # CETTE table (`elem`), mais la lecture est par nom aux deux endroits
-    # (`_ui_element_index`), l'ordre d'émission n'a donc pas à être contraint
+    # (`ui_element_index`), l'ordre d'émission n'a donc pas à être contraint
     # — placée ici pour rester avec le reste de l'UI.
     L += emit_ui_elements_c(p)
     L += emit_ui_lists_c(p, emit)
@@ -4317,7 +2237,7 @@ def generate_main(
     # ── Sauvegarde ────────────────────────────────────────────────
     # Après globals.h (inclus plus haut) : les tables citent les index
     # GLOBAL_*, et le pilote appelle global_read/global_write.
-    L += _save_lines(p, emit)
+    L += save_lines(p, emit)
 
     # ── Tile helpers (dispatch via pointeur) ──────────────────────
     L += _gen_tile_helpers()
@@ -4352,7 +2272,7 @@ def generate_main(
         sc = d["scene"]
         sym = c_sym(sc.name)
         if scene_bank_layout(p, sc, "obj").bank_count() > 0:
-            words = _scene_obj_palette_words(p, sc)
+            words = scene_obj_palette_words(p, sc)
             L += [
                 f"static const unsigned short g_pal_obj_{sym}[256] __attribute__((aligned(4))) = {{",
                 "    " + ", ".join(f"0x{v:04X}" for v in words),
@@ -4363,7 +2283,7 @@ def generate_main(
     # ── Palettes BG actives par scène (16 banques x 16 couleurs, résolues
     #    depuis Scene.active_bg_palettes -> project.palettes) ──────────────
     # Même garde qu'OBJ ci-dessus — le backdrop (PAL_BG_RAM[0]) est écrit à
-    # part comme constante littérale (_resolve_backdrop_color), pas depuis
+    # part comme constante littérale (resolve_backdrop_color), pas depuis
     # ce tableau, donc rien ne le référence si aucun slot BG n'est occupé.
     for d in all_scene_data:
         sc = d["scene"]
@@ -4371,7 +2291,7 @@ def generate_main(
         # Émis si un slot BG est occupé (référencé, bloc de fond compressé, ou
         # palette propre) ; le backdrop (PAL_BG_RAM[0]) est écrit séparément.
         if scene_bank_layout(p, sc, "bg").bank_count() > 0:
-            words = _scene_bg_palette_words(p, sc)
+            words = scene_bg_palette_words(p, sc)
             L += [
                 f"static const unsigned short g_pal_bg_{sym}[256] __attribute__((aligned(4))) = {{",
                 "    " + ", ".join(f"0x{v:04X}" for v in words),
@@ -4398,7 +2318,7 @@ def generate_main(
         "int   g_bounds_x = 0, g_bounds_y = 0, g_bounds_w = 0, g_bounds_h = 0;",
         "int   g_cam_active = 0;",
         # État de la secousse — un événement en cours, pas un réglage : il vit
-        # ici et non dans la table des caméras (cf. actor_api_static.h).
+        # ici et non dans la table des caméras (cf. runtime_api_inline.h).
         "int   g_shake_amp = 0, g_shake_left = 0, g_shake_total = 1;",
         "int   g_shake_dx = 0, g_shake_dy = 0;",
         "u32   g_shake_seed = 2463534242u;",
@@ -4409,7 +2329,7 @@ def generate_main(
         "int   g_mtr_i = 0, g_mtr_n = 1, g_mtr_row = 0;",
         "int   _g_frame = 0;",
         # Taille du monde de la scène courante, lue par `scene.size` : déclarée
-        # `extern` dans actor_api_static.h et posée par chaque scene_init — il
+        # `extern` dans runtime_api_inline.h et posée par chaque scene_init — il
         # manquait sa DÉFINITION, et le lien échouait sur tout projet.
         "int   g_scene_w = 0, g_scene_h = 0;",
         "int   g_current_scene = -1;",
@@ -4423,7 +2343,7 @@ def generate_main(
     L += _section_spawn(pi, p, _anchor_obj_layout, actor_defined_events=actor_defined_events)
 
     # Position d'un acteur pour les zones de texte ancrées : `gba_engine.h`
-    # ignore la structure Actor (elle est déclarée dans actor_api_static.h, qui
+    # ignore la structure Actor (elle est déclarée dans runtime_api_inline.h, qui
     # inclut le moteur et non l'inverse), d'où ces deux accesseurs passés par
     # pointeur de fonction plutôt qu'une dépendance inversée.
     if obj_text_oam >= 0:
@@ -4440,7 +2360,7 @@ def generate_main(
     # `g_sound_box_action[]` pour résoudre l'action d'une frame.
     if has_sound and soundbank_h.exists():
         # La hauteur courante de chaque effet — déclarée `extern` dans
-        # actor_api.h, définie ici comme les autres états d'un événement en
+        # runtime_api.h, définie ici comme les autres états d'un événement en
         # cours. 1024 = hauteur normale ; `sfx_play` la repose à chaque
         # lecture (cf. headers.py, et ROADMAP v0.8.6 pour la mesure qui
         # oblige à la retenir).
@@ -4454,6 +2374,7 @@ def generate_main(
         sc         = d["scene"]
         act_off    = scene_offsets[i]
         bgi_d      = bg_info(p, d["scene"])
+        _apply_vram_layout(p, sc, bgi_d, scene_text_reservation(p, sc))
         sa         = d["scene_actors"]
 
         # lua_idx local (indices GLOBAUX)
@@ -4481,7 +2402,7 @@ def generate_main(
             actor_defined_events=actor_defined_events,
             obj_text_oam=obj_text_oam, obj_text_tile=obj_text_tile,
             emit=emit,
-            affine_info=_compute_affine_info(act_off, sa, pi),
+            affine_info=compute_affine_info(act_off, sa, pi),
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────
@@ -4489,6 +2410,7 @@ def generate_main(
         sc      = d["scene"]
         act_off = scene_offsets[i]
         bgi_d   = bg_info(p, d["scene"])
+        _apply_vram_layout(p, sc, bgi_d, scene_text_reservation(p, sc))
         sa      = d["scene_actors"]
 
         lua_idx_d: set[int] = set()
@@ -4512,7 +2434,7 @@ def generate_main(
             and actors_can_collide(p, sa[ii][0], sa[jj][0])
         ]
 
-        affine_d = _compute_affine_info(act_off, sa, pi)
+        affine_d = compute_affine_info(act_off, sa, pi)
         L += _gen_scene_tick(
             p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
             sprite_offsets, sprite_nframes, col_pairs_d,

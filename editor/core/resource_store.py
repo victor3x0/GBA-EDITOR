@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Generic, Iterator, Optional, Type, TypeVar
 
 from core.models.resource import Resource
-from core import project_json
+from core.models import project_json
 
 T = TypeVar("T", bound=Resource)
 

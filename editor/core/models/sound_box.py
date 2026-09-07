@@ -28,7 +28,7 @@ Rangées avec les données propres au projet, pas avec les ressources importées
 une boîte ne dépend d'aucun fichier extérieur. Même statut que la caméra (v0.6.1).
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 from core.models.resource import Resource
 
@@ -126,17 +126,8 @@ class MusicBox(Resource):
         return {
             "name": self.name,
             "start": self.start,
-            "states": [
-                {"name": s.name, "music": s.music, "loop": s.loop,
-                 "level": s.level, "intensity_target": s.intensity_target,
-                 "intensity": s.intensity, "x": s.x, "y": s.y}
-                for s in self.states
-            ],
-            "transitions": [
-                {"src": tr.src, "dst": tr.dst, "trigger": tr.trigger,
-                 "kind": tr.kind, "frames": tr.frames}
-                for tr in self.transitions
-            ],
+            "states":      [asdict(s) for s in self.states],        # dérivé des champs
+            "transitions": [asdict(tr) for tr in self.transitions],  # de MusicState/Transition
         }
 
     @classmethod
@@ -218,8 +209,7 @@ class ActionBox(Resource):
             "name": self.name,
             "actions": list(self.actions),
             "start": self.start,
-            "states": [{"name": s.name, "mapping": dict(s.mapping)}
-                       for s in self.states],
+            "states": [asdict(s) for s in self.states],   # dérivé des champs d'ActionState
         }
 
     @classmethod

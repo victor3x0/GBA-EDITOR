@@ -12,7 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .globals import _C_TYPES
-from codegen import build_output
+import codegen.build_output as build_output
 
 
 def generate_constants_h(constants_) -> str:

@@ -459,6 +459,8 @@ class MainWindow(QMainWindow):
             lambda: self._switch_screen("Scenes")
         )
         self._script_editor.build_panel.cartridge_mib_changed.connect(self._set_cartridge_mib)
+        self._script_editor.build_panel.console.location_activated.connect(self._open_build_location)
+        self._wire_diagnostics(self._script_editor.build_panel)
         return self._script_editor
 
     def _build_scene_manager_screen(self) -> QWidget:
@@ -509,6 +511,8 @@ class MainWindow(QMainWindow):
         self.build_panel = BuildPanel()
         self.build_panel.btn_build.clicked.connect(self._run_build)
         self.build_panel.cartridge_mib_changed.connect(self._set_cartridge_mib)
+        self.build_panel.console.location_activated.connect(self._open_build_location)
+        self._wire_diagnostics(self.build_panel)
         self.build_panel.setMinimumHeight(80)
         self._center_v_split.addWidget(self.build_panel)
         self._center_v_split.setSizes([600, 160])
@@ -822,12 +826,84 @@ class MainWindow(QMainWindow):
             else:
                 self._open_project(picker.result_path)
 
-    def open_script(self, path):
-        """Ouvre un script .lua dans le Script Editor et bascule l'écran."""
+    def open_script(self, path, line: int | None = None):
+        """Ouvre un script .lua dans le Script Editor et bascule l'écran.
+
+        `line` (1-indexée, optionnelle) fait sauter le curseur à la ligne — le
+        clic sur un `fichier.lua:ligne` du journal de build passe par là. On
+        bascule l'écran AVANT d'ouvrir, pour que l'éditeur soit visible quand
+        `goto_line` centre la ligne."""
         from pathlib import Path
         self._script_editor.load_project(self.project)
-        self._script_editor.open_script(Path(path))
         self._switch_screen("Scripts")
+        self._script_editor.open_script(Path(path), line)
+
+    def _open_build_location(self, filename: str, line: int):
+        """Un `fichier.lua:ligne` du journal de build a été cliqué : ouvre le
+        script à cette ligne. Le journal ne cite qu'un NOM de fichier (le
+        codegen émet `sp.name`) — on le retrouve par son basename sous le dossier
+        des scripts du projet."""
+        if not self.project:
+            return
+        from pathlib import Path
+        root = getattr(self.project, "scripts_dir", None) or \
+            (self.project.root / "project" / "scripts")
+        match = next((p for p in Path(root).rglob(filename)), None)
+        if match is None:
+            self._status.showMessage(f"Script introuvable : {filename}", 4000)
+            return
+        self.open_script(match, line)
+
+    # ── Diagnostics (panneau du validateur) ───────────────────────
+    def _wire_diagnostics(self, build_panel):
+        """Branche l'onglet Diagnostics d'un BuildPanel : relance la validation,
+        et route les clics (script → ligne, acteur → sélection)."""
+        d = build_panel.diagnostics
+        d.refresh_requested.connect(self._refresh_diagnostics)
+        d.location_activated.connect(self._open_build_location)
+        d.actor_activated.connect(self._select_actor_by_name)
+        d.element_activated.connect(self._select_ui_element)
+
+    def _refresh_diagnostics(self):
+        """Relance `validate_project` sur la scène active et alimente les deux
+        onglets Diagnostics. À la demande (bouton Refresh) et au changement de
+        scène — pas à chaque frappe (un parse complet coûte)."""
+        if not self.project:
+            return
+        from core.validator import validate_project
+        warns, errors = validate_project(self.project)
+        for bp in (getattr(self, "build_panel", None),
+                   getattr(getattr(self, "_script_editor", None), "build_panel", None)):
+            if bp is not None:
+                bp.diagnostics.set_diagnostics(warns, errors)
+
+    def _select_actor_by_name(self, name: str):
+        """Clic sur un diagnostic d'acteur : le sélectionner dans la scène
+        active (les contrôles d'acteur du validateur portent sur elle)."""
+        scene = self.project.active_scene if self.project else None
+        if scene is None:
+            return
+        actor = next((a for a in scene.actors if a.name == name), None)
+        if actor is not None:
+            self._bus.select(actor)
+        else:
+            self._status.showMessage(
+                f"« {name} » introuvable dans la scène active", 4000)
+
+    def _select_ui_element(self, layout_name: str, name: str):
+        """Clic sur un diagnostic de zone d'UI : bascule sur Scenes et sélectionne
+        l'élément. Résolu par nom via `Project.all_elements` (mise en page +
+        élément), comme le journal résout un `fichier.lua:ligne`."""
+        if not self.project:
+            return
+        from core.selection_bus import UIElementSelection
+        match = next(((lay, el) for lay, el in self.project.all_elements()
+                      if lay.name == layout_name and el.name == name), None)
+        if match is None:
+            self._status.showMessage(f"« {name} » introuvable", 4000)
+            return
+        self._switch_screen("Scenes")
+        self._bus.select(UIElementSelection(*match))
 
     def _open_palette_usage(self, kind: str, name: str):
         """Clic sur une ligne de la carte « USAGE » du Palette Editor :
@@ -954,6 +1030,7 @@ class MainWindow(QMainWindow):
         self.assets_finder_panel.refresh()
         self.scene_tree_panel.set_active_scene(self.project.active_scene)
         self._update_gba_bar()
+        self._refresh_diagnostics()   # la validation d'acteur porte sur la scène active
         self._status.showMessage(f"Active scene: {self.project.active_scene.name}")
 
     def _add_scene(self):
@@ -1070,10 +1147,12 @@ class MainWindow(QMainWindow):
         # Sauvegarder l'état actuel (le modèle en mémoire = vérité après undo)
         with self._watcher.suspended():
             self.project.save_scene(self.project.active_scene)
-        # Rafraîchissement ciblé : sprites uniquement (pas reset zoom/cam/BG)
+        # Resynchro des ITEMS du canvas depuis le modèle (sprites, caméras,
+        # zones) — sans reset zoom/pan/BG. Reposer les seuls sprites laissait un
+        # item de caméra ou de zone annulé à sa position draggée (cf. Correctifs).
         self.assets_finder_panel.refresh()
         self.scene_tree_panel.refresh()
-        self.scene_editor._reload_sprites()
+        self.scene_editor.reload_scene_items()
         self._update_gba_bar()
         # Recharger l'inspector scène
         si = self._inspector._scene_insp

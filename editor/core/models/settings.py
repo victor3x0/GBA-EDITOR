@@ -55,10 +55,11 @@ class Language:
 
 
 # ── Inputs (placeholder — ROADMAP à écrire) ───────────────────────
-# Les 10 boutons physiques du GBA, dans l'ordre du boîtier. Mêmes noms que
-# `VALID_KEYS` (scripting/checker.py, qui valide `input.pressed("A")` etc.) —
-# dupliqués plutôt qu'importés : `core` ne dépend pas de `scripting`
-# (cf. ARCHITECTURE.md, couches).
+# Les 10 boutons physiques du GBA, dans l'ordre du boîtier. SOURCE UNIQUE : ce
+# fichier est dans `core.models` (le socle), la seule couche que tout le monde a
+# le droit d'importer. `scripting/checker.py` (`VALID_KEYS`) et l'UI
+# (`inputs_card.py`) l'importent d'ici — le socle, lui, ne peut pas remonter vers
+# eux (cf. check_architecture, INTERDITS), d'où le sens des imports.
 BUTTON_NAMES: tuple = ("up", "down", "left", "right", "a", "b", "l", "r", "start", "select")
 
 

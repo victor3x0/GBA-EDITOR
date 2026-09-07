@@ -22,7 +22,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import Qt, QPointF, pyqtSignal
 
-from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
+from core.models.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
 
 _SIDE = 172
 _MARGIN = 6

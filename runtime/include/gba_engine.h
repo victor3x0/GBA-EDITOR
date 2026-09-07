@@ -807,7 +807,7 @@ extern int g_lang_reload;
    courante comme un vrai changement de scène.
 
    PAS `static inline` (contrairement à `scene_switch`) : `main.c` inclut à
-   la fois ce header et `actor_api_static.h`, qui la redéclare pour les
+   la fois ce header et `runtime_api_inline.h`, qui la redéclare pour les
    unités de compilation d'acteur/scène (cf. son en-tête) — deux corps
    `static inline` du même nom dans la même unité de traduction refuseraient
    de compiler. Même découpe que `text_set_font` : prototype ici,
@@ -2799,7 +2799,7 @@ static void text_render_obj(const unsigned short *s, int slen,
    pour les nombres finirait par dériver de celui-ci — mêmes chasses, même
    alignement, même effacement, ou rien. */
 /* Position d'un acteur, fournie par le code généré. `gba_engine.h` ignore la
-   structure `Actor` — elle vit dans actor_api_static.h, qui inclut celui-ci et
+   structure `Actor` — elle vit dans runtime_api_inline.h, qui inclut celui-ci et
    non l'inverse. Un pointeur de fonction évite d'inverser cette dépendance
    pour deux entiers. */
 static int (*g_actor_x_fn)(int) = 0;
@@ -2820,7 +2820,7 @@ static inline int ui_obj_prio(unsigned char prio, unsigned char anchor, short ac
 }
 
 /* Caméra — définies dans le main.c généré, déjà déclarées par
-   actor_api_static.h pour l'API `camera.*`. Deux entiers, pas un type généré :
+   runtime_api_inline.h pour l'API `camera.*`. Deux entiers, pas un type généré :
    le détour par pointeur de fonction qu'imposent les acteurs ne se justifie
    pas ici. */
 extern int cam_x, cam_y;

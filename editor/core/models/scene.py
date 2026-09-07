@@ -60,21 +60,14 @@ def blend_role_of(layer) -> str:
     return r if r in BLEND_ROLES else ""
 
 
-# ── Effets : l'INTENTION, au-dessus des registres ─────────────────
-# `BLDCNT` se règle en six bits de cible + un mode + deux ou trois
-# coefficients ; c'est le matériel, et c'est ce que la scène stocke. Mais
-# personne ne pense « première cible » : on pense « fondu au noir » ou « ce
-# layer est translucide ». Ces trois effets sont la traduction, et ils couvrent
-# ce pour quoi le blending GBA sert réellement.
-#
-# Rien n'est perdu : l'effet ÉCRIT les mêmes champs, et un réglage composé à la
-# main (cibles partielles, EVA+EVB > 16 pour un halo) reste lisible et
-# modifiable — il ressort simplement en « personnalisé ».
+# ── Vocabulaire des transitions de scène (v0.6.2) ─────────────────
+# Un fondu joué en QUITTANT et en OUVRANT une scène (cf. `transition_of`). Ces
+# noms servaient AUSSI à une authoring d'effet de blend au niveau scène, retirée
+# depuis : le blending vit désormais PAR-CALQUE au runtime (`blend.*`/`layer.*`,
+# BLDCNT n'a qu'un mode). Seuls les trois que la transition emploie subsistent.
 EFFECT_NONE        = "none"
 EFFECT_FADE_BLACK  = "fade_black"    # mode 3, tout l'écran
 EFFECT_FADE_WHITE  = "fade_white"    # mode 2, tout l'écran
-EFFECT_TRANSLUCENT = "translucent"   # mode 1, un layer par-dessus ce qu'il y a derrière
-EFFECT_CUSTOM      = "custom"        # composé à la main : on n'y touche pas
 
 # Transitions de scène (v0.6.2) — le fondu joué en QUITTANT et en OUVRANT une
 # scène. Volontairement le même vocabulaire que les effets ci-dessus : c'est le
@@ -148,45 +141,6 @@ TRANSITION_MODES = {EFFECT_NONE: BLEND_NONE,
                     EFFECT_FADE_BLACK: BLEND_DARKEN,
                     EFFECT_FADE_WHITE: BLEND_BRIGHTEN}
 
-_FADE_EFFECTS = {EFFECT_FADE_BLACK: BLEND_DARKEN, EFFECT_FADE_WHITE: BLEND_BRIGHTEN}
-
-
-def blend_effect_of(scene) -> str:
-    """L'effet que ce réglage REPRÉSENTE, ou « personnalisé ».
-
-    Reconnaissance et non mémorisation : l'effet n'est pas un champ stocké de
-    plus (qui pourrait mentir sur les registres), il se relit des registres.
-    Un réglage fait à la main reste donc éditable sans qu'un champ caché
-    prétende le contraire."""
-    mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
-    if mode == BLEND_NONE:
-        return EFFECT_NONE
-    layers = list(getattr(scene, "background_layers", []))
-    tops = [L for L in layers if blend_role_of(L) == BLEND_TOP]
-    bottoms = [L for L in layers if blend_role_of(L) == BLEND_BOTTOM]
-    obj = getattr(scene, "blend_obj_role", "")
-    bd = getattr(scene, "blend_backdrop_role", "")
-    if mode in (BLEND_DARKEN, BLEND_BRIGHTEN):
-        # Fondu d'écran = TOUT est première cible, rien n'est seconde.
-        whole = (len(tops) == len(layers) and not bottoms
-                 and obj == BLEND_TOP and bd == BLEND_TOP)
-        if whole:
-            return EFFECT_FADE_BLACK if mode == BLEND_DARKEN else EFFECT_FADE_WHITE
-        return EFFECT_CUSTOM
-    # Alpha : un ou plusieurs layers devant, tout le reste derrière, et les
-    # deux coefficients complémentaires (ce que « X % opaque » veut dire).
-    #
-    # `tops` VIDE compte quand même comme translucidité : c'est l'état d'un
-    # réglage commencé mais pas fini — on a choisi l'effet, on n'a pas encore
-    # marqué le layer. Le renvoyer en « personnalisé » ferait sauter le
-    # sélecteur sur autre chose entre deux clics, alors que l'avertissement dit
-    # déjà quoi faire.
-    rest_ok = all(blend_role_of(L) == BLEND_BOTTOM for L in layers if L not in tops)
-    if (rest_ok and bd == BLEND_BOTTOM and not obj
-            and int(scene.blend_eva) + int(scene.blend_evb) == BLEND_EV_MAX):
-        return EFFECT_TRANSLUCENT
-    return EFFECT_CUSTOM
-
 
 def transition_of(scene, settings) -> tuple[str, int]:
     """La transition EFFECTIVE d'une scène : la sienne, ou celle du projet.
@@ -206,55 +160,6 @@ def transition_of(scene, settings) -> tuple[str, int]:
         kind = EFFECT_NONE
     return kind, max(1, frames)
 
-
-def blend_amount_of(scene) -> int:
-    """L'effet en POURCENTAGE, tel que l'inspecteur le montre.
-
-    Fondu : 0 = rien, 100 = noir (ou blanc) plein. Translucidité : c'est
-    l'opacité du layer de devant, 100 = opaque."""
-    mode = int(getattr(scene, "blend_mode", BLEND_NONE) or BLEND_NONE)
-    ev = int(scene.blend_eva) if mode == BLEND_ALPHA else int(scene.blend_evy)
-    return round(ev * 100 / BLEND_EV_MAX)
-
-
-def apply_blend_effect(scene, effect: str, amount_pct: int) -> None:
-    """Écrit les registres d'un effet. Les CIBLES sont posées d'office :
-
-    - fondu → tout l'écran est première cible (layers, sprites, backdrop). C'est
-      ce qu'on veut d'une transition, et oublier le backdrop laisserait les
-      zones vides allumées pendant que le reste s'éteint — la panne classique ;
-    - translucidité → les layers marqués restent devant, TOUT le reste passe
-      derrière. Le matériel ne mélange qu'avec la couche immédiatement
-      inférieure : marquer largement garantit qu'elle en fasse partie, quelle
-      qu'elle soit (cf. la règle du « pas de saut de couche »).
-
-    `EFFECT_CUSTOM` ne touche à rien : c'est le réglage composé à la main."""
-    if effect == EFFECT_CUSTOM:
-        return
-    ev = max(0, min(BLEND_EV_MAX, round(int(amount_pct) * BLEND_EV_MAX / 100)))
-    layers = list(getattr(scene, "background_layers", []))
-    if effect == EFFECT_NONE:
-        scene.blend_mode = BLEND_NONE
-        for L in layers:
-            L.blend_role = ""
-        scene.blend_obj_role = scene.blend_backdrop_role = ""
-        return
-    if effect in _FADE_EFFECTS:
-        scene.blend_mode = _FADE_EFFECTS[effect]
-        scene.blend_evy = ev
-        for L in layers:
-            L.blend_role = BLEND_TOP
-        scene.blend_obj_role = scene.blend_backdrop_role = BLEND_TOP
-        return
-    if effect == EFFECT_TRANSLUCENT:
-        scene.blend_mode = BLEND_ALPHA
-        scene.blend_eva = ev
-        scene.blend_evb = BLEND_EV_MAX - ev
-        for L in layers:
-            if blend_role_of(L) != BLEND_TOP:
-                L.blend_role = BLEND_BOTTOM
-        scene.blend_obj_role = ""
-        scene.blend_backdrop_role = BLEND_BOTTOM
 
 def make_collision_map(width_px: int, height_px: int) -> list[list[int]]:
     """Crée une grille vide (TILE_EMPTY) aux dimensions de la scène en pixels."""

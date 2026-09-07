@@ -37,7 +37,7 @@ from PyQt6.QtCore import Qt, QPoint, QSize, QRectF, QTimer, QPropertyAnimation, 
 
 from core.bg_import import render_bg_preview, render_bitmap_preview
 from core.models.tile_codec import unpack_se, hex_to_tile, flip_h, flip_v
-from core.gba_color import bgr555_to_rgb888
+from core.models.gba_color import bgr555_to_rgb888
 from core.models.resource import MIME_ANIMATED_BG
 from core.models.background import (
     KIND_UI, KIND_ANIMATED, UI_ROLE_NINE, BackgroundAnimation,

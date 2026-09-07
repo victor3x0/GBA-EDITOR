@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, QPoint
 
 from ui.common.theme import C
 from core.models.palette import PaletteBank
-from core.gba_color import bgr555_to_rgb888
+from core.models.gba_color import bgr555_to_rgb888
 
 
 def _qcolor(v: int) -> QColor:

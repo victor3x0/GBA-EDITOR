@@ -20,6 +20,7 @@ from core.selection_bus import get_bus
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import NotesEdit, CollapsibleCard
+from ui.common.field_binder import FieldBinder
 from ui.common.notice import notice
 from ui.common.direction_grid import DirectionPicker
 from ui.common import icons
@@ -184,6 +185,10 @@ class ActorInspector(QWidget):
         # scène ; seul l'ENREGISTREMENT diffère — c'est le prefab qu'il faut
         # sauver, pas la scène.
         self._child_owner = None
+        # Le pont champ↔widget des champs 1:1 (cf. ui/common/field_binder). Il
+        # appelle `self._set`, qui garde l'undo et la persistance ; `load()`
+        # repeuple d'un coup tous les widgets qu'on lui a confiés.
+        self._fields = FieldBinder(self._set)
         self.setStyleSheet(f"background:{C.BG_DEEP};")
 
         scroll = QScrollArea()
@@ -370,11 +375,9 @@ class ActorInspector(QWidget):
         from ui.common.widgets import W as _W
 
         # ── Position : X [ ]  Y [ ] — px / tile / réf de variable ────
-        self._tx = _W.value_field(0, project=self._project)
-        self._tx.changed.connect(lambda raw: self._set("x", raw))
+        self._tx = self._fields.bind("x", _W.value_field(0, project=self._project))
         notice("actor.x", self._tx, tl)
-        self._ty = _W.value_field(0, project=self._project)
-        self._ty.changed.connect(lambda raw: self._set("y", raw))
+        self._ty = self._fields.bind("y", _W.value_field(0, project=self._project))
         notice("actor.y", self._ty, tl)
         # Largeur de colonne des libellés : mesurée sur le plus long du groupe
         # plutôt que codée en dur — « monospace » se résout à des fontes de
@@ -396,16 +399,15 @@ class ActorInspector(QWidget):
         # SpriteComponent (cf. ARCHITECTURE.md « Le modèle affine ») : elle
         # réserve le slot de matrice OAM. Ces champs ne sont donc pas grisés
         # quand elle est décochée — ils marchent, ils ne s'affichent pas.
-        self._trotation = _W.spinbox(0, min_v=0, max_v=359)
+        self._trotation = self._fields.bind("rotation", _W.spinbox(0, min_v=0, max_v=359))
         self._trotation.setSuffix("°")
         self._trotation.setWrapping(True)
-        self._trotation.valueChanged.connect(lambda v: self._set("rotation", v))
         _W.row("Rotation", self._trotation, tl, label_width=_lbl_w)
 
-        self._tscale_x = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
-        self._tscale_y = _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1)
-        self._tscale_x.valueChanged.connect(lambda v: self._set("scale_x", v))
-        self._tscale_y.valueChanged.connect(lambda v: self._set("scale_y", v))
+        self._tscale_x = self._fields.bind(
+            "scale_x", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
+        self._tscale_y = self._fields.bind(
+            "scale_y", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
         _W.pair("Scale", "X", C.AXIS_X, self._tscale_x, "Y", C.AXIS_Y, self._tscale_y, tl,
                 label_width=_lbl_w)
 
@@ -425,8 +427,7 @@ class ActorInspector(QWidget):
         # ── Priority ─────────────────────────────────────────────
         # (la palette OBJ se règle désormais dans l'éditeur du SpriteComponent,
         # cf. component_editors/sprite.py — palette_picker_slot)
-        self._tpriority = _W.spinbox(0, min_v=0, max_v=3)
-        self._tpriority.valueChanged.connect(lambda v: self._set("priority", v))
+        self._tpriority = self._fields.bind("priority", _W.spinbox(0, min_v=0, max_v=3))
         notice("actor.priority", self._tpriority, tl)
         _W.row("Priority", self._tpriority, tl, label_width=_lbl_w)
 
@@ -437,9 +438,10 @@ class ActorInspector(QWidget):
         # Le champ reste `obj_mode` (nom du registre GBA, OAM attr0 bits 10-11,
         # et API Lua publique self.obj_mode) : seuls les libellés adoptent
         # le vocabulaire « window » du panneau WINDOWS de la scène.
-        self._tobj_mode = _W.combobox(["Normal", "Masque (window OBJ)"])
-        self._tobj_mode.currentIndexChanged.connect(
-            lambda i: self._set("obj_mode", 2 if i == 1 else 0))
+        # values=[0, 2] : l'index 0 (« Normal ») vaut obj_mode 0, l'index 1
+        # (« Masque ») vaut 2 — le mode 1 (semi-transparent) est absent exprès.
+        self._tobj_mode = self._fields.bind(
+            "obj_mode", _W.combobox(["Normal", "Masque (window OBJ)"]), values=[0, 2])
         _W.row("Mode window", self._tobj_mode, tl, label_width=_lbl_w)
 
         # ── Parent (ROADMAP v0.23) ────────────────────────────────
@@ -462,14 +464,14 @@ class ActorInspector(QWidget):
         # ── Ancrage écran (UI en sprite) ──────────────────────────
         # Juste sous Position : c'est le sens de X/Y qu'il change (monde →
         # écran), pas une propriété de rendu.
-        self._tscreen = QCheckBox("Screen space"); self._tscreen.setStyleSheet(QSS.checkbox)
-        self._tscreen.toggled.connect(lambda v: self._set("screen_space", v))
+        self._tscreen = self._fields.bind("screen_space", QCheckBox("Screen space"))
+        self._tscreen.setStyleSheet(QSS.checkbox)
         notice("actor.screen_space", self._tscreen, tl)
         tl.addWidget(self._tscreen)
 
         # ── Visible ───────────────────────────────────────────────
-        self._tvisible = QCheckBox("Visible"); self._tvisible.setStyleSheet(QSS.checkbox)
-        self._tvisible.toggled.connect(lambda v: self._set("visible", v))
+        self._tvisible = self._fields.bind("visible", QCheckBox("Visible"))
+        self._tvisible.setStyleSheet(QSS.checkbox)
         tl.addWidget(self._tvisible)
         cl.addWidget(self._transform_group)
 
@@ -687,22 +689,24 @@ class ActorInspector(QWidget):
             from core.models.field_value import variables_from_project
             _vars = variables_from_project(self._project)
             self._tx.set_variables(_vars); self._ty.set_variables(_vars)
-            self._tx.set_raw(actor.x); self._ty.set_raw(actor.y)
             self._dir_picker.set_direction(getattr(actor, "dir_x", 0), getattr(actor, "dir_y", 0))
-            self._tpriority.setValue(actor.priority)
-            self._tobj_mode.setCurrentIndex(1 if getattr(actor, "obj_mode", 0) == 2 else 0)
+            # x, y, rotation, scale_x, scale_y, priority, obj_mode, screen_space,
+            # visible : repeuplés d'un coup par le binder (x/y après le
+            # set_variables ci-dessus, qui doit précéder leur set_raw). Tous vivent
+            # dans la carte Transform, cachée pour une racine de prefab — les
+            # charger seulement ici (et non plus après le bloc) ne change rien de
+            # visible.
+            self._fields.load(actor)
             self._refresh_parent_choices(actor)
-            self._tscreen.setChecked(bool(getattr(actor, "screen_space", False)))
         # Les ENFANTS ne se montrent qu'ici : un enfant n'a de sens que dans
         # un template (ROADMAP v0.23).
         self._children_card.setVisible(is_prefab_root)
         if is_prefab_root:
             self._refresh_children_list()
-        if not is_prefab_root and not self._blocking:
-            self._trotation.setValue(getattr(actor, "rotation", 0))
-            self._tscale_x.setValue(getattr(actor, "scale_x", 1.0))
-            self._tscale_y.setValue(getattr(actor, "scale_y", 1.0))
-        self._tvisible.setChecked(actor.visible)
+        # rotation/scale_x/scale_y sont désormais repeuplés par `self._fields.load`
+        # ci-dessus (comme les autres champs de la carte Transform). L'ancien bloc
+        # ici ne s'exécutait jamais — `_blocking` était mis à True juste avant son
+        # `if ... and not self._blocking:` (cf. TodoTechnique, Correctifs).
         self._blocking = False
         self._refresh_component_list()
         if not is_prefab_root:

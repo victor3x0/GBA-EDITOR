@@ -43,7 +43,7 @@ script.
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 from core.models.ids import new_id as _new_id
 
@@ -82,11 +82,10 @@ class Text:
         return SEP.join(self.path)
 
     def to_dict(self) -> dict:
-        return {
-            "id": self.id, "key": self.key, "path": list(self.path),
-            "content": self.content, "note": self.note, "scene": self.scene,
-            "auto_key": self.auto_key,
-        }
+        # Dérivé des champs : ajouter un champ à Text le persiste sans risquer
+        # d'oublier cette méthode. `from_dict` reste explicite — il porte la
+        # migration de l'ancienne table plate (`label` → `path`).
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Text":

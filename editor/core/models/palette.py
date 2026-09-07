@@ -4,14 +4,10 @@ from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from core.models.resource import Resource
-
-
-# Index 0 d'une PaletteBank est réservé — le hardware GBA traite toujours
-# l'index de palette 0 comme transparent (OBJ comme BG), quelle que soit la
-# couleur RGB qui y est stockée. La valeur exacte n'a donc aucune incidence
-# visuelle pour une tuile normale (seul PAL_BG_RAM[0] — banque 0 — a un rôle
-# supplémentaire de backdrop, géré séparément via Project/Scene.backdrop_color).
-RESERVED_SLOT_COLOR = 0
+# La réserve de l'index 0 et l'encodage des couleurs vivent dans gba_color (le
+# module de format) ; palette les emploie pour se sérialiser. Import de haut
+# niveau : gba_color n'importe plus rien de palette, il n'y a plus de cycle.
+from core.models.gba_color import RESERVED_SLOT_COLOR, write_colors, read_colors
 
 
 class PaletteUsage(NamedTuple):
@@ -68,19 +64,13 @@ class PaletteBank(Resource):
     # palette (`name`, `size`) se sérialise très bien tout seul.
     # Une couleur par ligne, et non les seize sur une seule : deux personnes
     # qui retouchent deux couleurs d'une même palette doivent pouvoir fusionner.
-    # L'import est LOCAL parce que `gba_color` importe RESERVED_SLOT_COLOR
-    # d'ici : la règle de réserve de l'index 0 est une règle de palette et
-    # reste chez elle (cf. l'en-tête de gba_color.py). Le cycle se coupe donc
-    # du côté qui n'a besoin de l'autre qu'au moment de sérialiser.
     def to_dict(self) -> dict:
-        from core.gba_color import write_colors
         d = super().to_dict()
         d["colors"] = write_colors(self.colors)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "PaletteBank":
-        from core.gba_color import read_colors
         return super().from_dict({**d, "colors": read_colors(d.get("colors", []))})
 
 

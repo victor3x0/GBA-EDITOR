@@ -1,5 +1,5 @@
 """
-runtime_codegen/headers.py — Génération de actor_types.h et actor_api.h.
+runtime_codegen/headers.py — Génération de actor_types.h et runtime_api.h.
 
 Entrées  : Project, liste (Actor, SpriteAsset), présence audio
 Sorties  : fichiers écrits dans p.src_dir/
@@ -13,7 +13,7 @@ from core.models.scene import Actor
 from core.project import Project
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
-from codegen import build_output
+import codegen.build_output as build_output
 from codegen.runtime_codegen.main_gen import prefab_group
 from codegen.actor_budget import prefab_pool_instances
 
@@ -88,7 +88,7 @@ def generate_actor_types(
     build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
 
 
-def generate_actor_api(
+def generate_runtime_api(
     p: Project,
     scene_actors: list[tuple[Actor, Optional[SpriteAsset]]],
     prefabs,
@@ -96,31 +96,61 @@ def generate_actor_api(
     all_scenes=None,   # liste de Scene — pour SCENE_IDX_* et scene_switch()
     max_actors: int | None = None,  # taille réelle du tableau g_actors
 ) -> None:
-    """Écrit actor_api_static.h (copie) et actor_api.h (généré)."""
+    """Écrit runtime_api_inline.h (copie) et runtime_api.h (généré)."""
     # gba_font.h retiré : police 1bpp dont le consommateur (`text_init()`)
     # n'existe plus depuis l'asset Font — elle était encore recopiée dans
     # chaque build sans qu'aucune ligne ne la lise.
-    for static_h in ("actor_api_static.h", "gba_engine.h", "gba_debug.h"):
+    for static_h in ("runtime_api_inline.h", "gba_engine.h", "gba_debug.h"):
         src_h = RUNTIME_DIR / "include" / static_h
         if src_h.exists():
             build_output.copy(src_h, p.src_dir / static_h)
-    _api_static = RUNTIME_DIR / "include" / "actor_api_static.h"
+    _api_static = RUNTIME_DIR / "include" / "runtime_api_inline.h"
 
     # Entrées de g_actors, parties comprises (ROADMAP v0.23).
     prefab_slots = sum(prefab_pool_instances(p, pf) * prefab_group(pf)
                        for pf in prefabs)
     total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)
 
+    # Prototypes de l'API, DÉRIVÉS de gba_engine.h pour le sous-ensemble exposé
+    # par le catalogue (cf. api_prototypes — le « 4e lecteur »). Émis AVANT
+    # runtime_api_inline.h : les impls inline de celui-ci les voient. Un nom exposé
+    # présent dans le moteur mais illisible casserait le build en silence — on
+    # le refuse tout de suite, à voix haute.
+    from codegen.runtime_codegen.api_prototypes import (
+        build_prototype_block, exposed_engine_names, build_enum_defines,
+        build_window_region_defines,
+    )
+    engine_src = (RUNTIME_DIR / "include" / "gba_engine.h").read_text(
+        encoding="utf-8", errors="ignore")
+    proto_decls, proto_unparsed = build_prototype_block(engine_src, exposed_engine_names())
+    enum_defines = build_enum_defines()
+    winr_defines = build_window_region_defines(engine_src)
+    if proto_unparsed:
+        raise RuntimeError(
+            "Prototypes d'API illisibles dans gba_engine.h : "
+            f"{', '.join(sorted(proto_unparsed))}. Le header d'API serait "
+            "incomplet — signature à simplifier, ou extracteur à étendre "
+            "(codegen/runtime_codegen/api_prototypes.py).")
+
     a = [
-        "/* actor_api.h — API runtime pour les scripts acteur */",
+        "/* runtime_api.h — l'API C que voient les scripts (généré) */",
         "/* Généré par GBA Editor */",
-        "#ifndef ACTOR_API_H",
-        "#define ACTOR_API_H",
+        "#ifndef RUNTIME_API_H",
+        "#define RUNTIME_API_H",
         '#include "actor_types.h"',
         "",
         f"#define G_ACTOR_COUNT {total_actors}",
         "",
-        '#include "actor_api_static.h"',
+        "/* Énumérations matérielles — générées depuis api.py (api_prototypes.py). */",
+        *enum_defines,
+        "",
+        "/* Régions de window — extraites de gba_engine.h (pas une énum du catalogue). */",
+        *winr_defines,
+        "",
+        "/* Prototypes de l'API exposée — dérivés de gba_engine.h (api_prototypes.py). */",
+        *proto_decls,
+        "",
+        '#include "runtime_api_inline.h"',
         "",
     ]
 
@@ -267,7 +297,7 @@ def generate_actor_api(
         ]
 
     # ── destroy() + SoundFxComponent("on_destroy") ─────────────────────
-    # `actor_destroy_internal` (actor_api_static.h) ne connaît que le
+    # `actor_destroy_internal` (runtime_api_inline.h) ne connaît que le
     # matériel : désactiver l'actor. Le SFX déclaré sur le trigger
     # "on_destroy" est une donnée PAR PROJET (quel Sfx, pour quel TAG), donc
     # elle vit ici, pas dans le fichier statique partagé entre tous les
@@ -327,7 +357,7 @@ def generate_actor_api(
     # différents. Dédupliquée : un layer partagé (même asset+slot) entre
     # plusieurs scènes ne produit qu'une seule constante.
     if all_scenes:
-        from codegen.runtime_codegen.main_gen import bg_info
+        from codegen.runtime_codegen.gen_scene_query import bg_info
         seen_layer_syms: set[str] = set()
         layer_lines: list[str] = []
         for sc in all_scenes:
@@ -372,5 +402,5 @@ def generate_actor_api(
         a.append("/* Windows nommées du projet — utilisées par window.* */")
         a += _win_lines
 
-    a += ["", "#endif /* ACTOR_API_H */", ""]
-    build_output.write(p.src_dir / "actor_api.h", "\n".join(a))
+    a += ["", "#endif /* RUNTIME_API_H */", ""]
+    build_output.write(p.src_dir / "runtime_api.h", "\n".join(a))

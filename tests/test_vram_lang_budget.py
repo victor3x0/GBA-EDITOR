@@ -71,7 +71,7 @@ def projet(tmp_path):
 
 def _reserve(p, scene) -> int:
     """Tuiles de glyphes que le BUILD réserve pour cette scène."""
-    from codegen.runtime_codegen.main_gen import scene_text_reservation
+    from codegen.runtime_codegen.gen_text import scene_text_reservation
     return scene_text_reservation(p, scene)["mono_tiles"]
 
 
@@ -80,7 +80,7 @@ def _load(p, scene) -> int:
     `FontSubset` émis, que `text_set_font` recopie entière (`n_load`)."""
     from codegen.font_emit import (encode_font, build_font_subset,
                                    scene_codepoints_union)
-    from codegen.runtime_codegen.main_gen import _declared_lang_codes
+    from codegen.runtime_codegen.gen_text import _declared_lang_codes
     font = p.fonts[0]
     e = encode_font(font, p.asset_abs(font.asset))
     sub = build_font_subset(e, scene_codepoints_union(p, scene,
@@ -129,7 +129,7 @@ def test_la_liste_des_langues_est_la_meme_pour_les_deux_lecteurs(projet):
     """`_declared_lang_codes` est le point unique : c'est de leur divergence
     que venait le décalage, pas du calcul de sous-ensemble lui-même."""
     p, _scene, _t = projet
-    from codegen.runtime_codegen.main_gen import _declared_lang_codes
+    from codegen.runtime_codegen.gen_text import _declared_lang_codes
     assert _declared_lang_codes(p) == ["en", "ja"]
 
     p.settings.languages = []

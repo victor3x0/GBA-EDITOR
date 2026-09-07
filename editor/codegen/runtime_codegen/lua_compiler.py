@@ -19,7 +19,7 @@ from scripting.codegen import generate as lua_generate, CodegenContext
 from scripting.globals import write_globals
 from scripting.constants import write_constants
 from codegen.c_names import sym as c_sym
-from codegen import build_output
+import codegen.build_output as build_output
 from codegen.actor_budget import prefab_pool_instances
 
 
@@ -97,7 +97,7 @@ def _child_refs_for_prefab(pf) -> dict:
 def _project_lists(p):
     """Les panneaux marqués LISTE — import local, `main_gen` important déjà ce
     module par ailleurs."""
-    from codegen.runtime_codegen.main_gen import project_lists
+    from codegen.runtime_codegen.gen_ui import project_lists
     return project_lists(p)
 
 
@@ -142,7 +142,7 @@ def transpile_all(
                    if hasattr(p, "music") else {})
     # Textes et polices : l'ORDRE fait foi (il devient l'index dans les tables C
     # émises par main_gen). project_fonts() est la source unique côté polices.
-    from codegen.runtime_codegen.main_gen import project_fonts
+    from codegen.font_emit import project_fonts
     # `build_texts()` et non `texts` : les littéraux de `text.draw` deviennent
     # des entrées anonymes, et leurs `#define TEXT_*` doivent exister aussi.
     text_keys   = ([t.key for t in p.build_texts()] if hasattr(p, "build_texts")

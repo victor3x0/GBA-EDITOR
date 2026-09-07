@@ -11,8 +11,8 @@ preview/build (comme les backgrounds).
 from __future__ import annotations
 
 from core.bg_import import open_image, is_indexed
-from core.gba_color import own_palette_from_source, distinct_opaque
-from core.models.palette import RESERVED_SLOT_COLOR
+from core.models.gba_color import own_palette_from_source, distinct_opaque
+from core.models.gba_color import RESERVED_SLOT_COLOR
 
 # 4bpp : 16 entrées/banque dont l'index 0 réservé (transparent) → 15 opaques.
 MAX_4BPP_COLORS = 15

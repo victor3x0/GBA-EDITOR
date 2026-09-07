@@ -6,9 +6,13 @@ bits 0-4 = R, bits 5-9 = G, bits 10-14 = B, 5 bits par canal.
 """
 from __future__ import annotations
 
-# La réserve de l'index 0 est une règle de PALETTE, pas de conversion de
-# couleur : elle vit avec le modèle qui l'énonce.
-from core.models.palette import RESERVED_SLOT_COLOR
+# Index 0 réservé d'une PaletteBank — le hardware GBA traite toujours l'index 0
+# comme transparent (OBJ comme BG), quelle que soit la couleur stockée ; sa valeur
+# exacte n'a donc aucune incidence visuelle pour une tuile normale. La constante
+# vit ICI, avec l'encodage des palettes qui l'emploie le plus (write_palettes/
+# write_colors, et au-delà bg_import, codegen) : `palette` l'importe désormais
+# d'ici, ce qui rompt le cycle gba_color↔palette d'autrefois.
+RESERVED_SLOT_COLOR = 0
 
 
 def rgb888_to_bgr555(r: int, g: int, b: int) -> int:

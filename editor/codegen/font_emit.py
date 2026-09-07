@@ -314,7 +314,6 @@ def scene_default_font(p, scene) -> tuple[int, str]:
 
     (-1, "") quand le projet n'a aucune police encodable : `scene_init` n'émet
     alors aucun `text_set_font`, et un projet sans texte compile toujours."""
-    from codegen.runtime_codegen.main_gen import project_fonts
     fonts = project_fonts(p)
     if not fonts:
         return -1, ""
@@ -1191,3 +1190,74 @@ def _bake_values(source: str, bake: dict) -> str:
         prev = m.src[1]
     out.append(source[prev:])
     return "".join(out)
+
+
+# ── Quelles polices le projet encode, et lesquelles il utilise ────────
+# Requêtes de police du projet. Elles vivent ICI (le module des polices) et non
+# dans main_gen : elles ne dépendent que de `p.fonts` et des fonctions de scène
+# de ce fichier (scene_font_names/default_font_name). Les tenir dans main_gen
+# faisait remonter font_emit et palette_alloc vers l'orchestrateur — le cœur du
+# cycle codegen d'autrefois (cf. TodoTechnique, tanglé codegen↔scripting).
+
+def encodable_project_fonts(p) -> list:
+    """Polices encodables (planche présente sur disque), AVANT tout élagage
+    par usage. Base commune à `project_fonts()` et à `project_used_font_names()`
+    — cette dernière doit résoudre la police par défaut de chaque scène contre
+    une liste non filtrée, sinon elle boucle sur `project_fonts()`. C'est aussi
+    la liste que l'éditeur doit montrer dans un sélecteur de police pas encore
+    posé (`scene_inspector._reload_scene_font`) : une police y est « utilisable »
+    dès qu'elle est encodable, la CHOISIR étant justement ce qui la rendrait
+    utilisée."""
+    out = []
+    for f in getattr(p, "fonts", []):
+        if f.asset and f.glyphs and p.asset_abs(f.asset) and p.asset_abs(f.asset).exists():
+            out.append(f)
+    return out
+
+
+def project_used_font_names(p) -> "set | None":
+    """Noms des polices RÉELLEMENT utilisées quelque part dans le projet, ou
+    `None` si c'est indécidable (repli de sûreté, comme `scene_font_names`
+    dont c'est l'union sur toutes les scènes).
+
+    Trois sources, pas deux :
+    - ce que chaque scène peut charger (mise en page + `text.set_font`),
+      TOUJOURS complété par sa police par défaut (`scene_init` la charge même
+      sans une ligne de texte) ;
+    - les polices de REMPLACEMENT par langue (`Language.fonts`) : jamais
+      citées par un script, substituées au runtime — les oublier élaguerait la
+      police japonaise/russe/grecque d'un projet qui ne l'emploie qu'en JA/RU/EL.
+
+    Une seule scène indécidable (script au choix de police dynamique, ou
+    illisible) fait retomber sur `None` pour le PROJET entier : mieux vaut de
+    la ROM payée pour une police jamais atteinte qu'une police manquante en
+    silence — même arbitrage que `scene_font_names`."""
+    all_fonts = encodable_project_fonts(p)
+    _proj_default = getattr(p.settings, "fallback_font", "")
+    names: set = set()
+    for scene in getattr(p, "scenes", []):
+        default_font = default_font_name(all_fonts, scene, _proj_default)
+        sn = scene_font_names(p, scene, default_font)
+        if sn is None:
+            return None
+        names |= sn
+    for lang in getattr(getattr(p, "settings", None), "languages", []):
+        names |= set(getattr(lang, "fonts", {}).values())
+    return names
+
+
+def project_fonts(p) -> list:
+    """Polices réellement encodables (planche présente sur disque) ET
+    utilisées quelque part dans le projet (cf. `project_used_font_names`).
+
+    Source de vérité partagée : `main_gen` émet les tables dans cet ordre et
+    `lua_compiler` en dérive les `#define FONT_*` — les deux doivent voir la
+    même liste, sinon un script pointerait sur la mauvaise police.
+
+    `project_used_font_names()` à `None` (usage indécidable) → repli sur
+    TOUTES les polices encodables, sans élagage."""
+    all_fonts = encodable_project_fonts(p)
+    used = project_used_font_names(p)
+    if used is None:
+        return all_fonts
+    return [f for f in all_fonts if f.name in used]

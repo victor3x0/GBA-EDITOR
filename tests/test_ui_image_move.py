@@ -18,9 +18,11 @@ Ce que ces tests protègent :
   (index dans `g_ui_elements`, la table de VISIBILITÉ qui couvre les trois
   types) — la confusion qui rendait le premier réflexe incompilable ;
 - un nom d'image inconnu est refusé au build, en nommant les images du projet ;
-- la fonction est déclarée DES DEUX CÔTÉS (`gba_engine.h` ET
-  `actor_api_static.h`) — le piège le plus coûteux de cette chaîne, déjà relevé
-  par ce jalon quand `list.*` est arrivé, et qui ne se manifeste qu'au `make`.
+- la fonction est vue des DEUX contextes de compilation — `gba_engine.h` pour
+  `main.c`, et le prototype GÉNÉRÉ dans `runtime_api.h` pour les unités de scène/
+  acteur (A2, « 4e lecteur »). Le piège d'antan — une redéclaration oubliée à la
+  main — est fermé : ce qui est exposé et présent dans le moteur est extrait
+  automatiquement.
 """
 from __future__ import annotations
 
@@ -123,19 +125,25 @@ def test_le_domaine_porte_le_renommage():
     assert [r.value for r in refs] == ["Curseur"]
 
 
-# ── Le piège des deux prototypes ──────────────────────────────────
+# ── Le piège des deux prototypes, désormais fermé par génération ───
 
 
 @pytest.mark.parametrize("fn", ["ui_image_move", "ui_image_dx", "ui_image_dy"])
-def test_la_fonction_est_declaree_des_deux_cotes(fn):
-    """`main.c` voit `gba_engine.h` ; une unité d'acteur ou de scène voit
-    `actor_api_static.h`. Une fonction déclarée d'un seul côté ne se manifeste
-    qu'au `make`, sur un appel sans prototype — le piège que ce jalon a déjà
-    payé une fois avec `list.*`."""
+def test_la_fonction_est_vue_des_deux_contextes(fn):
+    """`main.c` voit `gba_engine.h` ; une unité d'acteur ou de scène voit le
+    prototype GÉNÉRÉ dans `runtime_api.h` (A2, « 4e lecteur »). Le piège d'antan —
+    une redéclaration oubliée à la main dans `runtime_api_inline.h` — n'existe plus :
+    ce qui est dans le moteur et exposé est extrait et émis automatiquement. Le
+    test protège donc l'invariant sous sa forme actuelle : présent dans le moteur,
+    et repris par la génération."""
+    from codegen.runtime_codegen.api_prototypes import (
+        build_prototype_block, exposed_engine_names,
+    )
     moteur = (REPO_DIR / "runtime" / "include" / "gba_engine.h").read_text(encoding="utf-8")
-    statique = (REPO_DIR / "runtime" / "include" / "actor_api_static.h").read_text(encoding="utf-8")
     assert fn in moteur
-    assert fn in statique
+    decls, _ = build_prototype_block(moteur, exposed_engine_names())
+    assert any(f"extern " in d and f" {fn}(" in d for d in decls), \
+        f"{fn} n'est pas repris par la génération de prototypes"
 
 
 def test_le_decalage_est_remis_a_zero_entre_deux_scenes():

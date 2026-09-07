@@ -26,6 +26,32 @@
       "code": "self.position.y",
       "text": "Vertical position in pixels (0–159).\nRead: local py = self.position.y\nWrite: self.position = vec2(x, y), or self:move(self.position, speed)"
     },
+    "camera.mode": {
+      "tone": "info",
+      "text": "Fixed: stays where activation put it.\nFollow: keeps the chosen Actor inside a deadzone.\nScript: the engine computes nothing, the script decides."
+    },
+    "camera.position": {
+      "tone": "accent",
+      "code": "camera.position = vec2(x, y)",
+      "text": "Reflects dragging the yellow rectangle in the canvas — editing here moves it too. Applied every time the camera is activated (scene start, or camera.switch)."
+    },
+    "camera.frame": {
+      "tone": "accent",
+      "text": "Screen size the camera renders into (max 240×160). Smaller than full screen → the camera claims one of the scene's two windows while active (which one is decided at build — cf. Windows panel, Scene inspector)."
+    },
+    "camera.margin": {
+      "tone": "info",
+      "text": "Deadzone: the camera only moves once the Actor gets further than Margin X/Y from the screen edge."
+    },
+    "camera.bounds": {
+      "tone": "accent",
+      "code": "camera.bound = rect(x, y, w, h)",
+      "text": "Applied when the camera is activated. A script can redefine them afterwards with camera.bound = rect(x, y, w, h)."
+    },
+    "camera.script": {
+      "tone": "info",
+      "text": "Runs AFTER the declarative settings above and BEFORE world bounds are applied — so it adjusts the framing instead of fighting it."
+    },
     "collision.h": {
       "tone": "accent",
       "code": "self.collision.height",

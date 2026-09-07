@@ -31,7 +31,7 @@ from ui.common import icons
 
 from core.models.palette import PaletteBank
 from core.project import Project
-from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
+from core.models.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
 from core.history import get_history, SetPaletteColorCmd, SetPaletteColorsCmd
 
 from .palette_file_io import serialize_palette

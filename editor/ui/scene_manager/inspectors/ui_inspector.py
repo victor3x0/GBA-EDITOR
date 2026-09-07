@@ -39,7 +39,7 @@ from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 
 from core.project import Project
 from core.text_markup import display_text
-from core.gba_color import bgr555_to_rgb888
+from core.models.gba_color import bgr555_to_rgb888
 from core.models.ui_region import (
     ANCHOR_ACTOR, ALIGNS, TARGET_BG, TARGET_OBJ, PRIORITY_INHERIT,
     KIND_LIST, KIND_TEXT, KIND_IMAGE, can_fill,
@@ -1659,7 +1659,7 @@ class UIInspector(QWidget):
             return None
         if getattr(self._element, "kind", "") != KIND_TEXT:
             return None
-        from codegen.runtime_codegen.main_gen import region_ink_bank
+        from codegen.runtime_codegen.gen_text import region_ink_bank
         resolved = region_ink_bank(self._project, self._scene, self._element)
         if resolved is None:
             return None      # le build ne lie pas cette zone : texte → police

@@ -247,24 +247,30 @@ class ApiProp:
 # DOMAIN_WIN_REGION fait exception (cf. plus bas) : ses noms rectangle sont
 # propres au projet, la table ne peut donc pas être figée ici.
 
-OBJ_MODES: dict[str, str] = {
-    "normal": "OBJ_MODE_NORMAL",   # 0 — sprite dessiné normalement
-    "blend":  "OBJ_MODE_BLEND",    # 1 — semi-transparent (réservé au mélange)
-    "window": "OBJ_MODE_WINDOW",   # 2 — masque : découpe la fenêtre-objet
+# nom Lua → (constante C, VALEUR). La valeur vit ICI, une seule fois : le
+# `#define` correspondant est GÉNÉRÉ dans `runtime_api.h` (cf.
+# codegen/runtime_codegen/api_prototypes.build_enum_defines), au lieu d'être
+# redéclaré à la main dans `runtime_api_inline.h`. Même geste que les prototypes
+# (le « 4e lecteur »), pour les constantes.
+OBJ_MODES: dict[str, tuple[str, int]] = {
+    "normal": ("OBJ_MODE_NORMAL", 0),   # sprite dessiné normalement
+    "blend":  ("OBJ_MODE_BLEND",  1),   # semi-transparent (réservé au mélange)
+    "window": ("OBJ_MODE_WINDOW", 2),   # masque : découpe la fenêtre-objet
 }
 
 # Les huit directions plus le neutre. Noms complets et non abrégés (« north »
 # et non « n ») : la règle de nommage du projet vaut aussi pour les valeurs.
-DIRECTIONS: dict[str, str] = {
-    "none":       "DIR_NONE",        # 0 — (0, 0), aucune direction
-    "north":      "DIR_NORTH",       # 1
-    "north_east": "DIR_NORTH_EAST",  # 2
-    "east":       "DIR_EAST",        # 3
-    "south_east": "DIR_SOUTH_EAST",  # 4
-    "south":      "DIR_SOUTH",       # 5
-    "south_west": "DIR_SOUTH_WEST",  # 6
-    "west":       "DIR_WEST",        # 7
-    "north_west": "DIR_NORTH_WEST",  # 8
+# L'ordre suit les tables de `actor_set_dir` du runtime (nord, puis sens horaire).
+DIRECTIONS: dict[str, tuple[str, int]] = {
+    "none":       ("DIR_NONE",       0),   # (0, 0), aucune direction
+    "north":      ("DIR_NORTH",      1),
+    "north_east": ("DIR_NORTH_EAST", 2),
+    "east":       ("DIR_EAST",       3),
+    "south_east": ("DIR_SOUTH_EAST", 4),
+    "south":      ("DIR_SOUTH",      5),
+    "south_west": ("DIR_SOUTH_WEST", 6),
+    "west":       ("DIR_WEST",       7),
+    "north_west": ("DIR_NORTH_WEST", 8),
 }
 
 # Les deux SEULS mots-clés fixes de DOMAIN_WIN_REGION (réglé le 2026-08-25,
@@ -277,27 +283,33 @@ WIN_REGIONS: dict[str, str] = {
     "outside": "WINR_OUT",  # tout le reste
 }
 
-BLEND_MODES: dict[str, str] = {
-    "none":     "BLD_MODE_NONE",      # 0
-    "alpha":    "BLD_MODE_ALPHA",     # 1 — dessus×EVA + dessous×EVB
-    "brighten": "BLD_MODE_BRIGHTEN",  # 2 — vers le blanc
-    "darken":   "BLD_MODE_DARKEN",    # 3 — vers le noir
+BLEND_MODES: dict[str, tuple[str, int]] = {
+    "none":     ("BLD_MODE_NONE",     0),
+    "alpha":    ("BLD_MODE_ALPHA",    1),   # dessus×EVA + dessous×EVB
+    "brighten": ("BLD_MODE_BRIGHTEN", 2),   # vers le blanc
+    "darken":   ("BLD_MODE_DARKEN",   3),   # vers le noir
 }
 
-BLEND_SIDES: dict[str, str] = {
-    "top":    "BLD_SIDE_TOP",     # 0 — la source du mélange
-    "bottom": "BLD_SIDE_BOTTOM",  # 1 — ce sur quoi elle se mélange
+BLEND_SIDES: dict[str, tuple[str, int]] = {
+    "top":    ("BLD_SIDE_TOP",    0),   # la source du mélange
+    "bottom": ("BLD_SIDE_BOTTOM", 1),   # ce sur quoi elle se mélange
 }
 
-EASE_KINDS: dict[str, str] = {
-    "in":     "EASE_IN",      # 0 — démarre lentement, accélère à l'arrivée
-    "out":    "EASE_OUT",     # 1 — démarre vite, ralentit à l'arrivée
-    "in_out": "EASE_IN_OUT",  # 2 — les deux, symétriques autour du milieu
+EASE_KINDS: dict[str, tuple[str, int]] = {
+    "in":     ("EASE_IN",     0),   # démarre lentement, accélère à l'arrivée
+    "out":    ("EASE_OUT",    1),   # démarre vite, ralentit à l'arrivée
+    "in_out": ("EASE_IN_OUT", 2),   # les deux, symétriques autour du milieu
 }
 
-# Domaine → sa table. DÉRIVÉE des tables ci-dessus, elle sert au checker (le nom
-# est-il dans l'ensemble ?) et au codegen (quelle constante émettre ?) sans
-# qu'aucun des deux ne réécrive les valeurs.
+# Les tables portant (constante, valeur), dans l'ordre — la SOURCE des `#define`
+# générés (`build_enum_defines`). L'ordre = l'ordre d'émission.
+_ENUM_TABLES: tuple[dict[str, tuple[str, int]], ...] = (
+    OBJ_MODES, DIRECTIONS, BLEND_MODES, BLEND_SIDES, EASE_KINDS,
+)
+
+# Domaine → {nom Lua: constante}. VUE dérivée des tables ci-dessus (dont la
+# valeur est retirée) : le checker (le nom est-il dans l'ensemble ?) et le codegen
+# (quelle constante émettre ?) sont inchangés, ils n'ont jamais lu la valeur.
 #
 # DOMAIN_WIN_REGION n'y figure PAS : depuis le 2026-08-25 ce n'est plus un
 # enum statique — "object"/"outside" restent fixes (WIN_REGIONS ci-dessus),
@@ -305,12 +317,22 @@ EASE_KINDS: dict[str, str] = {
 # `CheckContext.window_names` (miroir de `camera_names`), résolu par
 # `window_region_constant`, pas par `hardware_enum_constant`.
 HARDWARE_ENUMS: dict[str, dict[str, str]] = {
-    DOMAIN_OBJ_MODE:   OBJ_MODES,
-    DOMAIN_DIRECTION:  DIRECTIONS,
-    DOMAIN_BLEND_MODE: BLEND_MODES,
-    DOMAIN_BLEND_SIDE: BLEND_SIDES,
-    DOMAIN_EASE:       EASE_KINDS,
+    dom: {name: sym for name, (sym, _v) in table.items()}
+    for dom, table in (
+        (DOMAIN_OBJ_MODE,   OBJ_MODES),
+        (DOMAIN_DIRECTION,  DIRECTIONS),
+        (DOMAIN_BLEND_MODE, BLEND_MODES),
+        (DOMAIN_BLEND_SIDE, BLEND_SIDES),
+        (DOMAIN_EASE,       EASE_KINDS),
+    )
 }
+
+
+def hardware_enum_defines() -> list[tuple[str, int]]:
+    """(constante, valeur) de toutes les énums matérielles, dans l'ordre — pour
+    générer leurs `#define`. Une constante n'apparaît qu'une fois ; l'ordre est
+    celui des tables."""
+    return [(sym, v) for table in _ENUM_TABLES for (sym, v) in table.values()]
 
 
 def hardware_enum_constant(domain: str, name: str) -> str:

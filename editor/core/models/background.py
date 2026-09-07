@@ -9,8 +9,8 @@ from core.models.resource import Resource
 from core.models.tile_codec import pack_se, unpack_se
 from core.models.palette import OWN_PAL_BANK
 from core.models.sub_palette import SubPaletteAssetMixin, decode_palette_overrides
-from core.gba_color import write_palettes, read_palettes
-from core.project_json import write_grid, read_grid
+from core.models.gba_color import write_palettes, read_palettes
+from core.models.project_json import write_grid, read_grid
 
 
 # ── Types de fond ─────────────────────────────────────────────────

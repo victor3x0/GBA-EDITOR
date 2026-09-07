@@ -195,7 +195,7 @@ class ScriptEditorScreen(QWidget):
 
     # ── API publique ──────────────────────────────────────────────────
 
-    def open_script(self, path: Path):
+    def open_script(self, path: Path, line: int | None = None):
         watched = self._file_watcher.files()
         if watched:
             self._file_watcher.removePaths(watched)
@@ -217,6 +217,11 @@ class ScriptEditorScreen(QWidget):
 
         if path.exists():
             self._file_watcher.addPath(str(path))
+
+        # Saut à la ligne (journal de build cliqué) — après setPlainText, quand
+        # les blocs existent.
+        if line is not None:
+            self._editor.goto_line(line)
 
     def load_project(self, project):
         """Connecte le projet pour peupler les sections dynamiques.

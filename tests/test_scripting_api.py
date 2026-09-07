@@ -108,40 +108,42 @@ def test_nom_de_ressource_du_recepteur_refuse():
 # ── 2. Les constantes vivent dans les DEUX en-têtes ────────────────
 
 
-def test_constantes_denumeration_declarees_dans_la_facade():
-    """`actor_api_static.h` est le seul en-tête que voient les unités de scène et
-    d'acteur. Une constante émise par le codegen mais définie seulement dans
-    `gba_engine.h` échoue au `make`, sur la ligne générée et jamais sur sa
-    cause."""
+def test_constantes_denumeration_generees_pour_les_unites_script():
+    """Les unités de scène et d'acteur voient les `#define` d'énums GÉNÉRÉS dans
+    `runtime_api.h` (plus redéclarés à la main dans `runtime_api_inline.h`). Le
+    contrat : chaque constante du catalogue est reprise par la génération —
+    sinon le codegen l'émettrait et le `make` échouerait sur un identifiant
+    inconnu."""
     from scripting.api import HARDWARE_ENUMS
+    from codegen.runtime_codegen.api_prototypes import build_enum_defines
 
-    facade = (REPO_DIR / "runtime" / "include" / "actor_api_static.h").read_text(
-        encoding="utf-8", errors="ignore")
+    generated = {l.split()[1] for l in build_enum_defines()}
     missing = sorted({
         c for table in HARDWARE_ENUMS.values() for c in table.values()
-        if not re.search(r"^\s*#\s*define\s+" + re.escape(c) + r"\b", facade, re.M)
+        if c not in generated
     })
-    assert missing == [], f"constantes absentes de actor_api_static.h : {missing}"
+    assert missing == [], f"constantes non générées : {missing}"
 
 
-def test_les_deux_entetes_saccordent_sur_les_valeurs():
-    """main.c inclut les deux : une valeur divergente serait une redéfinition,
-    donc bruyante — ce test la nomme avant le compilateur."""
-    from scripting.api import HARDWARE_ENUMS
+def test_les_valeurs_denum_saccordent_avec_le_moteur():
+    """api.py tient désormais la valeur de chaque énum ; `gba_engine.h` en
+    redéfinit certaines à la main côté moteur. main.c voit les deux — une valeur
+    divergente serait une redéfinition bruyante ET un décalage silencieux côté
+    script. Ce test la nomme avant le compilateur (miroir du garde-fou de
+    `validator._check_api_prototypes`)."""
+    from scripting.api import hardware_enum_defines
 
-    inc = REPO_DIR / "runtime" / "include"
-    facade = (inc / "actor_api_static.h").read_text(encoding="utf-8", errors="ignore")
-    engine = (inc / "gba_engine.h").read_text(encoding="utf-8", errors="ignore")
+    engine = (REPO_DIR / "runtime" / "include" / "gba_engine.h").read_text(
+        encoding="utf-8", errors="ignore")
 
-    def value(src: str, name: str):
-        m = re.search(r"^\s*#\s*define\s+" + re.escape(name) + r"\s+(\S+)", src, re.M)
-        return m.group(1) if m else None
+    def engine_value(name: str):
+        m = re.search(r"^\s*#\s*define\s+" + re.escape(name) + r"\s+(-?\d+)\b", engine, re.M)
+        return int(m.group(1)) if m else None
 
-    for table in HARDWARE_ENUMS.values():
-        for c in table.values():
-            a, b = value(facade, c), value(engine, c)
-            if a is not None and b is not None:
-                assert a == b, f"{c} vaut {a} dans la façade et {b} dans le moteur"
+    for sym, value in hardware_enum_defines():
+        ev = engine_value(sym)
+        if ev is not None:
+            assert ev == value, f"{sym} vaut {value} dans api.py et {ev} dans le moteur"
 
 
 def test_le_c_emis_cite_la_constante_pas_le_nombre():
@@ -255,13 +257,13 @@ def test_le_getter_dauto_dir_existe_en_c():
     pas signalé l'absence de celle-ci."""
     from scripting.api import RUNTIME_PROPS
 
-    facade = (REPO_DIR / "runtime" / "include" / "actor_api_static.h").read_text(
+    facade = (REPO_DIR / "runtime" / "include" / "runtime_api_inline.h").read_text(
         encoding="utf-8", errors="ignore")
     for name, p in RUNTIME_PROPS.items():
         for fn in (p.c_getter, p.c_setter, p.c_getter_named, p.c_setter_named):
             if fn and fn.startswith("actor_"):
                 assert re.search(r"\b" + re.escape(fn) + r"\s*\(", facade), (
-                    f"{name} : {fn}() n'existe pas dans actor_api_static.h")
+                    f"{name} : {fn}() n'existe pas dans runtime_api_inline.h")
 
 
 # ── 5. L'état d'une image se vérifie DANS son sprite ───────────────
@@ -459,12 +461,12 @@ def test_les_neuf_helpers_existent_en_c():
     implémentation compilerait en `undefined reference` seulement au `make`."""
     from scripting.api import RUNTIME_API
 
-    facade = (REPO_DIR / "runtime" / "include" / "actor_api_static.h").read_text(
+    facade = (REPO_DIR / "runtime" / "include" / "runtime_api_inline.h").read_text(
         encoding="utf-8", errors="ignore")
     for m in JUICE_METHODS:
         fn = RUNTIME_API[f"self:{m}"].c_func
         assert re.search(r"\b" + re.escape(fn) + r"\s*\(", facade), (
-            f"self:{m} : {fn}() n'existe pas dans actor_api_static.h")
+            f"self:{m} : {fn}() n'existe pas dans runtime_api_inline.h")
 
 
 
@@ -571,7 +573,7 @@ def test_une_reference_qui_traverse_une_attente_garde_son_champ_detat():
 
 def test_les_portes_du_son_existent_dans_le_c_emis():
     """Même garde-fou que pour les helpers de juiciness, côté audio : ces
-    fonctions-là ne vivent pas dans `actor_api_static.h` mais dans l'en-tête
+    fonctions-là ne vivent pas dans `runtime_api_inline.h` mais dans l'en-tête
     ÉMIS par `headers.py`, et un `c_func` sans implémentation ne se verrait
     qu'au `make`."""
     from scripting.api import RUNTIME_API

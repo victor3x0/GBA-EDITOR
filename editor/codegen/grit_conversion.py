@@ -26,7 +26,7 @@ from core.project import Project
 # très courant dans la génération (`sym = bg_layer_sym(...)`), et une locale
 # masquerait la fonction dans toute la portée où elle apparaît.
 from codegen.c_names import sym as c_sym
-from codegen import build_output
+import codegen.build_output as build_output
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ def quantize_asset(path: Path, bank_colors: list[int], mode: str) -> "Image.Imag
     """Quantifie `path` vers `bank_colors`, retourne une image RGBA.
     mode="direct_index" : les index 'P' du fichier se calent sur la banque
     (sprites). mode="nearest" : chaque pixel prend la couleur la plus proche (BG)."""
-    from core.gba_color import quantize_image_to_bank, direct_index_to_bank
+    from core.models.gba_color import quantize_image_to_bank, direct_index_to_bank
     if mode == "direct_index":
         return direct_index_to_bank(path, bank_colors)
     from PIL import Image
@@ -210,7 +210,7 @@ def sprite_unique_frames(sprite: SpriteAsset) -> tuple[dict, list]:
 
     Fait autorité sur l'ordre des frames pour le sheet reconstruit
     (build_sprite_sheet_indexed) ET les tables d'animation C
-    (main_gen._anim_tables_for) — les deux partagent ce layout.
+    (gen_sprite.anim_tables_for) — les deux partagent ce layout.
 
     Retourne (seq_starts, ordered) où seq_starts[seq_key] = offset de départ du
     bloc dans ordered, et ordered = [(AnimFrame, flip_h, flip_v), ...] dans
@@ -475,10 +475,10 @@ class GritSprites:
             # cas normal passe déjà par `colors` (préfixé dans
             # palette_alloc.effective_palette_colors), ce fallback ne sert que si
             # la résolution en amont a échoué.
-            from core.models.palette import RESERVED_SLOT_COLOR
+            from core.models.gba_color import RESERVED_SLOT_COLOR
             bank_colors = list(colors) if colors else ([RESERVED_SLOT_COLOR] + own_pal if own_pal else [])
 
-            from core.gba_color import render_indexed
+            from core.models.gba_color import render_indexed
             p.grit_out_dir.mkdir(parents=True, exist_ok=True)
             p_src = p.grit_out_dir / f"_srcidx_{c_sym(sprite.name)}.png"
             render_indexed(ap, own_pal).save(p_src, transparency=0)

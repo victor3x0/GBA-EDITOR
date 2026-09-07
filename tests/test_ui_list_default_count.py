@@ -43,7 +43,7 @@ def _totals(src: str) -> list[int]:
 
 
 def test_le_total_par_defaut_est_le_compte_de_rangees(projet):
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lst = projet
     src = "\n".join(emit_ui_lists_c(p))
     assert _totals(src) == [3]
@@ -60,14 +60,14 @@ def test_une_liste_sans_rangee_reste_a_zero(projet):
     layout.elements.append(UIList(name="Vide"))
     p2.ui_layouts.append(layout)
 
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     src = "\n".join(emit_ui_lists_c(p2))
     assert _totals(src) == [0]
 
 
 def test_plusieurs_listes_gardent_chacune_leur_propre_compte(projet):
     from core.models.ui_region import UIList, UIText
-    from codegen.runtime_codegen.main_gen import emit_ui_lists_c
+    from codegen.runtime_codegen.gen_ui import emit_ui_lists_c
     p, _lst = projet
     lay = p.ui_layouts[0]
     autre = UIList(name="Autre")

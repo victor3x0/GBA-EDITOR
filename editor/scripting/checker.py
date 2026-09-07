@@ -31,6 +31,11 @@ from .parser import (
     SEQUENCE_PREFIX,
 )
 from . import lua_subset
+# Les 10 boutons GBA — source unique dans le SOCLE (core.models). `scripting`
+# a le droit d'importer `core.models` (cf. check_architecture, INTERDITS) ; c'est
+# `core.models` qui ne peut pas remonter vers `scripting`, d'où le sens de
+# l'import (et non une seconde liste tenue ici).
+from core.models.settings import BUTTON_NAMES
 from .api import (RUNTIME_API, RUNTIME_PROPS, REMOVED_API, KNOWN_EVENTS, DOMAIN_ANIM, DOMAIN_SFX,
                   DOMAIN_SOUND_BOX_STATE, DOMAIN_JINGLE_BOX_STATE,
                   DOMAIN_MUSIC_BOX_TRIGGER,
@@ -136,7 +141,7 @@ class BuildContext:
     # avertissement, et non le refus de build que c'était jusqu'au 2026-08-25.
     affine_transform: bool = False
 
-    VALID_KEYS = {"a", "b", "l", "r", "start", "select", "up", "down", "left", "right"}
+    VALID_KEYS = frozenset(BUTTON_NAMES)   # dérivé du socle, jamais redéclaré
 
 
 # Plage valide par type C généré (cf. scripting/globals.py) — "int" n'a pas
@@ -830,7 +835,7 @@ class Checker:
             # Exception : un nom cité par `AnimFrame.event_name` sur LE sprite
             # de cet actor (`frame_event_names`) EST atteint — pas par un appel
             # Lua, par le stepper d'anim de `main.c` (ROADMAP v0.8.9, EventCall,
-            # cf. `codegen._emit_function` / `main_gen._actor_frame_event_lines`).
+            # cf. `codegen._emit_function` / `gen_sprite.actor_frame_event_lines`).
             self.errors.append(CheckError(
                 "error",
                 f"Fonction '{fn.name}' inconnue : une fonction de premier niveau "

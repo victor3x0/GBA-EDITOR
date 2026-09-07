@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from core.models.components import SpriteComponent
 from core.models.scene import Actor
-from codegen.runtime_codegen.main_gen import (
-    _affine_entry, _compute_affine_info, _affine_oam_lines_dynamic,
+from codegen.runtime_codegen.gen_affine import (
+    affine_entry, compute_affine_info, affine_oam_lines_dynamic,
 )
 
 
@@ -41,13 +41,13 @@ def _sc(**kw) -> SpriteComponent:
 def test_non_affine_ne_reserve_aucun_slot():
     a = _actor()
     sc = _sc()
-    assert _affine_entry(a, sc, 3) is None
+    assert affine_entry(a, sc, 3) is None
 
 
 def test_affine_reserve_un_slot_meme_a_identite():
     """`affine_transform` coché réserve le slot même si scale/rotation valent
     leur défaut — c'est ce qui laisse le rendu écrire une matrice."""
-    e = _affine_entry(_actor(), _sc(affine_transform=True), 7)
+    e = affine_entry(_actor(), _sc(affine_transform=True), 7)
     assert e is not None
     assert e["slot"] == 7
     assert e["scale_x"] == 256 and e["scale_y"] == 256   # Q8, 100%
@@ -59,21 +59,21 @@ def test_la_case_sur_l_actor_ne_reserve_plus_rien():
     emplacements cohabiteraient et le C émis dépendrait de l'ordre de lecture."""
     a = _actor()
     a.affine_transform = True           # n'est plus un champ du modèle
-    assert _affine_entry(a, _sc(), 0) is None
+    assert affine_entry(a, _sc(), 0) is None
 
 
 def test_le_scale_rotation_sans_affine_sont_ignores():
     """Un scale/rotation sur le sprite SANS « Affine transform » ne crée pas de
     slot : sans réservation, aucune matrice n'est écrite."""
     sc = _sc(scale_x=2.0, rotation=45)
-    assert _affine_entry(_actor(), sc, 0) is None
+    assert affine_entry(_actor(), sc, 0) is None
 
 
 def test_monde_et_local_finissent_en_champs_actor():
     a = _actor(rotation=90, scale_x=2.0, scale_y=0.5)
     sc = _sc(affine_transform=True,
              rotation=45, scale_x=1.5, scale_y=0.25, offset_x=-8, offset_y=12)
-    e = _affine_entry(a, sc, 2)
+    e = affine_entry(a, sc, 2)
     assert e["rotation"] == 90            # monde
     assert e["scale_x"] == 512            # Q8 : 2.0×256
     assert e["scale_y"] == 128            # Q8 : 0.5×256
@@ -91,7 +91,7 @@ def test_compute_affine_info_compte_des_slots_distincts():
     a3 = _actor()                       # sprite sans affine → pas de slot
     a3.components.append(_sc())
     scene_actors = [(a1, None), (a2, None), (a3, None)]
-    info = _compute_affine_info(offset := 10, scene_actors, [])
+    info = compute_affine_info(offset := 10, scene_actors, [])
     assert set(info) == {10, 11}          # a1 et a2, pas a3
     assert info[10]["slot"] == 0
     assert info[11]["slot"] == 1
@@ -109,8 +109,8 @@ def test_oam_dynamic_compose_monde_local_et_offset():
         oam_shape, oam_size = 1, 0     # 8×8 affine
         tiles_per_frame = 1
 
-    entry = _affine_entry(a, sc, 0)
-    lines = "\n".join(_affine_oam_lines_dynamic(7, entry, SpriteShape(), bt=0, priority_expr="0"))
+    entry = affine_entry(a, sc, 0)
+    lines = "\n".join(affine_oam_lines_dynamic(7, entry, SpriteShape(), bt=0, priority_expr="0"))
     # Lecture des champs par-Actor, plus de globals par slot
     assert "g_actors[7].rotation" in lines
     assert "g_actors[7].sprite.rotation" in lines
@@ -180,7 +180,7 @@ def test_accesseurs_affine_non_gardes_par_le_slot():
     affine. Les champs sont de l'état de jeu : ils s'écrivent toujours."""
     from pathlib import Path
     api = (Path(__file__).resolve().parent.parent
-           / "runtime" / "include" / "actor_api_static.h").read_text(encoding="utf-8")
+           / "runtime" / "include" / "runtime_api_inline.h").read_text(encoding="utf-8")
     body = api[api.index("static inline void actor_set_rotation"):
                api.index("static inline int  actor_get_dir")]
     assert "affine_slot" not in body
@@ -202,7 +202,7 @@ def test_seed_scene_ecrit_dans_la_struct_actor():
     # `affine_slot` a suivi la case : c'est du rendu, donc le bloc `sprite`.
     assert hdr.index("int affine_slot;") < hdr.index("} sprite;")
     api = (Path(__file__).resolve().parent.parent
-           / "runtime" / "include" / "actor_api_static.h").read_text(encoding="utf-8")
+           / "runtime" / "include" / "runtime_api_inline.h").read_text(encoding="utf-8")
     # (régression) plus de globals par slot : chaque TU en aurait une copie
     assert "g_affine_angle" not in api
     assert "g_affine_scale_x" not in api
@@ -229,7 +229,7 @@ def test_ancienne_cle_sur_l_actor_migre_vers_le_sprite():
 
 def test_migration_sans_sprite_ne_casse_rien():
     """Un actor coché mais sans SpriteComponent n'a jamais rien réservé
-    (`_compute_affine_info` passait déjà son tour) : rien à reporter."""
+    (`compute_affine_info` passait déjà son tour) : rien à reporter."""
     a = Actor.from_dict({"name": "Trigger", "affine_transform": True, "components": []})
     assert a.components == []
 

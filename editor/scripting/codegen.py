@@ -737,11 +737,11 @@ class CodeGen:
             self._w(f"/* {sym}.c — script de {kind}, généré par GBA Editor (ne pas éditer) */")
         else:
             self._w(f"/* actor_{sym}.c — généré par GBA Editor (ne pas éditer) */")
-        # `actor_api.h` et non `runtime.h` : c'est l'en-tête généré qui porte
+        # `runtime_api.h` et non `runtime.h` : c'est l'en-tête généré qui porte
         # la vraie struct Actor et l'API. Le C émis l'incluait autrefois sous le
         # nom `runtime.h`, que chaque appelant remplaçait ensuite par celui-ci —
         # un détour dont il ne restait que le nom.
-        self._w('#include "actor_api.h"')
+        self._w('#include "runtime_api.h"')
         self._w('#include "globals.h"')
         self._w('#include "constants.h"')
         self._w('#include "gba_debug.h"')   # debug.log — ROADMAP v0.14
@@ -1089,7 +1089,7 @@ class CodeGen:
                 # `EVENT_C_SIGNATURES`) est le point d'entrée d'un EventCall —
                 # une frame d'animation du sprite de CET actor peut l'appeler
                 # depuis `main.c`, une autre unité de compilation (ROADMAP
-                # v0.8.9 ; cf. `_actor_frame_event_lines` dans main_gen.py).
+                # v0.8.9 ; cf. `actor_frame_event_lines` dans gen_sprite.py).
                 # Rien ne distingue ici « appelée par une frame » de « jamais
                 # appelée » : les deux cas restent corrects avec une liaison
                 # externe, et le linker élague ce qui ne sert à personne.
@@ -1365,7 +1365,7 @@ class CodeGen:
             vt = lt or rt
             if vt and e.op in ("+", "-", "*"):
                 # Pas d'opérateur `+`/`-`/`*` sur les structs en C : ce sont
-                # les fonctions vec2_*/vec3_* de actor_api_static.h qui portent
+                # les fonctions vec2_*/vec3_* de runtime_api_inline.h qui portent
                 # l'opération (checker.py a déjà refusé vec2+vec3, vec*vec…).
                 left, right = self._expr(e.left), self._expr(e.right)
                 if e.op == "*":

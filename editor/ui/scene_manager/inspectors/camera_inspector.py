@@ -31,9 +31,9 @@ from typing import Optional
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QScrollArea,
-    QSpinBox, QPushButton, QMessageBox, QInputDialog,
+    QPushButton, QMessageBox, QInputDialog,
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QFontMetrics
 from PyQt6.QtCore import pyqtSignal
 
 from core.models.camera import Camera, CAM_FIXED, CAM_FOLLOW, CAM_SCRIPT
@@ -41,7 +41,8 @@ from core.models.scene import Scene
 from core.project import Project
 from ui.common.theme import C, T, QSS
 from ui.common.icons import COLOR_SCRIPT
-from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard
+from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard, W
+from ui.common.notice import notice
 
 _MODES = [
     (CAM_FIXED,  "Fixed"),
@@ -122,82 +123,37 @@ class CameraInspector(QWidget):
             self._mode_combo.addItem(label)
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_card.body_layout.addWidget(self._mode_combo)
-
-        mode_info = QLabel(
-            "Fixed: stays where activation put it.\n"
-            "Follow: keeps the chosen Actor inside a deadzone.\n"
-            "Script: the engine computes nothing, the script decides."
-        )
-        mode_info.setFont(QFont(T.UI, T.XS))
-        mode_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        mode_info.setWordWrap(True)
-        mode_card.body_layout.addWidget(mode_info)
+        notice("camera.mode", self._mode_combo, mode_card.body_layout)
         layout.addWidget(mode_card)
+
+        # Largeur de colonne des libellés, mesurée sur le plus long du panneau —
+        # même approche que l'ActorInspector (une valeur fixe tronquerait selon
+        # la fonte de la machine).
+        _lbl_w = max(
+            QFontMetrics(QFont(T.UI, T.SM)).horizontalAdvance(t)
+            for t in ("Position", "Origin", "Margin", "Frame", "Size")
+        ) + 4
 
         # ── Transform : position (canvas ↔ inspecteur) + frame écran ──
         transform_card = CollapsibleCard("Transform")
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(10)
-        for label, attr in (("Position X:", "_pos_x"), ("Position Y:", "_pos_y")):
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont(T.UI, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            col.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setFont(QFont(T.MONO, T.MD))
-            spin.setStyleSheet(QSS.spinbox)
-            spin.setRange(0, 32767)   # même plage que les bornes du monde plus bas
-            spin.setSingleStep(8)
-            setattr(self, attr, spin)
-            col.addWidget(spin)
-            pos_row.addLayout(col)
-        pos_row.addStretch()
-        transform_card.body_layout.addLayout(pos_row)
+        # Position — plage 0..32767 (s16, comme les bornes du monde), pas de 8 px.
+        self._pos_x = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        self._pos_y = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        W.pair("Position", "X", C.AXIS_X, self._pos_x, "Y", C.AXIS_Y, self._pos_y,
+               transform_card.body_layout, label_width=_lbl_w)
+        notice("camera.position", self._pos_x, transform_card.body_layout)
 
-        pos_info = QLabel(
-            "Reflects dragging the yellow rectangle in the canvas — editing here "
-            "moves it too. Applied every time the camera is activated (scene "
-            "start, or camera.switch)."
-        )
-        pos_info.setFont(QFont(T.UI, T.XS))
-        pos_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        pos_info.setWordWrap(True)
-        transform_card.body_layout.addWidget(pos_info)
-
-        frame_row = QHBoxLayout()
-        frame_row.setSpacing(10)
-        for label, attr, maxv in (("Frame W:", "_frame_w", 240), ("Frame H:", "_frame_h", 160)):
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont(T.UI, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            col.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setFont(QFont(T.MONO, T.MD))
-            spin.setStyleSheet(QSS.spinbox)
-            spin.setRange(1, maxv)
-            setattr(self, attr, spin)
-            col.addWidget(spin)
-            frame_row.addLayout(col)
-        frame_row.addStretch()
-        transform_card.body_layout.addLayout(frame_row)
+        self._frame_w = W.spinbox(240, min_v=1, max_v=240)
+        self._frame_h = W.spinbox(160, min_v=1, max_v=160)
+        W.pair("Frame", "W", C.AXIS_X, self._frame_w, "H", C.AXIS_Y, self._frame_h,
+               transform_card.body_layout, label_width=_lbl_w)
 
         self._lbl_win_budget = QLabel("")
         self._lbl_win_budget.setFont(QFont(T.UI, T.XS))
         self._lbl_win_budget.setWordWrap(True)
         transform_card.body_layout.addWidget(self._lbl_win_budget)
 
-        frame_info = QLabel(
-            "Screen size the camera renders into (max 240×160). Smaller than "
-            "full screen → the camera claims one of the scene's two windows "
-            "while active (which one is decided at build — cf. Windows panel, "
-            "Scene inspector)."
-        )
-        frame_info.setFont(QFont(T.UI, T.XS))
-        frame_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        frame_info.setWordWrap(True)
-        transform_card.body_layout.addWidget(frame_info)
+        notice("camera.frame", self._frame_w, transform_card.body_layout)
         layout.addWidget(transform_card)
 
         # ── Suivi (visible en mode follow) ────────────────────────
@@ -213,80 +169,30 @@ class CameraInspector(QWidget):
         self._follow_combo.currentTextChanged.connect(self._on_follow_changed)
         fg.addWidget(self._follow_combo)
 
-        margin_row = QHBoxLayout()
-        margin_row.setSpacing(10)
-        for label, attr in (("Margin X:", "_margin_x"), ("Margin Y:", "_margin_y")):
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont(T.UI, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            col.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setFont(QFont(T.MONO, T.MD))
-            spin.setStyleSheet(QSS.spinbox)
-            spin.setRange(0, 120)
-            setattr(self, attr, spin)
-            col.addWidget(spin)
-            margin_row.addLayout(col)
-        margin_row.addStretch()
-        fg.addLayout(margin_row)
+        self._margin_x = W.spinbox(0, min_v=0, max_v=120)
+        self._margin_y = W.spinbox(0, min_v=0, max_v=120)
+        W.pair("Margin", "X", C.AXIS_X, self._margin_x, "Y", C.AXIS_Y, self._margin_y,
+               fg, label_width=_lbl_w)
         self._margin_x.valueChanged.connect(self._on_margins_changed)
         self._margin_y.valueChanged.connect(self._on_margins_changed)
-
-        follow_info = QLabel(
-            "Deadzone: the camera only moves once the Actor\n"
-            "gets further than Margin X/Y from the screen edge."
-        )
-        follow_info.setFont(QFont(T.UI, T.XS))
-        follow_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        follow_info.setWordWrap(True)
-        fg.addWidget(follow_info)
+        notice("camera.margin", self._margin_x, fg)
 
         layout.addWidget(self._follow_group)
 
         # ── Bornes du monde (rect : origine + taille) ──────────────
         bounds_card = CollapsibleCard("World bounds (0 = unlimited)")
-        bounds_row = QHBoxLayout()
-        bounds_row.setSpacing(10)
-        for label, attr in (("Width:", "_bounds_w"), ("Height:", "_bounds_h")):
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont(T.UI, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            col.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setFont(QFont(T.MONO, T.MD))
-            spin.setStyleSheet(QSS.spinbox)
-            # Bornes monde jusqu'à 32767 (s16) → scroll caméra max = 32767 -
-            # screen.width (32527 en X, 32607 en Y).
-            spin.setRange(0, 32767)
-            spin.setSingleStep(8)
-            setattr(self, attr, spin)
-            col.addWidget(spin)
-            bounds_row.addLayout(col)
-        bounds_row.addStretch()
-        bounds_card.body_layout.addLayout(bounds_row)
-        origin_row = QHBoxLayout()
-        origin_row.setSpacing(10)
-        for label, attr in (("Origin X:", "_bounds_x"), ("Origin Y:", "_bounds_y")):
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setFont(QFont(T.UI, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            col.addWidget(lbl)
-            spin = QSpinBox()
-            spin.setFont(QFont(T.MONO, T.MD))
-            spin.setStyleSheet(QSS.spinbox)
-            # Origine de la zone scrollable — 0 = le monde commence au bord de
-            # l'écran. Presque toujours 0, exposé pour rester cohérent avec le
-            # rect camera.bound du script.
-            spin.setRange(0, 32767)
-            spin.setSingleStep(8)
-            setattr(self, attr, spin)
-            col.addWidget(spin)
-            origin_row.addLayout(col)
-        origin_row.addStretch()
-        bounds_card.body_layout.addLayout(origin_row)
+        # Taille — bornes monde jusqu'à 32767 (s16) → scroll caméra max = 32767 -
+        # screen.width (32527 en X, 32607 en Y).
+        self._bounds_w = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        self._bounds_h = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        W.pair("Size", "W", C.AXIS_X, self._bounds_w, "H", C.AXIS_Y, self._bounds_h,
+               bounds_card.body_layout, label_width=_lbl_w)
+        # Origine de la zone scrollable — 0 = le monde commence au bord de l'écran.
+        # Presque toujours 0, exposé pour rester cohérent avec le rect camera.bound.
+        self._bounds_x = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        self._bounds_y = W.spinbox(0, min_v=0, max_v=32767, step=8)
+        W.pair("Origin", "X", C.AXIS_X, self._bounds_x, "Y", C.AXIS_Y, self._bounds_y,
+               bounds_card.body_layout, label_width=_lbl_w)
         self._bounds_w.valueChanged.connect(self._on_bounds_changed)
         self._bounds_h.valueChanged.connect(self._on_bounds_changed)
         self._bounds_x.valueChanged.connect(self._on_bounds_changed)
@@ -302,14 +208,7 @@ class CameraInspector(QWidget):
         self._btn_recalc.clicked.connect(self._recalc_bounds)
         bounds_card.body_layout.addWidget(self._btn_recalc)
 
-        bounds_info = QLabel(
-            "Applied when the camera is activated. A script can redefine them "
-            "afterwards with camera.bound = rect(x, y, w, h)."
-        )
-        bounds_info.setFont(QFont(T.UI, T.XS))
-        bounds_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        bounds_info.setWordWrap(True)
-        bounds_card.body_layout.addWidget(bounds_info)
+        notice("camera.bounds", self._bounds_w, bounds_card.body_layout)
         layout.addWidget(bounds_card)
 
         # ── Script de caméra ──────────────────────────────────────
@@ -325,15 +224,7 @@ class CameraInspector(QWidget):
             on_clear = self._script_clear,
         )
         script_card.body_layout.addWidget(self._script_slot)
-
-        script_info = QLabel(
-            "Runs AFTER the declarative settings above and BEFORE world bounds "
-            "are applied — so it adjusts the framing instead of fighting it."
-        )
-        script_info.setFont(QFont(T.UI, T.XS))
-        script_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        script_info.setWordWrap(True)
-        script_card.body_layout.addWidget(script_info)
+        notice("camera.script", self._script_slot, script_card.body_layout)
         layout.addWidget(script_card)
 
         layout.addStretch()
@@ -455,87 +346,108 @@ class CameraInspector(QWidget):
     def _mutable(self) -> Optional[Camera]:
         """La caméra à éditer, matérialisée si la scène n'en avait encore
         aucune (état implicite, `self._camera is None`). Une fois réelle, la
-        référence tenue par l'inspecteur devient cette caméra-là."""
+        référence tenue par l'inspecteur devient cette caméra-là.
+
+        Seule la MATÉRIALISATION exige un projet (elle passe par
+        `ensure_scene_camera`) : une caméra déjà réelle s'édite sans, ce qui
+        garde l'édition symétrique des autres inspecteurs (la persistance, elle,
+        est déjà gardée dans `_save`)."""
+        if self._camera is not None:
+            return self._camera
         if not self._scene or not self._project:
             return None
-        if self._camera is None:
-            self._camera = self._project.ensure_scene_camera(self._scene)
+        self._camera = self._project.ensure_scene_camera(self._scene)
         return self._camera
 
-    def _commit(self, refresh: bool = True):
-        """Un seul save : la caméra vit dans le JSON de la scène (plus de
-        fichier séparé). Ne pas s'en remettre au signal `changed` pour ça :
-        il sert à rafraîchir les vues, personne ne s'y est abonné pour
-        écrire sur le disque."""
+    def _save(self):
+        """Persiste la scène — la caméra vit dans SON JSON (plus de fichier
+        séparé). Donné en `persist_fn` aux commandes : c'est leur `execute`/`undo`
+        qui sauve, pour que l'écriture disque suive fidèlement l'état."""
         if self._project and self._scene:
             self._project.save_scene(self._scene)
+
+    def _edit(self, fields, label: str, refresh: bool = True) -> bool:
+        """Applique un GROUPE de champs comme UNE entrée d'historique annulable.
+
+        `fields` = [(obj, nom, valeur), …]. Seuls les champs qui CHANGENT
+        réellement produisent une commande (garde no-op, comme `_set` des autres
+        inspecteurs). Un seul champ modifié → `SetFieldCmd` (les frappes du même
+        champ fusionnent) ; plusieurs → `MacroCmd` atomique (un geste = un
+        Ctrl+Z). Rend True si quelque chose a changé.
+
+        C'est ce qui rend la caméra ANNULABLE : l'édition ne mute plus l'objet
+        en direct, elle passe par l'historique comme l'actor et l'UIRegion."""
+        from core.history import get_history, SetFieldCmd, MacroCmd
+        cmds = [SetFieldCmd(o, f, getattr(o, f, None), v, label=label)
+                for o, f, v in fields if getattr(o, f, None) != v]
+        if not cmds:
+            return False
+        cmds[-1]._persist = self._save          # un seul save, en fin de groupe
+        get_history().push(cmds[0] if len(cmds) == 1 else MacroCmd(cmds, label))
         self.changed.emit()
         if refresh:
             self._refresh()
+        return True
 
     def _on_camera_picked(self, idx: int):
         """Choix de la caméra de DÉMARRAGE de la scène — indépendant de la
         caméra affichée/éditée par le reste de ce panneau."""
         if self._blocking or not self._scene:
             return
-        self._scene.camera = self._combo_camera.itemData(idx) or ""
-        self._commit()
+        self._edit([(self._scene, "camera", self._combo_camera.itemData(idx) or "")],
+                   "Startup camera")
 
     def _on_mode_changed(self, idx: int):
         if self._blocking:
             return
         cam = self._mutable()
-        if cam is None:
-            return
-        cam.mode = _MODES[idx][0]
-        self._commit()
+        if cam is not None:
+            self._edit([(cam, "mode", _MODES[idx][0])], "Camera mode")
 
     def _on_follow_changed(self, text: str):
         if self._blocking:
             return
         cam = self._mutable()
-        if cam is None:
-            return
-        cam.follow_target = "" if text == _NO_TARGET else text.split("  (")[0]
-        self._commit(refresh=False)
+        if cam is not None:
+            self._edit([(cam, "follow_target",
+                         "" if text == _NO_TARGET else text.split("  (")[0])],
+                       "Camera target", refresh=False)
 
     def _on_margins_changed(self):
         if self._blocking:
             return
         cam = self._mutable()
-        if cam is None:
-            return
-        cam.margin_x = self._margin_x.value()
-        cam.margin_y = self._margin_y.value()
-        self._commit(refresh=False)
+        if cam is not None:
+            self._edit([(cam, "margin_x", self._margin_x.value()),
+                        (cam, "margin_y", self._margin_y.value())],
+                       "Camera margins", refresh=False)
 
     def _on_bounds_changed(self):
         if self._blocking:
             return
         cam = self._mutable()
-        if cam is None:
-            return
-        cam.bounds_w = self._bounds_w.value() or None
-        cam.bounds_h = self._bounds_h.value() or None
-        cam.bounds_x = self._bounds_x.value() or None
-        cam.bounds_y = self._bounds_y.value() or None
-        self._commit(refresh=False)
+        if cam is not None:
+            self._edit([(cam, "bounds_w", self._bounds_w.value() or None),
+                        (cam, "bounds_h", self._bounds_h.value() or None),
+                        (cam, "bounds_x", self._bounds_x.value() or None),
+                        (cam, "bounds_y", self._bounds_y.value() or None)],
+                       "Camera bounds", refresh=False)
 
     def _on_transform_changed(self):
         """Position et frame : édition faite ICI (pas par drag canvas), donc
-        `camera_moved` est émis en plus de `_commit()` — c'est ce qui fait
-        suivre le rectangle du canvas (cf. SceneEditor.move_camera_item)."""
+        `camera_moved` est émis en plus — c'est ce qui fait suivre le rectangle
+        du canvas (cf. SceneEditor.move_camera_item)."""
         if self._blocking:
             return
         cam = self._mutable()
         if cam is None:
             return
-        cam.x = self._pos_x.value()
-        cam.y = self._pos_y.value()
-        cam.frame_w = self._frame_w.value()
-        cam.frame_h = self._frame_h.value()
-        self._commit(refresh=False)
-        self.camera_moved.emit(cam)
+        if self._edit([(cam, "x", self._pos_x.value()),
+                       (cam, "y", self._pos_y.value()),
+                       (cam, "frame_w", self._frame_w.value()),
+                       (cam, "frame_h", self._frame_h.value())],
+                      "Camera transform", refresh=False):
+            self.camera_moved.emit(cam)
 
     def _recalc_bounds(self):
         """Pré-remplit depuis le fond le plus proche d'une vitesse de 1.0 dans
@@ -552,11 +464,15 @@ class CameraInspector(QWidget):
             QMessageBox.warning(self, "World bounds", f"Could not read dimensions of '{ref.background_name}'.")
             return
         w, h = size
-        self._bounds_x.setValue(0)
-        self._bounds_y.setValue(0)
-        self._bounds_w.setValue(w)
-        self._bounds_h.setValue(h)
-        # setValue déclenche déjà _on_bounds_changed via valueChanged.
+        # Poser les quatre valeurs SANS déclencher le handler par champ (sinon
+        # quatre entrées d'historique pour un clic), puis committer le groupe en
+        # UNE entrée via `_on_bounds_changed` → `_edit` (MacroCmd).
+        for sp, v in ((self._bounds_x, 0), (self._bounds_y, 0),
+                      (self._bounds_w, w), (self._bounds_h, h)):
+            sp.blockSignals(True)
+            sp.setValue(v)
+            sp.blockSignals(False)
+        self._on_bounds_changed()
 
     def _bg_pixel_size(self, layer) -> Optional[tuple[int, int]]:
         ba = self._project.get_background(layer.background_name)
@@ -592,10 +508,8 @@ class CameraInspector(QWidget):
 
     def _script_assign(self, rel: str):
         cam = self._mutable()
-        if cam is None:
-            return
-        cam.script = rel
-        self._commit()
+        if cam is not None:
+            self._edit([(cam, "script", rel)], "Camera script")
 
     def _script_create_new(self):
         cam = self._mutable()
@@ -611,8 +525,8 @@ class CameraInspector(QWidget):
         if not sp.exists():
             ctx = ScriptTemplateContext(kind="camera", name=name.strip(), camera_name=cam.name)
             sp.write_text(generate_script_template(ctx), encoding="utf-8")
-        cam.script = str(sp.relative_to(self._project.root)).replace("\\", "/")
-        self._commit()
+        rel = str(sp.relative_to(self._project.root)).replace("\\", "/")
+        self._edit([(cam, "script", rel)], "Camera script")
         if self._script_open_fn:
             self._script_open_fn(str(sp))
 
@@ -626,7 +540,5 @@ class CameraInspector(QWidget):
 
     def _script_clear(self):
         cam = self._camera
-        if cam is None:
-            return
-        cam.script = ""
-        self._commit()
+        if cam is not None:
+            self._edit([(cam, "script", "")], "Camera script")

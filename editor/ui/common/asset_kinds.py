@@ -297,7 +297,7 @@ def _import_palette(project):
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
     from pathlib import Path as _P
     from core.models.palette import PaletteBank
-    from core.gba_color import rgb888_to_bgr555
+    from core.models.gba_color import rgb888_to_bgr555
     from core.history import AddResourceCmd
     from ui.palette_editor.palette_file_io import parse_palette_file
 

@@ -68,7 +68,7 @@ def projet(tmp_path):
 
 
 def _surf(p, scene):
-    from codegen.runtime_codegen.main_gen import scene_text_reservation
+    from codegen.runtime_codegen.gen_text import scene_text_reservation
     return scene_text_reservation(p, scene)
 
 

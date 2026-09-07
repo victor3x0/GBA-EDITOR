@@ -48,7 +48,7 @@ from core.history import (get_history, SetFieldCmd, AddListItemCmd,
                           RemoveListItemCmd, RenameCollisionTagCmd,
                           RemoveCollisionTagCmd)
 from core.command_dispatcher import get_dispatcher
-from core.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
+from core.models.gba_color import bgr555_to_rgb888, rgb888_to_bgr555
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.notice import note, tip

@@ -29,7 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from core.models.data_table import COLUMN_REFERENCES
-from codegen import build_output
+import codegen.build_output as build_output
 
 
 def reference_index(p) -> dict[str, dict[str, int]]:
@@ -39,7 +39,8 @@ def reference_index(p) -> dict[str, dict[str, int]]:
     deux doivent voir la même liste, ou la référence désigne autre chose. Elles
     sont donc appelées ici, jamais recopiées.
     """
-    from codegen.runtime_codegen.main_gen import project_fonts, project_cameras
+    from codegen.font_emit import project_fonts
+    from codegen.runtime_codegen.main_gen import project_cameras
 
     def index_of(names) -> dict[str, int]:
         return {n: i for i, n in enumerate(names)}

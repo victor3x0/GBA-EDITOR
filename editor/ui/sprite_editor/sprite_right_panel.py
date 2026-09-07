@@ -261,7 +261,7 @@ class SpriteRightPanel(QWidget):
         ap = self._project.root / self._sprite.asset
         if not ap.exists():
             return
-        from core.gba_color import extract_palette_from_image
+        from core.models.gba_color import extract_palette_from_image
         from core.models.palette import PaletteBank
         colors = extract_palette_from_image(ap)
         name = f"pal_{self._sprite.name}"

@@ -6,7 +6,7 @@ même géométrie. Deux usages :
   - `DirectionPicker`    : grille exclusive exposée en vecteur (dir_x, dir_y)
                            (Transform des Actors / Prefabs)
 
-Les dir_id suivent la nomenclature du runtime (`actor_api_static.h`) :
+Les dir_id suivent la nomenclature du runtime (`runtime_api_inline.h`) :
     8 1 2
     7 0 3      0 = omni / aucune direction
     6 5 4

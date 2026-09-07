@@ -33,16 +33,17 @@ from codegen.palette_alloc import (
 )
 from codegen.actor_budget import prefab_pool_instances
 from core.app_paths import RUNTIME_DIR
-from codegen.runtime_codegen.headers import generate_actor_types, generate_actor_api
+from codegen.runtime_codegen.headers import generate_actor_types, generate_runtime_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
-from codegen.runtime_codegen.main_gen import generate_main, ui_image_sprites
+from codegen.runtime_codegen.main_gen import generate_main
+from codegen.runtime_codegen.gen_scene_query import ui_image_sprites
 from core.models.palette import OWN_PAL_BANK
 from core.models.components import SpriteComponent
 from core.models.sprite import SpriteAsset
 from core.models.scene import Actor
 from core.project import Project
 from core.validator import validate_project
-from codegen import build_output
+import codegen.build_output as build_output
 
 # Pipeline scripting (Lua → C) : importée localement dans les méthodes, d'où
 # l'ajout du dossier au sys.path ici pour que `from scripting.…` se résolve.
@@ -678,7 +679,7 @@ class BuildWorker(EventEmitter, threading.Thread):
         une fois : c'est la scène la plus contrainte qui commande."""
         from codegen.vram_alloc import scene_layout
         from codegen.bg_anim import layer_tile_count as bg_anim_tile_count
-        from codegen.runtime_codegen.main_gen import scene_text_reservation
+        from codegen.runtime_codegen.gen_text import scene_text_reservation
         # Réservation prise au MÊME calcul que le placement réel, sinon le
         # budget validé ici n'est plus celui que la scène tient.
         out: dict = {}
@@ -737,7 +738,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                                       all_scenes=None, total_actors: int | None = None):
         has_sound = bool(sound_assets and (sound_assets.get('sfx') or sound_assets.get('music')))
         generate_actor_types(p, scene_actors, self.project.prefabs)
-        generate_actor_api(
+        generate_runtime_api(
             p, scene_actors, self.project.prefabs, has_sound,
             all_scenes=all_scenes, max_actors=total_actors,
         )

@@ -24,8 +24,8 @@ from core.models.palette import OWN_PAL_BANK
 from core.models.scene import Scene, scene_font_pal_bank
 from core.project import Project
 from codegen.actor_budget import prefab_pool_instances
-from core.gba_color import extract_palette_from_image
-from core.models.palette import RESERVED_SLOT_COLOR
+from core.models.gba_color import extract_palette_from_image
+from core.models.gba_color import RESERVED_SLOT_COLOR
 from core.palette_presets import DEFAULT_PAL_BANK_COLORS
 
 # Cache des palettes propres, invalidé par mtime du PNG.
@@ -318,9 +318,9 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
     (override), lu via `scene_font_pal_bank`. Police par défaut d'abord (ordre
     stable). Une écriture libre (`text.draw`) ou un script indécidable comptent
     comme un usage libre de la police PAR DÉFAUT — repli sûr (cf. ROADMAP)."""
-    from codegen.runtime_codegen.main_gen import (
-        encodable_project_fonts, region_fill_container)
+    from core.models.ui_region import region_fill_container
     from codegen.font_emit import (
+        encodable_project_fonts,
         scene_font_names, default_font_name, font_palette, scene_writes_free)
 
     fonts = encodable_project_fonts(p)
@@ -557,8 +557,8 @@ def scene_font_runtime_banks(p: Project, scene: Scene) -> dict:
     Une police absente d'ici (substitut de langue, ou non chargée) garde le défaut
     historique côté runtime (charge sa palette en banque 15) — le codegen n'émet
     alors rien pour elle. Source unique lue par l'émission de `scene_init`."""
-    from codegen.font_emit import scene_font_names, default_font_name, FONT_PAL_BANK
-    from codegen.runtime_codegen.main_gen import encodable_project_fonts
+    from codegen.font_emit import (
+        scene_font_names, default_font_name, FONT_PAL_BANK, encodable_project_fonts)
 
     fonts = encodable_project_fonts(p)
     if not fonts:
