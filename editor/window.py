@@ -29,6 +29,7 @@ from core.models.font import FONT_FILE_EXTS
 from core.models.sprite import IMAGE_FILE_EXTS
 from core.models.scene import Scene
 from core.project import Project
+from core.project_paths import ProjectManifestError
 from ui.screens import EditorScreen, ProjectScreen, plugin_screens
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -952,7 +953,15 @@ class MainWindow(QMainWindow):
         self._status.showMessage(f"New project: {name}")
 
     def _open_project(self, path: Path):
-        self.project = Project.open(path)
+        # Plusieurs .gba-project dans le dossier : on refuse d'en choisir un
+        # (cf. ROADMAP v0.10). On le dit et on abandonne l'ouverture — l'écran
+        # courant reste, aucun projet n'est à moitié chargé.
+        try:
+            self.project = Project.open(path)
+        except ProjectManifestError as exc:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Open project", str(exc))
+            return
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
         self._connect_watcher()

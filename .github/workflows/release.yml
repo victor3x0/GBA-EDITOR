@@ -6,11 +6,10 @@ name: Release builds
 # `workflow_dispatch` permet aussi de lancer un build de test sans publier
 # de release (les artefacts restent alors dans l'onglet Actions).
 #
-# Le job Linux (AppImage) est mis en pause (if: false) le temps de tester la
-# build sur une vraie distro — tout le travail (packaging/linux/) reste en
-# place, prêt à réactiver : repasser `if: false` en `if: true` sur
-# build-linux-appimage et le remettre dans les `needs` + le
-# download-artifact de `publish`.
+# Trois plateformes : l'installateur NSIS + le ZIP portable Windows, et
+# l'AppImage Linux. Faute de Linux local, la vraie distribution de test EST le
+# runner ubuntu-latest : un `workflow_dispatch` produit l'AppImage en artefact
+# (onglet Actions) sans publier de release, pour la valider avant un vrai tag.
 on:
   release:
     types: [published]
@@ -113,7 +112,6 @@ jobs:
             GBAEditor-*-windows-portable.zip
 
   build-linux-appimage:
-    if: false   # en pause — repasser à true une fois testé sur une vraie distro Linux
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -170,6 +168,11 @@ jobs:
           chmod +x AppDir/AppRun AppDir/usr/bin/"GBA Editor"
           cp packaging/linux/gba-editor.desktop AppDir/gba-editor.desktop
           cp packaging/icon.png AppDir/icon.png
+          # Type MIME du manifeste <Nom>.gba-project : c'est ce qui apprend au
+          # bureau Linux que l'extension est connue, associee a l'editeur via le
+          # MimeType du .desktop. Sans lui, le double-clic ne trouve aucune appli.
+          mkdir -p AppDir/usr/share/mime/packages
+          cp packaging/linux/gba-project.xml AppDir/usr/share/mime/packages/gba-project.xml
 
       - name: Construire l'AppImage
         run: |
@@ -185,17 +188,24 @@ jobs:
 
   publish:
     if: github.event_name == 'release'
-    needs: [build-windows]
+    needs: [build-windows, build-linux-appimage]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      # Les deux artefacts tombent à plat dans le même dossier (chacun ne
+      # contient que des fichiers, pas de sous-arbre), pour un seul upload.
       - uses: actions/download-artifact@v4
         with:
           name: windows
           path: artifacts
 
-      - name: Attacher les artefacts Windows à la release
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-appimage
+          path: artifacts
+
+      - name: Attacher les artefacts à la release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber --repo "${{ github.repository }}"

@@ -20,7 +20,10 @@ Structure de projet :
     scenes/            ← une scène par JSON (actors ET caméras inline)
     prefab/            ← templates d'actors (jamais compilés directement)
 
-  project.json         ← settings globaux (nom, scène de démarrage, auteur)
+  <Nom>.gba-project    ← manifeste : settings globaux (scène de démarrage,
+                         auteur…) ET point d'entrée double-clic. Le nom du
+                         projet EST le nom du fichier. Remplace project.json,
+                         encore relu une fois pour les projets d'avant v0.10.
   build/               ← 100 % jetable (regénéré à chaque build)
 
 Ce module porte la classe `Project` : ses registres d'assets, la scène active,
@@ -58,7 +61,6 @@ module-ci.
 import json
 import shutil
 import copy
-import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
@@ -66,10 +68,9 @@ from typing import Optional
 from core.events import EventEmitter
 from core.models import project_json
 from core import asset_encoding
-from core.app_paths import IS_FROZEN
 from core.resource_store import ResourceStore, atomic_write
 from core.palette_presets import seed_default_palettes
-from core.project_paths import ProjectPathsMixin
+from core.project_paths import ProjectPathsMixin, PROJECT_EXT, find_manifest
 from core.project_variables import ProjectVariablesMixin
 from core.project_texts import ProjectTextsMixin
 from core.project_langs import ProjectLangsMixin
@@ -715,8 +716,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     # ── I/O settings globaux ──────────────────────────────────────
 
     def save_settings(self):
+        # Pas de clé `name` : le nom du projet EST le nom du fichier
+        # (<Nom>.gba-project). L'écrire aussi dans le JSON en ferait un second
+        # porteur, à re-synchroniser — exactement ce que « source de vérité
+        # unique » interdit (cf. ROADMAP v0.10).
         data = {
-            "name":        self.settings.name,
             "start_scene": self.settings.start_scene,
             "last_scene":  self.settings.last_scene,
             "author":      self.settings.author,
@@ -754,12 +758,25 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
                if self.settings.inputs else {}),
         }
         atomic_write(self.project_file, project_json.dumps(data))
+        # Projet d'avant v0.10 : le .gba-project vient d'être écrit, l'ancien
+        # project.json n'a plus de raison d'être. Sa suppression ici est la
+        # deuxième moitié du pont de find_manifest — sans elle, le dossier
+        # porterait deux manifestes et l'ouverture suivante serait refusée.
+        if self.legacy_project_file.exists():
+            self.legacy_project_file.unlink()
 
     def load_settings(self):
-        if not self.project_file.exists():
+        manifest = find_manifest(self.root)
+        if manifest is None:
             return
-        d = json.loads(self.project_file.read_text(encoding="utf-8"))
-        self.settings.name        = d.get("name", self.root.name)
+        d = json.loads(manifest.read_text(encoding="utf-8"))
+        # Le nom vient du FICHIER : <Nom>.gba-project → le stem. Un manifeste
+        # legacy (project.json) ne le porte pas dans son intitulé — on retombe
+        # alors sur sa clé `name`, puis sur le dossier.
+        if manifest.suffix == PROJECT_EXT:
+            self.settings.name = manifest.stem
+        else:
+            self.settings.name = d.get("name", self.root.name)
         self.settings.start_scene = d.get("start_scene", "")
         # Projets antérieurs à la séparation start_scene/last_scene : start_scene
         # y servait aussi de « dernière scène ouverte ».
@@ -993,24 +1010,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         proj.settings.start_scene = "Scene_01"
         proj.settings.last_scene  = "Scene_01"
 
+        # save() écrit le manifeste <Nom>.gba-project : c'est LUI qu'on
+        # double-clique, associé à l'éditeur sur les deux OS (packaging/). Il a
+        # remplacé le launcher .bat, qui ne valait que sous Windows.
         proj.save()
-
-        # Launcher .bat — ouvre l'éditeur directement sur ce projet.
-        # Figé (exe distribué) : appeler l'exe. Depuis les sources : passer
-        # par l'interpréteur courant. L'ancienne version écrivait toujours
-        # `python editor\main.py` depuis la racine du repo, ce qui ne peut
-        # pas marcher chez quelqu'un qui n'a que l'exe.
-        bat_path = root / f"{name}.bat"
-        if IS_FROZEN:
-            cmd = f"\"{Path(sys.executable)}\" --project \"{root}\""
-        else:
-            editor_root = Path(__file__).resolve().parents[2]
-            cmd = (f"cd /d \"{editor_root}\"\r\n"
-                   f"\"{Path(sys.executable)}\" editor\\main.py --project \"{root}\"")
-        bat_path.write_text(
-            f"@echo off\r\n{cmd}\r\n",
-            encoding="utf-8"
-        )
 
         return proj
 

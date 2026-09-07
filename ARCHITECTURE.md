@@ -169,7 +169,7 @@ gba-editor/
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
     └── Pong/                        ← projet démo
-        ├── project.json             ← config racine uniquement (nom, scène de démarrage, auteur, version)
+        ├── Pong.gba-project         ← manifeste : config racine (scène de démarrage, auteur, version) ET point d'entrée double-clic ; le nom du projet EST le nom du fichier (v0.10, remplace project.json)
         ├── assets/                  ← dépend d'une ressource externe (image, son...)
         │   ├── sprites/             ← PNG + JSON sidecar (SpriteAsset)
         │   ├── backgrounds/         ← PNG + JSON sidecar (BackgroundAsset)
@@ -314,7 +314,7 @@ modifiable ensuite par script dans les deux cas, l'émission OAM lisant désorma
 - `assets/backgrounds/` → PNG bruts (`BackgroundAsset`) ; → sidecar d'importation par image (`BackgroundAsset` : tileset + sous-palettes, PNG jamais modifié). 
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
 - `build/grit_out/` et `build/src/` → effacés et regénérés à chaque build ; `build/obj/` est conservé pour la compilation incrémentale
-- `project.json` → config racine uniquement (nom, scène de démarrage, auteur, version) ; `start_scene` (point de départ du **jeu**, éditable dans le ProjectInspector) et `last_scene` (dernière scène ouverte dans l'**éditeur**, restaurée à l'ouverture) sont deux champs distincts — ouvrir une scène ne redéfinit jamais le point de départ ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
+- `<Nom>.gba-project` → manifeste racine (v0.10, remplace `project.json`) : c'est LUI qu'on double-clique, associé à l'éditeur sur les deux OS, et son nom de fichier EST le nom du projet (aucune clé `name` dans le JSON). Config racine uniquement (scène de démarrage, auteur, version) ; un `project.json` d'avant v0.10 se relit une fois et se réécrit dans la nouvelle forme à la première sauvegarde ; `start_scene` (point de départ du **jeu**, éditable dans le ProjectInspector) et `last_scene` (dernière scène ouverte dans l'**éditeur**, restaurée à l'ouverture) sont deux champs distincts — ouvrir une scène ne redéfinit jamais le point de départ ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
 - Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `BackgroundLayer.backgroundasset_name`, palette active par nom de `PaletteBank`) — jamais par chemin absolu
 - Un argument de script qui cite un élément du projet est déclaré par le `domain` de son `Param` dans `scripting/api.py` (`DOMAIN_SCENE`, `DOMAIN_SFX`, `DOMAIN_GLOBAL`…). Cette table unique sert au checker (valider), au codegen (résoudre en index physique) et à `scripting/refactor.py` (suivre les renommages) : déclarer le domaine d'un nouvel argument suffit à alimenter les trois. Un renommage éditeur (`Project.rename_*`) réécrit les références Lua correspondantes en repérage **structurel** — jamais textuel, donc ni les commentaires ni les strings sans rapport ne bougent
 - Les scripts Lua sont **transpilés vers C** au build, pas interprétés à l'exécution
@@ -1165,8 +1165,8 @@ tip(clé, layout)               3  encadré à ampoule, coupé par Settings ▸ 
 
 **L'interrupteur des astuces est un réglage d'APPLICATION**
 (`core/interface_preferences.py`, à côté de `toolchain`/`external_tools`/`keybindings`), pas
-un champ de `ProjectSettings`. Deux raisons, la seconde décisive : `project.json` est
-versionné, donc couper les astuces les couperait pour toute l'équipe ; et un réglage de
+un champ de `ProjectSettings`. Deux raisons, la seconde décisive : le manifeste
+`<Nom>.gba-project` est versionné, donc couper les astuces les couperait pour toute l'équipe ; et un réglage de
 projet passe par `SetFieldCmd`, donc annuler une édition de scène rebasculerait une
 préférence de machine.
 

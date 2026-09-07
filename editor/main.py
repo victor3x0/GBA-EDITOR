@@ -15,12 +15,13 @@ _EDITOR_DIR = str(Path(__file__).resolve().parent)
 if _EDITOR_DIR not in sys.path:
     sys.path.insert(0, _EDITOR_DIR)
 
-from PyQt6.QtWidgets import QApplication, QDialog
+from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
 from ui.common.theme import GLOBAL_QSS, C, install_app_fonts
 from ui.common import icons
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
+from core.project_paths import PROJECT_EXT, find_manifest, ProjectManifestError
 
 
 def dark_palette() -> QPalette:
@@ -52,13 +53,24 @@ if __name__ == "__main__":
     from plugins import load_all_plugins
     loaded, plugin_errors = load_all_plugins()
 
-    # Argument optionnel : --project <chemin>
+    # Projet fourni au lancement, deux formes :
+    #   --project <dossier>          (le picker, les récents)
+    #   <chemin>/<Nom>.gba-project   (double-clic : l'OS passe le fichier associé)
     project_path = None
     if "--project" in sys.argv:
         idx = sys.argv.index("--project")
         if idx + 1 < len(sys.argv):
-            from pathlib import Path
             project_path = Path(sys.argv[idx + 1])
+    else:
+        for arg in sys.argv[1:]:
+            if arg.endswith(PROJECT_EXT):
+                project_path = Path(arg)
+                break
+
+    # Le manifeste vit DANS le dossier projet : un .gba-project double-cliqué se
+    # ramène à son dossier parent, la racine que MainWindow/Project attendent.
+    if project_path is not None and project_path.is_file():
+        project_path = project_path.parent
 
     app = QApplication(sys.argv)
     app.setApplicationName("GBA Editor")
@@ -69,6 +81,16 @@ if __name__ == "__main__":
     # rendre maintenant (la QApplication existe) avant d'appliquer la feuille.
     icons.ensure_qss_assets()
     app.setStyleSheet(GLOBAL_QSS)
+
+    # Refus explicite si le dossier porte plusieurs manifestes (ROADMAP v0.10) :
+    # on le dit et on retombe sur l'accueil, plutôt que d'en choisir un au hasard.
+    # Après la QApplication : une QMessageBox sans elle planterait.
+    if project_path is not None:
+        try:
+            find_manifest(project_path)
+        except ProjectManifestError as exc:
+            QMessageBox.critical(None, "Open project", str(exc))
+            project_path = None
 
     # Si aucun projet fourni en argument, afficher l'écran d'accueil
     if project_path is None:
@@ -100,7 +122,6 @@ if __name__ == "__main__":
     problems = ([f"{name} : {exc}" for name, exc in plugin_errors]
                 + list(win.screen_errors))
     if problems:
-        from PyQt6.QtWidgets import QMessageBox
         box = QMessageBox(win)
         box.setWindowTitle("Extension Errors")
         box.setIcon(QMessageBox.Icon.Warning)

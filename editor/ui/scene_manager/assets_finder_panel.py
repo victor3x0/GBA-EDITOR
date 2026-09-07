@@ -10,7 +10,6 @@ Le contenu de la scène active — acteurs et mise en page UI — vit dans
 `scene_tree_panel.py`, au-dessus dans la même colonne.
 """
 
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -137,9 +136,11 @@ class AssetsFinderPanel(QWidget):
         sp.write_text(generate_script_template(ScriptTemplateContext(kind=kind, name=name)),
                       encoding="utf-8")
         self.refresh()
+        # Ouvre le script dans le Script Editor interne (window.open_script), sur
+        # les trois OS. Un os.startfile Windows-only l'ouvrait EN PLUS dans
+        # l'éditeur externe du système — redondant avec l'éditeur interne et
+        # incohérent hors Windows ; retiré.
         self.script_opened.emit(str(sp))
-        if os.name == "nt":
-            os.startfile(str(sp))
 
     # ── Renommage inline d'un asset fraîchement créé (pas de pop-up) ──
 

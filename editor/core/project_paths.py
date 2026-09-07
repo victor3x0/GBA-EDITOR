@@ -4,7 +4,10 @@ Toutes les propriétés dérivent de `self.root` et rien d'autre : ce sont des
 chemins CANONIQUES, la seule réponse à « où est-ce rangé ». Il n'y en a jamais
 deux pour la même chose : les anciens emplacements ne sont plus lus nulle part
 (cf. `core/project.py`, « Aucune migration de format »), donc ils ne se nomment
-plus ici.
+plus ici. **Une exception, le manifeste** : depuis v0.10 il s'appelle
+`<Nom>.gba-project` (cf. `find_manifest`), et l'ancien `project.json` se lit
+encore une fois — le pont assumé le temps que les projets d'avant se réécrivent
+à leur première sauvegarde.
 
 Une TRANCHE de la classe `Project`, pas un module autonome : les méthodes
 ci-dessous s'appellent `self.…` entre elles et avec le reste de `Project`. La
@@ -16,7 +19,48 @@ le moindre saut d'appel : un mixin est résolu à la construction de la classe,
 puisque `project.py` l'importe pour composer la classe.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+
+
+# Le manifeste porte le nom du projet : <Nom>.gba-project. Son extension est ce
+# que Windows et Linux associent à l'éditeur — un point d'entrée sans OS, à la
+# place du .bat qui ne valait que sous Windows (cf. ROADMAP v0.10).
+PROJECT_EXT = ".gba-project"
+
+# Ancien manifeste, d'avant v0.10. Encore lu une fois par find_manifest quand
+# aucun .gba-project n'existe, puis supprimé à la première sauvegarde
+# (Project.save_settings) : le projet se réécrit dans la nouvelle forme sans
+# convertisseur à lancer.
+LEGACY_MANIFEST_NAME = "project.json"
+
+
+class ProjectManifestError(Exception):
+    """Un dossier porte plusieurs `.gba-project`. L'éditeur refuse de choisir un
+    manifeste sur deux — c'est une copie manuelle, un cas anormal qu'on signale
+    au lieu de deviner (cf. ROADMAP v0.10, « refus explicite »)."""
+
+
+def find_manifest(root: Path) -> Path | None:
+    """Le manifeste d'un dossier projet, ou None si le dossier n'en est pas un.
+
+    - Exactement un `*.gba-project` → ce fichier (le nom du projet est son stem).
+    - Aucun, mais un `project.json` (forme d'avant v0.10) → le legacy, que la
+      première sauvegarde réécrira.
+    - Aucun des deux → None : ce dossier n'est pas un projet.
+    - Plusieurs `*.gba-project` → `ProjectManifestError` : on ne devine pas.
+    """
+    manifests = sorted(root.glob(f"*{PROJECT_EXT}"))
+    if len(manifests) > 1:
+        names = ", ".join(m.name for m in manifests)
+        raise ProjectManifestError(
+            f"« {root.name} » contient {len(manifests)} manifestes "
+            f"({names}). Gardez-en un seul.")
+    if manifests:
+        return manifests[0]
+    legacy = root / LEGACY_MANIFEST_NAME
+    return legacy if legacy.exists() else None
 
 
 class ProjectPathsMixin:
@@ -181,4 +225,15 @@ class ProjectPathsMixin:
 
     @property
     def project_file(self) -> Path:
-        return self.root / "project.json"
+        """Manifeste `<Nom>.gba-project` — la cible d'ÉCRITURE, reconstruite à
+        partir du nom. En lecture c'est `find_manifest()` qui le DÉCOUVRE, et le
+        nom vient alors du fichier ; ici on fait le chemin inverse, le nom étant
+        fixé à la création et jamais éditable ensuite."""
+        return self.root / f"{self.settings.name}{PROJECT_EXT}"
+
+    @property
+    def legacy_project_file(self) -> Path:
+        """Ancien manifeste `project.json`. Supprimé à la première sauvegarde
+        d'un projet d'avant v0.10, une fois le `.gba-project` écrit à sa place
+        (cf. `Project.save_settings`)."""
+        return self.root / LEGACY_MANIFEST_NAME

@@ -109,6 +109,20 @@ Section "GBA Editor" SecApp
   IntFmt $0 "0x%08X" $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
 
+  ; --- Association du fichier de projet (.gba-project) ---
+  ; Par utilisateur : HKCU\Software\Classes est la vue HKCR propre a
+  ; l'utilisateur, coherente avec une installation sans elevation. Un ProgID
+  ; dedie porte l'icone et la commande d'ouverture ; l'exe ouvre le fichier
+  ; passe en "%1" (main.py accepte ce chemin en argument positionnel).
+  WriteRegStr HKCU "Software\Classes\.gba-project" "" "${APP_KEY}.Project"
+  WriteRegStr HKCU "Software\Classes\${APP_KEY}.Project" "" "GBA Editor Project"
+  WriteRegStr HKCU "Software\Classes\${APP_KEY}.Project\DefaultIcon" "" "$INSTDIR\${APP_EXE},0"
+  WriteRegStr HKCU "Software\Classes\${APP_KEY}.Project\shell\open\command" "" '"$INSTDIR\${APP_EXE}" "%1"'
+
+  ; Prevenir le shell que les associations ont change (icone et appli a jour
+  ; sans deconnexion). SHCNE_ASSOCCHANGED=0x08000000, SHCNF_IDLIST=0.
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut  "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}"
   CreateShortcut  "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk"   "$INSTDIR\Uninstall.exe"
@@ -146,6 +160,11 @@ Section "Uninstall"
 
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\${APP_KEY}"
+
+  ; Defaire l'association .gba-project posee a l'installation.
+  DeleteRegKey HKCU "Software\Classes\${APP_KEY}.Project"
+  DeleteRegKey HKCU "Software\Classes\.gba-project"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 
   ; Volontairement conserves : les projets de l'utilisateur
   ; (%USERPROFILE%\GBAProjects) et sa configuration toolchain
