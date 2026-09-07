@@ -836,7 +836,7 @@ QTabBar::tab:hover:!selected {{
     # famille d'asset (AssetHeaderBar), pas de couleur libre par panneau.
     def title_section(self, color: str | None = None) -> str:
         return (f"color: {color or C.ACCENT}; background: transparent; border: none;"
-                f"font-family: {T.UI_STACK}; font-size: {T.SM}px;"
+                f"font-family: {T.UI_STACK}; font-size: {T.LG}px;"
                 f"font-weight: 600; letter-spacing: 1px;")
 
     # Niveau 3 — label de champ d'une ligne de formulaire (« Frame », « Speed »)

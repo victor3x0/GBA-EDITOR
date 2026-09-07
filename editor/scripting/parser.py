@@ -290,11 +290,8 @@ class _Converter:
                 fn = self._func(stmt)
                 functions.append(fn)
             elif t == "LocalAssign":
-                for tgt, val in zip(stmt.targets, stmt.values or [None]*len(stmt.targets)):
-                    locals_.append(LuaLocal(
-                        name  = tgt.id,
-                        value = self._expr(val) if val is not None else None,
-                    ))
+                for name, val in self._local_pairs(stmt.targets, stmt.values):
+                    locals_.append(LuaLocal(name=name, value=val))
             elif t == "Assign":
                 # exports = { key = { default=N, ... }, ... }  → variables C statiques
                 targets = stmt.targets if hasattr(stmt, "targets") else []
@@ -354,9 +351,25 @@ class _Converter:
         stmts = []
         for s in (block.body if block else []):
             st = self._stmt(s, local_scope)
-            if st is not None:
-                stmts.append(st)
+            if st is None:
+                continue
+            # Un `local a, b, c` s'étend en PLUSIEURS statements : `_stmt` rend
+            # alors une liste, aplatie ici. Tout l'aval (checker, codegen) ne voit
+            # que des `local` mono-nom, comme avant ce correctif.
+            stmts.extend(st) if isinstance(st, list) else stmts.append(st)
         return stmts
+
+    def _local_pairs(self, targets, values) -> list:
+        """(nom, valeur|None) pour chaque cible d'un `local a, b, c = …`, la
+        valeur appariée PAR POSITION, None au-delà de la liste fournie : `local
+        a, b, c = 1` donne (a, 1), (b, None), (c, None). Un seul appariement pour
+        le top-level et pour les corps de handler — c'est ce qui manquait en
+        corps, où seule la première cible était lue."""
+        vals = values or []
+        return [
+            (t.id, self._expr(vals[i]) if i < len(vals) and vals[i] is not None else None)
+            for i, t in enumerate(targets)
+        ]
 
     def _stmt(self, node, local_scope: set[str]):
         t = type(node).__name__
@@ -366,10 +379,11 @@ class _Converter:
                 val = self._expr(node.values[0])
                 return StmtAssign(target=tgt, value=val)
             case "LocalAssign":
-                name = node.targets[0].id
-                val  = self._expr(node.values[0]) if node.values else None
-                local_scope.add(name)
-                return StmtLocalAssign(name=name, value=val)
+                out = []
+                for name, val in self._local_pairs(node.targets, node.values):
+                    local_scope.add(name)
+                    out.append(StmtLocalAssign(name=name, value=val))
+                return out
             case "Call":
                 return StmtCall(call=self._expr_call(node))
             case "Invoke":
@@ -610,6 +624,42 @@ def assigned_names(script: LuaScript) -> set[str]:
                 walk(s.body)
 
     for fn in script.functions:
+        walk(fn.body)
+    return names
+
+
+def local_names(script: LuaScript) -> set[str]:
+    """Tout ce qu'un identifiant NU a le droit de désigner dans ce script : les
+    `local` (où qu'ils soient déclarés), la table de module d'un behavior, les
+    paramètres de handler et les variables de boucle.
+
+    Parcours À PLAT, sans portée lexicale : un `local` déclaré dans un `if`
+    compte pour tout le script. C'est la lecture que le checker fait pour REFUSER
+    un nom nu (une liste trop large ne fait que taire un refus, jamais en
+    inventer un) ; elle vit ici pour que l'autocomplétion PROPOSE ces mêmes noms
+    à partir de la même source, sans la redécrire."""
+    names: set[str] = set()
+
+    def walk(stmts):
+        for s in stmts:
+            if isinstance(s, StmtLocalAssign):
+                names.add(s.name)
+            elif isinstance(s, StmtIf):
+                walk(s.then)
+                for _cond, body in s.elseifs:
+                    walk(body)
+                walk(s.else_)
+            elif isinstance(s, StmtWhile):
+                walk(s.body)
+            elif isinstance(s, StmtForNum):
+                names.add(s.var)
+                walk(s.body)
+
+    for loc in script.locals:
+        names.add(loc.name)
+    names |= set(script.module_names or [])
+    for fn in script.functions:
+        names |= set(fn.params or [])
         walk(fn.body)
     return names
 

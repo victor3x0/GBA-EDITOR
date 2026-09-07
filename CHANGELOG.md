@@ -140,3 +140,15 @@ plusieurs — un HUD fixe en fond, une bulle qui suit un acteur en sprite — ch
 inspecteur dédié affiche le réglage et sa raison quand le matériel l'impose.
 
 → [détail](changelog-archive/v0.25.md)
+
+## v0.27 — L'éditeur souffle le mot juste
+
+*Livrée le 2026-09-07.* Autocomplétion du Script Editor : en tapant `self:`, `sfx.` ou
+`camera.`, une liste des suites s'ouvre sous le curseur, avec la même infobulle que la sidebar.
+Elle **dérive du catalogue** — membres et modules, handlers, enum matériels, `local`/paramètres
+en portée, et noms du projet dans les arguments chaîne (`sfx.play("` → les effets) — donc elle
+propose exactement ce que le checker accepte, jamais une fonction morte. `Tab` accepte, `Entrée`
+insère une ligne, `Échap` ferme, `↑`/`↓` naviguent, `Ctrl+Espace` ouvre à la demande. En chemin,
+un correctif du moteur : un `local a, b, c` en corps de handler déclare enfin ses trois noms.
+
+→ [détail](changelog-archive/v0.27.md)

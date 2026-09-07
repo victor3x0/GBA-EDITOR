@@ -26,7 +26,7 @@ from .parser import (
     StmtUnsupported, ExprUnsupported,
     ExprInvoke, ExprCall, ExprIndex, ExprIndexAt, ExprTable, ExprName, ExprString,
     ExprNumber, ExprUnop, ExprBool, ExprBinop, ExprNil,
-    ARRAY_CTOR, array_dims, DATA_NS, REQUIRE_FN, require_target,
+    ARRAY_CTOR, array_dims, DATA_NS, REQUIRE_FN, require_target, local_names,
     assigned_names, sequence_name, wait_call, WAIT_FN, WAIT_UNTIL_FN, WAIT_FNS,
     SEQUENCE_PREFIX,
 )
@@ -289,36 +289,15 @@ class Checker:
             walk(fn.body)
 
     def _collect_local_names(self, script: LuaScript):
-        """Les noms qu'un nom NU a le droit de porter — quatrième parcours à
-        plat, même forme et même approximation que ses trois jumeaux : pas de
-        portée, un `local` déclaré dans un `if` compte pour tout le script.
+        """Les noms qu'un nom NU a le droit de porter — locals (où qu'ils soient
+        déclarés), table de module, paramètres de handler, variables de boucle.
 
-        Assumé, et dans le bon sens : cette liste sert à REFUSER, donc trop
-        large ne produit qu'un silence là où on aurait pu parler, tandis que
-        trop étroite refuserait du code juste. Les paramètres et les variables
-        de boucle en font partie — un behavior reçoit `actor` en paramètre, et
-        `for i = 1, 3` déclare `i`."""
-        def walk(stmts):
-            for s in stmts:
-                if isinstance(s, StmtLocalAssign):
-                    self._local_names.add(s.name)
-                elif isinstance(s, StmtIf):
-                    walk(s.then)
-                    for _, b in s.elseifs:
-                        walk(b)
-                    walk(s.else_)
-                elif isinstance(s, StmtWhile):
-                    walk(s.body)
-                elif isinstance(s, StmtForNum):
-                    self._local_names.add(s.var)
-                    walk(s.body)
-
-        for loc in script.locals:
-            self._local_names.add(loc.name)
-        self._local_names |= set(script.module_names or [])
-        for fn in script.functions:
-            self._local_names |= set(fn.params or [])
-            walk(fn.body)
+        La lecture vit dans `parser.local_names` : à plat, sans portée, cette
+        liste sert à REFUSER, donc trop large ne fait que taire un refus, jamais
+        en inventer un. L'autocomplétion la PROPOSE depuis la même source (ROADMAP
+        v0.27, phase 2) — d'où l'extraction, pour qu'un seul parcours nourrisse
+        les deux."""
+        self._local_names |= local_names(script)
 
     # ── Espaces de noms appelables ────────────────────────────────
 

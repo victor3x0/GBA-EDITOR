@@ -32,7 +32,20 @@ def atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
     répété, molette continue sur un spinbox). Non rattrapée, l'exception
     remonte hors d'un slot Qt et PyQt6 abandonne le process → crash observé.
     On réessaie donc le rename quelques fois (le verrou transitoire se libère
-    en quelques dizaines de ms) avant d'abandonner."""
+    en quelques dizaines de ms) avant d'abandonner.
+
+    Écriture SAUTÉE si le fichier contient déjà exactement `text` — même règle et
+    même raison que `build_output.write` côté build. `project.save()` réécrit les
+    quatorze collections à chaque Ctrl+S ; sur un projet réel, la quasi-totalité
+    des assets n'a pas changé, et écrire à l'identique coûtait pour rien : un
+    fichier temporaire et un rename par asset, chacun ré-armant le
+    QFileSystemWatcher (donc rappelant la fenêtre de retry ci-dessus). Comparer
+    au disque est une lecture, sans rename ni contention."""
+    try:
+        if path.read_text(encoding=encoding) == text:
+            return
+    except (OSError, UnicodeDecodeError):
+        pass          # absent, illisible, ou d'un autre encodage : on écrit
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(text, encoding=encoding)

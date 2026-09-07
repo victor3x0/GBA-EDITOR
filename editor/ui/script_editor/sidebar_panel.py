@@ -6,8 +6,10 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from scripting.api import (KNOWN_EVENTS, KNOWN_SCENE_EVENTS, KNOWN_EVENTS_BY_KIND,
-                           EVENT_REGISTRY as _EVENT_META)
+                           EVENT_REGISTRY as _EVENT_META,
+                           DOMAIN_SCENE, DOMAIN_ACTOR, DOMAIN_PREFAB, DOMAIN_SFX, DOMAIN_FONT)
 from scripting import api_snippets
+from scripting.project_names import names_by_domain
 from core.models.text import SEP
 from core.text_markup import display_text
 from ui.common.theme import C, T
@@ -110,6 +112,13 @@ class SidebarPanel(QWidget):
         if not project:
             return
 
+        # Les noms par domaine viennent de la source unique (`names_by_domain`),
+        # celle que lit aussi l'autocomplétion — plus de liste dressée ici à côté
+        # d'elle (ROADMAP v0.27, phase 3). Les sections riches (textes, zones)
+        # gardent leur parcours propre : elles ont besoin des OBJETS, pas des
+        # seuls noms.
+        nbd = names_by_domain(project)
+
         def _ref_btn(label: str, snippet: str, tip: str) -> _EntryButton:
             btn = _EntryButton(f"  {label}", _BTN_REF, tip)
             btn.clicked.connect(lambda _, s=snippet: self.snippet_requested.emit(s))
@@ -135,25 +144,22 @@ class SidebarPanel(QWidget):
             sub.add_widget(_ref_btn(label, sn, _api_tip(api_name, sn, extra)))
 
         # Scènes
-        scenes = list(project.scenes)
-        if scenes:
+        if nbd.get(DOMAIN_SCENE):
             sub = self._sec_refs.sub_section("Scenes")
-            for s in scenes:
-                _add(sub, s.name, "scene.switch", scene=s.name)
+            for name in nbd[DOMAIN_SCENE]:
+                _add(sub, name, "scene.switch", scene=name)
 
-        # Actors
-        actors = list(project.active_scene.actors) if project.active_scene else []
-        if actors:
+        # Actors — ceux de la scène active (cf. names_by_domain)
+        if nbd.get(DOMAIN_ACTOR):
             sub = self._sec_refs.sub_section("Actors")
-            for a in actors:
-                _add(sub, a.name, "get_actor", "Active scene.", actor=a.name)
+            for name in nbd[DOMAIN_ACTOR]:
+                _add(sub, name, "get_actor", "Active scene.", actor=name)
 
         # Prefabs
-        prefabs = list(project.prefabs)
-        if prefabs:
+        if nbd.get(DOMAIN_PREFAB):
             sub = self._sec_refs.sub_section("Prefabs")
-            for p in prefabs:
-                _add(sub, p.name, "actor.spawn", prefab=p.name)
+            for name in nbd[DOMAIN_PREFAB]:
+                _add(sub, name, "actor.spawn", prefab=name)
 
         # Sprites
         sprites = list(project.sprites)
@@ -218,18 +224,16 @@ class SidebarPanel(QWidget):
                      + (f" — preview “{escape(key)}”" if key else ""), **doms)
 
         # ── Polices ────────────────────────────────────────────────
-        fonts = list(getattr(project, "fonts", []))
-        if fonts:
+        if nbd.get(DOMAIN_FONT):
             sub = self._sec_refs.sub_section("Fonts")
-            for f in fonts:
-                _add(sub, f.name, "text.set_font", font=f.name)
+            for name in nbd[DOMAIN_FONT]:
+                _add(sub, name, "text.set_font", font=name)
 
         # SFX
-        sfx_list = list(project.sfx) if hasattr(project, "sfx") else []
-        if sfx_list:
+        if nbd.get(DOMAIN_SFX):
             sub = self._sec_refs.sub_section("SFX")
-            for sfx in sfx_list:
-                _add(sub, sfx.name, "sfx.play", sfx=sfx.name)
+            for name in nbd[DOMAIN_SFX]:
+                _add(sub, name, "sfx.play", sfx=name)
 
         # Scripts behaviors
         behaviors_dir = project.scripts_behaviors_dir

@@ -67,6 +67,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
 | v0.26 | Les polices : de la source au pixel | **Conception figée, non commencée** — voir plus bas |
+| v0.27 | L'éditeur souffle le mot juste (autocomplétion) | **Livrée** — [archive](changelog-archive/v0.27.md) |
 
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
 de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
@@ -91,9 +92,18 @@ les chantiers seront ouverts — suit désormais l'ordre de traitement.
 
 ## Correctifs (trouvés en marchant, hors chantier)
 
-Dix défauts réels, trouvés en construisant et en jouant les projets démo pendant le chantier
-v0.9, sans rapport avec la traduction elle-même — consignés ici pour ne pas rester invisibles
-faute d'un jalon à qui les rattacher.
+Des défauts réels, trouvés en marchant — la plupart en construisant et en jouant les projets
+démo pendant le chantier v0.9, quelques-uns depuis — sans rapport avec un jalon en particulier,
+consignés ici pour ne pas rester invisibles faute d'un jalon à qui les rattacher.
+
+- **`project.save()` réécrivait tout à chaque `Ctrl+S`** (`core/resource_store.py`), trouvé le
+  2026-09-07 en traitant une lenteur de sauvegarde signalée sur le Script Editor. Enregistrer le
+  projet sérialise et réécrit les quatorze collections ; or éditer un script ne change AUCUN
+  asset, et `atomic_write` écrivait quand même chaque fichier (temporaire + rename, ré-armant le
+  QFileSystemWatcher à chaque fois). Il **saute** désormais l'écriture quand le disque contient
+  déjà le même texte — le patron de `build_output.write` côté build, porté au chemin de
+  sauvegarde. Sur 200 assets intacts : ~950 ms → ~100 ms. Bénéfice au passage : un fichier non
+  réécrit garde son mtime, donc pas de faux rebuild incrémental.
 
 - **`_hw_layer_z` — l'ordre de composition du canvas** (`ui/scene_manager/scene_canvas.py`).
   Un acteur (OBJ) portait un zValue fixe (10) et une zone d'interface un zValue fixe (120) :

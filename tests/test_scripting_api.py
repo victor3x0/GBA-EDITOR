@@ -606,3 +606,33 @@ def test_un_effet_pose_seul_laisse_son_canal_volable():
     assert errs == []
     assert "sfx_play(SFX_PAS, 255, 0);" in code
     assert "mm_sfxhand tenu = sfx_play(SFX_PAS, 255, 1);" in code
+
+
+# ── Un `local a, b, c` déclare bien les TROIS, dans un corps de handler ──
+# Le défaut, silencieux et daté : en corps de fonction, seul le premier nom
+# était retenu (`StmtLocalAssign` ne lisait que `targets[0]`). `heightspeed` et
+# `runspeed` disparaissaient du C, et les référencer partait en identifiant C
+# inconnu — au `make`, jamais sur sa cause. Le top-level, lui, les gardait déjà :
+# c'est cette asymétrie que le correctif « multi-local » supprime.
+
+MULTI_LOCAL = '''function on_update()
+    local speed, heightspeed, runspeed = 1, 2, 3
+    self:move(vec2(speed, 0), runspeed + heightspeed)
+end
+'''
+
+
+def test_multi_local_en_corps_declare_tous_les_noms():
+    errs, code = _lua(MULTI_LOCAL)
+    assert [e.message for e in errs if e.level in ("error", "warning")] == []
+    assert "int speed = 1;" in code
+    assert "int heightspeed = 2;" in code
+    assert "int runspeed = 3;" in code
+
+
+def test_multi_local_valeurs_manquantes_valent_zero():
+    # `local a, b, c = 1` : b et c sont nil, donc 0 dans le C entier — jamais
+    # laissés non initialisés.
+    _errs, code = _lua("function on_start()\n    local a, b, c = 1\nend\n")
+    assert "int a = 1;" in code
+    assert "int b = 0;" in code and "int c = 0;" in code

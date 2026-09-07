@@ -1,25 +1,21 @@
 """ui/script_editor/lua_editor.py — coloration syntaxique Lua + widget d'édition."""
 from PyQt6.QtWidgets import QPlainTextEdit
 from PyQt6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextCursor
-from PyQt6.QtCore import QRegularExpression
+from PyQt6.QtCore import Qt, QRegularExpression
 
+from scripting import completion
 from ui.common.theme import C, T
+from .completer import ScriptCompleter
 
 class LuaHighlighter(QSyntaxHighlighter):
 
-    _KEYWORDS = (
-        r"\bfunction\b", r"\bend\b", r"\bif\b", r"\bthen\b",
-        r"\belseif\b", r"\belse\b", r"\bwhile\b", r"\bdo\b",
-        r"\bfor\b", r"\breturn\b", r"\blocal\b", r"\band\b",
-        r"\bor\b", r"\bnot\b", r"\btrue\b", r"\bfalse\b",
-        r"\bnil\b", r"\bbreak\b", r"\bin\b", r"\brepeat\b",
-        r"\buntil\b",
-    )
-    _API_MODULES = (
-        r"\bself\b", r"\bsfx\b", r"\bmusic\b",
-        r"\binput\b", r"\bglobal\b", r"\bsend\b", r"\bbroadcast\b",
-        r"\bcamera\b", r"\bdisplay\b", r"\bmath\b",
-    )
+    # Mots-clés et modules ne sont plus tenus à la main : ils DÉRIVENT du même
+    # catalogue que l'autocomplétion (`scripting.completion`). L'ancienne liste
+    # colorait encore `display`/`send`, disparus de l'API, et ignorait la moitié
+    # des modules vivants — la source unique supprime la dérive (cf. ROADMAP
+    # v0.27). `self` s'y ajoute : c'est le récepteur, pas un module du catalogue.
+    _KEYWORDS = completion.KEYWORDS
+    _API_MODULES = ("self", *completion.MODULES)
 
     def __init__(self, doc):
         super().__init__(doc)
@@ -33,12 +29,12 @@ class LuaHighlighter(QSyntaxHighlighter):
             return f
 
         kw_fmt = fmt("#c586c0", bold=True)
-        for p in self._KEYWORDS:
-            self._rules.append((QRegularExpression(p), kw_fmt))
+        for word in self._KEYWORDS:
+            self._rules.append((QRegularExpression(rf"\b{word}\b"), kw_fmt))
 
         api_fmt = fmt("#4ec9b0")
-        for p in self._API_MODULES:
-            self._rules.append((QRegularExpression(p), api_fmt))
+        for word in self._API_MODULES:
+            self._rules.append((QRegularExpression(rf"\b{word}\b"), api_fmt))
 
         self._rules.append((QRegularExpression(r"\b0x[0-9a-fA-F]+\b|\b\d+\.?\d*\b"),
                             fmt("#b5cea8")))
@@ -74,6 +70,63 @@ class LuaEditor(QPlainTextEdit):
         )
         self.setTabStopDistance(32)
         self._hl = LuaHighlighter(self.document())
+        self._completer = ScriptCompleter(self)
+
+    def set_completion_context(self, context: str):
+        """Le type de script (actor/scene/behavior/camera) — ce qui filtre les
+        handlers proposés. Posé par l'écran à l'ouverture d'un fichier."""
+        self._completer.set_context(context)
+
+    def set_completion_project_names(self, names):
+        """{domaine → noms du projet} pour la complétion des arguments chaîne.
+        Posé par l'écran quand le projet est chargé."""
+        self._completer.set_project_names(names)
+
+    def insert_newline_keeping_indent(self):
+        """Retour à la ligne qui CONSERVE l'indentation de la ligne courante —
+        sans ça, `Entrée` ramène le curseur tout à gauche. Reproduit le blanc de
+        tête (espaces/tabulations) de la ligne, rien de plus : garder
+        l'indentation courante, pas en ajouter un niveau après `then`/`do`.
+
+        Le point unique du retour à la ligne : l'éditeur l'appelle quand le popup
+        est fermé, le completer quand il est ouvert sans sélection — pour que les
+        deux indentent pareil."""
+        cur = self.textCursor()
+        line = cur.block().text()
+        indent = line[:len(line) - len(line.lstrip(" \t"))]
+        cur.insertText("\n" + indent)
+        self.setTextCursor(cur)
+        self.ensureCursorVisible()
+
+    # ── Autocomplétion ─────────────────────────────────────────────
+    # Les touches du popup OUVERT (Tab, Entrée, Échap, ↑/↓) sont tenues par le
+    # filtre du completer sur sa liste — le popup capte le clavier quand il est
+    # visible, donc elles n'arrivent pas ici. Cette méthode ne gère que
+    # l'ouverture à la demande et le re-déclenchement au fil de la frappe.
+    def keyPressEvent(self, event):
+        comp = self._completer
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier) \
+                and event.key() == Qt.Key.Key_Space:
+            comp.maybe_complete(force=True)      # Ctrl+Espace
+            return
+
+        # `Entrée` (popup fermé — ouvert, c'est le filtre du completer qui l'a) :
+        # retour à la ligne en conservant l'indentation courante.
+        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return) \
+                and not (event.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                              | Qt.KeyboardModifier.AltModifier)):
+            self.insert_newline_keeping_indent()
+            comp.hide()
+            return
+
+        super().keyPressEvent(event)
+        # Un déplacement pur ferme le popup et ne le relance pas.
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right,
+                           Qt.Key.Key_Home, Qt.Key.Key_End,
+                           Qt.Key.Key_Up, Qt.Key.Key_Down):
+            comp.hide()
+            return
+        comp.maybe_complete()
 
     def jump_to_function(self, func_name: str):
         doc = self.document()

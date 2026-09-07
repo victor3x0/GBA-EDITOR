@@ -212,6 +212,7 @@ class ScriptEditorScreen(QWidget):
 
         ctx = self._detect_context(path)
         self._sidebar.set_context(ctx)
+        self._editor.set_completion_context(ctx)
         self._update_context_badge(ctx)
         self._file_tree.highlight_file(path)
 
@@ -230,6 +231,8 @@ class ScriptEditorScreen(QWidget):
         (cf. ui/screens.py), que les six autres écrans écrivaient déjà ainsi."""
         self._sidebar.set_project(project)
         self._file_tree.set_project(project)
+        from scripting.project_names import names_by_domain
+        self._editor.set_completion_project_names(names_by_domain(project) if project else None)
         if project:
             scripts_dir = getattr(project, "scripts_dir", None) or \
                           project.root / "project" / "scripts"
