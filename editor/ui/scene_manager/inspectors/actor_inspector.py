@@ -22,14 +22,15 @@ from ui.common.theme import C, T, QSS
 from ui.common.widgets import NotesEdit, CollapsibleCard
 from ui.common.field_binder import FieldBinder
 from ui.common.notice import notice
+from ui.common.labels import label
 from ui.common.direction_grid import DirectionPicker
 from ui.common import icons
 
-COMPONENT_LABELS = {
-    "sprite":        "Sprite",
-    "collision_box": "Collision",
-    "sound_fx":      "SoundFX",
-    "script":        "Script",
+COMPONENT_LABEL_KEYS = {
+    "sprite":        "actorinsp.comp.sprite",
+    "collision_box": "actorinsp.comp.collision",
+    "sound_fx":      "actorinsp.comp.soundfx",
+    "script":        "actorinsp.comp.script",
 }
 
 # ──────────────────────────────────────────────────────────────────
@@ -204,7 +205,7 @@ class ActorInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Select an actor\nfrom the left panel")
+        self._empty = QLabel(label("actorinsp.empty"))
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -217,7 +218,7 @@ class ActorInspector(QWidget):
         cl.setSpacing(5)
 
         # ── NOTE card — partagée Actor/Prefab ────────────────────
-        notes_card = CollapsibleCard("Note")
+        notes_card = CollapsibleCard(label("actorinsp.card.note"))
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set("notes", text))
         notes_card.body_layout.addWidget(self._notes_edit)
@@ -240,10 +241,7 @@ class ActorInspector(QWidget):
         )
         self._sprite_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._sprite_preview.setToolTip(
-            f"<b style='color:{icons.COLOR_SPRITE}'>Starting sprite</b><br><br>"
-            "Click to assign a sprite from the project.<br>"
-            "First frame of the initial AnimState."
-        )
+            label("actorinsp.sprite_preview_tip", color=icons.COLOR_SPRITE))
         self._sprite_preview.setCursor(Qt.CursorShape.PointingHandCursor)
         self._sprite_preview.mousePressEvent = lambda e: self._pick_sprite()
         hl.addWidget(self._sprite_preview)
@@ -251,12 +249,10 @@ class ActorInspector(QWidget):
         name_col = QVBoxLayout()
         name_col.setSpacing(3)
 
-        self._tag_lbl = QLabel("Index: —")
+        self._tag_lbl = QLabel(label("actorinsp.index_none"))
         self._tag_lbl.setFont(QFont(T.UI, T.SM))
         self._tag_lbl.setStyleSheet(f"color:{icons.COLOR_ACTOR};")
-        self._tag_lbl.setToolTip(
-            "Position de l'actor dans la scène (ordre de traitement et de rendu)."
-        )
+        self._tag_lbl.setToolTip(label("actorinsp.index_tip"))
         name_col.addWidget(self._tag_lbl)
         hl.addLayout(name_col, 1)
         cl.addWidget(header_frame)
@@ -275,7 +271,7 @@ class ActorInspector(QWidget):
         self._prefab_badge_lbl.setFont(QFont(T.UI, T.SM))
         self._prefab_badge_lbl.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
         pb_layout.addWidget(self._prefab_badge_lbl, 1)
-        btn_open_prefab = QPushButton("Open prefab")
+        btn_open_prefab = QPushButton(label("actorinsp.open_prefab"))
         btn_open_prefab.setFont(QFont(T.UI, T.XS))
         btn_open_prefab.setFixedHeight(18)
         btn_open_prefab.setStyleSheet(
@@ -295,30 +291,24 @@ class ActorInspector(QWidget):
         # (structure des components + fichier .lua identiques au prefab, cf.
         # core/models/scene.actor_prefab_linked) : Relink adopte le prefab,
         # Expose publie CETTE instance comme nouvelle définition du prefab.
-        self._btn_relink = QPushButton("Relink")
+        self._btn_relink = QPushButton(label("actorinsp.relink"))
         self._btn_relink.setFont(QFont(T.UI, T.XS))
         self._btn_relink.setFixedHeight(18)
-        self._btn_relink.setToolTip(
-            "Reload this instance's components/palette/notes from the\n"
-            "prefab's current definition — discards local structural changes."
-        )
+        self._btn_relink.setToolTip(label("actorinsp.relink_tip"))
         self._btn_relink.setStyleSheet(_pb_btn_style)
         self._btn_relink.clicked.connect(self._relink_to_prefab)
         pb_layout.addWidget(self._btn_relink)
-        self._btn_expose = QPushButton("Expose")
+        self._btn_expose = QPushButton(label("actorinsp.expose"))
         self._btn_expose.setFont(QFont(T.UI, T.XS))
         self._btn_expose.setFixedHeight(18)
-        self._btn_expose.setToolTip(
-            "Push this instance's components/palette/notes up to the prefab —\n"
-            "every OTHER instance of it is updated too."
-        )
+        self._btn_expose.setToolTip(label("actorinsp.expose_tip"))
         self._btn_expose.setStyleSheet(_pb_btn_style)
         self._btn_expose.clicked.connect(self._expose_to_prefab)
         pb_layout.addWidget(self._btn_expose)
         btn_unlink = QPushButton("×")
         btn_unlink.setFont(QFont(T.UI, T.MD))
         btn_unlink.setFixedSize(18, 18)
-        btn_unlink.setToolTip("Break the link with the prefab\n(the actor becomes independent)")
+        btn_unlink.setToolTip(label("actorinsp.unlink_tip"))
         btn_unlink.setStyleSheet(
             f"QPushButton{{color:{C.TEXT_MUTED};background:transparent;border:none;}}"
             f"QPushButton:hover{{color:{C.ACCENT_RED};}}"
@@ -341,13 +331,10 @@ class ActorInspector(QWidget):
         er_layout = QHBoxLayout(self._expose_row)
         er_layout.setContentsMargins(8, 0, 6, 0)
         er_layout.addStretch(1)
-        btn_expose_new = QPushButton("Expose to prefab")
+        btn_expose_new = QPushButton(label("actorinsp.expose_new"))
         btn_expose_new.setFont(QFont(T.UI, T.XS))
         btn_expose_new.setFixedHeight(18)
-        btn_expose_new.setToolTip(
-            "Create a new prefab from this actor's current components/palette/\n"
-            "notes — this actor becomes its first linked instance."
-        )
+        btn_expose_new.setToolTip(label("actorinsp.expose_new_tip"))
         btn_expose_new.setStyleSheet(
             f"QPushButton{{color:{icons.COLOR_PREFAB};background:transparent;border:1px solid {icons.COLOR_PREFAB};"
             f"border-radius:2px;padding:0 5px;}}"
@@ -358,7 +345,7 @@ class ActorInspector(QWidget):
         self._expose_row.setVisible(False)
         cl.addWidget(self._expose_row)
 
-        self._active = QCheckBox("Active on start")
+        self._active = QCheckBox(label("actorinsp.active"))
         self._active.setFont(QFont(T.UI, T.MD))
         self._active.setStyleSheet(
             f"color:{C.TEXT_NORM}; padding:4px 6px;"
@@ -369,7 +356,7 @@ class ActorInspector(QWidget):
         cl.addWidget(self._active)
 
         # ── TRANSFORM card ───────────────────────────────────────────
-        self._transform_group = CollapsibleCard("Transform")
+        self._transform_group = CollapsibleCard(label("actorinsp.card.transform"))
         tl = self._transform_group.body_layout
 
         from ui.common.widgets import W as _W
@@ -385,12 +372,13 @@ class ActorInspector(QWidget):
         # « Mode window » ici et pas là.
         from PyQt6.QtGui import QFontMetrics
         _lbl_w = max(
-            QFontMetrics(QFont(T.UI, T.SM)).horizontalAdvance(t)
-            for t in ("Position", "Priority", "Mode window")
+            QFontMetrics(QFont(T.UI, T.SM)).horizontalAdvance(label(k))
+            for k in ("actorinsp.tr.position", "actorinsp.tr.priority",
+                      "actorinsp.tr.mode_window")
         ) + 4
 
-        _W.pair("Position", "X", C.AXIS_X, self._tx, "Y", C.AXIS_Y, self._ty, tl,
-                label_width=_lbl_w)
+        _W.pair(label("actorinsp.tr.position"), "X", C.AXIS_X, self._tx,
+                "Y", C.AXIS_Y, self._ty, tl, label_width=_lbl_w)
 
         # ── Rotation / Scale monde ────────────────────────────────
         # Avec Position : c'est le triplet de pose de l'actor, et c'est de
@@ -402,19 +390,19 @@ class ActorInspector(QWidget):
         self._trotation = self._fields.bind("rotation", _W.spinbox(0, min_v=0, max_v=359))
         self._trotation.setSuffix("°")
         self._trotation.setWrapping(True)
-        _W.row("Rotation", self._trotation, tl, label_width=_lbl_w)
+        _W.row(label("actorinsp.tr.rotation"), self._trotation, tl, label_width=_lbl_w)
 
         self._tscale_x = self._fields.bind(
             "scale_x", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
         self._tscale_y = self._fields.bind(
             "scale_y", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
-        _W.pair("Scale", "X", C.AXIS_X, self._tscale_x, "Y", C.AXIS_Y, self._tscale_y, tl,
-                label_width=_lbl_w)
+        _W.pair(label("actorinsp.tr.scale"), "X", C.AXIS_X, self._tscale_x,
+                "Y", C.AXIS_Y, self._tscale_y, tl, label_width=_lbl_w)
 
         # ── Direction initiale : sélecteur 3×3 ───────────────────
         dir_row = QHBoxLayout(); dir_row.setSpacing(8)
         dir_row.setContentsMargins(0, 2, 0, 2)
-        dir_lbl = QLabel("Direction"); dir_lbl.setFont(QFont(T.UI, T.SM))
+        dir_lbl = QLabel(label("actorinsp.tr.direction")); dir_lbl.setFont(QFont(T.UI, T.SM))
         dir_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent; border:none;")
         dir_lbl.setFixedWidth(_lbl_w)
         dir_row.addWidget(dir_lbl)
@@ -429,7 +417,7 @@ class ActorInspector(QWidget):
         # cf. component_editors/sprite.py — palette_picker_slot)
         self._tpriority = self._fields.bind("priority", _W.spinbox(0, min_v=0, max_v=3))
         notice("actor.priority", self._tpriority, tl)
-        _W.row("Priority", self._tpriority, tl, label_width=_lbl_w)
+        _W.row(label("actorinsp.tr.priority"), self._tpriority, tl, label_width=_lbl_w)
 
         # ── Mode window ───────────────────────────────────────────
         # 2 = window OBJ : le sprite devient un pochoir de forme libre.
@@ -441,8 +429,9 @@ class ActorInspector(QWidget):
         # values=[0, 2] : l'index 0 (« Normal ») vaut obj_mode 0, l'index 1
         # (« Masque ») vaut 2 — le mode 1 (semi-transparent) est absent exprès.
         self._tobj_mode = self._fields.bind(
-            "obj_mode", _W.combobox(["Normal", "Masque (window OBJ)"]), values=[0, 2])
-        _W.row("Mode window", self._tobj_mode, tl, label_width=_lbl_w)
+            "obj_mode", _W.combobox([label("actorinsp.objmode.normal"),
+                                     label("actorinsp.objmode.mask")]), values=[0, 2])
+        _W.row(label("actorinsp.tr.mode_window"), self._tobj_mode, tl, label_width=_lbl_w)
 
         # ── Parent (ROADMAP v0.23) ────────────────────────────────
         # Juste avant « Screen space », pour la même raison que lui : les deux
@@ -450,27 +439,19 @@ class ActorInspector(QWidget):
         # l'écran ; un parent les fait passer du monde à son repère à lui.
         self._tparent = _W.combobox([])
         self._tparent.currentIndexChanged.connect(self._on_parent_changed)
-        self._tparent.setToolTip(
-            "<b>Parent</b><br><br>"
-            "L'acteur dans le repère duquel la position de celui-ci est "
-            "exprimée.<br>X/Y, rotation et échelle deviennent alors LOCAUX : "
-            "le parent<br>bouge, tourne ou grandit, et son sous-arbre suit.<br><br>"
-            "Ce n'est pas de l'héritage — la définition n'est pas reprise. Pour "
-            "ça,<br>c'est un prefab. Cacher le parent cache tout son sous-arbre."
-            "<br><br>Un parent se choisit dans la même scène, et un cycle est "
-            "refusé au Build.")
-        _W.row("Parent", self._tparent, tl, label_width=_lbl_w)
+        self._tparent.setToolTip(label("actorinsp.parent_tip"))
+        _W.row(label("actorinsp.tr.parent"), self._tparent, tl, label_width=_lbl_w)
 
         # ── Ancrage écran (UI en sprite) ──────────────────────────
         # Juste sous Position : c'est le sens de X/Y qu'il change (monde →
         # écran), pas une propriété de rendu.
-        self._tscreen = self._fields.bind("screen_space", QCheckBox("Screen space"))
+        self._tscreen = self._fields.bind("screen_space", QCheckBox(label("actorinsp.screen_space")))
         self._tscreen.setStyleSheet(QSS.checkbox)
         notice("actor.screen_space", self._tscreen, tl)
         tl.addWidget(self._tscreen)
 
         # ── Visible ───────────────────────────────────────────────
-        self._tvisible = self._fields.bind("visible", QCheckBox("Visible"))
+        self._tvisible = self._fields.bind("visible", QCheckBox(label("actorinsp.visible")))
         self._tvisible.setStyleSheet(QSS.checkbox)
         tl.addWidget(self._tvisible)
         cl.addWidget(self._transform_group)
@@ -483,7 +464,7 @@ class ActorInspector(QWidget):
         )
 
         # ── COMPONENTS card ──────────────────────────────────────────
-        self._comp_card = CollapsibleCard("Components", color=icons.COLOR_ACTOR)
+        self._comp_card = CollapsibleCard(label("actorinsp.card.components"), color=icons.COLOR_ACTOR)
         btn_add = QPushButton("+"); btn_add.setFixedSize(20, 20)
         btn_add.setStyleSheet(_ico_btn); btn_add.clicked.connect(self._show_add_menu)
         btn_del = QPushButton("−"); btn_del.setFixedSize(20, 20)
@@ -513,7 +494,7 @@ class ActorInspector(QWidget):
         # template. Le « + » ajoute une ligne tout de suite, sans boîte de
         # dialogue — on renomme ensuite dans l'inspecteur, comme partout
         # ailleurs dans ce logiciel.
-        self._children_card = CollapsibleCard("Children", color=icons.COLOR_PREFAB)
+        self._children_card = CollapsibleCard(label("actorinsp.card.children"), color=icons.COLOR_PREFAB)
         _pb_add = QPushButton("+"); _pb_add.setFixedSize(20, 20)
         _pb_add.setStyleSheet(_ico_btn); _pb_add.clicked.connect(self._add_child)
         _pb_del = QPushButton("−"); _pb_del.setFixedSize(20, 20)
@@ -526,15 +507,7 @@ class ActorInspector(QWidget):
         self._children_tree.setFont(QFont(T.UI, T.MD))
         self._children_tree.itemDoubleClicked.connect(self._open_selected_child)
         self._children_tree.reparented.connect(self._on_children_reparented)
-        self._children_tree.setToolTip(chr(10).join([
-            "Les ENFANTS de ce prefab — un boss segmenté, une chenille.",
-            "Chaque enfant est un acteur à part entière : son sprite, ses",
-            "boxes, son transform local. Double-cliquer pour l'éditer,",
-            "glisser-déposer SUR un autre enfant pour le reparenter.",
-            "",
-            "Le pool se dit en INSTANCES : « max instances » × (1 + enfants)",
-            "entrées sont réservées, et c'est ce total qui est payé.",
-        ]))
+        self._children_tree.setToolTip(label("actorinsp.children_tip"))
         self._children_card.body_layout.setContentsMargins(0, 0, 0, 0)
         self._children_card.body_layout.addWidget(self._children_tree)
         cl.addWidget(self._children_card)
@@ -640,15 +613,15 @@ class ActorInspector(QWidget):
         self._blocking = True
         self._notes_edit.set_text_silent(getattr(actor, "notes", ""))
         if is_prefab_root:
-            self._tag_lbl.setText("Index: (prefab)")
+            self._tag_lbl.setText(label("actorinsp.index_prefab"))
         elif scene:
             try:
                 idx = scene.actors.index(actor)
-                self._tag_lbl.setText(f"Index: {idx}")
+                self._tag_lbl.setText(label("actorinsp.index", value=idx))
             except ValueError:
-                self._tag_lbl.setText("Index: —")
+                self._tag_lbl.setText(label("actorinsp.index_none"))
         else:
-            self._tag_lbl.setText("Index: —")
+            self._tag_lbl.setText(label("actorinsp.index_none"))
         # Un template n'est jamais lui-même actif/inactif — seules ses
         # instances le sont.
         self._active.setChecked(True if is_prefab_root else actor.active)
@@ -663,13 +636,16 @@ class ActorInspector(QWidget):
             src_prefab = self._project.get_prefab(actor.prefab_name) if self._project else None
             linked = src_prefab is not None and actor_prefab_linked(actor, src_prefab)
             if src_prefab is None:
-                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}  (introuvable)")
+                self._prefab_badge_lbl.setText(
+                    label("actorinsp.instance_missing", name=actor.prefab_name))
                 self._prefab_badge_lbl.setStyleSheet(f"color:{C.ACCENT_RED};")
             elif linked:
-                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}")
+                self._prefab_badge_lbl.setText(
+                    label("actorinsp.instance", name=actor.prefab_name))
                 self._prefab_badge_lbl.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
             else:
-                self._prefab_badge_lbl.setText(f"◈ Instance de  {actor.prefab_name}  — unlinkée")
+                self._prefab_badge_lbl.setText(
+                    label("actorinsp.instance_unlinked", name=actor.prefab_name))
                 self._prefab_badge_lbl.setStyleSheet(f"color:{C.ACCENT_YLW};")
             # Relink n'a de sens que s'il y a une DIVERGENCE à annuler — déjà
             # linkée, le bouton n'apporterait rien à cliquer.
@@ -735,7 +711,7 @@ class ActorInspector(QWidget):
     def _refresh_parent_choices(self, actor):
         self._tparent.blockSignals(True)
         self._tparent.clear()
-        self._tparent.addItem("— aucun —", None)
+        self._tparent.addItem(label("common.none_dash"), None)
         exclus = self._descendants(actor.name)
         # Une PARTIE se rattache à une autre partie du même prefab, ou à la
         # racine (« — aucun — »). Rien d'extérieur n'est nommable : c'est ce
@@ -755,7 +731,7 @@ class ActorInspector(QWidget):
             # on le garde VISIBLE plutôt que de le réécrire en silence. Le Build
             # le nomme déjà comme introuvable ; l'inspecteur doit dire la même
             # chose que lui.
-            self._tparent.addItem(f"{cur}  (introuvable)", cur)
+            self._tparent.addItem(label("actorinsp.parent_missing", name=cur), cur)
             i = self._tparent.findData(cur)
         self._tparent.setCurrentIndex(max(0, i))
         self._tparent.blockSignals(False)
@@ -914,8 +890,8 @@ class ActorInspector(QWidget):
         pngs = sorted(sprites_dir.glob("*.png")) if sprites_dir.exists() else []
         if not pngs:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(self, "Aucun sprite",
-                "Aucun PNG trouvé dans assets/sprites/.")
+            QMessageBox.information(self, label("actorinsp.no_sprite_title"),
+                label("actorinsp.no_sprite_text"))
             return
 
         menu = QMenu(self)
@@ -1055,8 +1031,9 @@ class ActorInspector(QWidget):
         if self._actor:
             for comp in self._actor.components:
                 type_name = component_type_name(comp)
-                label = COMPONENT_LABELS.get(type_name, type_name)
-                text = f"{label} [{comp.id}]" + ("  (inactif)" if not comp.active else "")
+                disp = label(COMPONENT_LABEL_KEYS.get(type_name, type_name))
+                text = f"{disp} [{comp.id}]" + (
+                    "  " + label("actorinsp.comp_inactive") if not comp.active else "")
                 self._comp_list.addItem(QListWidgetItem(text))
         self._comp_list.blockSignals(False)
         if self._comp_list.count():
@@ -1075,12 +1052,12 @@ class ActorInspector(QWidget):
         menu.setStyleSheet(QSS.menu)
         existing_script = self._actor.get_component("script")
         has_active_script = existing_script is not None and existing_script.active
-        for type_name, label in COMPONENT_LABELS.items():
+        for type_name, key in COMPONENT_LABEL_KEYS.items():
             # Un seul ScriptComponent actif à la fois : le compilateur Lua->C
             # (lua_compiler._actor_script) n'en lit de toute façon qu'un seul.
             if type_name == "script" and has_active_script:
                 continue
-            menu.addAction(label, lambda t=type_name: self._add_component(t))
+            menu.addAction(label(key), lambda t=type_name: self._add_component(t))
         menu.exec(QCursor.pos())
 
     def _add_component(self, type_name: str):
@@ -1180,8 +1157,9 @@ class ActorInspector(QWidget):
             if item is None:
                 continue
             type_name = component_type_name(comp)
-            label = COMPONENT_LABELS.get(type_name, type_name)
-            text = f"{label} [{comp.id}]" + ("  (inactif)" if not comp.active else "")
+            disp = label(COMPONENT_LABEL_KEYS.get(type_name, type_name))
+            text = f"{disp} [{comp.id}]" + (
+                "  " + label("actorinsp.comp_inactive") if not comp.active else "")
             item.setText(text)
         self._comp_list.blockSignals(False)
 
@@ -1217,7 +1195,7 @@ class ActorInspector(QWidget):
         self._field_syncers: dict[str, callable] = {}
 
         if not comp:
-            lbl = QLabel("Select a component above")
+            lbl = QLabel(label("actorinsp.select_component"))
             lbl.setFont(QFont(T.UI, T.MD))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:10px 6px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1238,7 +1216,7 @@ class ActorInspector(QWidget):
         if EditorCls:
             EditorCls(self).build(comp, row, self._editor_layout)
         else:
-            lbl = QLabel(f"{type_name} — no editor registered")
+            lbl = QLabel(label("actorinsp.no_editor", type=type_name))
             lbl.setFont(QFont(T.UI, T.SM)); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
             self._editor_layout.addWidget(lbl)
 

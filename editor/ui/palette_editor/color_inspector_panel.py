@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, CollapsibleCard
+from ui.common.labels import label
 
 from core.models.gba_color import (
     bgr555_to_rgb888, bgr555_components, components_to_bgr555, rgb888_to_bgr555,
@@ -81,7 +82,7 @@ class ColorInspectorPanel(QWidget):
         card_hdr.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         chl = QHBoxLayout(card_hdr)
         chl.setContentsMargins(12, 0, 12, 0)
-        self._color_hdr = QLabel("Color")
+        self._color_hdr = QLabel(label("colins.color"))
         self._color_hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._color_hdr.setStyleSheet(QSS.title_section())
         chl.addWidget(self._color_hdr)
@@ -103,7 +104,7 @@ class ColorInspectorPanel(QWidget):
         el.setSpacing(10)
 
         # ── 1. Roue chromatique (élément de sélection principal) ──────
-        wheel_card = CollapsibleCard("Wheel")
+        wheel_card = CollapsibleCard(label("colins.wheel"))
         self._wheel = ColorTriangleWheel()
         self._wheel.color_changed.connect(self._on_wheel_changed)
         wheel_card.body_layout.addWidget(self._wheel, alignment=_CENTER)
@@ -141,8 +142,8 @@ class ColorInspectorPanel(QWidget):
         # Entrée valide ET rend le focus à la grille → les flèches reprennent.
         self._hex.returnPressed.connect(self.grid_focus_requested.emit)
         hex_row.addWidget(self._hex, 1)
-        btn_copy = W.btn_ghost("Copy")   # libellé explicite (⧉ était incompris)
-        btn_copy.setToolTip("Copy HEX to clipboard (Ctrl+C)")
+        btn_copy = W.btn_ghost(label("colins.copy"))   # libellé explicite (⧉ était incompris)
+        btn_copy.setToolTip(label("colins.copy_tip"))
         btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_copy.clicked.connect(self._copy_color)
         hex_row.addWidget(btn_copy)
@@ -163,7 +164,7 @@ class ColorInspectorPanel(QWidget):
         self._snap = QLabel("")
         self._snap.setFont(QFont(T.MONO, T.SM))
         self._snap.setStyleSheet(f"color:{C.AXIS_X};")
-        self._snap.setToolTip("Color snapped to the GBA's 15-bit grid (5 bits/channel)")
+        self._snap.setToolTip(label("colins.snap_tip"))
         self._snap.setVisible(False)
         bgr_row.addWidget(self._snap)
         bgr_row.addStretch(1)
@@ -192,11 +193,11 @@ class ColorInspectorPanel(QWidget):
         # ── 4. TSL (dérivé) — repliée par défaut : HEX + RGB suffisent le
         # plus souvent.
         hsb_card = CollapsibleCard("HSB", expanded=False)
-        for ch, label, maxv, chan_color in (
+        for ch, lbl, maxv, chan_color in (
             ("h", "H", 359, C.TEXT_DIM), ("s", "S", 100, C.TEXT_DIM), ("v", "L", 100, C.TEXT_DIM),
         ):
             sl, sp = self._make_channel_row(
-                hsb_card.body_layout, label, chan_color, 0, maxv,
+                hsb_card.body_layout, lbl, chan_color, 0, maxv,
                 lambda v, ch=ch: self._on_hsb_changed(ch, v),
             )
             self._hsb_sliders[ch] = sl
@@ -240,7 +241,8 @@ class ColorInspectorPanel(QWidget):
 
     def load_color(self, index: int, value: int):
         """Affiche le slot `index` et sa couleur `value` (BGR555)."""
-        self._color_hdr.setText(f"COULEUR · index {index} · 0x{index:02X}")
+        self._color_hdr.setText(label("colins.color_index", index=index,
+                                      hex=f"{index:02X}"))
         self._load_channels(value)
 
     def focus_hex(self):
@@ -345,5 +347,5 @@ class ColorInspectorPanel(QWidget):
         # 24 bits saisi ne retombe pas exactement sur la grille 15 bits, on le
         # signale.
         if bgr555_to_rgb888(new) != (R, G, B):
-            self._snap.setText("≈ snap")
+            self._snap.setText(label("colins.snap_badge"))
             self._snap.setVisible(True)

@@ -25,14 +25,15 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
 from ui.common.theme import C, T, QSS
 from ui.common import icons
+from ui.common.labels import label
 
-# Type d'usage -> (icône, couleur, libellé de groupe singulier/pluriel).
+# Type d'usage -> (icône, couleur, clé de groupe pluralisable).
 # L'ordre de ce tableau EST l'ordre d'affichage des groupes.
 _KINDS = (
-    ("sprite",     "sprite",     icons.COLOR_SPRITE,     "Sprite",     "Sprites"),
-    ("background", "background", icons.COLOR_BACKGROUND, "Background", "Backgrounds"),
-    ("prefab",     "prefab",     icons.COLOR_PREFAB,     "Prefab",     "Prefabs"),
-    ("scene",      "scene",      icons.COLOR_SCENE,      "Scene",      "Scenes"),
+    ("sprite",     "sprite",     icons.COLOR_SPRITE,     "paluse.sprite"),
+    ("background", "background", icons.COLOR_BACKGROUND, "paluse.background"),
+    ("prefab",     "prefab",     icons.COLOR_PREFAB,     "paluse.prefab"),
+    ("scene",      "scene",      icons.COLOR_SCENE,      "paluse.scene"),
 )
 
 _HDR_H = 28
@@ -68,7 +69,7 @@ class PaletteUsageCard(QWidget):
         )
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(12, 0, 12, 0)
-        title = QLabel("Usage")
+        title = QLabel(label("paluse.title"))
         title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         title.setStyleSheet(QSS.title_panel)
         hl.addWidget(title)
@@ -101,23 +102,23 @@ class PaletteUsageCard(QWidget):
         self._clear()
         if not (project and bank_name):
             self._count.setText("")
-            self._add_empty("No palette selected.")
+            self._add_empty(label("paluse.none_selected"))
             self._list.addStretch()
             return
 
         usages = project.palette_usages(bank_name)
         self._count.setText(str(len(usages)) if usages else "")
         if not usages:
-            self._add_empty("No use in the project.")
+            self._add_empty(label("paluse.no_use"))
             self._list.addStretch()
             return
 
-        for kind, icon_name, color, singular, plural in _KINDS:
+        for kind, icon_name, color, name_key in _KINDS:
             group = [u for u in usages if u.kind == kind]
             if not group:
                 continue
             self._add_group(icon_name, color,
-                            singular if len(group) == 1 else plural, len(group))
+                            label(name_key, n=len(group)), len(group))
             for usage in group:
                 self._add_leaf(usage)
         self._list.addStretch()
@@ -179,7 +180,7 @@ class PaletteUsageCard(QWidget):
             f"QFrame{{background:transparent;}}"
             f"QFrame:hover{{background:{C.BG_HOVER};}}"
         )
-        row.setToolTip(f"{usage.detail} — open in its editor")
+        row.setToolTip(label("paluse.open_tip", detail=usage.detail))
         rl = QHBoxLayout(row)
         rl.setContentsMargins(26, 0, 10, 0)
         rl.setSpacing(6)

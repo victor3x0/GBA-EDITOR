@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer, QSize
 
 from ui.common.theme import T, C, S, QSS, ui_font
 from ui.common.widgets import W
+from ui.common.labels import label
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 
 from core.models.scene import Actor, Scene
@@ -53,8 +54,8 @@ _UI_ELEM_ICON = {KIND_CONTAINER: "ui_container", KIND_LIST: "ui_list",
 _UI_ELEM_LABEL = {KIND_CONTAINER: "container", KIND_LIST: "list",
                   KIND_TEXT: "text", KIND_IMAGE: "image"}
 # Les types proposés à la création, dans l'ordre où l'auteur les rencontre.
-_UI_ELEM_ADD = ((KIND_TEXT, "Text"), (KIND_CONTAINER, "Container"),
-                (KIND_LIST, "List"), (KIND_IMAGE, "Image"))
+_UI_ELEM_ADD = ((KIND_TEXT, "scttree.widget_text"), (KIND_CONTAINER, "scttree.widget_container"),
+                (KIND_LIST, "scttree.widget_list"), (KIND_IMAGE, "scttree.widget_image"))
 
 
 def _lua_handle(node_type: str, obj) -> str:
@@ -268,14 +269,14 @@ class _ActiveSceneTree(_Tree):
             root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
             root_item.setData(0, _ROLE_OBJ, lay)
             root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
-            base = lay.name if many else "Interface"
-            root_item.setText(0, f"{base}  ·  {len(users)} scenes" if shared else base)
+            base = lay.name if many else label("scttree.interface")
+            root_item.setText(0, label("scttree.iface_shared_label", base=base, n=len(users))
+                              if shared else base)
             root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
             root_item.setFont(0, ui_font(T.MD, bold=True))
             root_item.setToolTip(
-                0, f"Interface “{lay.name}”"
-                   + (f"\nSHARED by {len(users)} scenes — editing it affects all of them."
-                      if shared else ""))
+                0, label("scttree.iface_tip_shared", name=lay.name, n=len(users)) if shared
+                   else label("scttree.iface_tip", name=lay.name))
             items: dict[str, QTreeWidgetItem] = {}
             for _depth, el in lay.in_tree_order():
                 parent_item = items.get(el.parent, root_item)
@@ -300,20 +301,22 @@ class _ActiveSceneTree(_Tree):
         handle = _lua_handle(T_UI_ELEM, el)
         if handle:
             item.setForeground(0, QColor(_TEXT))
-            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · referenceable: {handle}")
+            item.setToolTip(0, label("scttree.elem_ref",
+                                     type=_UI_ELEM_LABEL.get(kind, kind), handle=handle))
         else:
             item.setForeground(0, QColor(_DIM))
-            item.setToolTip(0, f"{_UI_ELEM_LABEL.get(kind, kind)} · authoring — not "
-                               f"referenceable in script")
+            item.setToolTip(0, label("scttree.elem_authoring",
+                                     type=_UI_ELEM_LABEL.get(kind, kind)))
 
     def _update_actor_item(self, item: QTreeWidgetItem, actor: Actor):
         handle = _lua_handle(T_ACTOR, actor)
         if actor.prefab_name:
             item.setIcon(0, _ico("prefab", COLOR_DEFAULT))
-            item.setToolTip(0, f"Prefab instance: {actor.prefab_name}\nreferenceable: {handle}")
+            item.setToolTip(0, label("scttree.actor_prefab_tip",
+                                     name=actor.prefab_name, handle=handle))
         else:
             item.setIcon(0, _ico("actor", COLOR_DEFAULT))
-            item.setToolTip(0, f"referenceable: {handle}")
+            item.setToolTip(0, label("scttree.ref_tip", handle=handle))
         item.setText(0, actor.name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setForeground(0, QColor(_TEXT))
@@ -321,7 +324,7 @@ class _ActiveSceneTree(_Tree):
     def _update_camera_item(self, item: QTreeWidgetItem, camera):
         handle = _lua_handle(T_CAMERA, camera)
         item.setIcon(0, _ico("camera", COLOR_DEFAULT))
-        item.setToolTip(0, f"referenceable: {handle}")
+        item.setToolTip(0, label("scttree.ref_tip", handle=handle))
         item.setText(0, camera.name)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
         item.setForeground(0, QColor(_TEXT))
@@ -553,31 +556,31 @@ class _ActiveSceneTree(_Tree):
         if typ == T_ACTOR:
             actor: Actor = item.data(0, _ROLE_OBJ)
             scene = self._scene
-            menu.addAction("Move to top").triggered.connect(
+            menu.addAction(label("scttree.move_top")).triggered.connect(
                 lambda: self._move_actor(scene, actor, "top"))
-            menu.addAction("Move up").triggered.connect(
+            menu.addAction(label("scttree.move_up")).triggered.connect(
                 lambda: self._move_actor(scene, actor, "up"))
-            menu.addAction("Move down").triggered.connect(
+            menu.addAction(label("scttree.move_down")).triggered.connect(
                 lambda: self._move_actor(scene, actor, "down"))
-            menu.addAction("Move to bottom").triggered.connect(
+            menu.addAction(label("scttree.move_bottom")).triggered.connect(
                 lambda: self._move_actor(scene, actor, "bottom"))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Rename actor")
-            menu.addAction("Delete actor").triggered.connect(
+            self.add_rename_action(menu, item, label("scttree.rename_actor"))
+            menu.addAction(label("scttree.delete_actor")).triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
 
         elif typ == T_CAMERA:
             camera = item.data(0, _ROLE_OBJ)
-            self.add_rename_action(menu, item, "Rename camera")
-            menu.addAction("Delete camera").triggered.connect(
+            self.add_rename_action(menu, item, label("scttree.rename_camera"))
+            menu.addAction(label("scttree.delete_camera")).triggered.connect(
                 lambda: get_dispatcher().delete_camera(camera))
 
         elif typ == T_UI_LAYOUT:
             layout = item.data(0, _ROLE_OBJ)
-            add = menu.addMenu("Add a widget")
+            add = menu.addMenu(label("scttree.add_widget"))
             add.setFont(QFont(T.UI, T.MD))
-            for kind, label in _UI_ELEM_ADD:
-                act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+            for kind, lbl_key in _UI_ELEM_ADD:
+                act = add.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label(lbl_key))
                 act.triggered.connect(
                     lambda _, k=kind, lay=layout: self._create_ui_elem(lay, k, ""))
             menu.addSeparator()
@@ -587,8 +590,8 @@ class _ActiveSceneTree(_Tree):
             proj = self._panel._project
             users = proj.ui_layout_users(layout.name) if proj else []
             shared = len(users) > 1
-            label = "Remove from this scene" if shared else "Delete interface"
-            menu.addAction(label).triggered.connect(
+            menu.addAction(label("scttree.remove_from_scene") if shared
+                           else label("scttree.delete_interface")).triggered.connect(
                 lambda _, lay=layout, sh=shared: self._delete_interface(lay, sh))
 
         elif typ == T_UI_ELEM:
@@ -596,31 +599,31 @@ class _ActiveSceneTree(_Tree):
             layout = item.data(0, _ROLE_PATH)
             sibs = [s.name for s in layout._siblings(layout._parent_key(el))]
             i, n = sibs.index(el.name), len(sibs)
-            for label, direction, on in (
-                ("Move to top", "top", i > 0),
-                ("Move up", "up", i > 0),
-                ("Move down", "down", i < n - 1),
-                ("Move to bottom", "bottom", i < n - 1),
+            for lbl_key, direction, on in (
+                ("scttree.move_top", "top", i > 0),
+                ("scttree.move_up", "up", i > 0),
+                ("scttree.move_down", "down", i < n - 1),
+                ("scttree.move_bottom", "bottom", i < n - 1),
             ):
-                a = menu.addAction(label)
+                a = menu.addAction(label(lbl_key))
                 a.setEnabled(on)
                 a.triggered.connect(
                     lambda _, d=direction, e=el, lay=layout: self._move_ui_elem(lay, e, d))
             accepted = getattr(el, "can_contain", ())
             if accepted:
                 menu.addSeparator()
-                sub = menu.addMenu("Add a child")
+                sub = menu.addMenu(label("scttree.add_child"))
                 sub.setFont(QFont(T.UI, T.MD))
                 # Ce que CE parent accueille : une liste ne prend que des
                 # textes, ses enfants étant ses rangées. Offrir une image ici
                 # ferait poser un élément que le build ignore ensuite.
-                for kind, label in (kl for kl in _UI_ELEM_ADD if kl[0] in accepted):
-                    act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label)
+                for kind, lbl_key in (kl for kl in _UI_ELEM_ADD if kl[0] in accepted):
+                    act = sub.addAction(_ico(_UI_ELEM_ICON[kind], COLOR_UI), label(lbl_key))
                     act.triggered.connect(
                         lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
             menu.addSeparator()
-            self.add_rename_action(menu, item, "Rename")
-            menu.addAction("Delete").triggered.connect(
+            self.add_rename_action(menu, item, label("scttree.rename"))
+            menu.addAction(label("scttree.delete")).triggered.connect(
                 lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
 
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -793,31 +796,31 @@ class SceneTreePanel(QWidget):
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(S.GUTTER, 0, S.MD, 0)
         hl.setSpacing(S.SM)
-        self._scene_lbl = QLabel("No active scene")
+        self._scene_lbl = QLabel(label("scttree.no_scene"))
         self._scene_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._scene_lbl.setStyleSheet(f"color:{C.TEXT_HI};")
         hl.addWidget(self._scene_lbl, 1)
         # Menu plutôt qu'un clic direct : deux natures d'objet se créent
         # depuis ce bouton, toutes deux possédées par la scène — un acteur et
         # une caméra (cf. command_dispatcher.add_camera).
-        self._btn_add = W.btn_add("Add…")
+        self._btn_add = W.btn_add(label("scttree.add"))
         add_menu = QMenu(self._btn_add)
         add_menu.setFont(QFont(T.UI, T.MD))
-        add_menu.addAction(_ico("actor", COLOR_DEFAULT), "Actor").triggered.connect(self._add_actor)
-        add_menu.addAction(_ico("camera", COLOR_DEFAULT), "Camera").triggered.connect(self._add_camera)
-        add_menu.addAction(_ico("ui_layout", COLOR_UI), "Interface").triggered.connect(self._add_interface)
+        add_menu.addAction(_ico("actor", COLOR_DEFAULT), label("scttree.actor")).triggered.connect(self._add_actor)
+        add_menu.addAction(_ico("camera", COLOR_DEFAULT), label("scttree.camera")).triggered.connect(self._add_camera)
+        add_menu.addAction(_ico("ui_layout", COLOR_UI), label("scttree.interface")).triggered.connect(self._add_interface)
         self._btn_add.setMenu(add_menu)
         self._btn_add.setPopupMode(self._btn_add.ToolButtonPopupMode.InstantPopup)
         hl.addWidget(self._btn_add)
         layout.addWidget(hdr)
 
         # ── Bandeau "finder" (identité du panneau) ────────────────
-        layout.addWidget(W.finder_bar("Scene tree"))
+        layout.addWidget(W.finder_bar(label("scttree.finder_bar")))
 
         # ── Corps : arbre, ou état vide si aucune scène active ────
         self._tree = _ActiveSceneTree(self)
 
-        self._empty = QLabel("No active scene")
+        self._empty = QLabel(label("scttree.no_scene"))
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:{S.CONTENT}px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -848,7 +851,7 @@ class SceneTreePanel(QWidget):
         self.refresh()
 
     def refresh(self):
-        self._scene_lbl.setText(self._scene.name if self._scene else "No active scene")
+        self._scene_lbl.setText(self._scene.name if self._scene else label("scttree.no_scene"))
         self._btn_add.setEnabled(self._scene is not None)
         self._tree.populate(self._project, self._scene)
         has_scene = self._scene is not None

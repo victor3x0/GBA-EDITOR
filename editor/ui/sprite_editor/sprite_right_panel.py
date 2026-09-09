@@ -9,6 +9,7 @@ from PyQt6.QtCore import pyqtSignal
 
 from ui.common.theme import C, T
 from ui.common.widgets import W
+from ui.common.labels import label
 from core.models.sprite import AnimFrame, AnimState, SpriteAsset, StateDirection
 from core.project import Project
 from core.models.sprite import valid_frame_heights, resolve_direction_mirrors
@@ -76,7 +77,7 @@ class SpriteRightPanel(QWidget):
 
     def _build_params(self):
         lay = self._content_layout
-        W.section("Canvas size", lay)
+        W.section(label("sprpanel.canvas_size"), lay)
 
         # Frame W / H
         self._cb_w = QComboBox(); self._cb_w.setFont(QFont(T.MONO, T.SM))
@@ -85,17 +86,17 @@ class SpriteRightPanel(QWidget):
             self._cb_w.addItem(str(v))
         self._cb_w.currentIndexChanged.connect(self._on_frame_w_changed)
         self._cb_h.currentIndexChanged.connect(self._on_frame_h_changed)
-        W.pair("Frame", "W", C.AXIS_X, self._cb_w, "H", C.AXIS_Y, self._cb_h, lay)
+        W.pair(label("sprpanel.frame"), "W", C.AXIS_X, self._cb_w, "H", C.AXIS_Y, self._cb_h, lay)
 
         W.separator(lay)
-        W.section("Animation", lay)
+        W.section(label("sprpanel.animation"), lay)
 
         self._sp_speed = W.spinbox(8, min_v=1, max_v=120)
-        self._sp_speed.setToolTip("Ticks GBA entre deux frames (60fps). 8=7.5fps  4=15fps  2=30fps")
+        self._sp_speed.setToolTip(label("sprpanel.speed_tip"))
         self._sp_speed.valueChanged.connect(self._on_speed_changed)
-        W.row("Speed", self._sp_speed, lay)
+        W.row(label("sprpanel.speed"), self._sp_speed, lay)
 
-        self._chk_loop = W.checkbox_row("", "Loop", lay)
+        self._chk_loop = W.checkbox_row("", label("sprpanel.loop"), lay)
         self._chk_loop.setChecked(True)
         self._chk_loop.toggled.connect(self._on_loop_changed)
 
@@ -103,7 +104,7 @@ class SpriteRightPanel(QWidget):
 
     def _build_direction(self):
         lay = self._content_layout
-        W.section("Directions", lay)
+        W.section(label("sprpanel.directions"), lay)
         self._dir_widget = DirectionWidget()
         self._dir_widget.directions_changed.connect(self._on_directions_changed)
         lay.addWidget(self._dir_widget)
@@ -112,7 +113,7 @@ class SpriteRightPanel(QWidget):
         from ui.common.palette_slot_grid import PaletteSlotGridAsset
         lay = self._content_layout
         W.separator(lay)
-        W.section("Palette", lay)
+        W.section(label("sprpanel.palette"), lay)
 
         # Grille unifiée (modèle scène/background) : les sous-palettes de la
         # PAL_BANK du sprite — dérivées du PNG grisées + overridables, « + » pour
@@ -126,19 +127,13 @@ class SpriteRightPanel(QWidget):
         self._pal_grid.asset_restore.connect(self._on_pal_restore)
         lay.addWidget(self._pal_grid)
 
-        self._btn_import = W.btn_accent("⟐  Import / replace image…")
-        self._btn_import.setToolTip(
-            "Choose an image, validate and encode it (GBA, non-destructive) and "
-            "attach it to the current sprite."
-        )
+        self._btn_import = W.btn_accent(label("sprpanel.import_replace"))
+        self._btn_import.setToolTip(label("sprpanel.import_replace_tip"))
         self._btn_import.clicked.connect(self._on_replace_image)
         lay.addWidget(self._btn_import)
 
-        self._btn_extract = W.btn_accent("⟐  Extract from PNG")
-        self._btn_extract.setToolTip(
-            "Creates a catalog palette “pal_<name>” from the PNG's colors "
-            "(index 0 = transparency, then darkest to lightest)."
-        )
+        self._btn_extract = W.btn_accent(label("sprpanel.extract"))
+        self._btn_extract.setToolTip(label("sprpanel.extract_tip"))
         self._btn_extract.clicked.connect(self._on_extract_palette)
         lay.addWidget(self._btn_extract)
 
@@ -210,7 +205,7 @@ class SpriteRightPanel(QWidget):
         self._state   = sprite.states[0] if sprite.states else None
         self._blocking = True
 
-        self._header.set_header("sprite", "Sprite", sprite.name)
+        self._header.set_header("sprite", label("sprpanel.header"), sprite.name)
 
         # Frame size
         self._cb_w.setCurrentText(str(sprite.frame_w))

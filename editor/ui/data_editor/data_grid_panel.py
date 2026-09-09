@@ -24,6 +24,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
 from ui.common.theme import C, T, S, QSS
 from ui.common.widgets import W
+from ui.common.labels import label
 
 from core.models.data_table import (DataTable, DataColumn, COLUMN_TYPES,
                                     COLUMN_REFERENCES)
@@ -167,13 +168,13 @@ class DataGridPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._bar = W.section_bar("Table", C.ACCENT)
+        self._bar = W.section_bar(label("datagrid.table_bar"), C.ACCENT)
         hl = self._bar.layout()
-        self._btn_row = W.btn_add("Add a row", icon="add_row")
+        self._btn_row = W.btn_add(label("datagrid.add_row"), icon="add_row")
         self._btn_row.clicked.connect(lambda: self._insert_row(len(self._table.rows)
                                                                if self._table else 0))
         hl.addWidget(self._btn_row)
-        self._btn_col = W.btn_add("Add a column", icon="add_column")
+        self._btn_col = W.btn_add(label("datagrid.add_column"), icon="add_column")
         self._btn_col.clicked.connect(self._add_column)
         hl.addWidget(self._btn_col)
         root.addWidget(self._bar)
@@ -195,10 +196,7 @@ class DataGridPanel(QWidget):
         self._tbl.currentCellChanged.connect(self._on_current_cell)
         root.addWidget(self._tbl, 1)
 
-        self._empty = W.empty_state(
-            "No table selected.\n\nA data table is read from a script as "
-            "data.Name[i].column — its rows are numbered from 1, like every "
-            "array in Lua.")
+        self._empty = W.empty_state(label("datagrid.empty"))
         root.addWidget(self._empty)
         self._show_empty(True)
 
@@ -297,7 +295,7 @@ class DataGridPanel(QWidget):
         entry = next((x for x in getattr(self._project, "texts", [])
                       if x.key == key), None)
         if entry is None:
-            return f"{key}  (introuvable dans la table de textes)"
+            return label("datagrid.text_not_found", key=key)
         try:
             from core.text_markup import parse, resolve
             consts = {c.name: c.value for c in getattr(self._project, "constants", [])}
@@ -307,7 +305,7 @@ class DataGridPanel(QWidget):
         body = body.replace(chr(10), " ")
         if len(body) > 160:
             body = body[:157] + "…"
-        return key + chr(10) + "« " + body + " »"
+        return label("datagrid.text_preview", key=key, body=body)
 
     # ── Écriture d'une cellule ────────────────────────────────────
 
@@ -360,8 +358,8 @@ class DataGridPanel(QWidget):
         if not self._table:
             return
         if not self._table.columns:
-            QMessageBox.information(self, "Row",
-                                    "Add a column first — a row has nowhere to go.")
+            QMessageBox.information(self, label("datagrid.no_column_title"),
+                                    label("datagrid.no_column_text"))
             return
         get_history().push(InsertRowCmd(self._table, index, {}, self._after_change))
 
@@ -378,11 +376,11 @@ class DataGridPanel(QWidget):
         r = self._tbl.rowAt(pos.y())
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        a_above = menu.addAction("Insert row above") if r >= 0 else None
-        a_below = menu.addAction("Insert row below") if r >= 0 else None
-        a_end   = menu.addAction("Add row at end")
+        a_above = menu.addAction(label("datagrid.row_above")) if r >= 0 else None
+        a_below = menu.addAction(label("datagrid.row_below")) if r >= 0 else None
+        a_end   = menu.addAction(label("datagrid.row_end"))
         menu.addSeparator()
-        a_del   = menu.addAction("Delete row") if r >= 0 else None
+        a_del   = menu.addAction(label("datagrid.row_delete")) if r >= 0 else None
         act = menu.exec(self._tbl.viewport().mapToGlobal(pos))
         if act is None:
             return
@@ -408,7 +406,7 @@ class DataGridPanel(QWidget):
     def _add_column(self):
         if not self._table:
             return
-        col = DataColumn(name=self._unique_column("colonne"), type="int")
+        col = DataColumn(name=self._unique_column("column"), type="int")
         get_history().push(AddColumnCmd(self._table, col, self._after_change))
 
     def _rename_column(self, index: int, new_name: str):
@@ -421,11 +419,9 @@ class DataGridPanel(QWidget):
         self.reload()
         if new_name != col.name:
             QMessageBox.warning(
-                self, "Rename",
-                f"« {new_name} » is not usable: a column is written as code in "
-                f"scripts (data.{self._table.name}[i].{col.name}), so it must be "
-                f"a plain identifier — letters, digits and _, not starting with "
-                f"a digit — and unique within the table.")
+                self, label("datagrid.rename_title"),
+                label("datagrid.rename_text", name=new_name,
+                      table=self._table.name, col=col.name))
 
     def set_column_type(self, column: DataColumn, new_type: str):
         """Appelé par l'inspecteur : c'est la grille qui écrit et qui pousse
@@ -443,7 +439,7 @@ class DataGridPanel(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        type_menu = menu.addMenu("Type")
+        type_menu = menu.addMenu(label("datagrid.type"))
         actions = {}
         for t in COLUMN_TYPES:
             a = type_menu.addAction(t)
@@ -451,8 +447,8 @@ class DataGridPanel(QWidget):
             a.setChecked(t == col.type)
             actions[a] = t
         menu.addSeparator()
-        a_add = menu.addAction("Add column")
-        a_del = menu.addAction("Delete column")
+        a_add = menu.addAction(label("datagrid.add_column_menu"))
+        a_del = menu.addAction(label("datagrid.delete_column"))
         act = menu.exec(self._header.mapToGlobal(pos))
         if act is None:
             return

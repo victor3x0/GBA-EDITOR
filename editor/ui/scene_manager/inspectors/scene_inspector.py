@@ -23,6 +23,7 @@ from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup, NotesEdit, CollapsibleCard
 from ui.common.notice import note, notice, tip
+from ui.common.labels import label
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from codegen.actor_budget import (
     OAM_LIMIT, prefab_group, scene_actor_budget, scene_pool_instances,
@@ -106,19 +107,22 @@ class _ScenePaletteCmd(Command):
 # kind : "tiled" (0/1/2, fonds tuilés) | "bitmap" (3/4/5, un fond plein écran BG2).
 # bg_slots : slots BG hardware valides ; affine : slots en mode affine (rotation).
 # bg_palettes : la scène sélectionne-t-elle des banques de palette BG ? (non en 3/5).
+# `tip` porte une CLÉ de libellé (résolue par `label()` à l'affichage), pas le
+# texte : ces descriptions techniques de mode sont visibles (indice sous le
+# bouton de mode, infobulles du menu).
 MODE_INFO: dict[int, dict] = {
     0: {"kind": "tiled",  "bg_slots": (0, 1, 2, 3), "affine": (),     "bg_palettes": True,
-        "res": (240, 160), "tip": "4 regular tiled backgrounds (BG0-3) · 4/8bpp"},
+        "res": (240, 160), "tip": "sceneinsp.mode_tip_0"},
     1: {"kind": "tiled",  "bg_slots": (0, 1, 2),    "affine": (2,),   "bg_palettes": True,
-        "res": (240, 160), "tip": "BG0-1 regular + BG2 affine (rotation/scale)"},
+        "res": (240, 160), "tip": "sceneinsp.mode_tip_1"},
     2: {"kind": "tiled",  "bg_slots": (2, 3),       "affine": (2, 3), "bg_palettes": True,
-        "res": (240, 160), "tip": "BG2-3 affine"},
+        "res": (240, 160), "tip": "sceneinsp.mode_tip_2"},
     3: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
-        "res": (240, 160), "bpp": 16, "tip": "Bitmap BG2 · 16bpp direct color · 240×160 (no palette)"},
+        "res": (240, 160), "bpp": 16, "tip": "sceneinsp.mode_tip_3"},
     4: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": True,
-        "res": (240, 160), "bpp": 8,  "tip": "Bitmap BG2 · 8bpp paletted (256 colors) · 240×160"},
+        "res": (240, 160), "bpp": 8,  "tip": "sceneinsp.mode_tip_4"},
     5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
-        "res": (160, 128), "bpp": 16, "tip": "Bitmap BG2 · 16bpp direct color · 160×128"},
+        "res": (160, 128), "bpp": 16, "tip": "sceneinsp.mode_tip_5"},
 }
 
 
@@ -149,7 +153,7 @@ class SceneInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Select a scene")
+        self._empty = QLabel(label("sceneinsp.empty"))
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -161,7 +165,7 @@ class SceneInspector(QWidget):
         cl.setSpacing(6)
 
         # ── Carte Note libre ───────────────────────────────────────
-        notes_card = CollapsibleCard("Note")
+        notes_card = CollapsibleCard(label("sceneinsp.card.note"))
         notes_inner = notes_card.body_layout
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set_scene_field("notes", text))
@@ -174,11 +178,11 @@ class SceneInspector(QWidget):
         # même logique de garde-fou/pruning qu'avant), les paramètres de la scène
         # (Layer UI, Scrolling) prennent place à sa droite, et le script de scène
         # est rattaché juste en dessous.
-        mode_card = CollapsibleCard("Scene mode")
+        mode_card = CollapsibleCard(label("sceneinsp.card.mode"))
         mode_inner = mode_card.body_layout
 
         mode_row = QHBoxLayout(); mode_row.setContentsMargins(0, 0, 0, 0); mode_row.setSpacing(12)
-        self._btn_mode = QPushButton("Mode 0")
+        self._btn_mode = QPushButton(label("sceneinsp.mode_btn", n=0))
         self._btn_mode.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._btn_mode.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_mode.setFixedSize(84, 44)
@@ -187,7 +191,7 @@ class SceneInspector(QWidget):
             f"border:2px solid {C.ACCENT}; border-radius:5px;}}"
             f"QPushButton:hover{{background:{C.BG_HOVER};}}"
         )
-        self._btn_mode.setToolTip("Change the scene's video mode")
+        self._btn_mode.setToolTip(label("sceneinsp.mode_btn_tip"))
         self._btn_mode.clicked.connect(self._show_mode_menu)
         mode_row.addWidget(self._btn_mode)
 
@@ -199,12 +203,12 @@ class SceneInspector(QWidget):
         param_inner.setSpacing(4)
 
         scroll_row = QHBoxLayout(); scroll_row.setSpacing(6)
-        lbl_scroll = QLabel("Scrolling:")
+        lbl_scroll = QLabel(label("sceneinsp.scrolling"))
         lbl_scroll.setFont(QFont(T.UI, T.SM)); lbl_scroll.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_scroll.setFixedWidth(70)
         scroll_row.addWidget(lbl_scroll)
-        self._chk_scroll_h = self._mk_scroll_toggle("scroll_h", "Horizontal scrolling")
-        self._chk_scroll_v = self._mk_scroll_toggle("scroll_v", "Vertical scrolling")
+        self._chk_scroll_h = self._mk_scroll_toggle("scroll_h", label("sceneinsp.scroll_h_tip"))
+        self._chk_scroll_v = self._mk_scroll_toggle("scroll_v", label("sceneinsp.scroll_v_tip"))
         scroll_row.addWidget(self._chk_scroll_h)
         scroll_row.addWidget(self._chk_scroll_v)
         scroll_row.addStretch()
@@ -217,26 +221,20 @@ class SceneInspector(QWidget):
         # AUCUN layer ni sprite ne dessine — donc aussi ce qui apparaît dans une
         # window qui masque tout.
         bd_row = QHBoxLayout(); bd_row.setSpacing(6)
-        lbl_bd = QLabel("Backdrop:")
+        lbl_bd = QLabel(label("sceneinsp.backdrop"))
         lbl_bd.setFont(QFont(T.UI, T.SM)); lbl_bd.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_bd.setFixedWidth(70)
         self._btn_backdrop = QPushButton()
         self._btn_backdrop.setFixedSize(40, 22)
         self._btn_backdrop.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_backdrop.clicked.connect(self._pick_backdrop)
-        self._btn_backdrop.setToolTip(
-            "<b>Couleur de fond (backdrop)</b><br><br>"
-            "Index 0 of the BG palette — shown wherever no layer or<br>"
-            "sprite draws, including through a window that masks everything.<br><br>"
-            "Quantized to BGR555 (5 bits per channel) like on hardware."
-        )
+        self._btn_backdrop.setToolTip(label("sceneinsp.backdrop_tip"))
         self._lbl_backdrop = QLabel()
         self._lbl_backdrop.setFont(QFont(T.MONO, T.XS))
         self._lbl_backdrop.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        self._btn_backdrop_reset = W.btn_ghost("Project default")
+        self._btn_backdrop_reset = W.btn_ghost(label("sceneinsp.backdrop_reset"))
         self._btn_backdrop_reset.setFont(QFont(T.UI, T.XS))
-        self._btn_backdrop_reset.setToolTip(
-            "Reuse the backdrop color defined at project level")
+        self._btn_backdrop_reset.setToolTip(label("sceneinsp.backdrop_reset_tip"))
         self._btn_backdrop_reset.clicked.connect(self._reset_backdrop)
         bd_row.addWidget(lbl_bd)
         bd_row.addWidget(self._btn_backdrop)
@@ -258,31 +256,23 @@ class SceneInspector(QWidget):
         # colonne des paramètres : une transition vaut aussi en mode bitmap,
         # alors que cette colonne y est masquée.
         trans_row = QHBoxLayout(); trans_row.setSpacing(6)
-        lbl_trans = QLabel("Transition:")
+        lbl_trans = QLabel(label("sceneinsp.transition"))
         lbl_trans.setFont(QFont(T.UI, T.SM)); lbl_trans.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_trans.setFixedWidth(70)
         self._combo_trans = QComboBox()
         self._combo_trans.setFont(QFont(T.UI, T.SM))
         self._combo_trans.setStyleSheet(QSS.combobox)
-        for kind, label in _TRANSITIONS:
-            self._combo_trans.addItem(label, kind)
-        self._combo_trans.setToolTip(
-            "<b>Fade played when leaving AND when opening this scene</b><br><br>"
-            "Each scene describes its own disappearance and its own "
-            "appearance,<br>so two scenes never fight over a switch.<br><br>"
-            "The outgoing scene is frozen while its fade plays, and this "
-            "scene's<br>color blending is suspended for the duration — the "
-            "hardware has a<br>single blend mode, there is no fade on top of a "
-            "translucency."
-        )
+        for kind, trans_label in _TRANSITIONS:
+            self._combo_trans.addItem(trans_label, kind)
+        self._combo_trans.setToolTip(label("sceneinsp.transition_tip"))
         self._combo_trans.currentIndexChanged.connect(self._on_transition_kind)
         self._spin_trans = QSpinBox()
         self._spin_trans.setRange(1, 255)
         self._spin_trans.setFixedWidth(60)
-        self._spin_trans.setSuffix(" f")
+        self._spin_trans.setSuffix(label("sceneinsp.frames_suffix"))
         self._spin_trans.setFont(QFont(T.MONO, T.SM))
         self._spin_trans.setStyleSheet(QSS.spinbox)
-        self._spin_trans.setToolTip("Frames per half — leaving, then opening.")
+        self._spin_trans.setToolTip(label("sceneinsp.transition_frames_tip"))
         self._spin_trans.valueChanged.connect(
             lambda v: self._set_scene_field("transition_frames", int(v)))
         trans_row.addWidget(lbl_trans)
@@ -295,21 +285,13 @@ class SceneInspector(QWidget):
         # c'est l'absence d'ordre — traverser une porte ne doit pas relancer
         # le thème. Le silence se déclare (cf. ROADMAP v0.8.2).
         music_row = QHBoxLayout(); music_row.setSpacing(6)
-        lbl_music = QLabel("Music:")
+        lbl_music = QLabel(label("sceneinsp.music"))
         lbl_music.setFont(QFont(T.UI, T.SM)); lbl_music.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_music.setFixedWidth(70)
         self._combo_music = QComboBox()
         self._combo_music.setFont(QFont(T.UI, T.SM))
         self._combo_music.setStyleSheet(QSS.combobox)
-        self._combo_music.setToolTip(
-            "<b>Track started when this scene opens</b><br><br>"
-            "<b>Keep playing</b> — the scene issues no order at all, so "
-            "whatever is<br>already playing carries on. This is the default: "
-            "walking through a<br>door should not restart the theme.<br><br>"
-            "<b>Silence</b> — explicitly stops the music.<br><br>"
-            "The track starts before the scene's <code>on_start</code>, so a "
-            "<code>music.play()</code><br>in the script overrides it."
-        )
+        self._combo_music.setToolTip(label("sceneinsp.music_tip"))
         self._combo_music.currentIndexChanged.connect(self._on_music)
         music_row.addWidget(lbl_music)
         music_row.addWidget(self._combo_music, 1)
@@ -319,9 +301,9 @@ class SceneInspector(QWidget):
 
         from ui.common.widgets import ScriptSlot, ScriptPickerPopup  # noqa: F401 (ScriptPickerPopup used later)
         self._scene_script_slot = ScriptSlot(
-            add_label    = "Add a scene script",
+            add_label    = label("sceneinsp.script_add"),
             accent_color = icons.COLOR_SCRIPT,
-            hint         = "on_start · on_update · on_late_update",
+            hint         = label("sceneinsp.script_hint"),
         )
         self._scene_script_slot.set_callbacks(
             on_add   = self._scene_script_new,
@@ -333,11 +315,11 @@ class SceneInspector(QWidget):
         cl.addWidget(mode_card)
 
         # ── Carte Background Asset ────────────────────────────────
-        bg_card = CollapsibleCard("Background layers")
+        bg_card = CollapsibleCard(label("sceneinsp.card.bg"))
         self._bg_card = bg_card
         bg_inner = bg_card.body_layout
 
-        self._btn_bg_add = W.btn_add("Add a BG layer (max 4)")
+        self._btn_bg_add = W.btn_add(label("sceneinsp.bg_add"))
         self._btn_bg_add.clicked.connect(self._add_bg_layer)
         bg_card.add_header_widget(self._btn_bg_add)
 
@@ -353,7 +335,7 @@ class SceneInspector(QWidget):
         self._bitmap_box = QWidget()
         bmp_l = QVBoxLayout(self._bitmap_box)
         bmp_l.setContentsMargins(0, 2, 0, 0); bmp_l.setSpacing(3)
-        self._btn_bitmap_pick = QPushButton("Choose a bitmap background…")
+        self._btn_bitmap_pick = QPushButton(label("sceneinsp.bitmap_pick"))
         self._btn_bitmap_pick.setFont(QFont(T.UI, T.SM))
         self._btn_bitmap_pick.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_bitmap_pick.setStyleSheet(
@@ -377,13 +359,13 @@ class SceneInspector(QWidget):
         # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
-        pal_card = CollapsibleCard("Palettes")
+        pal_card = CollapsibleCard(label("sceneinsp.card.palettes"))
         pal_inner = pal_card.body_layout
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
         self._pal_sublabels: dict[str, QLabel] = {}
-        for pool, color, title in (("obj", C.ACCENT_WARM, "OBJ (sprites)"),
-                                    ("bg", C.ACCENT_COOL, "BCK (backgrounds)")):
+        for pool, color, title in (("obj", C.ACCENT_WARM, label("sceneinsp.pal_obj")),
+                                    ("bg", C.ACCENT_COOL, label("sceneinsp.pal_bg"))):
             sub_lbl = QLabel(title)
             sub_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
             sub_lbl.setStyleSheet(f"color:{C.TEXT_DIM}; letter-spacing:1px; margin-top:4px;")
@@ -405,27 +387,22 @@ class SceneInspector(QWidget):
         # plutôt qu'éclatés dans la colonne « Scene mode » : ils forment une
         # même décision (où le HUD s'affiche, avec quoi), pas des paramètres
         # de rendu du fond.
-        ui_card = CollapsibleCard("User Interface")
+        ui_card = CollapsibleCard(label("sceneinsp.card.ui"))
         self._ui_card = ui_card
         ui_inner = ui_card.body_layout
 
         ui_row = QHBoxLayout(); ui_row.setSpacing(6)
-        lbl_ui = QLabel("UI layer:")
+        lbl_ui = QLabel(label("sceneinsp.ui_layer"))
         lbl_ui.setFont(QFont(T.UI, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_ui.setFixedWidth(70)
         self._combo_text_bg = QComboBox()
         self._combo_text_bg.setFont(QFont(T.UI, T.SM))
         self._combo_text_bg.setStyleSheet(QSS.combobox)
         for i in range(4):
-            self._combo_text_bg.addItem(f"BG{i}" + (" (default)" if i == 1 else ""), i)
+            self._combo_text_bg.addItem(
+                f"BG{i}" + (label("sceneinsp.default_suffix") if i == 1 else ""), i)
         self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
-        self._combo_text_bg.setToolTip(
-            "<b>Layer reserved for HUD text (TTE)</b><br><br>"
-            "In-game text (score, dialogue…) takes up a whole BG layer.<br>"
-            "Pick a BG that isn't used by a background.<br><br>"
-            "<b>Conflict ⚠</b>: if this BG is already assigned to a background,<br>"
-            "the two overlap and the result is undefined."
-        )
+        self._combo_text_bg.setToolTip(label("sceneinsp.ui_layer_tip"))
         self._lbl_text_bg_warn = QLabel()
         self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
         self._lbl_text_bg_warn.setVisible(False)
@@ -443,7 +420,7 @@ class SceneInspector(QWidget):
         # `ui_inspector._reload_ui_pal_slot`) — il ne doit pas se présenter
         # différemment selon l'écran d'où on le change.
         pal_row = QHBoxLayout(); pal_row.setSpacing(6)
-        lbl_pal = QLabel("UI colors:")
+        lbl_pal = QLabel(label("sceneinsp.ui_colors"))
         lbl_pal.setFont(QFont(T.UI, T.SM)); lbl_pal.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_pal.setFixedWidth(70)
         self._ui_pal_slot = None
@@ -457,7 +434,7 @@ class SceneInspector(QWidget):
         # n'en nomme pas — un élément d'UI réglé sur « (scene font) », ou un
         # `text.draw` sans `text.set_font`.
         font_row = QHBoxLayout(); font_row.setSpacing(6)
-        lbl_font = QLabel("UI font:")
+        lbl_font = QLabel(label("sceneinsp.ui_font"))
         lbl_font.setFont(QFont(T.UI, T.SM)); lbl_font.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_font.setFixedWidth(70)
         self._font_slot = None
@@ -471,7 +448,7 @@ class SceneInspector(QWidget):
         # (settings.fallback_font) : ce qui comble un caractère absent de la
         # police active. Vide = hérite du projet, comme la transition/backdrop.
         fb_row = QHBoxLayout(); fb_row.setSpacing(6)
-        lbl_fb = QLabel("Fallback font:")
+        lbl_fb = QLabel(label("sceneinsp.fallback_font_label"))
         lbl_fb.setFont(QFont(T.UI, T.SM)); lbl_fb.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_fb.setFixedWidth(70)
         self._fb_slot = None
@@ -491,7 +468,7 @@ class SceneInspector(QWidget):
         # réciproquement. Pousser une valeur d'autorité aurait détruit en
         # silence un pool réglé plus tôt — ici l'auteur voit simplement qu'il
         # ne reste rien à prendre.
-        budget_card = CollapsibleCard("Actor budget", color=C.ACCENT_WARM)
+        budget_card = CollapsibleCard(label("sceneinsp.card.budget"), color=C.ACCENT_WARM)
         budget_inner = budget_card.body_layout
 
         # Niveau 1 : le compte, toujours affiché. Niveau 2 : un encadré
@@ -508,18 +485,14 @@ class SceneInspector(QWidget):
 
         row_slots = QHBoxLayout()
         row_slots.setContentsMargins(0, 4, 0, 0); row_slots.setSpacing(8)
-        lbl_slots = self._dim_label("Scene actors:")
+        lbl_slots = self._dim_label(label("sceneinsp.scene_actors"))
         lbl_slots.setFixedWidth(96)
         self._spin_actor_slots = QSpinBox()
         self._spin_actor_slots.setRange(0, OAM_LIMIT)
         self._spin_actor_slots.setFont(QFont(T.MONO, T.SM))
         self._spin_actor_slots.setStyleSheet(QSS.spinbox)
         self._spin_actor_slots.setKeyboardTracking(False)
-        self._spin_actor_slots.setToolTip(
-            "Entries reserved for the actors placed in this scene.\n\n"
-            "0 = automatic: the reservation follows what you actually place. "
-            "Set it higher than the placed count only if you need headroom."
-        )
+        self._spin_actor_slots.setToolTip(label("sceneinsp.scene_actors_tip"))
         self._spin_actor_slots.valueChanged.connect(self._on_actor_slots_changed)
         self._lbl_slots_hint = QLabel("")
         self._lbl_slots_hint.setFont(QFont(T.UI, T.XS))
@@ -609,19 +582,19 @@ class SceneInspector(QWidget):
         menu.setStyleSheet(QSS.menu)
         menu.setToolTipsVisible(True)
         for m in range(6):
-            label = f"Mode {m}" + ("  ✓" if m == current else "")
-            act = menu.addAction(label)
+            item_text = label("sceneinsp.mode_menu", n=m) + ("  ✓" if m == current else "")
+            act = menu.addAction(item_text)
             if m == 0:
-                act.setToolTip(MODE_INFO[0]["tip"])
+                act.setToolTip(label(MODE_INFO[0]["tip"]))
             else:
                 act.setEnabled(False)
-                act.setToolTip(f"{MODE_INFO[m]['tip']}\n(rendering not implemented yet — coming soon)")
+                act.setToolTip(label("sceneinsp.mode_not_impl", tip=label(MODE_INFO[m]["tip"])))
             act.triggered.connect(lambda _c=False, m=m: self._on_set_mode(m))
         menu.exec(self._btn_mode.mapToGlobal(QPoint(0, self._btn_mode.height())))
 
     def _refresh_mode_buttons(self):
         mode = getattr(self._scene, "render_mode", 0) if self._scene else 0
-        self._btn_mode.setText(f"MODE {mode}")
+        self._btn_mode.setText(label("sceneinsp.mode_btn", n=mode))
 
     def _is_bitmap_layer(self, layer) -> bool:
         ba = self._project.get_background(layer.background_name) if (self._project and layer.background_name) else None
@@ -688,12 +661,14 @@ class SceneInspector(QWidget):
         layer = next((L for L in self._scene.background_layers
                       if self._is_bitmap_layer(L)), None)
         name = layer.background_name if layer else None
-        self._btn_bitmap_pick.setText(name or "Choose a bitmap background…")
+        self._btn_bitmap_pick.setText(name or label("sceneinsp.bitmap_pick"))
         rw, rh = info.get("res", (240, 160))
         bpp = info.get("bpp", 8)
-        depth = "8bpp paletted (256)" if bpp == 8 else "16bpp direct color"
-        self._bitmap_note.setText(f"BG2 · {rw}×{rh} · {depth}"
-                                  + ("" if name else " — no background selected"))
+        depth = (label("sceneinsp.bitmap_depth_8") if bpp == 8
+                 else label("sceneinsp.bitmap_depth_16"))
+        self._bitmap_note.setText(
+            label("sceneinsp.bitmap_note", w=rw, h=rh, depth=depth)
+            + ("" if name else label("sceneinsp.bitmap_no_bg")))
 
     def _pick_bitmap_bg(self):
         if not self._project or not self._scene:
@@ -702,8 +677,8 @@ class SceneInspector(QWidget):
                    if getattr(b, "mode", "tiled") == "bitmap"]
         if not bitmaps:
             QMessageBox.information(
-                self, "Aucun fond bitmap",
-                "Importe d'abord une image en mode Bitmap dans le Background Editor.")
+                self, label("sceneinsp.no_bitmap_title"),
+                label("sceneinsp.no_bitmap_text"))
             return
         entries = [(b.name, b.name) for b in bitmaps]
         popup = ScriptPickerPopup(entries, icons.COLOR_BACKGROUND, parent=self, new_label=None)
@@ -724,7 +699,7 @@ class SceneInspector(QWidget):
         info = MODE_INFO.get(mode, MODE_INFO[0])
         is_tiled = info["kind"] == "tiled"
         self._refresh_mode_buttons()
-        self._mode_hint.setText(info["tip"])
+        self._mode_hint.setText(label(info["tip"]))
         # BACKGROUND : rangées tuilées vs slot bitmap.
         self._btn_bg_add.setVisible(is_tiled)
         self._bitmap_box.setVisible(not is_tiled)
@@ -957,7 +932,7 @@ class SceneInspector(QWidget):
 
         prefabs = sorted(self._project.prefabs, key=lambda pf: pf.name)
         if not prefabs:
-            lbl = QLabel("No prefab in this project yet — nothing to pool.")
+            lbl = QLabel(label("sceneinsp.no_prefab"))
             lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
             lbl.setWordWrap(True)
@@ -975,12 +950,11 @@ class SceneInspector(QWidget):
             sp.setStyleSheet(QSS.spinbox)
             sp.setKeyboardTracking(False)
             sp.setValue(scene_pool_instances(self._scene, pf))
-            tip = [f"How many '{pf.name}' can be alive at once in this scene.",
-                   "0 = this scene never spawns it, and pays nothing for it."]
+            tip_parts = [label("sceneinsp.pool_tip", name=pf.name)]
             if group > 1:
-                tip.append(f"This prefab has {group - 1} part(s), so one "
-                           f"instance costs {group} slots.")
-            sp.setToolTip("\n\n".join(tip))
+                tip_parts.append(label("sceneinsp.pool_tip_parts",
+                                       n=group - 1, slots=group))
+            sp.setToolTip("\n\n".join(tip_parts))
             sp.valueChanged.connect(
                 lambda v, name=pf.name: self._on_pool_changed(name, v))
             # Ce que l'instance COÛTE — le pool se dit en instances, le budget
@@ -1034,16 +1008,19 @@ class SceneInspector(QWidget):
             self._spin_actor_slots.setMaximum(max(0, OAM_LIMIT - b["pool"]))
             self._spin_actor_slots.setValue(self._scene.actor_slots)
             self._lbl_slots_hint.setText(
-                f"0 = auto ({b['placed']} placed)" if self._scene.actor_slots == 0
-                else f"{b['placed']} placed")
+                label("sceneinsp.slots_hint_auto", placed=b['placed'])
+                if self._scene.actor_slots == 0
+                else label("sceneinsp.slots_hint", placed=b['placed']))
             others = b["pool"]
             for name, (sp, cost, group) in self._pool_spins.items():
                 mine = int(self._scene.prefab_pools.get(name, 0) or 0)
                 room = OAM_LIMIT - b["reserved"] - (others - mine * group)
                 sp.setMaximum(max(mine, room // group if group else 0))
                 sp.setValue(mine)
-                cost.setText(f"× {group} = {mine * group} slots" if group > 1
-                             else (f"= {mine} slot(s)" if mine else ""))
+                cost.setText(
+                    label("sceneinsp.pool_cost_grouped", group=group, slots=mine * group)
+                    if group > 1
+                    else (label("sceneinsp.pool_cost_single", n=mine) if mine else ""))
         finally:
             self._blocking = prev
 
@@ -1303,8 +1280,8 @@ class SceneInspector(QWidget):
         want = getattr(sc, "music", MUSIC_INHERIT) or MUSIC_INHERIT
         self._combo_music.blockSignals(True)
         self._combo_music.clear()
-        self._combo_music.addItem("Keep playing", MUSIC_INHERIT)
-        self._combo_music.addItem("Silence", MUSIC_NONE)
+        self._combo_music.addItem(label("sceneinsp.music_keep"), MUSIC_INHERIT)
+        self._combo_music.addItem(label("sceneinsp.music_silence"), MUSIC_NONE)
         for m in (getattr(p, "music", []) if p else []):
             self._combo_music.addItem(m.name, m.name)
         idx = self._combo_music.findData(want)
@@ -1312,7 +1289,7 @@ class SceneInspector(QWidget):
             # Piste disparue : on la garde VISIBLE plutôt que de retomber en
             # silence sur « Keep playing ». Le champ dirait le contraire du
             # fichier, et le validateur signale déjà le problème.
-            self._combo_music.addItem(f"{want}  (missing)", want)
+            self._combo_music.addItem(label("sceneinsp.music_missing", name=want), want)
             idx = self._combo_music.count() - 1
         self._combo_music.setCurrentIndex(idx)
         self._combo_music.blockSignals(False)
@@ -1352,7 +1329,8 @@ class SceneInspector(QWidget):
             f"QPushButton:hover{{border-color:{C.ACCENT};}}"
         )
         overridden = getattr(self._scene, "backdrop_color", None) is not None
-        self._lbl_backdrop.setText(f"0x{v:04X}" + ("" if overridden else "  (projet)"))
+        self._lbl_backdrop.setText(
+            f"0x{v:04X}" + ("" if overridden else label("sceneinsp.backdrop_project_suffix")))
         self._btn_backdrop_reset.setVisible(overridden)
 
     def _pick_backdrop(self):
@@ -1362,7 +1340,7 @@ class SceneInspector(QWidget):
             return
         r, g, b = bgr555_to_rgb888(self._effective_backdrop())
         col = QColorDialog.getColor(
-            QColor(r, g, b), self, "Couleur de backdrop",
+            QColor(r, g, b), self, label("sceneinsp.backdrop_dialog"),
             QColorDialog.ColorDialogOption.DontUseNativeDialog,
         )
         if not col.isValid():
@@ -1486,7 +1464,7 @@ class SceneInspector(QWidget):
         self._fb_slot = font_picker_slot(
             list(getattr(p, "fonts", []) or []), usable, cur, icons.COLOR_UI,
             on_picked=self._on_scene_fallback_changed,
-            add_label="Choose a fallback font for this scene", parent=self,
+            add_label=label("sceneinsp.fallback_add"), parent=self,
             project_default=getattr(p.settings, "fallback_font", "") if p else "")
         self._fb_box.addWidget(self._fb_slot)
 
@@ -1513,8 +1491,8 @@ class SceneInspector(QWidget):
         self._lbl_text_bg_warn.setVisible(bool(conflict))
         if conflict:
             self._lbl_text_bg_warn.setToolTip(
-                f"BG{text_bg} porte '{conflict.background_name}' — sera écrasé par le texte"
-            )
+                label("sceneinsp.text_bg_conflict_tip",
+                      n=text_bg, name=conflict.background_name))
 
     def _refresh_ui_layer_marks(self):
         """Marque visuellement (icône 'UI') la rangée dont le bg_slot == Layer

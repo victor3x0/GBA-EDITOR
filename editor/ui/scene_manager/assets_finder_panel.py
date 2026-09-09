@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 from ui.common.theme import QSS
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import SCENES, PREFABS, SCRIPTS
+from ui.common.labels import label
 
 from core.project import Project
 from core.selection_bus import get_bus
@@ -60,15 +61,15 @@ class AssetsFinderPanel(QWidget):
 
         # Entrées de menu propres à cet écran : elles supposent un inspecteur
         # capable de les afficher, que seul le Scene Manager possède.
-        self._finder.add_action(PREFABS.label, "Instantiate prefab",
+        self._finder.add_action(PREFABS.label, label("assf.instantiate_prefab"),
                                 lambda pf: get_dispatcher().instantiate_prefab(pf.name, 60, 60))
-        self._finder.add_action(PREFABS.label, "Edit prefab",
+        self._finder.add_action(PREFABS.label, label("assf.edit_prefab"),
                                 lambda pf: get_bus().select(pf))
-        self._finder.add_action(PREFABS.label, "View instances",
+        self._finder.add_action(PREFABS.label, label("assf.view_instances"),
                                 self.prefab_uses_requested.emit)
-        self._finder.add_action(SCRIPTS.label, "Edit script",
+        self._finder.add_action(SCRIPTS.label, label("assf.edit_script"),
                                 lambda p: self.script_opened.emit(str(p)))
-        self._finder.add_action(SCRIPTS.label, "View uses",
+        self._finder.add_action(SCRIPTS.label, label("assf.view_uses"),
                                 lambda p: self.script_uses_requested.emit(str(p)))
 
     # ── Sélection ─────────────────────────────────────────────────
@@ -115,7 +116,7 @@ class AssetsFinderPanel(QWidget):
     def _show_add_script_menu(self):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        menu.addAction("Behavior Script", self._new_behavior_script)
+        menu.addAction(label("assf.behavior_script"), self._new_behavior_script)
         menu.exec(self.mapToGlobal(QPoint(0, 0)))
 
     def _new_behavior_script(self):
@@ -177,7 +178,7 @@ class AssetsFinderPanel(QWidget):
             self.project_created.emit(dlg.result_name, str(dlg.result_path))
 
     def _prompt_open(self):
-        path = QFileDialog.getExistingDirectory(self, "Ouvrir un projet", str(PROJECTS_DIR))
+        path = QFileDialog.getExistingDirectory(self, label("assf.open_project"), str(PROJECTS_DIR))
         if path:
             self.project_opened.emit(path)
 

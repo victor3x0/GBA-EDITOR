@@ -21,6 +21,7 @@ from PyQt6.QtCore import (
 
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
+from ui.common.labels import label
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from ui.common import external_editor
 
@@ -127,7 +128,7 @@ class AudioPlayer(QWidget):
             f"QToolButton{{border:none;background:transparent;border-radius:3px;}}"
             f"QToolButton:hover{{background:{C.BG_HOVER};}}"
         )
-        self._btn_edit.setToolTip("Edit audio…")
+        self._btn_edit.setToolTip(label("sndpanel.edit_audio_tip"))
         self._btn_edit.setEnabled(False)
         self._btn_edit.clicked.connect(self._on_edit_audio)
         self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -144,8 +145,8 @@ class AudioPlayer(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         cur = external_editor.get_configured_editor(external_editor.KIND_AUDIO)
-        act_choose = menu.addAction("Choose editor…")
-        act_default = menu.addAction("Use system default")
+        act_choose = menu.addAction(label("sndpanel.choose_editor"))
+        act_default = menu.addAction(label("sndpanel.use_default"))
         act_default.setEnabled(bool(cur))
         chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
         if chosen == act_choose:
@@ -186,7 +187,7 @@ class AudioPlayer(QWidget):
                 pcm = render_module(load_module(path))
                 self._module_cache[path] = pcm
             if pcm.shape[0] == 0:
-                self._lbl.setText(f"{path.name}  (empty / unreadable)")
+                self._lbl.setText(label("sndpanel.mod_empty", name=path.name))
                 return
             fmt = QAudioFormat()
             fmt.setSampleRate(GBA_MIX_RATE)
@@ -200,7 +201,7 @@ class AudioPlayer(QWidget):
             self._buffer.setData(QByteArray(pcm.tobytes()))
             self._buffer.open(QIODevice.OpenModeFlag.ReadOnly)
         except Exception as e:
-            self._lbl.setText(f"{path.name}  (erreur de lecture MOD : {e})")
+            self._lbl.setText(label("sndpanel.mod_error", name=path.name, error=e))
             self._sink = None
 
     def _teardown_sink(self):
@@ -261,7 +262,9 @@ class AudioPlayer(QWidget):
     def _on_player_error(self, error, error_string: str):
         if self._is_module or error == QMediaPlayer.Error.NoError:
             return
-        self._lbl.setText(f"{self._current.name if self._current else '—'}  (preview unavailable: {error_string})")
+        self._lbl.setText(label("sndpanel.preview_unavailable",
+                                name=self._current.name if self._current else "—",
+                                error=error_string))
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -293,7 +296,7 @@ class _AssetInspectorBase(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self._empty = QLabel(self._EMPTY_TEXT)
+        self._empty = QLabel(label(self._EMPTY_TEXT) if self._EMPTY_TEXT else "")
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -315,18 +318,18 @@ class _AssetInspectorBase(QWidget):
         self._header.renamed.connect(self._on_renamed)
         cl.addWidget(self._header)
 
-        self._file_lbl = QLabel("None")
+        self._file_lbl = QLabel(label("sndpanel.no_file"))
         self._file_lbl.setFont(QFont(T.UI, T.SM))
         self._file_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         cl.addWidget(self._file_lbl)
 
-        btn_import = QPushButton(self._IMPORT_BTN_TEXT)
+        btn_import = QPushButton(label(self._IMPORT_BTN_TEXT))
         btn_import.setFont(QFont(T.UI, T.MD))
         btn_import.clicked.connect(self._import)
         cl.addWidget(btn_import)
 
         if self._HAS_LOOP:
-            self._loop = QCheckBox("Loop")
+            self._loop = QCheckBox(label("sndpanel.loop"))
             self._loop.setFont(QFont(T.UI, T.MD))
             self._loop.setStyleSheet(f"color:{C.TEXT_NORM};")
             self._loop.toggled.connect(self._on_loop)
@@ -338,14 +341,9 @@ class _AssetInspectorBase(QWidget):
             f"QSpinBox{{background:{C.BG_INPUT};color:{C.TEXT_NORM};border:1px solid {C.BORDER_MID};"
             "border-radius:3px;padding:2px;}"
         )
-        self._vol.setToolTip(
-            "Niveau, en pourcentage.\n\n"
-            "maxmod a deux échelles de volume — 0–255 pour un effet, 0–1024\n"
-            "pour le module — et le build convertit vers celle de la cible.\n"
-            "Un pourcentage ne peut être confondu avec ni l'une ni l'autre."
-        )
+        self._vol.setToolTip(label("sndpanel.volume_tip"))
         self._vol.valueChanged.connect(self._on_vol)
-        row("Volume", self._vol)
+        row(label("sndpanel.volume"), self._vol)
 
         self._build_extra_rows(row, cl)
 
@@ -367,7 +365,7 @@ class _AssetInspectorBase(QWidget):
 
     def _weight_text(self, entry) -> str:
         """Ce que pèse cet asset en ROM, tel qu'on l'écrit à l'auteur."""
-        return f"En ROM : {entry.own_bytes / 1024:.1f} Kio  (dernier build)"
+        return label("sndpanel.weight", kb=f"{entry.own_bytes / 1024:.1f}")
 
     def refresh_weight(self, entry):
         self._weight.setText(self._weight_text(entry) if entry else "")
@@ -384,7 +382,7 @@ class _AssetInspectorBase(QWidget):
             self._content.setVisible(False); self._empty.setVisible(True); return
         self._empty.setVisible(False); self._content.setVisible(True)
         self._blocking = True
-        self._header.set_header(self._HEADER_KIND, self._HEADER_LABEL, asset.name)
+        self._header.set_header(self._HEADER_KIND, label(self._HEADER_LABEL), asset.name)
         ap = project.asset_abs(asset.asset) if asset.asset else None
         self._set_file_label(ap)
         if self._HAS_LOOP:
@@ -422,13 +420,13 @@ class _AssetInspectorBase(QWidget):
 
     def _set_file_label(self, path: Optional[Path]):
         if path is None:
-            self._file_lbl.setText("Aucun fichier"); return
+            self._file_lbl.setText(label("sndpanel.no_file")); return
         self._file_lbl.setText(f"{path.name}{self._file_hint(path)}")
 
     def _import(self):
         if not self._project or not self._asset: return
         path, _ = QFileDialog.getOpenFileName(
-            self, self._IMPORT_DIALOG_TITLE, "", self._IMPORT_FILTER
+            self, label(self._IMPORT_DIALOG_TITLE), "", self._IMPORT_FILTER
         )
         if not path:
             return
@@ -436,8 +434,9 @@ class _AssetInspectorBase(QWidget):
         # assets/. Et c'est le seul refus possible — mmutil construit la ROM
         # sans broncher sur un wav 24 bits, en la laissant muette.
         if reason := check_audio_file(Path(path)):
-            QMessageBox.warning(self, "Fichier non importé",
-                                f"{Path(path).name}\n\n{reason}")
+            QMessageBox.warning(self, label("sndpanel.import_rejected_title"),
+                                label("sndpanel.import_rejected_text",
+                                      name=Path(path).name, reason=reason))
             return
         dst = self._project.import_asset(Path(path), self._IMPORT_FOLDER)
         self._asset.asset = self._project.asset_rel(dst)
@@ -447,11 +446,11 @@ class _AssetInspectorBase(QWidget):
 
 
 class SfxInspector(_AssetInspectorBase):
-    _EMPTY_TEXT = "Select an SFX"
+    _EMPTY_TEXT = "sndpanel.sfx_empty"
     _HEADER_KIND = "sfx"
-    _HEADER_LABEL = "SFX"
-    _IMPORT_BTN_TEXT = "Importer WAV…"
-    _IMPORT_DIALOG_TITLE = "Importer SFX"
+    _HEADER_LABEL = "sndpanel.header_sfx"
+    _IMPORT_BTN_TEXT = "sndpanel.sfx_import_btn"
+    _IMPORT_DIALOG_TITLE = "sndpanel.sfx_import_title"
     _IMPORT_FILTER = file_dialog_filter("WAV PCM 8/16 bits", SFX_FILE_EXTS)
     _IMPORT_FOLDER = "sfx"
 
@@ -469,21 +468,16 @@ class SfxInspector(_AssetInspectorBase):
         ne refuse pas le choix (ROADMAP v0.8.1).
         """
         n = sfx_rom_bytes(path)
-        return f"  —  source {n / 1024:.1f} Kio" if n else ""
+        return label("sndpanel.sfx_source", kb=f"{n / 1024:.1f}") if n else ""
 
     def _build_extra_rows(self, row, layout):
         self._rate = QComboBox()
         self._rate.setFont(QFont(T.UI, T.MD))
-        for value, label in self._RATES:
-            self._rate.addItem(label, value)
-        self._rate.setToolTip(
-            "Taux d'échantillonnage visé pour cet effet.\n\n"
-            "La conversion a lieu au build : le fichier de assets/ n'est jamais\n"
-            "réécrit, on peut donc remonter le taux après coup sans rien perdre.\n\n"
-            "« From project » suit le réglage du projet."
-        )
+        for value, rate_label in self._RATES:
+            self._rate.addItem(rate_label, value)
+        self._rate.setToolTip(label("sndpanel.rate_tip"))
         self._rate.currentIndexChanged.connect(self._on_rate)
-        row("Taux", self._rate)
+        row(label("sndpanel.rate"), self._rate)
 
     def _manager(self):
         return self._project.sfx
@@ -502,11 +496,11 @@ class SfxInspector(_AssetInspectorBase):
 #  Inspector d'une Music
 # ──────────────────────────────────────────────────────────────────
 class MusicInspector(_AssetInspectorBase):
-    _EMPTY_TEXT = "Select a track"
+    _EMPTY_TEXT = "sndpanel.music_empty"
     _HEADER_KIND = "music"
-    _HEADER_LABEL = "Music"
-    _IMPORT_BTN_TEXT = "Importer MOD…"
-    _IMPORT_DIALOG_TITLE = "Importer Music"
+    _HEADER_LABEL = "sndpanel.header_music"
+    _IMPORT_BTN_TEXT = "sndpanel.music_import_btn"
+    _IMPORT_DIALOG_TITLE = "sndpanel.music_import_title"
     _IMPORT_FILTER = file_dialog_filter("Module", MUSIC_FILE_EXTS)
     _IMPORT_FOLDER = "music"
     _HAS_LOOP = True
@@ -521,12 +515,11 @@ class MusicInspector(_AssetInspectorBase):
         une en rend autant, et le poids propre cacherait ce qu'elle a fait
         entrer (cf. ROADMAP v0.8.4).
         """
-        own = f"{entry.own_bytes / 1024:.1f} Kio en propre"
+        kb = f"{entry.own_bytes / 1024:.1f}"
         if entry.shared_bytes and entry.shared_with:
-            return (f"En ROM : {own}, plus {entry.shared_bytes / 1024:.1f} Kio "
-                    f"d'échantillons partagés avec {entry.shared_with} autre(s) "
-                    f"piste(s).  (dernier build)")
-        return f"En ROM : {own}  (dernier build)"
+            return label("sndpanel.music_weight_shared", kb=kb,
+                         shared=f"{entry.shared_bytes / 1024:.1f}", n=entry.shared_with)
+        return label("sndpanel.music_weight", kb=kb)
 
     def _manager(self):
         return self._project.music
@@ -561,16 +554,13 @@ class _BoxTab(QWidget):
         lay.setSpacing(6)
 
         bar = QHBoxLayout(); bar.setSpacing(6)
-        lbl = QLabel("Boîte :")
+        lbl = QLabel(label("sndpanel.box"))
         lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         self._combo = QComboBox()
         self._combo.setFont(QFont(T.UI, T.SM))
         self._combo.setStyleSheet(QSS.combobox)
-        self._combo.setToolTip(
-            "Le jeu n'en charge qu'UNE par famille — la première par ordre de "
-            "nom.\n\nLes autres restent dans le projet mais ne sonneront pas ; "
-            "le validateur les signale.")
+        self._combo.setToolTip(label("sndpanel.box_tip"))
         self._combo.currentIndexChanged.connect(lambda _i: self._load())
         # Le champ de renommage prend la PLACE du sélecteur, il ne s'ajoute
         # pas à côté : on renomme la boîte qu'on a sous les yeux, et la barre
@@ -585,11 +575,11 @@ class _BoxTab(QWidget):
         self._name_edit.setVisible(False)
         self._name_edit.editingFinished.connect(self._commit_rename)
         self._btn_ren = W.btn_ghost("✎")
-        self._btn_ren.setToolTip("Renommer cette boîte")
+        self._btn_ren.setToolTip(label("sndpanel.rename_box_tip"))
         self._btn_ren.clicked.connect(self._begin_rename)
-        btn_new = W.btn_ghost("+ Nouvelle")
+        btn_new = W.btn_ghost(label("sndpanel.new_box"))
         btn_new.clicked.connect(self._new)
-        self._btn_del = W.btn_danger("Supprimer cette boîte")
+        self._btn_del = W.btn_danger(label("sndpanel.del_box_tip"))
         self._btn_del.clicked.connect(self._delete)
         bar.addWidget(lbl)
         bar.addWidget(self._combo, 1); bar.addWidget(self._name_edit, 1)
@@ -717,8 +707,8 @@ class _BoxTab(QWidget):
         if box is None or not self._project:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer la boîte « {box.name} » ?\n(Ctrl+Z pour annuler)",
+            self, label("sndpanel.del_box_title"),
+            label("sndpanel.del_box_text", name=box.name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -791,7 +781,7 @@ class SoundMixerScreen(QWidget):
 
         empty_w = QWidget(); empty_w.setStyleSheet(f"background:{C.BG_PANEL};")
         el = QVBoxLayout(empty_w)
-        hint = QLabel("Select or create\nan SFX or a track\nto edit its properties")
+        hint = QLabel(label("sndpanel.right_empty"))
         hint.setFont(QFont(T.UI, T.MD))
         hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -859,23 +849,17 @@ class SoundMixerScreen(QWidget):
         self._music_tab = _BoxTab(
             "music_boxes", MusicBox, self._music_machine,
             lambda box: self._music_machine.load(box),
-            "Une MusicBox range les états musicaux et les transitions entre "
-            "eux : quelle piste dans quelle ambiance, et par quel déclencheur "
-            "on passe de l'une à l'autre.")
+            label("sndpanel.musicbox_empty"))
         self._sound_tab = _BoxTab(
             "sound_boxes", SoundBox, self._sfx_matrix,
             lambda box: self._sfx_matrix.load(
                 box, [s.name for s in self._project.sfx]),
-            "Une SoundBox dit vers quel effet chaque action pointe selon "
-            "l'état — le même cycle de marche sonne le sable ou les cailloux "
-            "sans être authoré deux fois.")
+            label("sndpanel.soundbox_empty"))
         self._jingle_tab = _BoxTab(
             "jingle_boxes", JingleBox, self._jingle_matrix,
             lambda box: self._jingle_matrix.load(
                 box, [m.name for m in self._project.music]),
-            "Une JingleBox dit vers quel module chaque action de jingle "
-            "pointe selon l'état. Un jingle se superpose à la musique, il ne "
-            "la remplace pas.")
+            label("sndpanel.jinglebox_empty"))
         for tab, title in ((self._music_tab, "MusicBox"),
                            (self._sound_tab, "SoundBox"),
                            (self._jingle_tab, "JingleBox")):
@@ -910,7 +894,7 @@ class SoundMixerScreen(QWidget):
         self._player.setFixedHeight(34)
         lay.addWidget(self._player, 1)
 
-        self._btn_rom = QPushButton("▶ Lecture ROM")
+        self._btn_rom = QPushButton(label("sndpanel.rom_play"))
         self._btn_rom.setCheckable(True)
         self._btn_rom.setFont(QFont(T.UI, T.SM))
         self._btn_rom.setStyleSheet(
@@ -919,11 +903,7 @@ class SoundMixerScreen(QWidget):
             f"QPushButton:hover{{background:{C.BG_HOVER};}}"
             f"QPushButton:checked{{background:{C.BG_SEL}; color:{C.ACCENT};"
             f"border-color:{C.ACCENT};}}")
-        self._btn_rom.setToolTip(
-            "Joue la MusicBox comme la ROM la jouera.\n\n"
-            "Cliquer un nœud émet le déclencheur qui y mène : la transition\n"
-            "s'entend exactement comme en jeu, sans build. S'il n'existe pas\n"
-            "d'arête vers ce nœud, rien ne se passe — comme sur la console.")
+        self._btn_rom.setToolTip(label("sndpanel.rom_play_tip"))
         self._btn_rom.toggled.connect(self._on_rom_toggled)
         lay.addWidget(self._btn_rom)
 
@@ -945,7 +925,7 @@ class SoundMixerScreen(QWidget):
             self._player.stop_playback()   # une seule sortie audio à la fois
             box = self._music_tab.current()
             if box is None or not box.states:
-                self._rom_state.setText("Aucun état à jouer.")
+                self._rom_state.setText(label("sndpanel.no_state"))
                 self._btn_rom.setChecked(False)
                 return
             self._box_player.load(self._project, box)

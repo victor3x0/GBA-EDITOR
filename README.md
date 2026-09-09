@@ -104,7 +104,7 @@ tient à l'échelle d'un vrai projet.
 - **v0.19** ✅ : Le sous-pixel — position et vitesse en point fixe (Q8), pour une accélération, un saut à hauteur variable et un recul qui ne se règlent pas par pixel entier ; `self.velocity` change d'unité, `self:apply_velocity()` l'accumule sans perte de fraction à travers la collision
 - **v0.20** ✅ : Les collections persistantes — une variable globale peut avoir plusieurs cases (`global.coffres[i]`), sauvegardables d'un bloc et empaquetées en SRAM (400 booléens tiennent en 60 octets), au lieu d'une variable par coffre
 - **v0.21** ✅ : Le texte adressable — un id de texte peut être une VALEUR (`text.draw(2, 16, data.Dialogues[i].replique)`) et non plus seulement une clé écrite à la main : un script parcourt enfin une conversation au lieu d'être déroulé réplique par réplique, et le dialogue reste traduisible
-- **v0.22** : Menus, listes et curseur — le moteur prend la navigation, la mise en page reste authorée
+- **v0.22** ✅ : Menus, listes et curseur — `UIList` devient un type d'élément à part entière (index, bornes, grille `nav_columns`/`nav_major`, curseur qui se pose ou qui glisse), un `active` par liste pour tenir un menu et son sous-menu à l'écran, `ui.image_move` pour piloter un curseur au script, et un en-tête de sauvegarde lisible sans charger la partie (`save.read(slot, "nom")`) — le moteur prend la navigation, la mise en page reste authorée
 - **v0.23** ✅ : Ce qu'un boss demande — attendre dans une boucle bornée (`for i = 1, 3 do tirer() ; wait(20) end`), une hiérarchie d'acteurs (un boss segmenté se déplace d'un bloc, chaque enfant gardant son sprite et ses collisions — y compris pour un ennemi spawné, dont le prefab porte son propre arbre — et un enfant se nomme depuis son parent : `local MonBras = self.BrasG`), et une matrice de collision entre tags qui retire du build les paires qui ne se rencontrent jamais
 - **v0.24** (en cours) : Le projet à l'échelle d'une équipe — des fichiers de projet que git sait relire (le jeu de démo passe de 14 444 à 3 679 lignes, couleurs en `#RRGGBB`, une ligne par rangée de carte), et un build qui ne refait que ce qui a changé : rebuild à chaud de 9,1 s à 6,6 s, dont `make` de 3,5 s à 0,17 s
 - **v0.25** ✅ : L'interface possède son chemin matériel — un nœud « Interface » se pose dans la scène et fixe, à un seul endroit, l'ancrage (écran / monde / acteur) et le chemin matériel (fond ou sprite) de tout son contenu ; une scène peut en poser plusieurs, un HUD fixe en fond et une bulle qui suit un acteur en sprite, chacun son chemin
@@ -164,8 +164,7 @@ d'autres plateformes sont les mêmes : ce qui s'y achète, c'est la commodité e
 le soutien au développement, jamais un supplément de fonctionnalités.
 
 Les composants tiers embarqués et leurs licences sont listés dans
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Pour contribuer, voir
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ---
 

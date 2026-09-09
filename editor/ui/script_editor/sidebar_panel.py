@@ -13,6 +13,7 @@ from scripting.project_names import names_by_domain
 from core.models.text import SEP
 from core.text_markup import display_text
 from ui.common.theme import C, T
+from ui.common.labels import label
 from .colors import _BG, _TEXT_DIM, _TEXT_NORM, _C_API, _C_REF, _C_EVENT, _C_BEHAVIOR
 from .sidebar_widgets import (
     _Section, _EntryButton, _group_label,
@@ -52,7 +53,7 @@ class SidebarPanel(QWidget):
         self._cl.setSpacing(0)
 
         # ── Section EVENTS ─────────────────────────────────────────
-        self._sec_events = _Section("Events", _C_EVENT)
+        self._sec_events = _Section(label("scrsb.events"), _C_EVENT)
         self._event_btns: dict[str, _EntryButton] = {}
         for ev in KNOWN_EVENTS:
             meta  = _EVENT_META.get(ev, {})
@@ -74,7 +75,7 @@ class SidebarPanel(QWidget):
             self._cl.addWidget(sec)
 
         # ── Section RÉFÉRENCES ──────────────────────────────────────
-        self._sec_refs = _Section("References", _C_REF, expanded=False)
+        self._sec_refs = _Section(label("scrsb.references"), _C_REF, expanded=False)
         self._cl.addWidget(self._sec_refs)
 
         self._cl.addStretch()
@@ -85,8 +86,8 @@ class SidebarPanel(QWidget):
 
     def _build_api_sections(self):
         from scripting.api_reference import get_categories_by_group, make_tooltip
-        for _group, label, cats in get_categories_by_group():
-            sec = _Section(label, _C_API, expanded=False)
+        for _group, grp_label, cats in get_categories_by_group():
+            sec = _Section(grp_label, _C_API, expanded=False)
             for cat in cats:
                 sub = sec.sub_section(cat["name"])
                 for entry in cat.get("entries", []):
@@ -145,26 +146,26 @@ class SidebarPanel(QWidget):
 
         # Scènes
         if nbd.get(DOMAIN_SCENE):
-            sub = self._sec_refs.sub_section("Scenes")
+            sub = self._sec_refs.sub_section(label("scrsb.scenes"))
             for name in nbd[DOMAIN_SCENE]:
                 _add(sub, name, "scene.switch", scene=name)
 
         # Actors — ceux de la scène active (cf. names_by_domain)
         if nbd.get(DOMAIN_ACTOR):
-            sub = self._sec_refs.sub_section("Actors")
+            sub = self._sec_refs.sub_section(label("scrsb.actors"))
             for name in nbd[DOMAIN_ACTOR]:
-                _add(sub, name, "get_actor", "Active scene.", actor=name)
+                _add(sub, name, "get_actor", label("scrsb.active_scene"), actor=name)
 
         # Prefabs
         if nbd.get(DOMAIN_PREFAB):
-            sub = self._sec_refs.sub_section("Prefabs")
+            sub = self._sec_refs.sub_section(label("scrsb.prefabs"))
             for name in nbd[DOMAIN_PREFAB]:
                 _add(sub, name, "actor.spawn", prefab=name)
 
         # Sprites
         sprites = list(project.sprites)
         if sprites:
-            sub = self._sec_refs.sub_section("Sprites")
+            sub = self._sec_refs.sub_section(label("scrsb.sprites"))
             for sp in sprites:
                 _add(sub, sp.name, "self:play_anim", anim=sp.name)
 
@@ -173,11 +174,10 @@ class SidebarPanel(QWidget):
         # commentaire, et le dire évite de chercher la fonction manquante.
         bgs = list(project.backgrounds)
         if bgs:
-            sub = self._sec_refs.sub_section("Backgrounds")
+            sub = self._sec_refs.sub_section(label("scrsb.backgrounds"))
             for bg in bgs:
                 sub.add_widget(_ref_btn(bg.name, f"-- BG: {bg.name}",
-                    _tip(bg.name, "Editorial reference — a background is placed in "
-                                  "the scene, not from a script.")))
+                    _tip(bg.name, label("scrsb.bg_ref"))))
 
         # ── Textes ─────────────────────────────────────────────────
         # Rangés par premier niveau de chemin : c'est l'arbre de l'écran Texte,
@@ -186,7 +186,7 @@ class SidebarPanel(QWidget):
         # métier de l'écran Texte, la sidebar sert à INSÉRER.
         texts = list(getattr(project, "texts", []))
         if texts:
-            sub = self._sec_refs.sub_section("Texts")
+            sub = self._sec_refs.sub_section(label("scrsb.texts"))
             _UNFILED = "(unfiled)"
             values = project.text_values()
             groups: dict[str, list] = {}
@@ -210,7 +210,7 @@ class SidebarPanel(QWidget):
                  if project.active_scene and hasattr(project, "scene_ui_slots")
                  else [])
         if slots:
-            sub = self._sec_refs.sub_section("Text zones")
+            sub = self._sec_refs.sub_section(label("scrsb.text_zones"))
             for layout, r in slots:
                 # Une zone propose son texte d'aperçu ; un texte AUTHORÉ porte
                 # directement sa clé, et reste adressable (cf. KIND_SLOTS) pour
@@ -225,13 +225,13 @@ class SidebarPanel(QWidget):
 
         # ── Polices ────────────────────────────────────────────────
         if nbd.get(DOMAIN_FONT):
-            sub = self._sec_refs.sub_section("Fonts")
+            sub = self._sec_refs.sub_section(label("scrsb.fonts"))
             for name in nbd[DOMAIN_FONT]:
                 _add(sub, name, "text.set_font", font=name)
 
         # SFX
         if nbd.get(DOMAIN_SFX):
-            sub = self._sec_refs.sub_section("SFX")
+            sub = self._sec_refs.sub_section(label("scrsb.sfx"))
             for name in nbd[DOMAIN_SFX]:
                 _add(sub, name, "sfx.play", sfx=name)
 
@@ -239,12 +239,13 @@ class SidebarPanel(QWidget):
         behaviors_dir = project.scripts_behaviors_dir
         scripts = sorted(behaviors_dir.glob("*.lua")) if behaviors_dir.exists() else []
         if scripts:
-            sub = self._sec_refs.sub_section("Scripts")
+            sub = self._sec_refs.sub_section(label("scrsb.scripts"))
             for sp in scripts:
                 rel = f"behaviors/{sp.stem}"
                 sn  = f"local {sp.stem} = require(\"{rel}\")"
                 sub.add_widget(_ref_btn(sp.name, sn,
-                    _tip(f"require(\"{rel}\")", f"Imports the behavior module <i>{sp.stem}</i>.")))
+                    _tip(f"require(\"{rel}\")",
+                         label("scrsb.require_desc", name=sp.stem))))
 
     # ── Mise à jour état events ───────────────────────────────────────
 
@@ -267,9 +268,9 @@ class SidebarPanel(QWidget):
 
         if context == "behavior":
             # Remplace EVENTS par MODULE
-            self._sec_events.set_title_and_color("MODULE", _C_BEHAVIOR)
+            self._sec_events.set_title_and_color(label("scrsb.module"), _C_BEHAVIOR)
 
-            hint = QLabel("  No handlers — called via require()")
+            hint = QLabel(label("scrsb.no_handlers"))
             hint.setFont(QFont(T.UI, T.XS))
             hint.setStyleSheet(f"color:{_TEXT_DIM};background:{_BG};padding:4px 8px;")
             hint.setWordWrap(True)
@@ -287,7 +288,7 @@ class SidebarPanel(QWidget):
             self._sec_refs.setVisible(False)
         else:
             # Restore EVENTS header style
-            self._sec_events.set_title_and_color("EVENTS", _C_EVENT)
+            self._sec_events.set_title_and_color(label("scrsb.events"), _C_EVENT)
             self._sec_refs.setVisible(True)
 
             # Un script sans `self` (scène ou caméra) a ses propres points

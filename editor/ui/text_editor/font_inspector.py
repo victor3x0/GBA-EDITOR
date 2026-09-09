@@ -15,6 +15,7 @@ from core.models.font import TILES_PER_CHARBLOCK, rect_tiles
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import CollapsibleCard
 from ui.common import icons
+from ui.common.labels import label
 from ui.text_editor.colors import FONT_COLOR
 from ui.text_editor.glyph_paint import key_out
 from ui.text_editor.glyph_sheet import GlyphSheet
@@ -46,24 +47,15 @@ class FontInspector(QWidget):
     pick_asked         = pyqtSignal(str, str)           # (rôle, libellé)
     key_color_cleared  = pyqtSignal(str)                # rôle
 
-    # (role, model field, label, tooltip).
+    # (role, model field, label key, tooltip key).
     _KEY_ROLES = (
-        ("bg", "bg_color", "Background",
-         "BACKGROUND color of the sheet.<br><br>"
-         "A sheet exported without an alpha channel lands on a flat fill — green,<br>"
-         "magenta, white. Without designating it, the encoder mistakes it for ink<br>"
-         "and every glyph comes out as a solid block.<br><br>"
-         "Suggested automatically on import (dominant color); re-pick it<br>"
-         "if the sheet is atypical."),
-        ("space", "space_color", "Spacing",
-         "Color that MARKS THE SPACING between glyphs.<br><br>"
-         "A convention used by several tools, including GB Studio: a second color<br>"
-         "fills the end of each cell to indicate where the character ends.<br>"
-         "It must disappear just like the background, or it will show up<br>"
-         "in-game."),
+        ("bg", "bg_color", "fontinsp.bg", "fontinsp.bg_tip"),
+        ("space", "space_color", "fontinsp.space", "fontinsp.space_tip"),
     )
 
     # Libellés des sources de chasse nommées par `font_emit.advance_source`.
+    # Diagnostic composé (source de chasse) — laissé littéral (fragments), cf.
+    # politique de différé des blocs de stats interpolés.
     _ADV_ORIGIN = {
         "fnt":     ".fnt descriptor",
         "spacing": "declared by spacing",
@@ -79,10 +71,10 @@ class FontInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(FONT_COLOR, "Font")
+        host, lay, self._name_lbl = insp_scroll(FONT_COLOR, label("fontinsp.title"))
         root.addWidget(host)
 
-        info_card = CollapsibleCard("Info")
+        info_card = CollapsibleCard(label("fontinsp.info"))
         self._info = QLabel("")
         self._info.setFont(QFont(T.UI, T.SM))
         self._info.setStyleSheet(f"color:{C.TEXT_NORM};")
@@ -93,10 +85,10 @@ class FontInspector(QWidget):
         # ── Transparence ──────────────────────────────────────────
         # Pipettes plutôt que sélecteur de couleur : la couleur voulue est
         # sous les yeux, dans la planche.
-        transparency_card = CollapsibleCard("Transparency")
+        transparency_card = CollapsibleCard(label("fontinsp.transparency"))
         self._swatches: dict[str, QLabel] = {}
-        for role, _field, label, tip in self._KEY_ROLES:
-            transparency_card.body_layout.addLayout(self._key_row(role, label, tip))
+        for role, _field, lbl_key, tip_key in self._KEY_ROLES:
+            transparency_card.body_layout.addLayout(self._key_row(role, lbl_key, tip_key))
 
         self._key_hint = QLabel("")
         self._key_hint.setFont(QFont(T.UI, T.XS))
@@ -105,7 +97,7 @@ class FontInspector(QWidget):
         transparency_card.body_layout.addWidget(self._key_hint)
         lay.addWidget(transparency_card)
 
-        charset_card = CollapsibleCard("Charset")
+        charset_card = CollapsibleCard(label("fontinsp.charset"))
         self._charset = _CharsetEdit()
         self._charset.setFont(QFont(T.CODE, T.MD))
         self._charset.setStyleSheet(
@@ -113,28 +105,18 @@ class FontInspector(QWidget):
             f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}"
         )
         self._charset.setFixedHeight(80)
-        self._charset.setToolTip(
-            "Characters covered by this font — derived from the glyphs,<br>"
-            "never stored as such.<br><br>"
-            "Editable: leaving the box reassigns characters to the cells<br>"
-            "in order (character 1 → cell 1, …). One cell holds one<br>"
-            "character, so a ligature (e.g. “...”) is set cell by cell,<br>"
-            "not here."
-        )
+        self._charset.setToolTip(label("fontinsp.charset_tip"))
         self._charset.editing_finished.connect(self._commit_charset)
         charset_card.body_layout.addWidget(self._charset)
 
-        charset_hint = QLabel(
-            "Editing reassigns characters to cells in order. Extra cells keep "
-            "their character; ligatures are set cell by cell."
-        )
+        charset_hint = QLabel(label("fontinsp.charset_hint"))
         charset_hint.setFont(QFont(T.UI, T.XS))
         charset_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         charset_hint.setWordWrap(True)
         charset_card.body_layout.addWidget(charset_hint)
         lay.addWidget(charset_card)
 
-        glyph_card = CollapsibleCard("Selected glyph")
+        glyph_card = CollapsibleCard(label("fontinsp.selected_glyph"))
 
         # La case seule, agrandie : c'est ce qu'on regarde pour décider quel
         # caractère lui assigner.
@@ -152,27 +134,18 @@ class FontInspector(QWidget):
         self._char_edit.setStyleSheet(QSS.lineedit)
         self._char_edit.setFont(QFont(T.CODE, T.LG))
         self._char_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._char_edit.setPlaceholderText("character")
-        self._char_edit.setToolTip(
-            "<b>This cell's character</b><br><br>"
-            "Multiple characters are accepted (e.g. “...”): the cell then<br>"
-            "becomes a <i>ligature</i>, a single drawing for a sequence of<br>"
-            "characters."
-        )
+        self._char_edit.setPlaceholderText(label("fontinsp.char_placeholder"))
+        self._char_edit.setToolTip(label("fontinsp.char_tip"))
         self._char_edit.editingFinished.connect(self._commit_char)
         glyph_card.body_layout.addWidget(self._char_edit)
 
-        self._glyph_info = QLabel("No cell selected")
+        self._glyph_info = QLabel(label("fontinsp.no_cell"))
         self._glyph_info.setFont(QFont(T.UI, T.XS))
         self._glyph_info.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._glyph_info.setWordWrap(True)
         glyph_card.body_layout.addWidget(self._glyph_info)
 
-        self._hint = QLabel(
-            "Glyphs are drawn in your image editor, just like for a "
-            "sprite — here you only correct which character "
-            "each cell corresponds to."
-        )
+        self._hint = QLabel(label("fontinsp.glyph_hint"))
         self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._hint.setWordWrap(True)
@@ -183,13 +156,15 @@ class FontInspector(QWidget):
 
     # ── Couleurs-clés ─────────────────────────────────────────────
 
-    def _key_row(self, role: str, label: str, tip: str) -> QHBoxLayout:
+    def _key_row(self, role: str, lbl_key: str, tip_key: str) -> QHBoxLayout:
         """Une ligne de couleur-clé : nom, pastille, pipette, effacement."""
+        disp = label(lbl_key)
+        tip = label(tip_key)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
 
-        name = QLabel(label)
+        name = QLabel(disp)
         name.setFont(QFont(T.UI, T.SM))
         name.setStyleSheet(f"color:{C.TEXT_NORM};")
         name.setToolTip(tip)
@@ -206,15 +181,15 @@ class FontInspector(QWidget):
         pick = QPushButton()
         pick.setIcon(icons.get("eyedropper", C.TEXT_NORM))
         pick.setFixedSize(24, 22)
-        pick.setToolTip(f"Pick the “{label}” color from the sheet")
+        pick.setToolTip(label("fontinsp.pick_tip", name=disp))
         pick.setStyleSheet(QSS.button_icon)
-        pick.clicked.connect(lambda _=False, r=role, l=label: self.pick_asked.emit(r, l))
+        pick.clicked.connect(lambda _=False, r=role, l=disp: self.pick_asked.emit(r, l))
         row.addWidget(pick)
 
         clear = QPushButton()
         clear.setIcon(icons.get("clear", C.TEXT_MUTED))
         clear.setFixedSize(24, 22)
-        clear.setToolTip(f"No longer make the “{label}” color transparent")
+        clear.setToolTip(label("fontinsp.clear_tip", name=disp))
         clear.setStyleSheet(QSS.button_icon)
         clear.clicked.connect(lambda _=False, r=role: self.key_color_cleared.emit(r))
         row.addWidget(clear)
@@ -243,13 +218,11 @@ class FontInspector(QWidget):
         # chasse. La seconde est invisible sur la planche, donc annoncée ici.
         mode = ""
         if f and f.source_format == "png":
-            mode = ("\nAdvance declared by spacing (proportional)."
-                    if f.space_color else
-                    "\nMono advance — designating the spacing makes it proportional.")
+            mode = (label("fontinsp.adv_spacing") if f.space_color
+                    else label("fontinsp.adv_mono"))
         self._key_hint.setText(
-            ("No transparent color — the sheet is used as-is."
-             if n == 0 else
-             f"{n} color(s) made transparent. The PNG is not modified.")
+            (label("fontinsp.key_none") if n == 0
+             else label("fontinsp.key_count", n=n))
             + mode
         )
 
@@ -294,7 +267,7 @@ class FontInspector(QWidget):
         self._glyph = glyph
         self._blocking = True
         if not glyph:
-            self._glyph_info.setText("No cell selected")
+            self._glyph_info.setText(label("fontinsp.no_cell"))
             self._glyph_preview.clear()
             self._char_edit.clear()
             self._char_edit.setEnabled(False)

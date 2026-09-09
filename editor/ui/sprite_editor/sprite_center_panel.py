@@ -8,6 +8,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtCore import Qt, QTimer
 
 from ui.common.theme import C
+from ui.common.labels import label
 from core.models.sprite import AnimState, SpriteAsset, StateDirection
 from core.project import Project
 from core.command_dispatcher import get_dispatcher
@@ -128,7 +129,7 @@ class SpriteCenterPanel(QWidget):
         strip = self._canvas_panel.paint_strip
         palettes = list(getattr(self._sprite, "palettes", []) or []) if self._sprite else []
         if palettes:
-            entries = [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
+            entries = [(i, label("sprctr.palette", i=i), cols) for i, cols in enumerate(palettes)]
             strip.load(entries, active=0)
             strip.setVisible(True)
             self._canvas_panel._position_paint_strip()
@@ -173,7 +174,7 @@ class SpriteCenterPanel(QWidget):
         self._tiles.setEnabled(not self._read_only)
         from ui.sprite_editor.sprite_finder_panel import dir_label
         self._canvas_panel.set_read_only_banner(
-            f"MIRROR · {dir_label(sd)} · read-only" if self._read_only else None)
+            label("sprctr.mirror_banner", dir=dir_label(sd)) if self._read_only else None)
         self._refresh_canvas()
 
     def _active_frames(self) -> list:

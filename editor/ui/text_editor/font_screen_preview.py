@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, QRect, QPoint
 from core.engine_emulation.text_layout import layout_text
 from ui.common import icons
 from ui.common.theme import C, T
+from ui.common.labels import label
 from ui.text_editor.glyph_paint import key_out
 
 
@@ -38,12 +39,13 @@ class FontScreenPreview(QWidget):
     # Fonds d'ÉPREUVE, pas le backdrop de la ROM : une police claire disparaît
     # sur le fond sombre de l'éditeur, une police sombre sur du blanc. Du plus
     # sombre au plus clair, plus un fond franc.
+    # (clé de nom affiché, couleur) — le nom est résolu à l'usage.
     BACKDROPS = (
-        ("editor background", C.BG_DEEP),
-        ("black",             "#000000"),
-        ("mid grey",          "#808080"),
-        ("white",             "#ffffff"),
-        ("magenta",           "#ff00ff"),
+        ("fsprev.bg_editor",  C.BG_DEEP),
+        ("fsprev.bg_black",   "#000000"),
+        ("fsprev.bg_grey",    "#808080"),
+        ("fsprev.bg_white",   "#ffffff"),
+        ("fsprev.bg_magenta", "#ff00ff"),
     )
 
     def __init__(self, parent=None):
@@ -104,18 +106,15 @@ class FontScreenPreview(QWidget):
         return QColor(self.BACKDROPS[self._backdrop][1])
 
     def _sync_backdrop_button(self):
-        name, _ = self.BACKDROPS[self._backdrop]
-        nxt, _ = self.BACKDROPS[(self._backdrop + 1) % len(self.BACKDROPS)]
+        name_key, _ = self.BACKDROPS[self._backdrop]
+        nxt_key, _ = self.BACKDROPS[(self._backdrop + 1) % len(self.BACKDROPS)]
         # Accentué dès qu'on n'est plus sur le fond de l'éditeur : ce qu'on
         # regarde n'est alors plus le rendu « par défaut ».
         self._btn_bg.setIcon(icons.get(
             "playback_contrast",
             C.TEXT_NORM if self._backdrop == 0 else C.ACCENT))
-        self._btn_bg.setToolTip(
-            f"<b>Proof background</b> — currently {name}.<br>"
-            f"Click for {nxt}.<br><br>"
-            "Reading aid only: it changes nothing in the text or in the ROM."
-        )
+        self._btn_bg.setToolTip(label(
+            "fsprev.backdrop_tip", name=label(name_key), next=label(nxt_key)))
 
     @staticmethod
     def _readable_on(bg: QColor) -> QColor:
@@ -243,7 +242,7 @@ class FontScreenPreview(QWidget):
             p.setPen(ink)
             p.setFont(QFont(T.UI, T.XS))
             p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
-                       "Choose a preview font")
+                       label("fsprev.choose_font"))
             return
 
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -259,7 +258,7 @@ class FontScreenPreview(QWidget):
             p.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
             p.drawText(QRect(0, h - 16, w - 4, 14),
                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       "overflows the screen")
+                       label("fsprev.overflows"))
 
         # Facteur affiché dans le VOLET, pas dans l'écran : c'est une donnée de
         # l'éditeur, elle n'a rien à faire sur la surface simulée.
@@ -268,4 +267,4 @@ class FontScreenPreview(QWidget):
         p.setFont(QFont(T.MONO, T.XS))
         p.drawText(QRect(0, self.height() - 20, self.width() - 8, 14),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                   f"×{s}" + ("" if self._zoom is None else "  (double-click to fit)"))
+                   f"×{s}" + ("" if self._zoom is None else label("fsprev.dbl_fit")))

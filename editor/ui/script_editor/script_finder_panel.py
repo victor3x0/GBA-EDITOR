@@ -17,6 +17,7 @@ from PyQt6.QtCore import pyqtSignal
 from ui.common.widgets import FinderSection
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import SCRIPTS
+from ui.common.labels import label
 from .colors import _BG
 from .var_table_panel import VarTablePanel
 
@@ -54,14 +55,14 @@ class ScriptFinderPanel(QWidget):
 
         # ── Constantes / globales — PAS des assets : des variables typées,
         #    avec leur valeur. Leur table reste. ────────────────────────
-        sec_const = FinderSection("Constants")
+        sec_const = FinderSection(label("vartbl.constants"))
         self._constants_panel = VarTablePanel(kind="const")
         self._constants_panel.snippet_requested.connect(self.snippet_requested)
         sec_const.set_widget(self._constants_panel)
         sec_const.add_clicked.connect(self._constants_panel._add_var)
         self._scripts.add_section(sec_const)
 
-        sec_globals = FinderSection("Globals")
+        sec_globals = FinderSection(label("vartbl.globals"))
         self._globals_panel = VarTablePanel(kind="global")
         self._globals_panel.snippet_requested.connect(self.snippet_requested)
         sec_globals.set_widget(self._globals_panel)

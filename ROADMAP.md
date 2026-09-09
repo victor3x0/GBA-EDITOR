@@ -55,10 +55,10 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.20 | L'état du monde : les collections persistantes | **Livrée** — [archive](changelog-archive/v0.20.md) |
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
-| v0.22 | Menus, listes et curseur | **En cours** — navigation et en-tête de sauvegarde livrés ; la liste devient un type, curseur et grille à faire |
+| v0.22 | Menus, listes et curseur | **Livrée** — [archive](changelog-archive/v0.22.md) |
 | v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
 | v0.10 | Distribution Linux | **En cours** — format `.gba-project` et associations OS livrés ; réactivation CI et test sur une vraie distro à faire |
-| v0.11 | Traduction de l'éditeur | **En cours** — gabarit de notices et catalogue livrés ; sélection de langue à faire |
+| v0.11 | Traduction de l'éditeur | **En cours** — notices + catalogue de libellés livrés, extraction des textes bien avancée ; sélection de langue à câbler |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
@@ -72,8 +72,8 @@ numéroté, jamais mélangé aux jalons produit.
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
 de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
 dans sa section, juste après ce tableau : **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 →
-v0.22**. Cinq d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21) sont livrées et archivées ; seules
-**v0.24** et **v0.22** restent détaillées plus bas, dans cet ordre. Les jalons restants (v0.10 à
+v0.22**. Six d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21, v0.22) sont livrées et archivées ;
+seule **v0.24** reste détaillée plus bas. Les jalons restants (v0.10 à
 v0.18, hors ceux déjà cités ; v0.9 est désormais livrée) n'ont pas de priorité tranchée entre eux
 et restent dans leur ordre numérique, à la suite du bloc priorisé.
 
@@ -404,357 +404,6 @@ Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/projec
 
 ---
 
-## v0.22 — Menus, listes et curseur — **EN COURS**
-
-> **La navigation est livrée le 2026-08-21.** Ses rangées sont ses zones de texte enfants, dans
-> l'ordre de l'arbre : rien à déclarer, ce qu'on voit dans l'éditeur est ce que la liste
-> parcourt — « le moteur prend la navigation, pas la mise en page ».
->
-> **Elle était alors une PROPRIÉTÉ du conteneur (`is_list`), et ne l'est plus depuis le
-> 2026-09-02** : le principe tient, son rangement non — cf. « La liste devient un TYPE » plus
-> bas. `UIList` est un quatrième type d'élément.
->
-> Les quatre questions ouvertes sont tranchées, trois d'entre elles depuis les règles déjà
-> écrites du projet : **rangées sur le calque de texte et défilement À LA LIGNE** (le texte
-> reste sur sa grille de tuiles, l'OAM reste libre pour les acteurs et le curseur) ; **cadence
-> de répétition en défaut de PROJET surchargeable par liste** (le patron de la transition de
-> scène, v0.6.2 — il répond à l'objection « trois listes à trois cadences, un joueur le sent »)
-> ; **un choix de dialogue est une liste comme les autres**, parce qu'un raccourci pour 2-3
-> options serait le premier « widget par genre de menu », dont la liste n'a pas de fin.
->
-> Le script dit combien d'items il y a (`list.set_count`) et écrit chaque rangée —
-> `text.draw_in(list.row("Menu", r), …)`. Un item est une ligne de donnée : c'est ce qui fait
-> qu'un inventaire, un arbre de compétences et un menu de sauvegarde se partagent le même
-> mécanisme.
->
-> **Le validateur du projet a attrapé une faute en cours de route** : une fonction exposée en
-> Lua doit être déclarée dans `actor_api_static.h` et pas seulement dans le moteur, faute de
-> quoi le C généré l'appellerait sans prototype. Deuxième leçon du même genre : le tick ne peut
-> pas utiliser les `BTN_*` du script — `gba_engine.h` ne voit pas les en-têtes d'acteur —, il
-> lit les `KEY_*` de libgba, qui sont les mêmes bits matériels.
->
-> **L'en-tête de sauvegarde étendu est réglé le 2026-08-23**, par un troisième verbe plutôt
-> qu'un nouveau concept : `save.read(slot, "nom")` rend la valeur d'UNE variable persistante
-> dans un emplacement, sans toucher aux globales de la partie en cours. L'auteur compose son
-> écran de sélection en l'appelant sur chacune des variables qu'il veut montrer — la
-> « désignation » de la décision verrouillée n'est rien d'autre que le choix des variables sur
-> lesquelles l'auteur appelle cette fonction. Au passage, l'ancien `save.read(slot)` — qui
-> remplace TOUTES les persistantes de la partie en cours, un geste bien plus lourd que ce que
-> « lire » suggère — est renommé `save.load(slot)`, le mot qu'un menu affiche déjà
-> (« Charger une partie »).
-
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-`UILayout` a trois types d'éléments : texte, panneau, image
-([ui_region.py](editor/core/models/ui_region.py)). **Aucun ne tient une sélection.** Un menu
-s'écrit donc entièrement en script : index courant, bornes, défilement, répétition de touche,
-retour arrière, et le curseur à déplacer. Sans fonction déclarable dans le langage, **chaque
-écran le réécrit en entier**.
-
-La v1.0 le note déjà, en « Ouvert » : *« si les trois genres à menus le rendent pénible, c'est
-ici que ça se verra »*. La revue tranche : pour un RPG à arbre de compétences, à inventaire et
-à équipement, ce n'est pas un confort qu'on jugera après coup — c'est un tiers du contenu du
-jeu, et il est aujourd'hui entièrement à la charge de l'auteur.
-
-Un manque va avec, et il est plus petit : `save.exists(slot)` répond « il y a quelque chose
-ici », rien de plus (v0.5, « Ouvert »). Un écran de sélection de partie ne peut donc afficher
-**ni chapitre, ni temps de jeu, ni nom** — c'est-à-dire rien de ce qu'un joueur regarde pour
-choisir sa partie.
-
-### Décisions verrouillées
-
-- **Le moteur prend la NAVIGATION, pas la mise en page.** Une liste, c'est un `UILayout`
-  existant plus quatre choses : un index courant, des bornes, un pas de défilement, et
-  l'entrée qui les fait bouger. Ce qui s'affiche reste du texte et des images authorées, avec
-  les outils qui existent.
-- **Un item est une LIGNE DE DONNÉE, pas un objet d'interface.** Une liste se lie à un tableau
-  (v0.20) ou à une table (v0.7.2), et l'auteur écrit ce qu'une ligne affiche. L'alternative —
-  un widget par genre de menu — n'a pas de fin, et chaque genre de jeu en redemanderait un.
-- **Le curseur est ce qui existe déjà** : un acteur `screen_space` ou une image d'UI. Pas de
-  troisième chose à apprendre.
-- **L'en-tête de sauvegarde s'étend, et il reste de l'auteur.** Un bloc descriptif par
-  emplacement — les valeurs de N globales que l'auteur désigne — lisible **sans charger la
-  partie**. Le moteur ne décide pas *ce qu'*une partie affiche, comme il ne décide pas où elle
-  reprend (v0.5).
-- **`save.read(slot, "nom")`, pas un nouveau concept d'« en-tête ».** *(Tranché le
-  2026-08-23.)* Le format SRAM (v0.20) range déjà chaque variable persistante dans son propre
-  enregistrement, retrouvable par balayage indépendamment des autres — `save.read` ne fait que
-  s'arrêter au premier enregistrement qui correspond, sans rejouer tout `save_read` (qui, lui,
-  réécrit TOUTES les globales persistantes). Rien à ajouter au modèle : ni un champ « variable
-  d'en-tête » sur `GlobalVar`, ni un panneau dédié. La désignation que demandait la décision
-  ci-dessus est simplement l'ensemble des variables que l'auteur choisit d'appeler.
-- **`save.read(slot)` devient `save.load(slot)`.** *(Tranché le 2026-08-23, renommage
-  complet.)* Le nom masquait ce que fait l'appel : remplacer TOUTES les globales persistantes
-  de la partie en cours n'est pas ce que « lire » suggère. « Charger » l'est, et c'est déjà le
-  mot que porte le bouton du menu qui l'appelle. Ça libère aussi `save.read` pour ce qu'il
-  désigne réellement ci-dessus : une lecture SANS effet de bord, symétrique de
-  `global_read`/`global_read_at` (déjà ce nom en C, pour exactement ce sens) plutôt qu'un
-  troisième mot (« peek ») pour un concept qui en avait déjà un dans cette base de code.
-
-### Ce que ça touche
-
-[ui_region.py](editor/core/models/ui_region.py),
-[main_gen.py](editor/codegen/runtime_codegen/main_gen.py) (le tick d'UI),
-[api.py](editor/scripting/api.py) (un domaine `list`, et le renommage/l'ajout `save.*`),
-[codegen.py](editor/scripting/codegen.py) et
-[checker.py](editor/scripting/checker.py) (résolution et vérification de `save.read`),
-[lua_compiler.py](editor/codegen/runtime_codegen/lua_compiler.py) (le contexte de vérification
-sait désormais quelles variables sont persistantes),
-[gba_engine.h](runtime/include/gba_engine.h) (`save_read_var`, la lecture sans effet de bord)
-et [actor_api_static.h](runtime/include/actor_api_static.h) (son prototype — le piège relevé
-plus haut), l'inspecteur de scène, et `validator.py`.
-
-### Ouvert
-
-- ~~**Où une liste se dessine.**~~ **Tranché le 2026-08-21** : sur le calque de texte — ses
-  rangées sont ses zones de texte enfants, dans l'ordre de l'arbre. Le budget de tuiles d'UI et
-  la grille de tuiles restent ceux d'un panneau de texte ordinaire ; rien de neuf à gérer côté
-  OAM.
-- ~~**Le défilement, à la ligne ou au pixel.**~~ **Tranché le 2026-08-21** : à la ligne — le
-  texte reste sur sa grille de tuiles, et l'OAM reste libre pour les acteurs et le curseur.
-- ~~**La répétition de touche.**~~ **Tranché le 2026-08-21** : cadence en défaut de PROJET,
-  surchargeable par liste — le même patron que la transition de scène (v0.6.2), qui répond
-  déjà à l'objection « trois listes à trois cadences, un joueur le sent ».
-- ~~**Ce que le moteur fait d'un choix de dialogue.**~~ **Tranché le 2026-08-21** : une liste
-  comme les autres — un raccourci pour 2-3 options aurait été le premier « widget par genre de
-  menu », dont la liste n'a pas de fin.
-
-Les quatre questions ouvertes sont donc closes, et implémentées de bout en bout (`list.*` dans
-[api.py](editor/scripting/api.py), le tick dans
-[main_gen.py](editor/codegen/runtime_codegen/main_gen.py),
-[gba_engine.h](runtime/include/gba_engine.h) et
-[actor_api_static.h](runtime/include/actor_api_static.h)) — de même que l'en-tête de sauvegarde
-(`save.read`/`save.load`, tranché le 2026-08-23, câblé dans
-[codegen.py](editor/scripting/codegen.py) et
-[checker.py](editor/scripting/checker.py)).
-
-### Le curseur qui se déplace — ouvert le 2026-09-02
-
-Le jalon s'appelle « Menus, listes et **curseur** », et il ne sait pas déplacer un curseur.
-La navigation livrée surligne la rangée choisie (`UIRegionInfo.highlight`), ce qui suffit à un
-menu sobre ; un curseur qui GLISSE d'une entrée à l'autre, lui, demande de bouger un sprite
-d'interface — et **aucune API ne donne accès à la position d'une image**. Trouvé en écrivant
-un écran de choix de langue : `ui.get("Cursor").y = …` traverse le checker sans un mot et
-produit `UIELEM_CURSOR.y` en C, `.y` sur un entier, refusé par gcc sur un fichier que l'auteur
-n'a pas écrit.
-
-#### Ce que la lecture du runtime a montré
-
-Le moteur est **déjà construit pour ça**, il n'y manque qu'une case en RAM.
-`ui_image_origin()` recompose l'origine à chaque frame, ancrage compris (monde retranche la
-caméra, acteur ajoute la position de l'acteur) ; et le chemin BG sait déjà déménager —
-`ui_image_clear_bg` porte le commentaire « Nécessaire avant tout déplacement », et
-`ui_image_update` teste `moved`, efface l'ancienne empreinte et réécrit. Le chemin OBJ repose
-son slot chaque frame de toute façon. Le seul manque : `I->x`/`I->y` viennent de
-`g_ui_images`, table `const` en ROM.
-
-#### Décisions verrouillées
-
-1. **Un appel de module, pas une propriété — `ui.image_move("Cursor", x, y)`.** La forme
-   propriété (`ui.get("Cursor").y = 40`) a été retenue puis ÉCARTÉE à la lecture du code, et
-   la raison mérite d'être écrite parce qu'elle vaut pour toute API future : la règle « un
-   état s'écrit en propriété » suppose un récepteur que le LANGAGE TIENT — `self`, `camera`,
-   `scene`, un acteur nommé. `resolve_prop` l'impose littéralement (le récepteur doit être un
-   `ExprName`), et `infer_ref_type` écrit noir sur blanc qu'une référence « ne se calcule pas
-   — on n'en prend pas de champ » : elle porte des méthodes, jamais des champs. Une image
-   d'interface n'est pas tenue par le langage, elle est **adressée par son nom à travers un
-   module** — exactement comme un effet sonore, une liste ou une scène. Et la forme voisine
-   existe déjà, livrée par ce même jalon : `list.set_index("Menu", i)` pose un état par un
-   appel de module à nom vérifié par domaine. `ui.image_set`/`ui.image_play` ont survécu à la
-   migration vers les propriétés (v0.7.4) pour cette raison-là, pas par oubli.
-
-   La forme propriété aurait coûté deux changements de grammaire — un récepteur qui soit une
-   expression, et des champs sur les références — pour une ergonomie PIRE : `resolve_prop`
-   exigeant un nom, il aurait fallu passer par `local c = ui.get("Cursor")` avant d'écrire
-   `c.y`, soit deux lignes là où l'appel en demande une.
-
-2. **`.x` et `.y`, jamais `.position`.** `self.position` d'un acteur est en **Q8 sous-pixel**
-   depuis la v0.19 ; donner le même mot à une position d'interface en pixels entiers mettrait
-   deux échelles derrière un mot, et `pos.x + 1` ne voudrait plus dire la même chose selon
-   l'objet. Deux scalaires entiers.
-
-3. **Le nom se résout au BUILD, par `DOMAIN_IMAGE`.** Le domaine porte déjà l'espace de noms
-   des images et sa constante (`image_constant` → `IMAGE_<NOM>`, index dans `g_ui_images`),
-   employée par `ui.image_set`. Un nom inconnu est donc refusé sans qu'une ligne de contrôle
-   soit écrite pour l'occasion, et `refactor.py` suit le renommage d'une image dans les
-   scripts par la même mécanique — c'est ce que porter un domaine veut dire.
-
-   Piège écarté au passage : `ui.get("X")` rend `UIELEM_X`, un index dans `g_ui_elements` — la
-   table de **visibilité**, qui couvre les trois types — et **pas** l'index dans `g_ui_images`.
-   Aucune table inverse n'existe, et il ne faut pas en ajouter : passer par `DOMAIN_IMAGE`
-   évite entièrement la question.
-
-4. **Seule une IMAGE se déplace, et le domaine suffit à le dire.** La géométrie d'une zone de
-   texte vit dans `g_ui_regions`, avec son bloc de surface alloué à un rectangle fixe par
-   `scene_init` ; le fond d'un panneau est peint une fois dans la tilemap. Ni l'une ni l'autre
-   ne se déplace à moindre coût, et `DOMAIN_IMAGE` ne connaît que les images : citer une zone
-   de texte est refusé au build, nommément, sans contrôle dédié.
-
-5. **La cible BG se cale sur 8 px, et ça se DIT.** `ui_image_update` fait `sx -= sx % 8` : sur
-   une image BG, `.y = 33` s'affiche à 32. Ni contournement ni arrondi silencieux — c'est
-   documenté, et l'auteur qui veut un déplacement au pixel bascule l'ancrage de son root pour
-   passer en OBJ. Pour un curseur qui glisse, OBJ est de toute façon la bonne cible. Le
-   matériel façonne le langage ; il ne se cache pas derrière lui.
-
-6. **La position écrite est RELATIVE au parent**, comme celle que l'auteur pose dans le canvas
-   (`UILayout.absolute_origin` somme déjà la chaîne jusqu'au root). Un seul sens pour le champ,
-   qu'il vienne de l'éditeur ou du script.
-
-#### Ce que ça coûte
-
-Deux `short` (`dx`, `dy`) dans `UIImageState` : **64 octets de RAM** au plafond de 16 images,
-et une addition par image et par frame dans `ui_image_origin`.
-
-#### Ce que ça touche
-
-[gba_engine.h](runtime/include/gba_engine.h) (les deux champs, `ui_image_set_pos`, les
-lectures) et [actor_api_static.h](runtime/include/actor_api_static.h) (les prototypes — le
-piège relevé plus haut dans ce jalon),
-[api.py](editor/scripting/api.py) (trois entrées `RUNTIME_API` portant `DOMAIN_IMAGE`),
-[SCRIPTING.md](SCRIPTING.md), [ARCHITECTURE.md](ARCHITECTURE.md) et les tests. Ni `checker.py`
-ni `codegen.py` : un appel de module à argument porteur d'un domaine déjà couvert se valide et
-s'émet par les chemins génériques — c'est précisément ce que la forme propriété aurait coûté
-en plus.
-
-### La liste devient un TYPE — ouvert le 2026-09-02
-
-#### Ce que le modèle disait, et ce que tout le reste disait
-
-Le 2026-08-21, la liste a été posée comme une PROPRIÉTÉ du conteneur (`is_list` plus
-quatre champs), au motif que « le moteur prend la navigation, pas la mise en page ». **Le motif
-reste juste ; le rangement, non** — et ce n'est pas une préférence de goût, c'est le reste de
-la base de code qui le dit :
-
-- **Le C a déjà le type.** `UIListInfo`, `g_ui_lists`, `g_ui_list_index/first/total/timer` et
-  sept fonctions `ui_list_*` : côté moteur, une liste EST une chose, avec sa table et son état
-  vivant. `project_lists()` ne fait que reconstruire cette population en refiltrant les
-  panneaux. Le modèle Python était le seul endroit du projet à ne pas croire qu'elle existe.
-- **L'API dit `list.*`** — six fonctions dans un domaine qui porte son nom — et l'auteur qui
-  les cherche dans l'éditeur trouve une case à cocher dans l'inspecteur de conteneur.
-- **`to_dict` écrivait cinq clés conditionnelles**, c'est-à-dire un objet qui n'a pas la même
-  forme selon un booléen : la définition d'un type qui s'ignore.
-- **L'inspecteur de conteneur portait une carte « Liste »** que la quasi-totalité des
-  conteneurs n'emploient jamais.
-
-La décision du 2026-08-21 n'est donc pas renversée, sa mise en œuvre l'est : le moteur prend
-toujours la navigation et pas la mise en page — mais la navigation a un propriétaire, et ce
-propriétaire est un type.
-
-#### Ce que la lecture du runtime a montré
-
-`ui_list_tick()` parcourt **toutes** les listes à chaque frame, sans notion de liste courante :
-son seul garde-fou est `g_ui_list_total[l] <= 0`, et le total vaut par défaut le nombre de
-rangées authorées. Deux listes visibles — un menu et son sous-menu — bougent donc ensemble sur
-le même appui. Le drapeau `active` ci-dessous ne rajoute pas un confort, il ferme ce défaut.
-
-#### Décisions verrouillées
-
-1. **`UIList` est un quatrième type** (`KIND_LIST`), à côté de `UIText`, `UIContainer` et
-   `UIImage`. Il porte sa géométrie, son fond, ses enfants et sa navigation. Le conteneur garde
-   tout son sens sans lui : grouper, ancrer un sous-arbre, dessiner un fond.
-
-2. **Ses enfants sont des zones de TEXTE, et l'arbre le fait respecter.** C'est déjà ce que
-   `list_rows_of` calcule (il filtre `KIND_TEXT`) ; ce qui change, c'est qu'aujourd'hui l'arbre
-   accepte qu'on y dépose une image et l'ignore ensuite en silence. `can_contain` cesse d'être
-   un booléen pour dire CE QUE le type accueille.
-
-3. **Le fond devient une CAPACITÉ, pas un type.** `kind == KIND_PANEL` est testé à huit
-   endroits et y veut dire deux choses différentes : « ça peut dessiner un fond »
-   ([palette_alloc.py](editor/codegen/palette_alloc.py), [validator.py](editor/core/validator.py),
-   les quatre émetteurs de fond de [main_gen.py](editor/codegen/runtime_codegen/main_gen.py)) et
-   « ça accueille des enfants » (l'arbre, déjà porté par `can_contain`). La liste gardant un
-   fond, les huit tests du premier sens deviennent `can_fill`, et les champs `fill_*` passent
-   dans un `FillMixin` — le patron de `RectGeometryMixin`, déjà dans ce fichier.
-
-   **Pas d'héritage `UIList(UIContainer)`.** Dans l'arbre et dans l'inspecteur, une liste n'est
-   justement PLUS un conteneur ; le dire par la porte du langage rouvrirait ce que le modèle
-   vient de séparer, et le premier `isinstance` écrit ailleurs le figerait.
-
-4. **`visible` n'est pas redéclaré.** Tous les éléments l'ont et `UILayout.is_visible` remonte
-   déjà la chaîne des parents. Un `show/hide` propre à la liste aurait été une deuxième source
-   de vérité pour la même question.
-
-5. **`active` est la SÉLECTION, pas l'affichage.** Une liste inactive reste dessinée, garde son
-   index, et cesse de consommer la croix directionnelle — c'est ce qui permet un menu et son
-   sous-menu à l'écran en même temps, le cas qui casse aujourd'hui. Le script bascule
-   (`list.set_active`), parce que c'est lui qui sait quel écran a la main.
-
-6. **La grille se dit en `nav_columns` + `nav_major`, pas en quatre modes.** Une navigation en
-   Z ou en W demande de savoir DE COMBIEN sauter en changeant de rangée : sans compte de
-   colonnes, le mode ne se calcule pas. Deux nombres couvrent les quatre cas — verticale = 1
-   colonne, horizontale = 1 rangée, Z = N colonnes en majeur-rangée, W = N colonnes en
-   majeur-colonne. Un énuméré à quatre valeurs aurait de toute façon dû s'accompagner du
-   compte, et aurait encodé deux choses indépendantes dans un seul champ.
-
-   `list_axis` disparaît : il n'est que le cas `nav_columns == 1`. Le défilement reste **à la
-   ligne** (tranché le 2026-08-21) — dans une grille, une ligne vaut `nav_columns` items.
-
-7. **La liste POSSÈDE son curseur.** `cursor_image` désigne un `UIImage` de la même mise en
-   page, `cursor_mode` dit s'il se POSE sur la rangée choisie ou s'il y GLISSE. Le moteur le
-   déplace en appelant le même chemin interne que `ui.image_move` — une implémentation, deux
-   portes : l'authoring pour le cas courant, l'appel de script pour ce que l'auteur veut mener
-   lui-même. La décision 1 de « Le curseur qui se déplace » n'est pas annulée, elle devient la
-   couche basse de celle-ci.
-
-   Le curseur n'est **pas un enfant** de la liste (décision 2 : les enfants sont des textes) :
-   c'est un élément de la mise en page que la liste NOMME. Et un curseur qui glisse veut la
-   cible OBJ, pour la raison déjà écrite en décision 5 du curseur — le chemin BG se cale sur
-   8 px.
-
-8. **L'effet sur la rangée choisie, c'est `highlight` et `color`, rien d'autre.** Les deux
-   existent déjà par région (`UIRegionInfo.highlight`, `.color`) ; la liste les porte pour la
-   rangée SÉLECTIONNÉE et le moteur les applique en suivant l'index. Ce qui est refusé pour
-   l'instant : une animation (ondulation, pulsation) sur la rangée choisie — sur cible BG elle
-   réécrirait des tuiles à chaque frame, et ce coût-là se mesure avant de se promettre.
-
-#### La lecture des projets existants
-
-Un `{"kind": "panel", "is_list": true}` se désérialise en `UIList` et n'est jamais réécrit sous
-cette forme : la recette exacte de `KIND_REGION`, déjà dans ce fichier. `list_axis:
-"horizontal"` devient `nav_columns` = le nombre de rangées, en majeur-rangée. Les scripts ne
-cassent pas — `list.*` s'adresse par nom d'élément, et le nom ne change pas.
-
-#### Ce que ça touche
-
-Modèle et build : [ui_region.py](editor/core/models/ui_region.py) (le type, le `FillMixin`, la
-lecture des anciens JSON), [main_gen.py](editor/codegen/runtime_codegen/main_gen.py)
-(`project_lists`, `emit_ui_lists_c`, les quatre émetteurs de fond),
-[palette_alloc.py](editor/codegen/palette_alloc.py), [validator.py](editor/core/validator.py),
-[project_renames.py](editor/core/project_renames.py).
-Interface : [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) (la carte
-« Liste » devient l'inspecteur d'un type),
-[dynamic_inspector.py](editor/ui/scene_manager/inspectors/dynamic_inspector.py),
-[scene_tree_panel.py](editor/ui/scene_manager/scene_tree_panel.py),
-[scene_canvas.py](editor/ui/scene_manager/scene_canvas.py), [icons.py](editor/ui/icons.py).
-Moteur : [gba_engine.h](runtime/include/gba_engine.h) (`active`, `columns`, le pas en grille,
-le déplacement du curseur) et [actor_api_static.h](runtime/include/actor_api_static.h) (les
-prototypes — le piège relevé plus haut dans ce jalon).
-Script : [api.py](editor/scripting/api.py) et
-[api_reference.json](editor/scripting/api_reference.json) (`list.set_active` / `list.active`).
-Enfin [ARCHITECTURE.md](ARCHITECTURE.md) et les tests.
-
-#### `UIPanel` devient `UIContainer` — tranché le 2026-09-02
-
-La classe s'appelait `UIPanel`, l'éditeur créait un « container », l'inspecteur affichait
-« Conteneur » : un concept, deux mots. Le troisième argument est celui qui décide — **« panel »
-était déjà pris** : les panneaux de l'ÉDITEUR (`AssetsFinderPanel`, `SpriteFinderPanel`,
-`sound_panel.py`, `scene_tree_panel.py`) sont une tout autre chose, et ils gardent le mot. Un
-élément d'interface et un dock de l'éditeur ne peuvent pas porter le même nom dans une base de
-code où l'on cherche par nom.
-
-Le renommage va jusqu'à la **valeur sérialisée** (`"kind": "panel"` → `"container"`) : la
-laisser en place aurait gardé l'ancien mot dans chaque fichier de projet et dans chaque
-discussion à propos d'eux. `KIND_PANEL_LEGACY` la relit et ne la réécrit jamais — la troisième
-occurrence de cette recette, après `KIND_REGION` et `is_list`, et elle commence à mériter d'être
-appelée par son nom : *une forme ancienne se lit, une seule forme s'écrit.*
-
-Ce qui n'a PAS été renommé : les panneaux de l'éditeur (ci-dessus), et les entrées de
-[CHANGELOG](CHANGELOG.md) et de [changelog-archive/](changelog-archive/), qui disent ce qui a
-été livré à une date — un journal ne se réécrit pas.
-
----
-
 ## Chantiers techniques
 
 Un chantier technique ne livre rien de visible pour qui joue au jeu produit avec l'éditeur —
@@ -766,227 +415,11 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | Chantier | Ouvert le | État |
 | --- | --- | --- |
 | La grammaire de la struct `Actor` | 2026-08-23 | **Livré** — [archive](changelog-archive/actor-struct-grammar.md) |
-| Les trois couleurs de l'interface | 2026-08-24 | **En cours** |
+| Les trois couleurs de l'interface | 2026-08-24 | **Livré** — [archive](changelog-archive/three-colors.md) |
 | `global.nom` / `const.nom` — l'accès pointé | 2026-09-01 | **Livré** — [archive](changelog-archive/global-const.md) |
 | L'identité d'un asset et son fichier | 2026-09-02 | **Livré** — [archive](changelog-archive/asset-identity.md) |
 | Les formats acceptés à l'import | 2026-09-03 | **Livré** — [archive](changelog-archive/import-formats.md) |
-| La police, une palette d'asset comme les autres | 2026-09-03 | **En cours** |
-
----
-
-## Les trois couleurs de l'interface — **EN COURS**
-
-### D'où vient la question (2026-08-24)
-
-Un conteneur en fond couleur ne colorait qu'une partie de sa zone. Le diagnostic n'a pas
-trouvé un bug de géométrie mais **deux chemins qui ne s'accordaient pas sur ce qui est
-émis** : `scene_color_fills` écarte un panneau dont la palette n'est pas dans les palettes
-BG actives de la scène (il lui faut une banque matérielle), tandis que `_region_bg_fills` —
-qui donnait aux zones de texte ENFANTS la couleur de leur panneau ancêtre — n'appliquait
-aucune de ces conditions. Résultat : le panneau ne dessinait rien, mais sa couleur
-apparaissait quand même dans la boîte de son texte enfant. Un échec **partiel et joli**, bien
-plus difficile à lire qu'un fond franchement absent.
-
-La cause profonde n'est pas la condition manquante, c'est qu'**une seule notion en portait
-trois** : le fond d'un conteneur, l'encre d'un texte, et la couleur posée sous ce texte
-étaient réglées à deux endroits pour trois effets.
-
-### Décisions verrouillées
-
-- **Trois couleurs nommées, trois champs distincts.** Le fond (`FillMixin.fill_palette` +
-  `fill_index`), l'encre (`UIText.text_color`) et le **surlignement** (`UIText.highlight_color`,
-  nouveau). Trois mots dans l'interface — *Color*, *Ink*, *Highlight* — parce que trois
-  effets différents réglés sous le même mot est précisément ce qui a produit le défaut.
-- **Un texte prend le fond de son conteneur, par défaut et sans rien déclarer.** Écrire ne
-  doit jamais PERCER ce qu'il y a dessous : le chemin tilemap remplacerait la cellule par une
-  tuile de glyphe, dont l'index 0 est transparent. C'est une règle de non-destruction, pas
-  une teinte — la zone ne s'approprie pas la couleur, elle refuse de l'effacer.
-- **Le surlignement SURCHARGE ce fond**, sur l'étendue que le texte écrit. Le fond dit ce
-  qu'il y a dessous, le surlignement ce que l'auteur veut y voir à la place. Les deux
-  coexistent sur une même zone, y compris sous un cadre nine-slice : le marqueur se pose SUR
-  le cadre, il ne le troue pas.
-- **Composer est décidé par le FOND autant que par la police.** Une zone à fond ou surlignée
-  se compose même en police MONO. Le cas nine-slice était déjà censé le faire et ne le
-  faisait pas (`text_is_composited` ne regardait pas la table des fonds) : un texte mono
-  posé sur un cadre le trouait, alors que la donnée pour le recomposer existait. Fermé ici.
-- **Le fond d'un texte est de l'état de SCÈNE, jamais de la table projet.** `RegionFill` est
-  posée par `scene_init`, et son contenu DÉRIVE de `scene_color_fills` / `scene_image_fills`
-  — c'est-à-dire de ce que le build émet réellement. C'est la correction de fond du
-  chantier : l'ancien `_region_bg_fills`, table projet-globale, ne connaissait aucune des
-  conditions d'émission, d'où un panneau écarté du build dont la couleur apparaissait quand
-  même dans la boîte de son texte.
-- **Deux formes de fond, UNE table.** Une carte de tuiles (nine-slice / background) ou un
-  aplat (couleur), distingués par `se == NULL`. C'est une seule question — « qu'y a-t-il sous
-  cette zone ? » — et deux tables auraient permis à une zone d'avoir deux fonds, ou aucun.
-  Même raison pour `region_fill_panel()` : la règle « le fond le plus proche gagne » s'écrit
-  une fois et se lit des deux côtés.
-- **Le surlignement est un index dans la banque d'UI de la scène**, comme l'encre — même
-  référentiel, même plage 0-15, `0` = aucun. Ce n'est PAS une palette + index comme le fond :
-  la surface composée reçoit `g_pal_bank_bg` (une seule banque par tuile, le matériel
-  l'impose), donc une couleur venue d'ailleurs devrait de toute façon être recopiée dans
-  cette banque. Le champ dirait « n'importe quelle couleur » là où le matériel n'en offre
-  que seize.
-- **Le surlignement couvre l'étendue RENDUE du texte**, pas la boîte authorée : un
-  surlignement est un trait de marqueur. La boîte entière reste PRÉPARÉE (c'est ce qui
-  empêche un texte plus court que le précédent de laisser l'encre de l'ancien), mais seule
-  l'étendue écrite reçoit la couleur — origine comprise, de sorte qu'un texte centré ne
-  surligne pas sa marge gauche.
-- **Où vit la couleur d'un aplat dépend de `scene.ui_pal_bank`, et le build tranche seul.**
-  En mode AUTOMATIQUE la banque d'UI appartient à la police : le build y loge la couleur du
-  conteneur, depuis le HAUT (15, 14, …) et en sautant les index que l'encre et les
-  surlignements de la scène occupent déjà — la réservation est PAR SCÈNE, là où l'ancienne
-  était projet-globale et ne pouvait éviter aucune collision. En banque DÉSIGNÉE le build
-  n'écrit rien (ce serait remplacer en douce les couleurs choisies) : l'index du conteneur
-  passe tel quel, et `_check_ui_text_fill_bank` exige que la banque désignée soit celle du
-  conteneur — même contrat que le cadre nine-slice, pour la même raison matérielle.
-- **Cible OBJ : pas de surlignement.** Une zone en bande de sprites ne passe pas par la
-  surface BG ; le champ est masqué plutôt que proposé sans effet — même règle que
-  `_FILL_TARGETS`, qui dit ce que le build ÉMET.
-- **Le fond d'un conteneur se choisit dans les palettes BG ACTIVES de la scène**, par le slot
-  de sélection partagé (`pickers.palette_picker_slot`) et non par une liste de tout le
-  catalogue. Proposer une palette que le build écartera est exactement le défaut d'origine,
-  déplacé dans le widget.
-- **Pas de migration de données, et il n'en faut aucune** : le fond redevenant automatique,
-  les textes qui héritaient retrouvent leur rendu sans qu'un champ soit écrit nulle part.
-  `highlight_color` naît à 0 et ne dit que ce que l'auteur y a mis.
-
-### Ce que ça touche
-
-| Fichier | Nature |
-| --- | --- |
-| [ui_region.py](editor/core/models/ui_region.py) | `UIText.highlight_color` |
-| [gba_engine.h](runtime/include/gba_engine.h) | `UIRegionInfo.bg_fill` → `highlight`, rectangle surligné, `text_layout` rend son origine |
-| [font_emit.py](editor/codegen/font_emit.py) | la table lit le champ de la zone, plus une table annexe |
-| [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) | `_region_bg_fills` remplacé par `region_fill_panel` + `scene_region_colors`, dérivés des fonds émis |
-| [validator.py](editor/core/validator.py) | `_check_ui_text_fill_bank` — le contrat de banque, étendu à l'aplat |
-| [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) | *Ink* / *Highlight*, slot de sélection filtré pour le fond |
-| [scene_canvas.py](editor/ui/scene_manager/scene_canvas.py) | aperçu du surlignement, composition sous un conteneur à fond |
-| [text_layout_probe.c](tests/native/text_layout_probe.c) + [gba_shim_common.h](tests/native/libgba_shim/gba_shim_common.h) | la sonde suit la signature — **et les stubs que la v0.22 lui devait** |
-
-**Le test d'équivalence Python/C était déjà rouge avant ce chantier**, et il ne
-le disait à personne : la sonde ne compilait plus contre `gba_engine.h` depuis
-que la navigation de liste lit les touches (`KEY_*` absents du shim libgba) et
-que six globales plus récentes (`g_ui_list_*`, `g_ui_element*`, `g_save_bits`,
-`g_save_len`, `global_read_at/write_at`) n'avaient pas de stub. Le fichier de
-test lui-même prévient qu'« un saut n'est pas un succès » — ici ce n'était même
-pas un saut, c'était une erreur de compilation avalée par 37 `ERROR` de setup.
-Les stubs sont complétés dans ce chantier parce que c'est exactement
-`text_layout` que la sonde garde, et que je venais d'en changer la signature.
-
-### Ouvert
-
-- **La banque d'UI reste implicite quand `scene.ui_pal_bank` vaut -1** : encre et
-  surlignement désignent alors des index de la banque de police, que l'auteur ne choisit pas.
-  L'inspecteur montre les pastilles quand la banque est désignée, et rien sinon.
-- **Huit fonds de zone par scène** (`TEXT_REGION_FILL_MAX`), aplats et cadres confondus —
-  ils partagent désormais la table. Au-delà, les zones en trop n'ont pas de fond et le
-  percent. Rien ne le signale encore ; le plafond n'a jamais été atteint, mais il est plus
-  facile à atteindre maintenant que le fond est automatique.
-- **Le surlignement n'est pas scriptable.** Comme l'encre, il est authoré. Un menu qui
-  surligne sa ligne courante se fait aujourd'hui en écrivant dans des zones distinctes ; si
-  la v0.22 rend ça pénible, c'est ici que ça se verra.
-
----
-
-## La police, une palette d'asset comme les autres — **EN COURS**
-
-### D'où vient la question (2026-09-03)
-
-La carte **Palettes** de l'inspecteur de scène traque deux pools : OBJ (les sprites) et BCK
-(les fonds). Chacun montre les palettes de la scène (éditables), puis les palettes **propres**
-des assets — grisées, comptées dans les seize banques, et remplaçables par une palette de scène
-d'un clic. La **police** manque à l'appel.
-
-Elle ne devrait pas. Une police possède ses couleurs exactement comme un sprite : `g_font_*_pal`,
-seize entrées, index 0 transparent. En mode automatique elle les charge en silence dans la
-banque 15 (`FONT_PAL_BANK`) — une banque que la grille ne montre pas et ne compte pas. C'est le
-point resté **Ouvert** du chantier *Les trois couleurs de l'interface* : « la banque d'UI reste
-implicite quand `scene.ui_pal_bank` vaut -1 ». L'auteur ne voit pas la banque que la police
-prend, et ne peut pas la rediriger avec le geste qui sert à tous les autres assets.
-
-### Ce que la lecture du code a trouvé (2026-09-03)
-
-- **La banque de police est décidée par le runtime, pas par l'allocateur.** `FONT_PAL_BANK = 15`
-  est cuit dans `text_set_font` ([gba_engine.h](runtime/include/gba_engine.h)), alors que
-  `scene_bank_layout` ([palette_alloc.py](editor/codegen/palette_alloc.py)) est la source de
-  vérité des seize banques. Elle ignore donc qu'une police en occupe une, et la grille ne peut
-  pas l'afficher.
-- **Le runtime est déjà paramétré par la banque.** `text_set_pal_bank(bg, obj)` pose où le texte
-  lit son encre ; négatif = automatique (palette propre → 15). Seule la banque automatique est
-  en dur — le reste du chemin sait déjà lire n'importe quel slot.
-- **La table par police existe déjà, pour la VRAM.** `text_set_font_base(f, base)` + `g_font_base[]`
-  donnent à un titre et à un corps de texte chacun leur base de tuiles, pour qu'ils ne s'écrasent
-  plus. La palette réclame **exactement la même forme** — une banque par police — et c'est
-  précisément parce qu'elle ne l'a pas que deux polices se repeignent aujourd'hui l'une l'autre
-  dans la banque 15.
-- **L'override existe déjà, mais à côté.** C'est le scalaire `Scene.ui_pal_bank`, câblé à un
-  sélecteur séparé (le slot « UI colors » de la carte User Interface), à l'échelle de la scène
-  entière et aveugle à *quelle* police il concerne.
-
-### Décisions verrouillées
-
-- **Parité totale avec les sprites.** Une police en mode propre entre dans la **même** allocation
-  ascendante que les acteurs et les calques, dédupliquée par couleurs, et reçoit une banque libre
-  — pas un 15 épinglé. Plusieurs polices → plusieurs banques, chacune une entrée grisée dans BCK.
-- **La palette suit l'ARBRE, pas seulement la police** *(2026-09-03)*. Comportement PAR DÉFAUT :
-  un texte **enfant** d'un conteneur à fond (nine-slice / background / couleur) reprend la banque de
-  CE conteneur — sa police ne prend alors **aucun** slot, elle lit son encre dans la palette du fond.
-  La règle « le fond le plus proche gagne » existe déjà, c'est `region_fill_container`, partagée avec
-  `scene_region_colors` / `scene_region_backdrops`. Un texte posé PAR-DESSUS un conteneur **sans en
-  être l'enfant** garde sa propre palette et écrase le fond. Trois conséquences :
-  - une police n'occupe une banque que pour ses usages **libres** ; utilisée seulement dans des
-    conteneurs, elle n'apparaît pas dans la grille — le conteneur, lui, y est déjà (fond couleur =
-    une palette de scène, nine-slice/background = son bloc de banques) ;
-  - la banque d'encre est résolue **par zone** (imbriquée → banque du conteneur ; libre → banque de
-    la police), et non plus par le scalaire scène-global qu'était `ui_pal_bank` — le runtime pose
-    donc la banque au dessin de la zone, pas une fois pour tout l'écran ;
-  - cela **renverse pour la BANQUE** la décision de *Les trois couleurs de l'interface* (« le fond
-    d'un conteneur ancêtre ne teinte pas ses textes enfants »). Le **surlignement**, lui, reste
-    par-texte : c'est une couleur SOUS le texte, pas la banque de l'encre.
-- **L'état vit sur la scène, par police : `Scene.font_pal_banks: dict[str, int]`.** L'analogue
-  exact de `Actor.pal_bank` / `BackgroundLayer.pal_bank`, keyé par **nom de police** faute
-  d'instance posée. Absent de la map (ou `OWN_PAL_BANK`) = palette propre dans une banque allouée ;
-  un slot 0-15 = lit l'encre dans cette palette de scène. Le scalaire `ui_pal_bank` est **migré à
-  la lecture** (`from_dict`) sur la police par défaut de la scène — les projets existants gardent
-  leurs couleurs — et le sentinel `UI_PAL_BANK_CONTAINER` survit comme valeur par police.
-- **Une seule source, deux surfaces d'édition** *(décision : garder les deux)*. `font_pal_banks`
-  est l'état. La grille de palettes override l'entrée de **n'importe quelle** police, exactement
-  comme un sprite. Le sélecteur « UI colors » de la carte User Interface reste, désormais lié à
-  l'entrée de la **police par défaut** dans cette même map — un raccourci pour le cas le plus
-  courant, jamais une seconde vérité.
-- **Le runtime gagne une table banque+propre par police, jumelle de `g_font_base`.**
-  `text_set_font(f)` lit la banque de la police et ne copie sa palette propre que si cette police
-  est en mode propre ; l'override force le slot de scène sans copie. Le placement des couleurs de
-  conteneur (`region_colors`) lit la banque **résolue** de la police au lieu de 15.
-
-### Ce que ça touche
-
-| Fichier | Nature |
-| --- | --- |
-| [scene.py](editor/core/models/scene.py) | `font_pal_banks` remplace `ui_pal_bank` ; migration à la lecture |
-| [palette_alloc.py](editor/codegen/palette_alloc.py) | la police entre comme source de palette propre BG (allocation `scene_bank_layout` + vue éditeur `scene_palette_view`) |
-| [font_emit.py](editor/codegen/font_emit.py) | `FONT_PAL_BANK` cesse d'être le défaut ; la police déclare son contenu de banque |
-| [main_gen.py](editor/codegen/runtime_codegen/main_gen.py) | banque d'encre RÉSOLUE PAR ZONE (imbriquée → conteneur via `region_fill_container`, libre → police) ; table banque+propre par police |
-| [ui_region.py](editor/core/models/ui_region.py) | le commentaire de `UIText` (« le fond d'un ancêtre ne teinte pas ») est renversé pour la BANQUE |
-| [gba_engine.h](runtime/include/gba_engine.h) | banque d'encre PAR ZONE + `g_font_bank`/`g_font_own` + `text_set_font_pal`, jumeaux de `g_font_base` |
-| [validator.py](editor/core/validator.py) | les deux contrôles d'`ui_pal_bank` lisent la map par police |
-| [scene_inspector.py](editor/ui/scene_manager/inspectors/scene_inspector.py) | la grille override la police ; le picker « UI colors » édite l'entrée par défaut |
-| [ui_inspector.py](editor/ui/scene_manager/inspectors/ui_inspector.py) / [scene_canvas.py](editor/ui/scene_manager/scene_canvas.py) | contexte d'élément et aperçu lisent la map |
-| [pickers.py](editor/ui/common/pickers.py) | le sélecteur de banque d'UI cible une entrée de la map |
-| [project_renames.py](editor/core/project_renames.py) | renommer une police suit ses clés dans `font_pal_banks` |
-
-### Ouvert
-
-- **La cible OBJ.** Une police se copie aussi dans `PAL_OBJ_RAM` pour le texte rendu en sprites.
-  La traquer aussi dans la grille OBJ, ou seulement dans BCK, se décide quand le chemin du texte
-  OBJ sera revu — le runtime copie déjà dans les deux, rien ne casse d'ici là.
-- **L'attribution des écritures libres.** `text.draw(x, y, …)` (sans zone) et un script au choix
-  de police dynamique (`scene_font_names` indécidable) ne disent pas SUR quel conteneur ils
-  écrivent : ils sont donc traités comme des usages LIBRES de la police par défaut (repli sûr —
-  une police libre de trop coûte une banque, une manquante rend le texte en couleurs voisines).
-- **`ARCHITECTURE.md` décrit encore `Scene.ui_pal_bank`, un `FONT_PAL_BANK` fixe et « le fond d'un
-  conteneur ne teinte pas ses enfants ».** Il devient la liste de contrôle du chantier, corrigé
-  quand le code atterrit — même règle que *La grammaire de la struct `Actor`*.
+| La police, une palette d'asset comme les autres | 2026-09-03 | **Livré** — [archive](changelog-archive/font-palette.md) |
 
 ---
 
@@ -2023,17 +1456,44 @@ niveau 3 parce qu'une astuce explique une notion et n'a donc aucun état à atte
   carte Liste, le libellé du mode Solid). Ils sont traduits au passage, comme le veut la
   règle de migration écran par écran.
 
+### Le deuxième temps — l'extraction des libellés (2026-09-08 →)
+
+La question laissée ouverte au premier temps — « les libellés partagent-ils le catalogue des
+notices ou vivent-ils à côté ? » — est tranchée : **un catalogue à côté**. Un libellé n'a ni
+ton ni niveau ; les fondre dans les notices aurait mis un champ mort dans chaque entrée. La
+mécanique commune (maître + side, join par clé, repli sur la source, pluriel, `set_language`)
+est remontée dans `ui/common/catalog.py`, et `notice.py` a été refondu dessus. Un second
+catalogue frère, `ui/common/labels.py` + `labels/labels.json`, expose `label("clé", **args)` —
+pour les libellés de champs, titres de cartes et d'écrans, entrées de menu, états vides,
+boutons et les `setToolTip` posés à la main. Le contrôle de CI vérifie désormais les DEUX
+catalogues dans les deux sens.
+
+**Avancement : ~39 fichiers d'UI extraits, ~840 clés de libellés.** Zones faites de bout en
+bout : `settings_dialog`, `home/project_picker`, la fenêtre principale (`window.py` — menus,
+barre d'outils, status bar), les inspecteurs du Scene Manager (`ui`/`actor`/`scene`), les
+éditeurs de composants, le `scene_tree_panel` et l'`assets_finder_panel`, le `sound_mixer`,
+le `sprite_editor`, le `data_editor`, et les trois zones complètes **`palette_editor`**,
+**`text_editor`** et **`script_editor`**. Les résidus français croisés en chemin ont été
+migrés à l'anglais au passage (règle de migration écran par écran).
+
+Politique d'extraction stable : on laisse HORS catalogue les libellés d'annulation
+(`SetFieldCmd label=…`, corpus du menu Undo à part), les identifiants qui doublent comme
+libellé (`COLUMN_TYPES`, `NO_CATEGORY`…), les noms de format techniques (BGR555, PNG), les
+titres d'`AssetFinder` (passe séparée), et les blocs de diagnostic très interpolés (à reprendre
+en clés-phrases à arguments nommés). Piège récurrent noté : une variable locale nommée `label`
+masque la fonction importée — grep systématique après chaque fichier.
+
 ### Ouvert
 
-- **La sélection de langue n'existe pas encore.** `notice.set_language(code)` est écrit et
-  n'a aucun appelant : c'est la seule pièce délibérément inemployée du chantier, et le premier
-  commit de la suite du jalon (un réglage d'application, pas de projet — l'interface est celle
-  de l'éditeur, pas du jeu). Tant qu'il n'est pas appelé, le maître est la seule source.
-- **Le reste de l'interface n'est pas extrait** : libellés, titres, états vides, menus, et les
-  202 `setToolTip` posés à la main. Le catalogue est fait pour les accueillir sans déménager,
-  mais les notices sont ce qui se traduit le moins bien et se lit le plus mal — d'où l'ordre.
-  Reste à trancher si les libellés partagent le catalogue des notices ou vivent à côté : un
-  libellé n'a ni ton ni niveau.
+- **La sélection de langue n'existe toujours pas.** `catalog.set_language(code)` (ex-
+  `notice.set_language`) est écrit et n'a aucun appelant : c'est la pièce délibérément
+  inemployée du chantier, et ce qui reste pour que la traduction soit UTILISABLE et pas
+  seulement PRÊTE. Ce sera un réglage d'application, pas de projet — l'interface est celle de
+  l'éditeur, pas du jeu. Tant qu'il n'est pas appelé, le maître est la seule source.
+- **L'extraction n'est pas finie** : il reste une trentaine de fichiers, presque tous petits
+  (inspecteurs `bg_layer_row`/`camera`/`script`/`languages_card`/`inputs_card`, `widgets.py`,
+  `build_panel`, barres de canvas, quelques dialogues d'import, finders divers). Le catalogue
+  les accueille sans déménager ; c'est du balayage, plus une décision d'architecture.
 - **Les messages du validateur** (`core/validator.py`, ~40 phrases) sont l'autre corpus déjà
   centralisé, et le plus proche : ils ont une gravité, et le rouge y a un sens. Ils partiront
   probablement dans le même catalogue avec un ton `error` que le gabarit d'inspecteur n'offre

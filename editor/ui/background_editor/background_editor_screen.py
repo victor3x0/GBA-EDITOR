@@ -22,6 +22,7 @@ from PyQt6.QtCore import (
 
 from ui.common.theme import C, T, QSS, ui_font
 from ui.common.widgets import W, FinderSection, AssetHeaderBar
+from ui.common.labels import label
 from ui.common.icons import COLOR_BACKGROUND, COLOR_UI
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
 from ui.common.asset_palette_view import background_palette_view
@@ -204,8 +205,7 @@ class _AnimatedSourceList(_BgList):
             it = QListWidgetItem(ba.name)
             it.setData(Qt.ItemDataRole.UserRole, ba)
             n = ba.frame_count()
-            it.setToolTip(f"{ba.name} — {n} frame{'s' if n > 1 else ''}. "
-                          f"Drag onto the canvas to place it.")
+            it.setToolTip(label("bgedit.anim_source_tip", name=ba.name, n=n))
             self.addItem(it)
         # Assez haute pour montrer jusqu'à quatre entrées, puis on défile : la
         # réserve ne doit pas repousser les palettes hors de l'écran.
@@ -251,13 +251,11 @@ class BgPropertiesPanel(QWidget):
         #    un décor qu'on décide d'employer en cadre est le même PNG.
         kind_row = QHBoxLayout(); kind_row.setContentsMargins(0, 2, 0, 2); kind_row.setSpacing(6)
         self._kind_btns: dict[str, QPushButton] = {}
-        for k, tip in ((KIND_SCENE, "Scene decor — placed as a layer, repainted per tile"),
-                       (KIND_UI, "Interface — fills a UI panel as a stretchable frame "
-                                 "or a plain image"),
-                       (KIND_ANIMATED, "Animation sheet — cut into frames and dropped "
-                                       "onto another background")):
-            b = self._mode_btn({KIND_SCENE: "Scene", KIND_UI: "UI",
-                                KIND_ANIMATED: "Animated"}[k], tip)
+        for k, lbl_key, tip_key in (
+                (KIND_SCENE, "bgedit.kind_scene", "bgedit.kind_scene_tip"),
+                (KIND_UI, "bgedit.kind_ui", "bgedit.kind_ui_tip"),
+                (KIND_ANIMATED, "bgedit.kind_animated", "bgedit.kind_animated_tip")):
+            b = self._mode_btn(label(lbl_key), label(tip_key))
             b.clicked.connect(lambda _=False, kk=k: self._set_kind(kk))
             kind_row.addWidget(b, 1)
             self._kind_btns[k] = b
@@ -269,23 +267,23 @@ class BgPropertiesPanel(QWidget):
         #    GBA → boutons profondeur filtrés selon le layout (cf. _refresh_mode_buttons).
         #    Changer d'axe recompresse le fond (hors-thread).
         lay_row = QHBoxLayout(); lay_row.setContentsMargins(0, 2, 0, 0); lay_row.setSpacing(6)
-        self._btn_tiled = self._mode_btn("Tiled", "Tiled background (Mode 0) — tileset + tilemap, scroll, inpainting")
-        self._btn_bitmap = self._mode_btn("Bitmap", "Full-screen bitmap ≤240×160, no tiles (photos / title screens)")
+        self._btn_tiled = self._mode_btn(label("bgedit.tiled"), label("bgedit.tiled_tip"))
+        self._btn_bitmap = self._mode_btn(label("bgedit.bitmap"), label("bgedit.bitmap_tip"))
         self._btn_tiled.clicked.connect(lambda: self._set_layout("tiled"))
         self._btn_bitmap.clicked.connect(lambda: self._set_layout("bitmap"))
         lay_row.addWidget(self._btn_tiled, 1); lay_row.addWidget(self._btn_bitmap, 1)
         root.addLayout(lay_row)
 
         dep_row = QHBoxLayout(); dep_row.setContentsMargins(0, 2, 0, 2); dep_row.setSpacing(6)
-        self._d4 = self._mode_btn("4bpp", "16 colors × 16 palettes · inpainting (pixel-art) — tiled only")
-        self._d8 = self._mode_btn("8bpp", "256 colors, one palette (rich pixel-art / bitmap Mode 4)")
-        self._d16 = self._mode_btn("16bpp", "15-bit direct color (true-color photos) — coming soon, falls back to Mode 4")
+        self._d4 = self._mode_btn(label("bgedit.d4"), label("bgedit.d4_tip"))
+        self._d8 = self._mode_btn(label("bgedit.d8"), label("bgedit.d8_tip"))
+        self._d16 = self._mode_btn(label("bgedit.d16"), label("bgedit.d16_tip"))
         self._d4.clicked.connect(lambda: self._set_depth(4))
         self._d8.clicked.connect(lambda: self._set_depth(8))
         self._d16.clicked.connect(lambda: self._set_depth(16))
         dep_row.addWidget(self._d4, 1); dep_row.addWidget(self._d8, 1); dep_row.addWidget(self._d16, 1)
         root.addLayout(dep_row)
-        self._chk_dither = QCheckBox("Dithering")
+        self._chk_dither = QCheckBox(label("bgedit.dithering"))
         self._chk_dither.setFont(QFont(T.UI, T.SM))
         self._chk_dither.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_dither.toggled.connect(self._on_dither_toggled)
@@ -306,12 +304,10 @@ class BgPropertiesPanel(QWidget):
         #    champs et les guides écrivent le même modèle.
         self._ui_widgets: list = []
         self._ui_sep = W.separator(root)
-        self._ui_title = W.section("UI role", root)
+        self._ui_title = W.section(label("bgedit.sec_ui_role"), root)
         role_row = QHBoxLayout(); role_row.setContentsMargins(0, 2, 0, 2); role_row.setSpacing(6)
-        self._btn_nine = self._mode_btn(
-            "Nine-slice", "Stretchable frame: fixed corners, repeated edges and center")
-        self._btn_plain = self._mode_btn(
-            "Background", "Plain image, laid top-left and cropped to the panel")
+        self._btn_nine = self._mode_btn(label("bgedit.nine"), label("bgedit.nine_tip"))
+        self._btn_plain = self._mode_btn(label("bgedit.plain"), label("bgedit.plain_tip"))
         self._btn_nine.clicked.connect(lambda: self._set_ui_role(UI_ROLE_NINE))
         self._btn_plain.clicked.connect(lambda: self._set_ui_role(UI_ROLE_BG))
         role_row.addWidget(self._btn_nine, 1); role_row.addWidget(self._btn_plain, 1)
@@ -342,7 +338,7 @@ class BgPropertiesPanel(QWidget):
             sp.valueChanged.connect(lambda v, f=field_name: self._on_slice(f, v))
             srow.addWidget(t); srow.addWidget(sp, 1)
             self._slice_spins[field_name] = sp
-        self._slice_row = W.row("Margins", slice_host, root).parentWidget()
+        self._slice_row = W.row(label("bgedit.margins"), slice_host, root).parentWidget()
         self._ui_widgets = [self._ui_sep, self._ui_title, self._ui_role_row,
                             self._slice_row]
 
@@ -350,7 +346,7 @@ class BgPropertiesPanel(QWidget):
         #    Découpe en GRILLE + vitesse en ticks 60 Hz (l'unité de
         #    `AnimState.speed` — animer un décor se lit comme animer un sprite).
         self._anim_sep = W.separator(root)
-        self._anim_title = W.section("Animation", root)
+        self._anim_title = W.section(label("bgedit.sec_animation"), root)
         frame_host = QWidget(); frame_host.setStyleSheet("background:transparent;")
         frow = QHBoxLayout(frame_host); frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(4)
         self._frame_spins: dict[str, QSpinBox] = {}
@@ -364,25 +360,24 @@ class BgPropertiesPanel(QWidget):
             sp.setStyleSheet(QSS.spinbox)
             sp.setRange(0, 1024)
             sp.setSingleStep(8)
-            sp.setSpecialValueText("full")   # 0 = pas de découpe : une seule frame
+            sp.setSpecialValueText(label("bgedit.frame_full"))   # 0 = une seule frame
             sp.setKeyboardTracking(False)
             sp.valueChanged.connect(lambda v, f=field_name: self._on_frame_size(f, v))
             frow.addWidget(t); frow.addWidget(sp, 1)
             self._frame_spins[field_name] = sp
-        self._frame_row = W.row("Frame", frame_host, root).parentWidget()
+        self._frame_row = W.row(label("bgedit.frame"), frame_host, root).parentWidget()
 
         self._speed = QSpinBox()
         self._speed.setFont(QFont(T.MONO, T.SM))
         self._speed.setStyleSheet(QSS.spinbox)
         self._speed.setRange(1, 255)
-        self._speed.setSuffix(" ticks")
-        self._speed.setToolTip("Ticks (1/60 s) between two frames — same unit as a "
-                               "sprite animation speed.")
+        self._speed.setSuffix(label("bgedit.ticks_suffix"))
+        self._speed.setToolTip(label("bgedit.speed_tip"))
         self._speed.setKeyboardTracking(False)
         self._speed.valueChanged.connect(self._on_speed)
-        self._speed_row = W.row("Speed", self._speed, root).parentWidget()
+        self._speed_row = W.row(label("bgedit.speed"), self._speed, root).parentWidget()
 
-        self._chk_loop = QCheckBox("Loop")
+        self._chk_loop = QCheckBox(label("bgedit.loop"))
         self._chk_loop.setFont(QFont(T.UI, T.SM))
         self._chk_loop.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_loop.toggled.connect(self._on_loop)
@@ -393,17 +388,15 @@ class BgPropertiesPanel(QWidget):
         mode_host = QWidget(); mode_host.setStyleSheet("background:transparent;")
         mrow = QHBoxLayout(mode_host); mrow.setContentsMargins(0, 0, 0, 0); mrow.setSpacing(6)
         self._anim_mode_btns: dict[str, QPushButton] = {}
-        for mode, label, tip in (
-            (ANIM_INSTANCE, "Per instance",
-             "Each copy placed on a background animates on its own."),
-            (ANIM_SHARED, "Shared",
-             "Every copy animates together, in step."),
+        for mode, lbl_key, tip_key in (
+            (ANIM_INSTANCE, "bgedit.per_instance", "bgedit.per_instance_tip"),
+            (ANIM_SHARED, "bgedit.shared", "bgedit.shared_tip"),
         ):
-            b = self._mode_btn(label, tip)
+            b = self._mode_btn(label(lbl_key), label(tip_key))
             b.clicked.connect(lambda _=False, m=mode: self._set_animation_mode(m))
             mrow.addWidget(b, 1)
             self._anim_mode_btns[mode] = b
-        self._anim_mode_row = W.row("Playback", mode_host, root).parentWidget()
+        self._anim_mode_row = W.row(label("bgedit.playback"), mode_host, root).parentWidget()
 
         self._anim_widgets = [self._anim_sep, self._anim_title, self._frame_row,
                               self._speed_row, self._chk_loop, self._anim_mode_row]
@@ -413,8 +406,8 @@ class BgPropertiesPanel(QWidget):
         #    le finder : celui-ci pilote l'asset édité, y presser un item ferait
         #    changer le canvas sous le drag (cf. _AnimatedSourceList).
         self._src_sep = W.separator(root)
-        self._src_title = W.section("Animations", root)
-        self._src_hint = QLabel("Drag onto the canvas to place")
+        self._src_title = W.section(label("bgedit.sec_animations"), root)
+        self._src_hint = QLabel(label("bgedit.src_hint"))
         self._src_hint.setFont(QFont(T.UI, T.SM))
         self._src_hint.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
         root.addWidget(self._src_hint)
@@ -427,7 +420,7 @@ class BgPropertiesPanel(QWidget):
         #    Section pilotée par la SÉLECTION et non par le type de l'asset :
         #    elle décrit une copie posée, pas l'image courante.
         self._pl_sep = W.separator(root)
-        self._pl_title = W.section("Placement", root)
+        self._pl_title = W.section(label("bgedit.sec_placement"), root)
         self._pl_name = QLabel("")
         self._pl_name.setFont(QFont(T.MONO, T.SM))
         self._pl_name.setStyleSheet(f"color:{C.TEXT_DIM}; background:transparent;")
@@ -436,25 +429,21 @@ class BgPropertiesPanel(QWidget):
         self._pl_start.setFont(QFont(T.MONO, T.SM))
         self._pl_start.setStyleSheet(QSS.spinbox)
         self._pl_start.setRange(0, 255)
-        self._pl_start.setToolTip(
-            "Which frame this copy starts on. Lets two copies of the same "
-            "animation sit at different points of the loop.")
+        self._pl_start.setToolTip(label("bgedit.pl_start_tip"))
         self._pl_start.setKeyboardTracking(False)
         self._pl_start.valueChanged.connect(self._on_placement_start)
-        self._pl_start_row = W.row("Start frame", self._pl_start, root).parentWidget()
+        self._pl_start_row = W.row(label("bgedit.start_frame"), self._pl_start, root).parentWidget()
 
         self._pl_speed = QSpinBox()
         self._pl_speed.setFont(QFont(T.MONO, T.SM))
         self._pl_speed.setStyleSheet(QSS.spinbox)
         self._pl_speed.setRange(0, 255)
-        self._pl_speed.setSuffix(" ticks")
-        self._pl_speed.setSpecialValueText("default")   # 0 = cadence de l'animé
-        self._pl_speed.setToolTip(
-            "Ticks between two frames for this copy only. Leave at default to "
-            "follow the animation's own speed.")
+        self._pl_speed.setSuffix(label("bgedit.ticks_suffix"))
+        self._pl_speed.setSpecialValueText(label("bgedit.default"))   # 0 = cadence de l'animé
+        self._pl_speed.setToolTip(label("bgedit.pl_speed_tip"))
         self._pl_speed.setKeyboardTracking(False)
         self._pl_speed.valueChanged.connect(self._on_placement_speed)
-        self._pl_speed_row = W.row("Speed", self._pl_speed, root).parentWidget()
+        self._pl_speed_row = W.row(label("bgedit.speed"), self._pl_speed, root).parentWidget()
 
         self._pl_widgets = [self._pl_sep, self._pl_title, self._pl_name,
                             self._pl_start_row, self._pl_speed_row]
@@ -467,7 +456,7 @@ class BgPropertiesPanel(QWidget):
         #    clic droit = restaurer l'origine) ; « + » ajoute une palette du
         #    catalogue (éditable, clic = remplacer, clic droit = retirer). La
         #    palette active de PEINTURE se choisit dans la bande en haut du canvas.
-        W.separator(root); W.section("Palettes", root)
+        W.separator(root); W.section(label("bgedit.sec_palettes"), root)
         self._pal_grid = PaletteSlotGridAsset(_BG_COLOR)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
@@ -476,14 +465,12 @@ class BgPropertiesPanel(QWidget):
         self._pal_grid.asset_restore.connect(self._on_pal_restore)
         root.addWidget(self._pal_grid)
 
-        self._btn = W.btn_accent("⟐  Import / replace image…")
+        self._btn = W.btn_accent(label("bgedit.import_replace"))
         self._btn.clicked.connect(self._on_replace)
         root.addWidget(self._btn)
 
         self._btn_restore = self._mini_btn(
-            "↺  Restore original…",
-            "Resets the background to its first import (PNG re-compression) — "
-            "added palettes and painting will be lost.")
+            label("bgedit.restore"), label("bgedit.restore_tip"))
         self._btn_restore.clicked.connect(self._on_restore)
         root.addWidget(self._btn_restore)
         root.addStretch()
@@ -491,11 +478,8 @@ class BgPropertiesPanel(QWidget):
         # ── EXTRACT PALETTE — ferré en bas de l'inspecteur. Promeut les
         #    sous-palettes déduites du PNG en PaletteBank partagées du catalogue
         #    (visibles/éditables depuis le Palette Editor) et les assigne à ce fond.
-        self._btn_extract = QPushButton("⤓  EXTRACT PALETTE")
-        self._btn_extract.setToolTip(
-            "Promotes palettes deduced from the PNG into shared catalog "
-            "palettes (visible and editable from the Palette Editor). "
-            "Created palettes are assigned to this background.")
+        self._btn_extract = QPushButton(label("bgedit.extract"))
+        self._btn_extract.setToolTip(label("bgedit.extract_tip"))
         self._btn_extract.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         self._btn_extract.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_extract.setFixedHeight(38)
@@ -1011,8 +995,8 @@ class BgPropertiesPanel(QWidget):
             return
         idx = self._ba.add_palette_colors(bank.colors)
         if idx < 0:
-            QMessageBox.warning(self, "Limite atteinte",
-                                "Un fond ne peut avoir que 16 palettes.")
+            QMessageBox.warning(self, label("bgedit.limit_title"),
+                                label("bgedit.limit_text"))
             return
         self._persist_bg()
         self._reload_palettes()
@@ -1059,9 +1043,8 @@ class BgPropertiesPanel(QWidget):
         if not self._ba or not (0 <= idx < len(self._ba.palettes)) or len(self._ba.palettes) <= 1:
             return
         if QMessageBox.question(
-            self, "Supprimer",
-            f"Supprimer la palette {idx} ?\n"
-            "Les tuiles qui l'utilisent repasseront sur la palette 0.",
+            self, label("bgedit.del_pal_title"),
+            label("bgedit.del_pal_text", idx=idx),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -1075,16 +1058,15 @@ class BgPropertiesPanel(QWidget):
         if not self._project or not self._ba:
             return
         if QMessageBox.question(
-            self, "Restore original",
-            "Reset this background to its very first import?\n"
-            "Added palettes and painting (inpainting) will be lost.",
+            self, label("bgedit.restore_dialog_title"),
+            label("bgedit.restore_dialog_text"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
         png = self._png_path()
         if not png or not png.exists():
-            QMessageBox.warning(self, "Not possible",
-                                "Source PNG not found — restoration impossible.")
+            QMessageBox.warning(self, label("bgedit.restore_no_png_title"),
+                                label("bgedit.restore_no_png_text"))
             return
         # Purge l'inpainting ; palettes/tileset/tilemap sont régénérés par la
         # recompression (hors-thread) depuis le PNG, dans le mode courant.
@@ -1098,8 +1080,8 @@ class BgPropertiesPanel(QWidget):
         if not new_name or new_name == self._ba.name:
             return
         if self._project.get_background(new_name):
-            QMessageBox.warning(self, "Name already used",
-                                f"A background named “{new_name}” already exists.")
+            QMessageBox.warning(self, label("bgedit.name_used_title"),
+                                label("bgedit.name_used_text", name=new_name))
             self._header.set_name(self._ba.name)
             return
         with get_dispatcher().suspended():
@@ -1124,9 +1106,8 @@ class BgPropertiesPanel(QWidget):
         pals = [list(p) for p in ba.palettes]
         if not pals:
             QMessageBox.information(
-                self, "Extraction not possible",
-                "This background doesn't have a palette to extract yet "
-                "(uncompressed or unreadable image).")
+                self, label("bgedit.no_extract_title"),
+                label("bgedit.no_extract_text"))
             return
         # 256 couleurs (une banque unique) en 8bpp / bitmap ; 16 en 4bpp tuilé.
         size = 256 if (ba.mode == "bitmap" or ba.bpp == 8) else 16
@@ -1147,18 +1128,16 @@ class BgPropertiesPanel(QWidget):
             # « palettes_changed » pour rafraîchir le Palette Editor / les finders.
             get_dispatcher().save_palette(bank)
             created.append(bank.name)
-        noun = "palette" if single else "palettes"
         QMessageBox.information(
-            self, "Palette extracted",
-            f"{len(created)} {noun} added to the catalog and assigned to "
-            f"“{ba.name}”:\n  " + "\n  ".join(created) + "\n\n"
-            "They are now visible and editable from the Palette Editor.")
+            self, label("bgedit.extracted_title"),
+            label("bgedit.extracted_text", n=len(created), name=ba.name,
+                  list="\n  ".join(created)))
 
     def _on_replace(self):
         if not self._project or not self._ba:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose an image", "", "Images (*.png)")
+            self, label("bgedit.choose_image"), "", "Images (*.png)")
         if not path:
             return
         import shutil
@@ -1172,7 +1151,7 @@ class BgPropertiesPanel(QWidget):
             d = detect_import_mode(dst)
             token = d["token"]
             if d["warning"]:
-                QMessageBox.information(self, "Import", d["warning"])
+                QMessageBox.information(self, label("bgedit.import_title"), d["warning"])
         except Exception:
             token = self._cur_mode_token()
         self.recompress_requested.emit(self._ba, dst, token, self._ba.dither)
@@ -1302,8 +1281,8 @@ class BackgroundEditorScreen(QWidget):
             if tok != self._compress_token:
                 return
             self._canvas.set_busy(False)
-            QMessageBox.warning(self, "Compression failed",
-                                f"Could not compress the background:\n{msg}")
+            QMessageBox.warning(self, label("bgedit.compress_fail_title"),
+                                label("bgedit.compress_fail_text", msg=msg))
 
         task.signals.done.connect(_done)
         task.signals.failed.connect(_failed)
@@ -1341,9 +1320,9 @@ class BackgroundEditorScreen(QWidget):
     def _on_import(self, kind: str = KIND_SCENE):
         if not self._project:
             return
-        title = {KIND_SCENE: "Import a background",
-                 KIND_UI: "Import a UI background",
-                 KIND_ANIMATED: "Import an animation sheet"}.get(kind, "Import a background")
+        title = {KIND_SCENE: label("bgedit.import_scene"),
+                 KIND_UI: label("bgedit.import_ui"),
+                 KIND_ANIMATED: label("bgedit.import_anim")}.get(kind, label("bgedit.import_scene"))
         path, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png)")
         if not path:
             return
@@ -1365,7 +1344,7 @@ class BackgroundEditorScreen(QWidget):
             d = detect_import_mode(dst)
             token = d["token"]
             if d["warning"]:
-                QMessageBox.information(self, "Import", d["warning"])
+                QMessageBox.information(self, label("bgedit.import_title"), d["warning"])
         except Exception:
             token = "tiled4"
         if kind != KIND_SCENE and token.startswith("bitmap"):

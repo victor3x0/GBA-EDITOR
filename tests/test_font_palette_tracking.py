@@ -126,3 +126,22 @@ def test_override_du_picker_place_la_police_sur_un_slot_de_scene(projet, scene_a
     assert scene_font_pal_bank(scene_avec_conteneur, "FontFree", "FontFree") == 0
     banks = scene_font_runtime_banks(projet, scene_avec_conteneur)
     assert banks["FontFree"] == (0, 0)
+
+
+def test_renommer_une_police_suit_son_override_de_banque(projet, scene_avec_conteneur):
+    """Renommer une police NON-défaut déplace sa clé dans `Scene.font_pal_banks`
+    (keyé par nom) : sans ce suivi, l'override vivrait sous le nom mort et
+    retomberait en silence sur la palette propre. La police PAR DÉFAUT passe par
+    la clé "" — stable, non concernée."""
+    scene = scene_avec_conteneur
+    # Un override par NOM sur une police non-défaut, plus la clé "" du défaut.
+    scene.font_pal_banks = {"FontNested": 2, "": 0}
+    font = next(f for f in projet.fonts if f.name == "FontNested")
+
+    projet.rename_font(font, "FontRenamed")
+
+    assert "FontNested" not in scene.font_pal_banks
+    assert scene.font_pal_banks.get("FontRenamed") == 2
+    assert scene.font_pal_banks.get("") == 0          # le défaut est épargné
+    # Le codegen lit l'override sous le nouveau nom.
+    assert scene_font_pal_bank(scene, "FontRenamed", "FontFree") == 2

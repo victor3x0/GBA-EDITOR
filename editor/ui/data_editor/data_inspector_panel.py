@@ -22,6 +22,7 @@ from PyQt6.QtCore import pyqtSignal
 from ui.common.theme import C, T, S, QSS
 from ui.common.widgets import W, CollapsibleCard
 from ui.common.notice import note
+from ui.common.labels import label
 
 from core.models.data_table import DataColumn, COLUMN_TYPES, COLUMN_REFERENCES
 from core.project import Project
@@ -45,27 +46,27 @@ class DataInspectorPanel(QWidget):
         root.setContentsMargins(S.MD, S.MD, S.MD, S.MD)
         root.setSpacing(S.SM)
 
-        column_card = CollapsibleCard("Column")
+        column_card = CollapsibleCard(label("datainsp.column"))
         self._name = QLabel("—")
         self._name.setStyleSheet(f"color:{C.ACCENT}; font-family:{T.CODE}; "
                                  f"font-size:{T.MD}px;")
-        W.row("name", self._name, column_card.body_layout)
+        W.row(label("datainsp.name"), self._name, column_card.body_layout)
 
         self._type = QComboBox()
         self._type.addItems(COLUMN_TYPES)
         self._type.setStyleSheet(QSS.combobox)
         self._type.currentTextChanged.connect(self._on_type_changed)
-        W.row("type", self._type, column_card.body_layout)
+        W.row(label("datainsp.type"), self._type, column_card.body_layout)
 
         note(column_card.body_layout, "data.column_rename").show_text()
         root.addWidget(column_card)
 
-        cell_card = CollapsibleCard("Cell")
+        cell_card = CollapsibleCard(label("datainsp.cell"))
         self._value = QLabel("—")
         self._value.setStyleSheet(f"color:{C.TEXT_HI}; font-family:{T.CODE}; "
                                   f"font-size:{T.MD}px;")
         self._value.setWordWrap(True)
-        W.row("value", self._value, cell_card.body_layout)
+        W.row(label("datainsp.value"), self._value, cell_card.body_layout)
 
         self._target = QLabel("")
         self._target.setStyleSheet(f"color:{C.TEXT_DIM}; font-size:{T.SM}px;")
@@ -105,18 +106,18 @@ class DataInspectorPanel(QWidget):
             return ""
         name = str(value or "").strip()
         if not name:
-            return "no reference — emitted as 0"
+            return label("datainsp.no_ref")
         if self._project is None:
             return ""
         if name not in self._project.data_column_choices(column.type):
-            return f"no {column.type} named “{name}” in this project"
+            return label("datainsp.no_named", type=column.type, name=name)
         if column.type == "text":
             entry = next((t for t in self._project.texts if t.key == name), None)
-            return f"“{entry.content}”" if entry else ""
+            return label("datainsp.text_content", content=entry.content) if entry else ""
         if column.type == "palette":
             bank = self._project.palettes.get(name)
-            return f"{bank.size} colors" if bank else ""
-        return f"{column.type} of this project"
+            return label("datainsp.pal_colors", n=bank.size) if bank else ""
+        return label("datainsp.of_project", type=column.type)
 
     # ── Type ──────────────────────────────────────────────────────
 

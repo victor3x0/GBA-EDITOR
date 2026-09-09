@@ -9,6 +9,7 @@ from PyQt6.QtGui import QFont
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot
+from ui.common.labels import label
 from ui.common.theme import C, T, QSS
 from ui.common import icons
 
@@ -21,9 +22,9 @@ class ScriptEditor(BaseComponentEditor):
         sp   = proj.asset_abs(comp.script) if comp.script else None
 
         slot = ScriptSlot(
-            add_label    = "Add a script",
+            add_label    = label("comped.script_add"),
             accent_color = icons.COLOR_SCRIPT,
-            hint         = "on_start · on_update · on_collide · …",
+            hint         = label("comped.script_hint"),
         )
         if sp and sp.exists():
             slot.set_script(sp.name)
@@ -50,7 +51,7 @@ class ScriptEditor(BaseComponentEditor):
             return
 
         W.separator(layout)
-        W.section("Exposed variables", layout)
+        W.section(label("comped.exposed_vars"), layout)
 
         for var in variables:
             self._build_var_row(comp, var, layout)
@@ -168,7 +169,8 @@ class ScriptEditor(BaseComponentEditor):
     def _new_script(self, comp, slot: ScriptSlot):
         from core.command_dispatcher import get_dispatcher
         proj = self.insp._project
-        name, ok = QInputDialog.getText(self.insp, "New actor script", "Name (without .lua):")
+        name, ok = QInputDialog.getText(self.insp, label("comped.new_script_title"),
+                                        label("comped.new_script_prompt"))
         if not ok or not name.strip(): return
         actors_dir = proj.scripts_actors_dir
         actors_dir.mkdir(parents=True, exist_ok=True)

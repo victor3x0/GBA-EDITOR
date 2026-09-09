@@ -17,6 +17,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData, QPoint, QRect, QSize
 
 from ui.common.theme import C, T, QSS
+from ui.common.labels import label
 from ui.common.icons import get as _ico
 from ui.common.palette_bank_strip import PaletteBankStrip
 from core.models.sprite import (
@@ -111,11 +112,11 @@ class _FrameThumb(QFrame):
         """Reflète action_name/direct_sfx_name/event_name : badge + tooltip."""
         parts = []
         if frame.action_name:
-            parts.append(("B", f"SoundBox action: {frame.action_name}"))
+            parts.append(("B", label("sprframe.trig_action", name=frame.action_name)))
         if frame.direct_sfx_name:
-            parts.append(("X", f"Sound effect: {frame.direct_sfx_name}"))
+            parts.append(("X", label("sprframe.trig_sfx", name=frame.direct_sfx_name)))
         if frame.event_name:
-            parts.append(("E", f"Event call: {frame.event_name}"))
+            parts.append(("E", label("sprframe.trig_event", name=frame.event_name)))
         self._badge_lbl.setText("".join(p[0] for p in parts))
         self.setToolTip("\n".join(p[1] for p in parts))
 
@@ -229,7 +230,7 @@ class _FrameTimeline(QWidget):
         outer.setSpacing(0)
 
         # Label section
-        hdr = QLabel("  FRAMES")
+        hdr = QLabel(label("sprframe.frames_header"))
         hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         hdr.setFixedHeight(18)
         hdr.setStyleSheet(
@@ -271,7 +272,7 @@ class _FrameTimeline(QWidget):
             f"font-size:{T.LG}px;}}"
             f"QToolButton:hover{{color:{C.ACCENT};border-color:{C.ACCENT};}}"
         )
-        self._add_btn.setToolTip("Add a frame")
+        self._add_btn.setToolTip(label("sprframe.add_frame_tip"))
         self._add_btn.clicked.connect(self._on_add)
 
         self._scroll.setWidget(self._content)
@@ -402,18 +403,18 @@ class _FrameTimeline(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        copy_a  = menu.addAction("Copy                Ctrl+D")
-        clone_a = menu.addAction("Clone")
-        clear_a = menu.addAction("Clear frame")
+        copy_a  = menu.addAction(label("sprframe.menu_copy"))
+        clone_a = menu.addAction(label("sprframe.menu_clone"))
+        clear_a = menu.addAction(label("sprframe.menu_clear"))
         menu.addSeparator()
-        del_a   = menu.addAction("Delete              Del")
+        del_a   = menu.addAction(label("sprframe.menu_delete"))
         del_a.setEnabled(len(self._sd.frames) > 1)
 
         menu.addSeparator()
         frame = self._sd.frames[index]
-        self._build_trigger_menu(menu, "Play SoundBox action", frame.action_name,
+        self._build_trigger_menu(menu, label("sprframe.play_action"), frame.action_name,
                                  self._sound_action_names(), index, "action_name")
-        self._build_trigger_menu(menu, "Play sound effect", frame.direct_sfx_name,
+        self._build_trigger_menu(menu, label("sprframe.play_sfx"), frame.direct_sfx_name,
                                  self._sfx_names(), index, "direct_sfx_name")
         self._build_event_call_menu(menu, frame.event_name, index)
 
@@ -440,12 +441,14 @@ class _FrameTimeline(QWidget):
             return []
         return [s.name for s in getattr(self._project, "sfx", [])]
 
-    def _build_trigger_menu(self, parent: QMenu, label: str, current: str,
+    def _build_trigger_menu(self, parent: QMenu, title: str, current: str,
                             names: list[str], index: int, field: str):
         """Sous-menu inline listant les noms disponibles (SoundBox action ou
         Sfx) — pas de dialogue, on choisit dans le menu contextuel lui-même."""
-        sub = parent.addMenu(f"{label} ({current})" if current else label)
-        none_a = sub.addAction("(None)")
+        sub = parent.addMenu(
+            label("sprframe.trigger_current", title=title, current=current)
+            if current else title)
+        none_a = sub.addAction(label("sprframe.none"))
         none_a.setCheckable(True)
         none_a.setChecked(not current)
         none_a.triggered.connect(lambda: self._set_frame_trigger(index, field, ""))
@@ -457,17 +460,18 @@ class _FrameTimeline(QWidget):
                 act.setChecked(name == current)
                 act.triggered.connect(lambda _c=False, n=name: self._set_frame_trigger(index, field, n))
         else:
-            empty_a = sub.addAction("Aucun dans le projet")
+            empty_a = sub.addAction(label("sprframe.none_in_project"))
             empty_a.setEnabled(False)
 
     def _build_event_call_menu(self, parent: QMenu, current: str, index: int):
         """EventCall : nom libre (fonction du script de l'actor), donc pas de
         liste à proposer — un champ texte embarqué DANS le menu contextuel
         (QWidgetAction), jamais une boîte de dialogue séparée."""
-        label = f"Event call ({current})" if current else "Event call"
-        sub = parent.addMenu(label)
+        title = (label("sprframe.event_call_current", name=current) if current
+                 else label("sprframe.event_call"))
+        sub = parent.addMenu(title)
         edit = QLineEdit(current)
-        edit.setPlaceholderText("nom de la fonction du script…")
+        edit.setPlaceholderText(label("sprframe.event_placeholder"))
         edit.setStyleSheet(
             f"QLineEdit{{background:{C.BG_INPUT};color:{C.TEXT_HI};"
             f"border:1px solid {C.BORDER};border-radius:3px;padding:3px 6px;}}"
@@ -481,7 +485,7 @@ class _FrameTimeline(QWidget):
         ))
         if current:
             sub.addSeparator()
-            clear_a = sub.addAction("(None)")
+            clear_a = sub.addAction(label("sprframe.none"))
             clear_a.triggered.connect(lambda: self._set_frame_trigger(index, "event_name", ""))
 
     def _set_frame_trigger(self, index: int, field: str, value: str):
@@ -933,7 +937,7 @@ class _FrameCanvas(QWidget):
             painter.setPen(QColor(C.TEXT_MUTED))
             painter.setFont(QFont(T.UI, T.MD))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "Select a frame")
+                             label("sprframe.select_frame"))
             painter.end()
             return
 
@@ -1078,11 +1082,11 @@ class _CanvasFloatingToolbar(QFrame):
             layout.addWidget(b)
             return b
 
-        self.btn_prev = _icon_btn("playback_prev", "Première frame")
-        self.btn_play = _icon_btn("playback_play", "Lecture", checkable=True)
-        self.btn_next = _icon_btn("playback_next", "Dernière frame")
+        self.btn_prev = _icon_btn("playback_prev", label("sprframe.first_frame"))
+        self.btn_play = _icon_btn("playback_play", label("sprframe.play"), checkable=True)
+        self.btn_next = _icon_btn("playback_next", label("sprframe.last_frame"))
         _sep()
-        self.btn_grid = _icon_btn("playback_grid", "Afficher grille", checkable=True)
+        self.btn_grid = _icon_btn("playback_grid", label("sprframe.show_grid"), checkable=True)
         _sep()
         # Mode de preview : couleurs natives du PNG vs quantifiées sur la
         # banque (rendu WYSIWYG in-game) — paire mutuellement exclusive.
@@ -1094,9 +1098,9 @@ class _CanvasFloatingToolbar(QFrame):
             f"border:1px solid {C.ACCENT};border-radius:4px;}}"
         )
         self.btn_original = QToolButton(); self.btn_original.setText("PNG")
-        self.btn_original.setToolTip("Preview: sprite's compressed result (own_palette)")
-        self.btn_indexed = QToolButton(); self.btn_indexed.setText("Indexed")
-        self.btn_indexed.setToolTip("Preview: recolored by the PALETTE strip's active palette (in-game render)")
+        self.btn_original.setToolTip(label("sprframe.preview_png_tip"))
+        self.btn_indexed = QToolButton(); self.btn_indexed.setText(label("sprframe.indexed"))
+        self.btn_indexed.setToolTip(label("sprframe.preview_indexed_tip"))
         for b in (self.btn_original, self.btn_indexed):
             b.setStyleSheet(_MODE_BTN)
             b.setCheckable(True)
@@ -1106,8 +1110,8 @@ class _CanvasFloatingToolbar(QFrame):
         self.btn_original.clicked.connect(lambda: self._set_preview_indexed(False))
         self.btn_indexed.clicked.connect(lambda: self._set_preview_indexed(True))
         _sep()
-        self.btn_flip_x = _icon_btn("mirror_h", "Horizontal flip of the active brush (Shift+X)")
-        self.btn_flip_y = _icon_btn("mirror_v", "Vertical flip of the active brush (Shift+Y)")
+        self.btn_flip_x = _icon_btn("mirror_h", label("sprframe.flip_x_tip"))
+        self.btn_flip_y = _icon_btn("mirror_v", label("sprframe.flip_y_tip"))
         _sep()
 
         _TXT_BTN = (
@@ -1115,13 +1119,13 @@ class _CanvasFloatingToolbar(QFrame):
             f"font-size:{T.LG}px;padding:0 8px;}}"
             f"QToolButton:hover{{color:{C.TEXT_HI};background:{C.BG_HOVER};}}"
         )
-        self.btn_fit = QToolButton(); self.btn_fit.setText("Fit")
+        self.btn_fit = QToolButton(); self.btn_fit.setText(label("sprframe.fit"))
         self.btn_zm  = QToolButton(); self.btn_zm.setText("−")
         self.btn_zp  = QToolButton(); self.btn_zp.setText("+")
         for b in (self.btn_fit, self.btn_zm, self.btn_zp):
             b.setStyleSheet(_TXT_BTN)
             b.setFixedHeight(36)
-            b.setToolTip("Reset zoom (auto-fit)" if b is self.btn_fit else "")
+            b.setToolTip(label("sprframe.fit_tip") if b is self.btn_fit else "")
             layout.addWidget(b)
 
         # Grille + flip/zoom pilotent directement le canvas (pas d'état
@@ -1189,7 +1193,7 @@ class _FrameCanvasPanel(QWidget):
         # Scene Manager/Background Editor — cf. palette_bank_strip) : les
         # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
         # clic = palette active pour le mode « Indexé ». Masqué si aucune palette.
-        self.paint_strip = PaletteBankStrip("Aucune palette", self)
+        self.paint_strip = PaletteBankStrip(label("sprframe.no_palette"), self)
         self.paint_strip.setVisible(False)
         self.paint_strip.raise_()
 
@@ -1198,7 +1202,7 @@ class _FrameCanvasPanel(QWidget):
         self.toolbar.raise_()
 
         _FLOAT_STY = f"color:{C.TEXT_MUTED};background:transparent;"
-        self._tag_lbl = QLabel("Canvas", self)
+        self._tag_lbl = QLabel(label("sprframe.canvas_tag"), self)
         self._tag_lbl.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._tag_lbl.setStyleSheet(_FLOAT_STY + "letter-spacing:1px;")
         self._tag_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -1238,12 +1242,12 @@ class _FrameCanvasPanel(QWidget):
         self._reposition_overlays()
 
     def set_info(self, tiles: int, unique: int):
-        self._info_lbl.setText(f"Tiles={tiles}  Unique={unique}")
+        self._info_lbl.setText(label("sprframe.info", tiles=tiles, unique=unique))
         self._info_lbl.adjustSize()
         self._reposition_overlays()
 
     def _on_hover_changed(self, cell):
-        self._coord_lbl.setText(f"tuile {cell[0]},{cell[1]}" if cell else "")
+        self._coord_lbl.setText(label("sprframe.coord", c=cell[0], r=cell[1]) if cell else "")
         self._coord_lbl.adjustSize()
         self._reposition_overlays()
 

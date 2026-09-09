@@ -169,13 +169,18 @@ def controle_ordre_d_import(mods: dict) -> list[str]:
 #  niveau dont la clé peut changer d'un rafraîchissement à l'autre, d'où la
 #  signature qui met le lieu d'abord (cf. ui/common/notice.py).
 CITATIONS_NOTICES = {"note": 1, "notice": 0, "tip": 0, "text": 0, "show_text": 0}
+#  Les libellés n'ont qu'un accès, `label(clé)` (cf. ui/common/labels.py).
+CITATIONS_LABELS = {"label": 0}
 
 
-def controle_notices(trees: dict) -> list:
-    """Toute clé citée existe dans le catalogue, toute entrée est citée."""
+def controle_catalogue(trees: dict, nom_catalogue: str, citations: dict) -> list:
+    """Toute clé citée existe dans le catalogue, toute entrée est citée. Vaut
+    pour les deux catalogues d'interface (notices, libellés) : même fichier
+    `<nom>/<nom>.json`, même grammaire, seule change la table des citations."""
     catalogue = json.loads(
-        (EDITOR / "ui" / "common" / "notices" / "notices.json").read_text(encoding="utf-8")
-    )["notices"]
+        (EDITOR / "ui" / "common" / nom_catalogue / f"{nom_catalogue}.json")
+        .read_text(encoding="utf-8")
+    )[nom_catalogue]
     citees: dict[str, str] = {}     # clé littérale EN POSITION D'APPEL
     littérales: set[str] = set()    # n'importe quelle chaîne du code
     for m, t in trees.items():
@@ -186,7 +191,7 @@ def controle_notices(trees: dict) -> list:
                 continue
             nom = (node.func.attr if isinstance(node.func, ast.Attribute)
                    else getattr(node.func, "id", ""))
-            pos = CITATIONS_NOTICES.get(nom)
+            pos = citations.get(nom)
             if pos is None or len(node.args) <= pos:
                 continue
             arg = node.args[pos]
@@ -437,7 +442,15 @@ def main() -> int:
     # jamais — c'est le seul défaut de ce chantier qu'aucun test ne verrait.
     # Le contrôle vaut dans les DEUX sens : une entrée que plus personne ne cite
     # est du texte à traduire pour rien.
-    r.section("Catalogue de notices", controle_notices(trees))
+    r.section("Catalogue de notices",
+              controle_catalogue(trees, "notices", CITATIONS_NOTICES))
+
+    # ── 8. Catalogue de libellés ↔ code ──────────────────────────
+    # Même contrôle, catalogue frère (ROADMAP v0.11) : les libellés d'interface
+    # extraits vers labels.json. Une clé mal tapée afficherait la clé brute ;
+    # une entrée que plus personne ne cite est du texte à traduire pour rien.
+    r.section("Catalogue de libellés",
+              controle_catalogue(trees, "labels", CITATIONS_LABELS))
 
     if args.fresh:
         r.section("Ordre d'import (interpréteur neuf par module)",

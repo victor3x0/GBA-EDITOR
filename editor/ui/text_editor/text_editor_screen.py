@@ -48,6 +48,7 @@ from PyQt6.QtCore import Qt
 
 from core.history import get_history, SetFieldCmd
 from ui.common.theme import C
+from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import FONTS
@@ -320,14 +321,12 @@ class TextEditorScreen(QWidget):
             return
         png = self._project.asset_abs(font.asset)
         if not png or not png.exists():
-            QMessageBox.warning(self, "Re-slice",
-                                f"Sheet not found: {font.asset}")
+            QMessageBox.warning(self, label("txtscr.reslice_title"),
+                                label("txtscr.sheet_not_found", asset=font.asset))
             return
         if QMessageBox.question(
-            self, "Re-slice sheet",
-            f"Re-slice “{font.name}” into {cw}×{ch} cells?\n\n"
-            "Assigned characters are reset from scratch — manual "
-            "corrections will be lost.",
+            self, label("txtscr.reslice_confirm_title"),
+            label("txtscr.reslice_confirm_msg", name=font.name, cw=cw, ch=ch),
         ) != QMessageBox.StandardButton.Yes:
             return
         from core import font_import
@@ -338,7 +337,8 @@ class TextEditorScreen(QWidget):
                                                  keys=font.key_colors(),
                                                  space_color=font.space_color)
         except Exception as exc:
-            QMessageBox.warning(self, "Re-slice", f"Import failed: {exc}")
+            QMessageBox.warning(self, label("txtscr.reslice_title"),
+                                label("txtscr.import_failed", error=exc))
             return
         get_history().push(ResliceFontCmd(
             self._project, font, fields,

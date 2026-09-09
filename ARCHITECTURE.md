@@ -65,8 +65,11 @@ gba-editor/
 │       ├── common/                  ← transverse à tous les écrans
 │       │   ├── theme.py             ← C (couleurs) / T (typographie) — jamais de valeurs en dur
 │       │   ├── icons.py, widgets.py, reorderable_bar.py, build_panel.py
-│       │   ├── notice.py            ← les 3 niveaux de contenu informatif
-│       │   └── notices/notices.json ← leurs TEXTES, hors du code (cf. « Textes de l'ÉDITEUR »)
+│       │   ├── catalog.py           ← cœur partagé maître+side (join par clé, pluriel, set_language)
+│       │   ├── notice.py            ← les 3 niveaux de contenu informatif (bâti sur catalog.py)
+│       │   ├── notices/notices.json ← leurs TEXTES, hors du code (cf. « Textes de l'ÉDITEUR »)
+│       │   ├── labels.py            ← label("clé") : libellés, titres, menus, infobulles (bâti sur catalog.py)
+│       │   └── labels/labels.json   ← leurs TEXTES, hors du code (même grammaire que les notices)
 │       ├── home/
 │       │   └── project_picker.py    ← écran d'accueil (HomeScreen)
 │       ├── scene_manager/
@@ -1150,7 +1153,29 @@ diagnostique pas en relisant son script.
 utilisateur, l'autre de ce que le JEU affiche au joueur. Deux corpus, deux fichiers, deux
 jalons (v0.11 et v0.9) — mais **la même grammaire**, et c'est délibéré.
 
-`ui/common/notice.py` + `ui/common/notices/notices.json`.
+**Deux catalogues frères, un seul cœur.** `ui/common/catalog.py` porte toute la mécanique —
+maître `<nom>.json` + side `<nom>_<code>.json` joints par clé, repli sur la source quand une
+entrée manque, pluriel `one`/`other` choisi par l'argument `n`, `format(**args)`, et un
+`set_language(code)` global à tous les catalogues. Deux catalogues l'utilisent :
+
+- **`ui/common/notice.py`** + `notices/notices.json` — le contenu INFORMATIF (constats,
+  avertissements, astuces), qui porte un TON et un NIVEAU (voir ci-dessous).
+- **`ui/common/labels.py`** + `labels/labels.json` — `label("clé", **args)` : tout le reste
+  du texte visible (libellés de champs, titres de cartes et d'écrans, entrées de menu, états
+  vides, boutons, et les `setToolTip` posés à la main). Un libellé n'a ni ton ni niveau —
+  d'où un catalogue à part, plat, plutôt qu'un champ mort dans chaque entrée de notice.
+
+Distinct de `core/project_langs.py` (les textes du JEU, couche `core`, id opaque) : ici on
+est dans l'UI, et la clé est lisible. **La règle de nommage** est `<écran>.<slug>` en
+snake_case, avec un préfixe `common.*` pour les atomes universels (browse, cancel, close,
+open, create…) traduits une seule fois.
+
+Ce que le catalogue de libellés ne reçoit PAS, délibérément (chacun a sa raison) : les
+libellés d'annulation (`SetFieldCmd label=…`, visibles dans le menu Undo, corpus à part),
+les identifiants qui doublent comme libellé (`COLUMN_TYPES`, `NO_CATEGORY`, noms de type
+`int`/`bool`…), les noms de format techniques (BGR555, PNG), les titres d'`AssetFinder`
+(passe séparée), et les blocs de diagnostic très interpolés (assemblés fragment par fragment —
+à reprendre en clés-phrases à arguments nommés lors d'une passe dédiée).
 
 **Le niveau est choisi par l'appelant, le ton est écrit dans le catalogue.** Le niveau est
 une question de place dans l'écran ; le ton est une propriété du message. Les mélanger est
@@ -1197,11 +1222,18 @@ Deux règles qui viennent de ce que la traduction exige, et qu'aucun test n'aura
   `"s" if n > 1`. Un champ `code` porte l'expression Lua qu'un champ miroite ; il vit dans le
   maître seul, parce qu'une expression d'API ne se traduit pas.
 
-`tools/check_architecture.py` (contrôle 7) vérifie les deux sens : toute clé citée existe,
-toute entrée est citée. Sans lui l'extraction se déferait toute seule — une clé mal tapée
-donne un message vide, et **un message vide ne se plaint jamais**. C'est précisément ce
-qu'on a trouvé en écrivant ce contrôle : quatre infobulles d'inspecteur citaient une clé
-absente de leur propre dictionnaire et n'affichaient rien depuis toujours.
+`tools/check_architecture.py` vérifie les deux sens, pour les DEUX catalogues (notices ET
+libellés) : toute clé citée existe, toute entrée est citée. Sans lui l'extraction se déferait
+toute seule — une clé mal tapée donne un message vide, et **un message vide ne se plaint
+jamais**. C'est précisément ce qu'on a trouvé en écrivant ce contrôle : quatre infobulles
+d'inspecteur citaient une clé absente de leur propre dictionnaire et n'affichaient rien depuis
+toujours.
+
+**Piège de mise en œuvre.** `label` est aussi un nom de variable tentant. Un `for k, label in …`
+ou un `label = …` dans une méthode qui appelle par ailleurs `label("clé")` masque la fonction
+importée et casse l'appel (`UnboundLocalError`) — invisible en statique, à la construction du
+widget. On renomme la variable locale (`lbl`, `disp`, `lbl_key`…) dès qu'un `label()` vit dans
+la même méthode.
 
 ## Textes du joueur — table de chaînes
 

@@ -24,6 +24,7 @@ from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
 
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
+from ui.common.labels import label
 from ui.common.reveal import reveal_in_file_manager
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
 from core.project_templates import (
@@ -78,9 +79,9 @@ class ToolchainStatus(QWidget):
 
     configure_requested = pyqtSignal()
 
-    _EXPLAIN = {
-        "devkitPro": "the compilation toolchain (ARM + grit) that turns your project into a playable .gba ROM",
-        "mGBA":      "the emulator used to launch and test your ROM directly from the editor",
+    _EXPLAIN_KEYS = {
+        "devkitPro": "home.status.explain_devkitpro",
+        "mGBA":      "home.status.explain_mgba",
     }
 
     def __init__(self, toolchain: Toolchain, parent=None):
@@ -119,7 +120,7 @@ class ToolchainStatus(QWidget):
             row_l.addWidget(lbl)
         row_l.addStretch()
 
-        cfg = QLabel('<a href="#" style="color:#555;text-decoration:none;">⚙ Configure manually</a>')
+        cfg = QLabel(f'<a href="#" style="color:#555;text-decoration:none;">⚙ {label("home.status.configure")}</a>')
         cfg.setFont(QFont(T.UI, T.XS))
         cfg.setStyleSheet("background:transparent;")
         cfg.linkActivated.connect(lambda _: self.configure_requested.emit())
@@ -129,8 +130,8 @@ class ToolchainStatus(QWidget):
 
         for name, ok, url in missing:
             expl = QLabel(
-                f'<span style="color:#666;">{name} — {self._EXPLAIN[name]}. '
-                f'<a href="{url}" style="color:#4c8caf;">Download →</a></span>'
+                f'<span style="color:#666;">{name} — {label(self._EXPLAIN_KEYS[name])}. '
+                f'<a href="{url}" style="color:#4c8caf;">{label("home.status.download")}</a></span>'
             )
             expl.setFont(QFont(T.UI, T.XS))
             expl.setStyleSheet("background:transparent;")
@@ -179,7 +180,7 @@ class _ProjectItem(QWidget):
         hl.addLayout(col, 1)
 
         if dead:
-            dead_badge = QLabel("not found")
+            dead_badge = QLabel(label("home.project.not_found"))
             dead_badge.setFont(QFont(T.UI, T.XS))
             dead_badge.setStyleSheet(
                 "color:#e05555;background:#2a1a1a;border:1px solid #e05555;"
@@ -187,7 +188,7 @@ class _ProjectItem(QWidget):
             )
             hl.addWidget(dead_badge)
         else:
-            btn_reveal = W.btn_reveal("Open project folder")
+            btn_reveal = W.btn_reveal(label("home.project.reveal"))
             btn_reveal.clicked.connect(lambda: reveal_in_file_manager(self.path))
             hl.addWidget(btn_reveal)
 
@@ -239,7 +240,7 @@ class _TemplateItem(QWidget):
     def set_downloaded(self, downloaded: bool):
         self.downloaded = downloaded
         if downloaded:
-            self._btn.setText("✓ Downloaded")
+            self._btn.setText(f"✓ {label('home.template.downloaded')}")
             self._btn.setEnabled(False)
             self._btn.setStyleSheet(
                 f"QPushButton{{color:{C.POWER};background:transparent;"
@@ -247,13 +248,13 @@ class _TemplateItem(QWidget):
                 f"QPushButton:disabled{{color:{C.POWER};border-color:{C.POWER};}}"
             )
         else:
-            self._btn.setText("Download")
+            self._btn.setText(label("home.template.download"))
             self._btn.setEnabled(True)
             self._btn.setStyleSheet(QSS.button_accent_outline)
 
-    def set_busy(self, label: str):
+    def set_busy(self, text: str):
         self._btn.setEnabled(False)
-        self._btn.setText(label)
+        self._btn.setText(text)
 
 
 class _TemplateDownloadThread(QThread):
@@ -302,7 +303,7 @@ class HomeScreen(QDialog):
         self._recent       = load_recent()
         self._toolchain    = Toolchain()
 
-        self.setWindowTitle("GBA Editor — Ouvrir un projet")
+        self.setWindowTitle(label("home.window_title"))
         self.setMinimumSize(580, 460)
         self.setMaximumSize(720, 640)
         self.setModal(True)
@@ -329,7 +330,7 @@ class HomeScreen(QDialog):
         title_lbl = QLabel("GBA Editor")
         title_lbl.setFont(QFont(T.UI, 16, QFont.Weight.DemiBold))
         title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
-        sub_lbl = QLabel("Select a project")
+        sub_lbl = QLabel(label("home.subtitle"))
         sub_lbl.setFont(QFont(T.UI, T.SM))
         sub_lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
 
@@ -343,8 +344,8 @@ class HomeScreen(QDialog):
         # ── Onglets : Projects (récents) / Templates (démos) ───────
         self._tabs = QTabWidget()
         self._tabs.setStyleSheet(QSS.tab)
-        self._tabs.addTab(self._build_projects_tab(), "Projects")
-        self._tabs.addTab(self._build_templates_tab(), "Templates")
+        self._tabs.addTab(self._build_projects_tab(), label("home.tab.projects"))
+        self._tabs.addTab(self._build_templates_tab(), label("home.tab.templates"))
         root.addWidget(self._tabs, 1)
 
         # ── Statut toolchain (devkitPro / mGBA) ────────────────────
@@ -382,9 +383,7 @@ class HomeScreen(QDialog):
         self._populate()
 
         # ── Message si liste vide ─────────────────────────────────
-        self._empty_lbl = QLabel(
-            "No recent project.\nCreate a new project or open an existing folder."
-        )
+        self._empty_lbl = QLabel(label("home.empty"))
         self._empty_lbl.setFont(QFont(T.UI, T.MD))
         self._empty_lbl.setStyleSheet(
             f"color:{C.TEXT_MUTED};background:{C.BG_BASE};"
@@ -403,7 +402,7 @@ class HomeScreen(QDialog):
         fl.setContentsMargins(16, 10, 16, 10)
         fl.setSpacing(8)
 
-        btn_clear = QPushButton("🗑  Clear list")
+        btn_clear = QPushButton(f"🗑  {label('home.clear')}")
         btn_clear.setFont(QFont(T.UI, T.SM))
         btn_clear.setFixedHeight(30)
         btn_clear.setStyleSheet(
@@ -412,13 +411,13 @@ class HomeScreen(QDialog):
             f"QPushButton:hover{{background:#2a1a1a;border-color:#e05555;}}"
             f"QPushButton:pressed{{background:#1e1010;}}"
         )
-        btn_clear.setToolTip("Removes entries pointing to projects that can't be found")
+        btn_clear.setToolTip(label("home.clear_tip"))
         btn_clear.clicked.connect(self._clear_dead)
         fl.addWidget(btn_clear)
 
         fl.addStretch()
 
-        btn_load = QPushButton("Load a folder…")
+        btn_load = QPushButton(label("home.load"))
         btn_load.setFont(QFont(T.UI, T.SM))
         btn_load.setFixedHeight(30)
         btn_load.setStyleSheet(
@@ -426,11 +425,11 @@ class HomeScreen(QDialog):
             f"border:1px solid {C.BORDER};border-radius:4px;padding:0 12px;}}"
             f"QPushButton:hover{{background:{C.BG_HOVER};border-color:#555;}}"
         )
-        btn_load.setToolTip("Browse the disk for an existing project folder")
+        btn_load.setToolTip(label("home.load_tip"))
         btn_load.clicked.connect(self._browse)
         fl.addWidget(btn_load)
 
-        self._btn_open = QPushButton("Open")
+        self._btn_open = QPushButton(label("common.open"))
         self._btn_open.setFont(QFont(T.UI, T.SM))
         self._btn_open.setFixedHeight(30)
         self._btn_open.setStyleSheet(
@@ -442,7 +441,7 @@ class HomeScreen(QDialog):
         self._btn_open.clicked.connect(self._open_selected)
         fl.addWidget(self._btn_open)
 
-        btn_new = QPushButton("+ Create project")
+        btn_new = QPushButton(f"+ {label('home.create_project')}")
         btn_new.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         btn_new.setFixedHeight(30)
         btn_new.setStyleSheet(
@@ -543,7 +542,7 @@ class HomeScreen(QDialog):
 
     def _browse(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Open an existing project", str(self._projects_dir)
+            self, label("home.browse_title"), str(self._projects_dir)
         )
         if path:
             self._accept(Path(path), is_new=False)
@@ -590,7 +589,7 @@ class HomeScreen(QDialog):
         row = self._row_of_template(template)
         w = self._tpl_list.itemWidget(self._tpl_list.item(row)) if row is not None else None
         if w:
-            w.set_busy("Downloading…")
+            w.set_busy(label("home.template.downloading"))
 
         thread = _TemplateDownloadThread(template, self._projects_dir, self)
         thread.progress.connect(lambda msg: w.set_busy(msg) if w else None)
@@ -612,7 +611,7 @@ class HomeScreen(QDialog):
             w = self._tpl_list.itemWidget(self._tpl_list.item(row))
             if w:
                 w.set_downloaded(False)
-        QMessageBox.warning(self, "Download failed", message)
+        QMessageBox.warning(self, label("home.download_failed"), message)
 
     def _open_template_selected(self, *_):
         row = self._tpl_list.currentRow()
@@ -638,7 +637,7 @@ class NewProjectDialog(QDialog):
     def __init__(self, projects_dir: Path, parent=None):
         super().__init__(parent)
         self._projects_dir = projects_dir
-        self.setWindowTitle("New project")
+        self.setWindowTitle(label("home.new.title"))
         self.setFixedSize(480, 260)
         self.setModal(True)
         self.setStyleSheet(f"QDialog{{background:{C.BG_BASE};}}")
@@ -660,7 +659,7 @@ class NewProjectDialog(QDialog):
         icon_lbl.setFont(QFont(T.UI, T.XXL))
         icon_lbl.setStyleSheet("background:transparent;")
         hl.addWidget(icon_lbl)
-        title_lbl = QLabel("New project")
+        title_lbl = QLabel(label("home.new.title"))
         title_lbl.setFont(QFont(T.UI, T.LG, QFont.Weight.DemiBold))
         title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
         hl.addWidget(title_lbl)
@@ -681,23 +680,23 @@ class NewProjectDialog(QDialog):
             return lbl
 
         # Nom du projet
-        bl.addWidget(_field_label("Project name"))
+        bl.addWidget(_field_label(label("home.new.name")))
         self._name_edit = QLineEdit()
         self._name_edit.setFont(QFont(T.MONO, T.MD))
         self._name_edit.setStyleSheet(QSS.lineedit)
         self._name_edit.setFixedHeight(32)
-        self._name_edit.setPlaceholderText("MyGame")
+        self._name_edit.setPlaceholderText(label("home.new.name_placeholder"))
         bl.addWidget(self._name_edit)
 
         # Dossier parent
-        bl.addWidget(_field_label("Location"))
+        bl.addWidget(_field_label(label("home.new.location")))
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         self._dir_edit = QLineEdit(str(projects_dir))
         self._dir_edit.setFont(QFont(T.MONO, T.MD))
         self._dir_edit.setStyleSheet(QSS.lineedit)
         self._dir_edit.setFixedHeight(32)
-        btn_dir = QPushButton("Browse…")
+        btn_dir = QPushButton(label("common.browse"))
         btn_dir.setFont(QFont(T.UI, T.SM))
         btn_dir.setFixedHeight(32)
         btn_dir.setStyleSheet(QSS.button_ghost)
@@ -725,12 +724,12 @@ class NewProjectDialog(QDialog):
         fl.setContentsMargins(16, 10, 16, 10)
         fl.setSpacing(8)
         fl.addStretch()
-        btn_cancel = QPushButton("Cancel")
+        btn_cancel = QPushButton(label("common.cancel"))
         btn_cancel.setFont(QFont(T.UI, T.SM))
         btn_cancel.setFixedHeight(30)
         btn_cancel.setStyleSheet(QSS.button_ghost)
         btn_cancel.clicked.connect(self.reject)
-        btn_ok = QPushButton("Create")
+        btn_ok = QPushButton(label("common.create"))
         btn_ok.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
         btn_ok.setFixedHeight(30)
         btn_ok.setStyleSheet(
@@ -761,7 +760,8 @@ class NewProjectDialog(QDialog):
 
     def _pick_dir(self):
         path = QFileDialog.getExistingDirectory(
-            self, "Choose the parent folder", self._dir_edit.text().strip() or str(self._projects_dir)
+            self, label("home.new.pick_dir_title"),
+            self._dir_edit.text().strip() or str(self._projects_dir)
         )
         if path:
             self._dir_edit.setText(path)
@@ -777,7 +777,8 @@ class NewProjectDialog(QDialog):
             return
         path = Path(dir_) / name
         if path.exists():
-            QMessageBox.warning(self, "Error", f"'{name}' already exists in this folder.")
+            QMessageBox.warning(self, label("common.error"),
+                                label("home.new.exists", name=name))
             return
         path.mkdir(parents=True, exist_ok=True)
         self.result_path = path

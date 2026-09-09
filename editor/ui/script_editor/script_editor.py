@@ -34,6 +34,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QFileSystemWatcher
 
 from scripting.api import EVENT_REGISTRY as _EVENT_META
 from ui.common.theme import C, T
+from ui.common.labels import label
 from ui.common.icons import COLOR_SCRIPT
 from ui.common.build_panel import BuildPanel
 from .colors import _BG, _BG_HDR, _BORDER, _TEXT_HI, _TEXT_NORM, _C_API, _C_EVENT, _C_BEHAVIOR
@@ -82,7 +83,7 @@ class ScriptEditorScreen(QWidget):
         bar_l.setContentsMargins(8, 0, 8, 0)
         bar_l.setSpacing(8)
 
-        btn_back = QPushButton("← Back")
+        btn_back = QPushButton(label("scred.back"))
         btn_back.setFont(QFont(T.UI, T.MD))
         btn_back.setFixedHeight(24)
         btn_back.setStyleSheet(
@@ -111,7 +112,7 @@ class ScriptEditorScreen(QWidget):
         self._ctx_badge.setVisible(False)
         bar_l.addWidget(self._ctx_badge)
 
-        self._save_btn = QPushButton("Save")
+        self._save_btn = QPushButton(label("scred.save"))
         self._save_btn.setFont(QFont(T.UI, T.MD))
         self._save_btn.setFixedHeight(24)
         self._save_btn.setStyleSheet(
@@ -130,8 +131,10 @@ class ScriptEditorScreen(QWidget):
         sep.setFixedWidth(1)
         bar_l.addWidget(sep)
 
-        for label, subdir in [("+ Script", ""), ("+ Actor", "actors"), ("+ Scene", "scenes")]:
-            btn = QPushButton(label)
+        for lbl_key, subdir in [("scred.new_script_btn", ""),
+                                ("scred.new_actor_btn", "actors"),
+                                ("scred.new_scene_btn", "scenes")]:
+            btn = QPushButton(label(lbl_key))
             btn.setFont(QFont(T.UI, T.SM))
             btn.setFixedHeight(24)
             btn.setStyleSheet(
@@ -263,13 +266,14 @@ class ScriptEditorScreen(QWidget):
     def _update_context_badge(self, ctx: str):
         from ui.common.widgets import kind_colors
         _BADGE = {
-            "actor":    ("Actor",    _C_EVENT),
-            "scene":    ("Scene",    _C_API),
-            "camera":   ("Camera",   _C_API),
-            "behavior": ("Behavior", _C_BEHAVIOR),
+            "actor":    ("scred.badge_actor",    _C_EVENT),
+            "scene":    ("scred.badge_scene",    _C_API),
+            "camera":   ("scred.badge_camera",   _C_API),
+            "behavior": ("scred.badge_behavior", _C_BEHAVIOR),
         }
         if ctx in _BADGE:
-            text, fg = _BADGE[ctx]
+            text_key, fg = _BADGE[ctx]
+            text = label(text_key)
             bg, _mid, _accent = kind_colors(fg)
             self._ctx_badge.setText(text)
             self._ctx_badge.setStyleSheet(
@@ -323,8 +327,9 @@ class ScriptEditorScreen(QWidget):
         if not self._dirty:
             self._external_reload_timer.start()
         else:
-            self._title_lbl.setText(
-                f"⚠ {self._path.name if self._path else '?'} (conflit externe)")
+            self._title_lbl.setText(label(
+                "scred.external_conflict",
+                name=self._path.name if self._path else "?"))
 
     def _reload_from_disk(self):
         if not self._path or not self._path.exists():
@@ -346,9 +351,11 @@ class ScriptEditorScreen(QWidget):
 
     def _create_script(self, subdir: str):
         if not self._root_scripts_dir:
-            QMessageBox.warning(self, "Project", "No project loaded.")
+            QMessageBox.warning(self, label("scred.no_project_title"),
+                                label("scred.no_project_msg"))
             return
-        name, ok = QInputDialog.getText(self, "New script", "Script name:")
+        name, ok = QInputDialog.getText(self, label("scred.new_script_title"),
+                                        label("scred.script_name"))
         if not ok or not name.strip():
             return
         name = name.strip()
@@ -358,7 +365,8 @@ class ScriptEditorScreen(QWidget):
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / name
         if path.exists():
-            QMessageBox.warning(self, "File already exists", f"{name} already exists.")
+            QMessageBox.warning(self, label("scred.file_exists_title"),
+                                label("scred.file_exists_msg", name=name))
             return
         from scripting.script_templates import ScriptTemplateContext, generate_script_template
         ctx = ScriptTemplateContext(kind="empty", name=name[:-4] if name.endswith(".lua") else name)

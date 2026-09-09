@@ -122,6 +122,20 @@ traduisible.
 
 → [détail](changelog-archive/v0.21.md)
 
+## v0.22 — Menus, listes et curseur
+
+*Livrée le 2026-09-05.* Le moteur prend la navigation, la mise en page reste authorée. `UIList`
+devient un quatrième type d'élément (à côté de texte, conteneur et image) : il porte son index,
+ses bornes, une grille (`nav_columns`/`nav_major`) et son curseur, qui se POSE sur la rangée
+choisie ou y GLISSE. Un `active` par liste permet un menu et son sous-menu à l'écran en même
+temps. `ui.image_move` déplace une image d'interface au script (le curseur qu'on pilote
+soi-même), `list.active`/`list.set_active` bascule la sélection. L'en-tête de sauvegarde s'étend
+sans nouveau concept : `save.read(slot, "nom")` lit une variable d'un emplacement sans charger la
+partie, et l'ancien `save.read(slot)` — qui remplace TOUTES les persistantes — devient
+`save.load(slot)`. Au passage, `UIPanel` devient `UIContainer`, jusqu'à la valeur sérialisée.
+
+→ [détail](changelog-archive/v0.22.md)
+
 ## v0.23 — Ce qu'un boss demande
 
 *Livrée le 2026-08-21.* Boucle bornée dans une séquence (`for i = 1, 3 do tirer() ;

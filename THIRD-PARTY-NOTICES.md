@@ -2,11 +2,8 @@
 
 L'éditeur est distribué sous GPL-3.0-only (cf. [LICENSE](LICENSE)). Il embarque
 et redistribue les composants ci-dessous, chacun sous ses propres conditions.
-Cette page les recense — c'est une obligation de la plupart d'entre elles, et
-elle est **déjà active** puisque l'installateur et le ZIP portable contiennent
-ces composants.
 
-> Le moteur GBA (`runtime/`) n'est PAS concerné par cette page : il est sous
+> Le moteur GBA (`runtime/`) n'est pas concerné par cette page : il est sous
 > licence zlib et n'embarque rien de tiers. Voir [runtime/LICENSE](runtime/LICENSE).
 
 ## Bibliothèques Python
@@ -25,16 +22,15 @@ ces composants.
 | [multimethod](https://github.com/coady/multimethod) | 2.1 | Apache-2.0 |
 
 Les quatre derniers sont des dépendances transitives (antlr4 et multimethod via
-luaparser, QtPy via QtAwesome) — elles ne figurent pas dans `requirements.txt`
-mais sont bien présentes dans la distribution, donc listées ici.
+luaparser, QtPy via QtAwesome)
 
 ### Deux points qui ne sont pas de simples notices
 
 **PyQt6 est en GPL-3.0-only.** C'est la raison pour laquelle cet éditeur est
-lui-même en GPL-3.0 : distribuer un binaire lié à PyQt6 sous une licence
-non-compatible n'est pas possible sans une licence commerciale Riverbank.
+lui-même en GPL-3.0 : Pour distribuer un binaire lié à PyQt6 sous une licence
+n'est pas possible sans une licence commerciale Riverbank.
 
-**Qt est en LGPL-3.0.** Elle impose de fournir cette notice ET de ne pas
+**Qt est en LGPL-3.0.** Elle impose de fournir cette notice et de ne pas
 empêcher l'utilisateur de remplacer les bibliothèques Qt par une version
 modifiée. La distribution étant en mode *standalone* (les `.dll` Qt sont des
 fichiers séparés dans le dossier, pas fusionnées dans l'exécutable), le
@@ -50,8 +46,7 @@ remplacement reste possible.
 | Codicon | via QtAwesome | CC BY 4.0 |
 
 Le texte intégral de la licence d'Inter accompagne les fichiers de fonte, à
-`editor/ui/common/fonts/LICENSE.txt`, et il est embarqué dans la distribution —
-l'OFL exige que la notice voyage avec la fonte.
+`editor/ui/common/fonts/LICENSE.txt`, et il est embarqué dans la distribution.
 
 Les fontes de QtAwesome sont fournies par le paquet lui-même et leurs notices
 respectives se trouvent dans son arborescence.
@@ -64,7 +59,7 @@ publié ici. Ils sont mentionnés parce qu'ils comptent pour l'utilisateur.
 
 | Outil | Rôle |
 | --- | --- |
-| devkitARM, grit (devkitPro) | compilation ARM et conversion des images — outils, ils n'entrent pas dans la ROM |
+| devkitARM, grit (devkitPro) | compilation ARM et conversion des images : outils, ils n'entrent pas dans la ROM |
 | libgba, maxmod (devkitPro) | **liées dans la ROM de l'utilisateur** (`-lgba -lmm`) |
 | mGBA | émulateur, lancé pour tester |
 

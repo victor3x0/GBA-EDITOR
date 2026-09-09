@@ -28,6 +28,7 @@ from PyQt6.QtCore import Qt, QEvent, QPoint, QSize, pyqtSignal
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common import icons
+from ui.common.labels import label
 
 from core.models.palette import PaletteBank
 from core.project import Project
@@ -103,7 +104,7 @@ class PaletteGridPanel(QWidget):
         tl.setSpacing(6)
 
         # Zoom : mêmes contrôles et mêmes libellés que CanvasTopBar (−/%/+/ajuster).
-        tl.addWidget(self._zoom_btn("zoom_out", "Zoom out  (wheel down)",
+        tl.addWidget(self._zoom_btn("zoom_out", label("palgrid.zoom_out_tip"),
                                     lambda: self.zoom_step(-1)))
         self._zoom_lbl = QLabel("100%")
         self._zoom_lbl.setFont(QFont(T.MONO, T.SM))
@@ -111,13 +112,13 @@ class PaletteGridPanel(QWidget):
         self._zoom_lbl.setFixedWidth(42)
         self._zoom_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tl.addWidget(self._zoom_lbl)
-        tl.addWidget(self._zoom_btn("zoom_in", "Zoom in  (wheel up)",
+        tl.addWidget(self._zoom_btn("zoom_in", label("palgrid.zoom_in_tip"),
                                     lambda: self.zoom_step(+1)))
-        tl.addWidget(self._zoom_btn("fit_page", "Fit to view  (F)", self.fit))
+        tl.addWidget(self._zoom_btn("fit_page", label("palgrid.fit_tip"), self.fit))
         tl.addSpacing(10)
 
-        self._btn_export = W.btn_ghost("Export")
-        self._btn_export.setToolTip("Export as .gpl (GIMP) / .pal (JASC) / hex list")
+        self._btn_export = W.btn_ghost(label("palgrid.export"))
+        self._btn_export.setToolTip(label("palgrid.export_tip"))
         self._btn_export.clicked.connect(self._export_palette)
         tl.addWidget(self._btn_export)
         chl.addWidget(self._tools)
@@ -128,7 +129,7 @@ class PaletteGridPanel(QWidget):
         il.setContentsMargins(16, 16, 16, 16)
         il.setSpacing(14)
 
-        self._empty_lbl = QLabel("Select a palette from the left panel")
+        self._empty_lbl = QLabel(label("palgrid.empty"))
         self._empty_lbl.setFont(QFont(T.UI, T.MD))
         self._empty_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -203,7 +204,8 @@ class PaletteGridPanel(QWidget):
         self._tools.setVisible(True)
         size = getattr(bank, "size", 16)
         self._title.setText(bank.name)
-        self._size_lbl.setText(f"{size} couleurs · {'8bpp' if size == 256 else '4bpp'}")
+        self._size_lbl.setText(label("palgrid.size", n=size,
+                                     bpp="8bpp" if size == 256 else "4bpp"))
 
         self._active_index = 1 if len(bank.colors) > 1 else None
         self._anchor_index = self._active_index
@@ -311,8 +313,8 @@ class PaletteGridPanel(QWidget):
         if not bank:
             return
         path, sel = QFileDialog.getSaveFileName(
-            self, "Export palette", bank.name,
-            "GIMP palette (*.gpl);;JASC palette (*.pal);;Hex list (*.txt)")
+            self, label("palgrid.export_dialog"), bank.name,
+            label("palgrid.export_filter"))
         if not path:
             return
         low = path.lower()
@@ -322,7 +324,8 @@ class PaletteGridPanel(QWidget):
         try:
             Path(path).write_text(serialize_palette(bank.name, rgb, fmt), encoding="utf-8")
         except OSError as e:
-            QMessageBox.warning(self, "Export", f"Write failed: {e}")
+            QMessageBox.warning(self, label("palgrid.export"),
+                                label("palgrid.write_failed", error=e))
 
     def _make_ramp(self):
         """Interpole un dégradé entre deux index (inclus) — les extrémités
@@ -335,15 +338,16 @@ class PaletteGridPanel(QWidget):
         n = len(bank.colors)
         lo, hi = self._sel_range
         dlg = QDialog(self)
-        dlg.setWindowTitle("Generate a ramp")
+        dlg.setWindowTitle(label("palgrid.ramp_title"))
         v = QVBoxLayout(dlg)
         row = QHBoxLayout()
         sa = QSpinBox(); sa.setRange(1, n - 1); sa.setValue(lo)
         sb = QSpinBox(); sb.setRange(1, n - 1); sb.setValue(hi)
-        row.addWidget(QLabel("From index")); row.addWidget(sa)
-        row.addWidget(QLabel("to")); row.addWidget(sb)
+        row.addWidget(QLabel(label("palgrid.from_index"))); row.addWidget(sa)
+        row.addWidget(QLabel(label("palgrid.to"))); row.addWidget(sb)
         v.addLayout(row)
-        space = QComboBox(); space.addItems(["RGB (linear)", "HSL (hue)"])
+        space = QComboBox()
+        space.addItems([label("palgrid.ramp_rgb"), label("palgrid.ramp_hsl")])
         v.addWidget(space)
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -434,7 +438,7 @@ class PaletteGridPanel(QWidget):
             if i == 0:
                 btn.set_checker()              # damier transparence (hardware GBA)
                 btn.setEnabled(False)
-                btn.setToolTip("Reserved — always transparent (GBA hardware)")
+                btn.setToolTip(label("palgrid.reserved_tip"))
             else:
                 # La case active (couleur éditée) porte le contour blanc.
                 is_active = bool(selectable and i == self._active_index)
@@ -670,14 +674,14 @@ class PaletteGridPanel(QWidget):
         if not self._selected_set:
             return
         menu = QMenu(self)
-        a_ramp = menu.addAction("Create a ramp")
+        a_ramp = menu.addAction(label("palgrid.create_ramp"))
         # Rampe = interpolation le long d'index CONTIGUS → uniquement en mode
         # plage (Shift+drag / Shift+flèches), pas sur une sélection rectangle.
         a_ramp.setEnabled(self._sel_range is not None
                           and self._sel_range[1] - self._sel_range[0] >= 2)
         menu.addSeparator()
-        a_clear = menu.addAction("Clear")
-        a_del = menu.addAction("Delete (shifts swatches)")
+        a_clear = menu.addAction(label("palgrid.menu_clear"))
+        a_del = menu.addAction(label("palgrid.menu_delete"))
         act = menu.exec(gpos)
         if act == a_ramp:
             self._make_ramp()

@@ -4,6 +4,7 @@ from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtCore import Qt, QSize
 
 from ui.common.theme import C, T
+from ui.common.labels import label
 from .colors import _BG, _BG_HDR, _BG_HOVER, _BORDER, _TEXT_DIM, _TEXT_HI, _TEXT_NORM, _C_API, _C_REF, _C_SUB, _C_EVENT, _C_BEHAVIOR, _BG_SEL_REF
 
 _BTN_BASE = (
@@ -74,7 +75,7 @@ def _event_tooltip(name: str) -> str:
                 f"</tr>"
             )
         lines.append("</table>")
-    lines.append(f"<p style='color:{_C_SUB};margin-top:6px;font-size:9px'>? doc (coming soon)</p>")
+    lines.append(f"<p style='color:{_C_SUB};margin-top:6px;font-size:9px'>{label('scrsb.doc_soon')}</p>")
     return "".join(lines)
 
 

@@ -10,6 +10,7 @@ from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QPixmap
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QRect
 
 from ui.common.theme import C, T, QSS
+from ui.common.labels import label
 from ui.common import icons
 from ui.common import external_editor
 
@@ -138,7 +139,7 @@ class _SpritesheetCanvas(QWidget):
         if not self._pixmap or self._pixmap.isNull():
             painter.setPen(QColor(C.TEXT_DIM))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
-                             "Aucun PNG source")
+                             label("sprsheet.no_png"))
             painter.end()
             return
 
@@ -192,14 +193,14 @@ class _SpritesheetViewer(QWidget):
         hdr_lay.setContentsMargins(8, 0, 4, 0)
         hdr_lay.setSpacing(4)
 
-        lbl_tiles = QLabel("Tiles")
+        lbl_tiles = QLabel(label("sprsheet.tiles"))
         lbl_tiles.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         lbl_tiles.setStyleSheet(QSS.title_panel)
         hdr_lay.addWidget(lbl_tiles)
 
         hdr_lay.addStretch()
 
-        self._brush_lbl = QLabel("No brush")
+        self._brush_lbl = QLabel(label("sprsheet.no_brush"))
         self._brush_lbl.setFont(QFont(T.UI, T.XS))
         self._brush_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
         hdr_lay.addWidget(self._brush_lbl)
@@ -230,7 +231,7 @@ class _SpritesheetViewer(QWidget):
         self._btn_edit.setIcon(icons.get("edit_external", icons.COLOR_DEFAULT))
         self._btn_edit.setIconSize(QSize(15, 15))
         self._btn_edit.setStyleSheet(_BTN)
-        self._btn_edit.setToolTip("Edit image…")
+        self._btn_edit.setToolTip(label("sprsheet.edit_tip"))
         self._btn_edit.setEnabled(False)
         self._btn_edit.clicked.connect(self._on_edit_image)
         self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -254,7 +255,7 @@ class _SpritesheetViewer(QWidget):
         root.addWidget(scroll, 1)
 
     def _on_hover_changed(self, cell):
-        self._coord_lbl.setText(f"tuile {cell[0]},{cell[1]}" if cell else "")
+        self._coord_lbl.setText(label("sprframe.coord", c=cell[0], r=cell[1]) if cell else "")
 
     def load(self, path: Optional[Path]):
         self._path = path
@@ -269,8 +270,8 @@ class _SpritesheetViewer(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         cur = external_editor.get_configured_editor()
-        act_choose = menu.addAction("Choose editor…")
-        act_default = menu.addAction("Use system default")
+        act_choose = menu.addAction(label("common.choose_editor"))
+        act_default = menu.addAction(label("common.use_default"))
         act_default.setEnabled(bool(cur))
         chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
         if chosen == act_choose:
@@ -284,10 +285,10 @@ class _SpritesheetViewer(QWidget):
 
     def set_brush_label(self, n: int):
         if n == 0:
-            self._brush_lbl.setText("No brush")
+            self._brush_lbl.setText(label("sprsheet.no_brush"))
             self._brush_lbl.setStyleSheet(f"color:{C.TEXT_MUTED};background:transparent;")
         else:
-            self._brush_lbl.setText(f"Brosse : {n} tuile{'s' if n > 1 else ''}")
+            self._brush_lbl.setText(label("sprsheet.brush", n=n))
             self._brush_lbl.setStyleSheet(f"color:{C.ACCENT};background:transparent;")
 
     def _zoom_in(self):

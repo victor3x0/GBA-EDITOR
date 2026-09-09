@@ -70,7 +70,6 @@ tapée donne un message vide, et un message vide ne se plaint jamais.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -80,6 +79,8 @@ from PyQt6.QtCore import QSize, Qt
 
 from ui.common import icons
 from ui.common.theme import C, S, T, QSS, ui_font
+from ui.common.catalog import Catalog
+from ui.common import catalog
 
 
 NOTICES_DIR = Path(__file__).parent / "notices"
@@ -95,60 +96,19 @@ TONES: dict[str, tuple[str, str]] = {
 
 
 # ── Le catalogue ──────────────────────────────────────────────────
+# La mécanique (maître + side, repli, pluriel, format, set_language) vit dans
+# ui/common/catalog.py, partagée avec les libellés (ui/common/labels.py). Ici ne
+# reste que ce qui est PROPRE aux notices : le ton, et le rich text des bulles.
 
-_master: dict = {}
-_side: dict = {}
-_lang: str = ""
-
-
-def _read(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8")).get("notices", {})
-    except (OSError, ValueError):
-        # Un catalogue illisible ne doit pas empêcher l'éditeur de démarrer :
-        # chaque message retombe alors sur sa clé, ce qui se voit à l'écran et
-        # se retrouve dans le code — contrairement à un écran vide.
-        return {}
-
-
-def _catalog() -> dict:
-    global _master
-    if not _master:
-        _master = _read(NOTICES_DIR / "notices.json")
-    return _master
+_CAT = Catalog("notices", NOTICES_DIR)
 
 
 def set_language(code: str):
-    """Charge le side d'une langue (`""` = la source seule).
-
-    AUCUN APPELANT à ce jour : c'est la pièce que la suite de la v0.11 branche
-    sur un réglage d'application. Elle est écrite ici parce que c'est le
-    catalogue qui décide de la règle de repli, pas l'écran de réglages."""
-    global _side, _lang
-    _lang = code or ""
-    _side = _read(NOTICES_DIR / f"notices_{_lang}.json") if _lang else {}
-
-
-def _escape(s: str) -> str:
-    """Texte brut → rich text Qt, retours à la ligne compris."""
-    return (s.replace("&", "&amp;").replace("<", "&lt;")
-             .replace("\n", "<br>"))
-
-
-def tone_of(key: str) -> str:
-    """Le ton déclaré par le catalogue, `info` s'il ne dit rien."""
-    t = str(_catalog().get(key, {}).get("tone", "info"))
-    return t if t in TONES else "info"
-
-
-def _template(entry: dict, args: dict) -> str:
-    """La forme brute d'une entrée : `text`, ou `one`/`other` selon `n`."""
-    if "text" in entry:
-        return str(entry["text"])
-    plural = "one" if int(args.get("n", 0) or 0) == 1 else "other"
-    return str(entry.get(plural, entry.get("other", "")))
+    """Bascule la langue de TOUS les catalogues d'interface (notices ET
+    libellés) — un changement de langue est global. Sous ce nom parce que c'est
+    l'API que la suite de la v0.11 branche sur le réglage de langue ; le cœur
+    partagé (`catalog.set_language`) fait le travail."""
+    catalog.set_language(code)
 
 
 def text(key: str, **args) -> str:
@@ -157,20 +117,19 @@ def text(key: str, **args) -> str:
     Public parce qu'un message COMPOSÉ injecte un autre message : chaque
     morceau reste une phrase entière pour le traducteur (`text("…where_obj",
     n=tiles)` passé en argument de l'entrée qui l'accueille)."""
-    source = _catalog().get(key)
-    if source is None:
-        return key      # visible à l'écran, retrouvable dans le code
-    raw = _template(_side.get(key) or source, args)
-    try:
-        return raw.format(**args)
-    except (KeyError, IndexError, ValueError):
-        # Une traduction dont les {valeurs} ne correspondent plus au maître ne
-        # doit pas casser l'écran : on retombe sur la source, qui est juste par
-        # construction. Le contrôle d'architecture, lui, le dira au build.
-        try:
-            return _template(source, args).format(**args)
-        except (KeyError, IndexError, ValueError):
-            return key
+    return _CAT.text(key, **args)
+
+
+def tone_of(key: str) -> str:
+    """Le ton déclaré par le catalogue, `info` s'il ne dit rien."""
+    t = str(_CAT.raw(key).get("tone", "info"))
+    return t if t in TONES else "info"
+
+
+def _escape(s: str) -> str:
+    """Texte brut → rich text Qt, retours à la ligne compris."""
+    return (s.replace("&", "&amp;").replace("<", "&lt;")
+             .replace("\n", "<br>"))
 
 
 # ── Niveau 3 — l'interrupteur ─────────────────────────────────────
@@ -345,7 +304,7 @@ class HoverNotice:
         # `code` — l'expression Lua que ce champ MIROITE. Elle vit dans le
         # maître et jamais dans un side : une expression d'API ne se traduit
         # pas, la traduire casserait le script qu'elle donne à recopier.
-        expr = str(_catalog().get(self.key, {}).get("code", ""))
+        expr = str(_CAT.raw(self.key).get("code", ""))
         if expr:
             html = (f"<b style='color:{C.ACCENT}'>{_escape(expr)}</b>"
                     f"<br><br>{html}")

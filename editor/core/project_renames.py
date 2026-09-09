@@ -8,7 +8,7 @@ fichiers suspendu).
 
 Ce qui est annoncé, ce sont des FAITS : `_notify_renamed` émet quoi, d'où vers
 où et combien de références réécrites. La phrase affichée à l'utilisateur est
-rédigée par `CommandDispatcher`, pas ici — le projet ne connaît pas l'interface.
+rédigée par `CommandDispatcher`, pas ici. Le projet ne connaît pas l'interface.
 
 Une TRANCHE de la classe `Project`, pas un module autonome : les méthodes
 ci-dessous s'appellent `self.…` entre elles et avec le reste de `Project`. La
@@ -379,6 +379,17 @@ class ProjectRenameMixin:
         with self._renaming():
             self.fonts.rename(font, new_name)
             refs = self.rename_lua_refs(DOMAIN_FONT, old_name, new_name)
+            # `Scene.font_pal_banks` est keyé par NOM de police (cf.
+            # `core/models/scene.font_pal_key`) : l'override de banque d'une
+            # police NON-défaut vivrait sinon sous le nom mort, et retomberait en
+            # silence sur la palette propre. La police PAR DÉFAUT passe par la clé
+            # "" — stable, jamais old_name, donc épargnée. Même geste que
+            # `rename_palette` pour `active_*_palettes`.
+            for scene in self.scenes:
+                banks = getattr(scene, "font_pal_banks", None) or {}
+                if old_name in banks:
+                    banks[new_name] = banks.pop(old_name)
+                    self.save_scene(scene)
         self._notify_renamed("Font", old_name, new_name, refs)
 
     # ── Références Lua ───────────────────────────────────────────────

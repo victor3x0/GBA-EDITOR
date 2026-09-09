@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint
 
 from ui.common.theme import C, T, S, QSS
+from ui.common.labels import label
 from core.models.settings import Constant, GlobalVar
 from core.command_dispatcher import unique_name
 from .colors import _C_GLOBAL, _C_CONST
@@ -63,7 +64,7 @@ class VarTablePanel(QWidget):
         self._kind = kind   # "global" | "const"
         self._project = None
         self._updating = False
-        self._label = "Globals" if kind == "global" else "Constants"
+        self._label = label("vartbl.globals") if kind == "global" else label("vartbl.constants")
         self._color = _C_GLOBAL if kind == "global" else _C_CONST
         value_col = "default" if kind == "global" else "value"
         # Name | Type | Value, pour les deux tables — le format d'origine.
@@ -169,9 +170,7 @@ class VarTablePanel(QWidget):
         value_item = QTableWidgetItem(str(shown))
         value_item.setForeground(QColor(C.ACCENT) if is_array else QColor("#b5cea8"))
         if is_array:
-            value_item.setToolTip(
-                "Array size — number of cells, indexed from 1 (global.name[1]..[N]).\n"
-                "Right-click → Array to turn it back into a single value.")
+            value_item.setToolTip(label("vartbl.array_tip"))
         self._tbl.setItem(row, self._col_value, value_item)
 
     def _add_var(self):
@@ -233,7 +232,8 @@ class VarTablePanel(QWidget):
         self._updating = False
         if new and self._project and self._project.variable_name_taken(
                 self._kind, new, exclude=entry):
-            QMessageBox.warning(self, "Duplicate", f"“{new}” already exists.")
+            QMessageBox.warning(self, label("vartbl.dup_title"),
+                                label("vartbl.dup_msg", name=new))
 
     def _sync_to_project(self):
         """Reporte la table dans le projet, en MODIFIANT les entrées existantes.
@@ -327,14 +327,14 @@ class VarTablePanel(QWidget):
         a_array = a_persist = None
         if self._kind == "global" and entry is not None:
             menu.addSeparator()
-            a_array = menu.addAction("Array")
+            a_array = menu.addAction(label("vartbl.array"))
             a_array.setCheckable(True)
             a_array.setChecked(entry.count > 1)
-            a_persist = menu.addAction("Persist (SRAM)")
+            a_persist = menu.addAction(label("vartbl.persist"))
             a_persist.setCheckable(True)
             a_persist.setChecked(entry.persist)
         menu.addSeparator()
-        a_del = menu.addAction("Delete")
+        a_del = menu.addAction(label("vartbl.delete"))
         action = menu.exec(self._tbl.viewport().mapToGlobal(pos))
         if action == a_get:
             self.snippet_requested.emit(self._snippet_get(name, n))

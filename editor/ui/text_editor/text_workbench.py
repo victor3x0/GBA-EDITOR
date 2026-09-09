@@ -44,14 +44,11 @@ from core.text_markup import parse, resolve
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import BTN_ICON
 from ui.common import icons
+from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.font_screen_preview import FontScreenPreview
 from ui.text_editor.markup_highlighter import MarkupHighlighter
 from ui.text_editor.markup_toolbar import MarkupToolbar
-
-
-# Ce qu'affiche un champ de rangement quand la sélection ne s'accorde pas.
-MIXED = "(mixed)"
 
 
 class _ContentEdit(QTextEdit):
@@ -144,18 +141,18 @@ class _LangTabs(QWidget):
         source_code = project.settings.source_lang.code
         for lang in langs:
             is_source = lang.code == source_code
-            label = lang.name or lang.code or "?"
+            disp = lang.name or lang.code or "?"
             if not is_source:
                 n = len(project.translation_gaps(lang.code))
                 if n:
-                    label = f"{label} ({n})"
+                    disp = f"{disp} ({n})"
             b = QToolButton()
-            b.setText(label)
+            b.setText(disp)
             b.setCheckable(True)
             b.setFont(QFont(T.UI, T.XS))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip(f"Source — {label}" if is_source else
-                        f"Translation — {label}")
+            b.setToolTip(label("txtwb.source_tab", name=disp) if is_source
+                         else label("txtwb.translation_tab", name=disp))
             b.setStyleSheet(
                 f"QToolButton{{background:transparent; color:{C.TEXT_DIM};"
                 f"border:none; border-bottom:2px solid transparent;"
@@ -271,7 +268,7 @@ class TextWorkbench(QWidget):
         self._key_edit = QLineEdit()
         self._key_edit.setFont(QFont(T.CODE, T.SM))
         self._key_edit.setFixedWidth(180)
-        self._key_edit.setPlaceholderText("key")
+        self._key_edit.setPlaceholderText(label("txtwb.key_ph"))
         self._key_edit.editingFinished.connect(self._commit_key)
         hl.addWidget(self._key_edit)
 
@@ -287,7 +284,7 @@ class TextWorkbench(QWidget):
         self._btn_copy.setFixedSize(22, 22)
         self._btn_copy.setStyleSheet(BTN_ICON)
         self._btn_copy.setIcon(icons.get("copy", C.TEXT_DIM))
-        self._btn_copy.setToolTip("Copy the key — paste into a Lua script")
+        self._btn_copy.setToolTip(label("txtwb.copy_tip"))
         self._btn_copy.clicked.connect(self._copy_key)
         hl.addWidget(self._btn_copy)
 
@@ -310,12 +307,8 @@ class TextWorkbench(QWidget):
                 arrow.setFont(QFont(T.UI, T.SM))
                 arrow.setStyleSheet(f"color:{C.TEXT_MUTED};")
                 hl.addWidget(arrow)
-            e = _PillEdit(f"level {lvl + 1}")
-            e.setToolTip(
-                "<b>Filing</b> — accents, spaces and duplicates allowed.<br>"
-                "Never resolved, never referenced: it organizes the table and<br>"
-                "suggests the key, without ever owning it."
-            )
+            e = _PillEdit(label("txtwb.level", n=lvl + 1))
+            e.setToolTip(label("txtwb.filing_tip"))
             e.editingFinished.connect(lambda _l=lvl: self._commit_path(_l))
             hl.addWidget(e)
             self._path_edits.append(e)
@@ -332,7 +325,9 @@ class TextWorkbench(QWidget):
         # Lecture seule et hauteur bornée à dessein : c'est un repère, pas un
         # second champ à remplir. « Éditer là où on lit » ne s'applique qu'à
         # la langue qu'on écrit ; l'original reste à côté, jamais mélangé.
-        self._source_hdr = QLabel("Source")
+        # Texte posé plus tard par `_reload_content` (SOURCE — <langue>) ; jamais
+        # affiché tant que rien n'est chargé.
+        self._source_hdr = QLabel("")
         self._source_hdr.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         self._source_hdr.setStyleSheet(
             f"background:{C.BG_PANEL}; color:{C.TEXT_MUTED};"
@@ -380,7 +375,7 @@ class TextWorkbench(QWidget):
             f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};")
         hl = QHBoxLayout(hdr)
         hl.setContentsMargins(8, 0, 8, 0)
-        title = QLabel("Screen preview")
+        title = QLabel(label("txtwb.screen_preview"))
         title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
         title.setStyleSheet(QSS.title_panel)
         hl.addWidget(title)
@@ -388,8 +383,7 @@ class TextWorkbench(QWidget):
         self._preview_font = QComboBox()
         self._preview_font.setFont(QFont(T.UI, T.XS))
         self._preview_font.setStyleSheet(QSS.combobox)
-        self._preview_font.setToolTip(
-            "Font used for the preview (doesn't affect the text)")
+        self._preview_font.setToolTip(label("txtwb.preview_font_tip"))
         self._preview_font.currentIndexChanged.connect(self._on_preview_font)
         hl.addWidget(self._preview_font)
         lay.addWidget(hdr)
@@ -487,12 +481,13 @@ class TextWorkbench(QWidget):
         self._blocking = True
         self._key_edit.setText(one.key if one else "")
         self._key_edit.setPlaceholderText(
-            f"{len(self._texts)} texts selected" if multi else "key")
+            label("txtwb.n_selected", n=len(self._texts)) if multi
+            else label("txtwb.key_ph"))
         for lvl, e in enumerate(self._path_edits):
             e.setText(self._common_segment(lvl))
             e.setPlaceholderText(
-                MIXED if multi and not e.text() and self._differs(lvl)
-                else f"level {lvl + 1}")
+                label("txtwb.mixed") if multi and not e.text() and self._differs(lvl)
+                else label("txtwb.level", n=lvl + 1))
         self._sync_key_lock()
         self._blocking = False
 
@@ -554,14 +549,15 @@ class TextWorkbench(QWidget):
         self._source_view.setVisible(show_ref)
         if show_ref:
             src = self._project.settings.source_lang
-            self._source_hdr.setText(f"SOURCE — {src.name or src.code or 'source'}")
+            self._source_hdr.setText(
+                label("txtwb.source_ref", name=src.name or src.code or "source"))
             self._source_view.setPlainText(one.content)
 
         content = self._content_of(one)
         self._editor.set_text_silent(content)
         self._editor.setPlaceholderText(
-            "Content is edited one entry at a time" if multi
-            else "Select a text entry to edit its content…")
+            label("txtwb.multi_ph") if multi
+            else label("txtwb.empty_ph"))
         self._push_parsed(content)
 
     def _common_segment(self, lvl: int) -> str:
@@ -660,22 +656,19 @@ class TextWorkbench(QWidget):
             QSS.lineedit + f"QLineEdit{{color:{C.TEXT_MUTED}; background:{C.BG_PANEL};}}"
         )
         self._key_edit.setToolTip(
-            "<b>Key</b> — the handle Lua scripts write, resolved at build time.<br><br>"
-            + ("It DERIVES from the filing and will follow it. Unlock to<br>"
-               "name it by hand: it will detach from it permanently."
-               if auto else
-               "Named by hand: the filing no longer affects it.<br>"
-               "Renaming it updates the scripts that reference it.")
+            label("txtwb.key_tip_head")
+            + (label("txtwb.key_tip_auto") if auto
+               else label("txtwb.key_tip_hand"))
         )
         self._btn_lock.setIcon(icons.get(
             "key_auto" if auto else "key_manual",
             C.TEXT_DIM if auto else TEXT_COLOR))
         self._btn_lock.setToolTip(
-            ("Key attached to the filing — click to name it by hand"
+            (label("txtwb.lock_attached")
              if not self._key_unlocked else
-             "Click to re-attach it to the filing")
+             label("txtwb.lock_reattach"))
             if auto else
-            "Named by hand — click to re-attach it to the filing")
+            label("txtwb.lock_hand"))
 
     def _copy_key(self):
         """Copie la clé dans le presse-papier (à coller dans un script)."""

@@ -42,13 +42,17 @@ from core.text_markup import parse, resolve
 from ui.common.theme import C, T, S
 from ui.common.widgets import W, BTN_ICON, HoverIconButton
 from ui.common import icons
+from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 
 
 # Une colonne = un rôle, nommé une fois ici : la construction des lignes, le
 # routage du double-clic et le tri s'y réfèrent tous les trois.
 COL_CAT, COL_SEC, COL_VAR, COL_KEY, COL_CONTENT, COL_STATUS, COL_USED = range(7)
-_HEADERS = ("Category", "Section", "Variant", "Key", "Content", "Status", "Used")
+# Clés de libellé des en-têtes, dans l'ordre des colonnes — résolues à l'usage.
+_HEADER_KEYS = ("txttbl.h_category", "txttbl.h_section", "txttbl.h_variant",
+                "txttbl.h_key", "txttbl.h_content", "txttbl.h_status",
+                "txttbl.h_used")
 # Les trois premières colonnes SONT les trois niveaux du chemin, dans l'ordre.
 _PATH_COLS = (COL_CAT, COL_SEC, COL_VAR)
 
@@ -78,24 +82,24 @@ class _CategoryDelegate(QStyledItemDelegate):
     la bordure d'un bloc et saute directement au contenu."""
 
     def paint(self, painter: QPainter, option, index):
-        label = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        disp = index.data(Qt.ItemDataRole.DisplayRole) or ""
         # Le fond de sélection est peint par la vue pour les autres colonnes :
         # sans ce rappel, la ligne sélectionnée aurait un trou ici.
         if option.state & QStyle.StateFlag.State_Selected:
             painter.fillRect(option.rect, QColor(C.BG_SEL))
-        if not label:
+        if not disp:
             return
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setFont(QFont(T.MONO, T.XS, QFont.Weight.Bold))
-        w = min(painter.fontMetrics().horizontalAdvance(label) + 12,
+        w = min(painter.fontMetrics().horizontalAdvance(disp) + 12,
                 max(option.rect.width() - 8, 16))
         r = QRectF(option.rect.left() + 6, option.rect.center().y() - 7.0, w, 15.0)
         painter.setPen(QPen(QColor(C.BORDER_MID)))
         painter.setBrush(QBrush(QColor(C.BG_RAISED)))
         painter.drawRoundedRect(r, 3, 3)
         painter.setPen(QPen(QColor(C.TEXT_DIM)))
-        painter.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+        painter.drawText(r, Qt.AlignmentFlag.AlignCenter, disp)
         painter.restore()
 
 
@@ -150,8 +154,8 @@ class TextTable(QWidget):
         root.addWidget(self._build_bar())
 
         self._tree = QTreeWidget()
-        self._tree.setColumnCount(len(_HEADERS))
-        self._tree.setHeaderLabels(_HEADERS)
+        self._tree.setColumnCount(len(_HEADER_KEYS))
+        self._tree.setHeaderLabels([label(k) for k in _HEADER_KEYS])
         self._tree.setRootIsDecorated(False)
         self._tree.setUniformRowHeights(True)
         self._tree.setAllColumnsShowFocus(True)
@@ -205,7 +209,7 @@ class TextTable(QWidget):
     # ── Barres ────────────────────────────────────────────────────
 
     def _build_bar(self) -> QFrame:
-        hdr = W.finder_bar("Texts")
+        hdr = W.finder_bar(label("txttbl.texts"))
         hl = hdr.layout()
         self._count = QLabel("")
         self._count.setFont(QFont(T.MONO, T.XS))
@@ -217,19 +221,18 @@ class TextTable(QWidget):
         # entrée peut être écrite ET orpheline, ou référencée ET vide : les
         # fondre ferait disparaître celui des deux qui n'a pas la priorité.
         self._chips: dict[str, QToolButton] = {}
-        for flag, label, tip in (
-            (FLAG_EMPTY, "Empty", "Entries with no content yet"),
-            (FLAG_UNUSED, "Unused",
-             "Entries no script and no layout refers to"),
+        for flag, lbl_key, tip_key in (
+            (FLAG_EMPTY, "txttbl.empty", "txttbl.empty_tip"),
+            (FLAG_UNUSED, "txttbl.unused", "txttbl.unused_tip"),
             # Ajouté ici pour vivre dans le même style, mais caché tant qu'on
             # n'édite pas une traduction — `refresh_languages()` le révèle.
-            (FLAG_MISSING, "Missing", "Entries not yet translated"),
+            (FLAG_MISSING, "txttbl.missing", "txttbl.missing_tip"),
         ):
             b = QToolButton()
-            b.setText(label)
+            b.setText(label(lbl_key))
             b.setCheckable(True)
             b.setFont(QFont(T.UI, T.XS))
-            b.setToolTip(tip)
+            b.setToolTip(label(tip_key))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(
                 f"QToolButton{{background:transparent; color:{C.TEXT_DIM};"
@@ -243,7 +246,7 @@ class TextTable(QWidget):
             self._chips[flag] = b
         self._chips[FLAG_MISSING].setVisible(False)
 
-        self._search = W.search_box("Filter: key, filing or content…")
+        self._search = W.search_box(label("txttbl.search"))
         self._search.setFixedWidth(200)
         self._search.textChanged.connect(lambda _q: self._apply_filter())
         hl.addWidget(self._search)
@@ -255,16 +258,14 @@ class TextTable(QWidget):
         self._btn_group.setCheckable(True)
         self._btn_group.setFixedSize(22, 22)
         self._btn_group.setStyleSheet(BTN_ICON)
-        self._btn_group.setToolTip(
-            "Group by category — folds the table back into its filing.\n"
-            "Sorting then applies inside each group.")
+        self._btn_group.setToolTip(label("txttbl.group_tip"))
         self._btn_group.toggled.connect(self._on_group_toggled)
         hl.addWidget(self._btn_group)
 
-        self._btn_add = W.btn_add("New text (filed where the selection is)")
+        self._btn_add = W.btn_add(label("txttbl.add_tip"))
         self._btn_add.clicked.connect(self.add_asked.emit)
         hl.addWidget(self._btn_add)
-        self._btn_del = W.btn_danger("Delete the selected texts")
+        self._btn_del = W.btn_danger(label("txttbl.delete_tip"))
         self._btn_del.clicked.connect(self.delete_asked.emit)
         self._btn_del.setEnabled(False)
         hl.addWidget(self._btn_del)
@@ -374,7 +375,7 @@ class TextTable(QWidget):
             # Le compte se pose CONTRE le nom, pas au bout de la ligne : une
             # ligne d'en-tête n'est pas une entrée, ses colonnes ne portent pas
             # le sens qu'elles ont ailleurs.
-            item.setText(COL_SEC, f"{n} text{'s' if n > 1 else ''}")
+            item.setText(COL_SEC, label("txttbl.text_count", n=n))
             item.setExpanded(cat not in self._collapsed)
 
         self._tree.setSortingEnabled(True)
@@ -396,11 +397,8 @@ class TextTable(QWidget):
         item.setForeground(COL_SEC, QColor(C.TEXT_MUTED))
         item.setToolTip(
             COL_CAT,
-            "Texts filed at the root — this is the absence of a category,\n"
-            "not a name: it cannot be renamed. File them from the level 1\n"
-            "field below." if cat == NO_CATEGORY else
-            "Double-click to rename this category — it renames the filing of\n"
-            "every text it contains.")
+            label("txttbl.group_root_tip") if cat == NO_CATEGORY
+            else label("txttbl.group_rename_tip"))
         groups[cat] = item
         return item
 
@@ -422,10 +420,7 @@ class TextTable(QWidget):
             if col != COL_CAT:
                 row.setForeground(col, QColor(C.TEXT_DIM if seg else C.TEXT_MUTED))
         row.setData(0, _ROLE_TEXT, t)
-        row.setToolTip(
-            COL_SEC, "Filing — accents, spaces and duplicates allowed.\n"
-                     "Never resolved, never referenced: it organizes the table\n"
-                     "and suggests the key, without ever owning it.")
+        row.setToolTip(COL_SEC, label("txttbl.sec_tip"))
 
         row.setText(COL_KEY, t.key)
         row.setFont(COL_KEY, QFont(T.CODE, T.SM))
@@ -434,9 +429,9 @@ class TextTable(QWidget):
         row.setForeground(COL_KEY,
                           QColor(C.TEXT_MUTED if t.auto_key else TEXT_COLOR))
         row.setToolTip(COL_KEY,
-                       ("Automatic key — follows the filing" if t.auto_key
-                        else "Named by hand — independent of the filing")
-                       + "\nDouble-click to name it by hand.")
+                       (label("txttbl.key_auto") if t.auto_key
+                        else label("txttbl.key_hand"))
+                       + label("txttbl.key_dblclick"))
 
         flags = set()
         # Le texte tel qu'on le LIT dans la langue ACTIVE : balises retirées,
@@ -456,7 +451,8 @@ class TextTable(QWidget):
         if self.is_translating():
             translated = bool(self._project.translations
                               .get(self._active_lang, {}).get(t.id, ""))
-            row.setText(COL_STATUS, "Translated" if translated else "Missing")
+            row.setText(COL_STATUS, label("txttbl.status_translated") if translated
+                        else label("txttbl.missing"))
             row.setForeground(COL_STATUS,
                               QColor(C.TEXT_DIM if translated else C.ACCENT_YLW))
             row.setData(COL_STATUS, _ROLE_SORT, 1 if translated else 0)
@@ -470,8 +466,7 @@ class TextTable(QWidget):
             # se supprime.
             row.setText(COL_USED, "?")
             row.setForeground(COL_USED, QColor(C.TEXT_MUTED))
-            row.setToolTip(COL_USED, "Scripts could not be parsed — "
-                                     "usage is unknown, not zero.")
+            row.setToolTip(COL_USED, label("txttbl.used_unknown_tip"))
             row.setData(COL_USED, _ROLE_SORT, -1)
         elif use is not None and use.count:
             row.setText(COL_USED, use.summary())
@@ -479,10 +474,9 @@ class TextTable(QWidget):
             row.setToolTip(COL_USED, use.detail())
             row.setData(COL_USED, _ROLE_SORT, use.count)
         else:
-            row.setText(COL_USED, "unused")
+            row.setText(COL_USED, label("txttbl.unused_cell"))
             row.setForeground(COL_USED, QColor(C.TEXT_MUTED))
-            row.setToolTip(COL_USED,
-                           "No script and no layout refers to this key.")
+            row.setToolTip(COL_USED, label("txttbl.unused_cell_tip"))
             row.setData(COL_USED, _ROLE_SORT, 0)
             flags.add(FLAG_UNUSED)
         self._flags[t.id] = flags
@@ -573,13 +567,13 @@ class TextTable(QWidget):
 
     def _update_footer(self):
         n = len(self.selected_texts())
-        self._sel_lbl.setText(f"{n} selected" if n else "")
+        self._sel_lbl.setText(label("txttbl.n_selected", n=n) if n else "")
         total = len(self._project.texts) if self._project else 0
         shown = sum(1 for it in self._iter_rows()
                     if it.data(0, _ROLE_TEXT) is not None and not it.isHidden())
         self._total_lbl.setText(
-            f"{total} text{'s' if total > 1 else ''}" if shown == total
-            else f"{shown} of {total} shown")
+            label("txttbl.text_count", n=total) if shown == total
+            else label("txttbl.shown_of", shown=shown, total=total))
 
     # ── Filtre et groupement ──────────────────────────────────────
 

@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from core.history import get_history, AddListItemCmd, RemoveListItemCmd, SetFieldCmd
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
+from ui.common.labels import label
 from ui.sound_mixer.music_graph import MusicGraphView
 from ui.sound_mixer.sound_commands import (
     RenameMusicStateCmd, AddBoxStateCmd, RemoveActionStateCmd,
@@ -41,8 +42,6 @@ from core.models.sound_box import (
     MusicBox, MusicState, MusicTransition, ActionState,
     KIND_SOUND, TRANSITION_FADE, TRANSITION_CUT, INTENSITY_TARGETS,
 )
-
-_NONE_LABEL = "— rien —"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -72,25 +71,21 @@ class ActionMatrix(QWidget):
         root.setSpacing(6)
 
         bar = QHBoxLayout(); bar.setSpacing(6)
-        self._btn_action = W.btn_ghost("+ Action")
+        self._btn_action = W.btn_ghost(label("sndmix.add_action"))
         self._btn_action.clicked.connect(self._add_action)
-        self._btn_state = W.btn_ghost("+ État")
+        self._btn_state = W.btn_ghost(label("sndmix.add_state"))
         self._btn_state.clicked.connect(self._add_state)
-        self._btn_del = W.btn_ghost("Supprimer la colonne")
+        self._btn_del = W.btn_ghost(label("sndmix.del_column"))
         self._btn_del.clicked.connect(self._del_state)
         bar.addWidget(self._btn_action); bar.addWidget(self._btn_state)
         bar.addWidget(self._btn_del); bar.addStretch()
-        lbl_start = QLabel("Départ :")
+        lbl_start = QLabel(label("sndmix.start"))
         lbl_start.setFont(QFont(T.UI, T.SM))
         lbl_start.setStyleSheet(f"color:{C.TEXT_DIM};")
         self._combo_start = QComboBox()
         self._combo_start.setFont(QFont(T.UI, T.SM))
         self._combo_start.setStyleSheet(QSS.combobox)
-        self._combo_start.setToolTip(
-            "L'état actif au démarrage du jeu.\n\n"
-            "Il est développé dès la ROM : sans lui, aucune action ne\n"
-            "résoudrait vers quoi que ce soit avant le premier sound.set_state()."
-        )
+        self._combo_start.setToolTip(label("sndmix.start_tip"))
         self._combo_start.currentIndexChanged.connect(self._on_start)
         bar.addWidget(lbl_start); bar.addWidget(self._combo_start)
         root.addLayout(bar)
@@ -131,7 +126,7 @@ class ActionMatrix(QWidget):
                 combo = QComboBox()
                 combo.setFont(QFont(T.UI, T.SM))
                 combo.setStyleSheet(QSS.combobox)
-                combo.addItem(_NONE_LABEL, "")
+                combo.addItem(label("common.none_dash"), "")
                 for a in self._assets:
                     combo.addItem(a, a)
                 cur = st.mapping.get(action, "") or ""
@@ -139,7 +134,7 @@ class ActionMatrix(QWidget):
                 if idx < 0 and cur:
                     # L'asset a disparu : on le GARDE visible plutôt que de
                     # retomber sur « rien », ce qui ferait mentir la case.
-                    combo.addItem(f"{cur}  (manquant)", cur)
+                    combo.addItem(label("sndmix.asset_missing", name=cur), cur)
                     idx = combo.count() - 1
                 combo.setCurrentIndex(max(0, idx))
                 combo.currentIndexChanged.connect(
@@ -153,15 +148,11 @@ class ActionMatrix(QWidget):
         self._combo_start.setCurrentIndex(i if i >= 0 else 0)
         self._blocking = False
 
-        kind_fr = "effet" if self._kind == KIND_SOUND else "jingle"
+        kind_word = label("sndmix.kind_sound" if self._kind == KIND_SOUND
+                          else "sndmix.kind_jingle")
         self._hint.setText(
-            f"Une frame d'animation cite une ACTION ; l'état actif dit vers "
-            f"quel {kind_fr} elle pointe. Une case laissée à « rien » ne joue "
-            f"rien dans cet état — un pas ne sonne pas en vol."
-            if actions else
-            f"Aucune action. Ajoutez-en une, puis posez son nom sur une frame "
-            f"dans le Sprite Editor : c'est ce qui rend le même cycle de marche "
-            f"utilisable sur plusieurs sols."
+            label("sndmix.matrix_hint", kind=kind_word) if actions
+            else label("sndmix.matrix_hint_empty")
         )
 
     # ── Édition ───────────────────────────────────────────────────
@@ -218,14 +209,14 @@ class ActionMatrix(QWidget):
     def _add_action(self):
         if not self._machine:
             return
-        name, ok = QInputDialog.getText(self, "Nouvelle action",
-                                        "Nom (celui que porteront les frames) :")
+        name, ok = QInputDialog.getText(self, label("sndmix.new_action_title"),
+                                        label("sndmix.new_action_prompt"))
         name = (name or "").strip()
         if not ok or not name:
             return
         if name in self._machine.actions:
-            QMessageBox.information(self, "Déjà présente",
-                                    f"L'action « {name} » existe déjà.")
+            QMessageBox.information(self, label("sndmix.dup_action_title"),
+                                    label("sndmix.dup_action_text", name=name))
             return
         get_history().push(AddListItemCmd(
             self._machine.actions, name, self._after_edit,
@@ -234,13 +225,14 @@ class ActionMatrix(QWidget):
     def _add_state(self):
         if not self._machine:
             return
-        name, ok = QInputDialog.getText(self, "Nouvel état", "Nom :")
+        name, ok = QInputDialog.getText(self, label("sndmix.new_state_title"),
+                                        label("sndmix.new_state_prompt"))
         name = (name or "").strip()
         if not ok or not name:
             return
         if any(s.name == name for s in self._machine.states):
-            QMessageBox.information(self, "Déjà présent",
-                                    f"L'état « {name} » existe déjà.")
+            QMessageBox.information(self, label("sndmix.dup_state_title"),
+                                    label("sndmix.dup_state_text", name=name))
             return
         get_history().push(AddBoxStateCmd(
             self._machine, ActionState(name=name, mapping={}),
@@ -251,8 +243,8 @@ class ActionMatrix(QWidget):
             return
         col = self._table.currentColumn()
         if col < 0 or col >= len(self._machine.states):
-            QMessageBox.information(self, "Aucune colonne",
-                                    "Sélectionnez d'abord la colonne d'un état.")
+            QMessageBox.information(self, label("sndmix.no_column_title"),
+                                    label("sndmix.no_column_text"))
             return
         get_history().push(RemoveActionStateCmd(
             self._machine, self._machine.states[col], self._after_edit))
@@ -296,14 +288,13 @@ class MusicMachinePanel(QWidget):
         root.setSpacing(6)
 
         bar = QHBoxLayout(); bar.setSpacing(4)
-        b_add = W.btn_ghost("+ État")
+        b_add = W.btn_ghost(label("sndmix.add_state"))
         b_add.clicked.connect(self._add_state)
         b_del = W.btn_ghost("−")
-        b_del.setToolTip("Supprimer ce qui est sélectionné — un état ou une "
-                         "transition (Suppr)")
+        b_del.setToolTip(label("sndmix.graph_del_tip"))
         b_del.clicked.connect(lambda: self.view.delete_selected())
-        b_auto = W.btn_ghost("Auto-disposer")
-        b_auto.setToolTip("Ranger les nœuds en colonnes, depuis l'état de départ.")
+        b_auto = W.btn_ghost(label("sndmix.auto_layout"))
+        b_auto.setToolTip(label("sndmix.auto_layout_tip"))
         b_auto.clicked.connect(lambda: self.view.auto_layout())
         bar.addWidget(b_add); bar.addWidget(b_del); bar.addWidget(b_auto)
         bar.addStretch()
@@ -318,7 +309,7 @@ class MusicMachinePanel(QWidget):
         b_in = W.btn_ghost("+")
         b_in.clicked.connect(lambda: self.view.zoom_by(1.15))
         b_fit = W.btn_ghost("⤢")
-        b_fit.setToolTip("Tout voir")
+        b_fit.setToolTip(label("sndmix.fit_tip"))
         b_fit.clicked.connect(lambda: self.view.fit())
         bar.addWidget(b_out); bar.addWidget(self._zoom_lbl)
         bar.addWidget(b_in); bar.addWidget(b_fit)
@@ -350,11 +341,9 @@ class MusicMachinePanel(QWidget):
         """Le geste qui manque, et lui seul — il disparaît une fois fait."""
         g = self.view.graph
         if g is None or not g.states:
-            self._hint.setText("Aucun état musical. « + État » en crée un.")
+            self._hint.setText(label("sndmix.graph_hint_empty"))
         elif not g.transitions:
-            self._hint.setText("Glissez la pastille du bord droit d'un nœud "
-                               "vers un autre pour créer une transition ; "
-                               "cliquez un fil puis Suppr pour le couper.")
+            self._hint.setText(label("sndmix.graph_hint_no_trans"))
         else:
             self._hint.clear()
         self._hint.setVisible(bool(self._hint.text()))
@@ -406,49 +395,43 @@ class _TransitionRow(QFrame):
         self._dst.setCurrentIndex(max(0, self._dst.findData(tr.dst)))
         self._dst.currentIndexChanged.connect(
             lambda _i: self._set("dst", self._dst.currentData() or ""))
-        btn_del = W.btn_danger("Supprimer cette transition")
+        btn_del = W.btn_danger(label("sndmix.del_transition_tip"))
         btn_del.clicked.connect(lambda: self.removed.emit(self.tr))
         head.addWidget(arrow); head.addWidget(self._dst, 1); head.addWidget(btn_del)
         lay.addLayout(head)
 
         self._src = QComboBox(); self._src.setStyleSheet(QSS.combobox)
-        self._src.addItem(f"cet état ({owner})", owner)
-        self._src.addItem("n'importe quel état", "")
+        self._src.addItem(label("sndmix.src_this", owner=owner), owner)
+        self._src.addItem(label("sndmix.src_any"), "")
         self._src.setCurrentIndex(0 if tr.src else 1)
         self._src.currentIndexChanged.connect(
             lambda _i: self._set("src", self._src.currentData() or ""))
-        W.row("Depuis", self._src, lay, label_width=78)
+        W.row(label("sndmix.from"), self._src, lay, label_width=78)
 
         self._trigger = QLineEdit(tr.trigger)
         self._trigger.setStyleSheet(QSS.lineedit)
-        self._trigger.setToolTip(
-            "Le nom que le script émet : sound.trigger(\"…\").\n\n"
-            "Le graphe DÉCLARE ce vocabulaire — un déclencheur inconnu ici est\n"
-            "refusé par le checker au lieu de rester muet en jeu.")
+        self._trigger.setToolTip(label("sndmix.trigger_tip"))
         self._trigger.editingFinished.connect(
             lambda: self._set("trigger", self._trigger.text().strip()))
-        W.row("Déclencheur", self._trigger, lay, label_width=78)
+        W.row(label("sndmix.trigger"), self._trigger, lay, label_width=78)
 
         self._kind = QComboBox(); self._kind.setStyleSheet(QSS.combobox)
-        self._kind.addItem("Fondu traversant", TRANSITION_FADE)
-        self._kind.addItem("Coupe à la position", TRANSITION_CUT)
+        self._kind.addItem(label("sndmix.fade"), TRANSITION_FADE)
+        self._kind.addItem(label("sndmix.cut"), TRANSITION_CUT)
         self._kind.setCurrentIndex(max(0, self._kind.findData(tr.kind)))
-        self._kind.setToolTip(
-            "Le FONDU marche entre deux morceaux quelconques, au prix d'un creux.\n"
-            "La COUPE reprend l'autre piste à la même position, sans creux — mais\n"
-            "les deux pistes doivent avoir la même structure.")
+        self._kind.setToolTip(label("sndmix.kind_tip"))
         self._kind.currentIndexChanged.connect(self._on_kind)
-        W.row("Transition", self._kind, lay, label_width=78)
+        W.row(label("sndmix.transition"), self._kind, lay, label_width=78)
 
         self._frames = QSpinBox(); self._frames.setRange(2, 255)
-        self._frames.setValue(tr.frames); self._frames.setSuffix(" f")
+        self._frames.setValue(tr.frames); self._frames.setSuffix(label("sndmix.frames_suffix"))
         self._frames.setStyleSheet(QSS.spinbox)
         # En frames et non en ms : c'est l'unité du runtime et celle des
         # transitions de scène (v0.6.2). Une durée ne s'écrit pas de deux façons.
-        self._frames.setToolTip("Durée du fondu, en frames (60 par seconde).")
+        self._frames.setToolTip(label("sndmix.frames_tip"))
         self._frames.valueChanged.connect(
             lambda v: self._set("frames", int(v)))
-        W.row("Durée", self._frames, lay, label_width=78)
+        W.row(label("sndmix.duration"), self._frames, lay, label_width=78)
 
         self._sync_frames()
         self._blocking = False
@@ -498,55 +481,48 @@ class MusicStateInspector(QWidget):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(6)
 
-        W.section("ÉTAT", root)
+        W.section(label("sndmix.sec_state"), root)
         self._name = QLineEdit(); self._name.setStyleSheet(QSS.lineedit)
         self._name.editingFinished.connect(self._on_rename)
-        W.row("Nom", self._name, root)
+        W.row(label("sndmix.name"), self._name, root)
 
-        self._start = QCheckBox("État de départ")
+        self._start = QCheckBox(label("sndmix.start_state"))
         self._start.setStyleSheet(QSS.checkbox)
-        self._start.setToolTip(
-            "L'état actif au démarrage du jeu — un seul par machine.")
+        self._start.setToolTip(label("sndmix.start_state_tip"))
         self._start.toggled.connect(self._on_start)
         root.addWidget(self._start)
 
-        W.section("MUSIQUE", root)
+        W.section(label("sndmix.sec_music"), root)
         self._music = QComboBox(); self._music.setStyleSheet(QSS.combobox)
         self._music.currentIndexChanged.connect(
             lambda _i: self._set("music", self._music.currentData() or ""))
-        W.row("Piste", self._music, root)
+        W.row(label("sndmix.track"), self._music, root)
 
-        self._loop = QCheckBox("Boucle"); self._loop.setStyleSheet(QSS.checkbox)
+        self._loop = QCheckBox(label("sndmix.loop")); self._loop.setStyleSheet(QSS.checkbox)
         self._loop.toggled.connect(lambda v: self._set("loop", bool(v)))
         root.addWidget(self._loop)
 
         self._level = QSpinBox(); self._level.setRange(0, 100)
         self._level.setSuffix(" %"); self._level.setStyleSheet(QSS.spinbox)
         self._level.valueChanged.connect(lambda v: self._set("level", int(v)))
-        W.row("Niveau", self._level, root)
+        W.row(label("sndmix.level"), self._level, root)
 
         self._itarget = QComboBox(); self._itarget.setStyleSheet(QSS.combobox)
         for t in INTENSITY_TARGETS:
             self._itarget.addItem(t, t)
-        self._itarget.setToolTip(
-            "Ce que l'intensité PILOTE, nommé explicitement.\n\n"
-            "Le matériel n'a que trois molettes continues : le volume du module,\n"
-            "son tempo et sa hauteur. Passer de DRUMLESS au morceau complet n'en\n"
-            "est pas une — c'est un autre ÉTAT, pas un curseur."
-        )
+        self._itarget.setToolTip(label("sndmix.intensity_tip"))
         self._itarget.currentIndexChanged.connect(
             lambda _i: self._set("intensity_target", self._itarget.currentData()))
-        W.row("Intensité", self._itarget, root)
+        W.row(label("sndmix.intensity"), self._itarget, root)
 
         self._ivalue = QSpinBox(); self._ivalue.setRange(50, 200)
         self._ivalue.setSuffix(" %"); self._ivalue.setStyleSheet(QSS.spinbox)
-        self._ivalue.setToolTip("100 % = valeur neutre. Le tempo et la hauteur "
-                                "sont bornés à ×0,5–×2 par le matériel.")
+        self._ivalue.setToolTip(label("sndmix.ivalue_tip"))
         self._ivalue.valueChanged.connect(
             lambda v: self._set("intensity", int(v)))
-        W.row("Valeur", self._ivalue, root)
+        W.row(label("sndmix.value"), self._ivalue, root)
 
-        W.section("TRANSITIONS SORTANTES", root)
+        W.section(label("sndmix.sec_transitions"), root)
         self._trs_box = QWidget()
         self._trs_box.setStyleSheet("background:transparent;")
         self._trs_lay = QVBoxLayout(self._trs_box)
@@ -554,7 +530,7 @@ class MusicStateInspector(QWidget):
         self._trs_lay.setSpacing(6)
         root.addWidget(self._trs_box)
 
-        self._btn_tr = W.btn_ghost("+ Transition")
+        self._btn_tr = W.btn_ghost(label("sndmix.add_transition"))
         self._btn_tr.clicked.connect(self._add_tr)
         root.addWidget(self._btn_tr)
         root.addStretch()
@@ -587,14 +563,14 @@ class MusicStateInspector(QWidget):
             self._start.setChecked(box is not None
                                    and box.start == state.name)
             self._music.clear()
-            self._music.addItem(_NONE_LABEL, "")
+            self._music.addItem(label("common.none_dash"), "")
             for m in self._musics:
                 self._music.addItem(m, m)
             i = self._music.findData(state.music)
             if i < 0 and state.music:
                 # La piste a disparu : on la GARDE visible plutôt que de
                 # retomber sur « rien », ce qui ferait mentir le champ.
-                self._music.addItem(f"{state.music}  (manquante)", state.music)
+                self._music.addItem(label("sndmix.track_missing", name=state.music), state.music)
                 i = self._music.count() - 1
             self._music.setCurrentIndex(max(0, i))
             self._loop.setChecked(state.loop)

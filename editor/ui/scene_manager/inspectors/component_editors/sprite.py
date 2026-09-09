@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from . import BaseComponentEditor, register
 from ui.common.widgets import W, ScriptSlot, ScriptPickerPopup
+from ui.common.labels import label
 from ui.common.pickers import sprite_picker_slot, palette_picker_slot
 from ui.common.theme import C
 from ui.common.icons import COLOR_SPRITE
@@ -38,9 +39,9 @@ class SpriteEditor(BaseComponentEditor):
         slot = sprite_picker_slot(
             [s.name for s in proj.sprites], sprite.name if sprite else None,
             COLOR_SPRITE, on_picked=_on_sprite_picked, on_cleared=_on_sprite_cleared,
-            add_label="Choose a sprite", parent=self.insp,
+            add_label=label("comped.choose_sprite"), parent=self.insp,
         )
-        W.row("Sprite", slot, layout)
+        W.row(label("comped.sprite"), slot, layout)
 
         # ── Palette OBJ (pal_bank est un champ Actor/Prefab) ─────────────
         # Un Prefab n'est qu'un modèle : à l'instanciation, il arrive dans une
@@ -74,18 +75,14 @@ class SpriteEditor(BaseComponentEditor):
         pal_slot = palette_picker_slot(
             active_banks, current_pal_name,
             COLOR_SPRITE, on_picked=_on_pal_picked,
-            add_label="Choose a palette", parent=self.insp,
+            add_label=label("comped.choose_palette"), parent=self.insp,
         )
-        pal_slot.setToolTip(
-            "“No palette” = original PNG colors (default). "
-            "Otherwise, choose one of the scene's active palettes (\"Active "
-            "palettes\" card in the scene inspector)."
-        )
-        W.row("Palette", pal_slot, layout)
+        pal_slot.setToolTip(label("comped.palette_tip"))
+        W.row(label("comped.palette"), pal_slot, layout)
 
         # ── État initial : même bouton+popup filtrable que "Sprite" ──
         state_slot = ScriptSlot(
-            add_label="Choose a state",
+            add_label=label("comped.choose_state"),
             accent_color=COLOR_SPRITE,
             show_clear=False,   # un state initial est toujours requis, rien à "vider"
         )
@@ -116,7 +113,7 @@ class SpriteEditor(BaseComponentEditor):
                 speed.blockSignals(False)
 
         state_slot.set_callbacks(on_add=_open_state_picker, on_open=_open_state_picker)
-        W.row("Etat init", state_slot, layout)
+        W.row(label("comped.state_init"), state_slot, layout)
 
         # ── Anim speed (du state initial uniquement — pas des autres states) ──
         _init_state = (
@@ -125,15 +122,9 @@ class SpriteEditor(BaseComponentEditor):
         ) or (sprite.states[0] if sprite and sprite.states else None)
         speed = W.spinbox(_init_state.speed if _init_state else 8, min_v=1, max_v=120)
         speed.setEnabled(sprite is not None)
-        speed.setToolTip(
-            "<b style='color:#7ecfff'>Animation speed</b><br><br>"
-            "GBA ticks (60 fps) between two frames, for the initial state "
-            f"(<b>{comp.initial_state}</b>) only.<br>"
-            "8 ticks ≈ 7.5 fps  |  4 = 15 fps  |  2 = 30 fps<br><br>"
-            "Other states keep their own speed — adjustable in the Sprite Editor."
-        )
+        speed.setToolTip(label("comped.anim_speed_tip", state=comp.initial_state))
         speed.valueChanged.connect(lambda v: self._set_anim_speed(comp, v))
-        W.row("Anim speed", speed, layout)
+        W.row(label("comped.anim_speed"), speed, layout)
 
         # ── Affine transform ──────────────────────────────────────
         # La case vit ICI et pas sur l'Actor : réserver un des 32 slots de
@@ -144,18 +135,9 @@ class SpriteEditor(BaseComponentEditor):
         # Elle commande les trois réglages qui suivent — et, à l'écran
         # seulement, le rotation/scale MONDE de l'actor (carte Transform) :
         # ceux-là gardent leur valeur, ils ne s'affichent simplement pas.
-        aff = W.checkbox_row("", "Affine transform", layout)
+        aff = W.checkbox_row("", label("comped.affine"), layout)
         aff.setChecked(bool(getattr(comp, "affine_transform", False)))
-        aff.setToolTip(
-            "Reserves one of the GBA's 32 affine matrix slots for this sprite, "
-            "even at identity.<br><br>"
-            "On → the sprite can rotate and scale: the actor's world "
-            "rotation/scale (Transform card) become visible, and the three "
-            "local settings below are composed on top — rotation ADDED, scale "
-            "MULTIPLIED, offset expressed in the actor's frame.<br><br>"
-            "Off → plain OAM, no slot. The actor's rotation and scale still "
-            "read and write from scripts, but nothing draws them.<br><br>"
-            "GBA: OAM attribute 1, bits 8-12 (affine matrix slot).")
+        aff.setToolTip(label("comped.affine_tip"))
         aff.toggled.connect(lambda on, c=comp: self._set_affine(c, on))
 
         # ── Scale local ───────────────────────────────────────────
@@ -167,23 +149,20 @@ class SpriteEditor(BaseComponentEditor):
         sx = W.double_spinbox(getattr(comp, "scale_x", 1.0), min_v=0.1, max_v=4.0, step=0.1)
         sy = W.double_spinbox(getattr(comp, "scale_y", 1.0), min_v=0.1, max_v=4.0, step=0.1)
         sx.setEnabled(_aff); sy.setEnabled(_aff)
-        sx.setToolTip("Local X scale — MULTIPLIED by the actor's scale (affine OAM).\n"
-                      "Requires <b>Affine transform</b> above.")
-        sy.setToolTip("Local Y scale — MULTIPLIED by the actor's scale (affine OAM).\n"
-                      "Requires <b>Affine transform</b> above.")
+        sx.setToolTip(label("comped.scale_x_tip"))
+        sy.setToolTip(label("comped.scale_y_tip"))
         sx.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_x", v))
         sy.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_y", v))
-        W.pair("Scale", "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
+        W.pair(label("comped.scale"), "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
 
         # ── Rotation locale ───────────────────────────────────────
         rot = W.spinbox(int(getattr(comp, "rotation", 0)), min_v=0, max_v=359)
         rot.setSuffix("°")
         rot.setWrapping(True)
         rot.setEnabled(_aff)
-        rot.setToolTip("Local rotation in degrees — ADDED to the actor's rotation "
-                       "(affine OAM). Requires <b>Affine transform</b> above.")
+        rot.setToolTip(label("comped.rotation_tip"))
         rot.valueChanged.connect(lambda v: self._set_comp_field(comp, "rotation", v))
-        W.row("Rotation", rot, layout)
+        W.row(label("comped.rotation"), rot, layout)
 
         # ── Offset (position relative à l'actor) ─────────────────
         # Le sprite n'a PAS de position monde : son offset est relatif à
@@ -191,15 +170,11 @@ class SpriteEditor(BaseComponentEditor):
         offx = W.spinbox(int(getattr(comp, "offset_x", 0)), min_v=-32768, max_v=32767)
         offy = W.spinbox(int(getattr(comp, "offset_y", 0)), min_v=-32768, max_v=32767)
         offx.setEnabled(_aff); offy.setEnabled(_aff)
-        offx.setToolTip("Offset X from the actor — in the actor's LOCAL frame, in pixels.\n"
-                        "The sprite has no world position: it is drawn at the actor's "
-                        "position + this offset, rotated/scaled with the actor.\n"
-                        "Requires <b>Affine transform</b> above.")
-        offy.setToolTip("Offset Y from the actor — in the actor's LOCAL frame, in pixels.\n"
-                        "Requires <b>Affine transform</b> above.")
+        offx.setToolTip(label("comped.offset_x_tip"))
+        offy.setToolTip(label("comped.offset_y_tip"))
         offx.valueChanged.connect(lambda v: self._set_comp_field(comp, "offset_x", v))
         offy.valueChanged.connect(lambda v: self._set_comp_field(comp, "offset_y", v))
-        W.pair("Offset", "X", C.AXIS_X, offx, "Y", C.AXIS_Y, offy, layout)
+        W.pair(label("comped.offset"), "X", C.AXIS_X, offx, "Y", C.AXIS_Y, offy, layout)
 
     # ── Helpers ──────────────────────────────────────────────────────
 

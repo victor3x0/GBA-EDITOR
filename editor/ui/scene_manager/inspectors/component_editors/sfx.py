@@ -5,22 +5,23 @@ from PyQt6.QtWidgets import QComboBox
 
 from core.models.components import SFX_AUTO_TRIGGERS
 from . import BaseComponentEditor, register
+from ui.common.labels import label
 
-# Libellé affiché pour chaque trigger — dans l'ordre du menu déroulant.
+# CLÉS de libellé pour chaque trigger — résolues par `label()` à l'affichage.
 _TRIGGER_LABELS: dict[str, str] = {
-    "manual":            "manual",
-    "on_spawn":          "on_spawn",
-    "on_destroy":        "on_destroy",
-    "on_button_a":       "bouton A",
-    "on_button_b":       "bouton B",
-    "on_button_l":       "gâchette L",
-    "on_button_r":       "gâchette R",
-    "on_button_start":   "Start",
-    "on_button_select":  "Select",
-    "on_button_up":      "↑",
-    "on_button_down":    "↓",
-    "on_button_left":    "←",
-    "on_button_right":   "→",
+    "manual":            "comped.trig_manual",
+    "on_spawn":          "comped.trig_on_spawn",
+    "on_destroy":        "comped.trig_on_destroy",
+    "on_button_a":       "comped.trig_button_a",
+    "on_button_b":       "comped.trig_button_b",
+    "on_button_l":       "comped.trig_button_l",
+    "on_button_r":       "comped.trig_button_r",
+    "on_button_start":   "comped.trig_button_start",
+    "on_button_select":  "comped.trig_button_select",
+    "on_button_up":      "comped.trig_up",
+    "on_button_down":    "comped.trig_down",
+    "on_button_left":    "comped.trig_left",
+    "on_button_right":   "comped.trig_right",
 }
 _TRIGGER_VALUES: list[str] = ["manual", *SFX_AUTO_TRIGGERS]
 
@@ -38,31 +39,21 @@ class SfxEditor(BaseComponentEditor):
             if comp.sfx_name in names:
                 sfx.setCurrentText(comp.sfx_name)
         else:
-            sfx.addItem("Aucun Sfx dans le projet")
+            sfx.addItem(label("comped.sfx_none"))
             sfx.setEnabled(False)
-        sfx.setToolTip(
-            "Sfx joué par ce component.\n"
-            "Ajoute des sons depuis l'écran Sound Mixer pour les voir apparaître ici."
-        )
+        sfx.setToolTip(label("comped.sfx_tip"))
         sfx.currentTextChanged.connect(
             lambda v: self.set_field(comp, "sfx_name", v if v in names else None)
         )
-        row("Sfx", sfx)
+        row(label("comped.sfx"), sfx)
 
         trigger = QComboBox()
         for v in _TRIGGER_VALUES:
-            trigger.addItem(_TRIGGER_LABELS[v], v)
+            trigger.addItem(label(_TRIGGER_LABELS[v]), v)
         current = comp.trigger if comp.trigger in _TRIGGER_VALUES else "manual"
         trigger.setCurrentIndex(_TRIGGER_VALUES.index(current))
-        trigger.setToolTip(
-            "<b>manual</b> — ne joue rien automatiquement, appeler <b>self:play_sfx()</b> depuis un script.<br>"
-            "<b>on_spawn</b> — joue au démarrage de l'actor, sans script.<br>"
-            "<b>on_destroy</b> — joue juste avant que l'actor soit détruit (par lui-même ou par un "
-            "autre), sans script sur cet actor.<br>"
-            "<b>bouton</b> — joue tant que l'actor est actif et que ce bouton est pressé, sans "
-            "script. Pratique pour un item de menu."
-        )
+        trigger.setToolTip(label("comped.trigger_tip"))
         trigger.currentIndexChanged.connect(
             lambda i: self.set_field(comp, "trigger", trigger.itemData(i))
         )
-        row("Trigger", trigger)
+        row(label("comped.trigger"), trigger)

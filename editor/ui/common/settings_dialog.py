@@ -44,6 +44,7 @@ from PyQt6.QtCore import Qt
 
 from ui.common.theme import C, T, QSS
 from ui.common.notice import note, refresh_tips
+from ui.common.labels import label
 from core.interface_preferences import tips_shown, set_tips_shown
 from core.toolchain import Toolchain
 from core.external_tools import ExternalTools, TOOL_KINDS
@@ -67,7 +68,7 @@ def _path_row(parent_layout, label_text: str, initial: str,
     edit = QLineEdit(initial)
     edit.setFont(_field_font())
     edit.setStyleSheet(QSS.lineedit)
-    btn = QPushButton("Browse…")
+    btn = QPushButton(label("common.browse"))
     btn.setStyleSheet(QSS.button_ghost)
     btn.setFixedWidth(90)
     btn.clicked.connect(lambda: browse_fn(edit))
@@ -93,8 +94,8 @@ class ToolchainsPanel(QWidget):
         self._toolchain = toolchain
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
-        lay.addWidget(_category_title("Toolchains"))
-        note = QLabel("Chemins vers devkitPro et mgba — nécessaires pour Build & Run.")
+        lay.addWidget(_category_title(label("settings.cat.toolchains")))
+        note = QLabel(label("settings.toolchains.hint"))
         note.setFont(QFont(T.UI, T.SM))
         note.setStyleSheet(f"color:{C.TEXT_DIM};")
         note.setWordWrap(True)
@@ -115,7 +116,7 @@ class ToolchainsPanel(QWidget):
             self._commit_dkp()
 
     def _browse_mgba(self, edit: QLineEdit):
-        p, _ = QFileDialog.getOpenFileName(self, "mgba executable")
+        p, _ = QFileDialog.getOpenFileName(self, label("settings.toolchains.pick_mgba"))
         if p:
             edit.setText(p)
             self._commit_mgba()
@@ -141,17 +142,14 @@ class ThemePanel(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
-        lay.addWidget(_category_title("Theme"))
+        lay.addWidget(_category_title(label("settings.cat.theme")))
 
-        current = QLabel("GBA — indigo / périwinkle")
+        current = QLabel(label("settings.theme.current"))
         current.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         current.setStyleSheet(f"color:{C.ACCENT};")
         lay.addWidget(current)
 
-        note = QLabel(
-            "Un seul thème existe aujourd'hui — pas de bascule clair/sombre ni "
-            "de variante pour l'instant."
-        )
+        note = QLabel(label("settings.theme.note"))
         note.setFont(QFont(T.UI, T.SM))
         note.setStyleSheet(f"color:{C.TEXT_DIM};")
         note.setWordWrap(True)
@@ -170,9 +168,9 @@ class InterfacePanel(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
-        lay.addWidget(_category_title("Interface"))
+        lay.addWidget(_category_title(label("settings.cat.interface")))
 
-        self._chk_tips = QCheckBox("Show tips")
+        self._chk_tips = QCheckBox(label("settings.interface.show_tips"))
         self._chk_tips.setFont(QFont(T.UI, T.MD))
         self._chk_tips.setStyleSheet(QSS.checkbox)
         self._chk_tips.setChecked(tips_shown())
@@ -211,13 +209,9 @@ class ShortcutsPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Shortcuts"))
+        lay.addWidget(_category_title(label("settings.cat.shortcuts")))
 
-        note = QLabel(
-            "Cliquer une touche et taper la nouvelle combinaison. Deux actions sur "
-            "la même touche sont signalées en rouge — les deux restent actives, "
-            "seule la première déclarée du contexte répond."
-        )
+        note = QLabel(label("settings.shortcuts.hint"))
         note.setFont(QFont(T.UI, T.SM))
         note.setStyleSheet(f"color:{C.TEXT_DIM};")
         note.setWordWrap(True)
@@ -232,7 +226,10 @@ class ShortcutsPanel(QWidget):
                 rows.extend(DISPLAY_ONLY)
 
         self._table = QTableWidget(len(rows), 4)
-        self._table.setHorizontalHeaderLabels(["Context", "Action", "Shortcut", ""])
+        self._table.setHorizontalHeaderLabels(
+            [label("settings.shortcuts.col_context"),
+             label("settings.shortcuts.col_action"),
+             label("settings.shortcuts.col_shortcut"), ""])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -260,20 +257,20 @@ class ShortcutsPanel(QWidget):
 
                 reset_btn = QPushButton("↺")
                 reset_btn.setFixedWidth(26)
-                reset_btn.setToolTip(f"Reset to {b.default}")
+                reset_btn.setToolTip(label("settings.shortcuts.reset_to", default=b.default))
                 reset_btn.clicked.connect(lambda _=False, bid=b.id: self._reset(bid))
                 self._table.setCellWidget(row, self._COL_RESET, reset_btn)
             else:
-                context, label, key = entry
+                context, disp_label, key = entry
                 self._table.setItem(row, self._COL_CONTEXT, self._plain_item(context, dim=True))
-                self._table.setItem(row, self._COL_ACTION, self._plain_item(label))
+                self._table.setItem(row, self._COL_ACTION, self._plain_item(disp_label))
                 key_item = self._plain_item(key, dim=True)
-                key_item.setToolTip("Touche système, non remappable")
+                key_item.setToolTip(label("settings.shortcuts.system_key"))
                 self._table.setItem(row, self._COL_KEY, key_item)
 
         lay.addWidget(self._table, 1)
 
-        reset_all = QPushButton("Reset all to defaults")
+        reset_all = QPushButton(label("settings.shortcuts.reset_all"))
         reset_all.setStyleSheet(QSS.button_ghost)
         reset_all.clicked.connect(self._reset_all)
         footer = QHBoxLayout()
@@ -348,28 +345,26 @@ class ExternalToolsPanel(QWidget):
         self._tools = tools
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
-        lay.addWidget(_category_title("External Tools"))
+        lay.addWidget(_category_title(label("settings.cat.external_tools")))
 
-        note = QLabel(
-            "Logiciels tiers pour éditer les assets — pas encore reliés à un "
-            "bouton « Edit externally » dans les écrans, juste enregistrés ici."
-        )
+        note = QLabel(label("settings.external.note"))
         note.setFont(QFont(T.UI, T.SM))
         note.setStyleSheet(f"color:{C.TEXT_DIM};")
         note.setWordWrap(True)
         lay.addWidget(note)
 
         self._edits: dict[str, QLineEdit] = {}
-        for kind, label in TOOL_KINDS:
+        for kind, tool_label in TOOL_KINDS:
             initial = str(tools.path(kind) or "")
-            edit = _path_row(lay, label, initial,
+            edit = _path_row(lay, tool_label, initial,
                              lambda e, k=kind: self._browse(k, e))
             edit.editingFinished.connect(lambda k=kind: self._commit(k))
             self._edits[kind] = edit
         lay.addStretch()
 
     def _browse(self, kind: str, edit: QLineEdit):
-        p, _ = QFileDialog.getOpenFileName(self, TOOL_KINDS_LABEL.get(kind, "Executable"))
+        p, _ = QFileDialog.getOpenFileName(
+            self, TOOL_KINDS_LABEL.get(kind, label("settings.external.pick")))
         if p:
             edit.setText(p)
             self._commit(kind)
@@ -386,13 +381,23 @@ class SettingsDialog(QDialog):
     partout où on y entre (File → Settings, ToolchainBar → Configure,
     Game → build bloqué par un toolchain manquant)."""
 
+    # Les valeurs sont des IDENTIFIANTS (comparés à `initial_category`, indexés) :
+    # elles ne se traduisent pas. Le LIBELLÉ affiché passe par `_CAT_LABELS` — le
+    # même piège qu'un nom de fichier qui doublerait comme clé (cf. v0.10).
     _CATEGORIES = ("Toolchains", "Theme", "Interface", "Shortcuts",
                    "External Tools")
+    _CAT_LABELS = {
+        "Toolchains": "settings.cat.toolchains",
+        "Theme": "settings.cat.theme",
+        "Interface": "settings.cat.interface",
+        "Shortcuts": "settings.cat.shortcuts",
+        "External Tools": "settings.cat.external_tools",
+    }
 
     def __init__(self, toolchain: Toolchain, external_tools: ExternalTools,
                 initial_category: str = "Toolchains", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle(label("settings.window_title"))
         self.setStyleSheet(QSS.dialog)
         self.resize(760, 480)
 
@@ -405,7 +410,7 @@ class SettingsDialog(QDialog):
         self._list.setFixedWidth(160)
         self._list.setFont(QFont(T.UI, T.MD))
         for cat in self._CATEGORIES:
-            self._list.addItem(QListWidgetItem(cat))
+            self._list.addItem(QListWidgetItem(label(self._CAT_LABELS[cat])))
         body.addWidget(self._list)
 
         self._stack = QStackedWidget()
@@ -430,7 +435,7 @@ class SettingsDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch()
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(label("common.close"))
         btn_close.setStyleSheet(QSS.button_primary)
         btn_close.setFixedWidth(90)
         btn_close.clicked.connect(self.accept)

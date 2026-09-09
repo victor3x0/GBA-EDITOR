@@ -11,6 +11,7 @@ from core.history import get_history, SetFieldCmd
 from core.text_markup import parse, resolve, TAGS
 from ui.common.theme import C, T
 from ui.common.widgets import CollapsibleCard
+from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.inspector_shell import insp_scroll
 
@@ -37,10 +38,10 @@ class TextInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, "Text")
+        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, label("txtinsp.title"))
         root.addWidget(host)
 
-        self._empty = QLabel("Select a text entry\nfrom the table")
+        self._empty = QLabel(label("txtinsp.empty"))
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -53,7 +54,7 @@ class TextInspector(QWidget):
 
         # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
         # traducteur et l'identité machine.
-        note_card = CollapsibleCard("Note for translator")
+        note_card = CollapsibleCard(label("txtinsp.note_card"))
         self._note_edit = QTextEdit()
         self._note_edit.setFont(QFont(T.UI, T.SM))
         self._note_edit.setStyleSheet(
@@ -61,10 +62,8 @@ class TextInspector(QWidget):
             f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}"
         )
         self._note_edit.setFixedHeight(64)
-        self._note_edit.setPlaceholderText("Context, tone, space constraint…")
-        self._note_edit.setToolTip(
-            "Context intended for translation (v0.8) — never shown in-game."
-        )
+        self._note_edit.setPlaceholderText(label("txtinsp.note_placeholder"))
+        self._note_edit.setToolTip(label("txtinsp.note_tip"))
         # Commit au focus-out : une commande par frappe noierait l'historique.
         self._note_edit.focusOutEvent = self._note_focus_out
         self._note_baseline = ""
@@ -74,7 +73,7 @@ class TextInspector(QWidget):
         # ── Balisage ──────────────────────────────────────────────
         # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
         # balisage n'ont nulle part ailleurs où apparaître avant le build.
-        markup_card = CollapsibleCard("Markup")
+        markup_card = CollapsibleCard(label("txtinsp.markup"))
         markup_card.setToolTip("<br>".join(
             f"<b>[{s.name}{'=…' if s.value else ''}]</b> — {s.doc}"
             for s in TAGS.values()))
@@ -102,7 +101,7 @@ class TextInspector(QWidget):
 
         # Contrepartie visible du renommage automatique : il réécrit les
         # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
-        usage_card = CollapsibleCard("Used by")
+        usage_card = CollapsibleCard(label("txtinsp.used_by"))
         self._usage = QLabel("")
         self._usage.setFont(QFont(T.UI, T.XS))
         self._usage.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -110,7 +109,7 @@ class TextInspector(QWidget):
         usage_card.body_layout.addWidget(self._usage)
         bl.addWidget(usage_card)
 
-        info_card = CollapsibleCard("Info")
+        info_card = CollapsibleCard(label("txtinsp.info"))
         self._meta = QLabel("")
         self._meta.setFont(QFont(T.UI, T.XS))
         self._meta.setStyleSheet(f"color:{C.TEXT_MUTED};")

@@ -34,6 +34,7 @@ from PyQt6.QtCore import Qt, QSize
 from core.text_markup import TAGS, KIND_VALUE, VALUE_NONE
 from ui.common import icons
 from ui.common.theme import C, T, QSS
+from ui.common.labels import label
 
 
 # Présentation d'une balise : (icône, valeur pré-remplie). Les valeurs par
@@ -74,9 +75,8 @@ class MarkupToolbar(QFrame):
             lay.addWidget(self._button(
                 icon,
                 f"<b>{syntax}</b><br>{spec.doc}<br><br>"
-                + ("Wraps the selection — click again to remove it."
-                   if spec.scoped else
-                   "Dropped in front of the selection, which is left intact."),
+                + (label("mktool.wraps") if spec.scoped
+                   else label("mktool.dropped")),
                 lambda _c=False, n=name, d=default: self._on_click(n, d),
             ))
 
@@ -91,8 +91,7 @@ class MarkupToolbar(QFrame):
         # il substitue) — d'où le séparateur, et sa place en bout de barre.
         lay.addWidget(self._button(
             "mk_value",
-            "<b>$name</b><br>Inserts the value of a project global or "
-            "constant, read at display time.",
+            label("mktool.value_tip"),
             lambda _c=False: self._on_click(KIND_VALUE, "name"),
         ))
         lay.addStretch()
@@ -140,13 +139,13 @@ class MarkupToolbar(QFrame):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         menu.setFont(QFont(T.UI, T.MD))
-        for label in choices:
-            menu.addAction(label, lambda _c=False, v=label:
+        for choice in choices:
+            menu.addAction(choice, lambda _c=False, v=choice:
                            self._insert(name, v, preselect=False))
         # Soupape : la liste dit ce que le projet connaît AUJOURD'HUI. Écrire
         # un texte avant le global qu'il affiche est un ordre légitime.
         menu.addSeparator()
-        menu.addAction("Type it by hand…", lambda _c=False:
+        menu.addAction(label("mktool.type_by_hand"), lambda _c=False:
                        self._insert(name, default or None, preselect=bool(default)))
         btn = self.sender()
         menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))

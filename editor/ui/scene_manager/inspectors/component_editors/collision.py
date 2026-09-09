@@ -7,6 +7,7 @@ from PyQt6.QtGui import QFont
 from . import BaseComponentEditor, register
 from ui.common.widgets import W
 from ui.common.notice import notice
+from ui.common.labels import label
 from ui.common.theme import C, T, QSS
 
 
@@ -44,7 +45,7 @@ class CollisionEditor(BaseComponentEditor):
         tag_combo.activated.connect(lambda _i: _commit_tag())
         self.register_syncer("tag", lambda v, w=tag_combo: (
             w.blockSignals(True), w.setCurrentText(str(v) or "body"), w.blockSignals(False)))
-        W.row("Tag", tag_combo, layout)
+        W.row(label("comped.tag"), tag_combo, layout)
 
         # ── Mode Solid / Trigger ──────────────────────────────────
         chk_solid = QCheckBox()
@@ -53,11 +54,11 @@ class CollisionEditor(BaseComponentEditor):
 
         mode_lbl = QWidget()
         hl = QHBoxLayout(mode_lbl); hl.setSpacing(6); hl.setContentsMargins(0, 0, 0, 0)
-        lbl = QLabel("Solid  (unchecked = Trigger)")
+        lbl = QLabel(label("comped.collision_solid"))
         lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_NORM}; background:transparent; border:none;")
         hl.addWidget(chk_solid); hl.addWidget(lbl); hl.addStretch()
-        W.row("Mode", mode_lbl, layout)
+        W.row(label("comped.mode"), mode_lbl, layout)
 
         # ── AABB — champs px/tile ou référence de variable ────────
         # Les valeurs peuvent être un littéral (px/tile) ou pointer une
@@ -78,8 +79,8 @@ class CollisionEditor(BaseComponentEditor):
             self.register_syncer(fname, lambda v, w=vf: w.set_raw(v))
             notice(key, vf, layout)
 
-        W.pair("Offset", "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
-        W.pair("Taille", "W", C.AXIS_X, vf_w, "H", C.AXIS_Y, vf_h, layout)
+        W.pair(label("comped.offset"), "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
+        W.pair(label("comped.size"), "W", C.AXIS_X, vf_w, "H", C.AXIS_Y, vf_h, layout)
 
         def _on_solid(v):
             self.set_field(comp, "solid", v)

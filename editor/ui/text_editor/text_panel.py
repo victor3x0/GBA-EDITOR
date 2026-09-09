@@ -25,6 +25,7 @@ from core.history import (
     get_history, SetFieldCmd, AddListItemCmd, RemoveListItemsCmd,
 )
 from ui.common.theme import QSS
+from ui.common.labels import label
 from ui.text_editor.text_table import TextTable
 from ui.text_editor.text_workbench import TextWorkbench
 from ui.text_editor.text_commands import (
@@ -232,8 +233,8 @@ class TextPanel(QWidget):
         old, old_auto = t.key, t.auto_key
         if not self._project.rename_text_key(t, new):
             QMessageBox.warning(
-                self, "Invalid key",
-                f"“{new}” is empty or already used by another text.")
+                self, label("txtpnl.invalid_key_title"),
+                label("txtpnl.invalid_key_msg", name=new))
             return False
         get_history().push(RenameTextKeyCmd(
             self._project, t, old, new, old_auto,
@@ -324,10 +325,10 @@ class TextPanel(QWidget):
         if not texts or not self._project:
             return
         what = (f"“{texts[0].key}”" if len(texts) == 1
-                else f"{len(texts)} texts")
+                else label("txtpnl.n_texts", n=len(texts)))
         if QMessageBox.question(
-            self, "Delete text",
-            f"Delete {what}?\n\nScripts that use them will no longer compile.",
+            self, label("txtpnl.delete_title"),
+            label("txtpnl.delete_msg", what=what),
         ) != QMessageBox.StandardButton.Yes:
             return
 
