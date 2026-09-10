@@ -57,8 +57,8 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
 | v0.22 | Menus, listes et curseur | **Livrée** — [archive](changelog-archive/v0.22.md) |
 | v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
-| v0.10 | Distribution Linux | **En cours** — format `.gba-project` et associations OS livrés ; réactivation CI et test sur une vraie distro à faire |
-| v0.11 | Traduction de l'éditeur | **En cours** — notices + catalogue de libellés livrés, extraction des textes bien avancée ; sélection de langue à câbler |
+| v0.10 | Distribution Linux | **Livrée** — format `.gba-project` et associations OS livrés |
+| v0.11 | Traduction de l'éditeur | **Livrée (infra)** — extraction UI, contrôles et choix de langue livrés ; la traduction FR elle-même est reportée au chantier « traduction fr » (v2.0) |
 | v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
@@ -66,7 +66,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.17 | Le pool par scène | Non commencée |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
-| v0.26 | Les polices : de la source au pixel | **Conception figée, non commencée** — voir plus bas |
+| v0.26 | Les polices : de la source au pixel | **Conception en cours, non commencée** — voir plus bas |
 | v0.27 | L'éditeur souffle le mot juste (autocomplétion) | **Livrée** — [archive](changelog-archive/v0.27.md) |
 
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
@@ -1294,7 +1294,7 @@ release.
 
 ---
 
-## v0.11 — Traduction de l'interface de l'éditeur — **EN COURS**
+## v0.11 — Traduction de l'interface de l'éditeur — **LIVRÉE (infra), traduction FR reportée à v2.0**
 
 Complètement indépendant du runtime GBA. Déplaçable librement dans l'ordre : peut être fait
 en parallèle de n'importe quelle autre version.
@@ -1468,39 +1468,52 @@ pour les libellés de champs, titres de cartes et d'écrans, entrées de menu, �
 boutons et les `setToolTip` posés à la main. Le contrôle de CI vérifie désormais les DEUX
 catalogues dans les deux sens.
 
-**Avancement : ~39 fichiers d'UI extraits, ~840 clés de libellés.** Zones faites de bout en
-bout : `settings_dialog`, `home/project_picker`, la fenêtre principale (`window.py` — menus,
-barre d'outils, status bar), les inspecteurs du Scene Manager (`ui`/`actor`/`scene`), les
-éditeurs de composants, le `scene_tree_panel` et l'`assets_finder_panel`, le `sound_mixer`,
-le `sprite_editor`, le `data_editor`, et les trois zones complètes **`palette_editor`**,
-**`text_editor`** et **`script_editor`**. Les résidus français croisés en chemin ont été
-migrés à l'anglais au passage (règle de migration écran par écran).
+**Extraction faite sur tout le périmètre de l'UI (~1 270 libellés).** Menée en deux temps :
+d'abord les gros écrans à la main — `settings_dialog`, `home/project_picker`, la fenêtre
+principale (`window.py` — menus, barre d'outils, status bar), les inspecteurs du Scene
+Manager, les éditeurs de composants, `scene_tree_panel`, `assets_finder_panel`, `sound_mixer`,
+`sprite_editor`, `data_editor`, et les zones `palette_editor`/`text_editor`/`script_editor` ;
+puis une passe outillée sur la longue traîne (widgets communs, canvas, imports, finders).
+Les deux conventions de clés qui ont coexisté un temps (`<écran>.<slug>` court et
+`<fichier>.<slug>`) ont été **unifiées** sur la première, avec des atomes `common.*` partagés
+(52, traduits une seule fois). Les résidus français croisés en chemin ont été migrés à
+l'anglais (règle de migration écran par écran).
 
-Politique d'extraction stable : on laisse HORS catalogue les libellés d'annulation
+Politique de la première passe : on laissait HORS catalogue les libellés d'annulation
 (`SetFieldCmd label=…`, corpus du menu Undo à part), les identifiants qui doublent comme
 libellé (`COLUMN_TYPES`, `NO_CATEGORY`…), les noms de format techniques (BGR555, PNG), les
 titres d'`AssetFinder` (passe séparée), et les blocs de diagnostic très interpolés (à reprendre
 en clés-phrases à arguments nommés). Piège récurrent noté : une variable locale nommée `label`
-masque la fonction importée — grep systématique après chaque fichier.
+masque la fonction importée — grep systématique après chaque fichier. La passe de clôture
+ci-dessous extrait aussi les titres de finders et les diagnostics formulés dans l'UI ;
+les autres exceptions sont précisées dans [docs/ui-text.md](docs/ui-text.md).
 
 ### Ouvert
 
-- **La sélection de langue n'existe toujours pas.** `catalog.set_language(code)` (ex-
-  `notice.set_language`) est écrit et n'a aucun appelant : c'est la pièce délibérément
-  inemployée du chantier, et ce qui reste pour que la traduction soit UTILISABLE et pas
-  seulement PRÊTE. Ce sera un réglage d'application, pas de projet — l'interface est celle de
-  l'éditeur, pas du jeu. Tant qu'il n'est pas appelé, le maître est la seule source.
-- **L'extraction n'est pas finie** : il reste une trentaine de fichiers, presque tous petits
-  (inspecteurs `bg_layer_row`/`camera`/`script`/`languages_card`/`inputs_card`, `widgets.py`,
-  `build_panel`, barres de canvas, quelques dialogues d'import, finders divers). Le catalogue
-  les accueille sans déménager ; c'est du balayage, plus une décision d'architecture.
+- **La sélection de langue est livrée.** Le panneau *Settings → Interface* écrit le code dans
+  les préférences d'application, puis le catalogue le charge avant la construction des écrans
+  au démarrage suivant. Le choix ne vit donc jamais dans le projet. Les widgets construits
+  figent leur texte : demander un redémarrage donne une interface entièrement cohérente plutôt
+  qu'une retraduction partielle. Un premier side français d'amorçage couvre les réglages,
+  l'accueil et les atomes `common.*` ; les clés qui manquent retombent sur le maître. **La
+  traduction française complète est reportée au chantier « traduction fr » (v2.0)** : l'infra
+  la rend possible sans qu'aucune ligne de code ne change, ce n'est plus qu'un travail de
+  contenu, sans dépendance technique.
+- **Extraction de l'interface terminée sur le périmètre défini** : inspecteurs, widgets
+  communs, build, canvas, imports et finders passent par le catalogue, désormais à 1 270
+  libellés. Les tables portent des clés résolues à l'affichage ; les identifiants de
+  sélection restent stables. `tools/check_ui_text.py` vérifie structure, paramètres,
+  clés et textes directs ciblés, avec exceptions justifiées. Voir
+  [le contrat et ses limites](docs/ui-text.md). La traduction française est reportée à v2.0.
+  Le choix de langue ne change aucun texte avant le redémarrage, y compris dans les
+  panneaux ouverts après le changement de préférence.
 - **Les messages du validateur** (`core/validator.py`, ~40 phrases) sont l'autre corpus déjà
   centralisé, et le plus proche : ils ont une gravité, et le rouge y a un sens. Ils partiront
   probablement dans le même catalogue avec un ton `error` que le gabarit d'inspecteur n'offre
   pas — à décider quand ce sera leur tour, pas avant.
-- **Une astuce n'est pas dismissible individuellement.** L'interrupteur est global. Un « ne
-  plus montrer celle-ci » demanderait une liste de clés vues dans le projet ; personne n'a
-  encore dit que c'était le besoin.
+- **Une astuce peut être fermée pour la session.** La croix existe déjà dans `NoticeBox` ;
+  le réglage global gouverne toutes les astuces. Une fermeture individuelle persistante
+  reste hors périmètre.
 
 ---
 

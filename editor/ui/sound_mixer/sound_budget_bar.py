@@ -24,6 +24,7 @@ PAS affiché : il n'est pas mesuré, et ce projet n'affiche pas de nombre devin�
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
@@ -116,7 +117,7 @@ class SoundBudgetBar(QWidget):
         lay.setContentsMargins(12, 0, 12, 0)
         lay.setSpacing(0)
 
-        lbl_name = QLabel("channels  ")
+        lbl_name = QLabel(label('sndbar.channels'))
         lbl_name.setFont(QFont(T.MONO, T.XS))
         lbl_name.setStyleSheet(f"color:{C.TEXT_MUTED};")
         lay.addWidget(lbl_name)
@@ -153,7 +154,7 @@ class SoundBudgetBar(QWidget):
         music_ch, jingle_ch = worst_case_channels(project, music_box, jingle_box)
         total = music_ch + jingle_ch
         self._value.setText(f"{total}/{limit}")
-        self._detail.setText(f"  (music {music_ch} + jingle {jingle_ch})")
+        self._detail.setText(label('sndbar.channels_detail', music_ch=music_ch, jingle_ch=jingle_ch))
         warn = round(limit * _WARN_RATIO)
         # `>=`, pas `>` : même règle que GbaStatusBar (window.py) — atteindre
         # PILE le plafond veut dire qu'il ne reste plus rien pour les effets,

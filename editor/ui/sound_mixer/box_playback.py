@@ -19,6 +19,7 @@ Deux fidélités valent d'être dites, parce qu'elles se voient à l'usage :
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from pathlib import Path
 from typing import Optional
 
@@ -148,8 +149,7 @@ class BoxPlayer(QObject):
              if t.dst == state_name and t.src in ("", self._current)), None)
         if edge is None:
             self.message.emit(
-                f"Aucune transition de « {self._current} » vers « {state_name} » : "
-                f"la ROM ne changerait pas de musique ici.")
+                label('boxplay.no_transition', _current=self._current, state_name=state_name))
             return
         self._enter(state_name, transition=True,
                     cut=edge.kind == TRANSITION_CUT, frames=int(edge.frames))
@@ -185,17 +185,17 @@ class BoxPlayer(QObject):
             return None
         music = self._project.music.get(state.music)
         if music is None or not music.asset:
-            self.message.emit(f"État « {state.name} » : piste introuvable.")
+            self.message.emit(label('boxplay.tat_name_piste_introuvable', name=state.name))
             return None
         path = self._project.asset_abs(music.asset)
         if path is None or not path.exists():
-            self.message.emit(f"État « {state.name} » : fichier manquant.")
+            self.message.emit(label('boxplay.tat_name_fichier_manquant', name=state.name))
             return None
         if path not in self._tracks:
             try:
                 pcm, marks = render_module_marked(load_module(path))
             except Exception as exc:
-                self.message.emit(f"« {music.name} » illisible : {exc}")
+                self.message.emit(label('boxplay.name_illisible_exc', name=music.name, exc=exc))
                 return None
             self._tracks[path] = Track(pcm=pcm, marks=marks)
         return self._tracks[path]

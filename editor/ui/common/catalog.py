@@ -34,6 +34,14 @@ from pathlib import Path
 _REGISTRY: list["Catalog"] = []
 _lang: str = ""
 
+# Les noms sont une donnée de l'éditeur, pas des noms de langue du JEU : les
+# langues de jeu appartiennent à ProjectSettings. Un code sans nom connu reste
+# tout de même sélectionnable, ce qui permet d'ajouter un side sans changer le
+# Python.
+_LANGUAGE_NAMES = {
+    "fr": "Français",
+}
+
 
 def _template(entry, args: dict) -> str:
     """La forme brute d'une entrée : `text`, ou `one`/`other` selon `n`."""
@@ -111,3 +119,22 @@ def set_language(code: str):
     _lang = code or ""
     for cat in _REGISTRY:
         cat._load_side(_lang)
+
+
+def available_languages() -> list[tuple[str, str]]:
+    """Langues d'interface réellement livrées, maître inclus.
+
+    Une langue apparaît dès qu'un catalogue fournit son side. Les clés absentes
+    de ce side retombent sur le maître : on peut donc traduire l'interface par
+    étapes sans masquer ni casser aucun libellé.
+    """
+    codes = {""}
+    for cat in _REGISTRY:
+        prefix = f"{cat.name}_"
+        for path in cat.dir.glob(f"{cat.name}_*.json"):
+            code = path.stem.removeprefix(prefix)
+            if code:
+                codes.add(code)
+    return [(code, "English (source)" if not code
+             else _LANGUAGE_NAMES.get(code, code))
+            for code in sorted(codes)]

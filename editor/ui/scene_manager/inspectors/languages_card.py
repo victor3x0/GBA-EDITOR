@@ -26,6 +26,7 @@ d'annulation — qui ramène le projet à zéro langue.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -42,7 +43,7 @@ from ui.common import icons
 
 
 # Ce que propose le combo d'une police non remplacée.
-_SAME = "(same as source)"
+_SAME = 'langcard.same_as_source'
 
 
 class LanguagesCard(CollapsibleCard):
@@ -61,15 +62,14 @@ class LanguagesCard(CollapsibleCard):
     def __init__(self, parent=None):
         # Repliée d'office : un projet monolingue n'a rien à y lire, et c'est
         # le cas de tous ceux d'avant la v0.9.
-        super().__init__("Languages", expanded=False, parent=parent)
+        super().__init__(label('langcard.languages'), expanded=False, parent=parent)
         self._project = None
         self._blocking = False
         self._expanded: str = ""     # code de la langue dont les polices sont ouvertes
         inner = self.body_layout
 
         hint = QLabel(
-            "The source language lives in texts.json. Each translation gets "
-            "its own project/texts_&lt;code&gt;.json.")
+            label('langcard.source_note'))
         hint.setFont(QFont(T.UI, T.XS))
         hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         hint.setWordWrap(True)
@@ -79,7 +79,7 @@ class LanguagesCard(CollapsibleCard):
         src = QHBoxLayout()
         src.setContentsMargins(0, 4, 0, 0)
         src.setSpacing(4)
-        lbl = QLabel("Source")
+        lbl = QLabel(label('langcard.source'))
         lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
         src.addWidget(lbl)
@@ -105,7 +105,7 @@ class LanguagesCard(CollapsibleCard):
 
         add_row = QHBoxLayout()
         add_row.setContentsMargins(0, 2, 0, 0)
-        self._btn_add = W.btn_add("Declare a translation")
+        self._btn_add = W.btn_add(label('langcard.declare_a_translation'))
         self._btn_add.clicked.connect(self._add_language)
         add_row.addWidget(self._btn_add)
         self._count = QLabel("")
@@ -123,9 +123,7 @@ class LanguagesCard(CollapsibleCard):
         e.setFixedWidth(52)
         e.setPlaceholderText(placeholder)
         e.setToolTip(
-            "<b>Language code</b> — it names the translation file "
-            "(<code>texts_de.json</code>),<br>so it is lowercased and stripped "
-            "of anything a filename refuses.")
+            label('langcard.code_tip'))
         return e
 
     def _name_field(self, placeholder: str) -> QLineEdit:
@@ -134,8 +132,7 @@ class LanguagesCard(CollapsibleCard):
         e.setStyleSheet(QSS.lineedit)
         e.setPlaceholderText(placeholder)
         e.setMinimumWidth(60)
-        e.setToolTip("Readable name — shown in the editor, and in the game's "
-                     "language menu when it exists.")
+        e.setToolTip(label('langcard.name_tip'))
         return e
 
     # ── Chargement ────────────────────────────────────────────────
@@ -157,7 +154,7 @@ class LanguagesCard(CollapsibleCard):
             self._rebuild_rows()
             n = len(p.settings.languages) if p else 0
             self._count.setText(
-                "" if not n else f"{n} translation{'s' if n > 1 else ''}")
+                "" if not n else label('langcard.count', n=n))
         finally:
             self._blocking = False
 
@@ -205,15 +202,12 @@ class LanguagesCard(CollapsibleCard):
         btn.setFixedSize(22, 22)
         btn.setStyleSheet(BTN_ICON)
         btn.setIcon(icons.get("font", C.ACCENT if n else C.TEXT_DIM))
-        btn.setToolTip(
-            (f"{n} font replacement{'s' if n > 1 else ''}" if n
-             else "No font replacement — this language uses the project's fonts")
-            + "\nOnly a different writing system needs one.")
+        btn.setToolTip(label('langcard.font_replacements', n=n) if n
+                       else label('langcard.no_font_replacement'))
         btn.clicked.connect(lambda _c=False, _l=lang.code: self._toggle_fonts(_l))
         row.addWidget(btn)
 
-        rm = W.btn_danger("Remove this language "
-                          "(its translation file is kept on disk)")
+        rm = W.btn_danger(label('langcard.remove_tip'))
         rm.clicked.connect(lambda _c=False, _i=index: self._remove(_i))
         row.addWidget(rm)
         return host
@@ -228,7 +222,7 @@ class LanguagesCard(CollapsibleCard):
         lay.setSpacing(2)
         fonts = [f.name for f in self._project.fonts] if self._project else []
         if not fonts:
-            empty = QLabel("This project has no font yet.")
+            empty = QLabel(label('langcard.this_project_has_no_font_yet'))
             empty.setFont(QFont(T.UI, T.XS))
             empty.setStyleSheet(f"color:{C.TEXT_MUTED};")
             lay.addWidget(empty)
@@ -248,7 +242,7 @@ class LanguagesCard(CollapsibleCard):
             combo = QComboBox()
             combo.setFont(QFont(T.UI, T.XS))
             combo.setStyleSheet(QSS.combobox)
-            combo.addItem(_SAME, "")
+            combo.addItem(label(_SAME), "")
             for other in fonts:
                 if other != fname:
                     combo.addItem(other, other)

@@ -82,7 +82,7 @@ class TextEditorScreen(QWidget):
             f"QSplitter::handle:hover{{background:{TEXT_COLOR};}}"
         )
 
-        self._fonts = AssetFinder("Font finder", [FONTS],
+        self._fonts = AssetFinder(label('txtscr.font_finder'), [FONTS],
                                   min_width=180, max_width=420)
 
         # Le CENTRE est contextuel lui aussi : une planche fait plusieurs

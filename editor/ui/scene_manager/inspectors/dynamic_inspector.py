@@ -1,6 +1,7 @@
 """DynamicInspector — remplace le QTabWidget Scene/Actor, route vers le bon panneau."""
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QLabel
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -75,7 +76,7 @@ class DynamicInspector(QWidget):
         empty_w = QWidget()
         empty_w.setStyleSheet(f"background:{C.BG_PANEL};")
         el = QVBoxLayout(empty_w)
-        hint = QLabel("Select a scene\nor an actor to\nshow its properties")
+        hint = QLabel(label('dyninsp.empty'))
         hint.setFont(QFont(T.UI, T.MD))
         hint.setStyleSheet(f"color:{C.BORDER_MID};")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -280,11 +281,11 @@ class DynamicInspector(QWidget):
         scene = project.active_scene if project else None
         self._ui_insp.load(layout_asset, element, project, scene)
         header_kind, title = {
-            KIND_CONTAINER: ("ui_container", "Container"),
-            KIND_LIST:  ("ui_list",  "List"),
-            KIND_TEXT:  ("ui_text",  "Text"),
-            KIND_IMAGE: ("ui_image", "Image"),
-        }.get(kind, ("ui_element", "UI element"))
+            KIND_CONTAINER: ("ui_container", label('common.container')),
+            KIND_LIST:  ("ui_list",  label('common.list')),
+            KIND_TEXT:  ("ui_text",  label('common.text')),
+            KIND_IMAGE: ("ui_image", label('common.image')),
+        }.get(kind, ("ui_element", label('dyninsp.ui_element')))
         self._set_header(header_kind, title, element.name)
         self._stack.setCurrentIndex(self._MODE_UI)
 
@@ -297,7 +298,7 @@ class DynamicInspector(QWidget):
         bandeau devient l'endroit où le nom du nœud se change."""
         scene = scene or (project.active_scene if project else None)
         self._ui_node_insp.load(layout, scene, project)
-        self._set_header("ui_layout", "Interface", layout.name if layout else "")
+        self._set_header("ui_layout", label('common.interface'), layout.name if layout else "")
         self._stack.setCurrentIndex(self._MODE_UI_NODE)
 
     def refresh_current(self):
@@ -322,12 +323,12 @@ class DynamicInspector(QWidget):
         canvas, Échap, suppression du dernier actor sélectionné…)."""
         self._project_insp.load(self._project)
         name = self._project.settings.name if self._project else ""
-        self._set_header("project", "Project", name)
+        self._set_header("project", label('dyninsp.project'), name)
         self._stack.setCurrentIndex(self._MODE_PROJECT)
 
     def show_scene(self, scene, project):
         self._scene_insp.load(scene, project)
-        self._set_header("scene", "Scene", scene.name if scene else "")
+        self._set_header("scene", label('common.scene'), scene.name if scene else "")
         self._stack.setCurrentIndex(self._MODE_SCENE)
         # Sync si l'inspector SceneInspector émet changed après un rename interne
         self._scene_insp.changed.connect(
@@ -338,13 +339,13 @@ class DynamicInspector(QWidget):
 
     def show_actor(self, actor, project, scene=None):
         self._actor_insp.load(actor, project, scene)
-        self._set_header("actor", "Actor", actor.name if actor else "")
+        self._set_header("actor", label('common.actor'), actor.name if actor else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_prefab(self, prefab, project):
         scene = project.active_scene if project else None
         self._actor_insp.load_prefab(prefab, project, scene)
-        self._set_header("prefab", "Prefab", prefab.name if prefab else "")
+        self._set_header("prefab", label('dyninsp.prefab'), prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_camera(self, scene, camera, project):
@@ -352,7 +353,7 @@ class DynamicInspector(QWidget):
         # Éditable seulement si la caméra existe RÉELLEMENT : l'état implicite
         # ("(default)", cf. camera_inspector.py) n'a pas de nom à changer —
         # renommer matérialiserait une caméra par un geste qui n'en a pas l'air.
-        self._set_header("camera", "Camera", camera.name if camera else "(default)",
+        self._set_header("camera", label('common.camera'), camera.name if camera else label('common.default_paren'),
                          editable=camera is not None)
         self._stack.setCurrentIndex(self._MODE_CAMERA)
 
@@ -363,7 +364,7 @@ class DynamicInspector(QWidget):
         path = _P(path)
         self._current_script_path = path
         self._script_insp.load(path)
-        self._set_header("script_asset", "Script", path.name)
+        self._set_header("script_asset", label('dyninsp.script'), path.name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT)
 
     def show_prefab_uses(self, prefab, project=None):
@@ -371,7 +372,7 @@ class DynamicInspector(QWidget):
         if not proj:
             return
         self._uses_insp.load(prefab, proj)
-        self._set_header("uses", "Instances", prefab.name if prefab else "")
+        self._set_header("uses", label('dyninsp.instances'), prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_PREFAB_USES)
 
     def show_script_uses(self, script_path: str, project=None):
@@ -380,7 +381,7 @@ class DynamicInspector(QWidget):
             return
         from pathlib import Path as _P
         self._script_uses_insp.load(script_path, proj)
-        self._set_header("script", "Script", _P(script_path).name)
+        self._set_header("script", label('dyninsp.script'), _P(script_path).name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT_USES)
 
     def _on_script_edit_requested(self, path: str):

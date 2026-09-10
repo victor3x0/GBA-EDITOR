@@ -145,7 +145,7 @@ class ProjectPathsMixin:
 
     @property
     def palettes_dir(self) -> Path:
-        """Catalogue de palettes unifié (illimité, partagé OBJ/BG) — project/palettes/*.json."""
+        """Catalogue de palettes unifié — sources ``.hex`` et sidecars JSON."""
         return self.project_dir / "palettes"
 
     @property

@@ -75,9 +75,52 @@ def test_set_language_is_global(demo):
     notices ET libellés d'un seul appel."""
     catalog.set_language("fr")
     assert demo.text("hi") == "Bonjour"
-    # Pas encore de side labels_fr.json → les libellés retombent sur la source EN.
-    assert label("common.close") == "Close"
+    assert label("common.close") == "Fermer"
     catalog.set_language("")
+
+
+def test_delivered_french_labels_and_fallback():
+    """Le premier side livré traduit ses clés et laisse le reste en source."""
+    catalog.set_language("fr")
+    assert label("common.close") == "Fermer"
+    # Ce libellé n'est pas encore dans labels_fr.json : le repli reste anglais.
+    assert label("actorinsp.active") == "Active on start"
+    catalog.set_language("")
+
+
+def test_french_settings_catalogue_is_complete():
+    """Le premier écran livré dans une langue ne mélange pas ses libellés."""
+    from ui.common.labels import LABELS_DIR
+    master = json.loads(
+        (LABELS_DIR / "labels.json").read_text(encoding="utf-8"))["labels"]
+    french = json.loads(
+        (LABELS_DIR / "labels_fr.json").read_text(encoding="utf-8"))["labels"]
+    settings_keys = {key for key in master if key.startswith("settings.")}
+    assert settings_keys <= set(french)
+
+
+def test_french_settings_tip_is_translated():
+    from ui.common import notice
+    catalog.set_language("fr")
+    assert notice.text("settings.tips").startswith("Les astuces expliquent")
+    catalog.set_language("")
+
+
+def test_french_home_catalogue_is_complete():
+    """L'accueil est le second écran livré sans mélange de langues."""
+    from ui.common.labels import LABELS_DIR
+    master = json.loads(
+        (LABELS_DIR / "labels.json").read_text(encoding="utf-8"))["labels"]
+    french = json.loads(
+        (LABELS_DIR / "labels_fr.json").read_text(encoding="utf-8"))["labels"]
+    home_keys = {key for key in master if key.startswith("home.")}
+    assert home_keys <= set(french)
+
+
+def test_available_languages_lists_delivered_sides():
+    codes = dict(catalog.available_languages())
+    assert codes[""] == "English (source)"
+    assert codes["fr"] == "Français"
 
 
 def test_labels_seed_reads_settings_keys():

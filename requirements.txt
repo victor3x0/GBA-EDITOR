@@ -5,8 +5,11 @@
 # multimethod pour luaparser, PyQt6-Qt6/PyQt6-sip pour PyQt6, qtpy pour
 # qtawesome). `python packaging/check_deps.py` vérifie que cette liste
 # couvre bien tous les imports du code — la CI le lance avant le build.
-PyQt6
-Pillow
-qtawesome
-numpy
-luaparser
+# Les bornes majeures empêchent qu'une mise à jour incompatible modifie une
+# release sans changement du dépôt. Les bornes basses correspondent à
+# l'environnement validé par la CI/release en septembre 2026.
+PyQt6>=6.11,<7
+Pillow>=12.3,<13
+qtawesome>=1.4,<2
+numpy>=2.5,<3
+luaparser>=4.1,<5

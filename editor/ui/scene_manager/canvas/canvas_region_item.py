@@ -13,6 +13,7 @@ vers la scène/vue (il dialogue avec sa scène via `self.scene()` + `hasattr`).
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 import copy
 
 from core.sprite_compose import compose_frame_image
@@ -186,7 +187,7 @@ class UIRegionItem(QGraphicsRectItem):
                 self._content_brush = None
         rm = int(getattr(scene, "render_mode", 0) or 0)
         is_obj_target = self._layout.resolved_target(region, rm) == "obj"
-        target = "sprite (OBJ)" if is_obj_target else "fond (BG)"
+        target = label('cvregion.sprite_obj') if is_obj_target else label('cvregion.background_bg')
         # Même échelle que les fonds et les acteurs (`hw_layer_z`) : une zone
         # OBJ (image, panneau à fond sprite) porte SA priorité (`.priority`,
         # 0-3, absente = 0 = devant) ; une zone BG vit sur le layer d'UI de la
@@ -224,9 +225,7 @@ class UIRegionItem(QGraphicsRectItem):
         if hasattr(region, "tile_rect"):
             _, _, tw, th = region.tile_rect()
             tiles = f"{tw}×{th} tiles · "
-        self.setToolTip(f"“{region.name}” — {self._layout.name}\n"
-                        f"{tiles}target {target}\n"
-                        f"Drag to move · handles to resize · Alt-drag to duplicate")
+        self.setToolTip(label('cvregion.region_tip', name=region.name, name_2=self._layout.name, tiles=tiles, target=target))
 
         # Étiquette : icône de type + le nom que cite le script, lisibles sans
         # passer par l'inspecteur.

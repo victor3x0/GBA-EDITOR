@@ -1,5 +1,6 @@
 """ui/sprite_editor/sprite_finder_panel.py — panneau gauche : liste des sprites + arbre d'animations."""
 from __future__ import annotations
+from ui.common.labels import label
 from typing import Any, Optional
 
 from PyQt6.QtWidgets import (
@@ -25,9 +26,9 @@ from core.command_dispatcher import get_dispatcher
 _PANEL_BG   = f"background:{C.BG_BASE};"
 
 _DIR_LABELS = {
-    0: "All Directions",
-    1: "North",      2: "North East", 3: "East",      4: "South East",
-    5: "South",      6: "South West", 7: "West",      8: "North West",
+    0: 'sprfind.all_directions',
+    1: 'sprfind.north',      2: 'sprfind.north_east', 3: 'sprfind.east',      4: 'sprfind.south_east',
+    5: 'sprfind.south',      6: 'sprfind.south_west', 7: 'sprfind.west',      8: 'sprfind.north_west',
 }
 
 _DIR_ICON_KEYS = {
@@ -43,9 +44,9 @@ _KEEP_SELECTION = object()
 
 
 def dir_label(sd: StateDirection) -> str:
-    base = _DIR_LABELS.get(sd.dir, str(sd.dir))
+    base = label(_DIR_LABELS[sd.dir]) if sd.dir in _DIR_LABELS else str(sd.dir)
     if sd.mirror_of is not None:
-        src = _DIR_LABELS.get(sd.mirror_of, str(sd.mirror_of))
+        src = label(_DIR_LABELS[sd.mirror_of]) if sd.mirror_of in _DIR_LABELS else str(sd.mirror_of)
         flips = ("H" if sd.flip_h else "") + ("V" if sd.flip_v else "")
         return f"{base}  ↔{src}{'['+flips+']' if flips else ''}"
     return base
@@ -83,7 +84,7 @@ class SpriteFinderPanel(QWidget):
 
         # ── Sprites : le composant partagé (il porte aussi le bandeau
         #    d'identité du panneau) ──────────────────────────────────
-        self._sprites = AssetFinder("Sprite finder", [SPRITES],
+        self._sprites = AssetFinder(label('sprfind.sprite_finder'), [SPRITES],
                                     min_width=180, max_width=420)
         self._sprites.selected.connect(lambda _kind, sp: self._on_sprite_chosen(sp))
         self._sprites.add_requested.connect(lambda _label: self._import_sprite())
@@ -93,7 +94,7 @@ class SpriteFinderPanel(QWidget):
         # ── Animations ────────────────────────────────────────────
         # PAS un asset finder : l'arbre montre la structure INTERNE du sprite
         # choisi (états × directions), pas des assets du projet.
-        sec_anim = FinderSection("Animation states")
+        sec_anim = FinderSection(label('sprfind.animation_states'))
         sec_anim.add_clicked.connect(self._on_add_state)
         self._sprites.add_section(sec_anim)
 
@@ -270,7 +271,7 @@ class SpriteFinderPanel(QWidget):
             return  # pas de menu sur une direction (gérée via le panneau DIRECTIONS)
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        delete_a = menu.addAction("Delete state")
+        delete_a = menu.addAction(label('sprfind.delete_state'))
         can_delete = bool(self._current_sprite) and len(self._current_sprite.states) > 1
         delete_a.setEnabled(can_delete)
         act = menu.exec(self._anim_tree.viewport().mapToGlobal(pos))
@@ -307,8 +308,8 @@ class SpriteFinderPanel(QWidget):
         if not self._current_sprite or len(self._current_sprite.states) <= 1:
             return
         if QMessageBox.question(
-            self, "Delete",
-            f"Delete state “{state.name}”?\n(Ctrl+Z to undo)",
+            self, label('common.delete'),
+            label('sprfind.delete_confirm', name=state.name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return

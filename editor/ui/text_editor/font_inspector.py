@@ -49,7 +49,7 @@ class FontInspector(QWidget):
 
     # (role, model field, label key, tooltip key).
     _KEY_ROLES = (
-        ("bg", "bg_color", "fontinsp.bg", "fontinsp.bg_tip"),
+        ("bg", "bg_color", "common.background", "fontinsp.bg_tip"),
         ("space", "space_color", "fontinsp.space", "fontinsp.space_tip"),
     )
 
@@ -57,9 +57,9 @@ class FontInspector(QWidget):
     # Diagnostic composé (source de chasse) — laissé littéral (fragments), cf.
     # politique de différé des blocs de stats interpolés.
     _ADV_ORIGIN = {
-        "fnt":     ".fnt descriptor",
-        "spacing": "declared by spacing",
-        "mono":    "mono",
+        "fnt":     'fontinsp.fnt_descriptor',
+        "spacing": 'fontinsp.declared_by_spacing',
+        "mono":    'fontinsp.mono',
     }
 
     def __init__(self, parent=None):
@@ -251,12 +251,9 @@ class FontInspector(QWidget):
             return
         # Le chiffre seul ne parle pas, la limite si : ces tuiles sont en
         # concurrence directe avec le décor.
-        warn = "  ⚠ exceeds a charblock" if f.exceeds_charblock() else ""
+        warn = label('fontinsp.exceeds_a_charblock') if f.exceeds_charblock() else ""
         self._info.setText(
-            f"{len(f.glyphs)} glyphs\n"
-            f"cell {f.cell_w}×{f.cell_h} px · line height {f.line_height}\n"
-            f"{f.tile_count()} tiles / {TILES_PER_CHARBLOCK} per charblock{warn}\n"
-            f"source: {f.source_format}"
+            label('fontinsp.stats', value=len(f.glyphs), cell_w=f.cell_w, cell_h=f.cell_h, line_height=f.line_height, value_2=f.tile_count(), TILES_PER_CHARBLOCK=TILES_PER_CHARBLOCK, warn=warn, source_format=f.source_format)
         )
         self._charset.setPlainText(f.charset)
 
@@ -276,18 +273,17 @@ class FontInspector(QWidget):
         self._char_edit.setEnabled(True)
         self._char_edit.setText(glyph.char)
         self._glyph_preview.setPixmap(self._crop(glyph))
-        extra = "  (ligature)" if len(glyph.char) > 1 else ""
+        extra = label('fontinsp.ligature') if len(glyph.char) > 1 else ""
         # D'OÙ vient la chasse, pas seulement sa valeur : « 5 px » ne dit pas si
         # c'est une décision de l'auteur ou le mono par défaut. La source est
         # nommée par l'émetteur, pas re-déduite ici.
         f = self._font
-        origin = self._ADV_ORIGIN[advance_source(f)] if f else "—"
+        origin = label(self._ADV_ORIGIN[advance_source(f)]) if f else "—"
         # Chasse EFFECTIVE, pas celle stockée : sans couleur d'espacement la
         # police est mono quoi que porte le champ (vieux sidecars).
         adv = glyph_advance_px(glyph, f) if f else glyph.advance
         self._glyph_info.setText(
-            f"rect {glyph.w}×{glyph.h} at ({glyph.x}, {glyph.y})\n"
-            f"advance: {adv} px — {origin}{extra}"
+            label('fontinsp.rect_w_h_at_x_y_advance_adv', w=glyph.w, h=glyph.h, x=glyph.x, y=glyph.y, adv=adv, origin=origin, extra=extra)
         )
         self._blocking = False
 
@@ -300,9 +296,7 @@ class FontInspector(QWidget):
         self._char_edit.setEnabled(False)
         tw, th = rect_tiles(rect.width(), rect.height())
         self._glyph_info.setText(
-            f"{count} cells selected\n"
-            f"merge → one {rect.width()}×{rect.height()} glyph "
-            f"({tw}×{th} tiles)"
+            label('fontinsp.merge_stats', count=count, value=rect.width(), value_2=rect.height(), tw=tw, th=th)
         )
 
     def _crop(self, glyph) -> QPixmap:

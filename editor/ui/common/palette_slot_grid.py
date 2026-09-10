@@ -19,6 +19,7 @@ recharge.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QWidget, QPushButton, QGridLayout
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
 
@@ -116,8 +117,7 @@ class PaletteSlotGridAsset(QWidget):
 
         if kind == "scene":
             btn.setIcon(_swatch_icon(entry.colors, self._ICON_SIZE))
-            btn.setToolTip(f"Slot {entry.slot} — {entry.name}\n"
-                           f"Click: replace · Right-click: remove")
+            btn.setToolTip(label('palslot.slot_tip', slot=entry.slot, name=entry.name))
             btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=C.BORDER_MID))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_scene(b, e.slot))
@@ -138,8 +138,7 @@ class PaletteSlotGridAsset(QWidget):
                                          override=True, marker_color=self._accent))
                 tgt = (getattr(entry, "ref_name", None)
                        or (target.name if target else "?"))
-                btn.setToolTip(f"{names} → {tgt} (override)\n"
-                               f"Click: change · Right-click: original palette")
+                btn.setToolTip(label('palslot.override_tip', names=names, tgt=tgt))
                 btn.setStyleSheet(self._style(bg=C.BG_INPUT, border=self._accent))
                 btn.customContextMenuRequested.connect(
                     lambda _p, e=entry: self.asset_restore.emit(e))
@@ -149,22 +148,21 @@ class PaletteSlotGridAsset(QWidget):
                 # Bloc compressé : palette d'asset fixe, non remappable.
                 btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
                 span = getattr(entry, "bank_span", 1)
-                span_txt = f" — bloc de {span} banques" if span > 1 else ""
-                btn.setToolTip(f"{names} — compressed background{span_txt}\n(non-editable palette)")
+                span_txt = label('palslot.bank_span', count=span) if span > 1 else ""
+                btn.setToolTip(label('palslot.compressed_tip', names=names, span_txt=span_txt))
                 btn.setStyleSheet(
                     f"QPushButton{{background:{C.BG_BASE};"
                     f"border:1px solid {C.BORDER_DARK};border-radius:4px;}}")
             else:  # own — palette propre grisée (overridable)
                 btn.setIcon(_swatch_icon(entry.own_colors, self._ICON_SIZE, greyed=True))
-                btn.setToolTip(f"{names} — own palette (non-editable)\n"
-                               f"Click: override with a scene palette")
+                btn.setToolTip(label('palslot.own_palette_tip', names=names))
                 btn.setStyleSheet(self._style(bg=C.BG_BASE, border=C.BORDER_MID, dashed=True))
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.clicked.connect(lambda _c, e=entry, b=btn: self._pick_override(b, e))
 
         elif kind == "plus":
             btn.setIcon(_plus_icon(self._ICON_SIZE, self._accent))
-            btn.setToolTip("Add a scene palette")
+            btn.setToolTip(label('palslot.add_a_scene_palette'))
             btn.setStyleSheet(
                 f"QPushButton{{background:#000000;"
                 f"border:1px dashed {self._accent};border-radius:4px;}}"
@@ -174,7 +172,7 @@ class PaletteSlotGridAsset(QWidget):
 
         else:  # empty — banque libre
             btn.setEnabled(False)
-            btn.setToolTip("Free bank")
+            btn.setToolTip(label('palslot.free_bank'))
             btn.setStyleSheet(self._style(bg="#000000", border=C.BORDER_DARK))
 
         return btn

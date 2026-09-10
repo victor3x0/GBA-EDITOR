@@ -14,6 +14,7 @@ Usage dans un éditeur de component (ou plugin) :
     btn = W.btn_danger("×")
 """
 from __future__ import annotations
+from ui.common.labels import label
 from typing import Callable, Any
 
 from PyQt6.QtWidgets import (
@@ -175,11 +176,13 @@ class _W:
             b.setToolTip(tooltip)
         return b
 
-    def btn_add(self, tooltip: str = "Add", icon: str | None = None) -> QToolButton:
+    def btn_add(self, tooltip: str = None, icon: str | None = None) -> QToolButton:
         """Bouton + sans bordure, survol accent — style project panel.
         `icon` : nom logique dans ui/common/icons.py (ex: "add_row") pour
         remplacer le "+" générique quand plusieurs boutons d'ajout se
         cotoient et doivent se distinguer par leur fonction."""
+        if tooltip is None:
+            tooltip = label('wdg.add')
         b = HoverIconButton(icon or "add", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
@@ -187,8 +190,10 @@ class _W:
         b.setToolTip(tooltip)
         return b
 
-    def btn_search(self, tooltip: str = "Search") -> QToolButton:
+    def btn_search(self, tooltip: str = None) -> QToolButton:
         """Bouton loupe sans bordure, survol accent — style project panel."""
+        if tooltip is None:
+            tooltip = label('wdg.search')
         b = HoverIconButton("search", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
@@ -196,11 +201,13 @@ class _W:
         b.setToolTip(tooltip)
         return b
 
-    def btn_reveal(self, tooltip: str = "Open in file manager") -> QToolButton:
+    def btn_reveal(self, tooltip: str = None) -> QToolButton:
         """Bouton dossier sans bordure — révèle le dossier RÉEL d'une famille
         de finder dans l'explorateur du système (cf. ui/common/reveal.py).
         Standardisé : le même bouton dans tous les finders, visible seulement
         pour les familles qui ont un dossier physique (`AssetKind.dir_of`)."""
+        if tooltip is None:
+            tooltip = label('wdg.open_in_file_manager')
         b = HoverIconButton("reveal_in_files", C.TEXT_DIM, C.ACCENT)
         b.setStyleSheet(BTN_ICON)
         b.setFixedSize(24, 24)
@@ -208,8 +215,10 @@ class _W:
         b.setToolTip(tooltip)
         return b
 
-    def search_box(self, placeholder: str = "Filter by name…") -> QLineEdit:
+    def search_box(self, placeholder: str = None) -> QLineEdit:
         """Champ de filtre par nom — apparaît sous un header au clic sur btn_search()."""
+        if placeholder is None:
+            placeholder = label('wdg.filter_by_name_2')
         e = QLineEdit()
         e.setPlaceholderText(placeholder)
         e.setFixedHeight(24)
@@ -432,7 +441,7 @@ class _W:
         field_syncers["id"] = lambda v, w=id_edit: (
             w.blockSignals(True), w.setText(str(v)), w.blockSignals(False))
 
-        active_cb = QCheckBox("Active"); active_cb.setFont(_FONT_UI_SM)
+        active_cb = QCheckBox(label('wdg.active')); active_cb.setFont(_FONT_UI_SM)
         active_cb.setChecked(comp.active)
         active_cb.toggled.connect(lambda v: set_comp_fn(comp, "active", v))
         field_syncers["active"] = lambda v, w=active_cb: (
@@ -514,7 +523,7 @@ class NotesEdit(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._baseline = ""
-        self.setPlaceholderText("Notes…")
+        self.setPlaceholderText(label('wdg.notes'))
         self.setFont(QFont(T.UI, T.SM))
         self.setFixedHeight(60)
         # Hauteur fixe : politique verticale Fixed, sinon (Expanding par défaut
@@ -662,6 +671,9 @@ class ScriptSlot(QWidget):
 
 # ── ScriptPickerPopup ─────────────────────────────────────────────────────────
 
+_DEFAULT_NEW_LABEL = object()
+
+
 class ScriptPickerPopup(QFrame):
     """
     Dropdown flottant pour choisir ou créer un script.
@@ -675,7 +687,7 @@ class ScriptPickerPopup(QFrame):
     new_requested = pyqtSignal()
 
     def __init__(self, scripts: list[tuple], accent: str, parent=None,
-                 new_label: str | None = "＋  New script"):
+                 new_label: str | None | object = _DEFAULT_NEW_LABEL):
         """
         scripts   : liste de (nom_affichage, valeur) ou (nom_affichage, valeur, QIcon)
                     — le 3e élément (icône par ligne) est optionnel, pour les
@@ -688,6 +700,8 @@ class ScriptPickerPopup(QFrame):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         # Normalise en (display, valeur, icone|None) — accepte les anciens
         # appels à 2-tuples sans modification.
+        if new_label is _DEFAULT_NEW_LABEL:
+            new_label = label('wdg.new_script')
         self._scripts = [(e[0], e[1], e[2] if len(e) > 2 else None) for e in scripts]
         self._accent  = accent
 
@@ -704,7 +718,7 @@ class ScriptPickerPopup(QFrame):
 
         # ── Barre de recherche ─────────────────────────────────────
         self._search = QLineEdit()
-        self._search.setPlaceholderText("Filter…")
+        self._search.setPlaceholderText(label('wdg.filter'))
         self._search.setFont(QFont(T.UI, T.SM))
         self._search.setStyleSheet(
             f"QLineEdit{{background:{C.BG_DEEP};color:{C.TEXT_NORM};border:1px solid {C.BORDER};"
@@ -763,7 +777,7 @@ class ScriptPickerPopup(QFrame):
         matches = [(d, r, i) for d, r, i in self._scripts if query in d.lower()]
 
         if not matches:
-            lbl = QLabel("No results")
+            lbl = QLabel(label('wdg.no_results'))
             lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED};padding:4px;")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -900,16 +914,16 @@ class FinderSection(QFrame):
         self._color = color
         self._title = title
 
-        self._btn_add = W.btn_add("Add item")
+        self._btn_add = W.btn_add(label('wdg.add_item'))
         self._btn_add.clicked.connect(self.add_clicked)
 
-        self._btn_search = W.btn_search("Filter by name")
+        self._btn_search = W.btn_search(label('wdg.filter_by_name'))
         self._btn_search.setCheckable(True)
         self._btn_search.toggled.connect(self._on_search_toggled)
 
         # Masqué par défaut : seules les familles avec un dossier physique
         # (`AssetKind.dir_of`) l'affichent — cf. AssetFinder._reveal.
-        self._btn_reveal = W.btn_reveal("Open in file manager")
+        self._btn_reveal = W.btn_reveal(label('wdg.open_in_file_manager'))
         self._btn_reveal.setVisible(False)
         self._btn_reveal.clicked.connect(self.reveal_clicked)
 
@@ -920,7 +934,7 @@ class FinderSection(QFrame):
         root.addWidget(hdr)
 
         # Champ de filtre — masqué par défaut, révélé par btn_search
-        self._search_box = W.search_box(f"Filter {title.lower()}…")
+        self._search_box = W.search_box(label('wdg.filter_value', value=title.lower()))
         self._search_box.textChanged.connect(self._apply_filter)
         _orig_keypress = self._search_box.keyPressEvent
         def _search_key_press(e, _orig=_orig_keypress):

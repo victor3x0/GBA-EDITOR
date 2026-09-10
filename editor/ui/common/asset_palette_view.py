@@ -14,6 +14,7 @@ Chaque entrée porte son `idx` = index réel dans `ba.palettes` (les tuiles y
 réfèrent), pour que le consommateur mappe les signaux vers le modèle.
 """
 from __future__ import annotations
+from ui.common.labels import label
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -72,7 +73,7 @@ def asset_palette_view(asset, read_only: bool = False) -> AssetPaletteGridView:
             scene_entries=[],
             asset_entries=[
                 AssetEntryView(idx=i, own_colors=list(cols),
-                               instances=[_Inst(f"Palette {i}")],
+                               instances=[_Inst(label('common.palette_i', i=i))],
                                overridable=False)
                 for i, cols in enumerate(palettes)
             ],
@@ -90,17 +91,17 @@ def asset_palette_view(asset, read_only: bool = False) -> AssetPaletteGridView:
                 src = source_palettes[idx] if idx < len(source_palettes) else cols
                 asset_entries.append(AssetEntryView(
                     idx=idx, own_colors=list(src),
-                    instances=[_Inst(f"Palette {idx} (PNG)")],
+                    instances=[_Inst(label('asspalview.palette_idx_png', idx=idx))],
                     state="override", ref_name=overrides[idx], ref_colors=list(cols),
                 ))
             else:
                 asset_entries.append(AssetEntryView(
                     idx=idx, own_colors=list(cols),
-                    instances=[_Inst(f"Palette {idx} (PNG)")],
+                    instances=[_Inst(label('asspalview.palette_idx_png', idx=idx))],
                 ))
         else:
             scene_entries.append(SceneEntryView(
-                slot=idx, name=f"Palette {idx}", colors=list(cols)))
+                slot=idx, name=label('asspalview.palette_idx', idx=idx), colors=list(cols)))
     return AssetPaletteGridView(scene_entries, asset_entries)
 
 

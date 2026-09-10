@@ -3,6 +3,7 @@ GBA Editor — point d'entrée
 Usage : python main.py
 """
 
+from ui.common.labels import label
 import sys
 from pathlib import Path
 
@@ -20,8 +21,10 @@ from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
 from ui.common.theme import GLOBAL_QSS, C, install_app_fonts
 from ui.common import icons
+from ui.common import catalog
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
 from core.project_paths import PROJECT_EXT, find_manifest, ProjectManifestError
+from core.interface_preferences import interface_language
 
 
 def dark_palette() -> QPalette:
@@ -49,6 +52,12 @@ def dark_palette() -> QPalette:
 
 
 if __name__ == "__main__":
+    # Avant de construire le moindre widget : les écrans lisent `label()` dans
+    # leur constructeur, donc les reconstruire après coup serait une seconde
+    # mécanique de traduction. Le réglage modifié en session prend effet au
+    # redémarrage, comme le dit le panneau Interface.
+    catalog.set_language(interface_language())
+
     # Charger les plugins avant de créer la fenêtre (enrichissent le registre)
     from plugins import load_all_plugins
     loaded, plugin_errors = load_all_plugins()
@@ -89,7 +98,7 @@ if __name__ == "__main__":
         try:
             find_manifest(project_path)
         except ProjectManifestError as exc:
-            QMessageBox.critical(None, "Open project", str(exc))
+            QMessageBox.critical(None, label('common.open_project'), str(exc))
             project_path = None
 
     # Si aucun projet fourni en argument, afficher l'écran d'accueil
@@ -123,9 +132,9 @@ if __name__ == "__main__":
                 + list(win.screen_errors))
     if problems:
         box = QMessageBox(win)
-        box.setWindowTitle("Extension Errors")
+        box.setWindowTitle(label('app.extension_errors'))
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"{len(problems)} problem(s) found while loading extensions:")
+        box.setText(label('app.extension_problems', value=len(problems)))
         box.setDetailedText("\n".join(f"• {p}" for p in problems))
         box.exec()
     sys.exit(app.exec())

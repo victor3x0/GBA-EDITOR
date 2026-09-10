@@ -43,6 +43,7 @@ CODEGEN :
 
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QSpinBox, QToolButton, QLabel, QMenu,
 )
@@ -203,12 +204,12 @@ class ValueField(QWidget):
     def _rebuild_menu(self):
         m = self._menu
         m.clear()
-        a_px = m.addAction("Pixels")
+        a_px = m.addAction(label('valfield.pixels'))
         a_px.setCheckable(True)
         a_px.setChecked(self._fv.mode == "px")
         a_px.triggered.connect(self._set_mode_px)
         if self._allow_tile:
-            a_t = m.addAction("Tiles")
+            a_t = m.addAction(label('valfield.tiles'))
             a_t.setCheckable(True)
             a_t.setChecked(self._fv.is_tile)
             a_t.triggered.connect(self._set_mode_tile)
@@ -217,8 +218,8 @@ class ValueField(QWidget):
         consts = [(n, i) for s, n, i in self._variables if s == "const"]
         if globs or consts:
             m.addSeparator()
-        for title, src, names in (("Globals", "global", globs),
-                                  ("Constants", "const", consts)):
+        for title, src, names in ((label('valfield.globals'), "global", globs),
+                                  (label('valfield.constants'), "const", consts)):
             if not names:
                 continue
             hdr = m.addAction(title)

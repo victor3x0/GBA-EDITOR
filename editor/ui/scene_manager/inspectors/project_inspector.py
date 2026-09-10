@@ -17,6 +17,7 @@ collisions) vit dans la fenêtre Game → Project Settings
 réglages du logiciel (`SettingsDialog`) : ce qu'on règle une fois plutôt que
 ce qu'on garde sous les yeux en travaillant (2026-08-25)."""
 from __future__ import annotations
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -49,10 +50,13 @@ _COUNTERS: tuple[tuple[str, str, str, str], ...] = (
 # SceneInspector reprend donc CES libellés et y ajoute son « From project »,
 # pour que le même fondu ne soit pas nommé de deux façons selon le panneau.
 TRANSITION_LABELS: tuple[tuple[str, str], ...] = (
-    ("none",       "Cut (no transition)"),
-    ("fade_black", "Fade to black"),
-    ("fade_white", "Fade to white"),
+    ("none",       'projinsp.cut_no_transition'),
+    ("fade_black", 'projinsp.fade_to_black'),
+    ("fade_white", 'projinsp.fade_to_white'),
 )
+
+
+_COUNTER_KEYS = {'scenes': 'projinsp.count_scenes', 'prefabs': 'projinsp.count_prefabs', 'sprites': 'projinsp.count_sprites', 'backgrounds': 'projinsp.count_backgrounds', 'palettes': 'projinsp.count_palettes', 'fonts': 'projinsp.count_fonts'}
 
 
 class ProjectInspector(QWidget):
@@ -81,37 +85,35 @@ class ProjectInspector(QWidget):
         scroll.setWidget(inner)
 
         # ── Carte Identité ────────────────────────────────────────
-        id_card = CollapsibleCard("Identity")
+        id_card = CollapsibleCard(label('projinsp.identity'))
         id_inner = id_card.body_layout
 
         self._ed_author = QLineEdit()
-        self._ed_author.setPlaceholderText("Anonymous")
+        self._ed_author.setPlaceholderText(label('projinsp.anonymous'))
         self._ed_author.editingFinished.connect(
             lambda: self._set_setting("author", self._ed_author.text().strip()))
-        self._row("Author", self._ed_author, id_inner)
+        self._row(label('projinsp.author'), self._ed_author, id_inner)
 
         self._ed_version = QLineEdit()
         self._ed_version.setPlaceholderText("0.1")
         self._ed_version.setMaximumWidth(110)
         self._ed_version.editingFinished.connect(
             lambda: self._set_setting("version", self._ed_version.text().strip()))
-        self._row("Version", self._ed_version, id_inner, stretch=False)
+        self._row(label('projinsp.version'), self._ed_version, id_inner, stretch=False)
 
         self._combo_start = QComboBox()
         self._combo_start.setFont(QFont(T.UI, T.MD))
         self._combo_start.setStyleSheet(QSS.combobox)
         self._combo_start.setToolTip(
-            "<b>Start scene</b><br><br>"
-            "First scene loaded when the ROM boots.<br>"
-            "Independent of the scene open in the editor."
+            label('projinsp.start_scene_tip')
         )
         self._combo_start.currentIndexChanged.connect(self._on_start_scene_changed)
-        self._row("Start", self._combo_start, id_inner)
+        self._row(label('projinsp.start'), self._combo_start, id_inner)
 
         layout.addWidget(id_card)
 
         # ── Carte Contenu ─────────────────────────────────────────
-        content_card = CollapsibleCard("Content")
+        content_card = CollapsibleCard(label('projinsp.content'))
         content_inner = content_card.body_layout
 
         grid = QGridLayout()
@@ -130,8 +132,7 @@ class ProjectInspector(QWidget):
         layout.addWidget(content_card)
 
         self._hint = QLabel(
-            "Select a scene or an actor in the left panel "
-            "to show its properties."
+            label('projinsp.empty')
         )
         self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:2px 4px;")
@@ -206,7 +207,7 @@ class ProjectInspector(QWidget):
             if start and start not in names:
                 # Scène de démarrage disparue (supprimée hors éditeur) : on la
                 # garde visible plutôt que de la réécrire silencieusement.
-                self._combo_start.addItem(f"{start}  (not found)", start)
+                self._combo_start.addItem(label('projinsp.start_not_found', start=start), start)
                 names = [start] + names
             for name in names:
                 if self._combo_start.findData(name) < 0:
@@ -220,7 +221,7 @@ class ProjectInspector(QWidget):
         p = self._project
         for attr, _icon, sing, plur in _COUNTERS:
             n = len(getattr(p, attr)) if p else 0
-            self._count_labels[attr].setText(f"{n} {sing if n <= 1 else plur}")
+            self._count_labels[attr].setText(label(_COUNTER_KEYS[attr], n=n))
 
     # ── Mutations ─────────────────────────────────────────────────
 

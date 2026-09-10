@@ -17,6 +17,7 @@ du code, sans guillemets.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter
@@ -49,7 +50,7 @@ class DataEditorScreen(QWidget):
         split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)
 
-        self._finder    = AssetFinder("Data finder", [DATA_TABLES],
+        self._finder    = AssetFinder(label('datascr.data_finder'), [DATA_TABLES],
                                       min_width=200, max_width=360)
         self._grid      = DataGridPanel()
         self._inspector = DataInspectorPanel()

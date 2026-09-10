@@ -71,7 +71,7 @@ FLAG_MISSING = "missing"
 
 # Catégorie des textes rangés à la racine. Entre parenthèses : ce n'est pas un
 # libellé que quelqu'un a écrit, c'est l'absence de libellé.
-NO_CATEGORY = "(unfiled)"
+NO_CATEGORY = label('txttbl.unfiled')
 
 
 class _CategoryDelegate(QStyledItemDelegate):
@@ -209,7 +209,7 @@ class TextTable(QWidget):
     # ── Barres ────────────────────────────────────────────────────
 
     def _build_bar(self) -> QFrame:
-        hdr = W.finder_bar(label("txttbl.texts"))
+        hdr = W.finder_bar(label("common.texts"))
         hl = hdr.layout()
         self._count = QLabel("")
         self._count.setFont(QFont(T.MONO, T.XS))
@@ -442,7 +442,7 @@ class TextTable(QWidget):
         content = (self._project.text_content(t, self._active_lang)
                   if self._project else t.content)
         display = resolve(parse(content), self._values).replace("\n", " ⏎ ")
-        row.setText(COL_CONTENT, display or "(empty)")
+        row.setText(COL_CONTENT, display or label('txttbl.empty_cell'))
         row.setForeground(COL_CONTENT,
                           QColor(C.TEXT_HI if display else C.ACCENT_YLW))
         if not display:
@@ -491,7 +491,7 @@ class TextTable(QWidget):
         if row is None:
             return
         self._blocking = True
-        row.setText(COL_CONTENT, display or "(empty)")
+        row.setText(COL_CONTENT, display or label('txttbl.empty_cell'))
         row.setForeground(COL_CONTENT,
                           QColor(C.TEXT_HI if display else C.ACCENT_YLW))
         self._blocking = False

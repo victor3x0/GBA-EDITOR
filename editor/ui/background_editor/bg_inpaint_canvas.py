@@ -25,6 +25,7 @@ Composants :
 - BgInpaintCanvas     : wrapper vue + toolbar.
 """
 from __future__ import annotations
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -910,7 +911,7 @@ class BgInpaintView(QGraphicsView):
             return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
-        act_del = menu.addAction("Remove this animation")
+        act_del = menu.addAction(label('bginp.remove_this_animation'))
         if menu.exec(e.globalPos()) == act_del:
             self.placement_deleted.emit(pl)
 
@@ -972,10 +973,10 @@ class BgInpaintToolbar(QFrame):
     tool_changed = pyqtSignal(str)
 
     _TOOLS = [
-        ("brush",  "tool_inpaint_brush", "Brush — repaint the palette (8×8)"),
-        ("fill",   "tool_fill",          "Paint bucket — fill contiguous area"),
-        ("rect",   "tool_inpaint_rect",  "Rectangle — repaint an area"),
-        ("eraser", "tool_erase",         "Eraser — restore the original palette"),
+        ("brush",  "tool_inpaint_brush", label('bginp.brush_tip')),
+        ("fill",   "tool_fill",          label('bginp.fill_tip')),
+        ("rect",   "tool_inpaint_rect",  label('bginp.rectangle_repaint_an_area')),
+        ("eraser", "tool_erase",         label('bginp.eraser_tip')),
     ]
 
     def __init__(self, parent=None):
@@ -1083,17 +1084,17 @@ class BgInpaintCanvas(QWidget):
         self._tick = 0
 
         # Barre d'état au-dessus du canvas — même composant que le Scene Manager.
-        self._bar = CanvasTopBar("Fit background to view")
+        self._bar = CanvasTopBar(label('bginp.fit_background_to_view'))
         self._bar.zoom_step_asked.connect(self._view.zoom_step)
         self._bar.fit_asked.connect(self._view.fit)
         self._chk_grid = self._bar.add_toggle(
-            "view_grid", "Grille 8 px (tuile GBA)", self._view.set_grid_visible)
+            "view_grid", label('bginp.8_px_grid_gba_tile'), self._view.set_grid_visible)
         self._chk_grid.setChecked(True)
         # Éditer l'image dans un logiciel externe (cf. external_editor) : ce
         # canvas peint des PALETTES, pas des pixels — pour le dessin, on
         # délègue plutôt que d'inventer un éditeur d'image dans Qt.
         self._btn_edit = self._bar.add_action(
-            "edit_external", "Edit image…", self._on_edit_image)
+            "edit_external", label('bginp.edit_image'), self._on_edit_image)
         self._btn_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._btn_edit.customContextMenuRequested.connect(self._on_edit_menu)
         self._view.zoom_changed.connect(self._bar.set_zoom)
@@ -1108,7 +1109,7 @@ class BgInpaintCanvas(QWidget):
 
         # Bandeau flottant de sélection de la palette de peinture (bas-centre,
         # même widget que Scene Manager/Sprite Editor — cf. palette_bank_strip).
-        self._paint_strip = PaletteBankStrip("Aucune palette", self)
+        self._paint_strip = PaletteBankStrip(label('common.no_palette'), self)
         self._paint_strip.selected.connect(self.set_active_palette)
         self._paint_strip.setVisible(False)
         self._paint_strip.raise_()
@@ -1120,7 +1121,7 @@ class BgInpaintCanvas(QWidget):
         self._toolbar.raise_()
 
         # Overlay « Compression… » (compression hors-thread — voir screen).
-        self._busy = QLabel("Compressing…", self)
+        self._busy = QLabel(label('bginp.compressing'), self)
         self._busy.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._busy.setStyleSheet(
             f"background:rgba(0,0,0,160); color:#eeeeee; font-family:{T.UI_STACK};"
@@ -1185,7 +1186,7 @@ class BgInpaintCanvas(QWidget):
         self._warn_ov.move(max(m, self.width() - self._warn_ov.width() - m), top)
         self._info_ov.raise_(); self._warn_ov.raise_()
 
-    def set_busy(self, on: bool, text: str = "Compressing…"):
+    def set_busy(self, on: bool, text: str = label('bginp.compressing')):
         self._busy.setText(text)
         self._busy.setVisible(on)
         if on:
@@ -1218,8 +1219,8 @@ class BgInpaintCanvas(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         cur = external_editor.get_configured_editor()
-        act_choose = menu.addAction("Choose editor…")
-        act_default = menu.addAction("Use system default")
+        act_choose = menu.addAction(label('common.choose_editor'))
+        act_default = menu.addAction(label('common.use_default'))
         act_default.setEnabled(bool(cur))
         chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
         if chosen == act_choose:
@@ -1240,7 +1241,7 @@ class BgInpaintCanvas(QWidget):
 
     @staticmethod
     def _palette_entries(palettes: list) -> list:
-        return [(i, f"Palette {i}", cols) for i, cols in enumerate(palettes)]
+        return [(i, label('common.palette_i', i=i), cols) for i, cols in enumerate(palettes)]
 
     # ── Superpositions par type ──────────────────────────────────
 

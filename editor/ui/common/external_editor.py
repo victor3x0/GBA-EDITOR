@@ -17,6 +17,7 @@ Le fichier réédité est repris par `project_watcher` (déjà en place pour tou
 `assets/`) : cette fonction n'a qu'à ouvrir, jamais à ré-importer.
 """
 from __future__ import annotations
+from ui.common.labels import label
 import subprocess
 from pathlib import Path
 
@@ -47,7 +48,7 @@ def set_configured_editor(path: str, kind: str = KIND_IMAGE) -> None:
 def choose_editor(parent: QWidget | None, kind: str = KIND_IMAGE) -> None:
     """Fait choisir l'exécutable à l'utilisateur (dialogue natif du système,
     pas un formulaire maison) et l'enregistre."""
-    title = "Choose an image editor" if kind == KIND_IMAGE else "Choose an audio editor"
+    title = label('extedit.choose_an_image_editor') if kind == KIND_IMAGE else label('extedit.choose_an_audio_editor')
     path, _ = QFileDialog.getOpenFileName(parent, title)
     if path:
         set_configured_editor(path, kind)

@@ -33,6 +33,7 @@ ProjectInspector, aucun panneau ici ne gère l'absence de projet.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QListWidget, QListWidgetItem, QStackedWidget, QScrollArea,
@@ -97,7 +98,7 @@ class BuildPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Build"))
+        lay.addWidget(_category_title(label('projset.build')))
 
         # ── Emplacements de sauvegarde ────────────────────────────
         self._spin_slots = QSpinBox()
@@ -106,15 +107,11 @@ class BuildPanel(QWidget):
         self._spin_slots.setFont(QFont(T.MONO, T.MD))
         self._spin_slots.setStyleSheet(QSS.spinbox)
         self._spin_slots.setToolTip(
-            "<b>Save slots</b><br><br>"
-            "How many separate saves the game can hold in SRAM.<br>"
-            "Scripts address them by number: <tt>save.write(0)</tt>.<br><br>"
-            "Only the global variables marked <i>persist</i> are stored.<br>"
-            "A project with none of them writes no save data at all."
+            label('projset.save_slots_tip')
         )
         self._spin_slots.valueChanged.connect(
             lambda v: self._set_setting("save_slots", int(v)))
-        _row("Save slots", self._spin_slots, lay, stretch=False)
+        _row(label('projset.save_slots'), self._spin_slots, lay, stretch=False)
 
         # ── Cartouche visée ───────────────────────────────────────
         from codegen.rom_report import CARTRIDGE_SIZES_MIB
@@ -124,32 +121,21 @@ class BuildPanel(QWidget):
         for mib in CARTRIDGE_SIZES_MIB:
             self._combo_cart.addItem(f"{mib} MiB", mib)
         self._combo_cart.setToolTip(
-            "<b>Cartridge size</b><br><br>"
-            "The capacity the build report compares the ROM against.<br>"
-            "Going over it is reported as an error — the ROM still exists,<br>"
-            "it simply does not fit on that cartridge.<br><br>"
-            "These are the mask-ROM sizes actually manufactured for the GBA."
+            label('projset.cartridge_tip')
         )
         self._combo_cart.currentIndexChanged.connect(
             lambda i: self._set_setting("cartridge_mib", int(self._combo_cart.itemData(i) or 4)))
-        _row("Cartridge", self._combo_cart, lay, stretch=False)
+        _row(label('projset.cartridge'), self._combo_cart, lay, stretch=False)
 
         # ── Build debug ─────────────────────────────────────────────
-        self._chk_debug = QCheckBox("Debug build")
+        self._chk_debug = QCheckBox(label('projset.debug_build'))
         self._chk_debug.setFont(QFont(T.UI, T.MD))
         self._chk_debug.setToolTip(
-            "<b>Debug build</b><br><br>"
-            "Enables <tt>debug.*</tt> in scripts: <tt>debug.log(...)</tt> writes "
-            "to the mGBA log console,<br>and the engine measures frame time, OAM "
-            "usage, sound channels and DMA<br>load once per frame, also logged "
-            "there.<br><br>"
-            "Unchecked (Release), every <tt>debug.*</tt> call and the "
-            "measurement it costs<br>are removed at compile time — not just "
-            "silenced at runtime."
+            label('projset.debug_tip')
         )
         self._chk_debug.toggled.connect(
             lambda v: self._set_setting("debug_build", bool(v)))
-        _row("Build", self._chk_debug, lay, stretch=False)
+        _row(label('projset.build'), self._chk_debug, lay, stretch=False)
 
         lay.addStretch()
         self._refresh_fields()
@@ -204,7 +190,7 @@ class VisualPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Visual"))
+        lay.addWidget(_category_title(label('projset.visual')))
 
         # ── Backdrop (défaut projet) ──────────────────────────────
         # Couleur de PAL_BG_RAM[0] : ce que le hardware affiche là où aucun
@@ -218,11 +204,7 @@ class VisualPanel(QWidget):
         self._btn_backdrop.setFixedSize(40, 22)
         self._btn_backdrop.setCursor(Qt.CursorShape.PointingHandCursor)
         self._btn_backdrop.setToolTip(
-            "<b>Project backdrop color</b><br><br>"
-            "Index 0 of the BG palette — shown wherever no layer or<br>"
-            "sprite draws, including through a window that masks everything.<br><br>"
-            "Default inherited by every scene that doesn't set its own.<br>"
-            "Quantized to BGR555 (5 bits per channel) like on hardware."
+            label('projset.backdrop_tip')
         )
         self._btn_backdrop.clicked.connect(self._pick_backdrop)
         self._lbl_backdrop = QLabel()
@@ -231,7 +213,7 @@ class VisualPanel(QWidget):
         bd_row.addWidget(self._btn_backdrop)
         bd_row.addWidget(self._lbl_backdrop)
         bd_row.addStretch(1)
-        _row("Backdrop", bd_box, lay)
+        _row(label('projset.backdrop'), bd_box, lay)
 
         # ── Transition de scène (défaut projet) ───────────────────
         # Le fondu joué à chaque changement de scène. Réglé une fois ici pour
@@ -243,16 +225,10 @@ class VisualPanel(QWidget):
         self._combo_trans = QComboBox()
         self._combo_trans.setFont(QFont(T.UI, T.MD))
         self._combo_trans.setStyleSheet(QSS.combobox)
-        for kind, label in TRANSITION_LABELS:
-            self._combo_trans.addItem(label, kind)
+        for kind, lbl_key in TRANSITION_LABELS:
+            self._combo_trans.addItem(label(lbl_key), kind)
         self._combo_trans.setToolTip(
-            "<b>Scene transition</b><br><br>"
-            "Fade played when the game leaves a scene and when it opens one.<br>"
-            "Each scene fades out with its own setting and fades in with the<br>"
-            "one of the scene being opened — including the very first scene.<br><br>"
-            "While a transition plays, the outgoing scene is frozen and the<br>"
-            "scene's own color blending is suspended: the hardware has a single<br>"
-            "blend mode, so there is no fade on top of a translucency."
+            label('projset.transition_tip')
         )
         self._combo_trans.currentIndexChanged.connect(
             lambda i: self._set_setting("transition_kind",
@@ -264,12 +240,12 @@ class VisualPanel(QWidget):
         self._spin_trans.setFont(QFont(T.MONO, T.MD))
         self._spin_trans.setStyleSheet(QSS.spinbox)
         self._spin_trans.setToolTip(
-            "Frames per half — 16 frames is a bit over a quarter of a second.")
+            label('projset.frames_tip'))
         self._spin_trans.valueChanged.connect(
             lambda v: self._set_setting("transition_frames", int(v)))
         trans_row.addWidget(self._combo_trans, 1)
         trans_row.addWidget(self._spin_trans)
-        _row("Transition", trans_box, lay)
+        _row(label('projset.transition'), trans_box, lay)
 
         lay.addStretch()
         self._refresh_fields()
@@ -327,7 +303,7 @@ class VisualPanel(QWidget):
         la couleur 8 bits/canal choisie dans le dialogue."""
         r, g, b = bgr555_to_rgb888(self._project.settings.backdrop_color)
         col = QColorDialog.getColor(
-            QColor(r, g, b), self, "Couleur de backdrop du projet",
+            QColor(r, g, b), self, label('projset.project_backdrop_color'),
             QColorDialog.ColorDialogOption.DontUseNativeDialog,
         )
         if not col.isValid():
@@ -353,7 +329,7 @@ class SoundPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Sound"))
+        lay.addWidget(_category_title(label('projset.sound')))
 
         # ── Taux d'échantillonnage des effets (défaut projet) ──────
         # « Source » ne ré-échantillonne rien : c'est le défaut, parce que
@@ -362,22 +338,16 @@ class SoundPanel(QWidget):
         self._combo_rate = QComboBox()
         self._combo_rate.setFont(QFont(T.UI, T.MD))
         self._combo_rate.setStyleSheet(QSS.combobox)
-        for value, label in ((0, "Source (no resampling)"), (8000, "8 000 Hz"),
-                             (11025, "11 025 Hz"), (16000, "16 000 Hz"),
-                             (22050, "22 050 Hz"), (32000, "32 000 Hz")):
-            self._combo_rate.addItem(label, value)
+        for value, disp in ((0, label('projset.source_no_resampling')), (8000, "8 000 Hz"),
+                            (11025, "11 025 Hz"), (16000, "16 000 Hz"),
+                            (22050, "22 050 Hz"), (32000, "32 000 Hz")):
+            self._combo_rate.addItem(disp, value)
         self._combo_rate.setToolTip(
-            "<b>Default sample rate for sound effects</b><br><br>"
-            "mmutil converts effects to 8-bit mono but <b>keeps their sample "
-            "rate</b>,<br>so a 44.1 kHz effect costs about three times what it "
-            "would at 16 kHz<br>— for detail the Maxmod mixer does not "
-            "reproduce.<br><br>"
-            "Resampling happens at build time. The file in <tt>assets/</tt> is "
-            "never<br>rewritten, so raising the rate again loses nothing."
+            label('projset.rate_tip')
         )
         self._combo_rate.currentIndexChanged.connect(
             lambda i: self._set_setting("sfx_sample_rate", int(self._combo_rate.itemData(i) or 0)))
-        _row("SFX rate", self._combo_rate, lay, stretch=False)
+        _row(label('projset.sfx_rate'), self._combo_rate, lay, stretch=False)
 
         # ── Canaux logiciels ──────────────────────────────────────
         # Musique et effets se les partagent. Le coût est exact et vient du
@@ -390,22 +360,11 @@ class SoundPanel(QWidget):
         self._spin_channels.setFont(QFont(T.MONO, T.MD))
         self._spin_channels.setStyleSheet(QSS.spinbox)
         self._spin_channels.setToolTip(
-            "<b>Sound channels</b><br><br>"
-            "Software mixing channels, shared by music and sound effects.<br>"
-            "A module needs one per voice; every effect playing takes one more."
-            "<br><br>"
-            f"Each channel costs {sound_channels_bytes(1) - sound_channels_bytes(0)}"
-            f" bytes of heap, plus a fixed {sound_channels_bytes(0)}-byte mixing "
-            f"buffer.<br>"
-            f"Eight channels — the default — cost {sound_channels_bytes(8)} bytes."
-            "<br><br>"
-            f"Unrelated to sound effect <i>references</i>: Maxmod tracks "
-            f"{SOUND_HANDLE_SLOTS} of those<br>whatever this is set to. An effect "
-            "past that limit still plays,<br>it simply has no reference."
+            label('projset.channels_tip', value=sound_channels_bytes(1) - sound_channels_bytes(0), value_2=sound_channels_bytes(0), value_3=sound_channels_bytes(8), SOUND_HANDLE_SLOTS=SOUND_HANDLE_SLOTS)
         )
         self._spin_channels.valueChanged.connect(
             lambda v: self._set_setting("sound_channels", int(v)))
-        _row("Sound channels", self._spin_channels, lay, stretch=False)
+        _row(label('projset.sound_channels'), self._spin_channels, lay, stretch=False)
 
         lay.addStretch()
         self._refresh_fields()
@@ -453,7 +412,7 @@ class InputsPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Input"))
+        lay.addWidget(_category_title(label('projset.input')))
 
         self._card = InputsCard()
         self._card.input_added.connect(self._add_input)
@@ -507,7 +466,7 @@ class LanguagesPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Languages"))
+        lay.addWidget(_category_title(label('projset.languages')))
 
         # ── Police de repli (« Default Font ») ────────────────────
         # Comble les trous de COUVERTURE : un caractère absent de la police
@@ -519,15 +478,9 @@ class LanguagesPanel(QWidget):
         self._combo_fallback.setFont(QFont(T.UI, T.MD))
         self._combo_fallback.setStyleSheet(QSS.combobox)
         self._combo_fallback.setToolTip(
-            "<b>Default font</b><br><br>"
-            "Fills coverage holes: a character the active font does not carry<br>"
-            "(a Latin word left untranslated under a Japanese font, say), or any<br>"
-            "glyph missing from the scene's font.<br><br>"
-            "It may be imperfect — a character missing from BOTH the active font<br>"
-            "and this one is still reported, as usual. «(none)» keeps the old<br>"
-            "behavior: a missing glyph is simply skipped, drawing nothing.")
+            label('projset.default_font_tip'))
         self._combo_fallback.currentIndexChanged.connect(self._on_fallback_changed)
-        _row("Default font", self._combo_fallback, lay)
+        _row(label('projset.default_font'), self._combo_fallback, lay)
 
         self._card = LanguagesCard()
         self._card.set_expanded(True)   # dépliée d'office : c'est tout l'écran ici
@@ -549,7 +502,7 @@ class LanguagesPanel(QWidget):
         self._blocking = True
         try:
             self._combo_fallback.clear()
-            self._combo_fallback.addItem("(none)", "")
+            self._combo_fallback.addItem(label('common.none_paren'), "")
             for f in self._project.fonts:
                 self._combo_fallback.addItem(f.name, f.name)
             cur = getattr(self._project.settings, "fallback_font", "") or ""
@@ -557,7 +510,7 @@ class LanguagesPanel(QWidget):
             if idx < 0 and cur:
                 # Police disparue (renommée/supprimée hors d'ici) : la garder
                 # visible plutôt que de la réécrire silencieusement.
-                self._combo_fallback.addItem(f"{cur}  (not found)", cur)
+                self._combo_fallback.addItem(label('projset.cur_not_found', cur=cur), cur)
                 idx = self._combo_fallback.findData(cur)
             self._combo_fallback.setCurrentIndex(idx if idx >= 0 else 0)
         finally:
@@ -722,7 +675,7 @@ class CollisionsPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
-        lay.addWidget(_category_title("Collisions"))
+        lay.addWidget(_category_title(label('projset.collisions')))
 
         # Ce qu'il faut FAIRE ici (niveau 1, il change avec l'état de la
         # matrice) et ce que la matrice VEUT DIRE (niveau 3 : une notion, la
@@ -745,7 +698,7 @@ class CollisionsPanel(QWidget):
 
         add_row = QHBoxLayout()
         add_row.setContentsMargins(0, 4, 0, 0)
-        self._btn_add = W.btn_add("Declare a tag")
+        self._btn_add = W.btn_add(label('projset.declare_a_tag'))
         self._btn_add.clicked.connect(self._add_tag)
         add_row.addWidget(self._btn_add)
         add_row.addStretch(1)
@@ -866,7 +819,7 @@ class CollisionsPanel(QWidget):
         handle.setFixedWidth(_TAG_HANDLE_W)
         handle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         handle.setCursor(Qt.CursorShape.OpenHandCursor)
-        handle.setToolTip("Drag to reorder")
+        handle.setToolTip(label('projset.drag_to_reorder'))
         handle.installEventFilter(self)
         self._drag_handles[handle] = ta
         row.addWidget(handle)
@@ -901,8 +854,7 @@ class CollisionsPanel(QWidget):
 
         n = self._tag_usage(ta)
         rm = W.btn_danger(
-            f"Remove this tag — used by {n} box{'es' if n != 1 else ''}, they fall "
-            "back to «body»" if n else "Remove this tag — not used by any box")
+            label('projset.remove_tag_used', n=n, value='es' if n != 1 else '') if n else label('projset.remove_tag_unused'))
         rm.clicked.connect(lambda _c=False, _t=ta: self._remove_tag(_t))
         row.addWidget(rm)
 
@@ -1080,11 +1032,13 @@ class ProjectSettingsDialog(QDialog):
     """Colonne de catégories à gauche, panneau à droite — même squelette que
     SettingsDialog (ui/common/settings_dialog.py)."""
 
+    _CATEGORY_KEYS = {'Build': 'projset.build', 'Visual': 'projset.visual', 'Sound': 'projset.sound', 'Input': 'projset.input', 'Languages': 'projset.languages', 'Collisions': 'projset.collisions'}
+
     _CATEGORIES = ("Build", "Visual", "Sound", "Input", "Languages", "Collisions")
 
     def __init__(self, project: Project, initial_category: str = "Build", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Project Settings")
+        self.setWindowTitle(label('projset.project_settings'))
         self.setStyleSheet(QSS.dialog)
         self.resize(820, 480)
 
@@ -1097,7 +1051,7 @@ class ProjectSettingsDialog(QDialog):
         self._list.setFixedWidth(160)
         self._list.setFont(QFont(T.UI, T.MD))
         for cat in self._CATEGORIES:
-            self._list.addItem(QListWidgetItem(cat))
+            self._list.addItem(QListWidgetItem(label(self._CATEGORY_KEYS[cat])))
         body.addWidget(self._list)
 
         self._stack = QStackedWidget()
@@ -1119,7 +1073,7 @@ class ProjectSettingsDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch()
-        btn_close = QPushButton("Close")
+        btn_close = QPushButton(label('common.close'))
         btn_close.setStyleSheet(QSS.button_primary)
         btn_close.setFixedWidth(90)
         btn_close.clicked.connect(self.accept)

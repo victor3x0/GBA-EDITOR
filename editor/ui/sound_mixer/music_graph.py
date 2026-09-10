@@ -17,6 +17,7 @@ l'auteur à chaque fois.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
@@ -160,17 +161,17 @@ class _StateNode(QGraphicsItem):
         painter.setPen(QColor(C.TEXT_NORM if st.music else C.TEXT_MUTED))
         painter.drawText(QRectF(12, y, NODE_W - 24, _ROW_H),
                          int(Qt.AlignmentFlag.AlignVCenter),
-                         self._elided(painter, f"♪  {st.music or '— silence —'}",
+                         self._elided(painter, f"♪  {st.music or label('musgraph.silence')}",
                                       NODE_W - 24))
 
         y += _ROW_H
         painter.setPen(QColor(C.TEXT_DIM))
         painter.drawText(QRectF(12, y, NODE_W - 24, _ROW_H),
                          int(Qt.AlignmentFlag.AlignVCenter),
-                         "↻  Boucle" if st.loop else "→  Une fois")
+                         label('musgraph.loop') if st.loop else label('musgraph.once'))
 
         y += _ROW_H
-        self._meter(painter, y, "Niveau", st.level, 100, C.ACCENT)
+        self._meter(painter, y, label('musgraph.level'), st.level, 100, C.ACCENT)
         y += _ROW_H
         self._meter(painter, y, st.intensity_target, st.intensity, 200,
                     C.ACCENT_COOL)
@@ -292,7 +293,7 @@ class _TransitionEdge(QGraphicsItem):
         painter.drawPolygon(head)
 
         painter.setFont(ui_font(T.XS))
-        text = self.tr.trigger or "(sans déclencheur)"
+        text = self.tr.trigger or label('musgraph.no_trigger')
         w = painter.fontMetrics().horizontalAdvance(text) + 12
         chip = QRectF(self._label.center().x() - w / 2, self._label.y(),
                       w, self._label.height())

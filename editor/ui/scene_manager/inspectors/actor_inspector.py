@@ -27,7 +27,7 @@ from ui.common.direction_grid import DirectionPicker
 from ui.common import icons
 
 COMPONENT_LABEL_KEYS = {
-    "sprite":        "actorinsp.comp.sprite",
+    "sprite":        "common.sprite",
     "collision_box": "actorinsp.comp.collision",
     "sound_fx":      "actorinsp.comp.soundfx",
     "script":        "actorinsp.comp.script",
@@ -218,7 +218,7 @@ class ActorInspector(QWidget):
         cl.setSpacing(5)
 
         # ── NOTE card — partagée Actor/Prefab ────────────────────
-        notes_card = CollapsibleCard(label("actorinsp.card.note"))
+        notes_card = CollapsibleCard(label("common.note"))
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set("notes", text))
         notes_card.body_layout.addWidget(self._notes_edit)
@@ -373,11 +373,11 @@ class ActorInspector(QWidget):
         from PyQt6.QtGui import QFontMetrics
         _lbl_w = max(
             QFontMetrics(QFont(T.UI, T.SM)).horizontalAdvance(label(k))
-            for k in ("actorinsp.tr.position", "actorinsp.tr.priority",
+            for k in ("common.position", "actorinsp.tr.priority",
                       "actorinsp.tr.mode_window")
         ) + 4
 
-        _W.pair(label("actorinsp.tr.position"), "X", C.AXIS_X, self._tx,
+        _W.pair(label("common.position"), "X", C.AXIS_X, self._tx,
                 "Y", C.AXIS_Y, self._ty, tl, label_width=_lbl_w)
 
         # ── Rotation / Scale monde ────────────────────────────────
@@ -390,13 +390,13 @@ class ActorInspector(QWidget):
         self._trotation = self._fields.bind("rotation", _W.spinbox(0, min_v=0, max_v=359))
         self._trotation.setSuffix("°")
         self._trotation.setWrapping(True)
-        _W.row(label("actorinsp.tr.rotation"), self._trotation, tl, label_width=_lbl_w)
+        _W.row(label("common.rotation"), self._trotation, tl, label_width=_lbl_w)
 
         self._tscale_x = self._fields.bind(
             "scale_x", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
         self._tscale_y = self._fields.bind(
             "scale_y", _W.double_spinbox(1.0, min_v=0.1, max_v=4.0, step=0.1))
-        _W.pair(label("actorinsp.tr.scale"), "X", C.AXIS_X, self._tscale_x,
+        _W.pair(label("common.scale"), "X", C.AXIS_X, self._tscale_x,
                 "Y", C.AXIS_Y, self._tscale_y, tl, label_width=_lbl_w)
 
         # ── Direction initiale : sélecteur 3×3 ───────────────────

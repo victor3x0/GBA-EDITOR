@@ -145,8 +145,8 @@ class AudioPlayer(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         cur = external_editor.get_configured_editor(external_editor.KIND_AUDIO)
-        act_choose = menu.addAction(label("sndpanel.choose_editor"))
-        act_default = menu.addAction(label("sndpanel.use_default"))
+        act_choose = menu.addAction(label("common.choose_editor"))
+        act_default = menu.addAction(label("common.use_default"))
         act_default.setEnabled(bool(cur))
         chosen = menu.exec(self._btn_edit.mapToGlobal(pos))
         if chosen == act_choose:
@@ -329,7 +329,7 @@ class _AssetInspectorBase(QWidget):
         cl.addWidget(btn_import)
 
         if self._HAS_LOOP:
-            self._loop = QCheckBox(label("sndpanel.loop"))
+            self._loop = QCheckBox(label("common.loop"))
             self._loop.setFont(QFont(T.UI, T.MD))
             self._loop.setStyleSheet(f"color:{C.TEXT_NORM};")
             self._loop.toggled.connect(self._on_loop)
@@ -448,7 +448,7 @@ class _AssetInspectorBase(QWidget):
 class SfxInspector(_AssetInspectorBase):
     _EMPTY_TEXT = "sndpanel.sfx_empty"
     _HEADER_KIND = "sfx"
-    _HEADER_LABEL = "sndpanel.header_sfx"
+    _HEADER_LABEL = "common.sfx"
     _IMPORT_BTN_TEXT = "sndpanel.sfx_import_btn"
     _IMPORT_DIALOG_TITLE = "sndpanel.sfx_import_title"
     _IMPORT_FILTER = file_dialog_filter("WAV PCM 8/16 bits", SFX_FILE_EXTS)
@@ -456,7 +456,7 @@ class SfxInspector(_AssetInspectorBase):
 
     # Taux proposés. Maxmod mixe autour de 16 kHz : au-delà on paie de la ROM
     # pour un détail que la console ne restitue pas.
-    _RATES = ((0, "From project"), (8000, "8 000 Hz"), (11025, "11 025 Hz"),
+    _RATES = ((0, label('sndpanel.from_project')), (8000, "8 000 Hz"), (11025, "11 025 Hz"),
               (16000, "16 000 Hz"), (22050, "22 050 Hz"), (32000, "32 000 Hz"))
 
     def _file_hint(self, path: Path) -> str:
@@ -707,7 +707,7 @@ class _BoxTab(QWidget):
         if box is None or not self._project:
             return
         if QMessageBox.question(
-            self, label("sndpanel.del_box_title"),
+            self, label("common.delete"),
             label("sndpanel.del_box_text", name=box.name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
@@ -756,7 +756,7 @@ class SoundMixerScreen(QWidget):
         # ── Panneau gauche : Sound finder ──────────────────────────
         # Deux familles dans un seul finder partagé ; c'est le TYPE de l'asset
         # reçu qui dit quel inspecteur montrer, pas un signal par famille.
-        self._finder = AssetFinder("Sound finder", [SFX, MUSIC],
+        self._finder = AssetFinder(label('sndpanel.sound_finder'), [SFX, MUSIC],
                                    min_width=180, max_width=360)
         self._finder.selected.connect(lambda _kind, a: self._on_asset_selected(a))
         self._finder.emptied.connect(lambda _kind: self._right_stack.setCurrentIndex(0))

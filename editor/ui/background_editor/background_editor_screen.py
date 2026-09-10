@@ -57,14 +57,6 @@ _BG_COLOR = COLOR_BACKGROUND
 _KIND_COLOR = {KIND_SCENE: COLOR_BACKGROUND, KIND_UI: COLOR_UI,
                KIND_ANIMATED: COLOR_BACKGROUND}
 
-# Titre de section + libellé du bouton « + », par type.
-_KIND_SECTION = {
-    KIND_SCENE:    ("Backgrounds",    "Import a PNG"),
-    KIND_UI:       ("UI backgrounds", "Import a UI frame or panel PNG"),
-    KIND_ANIMATED: ("Animated",       "Import an animation sheet PNG"),
-}
-
-
 # ── Compression hors-thread ─────────────────────────────────────────────────
 # La compression (bg_import) peut prendre plusieurs secondes sur un grand fond
 # ou une photo : on la lance dans un worker du QThreadPool pour ne JAMAIS geler
@@ -252,7 +244,7 @@ class BgPropertiesPanel(QWidget):
         kind_row = QHBoxLayout(); kind_row.setContentsMargins(0, 2, 0, 2); kind_row.setSpacing(6)
         self._kind_btns: dict[str, QPushButton] = {}
         for k, lbl_key, tip_key in (
-                (KIND_SCENE, "bgedit.kind_scene", "bgedit.kind_scene_tip"),
+                (KIND_SCENE, "common.scene", "bgedit.kind_scene_tip"),
                 (KIND_UI, "bgedit.kind_ui", "bgedit.kind_ui_tip"),
                 (KIND_ANIMATED, "bgedit.kind_animated", "bgedit.kind_animated_tip")):
             b = self._mode_btn(label(lbl_key), label(tip_key))
@@ -307,7 +299,7 @@ class BgPropertiesPanel(QWidget):
         self._ui_title = W.section(label("bgedit.sec_ui_role"), root)
         role_row = QHBoxLayout(); role_row.setContentsMargins(0, 2, 0, 2); role_row.setSpacing(6)
         self._btn_nine = self._mode_btn(label("bgedit.nine"), label("bgedit.nine_tip"))
-        self._btn_plain = self._mode_btn(label("bgedit.plain"), label("bgedit.plain_tip"))
+        self._btn_plain = self._mode_btn(label("common.background"), label("bgedit.plain_tip"))
         self._btn_nine.clicked.connect(lambda: self._set_ui_role(UI_ROLE_NINE))
         self._btn_plain.clicked.connect(lambda: self._set_ui_role(UI_ROLE_BG))
         role_row.addWidget(self._btn_nine, 1); role_row.addWidget(self._btn_plain, 1)
@@ -365,7 +357,7 @@ class BgPropertiesPanel(QWidget):
             sp.valueChanged.connect(lambda v, f=field_name: self._on_frame_size(f, v))
             frow.addWidget(t); frow.addWidget(sp, 1)
             self._frame_spins[field_name] = sp
-        self._frame_row = W.row(label("bgedit.frame"), frame_host, root).parentWidget()
+        self._frame_row = W.row(label("common.frame"), frame_host, root).parentWidget()
 
         self._speed = QSpinBox()
         self._speed.setFont(QFont(T.MONO, T.SM))
@@ -375,9 +367,9 @@ class BgPropertiesPanel(QWidget):
         self._speed.setToolTip(label("bgedit.speed_tip"))
         self._speed.setKeyboardTracking(False)
         self._speed.valueChanged.connect(self._on_speed)
-        self._speed_row = W.row(label("bgedit.speed"), self._speed, root).parentWidget()
+        self._speed_row = W.row(label("common.speed"), self._speed, root).parentWidget()
 
-        self._chk_loop = QCheckBox(label("bgedit.loop"))
+        self._chk_loop = QCheckBox(label("common.loop"))
         self._chk_loop.setFont(QFont(T.UI, T.SM))
         self._chk_loop.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._chk_loop.toggled.connect(self._on_loop)
@@ -443,7 +435,7 @@ class BgPropertiesPanel(QWidget):
         self._pl_speed.setToolTip(label("bgedit.pl_speed_tip"))
         self._pl_speed.setKeyboardTracking(False)
         self._pl_speed.valueChanged.connect(self._on_placement_speed)
-        self._pl_speed_row = W.row(label("bgedit.speed"), self._pl_speed, root).parentWidget()
+        self._pl_speed_row = W.row(label("common.speed"), self._pl_speed, root).parentWidget()
 
         self._pl_widgets = [self._pl_sep, self._pl_title, self._pl_name,
                             self._pl_start_row, self._pl_speed_row]
@@ -456,7 +448,7 @@ class BgPropertiesPanel(QWidget):
         #    clic droit = restaurer l'origine) ; « + » ajoute une palette du
         #    catalogue (éditable, clic = remplacer, clic droit = retirer). La
         #    palette active de PEINTURE se choisit dans la bande en haut du canvas.
-        W.separator(root); W.section(label("bgedit.sec_palettes"), root)
+        W.separator(root); W.section(label("common.palettes"), root)
         self._pal_grid = PaletteSlotGridAsset(_BG_COLOR)
         self._pal_grid.scene_add.connect(self._on_pal_add)
         self._pal_grid.scene_replace.connect(self._on_pal_replace)
@@ -807,21 +799,21 @@ class BgPropertiesPanel(QWidget):
             return []
         lines: list = []
         if ba.mode == "bitmap" and ba.bitmap:
-            lines.append(f"{ba.out_w}×{ba.out_h} px  ·  bitmap ≤240×160")
+            lines.append(label('bgedit.out_w_out_h_px_bitmap_240_160', out_w=ba.out_w, out_h=ba.out_h))
         elif ba.tileset:
-            lines.append(f"{ba.tiles_w*8}×{ba.tiles_h*8} px  ·  {ba.tiles_w}×{ba.tiles_h} tuiles")
+            lines.append(label('bgedit.value_value_2_px_tiles_w_tiles_h', value=ba.tiles_w * 8, value_2=ba.tiles_h * 8, tiles_w=ba.tiles_w, tiles_h=ba.tiles_h))
         indexed, ncol, capped = self._source_info(ba)
-        origin = "indexed (original palette)" if indexed else "inferred"
+        origin = label('bgedit.indexed_original_palette') if indexed else "inferred"
         ncol_s = "256+" if capped else str(ncol)
-        lines.append(f"Source: {origin} · {ncol_s} colors")
+        lines.append(label('bgedit.source_origin_ncol_s_colors', origin=origin, ncol_s=ncol_s))
         if ba.mode == "bitmap":
-            lines.append("Mode 4 — full screen, no tiles")
-            lines.append("Palette: 256 colors (1)")
+            lines.append(label('bgedit.mode_4_full_screen_no_tiles'))
+            lines.append(label('bgedit.palette_256_colors_1'))
         else:
             budget = 256 if ba.bpp == 8 else 512
-            lines.append(f"Unique tiles: {len(ba.tileset)} / {budget}  ({ba.bpp}bpp)")
-            lines.append("Palette: 256 colors (1)" if ba.bpp == 8
-                         else f"Palettes: {len(ba.palettes)} / 16")
+            lines.append(label('bgedit.unique_tiles_value_budget_bpp_bpp', value=len(ba.tileset), budget=budget, bpp=ba.bpp))
+            lines.append(label('bgedit.palette_256_colors_1') if ba.bpp == 8
+                         else label('bgedit.palettes_value_16', value=len(ba.palettes)))
         lines += self._kind_info_lines(ba)
         return lines
 
@@ -832,22 +824,22 @@ class BgPropertiesPanel(QWidget):
         au milieu de ceux qu'on édite."""
         if ba.kind == KIND_UI:
             if ba.ui_role != UI_ROLE_NINE:
-                return ["UI: plain background — laid top-left, cropped to the panel"]
+                return [label('bgedit.ui_plain_info')]
             l, r, t, b = ba.slice_margins()
             tl, tr, tt, tb = ba.slice_margins_tiles()
-            return [f"UI: nine-slice — margins {l}/{r}/{t}/{b} px",
-                    f"At build: {tl}/{tr}/{tt}/{tb} tiles"]
+            return [label('bgedit.ui_nine_slice_margins_l_r_t_b', l=l, r=r, t=t, b=b),
+                    label('bgedit.at_build_tl_tr_tt_tb_tiles', tl=tl, tr=tr, tt=tt, tb=tb)]
         if ba.kind == KIND_ANIMATED:
             cols, rows = ba.frame_grid()
             fw, fh = ba.frame_size()
             n = ba.frame_count()
             secs = ba.duration_frames() / 60.0
-            return [f"Frames: {n}  ({cols}×{rows} grid of {fw}×{fh} px)",
-                    f"Cycle: {ba.speed} ticks/frame · {secs:.2f}s"
-                    + ("" if ba.loop else " · once")]
+            return [label('bgedit.frames_n_cols_rows_grid_of_fw_fh', n=n, cols=cols, rows=rows, fw=fw, fh=fh),
+                    label('bgedit.cycle_speed_ticks_frame_secs_2f_s', speed=ba.speed, secs=secs)
+                    + ("" if ba.loop else label('bgedit.once'))]
         if ba.animations:
             n = len(ba.animations)
-            return [f"Animations placed: {n}"]
+            return [label('bgedit.animations_placed_n', n=n)]
         return []
 
     def _source_info(self, ba) -> tuple[bool, int, bool]:
@@ -893,72 +885,67 @@ class BgPropertiesPanel(QWidget):
         warn, err = C.ACCENT_YLW, C.ACCENT_RED
         out: list = []
         if ba.kind in (KIND_UI, KIND_ANIMATED) and ba.mode == "bitmap":
-            out.append((f"⚠ Bitmap (Mode 4) — a {ba.kind_label().lower()} needs "
-                        "tiles; switch to Tiled.", err))
+            out.append((label('bgedit.bitmap_needs_tiles', value=ba.kind_label().lower()), err))
             return out
         if ba.kind == KIND_UI and ba.ui_role == UI_ROLE_NINE:
             odd = [n for n, m in zip("LRTB", ba.slice_margins()) if m % 8]
             if odd:
-                out.append(("⚠ Margin " + "/".join(odd) + " is not a multiple of 8 — "
-                            "rounded down to the tile at build.", warn))
+                out.append((label('bgedit.margin_rounding', margins="/".join(odd)), warn))
             l, r, t, b = ba.slice_margins()
             iw, ih = ba.pixel_size()
             if iw and (l + r > iw or t + b > ih):
-                out.append(("⚠ Opposite margins overlap — corners will be "
-                            "squeezed on small panels.", warn))
+                out.append((label('bgedit.margins_overlap'), warn))
         if ba.kind == KIND_ANIMATED:
             if ba.frame_count() <= 0:
-                out.append(("⚠ Frame larger than the sheet — no frame to play.", err))
+                out.append((label('bgedit.frame_too_large'), err))
             elif not ba.frame_grid_is_exact():
                 cols, rows = ba.frame_grid()
                 fw, fh = ba.frame_size()
                 iw, ih = ba.pixel_size()
-                out.append((f"⚠ {iw}×{ih} not divisible by {fw}×{fh} — "
-                            f"{iw - cols * fw}×{ih - rows * fh} px left out.", warn))
+                out.append((label('bgedit.iw_ih_not_divisible_by_fw_fh_value', iw=iw, ih=ih, fw=fw, fh=fh, value=iw - cols * fw, value_2=ih - rows * fh), warn))
         return out
 
     def _validation_lines(self, ba) -> list:
         if not ba or not (ba.tileset or ba.bitmap):
-            return [("⚠ Compression impossible — unreadable or empty image.", C.ACCENT_RED)]
+            return [(label('bgedit.compression_failed'), C.ACCENT_RED)]
         warn, err, ok = C.ACCENT_YLW, C.ACCENT_RED, C.POWER
         kind_lines = self._kind_validation_lines(ba)
         if ba.mode == "bitmap":
             diag = self._diag_for(ba)
             lines: list = []
             if diag.get("scaled"):
-                lines.append((f"⚠ Image scaled → {ba.out_w}×{ba.out_h} (≤ 240×160).", warn))
+                lines.append((label('bgedit.image_scaled_out_w_out_h_240_160', out_w=ba.out_w, out_h=ba.out_h), warn))
             tc = diag.get("total_colors", 0)
             if tc == -1 or tc > 255:
-                lines.append(("⚠ &gt; 256 colors — reduced to 256 (lossy).", warn))
+                lines.append((label('bgedit.gt_256_colors_reduced_to_256_lossy'), warn))
             if not lines and not kind_lines:
-                lines.append(("✓ GBA bitmap (Mode 4) — full screen, no tile loss.", ok))
+                lines.append((label('bgedit.bitmap_ok'), ok))
             return kind_lines + lines
         diag = self._diag_for(ba)
         lines: list = []
         if diag and not diag.get("multiple_of_8", True):
             w, h = diag.get("src_w"), diag.get("src_h")
-            lines.append((f"⚠ {w}×{h} px not a multiple of 8 — padded with transparency "
-                          f"({ba.tiles_w*8}×{ba.tiles_h*8}).", warn))
+            lines.append((label('bgedit.w_h_px_not_a_multiple_of_8', w=w, h=h, value=ba.tiles_w * 8, value_2=ba.tiles_h * 8), warn))
         if ba.bpp == 8:
             # 8bpp : une seule palette de 256 ; perte si le source en avait plus.
             tc = diag.get("total_colors", 0)
             if tc == -1 or tc > 255:
-                lines.append(("⚠ &gt; 256 colors — reduced to 256 (lossy, 8bpp mode).", warn))
+                lines.append((label('bgedit.reduced_256_8bpp'), warn))
             budget = 256
         else:
             mtc = diag.get("max_tile_colors", 0)
             if mtc > 15:
                 n = diag.get("tiles_reduced", 0)
-                lines.append((f"⚠ {n} tile(s) &gt; 15 colors (max {mtc}) — colors reduced (lossy).", warn))
+                lines.append((label('bgedit.n_tile_s_gt_15_colors_max_mtc', n=n, mtc=mtc), warn))
             pre = diag.get("pre_merge_palettes")
             if pre and pre > 16:
-                lines.append((f"⚠ {pre} palettes needed &gt; 16 — merged into {len(ba.palettes)} (lossy).", warn))
+                lines.append((label('bgedit.palettes_merged', pre=pre, value=len(ba.palettes)), warn))
             budget = 512
         fits, bud = bg_fits_vram(ba.tileset, budget=budget)
         if not fits:
-            lines.append((f"⚠ {len(ba.tileset)} unique tiles &gt; {bud} — exceeds VRAM ({ba.bpp}bpp).", err))
+            lines.append((label('bgedit.tiles_exceed_vram', value=len(ba.tileset), bud=bud, bpp=ba.bpp), err))
         if not lines and not kind_lines:
-            lines.append((f"✓ GBA-compatible ({ba.bpp}bpp) — compressed losslessly.", ok))
+            lines.append((label('bgedit.compat_ok', bpp=ba.bpp), ok))
         # Les alertes du TYPE d'abord : elles portent sur un réglage que l'auteur
         # vient de poser, celles de la compression sur ce que le PNG impose.
         return kind_lines + lines
@@ -1137,7 +1124,7 @@ class BgPropertiesPanel(QWidget):
         if not self._project or not self._ba:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, label("bgedit.choose_image"), "", "Images (*.png)")
+            self, label("bgedit.choose_image"), "", label('bgedit.images_png'))
         if not path:
             return
         import shutil
@@ -1174,7 +1161,7 @@ class BackgroundEditorScreen(QWidget):
         # Trois sections, une par `kind` : chacune a son propre import (un PNG,
         # un cadre d'UI, une planche d'animation). Cf. ui/common/asset_kinds.py.
         self._finder = AssetFinder(
-            "Background finder",
+            label('bgedit.background_finder'),
             [BACKGROUNDS_SCENE, BACKGROUNDS_UI, BACKGROUNDS_ANIM],
             min_width=180, max_width=420)
         self._canvas = BgInpaintCanvas()
@@ -1323,7 +1310,7 @@ class BackgroundEditorScreen(QWidget):
         title = {KIND_SCENE: label("bgedit.import_scene"),
                  KIND_UI: label("bgedit.import_ui"),
                  KIND_ANIMATED: label("bgedit.import_anim")}.get(kind, label("bgedit.import_scene"))
-        path, _ = QFileDialog.getOpenFileName(self, title, "", "Images (*.png)")
+        path, _ = QFileDialog.getOpenFileName(self, title, "", label('bgedit.images_png'))
         if not path:
             return
         dst = self._project.import_asset(Path(path), "backgrounds")

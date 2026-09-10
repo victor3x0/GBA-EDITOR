@@ -58,7 +58,7 @@ class CollisionEditor(BaseComponentEditor):
         lbl.setFont(QFont(T.UI, T.SM))
         lbl.setStyleSheet(f"color:{C.TEXT_NORM}; background:transparent; border:none;")
         hl.addWidget(chk_solid); hl.addWidget(lbl); hl.addStretch()
-        W.row(label("comped.mode"), mode_lbl, layout)
+        W.row(label("common.mode"), mode_lbl, layout)
 
         # ── AABB — champs px/tile ou référence de variable ────────
         # Les valeurs peuvent être un littéral (px/tile) ou pointer une
@@ -80,7 +80,7 @@ class CollisionEditor(BaseComponentEditor):
             notice(key, vf, layout)
 
         W.pair(label("comped.offset"), "X", C.AXIS_X, vf_x, "Y", C.AXIS_Y, vf_y, layout)
-        W.pair(label("comped.size"), "W", C.AXIS_X, vf_w, "H", C.AXIS_Y, vf_h, layout)
+        W.pair(label("common.size"), "W", C.AXIS_X, vf_w, "H", C.AXIS_Y, vf_h, layout)
 
         def _on_solid(v):
             self.set_field(comp, "solid", v)

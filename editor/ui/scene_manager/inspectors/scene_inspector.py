@@ -37,7 +37,7 @@ from ui.common import icons
 # libellé dit ce que la scène hérite RÉELLEMENT (cf. _refresh_transition) : un
 # « from project » nu obligerait à aller voir ailleurs ce que ça donne.
 _TRANSITIONS: tuple[tuple[str, str], ...] = (
-    (TRANSITION_INHERIT, "From project"),
+    (TRANSITION_INHERIT, 'sceneinsp.from_project'),
 ) + TRANSITION_LABELS
 
 
@@ -165,7 +165,7 @@ class SceneInspector(QWidget):
         cl.setSpacing(6)
 
         # ── Carte Note libre ───────────────────────────────────────
-        notes_card = CollapsibleCard(label("sceneinsp.card.note"))
+        notes_card = CollapsibleCard(label("common.note"))
         notes_inner = notes_card.body_layout
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(lambda text: self._set_scene_field("notes", text))
@@ -263,7 +263,7 @@ class SceneInspector(QWidget):
         self._combo_trans.setFont(QFont(T.UI, T.SM))
         self._combo_trans.setStyleSheet(QSS.combobox)
         for kind, trans_label in _TRANSITIONS:
-            self._combo_trans.addItem(trans_label, kind)
+            self._combo_trans.addItem(label(trans_label), kind)
         self._combo_trans.setToolTip(label("sceneinsp.transition_tip"))
         self._combo_trans.currentIndexChanged.connect(self._on_transition_kind)
         self._spin_trans = QSpinBox()
@@ -359,7 +359,7 @@ class SceneInspector(QWidget):
         # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
-        pal_card = CollapsibleCard(label("sceneinsp.card.palettes"))
+        pal_card = CollapsibleCard(label("common.palettes"))
         pal_inner = pal_card.body_layout
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
@@ -607,16 +607,16 @@ class SceneInspector(QWidget):
         if info["kind"] == "bitmap":
             for L in self._scene.background_layers:
                 if not self._is_bitmap_layer(L):
-                    out.append(f"BG{L.bg_slot} layer" + (f" ({L.background_name})" if L.background_name else " (empty)"))
+                    out.append(label('sceneinsp.layer_to_remove', slot=L.bg_slot, name=L.background_name or label('sceneinsp.empty_val')))
         else:
             valid = set(info["bg_slots"])
             for L in self._scene.background_layers:
                 if L.bg_slot not in valid or self._is_bitmap_layer(L):
-                    out.append(f"BG{L.bg_slot} layer" + (f" ({L.background_name})" if L.background_name else " (empty)"))
+                    out.append(label('sceneinsp.layer_to_remove', slot=L.bg_slot, name=L.background_name or label('sceneinsp.empty_val')))
         if not info["bg_palettes"]:
             n = sum(1 for name in self._scene.active_bg_palettes if name)
             if n:
-                out.append(f"{n} active BG palette(s)")
+                out.append(label('sceneinsp.palettes_to_remove', n=n))
         return out
 
     def _on_set_mode(self, m: int):
@@ -626,10 +626,9 @@ class SceneInspector(QWidget):
             self._refresh_mode_buttons(); return
         pruned = self._pruned_by_mode(m)
         if pruned:
-            msg = (f"Switching to Mode {m} will remove:\n• " + "\n• ".join(pruned)
-                   + "\n\nContinue? (Ctrl+Z to undo)")
+            msg = label('sceneinsp.confirm_mode_change', mode=m, items="\n• ".join(pruned))
             if QMessageBox.question(
-                self, "Change scene mode", msg,
+                self, label('sceneinsp.change_scene_mode'), msg,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             ) != QMessageBox.StandardButton.Yes:
                 self._refresh_mode_buttons()
@@ -1258,10 +1257,10 @@ class SceneInspector(QWidget):
         st = p.settings if p else None
         inherited = getattr(st, "transition_kind", EFFECT_NONE) or EFFECT_NONE
         inh_frames = getattr(st, "transition_frames", 16)
-        label = dict(_TRANSITIONS).get(inherited, inherited)
+        trans = label(dict(_TRANSITIONS).get(inherited, inherited))
         self._combo_trans.setItemText(
-            0, f"From project — {label.lower()}"
-            + (f", {inh_frames} f" if inherited != EFFECT_NONE else ""))
+            0, label('sceneinsp.inherited_transition', transition=trans)
+            + (label('sceneinsp.transition_frames', frames=inh_frames) if inherited != EFFECT_NONE else ""))
         self._combo_trans.blockSignals(True)
         idx = self._combo_trans.findData(kind)
         self._combo_trans.setCurrentIndex(idx if idx >= 0 else 0)
@@ -1289,7 +1288,7 @@ class SceneInspector(QWidget):
             # Piste disparue : on la garde VISIBLE plutôt que de retomber en
             # silence sur « Keep playing ». Le champ dirait le contraire du
             # fichier, et le validateur signale déjà le problème.
-            self._combo_music.addItem(label("sceneinsp.music_missing", name=want), want)
+            self._combo_music.addItem(label("common.missing_name", name=want), want)
             idx = self._combo_music.count() - 1
         self._combo_music.setCurrentIndex(idx)
         self._combo_music.blockSignals(False)
@@ -1562,7 +1561,7 @@ class SceneInspector(QWidget):
         """Dialogue de création d'un nouveau script de scène."""
         if not self._scene or not self._project: return
         from PyQt6.QtWidgets import QInputDialog
-        name, ok = QInputDialog.getText(self, "New scene script", "Name (without .lua):")
+        name, ok = QInputDialog.getText(self, label('sceneinsp.new_scene_script'), label('common.name_without_lua'))
         if not ok or not name.strip(): return
         from scripting.script_templates import ScriptTemplateContext, generate_script_template
         d = self._project.scripts_scenes_dir

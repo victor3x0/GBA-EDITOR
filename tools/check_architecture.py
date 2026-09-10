@@ -452,6 +452,10 @@ def main() -> int:
     r.section("Catalogue de libellés",
               controle_catalogue(trees, "labels", CITATIONS_LABELS))
 
+    from check_ui_text import check as check_ui_text
+    r.section("Textes d'interface : structure, paramètres et extraction",
+              check_ui_text(ROOT))
+
     if args.fresh:
         r.section("Ordre d'import (interpréteur neuf par module)",
                   controle_ordre_d_import(mods))

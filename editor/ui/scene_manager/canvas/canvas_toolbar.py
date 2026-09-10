@@ -7,6 +7,7 @@ interface), leurs menus déroulants et les raccourcis. N'émet que des signaux
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtCore import Qt, QPoint, QSize, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QFrame, QToolButton, QVBoxLayout
@@ -37,9 +38,9 @@ class FloatingToolbar(QFrame):
 
     # Outils principaux — (id, icon_key, tooltip)
     _MAIN_TOOLS = [
-        ("select", "tool_select", "Select  (S)"),
-        ("add", "tool_add", "Add actor  (A)"),
-        ("erase", "tool_erase", "Eraser  (E)"),
+        ("select", "tool_select", 'cvtool.select_s'),
+        ("add", "tool_add", 'cvtool.add_actor_a'),
+        ("erase", "tool_erase", 'cvtool.eraser_e'),
     ]
 
     # Sous-outils collision — (id, icon_key, label, tooltip)
@@ -47,35 +48,35 @@ class FloatingToolbar(QFrame):
         (
             "collision_8",
             "tool_collision_8",
-            "8×8 px brush",
-            "Collision brush  8×8 px",
+            'cvtool.8_8_px_brush',
+            'cvtool.collision_brush_8_8_px',
         ),
         (
             "collision_16",
             "tool_collision_16",
-            "16×16 px brush",
-            "Collision brush 16×16 px",
+            'cvtool.16_16_px_brush',
+            'cvtool.collision_brush_16_16_px',
         ),
         (
             "collision_slope",
             "tool_collision_slope",
-            "Floor slope",
-            "Floor slope (triangle, Bresenham)",
+            'cvtool.floor_slope',
+            'cvtool.floor_slope_triangle_bresenham',
         ),
         (
             "collision_slope_inv",
             "tool_collision_slope_inv",
-            "Ceiling slope",
-            "Inverted floor slope (triangle, Bresenham)",
+            'cvtool.ceiling_slope',
+            'cvtool.ceiling_slope_tip',
         ),
     ]
 
     # Sous-outils inpainting de scène — (id, icon_key, label, tooltip)
     _INPAINT_MODES = [
-        ("inpaint_brush", "tool_inpaint_brush", "Brush",
-         "Inpainting: repaint a tile's palette (8×8 brush)"),
-        ("inpaint_rect", "tool_inpaint_rect", "Rectangle",
-         "Inpainting: repaint the palette over a rectangular area"),
+        ("inpaint_brush", "tool_inpaint_brush", 'cvtool.brush',
+         'cvtool.inpaint_brush_tip'),
+        ("inpaint_rect", "tool_inpaint_rect", 'cvtool.rectangle',
+         'cvtool.inpaint_rect_tip'),
     ]
     _INPAINT_ICON_KEYS = {
         "inpaint_brush": "tool_inpaint_brush",
@@ -86,14 +87,14 @@ class FloatingToolbar(QFrame):
     # se choisit au dropdown (comme collision/inpaint) ; le geste rectangle est
     # le même pour les trois. Icônes = formes de la famille Interface.
     _UI_MODES = [
-        ("ui_text", "ui_text", "Text",
-         "Text — authored here, or left empty for a script to write into"),
-        ("ui_container", "ui_container", "Container",
-         "Container / group — anchor root, can draw a background"),
-        ("ui_list", "ui_list", "List",
-         "List — a container the engine walks: rows, cursor, selection"),
-        ("ui_image", "ui_image", "Image",
-         "Image — a sprite whose state a script can switch"),
+        ("ui_text", "ui_text", 'common.text',
+         'cvtool.text_tip'),
+        ("ui_container", "ui_container", 'common.container',
+         'cvtool.container_tip'),
+        ("ui_list", "ui_list", 'common.list',
+         'cvtool.list_tip'),
+        ("ui_image", "ui_image", 'common.image',
+         'cvtool.image_tip'),
     ]
     _UI_ICON_KEYS = {
         "ui_text": "ui_text",
@@ -154,7 +155,7 @@ class FloatingToolbar(QFrame):
             btn.setIcon(_ico(icon_key, COLOR_DEFAULT, COLOR_ACTIVE))
             btn.setIconSize(QSize(24, 24))
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            btn.setToolTip(tip)
+            btn.setToolTip(label(tip))
             btn.setCheckable(True)
             btn.setChecked(tool_id == "select")
             btn.setFixedSize(36, 36)
@@ -170,7 +171,7 @@ class FloatingToolbar(QFrame):
         self._btn_collision.setIcon(_ico("view_collision", COLOR_DEFAULT, COLOR_ACTIVE))
         self._btn_collision.setIconSize(QSize(24, 24))
         self._btn_collision.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._btn_collision.setToolTip("Édition de collisions  (C)")
+        self._btn_collision.setToolTip(label('cvtool.collision_editing_c'))
         self._btn_collision.setCheckable(True)
         self._btn_collision.setFixedSize(36, 36)
         self._btn_collision.clicked.connect(self._on_collision_click)
@@ -185,7 +186,7 @@ class FloatingToolbar(QFrame):
         )
         self._btn_inpaint.setIconSize(QSize(24, 24))
         self._btn_inpaint.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._btn_inpaint.setToolTip("Scene inpainting  (B)")
+        self._btn_inpaint.setToolTip(label('cvtool.scene_inpainting_b'))
         self._btn_inpaint.setCheckable(True)
         self._btn_inpaint.setFixedSize(36, 36)
         self._btn_inpaint.clicked.connect(self._on_inpaint_click)
@@ -207,7 +208,7 @@ class FloatingToolbar(QFrame):
             _ico(self._UI_ICON_KEYS[self._current_ui], COLOR_DEFAULT, COLOR_ACTIVE))
         self._btn_ui.setIconSize(QSize(20, 20))
         self._btn_ui.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self._btn_ui.setToolTip("Widget d'interface  (T)")
+        self._btn_ui.setToolTip(label('cvtool.interface_widget_t'))
         self._btn_ui.setCheckable(True)
         self._btn_ui.setFixedSize(34, 34)
         self._btn_ui.clicked.connect(self._on_ui_click)
@@ -244,10 +245,10 @@ class FloatingToolbar(QFrame):
         from ui.common.icons import COLOR_DEFAULT
         from ui.common.icons import get as _ico
 
-        for mode_id, icon_key, label, tip in self._COLLISION_MODES:
-            act = QAction(label, self)
+        for mode_id, icon_key, lbl_key, tip in self._COLLISION_MODES:
+            act = QAction(label(lbl_key), self)
             act.setIcon(_ico(icon_key, COLOR_DEFAULT))
-            act.setToolTip(tip)
+            act.setToolTip(label(tip))
             act.setCheckable(True)
             act.setChecked(self._current_collision == mode_id)
             act.triggered.connect(lambda _, m=mode_id: self._select_collision_mode(m))
@@ -286,10 +287,10 @@ class FloatingToolbar(QFrame):
         from ui.common.icons import COLOR_DEFAULT
         from ui.common.icons import get as _ico
 
-        for mode_id, icon_key, label, tip in self._INPAINT_MODES:
-            act = QAction(label, self)
+        for mode_id, icon_key, lbl_key, tip in self._INPAINT_MODES:
+            act = QAction(label(lbl_key), self)
             act.setIcon(_ico(icon_key, COLOR_DEFAULT))
-            act.setToolTip(tip)
+            act.setToolTip(label(tip))
             act.setCheckable(True)
             act.setChecked(self._current_inpaint == mode_id)
             act.triggered.connect(lambda _, m=mode_id: self._select_inpaint_mode(m))
@@ -331,10 +332,10 @@ class FloatingToolbar(QFrame):
         from ui.common.icons import COLOR_UI
         from ui.common.icons import get as _ico
 
-        for mode_id, icon_key, label, tip in self._UI_MODES:
-            act = QAction(label, self)
+        for mode_id, icon_key, lbl_key, tip in self._UI_MODES:
+            act = QAction(label(lbl_key), self)
             act.setIcon(_ico(icon_key, COLOR_UI))
-            act.setToolTip(tip)
+            act.setToolTip(label(tip))
             act.setCheckable(True)
             act.setChecked(self._current_ui == mode_id)
             act.triggered.connect(lambda _, m=mode_id: self._select_ui_mode(m))

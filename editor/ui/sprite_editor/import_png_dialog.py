@@ -7,6 +7,7 @@ vivent dans le .json du sprite. Plus de dialogue de compression modal — l'algo
 règle dans l'éditeur (comme le mode d'un background dans son inspecteur).
 """
 from __future__ import annotations
+from ui.common.labels import label
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -29,13 +30,13 @@ def import_new_sprite(project, parent=None) -> Optional[Path]:
     """Choisit un fichier, le COPIE tel quel dans assets/sprites/, crée le sprite
     et l'encode (Validator → Encodage). Retourne le chemin ou None."""
     path, _ = QFileDialog.getOpenFileName(
-        parent, "Importer une image", "", "Images (*.png)")
+        parent, label('imgpng.import_an_image'), "", label('imgpng.images_png'))
     if not path:
         return None
     dst = project.import_asset(Path(path), "sprites")   # copie le source intact
     warning = asset_encoding.sync_sprite_png(project, dst)  # détection + encodage + save
     if warning and parent is not None:
-        QMessageBox.information(parent, "Import sprite", warning)
+        QMessageBox.information(parent, label('imgpng.import_sprite'), warning)
     return dst
 
 
@@ -45,7 +46,7 @@ def replace_sprite_image(project, sprite, parent=None) -> bool:
     if not sprite:
         return False
     path, _ = QFileDialog.getOpenFileName(
-        parent, "Choisir une image", "", "Images (*.png)")
+        parent, label('imgpng.choose_an_image'), "", label('imgpng.images_png'))
     if not path:
         return False
     dst_dir = project.assets_dir / "sprites"
@@ -55,5 +56,5 @@ def replace_sprite_image(project, sprite, parent=None) -> bool:
     sprite.asset = project.asset_rel(dst)
     warning = _encode_and_store(project, sprite, dst)
     if warning and parent is not None:
-        QMessageBox.information(parent, "Remplacement sprite", warning)
+        QMessageBox.information(parent, label('imgpng.replace_sprite'), warning)
     return True

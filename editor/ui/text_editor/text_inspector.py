@@ -38,7 +38,7 @@ class TextInspector(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, label("txtinsp.title"))
+        host, lay, self._name_lbl = insp_scroll(TEXT_COLOR, label("common.text"))
         root.addWidget(host)
 
         self._empty = QLabel(label("txtinsp.empty"))
@@ -136,12 +136,12 @@ class TextInspector(QWidget):
             self._issues.setVisible(False)
             self._missing.setVisible(False)
             return
-        bits = [f"{parsed.length} characters emitted"]
+        bits = [label('txtinsp.length_characters_emitted', length=parsed.length)]
         effects = parsed.of_kind(*(s.name for s in TAGS.values()))
         if effects:
-            bits.append(f"{len(effects)} tag(s)")
+            bits.append(label('txtinsp.value_tag_s', value=len(effects)))
         if parsed.animated_glyphs:
-            bits.append(f"{parsed.animated_glyphs} animated glyph(s)")
+            bits.append(label('txtinsp.animated_glyphs_animated_glyph_s', animated_glyphs=parsed.animated_glyphs))
         values = parsed.of_kind("value")
         if values:
             bits.append("values: " + ", ".join(f"${m.value}" for m in values))
@@ -163,8 +163,7 @@ class TextInspector(QWidget):
         shown = resolve(parsed, self._project.text_values() if self._project else {})
         miss = self._font.missing_chars(shown) if self._font else []
         self._missing.setText(
-            "✕ missing from “{}”: {}".format(
-                self._font.name, " ".join(repr(c)[1:-1] for c in miss))
+            label('txtinsp.missing_glyphs', font=self._font.name, glyphs=' '.join((repr(c)[1:-1] for c in miss)))
             if miss else "")
         self._missing.setVisible(bool(miss))
 
@@ -175,23 +174,17 @@ class TextInspector(QWidget):
         out = []
         for m in parsed.of_kind("icon"):
             if self._font and self._font.glyph(m.value) is None:
-                out.append(f"“{self._font.name}” has no glyph "
-                           f"“{m.value}” — merge the cells that draw "
-                           f"it and give it that name.")
+                out.append(label('txtinsp.no_glyph', name=self._font.name, value=m.value))
         if parsed.of_kind("color") and self._font:
             from codegen.font_emit import render_composited
             if not render_composited(self._font):
-                out.append(f"“{self._font.name}” is rendered in tiles: "
-                           f"“[color]” will be ignored there (it requires a "
-                           f"composed font — proportional, or too large for "
-                           f"VRAM).")
+                out.append(label('txtinsp.tiles_no_color', name=self._font.name))
         if self._project:
             known = {v.name for v in self._project.globals} \
                   | {c.name for c in self._project.constants}
             for m in parsed.of_kind("value"):
                 if m.value not in known:
-                    out.append(f"“${m.value}” is neither a project global "
-                               f"nor a constant.")
+                    out.append(label('txtinsp.unknown_value', value=m.value))
         return out
 
     def load(self, text, project):
@@ -209,11 +202,10 @@ class TextInspector(QWidget):
             self._usage.setText(self._usage_text(text.key))
             self.set_parsed(parse(text.content))
             self._meta.setText(
-                f"id {text.id}\n"
-                f"folder: {text.path_str() or '(root)'}\n"
-                + ("key derived from the folder — naming it by hand detaches it"
-                   if text.auto_key else "key named by hand — the folder no longer affects it")
-                + (f"\noriginating scene: {text.scene}" if text.scene else "")
+                label('txtinsp.id_id_folder_value', id=text.id, value=text.path_str() or label('txtinsp.root'))
+                + (label('txtinsp.key_auto_note')
+                   if text.auto_key else label('txtinsp.key_manual_note'))
+                + (label('txtinsp.originating_scene_scene', scene=text.scene) if text.scene else "")
             )
         else:
             self._name_lbl.setText("")
@@ -241,10 +233,10 @@ class TextInspector(QWidget):
         if self._usage_index is None:
             return ""
         if not self._usage_index.scripts_scanned:
-            return "scripts could not be parsed — usage unknown"
+            return label('txtinsp.usage_unknown')
         use = self._usage_index.get(key)
         if not use.count:
-            return "no script, no layout"
+            return label('txtinsp.no_script_no_layout')
         lines = [f"  {line}" for line in use.detail().splitlines()]
         return "\n".join([use.summary()] + lines)
 

@@ -13,6 +13,7 @@ Layout : 3 colonnes (même modèle que le Sprite Editor)
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSplitter
@@ -53,7 +54,7 @@ class PaletteEditorScreen(QWidget):
         split.setStyleSheet(QSS.splitter)
         root.addWidget(split, 1)
 
-        self._finder    = AssetFinder("Palette finder", [PALETTES],
+        self._finder    = AssetFinder(label('palscr.palette_finder'), [PALETTES],
                                       min_width=200, max_width=360)
         self._grid      = PaletteGridPanel()
         self._inspector = ColorInspectorPanel()

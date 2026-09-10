@@ -1,0 +1,265 @@
+{
+  "labels": {
+    "common.browse": {
+      "text": "Parcourir…"
+    },
+    "common.cancel": {
+      "text": "Annuler"
+    },
+    "common.close": {
+      "text": "Fermer"
+    },
+    "common.open": {
+      "text": "Ouvrir"
+    },
+    "common.create": {
+      "text": "Créer"
+    },
+    "common.error": {
+      "text": "Erreur"
+    },
+    "common.none_dash": {
+      "text": "— aucun —"
+    },
+    "common.settings": {
+      "text": "Réglages"
+    },
+    "settings.cat.toolchains": {
+      "text": "Chaînes d'outils"
+    },
+    "settings.cat.theme": {
+      "text": "Thème"
+    },
+    "common.interface": {
+      "text": "Interface"
+    },
+    "settings.cat.shortcuts": {
+      "text": "Raccourcis"
+    },
+    "settings.cat.external_tools": {
+      "text": "Outils externes"
+    },
+    "settings.toolchains.hint": {
+      "text": "Chemins vers devkitPro et mgba : nécessaires pour Compiler et lancer."
+    },
+    "settings.toolchains.pick_mgba": {
+      "text": "Exécutable mgba"
+    },
+    "settings.theme.current": {
+      "text": "GBA : indigo / pervenche"
+    },
+    "settings.theme.note": {
+      "text": "Un seul thème existe aujourd’hui : aucun choix clair/sombre ou variante pour le moment."
+    },
+    "settings.interface.show_tips": {
+      "text": "Afficher les astuces"
+    },
+    "settings.interface.language": {
+      "text": "Langue"
+    },
+    "settings.interface.language_restart": {
+      "text": "Le changement de langue s’appliquera au prochain démarrage de GBA Editor."
+    },
+    "settings.shortcuts.hint": {
+      "text": "Cliquez dans une touche puis saisissez la nouvelle combinaison. Deux actions sur la même touche sont signalées en rouge : elles restent actives, mais seule la première déclarée dans ce contexte répond."
+    },
+    "settings.shortcuts.col_context": {
+      "text": "Contexte"
+    },
+    "settings.shortcuts.col_action": {
+      "text": "Action"
+    },
+    "settings.shortcuts.col_shortcut": {
+      "text": "Raccourci"
+    },
+    "settings.shortcuts.reset_to": {
+      "text": "Réinitialiser sur {default}"
+    },
+    "settings.shortcuts.system_key": {
+      "text": "Touche système, non modifiable"
+    },
+    "settings.shortcuts.reset_all": {
+      "text": "Tout réinitialiser"
+    },
+    "settings.shortcuts.context.global": {
+      "text": "Global"
+    },
+    "settings.shortcuts.context.scene_canvas": {
+      "text": "Canvas de scène"
+    },
+    "settings.shortcuts.context.sprite_editor": {
+      "text": "Éditeur de sprites"
+    },
+    "settings.shortcuts.context.sound_mixer": {
+      "text": "Mixeur audio"
+    },
+    "settings.shortcuts.display.undo": {
+      "text": "Annuler"
+    },
+    "settings.shortcuts.display.redo": {
+      "text": "Rétablir"
+    },
+    "common.new_project": {
+      "text": "Nouveau projet"
+    },
+    "common.open_project": {
+      "text": "Ouvrir un projet"
+    },
+    "common.save": {
+      "text": "Enregistrer"
+    },
+    "common.quit": {
+      "text": "Quitter"
+    },
+    "common.build_run": {
+      "text": "Compiler et lancer"
+    },
+    "settings.shortcuts.action.canvas.tool_select": {
+      "text": "Outil de sélection"
+    },
+    "settings.shortcuts.action.canvas.tool_add": {
+      "text": "Outil d’ajout"
+    },
+    "settings.shortcuts.action.canvas.tool_erase": {
+      "text": "Outil d’effacement"
+    },
+    "settings.shortcuts.action.canvas.tool_collision": {
+      "text": "Outil de collision"
+    },
+    "settings.shortcuts.action.canvas.tool_inpaint": {
+      "text": "Outil de recoloration"
+    },
+    "settings.shortcuts.action.canvas.tool_ui": {
+      "text": "Outil d’interface"
+    },
+    "settings.shortcuts.action.canvas.fit": {
+      "text": "Ajuster la vue"
+    },
+    "settings.shortcuts.action.canvas.cancel": {
+      "text": "Annuler / désélectionner"
+    },
+    "settings.shortcuts.action.canvas.delete": {
+      "text": "Supprimer la sélection"
+    },
+    "settings.shortcuts.action.canvas.duplicate": {
+      "text": "Dupliquer la sélection"
+    },
+    "common.copy": {
+      "text": "Copier"
+    },
+    "settings.shortcuts.action.canvas.paste": {
+      "text": "Coller"
+    },
+    "settings.shortcuts.action.sprite.flip_h": {
+      "text": "Retourner le pinceau horizontalement"
+    },
+    "settings.shortcuts.action.sprite.flip_v": {
+      "text": "Retourner le pinceau verticalement"
+    },
+    "settings.shortcuts.action.sprite.duplicate_frame": {
+      "text": "Dupliquer l’image"
+    },
+    "settings.shortcuts.action.sprite.delete_frame": {
+      "text": "Supprimer l’image"
+    },
+    "settings.shortcuts.action.sound.play_pause": {
+      "text": "Lire / mettre en pause l’aperçu"
+    },
+    "settings.external.note": {
+      "text": "Logiciels tiers pour modifier les ressources. Ils ne sont pas encore reliés à un bouton « Modifier en externe » dans les écrans ; leurs chemins sont seulement enregistrés ici."
+    },
+    "settings.external.pick": {
+      "text": "Exécutable"
+    },
+    "home.window_title": {
+      "text": "GBA Editor — Ouvrir un projet"
+    },
+    "home.subtitle": {
+      "text": "Sélectionnez un projet"
+    },
+    "home.tab.projects": {
+      "text": "Projets"
+    },
+    "home.tab.templates": {
+      "text": "Modèles"
+    },
+    "home.empty": {
+      "text": "Aucun projet récent.\nCréez un projet ou ouvrez un dossier existant."
+    },
+    "home.clear": {
+      "text": "Effacer la liste"
+    },
+    "home.clear_tip": {
+      "text": "Retire les entrées dont le projet est introuvable"
+    },
+    "home.load": {
+      "text": "Ouvrir un dossier…"
+    },
+    "home.load_tip": {
+      "text": "Parcourir le disque pour ouvrir le dossier d’un projet existant"
+    },
+    "home.create_project": {
+      "text": "Créer un projet"
+    },
+    "home.browse_title": {
+      "text": "Ouvrir un projet existant"
+    },
+    "home.download_failed": {
+      "text": "Échec du téléchargement"
+    },
+    "home.status.configure": {
+      "text": "Configurer manuellement"
+    },
+    "home.status.download": {
+      "text": "Télécharger →"
+    },
+    "home.status.explain_devkitpro": {
+      "text": "la chaîne de compilation (ARM + grit) qui transforme votre projet en ROM .gba jouable"
+    },
+    "home.status.explain_mgba": {
+      "text": "l’émulateur utilisé pour lancer et tester votre ROM directement depuis l’éditeur"
+    },
+    "home.project.not_found": {
+      "text": "introuvable"
+    },
+    "home.project.reveal": {
+      "text": "Ouvrir le dossier du projet"
+    },
+    "home.template.download": {
+      "text": "Télécharger"
+    },
+    "home.template.downloaded": {
+      "text": "Téléchargé"
+    },
+    "home.template.downloading": {
+      "text": "Téléchargement…"
+    },
+    "home.template.extracting": {
+      "text": "Extraction…"
+    },
+    "home.template.pong.name": {
+      "text": "Pong"
+    },
+    "home.template.pong.description": {
+      "text": "Jeu complet — scènes, sprites, scripts et musique."
+    },
+    "home.new.name": {
+      "text": "Nom du projet"
+    },
+    "home.new.name_placeholder": {
+      "text": "MonJeu"
+    },
+    "home.new.location": {
+      "text": "Emplacement"
+    },
+    "home.new.pick_dir_title": {
+      "text": "Choisir le dossier parent"
+    },
+    "home.new.exists": {
+      "text": "« {name} » existe déjà dans ce dossier."
+    },
+    "settings.window_title": {
+      "text": "Réglages"
+    }
+  }
+}

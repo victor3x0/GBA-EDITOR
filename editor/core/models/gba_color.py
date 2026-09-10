@@ -268,7 +268,7 @@ def reduce_nearest_pair(colors: list[tuple[int, int, int]], n: int) -> list[tupl
     """Réduit `colors` à `n` en retirant à chaque fois l'une des deux couleurs
     les plus proches (distance RGB²) — garde les couleurs EXACTES (pas de
     moyenne). Ordre source préservé pour ce qui reste. Brique partagée avec
-    palette_presets._reduce_to."""
+    cette fonction."""
     colors = list(colors)
     while len(colors) > n:
         best = None

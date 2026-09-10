@@ -67,9 +67,9 @@ gba-editor/
 │       │   ├── icons.py, widgets.py, reorderable_bar.py, build_panel.py
 │       │   ├── catalog.py           ← cœur partagé maître+side (join par clé, pluriel, set_language)
 │       │   ├── notice.py            ← les 3 niveaux de contenu informatif (bâti sur catalog.py)
-│       │   ├── notices/notices.json ← leurs TEXTES, hors du code (cf. « Textes de l'ÉDITEUR »)
+│       │   ├── notices/             ← notices.json (source EN) + notices_<code>.json (traductions)
 │       │   ├── labels.py            ← label("clé") : libellés, titres, menus, infobulles (bâti sur catalog.py)
-│       │   └── labels/labels.json   ← leurs TEXTES, hors du code (même grammaire que les notices)
+│       │   └── labels/              ← labels.json (source EN) + labels_<code>.json (traductions) — cf. docs/ui-text.md
 │       ├── home/
 │       │   └── project_picker.py    ← écran d'accueil (HomeScreen)
 │       ├── scene_manager/
@@ -1172,10 +1172,12 @@ open, create…) traduits une seule fois.
 
 Ce que le catalogue de libellés ne reçoit PAS, délibérément (chacun a sa raison) : les
 libellés d'annulation (`SetFieldCmd label=…`, visibles dans le menu Undo, corpus à part),
-les identifiants qui doublent comme libellé (`COLUMN_TYPES`, `NO_CATEGORY`, noms de type
-`int`/`bool`…), les noms de format techniques (BGR555, PNG), les titres d'`AssetFinder`
-(passe séparée), et les blocs de diagnostic très interpolés (assemblés fragment par fragment —
-à reprendre en clés-phrases à arguments nommés lors d'une passe dédiée).
+les identifiants techniques (noms de type `int`/`bool`…), les noms de format (BGR555,
+PNG), les données de l'utilisateur et les diagnostics reçus du cœur ou d'outils externes.
+Les titres d'`AssetFinder`, les tables d'affichage et les diagnostics formulés par l'UI
+sont désormais extraits. Les identifiants de familles restent distincts de leurs titres
+traduits. [Le contrat des textes](docs/ui-text.md) précise les exceptions et les limites
+du contrôle ciblé `tools/check_ui_text.py`, intégré au contrôle d'architecture.
 
 **Le niveau est choisi par l'appelant, le ton est écrit dans le catalogue.** Le niveau est
 une question de place dans l'écran ; le ton est une propriété du message. Les mélanger est

@@ -232,7 +232,7 @@ class VarTablePanel(QWidget):
         self._updating = False
         if new and self._project and self._project.variable_name_taken(
                 self._kind, new, exclude=entry):
-            QMessageBox.warning(self, label("vartbl.dup_title"),
+            QMessageBox.warning(self, label("common.duplicate"),
                                 label("vartbl.dup_msg", name=new))
 
     def _sync_to_project(self):
@@ -334,7 +334,7 @@ class VarTablePanel(QWidget):
             a_persist.setCheckable(True)
             a_persist.setChecked(entry.persist)
         menu.addSeparator()
-        a_del = menu.addAction(label("vartbl.delete"))
+        a_del = menu.addAction(label("common.delete"))
         action = menu.exec(self._tbl.viewport().mapToGlobal(pos))
         if action == a_get:
             self.snippet_requested.emit(self._snippet_get(name, n))

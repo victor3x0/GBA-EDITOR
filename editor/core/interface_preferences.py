@@ -12,8 +12,8 @@ arrive et à qui elles s'adressent ; et un réglage de projet passe par
 préférence de machine**. Un réglage d'application n'a rien à faire dans
 l'historique d'un projet, et c'est le vrai argument des deux.
 
-Portée actuelle : une seule préférence, les astuces (le niveau 3 de
-`ui/common/notice.py`, ROADMAP v0.11). Le fichier existe pour ce qui décrit
+Portée actuelle : les astuces (le niveau 3 de `ui/common/notice.py`) et la
+langue de l'interface (ROADMAP v0.11). Le fichier existe pour ce qui décrit
 l'AFFICHAGE de l'éditeur — pas pour devenir le tiroir de tout ce qui n'a pas
 trouvé de place ailleurs : un réglage qui décrit le JEU va dans
 `ProjectSettings`, un chemin de machine dans `toolchain`/`external_tools`.
@@ -29,7 +29,12 @@ CONFIG_FILE = config_dir() / "interface.json"
 # Ce qu'une installation neuve montre. Les astuces sont VRAIES par défaut :
 # elles s'adressent d'abord à qui découvre l'éditeur, et celui-là n'ira pas
 # les allumer dans un écran de réglages qu'il ne connaît pas encore.
-_DEFAULTS = {"show_tips": True}
+_DEFAULTS = {
+    "show_tips": True,
+    # "" est le catalogue maître. Une langue d'interface est propre à la
+    # machine : elle ne dépend ni du jeu ouvert, ni de sa langue de jeu.
+    "language": "",
+}
 
 _cache: dict | None = None
 
@@ -59,4 +64,16 @@ def tips_shown() -> bool:
 
 def set_tips_shown(value: bool):
     _load()["show_tips"] = bool(value)
+    _save()
+
+
+def interface_language() -> str:
+    """Code de langue choisi pour l'interface ("" = catalogue maître)."""
+    value = _load().get("language", _DEFAULTS["language"])
+    return value if isinstance(value, str) else _DEFAULTS["language"]
+
+
+def set_interface_language(code: str):
+    """Persiste la langue de l'interface sans la mélanger au projet ouvert."""
+    _load()["language"] = str(code or "")
     _save()

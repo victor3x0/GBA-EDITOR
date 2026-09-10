@@ -3,6 +3,7 @@ d'actor) : note libre + liste des variables exposées (ajout/retrait). Le nom
 de l'asset (fichier .lua) est renommé via l'en-tête partagé (AssetHeaderBar),
 géré par DynamicInspector — cf. dynamic_inspector._on_header_rename."""
 from __future__ import annotations
+from ui.common.labels import label
 import re
 from pathlib import Path
 from typing import Optional
@@ -66,7 +67,7 @@ class ScriptInspector(QWidget):
         layout.setSpacing(6)
         scroll.setWidget(inner)
 
-        self._empty = QLabel("Select a script\nfrom the left panel")
+        self._empty = QLabel(label('scrinsp.empty'))
         self._empty.setFont(QFont(T.UI, T.MD))
         self._empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:20px;")
         layout.addWidget(self._empty)
@@ -77,15 +78,15 @@ class ScriptInspector(QWidget):
         cl.setSpacing(6)
 
         # ── Carte Note ────────────────────────────────────────────
-        notes_card = CollapsibleCard("Note")
+        notes_card = CollapsibleCard(label('common.note'))
         self._notes_edit = NotesEdit()
         self._notes_edit.committed.connect(self._on_note_committed)
         notes_card.body_layout.addWidget(self._notes_edit)
         cl.addWidget(notes_card)
 
         # ── Carte Variables exposées ──────────────────────────────
-        vars_card = CollapsibleCard("Exposed variables")
-        self._btn_add_var = W.btn_add("Add an exposed variable")
+        vars_card = CollapsibleCard(label('scrinsp.exposed_variables'))
+        self._btn_add_var = W.btn_add(label('scrinsp.add_an_exposed_variable'))
         self._btn_add_var.clicked.connect(self._on_add_var)
         vars_card.add_header_widget(self._btn_add_var)
 
@@ -94,7 +95,7 @@ class ScriptInspector(QWidget):
         self._vars_list.setSpacing(3)
         vars_card.body_layout.addLayout(self._vars_list)
 
-        self._vars_empty_hint = QLabel("No exposed variable.")
+        self._vars_empty_hint = QLabel(label('scrinsp.no_exposed_variable'))
         self._vars_empty_hint.setFont(QFont(T.UI, T.XS))
         self._vars_empty_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         vars_card.body_layout.addWidget(self._vars_empty_hint)
@@ -153,7 +154,7 @@ class ScriptInspector(QWidget):
             lambda t, n=name: self._commit_type(n, t))
         hdr.addWidget(type_cb)
 
-        btn_del = W.btn_danger(f"Remove '{name}'")
+        btn_del = W.btn_danger(label('scrinsp.remove_name', name=name))
         btn_del.clicked.connect(lambda _c=False, n=name: self._on_remove_var(n))
         hdr.addWidget(btn_del)
         cv.addLayout(hdr)
@@ -191,8 +192,8 @@ class ScriptInspector(QWidget):
             seg = QWidget(); hb = QHBoxLayout(seg)
             hb.setContentsMargins(0, 0, 0, 0); hb.setSpacing(0)
             grp = QButtonGroup(seg); grp.setExclusive(True)
-            for label, val, rounded in (("true", True, "left"), ("false", False, "right")):
-                b = QPushButton(label); b.setCheckable(True)
+            for disp, val, rounded in (("true", True, "left"), ("false", False, "right")):
+                b = QPushButton(disp); b.setCheckable(True)
                 b.setFont(QFont(T.MONO, T.SM))
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
                 b.setChecked(cur == val)
@@ -237,10 +238,10 @@ class ScriptInspector(QWidget):
             def sync_preview(_=None):
                 preview.set_text(edit.toPlainText())
                 if preview.truncated:
-                    cap.setText(f"⚠ exceeds the screen — past {MAX_CELLS} chars of 8px")
+                    cap.setText(label('scrinsp.overflow', MAX_CELLS=MAX_CELLS))
                     cap.setStyleSheet(f"color:{C.ACCENT_RED}; background:transparent;")
                 else:
-                    cap.setText("gauge · 240px screen, 8px/char")
+                    cap.setText(label('scrinsp.gauge_240px_screen_8px_char'))
                     cap.setStyleSheet(f"color:{C.TEXT_MUTED}; background:transparent;")
             edit.textChanged.connect(sync_preview)
             edit.committed.connect(
@@ -277,8 +278,8 @@ class ScriptInspector(QWidget):
             sp_y = W.spinbox(int(vals[1]), -9999, 9999)
             sp_w = W.spinbox(int(vals[2]), 0, 9999)
             sp_h = W.spinbox(int(vals[3]), 0, 9999)
-            W.pair("Offset", "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, vbox)
-            W.pair("Size", "W", C.TEXT_DIM, sp_w, "H", C.TEXT_DIM, sp_h, vbox)
+            W.pair(label('scrinsp.offset'), "X", C.AXIS_X, sp_x, "Y", C.AXIS_Y, sp_y, vbox)
+            W.pair(label('common.size'), "W", C.TEXT_DIM, sp_w, "H", C.TEXT_DIM, sp_h, vbox)
 
             def save_rect(_v=None):
                 var["default"] = [sp_x.value(), sp_y.value(), sp_w.value(), sp_h.value()]; save()
@@ -289,7 +290,7 @@ class ScriptInspector(QWidget):
             values = list(var.get("values") or [])
             vals_edit = QLineEdit(", ".join(values))
             vals_edit.setFont(QFont(T.MONO, T.MD)); vals_edit.setStyleSheet(QSS.lineedit)
-            vals_edit.setPlaceholderText("values, comma-separated")
+            vals_edit.setPlaceholderText(label('scrinsp.values_comma_separated'))
 
             def commit_values():
                 new_vals = [s.strip() for s in vals_edit.text().split(",") if s.strip()]
@@ -298,19 +299,19 @@ class ScriptInspector(QWidget):
                     var["default"] = new_vals[0] if new_vals else ""
                 save(); self._refresh_vars()
             vals_edit.editingFinished.connect(commit_values)
-            W.row("Values", vals_edit, vbox)
+            W.row(label('scrinsp.values'), vals_edit, vbox)
             if values:
                 cb = W.combobox(values, str(var.get("default") or values[0]))
                 cb.currentTextChanged.connect(
                     lambda t: (var.__setitem__("default", t), save()))
-                W.row("Default", cb, vbox)
+                W.row(label('scrinsp.default'), cb, vbox)
 
         else:  # actor_ref / scene_ref / sfx_ref — pas de contexte projet ici
             le = QLineEdit(str(var.get("default") or ""))
             le.setFont(QFont(T.MONO, T.MD)); le.setStyleSheet(QSS.lineedit)
-            le.setPlaceholderText(f"name ({typ})")
+            le.setPlaceholderText(label('scrinsp.name_typ', typ=typ))
             le.editingFinished.connect(lambda: (var.__setitem__("default", le.text()), save()))
-            W.row("Ref", le, vbox)
+            W.row(label('scrinsp.ref'), le, vbox)
 
     def _labeled_field(self, label: str, widget: QWidget) -> QWidget:
         """Colonne : label (mot complet) au-dessus de son champ."""
@@ -381,8 +382,8 @@ class ScriptInspector(QWidget):
 
         bounds = QWidget(); bh = QHBoxLayout(bounds)
         bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(10)
-        bh.addWidget(self._labeled_field("Min", mn_w), 1)
-        bh.addWidget(self._labeled_field("Max", mx_w), 1)
+        bh.addWidget(self._labeled_field(label('scrinsp.min'), mn_w), 1)
+        bh.addWidget(self._labeled_field(label('scrinsp.max'), mx_w), 1)
         vbox.addWidget(bounds)
 
     # ── Actions ───────────────────────────────────────────────────
@@ -442,8 +443,8 @@ class ScriptInspector(QWidget):
         if not self._path:
             return
         if QMessageBox.question(
-            self, "Remove variable",
-            f"Remove the exposed variable '{name}' from the script?",
+            self, label('scrinsp.remove_variable'),
+            label('scrinsp.remove_var_confirm', name=name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return

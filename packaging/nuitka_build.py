@@ -162,6 +162,12 @@ def build_command(version: str, output_dir: Path) -> list[str]:
         f"=ui/common/notices"
     )
 
+    # Starter local : les palettes initiales doivent exister dans une version
+    # distribuée aussi, pas seulement depuis un checkout de développement.
+    cmd.append(
+        f"--include-data-dir={EDITOR_DIR / 'project_starters'}=project_starters"
+    )
+
     # Les flèches ▲▼ des QSpinBox venaient d'assets PNG livrés ici ; elles
     # sortent maintenant de qtawesome comme le reste des icônes (ui.common.
     # icons.qss_image les rend au démarrage dans un cache temporaire).

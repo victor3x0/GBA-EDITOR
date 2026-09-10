@@ -14,6 +14,7 @@ vers la scène/vue/façade (les items dialoguent avec leur scène via `self.scen
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Optional
 
 from core.history import MoveActorCmd, MoveActorGroupCmd, get_history
@@ -473,8 +474,8 @@ class CameraItem(QGraphicsItem):
         self.setToolTip(self._tooltip())
 
     def _tooltip(self) -> str:
-        name = self.camera.name if self.camera else "(default)"
-        return f"GBA Camera — {name} — {self._frame_w}×{self._frame_h} px\nDrag to move the view"
+        name = self.camera.name if self.camera else label('common.default_paren')
+        return label('cvitems.gba_camera_name_frame_w_frame_h_px', name=name, _frame_w=self._frame_w, _frame_h=self._frame_h)
 
     def set_frame_size(self, w: int, h: int):
         """Redimensionne le rectangle de vue — c'est le frame écran de la
@@ -528,8 +529,8 @@ class CameraItem(QGraphicsItem):
             rect.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
             rect.setAcceptHoverEvents(False)
             rect.setToolTip(
-                f"{ws.name or '(unnamed window)'} — {x1 - x0}×{y1 - y0} px at ({x0}, {y0})"
-                + ("" if ws.visible else "\n(inactive — window_show at 0)")
+                label('cvitems.value_value_2_value_3_px_at_x0', value=ws.name or label('cvitems.unnamed_window'), value_2=x1 - x0, value_3=y1 - y0, x0=x0, y0=y0)
+                + ("" if ws.visible else label('cvitems.inactive_window_show_at_0'))
             )
             self._window_items.append(rect)
 

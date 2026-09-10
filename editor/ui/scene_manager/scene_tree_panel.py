@@ -54,8 +54,8 @@ _UI_ELEM_ICON = {KIND_CONTAINER: "ui_container", KIND_LIST: "ui_list",
 _UI_ELEM_LABEL = {KIND_CONTAINER: "container", KIND_LIST: "list",
                   KIND_TEXT: "text", KIND_IMAGE: "image"}
 # Les types proposés à la création, dans l'ordre où l'auteur les rencontre.
-_UI_ELEM_ADD = ((KIND_TEXT, "scttree.widget_text"), (KIND_CONTAINER, "scttree.widget_container"),
-                (KIND_LIST, "scttree.widget_list"), (KIND_IMAGE, "scttree.widget_image"))
+_UI_ELEM_ADD = ((KIND_TEXT, "common.text"), (KIND_CONTAINER, "common.container"),
+                (KIND_LIST, "common.list"), (KIND_IMAGE, "common.image"))
 
 
 def _lua_handle(node_type: str, obj) -> str:
@@ -269,7 +269,7 @@ class _ActiveSceneTree(_Tree):
             root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
             root_item.setData(0, _ROLE_OBJ, lay)
             root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
-            base = lay.name if many else label("scttree.interface")
+            base = lay.name if many else label("common.interface")
             root_item.setText(0, label("scttree.iface_shared_label", base=base, n=len(users))
                               if shared else base)
             root_item.setForeground(0, QColor(C.ACCENT_YLW if shared else _DIM))
@@ -623,7 +623,7 @@ class _ActiveSceneTree(_Tree):
                         lambda _, k=kind, lay=layout, p=el.name: self._create_ui_elem(lay, k, p))
             menu.addSeparator()
             self.add_rename_action(menu, item, label("scttree.rename"))
-            menu.addAction(label("scttree.delete")).triggered.connect(
+            menu.addAction(label("common.delete")).triggered.connect(
                 lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
 
         menu.exec(self.viewport().mapToGlobal(pos))
@@ -806,9 +806,9 @@ class SceneTreePanel(QWidget):
         self._btn_add = W.btn_add(label("scttree.add"))
         add_menu = QMenu(self._btn_add)
         add_menu.setFont(QFont(T.UI, T.MD))
-        add_menu.addAction(_ico("actor", COLOR_DEFAULT), label("scttree.actor")).triggered.connect(self._add_actor)
-        add_menu.addAction(_ico("camera", COLOR_DEFAULT), label("scttree.camera")).triggered.connect(self._add_camera)
-        add_menu.addAction(_ico("ui_layout", COLOR_UI), label("scttree.interface")).triggered.connect(self._add_interface)
+        add_menu.addAction(_ico("actor", COLOR_DEFAULT), label("common.actor")).triggered.connect(self._add_actor)
+        add_menu.addAction(_ico("camera", COLOR_DEFAULT), label("common.camera")).triggered.connect(self._add_camera)
+        add_menu.addAction(_ico("ui_layout", COLOR_UI), label("common.interface")).triggered.connect(self._add_interface)
         self._btn_add.setMenu(add_menu)
         self._btn_add.setPopupMode(self._btn_add.ToolButtonPopupMode.InstantPopup)
         hl.addWidget(self._btn_add)

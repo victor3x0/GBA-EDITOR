@@ -19,6 +19,7 @@ pendantes, silencieusement.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from pathlib import Path
 
 from ui.common.icons import get as _ico, COLOR_DEFAULT
@@ -98,23 +99,25 @@ def _menu_choice(entries):
 
 SCENES = AssetKind(
     label         = "Scenes",
+    label_key = 'akind.scenes',
     icon          = "scene",
     nodes         = store_nodes("scenes"),
     rename        = _renamer("rename_scene"),
     delete        = _store_deleter("scenes"),
-    delete_prompt = lambda s: f"Delete scene “{s.name}”?\n(Ctrl+Z to undo)",
-    add_tooltip   = "New scene",     # l'écran crée (scène active à reporter)
+    delete_prompt = lambda s: label('akind.delete_scene_name_ctrl_z_to_undo', name=s.name),
+    add_tooltip_key = 'akind.new_scene',     # l'écran crée (scène active à reporter)
     dir_of        = resource_dir("scenes_dir"),
 )
 
 PREFABS = AssetKind(
     label         = "Prefabs",
+    label_key = 'common.prefabs',
     icon          = "prefab",
     nodes         = store_nodes("prefabs"),
     rename        = _renamer("rename_prefab"),
     delete        = _store_deleter("prefabs"),
-    delete_prompt = lambda p: f"Delete prefab “{p.name}”?\n(Ctrl+Z to undo)",
-    add_tooltip   = "New prefab",
+    delete_prompt = lambda p: label('akind.delete_prefab_name_ctrl_z_to_undo', name=p.name),
+    add_tooltip_key = 'akind.new_prefab',
     # Glisser un prefab sur le canvas l'y instancie.
     mime          = (MIME_PREFAB_TEMPLATE, lambda project, pf: pf.name),
     dir_of        = resource_dir("prefab_dir"),
@@ -146,13 +149,14 @@ def _rename_script(project, path: Path, new_text: str) -> str:
 
 SCRIPTS = AssetKind(
     label         = "Scripts",
+    label_key = 'akind.scripts',
     icon          = "script_lua",
     icon_of       = _script_icon,
     nodes         = dir_nodes("scripts_dir", (".lua", ".c")),
     rename        = _rename_script,
     delete        = lambda project, path: DeleteFileCmd(path),
-    delete_prompt = lambda p: f"Delete “{p.name}”?\n(Ctrl+Z to undo)",
-    add_tooltip   = "New script",
+    delete_prompt = lambda p: label('akind.delete_name_ctrl_z_to_undo', name=p.name),
+    add_tooltip_key = 'akind.new_script',
     # Glisser un script sur un actor lui attache un ScriptComponent. La charge
     # utile est le chemin RELATIF au projet : un chemin absolu ne survivrait pas
     # au déplacement du dossier de projet.
@@ -187,15 +191,16 @@ def _rename_sprite(project, sprite, new_name: str) -> str:
 
 SPRITES = AssetKind(
     label         = "Sprites",
+    label_key = 'common.sprites',
     icon          = "sprite",
     nodes         = store_nodes("sprites", group_by=_sprite_group,
                                 collapse_singletons=True),
     rename        = _rename_sprite,
     delete        = _store_deleter("sprites"),
-    delete_prompt = lambda s: f"Delete sprite “{s.name}”?\n(Ctrl+Z to undo)",
+    delete_prompt = lambda s: label('akind.delete_sprite_name_ctrl_z_to_undo', name=s.name),
     # Un sprite se crée uniquement par import d'une image : l'écran ouvre le
     # dialogue (il lui faut un parent), le finder ne fait que le demander.
-    add_tooltip   = "Import a sprite sheet",
+    add_tooltip_key = 'akind.import_a_sprite_sheet',
     dir_of        = resource_dir("sprites_dir"),
 )
 
@@ -206,6 +211,7 @@ SPRITES = AssetKind(
 
 BACKGROUNDS = AssetKind(
     label  = "Backgrounds",
+    label_key = 'common.backgrounds',
     icon   = "background",
     # `kind` (scene / ui / animated) est le seul axe de rangement que le modèle
     # porte déjà : on s'en sert comme dossier tant que l'utilisateur n'a pas les
@@ -215,6 +221,9 @@ BACKGROUNDS = AssetKind(
     delete = _store_deleter("backgrounds"),
     dir_of = resource_dir("backgrounds_dir"),
 )
+
+
+_BACKGROUND_LABEL_KEYS = {'scene': 'common.backgrounds', 'ui': 'akind.ui_backgrounds', 'animated': 'akind.animated'}
 
 
 def _background_of_kind(bg_kind: str, label: str, add_tooltip: str,
@@ -228,24 +237,25 @@ def _background_of_kind(bg_kind: str, label: str, add_tooltip: str,
     rangées par `kind`. Même store, deux façons de le présenter."""
     return AssetKind(
         label       = label,
+        label_key   = _BACKGROUND_LABEL_KEYS[bg_kind],
         icon        = "background",
         nodes       = store_nodes("backgrounds",
                                   where=lambda bg, k=bg_kind: getattr(bg, "kind", "") == k),
         rename      = _renamer("rename_background"),
         delete      = _store_deleter("backgrounds"),
-        add_tooltip = add_tooltip,      # sans `add` : l'écran ouvre l'import
+        add_tooltip_key = add_tooltip,      # sans `add` : l'écran ouvre l'import
         mime        = mime,
         dir_of      = resource_dir("backgrounds_dir"),
     )
 
 
-BACKGROUNDS_SCENE = _background_of_kind("scene", "Backgrounds", "Import a PNG")
+BACKGROUNDS_SCENE = _background_of_kind("scene", "Backgrounds", 'akind.import_a_png')
 BACKGROUNDS_UI    = _background_of_kind("ui", "UI backgrounds",
-                                        "Import a UI frame or panel PNG")
+                                        'akind.import_a_ui_frame_or_panel_png')
 # Un fond animé se POSE sur le canvas d'un fond hôte : c'est la seule famille de
 # fonds qui se glisse (cf. project_v04_decor_animation).
 BACKGROUNDS_ANIM  = _background_of_kind("animated", "Animated",
-                                        "Import an animation sheet PNG",
+                                        'akind.import_an_animation_sheet_png',
                                         mime=(MIME_ANIMATED_BG,
                                               lambda project, bg: bg.name))
 
@@ -256,6 +266,7 @@ BACKGROUNDS_ANIM  = _background_of_kind("animated", "Animated",
 
 FONTS = AssetKind(
     label      = "Fonts",
+    label_key = 'common.fonts',
     icon       = "font",
     nodes      = store_nodes("fonts"),
     rename     = _renamer("rename_font"),
@@ -263,11 +274,9 @@ FONTS = AssetKind(
     dir_of     = resource_dir("fonts_dir"),
     # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
     # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
-    empty_text = "No font.\n\nDrop a PNG or a .fnt\ninto assets/fonts/",
+    empty_text_key = 'akind.no_font_drop_a_png_or_a_fnt',
     tooltip_of = lambda f: (
-        f"{f.name}\n{len(f.glyphs)} glyphs · {f.cell_w}×{f.cell_h} px\n"
-        f"{f.tile_count()} tiles in the UI layer's charblock\n"
-        f"source: {f.source_format}"
+        label('akind.name_value_glyphs_cell_w_cell_h_px', name=f.name, value=len(f.glyphs), cell_w=f.cell_w, cell_h=f.cell_h, value_2=f.tile_count(), source_format=f.source_format)
     ),
 )
 
@@ -296,27 +305,18 @@ def _import_palette(project):
     de fichier, taille déduite du nombre de couleurs."""
     from PyQt6.QtWidgets import QFileDialog, QMessageBox
     from pathlib import Path as _P
-    from core.models.palette import PaletteBank
-    from core.models.gba_color import rgb888_to_bgr555
     from core.history import AddResourceCmd
-    from ui.palette_editor.palette_file_io import parse_palette_file
+    from core.palette_io import PALETTE_IMPORT_FILTER, import_palette
 
     path, _ = QFileDialog.getOpenFileName(
-        None, "Import a palette", "", "Palettes (*.gpl *.pal *.txt *.hex);;All files (*)")
+        None, label('akind.import_a_palette'), "", PALETTE_IMPORT_FILTER)
     if not path:
         return None
     try:
-        colors = parse_palette_file(_P(path))
-    except OSError as e:
-        QMessageBox.warning(None, "Import", f"Unreadable file: {e}")
+        bank = import_palette(_P(path), _unique(project.palettes, _P(path).stem))
+    except (OSError, ValueError) as e:
+        QMessageBox.warning(None, label('akind.import'), label('akind.unreadable_file_e', e=e))
         return None
-    if not colors:
-        QMessageBox.warning(None, "Import", "No color recognized in this file.")
-        return None
-    size = 256 if len(colors) > 16 else 16
-    bgr = [rgb888_to_bgr555(*c) for c in colors[:size]]
-    bgr += [0] * (size - len(bgr))            # complète si le fichier est court
-    bank = PaletteBank(name=_unique(project.palettes, _P(path).stem), colors=bgr, size=size)
     get_history().push(AddResourceCmd(project.palettes, bank))
     return bank
 
@@ -327,10 +327,10 @@ def _add_palette(project):
     plutôt que dialogues ») : la banque naît nommée, et le finder ouvre aussitôt
     son renommage en place."""
     return _menu_choice([
-        ("New 16-color palette (4bpp)",  lambda: _new_palette(project, 16)),
-        ("New 256-color palette (8bpp)", lambda: _new_palette(project, 256)),
+        (label('akind.new_16_color_palette_4bpp'),  lambda: _new_palette(project, 16)),
+        (label('akind.new_256_color_palette_8bpp'), lambda: _new_palette(project, 256)),
         (None, None),
-        ("Import…",                      lambda: _import_palette(project)),
+        (label('akind.import_2'),                      lambda: _import_palette(project)),
     ])
 
 
@@ -346,16 +346,17 @@ def _duplicate_palette(project, bank):
 
 PALETTES = AssetKind(
     label       = "Palettes",
+    label_key = 'common.palettes',
     icon        = "palette",
     icon_of     = _palette_icon,
     nodes       = store_nodes("palettes"),
     suffix_of   = lambda bank: f"({bank.size})",
     rename      = _renamer("rename_palette"),
     delete      = _store_deleter("palettes"),
-    delete_prompt = lambda b: f"Delete palette “{b.name}”?\n(Ctrl+Z to undo)",
+    delete_prompt = lambda b: label('akind.delete_palette_name_ctrl_z_to_undo', name=b.name),
     add         = _add_palette,
-    add_tooltip = "Add a palette (create / import)",
-    actions     = (("Duplicate", _duplicate_palette),),
+    add_tooltip_key = 'akind.add_a_palette_create_import',
+    actions     = (('common.duplicate', _duplicate_palette),),
     dir_of      = resource_dir("palettes_dir"),
 )
 
@@ -379,18 +380,20 @@ def _add_sound(attr: str, cls_name: str, base: str):
 
 SFX = AssetKind(
     label         = "SFX",
+    label_key = 'common.sfx',
     icon          = "sfx",
     nodes         = store_nodes("sfx"),
     rename        = _renamer("rename_sound"),
     delete        = _store_deleter("sfx"),
-    delete_prompt = lambda a: f"Delete SFX “{a.name}”?\n(Ctrl+Z to undo)",
+    delete_prompt = lambda a: label('akind.delete_sfx_name_ctrl_z_to_undo', name=a.name),
     add           = _add_sound("sfx", "Sfx", "SFX"),
-    add_tooltip   = "Add an SFX",
+    add_tooltip_key = 'akind.add_an_sfx',
     dir_of        = resource_dir("sfx_dir"),
 )
 
 MUSIC = AssetKind(
     label         = "Music",
+    label_key = 'akind.music',
     icon          = "music",
     nodes         = store_nodes("music"),
     # Glissable vers le graphe de la MusicBox : lâchée sur un nœud, elle en
@@ -398,9 +401,9 @@ MUSIC = AssetKind(
     mime          = (MIME_MUSIC, lambda _p, m: m.name),
     rename        = _renamer("rename_sound"),
     delete        = _store_deleter("music"),
-    delete_prompt = lambda a: f"Delete track “{a.name}”?\n(Ctrl+Z to undo)",
+    delete_prompt = lambda a: label('akind.delete_track_name_ctrl_z_to_undo', name=a.name),
     add           = _add_sound("music", "Music", "Track"),
-    add_tooltip   = "Add a track",
+    add_tooltip_key = 'akind.add_a_track',
     dir_of        = resource_dir("music_dir"),
 )
 
@@ -435,14 +438,15 @@ def _rename_data_table(project, table, new_name: str) -> str:
 
 DATA_TABLES = AssetKind(
     label         = "Tables",
+    label_key = 'akind.tables',
     icon          = "data_table",
     nodes         = store_nodes("data_tables"),
     suffix_of     = lambda t: f"({len(t.rows)} × {len(t.columns)})",
     rename        = _rename_data_table,
     delete        = _store_deleter("data_tables"),
-    delete_prompt = lambda t: f"Delete table “{t.name}”?\n(Ctrl+Z to undo)",
+    delete_prompt = lambda t: label('akind.delete_table_name_ctrl_z_to_undo', name=t.name),
     add           = _add_data_table,
-    add_tooltip   = "New table",
+    add_tooltip_key = 'akind.new_table',
     dir_of        = resource_dir("data_tables_dir"),
 )
 

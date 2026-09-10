@@ -134,7 +134,7 @@ class ActionMatrix(QWidget):
                 if idx < 0 and cur:
                     # L'asset a disparu : on le GARDE visible plutôt que de
                     # retomber sur « rien », ce qui ferait mentir la case.
-                    combo.addItem(label("sndmix.asset_missing", name=cur), cur)
+                    combo.addItem(label("common.missing_name", name=cur), cur)
                     idx = combo.count() - 1
                 combo.setCurrentIndex(max(0, idx))
                 combo.currentIndexChanged.connect(
@@ -226,7 +226,7 @@ class ActionMatrix(QWidget):
         if not self._machine:
             return
         name, ok = QInputDialog.getText(self, label("sndmix.new_state_title"),
-                                        label("sndmix.new_state_prompt"))
+                                        label("common.name_colon"))
         name = (name or "").strip()
         if not ok or not name:
             return
@@ -498,7 +498,7 @@ class MusicStateInspector(QWidget):
             lambda _i: self._set("music", self._music.currentData() or ""))
         W.row(label("sndmix.track"), self._music, root)
 
-        self._loop = QCheckBox(label("sndmix.loop")); self._loop.setStyleSheet(QSS.checkbox)
+        self._loop = QCheckBox(label("common.loop")); self._loop.setStyleSheet(QSS.checkbox)
         self._loop.toggled.connect(lambda v: self._set("loop", bool(v)))
         root.addWidget(self._loop)
 
@@ -570,7 +570,7 @@ class MusicStateInspector(QWidget):
             if i < 0 and state.music:
                 # La piste a disparu : on la GARDE visible plutôt que de
                 # retomber sur « rien », ce qui ferait mentir le champ.
-                self._music.addItem(label("sndmix.track_missing", name=state.music), state.music)
+                self._music.addItem(label("common.missing_name", name=state.music), state.music)
                 i = self._music.count() - 1
             self._music.setCurrentIndex(max(0, i))
             self._loop.setChecked(state.loop)

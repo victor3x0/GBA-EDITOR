@@ -41,7 +41,7 @@ class SpriteEditor(BaseComponentEditor):
             COLOR_SPRITE, on_picked=_on_sprite_picked, on_cleared=_on_sprite_cleared,
             add_label=label("comped.choose_sprite"), parent=self.insp,
         )
-        W.row(label("comped.sprite"), slot, layout)
+        W.row(label("common.sprite"), slot, layout)
 
         # ── Palette OBJ (pal_bank est un champ Actor/Prefab) ─────────────
         # Un Prefab n'est qu'un modèle : à l'instanciation, il arrive dans une
@@ -75,7 +75,7 @@ class SpriteEditor(BaseComponentEditor):
         pal_slot = palette_picker_slot(
             active_banks, current_pal_name,
             COLOR_SPRITE, on_picked=_on_pal_picked,
-            add_label=label("comped.choose_palette"), parent=self.insp,
+            add_label=label("common.choose_palette"), parent=self.insp,
         )
         pal_slot.setToolTip(label("comped.palette_tip"))
         W.row(label("comped.palette"), pal_slot, layout)
@@ -153,7 +153,7 @@ class SpriteEditor(BaseComponentEditor):
         sy.setToolTip(label("comped.scale_y_tip"))
         sx.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_x", v))
         sy.valueChanged.connect(lambda v: self._set_comp_field(comp, "scale_y", v))
-        W.pair(label("comped.scale"), "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
+        W.pair(label("common.scale"), "X", C.AXIS_X, sx, "Y", C.AXIS_Y, sy, layout)
 
         # ── Rotation locale ───────────────────────────────────────
         rot = W.spinbox(int(getattr(comp, "rotation", 0)), min_v=0, max_v=359)
@@ -162,7 +162,7 @@ class SpriteEditor(BaseComponentEditor):
         rot.setEnabled(_aff)
         rot.setToolTip(label("comped.rotation_tip"))
         rot.valueChanged.connect(lambda v: self._set_comp_field(comp, "rotation", v))
-        W.row(label("comped.rotation"), rot, layout)
+        W.row(label("common.rotation"), rot, layout)
 
         # ── Offset (position relative à l'actor) ─────────────────
         # Le sprite n'a PAS de position monde : son offset est relatif à

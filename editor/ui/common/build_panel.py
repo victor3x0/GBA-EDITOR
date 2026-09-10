@@ -1,5 +1,6 @@
 """BuildPanel, ToolchainBar."""
 
+from ui.common.labels import label
 import re
 
 from PyQt6.QtWidgets import (
@@ -97,7 +98,7 @@ class DiagnosticsView(QWidget):
         bar.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         h = QHBoxLayout(bar)
         h.setContentsMargins(8, 0, 8, 0)
-        self._btn_refresh = QPushButton("⟳ Refresh")
+        self._btn_refresh = QPushButton(label('build.refresh'))
         self._btn_refresh.setFont(QFont(T.UI, T.SM))
         self._btn_refresh.setFixedHeight(20)
         self._btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -132,10 +133,10 @@ class DiagnosticsView(QWidget):
             it.setForeground(QColor(C.ACCENT_RED if m.level == "error" else C.ACCENT_YLW))
             self._list.addItem(it)
         if not self._msgs:
-            self._summary.setText("No problems")
+            self._summary.setText(label('build.no_problems'))
         else:
             self._summary.setText(
-                f"{len(warnings)} warning(s) · {len(errors)} error(s)")
+                label('build.counts', value=len(warnings), value_2=len(errors)))
 
     def _on_row(self, item):
         i = self._list.row(item)
@@ -318,12 +319,12 @@ class BuildPanel(QWidget):
         header.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(8, 0, 8, 0)
-        lbl = QLabel("Build / debug")
+        lbl = QLabel(label('build.build_debug'))
         lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         lbl.setStyleSheet(f"color:{C.TEXT_NORM};")
         hl.addWidget(lbl)
         hl.addStretch()
-        btn_clear = QPushButton("Clear")
+        btn_clear = QPushButton(label('build.clear'))
         btn_clear.setFont(QFont(T.UI, T.SM))
         btn_clear.setFixedHeight(20)
         btn_clear.clicked.connect(lambda: self.console.clear())
@@ -350,8 +351,8 @@ class BuildPanel(QWidget):
             f"QTabBar::tab:selected{{color:{C.TEXT_NORM};border-bottom:2px solid {C.ACCENT};}}"
             f"QTabWidget::pane{{border:none;}}"
         )
-        tabs.addTab(self.console, "Console")
-        tabs.addTab(self.diagnostics, "Diagnostics")
+        tabs.addTab(self.console, label('build.console'))
+        tabs.addTab(self.diagnostics, label('build.diagnostics'))
         layout.addWidget(tabs, 1)
 
         # Séparé verticalement du journal, et FERRÉ en bas : contrairement au
@@ -361,7 +362,7 @@ class BuildPanel(QWidget):
         self.rom_bar.cartridge_mib_changed.connect(self.cartridge_mib_changed)
         layout.addWidget(self.rom_bar, 0)
 
-        self.btn_build = QPushButton("▶  Build & Run")
+        self.btn_build = QPushButton(label('build.build_run'))
         self.btn_build.setEnabled(False)
         self.btn_build.setVisible(False)
 
@@ -379,7 +380,7 @@ class BuildPanel(QWidget):
 
     def set_building(self, b):
         self.btn_build.setEnabled(not b)
-        self.btn_build.setText("⏳  Building…" if b else "▶  Build & Run")
+        self.btn_build.setText(label('build.building') if b else label('build.build_run'))
 
     def update_rom_report(self, report):
         """Reçoit le `RomReport` du dernier build (window.py, événement
@@ -405,7 +406,7 @@ class ToolchainBar(QFrame):
         layout.setSpacing(12)
         font = QFont(T.UI, T.SM)
 
-        lbl = QLabel("Toolchain:")
+        lbl = QLabel(label('build.toolchain'))
         lbl.setFont(font); lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
         layout.addWidget(lbl)
 
@@ -415,7 +416,7 @@ class ToolchainBar(QFrame):
         layout.addWidget(self._mgba)
         layout.addStretch()
 
-        btn = QPushButton("⚙ Configure")
+        btn = QPushButton(label('build.configure'))
         btn.setFixedHeight(20); btn.setFont(font)
         btn.setStyleSheet(
             f"background:{C.BORDER}; color:{C.TEXT_NORM}; border:1px solid {C.TEXT_MUTED};"

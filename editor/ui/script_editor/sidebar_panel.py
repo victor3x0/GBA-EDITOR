@@ -158,14 +158,14 @@ class SidebarPanel(QWidget):
 
         # Prefabs
         if nbd.get(DOMAIN_PREFAB):
-            sub = self._sec_refs.sub_section(label("scrsb.prefabs"))
+            sub = self._sec_refs.sub_section(label("common.prefabs"))
             for name in nbd[DOMAIN_PREFAB]:
                 _add(sub, name, "actor.spawn", prefab=name)
 
         # Sprites
         sprites = list(project.sprites)
         if sprites:
-            sub = self._sec_refs.sub_section(label("scrsb.sprites"))
+            sub = self._sec_refs.sub_section(label("common.sprites"))
             for sp in sprites:
                 _add(sub, sp.name, "self:play_anim", anim=sp.name)
 
@@ -174,7 +174,7 @@ class SidebarPanel(QWidget):
         # commentaire, et le dire évite de chercher la fonction manquante.
         bgs = list(project.backgrounds)
         if bgs:
-            sub = self._sec_refs.sub_section(label("scrsb.backgrounds"))
+            sub = self._sec_refs.sub_section(label("common.backgrounds"))
             for bg in bgs:
                 sub.add_widget(_ref_btn(bg.name, f"-- BG: {bg.name}",
                     _tip(bg.name, label("scrsb.bg_ref"))))
@@ -186,8 +186,8 @@ class SidebarPanel(QWidget):
         # métier de l'écran Texte, la sidebar sert à INSÉRER.
         texts = list(getattr(project, "texts", []))
         if texts:
-            sub = self._sec_refs.sub_section(label("scrsb.texts"))
-            _UNFILED = "(unfiled)"
+            sub = self._sec_refs.sub_section(label("common.texts"))
+            _UNFILED = label('scrsb.unfiled')
             values = project.text_values()
             groups: dict[str, list] = {}
             for t in texts:
@@ -220,18 +220,18 @@ class SidebarPanel(QWidget):
                 if key:
                     doms["text"] = key
                 _add(sub, r.name, "text.draw_in",
-                     f"Interface <i>{layout.name}</i>"
-                     + (f" — preview “{escape(key)}”" if key else ""), **doms)
+                     label('scrsb.interface_name', name=layout.name)
+                     + (label('scrsb.preview_value', value=escape(key)) if key else ""), **doms)
 
         # ── Polices ────────────────────────────────────────────────
         if nbd.get(DOMAIN_FONT):
-            sub = self._sec_refs.sub_section(label("scrsb.fonts"))
+            sub = self._sec_refs.sub_section(label("common.fonts"))
             for name in nbd[DOMAIN_FONT]:
                 _add(sub, name, "text.set_font", font=name)
 
         # SFX
         if nbd.get(DOMAIN_SFX):
-            sub = self._sec_refs.sub_section(label("scrsb.sfx"))
+            sub = self._sec_refs.sub_section(label("common.sfx"))
             for name in nbd[DOMAIN_SFX]:
                 _add(sub, name, "sfx.play", sfx=name)
 

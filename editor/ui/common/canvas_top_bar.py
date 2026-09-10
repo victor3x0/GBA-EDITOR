@@ -10,6 +10,7 @@ L'écran hôte reste maître de son canvas : la barre ne fait qu'émettre
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolButton
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
@@ -24,7 +25,9 @@ class CanvasTopBar(QFrame):
     zoom_step_asked = pyqtSignal(int)   # -1 = dézoomer, +1 = zoomer
     fit_asked = pyqtSignal()
 
-    def __init__(self, fit_tip: str = "Fit to view  (F)", parent=None):
+    def __init__(self, fit_tip: str = None, parent=None):
+        if fit_tip is None:
+            fit_tip = label('cvtop.fit_to_view_f')
         super().__init__(parent)
         self.setFixedHeight(BAR_HEIGHT)
         self.setStyleSheet(f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
@@ -36,7 +39,7 @@ class CanvasTopBar(QFrame):
         self._lay = lay
 
         self._btn_zoom_out = self._icon_btn("zoom_out", 16, (24, 24),
-                                            "Zoom out  (wheel down)")
+                                            label('cvtop.zoom_out_wheel_down'))
         self._btn_zoom_out.clicked.connect(lambda: self.zoom_step_asked.emit(-1))
         lay.addWidget(self._btn_zoom_out)
 
@@ -48,7 +51,7 @@ class CanvasTopBar(QFrame):
         lay.addWidget(self._zoom_label)
 
         self._btn_zoom_in = self._icon_btn("zoom_in", 16, (24, 24),
-                                           "Zoom in  (wheel up)")
+                                           label('cvtop.zoom_in_wheel_up'))
         self._btn_zoom_in.clicked.connect(lambda: self.zoom_step_asked.emit(+1))
         lay.addWidget(self._btn_zoom_in)
 

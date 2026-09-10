@@ -1193,7 +1193,7 @@ class _FrameCanvasPanel(QWidget):
         # Scene Manager/Background Editor — cf. palette_bank_strip) : les
         # sous-palettes de la PAL_BANK du sprite (SpriteCenterPanel.load_sprite),
         # clic = palette active pour le mode « Indexé ». Masqué si aucune palette.
-        self.paint_strip = PaletteBankStrip(label("sprframe.no_palette"), self)
+        self.paint_strip = PaletteBankStrip(label("common.no_palette"), self)
         self.paint_strip.setVisible(False)
         self.paint_strip.raise_()
 

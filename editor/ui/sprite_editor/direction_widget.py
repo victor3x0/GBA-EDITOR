@@ -1,6 +1,7 @@
 """ui/sprite_editor/direction_widget.py — sélecteur de directions 3×3 pour une AnimState."""
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QToolButton
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
@@ -53,22 +54,22 @@ class DirectionWidget(QWidget):
 
         from ui.common.icons import get as _ico
 
-        self._btn_h = QToolButton(); self._btn_h.setText("  H-Mirror")
+        self._btn_h = QToolButton(); self._btn_h.setText(label('dirwidget.h_mirror'))
         self._btn_h.setIcon(_ico("mirror_h", C.TEXT_DIM, C.ACCENT_COOL))
         self._btn_h.setIconSize(QSize(16, 16))
         self._btn_h.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._btn_h.setCheckable(True); self._btn_h.setStyleSheet(_MIRROR_BTN)
         self._btn_h.setFixedHeight(28)
-        self._btn_h.setToolTip("Horizontal mirror: generates W, NW, SW from E, NE, SE")
+        self._btn_h.setToolTip(label('dirwidget.mirror_h_tip'))
         self._btn_h.toggled.connect(self._on_h_mirror)
 
-        self._btn_v = QToolButton(); self._btn_v.setText("  V-Mirror")
+        self._btn_v = QToolButton(); self._btn_v.setText(label('dirwidget.v_mirror'))
         self._btn_v.setIcon(_ico("mirror_v", C.TEXT_DIM, C.ACCENT_COOL))
         self._btn_v.setIconSize(QSize(16, 16))
         self._btn_v.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._btn_v.setCheckable(True); self._btn_v.setStyleSheet(_MIRROR_BTN)
         self._btn_v.setFixedHeight(28)
-        self._btn_v.setToolTip("Vertical mirror: generates S, SE, SW from N, NE, NW")
+        self._btn_v.setToolTip(label('dirwidget.mirror_v_tip'))
         self._btn_v.toggled.connect(self._on_v_mirror)
 
         mirror_row.addWidget(self._btn_h, 1)

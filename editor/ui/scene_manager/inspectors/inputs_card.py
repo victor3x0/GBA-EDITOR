@@ -19,6 +19,7 @@ commande annulable.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QCheckBox,
 )
@@ -46,15 +47,13 @@ class InputsCard(CollapsibleCard):
     input_field_changed = pyqtSignal(object, str, object)  # (InputBinding, champ, valeur)
 
     def __init__(self, parent=None):
-        super().__init__("Inputs", expanded=True, parent=parent)
+        super().__init__(label('inputs.inputs'), expanded=True, parent=parent)
         self._project = None
         self._blocking = False
         inner = self.body_layout
 
         hint = QLabel(
-            "Name an action and pick the buttons that trigger it together. "
-            "Placeholder — nothing reads these bindings yet, scripts still "
-            "test physical buttons directly.")
+            label('inputs.hint'))
         hint.setFont(QFont(T.UI, T.XS))
         hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
         hint.setWordWrap(True)
@@ -68,7 +67,7 @@ class InputsCard(CollapsibleCard):
 
         add_row = QHBoxLayout()
         add_row.setContentsMargins(0, 4, 0, 0)
-        self._btn_add = W.btn_add("Declare an input")
+        self._btn_add = W.btn_add(label('inputs.declare_an_input'))
         self._btn_add.clicked.connect(lambda: self.input_added.emit())
         add_row.addWidget(self._btn_add)
         self._count = QLabel("")
@@ -90,7 +89,7 @@ class InputsCard(CollapsibleCard):
             self._btn_add.setEnabled(p is not None)
             self._rebuild_rows()
             n = len(p.settings.inputs) if p else 0
-            self._count.setText("" if not n else f"{n} input{'s' if n > 1 else ''}")
+            self._count.setText("" if not n else label('inputs.count', n=n))
         finally:
             self._blocking = False
 
@@ -118,14 +117,14 @@ class InputsCard(CollapsibleCard):
         name = QLineEdit(binding.name)
         name.setFont(QFont(T.UI, T.SM))
         name.setStyleSheet(QSS.lineedit)
-        name.setPlaceholderText("Jump")
+        name.setPlaceholderText(label('inputs.jump'))
         name.setFixedWidth(110)
         name.editingFinished.connect(
             lambda _i=index, _e=name: self._commit_name(_i, _e.text()))
         row.addWidget(name)
 
-        for key, label in _BUTTON_LABELS:
-            box = QCheckBox(label)
+        for key, btn_name in _BUTTON_LABELS:
+            box = QCheckBox(btn_name)
             box.setFont(QFont(T.UI, T.XS))
             box.setStyleSheet(QSS.checkbox)
             box.setChecked(key in binding.buttons)
@@ -134,7 +133,7 @@ class InputsCard(CollapsibleCard):
             row.addWidget(box)
 
         row.addStretch(1)
-        rm = W.btn_danger("Remove this input")
+        rm = W.btn_danger(label('inputs.remove_this_input'))
         rm.clicked.connect(lambda _c=False, _i=index: self._remove(_i))
         row.addWidget(rm)
         return host

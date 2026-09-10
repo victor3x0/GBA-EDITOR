@@ -19,6 +19,7 @@ Ce que l'inspecteur DIT et ne laisse pas deviner :
   • le nœud est un ASSET partagé — l'éditer touche N scènes, dit en couleur.
 """
 from __future__ import annotations
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -37,11 +38,11 @@ from ui.common.widgets import W, CollapsibleCard
 from ui.common.notice import note
 
 _ANCHORS = [
-    (ANCHOR_SCREEN, "Screen (fixed)"),
-    (ANCHOR_WORLD,  "World (scrolls)"),
-    (ANCHOR_ACTOR,  "Actor (follows)"),
+    (ANCHOR_SCREEN, 'uinode.screen_fixed'),
+    (ANCHOR_WORLD,  'uinode.world_scrolls'),
+    (ANCHOR_ACTOR,  'uinode.actor_follows'),
 ]
-_TARGETS = [(TARGET_BG, "Background (BG)"), (TARGET_OBJ, "Sprite (OBJ)")]
+_TARGETS = [(TARGET_BG, 'uinode.background_bg'), (TARGET_OBJ, 'uinode.sprite_obj')]
 
 
 class UINodeInspector(QWidget):
@@ -74,28 +75,28 @@ class UINodeInspector(QWidget):
         self._shared = note(L, "ui.layout.shared")
 
         # ── Chemin matériel ───────────────────────────────────────
-        card = CollapsibleCard("Hardware path")
+        card = CollapsibleCard(label('uinode.hardware_path'))
         self._anchor = QComboBox()
         self._anchor.setFont(QFont(T.UI, T.MD))
         self._anchor.setStyleSheet(QSS.combobox)
         for _, lab in _ANCHORS:
-            self._anchor.addItem(lab)
+            self._anchor.addItem(label(lab))
         self._anchor.currentIndexChanged.connect(self._on_anchor)
-        W.row("Anchor", self._anchor, card.body_layout)
+        W.row(label('uinode.anchor'), self._anchor, card.body_layout)
 
         self._actor = QComboBox()
         self._actor.setFont(QFont(T.UI, T.MD))
         self._actor.setStyleSheet(QSS.combobox)
         self._actor.currentIndexChanged.connect(self._on_actor)
-        self._actor_row = W.row("Actor", self._actor, card.body_layout).parentWidget()
+        self._actor_row = W.row(label('common.actor'), self._actor, card.body_layout).parentWidget()
 
         self._target = QComboBox()
         self._target.setFont(QFont(T.UI, T.MD))
         self._target.setStyleSheet(QSS.combobox)
         for _, lab in _TARGETS:
-            self._target.addItem(lab)
+            self._target.addItem(label(lab))
         self._target.currentIndexChanged.connect(self._on_target)
-        self._target_row = W.row("Target", self._target, card.body_layout).parentWidget()
+        self._target_row = W.row(label('uinode.target'), self._target, card.body_layout).parentWidget()
 
         # La raison quand la cible est IMPOSÉE (actor / bitmap), et l'alerte quand
         # un ancrage actor n'a pas d'acteur — chacune sous le réglage qui la cause.
@@ -135,10 +136,10 @@ class UINodeInspector(QWidget):
         # ancre : `anchor_actor` restait "" en silence. On sépare l'affichage du
         # modèle : `data` porte le nom (ou "" pour le placeholder), lu par `_on_actor`.
         if not names:
-            self._actor.addItem("(no actor)", "")
+            self._actor.addItem(label('uinode.no_actor'), "")
         else:
             if not actor:
-                self._actor.addItem("— choose an actor —", "")
+                self._actor.addItem(label('uinode.choose_an_actor'), "")
             for nm in names:
                 self._actor.addItem(nm, nm)
         self._anchor.setCurrentIndex(

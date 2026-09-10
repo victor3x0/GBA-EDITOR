@@ -10,6 +10,7 @@ Layers (z-order) :
   z=200    → bordure canvas
 """
 
+from ui.common.labels import label
 import copy
 from typing import Optional
 
@@ -79,7 +80,7 @@ class CanvasContainer(QWidget):
         # Bandeau flottant de sélection de la banque de peinture (bas-centre,
         # même widget que Sprite Editor/Background Editor — cf. palette_bank_strip).
         self._inpaint_ctrl: Optional[SceneInpaintingController] = None
-        self._inpaint_bank_strip = PaletteBankStrip("Aucune banque BG active", self)
+        self._inpaint_bank_strip = PaletteBankStrip(label('scncanvas.no_active_bg_bank'), self)
         self._inpaint_bank_strip.selected.connect(self._on_inpaint_bank_selected)
         self._inpaint_bank_strip.raise_()
 
@@ -93,7 +94,7 @@ class CanvasContainer(QWidget):
     def refresh_inpaint_banks(self):
         ctrl = self._inpaint_ctrl
         banks = ctrl.scene_bg_banks() if ctrl else []
-        entries = [(slot, f"Banque {slot} — {bank.name}", bank.colors) for slot, bank in banks]
+        entries = [(slot, label('scncanvas.bank_slot', slot=slot, name=bank.name), bank.colors) for slot, bank in banks]
         self._inpaint_bank_strip.load(entries, active=ctrl.inpaint_bank if ctrl else None)
         if ctrl:
             ctrl.set_inpaint_bank(self._inpaint_bank_strip.active())
@@ -199,29 +200,29 @@ class SceneEditor(QWidget):
         layout.setSpacing(0)
 
         # ── Barre haut — composant partagé (cf. ui/common/canvas_top_bar) ──
-        self._bar = CanvasTopBar("Fit scene to view  (F)")
+        self._bar = CanvasTopBar(label('scncanvas.fit_tip'))
         self._bar.zoom_step_asked.connect(self._zoom_step)
         self._bar.fit_asked.connect(self._fit)
         self._bar.set_canvas_size(GBA_W, GBA_H)
 
         # ── Toggles d'affichage iconifiés (remplacent les cases texte) ──
         self._chk_grid8 = self._bar.add_toggle(
-            "view_grid", "8 px grid (GBA tile)", self._on_grid8_toggle)
+            "view_grid", label('scncanvas.grid_8px'), self._on_grid8_toggle)
         self._chk_grid16 = self._bar.add_toggle(
-            "view_grid_large", "16 px grid", self._on_grid16_toggle)
+            "view_grid_large", label('scncanvas.grid_16px'), self._on_grid16_toggle)
         self._chk_snap = self._bar.add_toggle(
-            "view_snap", "Snap — align actors to the grid while moving",
+            "view_snap", label('scncanvas.snap_tip'),
             self._on_snap_toggle)
         self._bar.add_spacing(10)
         self._chk_boxes_actors = self._bar.add_toggle(
-            "view_boxes", "Actor boxes — collision boxes of all actors",
+            "view_boxes", label('scncanvas.actor_boxes_tip'),
             self._on_boxes_actors_toggle)
         self._chk_collision_view = self._bar.add_toggle(
-            "view_collision", "Scene collisions — painted collision map",
+            "view_collision", label('scncanvas.collisions_tip'),
             self._on_collision_view_toggle)
         self._bar.add_spacing(10)
         self._chk_ui_elements = self._bar.add_toggle(
-            "ui_layout", "Interface elements — text zones, containers, texts",
+            "ui_layout", label('scncanvas.interface_tip'),
             self._on_ui_elements_toggle)
         # blockSignals : self._gba_scene est créé plus bas, et le `toggled`
         # SYNCHRONE de setChecked ferait planter _on_ui_elements_toggle dessus
@@ -385,11 +386,11 @@ class SceneEditor(QWidget):
         menu = QMenu(self)
         menu.setFont(QFont(T.UI, T.MD))
         menu.setStyleSheet(QSS.menu)
-        act_rename = menu.addAction("Rename…")
+        act_rename = menu.addAction(label('scncanvas.rename'))
         act_rename.setEnabled(n == 1)
-        act_dup = menu.addAction("Duplicate" if n == 1 else f"Duplicate ({n})")
+        act_dup = menu.addAction(label('common.duplicate') if n == 1 else label('scncanvas.duplicate_n', n=n))
         menu.addSeparator()
-        act_del = menu.addAction("Delete" if n == 1 else f"Delete ({n})")
+        act_del = menu.addAction(label('common.delete') if n == 1 else label('scncanvas.delete_n', n=n))
         chosen = menu.exec(global_pos)
         if chosen is act_rename:
             self._rename_actor(actors[0])
@@ -397,14 +398,14 @@ class SceneEditor(QWidget):
             # Par la sélection : le menu vise déjà tout le lot, et les copies
             # doivent hériter de la sélection comme après un Ctrl+D.
             self._select_copies(get_dispatcher().duplicate_actors(actors),
-                                [], "Duplicated")
+                                [], 'scncanvas.duplicated_elements')
         elif chosen is act_del:
             get_dispatcher().delete_actors(actors)
 
     def _rename_actor(self, actor):
         from PyQt6.QtWidgets import QInputDialog
         new_name, ok = QInputDialog.getText(
-            self, "Rename actor", "Name:", text=actor.name)
+            self, label('scncanvas.rename_actor'), label('common.name_colon'), text=actor.name)
         if not ok:
             return
         new_name = new_name.strip()
@@ -445,7 +446,7 @@ class SceneEditor(QWidget):
         gone = self._ui_region_ctrl.delete_elements(elements)
         n = len(actors) + len(elements)
         if gone or actors:
-            get_dispatcher().status(f"Deleted {n} element{'s' if n > 1 else ''}")
+            get_dispatcher().status(label('scncanvas.deleted_elements', n=n))
 
     def _shortcut_duplicate(self):
         self._duplicate_selection(8, 8)
@@ -469,7 +470,7 @@ class SceneEditor(QWidget):
             # l'original, donc invisible. Un cran de grille, comme au Ctrl+D.
             edx = edy = 8
         new_elements = self._ui_region_ctrl.duplicate_elements(elements, edx, edy)
-        self._select_copies(new_actors, new_elements, "Duplicated")
+        self._select_copies(new_actors, new_elements, 'scncanvas.duplicated_elements')
 
     def _on_duplicate_drag(self, dx: int, dy: int):
         """Alt+glisser relâché : la vue a déjà remis les originaux en place."""
@@ -498,7 +499,7 @@ class SceneEditor(QWidget):
         _clipboard.take(actors, groups, getattr(scene, "name", ""))
         n = len(actors) + len(groups)
         get_dispatcher().status(
-            f"Copied {n} element{'s' if n > 1 else ''}")
+            label('scncanvas.copied_elements', n=n))
 
     def _shortcut_paste(self):
         """Ctrl+V — colle le presse-papier dans la scène ACTIVE (pas forcément
@@ -510,7 +511,7 @@ class SceneEditor(QWidget):
         new_actors = get_dispatcher().paste_actors(_clipboard.actors, d, d)
         new_elements = self._ui_region_ctrl.paste_elements(
             _clipboard.ui_groups, _tile_snap(d), _tile_snap(d))
-        self._select_copies(new_actors, new_elements, "Pasted")
+        self._select_copies(new_actors, new_elements, 'scncanvas.pasted_elements')
 
     def _select_copies(self, actors: list, elements: list, verb: str):
         """Donne la sélection aux copies fraîches : c'est sur elles que porte le
@@ -547,7 +548,7 @@ class SceneEditor(QWidget):
                 from core.selection_bus import UIRegionSelection
                 get_bus().select(UIRegionSelection(first._layout, first._region))
         n = len(actors) + len(elements)
-        get_dispatcher().status(f"{verb} {n} element{'s' if n > 1 else ''}")
+        get_dispatcher().status(label(verb, n=n))
 
     def _shortcut_nudge(self, dx: int, dy: int):
         items = self._selected_sprite_items()
@@ -687,21 +688,18 @@ class SceneEditor(QWidget):
         if not self._project:
             return
         from core.selection_bus import get_bus, UIRegionSelection
-        from core.models.ui_region import KIND_CONTAINER
         get_bus().select(UIRegionSelection(layout, region))
         users = self._project.ui_layout_users(layout.name)
-        shared = f" — shared by {len(users)} scenes" if len(users) > 1 else ""
-        kind_label = {KIND_CONTAINER: "Container", "image": "Image"}.get(
-            getattr(region, "kind", "text"), "Text")
+        shared = label('scncanvas.shared_layout', count=len(users)) if len(users) > 1 else ""
         # L'empreinte en tuiles ne se dit que pour ce qui occupe la tilemap ;
         # une image l'annonce dans son inspecteur, d'après son sprite.
         tiles = ""
         if getattr(region, "kind", "") != "image" and hasattr(region, "tile_rect"):
             tw, th = region.tile_rect()[2:]
-            tiles = f" · {tw}×{th} tiles"
+            tiles = label('scncanvas.tile_size', width=tw, height=th)
         get_dispatcher().status(
-            f"{kind_label} “{region.name}” created in “{layout.name}”"
-            f"{shared}{tiles}")
+            label('scncanvas.element_created', name=region.name,
+                            layout=layout.name, shared=shared, tiles=tiles))
 
     def _on_collision_painted(self):
         """Persiste la collision_map après chaque stroke."""

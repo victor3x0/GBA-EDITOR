@@ -32,6 +32,7 @@ Cf. docs/asset-finder.md pour l'état des lieux et la décision.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -131,6 +132,12 @@ class AssetKind:
     # « Open in file manager » (standardisé, cf. widgets.FinderSection). Une
     # famille sans `dir_of` n'affiche pas le bouton — cf. `dir_of()` ci-dessous.
     dir_of: Optional[Callable[[Any], Any]] = None
+
+    # Keep these after the original fields: positional plugin constructors
+    # retain their argument order. Empty keys preserve plugin-provided text.
+    label_key: str = ""
+    add_tooltip_key: str = ""
+    empty_text_key: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -466,17 +473,17 @@ class _KindTree(QTreeWidget):
         # Actions de la famille (les mêmes partout), puis celles que l'écran a
         # ajoutées — « Voir les instances » n'a de sens que là où un inspecteur
         # peut les montrer.
-        for label, fn in kind.actions:
-            menu.addAction(label).triggered.connect(
+        for lbl_key, fn in kind.actions:
+            menu.addAction(label(lbl_key)).triggered.connect(
                 lambda _=False, f=fn, o=obj: f(project, o))
-        for label, fn in self._panel.extra_actions(kind.label):
-            menu.addAction(label).triggered.connect(
+        for lbl, fn in self._panel.extra_actions(kind.label):
+            menu.addAction(lbl).triggered.connect(
                 lambda _=False, f=fn, o=obj: f(o))
 
         if kind.rename is not None:
             if not menu.isEmpty():
                 menu.addSeparator()
-            act = menu.addAction(f"Rename {kind.label.rstrip('s').lower()}")
+            act = menu.addAction(label('assetfind.rename'))
             act.setShortcut("F2")       # affiché ; géré par EditKeyPressed
             # Pas `item` capturé : le menu ouvert laisse tourner la boucle
             # d'évènements, un refresh de l'arbre peut le détruire avant le
@@ -485,7 +492,7 @@ class _KindTree(QTreeWidget):
 
         if kind.delete is not None:
             menu.addSeparator()
-            menu.addAction("Delete").triggered.connect(
+            menu.addAction(label('common.delete')).triggered.connect(
                 lambda _=False, o=obj: self._delete(o))
 
         if not menu.isEmpty():
@@ -502,7 +509,7 @@ class _KindTree(QTreeWidget):
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         menu.setFont(QFont(T.UI, T.MD))
-        menu.addAction(f"Delete {len(objs)} {kind.label.lower()}").triggered.connect(
+        menu.addAction(label('assetfind.delete_selection', n=len(objs))).triggered.connect(
             lambda _=False, os=list(objs): self._delete_many(os))
         menu.exec(self.viewport().mapToGlobal(pos))
 
@@ -512,9 +519,9 @@ class _KindTree(QTreeWidget):
             return
         name = self._name_of(obj)
         prompt = (kind.delete_prompt(obj) if kind.delete_prompt
-                  else f"Delete “{name}”?\n(Ctrl+Z to undo)")
+                  else label('assetfind.delete_name_ctrl_z_to_undo', name=name))
         if QMessageBox.question(
-            self, "Delete", prompt,
+            self, label('common.delete'), prompt,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -531,8 +538,8 @@ class _KindTree(QTreeWidget):
             return
         n = len(objs)
         if QMessageBox.question(
-            self, "Delete",
-            f"Delete these {n} items?\n(Ctrl+Z to undo)",
+            self, label('common.delete'),
+            label('assetfind.delete_confirm', n=n),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
@@ -596,15 +603,16 @@ class AssetFinder(QWidget):
         for kind in self._kinds:
             # Titre en tons de thème : les finders n'ont plus de code couleur
             # par famille, la distinction se fait à la forme de l'icône.
-            section = FinderSection(kind.label)
+            section = FinderSection(label(kind.label_key) if kind.label_key else kind.label)
             tree = _KindTree(self, kind)
             self._trees[kind.label] = tree
             self._sections[kind.label] = section
             section.set_widget(self._wrap(tree, kind))
-            if kind.add is None and not kind.add_tooltip:
+            if kind.add is None and not (kind.add_tooltip or kind.add_tooltip_key):
                 section.set_add_visible(False)
             else:
-                section.set_add_tooltip(kind.add_tooltip or f"Add to {kind.label}")
+                section.set_add_tooltip(label(kind.add_tooltip_key) if kind.add_tooltip_key
+                                        else kind.add_tooltip or label('assetfind.add_an_item'))
                 section.add_clicked.connect(lambda k=kind: self._add(k))
             if kind.dir_of is not None:
                 section.set_reveal_visible(True)
@@ -637,7 +645,7 @@ class AssetFinder(QWidget):
     def _wrap(self, tree: _KindTree, kind: AssetKind) -> QWidget:
         """Liste + message d'état vide, l'un ou l'autre. Une famille sans
         `empty_text` n'affiche rien : une liste vide se voit toute seule."""
-        if not kind.empty_text:
+        if not (kind.empty_text or kind.empty_text_key):
             return tree
         box = QWidget()
         box.setStyleSheet(f"background:{C.BG_BASE};")
@@ -645,7 +653,7 @@ class AssetFinder(QWidget):
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        empty = QLabel(kind.empty_text)
+        empty = QLabel(label(kind.empty_text_key) if kind.empty_text_key else kind.empty_text)
         empty.setFont(QFont(T.UI, T.SM))
         empty.setStyleSheet(f"color:{C.TEXT_MUTED}; padding:{S.CONTENT}px;")
         empty.setAlignment(Qt.AlignmentFlag.AlignCenter)

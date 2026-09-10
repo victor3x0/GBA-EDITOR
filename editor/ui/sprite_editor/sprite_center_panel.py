@@ -129,7 +129,7 @@ class SpriteCenterPanel(QWidget):
         strip = self._canvas_panel.paint_strip
         palettes = list(getattr(self._sprite, "palettes", []) or []) if self._sprite else []
         if palettes:
-            entries = [(i, label("sprctr.palette", i=i), cols) for i, cols in enumerate(palettes)]
+            entries = [(i, label("common.palette_i", i=i), cols) for i, cols in enumerate(palettes)]
             strip.load(entries, active=0)
             strip.setVisible(True)
             self._canvas_panel._position_paint_strip()

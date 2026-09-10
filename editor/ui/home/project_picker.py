@@ -17,7 +17,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QFrame, QFileDialog, QSizePolicy,
-    QLineEdit, QWidget, QMessageBox, QTabWidget,
+    QLineEdit, QWidget, QMessageBox, QTabWidget, QComboBox,
 )
 from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
@@ -31,6 +31,7 @@ from core.project_templates import (
     ProjectTemplate, TEMPLATES, target_dir as template_target_dir,
     is_downloaded as template_is_downloaded, download_template,
 )
+from core.project_starters import USER_STARTERS_DIR, available_starters
 
 # Emplacement proposé par défaut pour un nouveau projet — jamais créé au
 # lancement. Il ne sert qu'à préremplir les champs et les dialogues de
@@ -201,6 +202,9 @@ class _TemplateItem(QWidget):
     ligne ouvre le projet extrait, géré par HomeScreen."""
 
     download_requested = pyqtSignal(object)  # ProjectTemplate
+    _TEXT_KEYS = {
+        "pong": ("home.template.pong.name", "home.template.pong.description"),
+    }
 
     def __init__(self, template: ProjectTemplate, downloaded: bool, parent=None):
         super().__init__(parent)
@@ -219,11 +223,14 @@ class _TemplateItem(QWidget):
 
         col = QVBoxLayout()
         col.setSpacing(2)
-        name_lbl = QLabel(template.display_name)
+        name_key, description_key = self._TEXT_KEYS.get(
+            template.id, ("", ""))
+        name_lbl = QLabel(label(name_key) if name_key else template.display_name)
         name_lbl.setFont(QFont(T.UI, T.MD, QFont.Weight.DemiBold))
         name_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
         col.addWidget(name_lbl)
-        desc_lbl = QLabel(template.description)
+        desc_lbl = QLabel(label(description_key) if description_key
+                          else template.description)
         desc_lbl.setFont(QFont(T.UI, T.XS))
         desc_lbl.setStyleSheet(f"color:{C.TEXT_DIM};background:transparent;")
         col.addWidget(desc_lbl)
@@ -296,6 +303,10 @@ class HomeScreen(QDialog):
     result_path:   Optional[Path] = None
     result_is_new: bool           = False
     result_name:   str            = ""
+    _TEMPLATE_PROGRESS_KEYS = {
+        "Downloading…": "home.template.downloading",
+        "Extracting…": "home.template.extracting",
+    }
 
     def __init__(self, projects_dir: Path, parent=None):
         super().__init__(parent)
@@ -592,7 +603,8 @@ class HomeScreen(QDialog):
             w.set_busy(label("home.template.downloading"))
 
         thread = _TemplateDownloadThread(template, self._projects_dir, self)
-        thread.progress.connect(lambda msg: w.set_busy(msg) if w else None)
+        thread.progress.connect(
+            lambda msg: w.set_busy(self._template_progress_text(msg)) if w else None)
         thread.succeeded.connect(lambda _dest: self._on_template_downloaded(template))
         thread.failed.connect(lambda err: self._on_template_download_failed(template, err))
         self._download_thread = thread
@@ -604,6 +616,11 @@ class HomeScreen(QDialog):
             w = self._tpl_list.itemWidget(self._tpl_list.item(row))
             if w:
                 w.set_downloaded(True)
+
+    @classmethod
+    def _template_progress_text(cls, raw: str) -> str:
+        """Le worker ne connaît que son état ; l'UI traduit son affichage."""
+        return label(cls._TEMPLATE_PROGRESS_KEYS.get(raw, raw))
 
     def _on_template_download_failed(self, template: ProjectTemplate, message: str):
         row = self._row_of_template(template)
@@ -633,12 +650,13 @@ class NewProjectDialog(QDialog):
 
     result_path: Optional[Path] = None
     result_name: str            = ""
+    result_starter: str         = "Basic"
 
     def __init__(self, projects_dir: Path, parent=None):
         super().__init__(parent)
         self._projects_dir = projects_dir
-        self.setWindowTitle(label("home.new.title"))
-        self.setFixedSize(480, 260)
+        self.setWindowTitle(label("common.new_project"))
+        self.setFixedSize(480, 320)
         self.setModal(True)
         self.setStyleSheet(f"QDialog{{background:{C.BG_BASE};}}")
 
@@ -659,7 +677,7 @@ class NewProjectDialog(QDialog):
         icon_lbl.setFont(QFont(T.UI, T.XXL))
         icon_lbl.setStyleSheet("background:transparent;")
         hl.addWidget(icon_lbl)
-        title_lbl = QLabel(label("home.new.title"))
+        title_lbl = QLabel(label("common.new_project"))
         title_lbl.setFont(QFont(T.UI, T.LG, QFont.Weight.DemiBold))
         title_lbl.setStyleSheet(f"color:{C.TEXT_HI};background:transparent;")
         hl.addWidget(title_lbl)
@@ -687,6 +705,21 @@ class NewProjectDialog(QDialog):
         self._name_edit.setFixedHeight(32)
         self._name_edit.setPlaceholderText(label("home.new.name_placeholder"))
         bl.addWidget(self._name_edit)
+
+        # Les presets personnels sont de simples dossiers sous le répertoire
+        # utilisateur : aucun format caché, ni import/export propriétaire.
+        bl.addWidget(_field_label(label('projpick.project_preset')))
+        self._starter_combo = QComboBox()
+        self._starter_combo.setFont(QFont(T.UI, T.SM))
+        self._starter_combo.setStyleSheet(QSS.lineedit)
+        self._starter_combo.setFixedHeight(32)
+        for starter in available_starters():
+            caption = starter.display_name if starter.builtin else label('projpick.display_name_personal', display_name=starter.display_name)
+            self._starter_combo.addItem(caption, starter.id)
+        self._starter_combo.setToolTip(
+            label('projpick.add_personal_hint', USER_STARTERS_DIR=USER_STARTERS_DIR)
+        )
+        bl.addWidget(self._starter_combo)
 
         # Dossier parent
         bl.addWidget(_field_label(label("home.new.location")))
@@ -783,4 +816,5 @@ class NewProjectDialog(QDialog):
         path.mkdir(parents=True, exist_ok=True)
         self.result_path = path
         self.result_name = name
+        self.result_starter = self._starter_combo.currentData() or "Basic"
         self.accept()

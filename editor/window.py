@@ -618,17 +618,17 @@ class MainWindow(QMainWindow):
             f"QMenu::item:selected{{background:{C.BG_SEL};}}"
         )
         m_file = mb.addMenu(label("win.menu_file"))
-        a_new  = QAction(label("win.new_project"),  self); bind("file.new",  a_new)
-        a_open = QAction(label("win.open_project"), self); bind("file.open", a_open)
-        a_save = QAction(label("win.save"),         self); bind("file.save", a_save)
+        a_new  = QAction(label("common.new_project"),  self); bind("file.new",  a_new)
+        a_open = QAction(label("common.open_project"), self); bind("file.open", a_open)
+        a_save = QAction(label("common.save"),         self); bind("file.save", a_save)
         a_save.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
         # Réglages du LOGICIEL (devkitPro/mgba, thème, raccourcis, outils
         # tiers — un état par machine) : distinct du menu Game → Project
         # Settings, qui ouvre le projet OUVERT. Même dialogue que le bouton
         # « ⚙ Configure » de la barre toolchain, une seconde porte vers la
         # même donnée.
-        a_file_settings = QAction(label("win.settings"), self)
-        a_quit = QAction(label("win.quit"), self); bind("file.quit", a_quit)
+        a_file_settings = QAction(label("common.settings"), self)
+        a_quit = QAction(label("common.quit"), self); bind("file.quit", a_quit)
         a_new.triggered.connect(self.assets_finder_panel._prompt_new)
         a_open.triggered.connect(self.assets_finder_panel._prompt_open)
         a_save.triggered.connect(self._save_project)
@@ -638,7 +638,7 @@ class MainWindow(QMainWindow):
             if a: m_file.addAction(a)
             else: m_file.addSeparator()
         m_game = mb.addMenu(label("win.menu_game"))
-        a_build = QAction(label("win.build_run"), self); bind("game.build", a_build)
+        a_build = QAction(label("common.build_run"), self); bind("game.build", a_build)
         a_build.triggered.connect(self._run_build)
         m_game.addAction(a_build)
         m_game.addSeparator()
@@ -787,7 +787,8 @@ class MainWindow(QMainWindow):
         picker = HomeScreen(PROJECTS_DIR, self)
         if picker.exec() == QDialog.DialogCode.Accepted and picker.result_path:
             if picker.result_is_new and picker.result_name:
-                self._new_project(picker.result_name, picker.result_path)
+                self._new_project(
+                    picker.result_name, picker.result_path, picker.result_starter)
             else:
                 self._open_project(picker.result_path)
 
@@ -905,9 +906,9 @@ class MainWindow(QMainWindow):
     def _on_home_open(self, path: str):
         self._open_project(Path(path))
 
-    def _new_project(self, name: str, path):
+    def _new_project(self, name: str, path, starter_id: str = "Basic"):
         path = Path(path)
-        self.project = Project.create(path, name)
+        self.project = Project.create(path, name, starter_id)
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
         self._connect_watcher()
@@ -924,7 +925,7 @@ class MainWindow(QMainWindow):
             self.project = Project.open(path)
         except ProjectManifestError as exc:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, label("win.open_project"), str(exc))
+            QMessageBox.critical(self, label("common.open_project"), str(exc))
             return
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)

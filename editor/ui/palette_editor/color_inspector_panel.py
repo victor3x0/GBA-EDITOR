@@ -142,7 +142,7 @@ class ColorInspectorPanel(QWidget):
         # Entrée valide ET rend le focus à la grille → les flèches reprennent.
         self._hex.returnPressed.connect(self.grid_focus_requested.emit)
         hex_row.addWidget(self._hex, 1)
-        btn_copy = W.btn_ghost(label("colins.copy"))   # libellé explicite (⧉ était incompris)
+        btn_copy = W.btn_ghost(label("common.copy"))   # libellé explicite (⧉ était incompris)
         btn_copy.setToolTip(label("colins.copy_tip"))
         btn_copy.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_copy.clicked.connect(self._copy_color)

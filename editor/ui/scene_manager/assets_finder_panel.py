@@ -51,7 +51,7 @@ class AssetsFinderPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self._finder = AssetFinder("Project viewer", [SCENES, PREFABS, SCRIPTS],
+        self._finder = AssetFinder(label('assf.project_viewer'), [SCENES, PREFABS, SCRIPTS],
                                    min_width=180, max_width=420)
         root.addWidget(self._finder, 1)
 

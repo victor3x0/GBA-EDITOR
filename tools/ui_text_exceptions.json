@@ -1,0 +1,192 @@
+[
+  {
+    "file": "editor/ui/common/build_panel.py",
+    "text": "devkitPro ✓",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/build_panel.py",
+    "text": "devkitPro ✗",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/build_panel.py",
+    "text": "mgba ✓",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/build_panel.py",
+    "text": "mgba ✗",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/canvas_top_bar.py",
+    "text": "x:— y:—",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/canvas_top_bar.py",
+    "text": "f'x:{x} y:{y}'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/notice.py",
+    "text": "f'<div style=\"color:{self._color}; width:280px;\">{html}</div>'",
+    "reason": "HTML presentation only; the displayed prose is resolved by the catalogue."
+  },
+  {
+    "file": "editor/ui/common/rom_budget_bar.py",
+    "text": "f'{self._cartridge_mib} MiB ▾'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/rom_budget_bar.py",
+    "text": "f'{mib} MiB'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/settings_dialog.py",
+    "text": "devkitPro",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/value_field.py",
+    "text": "ƒ",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/value_field.py",
+    "text": "t",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/value_field.py",
+    "text": "px",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/widgets.py",
+    "text": "id",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/common/widgets.py",
+    "text": "id…",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/home/project_picker.py",
+    "text": "f\"\"\"<a href=\"#\" style=\"color:#555;text-decoration:none;\">⚙ {label('home.status.configure')}</a>\"\"\"",
+    "reason": "HTML presentation only; the displayed prose is resolved by the catalogue."
+  },
+  {
+    "file": "editor/ui/home/project_picker.py",
+    "text": "GBA Editor",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/home/project_picker.py",
+    "text": "f'''<span style=\"color:#666;\">{name} — {label(self._EXPLAIN_KEYS[name])}. <a href=\"{url}\" style=\"color:#4c8caf;\">{label('home.status.download')}</a></span>'''",
+    "reason": "HTML presentation only; the displayed prose is resolved by the catalogue."
+  },
+  {
+    "file": "editor/ui/palette_editor/color_inspector_panel.py",
+    "text": "HEX",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/palette_editor/color_inspector_panel.py",
+    "text": "BGR555",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/palette_editor/color_inspector_panel.py",
+    "text": "RGB",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/palette_editor/color_inspector_panel.py",
+    "text": "HSB",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/palette_editor/color_inspector_panel.py",
+    "text": "f'0x{value & 32767:04X}'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/bg_layer_row.py",
+    "text": "UI",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/camera_inspector.py",
+    "text": "on_start · on_update",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/project_settings_dialog.py",
+    "text": "f'0x{v:04X}'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/project_settings_dialog.py",
+    "text": "f'{mib} MiB'",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/uses_inspectors.py",
+    "text": "v",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "int",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "bool",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "u8",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "u16",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "s8",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/script_editor/var_table_panel.py",
+    "text": "s16",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/sprite_editor/frame_canvas.py",
+    "text": "PNG",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/window.py",
+    "text": "GBA  240×160  ARM7TDMI 16MHz  256KB WRAM",
+    "reason": "Technical identifier, unit, glyph or hardware notation; not prose."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/scene_inspector.py",
+    "text": "f'0x{v:04X}'",
+    "reason": "Hardware register/bank notation, independent of the interface language."
+  },
+  {
+    "file": "editor/ui/scene_manager/inspectors/scene_inspector.py",
+    "text": "f'BG{i}'",
+    "reason": "Hardware register/bank notation, independent of the interface language."
+  }
+]

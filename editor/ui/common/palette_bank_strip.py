@@ -9,6 +9,7 @@ Sprite Editor et le Background Editor (palette active de preview/peinture).
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import QSize, pyqtSignal
@@ -32,7 +33,9 @@ class PaletteBankStrip(QFrame):
 
     _ICON = 22
 
-    def __init__(self, empty_hint: str = "Aucune palette", parent=None):
+    def __init__(self, empty_hint: str = None, parent=None):
+        if empty_hint is None:
+            empty_hint = label('common.no_palette')
         super().__init__(parent)
         self._active = None
         self._btns: dict = {}

@@ -86,7 +86,7 @@ class SpriteRightPanel(QWidget):
             self._cb_w.addItem(str(v))
         self._cb_w.currentIndexChanged.connect(self._on_frame_w_changed)
         self._cb_h.currentIndexChanged.connect(self._on_frame_h_changed)
-        W.pair(label("sprpanel.frame"), "W", C.AXIS_X, self._cb_w, "H", C.AXIS_Y, self._cb_h, lay)
+        W.pair(label("common.frame"), "W", C.AXIS_X, self._cb_w, "H", C.AXIS_Y, self._cb_h, lay)
 
         W.separator(lay)
         W.section(label("sprpanel.animation"), lay)
@@ -94,9 +94,9 @@ class SpriteRightPanel(QWidget):
         self._sp_speed = W.spinbox(8, min_v=1, max_v=120)
         self._sp_speed.setToolTip(label("sprpanel.speed_tip"))
         self._sp_speed.valueChanged.connect(self._on_speed_changed)
-        W.row(label("sprpanel.speed"), self._sp_speed, lay)
+        W.row(label("common.speed"), self._sp_speed, lay)
 
-        self._chk_loop = W.checkbox_row("", label("sprpanel.loop"), lay)
+        self._chk_loop = W.checkbox_row("", label("common.loop"), lay)
         self._chk_loop.setChecked(True)
         self._chk_loop.toggled.connect(self._on_loop_changed)
 
@@ -205,7 +205,7 @@ class SpriteRightPanel(QWidget):
         self._state   = sprite.states[0] if sprite.states else None
         self._blocking = True
 
-        self._header.set_header("sprite", label("sprpanel.header"), sprite.name)
+        self._header.set_header("sprite", label("common.sprite"), sprite.name)
 
         # Frame size
         self._cb_w.setCurrentText(str(sprite.frame_w))

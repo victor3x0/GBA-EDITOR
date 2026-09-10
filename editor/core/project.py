@@ -69,7 +69,8 @@ from core.events import EventEmitter
 from core.models import project_json
 from core import asset_encoding
 from core.resource_store import ResourceStore, atomic_write
-from core.palette_presets import seed_default_palettes
+from core.palette_store import PaletteStore
+from core.project_starters import copy_starter, get_starter
 from core.project_paths import ProjectPathsMixin, PROJECT_EXT, find_manifest
 from core.project_variables import ProjectVariablesMixin
 from core.project_texts import ProjectTextsMixin
@@ -182,7 +183,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.sfx:         ResourceStore[Sfx]         = ResourceStore(self.sfx_dir, Sfx)
         self.music:       ResourceStore[Music]       = ResourceStore(self.music_dir, Music)
         self.fonts:       ResourceStore[Font]        = ResourceStore(self.fonts_dir, Font)
-        self.palettes: ResourceStore[PaletteBank] = ResourceStore(self.palettes_dir, PaletteBank)
+        self.palettes: PaletteStore = PaletteStore(self.palettes_dir)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
         # Pas de ResourceStore pour Camera : une caméra appartient à sa scène
         # (Scene.cameras), elle se charge/sauve avec elle (cf. camera_names()
@@ -946,7 +947,6 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Après les textes : un side se joint aux entrées du maître.
         self.load_translations()
         self.palettes.load()
-        seed_default_palettes(self)
         self.sprites.load()
         asset_encoding.reconcile_sprites(self)
         self.backgrounds.load()
@@ -974,8 +974,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     # ── Création / ouverture ──────────────────────────────────────
 
     @classmethod
-    def create(cls, root: Path, name: str) -> "Project":
-        """Crée un nouveau projet vide avec la structure de dossiers."""
+    def create(cls, root: Path, name: str, starter_id: str = "Basic") -> "Project":
+        """Crée un projet depuis le starter ``Basic`` intégré à l'éditeur."""
         root.mkdir(parents=True, exist_ok=True)
         for sub in (
             "assets/sprites",
@@ -993,13 +993,14 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         ):
             (root / sub).mkdir(parents=True, exist_ok=True)
 
+        copy_starter(get_starter(starter_id), root)
+
         proj = cls(root)
         proj.settings.name = name
 
-        # Peupler le catalogue de palettes par défaut dès la création (sinon
-        # le seeding n'a lieu qu'au prochain load() et les palettes n'apparaissent
-        # qu'après un redémarrage).
-        seed_default_palettes(proj)
+        # Les assets initiaux (dont les palettes .hex) viennent du starter.
+        # Le chargement crée leurs sidecars JSON, sans jamais générer de palette.
+        proj.palettes.load()
 
         # Créer une scène de démarrage par défaut
         # Même budget de départ que toute scène créée ensuite (v0.17) — la

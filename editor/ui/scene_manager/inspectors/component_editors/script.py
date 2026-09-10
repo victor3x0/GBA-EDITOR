@@ -170,7 +170,7 @@ class ScriptEditor(BaseComponentEditor):
         from core.command_dispatcher import get_dispatcher
         proj = self.insp._project
         name, ok = QInputDialog.getText(self.insp, label("comped.new_script_title"),
-                                        label("comped.new_script_prompt"))
+                                        label("common.name_without_lua"))
         if not ok or not name.strip(): return
         actors_dir = proj.scripts_actors_dir
         actors_dir.mkdir(parents=True, exist_ok=True)

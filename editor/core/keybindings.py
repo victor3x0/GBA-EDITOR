@@ -55,42 +55,41 @@ CONFIG_FILE = config_dir() / "keybindings.json"
 @dataclass(frozen=True)
 class Binding:
     id: str            # stable — c'est la clé de persistance, jamais affichée
-    context: str        # regroupement à l'écran (« Global », « Scene canvas »…)
-    label: str          # ce que l'écran Réglages affiche
+    context_id: str     # regroupement stable, résolu en libellé par l'UI
     default: str         # QKeySequence, ex. "Ctrl+D", "Shift+X", "F"
 
 
 # ── Le registre — un binding par ligne, dans l'ordre d'affichage ──────────
 BINDINGS: list[Binding] = [
     # Global (window.py — menus File / Game)
-    Binding("file.new",   "Global", "New project",  "Ctrl+N"),
-    Binding("file.open",  "Global", "Open project", "Ctrl+O"),
-    Binding("file.save",  "Global", "Save",         "Ctrl+S"),
-    Binding("file.quit",  "Global", "Quit",         "Ctrl+Q"),
-    Binding("game.build", "Global", "Build & Run",  "F5"),
+    Binding("file.new",   "global", "Ctrl+N"),
+    Binding("file.open",  "global", "Ctrl+O"),
+    Binding("file.save",  "global", "Ctrl+S"),
+    Binding("file.quit",  "global", "Ctrl+Q"),
+    Binding("game.build", "global", "F5"),
 
     # Scene canvas (ui/scene_manager/scene_canvas.py)
-    Binding("canvas.tool_select",    "Scene canvas", "Select tool",         "S"),
-    Binding("canvas.tool_add",       "Scene canvas", "Add tool",            "A"),
-    Binding("canvas.tool_erase",     "Scene canvas", "Erase tool",          "E"),
-    Binding("canvas.tool_collision", "Scene canvas", "Collision tool",      "C"),
-    Binding("canvas.tool_inpaint",   "Scene canvas", "Inpaint tool",        "B"),
-    Binding("canvas.tool_ui",        "Scene canvas", "UI tool",             "T"),
-    Binding("canvas.fit",            "Scene canvas", "Fit view",            "F"),
-    Binding("canvas.cancel",         "Scene canvas", "Cancel / deselect",   "Escape"),
-    Binding("canvas.delete",         "Scene canvas", "Delete selection",    "Del"),
-    Binding("canvas.duplicate",      "Scene canvas", "Duplicate selection", "Ctrl+D"),
-    Binding("canvas.copy",           "Scene canvas", "Copy",                "Ctrl+C"),
-    Binding("canvas.paste",          "Scene canvas", "Paste",               "Ctrl+V"),
+    Binding("canvas.tool_select",    "scene_canvas", "S"),
+    Binding("canvas.tool_add",       "scene_canvas", "A"),
+    Binding("canvas.tool_erase",     "scene_canvas", "E"),
+    Binding("canvas.tool_collision", "scene_canvas", "C"),
+    Binding("canvas.tool_inpaint",   "scene_canvas", "B"),
+    Binding("canvas.tool_ui",        "scene_canvas", "T"),
+    Binding("canvas.fit",            "scene_canvas", "F"),
+    Binding("canvas.cancel",         "scene_canvas", "Escape"),
+    Binding("canvas.delete",         "scene_canvas", "Del"),
+    Binding("canvas.duplicate",      "scene_canvas", "Ctrl+D"),
+    Binding("canvas.copy",           "scene_canvas", "Ctrl+C"),
+    Binding("canvas.paste",          "scene_canvas", "Ctrl+V"),
 
     # Sprite editor (ui/sprite_editor/*)
-    Binding("sprite.flip_h",         "Sprite editor", "Flip brush horizontally", "Shift+X"),
-    Binding("sprite.flip_v",         "Sprite editor", "Flip brush vertically",   "Shift+Y"),
-    Binding("sprite.duplicate_frame","Sprite editor", "Duplicate frame",         "Ctrl+D"),
-    Binding("sprite.delete_frame",   "Sprite editor", "Delete frame",            "Del"),
+    Binding("sprite.flip_h",         "sprite_editor", "Shift+X"),
+    Binding("sprite.flip_v",         "sprite_editor", "Shift+Y"),
+    Binding("sprite.duplicate_frame","sprite_editor", "Ctrl+D"),
+    Binding("sprite.delete_frame",   "sprite_editor", "Del"),
 
     # Sound mixer (ui/sound_mixer/sound_panel.py)
-    Binding("sound.play_pause", "Sound mixer", "Play / pause preview", "Space"),
+    Binding("sound.play_pause", "sound_mixer", "Space"),
 ]
 
 _BY_ID: dict[str, Binding] = {b.id: b for b in BINDINGS}
@@ -101,9 +100,9 @@ _BY_ID: dict[str, Binding] = {b.id: b for b in BINDINGS}
 # contexte — ShortcutsPanel s'en sert pour les placer au bon endroit de la
 # table sans dupliquer l'ordre d'affichage ici.
 DISPLAY_ONLY: list[tuple[str, str, str]] = [
-    # (context, label, touche affichée)
-    ("Global", "Undo", "Ctrl+Z"),
-    ("Global", "Redo", "Ctrl+Y"),
+    # (context_id, display_id, touche affichée)
+    ("global", "undo", "Ctrl+Z"),
+    ("global", "redo", "Ctrl+Y"),
 ]
 DISPLAY_ONLY_INSERT_AFTER = "file.save"   # binding_id après lequel les insérer
 

@@ -270,11 +270,11 @@ class TextPanel(QWidget):
                 entries.append((t, list(t.path), new))
         if not entries:
             return
-        where = SEP.join(entries[0][2]) or "(root)"
-        label = (f"File {len(entries)} texts under {where}" if len(entries) > 1
-                 else f"File {entries[0][0].key} under {where}")
+        where = SEP.join(entries[0][2]) or label('txtpnl.root')
+        cmd_label = (f"File {len(entries)} texts under {where}" if len(entries) > 1
+                     else f"File {entries[0][0].key} under {where}")
         get_history().push(SetTextPathCmd(
-            self._project, entries, label=label,
+            self._project, entries, label=cmd_label,
             persist_fn=self._after_identity_change))
 
     def _on_group_renamed(self, cat: str, new_seg: str):

@@ -81,25 +81,25 @@ _FILL_LABEL_KEYS = [
     (FILL_NONE,   "uiinsp.fill.none"),
     (FILL_COLOR,  "uiinsp.fill.color"),
     (FILL_NINE,   "uiinsp.fill.nine"),
-    (FILL_BG,     "uiinsp.fill.bg"),
+    (FILL_BG,     "common.background"),
     (FILL_SPRITE, "uiinsp.fill.sprite_opt"),
 ]
 
 # ── Presets de placement ──────────────────────────────────────────
 _H_POS = (H_LEFT, H_CENTER, H_RIGHT)
 _V_POS = (V_TOP, V_MIDDLE, V_BOTTOM)
-_POS_WORD = {H_LEFT: "left", H_CENTER: "centre", H_RIGHT: "right",
-             V_TOP: "top", V_MIDDLE: "middle", V_BOTTOM: "bottom"}
+_POS_WORD = {H_LEFT: 'uiinsp.left', H_CENTER: 'uiinsp.center', H_RIGHT: 'uiinsp.right',
+             V_TOP: 'uiinsp.top', V_MIDDLE: 'uiinsp.middle', V_BOTTOM: 'uiinsp.bottom'}
 
 
 def _preset_tip(hpos: str, vpos: str, sh: bool, sv: bool) -> str:
     if sh and sv:
-        return "Fill the frame"
+        return label('uiinsp.fill_the_frame')
     if sh:
-        return f"Full width, {_POS_WORD[vpos]}"
+        return label('uiinsp.full_width_value', value=label(_POS_WORD[vpos]))
     if sv:
-        return f"Full height, {_POS_WORD[hpos]}"
-    return f"{_POS_WORD[vpos].capitalize()} {_POS_WORD[hpos]}"
+        return label('uiinsp.full_height_value', value=label(_POS_WORD[hpos]))
+    return label('uiinsp.placement', vertical=label(_POS_WORD[vpos]), horizontal=label(_POS_WORD[hpos]))
 
 
 def _preset_icon(hpos: str, vpos: str, sh: bool, sv: bool) -> QIcon:
@@ -210,9 +210,9 @@ class UIInspector(QWidget):
         self._sp["y"].setRange(-512, 512)
         self._sp["w"].setRange(8, 512)
         self._sp["h"].setRange(8, 512)
-        W.pair(label("uiinsp.geom.position"), "X", C.AXIS_X, self._sp["x"],
+        W.pair(label("common.position"), "X", C.AXIS_X, self._sp["x"],
                "Y", C.AXIS_Y, self._sp["y"], geom_card.body_layout)
-        W.pair(label("uiinsp.geom.size"), "W", C.AXIS_X, self._sp["w"],
+        W.pair(label("common.size"), "W", C.AXIS_X, self._sp["w"],
                "H", C.AXIS_Y, self._sp["h"], geom_card.body_layout)
         L.addWidget(geom_card)
 
@@ -246,7 +246,7 @@ class UIInspector(QWidget):
         L.addWidget(visible_card)
 
         # ── Section TEXTE (zone runtime ET texte authoré) ─────────
-        self._text_card = CollapsibleCard(label("uiinsp.card.text"))
+        self._text_card = CollapsibleCard(label("common.text"))
 
         # Contenu ÉDITABLE SUR PLACE d'un texte authoré, pour ne pas avoir à
         # créer l'entrée dans l'écran Texte puis revenir la choisir ici.
@@ -403,7 +403,7 @@ class UIInspector(QWidget):
         L.addWidget(self._text_card)
 
         # ── Section FOND (conteneur) ──────────────────────────────
-        self._fill_card = CollapsibleCard(label("uiinsp.card.background"))
+        self._fill_card = CollapsibleCard(label("common.background"))
 
         self._fill_kind = QComboBox()
         self._fill_kind.setFont(QFont(T.UI, T.MD))
@@ -411,7 +411,7 @@ class UIInspector(QWidget):
         for k, key in _FILL_LABEL_KEYS:
             self._fill_kind.addItem(label(key), k)
         self._fill_kind.currentIndexChanged.connect(self._on_fill_kind)
-        self._fill_kind_row = W.row(label("uiinsp.fill.mode"), self._fill_kind,
+        self._fill_kind_row = W.row(label("common.mode"), self._fill_kind,
                                     self._fill_card.body_layout).parentWidget()
 
         # Couleur : palette ACTIVE de la scène + index + pastille de rendu.
@@ -464,7 +464,7 @@ class UIInspector(QWidget):
         self._fill_sprite.setStyleSheet(QSS.combobox)
         self._fill_sprite.setToolTip(label("uiinsp.fill.sprite_tip"))
         self._fill_sprite.currentIndexChanged.connect(self._on_fill_sprite)
-        self._fill_sprite_row = W.row(label("uiinsp.fill.sprite_row"), self._fill_sprite,
+        self._fill_sprite_row = W.row(label("common.sprite"), self._fill_sprite,
                                       self._fill_card.body_layout).parentWidget()
 
         self._fill_state = QComboBox()
@@ -484,7 +484,7 @@ class UIInspector(QWidget):
         self._fill_speed.setKeyboardTracking(False)
         self._fill_speed.setToolTip(label("uiinsp.fill.speed_tip"))
         self._fill_speed.valueChanged.connect(self._on_fill_speed)
-        self._fill_speed_row = W.row(label("uiinsp.fill.speed"), self._fill_speed,
+        self._fill_speed_row = W.row(label("common.speed"), self._fill_speed,
                                      self._fill_card.body_layout).parentWidget()
 
         # Marges de coupe du cadre sélectionné. Elles vivent sur le FOND
@@ -534,7 +534,7 @@ class UIInspector(QWidget):
         # navigation et pas la mise en page, mais la navigation a un
         # propriétaire. Les rangées restent les zones de texte posées DANS la
         # liste — rien à déclarer de plus.
-        self._list_card = CollapsibleCard(label("uiinsp.card.list"))
+        self._list_card = CollapsibleCard(label("common.list"))
         W.section(label("uiinsp.list.navigation"), self._list_card.body_layout)
 
         self._list_active = W.checkbox_row(
@@ -584,7 +584,7 @@ class UIInspector(QWidget):
         self._list_cursor = W.combobox([])
         self._list_cursor.setToolTip(label("uiinsp.list.cursor_tip"))
         self._list_cursor.currentIndexChanged.connect(self._on_list_cursor)
-        W.row(label("uiinsp.list.cursor_image"), self._list_cursor, self._list_card.body_layout)
+        W.row(label("common.image"), self._list_cursor, self._list_card.body_layout)
 
         self._list_cursor_mode = W.combobox([label("uiinsp.list.motion_snap"),
                                              label("uiinsp.list.motion_slide")])
@@ -605,7 +605,7 @@ class UIInspector(QWidget):
         self._list_cursor_speed.valueChanged.connect(
             lambda v: self._set("cursor_speed", int(v), "Cursor speed"))
         self._list_cursor_speed_row = W.row(
-            label("uiinsp.list.speed"), self._list_cursor_speed,
+            label("common.speed"), self._list_cursor_speed,
             self._list_card.body_layout).parentWidget()
         self._list_cursor_why = note(self._list_card.body_layout,
                                      "ui.list.cursor_missing")
@@ -635,14 +635,14 @@ class UIInspector(QWidget):
         # frames, ni direction ici — tout ça vit dans le SpriteAsset et s'édite
         # dans le Sprite Editor. Recopier une vitesse donnerait deux vérités
         # pour un même dessin (cf. models/ui_region.UIImage).
-        self._img_card = CollapsibleCard(label("uiinsp.card.image"))
+        self._img_card = CollapsibleCard(label("common.image"))
 
         self._img_sprite = QComboBox()
         self._img_sprite.setFont(QFont(T.UI, T.MD))
         self._img_sprite.setStyleSheet(QSS.combobox)
         self._img_sprite.setToolTip(label("uiinsp.img.sprite_tip"))
         self._img_sprite.currentIndexChanged.connect(self._on_img_sprite)
-        self._img_sprite_row = W.row(label("uiinsp.img.sprite"), self._img_sprite,
+        self._img_sprite_row = W.row(label("common.sprite"), self._img_sprite,
                                      self._img_card.body_layout).parentWidget()
 
         self._img_state = QComboBox()
@@ -814,7 +814,7 @@ class UIInspector(QWidget):
 
     def _reload_previews(self):
         self._preview.clear()
-        self._preview.addItem(label("uiinsp.text.preview_none"), "")
+        self._preview.addItem(label("common.none_paren"), "")
         values = self._project.text_values() if self._project else {}
         for t in (self._project.texts if self._project else []):
             self._preview.addItem(
@@ -1227,7 +1227,7 @@ class UIInspector(QWidget):
         self._fill_pal_slot = palette_picker_slot(
             banks, cur or None, _icons.COLOR_UI,
             on_picked=self._on_fill_palette,
-            add_label=label("uiinsp.fill.choose_palette"), parent=self, allow_none=False)
+            add_label=label("common.choose_palette"), parent=self, allow_none=False)
         if cur and cur not in actifs:
             self._fill_pal_slot.set_script(cur)
         self._fill_pal_box.addWidget(self._fill_pal_slot)
@@ -1499,13 +1499,13 @@ class UIInspector(QWidget):
             self._list_shape.clear()
             return
         if cols == 1:
-            shape, order = f"{n} rows, one column", "top to bottom"
+            shape, order = label('uiinsp.n_rows_one_column', n=n), label('uiinsp.top_to_bottom')
         elif lines <= 1:
-            shape, order = f"{n} columns, one line", "left to right"
+            shape, order = label('uiinsp.n_columns_one_line', n=n), label('uiinsp.left_to_right')
         else:
-            shape = f"{lines} \u00d7 {cols} grid"
-            order = ("left to right, then the line below" if row_first
-                     else "top to bottom, then the next column")
+            shape = label('uiinsp.lines_cols_grid', lines=lines, cols=cols)
+            order = (label('uiinsp.left_to_right_then_the_line_below') if row_first
+                     else label('uiinsp.top_to_bottom_then_the_next_column'))
         self._list_shape.show_text("ui.list.grid", shape=shape, order=order)
 
     def _set(self, field: str, value, label: str):

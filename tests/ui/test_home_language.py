@@ -1,0 +1,31 @@
+"""Les textes visibles du sélecteur de projet en français."""
+from __future__ import annotations
+
+from PyQt6.QtWidgets import QPushButton
+
+from ui.common import catalog
+from ui.home import project_picker
+from ui.home.project_picker import HomeScreen, NewProjectDialog
+
+
+def test_home_screen_is_french(qapp, tmp_path, monkeypatch):
+    monkeypatch.setattr(project_picker, "load_recent", lambda: [])
+    catalog.set_language("fr")
+
+    home = HomeScreen(tmp_path)
+
+    assert home.windowTitle() == "GBA Editor — Ouvrir un projet"
+    assert home._tabs.tabText(0) == "Projets"
+    assert home._tabs.tabText(1) == "Modèles"
+    assert home._empty_lbl.text().startswith("Aucun projet récent")
+    assert "+ Créer un projet" in {button.text() for button in home.findChildren(QPushButton)}
+    catalog.set_language("")
+
+
+def test_new_project_dialog_is_french(qapp, tmp_path):
+    catalog.set_language("fr")
+    dialog = NewProjectDialog(tmp_path)
+
+    assert dialog.windowTitle() == "Nouveau projet"
+    assert dialog._name_edit.placeholderText() == "MonJeu"
+    catalog.set_language("")

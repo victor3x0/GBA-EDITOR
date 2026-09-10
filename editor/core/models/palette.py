@@ -7,7 +7,9 @@ from core.models.resource import Resource
 # La réserve de l'index 0 et l'encodage des couleurs vivent dans gba_color (le
 # module de format) ; palette les emploie pour se sérialiser. Import de haut
 # niveau : gba_color n'importe plus rien de palette, il n'y a plus de cycle.
-from core.models.gba_color import RESERVED_SLOT_COLOR, write_colors, read_colors
+from core.models.gba_color import (
+    RESERVED_SLOT_COLOR, bgr555_to_hex, hex_to_bgr555, read_colors, write_colors,
+)
 
 
 class PaletteUsage(NamedTuple):
@@ -27,8 +29,8 @@ class PaletteUsage(NamedTuple):
 @dataclass
 class PaletteBank(Resource):
     """Une palette nommée de 16 couleurs, catalogue illimité et unifié au
-    niveau projet (project/palettes/*.json, un fichier par palette — cf.
-    ResourceStore) — partagé entre OBJ et BG, une même palette peut servir
+    niveau projet (project/palettes/*.hex, un fichier visible par palette ; le
+    JSON voisin ne contient que les métadonnées) — partagé entre OBJ et BG, une même palette peut servir
     aux deux. Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes
     / active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui
     occupe les banques hardware (physiquement séparées OBJ/BG) au build."""
@@ -72,6 +74,37 @@ class PaletteBank(Resource):
     @classmethod
     def from_dict(cls, d: dict) -> "PaletteBank":
         return super().from_dict({**d, "colors": read_colors(d.get("colors", []))})
+
+    # La persistance actuelle découpe une palette en deux fichiers : les
+    # couleurs, lisibles par un humain, dans le .hex ; les rares métadonnées
+    # de l'éditeur dans le sidecar JSON. Ces trois méthodes définissent ce
+    # FORMAT de palette, sans savoir où il se trouve sur le disque.
+    def to_metadata_dict(self) -> dict:
+        return {"name": self.name, "size": self.size}
+
+    def to_hex(self) -> str:
+        """Forme canonique : une couleur #RRGGBB par ligne."""
+        return "\n".join(bgr555_to_hex(color) for color in self.colors) + "\n"
+
+    @classmethod
+    def from_hex(cls, name: str, text: str, metadata: dict | None = None) -> "PaletteBank":
+        """Construit une banque depuis sa source .hex et son sidecar éventuel."""
+        colors: list[int] = []
+        for line_number, raw in enumerate(text.splitlines(), 1):
+            value = raw.strip()
+            if not value:
+                continue
+            candidate = value[1:] if value.startswith("#") else value
+            if len(candidate) != 6 or any(char not in "0123456789abcdefABCDEF" for char in candidate):
+                raise ValueError(f"ligne {line_number}: couleur attendue sous la forme #RRGGBB")
+            colors.append(hex_to_bgr555(value))
+        if not colors:
+            raise ValueError("le fichier ne contient aucune couleur")
+
+        requested_size = (metadata or {}).get("size")
+        size = requested_size if requested_size in (16, 256) and len(colors) <= requested_size \
+            else (256 if len(colors) > 16 else 16)
+        return cls(name=name, colors=colors, size=size)
 
 
 # Sentinel Actor/Prefab.pal_bank et BackgroundLayer.pal_bank : "Sans palette"

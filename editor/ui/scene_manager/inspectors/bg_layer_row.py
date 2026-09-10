@@ -10,6 +10,7 @@ trois autres classes qu'il portait (`AssignSlot`, `AssignPanel`,
 `AssetManagerPanel`) n'étaient plus instanciées nulle part et sont parties avec
 lui. Seule celle-ci vivait, et son unique client est l'inspecteur de scène —
 d'où sa place ici."""
+from ui.common.labels import label
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -75,7 +76,7 @@ class BgLayerRow(QFrame):
             f"QPushButton{{color:#3a3a3a;background:transparent;border:none;padding:0;}}"
             f"QPushButton:hover{{color:{self._color};}}"
         )
-        self._radio.setToolTip("Set as the collision layer")
+        self._radio.setToolTip(label('bglayer.set_as_the_collision_layer'))
         self._radio.clicked.connect(lambda: self.bound_toggled.emit(self.slot_index))
         row.addWidget(self._radio)
 
@@ -92,7 +93,7 @@ class BgLayerRow(QFrame):
             f"color:#555;font-size:14px;"
         )
         self._thumb.setText("🖼")
-        self._thumb.setToolTip("Click or drop a PNG")
+        self._thumb.setToolTip(label('bglayer.click_or_drop_a_png'))
         self._thumb.setCursor(Qt.CursorShape.PointingHandCursor)
         self._thumb.mousePressEvent = lambda e: self._open_dialog()
 
@@ -103,7 +104,7 @@ class BgLayerRow(QFrame):
             "QPushButton{background:#3a1a1a;color:#cc5555;border:none;border-radius:2px;}"
             "QPushButton:hover{background:#cc3333;color:#fff;}"
         )
-        self._btn_clear.setToolTip("Remove this background")
+        self._btn_clear.setToolTip(label('bglayer.remove_this_background'))
         self._btn_clear.setVisible(False)
         self._btn_clear.clicked.connect(self._clear)
 
@@ -118,7 +119,7 @@ class BgLayerRow(QFrame):
         badge.setStyleSheet(f"color:{self._color};background:transparent;")
         badge.setFixedWidth(34)
         badge.setCursor(Qt.CursorShape.OpenHandCursor)
-        badge.setToolTip("Drag to swap display priority with another layer")
+        badge.setToolTip(label('bglayer.reorder_tip'))
         badge.mousePressEvent = self._badge_press
         badge.mouseMoveEvent = self._badge_move
         row.addWidget(badge)
@@ -143,7 +144,7 @@ class BgLayerRow(QFrame):
         self._pal_btn = QToolButton()
         self._pal_btn.setFixedSize(30, 30)
         self._pal_btn.setIconSize(QSize(24, 24))
-        self._pal_btn.setToolTip("Choisir la palette de ce layer")
+        self._pal_btn.setToolTip(label('bglayer.choose_this_layer_s_palette'))
         self._pal_btn.setStyleSheet(
             "QToolButton{background:transparent;border:1px solid #333;"
             "border-radius:3px;padding:0;}"
@@ -179,7 +180,7 @@ class BgLayerRow(QFrame):
         self._inpaint_layer_btn.setFixedSize(22, 22)
         self._inpaint_layer_btn.setIconSize(QSize(16, 16))
         self._inpaint_layer_btn.setIcon(_ico("tool_inpaint_brush", C.TEXT_DIM, self._color))
-        self._inpaint_layer_btn.setToolTip("Inpainter ce layer (repeindre ses palettes)")
+        self._inpaint_layer_btn.setToolTip(label('bglayer.inpaint_tip'))
         self._inpaint_layer_btn.setStyleSheet(
             "QToolButton{background:transparent;border:none;padding:0;}"
             f"QToolButton:checked{{background:{C.BG_SEL};border:1px solid {self._color};"
@@ -196,7 +197,7 @@ class BgLayerRow(QFrame):
         self._eye_btn.setIconSize(QSize(16, 16))
         self._visible = True
         self._eye_btn.setIcon(_ico("eye", C.TEXT_DIM, self._color))
-        self._eye_btn.setToolTip("Masquer/afficher ce layer dans le canvas")
+        self._eye_btn.setToolTip(label('bglayer.visibility_tip'))
         self._eye_btn.setStyleSheet(
             "QToolButton{background:transparent;border:none;padding:0;}"
         )
@@ -205,7 +206,7 @@ class BgLayerRow(QFrame):
 
         btn_remove = W.btn_danger("×")
         btn_remove.setFixedSize(22, 22)
-        btn_remove.setToolTip("Retirer ce layer")
+        btn_remove.setToolTip(label('bglayer.remove_this_layer'))
         btn_remove.clicked.connect(lambda: self.layer_removed.emit(self.slot_index))
         row.addWidget(btn_remove)
 
@@ -217,13 +218,13 @@ class BgLayerRow(QFrame):
     # la main. Le mot « cible » n'a pas à remonter jusqu'à qui a juste choisi
     # « layer translucide » dans un menu.
     _BLEND_TIPS_SIMPLE = {
-        "top":    "This is the layer you see through — click to put it behind instead",
-        "bottom": "Behind the translucent layer — click to make it the translucent one",
+        "top":    'bglayer.through_tip',
+        "bottom": 'bglayer.behind_tip',
     }
     _BLEND_TIPS_FULL = {
-        "": "Not part of the blend — click to make it the top layer",
-        "top": "Top: this layer is what gets blended",
-        "bottom": "Bottom: this layer is what the top blends with, behind it",
+        "": 'bglayer.no_blend_tip',
+        "top": 'bglayer.top_tip',
+        "bottom": 'bglayer.bottom_tip',
     }
 
     # Ce que le bouton propose, piloté par l'effet de la scène :
@@ -242,7 +243,7 @@ class BgLayerRow(QFrame):
                                      self._color))
         tips = (self._BLEND_TIPS_SIMPLE if self._blend_ui == "toggle"
                 else self._BLEND_TIPS_FULL)
-        self._blend_btn.setToolTip(tips.get(self._blend_role, ""))
+        self._blend_btn.setToolTip(label(tips[self._blend_role]) if self._blend_role in tips else "")
 
     def _cycle_blend_role(self):
         order = (["top", "bottom"] if self._blend_ui == "toggle"
@@ -291,7 +292,7 @@ class BgLayerRow(QFrame):
         Entrée « Vide » en tête pour un layer sans image (même contrat que
         « Sans palette » côté pal_bank, cf. ui/common/pickers.py)."""
         from ui.common.widgets import ScriptPickerPopup
-        entries = [("Vide (aucune image)", "", None)]
+        entries = [(label('bglayer.empty_no_image'), "", None)]
         entries += [(n, n, None) for n in (self._bg_names or [])]
         popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
         popup.picked.connect(lambda name: self.asset_changed.emit(self.slot_index, name))
@@ -344,17 +345,17 @@ class BgLayerRow(QFrame):
         current = next((b for b in banks if b.name == current_name), None) if current_name else None
         if current:
             self._pal_btn.setIcon(bank_icon(current))
-            self._pal_btn.setToolTip(f"Palette du layer : {current.name}")
+            self._pal_btn.setToolTip(label('bglayer.layer_palette_name', name=current.name))
         else:
             # « Sans palette » : couleurs d'origine du PNG (défaut) — icône
             # neutre plutôt qu'un bouton vide.
             from ui.common.icons import get as _ico
             self._pal_btn.setIcon(_ico("tool_palette", C.TEXT_DIM, self._color))
-            self._pal_btn.setToolTip("Sans palette (couleurs du PNG) — clic pour changer")
+            self._pal_btn.setToolTip(label('bglayer.no_palette_tip'))
 
     def _open_pal_picker(self):
         from ui.common.pickers import PALETTE_NONE
-        entries = [("Sans palette (couleurs du PNG)", PALETTE_NONE, None)]
+        entries = [(label('bglayer.no_palette_png_colors'), PALETTE_NONE, None)]
         entries += [(bank.name, bank.name, bank_icon(bank)) for bank in self._pal_banks]
         popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
         popup.picked.connect(lambda name: self.pal_bank_changed.emit(self.slot_index, name))

@@ -14,8 +14,8 @@ Portée des catégories, volontairement inégale (2026-08-23) :
     cf. ARCHITECTURE.md « Thème GBA redesign ») : l'écran le DIT plutôt que
     de proposer un choix qui n'existe pas.
   - **Interface** — ce que l'éditeur MONTRE de lui-même
-    (`core/interface_preferences.py`) : aujourd'hui l'affichage des astuces,
-    le niveau 3 des notices (ROADMAP v0.11). Ce réglage a d'abord vécu dans
+    (`core/interface_preferences.py`) : la langue et l'affichage des astuces,
+    le niveau 3 des notices (ROADMAP v0.11). Ces réglages ont d'abord vécu dans
     les réglages du PROJET ; il en est sorti parce que `project.json` est
     versionné — couper les astuces les coupait pour toute l'équipe — et parce
     qu'un réglage de projet passe par l'historique d'annulation, où une
@@ -37,7 +37,7 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QStackedWidget, QLabel, QLineEdit, QPushButton, QFileDialog,
     QTableWidget, QTableWidgetItem, QHeaderView, QKeySequenceEdit, QScrollArea,
-    QCheckBox,
+    QCheckBox, QComboBox,
 )
 from PyQt6.QtGui import QFont, QKeySequence
 from PyQt6.QtCore import Qt
@@ -45,7 +45,10 @@ from PyQt6.QtCore import Qt
 from ui.common.theme import C, T, QSS
 from ui.common.notice import note, refresh_tips
 from ui.common.labels import label
-from core.interface_preferences import tips_shown, set_tips_shown
+from ui.common import catalog
+from core.interface_preferences import (
+    tips_shown, set_tips_shown, interface_language, set_interface_language,
+)
 from core.toolchain import Toolchain
 from core.external_tools import ExternalTools, TOOL_KINDS
 from core.keybindings import (
@@ -160,15 +163,41 @@ class ThemePanel(QWidget):
 # ── Interface ───────────────────────────────────────────────────────────
 
 class InterfacePanel(QWidget):
-    """Ce que l'éditeur montre de lui-même. Une seule entrée pour l'instant :
-    les astuces. Comme partout dans ce dialogue, le réglage se persiste à
-    l'instant où il change — il n'y a rien à annuler."""
+    """Ce que l'éditeur montre de lui-même.
+
+    Les préférences se persistent à l'instant où elles changent : il n'y a
+    rien à annuler. La langue prend effet au prochain démarrage, car les
+    widgets existants ont déjà reçu leur texte lors de leur construction.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setSpacing(14)
-        lay.addWidget(_category_title(label("settings.cat.interface")))
+        lay.addWidget(_category_title(label("common.interface")))
+
+        language_row = QHBoxLayout()
+        language_label = QLabel(label("settings.interface.language"))
+        language_label.setFont(QFont(T.UI, T.MD))
+        language_label.setFixedWidth(140)
+        self._language = QComboBox()
+        self._language.setFont(QFont(T.UI, T.MD))
+        self._language.setStyleSheet(QSS.combobox)
+        current_language = interface_language()
+        for code, name in catalog.available_languages():
+            self._language.addItem(name, code)
+        current_index = self._language.findData(current_language)
+        self._language.setCurrentIndex(max(0, current_index))
+        self._language.currentIndexChanged.connect(self._on_language_changed)
+        language_row.addWidget(language_label)
+        language_row.addWidget(self._language, 1)
+        lay.addLayout(language_row)
+
+        restart_note = QLabel(label("settings.interface.language_restart"))
+        restart_note.setFont(QFont(T.UI, T.SM))
+        restart_note.setStyleSheet(f"color:{C.TEXT_DIM};")
+        restart_note.setWordWrap(True)
+        lay.addWidget(restart_note)
 
         self._chk_tips = QCheckBox(label("settings.interface.show_tips"))
         self._chk_tips.setFont(QFont(T.UI, T.MD))
@@ -187,6 +216,13 @@ class InterfacePanel(QWidget):
         # prochain lancement, et on le rebasculerait en croyant l'avoir raté.
         refresh_tips()
 
+    def _on_language_changed(self, index: int):
+        code = self._language.itemData(index)
+        set_interface_language(str(code or ""))
+        # Appliqué par main.py au prochain démarrage, avant tout widget.
+        # Les nouveaux panneaux et les messages rafraîchis gardent eux aussi
+        # la langue de cette session : aucun mélange avant le redémarrage.
+
 
 # ── Shortcuts ───────────────────────────────────────────────────────────
 
@@ -201,6 +237,40 @@ class ShortcutsPanel(QWidget):
     seule, pas de bouton reset."""
 
     _COL_CONTEXT, _COL_ACTION, _COL_KEY, _COL_RESET = range(4)
+    _CONTEXT_KEYS = {
+        "global": "settings.shortcuts.context.global",
+        "scene_canvas": "settings.shortcuts.context.scene_canvas",
+        "sprite_editor": "settings.shortcuts.context.sprite_editor",
+        "sound_mixer": "settings.shortcuts.context.sound_mixer",
+    }
+    _DISPLAY_KEYS = {
+        "undo": "settings.shortcuts.display.undo",
+        "redo": "settings.shortcuts.display.redo",
+    }
+    _BINDING_KEYS = {
+        "file.new": "common.new_project",
+        "file.open": "common.open_project",
+        "file.save": "common.save",
+        "file.quit": "common.quit",
+        "game.build": "common.build_run",
+        "canvas.tool_select": "settings.shortcuts.action.canvas.tool_select",
+        "canvas.tool_add": "settings.shortcuts.action.canvas.tool_add",
+        "canvas.tool_erase": "settings.shortcuts.action.canvas.tool_erase",
+        "canvas.tool_collision": "settings.shortcuts.action.canvas.tool_collision",
+        "canvas.tool_inpaint": "settings.shortcuts.action.canvas.tool_inpaint",
+        "canvas.tool_ui": "settings.shortcuts.action.canvas.tool_ui",
+        "canvas.fit": "settings.shortcuts.action.canvas.fit",
+        "canvas.cancel": "settings.shortcuts.action.canvas.cancel",
+        "canvas.delete": "settings.shortcuts.action.canvas.delete",
+        "canvas.duplicate": "settings.shortcuts.action.canvas.duplicate",
+        "canvas.copy": "common.copy",
+        "canvas.paste": "settings.shortcuts.action.canvas.paste",
+        "sprite.flip_h": "settings.shortcuts.action.sprite.flip_h",
+        "sprite.flip_v": "settings.shortcuts.action.sprite.flip_v",
+        "sprite.duplicate_frame": "settings.shortcuts.action.sprite.duplicate_frame",
+        "sprite.delete_frame": "settings.shortcuts.action.sprite.delete_frame",
+        "sound.play_pause": "settings.shortcuts.action.sound.play_pause",
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -246,8 +316,10 @@ class ShortcutsPanel(QWidget):
         for row, entry in enumerate(rows):
             if isinstance(entry, Binding):
                 b = entry
-                self._table.setItem(row, self._COL_CONTEXT, self._plain_item(b.context, dim=True))
-                self._table.setItem(row, self._COL_ACTION, self._plain_item(b.label))
+                self._table.setItem(row, self._COL_CONTEXT,
+                                    self._plain_item(self._context_label(b.context_id), dim=True))
+                self._table.setItem(row, self._COL_ACTION,
+                                    self._plain_item(self._binding_label(b.id)))
 
                 kse = QKeySequenceEdit(QKeySequence(self._kb.resolve(b.id)))
                 kse.setFont(_field_font())
@@ -261,9 +333,11 @@ class ShortcutsPanel(QWidget):
                 reset_btn.clicked.connect(lambda _=False, bid=b.id: self._reset(bid))
                 self._table.setCellWidget(row, self._COL_RESET, reset_btn)
             else:
-                context, disp_label, key = entry
-                self._table.setItem(row, self._COL_CONTEXT, self._plain_item(context, dim=True))
-                self._table.setItem(row, self._COL_ACTION, self._plain_item(disp_label))
+                context_id, display_id, key = entry
+                self._table.setItem(row, self._COL_CONTEXT,
+                                    self._plain_item(self._context_label(context_id), dim=True))
+                display_key = self._DISPLAY_KEYS.get(display_id, display_id)
+                self._table.setItem(row, self._COL_ACTION, self._plain_item(label(display_key)))
                 key_item = self._plain_item(key, dim=True)
                 key_item.setToolTip(label("settings.shortcuts.system_key"))
                 self._table.setItem(row, self._COL_KEY, key_item)
@@ -287,6 +361,14 @@ class ShortcutsPanel(QWidget):
         if dim:
             it.setForeground(Qt.GlobalColor.gray)
         return it
+
+    @classmethod
+    def _context_label(cls, context_id: str) -> str:
+        return label(cls._CONTEXT_KEYS.get(context_id, context_id))
+
+    @classmethod
+    def _binding_label(cls, binding_id: str) -> str:
+        return label(cls._BINDING_KEYS.get(binding_id, binding_id))
 
     def _on_edited(self, binding_id: str, seq: QKeySequence):
         self._kb.set(binding_id, seq.toString())
@@ -313,7 +395,7 @@ class ShortcutsPanel(QWidget):
             seq = self._kb.resolve(b.id)
             if not seq:
                 continue
-            by_context.setdefault(b.context, {}).setdefault(seq, []).append(b.id)
+            by_context.setdefault(b.context_id, {}).setdefault(seq, []).append(b.id)
 
         conflicted: set[str] = set()
         for seqs in by_context.values():
@@ -389,7 +471,7 @@ class SettingsDialog(QDialog):
     _CAT_LABELS = {
         "Toolchains": "settings.cat.toolchains",
         "Theme": "settings.cat.theme",
-        "Interface": "settings.cat.interface",
+        "Interface": "common.interface",
         "Shortcuts": "settings.cat.shortcuts",
         "External Tools": "settings.cat.external_tools",
     }

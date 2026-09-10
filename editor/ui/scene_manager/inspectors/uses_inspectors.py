@@ -9,6 +9,7 @@ optionnel, et la façon dont elle peuple la liste (load()), qui reste propre
 à son domaine (instances de prefab / actors utilisant un script).
 """
 from __future__ import annotations
+from ui.common.labels import label
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -62,7 +63,7 @@ class _UsesInspectorBase(QWidget):
             f"font-family:{T.UI_STACK};font-size:10px;}}"
             f"QPushButton:hover{{color:{C.TEXT_HI};}}"
         )
-        btn_close.setToolTip("Close this view")
+        btn_close.setToolTip(label('uses.close_this_view'))
         btn_close.clicked.connect(self._on_close)
         tl.addWidget(self._name_lbl, 1)
         tl.addWidget(btn_close)
@@ -189,8 +190,8 @@ class PrefabUsesInspector(_UsesInspectorBase):
     _HEADER_COLOR = icons.COLOR_PREFAB
     _HEADER_BG_ALPHA = "30"
     _HEADER_BORDER_ALPHA = "50"
-    _SECTION_TITLE = "Prefab uses"
-    _ACTION_BTN_TEXT = "Edit prefab"
+    _SECTION_TITLE = label('uses.prefab_uses')
+    _ACTION_BTN_TEXT = label('uses.edit_prefab')
     _ACTION_BTN_COLOR = icons.COLOR_PREFAB
 
     def __init__(self, parent=None):
@@ -219,7 +220,7 @@ class PrefabUsesInspector(_UsesInspectorBase):
                 self._add_leaf_row(actor.name, lambda a=actor: get_bus().select(a))
 
         if not found_any:
-            self._add_empty_row("No instance in the project.")
+            self._add_empty_row(label('uses.no_instance_in_the_project'))
 
         self._list_layout.addStretch()
 
@@ -255,8 +256,8 @@ class ScriptUsesInspector(_UsesInspectorBase):
     _HEADER_COLOR = icons.COLOR_SCRIPT
     _HEADER_BG_ALPHA = "25"
     _HEADER_BORDER_ALPHA = "40"
-    _SECTION_TITLE = "Script uses"
-    _ACTION_BTN_TEXT = "Edit script"
+    _SECTION_TITLE = label('uses.script_uses')
+    _ACTION_BTN_TEXT = label('uses.edit_script')
     _ACTION_BTN_COLOR = icons.COLOR_SCRIPT
 
     def __init__(self, parent=None):
@@ -299,7 +300,7 @@ class ScriptUsesInspector(_UsesInspectorBase):
         ]
         if linked_prefabs:
             found_any = True
-            self._add_group_row("◆", "Prefabs", icons.COLOR_PREFAB)
+            self._add_group_row("◆", label('common.prefabs'), icons.COLOR_PREFAB)
             for pf in linked_prefabs:
                 self._add_leaf_row(pf.name, lambda p=pf: get_bus().select(p))
 
@@ -307,12 +308,12 @@ class ScriptUsesInspector(_UsesInspectorBase):
         linked_scenes = [s for s in project.scenes if Path(s.script or "").name == name]
         if linked_scenes:
             found_any = True
-            self._add_group_row("▤", "SCRIPTS DE SCÈNE", icons.COLOR_SCRIPT)
+            self._add_group_row("▤", label('uses.scene_scripts'), icons.COLOR_SCRIPT)
             for scene in linked_scenes:
                 self._add_leaf_row(scene.name, lambda s=scene: get_bus().select(s))
 
         if not found_any:
-            self._add_empty_row("No actor uses this script.")
+            self._add_empty_row(label('uses.no_actor_uses_this_script'))
 
         self._list_layout.addStretch()
 

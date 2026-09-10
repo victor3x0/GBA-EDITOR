@@ -1,0 +1,7 @@
+# GBA Editor est distribué par Nuitka, et non comme paquet pip : ce fichier
+# centralise donc la configuration des outils, sans dupliquer les métadonnées
+# ou les dépendances de requirements.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -rs"

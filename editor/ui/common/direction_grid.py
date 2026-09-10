@@ -13,6 +13,7 @@ Les dir_id suivent la nomenclature du runtime (`runtime_api_inline.h`) :
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from PyQt6.QtWidgets import QWidget, QGridLayout, QToolButton
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 
@@ -22,7 +23,7 @@ from ui.common.icons import get as _ico
 # (dir_id, icon_key, tooltip, row, col)
 DIR_CELLS = [
     (8, "dir_nw", "NW", 0, 0), (1, "dir_n", "N",  0, 1), (2, "dir_ne", "NE", 0, 2),
-    (7, "dir_w",  "W",  1, 0), (0, "dir_omni", "Omni (toutes directions)", 1, 1), (3, "dir_e", "E", 1, 2),
+    (7, "dir_w",  "W",  1, 0), (0, "dir_omni", 'dirgrid.omni_all_directions', 1, 1), (3, "dir_e", "E", 1, 2),
     (6, "dir_sw", "SW", 2, 0), (5, "dir_s", "S",  2, 1), (4, "dir_se", "SE", 2, 2),
 ]
 
@@ -121,7 +122,7 @@ class DirectionGrid(QWidget):
 
         self.buttons: dict[int, DirectionButton] = {}
         for dir_id, icon_key, tip, row, col in DIR_CELLS:
-            btn = DirectionButton(dir_id, icon_key, tip, cell=cell, icon_px=icon_px)
+            btn = DirectionButton(dir_id, icon_key, label(tip), cell=cell, icon_px=icon_px)
             btn.toggled.connect(lambda checked, d=dir_id: self._on_toggled(d, checked))
             grid.addWidget(btn, row, col)
             self.buttons[dir_id] = btn
@@ -176,7 +177,7 @@ class DirectionPicker(QWidget):
         from PyQt6.QtWidgets import QVBoxLayout
 
         self._grid = DirectionGrid(cell=cell, gap=gap, exclusive=True)
-        self._grid.buttons[0].setToolTip("Omni (aucune direction initiale)")
+        self._grid.buttons[0].setToolTip(label('dirgrid.omni_no_initial_direction'))
         self._grid.dir_toggled.connect(self._on_dir)
 
         root = QVBoxLayout(self)

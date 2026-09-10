@@ -5,6 +5,7 @@ recherche+liste au clic.
 """
 from __future__ import annotations
 
+from ui.common.labels import label
 from typing import Callable, Optional
 
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel, QToolButton
@@ -21,7 +22,7 @@ from core.models.palette import PaletteBank
 # Jeton renvoyé à on_picked quand l'utilisateur choisit « Sans palette » —
 # l'appelant le mappe vers OWN_PAL_BANK (l'asset garde ses couleurs d'origine).
 PALETTE_NONE = "__none__"
-_NONE_LABEL = "No palette (PNG colors)"
+_NONE_LABEL = 'pick.no_palette_png_colors'
 
 
 def palette_picker_slot(
@@ -30,7 +31,7 @@ def palette_picker_slot(
     accent: str,
     on_picked: Callable[[str], None],
     on_cleared: Optional[Callable[[], None]] = None,
-    add_label: str = "Choose a palette",
+    add_label: str = None,
     parent=None,
     allow_none: bool = True,
 ) -> ScriptSlot:
@@ -38,6 +39,8 @@ def palette_picker_slot(
     `allow_none` (défaut), une entrée « Sans palette » en tête permet de
     revenir aux couleurs d'origine du PNG — on_picked reçoit alors le jeton
     PALETTE_NONE. `current_name` None + allow_none => affiche « Sans palette »."""
+    if add_label is None:
+        add_label = label('common.choose_palette')
     slot = ScriptSlot(
         add_label=add_label, accent_color=accent,
         show_clear=on_cleared is not None,
@@ -47,18 +50,18 @@ def palette_picker_slot(
     if current:
         slot.set_script(current.name, icon=bank_icon(current))
     elif allow_none:
-        slot.set_script(_NONE_LABEL)
+        slot.set_script(label(_NONE_LABEL))
 
     def _open_picker():
         entries = [(bank.name, bank.name, bank_icon(bank)) for bank in banks]
         if allow_none:
-            entries.insert(0, (_NONE_LABEL, PALETTE_NONE, None))
+            entries.insert(0, (label(_NONE_LABEL), PALETTE_NONE, None))
         popup = ScriptPickerPopup(entries, accent, parent=parent, new_label=None)
 
         def _picked(name: str):
             # Met à jour l'affichage du slot AVANT de notifier l'appelant.
             if name == PALETTE_NONE:
-                slot.set_script(_NONE_LABEL)
+                slot.set_script(label(_NONE_LABEL))
             else:
                 b = next((x for x in banks if x.name == name), None)
                 if b:
@@ -72,7 +75,7 @@ def palette_picker_slot(
     return slot
 
 
-_UI_BANK_AUTO_LABEL = "Own palette (automatic)"
+_UI_BANK_AUTO_LABEL = 'pick.own_palette_automatic'
 
 
 def ui_pal_bank_slot(
@@ -100,17 +103,17 @@ def ui_pal_bank_slot(
 
     `ScriptPickerPopup.picked` est typé `str` (chemins de script, son usage
     d'origine) : l'index voyage donc en texte, comme dans `ColorIndexSlot`."""
-    slot = ScriptSlot(add_label="Choose the UI bank", accent_color=accent,
+    slot = ScriptSlot(add_label=label('pick.choose_the_ui_bank'), accent_color=accent,
                       show_clear=False)
 
     def _label_and_icon(i: int):
         name = active[i] if 0 <= i < len(active) else ""
         bank = project.get_palette(name) if (project and name) else None
-        return f"{i} — {name or '(empty)'}", (bank_icon(bank) if bank else None)
+        return f"{i} — {name or label('pick.empty')}", (bank_icon(bank) if bank else None)
 
     def _show(value: int):
         if value < 0:
-            slot.set_script(_UI_BANK_AUTO_LABEL)
+            slot.set_script(label(_UI_BANK_AUTO_LABEL))
         else:
             lab, icon = _label_and_icon(value)
             slot.set_script(lab, icon=icon)
@@ -118,7 +121,7 @@ def ui_pal_bank_slot(
     _show(current_index)
 
     def _open_picker():
-        entries = [(_UI_BANK_AUTO_LABEL, "-1", None)]
+        entries = [(label(_UI_BANK_AUTO_LABEL), "-1", None)]
         for i in range(16):
             lab, icon = _label_and_icon(i)
             entries.append((lab, str(i), icon))
@@ -139,7 +142,7 @@ def ui_pal_bank_slot(
     return slot
 
 
-_FONT_AUTO_LABEL_BASE = "Automatic (first font)"
+_FONT_AUTO_LABEL_BASE = 'pick.automatic_first_font'
 
 
 def font_picker_slot(
@@ -148,7 +151,7 @@ def font_picker_slot(
     current_name: str,
     accent: str,
     on_picked: Callable[[str], None],
-    add_label: str = "Choose the scene font",
+    add_label: str = None,
     parent=None,
     project_default: str = "",
 ) -> ScriptSlot:
@@ -164,19 +167,21 @@ def font_picker_slot(
     Ce que « Automatic » résout suit `font_emit.default_font_name` : la « Default
     Font » du projet (`project_default`) si elle est posée et utilisable, sinon la
     seule police utilisable s'il n'y en a qu'une — sinon indécidable ici."""
+    if add_label is None:
+        add_label = label('pick.choose_the_scene_font')
     slot = ScriptSlot(add_label=add_label, accent_color=accent, show_clear=False)
     icon = icons.get("font", C.TEXT_DIM)
 
     def _auto_label() -> str:
         if project_default and project_default in usable_names:
-            return f"Automatic — {project_default}"
+            return label('pick.automatic_project_default', project_default=project_default)
         first = sorted(usable_names)[0] if len(usable_names) == 1 else ""
-        return f"Automatic — {first}" if first else _FONT_AUTO_LABEL_BASE
+        return label('pick.automatic_first', first=first) if first else label(_FONT_AUTO_LABEL_BASE)
 
     def _label(name: str) -> str:
         if not any(f.name == name for f in fonts):
-            return f"{name} (missing)"
-        return name if name in usable_names else f"{name} (no usable sheet)"
+            return label('pick.name_missing', name=name)
+        return name if name in usable_names else label('pick.name_no_usable_sheet', name=name)
 
     def _show(name: str):
         slot.set_script(_auto_label() if not name else _label(name), icon=icon)
@@ -207,11 +212,13 @@ def sprite_picker_slot(
     accent: str,
     on_picked: Callable[[str], None],
     on_cleared: Optional[Callable[[], None]] = None,
-    add_label: str = "Choose a sprite",
+    add_label: str = None,
     parent=None,
 ) -> ScriptSlot:
     """Slot pour choisir un SpriteAsset par nom — même modèle que
     `palette_picker_slot`, sans icône (pas d'aperçu bon marché pour un sprite)."""
+    if add_label is None:
+        add_label = label('pick.choose_a_sprite')
     slot = ScriptSlot(
         add_label=add_label, accent_color=accent,
         show_clear=on_cleared is not None,
@@ -287,7 +294,7 @@ class ColorIndexSlot(QWidget):
         self._btn.setFixedSize(24, 24)
         self._btn.setStyleSheet(QSS.toolbutton_icon)
         self._btn.setIcon(icons.get("palette", C.TEXT_DIM))
-        self._btn.setToolTip("Pick a color from the bank this text reads")
+        self._btn.setToolTip(label('pick.pick_hint'))
         self._btn.clicked.connect(self._open)
         row.addWidget(self._btn)
 
@@ -331,11 +338,10 @@ class ColorIndexSlot(QWidget):
             self._swatch.setStyleSheet(
                 f"background:{C.BG_INPUT}; border:1px solid {C.ACCENT_YLW};"
                 f"border-radius:3px;")
-            self._code.setText(f"index {self._index} — not in the bank")
+            self._code.setText(label('pick.index_index_not_in_the_bank', _index=self._index))
             self._code.setStyleSheet(f"color:{C.ACCENT_YLW};")
             self._code.setToolTip(
-                "This index is kept, but the bank this text reads has no such "
-                "color — nothing will be painted with it.")
+                label('pick.stale_index_tip'))
             return
         r, g, b = rgb
         self._swatch.setPixmap(QPixmap())   # efface une icône posée au tour précédent
@@ -345,8 +351,7 @@ class ColorIndexSlot(QWidget):
         self._code.setText(f"#{r:02X}{g:02X}{b:02X}")
         self._code.setStyleSheet(f"color:{C.TEXT_NORM};")
         self._code.setToolTip(
-            f"Index {self._index} of the bank — the color code is shown, not "
-            f"typed: the hardware only offers the bank's sixteen slots.")
+            label('pick.index_tip', _index=self._index))
 
     # ── Choix ─────────────────────────────────────────────────────
 

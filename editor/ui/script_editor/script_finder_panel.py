@@ -46,7 +46,7 @@ class ScriptFinderPanel(QWidget):
         # Un simple clic ouvre : dans CET écran, choisir un script et l'éditer
         # sont le même geste. Ailleurs (Project viewer) la sélection ne fait
         # que peupler l'inspecteur, d'où deux signaux distincts.
-        self._scripts = AssetFinder("Script finder", [SCRIPTS],
+        self._scripts = AssetFinder(label('scrfind.script_finder'), [SCRIPTS],
                                     min_width=self._COL_MIN, max_width=self._COL_MAX)
         self._scripts.selected.connect(lambda _kind, p: self.file_requested.emit(str(p)))
         root.addWidget(self._scripts, 1)

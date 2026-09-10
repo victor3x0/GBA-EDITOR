@@ -112,7 +112,7 @@ class ScriptEditorScreen(QWidget):
         self._ctx_badge.setVisible(False)
         bar_l.addWidget(self._ctx_badge)
 
-        self._save_btn = QPushButton(label("scred.save"))
+        self._save_btn = QPushButton(label("common.save"))
         self._save_btn.setFont(QFont(T.UI, T.MD))
         self._save_btn.setFixedHeight(24)
         self._save_btn.setStyleSheet(
@@ -266,9 +266,9 @@ class ScriptEditorScreen(QWidget):
     def _update_context_badge(self, ctx: str):
         from ui.common.widgets import kind_colors
         _BADGE = {
-            "actor":    ("scred.badge_actor",    _C_EVENT),
-            "scene":    ("scred.badge_scene",    _C_API),
-            "camera":   ("scred.badge_camera",   _C_API),
+            "actor":    ("common.actor",    _C_EVENT),
+            "scene":    ("common.scene",    _C_API),
+            "camera":   ("common.camera",   _C_API),
             "behavior": ("scred.badge_behavior", _C_BEHAVIOR),
         }
         if ctx in _BADGE:
