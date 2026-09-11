@@ -258,6 +258,132 @@
     "home.new.exists": {
       "text": "« {name} » existe déjà dans ce dossier."
     },
+    "akind.font_assets": {
+      "text": "Assets de police"
+    },
+    "akind.new_font_asset": {
+      "text": "Nouvel asset de police"
+    },
+    "akind.no_font_assets": {
+      "text": "Créez un asset de police, puis configurez ses sources et sa recette de rendu."
+    },
+    "akind.font_asset_tip": {
+      "text": "{name} · {pixel_height} px · interligne {line_height} px"
+    },
+    "fontasset.title": {
+      "text": "Asset de police"
+    },
+    "fontasset.sources": {
+      "text": "Sources"
+    },
+    "fontasset.faces": {
+      "text": "Variantes de la famille"
+    },
+    "fontasset.face_line": {
+      "text": "{style} · {source}"
+    },
+    "fontasset.face_regular": {
+      "text": "Normale"
+    },
+    "fontasset.face_bold": {
+      "text": "Gras"
+    },
+    "fontasset.face_italic": {
+      "text": "Italique"
+    },
+    "fontasset.face_bold_italic": {
+      "text": "Gras italique"
+    },
+    "fontasset.face_weight": {
+      "text": "Poids {weight}"
+    },
+    "fontselect.weight_named": {
+      "text": "{name} ({weight})"
+    },
+    "fontselect.weight_italic": {
+      "text": "{name} Italique ({weight})"
+    },
+    "fontselect.missing": {
+      "text": "Asset de police introuvable : {name}"
+    },
+    "fontselect.choose_asset": {
+      "text": "Choisir un asset de police"
+    },
+    "fontselect.bold_tip": {
+      "text": "Utiliser la face grasse native"
+    },
+    "fontselect.italic_tip": {
+      "text": "Utiliser la face italique native"
+    },
+    "fontasset.primary": {
+      "text": "Primaire"
+    },
+    "fontasset.fallbacks": {
+      "text": "Replis"
+    },
+    "fontasset.fallback_placeholder": {
+      "text": "Noms de sources séparés par des virgules"
+    },
+    "fontasset.rasterization": {
+      "text": "Rasterisation"
+    },
+    "fontasset.pixel_height": {
+      "text": "Hauteur pixels"
+    },
+    "fontasset.line_height": {
+      "text": "Interligne"
+    },
+    "fontasset.pixel_fit": {
+      "text": "Ajustement pixel"
+    },
+    "fontasset.hinting": {
+      "text": "Hinting"
+    },
+    "fontasset.raster_mode": {
+      "text": "Sortie"
+    },
+    "fontasset.threshold": {
+      "text": "Seuil"
+    },
+    "fontasset.dither": {
+      "text": "Tramage"
+    },
+    "fontasset.offset_x": {
+      "text": "Décalage X"
+    },
+    "fontasset.offset_y": {
+      "text": "Décalage Y"
+    },
+    "fontasset.prefer_bitmap_strike": {
+      "text": "Préférer une bitmap strike intégrée"
+    },
+    "fontasset.preview_title": {
+      "text": "Aperçu raster GBA"
+    },
+    "fontasset.preview_live": {
+      "text": "Aperçu direct — rendu par le rasterizer du projet."
+    },
+    "fontasset.preview_sample": {
+      "text": "Échantillon : {sample}"
+    },
+    "fontasset.preview_coverage": {
+      "text": "Couverture source"
+    },
+    "fontasset.preview_output": {
+      "text": "Sortie GBA"
+    },
+    "fontasset.preview_ink_loss": {
+      "text": "Seulement {kept}% de l’encre source survit à cette sortie. Essaie une hauteur plus grande, un seuil inférieur à {threshold}, ou le tramage."
+    },
+    "fontasset.preview_unavailable": {
+      "text": "Aperçu vectoriel indisponible : {detail}"
+    },
+    "fontasset.preview_error": {
+      "text": "Aperçu indisponible : {detail}"
+    },
+    "fontasset.preview_summary": {
+      "text": "{pixel_height} px · interligne {line_height} px · ajustement {pixel_fit} · hinting {hinting} · {raster_mode} · {sources}"
+    },
     "settings.window_title": {
       "text": "Réglages"
     }

@@ -138,6 +138,9 @@ class AssetKind:
     label_key: str = ""
     add_tooltip_key: str = ""
     empty_text_key: str = ""
+    # L'état initial est une propriété de la famille, non du finder qui la
+    # montre : une source encombrante peut démarrer repliée partout.
+    section_expanded: bool = True
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -604,6 +607,7 @@ class AssetFinder(QWidget):
             # Titre en tons de thème : les finders n'ont plus de code couleur
             # par famille, la distinction se fait à la forme de l'icône.
             section = FinderSection(label(kind.label_key) if kind.label_key else kind.label)
+            section.set_expanded(kind.section_expanded)
             tree = _KindTree(self, kind)
             self._trees[kind.label] = tree
             self._sections[kind.label] = section

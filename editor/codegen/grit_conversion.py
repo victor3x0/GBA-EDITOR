@@ -27,6 +27,7 @@ from core.project import Project
 # masquerait la fonction dans toute la portée où elle apparaît.
 from codegen.c_names import sym as c_sym
 import codegen.build_output as build_output
+from codegen.asset_cache import AssetBuildCache, file_digest, tool_signature
 
 
 # ── Helpers image ──────────────────────────────────────────────────────────────
@@ -102,10 +103,12 @@ class GritBackground:
     """Convertit les tilesets BG via grit -> {asset}_bg{slot}.h/.c, un appel
     grit indépendant par layer (comme GritSprites, un appel par sprite)."""
 
-    def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable):
+    def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable,
+                 asset_cache: AssetBuildCache | None = None):
         self._grit    = grit_path
         self._emit    = emit
         self._run_cmd = run_cmd
+        self._cache   = asset_cache
 
     def run(
         self,
@@ -126,6 +129,7 @@ class GritBackground:
         if not self._grit:
             self._emit("error_line", "[grit BG] introuvable"); return False
 
+        cache_hits = 0
         for asset, layer, colors, mp_slot in layers:
             if not layer.background_name:
                 continue
@@ -137,6 +141,22 @@ class GritBackground:
 
             quantize = bool(colors)
             sym = bg_layer_sym(asset.name, layer.bg_slot)
+            outputs = [p.grit_out_dir / f"{sym}.c", p.grit_out_dir / f"{sym}.h"]
+            fingerprint = (self._cache.fingerprint({
+                "source": file_digest(ap),
+                "asset": asset.to_dict(),
+                # La sortie grit legacy ne dépend du layer que par son asset
+                # référencé et son CBB ; scroll/overrides sont consommés plus
+                # tard par l'émission de scène, pas par cette conversion.
+                "layer": {"background_name": layer.background_name,
+                          "bg_slot": layer.bg_slot},
+                "palette": colors or [],
+                "palette_slot": mp_slot,
+                "grit": tool_signature(self._grit),
+            }) if self._cache else "")
+            if self._cache and self._cache.hit(f"background:{sym}", fingerprint, outputs):
+                cache_hits += 1
+                continue
             tmp = p.grit_out_dir / f"{sym}.png"
             # Quantification nearest vers la banque du layer (le BG n'a pas
             # encore de compression own_palette propre).
@@ -154,7 +174,9 @@ class GritBackground:
                 shutil.copy2(ap, tmp)
             self._emit("log_line", f"[grit BG] {asset.name} BG{layer.bg_slot} <- {layer.background_name}")
 
-            out_base = str(p.grit_out_dir / sym)
+            scratch = p.grit_out_dir / "_grit"
+            scratch.mkdir(parents=True, exist_ok=True)
+            out_base = str(scratch / sym)
             cmd = [
                 str(self._grit), str(tmp),
                 "-gt", "-gB4", "-mRtf", "-mLf",
@@ -169,12 +191,19 @@ class GritBackground:
             if quantize:
                 if not remap_tiles_to_bank(Path(out_base + ".c"), colors, self._emit):
                     return False
-            # Chemin LEGACY (fond non compressé) : grit écrit ces deux fichiers
-            # lui-même, donc `build_output` ne les a pas vus passer. Sans cette
-            # déclaration, le balayage de fin de build les prendrait pour des
-            # restes périmés et les supprimerait.
+            # grit écrit dans son bac à sable : on republie ses deux sorties par
+            # build_output, qui neutralise l'horodatage et conserve la date si
+            # leur contenu n'a pas changé.
             for ext in (".c", ".h"):
-                build_output.claim(Path(out_base + ext))
+                src_f = Path(out_base + ext)
+                if src_f.exists():
+                    build_output.write(p.grit_out_dir / f"{sym}{ext}",
+                                       src_f.read_text(encoding="utf-8", errors="replace"))
+            if self._cache and all(path.is_file() for path in outputs):
+                self._cache.store(f"background:{sym}", fingerprint)
+        if cache_hits:
+            self._emit("log_line", f"[cache] fonds : {cache_hits} hit(s), "
+                       f"{len(layers) - cache_hits} reconverti(s)")
         return True
 
 
@@ -431,10 +460,12 @@ def resolve_obj_palette_bank(p: Project, entity, scene: Optional["Scene"]):
 class GritSprites:
     """Convertit les sprites OBJ (acteurs + prefabs) via grit -> sprite_X.h/.c."""
 
-    def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable):
+    def __init__(self, grit_path: Path, emit: Callable, run_cmd: Callable,
+                 asset_cache: AssetBuildCache | None = None):
         self._grit    = grit_path
         self._emit    = emit
         self._run_cmd = run_cmd
+        self._cache   = asset_cache
 
     def run(
         self,
@@ -453,6 +484,7 @@ class GritSprites:
             self._emit("error_line", "[grit Actor] introuvable"); return False
 
         done: set[str] = set()
+        cache_hits = 0
         for actor_or_pf, sprite, colors in sprites:
             if not sprite or not sprite.asset or sprite.name in done:
                 continue
@@ -478,6 +510,18 @@ class GritSprites:
             from core.models.gba_color import RESERVED_SLOT_COLOR
             bank_colors = list(colors) if colors else ([RESERVED_SLOT_COLOR] + own_pal if own_pal else [])
 
+            sym = f"sprite_{c_sym(sprite.name)}"
+            outputs = [p.grit_out_dir / f"{sym}.c", p.grit_out_dir / f"{sym}.h"]
+            fingerprint = (self._cache.fingerprint({
+                "source": file_digest(ap),
+                "sprite": sprite.to_dict(),
+                "palette": bank_colors,
+                "grit": tool_signature(self._grit),
+            }) if self._cache else "")
+            if self._cache and self._cache.hit(f"sprite:{sprite.name}", fingerprint, outputs):
+                cache_hits += 1
+                continue
+
             from core.models.gba_color import render_indexed
             p.grit_out_dir.mkdir(parents=True, exist_ok=True)
             p_src = p.grit_out_dir / f"_srcidx_{c_sym(sprite.name)}.png"
@@ -495,7 +539,6 @@ class GritSprites:
                 self._emit("log_line",
                            f"[palette] {sprite.name} -> {len(bank_colors)} couleurs (indexé)")
 
-            sym = f"sprite_{c_sym(sprite.name)}"
             # grit écrit LUI-MÊME ses fichiers, donc il en date la sortie à
             # chaque passage — et il y estampille l'heure d'export, ce qui la
             # rend différente même à donnée identique (cf. build_output).
@@ -526,6 +569,12 @@ class GritSprites:
                 if src_f.exists():
                     build_output.write(p.grit_out_dir / f"{sym}{ext}",
                                        src_f.read_text(encoding="utf-8", errors="replace"))
+            if self._cache and all(path.is_file() for path in outputs):
+                self._cache.store(f"sprite:{sprite.name}", fingerprint)
+        if cache_hits:
+            self._emit("log_line",
+                       f"[cache] sprites : {cache_hits} hit(s), "
+                       f"{len(done) - cache_hits} reconverti(s)")
         return True
 
 
@@ -642,11 +691,13 @@ def resolve_sound_assets(p: Project) -> dict:
 class MmutilAudio:
     """Lance mmutil + bin2s pour produire soundbank.h/.bin/.s."""
 
-    def __init__(self, mmutil_path, bin2s_path, emit: Callable, run_cmd: Callable):
+    def __init__(self, mmutil_path, bin2s_path, emit: Callable, run_cmd: Callable,
+                 asset_cache: AssetBuildCache | None = None):
         self._mmutil  = mmutil_path
         self._bin2s   = bin2s_path
         self._emit    = emit
         self._run_cmd = run_cmd
+        self._cache   = asset_cache
 
     def _check_ids(self, soundbank_h: Path, sound_assets: dict) -> bool:
         """Vérifie que mmutil a numéroté dans l'ordre où on lui a passé les
@@ -708,6 +759,20 @@ class MmutilAudio:
 
         soundbank_bin = p.build_dir / "soundbank.bin"
         soundbank_h   = p.build_dir / "soundbank.h"
+        outputs = [soundbank_bin, soundbank_h, p.src_dir / "soundbank.h",
+                   p.src_dir / "soundbank.s", p.src_dir / "soundbank.bin.h"]
+        fingerprint = (self._cache.fingerprint({
+            "sfx": [(item.to_dict(), file_digest(path))
+                    for item, path in sound_assets["sfx"]],
+            "music": [(item.to_dict(), file_digest(path))
+                      for item, path in sound_assets["music"]],
+            "project_sample_rate": int(getattr(p.settings, "sfx_sample_rate", 0) or 0),
+            "mmutil": tool_signature(self._mmutil),
+            "bin2s": tool_signature(self._bin2s),
+        }) if self._cache else "")
+        if self._cache and self._cache.hit("audio", fingerprint, outputs):
+            self._emit("log_line", "[cache] audio — inchangé")
+            return self._check_ids(soundbank_h, sound_assets)
         cmd = [str(self._mmutil)] + all_files + ["-osoundbank.bin", "-hsoundbank.h"]
         self._emit("log_line",
                    f"[mmutil] {len(sound_assets['sfx'])} sfx + "
@@ -776,6 +841,8 @@ class MmutilAudio:
                         "#endif\n",
                     )
                     self._emit("log_line", "[bin2s] -> src/soundbank.bin.h")
+                    if self._cache and all(path.is_file() for path in outputs):
+                        self._cache.store("audio", fingerprint)
             else:
                 self._emit("log_line", "[bin2s] introuvable — soundbank non linke")
         return ok

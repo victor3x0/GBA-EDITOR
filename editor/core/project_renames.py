@@ -379,6 +379,26 @@ class ProjectRenameMixin:
         with self._renaming():
             self.fonts.rename(font, new_name)
             refs = self.rename_lua_refs(DOMAIN_FONT, old_name, new_name)
+            # FontAsset est le seul consommateur qui cite une SOURCE de police
+            # à ce stade. Le garder ici, avec les scènes et les scripts, évite
+            # de laisser une chaîne de couverture devenir silencieusement morte.
+            for font_asset in self.font_assets:
+                changed = False
+                for sources in font_asset.sources.values():
+                    for i, source_name in enumerate(sources):
+                        if source_name == old_name:
+                            sources[i] = new_name
+                            changed = True
+                if any(face.source_name == old_name for face in font_asset.faces):
+                    from core.models.font_asset import FontFace
+                    font_asset.faces = [
+                        FontFace(new_name if face.source_name == old_name else face.source_name,
+                                 face.weight, face.italic)
+                        for face in font_asset.faces
+                    ]
+                    changed = True
+                if changed:
+                    self.save_font_asset(font_asset)
             # `Scene.font_pal_banks` est keyé par NOM de police (cf.
             # `core/models/scene.font_pal_key`) : l'override de banque d'une
             # police NON-défaut vivrait sinon sous le nom mort, et retomberait en
@@ -391,6 +411,22 @@ class ProjectRenameMixin:
                     banks[new_name] = banks.pop(old_name)
                     self.save_scene(scene)
         self._notify_renamed("Font", old_name, new_name, refs)
+
+    def rename_font_asset(self, font_asset, new_name: str):
+        """Renomme une police logique.
+
+        Aucun consommateur ne cite encore FontAsset : la propagation arrivera
+        avec la bascule des scènes et des layouts vers cette couche. Garder le
+        renommage ici dès maintenant évite toutefois que le finder contourne
+        Project et crée une seconde règle le jour où ces références existent.
+        """
+        new_name = new_name.strip()
+        if not new_name or new_name == font_asset.name:
+            return
+        old_name = font_asset.name
+        with self._renaming():
+            self.font_assets.rename(font_asset, new_name)
+        self._notify_renamed("FontAsset", old_name, new_name)
 
     # ── Références Lua ───────────────────────────────────────────────
     # Un script cite un élément du projet par son NOM, mais ce nom n'est

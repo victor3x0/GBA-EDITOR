@@ -51,11 +51,14 @@ from ui.common.theme import C
 from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 from ui.common.asset_finder import AssetFinder
-from ui.common.asset_kinds import FONTS
+from ui.common.asset_kinds import FONTS, FONT_ASSETS
 from ui.text_editor.text_panel import TextPanel
 from ui.text_editor.glyph_sheet_panel import GlyphSheetPanel
 from ui.text_editor.text_inspector import TextInspector
 from ui.text_editor.font_inspector import FontInspector
+from ui.text_editor.font_asset_preview import FontAssetPreview
+from ui.text_editor.font_asset_inspector import FontAssetInspector
+from core.models.font_asset import FontAsset
 from ui.text_editor.text_commands import (
     SetKeyColorCmd, ResliceFontCmd, MergeGlyphsCmd, SetCharsetCmd,
 )
@@ -65,6 +68,7 @@ class TextEditorScreen(QWidget):
 
     _CTX_TEXT = 0
     _CTX_FONT = 1
+    _CTX_FONT_ASSET = 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -82,24 +86,31 @@ class TextEditorScreen(QWidget):
             f"QSplitter::handle:hover{{background:{TEXT_COLOR};}}"
         )
 
-        self._fonts = AssetFinder(label('txtscr.font_finder'), [FONTS],
+        self._fonts = AssetFinder(label('txtscr.font_finder'), [FONT_ASSETS, FONTS],
                                   min_width=180, max_width=420)
 
         # Le CENTRE est contextuel lui aussi : une planche fait plusieurs
         # centaines de cases, elle n'aurait pas tenu dans l'inspecteur.
         self._center = QStackedWidget()
+        # Un écran empilé ne doit pas hériter de la largeur d'un aperçu à
+        # pixmap fixe : seul le splitter arbitre les trois colonnes.
+        self._center.setMinimumWidth(0)
         self._texts = TextPanel()
         self._sheet = GlyphSheetPanel()
+        self._font_asset_preview = FontAssetPreview()
         self._center.addWidget(self._texts)   # _CTX_TEXT
         self._center.addWidget(self._sheet)   # _CTX_FONT
+        self._center.addWidget(self._font_asset_preview)  # _CTX_FONT_ASSET
 
         self._inspectors = QStackedWidget()
         self._inspectors.setMinimumWidth(200)
         self._inspectors.setMaximumWidth(420)
         self._text_insp = TextInspector()
         self._font_insp = FontInspector()
+        self._font_asset_insp = FontAssetInspector()
         self._inspectors.addWidget(self._text_insp)   # _CTX_TEXT
         self._inspectors.addWidget(self._font_insp)   # _CTX_FONT
+        self._inspectors.addWidget(self._font_asset_insp)  # _CTX_FONT_ASSET
 
         split.addWidget(self._fonts)
         split.addWidget(self._center)
@@ -108,6 +119,7 @@ class TextEditorScreen(QWidget):
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setStretchFactor(2, 0)
+        split.setCollapsible(1, False)
         root.addWidget(split)
 
         # Bascule de contexte par sélection — jamais par un onglet.
@@ -139,6 +151,7 @@ class TextEditorScreen(QWidget):
         self._font_insp.glyph_char_changed.connect(self._on_glyph_edited)
         # Charset réécrit d'un bloc : assignation positionnelle sur les cases.
         self._font_insp.charset_edited.connect(self._on_charset_edited)
+        self._font_asset_insp.field_changed.connect(self._on_font_asset_field_changed)
 
     def load_project(self, project):
         """Ouvre un projet — l'écran repart en contexte Texte."""
@@ -199,6 +212,18 @@ class TextEditorScreen(QWidget):
                 self._font_insp.refresh_stats()
                 self._font_insp.refresh_keys()
 
+        font_asset = self._font_asset_insp._asset
+        if font_asset is not None:
+            if font_asset not in self._project.font_assets:
+                self._font_asset_insp.load(None, self._project)
+                self._font_asset_preview.load(None, self._project)
+                self._set_context(self._CTX_TEXT)
+            else:
+                # Une source peut avoir été renommée ou apparaître à chaud :
+                # le sélecteur et le résumé doivent alors se relire ensemble.
+                self._font_asset_insp.load(font_asset, self._project)
+                self._font_asset_preview.load(font_asset, self._project)
+
     # ── Contexte ──────────────────────────────────────────────────
 
     def _set_context(self, ctx: int):
@@ -213,10 +238,33 @@ class TextEditorScreen(QWidget):
             # cas particulier de retour.
             self._set_context(self._CTX_TEXT)
             return
+        if isinstance(font, FontAsset):
+            self._texts.clear_selection()
+            self._font_asset_insp.load(font, self._project)
+            self._font_asset_preview.load(font, self._project)
+            self._set_context(self._CTX_FONT_ASSET)
+            return
         self._texts.clear_selection()
         self._font_insp.load(font, self._project)
         self._sheet.load(font, self._project)
         self._set_context(self._CTX_FONT)
+
+    def _on_font_asset_field_changed(self, field: str, value):
+        """Tous les champs de recette passent par l'historique et la même
+        persistance ; l'aperçu ne peut jamais afficher une valeur non sauvée."""
+        asset = self._font_asset_insp._asset
+        if not asset or getattr(asset, field) == value:
+            return
+        get_history().push(SetFieldCmd(
+            asset, field, getattr(asset, field), value,
+            label=f"Set {field} of {asset.name}",
+            persist_fn=lambda: self._after_font_asset_change(asset),
+        ))
+
+    def _after_font_asset_change(self, asset):
+        self._font_asset_preview.refresh()
+        if self._project:
+            self._project.save_font_asset(asset)
 
     def _on_text_selected(self, text):
         """Sélection dans la table : revient au contexte Texte, même si une

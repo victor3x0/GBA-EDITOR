@@ -1230,7 +1230,10 @@ class MainWindow(QMainWindow):
         if not route:
             return
         _, remove_fn, _, route_label = route
-        remove_fn(self.project, p)
+        with self._watcher.suspended():
+            remove_fn(self.project, p)
+            if p.parent.name == "fonts":
+                asset_encoding.reconcile_font_assets(self.project)
         self._refresh_ui()
         self._status.showMessage(label("win.asset_removed", kind=route_label, name=p.name), 3000)
 
@@ -1258,6 +1261,8 @@ class MainWindow(QMainWindow):
         _, _, rename_fn, route_label = route
         with self._watcher.suspended():
             result = rename_fn(self.project, old_p, new_p)
+            if new_p.parent.name == "fonts":
+                asset_encoding.reconcile_font_assets(self.project)
         warning = result if isinstance(result, str) else None
         self._refresh_ui()
         if warning:
@@ -1317,6 +1322,7 @@ class MainWindow(QMainWindow):
             if self.project:
                 with self._watcher.suspended():
                     warning = asset_encoding.sync_font_file(self.project, p)
+                    asset_encoding.reconcile_font_assets(self.project)
                 self._text_editor.refresh()
                 if warning:
                     self._status.showMessage(warning, _WATCHER_WARNING_MS)

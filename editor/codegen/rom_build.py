@@ -123,6 +123,10 @@ class BuildWorker(EventEmitter, threading.Thread):
 
             p.prepare_build()
             build_output.begin_build()
+            # Le cache n'est qu'un index : les sorties restent dans build/ et
+            # sont validées par leur présence avant tout réemploi.
+            from codegen.asset_cache import AssetBuildCache
+            asset_cache = AssetBuildCache(p.build_dir)
             # Le scan des `text.set_font` est mémoïsé pour la durée d'un build
             # seulement (cf. font_emit) : les scripts changent entre deux builds.
             from codegen.font_emit import clear_font_scan_cache
@@ -247,7 +251,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 # pour les couleurs).
                 ok = self._emit_scene_animations(p, scene, bg_layout) and ok
             if ok and unique_bg_layers:
-                ok = ok and self._step_grit_bg(p, unique_bg_layers)
+                ok = ok and self._step_grit_bg(p, unique_bg_layers, asset_cache)
             if ok and unique_bg_layers:
                 ok = ok and self._check_bg_tile_budget(p, unique_bg_layers)
             if ok:
@@ -299,11 +303,11 @@ class BuildWorker(EventEmitter, threading.Thread):
                         own_pal=sprite.own_palette)
                     unique_sprites.append((None, sprite, colors))
             if ok and unique_sprites:
-                ok = ok and self._step_grit_actors(p, unique_sprites)
+                ok = ok and self._step_grit_actors(p, unique_sprites, asset_cache)
             if ok: self._emit("progress", 0.35)
 
             if ok and sound_assets:
-                ok = ok and self._step_mmutil(p, sound_assets)
+                ok = ok and self._step_mmutil(p, sound_assets, asset_cache)
             if ok: self._emit("progress", 0.45)
 
             # Headers : tous les actors de toutes les scènes
@@ -371,6 +375,7 @@ class BuildWorker(EventEmitter, threading.Thread):
                 self._emit("log_line",
                            f"[gen] {build_output.written} fichier(s) écrit(s), "
                            f"{build_output.skipped} inchangé(s)")
+                asset_cache.save()
             if ok:
                 ok = self._step_make(p)
             if ok: self._emit("progress", 0.97)
@@ -433,9 +438,9 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     # ── Étape 1 : grit BG ─────────────────────────────────────────
 
-    def _step_grit_bg(self, p, layers):
+    def _step_grit_bg(self, p, layers, asset_cache=None):
         return GritBackground(
-            self.toolchain.resolve_grit(), self._emit, self._run_cmd
+            self.toolchain.resolve_grit(), self._emit, self._run_cmd, asset_cache
         ).run(p, layers)
 
     def _bg_final_tilemap(self, p, scene, ba, layer, pal_offset: int) -> list:
@@ -715,9 +720,9 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     # ── Étape 2 : grit Actors ─────────────────────────────────────
 
-    def _step_grit_actors(self, p, sprites):
+    def _step_grit_actors(self, p, sprites, asset_cache=None):
         return GritSprites(
-            self.toolchain.resolve_grit(), self._emit, self._run_cmd
+            self.toolchain.resolve_grit(), self._emit, self._run_cmd, asset_cache
         ).run(p, sprites)
 
     # ── Étape 3 : audio ───────────────────────────────────────────
@@ -725,11 +730,11 @@ class BuildWorker(EventEmitter, threading.Thread):
     def _resolve_sound_assets(self, p):
         return resolve_sound_assets(p)
 
-    def _step_mmutil(self, p, sound_assets):
+    def _step_mmutil(self, p, sound_assets, asset_cache=None):
         return MmutilAudio(
             self.toolchain.resolve_mmutil(),
             self.toolchain.resolve_bin2s(),
-            self._emit, self._run_cmd,
+            self._emit, self._run_cmd, asset_cache,
         ).run(p, sound_assets)
 
     # ── Génération des headers C ─────────────────────────────────────

@@ -155,6 +155,16 @@ inspecteur dédié affiche le réglage et sa raison quand le matériel l'impose.
 
 → [détail](changelog-archive/v0.25.md)
 
+## v0.26 — Les polices : sources, assets et aperçu
+
+*Livrée le 2026-09-12.* Les sources PNG, BMFont, TTF et OTF sont séparées des Font Assets
+logiques du projet. Une source découverte crée son asset immédiatement ; les familles
+vectorielles réunissent automatiquement leurs faces natives. Le rasterizer FreeType produit le
+même aperçu pour l'inspecteur et le canvas, avec politique pixel-fit éditable (strikes bitmap,
+alignement sur grille ou rendu natif) et sélection de poids/italique natifs.
+
+→ [détail](changelog-archive/v0.26.md)
+
 ## v0.27 — L'éditeur souffle le mot juste
 
 *Livrée le 2026-09-07.* Autocomplétion du Script Editor : en tapant `self:`, `sfx.` ou

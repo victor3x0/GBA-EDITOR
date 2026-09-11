@@ -368,6 +368,13 @@ class UIText(RectGeometryMixin):
     # "" = police par défaut de la scène. Nommer une police ici est ce qui rend
     # l'empreinte VRAM de la scène calculable (cf. font_emit.scene_text_tiles).
     font_name: str = ""
+    # Poids natif demandé dans la FontAsset. Il reste une valeur OS/2 (400 =
+    # Regular, 700 = Bold), pas un booléen : Light et Medium sont de vraies
+    # faces, et l'éditeur ne synthétise jamais un faux gras.
+    font_weight: int = 400
+    # Le poids ne suffit pas à distinguer Light et Light Italic. Cette face est
+    # elle aussi native ; False conserve les TextBox créés avant ce champ.
+    font_italic: bool = False
     align: str = "left"
     # Texte de MESURE, éditeur seulement, jamais compilé : ce que le canvas pose
     # dans le rectangle quand `text_key` est vide, pour voir le débordement à la
@@ -431,7 +438,9 @@ class UIText(RectGeometryMixin):
             "priority": self.priority,
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "text_key": self.text_key,
-            "font_name": self.font_name, "align": self.align,
+            "font_name": self.font_name, "font_weight": self.font_weight,
+            "font_italic": self.font_italic,
+            "align": self.align,
             "preview_text": self.preview_text,
         }
 
@@ -464,6 +473,8 @@ class UIText(RectGeometryMixin):
             h = int(d.get("h", 32 if was_region else 16)),
             text_key     = str(d.get("text_key", "")),
             font_name    = str(d.get("font_name", "")),
+            font_weight  = max(1, min(1000, int(d.get("font_weight", 400)))),
+            font_italic  = bool(d.get("font_italic", False)),
             align        = align if align in ALIGNS else "left",
             # `animated_glyphs` d'un ancien fichier est IGNORÉ : la valeur se
             # dérive du texte désormais. La clé disparaît du JSON au prochain

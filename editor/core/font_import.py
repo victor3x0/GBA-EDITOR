@@ -355,7 +355,8 @@ def import_font_fnt(fnt_path: Path) -> dict:
 def apply_font_import(font: Font, fields: dict):
     """Pose un résultat d'import sur le `Font` (calcul/application séparés,
     comme apply_bg_encoding)."""
-    for key in ("cell_w", "cell_h", "line_height", "source_format"):
+    for key in ("cell_w", "cell_h", "line_height", "source_format",
+                "family_name", "style_name", "weight", "italic"):
         if key in fields:
             setattr(font, key, fields[key])
     if "glyphs" in fields:

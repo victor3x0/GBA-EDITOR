@@ -94,6 +94,7 @@ from core.models.sprite import SpriteAsset
 from core.models.background import BackgroundAsset
 from core.models.audio import Sfx, Music
 from core.models.font import Font
+from core.models.font_asset import FontAsset
 from core.models.ui_region import UILayout
 from core.models.camera import Camera
 from core.models.sound_box import MusicBox, JingleBox, SoundBox
@@ -183,6 +184,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.sfx:         ResourceStore[Sfx]         = ResourceStore(self.sfx_dir, Sfx)
         self.music:       ResourceStore[Music]       = ResourceStore(self.music_dir, Music)
         self.fonts:       ResourceStore[Font]        = ResourceStore(self.fonts_dir, Font)
+        self.font_assets: ResourceStore[FontAsset]   = ResourceStore(self.font_assets_dir, FontAsset)
         self.palettes: PaletteStore = PaletteStore(self.palettes_dir)
         self.ui_layouts: ResourceStore[UILayout] = ResourceStore(self.ui_layouts_dir, UILayout)
         # Pas de ResourceStore pour Camera : une caméra appartient à sa scène
@@ -289,7 +291,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
                     except OSError:
                         pass   # fichier verrouillé (indexeur, AV) : le reste passe
         for mgr in (self.sprites, self.backgrounds, self.sfx, self.music,
-                    self.fonts, self.scenes, self.prefabs, self.ui_layouts,
+                    self.fonts, self.font_assets, self.scenes, self.prefabs, self.ui_layouts,
                     self.palettes, self.music_boxes,
                     self.jingle_boxes, self.sound_boxes):
             mgr.commit_deletes()
@@ -301,6 +303,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
     def get_sprite(self, name: str) -> Optional[SpriteAsset]:
         return self.sprites.get(name)
+
+    def get_font_asset(self, name: str) -> Optional[FontAsset]:
+        """La police logique nommée, distincte de sa source ``Font``."""
+        return self.font_assets.get(name)
 
     def get_prefab(self, name: str) -> Optional[Prefab]:
         return self.prefabs.get(name)
@@ -879,6 +885,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def save_background(self, bg: BackgroundAsset):       self.backgrounds.save(bg)
     def save_sfx(self, sfx: Sfx):                         self.sfx.save(sfx)
     def save_music(self, music: Music):                   self.music.save(music)
+    def save_font_asset(self, font_asset: FontAsset):     self.font_assets.save(font_asset)
 
     # ── Sauvegarde / chargement global ────────────────────────────
 
@@ -890,6 +897,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.sfx.save_all()
         self.music.save_all()
         self.fonts.save_all()
+        self.font_assets.save_all()
         self.ui_layouts.save_all()
         self.music_boxes.save_all()
         self.jingle_boxes.save_all()
@@ -922,7 +930,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
-                    "project/palettes", "project/ui_layouts",
+                    "project/palettes", "project/fonts_assets", "project/ui_layouts",
                     "project/music_boxes",
                     "project/jingle_boxes",
                     "project/sound_boxes",
@@ -955,10 +963,12 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.music.load()
         asset_encoding.reconcile_sfx_and_music(self)
         self.fonts.load()
+        self.font_assets.load()
         # Ce que la réconciliation n'a PAS pu importer. Gardé sur le projet
         # plutôt que jeté : sans ça, une police refusée à l'import laisse un
         # panneau vide et aucune explication (cf. reconcile_fonts).
         self.load_warnings = list(asset_encoding.reconcile_fonts(self) or [])
+        asset_encoding.reconcile_font_assets(self)
         # Avant les scènes : une scène référence sa mise en page et ses prefabs
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
@@ -984,6 +994,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
             "assets/sfx",
             "assets/music",
             "assets/fonts",
+            "project/fonts_assets",
             "assets/scripts",
             "assets/scripts/actors",
             "assets/scripts/scenes",

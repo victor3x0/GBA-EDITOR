@@ -37,12 +37,23 @@ def key_out(px: Optional[QPixmap], keys) -> Optional[QPixmap]:
         QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy())
 
 
-def checker_brush() -> QBrush:
-    """Damier de transparence — même convention que l'écran Palette."""
+def checker_brush(base=None) -> QBrush:
+    """Damier de transparence — même convention que l'écran Palette.
+
+    `base` teinte les deux tuiles (fond d'épreuve du `BackdropButton`) ; `None`
+    garde le fond sombre de l'éditeur. Le damier reste, même sur un fond clair :
+    c'est lui qui dit « transparent » plutôt que « pixel de cette couleur »."""
+    if base is None:
+        lo, hi = QColor(C.BG_DEEP), QColor(C.BG_RAISED)
+    else:
+        lo = QColor(base)
+        # Seconde tuile décalée vers le contraste : plus sombre sur un fond
+        # clair, plus claire sur un fond sombre — visible dans les deux sens.
+        hi = lo.darker(115) if lo.lightness() > 128 else lo.lighter(135)
     px = QPixmap(16, 16)
-    px.fill(QColor(C.BG_DEEP))
+    px.fill(lo)
     q = QPainter(px)
-    q.fillRect(0, 0, 8, 8, QColor(C.BG_RAISED))
-    q.fillRect(8, 8, 8, 8, QColor(C.BG_RAISED))
+    q.fillRect(0, 0, 8, 8, hi)
+    q.fillRect(8, 8, 8, 8, hi)
     q.end()
     return QBrush(px)

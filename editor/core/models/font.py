@@ -118,16 +118,13 @@ class Glyph:
 
 
 def _source_format(value) -> str:
-    """Relit `Font.source_format` en n'admettant que les deux formats d'entrée.
+    """Format de la ressource source, jamais une promesse d'encodage.
 
-    Un projet importé quand l'éditeur acceptait encore les conteneurs bitmap
-    porte `"ttf"`, `"bdf"`… dans son sidecar. Sa planche générée est toujours
-    sur le disque et le sidecar la cite : la police reste bonne, c'est une
-    police PNG comme une autre. Seul l'étiquetage était périmé — et il ne se
-    lisait nulle part en aval (`font_emit.advance_source` et l'inspecteur de
-    police ne connaissent que `png` et `fnt`). On le corrige à la lecture
-    plutôt que par une migration : aucun fichier de projet à réécrire."""
-    return value if value in ("png", "fnt") else "png"
+    PNG et BMFont restent directement encodables par le pipeline historique.
+    TTF/OTF sont des sources vectorielles reconnues et suivies dès leur dépôt ;
+    elles ne seront encodables qu'une fois FontRasterizer raccordé.
+    """
+    return value if value in ("png", "fnt", "ttf", "otf") else "png"
 
 
 @dataclass
@@ -135,11 +132,15 @@ class Font(Resource):
     name:  str = "font"
     asset: Optional[str] = None          # planche PNG (relative au projet)
     descriptor: Optional[str] = None     # .fnt BMFont d'origine, si import .fnt
-    source_format: str = "png"           # "png" | "fnt" — provenance, affichée à l'écran
+    source_format: str = "png"           # "png" | "fnt" | "ttf" | "otf"
     cell_w: int = 8
     cell_h: int = 8
     line_height: int = 8                 # interligne conseillé (BMFont lineHeight)
     glyphs: list[Glyph] = field(default_factory=list)
+    family_name: str = ""                # nom intrinsèque TTF/OTF
+    style_name: str = ""                 # ex. Regular, Light Italic
+    weight: int = 400                     # OS/2 usWeightClass
+    italic: bool = False
 
     # Couleurs de la planche à traiter comme transparentes. Deux champs et non
     # une liste : ils ne se désignent pas au même moment ni pour la même raison
@@ -286,6 +287,10 @@ class Font(Resource):
             "cell_w": self.cell_w,
             "cell_h": self.cell_h,
             "line_height": self.line_height,
+            **({"family_name": self.family_name} if self.family_name else {}),
+            **({"style_name": self.style_name} if self.style_name else {}),
+            **({"weight": self.weight} if self.weight != 400 else {}),
+            **({"italic": True} if self.italic else {}),
             **({"bg_color": color_to_hex(self.bg_color)} if self.bg_color else {}),
             **({"space_color": color_to_hex(self.space_color)} if self.space_color else {}),
             "glyphs": [g.to_dict() for g in self.glyphs],
@@ -301,6 +306,10 @@ class Font(Resource):
             cell_w      = int(d.get("cell_w", 8)),
             cell_h      = int(d.get("cell_h", 8)),
             line_height = int(d.get("line_height", d.get("cell_h", 8))),
+            family_name = str(d.get("family_name", "")),
+            style_name  = str(d.get("style_name", "")),
+            weight      = max(1, int(d.get("weight", 400))),
+            italic      = bool(d.get("italic", False)),
             bg_color    = color_from_hex(d.get("bg_color")),
             space_color = color_from_hex(d.get("space_color")),
             glyphs      = [Glyph.from_dict(g) for g in d.get("glyphs", [])],
@@ -310,9 +319,6 @@ class Font(Resource):
 # Extensions reconnues dans assets/fonts/ — la planche seule, ou le descripteur
 # BMFont (dont la page PNG est référencée à l'intérieur).
 #
-# Il y en avait six : `.bdf`, `.pcf`, `.dfont` et `.ttf` passaient par un
-# troisième point d'entrée qui RENDAIT la planche au lieu de la lire. Retirés
-# (cf. ROADMAP, « Les formats acceptés à l'import ») — ils contredisaient ce que
-# ce module et ARCHITECTURE.md affirmaient tous les deux, et `source_format` en
-# recevait des valeurs que rien en aval ne savait relire.
-FONT_FILE_EXTS = {".png", ".fnt"}
+# Le rasterizer lit ces deux formats vectoriels au build ; les accepter ici les
+# fait aussi traverser le ProjectWatcher, qui dérive sa liste de CETTE constante.
+FONT_FILE_EXTS = {".png", ".fnt", ".ttf", ".otf"}

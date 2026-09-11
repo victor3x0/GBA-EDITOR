@@ -10,6 +10,7 @@
 # l'environnement validé par la CI/release en septembre 2026.
 PyQt6>=6.11,<7
 Pillow>=12.3,<13
+freetype-py>=2.5,<3
 qtawesome>=1.4,<2
 numpy>=2.5,<3
 luaparser>=4.1,<5

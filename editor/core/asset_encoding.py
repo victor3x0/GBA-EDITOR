@@ -388,8 +388,7 @@ def sync_music_file(project, path: Path):
 
 
 def sync_font_file(project, path: Path) -> Optional[str]:
-    """Appelé quand une planche PNG ou un descripteur `.fnt` apparaît dans
-    assets/fonts/. Crée le Font + son sidecar si absent.
+    """Appelé quand une source de police apparaît dans assets/fonts/.
 
     Deux points d'entrée, un seul asset : le `.fnt` apporte le mapping des
     caractères, le PNG nu le fait déduire (grille + charset proposé,
@@ -413,6 +412,16 @@ def sync_font_file(project, path: Path) -> Optional[str]:
         if path.suffix.lower() != ".fnt":
             _relink_source(project.fonts, font, project.asset_rel(path),
                            project.asset_abs(font.asset))
+        if path.suffix.lower() in (".ttf", ".otf") and not font.family_name:
+            # Sources reconnues avant l'arrivée des métadonnées : les relire
+            # une fois afin que leur famille soit créée sans réimport manuel.
+            try:
+                from core.font_metadata import vector_font_metadata
+                for key, value in vector_font_metadata(path).items():
+                    setattr(font, key, value)
+                project.fonts.save(font)
+            except Exception as exc:
+                return f"Police « {name} » : métadonnées impossibles à lire ({exc})."
     else:
         # La planche d'un `.fnt` déjà importé ne doit pas créer une SECONDE
         # police : le descripteur fait foi (il porte le mapping des caractères)
@@ -428,7 +437,8 @@ def sync_font_file(project, path: Path) -> Optional[str]:
         # échec mou (planche lisible mais aucun glyphe trouvé) crée l'asset :
         # l'utilisateur corrigera la taille de cellule dans l'écran Police.
         try:
-            if path.suffix.lower() == ".fnt":
+            suffix = path.suffix.lower()
+            if suffix == ".fnt":
                 fields = font_import.import_font_fnt(path)
                 page = fields.pop("page_path", None)
                 if page is None:
@@ -436,7 +446,7 @@ def sync_font_file(project, path: Path) -> Optional[str]:
                             f"planche PNG trouvable — dépose la planche à côté du .fnt.")
                 font.asset = project.asset_rel(page)
                 font.descriptor = project.asset_rel(path)
-            else:
+            elif suffix == ".png":
                 # Planche opaque : le fond dominant est PROPOSÉ comme couleur
                 # transparente. Une proposition, pas un verdict — l'écran
                 # Police laisse la repiquer, ou l'effacer si elle est fausse.
@@ -448,10 +458,19 @@ def sync_font_file(project, path: Path) -> Optional[str]:
                 fields = font_import.import_font_png(
                     path, keys=font.key_colors(), space_color=font.space_color)
                 font.asset = project.asset_rel(path)
+            else:
+                # Une source vectorielle ne se transforme pas à l'import : le
+                # futur FontRasterizer la lira à la demande, pour le sous-
+                # ensemble réellement requis. Créer le sidecar suffit pour que
+                # le watcher, le finder et FontAsset puissent la référencer.
+                font.asset = project.asset_rel(path)
+                from core.font_metadata import vector_font_metadata
+                fields = {"source_format": suffix.lstrip("."),
+                          **vector_font_metadata(path)}
             font_import.apply_font_import(font, fields)
         except Exception as exc:
             return f"Police « {name} » : import impossible ({exc})."
-        if not font.glyphs:
+        if not font.glyphs and font.source_format in ("png", "fnt"):
             warning = (f"Police « {name} » : aucun glyphe détecté — vérifie la "
                        f"taille de cellule dans l'écran Police.")
         project.fonts.append(font)
@@ -460,7 +479,101 @@ def sync_font_file(project, path: Path) -> Optional[str]:
     # c'est justement ce cas-là qu'on rattrape ici (cf. ResourceStore.path_of).
     if not project.fonts.path_of(font).exists():
         project.fonts.save(font)
+    # La source vient d'être reconnue : elle doit être immédiatement utilisable
+    # dans les TextBox, même lorsqu'il s'agit d'une planche bitmap sans famille
+    # typographique vectorielle. Idempotent et sans écraser les recettes déjà
+    # écrites par l'auteur.
+    reconcile_font_assets(project)
     return warning
+
+
+def _family_key(name: str) -> str:
+    """Identité de famille indépendante des espaces, tirets et capitales."""
+    return "".join(char.casefold() for char in name if char.isalnum())
+
+
+def reconcile_font_assets(project):
+    """Compose les familles logiques à partir des sources vectorielles.
+
+    Les réglages d'un FontAsset n'appartiennent pas à la découverte de fichiers :
+    seules ses faces auto-gérées sont remplacées. Une famille créée à la main
+    avec le même nom est complétée, jamais remplacée.
+    """
+    from core.models.font_asset import FontAsset, FontFace
+
+    groups: dict[str, list] = {}
+    for font in project.fonts:
+        if font.source_format not in ("ttf", "otf") or not font.family_name:
+            continue
+        groups.setdefault(font.family_name, []).append(font)
+    # Mettre d'abord à jour les assets qui étaient déjà auto-composés. Cela
+    # couvre aussi la dernière face d'une famille supprimée depuis le finder :
+    # il est légitime que l'asset logique reste (sa recette de rendu est un
+    # réglage de projet), mais il ne doit plus désigner une source disparue.
+    groups_by_key = {_family_key(name): (name, fonts) for name, fonts in groups.items()}
+    matched_keys: set[str] = set()
+    for asset in project.font_assets:
+        if not asset.auto_family:
+            continue
+        family = groups_by_key.get(_family_key(asset.auto_family))
+        fonts = family[1] if family else []
+        family_name = family[0] if family else asset.auto_family
+        faces = [FontFace(font.name, font.weight, font.italic)
+                 for font in sorted(fonts, key=lambda item: (item.weight, item.italic, item.name.casefold()))]
+        removed_sources = {face.source_name for face in asset.faces} - {face.source_name for face in faces}
+        sources = {
+            variant: [name for name in names if name not in removed_sources]
+            for variant, names in asset.sources.items()
+        }
+        if asset.faces != faces or asset.auto_family != family_name or asset.sources != sources:
+            asset.faces, asset.auto_family, asset.sources = faces, family_name, sources
+            project.font_assets.save(asset)
+        matched_keys.add(_family_key(family_name))
+
+    for family_name, fonts in groups.items():
+        key = _family_key(family_name)
+        if key in matched_keys:
+            continue
+        asset = next((item for item in project.font_assets
+                      if _family_key(item.auto_family or item.name) == key), None)
+        if asset is None:
+            asset = FontAsset(name=family_name, auto_family=family_name)
+            project.font_assets.append(asset)
+        faces = [FontFace(font.name, font.weight, font.italic)
+                 for font in sorted(fonts, key=lambda item: (item.weight, item.italic, item.name.casefold()))]
+        if asset.faces != faces or asset.auto_family != family_name:
+            asset.faces, asset.auto_family = faces, family_name
+        # Le panneau actuel configure encore la chaîne regular : la renseigner
+        # depuis la vraie face 400 non-italique sans jamais toucher aux
+        # fallbacks qu'un auteur aurait ajoutés.
+        regular = next((face.source_name for face in faces
+                        if face.weight == 400 and not face.italic), "")
+        if regular and not asset.sources.get("regular"):
+            asset.sources["regular"] = [regular]
+        project.font_assets.save(asset)
+
+    # Les sources bitmap n'ont ni famille SFNT ni faces à fusionner. Chacune
+    # devient donc son propre Font Asset au dépôt, afin que la source ne soit
+    # jamais visible dans le dossier Fonts sans être sélectionnable par une
+    # TextBox. Une recette existante a toujours priorité : jamais de mutation
+    # silencieuse d'un asset que l'auteur a nommé ou configuré lui-même.
+    covered = {
+        name
+        for asset in project.font_assets
+        for names in asset.sources.values()
+        for name in names
+    }
+    covered.update(face.source_name for asset in project.font_assets for face in asset.faces)
+    for font in project.fonts:
+        if font.name in covered:
+            continue
+        if font.source_format in ("ttf", "otf") and font.family_name:
+            continue
+        if project.font_assets.get(font.name) is not None:
+            continue
+        asset = FontAsset(name=font.name, sources={"regular": [font.name]})
+        project.font_assets.append(asset)
+        project.font_assets.save(asset)
 
 
 def sync_background_png(project, png_path: Path) -> Optional[str]:

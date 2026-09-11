@@ -68,6 +68,11 @@ _TEXT_SHEETS: dict = {}
 # pan) se sentirait, d'où ce cache jumeau de `_TEXT_SHEETS`.
 _FLAT_SHEETS: dict = {}
 
+# Rendu vectoriel final d'un TextBox : le canvas peut repeindre plusieurs fois
+# par seconde (survol, sélection, pan). FreeType ne doit tourner que lorsqu'un
+# texte, une recette, une face ou une source change réellement.
+_VECTOR_TEXT_IMAGES: dict = {}
+
 # Sentinelle « pas encore calculé » pour le cache de banque d'un item (une valeur
 # None étant, elle, un résultat légitime — « pas de banque »).
 _UNSET = object()
@@ -453,7 +458,13 @@ class UIRegionItem(QGraphicsRectItem):
         named = getattr(self._region, "font_name", "") or ""
         fonts = list(getattr(p, "fonts", []) or []) if p else []
         if named:
-            return next((f for f in fonts if f.name == named), None)
+            direct = next((f for f in fonts if f.name == named), None)
+            if direct is not None:
+                return direct
+            # Un TextBox récent nomme un FontAsset ; le chemin bitmap conserve
+            # une source primaire pour les assets qui en utilisent une.
+            asset = self._text_font_asset()
+            return p.fonts.get(asset.primary_source_name()) if asset else None
         try:
             from codegen.font_emit import scene_default_font
             name = scene_default_font(p, self._scene)[1]
@@ -461,6 +472,12 @@ class UIRegionItem(QGraphicsRectItem):
         except Exception:
             # Stub de test, ou chaîne codegen indisponible.
             return fonts[0] if fonts else None
+
+    def _text_font_asset(self):
+        """L'asset logique explicitement choisi par ce TextBox, si présent."""
+        p = self._project
+        named = getattr(self._region, "font_name", "") or ""
+        return p.font_assets.get(named) if p and named and hasattr(p, "font_assets") else None
 
     def _composited(self) -> bool:
         """Le texte se COMPOSE-t-il (pixel) plutôt que de se poser à la tuile ?
@@ -598,6 +615,11 @@ class UIRegionItem(QGraphicsRectItem):
         text = self._text_content()
         if not text:
             return False
+        asset = self._text_font_asset()
+        if asset is not None:
+            vector = self._paint_vector_text(painter, asset, text)
+            if vector is not None:
+                return vector
         font = self._text_font()
         sheet = self._load_text_sheet(font)
         if sheet is None:
@@ -642,6 +664,107 @@ class UIRegionItem(QGraphicsRectItem):
                                sheet, QRectF(g.x, g.y, g.w, g.h))
         painter.restore()
         return over
+
+    def _paint_vector_text(self, painter, asset, text: str):
+        """Dessine une FontAsset vectorielle dans le canvas.
+
+        ``None`` signifie que l'asset est bitmap ou que FreeType n'est pas
+        disponible : l'appelant reprend alors le chemin historique de planche.
+        Une sortie booléenne est réservée au vrai rendu vectoriel et conserve le
+        contrat de ``_paint_text`` (True = débordement).
+        """
+        from core.font_rasterizer import FontRasterizerError, rasterize_asset_glyph, display_coverage
+
+        weight = int(getattr(self._region, "font_weight", 400) or 400)
+        italic = bool(getattr(self._region, "font_italic", False))
+        r = self.rect()
+        width, height = max(1, int(r.width())), max(1, int(r.height()))
+        ink_index = int(getattr(self._region, "text_color", 0) or 0)
+        colors = self._bank_colors()
+        ink = QColor(C.TEXT_HI)
+        if ink_index and colors and ink_index < len(colors):
+            ink = QColor(*colors[ink_index])
+        source_names = set(asset.source_names()) | {face.source_name for face in asset.faces}
+        source_stamp = []
+        for name in sorted(source_names):
+            source = self._project.fonts.get(name)
+            path = self._project.asset_abs(source.asset) if source and source.asset else None
+            try:
+                stat = path.stat() if path else None
+                source_stamp.append((name, stat.st_mtime_ns, stat.st_size))
+            except (AttributeError, OSError):
+                source_stamp.append((name, 0, 0))
+        cache_key = (
+            asset.name, tuple(source_stamp), text, width, height, weight, italic,
+            asset.pixel_height, asset.line_height, asset.pixel_fit, asset.hinting, asset.raster_mode,
+            asset.coverage_threshold, asset.dither_pattern, asset.offset_x, asset.offset_y,
+            asset.prefer_bitmap_strike, getattr(self._region, "align", "left"),
+            ink.red(), ink.green(), ink.blue(), ink_index,
+        )
+        cached = _VECTOR_TEXT_IMAGES.get(cache_key)
+        if cached is not None:
+            image, overflow = cached
+            painter.drawImage(r.topLeft(), image)
+            return overflow
+        glyphs = []
+        try:
+            for char in text:
+                if char == "\n":
+                    glyphs.append(None)
+                else:
+                    glyphs.append(rasterize_asset_glyph(
+                        self._project, asset, char, weight=weight, italic=italic))
+        except FontRasterizerError:
+            return None
+        if not glyphs:
+            return False
+
+        line_height = max(1, int(asset.line_height))
+        lines, line, pen, overflow = [], [], 0, False
+        for glyph in glyphs:
+            if glyph is None:
+                lines.append((line, pen)); line, pen = [], 0
+                continue
+            advance = max(1, glyph.advance)
+            if pen and pen + advance > width:
+                lines.append((line, pen)); line, pen = [], 0
+            if len(lines) * line_height + line_height > height:
+                overflow = True
+                break
+            line.append((glyph, pen)); pen += advance
+        if line and not overflow:
+            lines.append((line, pen))
+
+        image = QImage(width, height, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        align = getattr(self._region, "align", "left")
+        for line_index, (entries, line_width) in enumerate(lines):
+            offset = ((width - line_width) // 2 if align == "center"
+                      else width - line_width if align == "right" else 0)
+            baseline = line_index * line_height + asset.pixel_height
+            for glyph, gx in entries:
+                for py in range(glyph.height):
+                    y = baseline - glyph.bearing_y + py
+                    if not 0 <= y < height:
+                        continue
+                    for px in range(glyph.width):
+                        x = offset + gx + glyph.bearing_x + px
+                        if not 0 <= x < width:
+                            continue
+                        alpha = display_coverage(
+                            glyph.coverage_at(px, py), px, py,
+                            raster_mode=asset.raster_mode,
+                            threshold=asset.coverage_threshold,
+                            dither_pattern=asset.dither_pattern,
+                        )
+                        if alpha:
+                            color = QColor(ink); color.setAlpha(alpha)
+                            image.setPixelColor(x, y, color)
+        if len(_VECTOR_TEXT_IMAGES) >= 128:
+            _VECTOR_TEXT_IMAGES.clear()
+        _VECTOR_TEXT_IMAGES[cache_key] = (image, overflow)
+        painter.drawImage(r.topLeft(), image)
+        return overflow
 
     # ── Peinture ─────────────────────────────────────────────────
     def boundingRect(self) -> QRectF:

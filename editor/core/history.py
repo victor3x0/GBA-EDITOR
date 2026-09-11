@@ -440,6 +440,40 @@ class DeleteResourceCmd(Command):
             self._refresh()
 
 
+class DeleteFontSourceCmd(DeleteResourceCmd):
+    """Supprime une source de police en gardant ses familles cohérentes.
+
+    Une ``Font`` vectorielle peut être la face d'un ou plusieurs ``FontAsset``.
+    Un simple ``DeleteResourceCmd`` enlève correctement la source, mais laisse
+    ces fiches afficher une face qui n'existe plus. La photographie est prise
+    avant la première exécution afin que Ctrl+Z remette *exactement* les faces
+    et les chaînes de repli que l'auteur avait configurées.
+    """
+
+    def __init__(self, project: Any, item: Any):
+        super().__init__(project.fonts, item)
+        self._project = project
+        self._asset_state = [
+            (asset, list(asset.faces),
+             {variant: list(sources) for variant, sources in asset.sources.items()})
+            for asset in project.font_assets
+        ]
+
+    def execute(self):
+        super().execute()
+        # Import local : history reste générique et n'introduit pas de cycle
+        # module avec la couche d'encodage au chargement de l'application.
+        from core.asset_encoding import reconcile_font_assets
+        reconcile_font_assets(self._project)
+
+    def undo(self):
+        super().undo()
+        for asset, faces, sources in self._asset_state:
+            asset.faces = list(faces)
+            asset.sources = {variant: list(names) for variant, names in sources.items()}
+            self._project.font_assets.save(asset)
+
+
 class AddResourceCmd(Command):
     """
     Ajout d'une Resource au catalogue depuis l'UI (ex. dupliquer une palette).

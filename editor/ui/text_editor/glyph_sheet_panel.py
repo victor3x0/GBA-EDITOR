@@ -13,6 +13,7 @@ from PyQt6.QtCore import pyqtSignal
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W
 from ui.common.labels import label
+from ui.common.backdrop_button import BackdropButton
 from ui.text_editor.glyph_sheet import GlyphSheet
 
 
@@ -102,6 +103,12 @@ class GlyphSheetPanel(QWidget):
         self._scroll.setWidget(self._sheet)
         root.addWidget(self._scroll, 1)
 
+        # Fond d'épreuve : posé DANS la planche, en bas à gauche — même widget et
+        # même geste que l'aperçu écran. Une police sombre, une fois la
+        # transparence active, se noie sinon dans le damier sombre.
+        self._btn_bg = BackdropButton(self)
+        self._btn_bg.changed.connect(self._apply_backdrop)
+
         self._hint = QLabel(label(self._HINT_DEFAULT))
         self._hint.setFont(QFont(T.UI, T.XS))
         self._hint.setStyleSheet(
@@ -121,6 +128,18 @@ class GlyphSheetPanel(QWidget):
         self._sheet.color_picked.connect(self.color_picked)
         self._sheet.pick_ended.connect(self.pick_ended)
         self._sheet.pick_ended.connect(lambda: self._set_hint(""))
+
+    def resizeEvent(self, e):
+        """Recale le bouton de fond d'épreuve en bas à gauche de la planche,
+        au-dessus du bandeau d'aide."""
+        super().resizeEvent(e)
+        g = self._scroll.geometry()
+        self._btn_bg.move(g.left() + 8, g.bottom() - self._btn_bg.height() - 8)
+        self._btn_bg.raise_()
+
+    def _apply_backdrop(self):
+        self._sheet.set_backdrop(
+            None if self._btn_bg.is_default() else self._btn_bg.color())
 
     # ── Pipette ───────────────────────────────────────────────────
 

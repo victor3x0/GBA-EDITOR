@@ -47,6 +47,8 @@ class GlyphSheet(QWidget):
         self._pan_last = None     # origine du pan clic-central
         self._range: list = []    # sélection multiple (Maj+clic) — fusion
         self._picking = ""        # rôle de couleur en cours de prélèvement, "" = aucun
+        self._backdrop = None     # damier teinté (BackdropButton) — None = fond éditeur
+        self._backdrop_cache = None  # brosse du damier teinté, reconstruite au besoin
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)   # survol sans bouton enfoncé
         self.setStyleSheet(f"background:{C.BG_BASE};")
@@ -165,9 +167,10 @@ class GlyphSheet(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         sheet_rect = QRect(0, 0, self._pixmap.width() * z, self._pixmap.height() * z)
         # Damier : sinon une zone trouée serait indiscernable, sur le fond uni
-        # du panneau, d'une zone simplement sombre.
+        # du panneau, d'une zone simplement sombre. Teinté par le fond d'épreuve
+        # choisi — une police sombre reste sinon noyée dans le damier sombre.
         if self._font and self._font.key_colors():
-            p.fillRect(sheet_rect, self._checker_brush())
+            p.fillRect(sheet_rect, self._backdrop_brush())
         p.drawPixmap(sheet_rect, self._pixmap)
 
         # Quadrillage NU : annoter les 224 cases en continu noyait la planche
@@ -207,9 +210,24 @@ class GlyphSheet(QWidget):
 
     @classmethod
     def _checker_brush(cls) -> QBrush:
+        """Damier sombre par défaut, mis en cache (aussi lu par l'inspecteur)."""
         if cls._CHECKER is None:
             cls._CHECKER = checker_brush()
         return cls._CHECKER
+
+    def _backdrop_brush(self) -> QBrush:
+        """Damier de la planche : teinté au fond d'épreuve, ou le défaut sombre."""
+        if self._backdrop is None:
+            return self._checker_brush()
+        if self._backdrop_cache is None:
+            self._backdrop_cache = checker_brush(self._backdrop)
+        return self._backdrop_cache
+
+    def set_backdrop(self, color):
+        """Change le fond d'épreuve du damier (`None` = fond de l'éditeur)."""
+        self._backdrop = color
+        self._backdrop_cache = None
+        self.update()
 
     def _label_font(self, r: QRect, label: str) -> QFont:
         """Police du caractère révélé, dimensionnée pour tenir dans la case —

@@ -32,25 +32,25 @@ Pour compiler et lancer des ROMs, deux outils externes sont nécessaires (l'édi
 
 ## Fonctionnalités
 
-- **Éditeur de scènes** : composez vos niveaux en plaçant acteurs, collisions et caméra directement sur un canvas GBA.
+- **Construisez vos niveaux à la souris** : posez acteurs, collisions et caméra directement sur un canvas GBA, et voyez votre scène telle qu'elle sera sur la console.
 
 ![Scene Manager](docs/screenshots/SceneEditor.png) 
 
-- **Éditeur de sprites** : créez les animations de vos personnages à partir d'une spritesheet.
+- **Animez vos personnages** : découpez une spritesheet et montez vos animations image par image, sans outil externe.
 
 ![Sprite Editor](docs/screenshots/SpriteEditor.png)
 
-- **Scripting Lua** : écrivez votre gameplay en Lua, le code est automatiquement converti en C lors de la compilation.
+- **Écrivez votre gameplay en Lua** : un langage simple à apprendre, traduit en C optimisé à la compilation — vos ROMs tournent à pleine vitesse, sans machine virtuelle ni ralenti.
 
 ![Script Editor](docs/screenshots/ScriptEditor.png)
 
-  Le script étant *traduit* en C et non interprété, le langage accepté est un sous-ensemble de Lua : [**SCRIPTING.md**](SCRIPTING.md) dit ce qu'on peut écrire, ce qui ne marche pas, et quoi écrire à la place.
+  Comme le script est *traduit* et non interprété, le langage accepté est un sous-ensemble de Lua : [**SCRIPTING.md**](SCRIPTING.md) dit ce qu'on peut écrire, ce qui ne marche pas, et quoi écrire à la place.
 
-- **Son** : effets sonores et musique (maxmod), gérés depuis l'éditeur.
+- **Habillez votre jeu de son** : effets sonores et musique (maxmod) gérés directement dans l'éditeur.
 
-- **Prefabs** : acteurs réutilisables entre scènes.
+- **Réutilisez votre travail** : transformez un acteur en *prefab* et réemployez-le d'une scène à l'autre, avec ses composants et sa logique.
 
-- **Components** : Components réutilisable et empilable pour manipuler facilement vos assets en LUA.
+- **Assemblez par composants** : des briques empilables (sprite, collision, script, son) qui s'attachent à un acteur et se pilotent en Lua — vous composez un comportement au lieu de le recoder.
 
 ## Projet de démo
 
@@ -84,35 +84,34 @@ tient à l'échelle d'un vrai projet.
 
 ## Roadmap vers la v1.0
 
-- **v0.2** ✅ : Gestion des palettes de couleurs
-- **v0.3** ✅ : Fondations runtime "background vivant" (layers, fenêtres, fondus) + Texte & UI in-game (polices custom, table de textes balisée, interface dessinée au canvas)
-- **v0.4** ✅ : Animation de décor (fonds animés posés au canvas, couleurs d'une scène pilotables au script)
-- **v0.5** ✅ : Sauvegarde en SRAM (variables globales marquées persistantes, plusieurs emplacements)
-- **v0.6** ✅ : Polish de la boucle de jeu — caméra devenue un asset réutilisable (suivi, bornes, secousse, script), transitions de scène en fondu (réglées au projet, surchargeables par scène), pentes résolues au runtime (26°, 45°, 63°, sols et plafonds), rotation et échelle des sprites (transform monde × local) avec neuf raccourcis de game feel (squash, flash, shake…)
-- **v0.7** ✅ : Structures de données — tableaux typés dans les scripts (une ou deux dimensions, indexés à partir de 1) et tables de données authorées, éditées dans le Data Editor et cuites en `const` dans la ROM — ce qui débloque RPG, tactique et gestion ; et le sous-ensemble Lua enfin **dit et tenu** ([SCRIPTING.md](SCRIPTING.md)) : ce qui n'est pas traduit est refusé sur sa ligne, plus jamais ignoré en silence
-- **v0.8** ✅ : Son — musique portée par la scène, deux transitions fidèles au matériel (fondu traversant, coupe à la position pour enchaîner deux variantes d'un même morceau sans creux), écran de mixage à boîtes d'état (musique/jingle/effets), référence d'effet avec cinq réglages à l'appel (volume, hauteur, panning), canaux logiciels en réglage de projet, et import des quatre formats de module que maxmod sait jouer (`.mod`, `.xm`, `.s3m`, `.it`)
-- **v0.9** ✅ : Traduction des jeux depuis l'éditeur — un écran Texte à plat qui montre les trous (statut traduit/manquant, atelier en onglets par langue), une traduction par fichier side jointe par id, sélection de langue en jeu (`lang.set`, choix persisté) et écran de choix, sous-ensemble de glyphes par (scène, langue) en VRAM, et une **police par défaut du projet** qui sert à la fois de défaut de scène et de repli de couverture — un caractère absent de la police active (un mot resté en langue source sous une écriture qui n'a pas ses lettres) se rend depuis elle plutôt que de disparaître
-- **v0.10** : Distribution élargie (Linux)
-- **v0.11** : Traduction de l'interface de l'éditeur
-- **v0.12** : Vue d'ensemble — graphe des scènes et de leurs transitions, pour lire la logique d'un projet d'un coup d'œil
-- **v0.13** : Édition mixte code / no-code — les appels d'API s'éditent aussi comme des blocs, le script Lua restant la source unique
-- **v0.14** ✅ : Diagnostic — `debug.log` vers la console mGBA, budget de frame et occupation OAM mesurés sur la cible, un réglage de projet Debug/Release qui retire tout ça de la ROM livrée
-- **v0.15** ✅ : Visibilité des éléments d'interface — texte, panneau et image peuvent se cacher/montrer, au script comme à l'authoring, et un panneau caché cache tout son sous-arbre
-- **v0.16** : L'API rangée — une règle de construction unique (on ne construit rien : on nomme une chose du projet, ou on prend un slot dans un pool dimensionné au build), et huit sections nommées d'après ce qu'on tient au lieu de vingt-deux nommées d'après le moteur
-- **v0.17** : Le pool par scène — une scène déclare les prefabs qu'elle fait apparaître et ne paie que ceux-là, au lieu de porter les slots de tous les prefabs du projet
-- **v0.18** : La valeur affichée — un texte peut interpoler une valeur que l'appel lui passe (`text.draw(9, 2, "PV : $1", hp)`), et non plus seulement une variable globale déclarée : afficher un compteur local ou une expression ne demande plus de la promouvoir en global
-- **v0.19** ✅ : Le sous-pixel — position et vitesse en point fixe (Q8), pour une accélération, un saut à hauteur variable et un recul qui ne se règlent pas par pixel entier ; `self.velocity` change d'unité, `self:apply_velocity()` l'accumule sans perte de fraction à travers la collision
-- **v0.20** ✅ : Les collections persistantes — une variable globale peut avoir plusieurs cases (`global.coffres[i]`), sauvegardables d'un bloc et empaquetées en SRAM (400 booléens tiennent en 60 octets), au lieu d'une variable par coffre
-- **v0.21** ✅ : Le texte adressable — un id de texte peut être une VALEUR (`text.draw(2, 16, data.Dialogues[i].replique)`) et non plus seulement une clé écrite à la main : un script parcourt enfin une conversation au lieu d'être déroulé réplique par réplique, et le dialogue reste traduisible
-- **v0.22** ✅ : Menus, listes et curseur — `UIList` devient un type d'élément à part entière (index, bornes, grille `nav_columns`/`nav_major`, curseur qui se pose ou qui glisse), un `active` par liste pour tenir un menu et son sous-menu à l'écran, `ui.image_move` pour piloter un curseur au script, et un en-tête de sauvegarde lisible sans charger la partie (`save.read(slot, "nom")`) — le moteur prend la navigation, la mise en page reste authorée
-- **v0.23** ✅ : Ce qu'un boss demande — attendre dans une boucle bornée (`for i = 1, 3 do tirer() ; wait(20) end`), une hiérarchie d'acteurs (un boss segmenté se déplace d'un bloc, chaque enfant gardant son sprite et ses collisions — y compris pour un ennemi spawné, dont le prefab porte son propre arbre — et un enfant se nomme depuis son parent : `local MonBras = self.BrasG`), et une matrice de collision entre tags qui retire du build les paires qui ne se rencontrent jamais
-- **v0.24** (en cours) : Le projet à l'échelle d'une équipe — des fichiers de projet que git sait relire (le jeu de démo passe de 14 444 à 3 679 lignes, couleurs en `#RRGGBB`, une ligne par rangée de carte), et un build qui ne refait que ce qui a changé : rebuild à chaud de 9,1 s à 6,6 s, dont `make` de 3,5 s à 0,17 s
-- **v0.25** ✅ : L'interface possède son chemin matériel — un nœud « Interface » se pose dans la scène et fixe, à un seul endroit, l'ancrage (écran / monde / acteur) et le chemin matériel (fond ou sprite) de tout son contenu ; une scène peut en poser plusieurs, un HUD fixe en fond et une bulle qui suit un acteur en sprite, chacun son chemin
-- **v0.27** ✅ : L'éditeur souffle le mot juste — autocomplétion du Script Editor qui **dérive du catalogue** (membres après `self:`/`sfx.`, handlers, enum matériels, `local`/paramètres en portée, et noms du projet dans les arguments chaîne comme `sfx.play("`), avec la même infobulle que la sidebar : elle propose exactement ce que le checker accepte, jamais une fonction morte ; `Tab` accepte, `Entrée` insère une ligne, `Ctrl+Espace` ouvre à la demande
+Où en est l'éditeur, et ce que chaque étape apporte à vos jeux. Les versions marquées ✅ sont
+déjà là ; les autres arrivent. La [ROADMAP](ROADMAP.md) détaillée en donne l'ordre recommandé.
 
-Les six dernières viennent d'une revue du logiciel du point de vue d'un projet de production
-mené à plusieurs ; la [ROADMAP](ROADMAP.md) en donne l'ordre recommandé, qui n'est pas celui
-des numéros.
+- **v0.2** ✅ : **Palettes de couleurs** — un catalogue de couleurs partagé par tout le jeu, avec import de vos palettes favorites.
+- **v0.3** ✅ : **Décors et interface** — des fonds à plusieurs couches, du texte, des menus et une UI dessinés à l'écran, avec vos propres polices.
+- **v0.4** ✅ : **Décors animés** — eau, flammes, couleurs qui pulsent : des fonds vivants posés au canvas et pilotables au script.
+- **v0.5** ✅ : **Sauvegarde** — la progression du joueur persiste sur la cartouche, avec plusieurs emplacements.
+- **v0.6** ✅ : **Le jeu prend vie** — caméra qui suit le joueur, transitions en fondu entre scènes, pentes, rotation et échelle des sprites, plus une palette d'effets de *game feel* (squash, flash, secousse…).
+- **v0.7** ✅ : **Données de jeu** — tableaux et tables de données éditables dans l'éditeur, qui débloquent RPG, tactique et gestion.
+- **v0.8** ✅ : **Son complet** — musique par scène, transitions fidèles au matériel, effets sonores réglables (volume, hauteur, panning), et import des formats de tracker courants (`.mod`, `.xm`, `.s3m`, `.it`).
+- **v0.9** ✅ : **Jeux multilingues** — écrivez votre jeu en plusieurs langues, le joueur choisit la sienne en jeu, et rien ne disparaît à l'écran grâce à une police de repli.
+- **v0.10** : **Windows et Linux** — l'éditeur disponible sur les deux systèmes.
+- **v0.11** : **Éditeur traduit** — l'interface de l'éditeur elle-même en plusieurs langues.
+- **v0.12** : **Vue d'ensemble** — un plan du jeu qui montre scènes et transitions d'un seul coup d'œil.
+- **v0.13** : **Édition mixte code / blocs** — programmez au clic *ou* au clavier, sur un même script.
+- **v0.14** ✅ : **Outils de débogage** — journal en direct, mesure des performances sur la cible, le tout retiré automatiquement de la version livrée.
+- **v0.15** ✅ : **Interface qui se montre et se cache** — panneaux, textes et images affichables ou masquables à volonté, à l'authoring comme au script.
+- **v0.16** : **Scripting simplifié** — une bibliothèque de scripting rangée par ce que vous voulez faire, plus par le matériel.
+- **v0.17** : **Scènes plus légères** — chaque scène ne consomme que les ressources qu'elle utilise vraiment.
+- **v0.18** : **Affichage dynamique** — montrez n'importe quelle valeur à l'écran (PV, score, timer) sans détour.
+- **v0.19** ✅ : **Mouvement fluide** — accélération, sauts à hauteur variable et reculs réglés au sous-pixel près, pour un contrôle qui répond.
+- **v0.20** ✅ : **Grandes sauvegardes** — des centaines d'états de jeu (coffres, quêtes, interrupteurs) tenus en quelques octets.
+- **v0.21** ✅ : **Dialogues dynamiques** — parcourez une conversation entière au script, toujours traduisible.
+- **v0.22** ✅ : **Menus et listes** — des menus navigables au curseur prêts à l'emploi, et des sauvegardes lisibles avant même de charger la partie.
+- **v0.23** ✅ : **Combats et boss** — attentes scriptées, boss articulés en plusieurs parties, et collisions optimisées entre types d'entités.
+- **v0.24** (en cours) : **Prêt pour le travail en équipe** — des fichiers de projet lisibles par git et des builds incrémentaux nettement plus rapides.
+- **v0.25** ✅ : **Interface ancrée** — un HUD fixé à l'écran, une bulle qui suit un personnage : chaque élément d'interface choisit sa cible.
+- **v0.27** ✅ : **Autocomplétion intelligente** — l'éditeur suggère en écrivant exactement ce que le langage accepte, jamais une fonction qui n'existe pas.
 
 ## Les versions suivantes exploreront des fonctionnalités plus avancées de la Game Boy Advance :
 

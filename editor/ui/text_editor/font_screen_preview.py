@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtWidgets import QWidget, QSizePolicy, QToolButton
+from PyQt6.QtWidgets import QWidget, QSizePolicy
 from PyQt6.QtGui import QFont, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtCore import Qt, QRect, QPoint
 
 from core.engine_emulation.text_layout import layout_text
-from ui.common import icons
 from ui.common.theme import C, T
 from ui.common.labels import label
+from ui.common.backdrop_button import BackdropButton
 from ui.text_editor.glyph_paint import key_out
 
 
@@ -36,18 +36,6 @@ class FontScreenPreview(QWidget):
     FIT_MAX = 3          # l'ajustement automatique ne dépasse pas ×3
     MARGIN = 24          # px d'écran qui restent forcément atteignables au pan
 
-    # Fonds d'ÉPREUVE, pas le backdrop de la ROM : une police claire disparaît
-    # sur le fond sombre de l'éditeur, une police sombre sur du blanc. Du plus
-    # sombre au plus clair, plus un fond franc.
-    # (clé de nom affiché, couleur) — le nom est résolu à l'usage.
-    BACKDROPS = (
-        ("fsprev.bg_editor",  C.BG_DEEP),
-        ("fsprev.bg_black",   "#000000"),
-        ("fsprev.bg_grey",    "#808080"),
-        ("fsprev.bg_white",   "#ffffff"),
-        ("fsprev.bg_magenta", "#ff00ff"),
-    )
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._font = None
@@ -60,23 +48,13 @@ class FontScreenPreview(QWidget):
         self._zoom: Optional[int] = None
         self._pan = QPoint(0, 0)
         self._pan_last: Optional[QPoint] = None
-        self._backdrop = 0
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(120)
 
         # Fond d'épreuve : posé DANS l'aperçu, en bas à gauche — il commente ce
         # qu'on regarde, pas la table des textes.
-        self._btn_bg = QToolButton(self)
-        self._btn_bg.setFixedSize(32, 32)
-        self._btn_bg.setIconSize(self._btn_bg.size() * 0.7)
-        self._btn_bg.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._btn_bg.setStyleSheet(
-            f"QToolButton{{background:{C.BG_PANEL}; border:1px solid {C.BORDER_MID};"
-            f"border-radius:4px;}}"
-            f"QToolButton:hover{{background:{C.BG_HOVER}; border-color:{C.ACCENT};}}"
-        )
-        self._btn_bg.clicked.connect(self._cycle_backdrop)
-        self._sync_backdrop_button()
+        self._btn_bg = BackdropButton(self)
+        self._btn_bg.changed.connect(self.update)
 
     def set_font_asset(self, font, project):
         """Charge la planche de `font` et la met en cache, déjà trouée."""
@@ -96,25 +74,6 @@ class FontScreenPreview(QWidget):
         self.update()
 
     # ── Fond d'épreuve ────────────────────────────────────────────
-
-    def _cycle_backdrop(self):
-        self._backdrop = (self._backdrop + 1) % len(self.BACKDROPS)
-        self._sync_backdrop_button()
-        self.update()
-
-    def _backdrop_color(self) -> QColor:
-        return QColor(self.BACKDROPS[self._backdrop][1])
-
-    def _sync_backdrop_button(self):
-        name_key, _ = self.BACKDROPS[self._backdrop]
-        nxt_key, _ = self.BACKDROPS[(self._backdrop + 1) % len(self.BACKDROPS)]
-        # Accentué dès qu'on n'est plus sur le fond de l'éditeur : ce qu'on
-        # regarde n'est alors plus le rendu « par défaut ».
-        self._btn_bg.setIcon(icons.get(
-            "playback_contrast",
-            C.TEXT_NORM if self._backdrop == 0 else C.ACCENT))
-        self._btn_bg.setToolTip(label(
-            "fsprev.backdrop_tip", name=label(name_key), next=label(nxt_key)))
 
     @staticmethod
     def _readable_on(bg: QColor) -> QColor:
@@ -228,7 +187,7 @@ class FontScreenPreview(QWidget):
         p = QPainter(self)
         s = self._scale()
         w, h = self.GBA_W * s, self.GBA_H * s
-        bg = self._backdrop_color()
+        bg = self._btn_bg.color()
         ink = self._readable_on(bg)
 
         p.fillRect(self.rect(), QColor(C.BG_DEEP))

@@ -712,7 +712,7 @@
       "text": "User Interface"
     },
     "sceneinsp.card.budget": {
-      "text": "Actor budget"
+      "text": "Sprite slots (OAM)"
     },
     "sceneinsp.mode_btn": {
       "text": "MODE {n}"
@@ -856,10 +856,10 @@
       "text": "Choose a fallback font for this scene"
     },
     "sceneinsp.scene_actors": {
-      "text": "Scene actors:"
+      "text": "Scene slots:"
     },
     "sceneinsp.scene_actors_tip": {
-      "text": "Entries reserved for the actors placed in this scene.\n\n0 = automatic: the reservation follows what you actually place. Set it higher than the placed count only if you need headroom."
+      "text": "Hardware slots reserved for actors placed in this scene — not an actor count.\n\n0 = automatic: one slot per placed actor. Set it higher only to leave room for more placed actors."
     },
     "sceneinsp.no_prefab": {
       "text": "No prefab in this project yet — nothing to pool."
@@ -877,10 +877,10 @@
       "text": "= {n} slot(s)"
     },
     "sceneinsp.slots_hint_auto": {
-      "text": "0 = auto ({placed} placed)"
+      "text": "auto ({placed} actors placed)"
     },
     "sceneinsp.slots_hint": {
-      "text": "{placed} placed"
+      "text": "{placed} actors placed"
     },
     "sceneinsp.text_bg_conflict_tip": {
       "text": "BG{n} carries '{name}' — will be overwritten by the text"
@@ -2331,22 +2331,22 @@
     "txtscr.import_failed": {
       "text": "Import failed: {error}"
     },
-    "fsprev.bg_editor": {
+    "backdrop.editor": {
       "text": "editor background"
     },
-    "fsprev.bg_black": {
+    "backdrop.black": {
       "text": "black"
     },
-    "fsprev.bg_grey": {
+    "backdrop.grey": {
       "text": "mid grey"
     },
-    "fsprev.bg_white": {
+    "backdrop.white": {
       "text": "white"
     },
-    "fsprev.bg_magenta": {
+    "backdrop.magenta": {
       "text": "magenta"
     },
-    "fsprev.backdrop_tip": {
+    "backdrop.tip": {
       "text": "<b>Proof background</b> — currently {name}.<br>Click for {next}.<br><br>Reading aid only: it changes nothing in the text or in the ROM."
     },
     "fsprev.choose_font": {
@@ -3826,6 +3826,132 @@
     },
     "uiinsp.placement": {
       "text": "{vertical} {horizontal}"
+    },
+    "akind.font_assets": {
+      "text": "Font assets"
+    },
+    "akind.new_font_asset": {
+      "text": "New font asset"
+    },
+    "akind.no_font_assets": {
+      "text": "Create a font asset, then configure its sources and rendering recipe."
+    },
+    "akind.font_asset_tip": {
+      "text": "{name} · {pixel_height} px · line height {line_height} px"
+    },
+    "fontasset.title": {
+      "text": "Font asset"
+    },
+    "fontasset.sources": {
+      "text": "Sources"
+    },
+    "fontasset.faces": {
+      "text": "Family faces"
+    },
+    "fontasset.face_line": {
+      "text": "{style} · {source}"
+    },
+    "fontasset.face_regular": {
+      "text": "Regular"
+    },
+    "fontasset.face_bold": {
+      "text": "Bold"
+    },
+    "fontasset.face_italic": {
+      "text": "Italic"
+    },
+    "fontasset.face_bold_italic": {
+      "text": "Bold italic"
+    },
+    "fontasset.face_weight": {
+      "text": "Weight {weight}"
+    },
+    "fontselect.weight_named": {
+      "text": "{name} ({weight})"
+    },
+    "fontselect.weight_italic": {
+      "text": "{name} Italic ({weight})"
+    },
+    "fontselect.missing": {
+      "text": "Missing font asset: {name}"
+    },
+    "fontselect.choose_asset": {
+      "text": "Choose a font asset"
+    },
+    "fontselect.bold_tip": {
+      "text": "Use the native bold face"
+    },
+    "fontselect.italic_tip": {
+      "text": "Use the native italic face"
+    },
+    "fontasset.primary": {
+      "text": "Primary"
+    },
+    "fontasset.fallbacks": {
+      "text": "Fallbacks"
+    },
+    "fontasset.fallback_placeholder": {
+      "text": "Comma-separated source names"
+    },
+    "fontasset.rasterization": {
+      "text": "Rasterization"
+    },
+    "fontasset.pixel_height": {
+      "text": "Pixel height"
+    },
+    "fontasset.line_height": {
+      "text": "Line height"
+    },
+    "fontasset.pixel_fit": {
+      "text": "Pixel fit"
+    },
+    "fontasset.hinting": {
+      "text": "Hinting"
+    },
+    "fontasset.raster_mode": {
+      "text": "Output"
+    },
+    "fontasset.threshold": {
+      "text": "Threshold"
+    },
+    "fontasset.dither": {
+      "text": "Dither"
+    },
+    "fontasset.offset_x": {
+      "text": "Offset X"
+    },
+    "fontasset.offset_y": {
+      "text": "Offset Y"
+    },
+    "fontasset.prefer_bitmap_strike": {
+      "text": "Prefer an embedded bitmap strike"
+    },
+    "fontasset.preview_title": {
+      "text": "GBA raster preview"
+    },
+    "fontasset.preview_live": {
+      "text": "Live preview — rendered by the project rasterizer."
+    },
+    "fontasset.preview_sample": {
+      "text": "Sample: {sample}"
+    },
+    "fontasset.preview_coverage": {
+      "text": "Source coverage"
+    },
+    "fontasset.preview_output": {
+      "text": "GBA output"
+    },
+    "fontasset.preview_ink_loss": {
+      "text": "Only {kept}% of source ink survives this output. Try a larger pixel height, a lower threshold than {threshold}, or dithering."
+    },
+    "fontasset.preview_unavailable": {
+      "text": "Vector preview unavailable: {detail}"
+    },
+    "fontasset.preview_error": {
+      "text": "Preview unavailable: {detail}"
+    },
+    "fontasset.preview_summary": {
+      "text": "{pixel_height} px · line height {line_height} px · {pixel_fit} pixel fit · {hinting} hinting · {raster_mode} · {sources}"
     },
     "settings.window_title": {
       "text": "Settings"

@@ -66,7 +66,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.17 | Le pool par scène | Non commencée |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
-| v0.26 | Les polices : de la source au pixel | **Conception en cours, non commencée** — voir plus bas |
+| v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) ; le raccordement build vectoriel reste ouvert plus bas |
 | v0.27 | L'éditeur souffle le mot juste (autocomplétion) | **Livrée** — [archive](changelog-archive/v0.27.md) |
 
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
@@ -95,6 +95,15 @@ les chantiers seront ouverts — suit désormais l'ordre de traitement.
 Des défauts réels, trouvés en marchant — la plupart en construisant et en jouant les projets
 démo pendant le chantier v0.9, quelques-uns depuis — sans rapport avec un jalon en particulier,
 consignés ici pour ne pas rester invisibles faute d'un jalon à qui les rattacher.
+
+- **`g_actors[]` débordait l'IWRAM sur un projet multi-scène dense**
+  (`codegen/runtime_codegen/main_gen.py`), révélé par le fixture `BuildBenchmark` : 120
+  acteurs répartis sur quatre scènes n'emploient jamais plus de 30 entrées OAM simultanément,
+  mais leurs tranches restent réunies dans une table runtime unique. Ses ~20 Kio, ajoutés au
+  moteur, dépassaient les 32 Kio d'IWRAM et faisaient échouer l'édition de liens. Cette table
+  est désormais émise en **EWRAM** (`EWRAM_DATA`, 256 Kio) ; les `TAG_*` et la sémantique des
+  transitions ne changent pas. Le dimensionnement par scène, gain plus large déjà identifié
+  pour v0.17, reste un chantier distinct.
 
 - **`project.save()` réécrivait tout à chaque `Ctrl+S`** (`core/resource_store.py`), trouvé le
   2026-09-07 en traitant une lenteur de sauvegarde signalée sur le Script Editor. Enregistrer le
@@ -239,9 +248,9 @@ rang :
 > 3 679 lignes de JSON, donnée pour donnée (vérifié par un aller-retour save/reload comparant
 > les modèles, et par un build complet dont la ROM ne bouge pas). Le **rebuild à chaud** passe
 > de 9,09 s à 6,56 s, dont `make` de 3,50 s à 0,17 s : plus aucun des 41 fichiers générés
-> n'est réécrit quand rien n'a changé. Restent le **cache de conversion des assets** (~1 s,
-> devenu le plus petit poste) et le **chargement paresseux** — que la mesure repousse
-> explicitement, cf. « Ouvert ».
+> n'est réécrit quand rien n'a changé. Le **cache de conversion des assets** est livré depuis
+> le 2026-09-10 ; reste le **chargement paresseux**, que la mesure repousse explicitement,
+> cf. « Ouvert ».
 
 ### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
 
@@ -390,11 +399,21 @@ Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/projec
   Reste à refaire la mesure sur un projet gonflé artificiellement — c'est là que les pentes
   se croisent, pas sur Pong.
 
-- **Le cache de conversion des assets reste à faire, et il ne vaut plus qu'environ 1 s.**
-  Ce qui reste à chaud, une fois `make` réduit à 0,17 s : mmutil 0,66 s, grit sprites, bin2s
-  0,19 s. C'est exactement le périmètre de la décision verrouillée « empreinte de la source
-  et des options » — mais c'est désormais le PLUS PETIT des postes, et le mesurer sur un
-  projet à deux cents assets doit précéder de l'écrire.
+- ~~**Le cache de conversion des assets reste à faire.**~~ **Livré le 2026-09-10.**
+  `build/.asset-cache.json` ne garde qu'un index ; les sorties restent celles de `build/` et
+  une entrée est refusée dès que l'une manque. Les sprites et fonds legacy sont empreintés sur
+  leur source, leur sidecar, leur palette effective et grit ; l'audio sur les sources retenues,
+  leurs réglages, mmutil et bin2s. Sur `BuildBenchmark`, le rebuild inchangé passe de **13,7 s**
+  à **4,2 s** ; un PNG reconvertit 1 sprite sur 120 (**5,4 s**), un WAV ne reconstruit que la
+  banque audio (**7,4 s**) et une option reconvertit le seul sprite concerné (**5,2 s**).
+- **Mesure du fixture (2026-09-10).** `Project Demo/BuildBenchmark` contient 120 sprites PNG
+  distincts et 80 effets WAV, répartis sur quatre scènes de 30 acteurs (480 tuiles OBJ au
+  total, 30 entrées OAM par scène). Sur le poste Windows de développement, sans lancer mGBA :
+  build à froid **26,4 s** ; rebuild inchangé **13,7 s** ; après un PNG **13,1 s** ; après un
+  WAV **17,2 s** ; après une option de conversion **11,8 s**. Les variations mineures entre
+  PNG et option sont du bruit de mesure ; aucune de ces relances ne réemploie sélectivement
+  grit ou mmutil. L'audio est le premier poste concret à éviter de reconstruire quand rien ne
+  l'a modifié ; le cache doit toujours reposer sur l'empreinte du source et des options.
 - ~~**Quand cesse-t-on d'ÉCRIRE l'ancien format ?**~~ **Tranché le 2026-08-20** : tout de
   suite, lecture des deux à vie, aucun convertisseur (cf. décisions verrouillées).
 - **Le chargement paresseux, par collection ou par écran ?** La seconde est plus simple et
@@ -631,20 +650,20 @@ text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la po
   sous-ensemble par scène les traite déjà un par un. Seul un système d'écriture différent
   (JA, RU, EL) demande une autre planche. Déclarer une police par langue obligerait à
   dupliquer la même planche quatre fois pour rien.
-  <br>↳ **Remplacée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** (2026-09-04) :
+  <br>↳ **Remplacée par la [v0.26](changelog-archive/v0.26.md)** (2026-09-12) :
   la substitution passe de « par langue » à « par couverture », sur le `FontAsset`.
 - **`font_de.fnt` est une PRATICITÉ D'IMPORT, jamais une règle.** Le suffixe pré-remplit la
   déclaration quand on ajoute une langue ; ce qui lie une police à une langue reste la
   déclaration explicite du projet. Déduire une liaison d'un suffixe de nom, c'est de la magie
   non vérifiable qui casse au premier renommage — et ça contredit `<asset>_name`, la règle du
   graphe de dépendances.
-  <br>↳ **Sans objet depuis la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : il n'y a
+  <br>↳ **Sans objet depuis la [v0.26](changelog-archive/v0.26.md)** : il n'y a
   plus de police par langue à pré-remplir.
 - **Une scène ne change jamais de police selon la langue.** Elle nomme `dialog` ; c'est la
   RÉSOLUTION de ce nom qui dépend de la langue, par une table de remap. Sans ça, il faudrait
   réécrire chaque `text.set_font` et chaque zone de mise en page, dans quarante scènes, pour
   chaque langue ajoutée.
-  <br>↳ **Amendée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : la scène nomme
+  <br>↳ **Amendée par la [v0.26](changelog-archive/v0.26.md)** : la scène nomme
   toujours `dialog`, mais `g_lang_font` disparaît — la résolution est la chaîne de couverture,
   pas un remap par langue.
 - **PNG et `.fnt` seulement** — c'est déjà le cas (`font_import.py` refuse même le BMFont
@@ -652,7 +671,7 @@ text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la po
   police est un **jeu fini d'images de glyphes**. C'est exactement ce qui rend
   `scene_codepoints()` calculable, donc le sous-ensemble par scène possible, donc le japonais
   envisageable. Un TTF rendu au build ne donnerait pas ça.
-  <br>↳ **Remplacée par la [v0.26](#v026--les-polices--de-la-source-au-pixel)** : les sources
+  <br>↳ **Remplacée par la [v0.26](changelog-archive/v0.26.md)** : les sources
   vectorielles sont acceptées via `FontRasterizer` ; le « jeu fini de glyphes » se déplace de la
   source vers la **sortie de build** (le sous-ensemble requis), et l'argument tient toujours.
 - **Le garde-fou VRAM se dimensionne sur la PIRE langue.** La ROM contient N sous-ensembles
@@ -1056,16 +1075,12 @@ couverture n'avertit que si ni l'active ni le repli ne portent le caractère.
 
 ---
 
-## v0.26 — Les polices : de la source au pixel
+## Raccordement build vectoriel — **À FAIRE**
 
-> **Conception figée le 2026-09-04, non commencée.** Le système de police actuel tient dans une
-> seule classe `Font` qui mélange trois natures : l'intrinsèque de la source (glyphes, rects,
-> métriques), de la config de traitement (`bg_color`, `space_color`), et rien de l'usage projet
-> — cet usage vit ailleurs, éclaté (couleur sur `UIRegion`, langue sur `g_lang_font`, layout sur
-> `text_layout`). Et une police y est verrouillée à un **jeu fini d'images de glyphes** : PNG ou
-> `.fnt`, jamais une source vectorielle. Ce jalon sépare proprement les couches et rend le
-> pipeline **indépendant du format de la source** — sans perdre ce que le jeu fini rendait
-> possible (le sous-ensemble par scène, le garde-fou VRAM, le CJK).
+> Le modèle, la découverte, le rasterizer et les écrans de la v0.26 sont livrés
+> ([archive](changelog-archive/v0.26.md)). Reste à faire entrer les `RasterGlyph`
+> vectoriels dans l'export GBA, sans dupliquer la recette que l'aperçu applique
+> déjà. Cette suite ne change pas l'API de l'auteur ; elle raccorde le build.
 
 ### La chaîne, en une ligne
 
@@ -1082,10 +1097,10 @@ conversion en tuiles et palette n'arrive qu'à l'export. Le bitmap est une repr�
 
 | Couche | Nature | Où | État |
 | --- | --- | --- | --- |
-| **`Font`** | source de glyphes — l'intrinsèque *disponible* dans le fichier (glyphes présents, codepoints, métriques) | sidecar `.json` à côté de la source, dans `assets/fonts/` (inchangé) | existe (`core/models/font.py`), à **dégraisser** |
+| **`Font`** | source de glyphes — l'intrinsèque *disponible* dans le fichier (glyphes présents, codepoints, métriques) | sidecar `.json` à côté de la source, dans `assets/fonts/` (inchangé) | livré |
 | **`Glyph`** | caractère + métriques (rect ou vectoriel, `advance`, `ox/oy`) | dans le sidecar `Font` | existe |
-| **`FontAsset`** | usage projet : sources par variante (regular / bold / italic / bold italic), ordre de fallback, params de traitement (taille de rendu, cellule cible, bpp, seuil/dither, chasse) | un `.json` par asset, dans `project/fonts_assets/` | **neuf** |
-| **`RasterGlyph`** | forme bitmap d'un glyphe, **grille de couverture** (gris/alpha), sans index GBA | calculé **au build** (et pour l'aperçu) | existe en creux dans le chemin composé de `font_emit`, à **nommer** |
+| **`FontAsset`** | usage projet : sources par variante (regular / bold / italic / bold italic), ordre de fallback, params de traitement (taille de rendu, cellule cible, bpp, seuil/dither, chasse) | un `.json` par asset, dans `project/fonts_assets/` | livré |
+| **`RasterGlyph`** | forme bitmap d'un glyphe, **grille de couverture** (gris/alpha), sans index GBA | calculé pour l'aperçu, à raccorder au build | livré côté modèle/rasterizer |
 | **`Text` / `TextStyle` / `Layout` / `TextEffect`** | contenu / apparence / placement / transformations | en aval — **hors de ce jalon** | partiels |
 | **Build** | résout `FontAsset` → sous-ensemble requis → rasterise → tuiles + palette | codegen | existe (`font_emit`), à réorganiser autour de `RasterGlyph` |
 
@@ -1117,13 +1132,13 @@ meilleur modèle *avant* que `FontAsset` existe ; la chaîne de couverture le su
 nomme toujours `dialog` — c'est la *résolution* de ce nom qui change, par couverture et non par
 langue.
 
-### Le rasterizer vit au build, et la preview l'appelle
+### Le rasterizer est prêt ; le build doit l'appeler
 
-`FontRasterizer` est une **fonction pure** `(source, glyphe, params) → RasterGlyph`, et **le
-build comme l'aperçu de l'éditeur appellent la même** — jamais deux implémentations. C'est la
-règle qu'on tient déjà ailleurs (`is_proportional()` partagé par l'émetteur et l'aperçu,
-`key_out()` qui reflète `key_colors()`) : si l'aperçu et l'émetteur divergent, le canvas ment
-sur ce qui part en ROM.
+`FontRasterizer` est une **fonction pure** `(source, glyphe, params) → RasterGlyph`. L'aperçu
+de l'éditeur l'appelle déjà ; le build devra appeler exactement cette fonction — jamais une
+seconde implémentation. C'est la règle qu'on tient déjà ailleurs (`is_proportional()` partagé
+par l'émetteur et l'aperçu, `key_out()` qui reflète `key_colors()`) : si l'aperçu et l'émetteur
+divergent, le canvas ment sur ce qui part en ROM.
 
 - **La rasterisation est résolue au BUILD, jamais au runtime.** Le jeu ne comprend aucun TTF/OTF
   — il ne manipule que des données de police déjà préparées pour la GBA. Le `RasterGlyph` n'est
@@ -1187,7 +1202,7 @@ là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes
 - **`TextStyle` / `TextEffect`** : leur propre jalon, en aval — ce qu'il faut, c'est que la
   grille de couverture reste manipulable jusqu'à l'export pour qu'ils restent simples.
 
-### Ce que ça touche (annoncé avant implémentation)
+### Ce que le raccordement build touche
 
 | Fichier | Ce qui change |
 | --- | --- |
@@ -2054,6 +2069,33 @@ ici — ça touche la résolution des `TAG_*`, qui sont aujourd'hui des offsets 
 toutes les scènes — mais c'est le gain le plus large que v0.17 rend accessible, et il ne faut
 pas le perdre de vue en chemin.
 
+### Objectif ajouté (2026-09-10) : le budget OAM compte TOUS ses consommateurs
+
+Le budget des 128 slots ne compte aujourd'hui que **les acteurs de scène et les pools**
+(`actor_budget.py`). Les autres consommateurs d'OAM sont réels, mais vérifiés **ailleurs**, hors du
+budget de scène :
+
+- **Les bandes de texte en cible OBJ** et **les images d'UI** — `text_update` / `ui_image_update`,
+  posées après les acteurs et les pools sur la même base (`text_obj_set_base`), contrôlées par un
+  test séparé `> 128` à l'émission (`main_gen.py:2033`).
+- **Les fonts en cible OBJ** tombent dans cette même bande.
+
+Résultat : deux comptes des mêmes 128 entrées, qui ne se parlent pas. Un pool trop large et une UI
+en sprites peuvent chacun passer leur propre contrôle et se disputer le stock à l'exécution — le
+message d'erreur de `main_gen.py:2036` le dit déjà à demi-mot (« réduire un pavage de fond […] ou
+diminuer le pool de prefabs »), preuve que les deux postes visent bien le même stock.
+
+**L'objectif du per-scène est donc un budget OAM UNIQUE par scène**, qui range côte à côte tous ses
+consommateurs *résolus au build* :
+
+```
+acteurs posés  +  pools de prefabs  +  bandes de texte OBJ  +  images d'UI  +  fonts OBJ  =  128
+```
+
+C'est la moitié BUILD de la question « OAM » (cf. « Deux allocateurs, pas un » du chantier
+transverse). La moitié FRAME — les consommateurs qui apparaissent en cours de partie — est traitée
+là-bas, pas ici.
+
 ### Ouvert
 
 - **`G_ACTOR_COUNT` n'est plus ce qu'il dit.** `actor_api.h` le fixe au total des acteurs de
@@ -2376,6 +2418,176 @@ jamais ». Ce jalon est son implémentation.
   verrouillée ci-dessus) n'est pas construite pour les windows — l'auteur voit le budget
   (N/2) mais pas quelle intention a reçu quel rang. À rouvrir si un projet réel en a besoin
   pour déboguer un recouvrement.
+
+#### Le cas mesuré de l'allocateur de frame — l'OAM dynamique (2026-09-10)
+
+La décision « l'allocateur de frame se décide sur un cas mesuré » (« Ouvert » ci-dessus) a son cas.
+Trois familles de consommateurs OAM apparaissent ou disparaissent **en cours de partie**, et aucune
+n'a de place dans le partitionnement build de la scène :
+
+- **Les projectiles** — un acteur poolé les sert déjà (v0.17) : ils ont position, vélocité,
+  collision, un brin de logique. Ce ne sont PAS un cas pour une primitive à part, seulement pour une
+  bonne API de spawn/despawn. Ils prennent leurs slots dans le pool de leur scène.
+- **Les particules** — le vrai cas hors-budget : des centaines, éphémères, sans collision ni script.
+  Un `Actor` plein par particule est absurde, et 128 OAM sature instantanément. Elles veulent
+  probablement un modèle À PART (cap fixe, ou effet BG) — peut-être pas de l'OAM du tout.
+- **L'UI en sprites** — déjà des consommateurs OAM légers (texte, images), placés au build et
+  repositionnés par frame. À laisser tels quels côté runtime ; ce qui change pour eux est la
+  **source visuelle** (chantier séparé ci-dessous).
+
+**Décision de conception (2026-09-10) : on ne scinde PAS `Actor` en deux structs.** L'idée d'un
+`Actor` (logique) référençant un `Sprite` (affichage) par pointeur a été pesée puis écartée : sur un
+ARM7TDMI sans cache, l'indirection frappe le cas 1:1 majoritaire dans les boucles les plus chaudes
+(tick d'anim, compose OAM), et rouvre un second allocateur à durée de vie coordonnée — exactement ce
+que le merge de la v0.25 (`actor_types_static.h`, « Une seule entité runtime ») refuse. « Actor sans
+sprite » existe DÉJÀ (le marqueur : point de tir, ancre). Le seul cas neuf, « sprite sans actor »,
+est couvert soit par l'acteur poolé (projectile), soit par une primitive d'affichage légère posée
+sur un slot OAM (particule, UI) — jamais par un `Actor` amaigri.
+
+**Ce qui reste ouvert** : la forme exacte de l'allocateur OAM de frame (une free-list de slots pour
+ce qui apparaît en jeu), et si les particules relèvent de l'OAM ou d'un effet BG. À trancher sur un
+projet réel qui en a besoin, pas avant — fidèle à la règle du chantier.
+
+### Chantier transverse — le Sprite, source visuelle unique
+
+Ne porte pas de numéro : c'est un remaniement de **données**, déclenché par le constat qu'un même
+dessin animé a aujourd'hui **plusieurs pipelines de définition** selon qui l'affiche. Un acteur
+pointe un `SpriteAsset` (ses tables d'anim émises en ROM) ; une image d'UI pointe une autre voie ;
+un futur projectile ou une particule ne pointent rien. Le dessin, ses frames, ses états et ses
+directions sont pourtant la même chose — celle qu'on édite dans **l'écran d'animation**.
+
+**La direction (2026-09-10)** : tout ce qui s'affiche — acteur, image d'UI, projectile, particule —
+**référence un seul `Sprite`**, l'asset de l'écran d'animation. C'est « source de vérité unique »
+appliquée au visuel. Distinct des deux questions OAM ci-dessus : celles-ci partagent le STOCK
+matériel (les 128 slots) ; celle-ci partage la DÉFINITION (l'asset). Un consommateur peut être léger
+côté runtime (une particule ne porte pas de logique) tout en pointant le même Sprite qu'un acteur
+lourd.
+
+**Ce que ça ne fait pas** : ça ne touche pas la struct `Actor` (cf. décision ci-dessus) et ça ne
+crée pas de runtime commun. C'est la couche asset qui s'unifie, pas la couche entité.
+
+**Ouvert** : l'inventaire des pipelines actuels (SpriteAsset côté acteur, la voie image de l'UI) et
+lequel absorbe l'autre ; et si le décor animé (v0.4) relève de ce même `Sprite` ou reste une voie BG
+à part.
+
+### v2.0 — Cible cartouche : le matériel embarqué façonne le langage — **JALON OUVERT**
+
+> La famille v2.0 n'est pas rangée. Ce jalon est **posé, pas ordonnancé** : quand on y sera,
+> on fera le point de tout ce qui s'y accumule et on décidera de la découpe. Ce qui suit fixe
+> l'**intention** et les décisions déjà prises (2026-09-10), pas un périmètre daté.
+
+Un **profil de cartouche** décrit ce que la cartouche embarque **physiquement** — capteurs,
+rumble, RTC, type et taille de sauvegarde. Il reste **100% GBA** : les limites mémoire (IWRAM,
+EWRAM, VRAM, OAM, palettes) sont fixes pour toute la gamme et **ne bougent pas**. Cibler un
+matériel aux limites différentes (NDS…) serait un second backend d'émission, un autre modèle
+mémoire — **hors de ce jalon**, écarté explicitement le 2026-09-10.
+
+Le profil n'énumère que des **faits matériels** ; il ne porte aucune logique. Il est la **source
+de vérité unique** de « ce que porte la cartouche », d'où tout dérive :
+
+| Capacité | Ce qu'elle débloque | Réel |
+| --- | --- | --- |
+| `tilt` | API `tilt.*` (angle brut X/Y) | WarioWare Twisted, Yoshi Topsy-Turvy |
+| `solar` | `solar.level` | Boktai |
+| `rumble` | `rumble.*` | Drill Dozer |
+| `rtc` | `rtc.*` | Pokémon Ruby/Sapphire |
+| `save` | type + taille (SRAM/Flash/EEPROM) | déjà modélisé partiellement (v0.5) |
+
+**Trois conséquences en cascade** (une source, tout en dérive) :
+
+1. **API script.** Chaque capacité présente ajoute son module au langage ; absente, le module
+   **n'existe pas** — pas grisé. Ce sont des modules **moteur spécialisés et nommés**, jamais de
+   l'itération par défaut (cf. la règle des deux couches).
+2. **Éditeur.** Les nœuds et champs qui dépendent d'une capacité absente ne s'affichent pas. Le
+   *pourquoi* d'une absence ne sort qu'en notice niveau 3, désactivable — l'éditeur ne commente
+   pas le matériel.
+3. **Émission ROM.** Le codegen n'inclut le driver (lecture capteur, IRQ RTC, registre rumble)
+   que si la capacité est déclarée. Pas de code mort dans une ROM qui n'a pas le hardware.
+
+#### Décision verrouillée (2026-09-10) — le profil ABSORBE la sauvegarde
+
+La config SRAM de la v0.5 est déjà un morceau de « ce que porte la cartouche » qui vit à côté.
+Le profil **l'absorbe** : une seule source de vérité, pas deux partielles. C'est un **vrai
+chantier de migration** — migration du modèle de save existant et relecture du codegen de
+sauvegarde, l'ancien supprimé avant de dire terminé — pas un bonus glissé dans autre chose.
+
+#### Deux pièges matériels à encoder
+
+- **Capteurs analogiques mutuellement exclusifs.** Une cartouche GBA porte *un* capteur
+  analogique (tilt **ou** solaire), pas les deux — même ligne d'acquisition. Le profil doit
+  interdire la combinaison, sinon on laisse décrire une cartouche qui n'existe pas.
+- **Le tilt n'est pas un axe de pad.** Il rend un angle bruité à calibrer/filtrer. L'exposer
+  comme un axe propre mentirait sur le matériel : valeur brute, et au plus un helper de
+  calibration nommé.
+
+#### Le catalogue « cartouche conseillée » — trois tiers (2026-09-10)
+
+Le catalogue s'inscrit dans une démarche homebrew/retrodev : on ne propose que des cartouches
+qu'un utilisateur peut **réellement obtenir ou fabriquer**. Décisions de cadrage :
+**marques écartées** (pas de nom de flashcart commercial dans l'UI, cf. le risque « GBA » de
+`project_licensing_model`), **flashcarts reprogrammables dépriorisées** au profit des vraies
+cartouches, et **priorité aux créateurs indépendants**.
+
+**Tier 1 — Profils de base : cartouches réelles historiques reproductibles.** Les configs que
+la logithèque GBA a réellement portées, reproductibles avec des puces standard et un gabarit
+`kicad-gamepaks` (djedditt — contours aux dimensions des coques officielles). La vraie variable
+est la puce de save + le périphérique embarqué :
+
+| Profil de base | Matériel embarqué | Équivalent historique |
+| --- | --- | --- |
+| Save — SRAM | SRAM sur pile | gros de la logithèque |
+| Save — Flash | Flash 64/128K | jeux à grosse sauvegarde |
+| Save — EEPROM | EEPROM 4/64K | petits jeux |
+| RTC | horloge + Flash | RPG jour/nuit (Pokémon G3) |
+| Solaire + RTC | photodiode + RTC | Boktai |
+| Rumble | moteur + driver | Drill Dozer, Pinball R/S |
+
+**Tier 2 — Options « cool » : créateurs indépendants.** Cartouches à matériel embarqué,
+buildables. Référence mature : **insideGadgets** (RTC+Rumble, Solar+RTC, FRAM sans pile, kits
+*build-it-yourself*). Écosystème : **GBMake** (fabrication indé de cartouches sur mesure),
+`kicad-gamepaks` (la brique de conception open source qui rend le Tier 1 fabricable).
+
+**Frontière — documentée, pas livrée comme profil.** De la R&D, pas des cibles stables :
+`jojolebarjos/gba-cartridge` (cartouche **FPGA**, TinyFPGA BX — mappers/périphériques custom) et
+`konsumer/dkart` (framework open hardware avec **ESP32 + SD** soudés — « cartouche
+intelligente »). Notés comme horizon, hors catalogue conseillé.
+
+#### Convention de nommage — capacité d'abord, board number en note
+
+Les cartouches historiques portent une nomenclature Nintendo, mais deux schémas coexistent :
+`AGB-002/013/019…` désigne la **coque/famille physique** (inutile ici) ; `AGB-Exx-nn` est le
+**PCB du jeu** qui encode save + périphérique (p. ex. `AGB-E05-01` = RTC + Flash, la carte
+Pokémon Gen 3 — le seul rock-solid). Le fil nesdev le confirme : pour un jeu GBA, les seules
+variables sont **taille de ROM, type de save, taille de save, présence d'un RTC** — donc notre
+modèle de capacités *est* déjà la bonne granularité.
+
+**On ne nomme PAS les profils par `AGB-Exx`** : c'est une désignation interne Nintendo (marque,
+écartée), le catalogue de référence est mort (Pocket Heaven — reconstituer une table exhaustive
+serait deviner), et le numéro n'encode rien qu'un nom de capacité ne dise mieux. Les profils
+sont nommés **par capacité** ; le board number n'apparaît qu'en **note historique** pour les cas
+sûrs (« profil RTC — équivalent historique `AGB-E05` »), jamais comme identifiant.
+
+#### Références externes à surveiller
+
+- [`kicad-gamepaks`](https://github.com/djedditt/kicad-gamepaks) — gabarits KiCad aux dimensions
+  des cartouches officielles (la brique de fabrication du Tier 1).
+- [insideGadgets](https://shop.insidegadgets.com/) — cartouches à RTC / Solar / Rumble / FRAM
+  (référence Tier 2, kits *build-it-yourself*).
+- [GBMake](https://gbmake.com/us) — fabrication indé de cartouches GB/GBA sur mesure.
+- [`jojolebarjos/gba-cartridge`](https://github.com/jojolebarjos/gba-cartridge) — cartouche
+  FPGA (TinyFPGA BX, KiCad) — frontière.
+- [`konsumer/dkart`](https://github.com/konsumer/dkart) — framework cartouche open hardware
+  ESP32 + SD — frontière.
+
+#### Ouvert
+
+- La découpe : ce jalon face aux autres candidats v2.0 (Backgrounds affines ci-dessous, etc.),
+  et s'il se scinde par capacité.
+- La forme exacte du profil dans le projet, et où il vit par rapport au reste de la config projet.
+- L'ordre de livraison des capacités (RTC, rumble et les saves sont sûrs et fabricables ;
+  l'ordre des capteurs analogiques dépend de la demande réelle). **Le tilt/gyro reste hors
+  catalogue** : historique et réel, mais non reproductible (soudé dans la cartouche OEM, aucune
+  flashcart ni repro ne l'embarque) — documenté « OEM-only », jamais proposé comme cible.
 
 ### v2.0 — Backgrounds affines (« Mode 7 »)
 

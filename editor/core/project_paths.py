@@ -149,6 +149,16 @@ class ProjectPathsMixin:
         return self.project_dir / "palettes"
 
     @property
+    def font_assets_dir(self) -> Path:
+        """Polices logiques — ``project/fonts_assets/*.json``.
+
+        Une FontAsset configure l'usage d'une ou plusieurs sources dans
+        ``assets/fonts/`` ; elle vit donc avec les données du projet, jamais à
+        côté d'un fichier importé.
+        """
+        return self.project_dir / "fonts_assets"
+
+    @property
     def sprites_dir(self) -> Path:
         return self.assets_dir / "sprites"
 

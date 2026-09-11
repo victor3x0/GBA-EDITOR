@@ -50,7 +50,7 @@ static int bg_block_ofs(int gcols, int c, int r) {
     return r >= 32 ? 0x400 : 0;
 }
 
-static void load_map(vu16*dst, const void*src,
+static void __attribute__((unused)) load_map(vu16*dst, const void*src,
                      int tw, int th, int gcols, int grows) {
     const u16*m = (const u16*)src;
     for (int y = 0; y < grows; y++) {

@@ -2300,8 +2300,12 @@ def generate_main(
             ]
 
     # ── Globals ───────────────────────────────────────────────────
+    # La table regroupe les tranches de toutes les scènes (et les pools) : une
+    # transition peut donc adresser les mêmes `TAG_*` sans déplacer les actors.
+    # C'est un état volumineux, jamais une routine chaude ; EWRAM_DATA évite de
+    # consommer les 32 Kio d'IWRAM réservés au code et aux petits états runtime.
     L += [
-        f"Actor g_actors[{n_actors}];",
+        f"Actor g_actors[{n_actors}] EWRAM_DATA;",
     ]
     # SoundFxComponent en trigger="on_destroy" — table indexée par TAG (même
     # ordre que actor_types.h : actors de scène concaténés, puis prefabs

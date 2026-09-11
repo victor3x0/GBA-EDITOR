@@ -60,6 +60,12 @@ def _store_deleter(attr: str):
     return delete
 
 
+def _font_source_deleter(project, obj):
+    """Une suppression de source met aussi à jour les familles vectorielles."""
+    from core.history import DeleteFontSourceCmd
+    return DeleteFontSourceCmd(project, obj)
+
+
 def _unique(store, base: str) -> str:
     """Premier nom libre de la forme `base`, `base 2`, `base 3`…"""
     base = (base or "").strip() or "Asset"
@@ -270,13 +276,46 @@ FONTS = AssetKind(
     icon       = "font",
     nodes      = store_nodes("fonts"),
     rename     = _renamer("rename_font"),
-    delete     = _store_deleter("fonts"),
+    delete     = _font_source_deleter,
     dir_of     = resource_dir("fonts_dir"),
     # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
     # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
     empty_text_key = 'akind.no_font_drop_a_png_or_a_fnt',
+    # Les fichiers source servent surtout au diagnostic : l'auteur travaille
+    # normalement avec les Font Assets au-dessus, donc ce dossier démarre clos.
+    section_expanded=False,
     tooltip_of = lambda f: (
         label('akind.name_value_glyphs_cell_w_cell_h_px', name=f.name, value=len(f.glyphs), cell_w=f.cell_w, cell_h=f.cell_h, value_2=f.tile_count(), source_format=f.source_format)
+    ),
+)
+
+
+def _new_font_asset(project):
+    """Crée une police logique, préliée à la première source disponible."""
+    from core.history import AddResourceCmd
+    from core.models.font_asset import FontAsset
+
+    asset = FontAsset(name=_unique(project.font_assets, "Font"))
+    if project.fonts:
+        asset.sources = {"regular": [project.fonts[0].name]}
+    get_history().push(AddResourceCmd(project.font_assets, asset))
+    return asset
+
+
+FONT_ASSETS = AssetKind(
+    label="Font assets",
+    label_key="akind.font_assets",
+    icon="font",
+    nodes=store_nodes("font_assets"),
+    rename=_renamer("rename_font_asset"),
+    delete=_store_deleter("font_assets"),
+    add=_new_font_asset,
+    add_tooltip_key="akind.new_font_asset",
+    dir_of=resource_dir("font_assets_dir"),
+    empty_text_key="akind.no_font_assets",
+    tooltip_of=lambda asset: label(
+        "akind.font_asset_tip", name=asset.name,
+        pixel_height=asset.pixel_height, line_height=asset.line_height,
     ),
 )
 

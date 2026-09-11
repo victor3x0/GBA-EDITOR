@@ -993,7 +993,11 @@ class FinderSection(QFrame):
         self._arrow_lbl.setPixmap(icon.pixmap(QSize(T.MD, T.MD)))
 
     def _toggle(self):
-        self._expanded = not self._expanded
+        self.set_expanded(not self._expanded)
+
+    def set_expanded(self, expanded: bool):
+        """Fixe l'état initial ou répond à un repli demandé par un finder."""
+        self._expanded = bool(expanded)
         self._body.setVisible(self._expanded)
         self._set_arrow("down" if self._expanded else "right")
         lay = self.layout()

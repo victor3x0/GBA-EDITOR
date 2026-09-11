@@ -23,7 +23,7 @@ gba-editor/
 │   │   │   ├── resource.py, settings.py, palette.py, sub_palette.py
 │   │   │   ├── components.py            ← Components ECS (CollisionBox/Sprite/SoundFx/Script) + registre
 │   │   │   ├── sprite.py, background.py, audio.py
-│   │   │   ├── font.py                  ← Font/Glyph : géométrie de planche, coût VRAM, fusion de cases
+│   │   │   ├── font.py, font_asset.py    ← source Font/Glyph vs recette logique FontAsset
 │   │   │   ├── text.py                  ← Text + clé dérivée + arbre de rangement (dérivé de la liste plate)
 │   │   │   ├── scene.py                 ← Actor, Prefab, Scene, collision map
 │   │   │   └── tile_codec.py            ← format binaire tuile/entrée de carte — module FEUILLE, n'importe rien
@@ -33,7 +33,8 @@ gba-editor/
 │   │   ├── collision_slopes.py      ← génération des tiles de pente (Bresenham) pour CollisionTool
 │   │   ├── project_watcher.py       ← détection live des assets
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
-│   │   ├── font_import.py           ← import de police (PNG déduit / BMFont .fnt), mesure des chasses
+│   │   ├── font_import.py           ← import de police (PNG / BMFont .fnt), mesure des chasses
+│   │   ├── font_metadata.py / font_rasterizer.py ← lecture SFNT et RasterGlyph FreeType à la demande
 │   │   ├── engine_emulation/           ← ce que l'éditeur REFAIT en Python parce que la console
 │   │   │   │                          le fait en C — DEUX implémentations à tenir d'accord
 │   │   │   ├── text_layout.py       ← où atterrit chaque glyphe (jumeau : text_layout() du moteur)
@@ -48,7 +49,7 @@ gba-editor/
 │   │   ├── interface_preferences.py ← ce que l'interface montre d'elle-même (astuces) — par machine
 │   │   └── ...
 │   ├── codegen/
-│   │   ├── pipeline.py              ← orchestration build
+│   │   ├── rom_build.py             ← orchestration build (BuildWorker)
 │   │   ├── grit_conversion.py        ← grit (sprites + BG + Sounds)
 │   │   └── runtime_codegen/         ← génération main.c, scènes, acteurs
 │   │       └── data_tables.py       ← tables de données du projet, en `const` dans la ROM
@@ -122,7 +123,7 @@ gba-editor/
 │           ├── colors.py                  ← familles police / texte, partagées par l'écran
 │           ├── glyph_paint.py              ← trouage des couleurs-clés + damier
 │           ├── text_commands.py            ← commandes annulables (clé, rangement, planche)
-│           ├── font_finder_panel.py        ← colonne gauche (liste des polices)
+│           ├── font_asset_inspector.py / font_asset_preview.py ← recette et aperçu raster vectoriel
 │           ├── text_panel.py               ← centre, contexte Texte : arbitre table et atelier
 │           ├── text_table.py               ← la table des textes (haut du centre)
 │           ├── text_workbench.py           ← l'atelier d'écriture (bas du centre)
@@ -171,8 +172,8 @@ gba-editor/
 ├── .github/workflows/tests.yml      ← contrôle d'architecture + tests, à chaque poussée
 ├── .github/workflows/release.yml    ← build + release GitHub automatique
 └── Project Demo/                    ← modèles de projet téléchargeables (voir README)
-    └── Pong/                        ← projet démo
-        ├── Pong.gba-project         ← manifeste : config racine (scène de démarrage, auteur, version) ET point d'entrée double-clic ; le nom du projet EST le nom du fichier (v0.10, remplace project.json)
+    └── MyGame/                      ← projet démo (OrbitTest suit la même structure)
+        ├── MyGame.gba-project       ← manifeste : config racine (scène de démarrage, auteur, version) ET point d'entrée double-clic ; le nom du projet EST le nom du fichier (v0.10, remplace project.json)
         ├── assets/                  ← dépend d'une ressource externe (image, son...)
         │   ├── sprites/             ← PNG + JSON sidecar (SpriteAsset)
         │   ├── backgrounds/         ← PNG + JSON sidecar (BackgroundAsset)
@@ -182,9 +183,57 @@ gba-editor/
         │   ├── palettes/            ← PaletteBank (.json) — catalogue de palettes nommées, 1 fichier/palette
         │   ├── prefab/              ← préfabs d'acteurs (.json)
         │   ├── data/                ← tables de données (.json) — colonnes typées, lignes
+        │   ├── ui_layouts/          ← mises en page d'interface (.json), partagées entre scènes
+        │   ├── texts.json           ← corpus source : id, clé, rangement et contenu
+        │   ├── texts_<code>.json    ← side de traduction partiel, joint au maître par id
         │   └── variables.json       ← globals + constants du projet
         └── build/                   ← 100% généré, gitignored — compile assets/ ET project/
 ```
+
+---
+
+## Conventions d'écriture
+
+Comment nommer et écrire, dans les trois langages que le projet fait cohabiter (Python de l'éditeur, C généré, C écrit à la main). La règle n'est pas esthétique : chaque casse **porte une information**, et un lecteur doit pouvoir déduire la nature d'un identifiant de sa seule forme.
+
+### La casse dit la nature
+
+| Casse | Nature | Exemples |
+|---|---|---|
+| `snake_case` | variable, fonction, méthode, argument — Python **et** C | `frame_w`, `bg_se_addr()`, `resolve_actor_tiles()`, `pal_bank` |
+| `PascalCase` | classe / dataclass Python, struct C, concept du domaine | `BackgroundLayer`, `CollisionBoxComponent`, `struct Actor` |
+| `UPPER_SNAKE` | constante de module, `#define` C, énumération matérielle | `RUNTIME_API`, `DOMAIN_SCENE`, `WINR_0`, `OBJ_MODE_WINDOW` |
+| `_leading_underscore` | **interne**, non-API : fonction/méthode/attribut qu'on ne doit ni importer ni appeler de l'extérieur | `_emit_api_call()`, `_check_args()`, `self._vec_types` |
+| `g_`, `_sh` | préfixe/suffixe C réservés au moteur : `g_` = état global runtime, `_sh` = registre *shadow* (copie RAM d'un registre write-only) | `g_actors[]`, `g_bgcnt_sh[4]`, `g_bg_ofs_x[4]` |
+
+**Le fichier suit son contenu** : un fichier Python est nommé d'après la classe qu'il porte, en `snake_case` (`background_layer.py` → `BackgroundLayer`, `assets_finder_panel.py` → `AssetsFinderPanel`). Un écran range ses fichiers par sous-zone, pas par type de widget (cf. `ui/`).
+
+**La seule exception à `snake_case` en Python : les surcharges Qt.** Une méthode qui *redéfinit* un slot de Qt garde la casse de Qt (`paintEvent`, `mousePressEvent`, `sizeHint`, `eventFilter`) — c'est un contrat imposé de l'extérieur, pas un nom qu'on choisit. Tout le reste du code Python, y compris nos propres méthodes sur une sous-classe de widget, reste `snake_case`. Pas de `camelCase` maison nulle part.
+
+### Les symboles C générés portent leur origine dans leur nom
+
+Le C émis se relit avec le vocabulaire de l'éditeur — un symbole généré nomme d'où il vient, par un préfixe stable dérivé du concept :
+
+| Concept éditeur | Symbole C généré | Forme |
+|---|---|---|
+| table de données `Objets` | `g_data_Objets` | `g_data_<Table>` |
+| paire de fonctions d'une scène `X` | `scene_init_X` / `scene_tick_X` | `scene_<verbe>_<Scene>` |
+| instanciation d'un `Prefab` nommé | `spawn_<Nom>` | `spawn_<Prefab>` |
+| variable globale / constante de projet | `g_<nom>` / `CONST_<NOM>` | accès pointé `global.nom` / `const.nom` |
+| entrée de domaine (`DOMAIN_SCENE`…) | `SCENE_<Nom>`, `PAL_<Nom>`, `CAM_<Nom>` | `<PREFIX>_<Nom>` (cf. `api.py`) |
+
+Ces préfixes ne sont pas décoratifs : ils garantissent l'unicité dans l'espace de noms C plat (pas de collision entre une scène et une palette homonymes) et rendent un identifiant traçable jusqu'à la donnée-source d'un coup d'œil.
+
+### Un concept, un seul mot — la grammaire unique
+
+C'est la règle qui prime sur tout le reste : **un concept a un seul nom, écrit identiquement dans le C généré, la classe Python et le label UI.** L'éditeur doit être transparent sur ce qu'il produit ; l'utilisateur ne doit pas apprendre deux vocabulaires.
+
+- **Pas d'abréviation**, même « évidente » : `CollisionBox`, jamais `CollBox` ; `rotation`, jamais `rot` ; `scale_x`, jamais `sx`. Les rares abréviations historiques qui subsistaient (`sprite_rot`, `offset_x`) ont été résorbées vers la forme longue (`sprite.rotation`, `sprite.offset_x`).
+- **Suffixe `Component`** obligatoire pour tout composant attachable à un `Actor` — jamais `Comp`, `Behavior`, `System` : `SpriteComponent`, `CollisionBoxComponent`, `ScriptComponent`.
+- **Le nom C reflète exactement le concept Python** sans le raccourcir : `CollisionBox` en C ↔ `CollisionBox`/`CollisionBoxComponent` en Python.
+- **Renommer, c'est renommer partout.** Un changement de nom touche la classe, le fichier, les labels et les références — pas seulement le libellé UI. Un renommage éditeur (`Project.rename_*`) réécrit d'ailleurs les références Lua par repérage **structurel**, jamais textuel : ni les commentaires ni les chaînes sans rapport ne bougent.
+
+Avant de nommer un nouveau type (struct C, classe Python, label UI), vérifier que le **même mot** est employé aux trois endroits. En cas de doute entre « juste le libellé » et « renommage complet », c'est toujours le renommage complet.
 
 ---
 
@@ -199,9 +248,9 @@ Ces concepts ont un équivalent direct dans le hardware ou la toolchain.
 | `SpriteAsset` | tiles OBJ VRAM | PNG converti par grit en tiles 8×8 chargées dans OBJ VRAM |
 | `TileCell` | tile index VRAM | Une tile 8×8 référencée par son index dans VRAM |
 | `AnimFrame` | plage de tile indices | Un état visuel = N tiles dans VRAM |
-| `Actor` | `struct Actor` + `OBJATTR` (OAM) | Une entrée de `g_actors[]`, affichée via une entrée OAM. Les composants de l'éditeur sont les blocs de la struct : `SpriteComponent` → `Actor.sprite`, `CollisionBoxComponent` → `Actor.collision` (cf. « Une seule entité runtime ») |
+| `Actor` | `struct Actor` + `OBJATTR` (OAM) | Une entrée de `g_actors[]` en EWRAM, affichée via une entrée OAM. Les composants de l'éditeur sont les blocs de la struct : `SpriteComponent` → `Actor.sprite`, `CollisionBoxComponent` → `Actor.collision` (cf. « Une seule entité runtime ») |
 | `BackgroundLayer` | charblock (CBB=`bg_slot`) + screenblock | `{image, bg_slot, scroll_speed, pal_bank, tile_palette_overrides}` — un plan BG physique **de la scène** |
-| `BackgroundAsset` | tileset + sous-palettes | Sidecar (`project/backgrounds/{image}.json`), keyé par nom comme `SpriteAsset` — PNG source jamais modifié 
+| `BackgroundAsset` | tileset + sous-palettes | Sidecar (`assets/backgrounds/{image}.json`), keyé par nom comme `SpriteAsset` — PNG source jamais modifié
 | `Scene.background_layers` | jusqu'à 4 `REG_BGxCNT` | Liste de `BackgroundLayer` inline dans le JSON de la scène (chacun référence un `BackgroundAsset` par nom d'asset) |
 | `PaletteBank` | 16 couleurs BGR555 | Palette nommée du catalogue (`project/palettes/*.json`), partagée OBJ/BG |
 | `Scene.active_obj_palettes` / `Scene.active_bg_palettes` | 16 banques `PAL_OBJ`/`PAL_BG` | Sélection ordonnée (index = banque hardware) des palettes actives de la scène ; `pal_bank` indexe dans cette liste |
@@ -316,7 +365,7 @@ modifiable ensuite par script dans les deux cas, l'émission OAM lisant désorma
 - `assets/` → la source de vérité des assets bruts ; le JSON sidecar est auto-géré par l'éditeur
 - `assets/backgrounds/` → PNG bruts (`BackgroundAsset`) ; → sidecar d'importation par image (`BackgroundAsset` : tileset + sous-palettes, PNG jamais modifié). 
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
-- `build/grit_out/` et `build/src/` → effacés et regénérés à chaque build ; `build/obj/` est conservé pour la compilation incrémentale
+- `build/grit_out/` et `build/src/` → sorties générées conservées puis balayées à la fin du build ; `build/obj/` est conservé pour la compilation incrémentale. `build/.asset-cache.json` mémorise les empreintes des conversions dont les sorties existent encore.
 - `<Nom>.gba-project` → manifeste racine (v0.10, remplace `project.json`) : c'est LUI qu'on double-clique, associé à l'éditeur sur les deux OS, et son nom de fichier EST le nom du projet (aucune clé `name` dans le JSON). Config racine uniquement (scène de démarrage, auteur, version) ; un `project.json` d'avant v0.10 se relit une fois et se réécrit dans la nouvelle forme à la première sauvegarde ; `start_scene` (point de départ du **jeu**, éditable dans le ProjectInspector) et `last_scene` (dernière scène ouverte dans l'**éditeur**, restaurée à l'ouverture) sont deux champs distincts — ouvrir une scène ne redéfinit jamais le point de départ ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
 - Les assets sont référencés **par nom** (ex. `SpriteComponent.sprite_name`, `BackgroundLayer.backgroundasset_name`, palette active par nom de `PaletteBank`) — jamais par chemin absolu
 - Un argument de script qui cite un élément du projet est déclaré par le `domain` de son `Param` dans `scripting/api.py` (`DOMAIN_SCENE`, `DOMAIN_SFX`, `DOMAIN_GLOBAL`…). Cette table unique sert au checker (valider), au codegen (résoudre en index physique) et à `scripting/refactor.py` (suivre les renommages) : déclarer le domaine d'un nouvel argument suffit à alimenter les trois. Un renommage éditeur (`Project.rename_*`) réécrit les références Lua correspondantes en repérage **structurel** — jamais textuel, donc ni les commentaires ni les strings sans rapport ne bougent
@@ -1239,9 +1288,10 @@ la même méthode.
 
 ## Textes du joueur — table de chaînes
 
-`project/texts.json`, modèle dans `core/models/text.py`. Un seul fichier plutôt qu'un par
-entrée (contrairement aux palettes) : des centaines d'entrées courtes, qu'un traducteur
-veut voir d'un coup. La v0.8 ajoutera `texts.<langue>.json` à côté.
+`project/texts.json`, modèle dans `core/models/text.py`. Un seul fichier maître plutôt
+qu'un par entrée (contrairement aux palettes) : des centaines d'entrées courtes, qu'un
+traducteur veut voir d'un coup. Chaque langue déclarée possède à côté un side
+`texts_<code>.json`, partiel et joint au maître par `id` (cf. `core/project_langs.py`).
 
 **Trois identifiants, un seul résolvable** — c'est la décision structurante :
 
@@ -1329,10 +1379,37 @@ entier. Signalé aux deux endroits qui peuvent le savoir, le build et l'inspecte
 
 ## Polices — un asset, deux points d'entrée
 
-`core/models/font.py` + `core/font_import.py`, sidecar à côté de la planche dans
-`assets/fonts/`. Deux formats acceptés, volontairement pas plus : **PNG nu** ou
-**BMFont `.fnt`**. Les deux remplissent le même sidecar — un format d'entrée n'est
-qu'une façade, comme `detect_import_mode` pour les fonds.
+`core/models/font.py` + `core/font_import.py`, sidecar à côté de la source dans
+`assets/fonts/`. Les sources bitmap acceptent **PNG nu** ou **BMFont `.fnt`** ;
+les sources vectorielles **TTF** et **OTF** sont aussi reconnues par le watcher et
+reçoivent leur sidecar immédiatement. Une source vectorielle ne fabrique surtout
+pas de planche à l'import : `core/font_rasterizer.py` la lit à la demande avec
+FreeType pour l'aperçu, et constitue l'unique point d'entrée que le build
+vectoriel appellera à son raccordement. Sa sortie `RasterGlyph` est une grille de
+couverture indépendante des tuiles et de la palette GBA.
+
+Une `FontAsset` porte aussi sa politique `pixel_fit`. `auto` choisit une
+bitmap strike seulement si elle correspond exactement à la hauteur demandée,
+sinon aligne le rendu sur la grille à 6 px ou moins et garde le rendu natif
+au-dessus. `native`, `grid_fit` et `bitmap_strike` restent des choix d'auteur :
+une fonte vectorielle ne devient pas magiquement une bonne police 5 px, mais
+la recette est déterministe dans l'aperçu et sera reprise telle quelle par le
+raccordement build vectoriel.
+
+**Découverte : une source, un usage possible.** À l'apparition d'un PNG, `.fnt`,
+TTF ou OTF, `sync_font_file()` crée ou réconcilie immédiatement un `FontAsset`.
+Les sources bitmap reçoivent un asset du même nom ; les sources vectorielles
+de même famille fusionnent leurs faces natives dans un seul asset. La
+réconciliation complète les faces ou retire les références disparues, mais ne
+remplace jamais les paramètres de rasterisation ni les fallbacks écrits par
+l'auteur.
+
+Un TextBox référence la police logique par `font_name` (le nom d'un
+`FontAsset`) et son `font_weight` natif (400 Regular, 700 Bold, etc.). Les
+anciens fichiers qui citent une source restent lisibles ; le sélecteur les
+reconnaît et propose l'asset qui les contient sans réécriture silencieuse.
+Les formats bitmap remplissent le même sidecar — un format d'entrée n'est qu'une
+façade, comme `detect_import_mode` pour les fonds.
 
 **Le modèle est à rectangles, pas à grille.** Chaque `Glyph` porte son propre rectangle
 dans la planche : c'est ce qui permet d'accueillir BMFont, dont les glyphes sont posés
@@ -1361,8 +1438,8 @@ l'affichage.
 - **`tile_count()`** donne le coût VRAM en tuiles 8×8 : ces tuiles vivent dans le
   charblock du layer d'UI, en concurrence directe avec le décor.
 - **`missing_chars()`** croise une police avec un texte. Couplé à la table de textes, ça
-  signale les caractères manquants *avant* de les découvrir sur la console — et ce sera
-  critique en v0.8 quand une traduction arrivera avec des `ß`.
+  signale les caractères manquants *avant* de les découvrir sur la console — notamment
+  lorsqu'une traduction apporte des `ß` ou d'autres glyphes absents de la langue source.
 
 ### Du sidecar à la ROM
 
@@ -1400,9 +1477,9 @@ les pose dans `main.c` et charge la police au début de chaque scène.
   franche plutôt qu'une corruption silencieuse.
 - **Un texte est émis en codepoints `u16`, pas en glyphes.** La correspondance
   caractère → tuile se fait au runtime, par dichotomie sur la table triée de la police
-  courante. C'est ce qui rend un texte **indépendant de la police** — indispensable en
-  v0.8, où une traduction peut exiger un autre jeu de glyphes. Le coût est une recherche
-  par caractère à l'affichage, pas par frame.
+  courante. C'est ce qui rend un texte **indépendant de la police** : une traduction peut
+  exiger un autre jeu de glyphes. Le coût est une recherche par caractère à l'affichage,
+  pas par frame.
 - **Le texte vit sur LE layer d'UI** (`Scene.text_bg`), d'où l'absence de paramètre
   `layer` dans l'API : les glyphes sont chargés dans le charblock de ce layer, et un
   charblock appartient à un layer. Un paramètre `layer` serait mensonger.
@@ -1618,7 +1695,9 @@ l'encre en place.
 
 Côté éditeur : outil « Widget d'interface » (T) au canvas de scène — un bouton, trois
 types au dropdown (zone / conteneur / texte, comme collision et inpainting), même geste
-rectangle pour les trois, et création du nœud à la volée si la scène n'en a pas
+rectangle pour les trois, et création du nœud à la volée si la scène n'en a pas. `UIList`
+et `UIImage` se créent depuis l'arbre de scène : leur configuration ne se réduit pas au
+geste rectangle.
 (`UIWidgetTool` + `create_element`, qui dépose dans le nœud primaire). `UIRegionItem`
 déplaçable avec snap 8 px en BG et 1 px en OBJ, dans la couleur de la famille Interface
 (`icons.COLOR_UI`, le type se lit à la forme d'icône posée à côté du nom) ; les
@@ -2178,6 +2257,12 @@ ressemble.
 l'édition de liens (attributs de section), le CPU est un budget qu'on *mesure*. Les ranger
 dans la même liste que l'OAM laisserait croire qu'un ordonnanceur peut les arbitrer.
 
+`g_actors[]` est explicitement en **EWRAM** (`EWRAM_DATA`) : la table cumule les tranches
+des scènes et les pools, donc son coût peut dépasser les 32 Kio d'IWRAM bien avant le plafond
+d'OAM. Les accès aux acteurs ne demandent pas la latence minimale d'une boucle critique ;
+l'IWRAM reste pour le code et les petits états du runtime. Ce placement est une règle du
+codegen, pas une option de projet.
+
 ### Le piège propre aux windows : les slots ne sont pas interchangeables
 
 `WINR_0` > `WINR_1` > `WINR_OBJ` > `WINR_OUT` est une priorité **câblée** (cf. « Windows — le
@@ -2261,7 +2346,7 @@ et un pool, quelles couleurs occupent chacune des 16 banques hardware :
 1. palettes référencées → à leur slot fixe (index dans `active_*_palettes`) ;
 4. fonds compressés → un **bloc de banques contiguës** (une par sous-palette).
 
-Déterministe : `pipeline.py` (quantification grit) et `main_gen.py` (émission des
+Déterministe : `rom_build.py` (quantification grit) et `main_gen.py` (émission des
 `PAL_*_RAM`) lisent le même layout sans se coordonner. Le débordement (>16 banques) n'est
 jamais silencieux : `bank_index` retombe sur la banque 0 et le validateur avertit.
 
@@ -2270,7 +2355,7 @@ jamais silencieux : `bank_index` retombe sur la banque 0 et le validateur averti
 - **Sprites** — chaque `SpriteAsset` conserve sa **palette propre** (`own_palette`, BGR555)
   dérivée d'un png indexé directement (ou déduite depuis un png non-indexé). Au build, le sprite est quantifié vers sa palette effective (propre ou
   banque référencée) et indexé, sans réécrire le PNG.
-- **Fonds** — `core/bg_compress.py` produit un `BackgroundAsset` (sidecar par image) :
+- **Fonds** — `core/bg_import.py` produit un `BackgroundAsset` (sidecar par image) :
   tuilerie 8×8 + déduplication + jusqu'à 16 **sous-palettes** (`SE_PALBANK` par tuile en
   4bpp). L'émission C se fait **directement** (`codegen/bg_emit.py::emit_bg_c`), sans passer
   par grit. Trois modes, **auto-détectés à l'import** (`detect_import_mode`) :
@@ -2300,7 +2385,7 @@ La gomme restaure la palette d'origine (supprime l'override).
 - **Conflit inter-scènes** — même sprite/prefab résolu vers des palettes différentes selon
   la scène → **avertissement** (une seule variante de tuiles est générée, 1ʳᵉ scène gagne).
 - **Débordement de banques** (>16 par pool) → avertissement, fallback banque 0.
-- **Budget VRAM tuiles** (`pipeline._check_bg_tile_budget`) — un layer dont les tuiles
+- **Budget VRAM tuiles** (`rom_build.BuildWorker._check_bg_tile_budget`) — un layer dont les tuiles
   générées déborderaient sur l'espace réservé à sa propre map → **erreur bloquante** (ici
   c'est de la mémoire écrasée au runtime, pas juste une mauvaise couleur).
 
@@ -2322,10 +2407,12 @@ La gomme restaure la palette d'origine (supprime l'override).
    assets/sprites/{name}.png  quantifié vers sa palette effective (propre ou banque
    référencée, résolue par palette_alloc)
        → grit              → build/grit_out/sprite_{name}.c/.h
+       → cache : empreinte du PNG, du sidecar, de la palette effective et de grit
 
 ④ Audio (optionnel)
    assets/sounds/*.wav/.mod
        → mmutil + bin2s     → build/grit_out/soundbank.*
+       → cache : empreinte des sources retenues, de leurs réglages et des deux outils
 
 ⑤ Génération des headers C
    project/ + sprites
@@ -2350,7 +2437,8 @@ La gomme restaure la palette d'origine (supprime l'override).
    build/rom.gba → mgba
 ```
 
-Orchestré par `editor/codegen/rom_build.py` (`BuildWorker`), déclenché depuis `ui/build_panel.py`.
+Orchestré par `editor/codegen/rom_build.py` (`BuildWorker`), déclenché depuis
+`ui/common/build_panel.py`.
 
 ---
 
@@ -2403,6 +2491,31 @@ Orchestré par `editor/codegen/rom_build.py` (`BuildWorker`), déclenché depuis
   print(f"{len(errors)} issues"); [print(f"  {m} :: {l} -> {e}") for m, l, e in errors]
   ```
   Dernier passage (2026-07-04) : 0 problème restant après les deux fixes ci-dessus.
+
+### Environnement de dev figé sur la version CI (`.venv-build312`)
+
+Le poste tourne en Python 3.14, mais la CI **et** le build Nuitka figent 3.12 (bornes de `requirements.txt`). Pour travailler « avec ce qui sortira réellement au build » sans toucher à l'interpréteur du poste, on crée un venv 3.12 **dans le dossier du projet** — nom conventionnel `.venv-build312`, déjà ignoré par `.gitignore` (`.venv*/`) :
+
+```powershell
+py -3.12 -m venv .venv-build312
+.venv-build312\Scripts\python.exe -m pip install --upgrade pip
+.venv-build312\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
+```
+
+Deux variables d'environnement reproduisent la CI ; les omettre change le résultat :
+
+- `QT_QPA_PLATFORM=offscreen` — PyQt6 sur une machine sans écran (sinon l'import échoue).
+- `CC=C:\msys64\ucrt64\bin\gcc.exe` — sans compilateur C hôte, les tests d'équivalence Python/C sont **skippés**, et un skip natif est un **échec** en CI (`GBA_TESTS_REQUIRE_NATIVE=1`).
+
+Contrôles locaux, identiques au job CI :
+
+```powershell
+$env:QT_QPA_PLATFORM='offscreen'; $env:CC='C:\msys64\ucrt64\bin\gcc.exe'
+.venv-build312\Scripts\python.exe tools\check_architecture.py --fresh
+.venv-build312\Scripts\python.exe -m pytest tests -q
+```
+
+Un manque de **bibliothèque système Linux** (p. ex. `libpulse.so.0`, réclamée par `PyQt6.QtMultimedia` du mixer son) ne se voit **pas** dans ce venv Windows : il relève des workflows GitHub (listes `apt-get` de `tests.yml` / `release.yml`), pas de l'environnement Python local.
 
 ---
 

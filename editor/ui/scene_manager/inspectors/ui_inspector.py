@@ -311,10 +311,9 @@ class UIInspector(QWidget):
 
         W.section(label("uiinsp.text.typography"), self._text_card.body_layout)
 
-        self._font = QComboBox()
-        self._font.setFont(QFont(T.UI, T.MD))
-        self._font.setStyleSheet(QSS.combobox)
-        self._font.currentIndexChanged.connect(self._on_font)
+        from ui.common.font_asset_selector import FontAssetSelector
+        self._font = FontAssetSelector()
+        self._font.changed.connect(self._on_font)
         self._font_row = W.row(label("uiinsp.text.font"), self._font,
                                self._text_card.body_layout).parentWidget()
 
@@ -805,12 +804,15 @@ class UIInspector(QWidget):
 
     # ── Rechargements de combos ───────────────────────────────────
     def _reload_fonts(self):
-        self._font.clear()
-        self._font.addItem(label("uiinsp.text.font_scene"), "")
-        for f in (self._project.fonts if self._project else []):
-            self._font.addItem(f.name, f.name)
-        i = self._font.findData(getattr(self._element, "font_name", "") or "")
-        self._font.setCurrentIndex(i if i >= 0 else 0)
+        self._font.set_project(self._project)
+        legacy_name = getattr(self._element, "font_name", "") or ""
+        legacy_font = self._project.fonts.get(legacy_name) if self._project and legacy_name else None
+        weight = getattr(self._element, "font_weight", None)
+        italic = getattr(self._element, "font_italic", None)
+        self._font.set_value(legacy_name, int(weight if weight is not None else
+                                               getattr(legacy_font, "weight", 400)),
+                             bool(italic if italic is not None else
+                                  getattr(legacy_font, "italic", False)))
 
     def _reload_previews(self):
         self._preview.clear()
@@ -1555,10 +1557,15 @@ class UIInspector(QWidget):
             return
         self._set("align", ALIGNS[i], "Alignment")
 
-    def _on_font(self, i):
-        if self._blocking or not self._element or i < 0:
+    def _on_font(self, name: str, weight: int, italic: bool):
+        if self._blocking or not self._element:
             return
-        self._set("font_name", self._font.currentData() or "", "Font")
+        if name != getattr(self._element, "font_name", ""):
+            self._set("font_name", name, "Font")
+        if weight != getattr(self._element, "font_weight", 400):
+            self._set("font_weight", weight, "Font weight")
+        if italic != getattr(self._element, "font_italic", False):
+            self._set("font_italic", italic, "Font italic")
 
     def _on_color(self, index: int):
         if self._blocking or not self._element:
