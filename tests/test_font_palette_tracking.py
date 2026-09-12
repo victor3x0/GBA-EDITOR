@@ -17,6 +17,7 @@ from PIL import Image
 from core.models.font import Font, Glyph
 from core.models.palette import OWN_PAL_BANK, PaletteBank
 from core.models.scene import Scene, scene_font_pal_bank
+from core.models.settings import Language
 from core.models.ui_region import UIContainer, UIText, UILayout, FILL_COLOR
 from core.project import Project
 from codegen.palette_alloc import (
@@ -126,6 +127,21 @@ def test_override_du_picker_place_la_police_sur_un_slot_de_scene(projet, scene_a
     assert scene_font_pal_bank(scene_avec_conteneur, "FontFree", "FontFree") == 0
     banks = scene_font_runtime_banks(projet, scene_avec_conteneur)
     assert banks["FontFree"] == (0, 0)
+
+
+def test_substitut_de_langue_herite_de_la_palette_du_defaut(projet, scene_avec_conteneur):
+    """Une traduction japonaise remplace le défaut logique, pas son choix de
+    palette : l'encre sélectionnée dans l'inspecteur doit donc rester active."""
+    _police(projet, "FontJapanese", (20, 20, 20))
+    projet.settings.default_font = "FontFree"
+    projet.settings.languages = [Language(code="ja", name="Japanese",
+                                          default_font="FontJapanese")]
+    scene_avec_conteneur.font_pal_banks = {"": 0}
+
+    banks = scene_font_runtime_banks(projet, scene_avec_conteneur)
+
+    assert banks["FontFree"] == (0, 0)
+    assert banks["FontJapanese"] == (0, 0)
 
 
 def test_renommer_une_police_suit_son_override_de_banque(projet, scene_avec_conteneur):

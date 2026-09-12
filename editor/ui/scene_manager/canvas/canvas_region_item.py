@@ -447,6 +447,16 @@ class UIRegionItem(QGraphicsRectItem):
         values = p.text_values() if hasattr(p, "text_values") else {}
         return display_text(t.content or "", values)
 
+    def _text_source(self) -> str:
+        """Source balisée de l'entrée affichée, ou ``""`` si inconnue."""
+        el, p = self._region, self._project
+        if p is None:
+            return ""
+        key = (getattr(el, "text_key", "") if getattr(el, "kind", "region") == "text"
+               else getattr(el, "preview_text", "")) or ""
+        text = p.get_text(key) if key and hasattr(p, "get_text") else None
+        return (getattr(text, "content", "") or "") if text is not None else ""
+
     def _text_font(self):
         """Police de l'élément, ou celle que la SCÈNE charge par défaut.
 
@@ -456,7 +466,14 @@ class UIRegionItem(QGraphicsRectItem):
         au canvas, qui est tout l'intérêt du `preview_text`."""
         p = self._project
         named = getattr(self._region, "font_name", "") or ""
-        fonts = list(getattr(p, "fonts", []) or []) if p else []
+        # Les TextBox récents et les portées `[font]` nomment des FontAsset.
+        # La liste matérialisée est celle que la ROM reçoit (métriques incluses),
+        # alors que `p.fonts` ne contient que leurs sources.
+        try:
+            from codegen.font_emit import project_fonts
+            fonts = project_fonts(p)
+        except Exception:
+            fonts = list(getattr(p, "fonts", []) or []) if p else []
         if named:
             direct = next((f for f in fonts if f.name == named), None)
             if direct is not None:
@@ -528,8 +545,16 @@ class UIRegionItem(QGraphicsRectItem):
                 off = resolved[0]
         except Exception:
             off = None
-        if off is None:      # texte libre : la banque d'UI de la scène
-            slot = int(getattr(scene, "ui_pal_bank", -1))
+        if off is None:      # texte libre : la banque de sa police dans la scène
+            # Même clé que l'inspecteur et l'allocateur.  ``ui_pal_bank`` était
+            # l'ancien scalaire : le relire ici faisait bien persister le choix
+            # dans le JSON, mais le canvas l'ignorait et laissait l'encre à sa
+            # couleur d'asset jusqu'au prochain rebuild.
+            from core.models.scene import scene_font_pal_bank
+            from codegen.font_emit import scene_default_font
+            _index, default_font = scene_default_font(p, scene)
+            selected_font = getattr(self._region, "font_name", "") or default_font
+            slot = scene_font_pal_bank(scene, selected_font, default_font)
             active = list(getattr(scene, "active_bg_palettes", []) or [])
             off = slot if 0 <= slot < len(active) else None
         if off is None:
@@ -615,29 +640,50 @@ class UIRegionItem(QGraphicsRectItem):
         text = self._text_content()
         if not text:
             return False
+        source = self._text_source()
+        from core.text_markup import parse
+        has_font_markup = bool(parse(source).of_kind("font"))
         asset = self._text_font_asset()
-        if asset is not None:
+        if asset is not None and not has_font_markup:
             vector = self._paint_vector_text(painter, asset, text)
             if vector is not None:
                 return vector
         font = self._text_font()
-        sheet = self._load_text_sheet(font)
-        if sheet is None:
-            return False
         # Encre APLATIE : un index 1-15 remplace toute la couleur de la police
         # par la couleur de la banque résolue (cf. `UIText.text_color`) ; l'index
         # 0 garde les teintes d'origine de la police, on ne touche donc rien.
         ink = int(getattr(self._region, "text_color", 0) or 0)
-        if ink:
-            cols = self._bank_colors()
-            if cols and ink < len(cols):
-                r, g, b = cols[ink]
-                sheet = self._flatten_sheet(sheet, QColor(r, g, b))
-        from core.engine_emulation.text_layout import layout_text
+        cols = self._bank_colors() if ink else None
+        ink_color = QColor(*cols[ink]) if cols and ink < len(cols) else None
+        # Le chemin simple garde ce contrôle précoce : sans planche, le canvas
+        # ne doit pas inventer un faux rendu. Pour un texte composé, chaque
+        # segment a sa propre planche et sera vérifié dans la boucle ci-dessous.
+        # Une FontAsset matérialisée n'a volontairement pas de planche sur
+        # disque : ses pixels vivent dans ``raster_glyphs`` et sont peints plus
+        # bas par `_paint_built_glyph`. Garder le garde-fou PNG pour les seules
+        # polices historiques, sinon le canvas sortait avant ce chemin.
+        if (not has_font_markup and not getattr(font, "raster_glyphs", None)
+                and self._load_text_sheet(font) is None):
+            return False
+        from core.engine_emulation.text_layout import layout_text, layout_marked_text
         r = self.rect()
-        placed, over = layout_text(font, text, int(r.width()), int(r.height()),
-                                   align=getattr(self._region, "align", "left"),
-                                   composited=self._composited())
+        try:
+            from codegen.font_emit import project_fonts
+            paint_fonts = project_fonts(self._project)
+        except Exception:
+            paint_fonts = list(getattr(self._project, "fonts", []) or [])
+        font_map = {item.name: item for item in paint_fonts}
+        if has_font_markup:
+            placed, over = layout_marked_text(
+                font, source, font_map,
+                self._project.text_values() if hasattr(self._project, "text_values") else {},
+                int(r.width()), int(r.height()), getattr(self._region, "align", "left"),
+                self._composited())
+        else:
+            plain, over = layout_text(font, text, int(r.width()), int(r.height()),
+                                      align=getattr(self._region, "align", "left"),
+                                      composited=self._composited())
+            placed = [(font, glyph, gx, gy) for glyph, gx, gy in plain]
         if not placed:
             return over
         painter.save()
@@ -654,16 +700,62 @@ class UIRegionItem(QGraphicsRectItem):
         if hl is not None:
             from codegen.font_emit import glyph_advance_px, font_line_px
             line = font_line_px(font)
-            x0 = min(gx for _g, gx, _gy in placed) // 8 * 8
-            y0 = min(gy for _g, _gx, gy in placed) // 8 * 8
-            x1 = -(-max(gx + glyph_advance_px(g, font) for g, gx, _gy in placed) // 8) * 8
-            y1 = -(-(max(gy for _g, _gx, gy in placed) + line) // 8) * 8
+            x0 = min(gx for _f, _g, gx, _gy in placed) // 8 * 8
+            y0 = min(gy for _f, _g, _gx, gy in placed) // 8 * 8
+            x1 = -(-max(gx + glyph_advance_px(g, f) for f, g, gx, _gy in placed) // 8) * 8
+            y1 = -(-(max(gy for _f, _g, _gx, gy in placed) + line) // 8) * 8
             painter.fillRect(QRectF(r.left() + x0, r.top() + y0, x1 - x0, y1 - y0), hl)
-        for g, gx, gy in placed:
+        for f, g, gx, gy in placed:
+            if self._paint_built_glyph(painter, f, g, r.left() + gx, r.top() + gy,
+                                       ink_color):
+                continue
+            glyph_sheet = self._load_text_sheet(f)
+            if glyph_sheet is None:
+                continue
+            if ink_color is not None:
+                glyph_sheet = self._flatten_sheet(glyph_sheet, ink_color)
             painter.drawPixmap(QRectF(r.left() + gx, r.top() + gy, g.w, g.h),
-                               sheet, QRectF(g.x, g.y, g.w, g.h))
+                               glyph_sheet, QRectF(g.x, g.y, g.w, g.h))
         painter.restore()
         return over
+
+    def _paint_built_glyph(self, painter, font, glyph, x: float, y: float,
+                            ink: "QColor | None") -> bool:
+        """Peint un glyphe déjà rasterisé par une ``FontAsset``.
+
+        Les FontAsset n'ont pas de planche persistée : le build leur attache
+        ``raster_glyphs``. Les dessiner ici évite de réinventer une atlas juste
+        pour l'aperçu, et permet à une portée `[font]` de mêler une recette
+        vectorielle à une police bitmap. La même recette de couverture que le
+        chemin vectoriel est appliquée.
+        """
+        rasters = getattr(font, "raster_glyphs", None)
+        raster = rasters.get(glyph.char) if rasters else None
+        if raster is None:
+            return False
+        from core.font_rasterizer import display_coverage
+
+        image = QImage(raster.width, raster.height, QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        color = QColor(ink) if ink is not None else QColor(C.TEXT_HI)
+        mode = getattr(font, "raster_mode", "binary")
+        threshold = int(getattr(font, "coverage_threshold", 128) or 128)
+        dither = getattr(font, "dither_pattern", "none")
+        for py in range(raster.height):
+            for px in range(raster.width):
+                alpha = display_coverage(
+                    raster.coverage_at(px, py), px, py, raster_mode=mode,
+                    threshold=threshold, dither_pattern=dither)
+                if alpha:
+                    pixel = QColor(color)
+                    pixel.setAlpha(alpha)
+                    image.setPixelColor(px, py, pixel)
+        # Même dépôt vertical que `_encode_raster_font` : la ligne est une
+        # hauteur, jamais la largeur de cellule (les deux ne coïncident pas sur
+        # une fonte vectorielle ou une police à interligne propre).
+        baseline = max(1, int(getattr(glyph, "h", 0) or getattr(font, "cell_h", 8) or 8))
+        painter.drawImage(QPointF(x + raster.bearing_x, y + baseline - raster.bearing_y), image)
+        return True
 
     def _paint_vector_text(self, painter, asset, text: str):
         """Dessine une FontAsset vectorielle dans le canvas.

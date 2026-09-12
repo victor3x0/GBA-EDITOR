@@ -7,14 +7,15 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import QWidget, QSizePolicy
-from PyQt6.QtGui import QFont, QPixmap, QPainter, QPen, QColor
+from PyQt6.QtGui import QFont, QImage, QPainter, QPen, QColor
 from PyQt6.QtCore import Qt, QRect, QPoint
 
 from core.engine_emulation.text_layout import layout_text
+from codegen.font_build import build_font_asset
+from core.font_rasterizer import FontRasterizerError, display_coverage
 from ui.common.theme import C, T
 from ui.common.labels import label
 from ui.common.backdrop_button import BackdropButton
-from ui.text_editor.glyph_paint import key_out
 
 
 class FontScreenPreview(QWidget):
@@ -40,9 +41,11 @@ class FontScreenPreview(QWidget):
         super().__init__(parent)
         self._font = None
         self._project = None
-        self._sheet: Optional[QPixmap] = None
         self._text = ""
-        self._overflow = False
+        self._render_font = None
+        self._render_text = None
+        self._render_error = ""
+        self._glyph_images: dict[str, QImage] = {}
         # Zoom None = ajusté au volet ; un chiffre = choisi à la molette, et il
         # ne bouge plus quand on redimensionne.
         self._zoom: Optional[int] = None
@@ -57,21 +60,74 @@ class FontScreenPreview(QWidget):
         self._btn_bg.changed.connect(self.update)
 
     def set_font_asset(self, font, project):
-        """Charge la planche de `font` et la met en cache, déjà trouée."""
+        """Choisit une recette de police, comme le font les TextBox.
+
+        Une FontAsset peut provenir d'une planche bitmap ou d'une fonte
+        vectorielle : il n'y a donc volontairement aucune planche PNG à
+        charger ici. Le même sous-ensemble temporaire que le build est produit
+        à la demande par :func:`build_font_asset`.
+        """
         self._font, self._project = font, project
-        self._sheet = None
-        if font and project and font.asset:
-            path = project.asset_abs(font.asset)
-            if path and path.exists():
-                px = QPixmap(str(path))
-                # Trouée : sur une planche opaque, chaque glyphe sortirait en
-                # pavé de couleur de fond — l'inverse de ce que fait la ROM.
-                self._sheet = None if px.isNull() else key_out(px, font.key_colors())
+        self._invalidate_render()
         self.update()
 
     def set_text(self, text: str):
         self._text = text or ""
+        self._invalidate_render()
         self.update()
+
+    def _invalidate_render(self):
+        self._render_font = None
+        self._render_text = None
+        self._render_error = ""
+        self._glyph_images = {}
+
+    def _font_for_text(self):
+        """Matérialise la recette uniquement pour les caractères visibles.
+
+        C'est le pont utilisé par le build ; le preview ne doit surtout pas
+        réinventer une lecture directe des sources de la FontAsset.
+        """
+        if self._render_text == self._text:
+            return self._render_font
+        self._render_text, self._render_font, self._render_error = self._text, None, ""
+        self._glyph_images = {}
+        if not self._font or not self._project:
+            return None
+        try:
+            chars = {char for char in self._text if char not in "\r\n"} or {" "}
+            self._render_font = build_font_asset(
+                self._project, self._font, chars,
+            )
+        except FontRasterizerError as exc:
+            self._render_error = str(exc)
+        return self._render_font
+
+    def _glyph_image(self, glyph) -> QImage:
+        """Cellule GBA du glyphe, avec le même dépôt que l'encodeur ROM."""
+        cached = self._glyph_images.get(glyph.char)
+        if cached is not None:
+            return cached
+        image = QImage(max(1, glyph.w), max(1, glyph.h), QImage.Format.Format_RGBA8888)
+        image.fill(Qt.GlobalColor.transparent)
+        raster = self._render_font.raster_glyphs.get(glyph.char)
+        if raster is not None:
+            base_y = max(0, glyph.h - raster.bearing_y)
+            for y in range(raster.height):
+                for x in range(raster.width):
+                    dx, dy = raster.bearing_x + x, base_y + y
+                    if not (0 <= dx < image.width() and 0 <= dy < image.height()):
+                        continue
+                    coverage = display_coverage(
+                        raster.coverage_at(x, y), dx, dy,
+                        raster_mode=self._font.raster_mode,
+                        threshold=self._font.coverage_threshold,
+                        dither_pattern=self._font.dither_pattern,
+                    )
+                    if coverage:
+                        image.setPixelColor(dx, dy, QColor(255, 255, 255, coverage))
+        self._glyph_images[glyph.char] = image
+        return image
 
     # ── Fond d'épreuve ────────────────────────────────────────────
 
@@ -197,20 +253,26 @@ class FontScreenPreview(QWidget):
         p.setPen(QPen(QColor(C.BORDER_MID)))
         p.drawRect(QRect(0, 0, w - 1, h - 1))
 
-        if not self._sheet or not self._font:
+        font = self._font_for_text()
+        if not self._font:
             p.setPen(ink)
             p.setFont(QFont(T.UI, T.XS))
             p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
                        label("fsprev.choose_font"))
             return
+        if font is None:
+            p.setPen(ink)
+            p.setFont(QFont(T.UI, T.XS))
+            p.drawText(QRect(12, 12, w - 24, h - 24), Qt.AlignmentFlag.AlignCenter,
+                       self._render_error or label("fsprev.choose_font"))
+            return
 
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        placed, over = layout_text(self._font, self._text,
+        placed, over = layout_text(font, self._text,
                                    self.GBA_W, self.GBA_H)
         for g, px, py in placed:
-            src = QRect(g.x, g.y, g.w, g.h)
-            dst = QRect(px * s, py * s, g.w * s, g.h * s)
-            p.drawPixmap(dst, self._sheet, src)
+            image = self._glyph_image(g)
+            p.drawImage(QRect(px * s, py * s, image.width() * s, image.height() * s), image)
 
         if over:
             p.setPen(QColor(C.ACCENT_YLW))

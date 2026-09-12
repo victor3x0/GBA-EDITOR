@@ -117,3 +117,69 @@ def layout_text(font, text: str, width: int = SCREEN_W,
     return out, over
 
 
+def layout_marked_text(font, source: str, fonts: dict[str, object], values=None,
+                       width: int = SCREEN_W, height: int = SCREEN_H,
+                       align: str = ALIGN_LEFT, composited: bool = True):
+    """Mise en page d'un texte balisé, avec la police active par position.
+
+    Le retour ajoute la police au placement : ``(font, glyph, x, y)``. C'est
+    le pendant éditeur de ``TEXT_EV_FONT`` ; le canvas peut ainsi choisir la
+    bonne planche pour chaque glyphe sans posséder sa propre grammaire.
+    """
+    from core.text_markup import parse, resolve, KIND_VALUE, SENTINEL
+    from codegen.font_emit import glyph_advance_px, font_fallback_adv_px, font_line_px
+
+    parsed = parse(source or "")
+    text = resolve(parsed, values or {})
+    if not font or not text:
+        return [], False
+    # Positions dans `parsed.display` → positions après résolution des valeurs.
+    pos, out_pos = [0] * (len(parsed.display) + 1), 0
+    value_at = {m.at: str((values or {}).get(m.value, f"${m.value}"))
+                for m in parsed.markers if m.kind == KIND_VALUE}
+    for i, ch in enumerate(parsed.display):
+        pos[i] = out_pos
+        out_pos += len(value_at[i]) if ch == SENTINEL and i in value_at else 1
+    pos[len(parsed.display)] = out_pos
+    ranges = [(pos[m.at], pos[m.end], fonts.get(str(m.value), font))
+              for m in parsed.of_kind("font")]
+
+    def active(i):
+        return next((f for start, end, f in reversed(ranges) if start <= i < end), font)
+
+    def match(i):
+        current = active(i)
+        glyph = current.match_at(text, i)
+        if glyph and any(active(i + j) is not current for j in range(1, len(glyph.char))):
+            glyph = None
+        return current, glyph
+
+    def advance(current, glyph):
+        return font_fallback_adv_px(current) if glyph is None else glyph_advance_px(glyph, current)
+
+    line = font_line_px(font)  # interligne de la zone, comme le runtime
+    out, widths, x, y, i, over = [], {}, 0, 0, 0, False
+    while i < len(text):
+        if text[i] == "\n":
+            x, y, i = 0, y + line, i + 1; continue
+        current, glyph = match(i)
+        used, adv = (len(glyph.char), advance(current, glyph)) if glyph else (1, advance(current, None))
+        if text[i] == " ":
+            j, word = i + used, 0
+            while j < len(text) and text[j] not in " \n":
+                wf, wg = match(j); wu = len(wg.char) if wg else 1
+                word += advance(wf, wg); j += wu
+            if x + adv + word > width:
+                x, y, i = 0, y + line, i + used; continue
+        if x and x + adv > width:
+            x, y = 0, y + line
+        if y + line > height:
+            over = True; break
+        if glyph:
+            out.append((current, glyph, x, y))
+        x += adv; widths[y] = x; i += used
+    if align in (ALIGN_CENTER, ALIGN_RIGHT):
+        out = [(f, g, gx + _align_off(align, width, widths.get(gy, 0), not composited), gy)
+               for f, g, gx, gy in out]
+    return out, over
+

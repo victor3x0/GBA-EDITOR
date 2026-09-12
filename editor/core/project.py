@@ -754,11 +754,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
                if self.settings.source_lang.code else {}),
             **({"languages": [l.to_dict() for l in self.settings.languages]}
                if self.settings.languages else {}),
-            # Police de repli globale (« Default Font ») — absente tant qu'aucune
-            # n'est choisie, comme languages : un projet qui n'en veut pas ne
-            # gagne pas de clé, et rien ne change pour lui.
-            **({"fallback_font": self.settings.fallback_font}
-               if self.settings.fallback_font else {}),
+            **({"default_font": self.settings.default_font}
+               if self.settings.default_font else {}),
             # Placeholder (cf. InputBinding) : un projet sans input déclaré ne
             # gagne pas de clé, même politique que languages/collisions.
             **({"inputs": [i.to_dict() for i in self.settings.inputs]}
@@ -842,9 +839,18 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.settings.languages = [Language.from_dict(x)
                                    for x in (d.get("languages") or [])
                                    if (x or {}).get("code")]
-        # Absente = aucun repli, le cas de tout projet d'avant que « Default
-        # Font » existe : un glyphe manquant reste simplement sauté, comme avant.
-        self.settings.fallback_font = d.get("fallback_font", "")
+        # `fallback_font` était le nom historique, alors ambigu : il désignait
+        # à la fois le défaut et un repli de couverture global. Il devient le
+        # défaut du projet lors de la première relecture ; la prochaine
+        # sauvegarde écrit uniquement `default_font`.
+        self.settings.default_font = d.get("default_font", d.get("fallback_font", ""))
+        # Les anciens remaps généraux deviennent le remplacement de la police
+        # par défaut seulement. Les remaps d'autres polices disparaissent : leur
+        # couverture appartient désormais à leurs FontAsset.
+        for raw, language in zip(d.get("languages") or [], self.settings.languages):
+            legacy = (raw or {}).get("fonts") or {}
+            if not language.default_font and self.settings.default_font:
+                language.default_font = str(legacy.get(self.settings.default_font, "") or "")
         # Absents = aucun input déclaré, le cas de tout projet avant que ce
         # placeholder n'existe.
         self.settings.inputs = [InputBinding.from_dict(x)
@@ -1009,9 +1015,15 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         proj = cls(root)
         proj.settings.name = name
 
-        # Les assets initiaux (dont les palettes .hex) viennent du starter.
-        # Le chargement crée leurs sidecars JSON, sans jamais générer de palette.
+        # Les assets initiaux (dont les palettes .hex et les polices de base)
+        # viennent du starter. Un projet neuf reste en mémoire juste après sa
+        # création : charger les fonts ici les rend donc visibles tout de suite,
+        # et non seulement après sa première réouverture.
         proj.palettes.load()
+        proj.fonts.load()
+        proj.font_assets.load()
+        proj.load_warnings = list(asset_encoding.reconcile_fonts(proj) or [])
+        asset_encoding.reconcile_font_assets(proj)
 
         # Créer une scène de démarrage par défaut
         # Même budget de départ que toute scène créée ensuite (v0.17) — la

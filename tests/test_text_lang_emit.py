@@ -70,6 +70,19 @@ def test_evenements_recalcules_par_langue():
     assert "g_text_ev_1_0" not in src    # la traduction, aucun balisage : pas de table
 
 
+def test_la_portee_font_devient_un_evenement_avec_l_index_de_la_police():
+    from codegen.font_emit import emit_texts_c
+    t = _text("title", "A[font=Titre]B[/font]")
+    fonts = [type("Font", (), {"name": "Corps"})(),
+             type("Font", (), {"name": "Titre"})()]
+
+    src = "\n".join(emit_texts_c([t], [""], lambda txt, code: txt.content,
+                                   fonts=fonts))
+
+    assert "TEXT_EV_FONT" in src
+    assert re.search(r"\{ 1, 2, 1, TEXT_EV_FONT, 0 \}", src)
+
+
 def test_g_text_values_deduplique_par_langue():
     """Un global cité dans une langue et pas l'autre : chaque langue tient sa
     PROPRE table de sources, jamais une partagée (une langue peut réordonner

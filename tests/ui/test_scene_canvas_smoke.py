@@ -125,3 +125,26 @@ def test_changer_de_scene_reconstruit_les_items(qapp):
         expected = sum(len(lay.elements) for lay in p.scene_ui_layouts(scene))
         _, n_ui, _ = _counts(ed)
         assert n_ui == expected, f"scène {scene.name}"
+
+
+def test_le_canvas_lit_la_banque_de_police_serialisee(qapp, tmp_path):
+    """Le canvas ne doit jamais relire l'ancien ``ui_pal_bank`` : la banque
+    sélectionnée par une zone est désormais dans ``font_pal_banks``."""
+    from core.models.palette import PaletteBank
+    from core.models.scene import Scene
+    from core.models.ui_region import UILayout, UIText
+    from ui.scene_manager.canvas.canvas_region_item import UIRegionItem
+
+    project = Project(tmp_path / "jeu")
+    project.palettes.append(PaletteBank(
+        name="Ink", colors=[0, 0x001F, 0x03E0, 0x7C00] + [0] * 12))
+    region = UIText(name="message", text_color=2, x=0, y=0, w=80, h=16)
+    layout = UILayout(name="HUD", elements=[region])
+    project.ui_layouts.append(layout)
+    scene = Scene(name="S", ui_layouts=["HUD"], active_bg_palettes=["Ink"],
+                  font_pal_banks={"": 0})
+    project.scenes.append(scene)
+
+    item = UIRegionItem(layout, region, project, scene)
+    # index 2 = vert BGR555, pas la couleur propre d'une police ni None.
+    assert item._compute_bank_colors()[2] == (0, 248, 0)

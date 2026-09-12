@@ -1474,8 +1474,10 @@ existants ouvrables.
   déposées à la suite dans le charblock du texte. Leur base n'est plus une constante :
   `text_set_tile_base()` la reçoit de l'allocateur de charblock (`codegen/vram_alloc.py`),
   qui glisse le texte dans les trous que laisse le décor — `FONT_TILE_BASE_DEFAULT = 1`
-  n'est que le repli. La tuile 0 reste vide, c'est celle que pose `text_clear()`. Palette
-  des glyphes en banque **15** (`FONT_PAL_BANK`), en BG comme en OBJ.
+  n'est que le repli. La tuile 0 reste vide, c'est celle que pose `text_clear()`. La palette
+  d'une police libre est chargée dans une banque allouée ; `Scene.font_pal_banks` peut la
+  remplacer par une banque BG de la scène, héritée par les zones dans un conteneur. La constante
+  `FONT_PAL_BANK` ne reste qu'un repli de compatibilité.
 - **Deux chemins de rendu, choisis par la donnée.** `font_emit.is_proportional()` /
   `render_composited()` décident, et `FontInfo.composited` désigne le CHEMIN, pas la
   typographie. *Tilemap* : les tuiles de glyphes vont en VRAM, écrire du texte revient à
@@ -1499,6 +1501,18 @@ existants ouvrables.
   haut et une boîte de dialogue en bas — une mise en page banale. Le coût suit désormais ce
   que l'auteur déclare au lieu d'un forfait ; un dépassement devient une erreur d'allocation
   franche plutôt qu'une corruption silencieuse.
+- **Le remplacement de la police par langue entre dans cette décision.** La police logique par
+  défaut peut rester une Font8x8 latine et être remappée vers Misaki pour le japonais
+  (`g_lang_font` dans le runtime). `region_is_composited()` examine donc toutes les polices
+  EFFECTIVES de la zone : si l'une est composée, `scene_text_reservation()` crée son
+  `surf_layout` et `main.c` émet `text_set_region_surf`. Résoudre la langue seulement au
+  runtime donnerait une police correctement choisie, mais sans l'espace VRAM où composer ses
+  pixels — une troncature silencieuse. Le canvas lit cette même règle.
+- **La banque d'encre d'une police est un réglage de scène persistant.**
+  `Scene.font_pal_banks` associe une police logique à une banque BG de la scène ; la clé vide
+  désigne la police par défaut. L'inspecteur, l'allocateur de palettes, le canvas et
+  `text_set_font_pal()` lisent cette unique donnée. Une banque propre reste l'absence de clé,
+  non une seconde valeur d'interface : ainsi le choix d'encre survit à la réouverture du projet.
 - **Un texte est émis en codepoints `u16`, pas en glyphes.** La correspondance
   caractère → tuile se fait au runtime, par dichotomie sur la table triée de la police
   courante. C'est ce qui rend un texte **indépendant de la police** : une traduction peut
@@ -1523,8 +1537,8 @@ existants ouvrables.
 - **`project_fonts()` n'émet que les polices UTILISÉES**, pas toutes les polices encodables
   du projet : `project_used_font_names()` fait l'union, sur toutes les scènes, de
   `scene_font_names()` (mise en page + `text.set_font`, toujours complétée par la police par
-  défaut de la scène) et des polices de REMPLACEMENT par langue (`Language.fonts`, jamais
-  citées par un script). Une scène indécidable (police choisie au runtime) fait retomber sur
+  défaut de la scène) et de la police par défaut de chaque langue (`Language.default_font`,
+  jamais citée par un script). Une scène indécidable (police choisie au runtime) fait retomber sur
   `None` → repli sur toutes les polices encodables, pour tout le projet, sans élagage — même
   arbitrage de sûreté que `scene_font_names`. `encodable_project_fonts()` reste la liste NON
   élaguée : c'est elle que l'éditeur utilise pour lister les polices choisissables dans un

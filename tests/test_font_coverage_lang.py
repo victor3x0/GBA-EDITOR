@@ -82,19 +82,33 @@ def test_langue_non_traduite_replie_sur_la_source_sans_redoubler(projet):
     assert _warnings_for(p) == []   # "OK" est couvert, source et repli identiques
 
 
-def test_le_remap_de_police_par_langue_est_pris_en_compte(projet):
+def test_le_remplacement_de_la_default_font_par_langue_est_pris_en_compte(projet):
     """Un kanji absent de la police PAR DÉFAUT ne doit plus être signalé si
-    la langue déclare un remplacement qui le couvre (`Language.fonts`, phase
-    3.2) — c'est CETTE police que `text_set_font` charge réellement."""
+    la langue déclare une Default Font qui le couvre — c'est CETTE police que
+    `text_set_font` charge réellement."""
     from core.models.settings import Language
     p, t = projet
     ja_font = _font(name="ja_font", chars="こんにちは")
     p.fonts.append(ja_font)
+    p.settings.default_font = "test_font"
     p.settings.languages = [Language(code="ja", name="Japanese",
-                                     fonts={"test_font": "ja_font"})]
+                                     default_font="ja_font")]
     p.translations["ja"][t.id] = "こんにちは"
 
     assert _warnings_for(p) == []
+
+
+def test_runtime_resout_la_police_de_langue_avant_de_choisir_le_rendu():
+    """Une police par langue peut être composée alors que la police logique
+    est mono. La zone doit donc passer par ``text_set_font`` avant que
+    ``text_render_cp_al`` décide entre surface et tilemap."""
+    from pathlib import Path
+
+    engine = (Path(__file__).parents[1] / "runtime" / "include"
+              / "gba_engine.h").read_text(encoding="utf-8")
+    start = engine.index("static void text_render_region_cp(")
+    body = engine[start:engine.index("static void text_render_region(", start)]
+    assert "if (g_text_default_font >= 0) text_set_font(g_text_default_font);" in body
 
 
 def test_projet_monolingue_verifie_quand_meme_la_source(projet):

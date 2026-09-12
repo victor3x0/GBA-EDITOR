@@ -327,7 +327,8 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
     if not fonts:
         return []
     by_name = {f.name: f for f in fonts}
-    default = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
+    default = default_font_name(fonts, scene, getattr(p.settings, "default_font", ""))
+    project_default = getattr(p.settings, "default_font", "") or ""
 
     # Polices à usage LIBRE : celles d'un texte hors conteneur à fond. Un texte
     # sans `font_name` prend la police par défaut de la scène.
@@ -342,6 +343,21 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
                     or scene_font_names(p, scene, default) is None):
         free.add(default)
 
+    # Le runtime remplace la *police par défaut du projet* par celle de la
+    # langue active. Ce n'est pas une police explicitement choisie par le texte
+    # : elle conserve donc la même sélection de palette que le défaut logique
+    # (clé ``""`` dans Scene.font_pal_banks). Sans cela, le substitut tombait
+    # dans le cas « seulement imbriqué » et lisait la banque 15, même lorsqu'un
+    # texte libre avait choisi une banque de scène dans l'inspecteur.
+    language_defaults: set[str] = set()
+    if default == project_default and default in free:
+        language_defaults = {
+            getattr(language, "default_font", "")
+            for language in getattr(p.settings, "languages", [])
+            if getattr(language, "default_font", "")
+        }
+        free |= language_defaults
+
     ordered = ([default] if default in free and default in by_name else []) \
         + sorted(n for n in free if n != default and n in by_name)
 
@@ -353,7 +369,8 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
             continue
         cols = font_palette(f, png)
         if cols:
-            out.append((name, scene_font_pal_bank(scene, name, default), cols))
+            palette_name = default if name in language_defaults else name
+            out.append((name, scene_font_pal_bank(scene, palette_name, default), cols))
     return out
 
 
@@ -554,9 +571,9 @@ def scene_font_runtime_banks(p: Project, scene: Scene) -> dict:
     - usage SEULEMENT imbriqué   → (15, 0) : elle ne charge rien, chaque texte
       prenant la banque de son conteneur (cf. `text_set_region_backdrop/color`).
 
-    Une police absente d'ici (substitut de langue, ou non chargée) garde le défaut
-    historique côté runtime (charge sa palette en banque 15) — le codegen n'émet
-    alors rien pour elle. Source unique lue par l'émission de `scene_init`."""
+    Un substitut de langue du défaut suit ce même choix de banque : il reste le
+    défaut logique du texte, et non une police imbriquée distincte. Source unique
+    lue par l'émission de `scene_init`."""
     from codegen.font_emit import (
         scene_font_names, default_font_name, FONT_PAL_BANK, encodable_project_fonts)
 
@@ -564,7 +581,7 @@ def scene_font_runtime_banks(p: Project, scene: Scene) -> dict:
     if not fonts:
         return {}
     by_name = {f.name: f for f in fonts}
-    default = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
+    default = default_font_name(fonts, scene, getattr(p.settings, "default_font", ""))
     layout = scene_bank_layout(p, scene, "bg")
 
     free = {name: (pb, cols) for name, pb, cols in _scene_font_palettes(p, scene)}

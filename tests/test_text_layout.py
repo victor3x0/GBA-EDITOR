@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.engine_emulation.text_layout import layout_text
+from core.engine_emulation.text_layout import layout_text, layout_marked_text
 from codegen.font_emit import font_line_px, glyph_advance_px, render_composited
 from text_layout_cases import CAS, police_mono, police_proportionnelle
 
@@ -69,6 +69,22 @@ def test_l_interligne_suit_la_police():
     assert font_line_px(prop) == 10
     pose, _ = _pose(prop, "AB\nCD", 64, 40)
     assert [y for _, _, y in pose] == [0, 0, 10, 10]
+
+
+def test_le_balisage_font_change_la_police_sans_changer_l_interligne():
+    """La zone conserve sa hauteur de ligne ; seul le glyphe et sa chasse
+    viennent de la police active, comme `TEXT_EV_FONT` dans le runtime."""
+    base = police_mono()
+    titre = police_proportionnelle()
+    titre.name = "Titre"
+
+    placed, over = layout_marked_text(
+        base, "A[font=Titre]B[/font]C", {"Titre": titre}, width=40, height=16)
+
+    assert [(f.name, g.char, x, y) for f, g, x, y in placed] == [
+        ("Mono", "A", 0, 0), ("Titre", "B", 8, 0), ("Mono", "C", 14, 0),
+    ]
+    assert over is False
 
 
 # ── Correspondance des glyphes ────────────────────────────────────

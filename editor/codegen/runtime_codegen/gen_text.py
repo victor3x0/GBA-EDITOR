@@ -401,7 +401,8 @@ def fonts_and_texts_lines(p, emit=None) -> list[str]:
     return (emit_fonts_c(encoded) + subset_lines
             + emit_texts_c(texts, lang_codes, content_fn, p.globals, p.constants,
                            emit, fonts=project_fonts(p))
-            + emit_lang_fonts_c(font_names, all_langs)
+            + emit_lang_fonts_c(font_names, all_langs,
+                                getattr(p.settings, "default_font", ""))
             + emit_ui_regions_c(regions, font_names, emit,
                                 obj_place=obj_text_alloc(p),
                                 actor_index=region_actor_index(p),
@@ -425,11 +426,42 @@ def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
         return True
     if region_fill_container(lay, el) is not None:
         return True
-    from codegen.font_emit import render_composited
+    from codegen.font_emit import (render_composited, text_markup_font_names)
+    # Une portée [font] force la surface, même si la police de la zone est mono:
+    # la composition doit rester un seul chemin pendant les deux passes de mise
+    # en page, et le runtime peut rencontrer une police proportionnelle dans le
+    # segment. Les traductions sont incluses : changer de langue ne doit jamais
+    # faire écrire les pixels dans les tuiles de glyphes mono.
+    key = getattr(el, "text_key", "") or ""
+    text = p.get_text(key) if key and hasattr(p, "get_text") else None
+    if text is not None:
+        contents = [getattr(text, "content", "") or ""]
+        for lang in getattr(getattr(p, "settings", None), "languages", []):
+            raw = getattr(p, "translations", {}).get(lang.code, {}).get(text.id, "")
+            if raw:
+                contents.append(raw)
+        if any(text_markup_font_names(content) for content in contents):
+            return True
     fname = getattr(el, "font_name", "") or default_font_name
     from codegen.font_emit import encodable_project_fonts
-    font = next((item for item in encodable_project_fonts(p) if item.name == fname), None)
-    return bool(font) and render_composited(font)
+    fonts_by_name = {item.name: item for item in encodable_project_fonts(p)}
+
+    # `text_set_font()` remappe la police PAR DÉFAUT DU PROJET quand la langue
+    # change. Cette zone doit donc réserver une surface si *l'une* de ces
+    # polices effectives est composée, même si l'anglais reste en Font8x8
+    # tilemap. Oublier ce second nom créait précisément une ROM qui décidait
+    # correctement de composer Misaki au runtime, mais sans bloc propre où
+    # écrire ses pixels.
+    effective_names = {fname}
+    project_default = getattr(getattr(p, "settings", None), "default_font", "") or ""
+    if fname == project_default:
+        effective_names |= {
+            getattr(lang, "default_font", "") or ""
+            for lang in getattr(getattr(p, "settings", None), "languages", [])
+        }
+        effective_names.discard("")
+    return any(render_composited(fonts_by_name[name])
+               for name in effective_names if name in fonts_by_name)
 
 
 def scene_region_colors(p: Project, scene, fills: list[dict]) -> list[dict]:

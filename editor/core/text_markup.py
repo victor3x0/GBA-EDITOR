@@ -85,6 +85,8 @@ TAGS: dict[str, TagSpec] = {t.name: t for t in (
             "Couleur d'encre n dans la sous-palette de la police (1..15). "
             "Suppose une planche qui porte déjà plusieurs teintes.",
             vmin=1, vmax=15),
+    TagSpec("font", True, VALUE_NAME,
+            "Emploie la police nommée pour ce fragment de texte."),
 )}
 
 # Marqueur de valeur — pas une balise : il désigne un global ou une const, dont

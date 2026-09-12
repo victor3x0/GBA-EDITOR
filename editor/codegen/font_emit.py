@@ -282,7 +282,7 @@ def default_font_name(fonts: list, scene, project_default: str = "") -> str:
     - la police que la scène NOMME (`Scene.font_name`), si elle existe — un choix
       explicite l'emporte toujours ;
     - sinon la police par DÉFAUT DU PROJET (`project_default`, « Default Font » —
-      `ProjectSettings.fallback_font`), si elle est fournie et présente : c'est le
+      `ProjectSettings.default_font`), si elle est fournie et présente : c'est le
       défaut que le projet a choisi, préféré à un ordre d'import arbitraire ;
     - sinon la première police de la liste, l'ultime repli quand rien n'est
       configuré (le comportement d'avant la « Default Font »)."""
@@ -322,27 +322,8 @@ def scene_default_font(p, scene) -> tuple[int, str]:
     fonts = project_fonts(p)
     if not fonts:
         return -1, ""
-    name = default_font_name(fonts, scene, getattr(p.settings, "fallback_font", ""))
+    name = default_font_name(fonts, scene, getattr(p.settings, "default_font", ""))
     return next(i for i, f in enumerate(fonts) if f.name == name), name
-
-
-def scene_fallback_font(p, scene) -> str:
-    """Nom de la police de REPLI effective d'une scène (« Default Font »), ou ""
-    si aucune.
-
-    POINT UNIQUE — le chargement VRAM (5ᵉ source de `scene_font_names`), le rendu
-    par glyphe et le validateur de couverture lisent tous ceci, exactement comme
-    `scene_default_font` pour la police par défaut. La scène surcharge le projet.
-
-    "" = pas de repli, jamais un repli INVENTÉ : un projet qui n'a pas choisi de
-    « Default Font » se comporte comme avant (un glyphe manquant reste sauté).
-    Contrairement à la police par défaut, on ne retombe donc PAS sur la première
-    police du projet — le repli est un filet explicite, pas un défaut imposé. Un
-    nom introuvable est laissé tel quel : c'est au validateur de le dire."""
-    scene_fb = (getattr(scene, "fallback_font", "") or "").strip()
-    if scene_fb:
-        return scene_fb
-    return (getattr(getattr(p, "settings", None), "fallback_font", "") or "").strip()
 
 
 def layout_font_names(layout, default_font: str = "") -> set[str]:
@@ -488,6 +469,26 @@ def build_font_subset(e: dict, codepoints: "set | None") -> "dict | None":
     return {"slot": out_slot, "load": load}
 
 
+def text_markup_font_names(content: str) -> set[str]:
+    """Polices citées par les portées ``[font=…]`` d'une entrée.
+
+    Le parseur est la seule grammaire lue ici : une regex locale réserverait une
+    police pour une balise invalide et divergerait au prochain ajout au langage.
+    """
+    from core.text_markup import parse
+    return {str(m.value) for m in parse(content or "").of_kind("font")}
+
+
+def _text_contents_in_all_languages(p, text) -> list[str]:
+    """Source et variantes qui peuvent être rendues pour ``text``."""
+    content = getattr(p, "text_content", None)
+    if content is None:
+        return [getattr(text, "content", "") or ""]
+    codes = [""] + [getattr(lang, "code", "")
+                    for lang in getattr(getattr(p, "settings", None), "languages", [])]
+    return [content(text, code) or "" for code in codes]
+
+
 def scene_font_names(p, scene, default_font: str = "") -> "set | None":
     """Polices qu'une scène peut avoir en VRAM, ou None si c'est indécidable.
 
@@ -498,11 +499,9 @@ def scene_font_names(p, scene, default_font: str = "") -> "set | None":
     - celles que chargent les scripts de la scène (`text.set_font`), repérées
       par DOMAINE — une zone n'a pas besoin de les nommer pour qu'elles
       arrivent en VRAM ;
-    - les CIBLES de remap des langues déclarées (v0.9, phase 3.2) : une langue
-      peut remplacer une police que la scène nomme (`Language.fonts`), et cette
-      cible doit être chargée comme l'original — sinon la scène rend, dans cette
-      langue, avec une police jamais copiée en VRAM. Même lecture de
-      `Language.fonts` que `emit_lang_fonts_c`, une seule vérité.
+    - le remplacement de la police par défaut dans les langues déclarées. Les
+      FontAsset explicitement nommées gardent leur couverture dans leur propre
+      chaîne de sources ; elles ne sont pas remappées par la langue.
 
     Rend None dès qu'un script choisit sa police au runtime ou n'est pas
     analysable : mieux vaut réserver pour tout le projet que trop peu."""
@@ -516,25 +515,27 @@ def scene_font_names(p, scene, default_font: str = "") -> "set | None":
     paths, opaque = p.scene_scripts(scene)
     if opaque:
         return None            # script introuvable ou C natif : on ne sait pas
+    text_names: set[str] = set()
     for path in paths:
         cited, dynamic = _script_font_names(path)
         if dynamic:
             return None
         names |= cited
-    # 4ᵉ source : le remap par langue. `scene_codepoints_union` compte déjà les
-    # codepoints de toutes les langues, mais le sous-ensemble ne sert à rien si
-    # la police cible n'entre pas dans l'ensemble chargé — d'où l'expansion ici.
-    for lang in getattr(getattr(p, "settings", None), "languages", []):
-        remap = getattr(lang, "fonts", None) or {}
-        names |= {remap[n] for n in list(names) if n in remap}
-    # 5ᵉ source : la police de REPLI (« Default Font ») comble les trous de
-    # couverture, elle doit donc être chargée et palettée comme les autres. Après
-    # le remap, jamais avant : le repli est le dernier recours, il ne se remplace
-    # pas lui-même par langue. Le sous-ensemble émis le dimensionne ensuite sur
-    # les codepoints de la scène, comme toute police chargée.
-    fb = scene_fallback_font(p, scene)
-    if fb:
-        names.add(fb)
+        cited_texts, dynamic_texts = _script_text_keys(path)
+        if dynamic_texts:
+            return None
+        text_names |= cited_texts
+    by_key = {t.key: t for t in p.build_texts()} if hasattr(p, "build_texts") else {}
+    texts = [by_key[name] for name in text_names if name in by_key]
+    texts += layout_texts(p, scene)
+    for text in texts:
+        for content in _text_contents_in_all_languages(p, text):
+            names |= text_markup_font_names(content)
+    project_default = getattr(getattr(p, "settings", None), "default_font", "") or ""
+    if project_default in names:
+        names |= {lang.default_font for lang in
+                  getattr(getattr(p, "settings", None), "languages", [])
+                  if getattr(lang, "default_font", "")}
     return names
 
 
@@ -658,9 +659,10 @@ def font_palette(font, png_path) -> list[int]:
     liste que l'allocateur traite comme la palette propre d'un asset (comme
     `sprite.own_palette`), et que la grille montre grisée."""
     # Même palette que `_encode_raster_font` : l'allocateur voit donc les
-    # niveaux réellement référencés par les tuiles vectorielles.
+    # niveaux réellement référencés par les tuiles. Les bitmap conservent leurs
+    # couleurs, les vecteurs reçoivent une encre noire (ou une rampe coverage).
     if getattr(font, "raster_glyphs", None) is not None:
-        return [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+        return _raster_palette(font, font.raster_glyphs)[0]
     import numpy as np
     from PIL import Image
     p = Path(png_path)
@@ -686,6 +688,48 @@ def font_palette(font, png_path) -> list[int]:
     return cached
 
 
+def _raster_palette(font, rasters: dict) -> tuple[list[int], dict[tuple[int, int, int], int], str | None]:
+    """Palette d'une police matérialisée et LUT RGB → index.
+
+    Une source bitmap arrive déjà avec ses couleurs : les perdre au profit
+    d'une rampe générique faisait passer ses pixels de l'index 1 à l'index 15,
+    ce qui rompait les encres des banques de scène. Les fontes vectorielles,
+    elles, n'ont qu'une couverture : noir binaire, ou rampe grise en coverage.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for raster in rasters.values():
+        if not getattr(raster, "colors", b""):
+            continue
+        for y in range(raster.height):
+            for x in range(raster.width):
+                if raster.coverage_at(x, y):
+                    color = raster.color_at(x, y)
+                    if color is not None:
+                        counts[color] += 1
+    if counts:
+        ranked = sorted(counts, key=lambda color: (-counts[color], color))
+        kept = ranked[:_MAX_INK_COLORS]
+        warning = (f"Police « {font.name} » : {len(ranked)} couleurs, "
+                   f"réduites aux {_MAX_INK_COLORS} plus fréquentes."
+                   if len(ranked) > _MAX_INK_COLORS else None)
+        palette = [0] + [_bgr555(color) for color in kept]
+        return palette + [0] * (16 - len(palette)), {
+            color: index + 1 for index, color in enumerate(kept)
+        }, warning
+
+    mode = getattr(font, "raster_mode", "binary")
+    if mode == "coverage":
+        palette = [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+    else:
+        # Le contrat d'une police vectorielle binaire : transparence + noir.
+        # L'index 1 est aussi celui que les palettes de scène exposent comme
+        # première encre sélectionnable.
+        palette = [0, _bgr555((0, 0, 0))] + [0] * 14
+    return palette, {}, None
+
+
 def _encode_raster_font(font, rasters: dict) -> dict:
     """Encode les ``RasterGlyph`` d'un FontAsset sans fichier intermédiaire.
 
@@ -699,9 +743,7 @@ def _encode_raster_font(font, rasters: dict) -> dict:
     mode = getattr(font, "raster_mode", "binary")
     threshold = int(getattr(font, "coverage_threshold", 128))
     pattern = getattr(font, "dither_pattern", "none")
-    # Blanc à intensité variable : une palette propre est ensuite allouée comme
-    # toute autre palette de police. Les modes binaires n'emploient que l'index 1.
-    palette = [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+    palette, color_lut, warning = _raster_palette(font, rasters)
     tiles, entries = [], []
     for g in effective_glyphs(font):
         raster = rasters.get(g.char)
@@ -722,7 +764,22 @@ def _encode_raster_font(font, rasters: dict) -> dict:
                 cov = display_coverage(raster.coverage_at(x, y), dx, dy,
                                        raster_mode=mode, threshold=threshold,
                                        dither_pattern=pattern)
-                cell[dy][dx] = max(0, min(15, round(cov * 15 / 255)))
+                source_color = raster.color_at(x, y)
+                if source_color is not None and color_lut:
+                    # Même règle que l'ancien encodeur PNG : si une planche a
+                    # plus de quinze encres, une couleur écartée rejoint la
+                    # couleur retenue la plus proche, jamais une encre arbitraire.
+                    index = color_lut.get(source_color)
+                    if index is None:
+                        index = min(color_lut, key=lambda color: sum(
+                            (color[channel] - source_color[channel]) ** 2
+                            for channel in range(3)))
+                        index = color_lut[index]
+                    cell[dy][dx] = index if cov else 0
+                elif mode == "coverage":
+                    cell[dy][dx] = max(0, min(15, round(cov * 15 / 255)))
+                else:
+                    cell[dy][dx] = 1 if cov else 0
         slot = len(tiles) // 8
         for ty in range(gty):
             for tx in range(gtx):
@@ -746,7 +803,7 @@ def _encode_raster_font(font, rasters: dict) -> dict:
             "composited": int(render_composited(font)),
             "cell_w": font_fallback_adv_px(font), "line_h": font_line_px(font),
             "tiles_x": 1, "tiles_y": max(1, (font.line_height + 7) // 8),
-            "warning": None}
+            "warning": warning}
 
 
 def encode_font(font, png_path: Path | None = None) -> dict:
@@ -1036,7 +1093,8 @@ def emit_ui_regions_c(regions: list, font_names: list, emit=None,
 _EV_KIND = {
     "speed": "TEXT_EV_SPEED", "pause": "TEXT_EV_PAUSE",
     "wave":  "TEXT_EV_WAVE",  "shake": "TEXT_EV_SHAKE",
-    "color": "TEXT_EV_COLOR", "value": "TEXT_EV_VALUE",
+    "color": "TEXT_EV_COLOR", "font": "TEXT_EV_FONT",
+    "value": "TEXT_EV_VALUE",
 }
 
 
@@ -1086,6 +1144,8 @@ def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
              f"police du projet ne l'est, la couleur sera ignorée.")
 
     cps = [ord(c) for c in parsed.display if ord(c) < 0x10000]
+    font_index = {getattr(font, "name", ""): index
+                  for index, font in enumerate(fonts or [])}
     events = []
     sources: list[str] = []       # symboles C des globals cités, DANS CETTE LANGUE
     for m in parsed.markers:
@@ -1093,6 +1153,14 @@ def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
         if kind is None:            # icon : déjà résolu dans les codepoints
             continue
         value = m.value
+        if m.kind == "font":
+            value = font_index.get(str(m.value))
+            if value is None:
+                # Le validateur bloque normalement ce cas. Garder le codegen
+                # total évite qu'un appel direct produise du C invalide.
+                if emit:
+                    emit("log_line", f"[text] {t.key} : police inconnue « {m.value} »")
+                continue
         if m.kind == KIND_VALUE:
             # Dédoublonnées PAR TEXTE ET PAR LANGUE : une traduction peut
             # réordonner ses `$nom` (ROADMAP), donc citer un global que la
@@ -1214,7 +1282,8 @@ def emit_texts_c(texts: list, lang_codes: list[str], content_fn,
     return L
 
 
-def emit_lang_fonts_c(font_names: list[str], languages: list) -> list[str]:
+def emit_lang_fonts_c(font_names: list[str], languages: list,
+                      default_font: str = "") -> list[str]:
     """`g_lang_font[lang][police]` — la police EFFECTIVEMENT chargée pour une
     police du PROJET, dans une langue donnée (ROADMAP v0.9, phase 3.2).
 
@@ -1223,11 +1292,10 @@ def emit_lang_fonts_c(font_names: list[str], languages: list) -> list[str]:
     que pour les textes). `languages` est `settings.all_languages()` — [] pour
     un projet qui n'a rien déclaré, une seule case IDENTITÉ dans ce cas.
 
-    `Language.fonts` ({police du projet: remplacement}) est un dict d'AUTEUR,
-    creux par construction : une entrée absente vaut l'identité, jamais un cas
-    à détecter au runtime. Une police introuvable dans le projet (nom mal
-    tapé, asset supprimé) retombe aussi sur l'identité — c'est au validateur
-    de le signaler à l'auteur, pas à ce module de deviner."""
+    `Language.default_font` ne remplace que la police par défaut du projet.
+    Les autres FontAsset restent à l'identité : leur couverture est configurée
+    dans la recette de l'asset, pas dans la langue. Une cible inconnue retombe
+    sur l'identité ; le validateur l'explique à l'auteur."""
     n = max(1, len(font_names))
     name_to_idx = {name: i for i, name in enumerate(font_names)}
     langs = list(languages) or [None]   # None = pas de langue déclarée : identité
@@ -1235,8 +1303,9 @@ def emit_lang_fonts_c(font_names: list[str], languages: list) -> list[str]:
     L: list[str] = ["/* ── Remap de police par langue ─────────────────── */"]
     table_names = []
     for i_lang, lang in enumerate(langs):
-        remap = getattr(lang, "fonts", None) or {}
-        idxs = [name_to_idx.get(remap.get(name, ""), i)
+        replacement = getattr(lang, "default_font", "") or ""
+        target = name_to_idx.get(replacement)
+        idxs = [target if name == default_font and target is not None else i
                 for i, name in enumerate(font_names)]
         tname = f"g_lang_font_{i_lang}"
         L.append(f"static const unsigned char {tname}[{n}] = {{"
@@ -1302,16 +1371,15 @@ def project_used_font_names(p) -> "set | None":
     - ce que chaque scène peut charger (mise en page + `text.set_font`),
       TOUJOURS complété par sa police par défaut (`scene_init` la charge même
       sans une ligne de texte) ;
-    - les polices de REMPLACEMENT par langue (`Language.fonts`) : jamais
-      citées par un script, substituées au runtime — les oublier élaguerait la
-      police japonaise/russe/grecque d'un projet qui ne l'emploie qu'en JA/RU/EL.
+    - les remplacements linguistiques de la Default Font : jamais cités par un
+      script, ils doivent tout de même être présents dans la ROM.
 
     Une seule scène indécidable (script au choix de police dynamique, ou
     illisible) fait retomber sur `None` pour le PROJET entier : mieux vaut de
     la ROM payée pour une police jamais atteinte qu'une police manquante en
     silence — même arbitrage que `scene_font_names`."""
     all_fonts = encodable_project_fonts(p)
-    _proj_default = getattr(p.settings, "fallback_font", "")
+    _proj_default = getattr(p.settings, "default_font", "")
     names: set = set()
     for scene in getattr(p, "scenes", []):
         default_font = default_font_name(all_fonts, scene, _proj_default)
@@ -1320,7 +1388,8 @@ def project_used_font_names(p) -> "set | None":
             return None
         names |= sn
     for lang in getattr(getattr(p, "settings", None), "languages", []):
-        names |= set(getattr(lang, "fonts", {}).values())
+        if getattr(lang, "default_font", ""):
+            names.add(lang.default_font)
     return names
 
 

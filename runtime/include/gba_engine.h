@@ -773,8 +773,8 @@ extern const int      g_font_count;   /* taille de g_fonts, émise */
    `g_fonts`) — la police EFFECTIVE à charger quand cette langue est active.
    Identité (`g_lang_font[lang][f] == f`) dans le cas courant, y compris
    pour une langue à système d'écriture différent dont la police du projet
-   couvre déjà tout nativement : `Language.fonts` (l'auteur) est un dict creux,
-   vide = rien à remplacer, jamais un cas spécial à tester ici. */
+   couvre déjà tout nativement. Seule la Default Font peut être remplacée par
+   langue ; les FontAsset explicitement nommées gardent leur propre couverture. */
 extern const unsigned char* const g_lang_font[];
 
 /* ── Langue active ──────────────────────────────────────────────
@@ -845,6 +845,7 @@ enum {
     TEXT_EV_WAVE,       /* portée                       */
     TEXT_EV_SHAKE,      /* portée                       */
     TEXT_EV_COLOR,      /* portée, value = index d'encre */
+    TEXT_EV_FONT,       /* portée, value = index de police logique */
     TEXT_EV_VALUE       /* value = index dans g_text_values */
 };
 
@@ -1130,7 +1131,6 @@ void text_set_surf_base(int t);     /* posé par scene_init SI la scène a un
 void text_set_region_surf(int r, int base, int w, int h);
 void text_clear_region_surfs(void);
 void text_set_font (int f);         /* charge glyphes + palette en VRAM */
-void text_set_fallback_font(int f); /* police de repli de la scène, SANS remap de langue (v0.9) */
 int  text_length   (int id);
 void text_clear    (int tx, int ty, int w, int h);
 /* GRAMMAIRE : position ou conteneur d'abord, contenu ensuite — le même ordre
@@ -1504,6 +1504,9 @@ static int g_text_layer = -1;
 static int g_text_cbb   = 0;
 static int g_text_tile_base = FONT_TILE_BASE_DEFAULT;
 static const FontInfo *g_font = 0;
+/* Index LOGIQUE (avant le remap de langue) : une portée [font] se restaure
+   par son index projet, jamais par le pointeur éventuellement remappé. */
+static int g_font_logical = -1;
 
 /* Le LAYER (0-3) où s'affiche le texte. Sert aux écritures de tilemap. */
 void text_set_layer(int bg) {
@@ -1537,22 +1540,6 @@ void text_set_tile_base(int t) {
 static const FontSubset *g_subsets[TEXT_MAX_FONTS];
 /* Sous-ensemble de la police RÉSIDENTE, ou 0 si elle est chargée entière. */
 static const FontSubset *g_font_sub = 0;
-
-/* ── Repli de couverture (« Default Font », ROADMAP v0.9) ─────────
-   Contexte de rendu du repli, posé par `text_set_fallback_font` SANS le remap de
-   langue — le repli est le DERNIER recours, pas une police qu'une langue peut
-   remplacer. Nul si la scène n'a pas de repli. Un codepoint absent de la police
-   active s'y résout glyphe par glyphe (`text_find_fb`), et se dessine par le
-   MÊME chemin que la zone (jamais celui de sa propre police). */
-static const FontInfo   *g_fb_font = 0;
-static const FontSubset *g_fb_sub  = 0;
-static int               g_fb_base = 0;
-/* Police ACTIVE mémorisée le temps qu'un glyphe de repli soit rendu, restaurée
-   par `text_end_fb`. L'active est le contexte courant entre deux glyphes : on ne
-   la garde donc que pour la durée d'un seul glyphe. */
-static const FontInfo   *g_af_font;
-static const FontSubset *g_af_sub;
-static int               g_af_base, g_af_var;
 
 /* Banque où le texte lit ses couleurs. Négatif = mode AUTOMATIQUE : la police
    charge sa propre palette dans FONT_PAL_BANK. C'est le défaut, le retirer
@@ -1733,6 +1720,7 @@ void text_set_font(int f) {
     /* Borné sur le compte ÉMIS : `g_fonts` est générée, et un index hors table
        lirait un pointeur de tuiles au hasard, copié en VRAM. */
     if (f < 0 || f >= g_font_count) return;
+    g_font_logical = f;
     /* Remap par langue (phase 3.2) : le script nomme toujours la police du
        PROJET (`FONT_DIALOG`, résolu au build) — c'est ici, et seulement ici,
        que la langue active peut la remplacer. `g_lang_font` est émis avec le
@@ -1779,27 +1767,50 @@ void text_set_font(int f) {
     }
 }
 
-/* Police de REPLI de la scène (« Default Font », ROADMAP v0.9), posée par
-   `scene_init`. Contrairement à `text_set_font`, PAS de remap `g_lang_font` : le
-   repli est le dernier recours, jamais remplacé par la langue active — sinon, en
-   japonais, un repli latin se ferait re-remapper vers la police même qui manque
-   le glyphe. `f < 0` = aucun repli (la scène n'en a pas déclaré). Charge ses
-   glyphes MONO en VRAM comme les autres ; une police composée n'en charge aucun,
-   elle lira la ROM au rendu. N'altère PAS la police active. */
-void text_set_fallback_font(int f) {
-    if (f < 0 || f >= g_font_count) { g_fb_font = 0; g_fb_sub = 0; g_fb_base = 0; return; }
-    g_fb_font = &g_fonts[f];
-    g_fb_sub  = (f < TEXT_MAX_FONTS) ? g_subsets[f]   : 0;
-    g_fb_base = (f < TEXT_MAX_FONTS) ? g_font_base[f] : 0;
-    text_load_glyphs(f, g_fb_font, g_fb_base, g_fb_sub);
-}
-
 /* Piste d'événements du texte en cours de rendu. Posée par `text_render_region`
    le temps de l'appel : la mise en page doit savoir, glyphe par glyphe, s'il
    tombe sous une portée animée, et le passer en paramètre aurait traversé
    quatre fonctions qui n'en ont que faire. */
 static const TextEvent *g_ev  = 0;
 static int              g_nev = 0;
+/* Police de la zone et dernier choix posé. L'interligne reste celui de la
+   zone : [font] change les glyphes et leurs chasses, pas la cadence verticale
+   d'un paragraphe. */
+static int g_text_default_font = -1;
+static int g_text_current_font = -2;
+/* Une zone a déjà résolu sa palette (choisie ou héritée). Changer de police ne
+   doit pas lui substituer la palette propre de cette police : les pixels
+   composés continuent de s'interpréter dans la banque du bloc. */
+static int g_text_palette_locked = 0;
+static int g_text_palette_bg = FONT_PAL_BANK, g_text_palette_obj = FONT_PAL_BANK;
+
+static int text_font_for(int i) {
+    int font = g_text_default_font;
+    for (int k = 0; k < g_nev; k++)
+        if (g_ev[k].kind == TEXT_EV_FONT
+                && i >= g_ev[k].at && i < g_ev[k].end)
+            font = g_ev[k].value;
+    return font;
+}
+
+static void text_apply_font(int i) {
+    int font = text_font_for(i);
+    if (font == g_text_current_font) return;
+    g_text_current_font = font;
+    if (font >= 0) {
+        text_set_font(font);
+        if (g_text_palette_locked) {
+            g_pal_bank_bg = g_text_palette_bg;
+            g_pal_bank_obj = g_text_palette_obj;
+        }
+    }
+}
+
+static int text_has_font_event(void) {
+    for (int k = 0; k < g_nev; k++)
+        if (g_ev[k].kind == TEXT_EV_FONT) return 1;
+    return 0;
+}
 
 
 /* Couleur du SLOT en cours de rendu (0 = encre d'origine). Sur le chemin
@@ -2239,47 +2250,19 @@ static int text_find(const unsigned short* s, int i, int len, int* consumed) {
         else hi = mid - 1;
     }
     if (found < 0) return -1;
+    int font = text_font_for(i);
     for (int k = found; k < g_font->n_glyphs && g_font->cp[k] == cp; k++) {
         int n = g_font->seq_len[k];
         if (i + n > len) continue;              /* déborde du texte */
         const unsigned short* q = g_font->seq + g_font->seq_off[k];
         int ok = 1;
         for (int j = 1; j < n; j++)             /* j=0 déjà vérifié par cp */
-            if (s[i + j] != q[j]) { ok = 0; break; }
+            if (s[i + j] != q[j] || text_font_for(i + j) != font) {
+                ok = 0; break;
+            }
         if (ok) { *consumed = n; return k; }
     }
     return -1;
-}
-
-/* Résout le glyphe à la position `i` : la police ACTIVE d'abord, puis le REPLI
-   (« Default Font ») si l'active ne le porte pas. Rend l'index de glyphe (ou -1),
-   pose `*consumed`, et `*fb = 1` si le glyphe vient du repli.
-
-   Quand `*fb`, le contexte de rendu (police/sous-ensemble/base/variante) est
-   LAISSÉ basculé sur le repli : l'appelant s'en sert pour `text_glyph_fits`,
-   `text_put_*` et `text_adv_px` — qui lisent tous `g_font` —, puis appelle
-   `text_end_fb`. La police active est le contexte courant entre deux glyphes ;
-   `g_af_*` ne la garde donc que le temps d'un glyphe. Le cas courant (l'active
-   porte le glyphe) sort avant toute bascule : coût nul. */
-static int text_find_fb(const unsigned short* s, int i, int len,
-                        int* consumed, int* fb) {
-    *fb = 0;
-    int gi = text_find(s, i, len, consumed);
-    if (gi >= 0 || !g_fb_font || g_fb_font == g_font) return gi;
-    /* Mémoriser l'active, basculer sur le repli (variante 0 : ses glyphes de
-       base, la couleur composée passant par `g_ink`). */
-    g_af_font = g_font; g_af_sub = g_font_sub; g_af_base = g_base_cur; g_af_var = g_var_cur;
-    g_font = g_fb_font; g_font_sub = g_fb_sub; g_base_cur = g_fb_base; g_var_cur = 0;
-    int gi2 = text_find(s, i, len, consumed);
-    if (gi2 >= 0) { *fb = 1; return gi2; }
-    /* Ni l'un ni l'autre : rendre l'active et son -1 (le validateur l'a signalé). */
-    g_font = g_af_font; g_font_sub = g_af_sub; g_base_cur = g_af_base; g_var_cur = g_af_var;
-    return gi;
-}
-
-/* Restaure la police active après le rendu d'un glyphe de repli. */
-static void text_end_fb(void) {
-    g_font = g_af_font; g_font_sub = g_af_sub; g_base_cur = g_af_base; g_var_cur = g_af_var;
 }
 
 /* ── Matérialisation d'une entrée de la table ─────────────────────
@@ -2515,9 +2498,9 @@ static int text_line_px(void) { return g_font->line_h; }
 static int text_word_width(const unsigned short* s, int i, int len) {
     int w = 0;
     while (i < len && s[i] != ' ' && s[i] != '\n') {
-        int used, fb, gi = text_find_fb(s, i, len, &used, &fb);
+        text_apply_font(i);
+        int used, gi = text_find(s, i, len, &used);
         w += text_adv_px(gi);
-        if (fb) text_end_fb();
         i += used;
     }
     return w;
@@ -2556,15 +2539,16 @@ static void text_scan_line(const unsigned short* s, int i, int len, int wrap_px,
             /* Coupe au MOT : on mesure le mot qui suit l'espace ; s'il ne tient
                pas sur la ligne, on passe à la suivante et l'espace disparaît
                (pas d'espace parasite en début de ligne). */
+            text_apply_font(i);
             int used_sp, gsp = text_find(s, i, len, &used_sp);
             int wlen = text_word_width(s, i + used_sp, len);
             if (x + text_adv_px(gsp) + wlen > wrap_px) {
                 *end = i; *next = i + used_sp; *w = x; return;
             }
         }
-        int used, fb, gi = text_find_fb(s, i, len, &used, &fb);
+        text_apply_font(i);
+        int used, gi = text_find(s, i, len, &used);
         int a = text_adv_px(gi);
-        if (fb) text_end_fb();
         /* Filet : un mot plus long que la boîte est coupé au glyphe. La garde
            `x > 0` est ce qui empêche une boîte plus étroite qu'un seul glyphe
            de ne jamais avancer — ce glyphe déborde, c'est le moindre mal. */
@@ -2617,7 +2601,7 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
        répondrait la composité de la police de REPLI une fois `g_font` basculé,
        et non celle de la zone, faisant poser une tuile là où il faut composer
        (ou l'inverse). */
-    int comp = text_is_composited();
+    int comp = text_is_composited() || text_has_font_event();
 
     int line   = text_line_px();
     int wrap_px = wrap > 0 ? wrap * 8 : 0;
@@ -2637,10 +2621,9 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
         if (min_x < 0 || x < min_x) min_x = x;
         while (i < end) {
             /* Correspondance au plus long : une ligature avale plusieurs
-               codepoints d'un coup. Repli de couverture (« Default Font ») si
-               l'active ne porte pas le codepoint — `text_find_fb` bascule alors
-               le contexte le temps du glyphe, `text_end_fb` le restaure. */
-            int used, fb, gi = text_find_fb(s, i, len, &used, &fb);
+               codepoints d'un coup, sans franchir une portée `[font]`. */
+            text_apply_font(i);
+            int used, gi = text_find(s, i, len, &used);
             if (!measure && gi >= 0 && text_glyph_fits(gi, x, y)
                     && (n < 0 || i < n)) {
                 /* `[color]` ne vaut que sur un chemin COMPOSÉ : le chemin
@@ -2648,11 +2631,7 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                    occurrences. Le build le signale plutôt que de laisser la
                    couleur disparaître en silence. */
                 g_ink = text_color_at(i);
-                /* Un effet par glyphe (`[wave]`…) ne s'applique pas à un glyphe
-                   de REPLI : la capture rejoue le dessin plus tard, quand `g_font`
-                   est revenu à l'active — le repli tombe donc dans le dessin
-                   direct ci-dessous. Cas de bord assumé pour la v0.9. */
-                int fx = (g_cap_max && !fb) ? text_fx_at(i) : 0;
+                int fx = g_cap_max ? text_fx_at(i) : 0;
                 if (fx && g_cap_n < g_cap_max) {
                     /* Réservé au chemin par glyphe : noté, pas dessiné —
                        le dessiner aussi le ferait apparaître deux fois. */
@@ -2674,7 +2653,6 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                 g_ink = 0;
             }
             x += text_adv_px(gi);
-            if (fb) text_end_fb();
             i += used;
         }
         if (x > max_x) max_x = x;
@@ -2720,7 +2698,7 @@ static void text_render_cp_al(const unsigned short *s, int slen,
        `tx`/`ty` sont déjà ses tuiles d'origine (cf. `text_render_region_cp`),
        donc une zone ancrée acteur ou monde suit son ancre. */
     if (g_surf_cur) { g_blit_ox = tx; g_blit_oy = ty; }
-    if (text_is_composited() && !g_text_no_prepare) {
+    if ((text_is_composited() || text_has_font_event()) && !g_text_no_prepare) {
         /* Préparer AVANT de composer : la composition ne pose que de l'encre,
            elle n'efface pas ce qui était là. La zone préparée doit couvrir le
            texte ALIGNÉ, d'où le même `align` dans les deux passes. Zone à
@@ -2778,7 +2756,14 @@ static void text_render(int id, int tx, int ty, int wrap, int n) {
     /* `draw` ignore le tempo (une tête de lecture doit s'accrocher à quelque
        chose de NOMMÉ, et un couple (x, y) ne l'est pas) mais pas les valeurs :
        celles-ci marchent partout. */
+    int restore_font = g_font_logical;
+    g_ev = e; g_nev = ne;
+    g_text_default_font = restore_font;
+    g_text_current_font = -2;
     text_render_cp(s, len, tx, ty, wrap, n);
+    if (restore_font >= 0) text_set_font(restore_font);
+    g_ev = 0; g_nev = 0;
+    g_text_default_font = -1;
 }
 
 void text_draw     (int tx, int ty, int id)                 { text_render(id, tx, ty, 0, -1); }
@@ -2932,7 +2917,15 @@ static void text_clear_region_at(const UIRegionInfo *R, int r, int ox, int oy) {
 static void text_render_region_cp(const unsigned short *s, int slen,
                                   int r, int n) {
     const UIRegionInfo *R = &g_ui_regions[r];
-    if (R->font != 255) text_set_font(R->font);
+    g_text_default_font = (R->font != 255) ? R->font : g_font_logical;
+    g_text_current_font = -2;
+    /* Toujours sélectionner la police logique de cette zone AVANT de choisir
+       le chemin de rendu. `text_set_font` applique le remap de langue : une
+       zone qui hérite de la police latine peut donc devenir Misaki (composée)
+       en japonais. Ne le faire que pour `R->font` laissait le test de
+       composition regarder la police précédente, puis dessinait Misaki dans
+       la tilemap : pixels fragmentés et mauvaise encre. */
+    if (g_text_default_font >= 0) text_set_font(g_text_default_font);
     if (!g_font) return;
     /* Variante de couleur DE CE SLOT — résolue après `text_set_font`, qui vient
        de poser le sous-ensemble dont dépend la correspondance couleur→variante. */
@@ -2951,7 +2944,14 @@ static void text_render_region_cp(const unsigned short *s, int slen,
     if (r >= 0 && r < TEXT_READ_MAX) {
         g_reads[r].sx = (short)ox; g_reads[r].sy = (short)oy;
     }
-    if (R->target == 1) { text_render_obj(s, slen, R, n); return; }
+    if (R->target == 1) {
+        g_text_palette_bg = g_pal_bank_bg;
+        g_text_palette_obj = g_pal_bank_obj;
+        g_text_palette_locked = 1;
+        text_render_obj(s, slen, R, n);
+        g_text_palette_locked = 0;
+        return;
+    }
     if (g_text_layer < 0) return;
     /* Le cadre EST la zone — ce que l'auteur a dessiné, et ce contre quoi
        l'aperçu de l'éditeur mesure le débordement. Il suit l'origine, donc une
@@ -2970,11 +2970,15 @@ static void text_render_region_cp(const unsigned short *s, int slen,
        léguer à la zone — ou à l'écriture libre — suivante. */
     int _save_bank = g_pal_bank_bg;
     if (g_ui_fill && g_ui_fill->bank >= 0) g_pal_bank_bg = g_ui_fill->bank;
+    g_text_palette_bg = g_pal_bank_bg;
+    g_text_palette_obj = g_pal_bank_obj;
+    g_text_palette_locked = 1;
     /* Bloc de surface propre à CETTE zone, s'il lui en a été alloué un : c'est
        ce qui l'empêche de partager ses tuiles avec une zone voisine (cf.
        `RegionSurf`). Absent = repli sur la surface partagée, comme avant. */
     g_surf_cur = text_region_surf(r);
     text_render_cp_al(s, slen, ox >> 3, oy >> 3, R->w >> 3, n, R->align, R->h >> 3);
+    g_text_palette_locked = 0;
     g_pal_bank_bg = _save_bank;
     g_surf_cur = 0;
     g_ui_highlight = 0;
@@ -2986,9 +2990,12 @@ static void text_render_region(int id, int r, int n) {
     int len = text_materialize(id, &s, &e, &ne);
     /* La piste accompagne le texte le temps du rendu : elle dit quels glyphes
        sont animés. */
+    int restore_font = g_font_logical;
     g_ev = e; g_nev = ne;
     text_render_region_cp(s, len, r, n);
+    if (restore_font >= 0) text_set_font(restore_font);
     g_ev = 0; g_nev = 0;
+    g_text_default_font = -1;
 }
 
 

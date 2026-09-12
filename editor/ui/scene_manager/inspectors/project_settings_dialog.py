@@ -468,12 +468,10 @@ class LanguagesPanel(QWidget):
         lay.setSpacing(10)
         lay.addWidget(_category_title(label('projset.languages')))
 
-        # ── Police de repli (« Default Font ») ────────────────────
-        # Comble les trous de COUVERTURE : un caractère absent de la police
-        # active (remap de langue inclus), ou une traduction manquante dont la
-        # source ne se rend pas dans la police active — un mot latin laissé non
-        # traduit sous une police japonaise, par exemple. « (none) » = pas de
-        # repli, un glyphe manquant reste simplement sauté.
+        # ── Police par défaut ─────────────────────────────────────
+        # Celle qu'une zone ou `text.draw` emploie sans choix explicite. Une
+        # langue peut la remplacer dans la carte ci-dessous ; la couverture des
+        # autres FontAsset reste dans leur inspecteur.
         self._combo_fallback = QComboBox()
         self._combo_fallback.setFont(QFont(T.UI, T.MD))
         self._combo_fallback.setStyleSheet(QSS.combobox)
@@ -494,18 +492,23 @@ class LanguagesPanel(QWidget):
         self._card.load(project)
         self._refresh_fallback()
 
-    # ── Police de repli ───────────────────────────────────────────
+    # ── Police par défaut ─────────────────────────────────────────
 
     def _refresh_fallback(self):
-        """(Re)synchronise le combo depuis settings.fallback_font — au chargement
+        """(Re)synchronise le combo depuis settings.default_font — au chargement
         ET après chaque mutation (donc aussi après un undo)."""
         self._blocking = True
         try:
             self._combo_fallback.clear()
             self._combo_fallback.addItem(label('common.none_paren'), "")
-            for f in self._project.fonts:
+            try:
+                from codegen.font_emit import encodable_project_fonts
+                fonts = encodable_project_fonts(self._project)
+            except Exception:
+                fonts = list(self._project.fonts)
+            for f in fonts:
                 self._combo_fallback.addItem(f.name, f.name)
-            cur = getattr(self._project.settings, "fallback_font", "") or ""
+            cur = getattr(self._project.settings, "default_font", "") or ""
             idx = self._combo_fallback.findData(cur)
             if idx < 0 and cur:
                 # Police disparue (renommée/supprimée hors d'ici) : la garder
@@ -520,12 +523,12 @@ class LanguagesPanel(QWidget):
         if self._blocking:
             return
         value = self._combo_fallback.currentData() or ""
-        old = getattr(self._project.settings, "fallback_font", "") or ""
+        old = getattr(self._project.settings, "default_font", "") or ""
         if old == value:
             return
         get_history().push(SetFieldCmd(
-            self._project.settings, "fallback_font", old, value,
-            label="Projet.fallback_font",
+            self._project.settings, "default_font", old, value,
+            label="Projet.default_font",
             persist_fn=lambda: (self._persist(), self._refresh_fallback()),
         ))
 

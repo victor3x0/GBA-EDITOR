@@ -158,6 +158,16 @@ consignés ici pour ne pas rester invisibles faute d'un jalon à qui les rattach
   plus réservée que si un script écrit LIBREMENT (`text.draw`/`text.clear`, qui n'ont pas de
   rectangle à qui donner un bloc). Tests : `test_text_surface_alloc.py`.
 
+- **Un remplacement de police par langue n'était pas compté comme une composition**
+  (`codegen/runtime_codegen/gen_text.py`, 2026-09-12). Une zone déclarée en Font8x8 Latin
+  pouvait devenir Misaki Gothic 8 au runtime japonais : le moteur choisissait alors bien le
+  chemin pixel, mais le build n'avait réservé aucun `RegionSurf` car il n'avait examiné que la
+  police latine. `region_is_composited()` tient désormais compte de chaque remplacement de la
+  police par défaut ; la réservation émet `text_set_region_surf` pour la zone. La palette de la
+  police suit la même source persistante (`Scene.font_pal_banks`) dans l'inspecteur, le canvas,
+  l'allocateur et le runtime. Tests : `test_text_surface_alloc.py`,
+  `test_font_palette_tracking.py`, `test_scene_canvas_smoke.py`.
+
 - **Trois trous du checker, fermés en avertissement** (`scripting/checker.py`, 2026-09-02).
   Trois défauts de la même famille, trouvés en écrivant un écran de sélection de langue : le
   script traverse le checker sans un mot, le codegen émet du C, et gcc parle d'un fichier que
@@ -650,22 +660,23 @@ text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la po
   sous-ensemble par scène les traite déjà un par un. Seul un système d'écriture différent
   (JA, RU, EL) demande une autre planche. Déclarer une police par langue obligerait à
   dupliquer la même planche quatre fois pour rien.
-  <br>↳ **Remplacée par la [v0.26](changelog-archive/v0.26.md)** (2026-09-12) :
-  la substitution passe de « par langue » à « par couverture », sur le `FontAsset`.
+  <br>↳ **Précisée par la [v0.26](changelog-archive/v0.26.md)** (2026-09-12) : la chaîne
+  de couverture vit dans le `FontAsset` ; elle complète le remplacement optionnel de la police
+  par défaut par langue, elle ne le remplace pas.
 - **`font_de.fnt` est une PRATICITÉ D'IMPORT, jamais une règle.** Le suffixe pré-remplit la
   déclaration quand on ajoute une langue ; ce qui lie une police à une langue reste la
   déclaration explicite du projet. Déduire une liaison d'un suffixe de nom, c'est de la magie
   non vérifiable qui casse au premier renommage — et ça contredit `<asset>_name`, la règle du
   graphe de dépendances.
-  <br>↳ **Sans objet depuis la [v0.26](changelog-archive/v0.26.md)** : il n'y a
-  plus de police par langue à pré-remplir.
+  <br>↳ **Toujours écartée** : le remplacement éventuel se configure explicitement dans
+  `Language.default_font` ; un suffixe de fichier ne crée aucun lien.
 - **Une scène ne change jamais de police selon la langue.** Elle nomme `dialog` ; c'est la
   RÉSOLUTION de ce nom qui dépend de la langue, par une table de remap. Sans ça, il faudrait
   réécrire chaque `text.set_font` et chaque zone de mise en page, dans quarante scènes, pour
   chaque langue ajoutée.
-  <br>↳ **Amendée par la [v0.26](changelog-archive/v0.26.md)** : la scène nomme
-  toujours `dialog`, mais `g_lang_font` disparaît — la résolution est la chaîne de couverture,
-  pas un remap par langue.
+  <br>↳ **Confirmée et raccordée à la [v0.26](changelog-archive/v0.26.md)** : la scène
+  nomme toujours `dialog`, et `g_lang_font` remappe seulement la police par défaut ; les sources
+  de l'asset règlent ensuite la couverture des caractères manquants.
 - **PNG et `.fnt` seulement** — c'est déjà le cas (`font_import.py` refuse même le BMFont
   binaire), mais ça mérite d'être écrit comme une décision et pas comme un état de fait : une
   police est un **jeu fini d'images de glyphes**. C'est exactement ce qui rend
@@ -801,13 +812,12 @@ l'étape 3 codée.
    `settings.languages` dans l'ordre déclaré. Le même ordre partout — `g_texts`,
    `g_lang_font`, et les futurs sélecteurs de la phase 4 — une seule vérité, comme le reste
    du projet.
-3. **Le remap de police lit `Language.fonts`**, posé dès la phase 1
-   ([models/settings.py](editor/core/models/settings.py)) et jamais lu par le build jusqu'ici.
-   `g_lang_font[lang][police]` vaut l'index de la police de remplacement si `Language.fonts`
-   en déclare une pour cette police, sinon l'index de la police elle-même — « pas de
-   remplacement » n'est donc pas un cas spécial à tester au runtime, l'indirection est
-   toujours valide. `text_set_font(FONT)` résout d'abord `FONT`, puis applique le remap : le
-   script continue de nommer `dialog`, jamais une variante par langue.
+3. **Le remap de police lit `Language.default_font`**, réglé dans
+   [models/settings.py](editor/core/models/settings.py). `g_lang_font[lang][police]` remplace
+   la police par défaut du projet par la police par défaut de la langue ; les autres polices
+   conservent leur index. « Pas de remplacement » n'est donc pas un cas spécial au runtime,
+   l'indirection reste toujours valide. `text_set_font(FONT)` résout d'abord `FONT`, puis
+   applique le remap : le script continue de nommer `dialog`, jamais une variante par langue.
 4. **`scene_codepoints` prend un paramètre langue**, calculé pour CHAQUE langue déclarée
    (source comprise) plutôt qu'une fois. Le sous-ensemble ÉMIS dans la ROM pour une scène est
    l'UNION de tous les sous-ensembles par langue — c'est ce qui permettra à la phase 4 de
@@ -834,7 +844,7 @@ l'étape 3 codée.
 | # | Étape | Ce qu'elle change | Ce qu'elle NE change PAS |
 | --- | --- | --- | --- |
 | 3.1 | `g_texts[lang][i]` — *livrée* | `font_emit.emit_texts_c` lit `project.text_content(t, code)` par langue déclarée. `g_lang` posé en `extern const int`, toujours 0. | Le rendu : un seul texte lu, celui d'aujourd'hui. |
-| 3.2 | Remap de police — *livrée* | `g_lang_font`, lu par `text_set_font` au lieu de l'index direct. | Tout projet dont `Language.fonts` est vide (cas courant EN/FR/DE/ES **et** une police déjà multilingue, cf. Fonts&Texts) — table = identité. |
+| 3.2 | Remap de police — *livrée* | `g_lang_font`, lu par `text_set_font` pour remplacer la police par défaut du projet par celle de la langue. | Toute langue sans `Language.default_font` (cas courant EN/FR/DE/ES et police déjà multilingue) — table = identité. |
 | 3.3 | `scene_codepoints` par langue + union émise — *livrée* | `scene_codepoints_union` — la police d'une scène grossit dès qu'une traduction ajoute des caractères. | La réservation VRAM (toujours la langue active, `scene_codepoints` sans `code`). |
 | 3.4 | Garde-fou VRAM multi-langue — *livrée* | `validator._check_vram_lang_budget` : `scene_text_reservation(p, scene, code)` rejouée par langue, avertit sur la PIRE si elle charge plus de tuiles que la source. | La réservation réelle (toujours la langue active) — c'est un avertissement, `g_lang` reste 0. |
 | 3.5 | Avertissement nommé sur les littéraux — *livrée* | `validator._check_literal_texts` : un `text.draw("...")` liste fichier + ligne, dès qu'une langue est déclarée. | Le comportement runtime (toujours une entrée anonyme valide) ; silencieux en monolingue. |
@@ -927,7 +937,7 @@ la SOURCE même sans aucune langue déclarée — un caractère manquant est un 
 qu'aucune traduction n'a besoin d'exister pour révéler.
 
 **Décision verrouillée** : la police jugée est l'EFFECTIVE, pas la déclarée — le remap par
-langue (`Language.fonts`, décision 3.2) peut substituer une autre planche à celle que la zone
+langue (`Language.default_font`, décision 3.2) peut substituer une autre planche à celle que la zone
 nomme, et c'est celle-là que `text_set_font` charge réellement une fois la langue active. Juger
 la police déclarée aurait produit de faux positifs sur tout projet qui utilise le remap
 justement pour ce genre de cas (un système d'écriture différent).
@@ -1111,7 +1121,7 @@ disent *comment lire* une planche bitmap — quittent `Font` pour devenir des pa
 du `FontAsset`, spécifiques aux sources bitmap : une source vectorielle n'a ni fond à trouer ni
 chasse à mesurer, le rasterizer lui donne couverture et métriques directement.
 
-### La chaîne de couverture — et pourquoi la langue en sort
+### La chaîne de couverture — et ce que la langue conserve
 
 Un `FontAsset` est une **police logique** qui résout **chaque codepoint requis** par une
 **chaîne ordonnée de sources**. Un codepoint prend la première source de la chaîne qui sait le
@@ -1128,10 +1138,12 @@ quels codepoints sont requis — ce que `scene_codepoints()` calcule déjà, sur
 Une police Unicode « juste marche » (la chaîne ne retombe jamais) ; une police pixel Latin-only
 reçoit un fallback pour les écritures qu'elle ne couvre pas, sans qu'on nomme jamais une langue.
 
-**C'est ce qui retire `g_lang_font`** (v0.9, phase 3.2) : le remap de police par langue était le
-meilleur modèle *avant* que `FontAsset` existe ; la chaîne de couverture le subsume. La scène
-nomme toujours `dialog` — c'est la *résolution* de ce nom qui change, par couverture et non par
-langue.
+La chaîne de couverture ne remplace pas le choix produit « police par défaut de la langue » :
+`Language.default_font` peut remapper la police par défaut du projet, tandis que les fallbacks
+d'un `FontAsset` résolvent les caractères absents DANS cette police. Le runtime conserve donc
+`g_lang_font` pour ce premier choix, puis le build matérialise la recette de l'asset retenu. La
+scène nomme toujours la police logique par défaut ; la décision doit être reflétée au build dans
+le sous-ensemble, la palette et la surface de composition.
 
 ### Le rasterizer est appelé par le build
 
@@ -1183,17 +1195,19 @@ divergent, le canvas ment sur ce qui part en ROM.
   (le faux-gras sur une police pixel est laid). La synthèse reste une **porte** ultérieure
   (« pour l'instant »).
 
-### Ce que ce jalon renverse dans la v0.9
+### Ce que ce jalon précise dans la v0.9
 
-Trois décisions verrouillées de la v0.9 (section Traduction) sont **remplacées** ici — signalées
+Trois décisions verrouillées de la v0.9 (section Traduction) sont **précisées** ici — signalées
 là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes :
 
 - « Une langue n'a pas de police : elle a éventuellement un REMPLACEMENT » → la substitution
-  n'est plus par langue, elle est par **couverture** sur le `FontAsset`.
+  de `Language.default_font` reste le choix de police par défaut de la langue ; la couverture
+  du `FontAsset` ajoute des replis de caractères dans cette police, sans multiplier les
+  remplacements.
 - « Une scène ne change jamais de police selon la langue… par une table de remap » → la scène
-  nomme toujours `dialog`, mais `g_lang_font` disparaît ; la résolution est la chaîne de
-  couverture. `font_de.fnt` comme praticité d'import disparaît avec (plus de police par langue à
-  pré-remplir).
+  nomme toujours `dialog` ; `g_lang_font` conserve le remap de la police par défaut et la
+  chaîne de couverture résout ensuite les caractères absents. `font_de.fnt` ne crée jamais ce
+  lien automatiquement.
 - « PNG et `.fnt` seulement… un TTF rendu au build ne donnerait pas ça » → les sources
   vectorielles sont acceptées via `FontRasterizer` ; le « jeu fini de glyphes » se déplace de la
   source vers la sortie de build, et l'argument tient toujours.
@@ -1212,11 +1226,11 @@ là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes
 | `core/font_rasterizer.py` | **création** — `FontRasterizer` (fonction pure) + `RasterGlyph` |
 | `core/models/font.py` | dégraissage : `bg_color`/`space_color` sortent vers `FontAsset` ; `Font` devient source intrinsèque, vectorielle ou bitmap |
 | `core/font_import.py` | lecture de source + extraction cmap/métriques ; plus aucun point d'entrée qui *fabrique* une planche |
-| `codegen/font_emit.py` | réorganisé autour de `RasterGlyph` ; **`emit_lang_fonts_c` retiré** |
-| `codegen/runtime_codegen/main_gen.py` | l'appel à `emit_lang_fonts_c` retiré |
-| `core/models/settings.py` | `Language.fonts` retiré |
-| `ui/scene_manager/inspectors/languages_card.py` | la carte « font replacement » retirée |
-| `runtime/include/gba_engine.h` | `g_lang_font` (table, `extern`, ligne de remap de `text_set_font`) retiré |
+| `codegen/font_emit.py` | réorganisé autour de `RasterGlyph` ; `emit_lang_fonts_c` conserve le remplacement de la police par défaut par langue |
+| `codegen/runtime_codegen/main_gen.py` | émet les tables de `FontAsset` et le remap de police par langue |
+| `core/models/settings.py` | `Language.default_font` conserve le choix de police par défaut de chaque langue |
+| `ui/scene_manager/inspectors/languages_card.py` | la carte expose ce choix de police par défaut |
+| `runtime/include/gba_engine.h` | `g_lang_font` remappe la police par défaut ; le rendu et la réservation tiennent compte de la police effective |
 | `core/project_paths.py` | `fonts_assets_dir` ajouté (`project/fonts_assets/`) ; `assets/fonts/` inchangé |
 | `core/project.py` | `ResourceStore[FontAsset]` monté sur `fonts_assets_dir` |
 | `core/asset_encoding.py` | synchro : sidecar `Font` (`assets/fonts/`) distinct du `FontAsset` (`project/fonts_assets/`) |

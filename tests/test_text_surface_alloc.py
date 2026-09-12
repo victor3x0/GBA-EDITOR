@@ -162,3 +162,27 @@ def test_le_chemin_tilemap_ne_reclame_aucune_surface(projet):
     res = _surf(p, scene)
     assert res["surf_layout"] == []
     assert res["shared_surf_tiles"] == 0
+
+
+def test_une_police_de_langue_composee_reserve_les_zones(projet):
+    """Le remplacement japonais de la police par défaut doit être pris en
+    compte au build, pas seulement une fois la ROM lancée. Sinon le runtime
+    compose ses pixels sans bloc de surface propre et les tronque."""
+    from core.models.font import Font, Glyph
+    from core.models.settings import Language
+
+    p, scene, _layout, titre, boite = projet
+    # `grosse` est notre police CJK composée. Le défaut latin tient au contraire
+    # dans la tilemap, mais il est remplacé par `grosse` en japonais.
+    latin = Font(name="latin", cell_w=8, cell_h=8, line_height=8,
+                 asset=p.fonts.get("grosse").asset)
+    latin.glyphs = [Glyph(char="A", x=0, y=0, w=8, h=8, advance=8)]
+    p.fonts.append(latin)
+    p.settings.default_font = "latin"
+    p.settings.languages = [Language(code="ja", name="Japanese",
+                                     default_font="grosse")]
+    scene.font_name = ""
+    assert titre.font_name == boite.font_name == ""
+
+    layout = _surf(p, scene)["surf_layout"]
+    assert {entry["name"] for entry in layout} == {"titre", "boite"}

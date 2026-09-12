@@ -586,11 +586,6 @@ class Scene(Resource):
     # v0.3.2 refuse explicitement. Un nom introuvable retombe sur la même
     # première police, et le validateur le dit.
     font_name: str = ""
-    # Surcharge de `ProjectSettings.fallback_font` (« Default Font ») pour cette
-    # scène. Référencée par NOM. "" = hérite du repli projet — le cas de toute
-    # scène qui n'a rien réglé, donc de toutes celles d'avant que le repli existe.
-    # Même politique d'héritage que transition_kind / backdrop_color.
-    fallback_font: str = ""
     # Banque de palette de CHAQUE police, par nom (cf. `font_pal_banks` en tête
     # de module). Absente = la police charge sa propre palette dans une banque
     # allouée (comme un sprite) ; un slot = elle lit son encre dans une palette
@@ -686,9 +681,6 @@ class Scene(Resource):
             "text_bg": self.text_bg,
             "ui_layouts": self.ui_layouts,
             "font_name": self.font_name,
-            # Absent tant que la scène hérite du repli projet : le défaut ne
-            # s'écrit pas, sinon changer le réglage projet ne se verrait plus.
-            **({"fallback_font": self.fallback_font} if self.fallback_font else {}),
             # Absent tant qu'aucune police n'est overridée : une scène en tout
             # automatique ne gagne pas la clé (même règle que blend/music).
             **({"font_pal_banks": {k: self.font_pal_banks[k]
@@ -776,8 +768,6 @@ class Scene(Resource):
             ui_layouts=list(d.get("ui_layouts")
                             or ([d["ui_layout"]] if d.get("ui_layout") else [])),
             font_name=d.get("font_name", ""),
-            # Absent = hérite du repli projet, le cas de toute scène antérieure.
-            fallback_font=d.get("fallback_font", ""),
             font_pal_banks=_font_pal_banks_from_dict(d),
             collision_layer=d.get("collision_layer", 0),
             collision_map=d.get("collision_map", []),

@@ -163,6 +163,12 @@ vectorielles réunissent automatiquement leurs faces natives. Le rasterizer Free
 même aperçu pour l'inspecteur et le canvas, avec politique pixel-fit éditable (strikes bitmap,
 alignement sur grille ou rendu natif) et sélection de poids/italique natifs.
 
+La police par défaut peut être remplacée par langue (Latin → Misaki pour le japonais) sans
+perdre la banque d'encre choisie dans la scène. Le build, le canvas et le runtime suivent la
+police effectivement rendue : une police composée reçoit sa surface VRAM propre par zone, ce qui
+évite les glyphes tronqués ; le choix de palette est persisté dans la scène et réapparaît après
+réouverture.
+
 → [détail](changelog-archive/v0.26.md)
 
 ## v0.27 — L'éditeur souffle le mot juste

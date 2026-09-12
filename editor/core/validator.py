@@ -139,6 +139,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     _check_api_prototypes(ctx)
     _check_api_domains(ctx)
     _check_lua_subset(ctx)
+    _check_markup_fonts(ctx)
     _check_text_overflow(ctx)
     _check_font_coverage(ctx)
     _check_literal_texts(ctx)
@@ -486,6 +487,36 @@ def _text_variants(p, text, globals_names: set) -> list:
                       for m in parsed.markers)]
 
 
+def _check_markup_fonts(ctx: ValidationContext):
+    """Une portée ``[font=nom]`` doit viser une police réellement disponible.
+
+    Le parseur valide la forme de la balise ; lui seul ne connaît pas le projet.
+    Sans ce contrôle, l'encodeur ne pourrait pas convertir le nom en index de
+    ``g_fonts`` et l'erreur apparaîtrait trop tard, dans le C généré.
+    """
+    p = ctx.project
+    from core.text_markup import parse
+    from codegen.font_emit import encodable_project_fonts
+    known = {font.name for font in (encodable_project_fonts(p) or list(getattr(p, "fonts", [])))}
+    seen: set[tuple[str, str, str]] = set()
+    for text in getattr(p, "texts", []):
+        variants = [("", getattr(text, "content", "") or "")]
+        for lang in getattr(getattr(p, "settings", None), "languages", []):
+            content = getattr(p, "translations", {}).get(lang.code, {}).get(text.id, "")
+            if content:
+                variants.append((lang.code, content))
+        for code, content in variants:
+            for marker in parse(content).of_kind("font"):
+                name = str(marker.value)
+                key = (text.key, code, name)
+                if name not in known and key not in seen:
+                    seen.add(key)
+                    ctx.error(None,
+                        f"Le texte '{text.key}'"
+                        + (f" (langue « {code} »)" if code else "")
+                        + f" cite la police inconnue '{name}' dans [font={name}].")
+
+
 def _check_text_overflow(ctx: ValidationContext):
     """Un texte qui ne tient pas dans sa zone est TRONQUÉ au dernier glyphe qui
     tient (cf. runtime `text_glyph_fits`), sans un mot en jeu.
@@ -509,7 +540,9 @@ def _check_text_overflow(ctx: ValidationContext):
     from core.engine_emulation.text_layout import layout_text
 
     regions = {r.name: r for _lay, r in p.all_regions()}
-    fonts   = {f.name: f for f in p.fonts}
+    from codegen.font_emit import encodable_project_fonts
+    built_fonts = encodable_project_fonts(p) or list(p.fonts)
+    fonts   = {f.name: f for f in built_fonts}
     globals_names = {g.name for g in getattr(p, "globals", [])}
     consts = {c.name: c.value for c in getattr(p, "constants", [])}
 
@@ -519,7 +552,7 @@ def _check_text_overflow(ctx: ValidationContext):
     # deux largeurs. On mesure contre chacune plutôt que d'en élire une —
     # choisir, ici, ce serait taire un débordement réel dans l'autre scène.
     from codegen.font_emit import scene_default_font
-    first = p.fonts[0]
+    first = built_fonts[0] if built_fonts else None
     lay_defaults: dict[str, list] = {}
     for _scene in p.scenes:
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
@@ -536,7 +569,7 @@ def _check_text_overflow(ctx: ValidationContext):
         nommée, sinon tous les défauts de scène qui peuvent lui échoir."""
         if getattr(el, "font_name", "") in fonts:
             return [fonts[el.font_name]]
-        return lay_defaults.get(region_layout.get(el.name, ""), None) or [first]
+        return lay_defaults.get(region_layout.get(el.name, ""), None) or ([first] if first else [])
 
     seen: set = set()
     for site in find_call_sites_in_project(p, DOMAIN_REGION, DOMAIN_TEXT):
@@ -596,16 +629,9 @@ def _check_font_coverage(ctx: ValidationContext):
     projet, invisible jusqu'à ce que quelqu'un joue la ROM dans cette
     langue-là.
 
-    La police jugée est l'EFFECTIVE, pas la déclarée : le remap par langue
-    (`Language.fonts`, phase 3.2) peut substituer une autre planche à celle
-    que la zone nomme — c'est CETTE police-là que `text_set_font` charge
-    réellement une fois la langue active, donc c'est elle qu'il faut
-    vérifier.
-
-    Depuis la « Default Font » (v0.9), un caractère absent de l'active mais
-    présent dans le REPLI de la scène n'est plus un trou : le runtime le rend
-    depuis le repli (`text_find_fb`). On n'avertit donc que si NI l'active NI le
-    repli ne le portent (cf. `lay_fallbacks`, `_missing`).
+    La police jugée est l'EFFECTIVE, pas la déclarée : une langue peut remplacer
+    la Default Font du projet. Les FontAsset explicitement nommées ne reçoivent
+    pas de repli global ; leur chaîne de sources porte leur couverture.
 
     Même reprise que `_check_text_overflow` : DEUX sources (script + textes
     authorés), TOUTES les langues déclarées (`_text_variants`), dédupliqué
@@ -618,66 +644,46 @@ def _check_font_coverage(ctx: ValidationContext):
     from core.text_markup import parse, resolve
 
     regions = {r.name: r for _lay, r in p.all_regions()}
-    fonts   = {f.name: f for f in p.fonts}
+    from codegen.font_emit import encodable_project_fonts
+    built_fonts = encodable_project_fonts(p) or list(p.fonts)
+    fonts   = {f.name: f for f in built_fonts}
     globals_names = {g.name for g in getattr(p, "globals", [])}
     consts = {c.name: c.value for c in getattr(p, "constants", [])}
     lang_by_code = {l.code: l for l in getattr(p.settings, "languages", [])}
     # Un jeu de caractères par police, calculé une fois — relire les glyphes
     # à chaque texte serait quadratique sur un projet qui en a beaucoup.
-    coverage = {f.name: {g.char for g in f.glyphs if g.char} for f in p.fonts}
+    coverage = {f.name: {g.char for g in f.glyphs if g.char} for f in built_fonts}
 
-    from codegen.font_emit import scene_default_font, scene_fallback_font
-    first = p.fonts[0]
+    from codegen.font_emit import scene_default_font
+    first = built_fonts[0] if built_fonts else None
     lay_defaults: dict[str, list] = {}
-    # Couverture de la police de REPLI (« Default Font », scene.fallback_font ou
-    # settings.fallback_font, NON remappée par la langue). Un caractère absent de
-    # la police active mais présent dans le repli n'est PAS un trou : le runtime
-    # le rend depuis le repli (text_find_fb). Comme une mise en page sert plusieurs
-    # scènes aux replis possiblement différents, on ne « sauve » un caractère que
-    # s'il est couvert par le repli de TOUTES ces scènes (intersection) — sinon il
-    # reste un trou dans celle qui ne le couvre pas. Absence de repli = set(),
-    # donc rien de sauvé, exactement le comportement d'avant la « Default Font ».
-    lay_fallbacks: dict[str, set] = {}
     for _scene in p.scenes:
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
-        _fb_name = scene_fallback_font(p, _scene)
-        _fb_cov = coverage.get(_fb_name, set()) if _fb_name else set()
         # La police par défaut de la scène s'applique à CHACUN de ses nœuds
         # `Interface` (v0.25 : une scène en référence plusieurs).
         for _lname in (getattr(_scene, "ui_layouts", []) or []):
             _seen_f = lay_defaults.setdefault(_lname, [])
             if not any(x is _f for x in _seen_f):
                 _seen_f.append(_f)
-            if _lname in lay_fallbacks:
-                lay_fallbacks[_lname] &= _fb_cov
-            else:
-                lay_fallbacks[_lname] = set(_fb_cov)
     region_layout = {r.name: lay.name for lay, r in p.all_regions()}
 
     def _fonts_for(el) -> list:
         if getattr(el, "font_name", "") in fonts:
             return [fonts[el.font_name]]
-        return lay_defaults.get(region_layout.get(el.name, ""), None) or [first]
+        return lay_defaults.get(region_layout.get(el.name, ""), None) or ([first] if first else [])
 
     def _effective(lbl: str, font):
-        """La police RÉELLEMENT chargée pour `font` dans la langue `lbl` —
-        `Language.fonts` (creux, vide = identité) ou la police telle quelle,
-        exactement la règle de `font_emit.emit_lang_fonts_c`."""
+        """La langue ne remplace que la Default Font du projet."""
         if not lbl:
             return font
         lang = lang_by_code.get(lbl)
-        target = getattr(lang, "fonts", None) or {} if lang else {}
-        return fonts.get(target.get(font.name, ""), font)
+        default = getattr(p.settings, "default_font", "") or ""
+        target = getattr(lang, "default_font", "") if lang and font.name == default else ""
+        return fonts.get(target or "", font)
 
-    def _missing(parsed, font, fb_cov: set) -> list:
-        """Caractères qu'AUCUNE des deux polices ne porte : ni l'active `font`,
-        ni le repli (`fb_cov` = sa couverture). Ceux que seul le repli couvre ne
-        sont pas des trous — le runtime les rend depuis lui (text_find_fb)."""
+    def _missing(parsed, font) -> list:
         chars = set(resolve(parsed, consts)) - {"\n"}
-        return sorted(chars - coverage.get(font.name, set()) - fb_cov)
-
-    def _fb_cov_for(region_name: str) -> set:
-        return lay_fallbacks.get(region_layout.get(region_name, ""), set())
+        return sorted(chars - coverage.get(font.name, set()))
 
     def _warn(key: str, lbl: str, region_kind: str, region_name: str,
               font_name: str, missing: list):
@@ -685,8 +691,8 @@ def _check_font_coverage(ctx: ValidationContext):
         ctx.warn(None,
             f"Le texte '{key}'"
             + (f" (langue « {lbl} »)" if lbl else "")
-            + f" cite un caractère qu'aucune police ne porte — ni l'active "
-            f"'{font_name}', ni la police de repli ({region_kind} '{region_name}') "
+            + f" cite un caractère absent de la police active "
+            f"'{font_name}' ({region_kind} '{region_name}') "
             f": {chars}. Le glyphe manquant sera sauté à l'affichage, sans un mot "
             f"en jeu. Ajoute-le à une police, ou change la traduction.")
 
@@ -703,7 +709,7 @@ def _check_font_coverage(ctx: ValidationContext):
                 if quad in seen:
                     continue
                 seen.add(quad)
-                missing = _missing(parsed, eff, _fb_cov_for(region.name))
+                missing = _missing(parsed, eff)
                 if missing:
                     _warn(text.key, lbl, "la zone", region.name, eff.name, missing)
 
@@ -721,7 +727,7 @@ def _check_font_coverage(ctx: ValidationContext):
                 if quad in seen:
                     continue
                 seen.add(quad)
-                missing = _missing(parsed, eff, _fb_cov_for(el.name))
+                missing = _missing(parsed, eff)
                 if missing:
                     _warn(text.key, lbl, "l'élément", el.name, eff.name, missing)
 
@@ -1492,6 +1498,17 @@ def _check_scene_font(ctx: ValidationContext):
     from codegen.font_emit import scene_default_font
     encodable = {f.name for f in project_fonts(p)}
     known = {f.name for f in getattr(p, "fonts", [])}
+    project_default = getattr(getattr(p, "settings", None), "default_font", "") or ""
+    if project_default and project_default not in encodable:
+        ctx.warn(None,
+            f"Projet : la Default Font « {project_default} » est introuvable ou "
+            "inexploitable ; le jeu retombera sur la première police disponible.")
+    for lang in getattr(getattr(p, "settings", None), "languages", []):
+        replacement = getattr(lang, "default_font", "") or ""
+        if replacement and replacement not in encodable:
+            ctx.warn(None,
+                f"Langue « {lang.code} » : la Default Font « {replacement} » est "
+                "introuvable ou inexploitable ; le jeu conservera celle du projet.")
     for scene in p.scenes:
         want = getattr(scene, "font_name", "") or ""
         if not want or want in encodable:

@@ -426,35 +426,51 @@ class TextWorkbench(QWidget):
         self.active_lang_changed.emit(code)
 
     def reload_fonts(self):
-        """Peuple le sélecteur de police d'aperçu — confort d'édition : le
-        texte reste indépendant de toute police (traductions v0.9)."""
+        """Peuple le sélecteur avec les Font Assets du projet.
+
+        Le texte reste indépendant de toute police ; cet aperçu doit toutefois
+        suivre la même recette (sources de repli, taille et rasterisation) que
+        celle qu'une TextBox sélectionnera dans une scène.
+        """
         self._blocking = True
         cur = self._preview_font.currentText()
         self._preview_font.clear()
-        for f in (list(self._project.fonts) if self._project else []):
-            self._preview_font.addItem(f.name, f)
+        for asset in (list(self._project.font_assets) if self._project else []):
+            self._preview_font.addItem(asset.name, asset)
         idx = self._preview_font.findText(cur)
         self._preview_font.setCurrentIndex(idx if idx >= 0 else 0)
         self._blocking = False
         self._apply_preview_font()
 
     def preview_font(self):
-        return self._preview_font.currentData()
+        """Source primaire, maintenue pour les outils bitmap existants.
+
+        L'écran lui-même reçoit la FontAsset complète dans
+        :meth:`_apply_preview_font`; l'inspecteur et le menu d'icônes n'ont pas
+        encore de modèle de ligatures multi-sources.
+        """
+        asset = self._preview_font.currentData()
+        return (self._project.fonts.get(asset.primary_source_name())
+                if asset and self._project else None)
 
     def refresh_preview_font(self):
-        """Retroue la planche d'aperçu (mise en cache au chargement) après un
-        changement de couleur-clé."""
+        """Reconstruit le rendu après une modification de recette ou source."""
         self._apply_preview_font()
 
     def _apply_preview_font(self):
         """Passe la police choisie à l'aperçu — et à qui veut la confronter au
         texte (l'inspecteur, pour les caractères manquants)."""
-        f = self._preview_font.currentData()
-        self._preview.set_font_asset(f, self._project)
+        asset = self._preview_font.currentData()
+        self._preview.set_font_asset(asset, self._project)
         # La même police décide de ce que `[icon=…]` peut désigner : les cases
-        # fusionnées n'existent que dans une planche précise.
-        self._markup_bar.set_font(f)
-        self.preview_font_changed.emit(f)
+        # fusionnées n'existent que dans une planche précise. Les outils
+        # historiques attendent encore une source bitmap ; la FontAsset est
+        # bien celle affichée par l'écran, sa première source sert seulement à
+        # cette liste de ligatures.
+        source = (self._project.fonts.get(asset.primary_source_name())
+                  if asset and self._project else None)
+        self._markup_bar.set_font(source)
+        self.preview_font_changed.emit(source)
 
     def _on_preview_font(self, _i):
         if not self._blocking:

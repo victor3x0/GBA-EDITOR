@@ -40,6 +40,10 @@ class RasterGlyph:
     bearing_x: int
     bearing_y: int
     source_name: str = ""
+    # RGB source, trois octets par pixel, facultatif pour les fontes
+    # vectorielles. Une planche bitmap le renseigne afin que l'encodage conserve
+    # ses indices/couleurs de palette au lieu de la réduire à un masque alpha.
+    colors: bytes = b""
 
     def __post_init__(self):
         if len(self.char) != 1:
@@ -48,11 +52,21 @@ class RasterGlyph:
             raise ValueError("les dimensions d'un RasterGlyph sont positives")
         if len(self.coverage) != self.width * self.height:
             raise ValueError("la couverture ne correspond pas aux dimensions")
+        if self.colors and len(self.colors) != self.width * self.height * 3:
+            raise ValueError("les couleurs ne correspondent pas aux pixels")
 
     def coverage_at(self, x: int, y: int) -> int:
         if not (0 <= x < self.width and 0 <= y < self.height):
             return 0
         return self.coverage[y * self.width + x]
+
+    def color_at(self, x: int, y: int) -> tuple[int, int, int] | None:
+        """Couleur source d'un pixel bitmap, ou ``None`` pour une couverture
+        vectorielle (qui sera mise en palette par l'encodeur)."""
+        if not self.colors or not (0 <= x < self.width and 0 <= y < self.height):
+            return None
+        offset = (y * self.width + x) * 3
+        return tuple(self.colors[offset:offset + 3])
 
 
 def _freetype():
@@ -274,16 +288,19 @@ def rasterize_asset_glyph(project, asset, char: str, variant: str = "regular",
                 image = Image.open(path).convert("RGBA")
                 pixels = image.load()
                 coverage = bytearray(glyph.w * glyph.h)
+                colors = bytearray(glyph.w * glyph.h * 3)
                 keys = {tuple(c) for c in source.key_colors()}
                 for y in range(glyph.h):
                     for x in range(glyph.w):
                         if x + glyph.x >= image.width or y + glyph.y >= image.height:
                             continue
                         r, g, b, a = pixels[x + glyph.x, y + glyph.y]
-                        coverage[y * glyph.w + x] = 0 if (r, g, b) in keys else a
+                        pos = y * glyph.w + x
+                        coverage[pos] = 0 if (r, g, b) in keys else a
+                        colors[pos * 3:pos * 3 + 3] = bytes((r, g, b))
                 return RasterGlyph(char, glyph.w, glyph.h, bytes(coverage),
                                    glyph.advance, glyph.ox, glyph.h - glyph.oy,
-                                   source_name=name)
+                                   source_name=name, colors=bytes(colors))
             except Exception as exc:
                 problems.append(f"lecture bitmap de {name} impossible ({exc})")
                 continue

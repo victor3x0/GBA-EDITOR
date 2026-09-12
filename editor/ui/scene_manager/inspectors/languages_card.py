@@ -197,7 +197,7 @@ class LanguagesCard(CollapsibleCard):
         # un, et n'ouvre le détail que si on le demande. Une grille de combos
         # par langue, toujours dépliée, ferait passer pour obligatoire ce qui
         # ne sert qu'aux écritures non latines.
-        n = len(lang.fonts)
+        n = int(bool(lang.default_font))
         btn = QToolButton()
         btn.setFixedSize(22, 22)
         btn.setStyleSheet(BTN_ICON)
@@ -213,46 +213,37 @@ class LanguagesCard(CollapsibleCard):
         return host
 
     def _build_fonts(self, index: int, lang: Language) -> QWidget:
-        """Sous-panneau : une ligne par police du projet."""
+        """Sous-panneau : le remplacement de la police par défaut seulement."""
         host = QFrame()
         host.setStyleSheet(
             f"background:{C.BG_BASE}; border-left:2px solid {C.BORDER_MID};")
         lay = QVBoxLayout(host)
         lay.setContentsMargins(8, 4, 4, 4)
         lay.setSpacing(2)
-        fonts = [f.name for f in self._project.fonts] if self._project else []
+        assets = list(getattr(self._project, "font_assets", ()) or []) if self._project else []
+        fonts = [f.name for f in assets] or [f.name for f in self._project.fonts]
         if not fonts:
             empty = QLabel(label('langcard.this_project_has_no_font_yet'))
             empty.setFont(QFont(T.UI, T.XS))
             empty.setStyleSheet(f"color:{C.TEXT_MUTED};")
             lay.addWidget(empty)
             return host
-        for fname in fonts:
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(4)
-            lbl = QLabel()
-            lbl.setFont(QFont(T.MONO, T.XS))
-            lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
-            lbl.setFixedWidth(84)
-            lbl.setText(lbl.fontMetrics().elidedText(
-                fname, Qt.TextElideMode.ElideMiddle, 82))
-            lbl.setToolTip(fname)
-            row.addWidget(lbl)
-            combo = QComboBox()
-            combo.setFont(QFont(T.UI, T.XS))
-            combo.setStyleSheet(QSS.combobox)
-            combo.addItem(label(_SAME), "")
-            for other in fonts:
-                if other != fname:
-                    combo.addItem(other, other)
-            cur = lang.fonts.get(fname, "")
-            combo.setCurrentIndex(max(0, combo.findData(cur)))
-            combo.currentIndexChanged.connect(
-                lambda _i, _idx=index, _f=fname, _c=combo:
-                    self._commit_font(_idx, _f, _c.currentData()))
-            row.addWidget(combo, 1)
-            lay.addLayout(row)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        lbl = QLabel(label('projset.default_font'))
+        lbl.setFont(QFont(T.UI, T.XS)); lbl.setStyleSheet(f"color:{C.TEXT_DIM};")
+        row.addWidget(lbl)
+        combo = QComboBox()
+        combo.setFont(QFont(T.UI, T.XS)); combo.setStyleSheet(QSS.combobox)
+        combo.addItem(label(_SAME), "")
+        for name in fonts:
+            combo.addItem(name, name)
+        combo.setCurrentIndex(max(0, combo.findData(lang.default_font)))
+        combo.currentIndexChanged.connect(
+            lambda _i, _idx=index, _c=combo: self._commit_font(_idx, _c.currentData()))
+        row.addWidget(combo, 1)
+        lay.addLayout(row)
         return host
 
     def _toggle_fonts(self, code: str):
@@ -306,19 +297,15 @@ class LanguagesCard(CollapsibleCard):
         if lang is not None and lang.name != raw.strip():
             self.language_field_changed.emit(lang, "name", raw.strip())
 
-    def _commit_font(self, index: int, font_name: str, replacement):
+    def _commit_font(self, index: int, replacement):
         if self._blocking or not self._project:
             return
         lang = self._lang_at(index)
         if lang is None:
             return
-        fonts = dict(lang.fonts)
-        if replacement:
-            fonts[font_name] = replacement
-        else:
-            fonts.pop(font_name, None)
-        if fonts != lang.fonts:
-            self.language_field_changed.emit(lang, "fonts", fonts)
+        replacement = replacement or ""
+        if replacement != lang.default_font:
+            self.language_field_changed.emit(lang, "default_font", replacement)
 
     def _add_language(self):
         """Ajoute une ligne éditable en place — jamais un dialogue."""

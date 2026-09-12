@@ -1578,13 +1578,23 @@ class UIInspector(QWidget):
         self._set("highlight_color", int(index), "Text highlight")
 
     def _ui_bank(self):
-        """PaletteBank où le texte de CETTE scène lit ses couleurs, ou None.
+        """PaletteBank où CE texte libre lit ses couleurs, ou None.
 
         None en mode automatique (la police impose sa propre palette) ou si le
         slot désigné est vide : pas de pastilles à montrer dans ces cas."""
         if not (self._project and self._scene):
             return None
-        slot = int(getattr(self._scene, "ui_pal_bank", -1))
+        from core.models.scene import scene_font_pal_bank
+        from codegen.font_emit import scene_default_font
+
+        # Le champ historique ``ui_pal_bank`` n'est plus sérialisé.  Le picker
+        # d'une zone doit donc lire exactement la même entrée de
+        # ``font_pal_banks`` que l'allocateur et le codegen, sinon une valeur
+        # pourtant enregistrée réapparaît à tort comme « own palette » après
+        # rechargement.
+        _index, default_font = scene_default_font(self._project, self._scene)
+        selected_font = getattr(self._element, "font_name", "") or default_font
+        slot = scene_font_pal_bank(self._scene, selected_font, default_font)
         active = list(getattr(self._scene, "active_bg_palettes", []) or [])
         if not 0 <= slot < len(active):
             return None
@@ -1644,14 +1654,21 @@ class UIInspector(QWidget):
 
     def _reload_ui_pal_slot(self):
         """(Re)construit le slot de banque ÉDITABLE — LA MÊME liste, dans le
-        même ordre, que `SceneInspector._reload_ui_pal` : c'est le même champ, il
-        ne doit pas se présenter différemment selon l'écran d'où on le change.
+        même ordre, que `SceneInspector._reload_ui_pal` : c'est le même choix
+        pour une police donnée, il ne doit pas se présenter différemment selon
+        l'écran d'où on le change.
         Reconstruit et non repeuplé, pour la même raison que
         `_reload_fill_palette` : le picker capture sa liste à la construction."""
         from ui.common.pickers import ui_pal_bank_slot
         from ui.common import icons as _icons
         active = list(getattr(self._scene, "active_bg_palettes", []) or []) if self._scene else []
-        cur = int(getattr(self._scene, "ui_pal_bank", -1)) if self._scene else -1
+        cur = -1
+        if self._scene and self._project:
+            from core.models.scene import scene_font_pal_bank
+            from codegen.font_emit import scene_default_font
+            _index, default_font = scene_default_font(self._project, self._scene)
+            selected_font = getattr(self._element, "font_name", "") or default_font
+            cur = scene_font_pal_bank(self._scene, selected_font, default_font)
         self._clear_ui_pal_host()
         self._ui_pal_slot = ui_pal_bank_slot(
             active, cur, _icons.COLOR_UI, on_picked=self._on_ui_pal_bank,
@@ -1672,18 +1689,33 @@ class UIInspector(QWidget):
         self._ui_pal_box.addWidget(lbl)
 
     def _on_ui_pal_bank(self, new: int):
-        """Écrit `Scene.ui_pal_bank` — un réglage de SCÈNE, posé depuis
-        l'inspecteur d'un ÉLÉMENT : `_set` cible `self._element`, il faut donc
-        sa propre écriture, calquée sur `SceneInspector._on_ui_pal_changed`."""
-        if not self._scene:
+        """Enregistre l'override de la police effective dans la scène.
+
+        L'inspecteur est ouvert depuis une zone, mais cette banque appartient
+        à la police dans cette scène.  Un dictionnaire neuf est indispensable
+        pour que l'historique puisse restaurer fidèlement avant/après."""
+        if not (self._scene and self._project):
             return
         from core.history import get_history, SetFieldCmd
-        old = int(getattr(self._scene, "ui_pal_bank", -1))
+        from core.models.scene import font_pal_key, scene_font_pal_bank
+        from codegen.font_emit import scene_default_font
+
+        _index, default_font = scene_default_font(self._project, self._scene)
+        selected_font = getattr(self._element, "font_name", "") or default_font
+        old = scene_font_pal_bank(self._scene, selected_font, default_font)
+        new = int(new)
         if old == new:
             return
+        banks = dict(getattr(self._scene, "font_pal_banks", {}) or {})
+        key = font_pal_key(selected_font, default_font)
+        if 0 <= new < 16:
+            banks[key] = new
+        else:
+            banks.pop(key, None)
         get_history().push(SetFieldCmd(
-            self._scene, "ui_pal_bank", old, new,
-            label="UI palette bank", persist_fn=self._persist))
+            self._scene, "font_pal_banks",
+            dict(getattr(self._scene, "font_pal_banks", {}) or {}), banks,
+            label="Text palette bank", persist_fn=self._persist))
         self._reload_color()   # les deux pickers lisent une autre banque désormais
 
     def _reload_color(self):

@@ -28,21 +28,18 @@ def lang_code(s: str) -> str:
 
 @dataclass
 class Language:
-    """Une langue du jeu : son code, son nom, et ses polices de remplacement."""
+    """Une langue du jeu et, si nécessaire, sa police par défaut."""
     code: str = ""      # `de` — identité, et le nom du fichier side
     name: str = ""      # `Deutsch` — libellé lisible
-    # {police du projet: police à lui substituer}. VIDE dans le cas courant :
-    # anglais, français, allemand et espagnol partagent la même planche latine,
-    # seuls leurs glyphes accentués diffèrent — et le sous-ensemble par scène
-    # les traite déjà un par un. Une langue n'a donc pas de police : elle a
-    # éventuellement un REMPLACEMENT, et seul un système d'écriture différent
-    # (japonais, russe, grec) en demande un.
-    fonts: dict = field(default_factory=dict)
+    # Remplace ProjectSettings.default_font dans cette langue. Les autres
+    # FontAsset ne sont jamais remappées par la langue : leur propre chaîne de
+    # sources porte leur couverture et conserve donc leur intention graphique.
+    default_font: str = ""
 
     def to_dict(self) -> dict:
         d = {"code": self.code, "name": self.name}
-        if self.fonts:
-            d["fonts"] = dict(self.fonts)
+        if self.default_font:
+            d["default_font"] = self.default_font
         return d
 
     @classmethod
@@ -50,7 +47,7 @@ class Language:
         return cls(
             code=lang_code(d.get("code", "")),
             name=str(d.get("name", "")),
-            fonts={str(k): str(v) for k, v in (d.get("fonts") or {}).items() if v},
+            default_font=str(d.get("default_font", "") or ""),
         )
 
 
@@ -175,15 +172,10 @@ class ProjectSettings:
     # vérité à tenir d'accord. Liste vide = projet monolingue, exactement ce
     # qu'était tout projet avant la v0.9.
     languages: list = field(default_factory=list)
-    # Police de REPLI globale (« Default Font ») — celle qui comble les trous de
-    # COUVERTURE : un caractère absent de la police active (y compris après un
-    # remap de langue), ou une traduction manquante dont la source ne se rend pas
-    # dans la police active. Référencée par NOM comme tout asset. Vide = aucun
-    # repli, le comportement d'avant (glyphe manquant simplement sauté). Une
-    # scène peut la surcharger (`Scene.fallback_font`) ; elle peut être imparfaite
-    # et il lui manquer des caractères — le validateur signale ce qu'aucune des
-    # deux ne couvre, comme d'habitude.
-    fallback_font: str = ""
+    # Police choisie quand une zone ou `text.draw` n'en nomme pas. Les projets
+    # multilingues peuvent la remplacer dans chaque Language ; la couverture
+    # d'une FontAsset explicite reste configurée dans cette FontAsset elle-même.
+    default_font: str = ""
     # ── Inputs (placeholder) ────────────────────────────────────────
     # Actions nommées du joueur, chacune liée à un combo de boutons — voir
     # InputBinding ci-dessus pour ce qui manque encore avant que ça pilote
