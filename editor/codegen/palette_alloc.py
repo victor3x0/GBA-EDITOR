@@ -349,7 +349,7 @@ def _scene_font_palettes(p: Project, scene: Scene) -> list[tuple]:
     for name in ordered:
         f = by_name[name]
         png = p.asset_abs(f.asset) if f.asset else None
-        if not png:
+        if not png and getattr(f, "raster_glyphs", None) is None:
             continue
         cols = font_palette(f, png)
         if cols:

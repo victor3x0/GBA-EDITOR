@@ -225,6 +225,9 @@
     "home.project.reveal": {
       "text": "Ouvrir le dossier du projet"
     },
+    "home.project.remove_recent": {
+      "text": "Retirer des projets récents"
+    },
     "home.template.download": {
       "text": "Télécharger"
     },
@@ -365,6 +368,33 @@
     },
     "fontasset.preview_sample": {
       "text": "Échantillon : {sample}"
+    },
+    "fontasset.preview_text": {
+      "text": "Texte"
+    },
+    "fontasset.preview_sample_text": {
+      "text": "Texte d’essai"
+    },
+    "fontasset.preview_text_placeholder": {
+      "text": "Saisissez un échantillon, Entrée crée un retour à la ligne"
+    },
+    "fontasset.preview_text_tip": {
+      "text": "Ce texte ne sert qu’à l’aperçu. Les retours à la ligne montrent l’interligne réel."
+    },
+    "fontasset.preview_size": {
+      "text": "Taille"
+    },
+    "fontasset.preview_size_tip": {
+      "text": "Taille de rasterisation, partagée avec l’inspecteur et enregistrée dans cette police."
+    },
+    "fontasset.preview_zoom": {
+      "text": "Zoom"
+    },
+    "fontasset.preview_zoom_tip": {
+      "text": "Agrandissement de l’aperçu uniquement ; il ne change pas la police exportée."
+    },
+    "fontasset.preview_canvas_tip": {
+      "text": "Molette : zoom. Clic central glissé : panoramique. Double-clic : réinitialiser la vue. La grille discrète marque les tuiles GBA 8×8."
     },
     "fontasset.preview_coverage": {
       "text": "Couverture source"

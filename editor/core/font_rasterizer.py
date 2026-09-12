@@ -260,12 +260,35 @@ def rasterize_asset_glyph(project, asset, char: str, variant: str = "regular",
         if source is None:
             problems.append(f"{name} est introuvable")
             continue
-        if source.source_format not in ("ttf", "otf"):
-            problems.append(f"{name} est une source bitmap")
-            continue
         path = project.asset_abs(source.asset)
         if not path or not path.exists():
             problems.append(f"le fichier de {name} est introuvable")
+            continue
+        if source.source_format in ("png", "fnt"):
+            glyph = source.glyph(char)
+            if glyph is None:
+                problems.append(f"{name} ne couvre pas ce caractère")
+                continue
+            try:
+                from PIL import Image
+                image = Image.open(path).convert("RGBA")
+                pixels = image.load()
+                coverage = bytearray(glyph.w * glyph.h)
+                keys = {tuple(c) for c in source.key_colors()}
+                for y in range(glyph.h):
+                    for x in range(glyph.w):
+                        if x + glyph.x >= image.width or y + glyph.y >= image.height:
+                            continue
+                        r, g, b, a = pixels[x + glyph.x, y + glyph.y]
+                        coverage[y * glyph.w + x] = 0 if (r, g, b) in keys else a
+                return RasterGlyph(char, glyph.w, glyph.h, bytes(coverage),
+                                   glyph.advance, glyph.ox, glyph.h - glyph.oy,
+                                   source_name=name)
+            except Exception as exc:
+                problems.append(f"lecture bitmap de {name} impossible ({exc})")
+                continue
+        if source.source_format not in ("ttf", "otf"):
+            problems.append(f"{name} a un format non rendu")
             continue
         if glyph_exists(path, char):
             return rasterize_vector_glyph(

@@ -1384,17 +1384,15 @@ entier. Signalé aux deux endroits qui peuvent le savoir, le build et l'inspecte
 les sources vectorielles **TTF** et **OTF** sont aussi reconnues par le watcher et
 reçoivent leur sidecar immédiatement. Une source vectorielle ne fabrique surtout
 pas de planche à l'import : `core/font_rasterizer.py` la lit à la demande avec
-FreeType pour l'aperçu, et constitue l'unique point d'entrée que le build
-vectoriel appellera à son raccordement. Sa sortie `RasterGlyph` est une grille de
-couverture indépendante des tuiles et de la palette GBA.
+FreeType pour l'aperçu comme pour le build. Sa sortie `RasterGlyph` est une grille
+de couverture indépendante des tuiles et de la palette GBA.
 
 Une `FontAsset` porte aussi sa politique `pixel_fit`. `auto` choisit une
 bitmap strike seulement si elle correspond exactement à la hauteur demandée,
 sinon aligne le rendu sur la grille à 6 px ou moins et garde le rendu natif
 au-dessus. `native`, `grid_fit` et `bitmap_strike` restent des choix d'auteur :
 une fonte vectorielle ne devient pas magiquement une bonne police 5 px, mais
-la recette est déterministe dans l'aperçu et sera reprise telle quelle par le
-raccordement build vectoriel.
+la recette est déterministe dans l'aperçu et reprise telle quelle par le build.
 
 **Découverte : une source, un usage possible.** À l'apparition d'un PNG, `.fnt`,
 TTF ou OTF, `sync_font_file()` crée ou réconcilie immédiatement un `FontAsset`.
@@ -1443,8 +1441,34 @@ l'affichage.
 
 ### Du sidecar à la ROM
 
-`codegen/font_emit.py` encode une police en tuiles 4bpp et émet les tables C ; `main_gen`
-les pose dans `main.c` et charge la police au début de chaque scène.
+```
+assets/fonts/ (Font, source) ─┐
+                               ├─ FontAsset ─→ RasterGlyph ─→ tuiles + palette 4bpp ─→ ROM
+project/fonts_assets/ ─────────┘       ↑              ↑                  ↑
+                                  recette auteur   preview/build     rendu + budget VRAM
+```
+
+`codegen/font_build.py` résout la chaîne de sources d'un `FontAsset` et le
+matérialise temporairement en glyphes raster. Rien de cette étape n'est persisté.
+`codegen/font_emit.py` encode ensuite ces mêmes glyphes en tuiles 4bpp et émet
+les tables C ; `main_gen` les pose dans `main.c` et charge la police au début de
+chaque scène. Les vieilles sources bitmap non encore couvertes par un FontAsset
+continuent de passer par l'encodeur historique, afin de garder les projets
+existants ouvrables.
+
+- **Une seule matérialisation par état de projet.** La représentation de build
+  est mémorisée et invalidée si une recette, un texte, une traduction ou le
+  fichier source change. L'allocateur, l'émetteur et le canvas ne rerastérisent
+  donc pas chacun leur propre copie de la police.
+- **La sortie est décidée au dernier moment.** Binaire et tramage donnent une
+  encre binaire ; le mode couverture est quantifié sur les 15 index d'encre
+  utilisables d'une palette 4bpp. `RasterGlyph` reste lui une couverture 0..255
+  jusqu'à cet instant.
+- **Le budget lit les mêmes glyphes.** `is_proportional()`,
+  `render_composited()` et `font_vram_tiles()` travaillent sur la police
+  matérialisée. Une police à chasse proportionnelle réserve ainsi la surface de
+  composition ; une police mono réserve ses tuiles de glyphes. Ce n'est pas une
+  estimation séparée de l'encodage.
 
 - **Un glyphe → `tiles_x × tiles_y` tuiles** (une seule pour du 8×8, le cas courant),
   déposées à la suite dans le charblock du texte. Leur base n'est plus une constante :

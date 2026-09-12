@@ -62,6 +62,11 @@ def advances_declared(font) -> bool:
     l'existant sans migration."""
     if getattr(font, "source_format", "png") == "fnt":
         return True
+    # Objet temporaire issu de FontAsset : RasterGlyph porte toujours une
+    # chasse FreeType/BMFont explicite. Le traiter comme mono casserait le
+    # choix de rendu et, surtout, le budget VRAM qui en découle.
+    if getattr(font, "source_format", "png") == "raster":
+        return True
     return getattr(font, "space_color", None) is not None
 
 
@@ -652,6 +657,10 @@ def font_palette(font, png_path) -> list[int]:
     si la planche est absente, illisible ou vide (aucune encre). C'est cette
     liste que l'allocateur traite comme la palette propre d'un asset (comme
     `sprite.own_palette`), et que la grille montre grisée."""
+    # Même palette que `_encode_raster_font` : l'allocateur voit donc les
+    # niveaux réellement référencés par les tuiles vectorielles.
+    if getattr(font, "raster_glyphs", None) is not None:
+        return [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
     import numpy as np
     from PIL import Image
     p = Path(png_path)
@@ -677,15 +686,84 @@ def font_palette(font, png_path) -> list[int]:
     return cached
 
 
-def encode_font(font, png_path: Path) -> dict:
+def _encode_raster_font(font, rasters: dict) -> dict:
+    """Encode les ``RasterGlyph`` d'un FontAsset sans fichier intermédiaire.
+
+    Les modes binary/dither deviennent une encre indexée 1 ; coverage quantifie
+    la couverture sur les quinze encres disponibles d'une palette 4bpp. Cette
+    décision appartient ici, au dernier passage avant la GBA, et est donc aussi
+    celle dont le compteur de tuiles tient compte.
+    """
+    from core.font_rasterizer import display_coverage
+
+    mode = getattr(font, "raster_mode", "binary")
+    threshold = int(getattr(font, "coverage_threshold", 128))
+    pattern = getattr(font, "dither_pattern", "none")
+    # Blanc à intensité variable : une palette propre est ensuite allouée comme
+    # toute autre palette de police. Les modes binaires n'emploient que l'index 1.
+    palette = [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+    tiles, entries = [], []
+    for g in effective_glyphs(font):
+        raster = rasters.get(g.char)
+        if raster is None:
+            continue
+        width = max(1, int(g.w)); height = max(1, int(g.h))
+        gtx, gty = max(1, (width + 7) // 8), max(1, (height + 7) // 8)
+        cell = [[0] * (gtx * 8) for _ in range(gty * 8)]
+        base_y = max(0, height - raster.bearing_y)
+        for y in range(raster.height):
+            dy = base_y + y
+            if not 0 <= dy < gty * 8:
+                continue
+            for x in range(raster.width):
+                dx = raster.bearing_x + x
+                if not 0 <= dx < gtx * 8:
+                    continue
+                cov = display_coverage(raster.coverage_at(x, y), dx, dy,
+                                       raster_mode=mode, threshold=threshold,
+                                       dither_pattern=pattern)
+                cell[dy][dx] = max(0, min(15, round(cov * 15 / 255)))
+        slot = len(tiles) // 8
+        for ty in range(gty):
+            for tx in range(gtx):
+                tiles += _tile_words([cell[ty * 8 + row][tx * 8 + col]
+                                      for row in range(8) for col in range(8)])
+        entries.append({"seq": [ord(c) for c in g.char if ord(c) < 0x10000],
+                        "slot": slot, "gw": gtx, "gh": gty,
+                        "adv": glyph_advance_px(g, font)})
+    entries = [entry for entry in entries if entry["seq"]]
+    entries.sort(key=lambda entry: (entry["seq"][0], -len(entry["seq"])))
+    seq, seq_off, seq_len = [], [], []
+    for entry in entries:
+        seq_off.append(len(seq)); seq_len.append(len(entry["seq"])); seq += entry["seq"]
+    return {"tiles": tiles, "n_tiles": len(tiles) // 8,
+            "codepoints": [entry["seq"][0] for entry in entries],
+            "slots": [entry["slot"] for entry in entries], "palette": palette,
+            "seq": seq, "seq_off": seq_off, "seq_len": seq_len,
+            "gw": [entry["gw"] for entry in entries],
+            "gh": [entry["gh"] for entry in entries],
+            "adv": [entry["adv"] for entry in entries],
+            "composited": int(render_composited(font)),
+            "cell_w": font_fallback_adv_px(font), "line_h": font_line_px(font),
+            "tiles_x": 1, "tiles_y": max(1, (font.line_height + 7) // 8),
+            "warning": None}
+
+
+def encode_font(font, png_path: Path | None = None) -> dict:
     """Encode une police en tuiles 4bpp + table de correspondance.
 
     Retourne {tiles, n_tiles, codepoints, slots, palette, tiles_x, tiles_y,
     warning}. `codepoints` est TRIÉ (le runtime fait une dichotomie dessus) et
     `slots` donne, pour chaque codepoint, l'index de sa première tuile."""
+    # FontAsset n'écrit aucune planche dérivée : ses RasterGlyph arrivent ici
+    # en mémoire. Les sources historiques conservent exactement leur chemin
+    # PNG/BMFont pour préserver les projets existants.
+    rasters = getattr(font, "raster_glyphs", None)
+    if rasters is not None:
+        return _encode_raster_font(font, rasters)
+
     import numpy as np
     from PIL import Image
-
     img = Image.open(png_path).convert("RGBA")
     arr = np.array(img)
     alpha = arr[:, :, 3]
@@ -1208,11 +1286,11 @@ def encodable_project_fonts(p) -> list:
     posé (`scene_inspector._reload_scene_font`) : une police y est « utilisable »
     dès qu'elle est encodable, la CHOISIR étant justement ce qui la rendrait
     utilisée."""
-    out = []
-    for f in getattr(p, "fonts", []):
-        if f.asset and f.glyphs and p.asset_abs(f.asset) and p.asset_abs(f.asset).exists():
-            out.append(f)
-    return out
+    # Depuis v0.26 une TextBox nomme un FontAsset, pas sa planche. Le build
+    # matérialise sa recette ici ; les Font brutes restent le repli de migration
+    # pour les projets qui n'ont pas encore d'asset logique.
+    from codegen.font_build import project_build_fonts
+    return [font for font in project_build_fonts(p) if font.glyphs]
 
 
 def project_used_font_names(p) -> "set | None":

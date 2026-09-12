@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from PyQt6.QtGui import QPalette, QColor
 from window import MainWindow
 from ui.common.theme import GLOBAL_QSS, C, install_app_fonts
+from ui.common.numeric_drag import install_numeric_drag_behavior
 from ui.common import icons
 from ui.common import catalog
 from ui.home.project_picker import HomeScreen, PROJECTS_DIR
@@ -85,6 +86,7 @@ if __name__ == "__main__":
     app.setApplicationName("GBA Editor")
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
+    install_numeric_drag_behavior(app)
     install_app_fonts()
     # Les QSS référencent quelques icônes par chemin de fichier : il faut les
     # rendre maintenant (la QApplication existe) avant d'appliquer la feuille.

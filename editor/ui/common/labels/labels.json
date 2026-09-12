@@ -240,6 +240,9 @@
     "home.project.reveal": {
       "text": "Open project folder"
     },
+    "home.project.remove_recent": {
+      "text": "Remove from recent projects"
+    },
     "home.template.download": {
       "text": "Download"
     },
@@ -3934,6 +3937,33 @@
     },
     "fontasset.preview_sample": {
       "text": "Sample: {sample}"
+    },
+    "fontasset.preview_text": {
+      "text": "Text"
+    },
+    "fontasset.preview_sample_text": {
+      "text": "Preview text"
+    },
+    "fontasset.preview_text_placeholder": {
+      "text": "Type a sample, using Enter for line breaks"
+    },
+    "fontasset.preview_text_tip": {
+      "text": "This text is only used by the preview. Line breaks reveal the actual line height."
+    },
+    "fontasset.preview_size": {
+      "text": "Size"
+    },
+    "fontasset.preview_size_tip": {
+      "text": "Raster size, shared with the inspector and saved in this font asset."
+    },
+    "fontasset.preview_zoom": {
+      "text": "Zoom"
+    },
+    "fontasset.preview_zoom_tip": {
+      "text": "Preview magnification only; it does not change the exported font."
+    },
+    "fontasset.preview_canvas_tip": {
+      "text": "Mouse wheel: zoom. Middle-button drag: pan. Double-click: reset view. The faint grid marks 8×8 GBA tiles."
     },
     "fontasset.preview_coverage": {
       "text": "Source coverage"

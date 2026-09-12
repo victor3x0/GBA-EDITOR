@@ -66,7 +66,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.17 | Le pool par scène | Non commencée |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
-| v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) ; le raccordement build vectoriel reste ouvert plus bas |
+| v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) |
 | v0.27 | L'éditeur souffle le mot juste (autocomplétion) | **Livrée** — [archive](changelog-archive/v0.27.md) |
 
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
@@ -1075,12 +1075,13 @@ couverture n'avertit que si ni l'active ni le repli ne portent le caractère.
 
 ---
 
-## Raccordement build vectoriel — **À FAIRE**
+## Raccordement build vectoriel — **LIVRÉ**
 
-> Le modèle, la découverte, le rasterizer et les écrans de la v0.26 sont livrés
-> ([archive](changelog-archive/v0.26.md)). Reste à faire entrer les `RasterGlyph`
-> vectoriels dans l'export GBA, sans dupliquer la recette que l'aperçu applique
-> déjà. Cette suite ne change pas l'API de l'auteur ; elle raccorde le build.
+> **Livré le 2026-09-12.** Le build matérialise un
+> `FontAsset` en `RasterGlyph` éphémères, puis en tuiles 4bpp : la même police
+> sert à l'émission C, au choix tilemap/composition et au budget VRAM. Aucune
+> planche dérivée n'est écrite ; les sources bitmap et les projets antérieurs
+> conservent leur chemin historique.
 
 ### La chaîne, en une ligne
 
@@ -1100,9 +1101,9 @@ conversion en tuiles et palette n'arrive qu'à l'export. Le bitmap est une repr�
 | **`Font`** | source de glyphes — l'intrinsèque *disponible* dans le fichier (glyphes présents, codepoints, métriques) | sidecar `.json` à côté de la source, dans `assets/fonts/` (inchangé) | livré |
 | **`Glyph`** | caractère + métriques (rect ou vectoriel, `advance`, `ox/oy`) | dans le sidecar `Font` | existe |
 | **`FontAsset`** | usage projet : sources par variante (regular / bold / italic / bold italic), ordre de fallback, params de traitement (taille de rendu, cellule cible, bpp, seuil/dither, chasse) | un `.json` par asset, dans `project/fonts_assets/` | livré |
-| **`RasterGlyph`** | forme bitmap d'un glyphe, **grille de couverture** (gris/alpha), sans index GBA | calculé pour l'aperçu, à raccorder au build | livré côté modèle/rasterizer |
+| **`RasterGlyph`** | forme bitmap d'un glyphe, **grille de couverture** (gris/alpha), sans index GBA | calculé à la demande pour l'aperçu et le build | livré |
 | **`Text` / `TextStyle` / `Layout` / `TextEffect`** | contenu / apparence / placement / transformations | en aval — **hors de ce jalon** | partiels |
-| **Build** | résout `FontAsset` → sous-ensemble requis → rasterise → tuiles + palette | codegen | existe (`font_emit`), à réorganiser autour de `RasterGlyph` |
+| **Build** | résout `FontAsset` → sous-ensemble requis → rasterise → tuiles + palette | `codegen/font_build.py` puis `font_emit.py` | premier raccord livré |
 
 **Le `FontAsset` ne duplique jamais les données intrinsèques d'un `Font`.** Le sidecar décrit la
 ressource ; le `FontAsset` décrit son usage. C'est pourquoi `bg_color` / `space_color` — qui
@@ -1132,11 +1133,11 @@ meilleur modèle *avant* que `FontAsset` existe ; la chaîne de couverture le su
 nomme toujours `dialog` — c'est la *résolution* de ce nom qui change, par couverture et non par
 langue.
 
-### Le rasterizer est prêt ; le build doit l'appeler
+### Le rasterizer est appelé par le build
 
 `FontRasterizer` est une **fonction pure** `(source, glyphe, params) → RasterGlyph`. L'aperçu
-de l'éditeur l'appelle déjà ; le build devra appeler exactement cette fonction — jamais une
-seconde implémentation. C'est la règle qu'on tient déjà ailleurs (`is_proportional()` partagé
+de l'éditeur et `codegen/font_build.py` l'appellent ; le build ne possède donc aucune seconde
+implémentation. C'est la règle qu'on tient déjà ailleurs (`is_proportional()` partagé
 par l'émetteur et l'aperçu, `key_out()` qui reflète `key_colors()`) : si l'aperçu et l'émetteur
 divergent, le canvas ment sur ce qui part en ROM.
 
@@ -1148,7 +1149,8 @@ divergent, le canvas ment sur ce qui part en ROM.
   VRAM et le CJK.
 - **`RasterGlyph` = grille de couverture, pas d'index GBA.** Une source vectorielle produit de
   l'anti-crénelage naturel ; une source bitmap indexée donne une couverture binaire. La
-  **quantisation couverture → N index de palette** (seuil ou dither) est l'étape *export GBA*.
+  **quantisation couverture → N index de palette** (seuil ou dither) est l'étape *export GBA*,
+  dans `font_emit._encode_raster_font()`.
   C'est cette grille abstraite, gardée jusqu'au dernier moment, qui rendra les couleurs, styles
   et effets simples à implémenter dans leur jalon à eux.
 - **La preview ne persiste rien.** La différence nette avec le point d'entrée FreeType supprimé
@@ -1196,7 +1198,7 @@ là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes
   vectorielles sont acceptées via `FontRasterizer` ; le « jeu fini de glyphes » se déplace de la
   source vers la sortie de build, et l'argument tient toujours.
 
-### Ouvert
+### Prolongements hors v0.26
 
 - **Le seuil / dither** couverture → index : réglage par `FontAsset`, ou déduit du bpp cible ?
 - **`TextStyle` / `TextEffect`** : leur propre jalon, en aval — ce qu'il faut, c'est que la

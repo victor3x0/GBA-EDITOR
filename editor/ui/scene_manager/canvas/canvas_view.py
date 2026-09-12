@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import QGraphicsView, QGraphicsItem, QGraphicsRectItem
 # ──────────────────────────────────────────────────────────────────
 class GBAView(QGraphicsView):
     prefab_template_dropped = pyqtSignal(str, QPointF)
+    zoom_changed = pyqtSignal(float)
     # Émis après CHAQUE clic gauche traité par Qt (RubberBandDrag), qu'il ait
     # ou non changé la sélection — Qt.selectionChanged ne se déclenche QUE si
     # l'ensemble sélectionné change réellement : un clic répété en dehors du
@@ -112,6 +113,7 @@ class GBAView(QGraphicsView):
         t = QTransform()
         t.scale(self._zoom, self._zoom)
         self.setTransform(t)
+        self.zoom_changed.emit(self._zoom)
 
     def wheelEvent(self, event: QWheelEvent):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
@@ -121,6 +123,7 @@ class GBAView(QGraphicsView):
     def fit(self, w: int = GBA_W, h: int = GBA_H):
         self.fitInView(0, 0, w, h, Qt.AspectRatioMode.KeepAspectRatio)
         self._zoom = self.transform().m11()
+        self.zoom_changed.emit(self._zoom)
 
     def zoom_to(self, level: float):
         self._zoom = max(0.5, min(level, 8.0))

@@ -23,7 +23,7 @@ from PyQt6.QtGui import QFont, QColor, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread
 
 from ui.common.theme import C, T, QSS
-from ui.common.widgets import W
+from ui.common.widgets import W, HoverIconButton
 from ui.common.labels import label
 from ui.common.reveal import reveal_in_file_manager
 from core.toolchain import Toolchain, DEVKITPRO_URL, MGBA_URL
@@ -144,6 +144,8 @@ class ToolchainStatus(QWidget):
 # ── Widget d'une entrée ───────────────────────────────────────────────
 
 class _ProjectItem(QWidget):
+    remove_requested = pyqtSignal(object)  # Path : retire seulement l'entrée récente
+
     def __init__(self, path: Path, dead: bool = False, parent=None):
         super().__init__(parent)
         self.path = path
@@ -192,6 +194,18 @@ class _ProjectItem(QWidget):
             btn_reveal = W.btn_reveal(label("home.project.reveal"))
             btn_reveal.clicked.connect(lambda: reveal_in_file_manager(self.path))
             hl.addWidget(btn_reveal)
+
+        # Retire ce projet de la liste des récents. Le dossier et son contenu
+        # restent intacts sur le disque.
+        btn_remove = HoverIconButton("clear", C.ACCENT_RED, "#ff3030")
+        btn_remove.setFixedSize(22, 22)
+        btn_remove.setIconSize(QSize(14, 14))
+        btn_remove.setToolTip(label("home.project.remove_recent"))
+        btn_remove.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;padding:0;}}"
+        )
+        btn_remove.clicked.connect(lambda: self.remove_requested.emit(self.path))
+        hl.addWidget(btn_remove)
 
 
 # ── Widget d'un template téléchargeable ────────────────────────────────
@@ -511,6 +525,7 @@ class HomeScreen(QDialog):
             dead = not path.exists()
             item = QListWidgetItem(self._list)
             w = _ProjectItem(path, dead)
+            w.remove_requested.connect(self._remove_recent)
             item.setSizeHint(QSize(0, 64))
             self._list.addItem(item)
             self._list.setItemWidget(item, w)
@@ -567,6 +582,14 @@ class HomeScreen(QDialog):
         alive = [p for p in self._recent if p.exists()]
         save_recent(alive)
         self._recent = alive
+        self._populate()
+        self._empty_lbl.setVisible(not self._recent)
+        self._on_sel()
+
+    def _remove_recent(self, path: Path):
+        """Retire immédiatement une entrée des récents, sans action disque."""
+        self._recent = [recent for recent in self._recent if recent != path]
+        save_recent(self._recent)
         self._populate()
         self._empty_lbl.setVisible(not self._recent)
         self._on_sel()

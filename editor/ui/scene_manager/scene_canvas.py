@@ -237,6 +237,7 @@ class SceneEditor(QWidget):
         # ── Canvas ────────────────────────────────────────────────
         self._gba_scene = GBAScene()
         self._gba_view = GBAView(self._gba_scene)
+        self._gba_view.zoom_changed.connect(self._bar.set_zoom)
         self._gba_view.setMouseTracking(True)
         self._gba_scene.selectionChanged.connect(self._on_selection_changed)
         # Filet de sécurité : Qt.selectionChanged ne fire que si l'ensemble

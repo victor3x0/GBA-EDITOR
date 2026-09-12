@@ -152,6 +152,7 @@ class TextEditorScreen(QWidget):
         # Charset réécrit d'un bloc : assignation positionnelle sur les cases.
         self._font_insp.charset_edited.connect(self._on_charset_edited)
         self._font_asset_insp.field_changed.connect(self._on_font_asset_field_changed)
+        self._font_asset_preview.field_changed.connect(self._on_font_asset_field_changed)
 
     def load_project(self, project):
         """Ouvre un projet — l'écran repart en contexte Texte."""
@@ -262,6 +263,10 @@ class TextEditorScreen(QWidget):
         ))
 
     def _after_font_asset_change(self, asset):
+        # Le sélecteur de taille de l'aperçu et celui de l'inspecteur pilotent
+        # la même recette. Relire les deux évite qu'un des deux affiche une
+        # valeur transitoire après undo/redo ou après un changement dans l'autre.
+        self._font_asset_insp.load(asset, self._project)
         self._font_asset_preview.refresh()
         if self._project:
             self._project.save_font_asset(asset)

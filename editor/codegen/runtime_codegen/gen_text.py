@@ -357,7 +357,7 @@ def fonts_and_texts_lines(p, emit=None) -> list[str]:
     encoded = []
     for f in kept:
         try:
-            e = encode_font(f, p.asset_abs(f.asset))
+            e = encode_font(f, p.asset_abs(f.asset) if f.asset else None)
         except Exception as exc:
             if emit:
                 emit("error_line", f"[font] {f.name} : encodage impossible ({exc})")
@@ -427,7 +427,8 @@ def region_is_composited(p: Project, lay, el, default_font_name: str) -> bool:
         return True
     from codegen.font_emit import render_composited
     fname = getattr(el, "font_name", "") or default_font_name
-    font = p.fonts.get(fname) if fname else None
+    from codegen.font_emit import encodable_project_fonts
+    font = next((item for item in encodable_project_fonts(p) if item.name == fname), None)
     return bool(font) and render_composited(font)
 
 
