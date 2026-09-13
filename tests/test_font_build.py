@@ -10,7 +10,7 @@ from core.models.font_asset import FontAsset
 def test_un_font_asset_rasterise_alimente_encodage_et_budget(monkeypatch):
     glyph = RasterGlyph("A", 3, 5, bytes([255]) * 15, 4, 0, 5, "source")
     monkeypatch.setattr("codegen.font_build.rasterize_asset_glyph",
-                        lambda _project, _asset, char: glyph if char == "A"
+                        lambda _project, _asset, char, faces=None: glyph if char == "A"
                         else (_ for _ in ()).throw(RuntimeError("absent")))
 
     font = build_font_asset(object(), FontAsset(

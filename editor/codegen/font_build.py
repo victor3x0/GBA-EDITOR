@@ -80,9 +80,13 @@ def build_font_asset(project, asset, chars: set[str] | None = None) -> Font:
     """
     chars = set(chars or project_codepoints(project)) | _bitmap_chars(project, asset)
     glyphs, rasters = [], {}
+    # Table de faces LOCALE à ce build : chaque fichier de police n'est chargé
+    # qu'une fois pour tous ses glyphes (au lieu d'une Face par glyphe, ×2 avec
+    # glyph_exists). Locale → aucun état partagé entre threads, libérée au retour.
+    faces: dict = {}
     for char in sorted(chars, key=ord):
         try:
-            raster = rasterize_asset_glyph(project, asset, char)
+            raster = rasterize_asset_glyph(project, asset, char, faces=faces)
         except FontRasterizerError:
             continue
         # La cellule tient la ligne demandée ; le vrai dépôt (bearings inclus)

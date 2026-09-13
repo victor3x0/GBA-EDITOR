@@ -569,8 +569,10 @@ class MainWindow(QMainWindow):
         # `refresh_blend` ne relit aucun fichier, on peut donc la brancher sur
         # chaque cran du curseur sans le rendre poussif.
         self._inspector.blend_changed.connect(self.scene_editor.refresh_blend)
+        # set_script_open_fn couvre désormais scene/actor/camera (appliqué par
+        # leurs fabriques au démarrage paresseux) — plus d'accès direct à
+        # `_scene_insp`, qui n'existe pas encore à ce stade.
         self._inspector.set_script_open_fn(self.open_script)
-        self._inspector._scene_insp.set_script_open_fn(self.open_script)
         self._h_split.addWidget(self._inspector)
 
         # Mise en page UI éditée depuis l'arbre de scène (ajout/suppression/
@@ -1159,7 +1161,7 @@ class MainWindow(QMainWindow):
         racine (core/models/scene.Prefab), `.load()` seule ne sait pas
         retrouver ce contexte depuis l'Actor nu qu'elle affiche déjà."""
         actor_insp = self._inspector.actor_inspector
-        if not actor_insp._actor:
+        if actor_insp is None or not actor_insp._actor:
             return
         scene = self.project.active_scene if self.project else None
         if actor_insp._is_prefab_template and actor_insp._prefab:
@@ -1221,9 +1223,10 @@ class MainWindow(QMainWindow):
         self.scene_tree_panel.refresh()
         self.scene_editor.reload_scene_items()
         self._update_gba_bar()
-        # Recharger l'inspector scène
+        # Recharger l'inspector scène — s'il a déjà été construit (démarrage
+        # paresseux) ET montre une scène.
         si = self._inspector._scene_insp
-        if si._scene:
+        if si is not None and si._scene:
             si.load(si._scene, self.project)
         # Recharger l'inspector si un actor est sélectionné
         self._reload_actor_inspector()

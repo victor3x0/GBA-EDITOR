@@ -83,63 +83,138 @@ class DynamicInspector(QWidget):
         el.addStretch(); el.addWidget(hint); el.addStretch()
         self._stack.addWidget(empty_w)
 
-        # 1 — scene
-        self._scene_insp = SceneInspector()
-        self._scene_insp.changed.connect(self.changed)
-        self._scene_insp.slot_assigned.connect(self.slot_assigned)
-        self._stack.addWidget(self._scene_insp)
+        # Démarrage paresseux — MÊME schéma que window._build_screens. Les 9
+        # inspecteurs contextuels sont lourds à CONSTRUIRE (leurs widgets, puis
+        # leur polish au premier show), mais un seul est visible à la fois. On ne
+        # monte ici qu'un placeholder par mode, à l'index == mode ; le vrai
+        # inspecteur — et son câblage de signaux — naît à sa première venue via
+        # `_ensure`. C'est l'essentiel du coût de construction de la fenêtre et
+        # de son premier paint qui sort ainsi du chemin de démarrage.
+        self._factories = {
+            self._MODE_SCENE:       self._make_scene,
+            self._MODE_ACTOR:       self._make_actor,
+            self._MODE_CAMERA:      self._make_camera,
+            self._MODE_PREFAB_USES: self._make_prefab_uses,
+            self._MODE_SCRIPT_USES: self._make_script_uses,
+            self._MODE_PROJECT:     self._make_project,
+            self._MODE_SCRIPT:      self._make_script,
+            self._MODE_UI:          self._make_ui,
+            self._MODE_UI_NODE:     self._make_ui_node,
+        }
+        self._placeholders: dict[int, QWidget] = {}
+        for _mode in self._factories:            # 1..9, dans l'ordre → index == mode
+            ph = QWidget()
+            self._placeholders[_mode] = ph
+            self._stack.addWidget(ph)
 
-        # 2 — actor / prefab
-        self._actor_insp = ActorInspector()
-        self._actor_insp.changed.connect(self._on_actor_insp_changed)
-        self._stack.addWidget(self._actor_insp)
+        # Références des inspecteurs — None tant que non construits.
+        self._scene_insp = None
+        self._actor_insp = None
+        self._camera_insp = None
+        self._uses_insp = None
+        self._script_uses_insp = None
+        self._project_insp = None
+        self._script_insp = None
+        self._ui_insp = None
+        self._ui_node_insp = None
 
-        # 3 — caméra
-        self._camera_insp = CameraInspector()
-        self._camera_insp.changed.connect(self.changed)
-        self._camera_insp.camera_moved.connect(self.camera_moved)
-        self._stack.addWidget(self._camera_insp)
-
-        # 4 — prefab uses
-        self._uses_insp = PrefabUsesInspector()
-        self._uses_insp.edit_requested.connect(
-            lambda p: self.show_prefab(p, self._project))
-        self._stack.addWidget(self._uses_insp)
-
-        # 5 — script uses
-        self._script_uses_insp = ScriptUsesInspector()
-        self._script_uses_insp.edit_requested.connect(self._on_script_edit_requested)
-        self._stack.addWidget(self._script_uses_insp)
-
-        # 6 — projet (mode par défaut : aucune sélection)
-        self._project_insp = ProjectInspector()
-        self._stack.addWidget(self._project_insp)
-
-        # 7 — script (asset .lua sélectionné dans le Project Viewer)
-        self._script_insp = ScriptInspector()
-        self._stack.addWidget(self._script_insp)
+        # Injecté par window.py AVANT toute construction d'inspecteur : mémorisé
+        # ici, appliqué par les fabriques concernées à la naissance de leur
+        # inspecteur (cf. set_script_open_fn).
+        self._script_open_fn = None
         self._current_script_path = None   # utilisé par _on_header_rename
-
-        # 8 — élément d'UI (texte, conteneur ou image) — UN inspecteur adaptatif
-        self._ui_insp = UIInspector()
-        self._ui_insp.changed.connect(self.changed)
-        self._ui_insp.changed.connect(self.ui_regions_changed)
-        # Un renommage venu d'AILLEURS que l'en-tête (arbre, canvas) doit s'y
-        # refléter : l'en-tête est désormais le seul endroit qui montre le nom.
-        self._ui_insp.renamed.connect(self._header.set_name)
-        self._stack.addWidget(self._ui_insp)
-
-        # 9 — nœud « Interface » (l'asset UILayout : ancrage + cible du sous-arbre)
-        self._ui_node_insp = UINodeInspector()
-        self._ui_node_insp.changed.connect(self.changed)
-        self._ui_node_insp.changed.connect(self.ui_regions_changed)
-        self._ui_node_insp.renamed.connect(self._header.set_name)
-        self._stack.addWidget(self._ui_node_insp)
 
         self._stack.setCurrentIndex(self._MODE_EMPTY)
 
         from core.selection_bus import get_bus
         get_bus().changed.connect(self.on_selection)
+
+    # ── Démarrage paresseux des sous-inspecteurs ─────────────────
+    #
+    # Une fabrique par mode : elle CONSTRUIT l'inspecteur, branche ses signaux
+    # une seule fois, applique le callback d'ouverture de script s'il est déjà
+    # connu, et le mémorise dans son attribut `self._X_insp`. `_ensure` la
+    # déclenche à la première venue du mode et substitue le vrai widget au
+    # placeholder, à l'index inchangé (== mode).
+
+    def _ensure(self, mode: int) -> None:
+        ph = self._placeholders.pop(mode, None)
+        if ph is None:
+            return   # déjà construit, ou mode sans fabrique (EMPTY)
+        real = self._factories[mode]()
+        self._stack.removeWidget(ph)
+        ph.deleteLater()
+        self._stack.insertWidget(mode, real)
+
+    def _make_scene(self) -> QWidget:
+        insp = SceneInspector()
+        insp.changed.connect(self.changed)
+        insp.slot_assigned.connect(self.slot_assigned)
+        # Le nom de la scène peut changer via un rename interne (`changed`) :
+        # tenir l'en-tête à jour. Branché ICI, une fois — `show_scene` empilait
+        # auparavant une connexion identique à chaque appel.
+        insp.changed.connect(
+            lambda: self._header.set_name(insp._scene.name if insp._scene else ""))
+        if self._script_open_fn:
+            insp.set_script_open_fn(self._script_open_fn)
+        self._scene_insp = insp
+        return insp
+
+    def _make_actor(self) -> QWidget:
+        insp = ActorInspector()
+        insp.changed.connect(self._on_actor_insp_changed)
+        insp._script_open_fn = self._script_open_fn
+        self._actor_insp = insp
+        return insp
+
+    def _make_camera(self) -> QWidget:
+        insp = CameraInspector()
+        insp.changed.connect(self.changed)
+        insp.camera_moved.connect(self.camera_moved)
+        if self._script_open_fn:
+            insp.set_script_open_fn(self._script_open_fn)
+        self._camera_insp = insp
+        return insp
+
+    def _make_prefab_uses(self) -> QWidget:
+        insp = PrefabUsesInspector()
+        insp.edit_requested.connect(lambda p: self.show_prefab(p, self._project))
+        self._uses_insp = insp
+        return insp
+
+    def _make_script_uses(self) -> QWidget:
+        insp = ScriptUsesInspector()
+        insp.edit_requested.connect(self._on_script_edit_requested)
+        self._script_uses_insp = insp
+        return insp
+
+    def _make_project(self) -> QWidget:
+        insp = ProjectInspector()
+        self._project_insp = insp
+        return insp
+
+    def _make_script(self) -> QWidget:
+        insp = ScriptInspector()
+        self._script_insp = insp
+        return insp
+
+    def _make_ui(self) -> QWidget:
+        insp = UIInspector()
+        insp.changed.connect(self.changed)
+        insp.changed.connect(self.ui_regions_changed)
+        # Un renommage venu d'AILLEURS que l'en-tête (arbre, canvas) doit s'y
+        # refléter : l'en-tête est désormais le seul endroit qui montre le nom.
+        insp.renamed.connect(self._header.set_name)
+        self._ui_insp = insp
+        return insp
+
+    def _make_ui_node(self) -> QWidget:
+        insp = UINodeInspector()
+        insp.changed.connect(self.changed)
+        insp.changed.connect(self.ui_regions_changed)
+        insp.renamed.connect(self._header.set_name)
+        self._ui_node_insp = insp
+        return insp
 
     def _on_actor_insp_changed(self):
         """Relaye changed ET émet actor_changed(actor) avec le payload explicite."""
@@ -279,6 +354,7 @@ class DynamicInspector(QWidget):
             KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE)
         kind = getattr(element, "kind", KIND_TEXT)
         scene = project.active_scene if project else None
+        self._ensure(self._MODE_UI)
         self._ui_insp.load(layout_asset, element, project, scene)
         header_kind, title = {
             KIND_CONTAINER: ("ui_container", label('common.container')),
@@ -297,6 +373,7 @@ class DynamicInspector(QWidget):
         """Le nœud « Interface » (l'asset) → l'inspecteur de chemin matériel. Le
         bandeau devient l'endroit où le nom du nœud se change."""
         scene = scene or (project.active_scene if project else None)
+        self._ensure(self._MODE_UI_NODE)
         self._ui_node_insp.load(layout, scene, project)
         self._set_header("ui_layout", label('common.interface'), layout.name if layout else "")
         self._stack.setCurrentIndex(self._MODE_UI_NODE)
@@ -321,34 +398,33 @@ class DynamicInspector(QWidget):
     def show_project(self):
         """Mode par défaut de l'inspecteur — aucune sélection (clic hors
         canvas, Échap, suppression du dernier actor sélectionné…)."""
+        self._ensure(self._MODE_PROJECT)
         self._project_insp.load(self._project)
         name = self._project.settings.name if self._project else ""
         self._set_header("project", label('dyninsp.project'), name)
         self._stack.setCurrentIndex(self._MODE_PROJECT)
 
     def show_scene(self, scene, project):
+        self._ensure(self._MODE_SCENE)
         self._scene_insp.load(scene, project)
         self._set_header("scene", label('common.scene'), scene.name if scene else "")
         self._stack.setCurrentIndex(self._MODE_SCENE)
-        # Sync si l'inspector SceneInspector émet changed après un rename interne
-        self._scene_insp.changed.connect(
-            lambda: self._header.set_name(
-                self._scene_insp._scene.name if self._scene_insp._scene else ""
-            )
-        )
 
     def show_actor(self, actor, project, scene=None):
+        self._ensure(self._MODE_ACTOR)
         self._actor_insp.load(actor, project, scene)
         self._set_header("actor", label('common.actor'), actor.name if actor else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_prefab(self, prefab, project):
         scene = project.active_scene if project else None
+        self._ensure(self._MODE_ACTOR)
         self._actor_insp.load_prefab(prefab, project, scene)
         self._set_header("prefab", label('dyninsp.prefab'), prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_ACTOR)
 
     def show_camera(self, scene, camera, project):
+        self._ensure(self._MODE_CAMERA)
         self._camera_insp.load(scene, camera, project)
         # Éditable seulement si la caméra existe RÉELLEMENT : l'état implicite
         # ("(default)", cf. camera_inspector.py) n'a pas de nom à changer —
@@ -363,6 +439,7 @@ class DynamicInspector(QWidget):
         from pathlib import Path as _P
         path = _P(path)
         self._current_script_path = path
+        self._ensure(self._MODE_SCRIPT)
         self._script_insp.load(path)
         self._set_header("script_asset", label('dyninsp.script'), path.name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT)
@@ -371,6 +448,7 @@ class DynamicInspector(QWidget):
         proj = project or self._project
         if not proj:
             return
+        self._ensure(self._MODE_PREFAB_USES)
         self._uses_insp.load(prefab, proj)
         self._set_header("uses", label('dyninsp.instances'), prefab.name if prefab else "")
         self._stack.setCurrentIndex(self._MODE_PREFAB_USES)
@@ -380,6 +458,7 @@ class DynamicInspector(QWidget):
         if not proj:
             return
         from pathlib import Path as _P
+        self._ensure(self._MODE_SCRIPT_USES)
         self._script_uses_insp.load(script_path, proj)
         self._set_header("script", label('dyninsp.script'), _P(script_path).name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT_USES)
@@ -394,17 +473,32 @@ class DynamicInspector(QWidget):
             self._script_open_fn(path)
 
     def set_script_open_fn(self, fn):
-        """Injecté par window.py pour ouvrir un script depuis la vue ScriptUses."""
+        """Injecté par window.py pour ouvrir un script depuis un inspecteur.
+
+        Mémorisé, puis appliqué aux inspecteurs concernés — à ceux DÉJÀ
+        construits maintenant, et aux autres par leur fabrique le jour où ils
+        naissent (démarrage paresseux). Couvre scene/actor/camera : au démarrage
+        aucun n'existe encore, tout passe donc par les fabriques."""
         self._script_open_fn = fn
-        self._actor_insp._script_open_fn = fn
-        self._camera_insp.set_script_open_fn(fn)
+        if self._actor_insp is not None:
+            self._actor_insp._script_open_fn = fn
+        if self._camera_insp is not None:
+            self._camera_insp.set_script_open_fn(fn)
+        if self._scene_insp is not None:
+            self._scene_insp.set_script_open_fn(fn)
 
     def update_actor_position(self, x: int, y: int):
-        self._actor_insp.update_position(x, y)
+        # Un drag canvas peut précéder toute ouverture de l'inspecteur d'acteur :
+        # rien à mettre à jour tant qu'il n'existe pas, il se chargera à sa venue.
+        if self._actor_insp is not None:
+            self._actor_insp.update_position(x, y)
 
     def update_camera_position(self, camera, x: int, y: int):
-        self._camera_insp.update_position(camera, x, y)
+        if self._camera_insp is not None:
+            self._camera_insp.update_position(camera, x, y)
 
     @property
-    def actor_inspector(self) -> ActorInspector:
+    def actor_inspector(self) -> ActorInspector | None:
+        """L'inspecteur d'acteur s'il a déjà été construit, sinon None (démarrage
+        paresseux) — les appelants (window._reload_actor_inspector) gèrent None."""
         return self._actor_insp

@@ -492,6 +492,21 @@ class GBAScene(QGraphicsScene):
         finally:
             self.blockSignals(was_blocked)
 
+        # Pré-chauffage : résoudre MAINTENANT (hors écran, à la construction des
+        # items) les couleurs de banque de chaque région. Chaque item les met en
+        # cache pour sa vie, et `scene_layout_cache` fait PARTAGER une seule
+        # allocation de scène — sans quoi ce coût (lourd : résolution des
+        # palettes de police) retombe au PREMIER paint, région par région, et
+        # fige l'affichage initial de la scène. Le build n'entre jamais dans ce
+        # contexte : il recalcule, aucun risque de périmé.
+        from codegen.palette_alloc import scene_layout_cache
+        with scene_layout_cache():
+            for it in self._ui_region_items:
+                try:
+                    it._bank_colors()
+                except Exception:
+                    pass
+
     def set_snap(self, snap: bool):
         self._snap = snap
         for item in self._sprite_items:

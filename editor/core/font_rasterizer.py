@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 
 class FontRasterizerError(RuntimeError):
     """Une source vectorielle ne peut pas être rasterisée."""
@@ -80,6 +82,28 @@ def _freetype():
     return freetype
 
 
+def _face(freetype, source_path, faces=None):
+    """La ``Face`` FreeType du fichier source.
+
+    ``faces`` (optionnel) est une table ``{chemin: Face}`` LOCALE à un lot de
+    rasterisations — cf. ``build_font_asset``, qui rastérise des dizaines de
+    glyphes d'une même police. Sans elle, chaque glyphe re-parsait le fichier
+    entier (une ``Face`` par appel, ×2 avec ``glyph_exists``) : c'était le coût
+    dominant de l'ouverture d'un projet. Avec elle, le fichier n'est lu qu'UNE
+    fois par source. La table ne vit que le temps de l'appel qui la crée (aucun
+    état de module, donc rien à invalider ni à partager entre threads) ; les
+    ``Face`` se libèrent à sa disparition. ``set_pixel_sizes``/``load_char``
+    restent réappliqués à chaque glyphe, la réutilisation est donc sûre."""
+    key = str(source_path)
+    if faces is None:
+        return freetype.Face(key)
+    face = faces.get(key)
+    if face is None:
+        face = freetype.Face(key)
+        faces[key] = face
+    return face
+
+
 def _load_flags(freetype, hinting: str, *, grid_fit: bool = False) -> int:
     """Traduit le vocabulaire persistant en choix FreeType, localement."""
     flags = freetype.FT_LOAD_RENDER
@@ -133,36 +157,41 @@ def _has_embedded_strike(face, pixel_height: int) -> bool:
 
 
 def _coverage(bitmap, freetype) -> bytes:
-    """Normalise les bitmaps Gray ou mono de FreeType en 0..255."""
+    """Normalise les bitmaps Gray ou mono de FreeType en 0..255.
+
+    Vectorisé (numpy) : le tampon entier est traité d'un bloc au lieu d'un
+    double `for` par pixel. Sortie octet-pour-octet identique à l'ancienne
+    boucle — `np.rint` arrondit au pair le plus proche, comme `round`."""
     width, rows, pitch = int(bitmap.width), int(bitmap.rows), int(bitmap.pitch)
     if not width or not rows:
         return b""
-    data = bytes(bitmap.buffer)
     stride = abs(pitch)
-    out = bytearray(width * rows)
+    # Tampon brut en (rows, stride), dans l'ordre mémoire des lignes source.
+    raw = np.frombuffer(bytes(bitmap.buffer), dtype=np.uint8)[:rows * stride]
+    raw = raw.reshape(rows, stride)
     mono = bitmap.pixel_mode == freetype.FT_PIXEL_MODE_MONO
-    for y in range(rows):
-        source_y = y if pitch >= 0 else rows - 1 - y
-        row = data[source_y * stride:(source_y + 1) * stride]
-        for x in range(width):
-            if mono:
-                out[y * width + x] = 255 if row[x // 8] & (0x80 >> (x % 8)) else 0
-            else:
-                value = row[x] if x < len(row) else 0
-                # FT_GRAY_NUM_GRAYS vaut normalement 256, mais cette formule
-                # garde la sortie correcte pour une strike à autre profondeur.
-                grays = max(2, int(getattr(bitmap, "num_grays", 256)))
-                out[y * width + x] = round(value * 255 / (grays - 1))
-    return bytes(out)
+    if mono:
+        # 1 bit/pixel, MSB d'abord (0x80 >> (x % 8)) : dépaquetage direct.
+        bits = np.unpackbits(raw, axis=1)          # (rows, stride*8), MSB-first
+        out = np.where(bits[:, :width] != 0, 255, 0).astype(np.uint8)
+    else:
+        vals = raw[:, :width].astype(np.int32)     # Gray brut (0..grays-1)
+        grays = max(2, int(getattr(bitmap, "num_grays", 256)))
+        # FT_GRAY_NUM_GRAYS vaut normalement 256, mais cette formule garde la
+        # sortie correcte pour une strike à autre profondeur.
+        out = np.rint(vals * 255 / (grays - 1)).astype(np.uint8)
+    if pitch < 0:                                  # lignes de bas en haut
+        out = out[::-1]
+    return out.tobytes()
 
 
-def glyph_exists(source_path: Path, char: str) -> bool:
+def glyph_exists(source_path: Path, char: str, faces=None) -> bool:
     """Vrai si la face possède réellement ce caractère, hors .notdef."""
     if len(char) != 1:
         return False
     freetype = _freetype()
     try:
-        face = freetype.Face(str(source_path))
+        face = _face(freetype, source_path, faces)
         return bool(face.get_char_index(ord(char)))
     except Exception as exc:  # FreeType expose plusieurs classes d'erreur.
         raise FontRasterizerError(f"Lecture impossible de « {source_path.name} » : {exc}") from exc
@@ -179,6 +208,7 @@ def rasterize_vector_glyph(
     offset_x: int = 0,
     offset_y: int = 0,
     source_name: str = "",
+    faces=None,
 ) -> RasterGlyph:
     """Rastérise un caractère TTF/OTF en couverture, sans effet de bord."""
     if len(char) != 1:
@@ -187,7 +217,7 @@ def rasterize_vector_glyph(
         raise ValueError("pixel_height doit être positif")
     freetype = _freetype()
     try:
-        face = freetype.Face(str(source_path))
+        face = _face(freetype, source_path, faces)
         fit = resolved_pixel_fit(
             pixel_fit, pixel_height,
             has_bitmap_strike=(pixel_fit == "bitmap_strike" or prefer_bitmap_strike)
@@ -258,12 +288,17 @@ def _asset_source_names(asset, variant: str, weight: int | None = None,
 
 
 def rasterize_asset_glyph(project, asset, char: str, variant: str = "regular",
-                           weight: int | None = None, italic: bool | None = None) -> RasterGlyph:
+                           weight: int | None = None, italic: bool | None = None,
+                           faces=None) -> RasterGlyph:
     """Résout la couverture d'un ``FontAsset`` dans l'ordre de ses sources.
 
     L'accès au projet sert uniquement à résoudre les noms et chemins. Dès que
     la source est choisie, l'opération délègue à ``rasterize_vector_glyph``, la
     fonction pure que le build utilisera également.
+
+    ``faces`` : table ``{chemin: Face}`` optionnelle, partagée sur toute une
+    passe de rasterisation pour ne charger chaque police qu'une fois (cf.
+    ``_face`` et ``build_font_asset``).
     """
     names = _asset_source_names(asset, variant, weight, italic)
     if not names:
@@ -274,7 +309,18 @@ def rasterize_asset_glyph(project, asset, char: str, variant: str = "regular",
         if source is None:
             problems.append(f"{name} est introuvable")
             continue
-        path = project.asset_abs(source.asset)
+        # `asset_abs` fait un `.resolve()` (appel filesystem, lent sur Windows) :
+        # inchangé pour tous les glyphes d'une même source, on le mémoïse sur la
+        # passe plutôt que de le refaire à chaque caractère.
+        if faces is None:
+            path = project.asset_abs(source.asset)
+        else:
+            pkey = ("path", source.asset)
+            if pkey in faces:
+                path = faces[pkey]
+            else:
+                path = project.asset_abs(source.asset)
+                faces[pkey] = path
         if not path or not path.exists():
             problems.append(f"le fichier de {name} est introuvable")
             continue
@@ -285,34 +331,57 @@ def rasterize_asset_glyph(project, asset, char: str, variant: str = "regular",
                 continue
             try:
                 from PIL import Image
-                image = Image.open(path).convert("RGBA")
-                pixels = image.load()
-                coverage = bytearray(glyph.w * glyph.h)
-                colors = bytearray(glyph.w * glyph.h * 3)
-                keys = {tuple(c) for c in source.key_colors()}
-                for y in range(glyph.h):
-                    for x in range(glyph.w):
-                        if x + glyph.x >= image.width or y + glyph.y >= image.height:
-                            continue
-                        r, g, b, a = pixels[x + glyph.x, y + glyph.y]
-                        pos = y * glyph.w + x
-                        coverage[pos] = 0 if (r, g, b) in keys else a
-                        colors[pos * 3:pos * 3 + 3] = bytes((r, g, b))
-                return RasterGlyph(char, glyph.w, glyph.h, bytes(coverage),
+                # Même remède que `_face` pour le chemin vectoriel : la planche
+                # PNG était rouverte et redécodée à CHAQUE glyphe (1000+ pour une
+                # police japonaise), coût dominant de l'ouverture d'un projet à
+                # polices bitmap. Réutilisée depuis la table de passe si fournie.
+                ikey = ("img", str(path))
+                image = faces.get(ikey) if faces is not None else None
+                if image is None:
+                    image = Image.open(path).convert("RGBA")
+                    if faces is not None:
+                        faces[ikey] = image
+                # Vectorisé (numpy) : le rectangle du glyphe est découpé et
+                # transformé d'un bloc au lieu d'un double `for` par pixel — le
+                # coût dominant de l'ouverture d'un projet à polices bitmap.
+                # Sortie octet-pour-octet identique à l'ancienne boucle.
+                arr = np.asarray(image)                    # (H, W, 4) uint8
+                H, W = int(arr.shape[0]), int(arr.shape[1])
+                gw, gh, gx, gy = glyph.w, glyph.h, glyph.x, glyph.y
+                coverage = np.zeros((gh, gw), dtype=np.uint8)
+                colors = np.zeros((gh, gw, 3), dtype=np.uint8)
+                # Rectangle clampé à la planche : un pixel hors-bord reste 0,
+                # exactement comme le `continue` par pixel d'avant.
+                vw = max(0, min(gw, W - gx))
+                vh = max(0, min(gh, H - gy))
+                if vw and vh:
+                    sub = arr[gy:gy + vh, gx:gx + vw]
+                    rgb, alpha = sub[..., :3], sub[..., 3]
+                    colors[:vh, :vw] = rgb
+                    keycols = [tuple(c) for c in source.key_colors()]
+                    if keycols:
+                        keyarr = np.array(keycols, dtype=np.uint8)   # (K, 3)
+                        # Chaque pixel comparé à chaque key color, en bloc.
+                        is_key = (rgb[:, :, None, :] == keyarr).all(-1).any(-1)
+                        coverage[:vh, :vw] = np.where(is_key, 0, alpha)
+                    else:
+                        coverage[:vh, :vw] = alpha
+                return RasterGlyph(char, gw, gh, coverage.tobytes(),
                                    glyph.advance, glyph.ox, glyph.h - glyph.oy,
-                                   source_name=name, colors=bytes(colors))
+                                   source_name=name, colors=colors.tobytes())
             except Exception as exc:
                 problems.append(f"lecture bitmap de {name} impossible ({exc})")
                 continue
         if source.source_format not in ("ttf", "otf"):
             problems.append(f"{name} a un format non rendu")
             continue
-        if glyph_exists(path, char):
+        if glyph_exists(path, char, faces):
             return rasterize_vector_glyph(
                 path, char, pixel_height=asset.pixel_height, hinting=asset.hinting,
                 pixel_fit=asset.pixel_fit,
                 prefer_bitmap_strike=asset.prefer_bitmap_strike,
                 offset_x=asset.offset_x, offset_y=asset.offset_y, source_name=name,
+                faces=faces,
             )
     detail = " ; ".join(problems) or "aucune source ne couvre ce caractère"
     raise FontRasterizerError(f"« {char} » ne peut pas être rendu : {detail}.")
