@@ -1155,6 +1155,19 @@ void text_read_reset_all(void);   /* posé par scene_init — ferme les lectures
 void text_update  (void);         /* une fois par frame, avant oam_update */
 void text_clear_in    (int region);             /* vide une zone, BG ou OBJ */
 
+/* ── Routage de rendu PAR SCÈNE (ROADMAP v0.12) ──────────────────────
+   `g_ui_regions`/`g_ui_images` sont per-ASSET : leur index est un nom d'élément
+   unique au projet. Mais le SLOT BG où une zone se rend appartient au NŒUD
+   `Interface` d'une scène, et peut différer d'une scène à l'autre pour un même
+   layout partagé (un HUD sur BG0 ici, BG2 là). `scene_init` pose donc, pour
+   chaque zone/image de ses nœuds, son slot ; le rendu l'utilise au lieu du layer
+   global. Tant qu'aucune route n'est posée, le rendu retombe sur `text_set_layer`
+   — l'ancien comportement, inchangé. (La cible BG/OBJ et l'ancrage restent per-
+   asset ; les rendre per-nœud attend l'édition par nœud, tranche éditeur.) */
+void scene_routes_reset (void);                    /* posé par scene_init, en tête */
+void scene_route_region (int r, int layer);        /* slot BG de la zone `r` dans cette scène */
+void scene_route_image  (int i, int layer);        /* slot BG de l'image `i` dans cette scène */
+
 /* Le FOND d'une zone — ce qu'il y a sous son texte, posé par scene_init AVANT
    les postes de texte (cf. `_gen_scene_init`). `text_clear_region_fills` vide
    la table de la scène précédente. Deux façons d'y enregistrer une zone, selon
@@ -2859,6 +2872,29 @@ typedef struct TextRead {
 static TextRead g_reads[TEXT_READ_MAX];
 static int      g_reads_init = 0;
 
+/* Routage de rendu par scène — le SLOT BG de chaque zone dans la scène courante.
+   En v0.12 tranche 2, seul le slot diffère d'une scène à l'autre pour un layout
+   partagé (la migration a semé `bg_slot` depuis l'ancien `text_bg`) ; la cible
+   BG/OBJ et l'ancrage restent ceux de l'asset (`g_ui_regions`). Poser aussi une
+   cible par nœud attendra l'édition par nœud (tranche éditeur). Les régions sont
+   un sous-ensemble des éléments, d'où le même plafond. */
+#define UI_REGION_MAX UI_ELEMENT_MAX
+static short         g_region_layer[UI_REGION_MAX];   /* slot BG du nœud */
+static unsigned char g_region_active[UI_REGION_MAX];  /* 0 = zone hors de la scène courante */
+
+void scene_route_region(int r, int layer) {
+    if (r < 0 || r >= UI_REGION_MAX || r >= g_ui_region_count) return;
+    g_region_layer[r] = (short)layer;
+    g_region_active[r] = 1;
+}
+
+/* Le slot BG où écrire cette zone : celui de son nœud si la scène l'a posé,
+   sinon le layer courant (`text_set_layer`) — l'ancien comportement. */
+static int region_layer_of(int r) {
+    return (r >= 0 && r < UI_REGION_MAX && g_region_active[r])
+           ? g_region_layer[r] : g_text_layer;
+}
+
 /* ── Visibilité des éléments d'interface ────────────────────────────
    État MUTABLE, propre bit de chaque élément — le seul que `ui_element_show`
    écrit. La visibilité EFFECTIVE (cf. `ui_element_is_visible`) n'est jamais
@@ -2907,7 +2943,11 @@ static void text_clear_region_at(const UIRegionInfo *R, int r, int ox, int oy) {
        PARTAGÉE — donc celles d'une autre zone — en laissant les siennes
        encrées. Même raison que la reprise du surlignement juste au-dessus. */
     g_surf_cur = text_region_surf(r);
+    /* Même slot BG qu'au rendu de la zone (routage par scène). */
+    int _saved_layer = g_text_layer;
+    g_text_layer = region_layer_of(r);
     text_clear(ox >> 3, oy >> 3, w > 0 ? w : 1, h > 0 ? h : 1);
+    g_text_layer = _saved_layer;
     g_pal_bank_bg = _save_bank;
     g_surf_cur = 0;
     g_ui_highlight = 0;
@@ -2992,7 +3032,14 @@ static void text_render_region(int id, int r, int n) {
        sont animés. */
     int restore_font = g_font_logical;
     g_ev = e; g_nev = ne;
+    /* Le slot BG de CETTE zone le temps du rendu (cf. routage par scène) : les
+       helpers d'écriture BG lisent `g_text_layer`, on le pose donc ici et on le
+       restaure pour ne pas déplacer le layer de l'écriture libre. La cible OBJ
+       n'y touche pas (elle passe par l'OAM). */
+    int _saved_layer = g_text_layer;
+    g_text_layer = region_layer_of(r);
     text_render_region_cp(s, len, r, n);
+    g_text_layer = _saved_layer;
     if (restore_font >= 0) text_set_font(restore_font);
     g_ev = 0; g_nev = 0;
     g_text_default_font = -1;
@@ -3756,6 +3803,29 @@ typedef struct UIImageState {
 
 static UIImageState g_ui_img[UI_IMAGE_MAX];
 
+/* Routage de rendu par scène — pendant image des zones (cf. scene_route_region). */
+static short         g_image_layer[UI_IMAGE_MAX];
+static unsigned char g_image_active[UI_IMAGE_MAX];
+
+void scene_route_image(int i, int layer) {
+    if (i < 0 || i >= UI_IMAGE_MAX || i >= g_ui_image_count) return;
+    g_image_layer[i] = (short)layer;
+    g_image_active[i] = 1;
+}
+
+static int image_layer_of(int i) {
+    return (i >= 0 && i < UI_IMAGE_MAX && g_image_active[i])
+           ? g_image_layer[i] : g_text_layer;
+}
+
+/* Remet à zéro tout le routage : appelé en tête de `scene_init`, avant que la
+   scène ne (re)pose la cible de ses propres nœuds. Une zone/image laissée
+   inactive retombe sur son contenu per-asset (rendu par défaut). */
+void scene_routes_reset(void) {
+    for (int r = 0; r < UI_REGION_MAX; r++) g_region_active[r] = 0;
+    for (int i = 0; i < UI_IMAGE_MAX;  i++) g_image_active[i]  = 0;
+}
+
 void ui_image_set_bank(int img, int bank) {
     if (img < 0 || img >= UI_IMAGE_MAX) return;
     g_ui_img[img].bank = (unsigned char)((bank >= 0 && bank < 16) ? bank : 0);
@@ -3900,9 +3970,13 @@ static int ui_image_size(int w, int h) {
 
 void ui_image_update(void) {
     int n = g_ui_image_count < UI_IMAGE_MAX ? g_ui_image_count : UI_IMAGE_MAX;
+    /* Slot BG de l'écriture libre, restauré en sortie : chaque image pose le
+       sien (routage par scène) le temps de son propre rendu BG. */
+    int _saved_layer = g_text_layer;
     for (int i = 0; i < n; i++) {
         const UIImageInfo *I = &g_ui_images[i];
         UIImageState *S = &g_ui_img[i];
+        g_text_layer = image_layer_of(i);
         if (!I->dirs) continue;              /* image sans sprite : rien à poser */
 
         /* 1. Tick d'animation — la même arithmétique que la boucle des acteurs.
@@ -3979,6 +4053,7 @@ void ui_image_update(void) {
             }
         }
     }
+    g_text_layer = _saved_layer;
 }
 
 /* ── Blending ────────────────────────────────────────────────────── */

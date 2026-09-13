@@ -190,7 +190,8 @@ def _apply_vram_layout(p, scene, bgi: list[dict], res: dict) -> None:
     from codegen.vram_alloc import scene_layout
     slots = {bi["bg"]: _layer_tiles_used(p, bi) for bi in bgi}
     maps  = {bi["bg"]: bi["map_sbb_count"] for bi in bgi}
-    lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), res["total"])
+    lay = scene_layout(slots, maps, p.scene_ui_bg_slot(scene), res["total"],
+                       ui_slots=p.scene_ui_bg_slots(scene))
     for bi in bgi:
         bi["sbb"] = lay.map_sbb[bi["bg"]]
     scene._vram_layout = lay   # consommé par _gen_scene_init
@@ -1043,6 +1044,32 @@ def _scene_music_lines(p: Project, scene: Scene, sound_assets: dict | None) -> l
     return [f"    music_play(MOD_{c_sym(want).upper()}, {loop}, {vol});"]
 
 
+def _gen_ui_routes(p: Project, scene) -> list[str]:
+    """Routage de rendu par scène (ROADMAP v0.12) : pour chaque zone/image rendue
+    en Background par un nœud `Interface`, son slot BG. Le rendu (`text_draw_in`,
+    `ui_image_update`…) l'utilise au lieu du layer global, ce qui permet à un
+    layout partagé de vivre sur BG0 dans une scène et BG2 dans une autre.
+
+    Les index sont les index PROJET-GLOBAUX (`all_regions`/`all_images`), les mêmes
+    que ceux qu'émettent les tables de contenu et que citent `REGION_*`/`IMAGE_*`.
+    Le slot vient du `bg_slot` de CHAQUE nœud (per-scène), non du slot unique de la
+    réservation VRAM."""
+    from core.models.ui_region import TARGET_BG
+    rm = int(getattr(scene, "render_mode", 0) or 0)
+    reg_idx = {el.name: i for i, (_l, el) in enumerate(p.all_regions())}
+    img_idx = {im.name: i for i, (_l, im) in enumerate(p.all_images())}
+    L: list[str] = ["    scene_routes_reset();"]
+    for lay, el in p.scene_ui_slots(scene):
+        if lay.resolved_target(el, rm) == TARGET_BG and el.name in reg_idx:
+            L.append(f"    scene_route_region({reg_idx[el.name]}, {lay.bg_slot});"
+                     f"   /* {el.name} → BG{lay.bg_slot} */")
+    for lay, im in p.scene_ui_images(scene):
+        if lay.resolved_target(im, rm) == TARGET_BG and im.name in img_idx:
+            L.append(f"    scene_route_image({img_idx[im.name]}, {lay.bg_slot});"
+                     f"   /* {im.name} → BG{lay.bg_slot} */")
+    return L
+
+
 def _gen_scene_init(
     p: Project,
     scene: Scene,
@@ -1219,32 +1246,35 @@ def _gen_scene_init(
     # police à partir de la tuile 1 de ce même charblock, là où text_set_font
     # pose la nôtre — les deux s'écrasaient. Un seul système de texte, donc un
     # seul occupant du charblock (cf. gba_engine.h, section TTE retiré).
-    text_bg = getattr(scene, "text_bg", -1)
+    text_bg = p.scene_ui_bg_slot(scene)
     lay = getattr(scene, "_vram_layout", None)
     text_cbb = (lay.text_cbb if lay else text_bg) if text_bg in {0, 1, 2, 3} else -1
     text_base = lay.text_base if lay else 1
     fills = getattr(scene, "_ui_fills", []) or []
     fill_indices = getattr(scene, "_ui_fill_indices", []) or []
+    # BGxCNT de CHAQUE slot d'UI (v0.12 : une scène peut en poser plusieurs). Un
+    # slot d'UI ne porte pas d'image, donc la boucle des fonds ne l'a pas
+    # configuré — sans cette ligne le registre reste à 0 (CBB 0 ET SBB 0), et les
+    # entrées de map du texte atterrissent PILE sur ses tuiles de glyphes.
+    #
+    # Tous les slots partagent le charblock des glyphes (`text_cbb`) mais ont
+    # CHACUN leur map (`ui_sbb[slot]`) : plusieurs calques d'UI, un seul jeu de
+    # tuiles (cf. codegen/vram_alloc.py). Purge inutile ici : `bg_maps_clear()`,
+    # en tête de scene_init, a déjà vidé les 32 screenblocks.
+    ui_slots = p.scene_ui_bg_slots(scene)
+    ui_sbb = getattr(lay, "ui_sbb", None) or {}
     if text_bg in {0, 1, 2, 3}:
-        # BGxCNT du layer d'UI. Il n'a pas d'image, donc la boucle des fonds
-        # ci-dessus ne l'a pas configuré — et c'est `tte_init_se` qui s'en
-        # chargeait avant, en effet de bord. Sans cette ligne le registre reste
-        # à 0 (display_reset) : CBB 0 ET SBB 0, donc les screen entries du texte
-        # atterrissent PILE sur ses propres tuiles de glyphes.
-        #
-        # CBB et SBB viennent de l'allocateur : le charblock du texte n'est plus
-        # forcément le sien, c'est tout l'intérêt (cf. codegen/vram_alloc.py).
-        text_sbb = lay.text_sbb if lay else text_bg * 8 + 7
-        text_cnt = (text_bg & 3) | (text_cbb & 3) << 2 | (text_sbb & 0x1F) << 8
-        L.append(f"    bg_cnt_set({text_bg}, 0x{text_cnt:04X});"
-                 f"   /* layer UI BG{text_bg} : CBB{text_cbb}, SBB{text_sbb} */")
-        # PAS besoin de purger le screenblock ici : `bg_maps_clear()`, tout en
-        # haut de `scene_init` (avant même les fonds), vide déjà les 32
-        # screenblocks en entier — donc CE SBB aussi, quelle que soit la scène
-        # précédente qui l'occupait. Une tentative de purge locale à cet
-        # endroit serait redondante (et, historiquement, n'était PAS la cause
-        # d'un texte qui persiste d'une scène à l'autre).
+        for us in ui_slots:
+            sbb = ui_sbb.get(us, us * 8 + 7)
+            cnt = (us & 3) | (text_cbb & 3) << 2 | (sbb & 0x1F) << 8
+            L.append(f"    bg_cnt_set({us}, 0x{cnt:04X});"
+                     f"   /* layer UI BG{us} : CBB{text_cbb}, SBB{sbb} */")
     L.append(f"    text_set_layer({text_bg if text_bg in {0,1,2,3} else -1});")
+    # Routage de rendu par scène : le slot BG de CHAQUE zone/image (per-nœud),
+    # posé AVANT tout `text_draw_in`/`ui_image_*` pour que le rendu route au bon
+    # calque. `text_set_layer` ci-dessus ne fixe plus que le défaut de l'écriture
+    # libre (`text.draw` aux coordonnées).
+    L += _gen_ui_routes(p, scene)
     # Remis à 0 (= pas de surface dédiée) à CHAQUE scène : `g_surf_tile_base`
     # est un global qui, sans ce reset, garderait la valeur de la scène
     # précédente pour une scène qui n'a elle-même aucune zone à fond.
@@ -1309,16 +1339,18 @@ def _gen_scene_init(
         _fi_def, _fn_def = _sdf(p, scene)
         L.append(f"    text_set_font({max(0, _fi_def)});"
                  + (f"   /* {_fn_def} */" if _fn_def else ""))
+    # Le fond va sur la map du slot de SON nœud (`f['slot']`, v0.12), plus un slot
+    # d'UI unique : deux HUD sur deux BG posent chacun leur fond sur son calque.
     for f in fills:
         L.append(
-            f"    ui_fill_rect({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
+            f"    ui_fill_rect({f.get('slot', text_bg)}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
             f"{text_base + fill_indices.index(f['index'])}, {f['bank']});"
-            f"   /* fond couleur '{f['name']}' */")
+            f"   /* fond couleur '{f['name']}' → BG{f.get('slot', text_bg)} */")
     for f in img_fills:
         L.append(
-            f"    ui_fill_map({text_bg}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
+            f"    ui_fill_map({f.get('slot', text_bg)}, {f['tx']}, {f['ty']}, {f['w']}, {f['h']}, "
             f"{sym}_uimap_{c_sym(f['name'])}, {asset_base[f['asset']]});"
-            f"   /* fond image '{f['name']}' */")
+            f"   /* fond image '{f['name']}' → BG{f.get('slot', text_bg)} */")
     # ── Le FOND des zones de texte ────────────────────────────────
     # Un texte prend le fond de son conteneur : sans ça, écrire remplace la
     # cellule par une tuile de glyphe (index 0 transparent) et perce le fond.
@@ -2378,10 +2410,12 @@ def generate_main(
                 if abs_sp and abs_sp.suffix.lower() == ".lua":
                     lua_idx_d.add(act_off + j)
 
-        # DISPCNT
-        text_bg = getattr(sc, "text_bg", -1)
+        # DISPCNT — activer CHAQUE slot d'UI de la scène (v0.12 : plusieurs
+        # possibles), plus les slots des fonds ci-dessous.
         bg_bits = {0: 0x0100, 1: 0x0200, 2: 0x0400, 3: 0x0800}
-        dispcnt = bg_bits.get(text_bg, 0)
+        dispcnt = 0
+        for us in p.scene_ui_bg_slots(sc):
+            dispcnt |= bg_bits.get(us, 0)
         if bgi_d:
             for bi in bgi_d:
                 dispcnt |= bg_bits.get(bi["bg"], 0)

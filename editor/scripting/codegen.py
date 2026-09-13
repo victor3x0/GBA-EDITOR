@@ -206,6 +206,9 @@ class CodegenContext:
     # décalage constant dans son groupe (`self + 2`). Résolu au BUILD dans
     # les deux cas — un enfant se NOMME, il ne se construit pas.
     child_refs: dict = field(default_factory=dict)
+    # Fonctions citées par une frame de sprite : elles sont appelées depuis
+    # main.c et doivent donc rester publiques, pas devenir des helpers static.
+    frame_event_names: list[str] = field(default_factory=list)
     is_scene: bool = False       # True → script SANS self (scène ou caméra)
     # Famille de propriétaire, quand is_scene : nomme le symbole C émis
     # (`<sym>_scene_on_update` / `<sym>_camera_on_update`). Une caméra a les
@@ -256,6 +259,9 @@ class CodegenContext:
     # un script d'acteur, ce qui serait incompréhensible.
     save_slots: Optional[int] = None
     has_persistent: Optional[bool] = None
+    # {nom d'action: expression de masque C}, dérivée des InputBinding du
+    # projet. Les boutons physiques restent résolus par `key_constant`.
+    input_masks: dict[str, str] = field(default_factory=dict)
 
 
 # ─── Générateur ───────────────────────────────────────────────────
@@ -267,6 +273,8 @@ class CodeGen:
         self._lines: list[str] = []
         self._indent = 0
         self._required_behaviors: dict[str, str] = {}  # alias Lua → sym C
+        self._helpers: dict[str, LuaFunction] = {}
+        self._in_helper = False
         # Prefab poolé — état par instance : nom Lua → champ de `<sym>State`.
         # C'est `_state_ref` qui en fait un accès (`_st->fx`), pour que la
         # forme vive à UN endroit. Vide pour un propriétaire unique.
@@ -306,15 +314,22 @@ class CodeGen:
         # et `_emit_locals` en a besoin pour le poser au bon endroit (champ de
         # la structure de pool, ou statique de fichier).
         self._plan_sequences(script)
+        self._helpers = {fn.name: fn for fn in script.functions
+                         if self._is_internal_helper(fn)}
         self._emit_header()
         self._emit_locals(script)
         # Inline des behaviors requis (collectés pendant _emit_locals via StmtLocalAssign)
         self._emit_inlined_behaviors(script)
+        self._emit_helper_declarations()
+        for fn in self._helpers.values():
+            self._emit_helper(fn)
         # Remise à l'état de départ du slot, pour les prefabs poolés (avant les handlers)
         if self.ctx.is_pooled:
             self._emit_pool_init()
         defined = set()
         for fn in script.functions:
+            if fn.name in self._helpers:
+                continue
             plan = self._plan_of.get(fn.name)
             if plan is not None:
                 self._emit_sequence(plan)
@@ -327,6 +342,42 @@ class CodeGen:
             if event not in defined:
                 self._emit_stub(event)
         return "\n".join(self._lines) + "\n"
+
+    def _is_internal_helper(self, fn: LuaFunction) -> bool:
+        known = self._known_hooks() if self.ctx.is_scene else KNOWN_EVENTS
+        return ("." not in fn.name
+                and fn.name not in known
+                and fn.name not in (self.ctx.frame_event_names or ())
+                and sequence_name(fn.name) is None)
+
+    def _helper_signature(self, fn: LuaFunction) -> str:
+        params = [f"int {p}" for p in fn.params]
+        if not self.ctx.is_scene:
+            params.insert(0, "Actor* self")
+        return f"static int {self.ctx.actor_sym}_{fn.name}({', '.join(params) or 'void'})"
+
+    def _emit_helper_declarations(self):
+        if not self._helpers:
+            return
+        self._w("/* Fonctions privées du script */")
+        for fn in self._helpers.values():
+            self._w(self._helper_signature(fn) + ";")
+        self._w("")
+
+    def _emit_helper(self, fn: LuaFunction):
+        self._w(self._helper_signature(fn) + " {")
+        self._indent += 1
+        mark = self._open_state_scope()
+        self._in_helper = True
+        self._emit_block(fn.body)
+        self._in_helper = False
+        # Un helper rend toujours un entier. Ignorer sa valeur est permis et
+        # `return` nu reste une sortie valide, avec 0 comme valeur neutre.
+        self._w("return 0;")
+        self._close_state_scope(mark)
+        self._indent -= 1
+        self._w("}")
+        self._w("")
 
     # ── Séquences ─────────────────────────────────────────────────
 
@@ -1253,6 +1304,8 @@ class CodeGen:
         elif isinstance(s, StmtReturn):
             if s.values:
                 self._w(f"return {self._expr(s.values[0])};")
+            elif self._in_helper:
+                self._w("return 0;")
             else:
                 self._w("return;")
 
@@ -1492,6 +1545,12 @@ class CodeGen:
             # C, pas un appel : aucune fonction `vec2`/`rect` n'existe côté runtime.
             args = ", ".join(self._expr(a) for a in e.args)
             return f"({C_TYPES[key]}){{{args}}}"
+
+        if key in self._helpers:
+            args = [self._expr(a) for a in e.args]
+            if not self.ctx.is_scene:
+                args.insert(0, "self")
+            return f"{self.ctx.actor_sym}_{key}({', '.join(args)})"
 
         # Appel sur un behavior requis : AI.update(self, x) → beh_foo_update(self, x)
         if (isinstance(e.func, ExprIndex)
@@ -1934,7 +1993,7 @@ _DOMAIN_CONSTANT: dict = {
     DOMAIN_ANIM:    lambda g, name: anim_constant(g.ctx.actor_sym, name),
     DOMAIN_SFX:     lambda g, name: sfx_constant(name),
     DOMAIN_MUSIC:   lambda g, name: music_constant(name),
-    DOMAIN_KEY:     lambda g, name: key_constant(name),
+    DOMAIN_KEY:     lambda g, name: g.ctx.input_masks.get(name, key_constant(name)),
     DOMAIN_TAG:     lambda g, name: tag_constant(name),
     DOMAIN_SCENE:   lambda g, name: scene_constant(name),
     DOMAIN_LANG:    lambda g, name: lang_constant(name),

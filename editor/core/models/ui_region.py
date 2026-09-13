@@ -1623,6 +1623,157 @@ class UILayout(Resource):
             e.nav_major = NAV_ROW
 
 
+# ── Le nœud Interface : l'instance d'un UILayout DANS une scène ────
+# Un `UILayout` est un asset de CONTENU réutilisable (éléments, géométrie,
+# glyphes) ; sa CIBLE DE RENDU — ancrage, cible BG/OBJ, acteur suivi, et le slot
+# BG, donc sa place dans la pile de composition — est un fait PAR INSTANCE dans
+# une scène (ROADMAP v0.12, « distinguer un asset de sa cible de rendu, le
+# z-order en fait partie »). Le nœud porte ce chemin matériel ; l'asset n'en sait
+# rien. Cela ACHÈVE la v0.25, qui disait déjà « le nœud possède anchor+target »
+# mais le représentait par un simple nom faute de corps.
+
+@dataclass
+class InterfaceNode:
+    """Une instance d'un `UILayout` dans une scène : réf de l'asset (par nom) +
+    sa cible de rendu propre. Le pendant de `BackgroundLayer` pour l'UI.
+
+    `anchor == ""` est le marqueur d'un nœud MIGRÉ depuis un simple nom (avant
+    v0.12) dont la cible n'a pas encore été recopiée depuis l'asset : la première
+    résolution par `Project.scene_ui_layouts` la remplit (cf. `BoundInterface`)."""
+    layout_name:  str = ""            # nom du UILayout référencé (cf. BackgroundLayer.background_name)
+    anchor:       str = ANCHOR_SCREEN  # "" = à migrer depuis l'asset
+    anchor_actor: str = ""
+    target:       str = ""             # "" = dérivée de l'ancrage (cf. resolved_target)
+    bg_slot:      int = 1              # slot BG (0-3) quand la cible résout à BG ; ex-Scene.text_bg
+
+    def to_dict(self) -> dict:
+        return {
+            "layout_name":  self.layout_name,
+            "anchor":       self.anchor,
+            "anchor_actor": self.anchor_actor,
+            "target":       self.target,
+            "bg_slot":      self.bg_slot,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "InterfaceNode":
+        # `anchor == ""` (marqueur « à migrer depuis l'asset ») est PRÉSERVÉ, pas
+        # ramené à `screen` : un nœud nu sauvegardé avant sa première résolution
+        # doit rester à migrer, sinon la cible réelle de l'asset serait perdue.
+        anchor = d.get("anchor", ANCHOR_SCREEN)
+        return cls(
+            layout_name  = str(d.get("layout_name", "")),
+            anchor       = anchor if (anchor in ANCHORS or anchor == "") else ANCHOR_SCREEN,
+            anchor_actor = str(d.get("anchor_actor", "")),
+            target       = d.get("target") if d.get("target") in TARGETS else "",
+            bg_slot      = int(d.get("bg_slot", 1)),
+        )
+
+
+class BoundInterface:
+    """Un `InterfaceNode` résolu contre son `UILayout` : la vue COMPOSÉE que
+    `Project.scene_ui_layouts` rend, et que lisent canvas, codegen et inspecteurs.
+
+    Le CONTENU (éléments, arbre, slots, images, géométrie) est délégué à l'asset.
+    Ce qui est PAR-NŒUD à ce stade (v0.12, routage du slot) : `bg_slot`, lu du
+    nœud. L'ancrage et la cible BG/OBJ restent portés par l'ASSET tant que leur
+    routage par nœud n'existe pas au runtime — les champs `anchor`/`target` du
+    nœud sont réservés pour cette étape, mais NE sont pas la source de vérité ici :
+    les lire du nœud divergerait de `g_ui_regions` (qui grave la cible de l'asset)
+    dès que l'auteur édite l'asset. On les lit donc de l'asset.
+
+    La surface de méthodes reste celle d'un `UILayout`, pour que les appelants
+    historiques (`.slots`, `.resolved_target(...)`, `.absolute_origin(...)`) ne
+    changent pas."""
+
+    def __init__(self, node: InterfaceNode, layout: "UILayout"):
+        self.node = node
+        self.layout = layout
+
+    # ── Cible de rendu ────────────────────────────────────────────────
+    # `bg_slot` : par nœud. `anchor`/`target`/`anchor_actor` : de l'asset (cf.
+    # docstring — leur passage par nœud attend le routage runtime correspondant).
+    @property
+    def anchor(self) -> str:
+        return self.layout.anchor
+
+    @property
+    def anchor_actor(self) -> str:
+        return self.layout.anchor_actor
+
+    @property
+    def target(self) -> str:
+        return self.layout.target
+
+    @property
+    def bg_slot(self) -> int:
+        return self.node.bg_slot
+
+    @property
+    def layout_name(self) -> str:
+        return self.node.layout_name
+
+    def __getattr__(self, name):
+        # Tout ce que la vue ne définit pas est du CONTENU : délégué à l'asset.
+        # (Appelé seulement quand l'attribut manque sur l'instance/la classe, donc
+        # jamais pour node/layout ni les propriétés/méthodes ci-dessus.)
+        return getattr(self.layout, name)
+
+    # ── Méthodes matérielles (ex-UILayout, lisant désormais le nœud) ──────
+    def resolved_target(self, element=None, render_mode: int = 0) -> str:
+        forced = forced_target(self.anchor, render_mode)
+        if forced:
+            return forced
+        return self.target if self.target in TARGETS else TARGET_BG
+
+    def effective_anchor(self, element=None) -> tuple[str, str]:
+        return self.anchor, self.anchor_actor
+
+    def absolute_origin(self, element, actor_pos) -> tuple[int, int, bool]:
+        chain = [element] + [self.layout.get(a) for a in self.layout.ancestors(element.name)]
+        chain = [e for e in chain if e is not None]
+        ox = sum(int(e.x) for e in chain)
+        oy = sum(int(e.y) for e in chain)
+        resolved = True
+        if self.anchor == ANCHOR_ACTOR:
+            ap = actor_pos(self.anchor_actor) if actor_pos else None
+            if ap is None:
+                resolved = False
+            else:
+                ox += ap[0]
+                oy += ap[1]
+        return ox, oy, resolved
+
+    def absolute_tile_rect(self, element, actor_pos) -> tuple[int, int, int, int]:
+        x, y, _resolved = self.absolute_origin(element, actor_pos)
+        tx, ty = x // TILE, y // TILE
+        tw = _ceil_tile(x % TILE + int(element.w))
+        th = _ceil_tile(y % TILE + int(element.h))
+        return tx, ty, max(1, tw), max(1, th)
+
+    def parent_origin(self, element, actor_pos) -> tuple[int, int]:
+        parent = self.layout.get(element.parent) if element.parent else None
+        if parent is None:
+            if self.anchor == ANCHOR_ACTOR:
+                ap = actor_pos(self.anchor_actor) if actor_pos else None
+                return (ap[0], ap[1]) if ap else (0, 0)
+            return (0, 0)
+        ax, ay, _ = self.absolute_origin(parent, actor_pos)
+        return ax, ay
+
+    def bg_regions(self, render_mode: int = 0) -> list:
+        return [r for r in self.layout.slots
+                if self.resolved_target(r, render_mode) == TARGET_BG]
+
+    def obj_regions(self, render_mode: int = 0) -> list:
+        return [r for r in self.layout.slots
+                if self.resolved_target(r, render_mode) == TARGET_OBJ]
+
+    def bg_images(self, render_mode: int = 0) -> list:
+        return [im for im in self.layout.images
+                if self.resolved_target(im, render_mode) == TARGET_BG]
+
+
 # ── Presets de placement ──────────────────────────────────────────
 # Le bouton « Layout » de Godot et sa grille, ramenés à ce que le matériel
 # permet : poser une boîte de dialogue basse sans taper x=0 y=120 w=240 h=40.

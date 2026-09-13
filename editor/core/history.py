@@ -544,12 +544,17 @@ class DeleteInterfaceCmd(Command):
     def __init__(self, store, layout, ref_list: list, delete_asset: bool,
                  persist_fn=None, refresh_fn=None):
         self._store = store
-        self._layout = layout
+        # `layout` peut être l'asset `UILayout` ou une vue liée `BoundInterface` :
+        # le store d'assets veut l'asset (`.layout`), la liste de scène veut le
+        # NŒUD `InterfaceNode` qui le cite (repéré par `layout_name`).
+        self._asset = getattr(layout, "layout", layout)
+        self._name = self._asset.name
         self._refs = ref_list
         self._delete_asset = delete_asset
-        self._index = (ref_list.index(layout.name)
-                       if layout.name in ref_list else len(ref_list))
-        self.label = f"Supprimer l'interface {layout.name}"
+        self._node = next((n for n in ref_list if n.layout_name == self._name), None)
+        self._index = (ref_list.index(self._node)
+                       if self._node in ref_list else len(ref_list))
+        self.label = f"Supprimer l'interface {self._name}"
         self._persist = persist_fn
         self._refresh = refresh_fn
 
@@ -560,17 +565,17 @@ class DeleteInterfaceCmd(Command):
             self._refresh()
 
     def execute(self):
-        if self._layout.name in self._refs:
-            self._refs.remove(self._layout.name)
+        if self._node in self._refs:
+            self._refs.remove(self._node)
         if self._delete_asset:
-            self._store.soft_delete(self._layout)
+            self._store.soft_delete(self._asset)
         self._after()
 
     def undo(self):
         if self._delete_asset:
-            self._store.restore(self._layout)
-        if self._layout.name not in self._refs:
-            self._refs.insert(min(self._index, len(self._refs)), self._layout.name)
+            self._store.restore(self._asset)
+        if self._node is not None and self._node not in self._refs:
+            self._refs.insert(min(self._index, len(self._refs)), self._node)
         self._after()
 
 

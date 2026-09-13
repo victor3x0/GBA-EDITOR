@@ -53,7 +53,7 @@ des raccourcis de game feel (squash, flash, shake…).
 Tableaux typés dans les scripts et tables de données authorées, cuites en `const` dans la
 ROM. `vec2`/`vec3` dans le langage. Les propriétés : l'état s'écrit comme un champ. L'état
 d'un prefab poolé. Les séquences, pour écrire une attente en ligne droite. Et le sous-ensemble
-Lua enfin dit et tenu ([SCRIPTING.md](SCRIPTING.md)) : ce qui n'est pas traduit est refusé sur
+Lua enfin dit et tenu ([référence de scripting](docs/scripting-reference.md)) : ce qui n'est pas traduit est refusé sur
 sa ligne, plus jamais ignoré en silence.
 
 → [détail](changelog-archive/v0.7.md)

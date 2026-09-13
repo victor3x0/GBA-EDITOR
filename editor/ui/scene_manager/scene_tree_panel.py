@@ -29,7 +29,7 @@ from core.selection_bus import (
 from core.command_dispatcher import get_dispatcher, unique_name
 from core.history import (
     get_history, AddListItemCmd, RemoveListItemCmd, UILayoutOrderCmd,
-    DeleteInterfaceCmd, SceneActorOrderCmd,
+    DeleteInterfaceCmd, SceneActorOrderCmd, SetFieldCmd,
 )
 from core.models.ui_region import KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE
 
@@ -825,13 +825,12 @@ class _PrioritySceneTree(_Tree):
                             group.setToolTip(0, "Empty hardware background slot")
                         else:
                             group.setText(0, f"Background {slot}  ·  {layer.background_name or 'empty'}")
-                        # Tout l'UI qui cible BG s'écrit dans `scene.text_bg` :
-                        # elle appartient donc à CE calque de composition, même
-                        # si aucun décor n'y est posé. La hiérarchie interne est
-                        # conservée sous le nœud Interface ; la vue Priorité ne
-                        # prétend pas que les enfants sont des backgrounds.
-                        if slot == getattr(scene, "text_bg", 1):
-                            self._populate_bg_ui(group, project, scene)
+                        # Chaque nœud Interface rendu en BG apparaît sous SON slot
+                        # (v0.12 : `InterfaceNode.bg_slot`), même si aucun décor n'y
+                        # est posé. La hiérarchie interne est conservée sous le nœud ;
+                        # la vue Priorité ne prétend pas que les enfants sont des
+                        # backgrounds.
+                        self._populate_bg_ui(group, project, scene, slot)
                         group.setExpanded(True)
         self.blockSignals(False)
         self._fit()
@@ -843,13 +842,16 @@ class _PrioritySceneTree(_Tree):
         item.setForeground(0, QColor(_TEXT))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsSelectable)
 
-    def _populate_bg_ui(self, host, project, scene):
-        """Ajoute les mises en page BG sous leur slot matériel effectif."""
+    def _populate_bg_ui(self, host, project, scene, slot):
+        """Ajoute sous `host` les nœuds Interface rendus en BG dont le `bg_slot`
+        est CE slot — chaque nœud apparaît donc sous son propre calque (v0.12)."""
         from core.models.ui_region import TARGET_BG
         layouts = (project.scene_ui_layouts(scene)
                    if project is not None and hasattr(project, "scene_ui_layouts") else [])
         for layout in layouts:
             if layout.resolved_target(render_mode=getattr(scene, "render_mode", 0)) != TARGET_BG:
+                continue
+            if int(getattr(layout, "bg_slot", 1)) != slot:
                 continue
             root = QTreeWidgetItem(host)
             root.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
@@ -858,6 +860,9 @@ class _PrioritySceneTree(_Tree):
             root.setText(0, f"Interface  ·  {layout.name}")
             root.setForeground(0, QColor(_DIM))
             root.setToolTip(0, label("scttree.iface_tip", name=layout.name))
+            # Le nœud se glisse d'un Background à l'autre (change son bg_slot) ;
+            # ses éléments, eux, ne déplacent aucun slot.
+            root.setFlags(root.flags() | Qt.ItemFlag.ItemIsDragEnabled)
             items = {}
             for _depth, element in layout.in_tree_order():
                 parent = items.get(element.parent, root)
@@ -870,6 +875,7 @@ class _PrioritySceneTree(_Tree):
                 item.setText(0, element.name)
                 item.setFont(0, ui_font(T.LG))
                 item.setForeground(0, QColor(_TEXT))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
                 items[element.name] = item
                 item.setExpanded(True)
             root.setExpanded(True)
@@ -891,15 +897,43 @@ class _PrioritySceneTree(_Tree):
     def dropEvent(self, event):
         dragged = self.currentItem()
         target = self.itemAt(event.position().toPoint())
-        if (dragged is None or dragged.data(0, _ROLE_TYPE) != T_ACTOR
+        dtype = dragged.data(0, _ROLE_TYPE) if dragged is not None else None
+        if (dragged is None or dtype not in (T_ACTOR, T_UI_LAYOUT)
                 or target is None or self._scene is None):
             event.ignore()
             return
         host = target if target.data(0, _ROLE_TYPE) == T_PRIORITY_GROUP else target.parent()
+        # Un élément d'UI (T_UI_ELEM) a pour parent son nœud, pas un groupe : sa
+        # remontée s'arrête donc ici, il ne déplace jamais de slot.
         if host is None or host.data(0, _ROLE_TYPE) != T_PRIORITY_GROUP:
             event.ignore()
             return
-        kind, priority = host.data(0, _ROLE_PATH)
+        kind, dest = host.data(0, _ROLE_PATH)
+
+        # ── Nœud Interface déposé sur un Background : changer son slot BG ──
+        if dtype == T_UI_LAYOUT:
+            if kind != "bg" or host.isDisabled():
+                event.ignore()
+                return
+            bound = dragged.data(0, _ROLE_OBJ)          # BoundInterface
+            node = getattr(bound, "node", None)
+            if node is None or int(getattr(node, "bg_slot", -1)) == dest:
+                event.ignore()
+                return
+
+            def persist_slot():
+                get_dispatcher().save_scene()
+                # Rejoue le canvas (z par slot du nœud) ET reconstruit l'arbre —
+                # même point de convergence que les éditions d'UI de l'arbre.
+                self._panel._after_ui_change()
+
+            get_history().push(SetFieldCmd(
+                node, "bg_slot", int(node.bg_slot), int(dest),
+                label=f"Set {bound.layout_name} BG{dest}", persist_fn=persist_slot))
+            event.accept()
+            return
+
+        priority = dest
         if kind != "obj":
             event.ignore()
             return
@@ -921,6 +955,10 @@ class _PrioritySceneTree(_Tree):
         def persist():
             get_dispatcher().save_scene()
             get_dispatcher()._emit("actors_list_changed")
+            # Le z du canvas suit `Actor.priority` (`hw_layer_z`) : recharger les
+            # sprites pour que le réordonnancement de la colonne Priority se voie
+            # aussi dans le canvas, pas seulement dans l'arbre.
+            get_dispatcher()._emit("scene_sprites_changed")
             self._panel.refresh()
 
         get_history().push(SceneActorOrderCmd(
@@ -932,7 +970,16 @@ class _PrioritySceneTree(_Tree):
     def highlight_actor(self, actor: Actor):
         self._highlight(T_ACTOR, actor)
 
-    def _highlight(self, node_type, obj):
+    def highlight_ui_element(self, element):
+        # Les éléments sont stockés directement dans `_ROLE_OBJ` : match par identité.
+        self._highlight(T_UI_ELEM, element)
+
+    def highlight_ui_layout(self, layout):
+        # Un nœud T_UI_LAYOUT porte une `BoundInterface`, pas l'asset : on compare
+        # donc son `.layout` (l'asset) à celui demandé.
+        self._highlight(T_UI_LAYOUT, layout, deref=True)
+
+    def _highlight(self, node_type, obj, deref=False):
         if QTreeWidgetItemIterator is None:
             return
         self.blockSignals(True)
@@ -940,7 +987,10 @@ class _PrioritySceneTree(_Tree):
         it = QTreeWidgetItemIterator(self)
         while it.value():
             node = it.value()
-            if node.data(0, _ROLE_TYPE) == node_type and node.data(0, _ROLE_OBJ) is obj:
+            stored = node.data(0, _ROLE_OBJ)
+            if deref:
+                stored = getattr(stored, "layout", stored)
+            if node.data(0, _ROLE_TYPE) == node_type and stored is obj:
                 node.setSelected(True)
                 self.scrollToItem(node)
                 break
@@ -1129,14 +1179,14 @@ class SceneTreePanel(QWidget):
         dans l'arbre — la ligne y affiche « Interface », jamais le nom du .json."""
         if not self._project or not self._scene:
             return
-        from core.models.ui_region import UILayout
+        from core.models.ui_region import UILayout, InterfaceNode
         base, name, n = (self._scene.name or "ui"), (self._scene.name or "ui"), 2
         while self._project.get_ui_layout(name) is not None:
             name = f"{base}_{n:02d}"
             n += 1
         lay = UILayout(name=name)
         self._project.ui_layouts.append(lay)
-        self._scene.ui_layouts.append(name)
+        self._scene.ui_layouts.append(InterfaceNode(layout_name=name))
         get_dispatcher().save_all()      # persiste l'asset neuf ET la scène
         self._after_ui_change()
         get_bus().select(UILayoutSelection(lay, self._scene))

@@ -98,6 +98,16 @@ class UINodeInspector(QWidget):
         self._target.currentIndexChanged.connect(self._on_target)
         self._target_row = W.row(label('uinode.target'), self._target, card.body_layout).parentWidget()
 
+        # Slot BG du NŒUD (v0.12) — par instance dans la scène, pas sur l'asset :
+        # un HUD partagé peut vivre sur BG0 ici et BG2 ailleurs. N'a de sens qu'en
+        # cible BG (masqué en OBJ) ; le combo ne liste que les slots permis par le
+        # mode vidéo (d'où bitmap → BG2 seul).
+        self._bg_slot = QComboBox()
+        self._bg_slot.setFont(QFont(T.UI, T.MD))
+        self._bg_slot.setStyleSheet(QSS.combobox)
+        self._bg_slot.currentIndexChanged.connect(self._on_bg_slot)
+        self._bg_slot_row = W.row(label('uinode.bg_slot'), self._bg_slot, card.body_layout).parentWidget()
+
         # La raison quand la cible est IMPOSÉE (actor / bitmap), et l'alerte quand
         # un ancrage actor n'a pas d'acteur — chacune sous le réglage qui la cause.
         self._frame_why = note(card.body_layout)
@@ -108,6 +118,12 @@ class UINodeInspector(QWidget):
     # ── Chargement ────────────────────────────────────────────────
     def load(self, layout, scene, project: Project):
         self._layout, self._scene, self._project = layout, scene, project
+        # Le NŒUD de CETTE scène qui référence l'asset — c'est lui qui porte
+        # `bg_slot` (cf. InterfaceNode). Le premier qui le cite : un même layout
+        # posé deux fois dans une scène est une collision que le validateur
+        # interdit, on n'a donc jamais à choisir entre deux.
+        self._node = next((n for n in getattr(scene, "ui_layouts", []) or []
+                           if n.layout_name == layout.name), None) if scene else None
         self._blocking = True
         try:
             users = project.ui_layout_users(layout.name) if project else []
@@ -170,6 +186,27 @@ class UINodeInspector(QWidget):
             self._anchor_why.show_text()
         else:
             self._anchor_why.clear()
+        self._sync_bg_slot(eff, rm)
+
+    def _sync_bg_slot(self, eff_target: str, rm: int):
+        """Le slot BG n'a de sens qu'en cible BG : masqué en OBJ. Le combo ne liste
+        que les slots permis par le mode vidéo ; le `bg_slot` du nœud est ramené
+        dans cette liste s'il n'y est pas (mode changé sous ses pieds)."""
+        from ui.scene_manager.inspectors.scene_inspector import MODE_INFO
+        node = getattr(self, "_node", None)
+        show = (eff_target == TARGET_BG) and node is not None
+        self._bg_slot_row.setVisible(show)
+        if not show:
+            return
+        allowed = list(MODE_INFO.get(rm, MODE_INFO[0])["bg_slots"])
+        self._bg_slot.blockSignals(True)
+        self._bg_slot.clear()
+        for s in allowed:
+            self._bg_slot.addItem(f"BG{s}", s)
+        cur = int(getattr(node, "bg_slot", allowed[0]))
+        j = self._bg_slot.findData(cur)
+        self._bg_slot.setCurrentIndex(j if j >= 0 else 0)
+        self._bg_slot.blockSignals(False)
 
     # ── Écriture ──────────────────────────────────────────────────
     def _set(self, field: str, value, label: str):
@@ -224,3 +261,14 @@ class UINodeInspector(QWidget):
         if self._blocking or self._layout is None:
             return
         self._set("target", _TARGETS[i][0], "Interface target")
+
+    def _on_bg_slot(self, i):
+        node = getattr(self, "_node", None)
+        if self._blocking or node is None or i < 0:
+            return
+        slot = self._bg_slot.currentData()
+        if slot is None or int(slot) == int(getattr(node, "bg_slot", -1)):
+            return
+        from core.history import get_history, SetFieldCmd
+        get_history().push(SetFieldCmd(node, "bg_slot", int(node.bg_slot), int(slot),
+                                       label="Interface BG slot", persist_fn=self._persist))

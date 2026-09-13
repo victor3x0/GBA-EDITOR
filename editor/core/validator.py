@@ -137,6 +137,7 @@ def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[
     # le contenu du slot varie par scène. À l'utilisateur d'aligner ses
     # palettes par index en amont.
     _check_bg_text_cbb_conflict(ctx)
+    _check_ui_node_slots(ctx)
     _check_pal_bank_reference(ctx)
     _check_palette_bank_overflow(ctx)
     _check_api_prototypes(ctx)
@@ -442,26 +443,52 @@ def _check_backgrounds(ctx: ValidationContext):
 
 
 def _check_bg_text_cbb_conflict(ctx: ValidationContext):
-    """tte_init_se(text_bg, BG_CBB(text_bg)|BG_SBB(text_bg*8+7), ...) (cf.
-    main_gen._gen_scene_init) loge la police DANS le charblock du layer UI
-    choisi (bg_slot == text_bg) — plus de CBB3 figé. Le layer UI est donc
-    censé ne porter AUCUNE image : son charblock entier est dédié à la
-    police. Si un vrai layer BG occupe ce même bg_slot, ses tuiles ET son
-    registre BGxCNT sont écrasés par la police — corruption garantie, pas
-    juste un mauvais rendu (même sévérité que _check_bg_tile_budget), donc
-    bloquant plutôt qu'un avertissement."""
+    """`scene_init` configure le BGxCNT de CHAQUE slot d'UI (v0.12) et y loge la
+    police : le slot d'une interface est donc censé ne porter AUCUN décor. Si un
+    vrai layer BG occupe ce même slot, ses tuiles ET son registre BGxCNT sont
+    écrasés au build — corruption garantie (même sévérité que _check_bg_tile_
+    budget), donc bloquant. Vaut pour tous les slots d'UI, pas le seul primaire."""
     p = ctx.project
     for scene in p.scenes:
-        text_bg = getattr(scene, "text_bg", -1)
-        if text_bg not in (0, 1, 2, 3):
-            continue
+        ui_slots = {s for s in p.scene_ui_bg_slots(scene) if s in (0, 1, 2, 3)}
         for layer in scene.background_layers:
-            if layer.background_name and layer.bg_slot == text_bg:
+            if layer.background_name and layer.bg_slot in ui_slots:
                 ctx.error(None,
-                    f"Scène '{scene.name}' : le layer BG{text_bg} ('{layer.background_name}') "
-                    f"partage son bg_slot avec le Layer UI (text_bg={text_bg}) — "
+                    f"Scène '{scene.name}' : le layer BG{layer.bg_slot} ('{layer.background_name}') "
+                    f"partage son slot avec une interface (BG{layer.bg_slot}) — "
                     f"son charblock est écrasé par les tuiles de police au build. "
-                    f"Change le Layer UI de slot ou vide l'image de ce layer.")
+                    f"Change le slot BG de l'interface ou vide l'image de ce layer.")
+
+
+def _check_ui_node_slots(ctx: ValidationContext):
+    """Slots BG des nœuds `Interface` (v0.12).
+
+    • Un nœud rendu en Background doit viser un slot que le MODE VIDÉO expose
+      (mode 1 n'a pas de BG3, les bitmaps n'ont que BG2…) — sinon rien ne
+      s'affiche au bon endroit.
+    • Un même layout ne peut être posé DEUX fois dans une scène : ses éléments
+      porteraient les mêmes noms, or `REGION_*`/`IMAGE_*` sont indexés par nom
+      unique au projet — collision d'ABI (cf. ROADMAP v0.12)."""
+    from core.models.scene import BG_SLOTS_BY_MODE
+    from core.models.ui_region import TARGET_BG
+    p = ctx.project
+    for scene in p.scenes:
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        valid = BG_SLOTS_BY_MODE.get(rm, BG_SLOTS_BY_MODE[0])
+        seen: set[str] = set()
+        for node in p.scene_ui_layouts(scene):
+            name = node.layout_name
+            if name in seen:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : l'interface '{name}' est posée deux fois — "
+                    f"ses éléments partageraient les mêmes noms (REGION_*/IMAGE_*). "
+                    f"Un layout ne se pose qu'une fois par scène.")
+            seen.add(name)
+            if node.resolved_target(None, rm) == TARGET_BG and node.bg_slot not in valid:
+                ctx.error(None,
+                    f"Scène '{scene.name}' : l'interface '{name}' vise le slot BG{node.bg_slot}, "
+                    f"indisponible en mode vidéo {rm} (slots permis : {list(valid)}). "
+                    f"Choisis un slot valide dans l'inspecteur du nœud.")
 
 
 def _text_variants(p, text, globals_names: set) -> list:
@@ -561,8 +588,8 @@ def _check_text_overflow(ctx: ValidationContext):
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
         # La police par défaut de la scène s'applique à CHACUN de ses nœuds
         # `Interface` (v0.25 : une scène en référence plusieurs).
-        for _lname in (getattr(_scene, "ui_layouts", []) or []):
-            _seen_f = lay_defaults.setdefault(_lname, [])
+        for _node in (getattr(_scene, "ui_layouts", []) or []):
+            _seen_f = lay_defaults.setdefault(_node.layout_name, [])
             if not any(x is _f for x in _seen_f):
                 _seen_f.append(_f)
     region_layout = {r.name: lay.name for lay, r in p.all_regions()}
@@ -664,8 +691,8 @@ def _check_font_coverage(ctx: ValidationContext):
         _f = fonts.get(scene_default_font(p, _scene)[1]) or first
         # La police par défaut de la scène s'applique à CHACUN de ses nœuds
         # `Interface` (v0.25 : une scène en référence plusieurs).
-        for _lname in (getattr(_scene, "ui_layouts", []) or []):
-            _seen_f = lay_defaults.setdefault(_lname, [])
+        for _node in (getattr(_scene, "ui_layouts", []) or []):
+            _seen_f = lay_defaults.setdefault(_node.layout_name, [])
             if not any(x is _f for x in _seen_f):
                 _seen_f.append(_f)
     region_layout = {r.name: lay.name for lay, r in p.all_regions()}
@@ -958,8 +985,8 @@ def _check_ui_container_fill(ctx: ValidationContext):
                     why.append("aucun sprite n'est choisi")
             else:
                 # ③ Chemin BG.
-                if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
-                    why.append("la scène n'a pas de calque UI (text_bg)")
+                if p.scene_ui_bg_slot(scene) not in (0, 1, 2, 3):
+                    why.append("la scène n'a pas de calque UI (aucun nœud Interface en Background)")
                 anchor = lay.effective_anchor(el)[0]
                 if anchor != ANCHOR_SCREEN:
                     why.append(f"son ancrage est « {anchor} » (seul l'écran est émis)")

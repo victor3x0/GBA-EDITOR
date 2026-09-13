@@ -67,7 +67,7 @@ def scene_avec_conteneur(projet) -> Scene:
     lay = UILayout(name="HUD", elements=[box, inside, free])
     projet.ui_layouts.append(lay)
 
-    scene = Scene(name="S", font_name="FontFree", text_bg=1,
+    scene = Scene(name="S", font_name="FontFree",
                   ui_layouts=["HUD"], active_bg_palettes=["BoxPal"])
     projet.scenes.append(scene)
     return scene

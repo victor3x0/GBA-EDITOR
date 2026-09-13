@@ -261,11 +261,11 @@ class ProjectRenameMixin:
         with self._renaming():
             self.ui_layouts.rename(layout, new_name)
             for scene in self.scenes:
-                names = getattr(scene, "ui_layouts", None) or []
+                nodes = getattr(scene, "ui_layouts", None) or []
                 touched = False
-                for i, n in enumerate(names):
-                    if n == old_name:
-                        names[i] = new_name
+                for node in nodes:
+                    if node.layout_name == old_name:
+                        node.layout_name = new_name
                         touched = True
                 if touched:
                     self.save_scene(scene)

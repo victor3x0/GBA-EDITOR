@@ -642,7 +642,7 @@ def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
     distincts, un par tuile pleine à graver dans le charblock UI."""
     from core.models.ui_region import (
         can_fill, FILL_COLOR, ANCHOR_SCREEN, TARGET_BG)
-    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+    if p.scene_ui_bg_slot(scene) not in (0, 1, 2, 3):
         return [], []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     active = list(getattr(scene, "active_bg_palettes", []) or [])
@@ -663,7 +663,8 @@ def scene_color_fills(p: Project, scene) -> tuple[list[dict], list[int]]:
         if idx not in indices:
             indices.append(idx)
         fills.append({"name": el.name, "tx": tx, "ty": ty, "w": tw, "h": th,
-                      "index": idx, "bank": active.index(pal)})
+                      "index": idx, "bank": active.index(pal),
+                      "slot": int(lay.bg_slot)})   # slot BG du nœud (routage v0.12)
     return fills, indices
 
 
@@ -693,7 +694,7 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
     from core.models.tile_codec import unpack_se, pack_se
     from codegen.palette_alloc import scene_bank_layout
 
-    if getattr(scene, "text_bg", -1) not in (0, 1, 2, 3):
+    if p.scene_ui_bg_slot(scene) not in (0, 1, 2, 3):
         return [], []
     rm = int(getattr(scene, "render_mode", 0) or 0)
     bank_layout = scene_bank_layout(p, scene, "bg")
@@ -766,5 +767,6 @@ def scene_image_fills(p: Project, scene) -> tuple[list[dict], list[dict]]:
             assets.append({"name": ba.name, "sym": f"ui_bg_{c_sym(ba.name)}",
                            "words": words, "tiles": len(words) // 8})
         fills.append({"name": el.name, "tx": tx, "ty": ty, "w": w, "h": h,
-                      "asset": by_name[ba.name], "se": se, "bank": pal_offset})
+                      "asset": by_name[ba.name], "se": se, "bank": pal_offset,
+                      "slot": int(lay.bg_slot)})   # slot BG du nœud (routage v0.12)
     return fills, assets

@@ -55,8 +55,8 @@ def names_by_domain(project, scene=None) -> dict[str, list[str]]:
         # `DOMAIN_CONST`), mais l'autocomplétion des membres le lit ici, sous la
         # clé qui EST le qualificateur écrit (`const`).
         "const":        _names(has("constants")),
-        # Boutons : enum FIXE du matériel (mêmes noms que `CheckContext.VALID_KEYS`).
-        DOMAIN_KEY:     list(BUTTON_NAMES),
+        # Boutons matériels + actions déclarées par le projet.
+        DOMAIN_KEY:     list(BUTTON_NAMES) + _names(getattr(has("settings"), "inputs", [])),
     }
 
     # Textes : la CLÉ, pas le nom — et `build_texts()` plutôt que `texts`, pour

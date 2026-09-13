@@ -81,20 +81,25 @@ class UIRegionController(QObject):
         # appartient encore à la scène active ; sinon le premier (défaut
         # stable) ; sinon un nœud neuf créé à la volée — dessiner dans une
         # scène vierge reste le cas d'usage principal.
-        layouts = self._project.scene_ui_layouts(self._scene)
-        if layouts:
-            for lay in layouts:
-                if lay is self._active_layout:
-                    return lay
-            return layouts[0]
+        # `scene_ui_layouts` rend des `BoundInterface` ; l'édition de CONTENU vise
+        # l'asset `UILayout` (`.layout`), pas la vue liée. `_active_layout` est déjà
+        # un asset (cf. `_track_selected_layout`), d'où la comparaison par identité
+        # d'asset.
+        from core.models.ui_region import InterfaceNode
+        bounds = self._project.scene_ui_layouts(self._scene)
+        if bounds:
+            for b in bounds:
+                if b.layout is self._active_layout:
+                    return b.layout
+            return bounds[0].layout
         base = getattr(self._scene, "name", "") or "ui"
         name, n = base, 2
         while self._project.get_ui_layout(name) is not None:
             name = f"{base}_{n:02d}"; n += 1
         lay = UILayout(name=name)
         self._project.ui_layouts.append(lay)
-        if name not in self._scene.ui_layouts:
-            self._scene.ui_layouts.append(name)
+        if not any(nd.layout_name == name for nd in self._scene.ui_layouts):
+            self._scene.ui_layouts.append(InterfaceNode(layout_name=name))
         return lay
 
     def create_element(self, kind: str, x: int, y: int, w: int, h: int):

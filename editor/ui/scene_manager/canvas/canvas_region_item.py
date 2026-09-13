@@ -216,8 +216,16 @@ class UIRegionItem(QGraphicsRectItem):
                         prio = int(getattr(a, "priority", 0) or 0)
             base_z = hw_layer_z(prio, is_obj=True)
         else:
-            text_bg = getattr(scene, "text_bg", -1)
-            base_z = hw_layer_z(text_bg if text_bg in (0, 1, 2, 3) else 0, is_obj=False)
+            # Slot BG du NŒUD de cette zone (v0.12) : `self._layout` est une
+            # `BoundInterface` (cf. `GBAScene.set_ui_regions`), donc son `bg_slot`
+            # est celui de l'instance dans la scène — deux HUD sur BG0 et BG2 se
+            # composent alors au bon niveau, comme dans la ROM. Repli sur le slot
+            # primaire de la scène si jamais un asset nu arrivait ici.
+            slot = getattr(self._layout, "bg_slot", None)
+            if slot is None:
+                slot = (self._project.scene_ui_bg_slot(scene)
+                        if self._project and scene is not None else -1)
+            base_z = hw_layer_z(slot if slot in (0, 1, 2, 3) else 0, is_obj=False)
         self.setZValue(base_z)
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable

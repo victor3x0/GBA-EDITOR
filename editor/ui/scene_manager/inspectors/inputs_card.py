@@ -2,16 +2,10 @@
 ui/scene_manager/inspectors/inputs_card.py — la carte « Inputs » de la
 fenêtre Project Settings (catégorie Input).
 
-Placeholder (2026-08-25, aucune entrée ROADMAP encore) : nommer une action et
-lui associer un ou plusieurs boutons physiques du GBA pressés ENSEMBLE — un
-combo à un seul bouton est le cas courant, à plusieurs il en fait un vrai
-combo. Rien ne consomme encore ces bindings : ni le codegen ni le scripting
-Lua, qui continuent de lire le bouton physique directement via
-`input.pressed("A")` (cf. `VALID_KEYS`, scripting/checker.py). Cette carte ne
-fait qu'éditer et persister `ProjectSettings.inputs`
-(`core.models.settings.InputBinding`) — même portée que
-project_script_exports_editor pour les exports de script : l'édition existe,
-le câblage au générateur de code est un chantier séparé.
+Nommer une action et lui associer un ou plusieurs boutons physiques du GBA
+pressés ENSEMBLE — un combo à un seul bouton est le cas courant, à plusieurs
+il en fait un vrai combo. Le nom est utilisable depuis Lua via
+`input.held("nom")` et `input.pressed("nom")`.
 
 Comme LanguagesCard, la carte ne mute rien : elle SIGNALE un geste — « ajoute »,
 « retire », « ce champ vaut ça » — et l'appelant (InputsPanel) en fait une
@@ -35,12 +29,12 @@ from ui.common.widgets import CollapsibleCard, W
 # même ordre que BUTTON_NAMES.
 _BUTTON_LABELS: tuple[tuple[str, str], ...] = tuple(zip(
     BUTTON_NAMES,
-    ("Up", "Down", "Left", "Right", "A", "B", "L", "R", "Start", "Select"),
+    ("↑", "↓", "←", "→", "A", "B", "L", "R", "Start", "Select"),
 ))
 
 
 class InputsCard(CollapsibleCard):
-    """Déclaration des actions d'input du projet (placeholder)."""
+    """Déclaration des actions d'input du projet."""
 
     input_added = pyqtSignal()
     input_removed = pyqtSignal(object)                     # InputBinding

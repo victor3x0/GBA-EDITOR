@@ -837,15 +837,6 @@
     "sceneinsp.pal_bg": {
       "text": "BCK (backgrounds)"
     },
-    "sceneinsp.ui_layer": {
-      "text": "UI layer:"
-    },
-    "sceneinsp.default_suffix": {
-      "text": " (default)"
-    },
-    "sceneinsp.ui_layer_tip": {
-      "text": "<b>Layer reserved for HUD text (TTE)</b><br><br>In-game text (score, dialogue…) takes up a whole BG layer.<br>Pick a BG that isn't used by a background.<br><br><b>Conflict ⚠</b>: if this BG is already assigned to a background,<br>the two overlap and the result is undefined."
-    },
     "sceneinsp.ui_colors": {
       "text": "UI colors:"
     },
@@ -884,9 +875,6 @@
     },
     "sceneinsp.slots_hint": {
       "text": "{placed} actors placed"
-    },
-    "sceneinsp.text_bg_conflict_tip": {
-      "text": "BG{n} carries '{name}' — will be overwritten by the text"
     },
     "sndmix.add_action": {
       "text": "+ Action"
@@ -2710,7 +2698,7 @@
       "text": "Select a scene\nor an actor to\nshow its properties"
     },
     "inputs.hint": {
-      "text": "Name an action and pick the buttons that trigger it together. Placeholder — nothing reads these bindings yet, scripts still test physical buttons directly."
+      "text": "Name an action and choose the buttons that must be held together. Use it in scripts with input.held(\"name\") or input.pressed(\"name\"). The arrows are the D-pad axes."
     },
     "inputs.declare_an_input": {
       "text": "Declare an input"
@@ -2966,6 +2954,9 @@
     },
     "uinode.target": {
       "text": "Target"
+    },
+    "uinode.bg_slot": {
+      "text": "BG slot"
     },
     "scrfind.script_finder": {
       "text": "Script finder"

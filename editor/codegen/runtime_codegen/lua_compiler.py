@@ -101,6 +101,26 @@ def _project_lists(p):
     return project_lists(p)
 
 
+def _project_inputs(p) -> tuple[list[str], dict[str, str]]:
+    """Noms et masques C des actions définies dans Project Settings.
+
+    Les noms sont délibérément résolus au build : une action ne demande aucun
+    état ni table en RAM. Un combo est simplement le masque OR de ses boutons,
+    que `input_held` teste déjà en entier.
+    """
+    bindings = list(getattr(getattr(p, "settings", None), "inputs", []) or [])
+    names: list[str] = []
+    masks: dict[str, str] = {}
+    for binding in bindings:
+        name = str(getattr(binding, "name", "") or "").strip()
+        buttons = list(getattr(binding, "buttons", []) or [])
+        if not name or not buttons or name in names:
+            continue
+        names.append(name)
+        masks[name] = " | ".join(f"BTN_{button.upper()}" for button in buttons)
+    return names, masks
+
+
 def transpile_all(
     p: Project,
     scene: Scene,
@@ -155,6 +175,7 @@ def transpile_all(
     # nom absent — pas un cas spécial.
     lang_codes  = ([l.code for l in p.settings.all_languages()]
                    if hasattr(p, "settings") else [])
+    input_names, input_masks = _project_inputs(p)
     # Palettes : le catalogue ENTIER, dans son ordre. L'ordre devient
     # l'index dans g_palettes (main_gen), comme pour les textes et les
     # polices. Pas de dérivation depuis les scripts : la ROM est assez
@@ -262,6 +283,7 @@ def transpile_all(
         _rt_transform = _affine_reserved(actor)
         ctx_check = BuildContext(
             actor_name   = actor.name,
+            input_names  = input_names,
             anim_names   = anim_names,
             frame_event_names = frame_event_names,
             affine_transform = _rt_transform,
@@ -324,6 +346,7 @@ def transpile_all(
         if sp and sp.exists() and sp.suffix.lower() == ".lua":
             ctx_check = BuildContext(
                 actor_name   = scene.name,
+                input_names  = input_names,
                 sfx_names    = sfx_names,
                 music_names  = music_names,
                 scene_names  = _scene_names,
@@ -371,17 +394,25 @@ def transpile_all(
     for actor, sprite, script, sp in parsed_scripts:
         s    = c_sym(actor.name)
         anims = [st.name for st in sprite.states] if sprite and sprite.states else []
+        frame_events = sorted({
+            getattr(fr, "event_name", "") or ""
+            for state in (sprite.states if sprite else [])
+            for direction in state.directions
+            for fr in direction.frames
+        } - {""})
         sfx_comp_name = _sfx_component_name(actor)
         ctx  = CodegenContext(
             child_refs    = _child_refs_for_actor(actor, scene_actors),
             actor_name    = actor.name,
             actor_sym     = s,
+            input_masks   = input_masks,
             anim_names    = anims,
             sfx_names     = sfx_names,
             music_names   = music_names,
             global_names  = set(global_names),
             const_names   = set(const_names),
             all_actor_syms= all_syms,
+            frame_event_names = frame_events,
             scripts_dir   = p.scripts_dir,
             scene_names   = _scene_names,
             sfx_component_name = sfx_comp_name,
@@ -436,6 +467,7 @@ def transpile_all(
         _pf_rt_transform = _affine_reserved(pf)
         ctx_check = BuildContext(
             actor_name   = pf.name,
+            input_names  = input_names,
             anim_names   = pf_anim,
             affine_transform = _pf_rt_transform,
             sfx_names    = sfx_names,
@@ -478,6 +510,7 @@ def transpile_all(
             child_refs    = _child_refs_for_prefab(pf),
             actor_name    = pf.name,
             actor_sym     = pf_sym,
+            input_masks   = input_masks,
             anim_names    = pf_anim,
             sfx_names     = sfx_names,
             music_names   = music_names,
@@ -533,6 +566,7 @@ def transpile_all(
         ctx_sc  = CodegenContext(
             actor_name    = scene.name,
             actor_sym     = scene_s,
+            input_masks   = input_masks,
             anim_names    = [],
             sfx_names     = sfx_names,
             music_names   = music_names,
@@ -587,6 +621,7 @@ def transpile_all(
             continue
         ctx_check = BuildContext(
             actor_name   = cam.name,
+            input_names  = input_names,
             sfx_names    = sfx_names,
             music_names  = music_names,
             scene_names  = _scene_names,
@@ -630,6 +665,7 @@ def transpile_all(
         ctx_cam = CodegenContext(
             actor_name    = cam.name,
             actor_sym     = cam_sym,
+            input_masks   = input_masks,
             anim_names    = [],
             sfx_names     = sfx_names,
             music_names   = music_names,

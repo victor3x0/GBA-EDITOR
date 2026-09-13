@@ -51,7 +51,7 @@ class Language:
         )
 
 
-# ── Inputs (placeholder — ROADMAP à écrire) ───────────────────────
+# ── Inputs ─────────────────────────────────────────────────────────
 # Les 10 boutons physiques du GBA, dans l'ordre du boîtier. SOURCE UNIQUE : ce
 # fichier est dans `core.models` (le socle), la seule couche que tout le monde a
 # le droit d'importer. `scripting/checker.py` (`VALID_KEYS`) et l'UI
@@ -66,10 +66,10 @@ class InputBinding:
     ENSEMBLE — un combo à un seul bouton est le cas courant, à plusieurs il
     en fait un vrai combo (ex: {up, a} pour un dash).
 
-    Placeholder : rien ne consomme encore ces bindings, ni le codegen ni le
-    scripting Lua — `input.pressed("A")` continue de lire le bouton physique
-    directement. Cette dataclass ne fait qu'exister et se persister, comme
-    les exports de script avant leur câblage au codegen."""
+    Le nom devient une clé utilisable dans les scripts, par exemple
+    `input.pressed("jump")`. Les directions de la croix sont des boutons au
+    même titre que A/B : `jump = up` et `dash = right + a` ne demandent donc
+    aucun cas spécial au runtime."""
     name: str = ""
     buttons: list = field(default_factory=list)   # sous-ensemble de BUTTON_NAMES
 
@@ -176,10 +176,8 @@ class ProjectSettings:
     # multilingues peuvent la remplacer dans chaque Language ; la couverture
     # d'une FontAsset explicite reste configurée dans cette FontAsset elle-même.
     default_font: str = ""
-    # ── Inputs (placeholder) ────────────────────────────────────────
-    # Actions nommées du joueur, chacune liée à un combo de boutons — voir
-    # InputBinding ci-dessus pour ce qui manque encore avant que ça pilote
-    # quoi que ce soit.
+    # ── Inputs ──────────────────────────────────────────────────────
+    # Actions nommées du joueur, chacune liée à un ou plusieurs boutons.
     inputs: list = field(default_factory=list)
 
     def all_languages(self) -> list:

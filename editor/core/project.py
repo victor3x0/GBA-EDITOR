@@ -383,8 +383,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Nœuds Interface : sprites posés par leurs images, fonds de remplissage
         # (nine-slice / background). Les mises en page, elles, sont déjà chargées.
         from core.models.ui_region import FILL_BG, FILL_NINE
-        for layout_name in getattr(scene, "ui_layouts", []):
-            layout = self.ui_layouts.get(layout_name)
+        for node in getattr(scene, "ui_layouts", []):
+            layout = self.ui_layouts.get(node.layout_name)
             if layout is None:
                 continue
             sprite_names |= layout.sprite_names()
@@ -499,15 +499,56 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         return [b for b in self.backgrounds if b.kind == KIND_ANIMATED]
 
     def scene_ui_layouts(self, scene) -> list:
-        """Les nœuds `Interface` d'une scène (v0.25), dans l'ordre où elle les
-        référence. Les refs cassées sont sautées — un nom qui ne résout plus ne
-        doit pas faire tomber le chargement, le validateur le signalera."""
+        """Les nœuds `Interface` d'une scène (v0.12), résolus en `BoundInterface`
+        (nœud + asset composé), dans l'ordre où la scène les référence. Les refs
+        cassées sont sautées — un nom qui ne résout plus ne doit pas faire tomber
+        le chargement, le validateur le signalera.
+
+        L'ancrage et la cible BG/OBJ restent portés par l'asset à ce stade
+        (cf. `BoundInterface`) ; seul `bg_slot` est par nœud. Aucune migration de
+        cible n'a donc lieu ici — les refs cassées sont sautées."""
+        from core.models.ui_region import BoundInterface
         out = []
-        for name in getattr(scene, "ui_layouts", []) or []:
-            lay = self.ui_layouts.get(name)
+        for node in getattr(scene, "ui_layouts", []) or []:
+            lay = self.ui_layouts.get(node.layout_name)
             if lay is not None:
-                out.append(lay)
+                out.append(BoundInterface(node, lay))
         return out
+
+    # Slot BG d'UI par DÉFAUT quand une scène n'a aucun nœud rendu en Background —
+    # le comportement historique de `Scene.text_bg` (défaut 1). Sert au texte
+    # scripté/libre (`text.draw` aux coordonnées) d'une scène sans Interface
+    # authorée. Une couverture explicite (avertir si un script écrit du texte sans
+    # nœud) reste à faire côté validateur.
+    UI_BG_SLOT_DEFAULT = 1
+
+    def scene_ui_bg_slot(self, scene) -> int:
+        """Slot BG d'UI de la scène (v0.12), remplace l'ancien `Scene.text_bg`
+        comme entrée UNIQUE de la réservation VRAM et de la config d'affichage :
+        le slot du premier nœud `Interface` rendu en Background, sinon le défaut.
+
+        Le ROUTAGE par zone (`scene_route_region`) utilise, lui, le `bg_slot` de
+        CHAQUE nœud — c'est ce qui permet à un layout partagé d'être sur deux slots
+        selon la scène. Ce helper ne rend qu'un slot (réservation mono-slot de la
+        tranche 2 ; le multi-slot par scène est une étape distincte)."""
+        from core.models.ui_region import TARGET_BG
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        for node in self.scene_ui_layouts(scene):
+            if node.resolved_target(None, rm) == TARGET_BG:
+                return int(node.bg_slot)
+        return self.UI_BG_SLOT_DEFAULT
+
+    def scene_ui_bg_slots(self, scene) -> list:
+        """TOUS les slots BG distincts que les nœuds `Interface` de la scène
+        occupent, triés. Un layout partagé posé sur BG0 et un HUD sur BG2 dans la
+        MÊME scène en rendent deux : chacun réclame sa propre map (screenblock),
+        les glyphes restant partagés dans un seul charblock. Vide → le défaut
+        (`scene_ui_bg_slot`) est utilisé seul, comme avant."""
+        from core.models.ui_region import TARGET_BG
+        rm = int(getattr(scene, "render_mode", 0) or 0)
+        slots = {int(node.bg_slot) for node in self.scene_ui_layouts(scene)
+                 if node.resolved_target(None, rm) == TARGET_BG}
+        return sorted(slots) if slots else [self.scene_ui_bg_slot(scene)]
 
     def scene_ui_layout(self, scene) -> Optional[UILayout]:
         """Le nœud `Interface` PRIMAIRE de la scène (le premier référencé), ou
@@ -748,7 +789,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         « partagée — N scènes » : éditer un élément depuis le canvas modifie un
         objet commun, et le taire casserait N scènes en un geste."""
         return [s for s in self.scenes
-                if name in (getattr(s, "ui_layouts", []) or [])]
+                if any(n.layout_name == name
+                       for n in (getattr(s, "ui_layouts", []) or []))]
 
     def instantiate_actor_from_prefab(self, prefab: Prefab, name: str,
                                        x: int = 112, y: int = 72) -> Actor:

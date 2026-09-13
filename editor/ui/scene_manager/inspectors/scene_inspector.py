@@ -12,7 +12,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
 from core.models.palette import OWN_PAL_BANK
 from core.models.scene import Scene
 from core.project import Project
-from core.models.scene import TRANSITION_INHERIT, EFFECT_NONE
+from core.models.scene import TRANSITION_INHERIT, EFFECT_NONE, BG_SLOTS_BY_MODE
 from ui.scene_manager.inspectors.bg_layer_row import BgLayerRow
 from ui.scene_manager.inspectors.project_inspector import TRANSITION_LABELS
 from core.history import (
@@ -135,18 +135,20 @@ class _ScenePaletteCmd(Command):
 # `tip` porte une CLÉ de libellé (résolue par `label()` à l'affichage), pas le
 # texte : ces descriptions techniques de mode sont visibles (indice sous le
 # bouton de mode, infobulles du menu).
+# `bg_slots` vient de la source cœur `BG_SLOTS_BY_MODE` (core/models/scene.py) —
+# un seul endroit tient la géométrie matérielle, l'UI et le validateur la lisent.
 MODE_INFO: dict[int, dict] = {
-    0: {"kind": "tiled",  "bg_slots": (0, 1, 2, 3), "affine": (),     "bg_palettes": True,
+    0: {"kind": "tiled",  "bg_slots": BG_SLOTS_BY_MODE[0], "affine": (),     "bg_palettes": True,
         "res": (240, 160), "tip": "sceneinsp.mode_tip_0"},
-    1: {"kind": "tiled",  "bg_slots": (0, 1, 2),    "affine": (2,),   "bg_palettes": True,
+    1: {"kind": "tiled",  "bg_slots": BG_SLOTS_BY_MODE[1], "affine": (2,),   "bg_palettes": True,
         "res": (240, 160), "tip": "sceneinsp.mode_tip_1"},
-    2: {"kind": "tiled",  "bg_slots": (2, 3),       "affine": (2, 3), "bg_palettes": True,
+    2: {"kind": "tiled",  "bg_slots": BG_SLOTS_BY_MODE[2], "affine": (2, 3), "bg_palettes": True,
         "res": (240, 160), "tip": "sceneinsp.mode_tip_2"},
-    3: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
+    3: {"kind": "bitmap", "bg_slots": BG_SLOTS_BY_MODE[3], "affine": (),     "bg_palettes": False,
         "res": (240, 160), "bpp": 16, "tip": "sceneinsp.mode_tip_3"},
-    4: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": True,
+    4: {"kind": "bitmap", "bg_slots": BG_SLOTS_BY_MODE[4], "affine": (),     "bg_palettes": True,
         "res": (240, 160), "bpp": 8,  "tip": "sceneinsp.mode_tip_4"},
-    5: {"kind": "bitmap", "bg_slots": (2,),         "affine": (),     "bg_palettes": False,
+    5: {"kind": "bitmap", "bg_slots": BG_SLOTS_BY_MODE[5], "affine": (),     "bg_palettes": False,
         "res": (160, 128), "bpp": 16, "tip": "sceneinsp.mode_tip_5"},
 }
 
@@ -424,26 +426,10 @@ class SceneInspector(QWidget):
         self._ui_card = ui_card
         ui_inner = ui_card.body_layout
 
-        ui_row = QHBoxLayout(); ui_row.setSpacing(6)
-        lbl_ui = QLabel(label("sceneinsp.ui_layer"))
-        lbl_ui.setFont(QFont(T.UI, T.SM)); lbl_ui.setStyleSheet(f"color:{C.TEXT_DIM};")
-        lbl_ui.setFixedWidth(70)
-        self._combo_text_bg = QComboBox()
-        self._combo_text_bg.setFont(QFont(T.UI, T.SM))
-        self._combo_text_bg.setStyleSheet(QSS.combobox)
-        for i in range(4):
-            self._combo_text_bg.addItem(
-                f"BG{i}" + (label("sceneinsp.default_suffix") if i == 1 else ""), i)
-        self._combo_text_bg.currentIndexChanged.connect(self._on_text_bg_changed)
-        self._combo_text_bg.setToolTip(label("sceneinsp.ui_layer_tip"))
-        self._lbl_text_bg_warn = QLabel()
-        self._lbl_text_bg_warn.setPixmap(icons.get("warning", C.ACCENT_YLW).pixmap(QSize(14, 14)))
-        self._lbl_text_bg_warn.setVisible(False)
-        ui_row.addWidget(lbl_ui)
-        ui_row.addWidget(self._combo_text_bg)
-        ui_row.addWidget(self._lbl_text_bg_warn)
-        ui_row.addStretch(1)
-        ui_inner.addLayout(ui_row)
+        # Le slot BG de l'UI n'est plus un réglage de scène (v0.12) : chaque nœud
+        # `Interface` porte le sien (`InterfaceNode.bg_slot`), édité dans son propre
+        # inspecteur et lisible dans la projection Priorité du Scene Tree. L'ancien
+        # combo « UI layer » a donc été retiré d'ici.
 
         # ── Banque de couleurs de l'UI ────────────────────────────
         # Où le texte lit ses couleurs : un SLOT de la sélection BG de la scène.
@@ -559,9 +545,6 @@ class SceneInspector(QWidget):
         self._chk_scroll_h.setChecked(scene.scroll_h)
         self._chk_scroll_v.setChecked(scene.scroll_v)
         self._refresh_scroll_speeds()
-        text_bg = getattr(scene, "text_bg", 3)
-        self._combo_text_bg.setCurrentIndex(text_bg)
-        self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
         self._palette_view_pending = True
         if self._pal_card.is_expanded():
@@ -1493,31 +1476,13 @@ class SceneInspector(QWidget):
         self._set_scene_field("font_name", name or "")
         self.changed.emit()
 
-    def _on_text_bg_changed(self):
-        if self._blocking or not self._scene: return
-        self._set_scene_field(
-            "text_bg", self._combo_text_bg.currentData(),
-            extra_persist=self._refresh_text_bg_warn,
-        )
-        self.changed.emit()
-
-    def _refresh_text_bg_warn(self):
-        if not self._scene: return
-        self._refresh_ui_layer_marks()
-        text_bg = getattr(self._scene, "text_bg", -1)
-        conflict = next((l for l in self._scene.background_layers
-                          if l.background_name and l.bg_slot == text_bg), None)
-        self._lbl_text_bg_warn.setVisible(bool(conflict))
-        if conflict:
-            self._lbl_text_bg_warn.setToolTip(
-                label("sceneinsp.text_bg_conflict_tip",
-                      n=text_bg, name=conflict.background_name))
-
     def _refresh_ui_layer_marks(self):
-        """Marque visuellement (icône 'UI') la rangée dont le bg_slot == Layer
-        UI de la scène — son charblock est réservé à la police TTE (cf.
-        main_gen._gen_scene_init), aucune image ne devrait y être assignée."""
-        text_bg = getattr(self._scene, "text_bg", -1) if self._scene else -1
+        """Marque visuellement (icône 'UI') la rangée dont le bg_slot est le slot
+        d'UI de la scène — son charblock est réservé à la police (cf.
+        main_gen._gen_scene_init), aucune image ne devrait y être assignée. Le slot
+        est désormais dérivé des nœuds `Interface` (v0.12), plus de `Scene.text_bg`."""
+        text_bg = (self._project.scene_ui_bg_slot(self._scene)
+                   if self._project and self._scene else -1)
         for row in self._bg_layer_rows:
             row.set_ui_layer(row.slot_index == text_bg)
 

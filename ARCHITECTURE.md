@@ -58,7 +58,7 @@ gba-editor/
 │   ├── scripting/                   ← compilation Lua → C (voir section dédiée)
 │   │   ├── parser.py / checker.py / codegen.py  ← Lua texte → AST → C
 │   │   ├── api.py                   ← RUNTIME_API : catalogue unique de l'API Lua ↔ C
-│   │   ├── lua_subset.py            ← le Lua accepté, et le refus qui dit quoi écrire (→ SCRIPTING.md)
+│   │   ├── lua_subset.py            ← le Lua accepté, et le refus qui dit quoi écrire (→ docs/scripting-reference.md)
 │   │   └── script_templates.py      ← contenu initial d'un nouveau script (scène/actor/vide)
 │   ├── plugins/                     ← plugins chargés dynamiquement (spec_from_file_location)
 │   └── ui/                          ← rangé par écran, pas par type de widget
@@ -72,7 +72,7 @@ gba-editor/
 │       │   ├── notice.py            ← les 3 niveaux de contenu informatif (bâti sur catalog.py)
 │       │   ├── notices/             ← notices.json (source EN) + notices_<code>.json (traductions)
 │       │   ├── labels.py            ← label("clé") : libellés, titres, menus, infobulles (bâti sur catalog.py)
-│       │   └── labels/              ← labels.json (source EN) + labels_<code>.json (traductions) — cf. docs/ui-text.md
+│       │   └── labels/              ← labels.json (source EN) + labels_<code>.json (traductions) — cf. docs/development/ui-text.md
 │       ├── home/
 │       │   └── project_picker.py    ← écran d'accueil (HomeScreen)
 │       ├── scene_manager/
@@ -81,7 +81,7 @@ gba-editor/
 │       │       ├── actor_inspector.py, scene_inspector.py, camera_inspector.py
 │       │       ├── uses_inspectors.py     ← Prefab/Script/Variable Uses (groupés, structure proche)
 │       │       ├── languages_card.py      ← carte « Languages » du ProjectInspector (v0.9)
-│       │       ├── dynamic_inspector.py   ← routeur, instancie tous les autres
+│       │       ├── dynamic_inspector.py   ← routeur ; construit chaque inspecteur à sa PREMIÈRE venue (paresseux, cf. « L'ouverture d'un projet, et l'écran blanc »)
 │       │       └── component_editors/     ← un fichier par type de Component
 │       ├── sprite_editor/             ← un fichier par sous-zone de l'écran
 │       │   ├── sprite_finder_panel.py     ← panneau gauche (sprites + anims)
@@ -394,7 +394,7 @@ texte Lua → parser.py → AST Python → checker.py (validation) → codegen.p
 - **`codegen.py`** — pour la majorité des appels, `_emit_api_call` génère l'appel C directement depuis l'entrée `RUNTIME_API` correspondante. Une poignée de fonctions ne se traduisent pas par un simple appel de fonction (`self:destroy` → deux instructions enchaînées, `sfx.play` → arguments synthétisés depuis la ressource Sfx du projet...) : elles sont réunies dans deux tables de dispatch en fin de fichier, `_INVOKE_CUSTOM` et `_CALL_CUSTOM`, plutôt que dispersées en `if`/`elif` dans le code de traduction. Chacune de ces fonctions a quand même une entrée dans `RUNTIME_API` pour la validation/documentation. `global.nom`/`const.nom` ne sont ni l'un ni l'autre (chantier global/const) : ce sont des accès POINTÉS, pas des appels — comme `self.position` (RUNTIME_PROPS) ou `data.Objets`, résolus directement dans la branche `ExprIndex` de `_expr` (accès direct à la variable C `g_nom` / au symbole `CONST_NOM`), et validés côté checker par `_check_global_scalar`/`_check_global_indexed`/`_check_const_scalar` plutôt que par le catalogue.
 - **Important pour toute nouvelle fonction Lua** : si elle se traduit par un simple appel C avec conversion d'arguments, une entrée dans `RUNTIME_API` suffit *côté traduction*. Ce n'est que si elle a besoin de logique de traduction (nom C dynamique, arguments non présents côté Lua, émission multi-instructions) qu'elle doit aussi rejoindre `_INVOKE_CUSTOM`/`_CALL_CUSTOM`.
 - **Mais une fonction du moteur doit être déclarée DEUX fois** — voir « Deux listes de prototypes » ci-dessous. C'est le piège le plus coûteux de cette chaîne, parce qu'il ne se manifeste qu'au `make`.
-- **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (`changelog-archive/v0.7.md`, v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `SCRIPTING.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge. Ce qui n'atteint même pas l'AST — une faute de SYNTAXE — est le seul refus que le parser prononce lui-même, et il le prononce dans la même langue : `LuaParseError` porte sa `line` et une phrase, reconstruites depuis la chaîne d'exceptions d'antlr que luaparser jette en formatant son `syntax errors: None` (cf. `_syntax_message`, et la table de faux amis qui ne se balaie qu'après un échec).
+- **`lua_subset.py`** — la LISTE de ce que le langage accepte, et de ce qu'il refuse en le disant (`changelog-archive/v0.7.md`, v0.7.5). Chaque nœud de luaparser y est rangé dans une des trois cases — `ACCEPTED` (il se traduit), `REFUSED` (avec la phrase qui dit quoi écrire à la place) ou `STRUCTURAL` (jamais dispatché) — et la bibliothèque standard de Lua (`print`, `math.floor`, `table.*`…) reçoit le même traitement, par nom. Trois consommateurs : `checker.py` (refuser en nommant l'issue), `docs/scripting-reference.md` (expliquer — un test échoue si un refus n'y est pas documenté) et `validator._check_lua_subset` (**erreur bloquante** si un nœud de luaparser n'est classé nulle part, exactement comme `_check_api_domains` pour les domaines d'arguments). Avant elle, `parser.py` rendait `None` pour tout statement non géré — un `repeat` ou un `for … in` disparaissait du jeu sans un mot — et `ExprName("__unsupported_<Type>")` pour toute expression non gérée, qui n'échouait qu'au `make`. Les nœuds non traduits sont désormais PORTÉS (`StmtUnsupported`, `ExprUnsupported`, avec leur ligne) : le parser décrit, le checker juge. Ce qui n'atteint même pas l'AST — une faute de SYNTAXE — est le seul refus que le parser prononce lui-même, et il le prononce dans la même langue : `LuaParseError` porte sa `line` et une phrase, reconstruites depuis la chaîne d'exceptions d'antlr que luaparser jette en formatant son `syntax errors: None` (cf. `_syntax_message`, et la table de faux amis qui ne se balaie qu'après un échec).
 - **`expr_types.py`** — les deux exceptions au sous-ensemble Lua entièrement scalaire (ROADMAP v0.7.3 et v0.8.6) : `vec2(x, y)`/`vec3(x, y, z)` sont des constructeurs de langage, pas des entrées `RUNTIME_API`. `checker.py` et `codegen.py` partagent ce module pour savoir si une expression EST un vec2/vec3 (locals `self._vec_types`, remplie au fil d'un même parcours à plat dans les deux fichiers — même approximation que `self._arrays`) plutôt que de laisser chacun réinventer sa propre inférence. `+`/`-`/`*` (par un entier) s'y traduisent en appels `vec2_add`/`vec2_sub`/`vec2_scale` (`actor_api_static.h`) : le C n'a pas d'opérateur sur les structs. La seconde exception sont les **références** — ce qu'un appel REND (`local pas = sfx.play("Pas")`) : une valeur composée se copie, une référence DÉSIGNE un slot pris dans un pool du matériel, mais les deux répondent à la même question (« quel type porte ce nom ? ») et deux modules y auraient fini par répondre différemment. Le module s'appelait `vec_types.py` tant qu'il n'y avait qu'une exception.
 
 ### La grammaire de l'API — trois formes, une par nature
@@ -1060,11 +1060,23 @@ sa collection. Ainsi, le démarrage interactif ne paie pas le rattrapage d'un
 PNG que l'utilisateur ne consulte pas, tandis que l'écran qui le rend ou une
 opération globale travaille toujours avec des données à jour.
 
-Le point d'entrée suit le même principe de rendu : `main.py` affiche la fenêtre
-principale, laisse Qt traiter un premier cycle de peinture, puis programme
-l'ouverture initiale du projet au tour d'événement suivant. Il n'y a pas d'écran
-de chargement séparé ; le but est seulement de ne pas bloquer le premier dessin
-de l'interface réelle par l'I/O du projet.
+Le point d'entrée **ouvre le projet fenêtre cachée, puis l'affiche déjà dessinée**
+(chantier « L'ouverture d'un projet, et l'écran blanc ») : `main.py` construit
+`MainWindow`, peuple l'éditeur (`_open_project`, sous curseur d'attente), et
+n'appelle `show()` qu'ensuite. La mesure a montré que le premier `show()` — la
+première mise en page et le premier paint de tout l'arbre de widgets — est
+justement l'endroit coûteux ; l'afficher avant que le projet soit chargé exposait
+un éditeur vide (panneaux blancs) puis figé le temps de l'I/O et du premier dessin.
+Il n'y a pas d'écran de chargement séparé : la fenêtre n'apparaît qu'une fois prête.
+
+Deux coûts que ce premier paint tirait ont été sortis de son chemin. Le
+**`DynamicInspector`** construit ses neuf sous-inspecteurs à leur première venue,
+pas au démarrage (même paresse que les écrans). Et l'**aperçu des boîtes de texte
+du canvas** — qui résout les couleurs de banque via `codegen/palette_alloc` et
+tirait ainsi la rasterisation de la police ROM entière — est **pré-chauffé hors
+écran** à la (re)construction des items (`GBAScene.set_ui_regions`), en partageant
+une seule allocation de scène (`palette_alloc.scene_layout_cache()`, un cache à
+portée de contexte que le build n'ouvre jamais).
 
 ---
 
@@ -1268,7 +1280,7 @@ les identifiants techniques (noms de type `int`/`bool`…), les noms de format (
 PNG), les données de l'utilisateur et les diagnostics reçus du cœur ou d'outils externes.
 Les titres d'`AssetFinder`, les tables d'affichage et les diagnostics formulés par l'UI
 sont désormais extraits. Les identifiants de familles restent distincts de leurs titres
-traduits. [Le contrat des textes](docs/ui-text.md) précise les exceptions et les limites
+traduits. [Le contrat des textes](docs/development/ui-text.md) précise les exceptions et les limites
 du contrôle ciblé `tools/check_ui_text.py`, intégré au contrôle d'architecture.
 
 **Le niveau est choisi par l'appelant, le ton est écrit dans le catalogue.** Le niveau est
@@ -1430,6 +1442,14 @@ pas de planche à l'import : `core/font_rasterizer.py` la lit à la demande avec
 FreeType pour l'aperçu comme pour le build. Sa sortie `RasterGlyph` est une grille
 de couverture indépendante des tuiles et de la palette GBA.
 
+Deux détails de **coût** (chantier « L'ouverture d'un projet, et l'écran blanc »).
+`build_font_asset` passe une **table de passe** `faces` à travers la rasterisation :
+chaque fichier source — `Face` FreeType, planche PNG, et chemin résolu par
+`asset_abs` — n'est chargé qu'**une fois** pour tous ses glyphes, au lieu d'un
+rechargement par caractère. Elle est locale à l'appel (aucun état de module, rien
+partagé entre threads). L'extraction de couverture (chemins PNG et `_coverage`
+FreeType) est **vectorisée** (numpy) : même sortie, à l'octet près.
+
 Une `FontAsset` porte aussi sa politique `pixel_fit`. `auto` choisit une
 bitmap strike seulement si elle correspond exactement à la hauteur demandée,
 sinon aligne le rendu sur la grille à 6 px ou moins et garde le rendu natif
@@ -1561,9 +1581,13 @@ existants ouvrables.
   courante. C'est ce qui rend un texte **indépendant de la police** : une traduction peut
   exiger un autre jeu de glyphes. Le coût est une recherche par caractère à l'affichage,
   pas par frame.
-- **Le texte vit sur LE layer d'UI** (`Scene.text_bg`), d'où l'absence de paramètre
-  `layer` dans l'API : les glyphes sont chargés dans le charblock de ce layer, et un
-  charblock appartient à un layer. Un paramètre `layer` serait mensonger.
+- **Le slot BG d'une zone appartient à son nœud `Interface`, par scène** (v0.12) : plus de
+  `Scene.text_bg` unique. Chaque `InterfaceNode.bg_slot` dit où SA zone se rend ; `scene_init`
+  installe une table de routage (`scene_route_region`/`scene_route_image`) que le rendu lit
+  au lieu d'un layer global. Un même layout partagé peut donc vivre sur BG0 dans une scène et
+  BG2 dans une autre. L'API texte n'a toujours pas de paramètre `layer` : la zone porte le
+  sien, et l'écriture libre (`text.draw` aux coordonnées) garde un layer courant par défaut,
+  posé au premier slot d'UI de la scène. Cf. « Éléments d'interface » plus bas.
 - **Une seule police résidente** à la fois : `text_set_font()` recopie glyphes et palette
   en VRAM. C'est un appel délibéré, pas un coût par frame.
 - **Celle que `scene_init` charge est `Scene.font_name`**, et `font_emit.scene_default_font()`
@@ -1665,6 +1689,50 @@ charge entre **deux budgets disjoints** — VRAM BG (64 Ko, arbitrée par
 `codegen/vram_alloc.py`) et VRAM OBJ (32 Ko). C'est l'échappatoire quand un charblock est
 plein.
 
+### Le slot BG appartient à l'INSTANCE dans la scène, pas à l'asset (v0.12)
+
+La v0.25 conflait « le nœud » et l'asset `UILayout` : une scène ne citait qu'un nom, donc le
+chemin matériel vivait physiquement sur l'asset partagé. Le contexte **Priority** du Scene
+Tree (chaque scène est une pile de composition matérielle) a rendu ce raccourci faux : chaque
+interface doit pouvoir se ranger indépendamment dans la pile. Le principe qui tranche —
+**distinguer un asset de sa cible de rendu, et le z-order en fait partie**.
+
+- **`InterfaceNode`** (dans `models/ui_region.py`, le pendant de `BackgroundLayer`) est
+  l'instance d'un layout DANS une scène : `{layout_name, anchor, anchor_actor, target,
+  bg_slot}`. Le champ **par-scène** effectivement en vigueur aujourd'hui est `bg_slot` — le
+  slot BG où l'interface se compose, qui remplace l'ancien `Scene.text_bg` unique. Un HUD
+  partagé peut donc être sur BG0 dans une scène et BG2 dans une autre.
+- **`BoundInterface`** est la vue COMPOSÉE que `scene_ui_layouts(scene)` rend : le contenu
+  (éléments, géométrie) délégué à l'asset, `bg_slot` lu du nœud. `anchor`/`target` restent
+  lus de l'**asset** (leur passage par nœud est différé — cf. « Ouvert » plus bas) ; les lire
+  du nœud figerait une valeur périmée dès qu'on édite l'asset.
+- **Routage de rendu par scène.** Les tables de contenu (`g_ui_regions` / `g_ui_images`,
+  indexées par nom d'élément UNIQUE au projet — d'où l'ABI `REGION_*`/`IMAGE_*`) restent
+  per-asset : les rekeyer par nœud casserait ce nommage. C'est la **cible** qui sort en table
+  de routage par scène — `scene_init` pose `scene_route_region(r, slot)` / `scene_route_image`,
+  et `text_draw_in` / effacement / reveal / listes / `ui_image_update` lisent le slot du nœud
+  (`region_layer_of`) au lieu du layer global. L'écriture libre garde `text_set_layer`.
+- **VRAM multi-slot** (`vram_alloc.scene_layout(..., ui_slots=…)`) : une map (SBB) par slot
+  d'UI utilisé, les **glyphes partagés** dans un seul charblock. `dispcnt`/`bg_cnt` activent
+  chaque slot.
+- **Édition.** L'inspecteur du nœud (`UINodeInspector`) porte un combo **BG slot** (seulement
+  les slots que le mode vidéo expose, masqué en OBJ) ; le contexte Priority range chaque nœud
+  sous son slot et le **glisser** d'un Background à l'autre change `bg_slot`. Le z-order du
+  canvas suit ce slot par nœud (`hw_layer_z`), et réordonner la colonne Priority rafraîchit le
+  canvas (`scene_sprites_changed` / rechargement des zones).
+- **Validation** (`_check_ui_node_slots`, `_check_bg_text_cbb_conflict`) : slot indisponible
+  dans le mode vidéo → erreur (source cœur `BG_SLOTS_BY_MODE`, dont `MODE_INFO` de l'UI
+  dérive) ; même layout posé deux fois dans une scène → erreur (collision de noms d'élément) ;
+  interface partageant son slot avec un décor → erreur (charblock écrasé).
+
+**Ouvert — routage par nœud de `anchor`/`target`.** Les champs existent sur `InterfaceNode`
+mais sont DORMANTS : `anchor`/`target` restent per-asset. Les router par scène demande (1) la
+copie vivante runtime portant target/anchor + l'édition sur le nœud (sûr, dans le même plan
+BG), et (2) pour la divergence **BG↔OBJ** (« HUD ici, bulle-acteur là »), d'émettre le
+placement OBJ inconditionnellement dans `g_ui_regions`, de réconcilier la géométrie BG/OBJ et
+de résoudre l'`actor` (index g_actors) PAR scène — coûteux et vérifiable seulement sur un vrai
+build ROM. Reporté à un chantier dédié.
+
 ### Tout en pixels, une seule unité
 
 Le BG exige un alignement à la tuile, mais c'est `snap_to_tile()` qui le pose, pas le
@@ -1686,16 +1754,18 @@ divergent.
 ### Un nœud est un asset, pas une donnée de scène — et une scène en référence PLUSIEURS
 
 `UILayout` est rangé dans `project/ui_layouts/` et référencé par nom. Une scène en référence
-une **liste** (`Scene.ui_layouts`, v0.25) : chaque nœud porte son couple ancrage/cible, une
-même scène peut donc poser un HUD-BG et une bulle actor-OBJ côte à côte. Une boîte dessinée
-une fois sert les quarante scènes du jeu et se corrige en un endroit — d'où le partage :
-éditer un élément depuis le canvas modifie un objet **partagé**, et `ui_layout_users()`
-alimente le badge « partagée — N scènes », sans quoi on casserait N scènes en croyant en
-ajuster une.
+une **liste de nœuds** (`Scene.ui_layouts`, désormais `list[InterfaceNode]`, v0.12) : chaque
+nœud est l'INSTANCE d'un layout dans cette scène, et porte sa `bg_slot` (cf. la sous-section
+suivante). Une même scène peut poser un HUD-BG et une bulle actor-OBJ côte à côte. Une boîte
+dessinée une fois sert les quarante scènes du jeu et se corrige en un endroit — d'où le
+partage : éditer un élément depuis le canvas modifie un objet **partagé**, et
+`ui_layout_users()` alimente le badge « partagée — N scènes », sans quoi on casserait N
+scènes en croyant en ajuster une.
 
-Le passage 1→N est celui qu'annonçait la v0.3 (« additif ; l'inverse ne l'est pas ») :
-`Scene.ui_layout` (nom unique) se relit désormais emballé dans `ui_layouts`, et ne se
-réécrit que sous la forme liste — la recette *une forme ancienne se lit, une seule s'écrit*.
+Le passage 1→N est celui qu'annonçait la v0.3 (« additif ; l'inverse ne l'est pas ») : les
+formes anciennes — `Scene.ui_layout` (nom unique), puis `ui_layouts` liste de NOMS (v0.25) —
+se relisent, seule la liste de nœuds s'écrit (recette *une forme ancienne se lit, une seule
+s'écrit* ; migration dans `_ui_nodes_from_dict`).
 
 `Project.scene_ui_layouts(scene)` résout la liste ; `scene_ui_slots` / `scene_ui_images` /
 `scene_ui_elements` en donnent les paires `(nœud, élément)` que les émetteurs **par scène**
