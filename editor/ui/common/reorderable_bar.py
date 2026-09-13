@@ -8,7 +8,7 @@ un trait vert indique la position de drop. Le layout ne se reconstruit qu'au rel
 from __future__ import annotations
 
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QToolButton, QButtonGroup, QFrame
-from PyQt6.QtCore import Qt, QSettings, QPoint, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, QSettings, QPoint, pyqtSignal, QEvent, QTimer
 from PyQt6.QtGui import QFont
 
 from ui.common.theme import C, T
@@ -63,7 +63,9 @@ class ReorderableButtonBar(QWidget):
             btn.setCheckable(True)
             btn.setFont(QFont(T.UI, T.MD))
             btn.setStyleSheet(_BTN_NORMAL)
-            btn.setCursor(Qt.CursorShape.OpenHandCursor)
+            # La main fermée est réservée au déplacement en cours : au repos,
+            # y compris au simple survol, le curseur reste celui par défaut.
+            btn.setCursor(Qt.CursorShape.ArrowCursor)
             btn.clicked.connect(lambda _=False, idx=i: self.screen_requested.emit(idx))
             btn.installEventFilter(self)
             self._group.addButton(btn, i)
@@ -90,6 +92,7 @@ class ReorderableButtonBar(QWidget):
         self._drag_start: QPoint | None = None
         self._dragging = False
         self._drag_target: int = 0   # index dans _order_without_dragged
+        self._cursor_reset_token = 0
 
     # ── API publique ──────────────────────────────────────────────────
 
@@ -176,6 +179,7 @@ class ReorderableButtonBar(QWidget):
 
     def _begin_drag(self, btn: QToolButton):
         self._dragging = True
+        self._cursor_reset_token += 1
         btn.setStyleSheet(_BTN_GHOST_SRC)
         btn.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -248,12 +252,23 @@ class ReorderableButtonBar(QWidget):
         self._order = others
 
         # Nettoyer l'UI de drag
-        self._drag_btn.setStyleSheet(_BTN_NORMAL)
-        self._drag_btn.setCursor(Qt.CursorShape.OpenHandCursor)
+        released_btn = self._drag_btn
+        reset_token = self._cursor_reset_token
+        released_btn.setStyleSheet(_BTN_NORMAL)
+        released_btn.setCursor(Qt.CursorShape.OpenHandCursor)
         self._ghost.hide()
         self._indicator.hide()
         self._dragging = False
         self._drag_btn = None
+
+        # Le relâché confirme visuellement la fin du geste, avant le retour
+        # discret au curseur normal. Ne pas interrompre un nouveau drag lancé
+        # pendant ce court délai, ni écourter le délai d'un geste suivant.
+        QTimer.singleShot(
+            100,
+            lambda: None if reset_token != self._cursor_reset_token
+            else released_btn.setCursor(Qt.CursorShape.ArrowCursor),
+        )
 
         self._rebuild_layout()
         self._save_order()

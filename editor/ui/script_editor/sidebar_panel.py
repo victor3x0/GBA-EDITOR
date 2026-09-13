@@ -112,6 +112,11 @@ class SidebarPanel(QWidget):
         self._sec_refs.clear_body()
         if not project:
             return
+        # La sidebar liste TOUS les sprites et fonds : matérialise ces catalogues
+        # différés (v0.24). On est ici à l'ouverture du Script Editor — un écran
+        # dédié, pas l'ouverture du projet.
+        project.load_sprites()
+        project.load_backgrounds()
 
         # Les noms par domaine viennent de la source unique (`names_by_domain`),
         # celle que lit aussi l'autocomplétion — plus de liste dressée ici à côté

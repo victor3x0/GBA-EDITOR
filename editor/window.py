@@ -19,7 +19,7 @@ from ui.common.labels import label
 
 from codegen import BuildWorker
 from ui.scene_manager.scene_canvas import SceneEditor
-from core import asset_encoding
+from core.resources import asset_reconciliation
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
 from core.history import get_history, SetFieldCmd
@@ -42,14 +42,14 @@ from ui.common.settings_dialog import SettingsDialog
 from core.external_tools import ExternalTools
 from core.keybindings import bind
 from ui.scene_manager.inspectors import DynamicInspector
-from ui.sound_mixer.sound_panel import SoundMixerScreen
-from ui.script_editor.script_editor import ScriptEditorScreen
 from ui.home.project_picker import HomeScreen, push_recent, PROJECTS_DIR
-from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
-from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
-from ui.background_editor.background_editor_screen import BackgroundEditorScreen
-from ui.data_editor.data_editor_screen import DataEditorScreen
-from ui.text_editor.text_editor_screen import TextEditorScreen
+# Démarrage paresseux (chantier « L'écran construit à sa première visite ») :
+# les sept écrans natifs différés — Data, Background, Sprite, Palette, Text,
+# Sound, Script — ne sont PAS importés ici. Leur import (souvent lourd :
+# QtMultimedia + numpy pour l'audio, grammaire luaparser pour les scripts) vit
+# dans leur fabrique `_make_*`, appelée à la première visite. Seul le Scene
+# Manager et ses composants (SceneEditor, panneaux, inspecteur) restent importés
+# en tête : c'est l'écran visible au démarrage.
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -206,6 +206,13 @@ class GbaStatusBar(QWidget):
 # ──────────────────────────────────────────────────────────────────
 #  Écrans dont la fenêtre est le propriétaire
 # ──────────────────────────────────────────────────────────────────
+class _ScreenPlaceholder(QWidget):
+    """Occupe la place d'un écran natif non encore construit dans le
+    `QStackedWidget` (démarrage paresseux). `_ensure_screen` le remplace par le
+    vrai widget à la première visite ; sa seule fonction est de tenir l'index et
+    d'être reconnaissable comme « pas encore là »."""
+
+
 class SceneManagerScreen(QWidget):
     """Les colonnes du Scene Manager (colonne 1 scindée en deux panneaux
     empilés : liste projet au-dessus, contenu de la scène active en-dessous).
@@ -232,6 +239,7 @@ class SceneManagerScreen(QWidget):
         self._inspector.set_project(project)
         if project.active_scene:
             self._canvas.load_project(project)
+        if project.active_scene:
             # Inspecteur de scène par défaut, sans passer par le bus.
             self._inspector.show_scene(project.active_scene, project)
 
@@ -261,30 +269,34 @@ class MainWindow(QMainWindow):
     # déposer un PNG dans assets/sprites/ levait un AttributeError dans un slot
     # Qt, donc tuait l'éditeur. Une référence directe échoue à l'import.
     _ASSET_ROUTES = [
-        ("sprites",     IMAGE_FILE_EXTS, asset_encoding.sync_sprite_png,
-                                          asset_encoding.remove_sprite_png,
-                                          asset_encoding.rename_sprite_png,     "Sprite"),
-        ("backgrounds", IMAGE_FILE_EXTS, asset_encoding.sync_background_png,
-                                          asset_encoding.remove_background_png,
-                                          asset_encoding.rename_background_png, "Background"),
-        ("sfx",         SFX_FILE_EXTS,    asset_encoding.sync_sfx_file,
-                                          asset_encoding.remove_sfx_file,
-                                          asset_encoding.rename_sfx_file,       "SFX"),
-        ("music",       MUSIC_FILE_EXTS,  asset_encoding.sync_music_file,
-                                          asset_encoding.remove_music_file,
-                                          asset_encoding.rename_music_file,     "Music"),
-        ("fonts",       FONT_FILE_EXTS,   asset_encoding.sync_font_file,
-                                          asset_encoding.remove_font_file,
-                                          asset_encoding.rename_font_file,      "Font"),
+        ("sprites",     IMAGE_FILE_EXTS, asset_reconciliation.sync_sprite_png,
+                                          asset_reconciliation.remove_sprite_png,
+                                          asset_reconciliation.rename_sprite_png,     "Sprite"),
+        ("backgrounds", IMAGE_FILE_EXTS, asset_reconciliation.sync_background_png,
+                                          asset_reconciliation.remove_background_png,
+                                          asset_reconciliation.rename_background_png, "Background"),
+        ("sfx",         SFX_FILE_EXTS,    asset_reconciliation.sync_sfx_file,
+                                          asset_reconciliation.remove_sfx_file,
+                                          asset_reconciliation.rename_sfx_file,       "SFX"),
+        ("music",       MUSIC_FILE_EXTS,  asset_reconciliation.sync_music_file,
+                                          asset_reconciliation.remove_music_file,
+                                          asset_reconciliation.rename_music_file,     "Music"),
+        ("fonts",       FONT_FILE_EXTS,   asset_reconciliation.sync_font_file,
+                                          asset_reconciliation.remove_font_file,
+                                          asset_reconciliation.rename_font_file,      "Font"),
     ]
 
-    def __init__(self, project_path: Path = None):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle(label("win.app_name"))
         self.resize(1280, 760)
         self.project: Project = None
+        # Un écran reçoit le projet quand il devient utile, pas au simple
+        # démarrage de la fenêtre. C'est la frontière UI du chargement différé
+        # des assets : le canvas ouvre ses références ponctuelles, tandis que
+        # leurs éditeurs demandent la collection entière à leur première vue.
+        self._project_loaded_screen_indices: set[int] = set()
         self._worker = None
-        self._startup_project = project_path
         self.toolchain = Toolchain()
         self._external_tools = ExternalTools()
         self._watcher = ProjectWatcher(self)
@@ -309,7 +321,6 @@ class MainWindow(QMainWindow):
         self._sc_redo_z.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self._sc_redo_z.activated.connect(self._do_redo)
         self._restore_layout()
-        self._load_default_project()
 
     def _setup_ui(self):
         # Le catalogue AVANT la barre d'outils : elle en tire ses libellés.
@@ -376,49 +387,98 @@ class MainWindow(QMainWindow):
         return [s.name for s in self._screens]
 
     def _build_screens(self):
-        """Construit chaque écran du catalogue, dans l'ordre, et le monte.
+        """Monte les écrans du catalogue — mais n'en construit qu'une partie.
 
-        Le contrat `ProjectScreen` est vérifié ICI et pas par un contrôle
-        statique : un écran venu d'un plugin n'existe pour personne avant ce
-        moment. Un écran qui ne le remplit pas est monté quand même — il
-        s'affiche, il ne reçoit simplement jamais le projet — et le défaut est
-        signalé au démarrage plutôt que de se manifester en écran vide.
+        Démarrage paresseux (chantier « L'écran construit à sa première
+        visite ») : seuls le Scene Manager (index 0, qui porte le menu, les
+        splitters restaurés et le câblage du dispatcher) et les écrans de
+        PLUGIN sont construits ici. Les autres écrans natifs reçoivent un
+        placeholder dans le `QStackedWidget` — leur vrai widget, et donc l'import
+        de leur module (souvent lourd : audio, luaparser…), n'arrive qu'à la
+        première visite via `_ensure_screen`.
+
+        Le contrat `ProjectScreen` est vérifié à la construction et pas par un
+        contrôle statique : un écran venu d'un plugin n'existe pour personne
+        avant ce moment. Les plugins restent donc construits ici, pour que le
+        défaut se signale AU DÉMARRAGE comme avant — un écran natif, lui,
+        satisfait le contrat par construction, le différer ne perd aucun message.
         """
         self._screen_widgets: list[QWidget] = []
         self.screen_errors: list[str] = []
-        for spec in self._screens:
-            widget = spec.build()
-            self._screen_widgets.append(widget)
-            self._screen_stack.addWidget(widget)
-            if not isinstance(widget, ProjectScreen):
-                self.screen_errors.append(label("win.screen_contract", name=spec.name))
+        for index, spec in enumerate(self._screens):
+            placeholder = _ScreenPlaceholder()
+            self._screen_widgets.append(placeholder)
+            self._screen_stack.addWidget(placeholder)
+            if index == 0 or spec.plugin:
+                self._ensure_screen(index)
+
+    def _ensure_screen(self, index: int) -> QWidget:
+        """Construit l'écran d'index `index` s'il ne l'est pas encore, et le
+        substitue à son placeholder dans le `QStackedWidget`.
+
+        Idempotent : un écran déjà réel est renvoyé tel quel. L'index dans le
+        stack reste celui du catalogue — le placeholder tient la place jusque-là,
+        et l'insertion+retrait ne décale pas les écrans suivants.
+        """
+        if not (0 <= index < len(self._screens)):
+            return self._screen_widgets[index]
+        current = self._screen_widgets[index]
+        if not isinstance(current, _ScreenPlaceholder):
+            return current   # déjà construit (Scene Manager, plugin, ou 2e appel)
+        spec = self._screens[index]
+        widget = spec.build()
+        self._screen_widgets[index] = widget
+        # Insère le vrai widget à SON index, puis retire le placeholder : l'ordre
+        # du stack continue de coïncider avec celui du catalogue.
+        self._screen_stack.insertWidget(index, widget)
+        self._screen_stack.removeWidget(current)
+        current.deleteLater()
+        if not isinstance(widget, ProjectScreen):
+            self.screen_errors.append(label("win.screen_contract", name=spec.name))
+        return widget
+
+    def _call_if_built(self, attr: str, method: str, *args) -> None:
+        """Appelle `method` sur l'écran nommé UNIQUEMENT s'il a déjà été
+        construit. Démarrage paresseux : un événement du dispatcher peut viser un
+        écran encore différé — on le saute alors, il lira l'état frais à sa
+        première visite (`load_project`)."""
+        screen = getattr(self, attr, None)
+        if screen is not None:
+            getattr(screen, method)(*args)
 
     def _make_data_editor(self) -> QWidget:
+        from ui.data_editor.data_editor_screen import DataEditorScreen
         self._data_editor = DataEditorScreen()
         return self._data_editor
 
     def _make_background_editor(self) -> QWidget:
+        from ui.background_editor.background_editor_screen import BackgroundEditorScreen
         self._bg_editor = BackgroundEditorScreen()
         return self._bg_editor
 
     def _make_sprite_editor(self) -> QWidget:
+        from ui.sprite_editor.sprite_editor_screen import SpriteEditorScreen
         self._sprite_editor = SpriteEditorScreen()
         return self._sprite_editor
 
     def _make_palette_editor(self) -> QWidget:
+        from ui.palette_editor.palette_editor_screen import PaletteEditorScreen
         self._palette_editor = PaletteEditorScreen()
         self._palette_editor.usage_activated.connect(self._open_palette_usage)
         return self._palette_editor
 
     def _make_text_editor(self) -> QWidget:
+        from ui.text_editor.text_editor_screen import TextEditorScreen
         self._text_editor = TextEditorScreen()
         return self._text_editor
 
     def _make_sound_mixer(self) -> QWidget:
+        from ui.sound_mixer.sound_panel import SoundMixerScreen
         self._sound_mixer = SoundMixerScreen()
         return self._sound_mixer
 
     def _make_script_editor(self) -> QWidget:
+        from ui.script_editor.script_editor import ScriptEditorScreen
         self._script_editor = ScriptEditorScreen()
         self._script_editor.back_requested.connect(
             lambda: self._switch_screen("Scenes")
@@ -538,9 +598,8 @@ class MainWindow(QMainWindow):
         _d.on("actors_list_changed",   self._refresh_actor_inspector)
         # Carte Palettes de l'inspecteur de SCÈNE : un acteur posé (prefab
         # instancié au canvas compris) ou re-quantifié change l'occupation des
-        # banques (cf. codegen/palette_alloc.scene_palette_view) — jusqu'ici
-        # elle ne se rafraîchissait qu'au changement d'écran (`_refresh_scene_
-        # manager`), invisible tant qu'on ne quittait pas le Scene Manager.
+        # banques (cf. codegen/palette_alloc.scene_palette_view) : elle doit
+        # suivre l'événement, pas attendre un aller-retour d'écran.
         _d.on("actors_list_changed",   self._inspector.refresh_current)
         _d.on("scene_sprites_changed", self._inspector.refresh_current)
         _d.on("cameras_list_changed",  self.scene_tree_panel.refresh)
@@ -555,12 +614,14 @@ class MainWindow(QMainWindow):
         _d.on("project_tree_changed",  self.scene_tree_panel.refresh)
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
         # lambda : _text_editor / _script_editor / _palette_editor sont construits
-        # plus loin dans _setup_ui que ce bloc d'abonnement — résoudre l'attribut
-        # au moment de l'émission, pas ici.
-        _d.on("scripts_changed",       lambda: self._text_editor.invalidate_script_usages())
-        _d.on("ui_text_links_changed", lambda: self._text_editor.invalidate_script_usages())
-        _d.on("flush_script_edits",    lambda: self._script_editor.flush_pending_edits())
-        _d.on("palettes_changed",      lambda: self._palette_editor.refresh())
+        # à leur PREMIÈRE VISITE (démarrage paresseux), donc après ce bloc
+        # d'abonnement. On résout l'attribut au moment de l'émission, et un écran
+        # non encore construit ignore l'événement — il lira l'état frais à sa
+        # venue (`load_project`). D'où `_call_if_built` plutôt qu'un accès direct.
+        _d.on("scripts_changed",       lambda: self._call_if_built("_text_editor", "invalidate_script_usages"))
+        _d.on("ui_text_links_changed", lambda: self._call_if_built("_text_editor", "invalidate_script_usages"))
+        _d.on("flush_script_edits",    lambda: self._call_if_built("_script_editor", "flush_pending_edits"))
+        _d.on("palettes_changed",      lambda: self._call_if_built("_palette_editor", "refresh"))
 
         self._h_split.setSizes([220, 820, 240])
         self._h_split.setStretchFactor(0, 0)
@@ -748,33 +809,71 @@ class MainWindow(QMainWindow):
         lui-même plutôt que de cette fenêtre."""
         if not self.project:
             return
-        self._text_editor.refresh()
+        # Écrans peut-être encore différés (démarrage paresseux) : on ne
+        # rafraîchit que ceux déjà construits — un écran neuf lira l'état à jour
+        # à sa première visite (`load_project`).
+        if (te := getattr(self, "_text_editor", None)) is not None:
+            te.refresh()
         cart_mib = getattr(self.project.settings, "cartridge_mib", 4)
         self.build_panel.set_cartridge_mib(cart_mib)
-        self._script_editor.build_panel.set_cartridge_mib(cart_mib)
+        if (sbp := self._script_build_panel()) is not None:
+            sbp.set_cartridge_mib(cart_mib)
 
     def _show_screen(self, index: int):
         # Un seul catalogue : l'index de nav EST l'index du stack, par
         # construction (`_build_screens` monte dans l'ordre de `_screens`).
+        # Démarrage paresseux : l'écran est construit maintenant s'il ne l'était
+        # pas — c'est sa première visite.
+        self._ensure_screen(index)
+        self._load_screen_for_project(index)
         self._screen_stack.setCurrentIndex(index)
         self._history.clear()
         self._bus.clear()
-        if index == 0:   # Scene Manager : re-synchroniser avec les assets
-            self._refresh_scene_manager()   # modifiés dans un autre écran
 
-    def _refresh_scene_manager(self):
-        """En revenant au Scene Manager, re-render le canvas + l'inspecteur
-        depuis les assets COURANTS. Le switch d'écran ne recharge rien : une
-        modification faite dans le Background/Sprite Editor (recompression,
-        inpainting, palettes) resterait sinon invisible ici jusqu'à la
-        re-sélection de la scène."""
-        se = getattr(self, "scene_editor", None)
-        if se is not None and getattr(se, "_project", None) is not None:
-            se.refresh_bg()        # re-render les fonds depuis les BackgroundAsset
-            se._reload_sprites()   # re-quantifier les acteurs (sprites édités)
-        insp = getattr(self, "_inspector", None)
-        if insp is not None:
-            insp.refresh_current()  # carte palettes / rangées layers (grisées d'asset)
+    def _load_screen_for_project(self, index: int):
+        """Prépare un écran lors de sa première visite pour ce projet.
+
+        Les autres écrans restent volontairement inertes à l'ouverture : leur
+        finder n'a pas à désérialiser tous les assets juste parce qu'il existe
+        dans un ``QStackedWidget`` invisible.
+        """
+        if not self.project or index in self._project_loaded_screen_indices:
+            return
+        if not (0 <= index < len(self._screen_widgets)):
+            return
+        # Un appelant peut viser un écran encore différé (watcher qui ré-encode
+        # un fond, ouverture d'un script…) : le construire avant de le charger.
+        self._ensure_screen(index)
+        spec = self._screens[index]
+        widget = self._screen_widgets[index]
+        if not isinstance(widget, ProjectScreen):
+            return
+
+        if spec.name == "Backgrounds":
+            self.project.load_backgrounds()
+        elif spec.name == "Animations":
+            self.project.load_sprites()
+        elif spec.name == "Sounds":
+            self.project.load_audio()
+        elif spec.name == "Datas":
+            # Les colonnes de référence d'une table citent effets et musiques
+            # (cf. DATA_COLUMN_SOURCES) : leur picker a besoin du catalogue.
+            self.project.load_audio()
+        elif spec.name == "Scripts":
+            # La sidebar RÉFÉRENCES liste tous les sprites et fonds.
+            self.project.load_sprites()
+            self.project.load_backgrounds()
+
+        if not spec.plugin:
+            widget.load_project(self.project)
+        else:
+            try:
+                widget.load_project(self.project)
+            except Exception as exc:
+                self._status.showMessage(
+                    label("win.screen_error", name=spec.name, error=exc), 8000)
+                return
+        self._project_loaded_screen_indices.add(index)
 
     def _switch_screen(self, name: str):
         names = self._screen_names
@@ -800,6 +899,9 @@ class MainWindow(QMainWindow):
         bascule l'écran AVANT d'ouvrir, pour que l'éditeur soit visible quand
         `goto_line` centre la ligne."""
         from pathlib import Path
+        # Démarrage paresseux : construire l'écran Scripts s'il ne l'est pas
+        # encore, avant de l'adresser.
+        self._ensure_screen(self._screen_names.index("Scripts"))
         self._script_editor.load_project(self.project)
         self._switch_screen("Scripts")
         self._script_editor.open_script(Path(path), line)
@@ -898,17 +1000,13 @@ class MainWindow(QMainWindow):
 
     # ── Chargement projet ─────────────────────────────────────────
 
-    def _load_default_project(self):
-        """Au démarrage : ouvre le projet passé en argument, sinon affiche l'accueil."""
-        if self._startup_project and self._startup_project.exists():
-            self._open_project(self._startup_project)
-
     def _on_home_open(self, path: str):
         self._open_project(Path(path))
 
     def _new_project(self, name: str, path, starter_id: str = "Basic"):
         path = Path(path)
         self.project = Project.create(path, name, starter_id)
+        self._project_loaded_screen_indices.clear()
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
         self._connect_watcher()
@@ -927,6 +1025,7 @@ class MainWindow(QMainWindow):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, label("common.open_project"), str(exc))
             return
+        self._project_loaded_screen_indices.clear()
         get_dispatcher().setup(self.project, self._watcher)
         self._watcher.watch_project(path)
         self._connect_watcher()
@@ -973,23 +1072,11 @@ class MainWindow(QMainWindow):
         self.build_panel.btn_build.setToolTip(tooltip)
         cart_mib = getattr(self.project.settings, "cartridge_mib", 4)
         self.build_panel.set_cartridge_mib(cart_mib)
-        self._script_editor.build_panel.set_cartridge_mib(cart_mib)
-        # Le projet part vers chaque écran, dans l'ordre du catalogue. Le Scene
-        # Manager propage à ses trois colonnes (SceneManagerScreen.load_project).
-        for spec, widget in zip(self._screens, self._screen_widgets):
-            if not isinstance(widget, ProjectScreen):
-                continue      # signalé au démarrage par _build_screens
-            if not spec.plugin:
-                widget.load_project(self.project)
-                continue
-            # Un écran de plugin est du code tiers dans un slot Qt : une
-            # exception non rattrapée y fait abandonner le process (PyQt6),
-            # donc ouvrir un projet deviendrait impossible à cause d'un écran
-            # accessoire. Même traitement que les validateurs de plugin.
-            try:
-                widget.load_project(self.project)
-            except Exception as exc:
-                self._status.showMessage(label("win.screen_error", name=spec.name, error=exc), 8000)
+        if (sbp := self._script_build_panel()) is not None:
+            sbp.set_cartridge_mib(cart_mib)
+        # Seul l'écran visible reçoit le projet maintenant. Les autres le
+        # recevront dans ``_show_screen`` lors de leur première visite.
+        self._load_screen_for_project(self._screen_stack.currentIndex())
         self._update_gba_bar()
 
     # ── Slots scène ───────────────────────────────────────────────
@@ -1053,7 +1140,9 @@ class MainWindow(QMainWindow):
         if not self.project:
             return
         self.scene_editor.flush_camera_pos()
-        self._script_editor.flush_pending_edits()
+        # Le Script Editor n'a du texte non enregistré que s'il a été ouvert.
+        if (se := getattr(self, "_script_editor", None)) is not None:
+            se.flush_pending_edits()
         self.project.save()
         self._status.showMessage(label("win.saved"), 2000)
 
@@ -1116,8 +1205,10 @@ class MainWindow(QMainWindow):
             return
         # Textes/polices : indépendants de la scène active, donc rafraîchis
         # AVANT le garde-fou ci-dessous (annuler un renommage de clé doit se
-        # voir même dans un projet sans scène).
-        self._text_editor.refresh()
+        # voir même dans un projet sans scène). Sauté si l'écran Texte n'a pas
+        # encore été ouvert (démarrage paresseux) — il lira l'état à sa venue.
+        if (te := getattr(self, "_text_editor", None)) is not None:
+            te.refresh()
         if not self.project.active_scene:
             return
         # Sauvegarder l'état actuel (le modèle en mémoire = vérité après undo)
@@ -1233,7 +1324,7 @@ class MainWindow(QMainWindow):
         with self._watcher.suspended():
             remove_fn(self.project, p)
             if p.parent.name == "fonts":
-                asset_encoding.reconcile_font_assets(self.project)
+                asset_reconciliation.reconcile_font_assets(self.project)
         self._refresh_ui()
         self._status.showMessage(label("win.asset_removed", kind=route_label, name=p.name), 3000)
 
@@ -1262,7 +1353,7 @@ class MainWindow(QMainWindow):
         with self._watcher.suspended():
             result = rename_fn(self.project, old_p, new_p)
             if new_p.parent.name == "fonts":
-                asset_encoding.reconcile_font_assets(self.project)
+                asset_reconciliation.reconcile_font_assets(self.project)
         warning = result if isinstance(result, str) else None
         self._refresh_ui()
         if warning:
@@ -1282,8 +1373,9 @@ class MainWindow(QMainWindow):
             # resterait à l'écran ET dans la ROM.
             if not self.project:
                 return
+            self._load_screen_for_project(self._screen_names.index("Backgrounds"))
             with self._watcher.suspended():   # le sidecar réécrit est NOTRE écriture
-                warning = asset_encoding.resync_background_png(self.project, p)
+                warning = asset_reconciliation.resync_background_png(self.project, p)
             # Le fond retouché reste celui qu'on regardait : `select` le remet à
             # l'écran plutôt que de renvoyer au premier de la liste.
             self._bg_editor._refresh_finder(select=p.stem)
@@ -1299,8 +1391,9 @@ class MainWindow(QMainWindow):
             # d'acteur, coût en palettes, allocation de banques).
             if not self.project:
                 return
+            self._load_screen_for_project(self._screen_names.index("Animations"))
             with self._watcher.suspended():   # le sidecar réécrit est NOTRE écriture
-                warning = asset_encoding.resync_sprite_png(self.project, p)
+                warning = asset_reconciliation.resync_sprite_png(self.project, p)
             self._sprite_editor.load_project(self.project)
             self.scene_editor._reload_sprites()
             self._inspector.actor_inspector._refresh_sprite_preview()
@@ -1321,9 +1414,10 @@ class MainWindow(QMainWindow):
             # bas, silencieux sur la vraie raison (cf. bug rapporté 2026-09-01).
             if self.project:
                 with self._watcher.suspended():
-                    warning = asset_encoding.sync_font_file(self.project, p)
-                    asset_encoding.reconcile_font_assets(self.project)
-                self._text_editor.refresh()
+                    warning = asset_reconciliation.sync_font_file(self.project, p)
+                    asset_reconciliation.reconcile_font_assets(self.project)
+                if (te := getattr(self, "_text_editor", None)) is not None:
+                    te.refresh()
                 if warning:
                     self._status.showMessage(warning, _WATCHER_WARNING_MS)
                     return
@@ -1395,12 +1489,22 @@ class MainWindow(QMainWindow):
             project.save()
             cur = getattr(settings, "cartridge_mib", 4)
             self.build_panel.set_cartridge_mib(cur)
-            self._script_editor.build_panel.set_cartridge_mib(cur)
+            if (sbp := self._script_build_panel()) is not None:
+                sbp.set_cartridge_mib(cur)
 
         get_history().push(SetFieldCmd(
             settings, "cartridge_mib", old, mib,
             label="Projet.cartridge_mib", persist_fn=_persist,
         ))
+
+    def _script_build_panel(self):
+        """La seconde console de build (celle du Script Editor) SI cet écran a
+        été construit, sinon None. Démarrage paresseux : le build est
+        déclenchable depuis la barre d'outils sans jamais avoir ouvert Scripts —
+        on n'alimente sa console mirroir que si elle existe déjà. Ouvrir Scripts
+        plus tard montre une console vierge, cohérent avec un écran neuf."""
+        se = getattr(self, "_script_editor", None)
+        return se.build_panel if se is not None else None
 
     def _run_build(self):
         if not self.project or not self.project.active_scene: return
@@ -1412,7 +1516,8 @@ class MainWindow(QMainWindow):
         msg = label("win.build_start", project=self.project.settings.name,
                     scene=self.project.active_scene.name)
         self.build_panel.log_info(msg)
-        self._script_editor.build_panel.log_info(msg)
+        if (sbp := self._script_build_panel()) is not None:
+            sbp.log_info(msg)
 
         # Bridge thread-safe : BuildWorker (thread Python) → Qt main thread
         # Les callbacks de l'engine sont appelés depuis le thread de build ;
@@ -1422,7 +1527,8 @@ class MainWindow(QMainWindow):
         self._build_drain.setInterval(30)
         self._build_drain.timeout.connect(self._drain_build_queue)
 
-        self._script_editor.build_panel.console.clear()
+        if (sbp := self._script_build_panel()) is not None:
+            sbp.console.clear()
         self._worker = BuildWorker(project=self.project, toolchain=self.toolchain)
         self._worker.on("log_line",   lambda m:  self._build_queue.put(("log",      m)))
         self._worker.on("error_line", lambda m:  self._build_queue.put(("error",    m)))
@@ -1437,17 +1543,18 @@ class MainWindow(QMainWindow):
         try:
             while True:
                 kind, data = self._build_queue.get_nowait()
+                sbp = self._script_build_panel()
                 if kind == "log":
                     self.build_panel.log(data)
-                    self._script_editor.build_panel.log(data)
+                    if sbp is not None: sbp.log(data)
                 elif kind == "error":
                     self.build_panel.log_error(data)
-                    self._script_editor.build_panel.log_error(data)
+                    if sbp is not None: sbp.log_error(data)
                 elif kind == "progress":
                     self._tb_build_btn.set_progress(data)
                 elif kind == "rom_report":
                     self.build_panel.update_rom_report(data)
-                    self._script_editor.build_panel.update_rom_report(data)
+                    if sbp is not None: sbp.update_rom_report(data)
                 elif kind == "finished":
                     self._build_drain.stop()
                     self._on_build_finished(data)
@@ -1457,11 +1564,12 @@ class MainWindow(QMainWindow):
     def _on_build_finished(self, success: bool):
         self.build_panel.set_building(False)
         self._tb_build_btn.build_finished.emit(success)
+        sbp = self._script_build_panel()
         if success:
             self.build_panel.log_info(label("win.build_rom_ok"))
-            self._script_editor.build_panel.log_info(label("win.build_rom_ok"))
+            if sbp is not None: sbp.log_info(label("win.build_rom_ok"))
             self._status.showMessage(label("win.build_ok"))
         else:
             self.build_panel.log_error(label("win.build_failed_log"))
-            self._script_editor.build_panel.log_error(label("win.build_failed_log"))
+            if sbp is not None: sbp.log_error(label("win.build_failed_log"))
             self._status.showMessage(label("win.build_error"))

@@ -11,6 +11,37 @@ from core.font_rasterizer import FontRasterizerError, rasterize_asset_glyph
 from core.models.font import Font, Glyph
 
 
+def available_project_font_names(project) -> set[str]:
+    """Noms sélectionnables sans matérialiser les glyphes.
+
+    L'inspecteur n'a besoin ici que de savoir si une recette possède au moins
+    une source lisible. Appeler ``project_build_fonts`` à cette étape
+    rasterisait tous les caractères de toutes les FontAsset juste pour remplir
+    un menu, ce qui bloquait l'ouverture d'une scène sur les projets riches en
+    texte. La matérialisation reste réservée au build et aux aperçus qui en ont
+    réellement besoin.
+    """
+    sources = getattr(project, "fonts", ())
+    out: set[str] = set()
+    for asset in getattr(project, "font_assets", ()):
+        for source_names in getattr(asset, "sources", {}).values():
+            if any(
+                (source := sources.get(name)) is not None
+                and getattr(source, "asset", None)
+                and project.asset_abs(source.asset).exists()
+                for name in source_names
+            ):
+                out.add(asset.name)
+                break
+    # Chemin de migration : une Font brute reste sélectionnable tant qu'aucune
+    # FontAsset logique ne la remplace.
+    for font in sources:
+        path = project.asset_abs(font.asset) if getattr(font, "asset", None) else None
+        if path and path.exists() and getattr(font, "glyphs", None):
+            out.add(font.name)
+    return out
+
+
 def project_codepoints(project) -> set[str]:
     """Caractères littéraux connus dans toutes les langues du projet.
 

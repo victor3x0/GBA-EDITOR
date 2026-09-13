@@ -10,15 +10,9 @@ from typing import Generic, Iterator, Optional, Type, TypeVar
 
 from core.models.resource import Resource
 from core.models import project_json
+from core.resources.resource_index import ResourceIndex, safe_filename
 
 T = TypeVar("T", bound=Resource)
-
-
-_WIN_FORBIDDEN = str.maketrans({c: "_" for c in r'\/:*?"<>|'})
-
-def safe_filename(name: str) -> str:
-    """Remplace les caractères interdits dans un nom de fichier Windows."""
-    return name.translate(_WIN_FORBIDDEN).strip() or "_"
 
 
 def atomic_write(path: Path, text: str, encoding: str = "utf-8") -> None:
@@ -78,6 +72,11 @@ class ResourceStore(Generic[T]):
     def __init__(self, directory: Path, cls: Type[T]):
         self.dir = directory
         self.cls = cls
+        # Inventaire disque, indépendant des objets déjà matérialisés dans
+        # ``items``. Aujourd'hui ``load`` continue de tout lire ; la phase
+        # suivante pourra ne charger que l'entrée demandée sans changer le
+        # contrat de nommage ni les chemins.
+        self.index = ResourceIndex(directory)
         self.items: list[T] = []
         self._pending_delete: list[T] = []
 
@@ -104,7 +103,30 @@ class ResourceStore(Generic[T]):
 
     # -- lookup --
     def get(self, name: str) -> Optional[T]:
-        return next((i for i in self.items if i.name == name), None)
+        cached = next((i for i in self.items if i.name == name), None)
+        if cached is not None:
+            return cached
+        # L'index ne contient que les sidecars vus à l'ouverture ou lors d'une
+        # écriture. Résoudre cette entrée seule est le chemin normal d'un canvas
+        # qui cite un sprite ou un fond sans ouvrir son éditeur complet.
+        return self.load_one(name) if self.index.path_for(name) else None
+
+    def scan_index(self) -> None:
+        """Actualise l'inventaire disque sans matérialiser les ressources."""
+        self.index.scan()
+
+    def known_names(self) -> tuple[str, ...]:
+        """Noms vus au dernier scan ou à la dernière écriture du store."""
+        return self.index.names()
+
+    def ensure_loaded(self, name: str) -> Optional[T]:
+        """Retourne ``name`` depuis le cache, ou le lit seul depuis le disque.
+
+        Ce chemin est volontairement explicite : itérer un store ne doit jamais
+        provoquer une lecture en masse cachée. ``Project`` l'emploie pour les
+        références ponctuelles des collections différées.
+        """
+        return self.get(name) or self.load_one(name)
 
     # -- I/O --
     def _path(self, name: str) -> Path:
@@ -121,7 +143,9 @@ class ResourceStore(Generic[T]):
 
     def save(self, item: T):
         self.dir.mkdir(parents=True, exist_ok=True)
-        atomic_write(self._path(item.name), project_json.dumps(item.to_dict()))
+        path = self._path(item.name)
+        atomic_write(path, project_json.dumps(item.to_dict()))
+        self.index.record(item.name, path)
 
     def save_all(self):
         for item in self.items:
@@ -129,9 +153,11 @@ class ResourceStore(Generic[T]):
 
     def load(self):
         self.items = []
-        if not self.dir.exists():
-            return
-        for f in sorted(self.dir.glob("*.json")):
+        self.scan_index()
+        for name in self.index.names():
+            f = self.index.path_for(name)
+            if f is None:  # garde de type ; une entrée indexée a un chemin
+                continue
             try:
                 d = json.loads(f.read_text(encoding="utf-8"))
                 item = self.cls.from_dict(d)
@@ -143,7 +169,7 @@ class ResourceStore(Generic[T]):
                 # cherche l'asset par le STEM de son fichier source, ne le
                 # trouverait pas, et en créerait un SECOND à côté du premier,
                 # lequel pointe désormais dans le vide (cf.
-                # asset_encoding.sync_font_file).
+                # asset_reconciliation.sync_font_file).
                 if safe_filename(item.name) != f.stem:
                     item.name = f.stem
                 self.items.append(item)
@@ -152,7 +178,7 @@ class ResourceStore(Generic[T]):
 
     def load_one(self, name: str) -> Optional[T]:
         """Recharge un seul item depuis le disque et met à jour la liste en place."""
-        path = self._path(name)
+        path = self.index.path_for(name) or self._path(name)
         if not path.exists():
             return None
         try:
@@ -166,8 +192,10 @@ class ResourceStore(Generic[T]):
             for i, item in enumerate(self.items):
                 if item.name == name:
                     self.items[i] = new_item
+                    self.index.record(name, path)
                     return new_item
             self.items.append(new_item)
+            self.index.record(name, path)
             return new_item
         except Exception as e:
             print(f"[project] erreur reload {self.cls.__name__} {name}: {e}")
@@ -178,6 +206,7 @@ class ResourceStore(Generic[T]):
         path = self._path(item.name)
         if path.exists():
             path.unlink()
+        self.index.forget(item.name)
         self.remove(item)
         self._pending_delete = [x for x in self._pending_delete if x is not item]
 
@@ -210,11 +239,13 @@ class ResourceStore(Generic[T]):
             path = self._path(item.name)
             if path.exists():
                 path.unlink()
+            self.index.forget(item.name)
         self._pending_delete.clear()
 
     def rename(self, item: T, new_name: str):
         old_path = self._path(item.name)
         if old_path.exists():
             old_path.unlink()
+        self.index.forget(item.name)
         item.name = new_name
         self.save(item)

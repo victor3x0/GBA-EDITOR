@@ -121,6 +121,9 @@ class ValidationContext:
 
 def validate_project(project: "Project") -> tuple[list[ValidationMessage], list[ValidationMessage]]:
     """Retourne (warnings, errors). Errors bloquent le build, warnings non."""
+    # Un diagnostic est une lecture GLOBALE : il ne doit jamais conclure qu'un
+    # asset est absent parce que son écran n'a pas encore été visité.
+    project.load_all_resources()
     ctx = ValidationContext(project)
 
     # ── Validateurs built-in ─────────────────────────────────────────
@@ -1211,7 +1214,7 @@ def _check_audio_files(ctx: ValidationContext):
     complète, avec sa constante `SFX_*` bien définie et un effet muet. Laisser
     passer, c'est livrer un jeu dont un son manque sans que rien ne l'ait dit —
     et ça ne s'entend qu'en jouant."""
-    from core.asset_encoding import check_audio_file
+    from core.resources.asset_reconciliation import check_audio_file
     p = ctx.project
     for kind, assets in (("SFX", getattr(p, "sfx", [])),
                          ("Musique", getattr(p, "music", []))):

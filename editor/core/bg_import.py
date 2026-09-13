@@ -880,7 +880,7 @@ def encode_by_mode(source, mode_token: str, method: str = "median_cut",
     `encode_background_bitmap` selon un token de mode ("tiled4"|"tiled8"|
     "bitmap"|"bitmap16" — vocabulaire de `detect_import_mode`). Partagé par
     l'import initial, la recompression depuis l'inspecteur (Background Editor)
-    et `core.asset_encoding.encode_background_asset`, pour qu'il n'existe qu'un
+    et `core.resources.asset_reconciliation.encode_background_asset`, pour qu'il n'existe qu'un
     seul endroit qui décide quel encodeur appeler.
 
     "bitmap16" = vrai 16bpp direct (détecté), pas encore implémenté : repli

@@ -139,6 +139,8 @@ class ScriptEditor(BaseComponentEditor):
 
         # ── sfx_ref ───────────────────────────────────────────────
         elif typ == "sfx_ref":
+            if proj:
+                proj.load_audio()   # catalogue différé (v0.24)
             sfx_list = [""] + [s.name for s in proj.sfx] if proj else [""]
             cb = W.combobox(sfx_list, str(current))
             W.row(label, cb, layout)

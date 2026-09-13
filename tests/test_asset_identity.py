@@ -45,6 +45,10 @@ def _projet(tmp_path, *, fichier: str, nom_interne: str, planche_citee: str):
 
     p = Project(root)
     p.load()
+    # v0.24 : `load` n'indexe que les catalogues lourds ; leur matérialisation et
+    # la réconciliation des sources (rattrapage, dépôts hors éditeur) sont un
+    # geste explicite, celui qu'un écran ou une opération globale demande.
+    p.load_all_resources()
     return p
 
 
@@ -110,6 +114,7 @@ def _projet_avec(tmp_path, famille: str, *, fichier: str, cite: str, **champs):
 
     p = Project(root)
     p.load()
+    p.load_all_resources()   # v0.24 : matérialisation + réconciliation explicites
     return p
 
 
@@ -143,6 +148,7 @@ def test_un_png_depose_editeur_ferme_cree_son_sprite(tmp_path):
     _image(root / "assets" / "sprites" / "ennemi.png")
     p = Project(root)
     p.load()
+    p.load_all_resources()   # v0.24 : matérialisation + réconciliation explicites
     assert [s.name for s in p.sprites] == ["ennemi"]
     assert (root / "assets" / "sprites" / "ennemi.json").exists()
 
@@ -178,7 +184,7 @@ def test_un_lua_n_est_pas_apparie():
 def test_sprite_renomme_garde_sa_decoupe_et_ses_references(tmp_path):
     """Le geste complet : le sprite suit son fichier — nom, sidecar, planche,
     et la référence que porte une scène."""
-    from core import asset_encoding
+    from core.resources import asset_reconciliation
     from core.models.components import SpriteComponent
     from core.models.scene import Actor, Scene
     from core.project import Project
@@ -187,6 +193,7 @@ def test_sprite_renomme_garde_sa_decoupe_et_ses_references(tmp_path):
     _image(root / "assets" / "sprites" / "hero.png")
     p = Project(root)
     p.load()
+    p.load_all_resources()   # v0.24 : crée le sidecar du PNG déposé hors éditeur
     sprite = p.sprites.get("hero")
     sprite.frame_w = sprite.frame_h = 16          # de l'authoring à préserver
 
@@ -199,7 +206,7 @@ def test_sprite_renomme_garde_sa_decoupe_et_ses_references(tmp_path):
     old = root / "assets" / "sprites" / "hero.png"
     new = old.with_name("heros.png")
     old.rename(new)
-    asset_encoding.rename_sprite_png(p, old, new)
+    asset_reconciliation.rename_sprite_png(p, old, new)
 
     assert [s.name for s in p.sprites] == ["heros"]
     assert p.sprites[0].asset == "assets/sprites/heros.png"
@@ -212,14 +219,14 @@ def test_sprite_renomme_garde_sa_decoupe_et_ses_references(tmp_path):
 def test_police_renommee_suit_sa_planche(tmp_path):
     """Une police garde ses glyphes — c'est-à-dire le travail case par case de
     l'écran Police — quand sa planche est renommée."""
-    from core import asset_encoding
+    from core.resources import asset_reconciliation
 
     p = _projet(tmp_path, fichier="ma-police",
                 nom_interne="ma-police", planche_citee="ma-police")
     old = p.fonts_dir / "ma-police.png"
     new = old.with_name("ma-jolie-police.png")
     old.rename(new)
-    asset_encoding.rename_font_file(p, old, new)
+    asset_reconciliation.rename_font_file(p, old, new)
 
     assert [f.name for f in p.fonts] == ["ma-jolie-police"]
     assert p.fonts[0].asset == "assets/fonts/ma-jolie-police.png"
@@ -229,7 +236,7 @@ def test_police_renommee_suit_sa_planche(tmp_path):
 def test_un_fichier_inconnu_renomme_est_une_apparition(tmp_path):
     """Renommer un fichier qu'aucun asset ne connaissait n'a rien à renommer :
     c'est une arrivée, et elle crée l'asset."""
-    from core import asset_encoding
+    from core.resources import asset_reconciliation
     from core.project import Project
 
     root = tmp_path / "jeu"
@@ -237,7 +244,7 @@ def test_un_fichier_inconnu_renomme_est_une_apparition(tmp_path):
     p.load()
     new = root / "assets" / "sprites" / "ennemi.png"
     _image(new)
-    asset_encoding.rename_sprite_png(p, new.with_name("brouillon.png"), new)
+    asset_reconciliation.rename_sprite_png(p, new.with_name("brouillon.png"), new)
     assert [s.name for s in p.sprites] == ["ennemi"]
 
 
@@ -254,6 +261,10 @@ def _recharge(root):
     from core.project import Project
     p = Project(root)
     p.load()
+    # Matérialisation explicite : c'est elle qui relancerait la réconciliation
+    # (donc ressusciterait un asset depuis une source restée sur le disque) —
+    # tester la NON-résurrection sans elle ne prouverait rien (v0.24).
+    p.load_all_resources()
     return p
 
 

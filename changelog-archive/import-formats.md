@@ -67,7 +67,7 @@ exportant une planche depuis son outil de police.
 | `core/models/sprite.py` | `IMAGE_FILE_EXTS` → `{".png"}` |
 | `core/models/font.py` | `FONT_FILE_EXTS` → `{".png", ".fnt"}` ; `from_dict` normalise `source_format` |
 | `core/font_import.py` | le point d'entrée FreeType supprimé (`FREETYPE_FONT_EXTS`, `_pack_glyphs`, `import_font_freetype`, `_BMP_MAX`) |
-| `core/asset_encoding.py` | `sync_font_file` n'aiguille plus que sur `.fnt` ou planche |
+| `core/resources/asset_reconciliation.py` | `sync_font_file` n'aiguille plus que sur `.fnt` ou planche |
 | `core/project_watcher.py` | commentaire : l'union dérivée ne porte plus six formats de police |
 | `codegen/font_emit.py` | commentaire citant la fonction supprimée |
 | `ui/background_editor/`, `ui/sprite_editor/` | les quatre filtres de dialogue : `*.png *.bmp` → `*.png` |

@@ -16,6 +16,11 @@ class SpriteEditor(BaseComponentEditor):
 
     def build(self, comp, row, layout):
         proj   = self.insp._project
+        # Le picker liste TOUS les sprites : matérialise le catalogue différé
+        # (v0.24). On est ici sur sélection d'un acteur — une action délibérée,
+        # jamais à l'ouverture du projet — donc le charger maintenant est sans
+        # effet sur la fluidité d'ouverture.
+        proj.load_sprites()
         sprite = proj.get_sprite(comp.sprite_name) if comp.sprite_name else None
 
         # ── Sprite : bouton qui se déploie en liste filtrable, comme le

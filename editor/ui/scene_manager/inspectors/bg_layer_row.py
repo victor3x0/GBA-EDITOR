@@ -282,9 +282,17 @@ class BgLayerRow(QFrame):
 
     # ── Asset ─────────────────────────────────────────────────────
 
-    def set_backgrounds(self, names: list, current: str = ""):
-        """Liste des BackgroundImages du projet proposées au picker de ce layer."""
-        self._bg_names = list(names)
+    def set_backgrounds(self, names, current: str = ""):
+        """Fonds proposés au picker de ce layer.
+
+        ``names`` est soit une liste figée, soit un CALLABLE qui la rend — le
+        second n'est appelé qu'à l'ouverture du popup. La liste complète des
+        fonds appartient à un catalogue différé (v0.24) : la résoudre à la
+        construction de la ligne rechargerait tout le disque à l'ouverture du
+        projet, alors que la ligne n'a besoin que de sa vignette (le fond
+        courant, déjà préchargé). On ne matérialise donc le catalogue que si
+        l'utilisateur déploie effectivement le choix."""
+        self._bg_names = names
 
     def _open_dialog(self):
         """Choisit un BackgroundImage EXISTANT (assets/backgrounds/) — les images
@@ -292,8 +300,9 @@ class BgLayerRow(QFrame):
         Entrée « Vide » en tête pour un layer sans image (même contrat que
         « Sans palette » côté pal_bank, cf. ui/common/pickers.py)."""
         from ui.common.widgets import ScriptPickerPopup
+        names = self._bg_names() if callable(self._bg_names) else self._bg_names
         entries = [(label('bglayer.empty_no_image'), "", None)]
-        entries += [(n, n, None) for n in (self._bg_names or [])]
+        entries += [(n, n, None) for n in (names or [])]
         popup = ScriptPickerPopup(entries, self._color, parent=self, new_label=None)
         popup.picked.connect(lambda name: self.asset_changed.emit(self.slot_index, name))
         popup.show_below(self._thumb)

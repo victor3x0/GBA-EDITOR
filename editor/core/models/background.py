@@ -252,7 +252,7 @@ class BackgroundAsset(SubPaletteAssetMixin, Resource):
     # pas de façon fiable : le sidecar est réécrit à chaque sauvegarde, donc
     # presque toujours plus récent que le PNG, et certains outils de dessin
     # reposent l'ancienne date en enregistrant. Vide = origine inconnue (asset
-    # d'avant ce champ). Cf. core/asset_encoding.resync_background_png.
+    # d'avant ce champ). Cf. core.resources.asset_reconciliation.resync_background_png.
     source_stamp: str = ""
     # Origine des sous-palettes pour l'éditeur (modèle scène : grisé + override).
     # `source_palettes` = snapshot des palettes DÉRIVÉES du PNG à la compression

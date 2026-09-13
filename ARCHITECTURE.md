@@ -27,11 +27,13 @@ gba-editor/
 │   │   │   ├── text.py                  ← Text + clé dérivée + arbre de rangement (dérivé de la liste plate)
 │   │   │   ├── scene.py                 ← Actor, Prefab, Scene, collision map
 │   │   │   └── tile_codec.py            ← format binaire tuile/entrée de carte — module FEUILLE, n'importe rien
-│   │   ├── resource_store.py      ← ResourceStore générique (I/O JSON par collection)
-│   │   ├── project_migrations.py    ← migrations/réconciliations de formats JSON legacy (appelées par Project.load)
-│   │   ├── asset_encoding.py            ← orchestration d'encodage déclenchée par l'apparition d'un PNG/audio sur disque
+│   │   ├── resources/               ← persistance disque ↔ modèles, sans dépendre de Project
+│   │   │   ├── resource_index.py    ← inventaire léger nom → chemin, sans lire les JSON
+│   │   │   ├── resource_store.py    ← ResourceStore générique (I/O JSON par collection)
+│   │   │   ├── palette_store.py     ← palettes .hex + sidecar JSON
+│   │   │   └── asset_reconciliation.py ← synchronisation des fichiers assets et de leurs sidecars
 │   │   ├── collision_slopes.py      ← génération des tiles de pente (Bresenham) pour CollisionTool
-│   │   ├── project_watcher.py       ← détection live des assets
+│   │   ├── project_watcher.py       ← détection live des assets (déplacement vers projects/ à venir)
 │   │   ├── sprite_compose.py        ← composition d'une frame de sprite depuis son PNG source (PIL)
 │   │   ├── font_import.py           ← import de police (PNG / BMFont .fnt), mesure des chasses
 │   │   ├── font_metadata.py / font_rasterizer.py ← lecture SFNT et RasterGlyph FreeType à la demande
@@ -1037,6 +1039,35 @@ immédiat.
 
 ---
 
+## Chargement différé — indexer d'abord, matérialiser au besoin
+
+L'ouverture d'un projet ne désérialise plus systématiquement tous les sidecars
+de sprites, fonds et sons. `ResourceIndex` inventorie chaque collection sous la
+forme `nom → chemin`, sans lire son JSON ; `ResourceStore` garde ensuite les
+objets déjà matérialisés et charge une entrée dans `get(nom)` si elle est
+réellement demandée.
+
+`Project.load()` indexe ces quatre collections, charge les scènes et précharge
+seulement les sprites et fonds directement cités par la scène active : le canvas
+peut donc être prêt sans ouvrir le catalogue entier. Les écrans Backgrounds,
+Animations et Sounds demandent explicitement leur collection lors de leur
+première visite. À l'inverse, build, validation et opérations transversales
+appellent `Project.load_all_resources()` : leur contrat exige une vue complète,
+pas une approximation paresseuse.
+
+La réconciliation des fichiers source reste attachée à la matérialisation de
+sa collection. Ainsi, le démarrage interactif ne paie pas le rattrapage d'un
+PNG que l'utilisateur ne consulte pas, tandis que l'écran qui le rend ou une
+opération globale travaille toujours avec des données à jour.
+
+Le point d'entrée suit le même principe de rendu : `main.py` affiche la fenêtre
+principale, laisse Qt traiter un premier cycle de peinture, puis programme
+l'ouverture initiale du projet au tour d'événement suivant. Il n'y a pas d'écran
+de chargement séparé ; le but est seulement de ne pas bloquer le premier dessin
+de l'interface réelle par l'I/O du projet.
+
+---
+
 ## Ajouter un écran — le catalogue et le contrat
 
 Un écran n'était pas une donnée : il fallait l'épeler à **cinq** endroits de
@@ -1064,17 +1095,29 @@ EditorScreen("Sound Editor", self._make_sound_editor)
   Il existait déjà sans nom, écrit `load_project` par six écrans et
   `set_project` par un septième — le Script Editor a été aligné. Un `Protocol`
   et non une classe de base : un écran est un `QWidget` d'abord.
-- **Le contrat est vérifié à la CONSTRUCTION** (`_build_screens`), pas
+- **Le contrat est vérifié à la CONSTRUCTION** (`_ensure_screen`), pas
   statiquement : un écran venu d'un plugin n'existe pour personne avant ce
   moment. Un écran qui ne le remplit pas est monté quand même — il s'affiche,
-  il ne reçoit jamais le projet — et le défaut est annoncé au démarrage, dans
-  la même boîte que les erreurs de plugin. Un écran muet ne se distingue sinon
-  pas d'un écran vide.
+  il ne reçoit jamais le projet — et le défaut est annoncé, dans la même boîte
+  que les erreurs de plugin. Un écran muet ne se distingue sinon pas d'un écran
+  vide.
+- **L'écran natif se construit à sa PREMIÈRE VISITE** (chantier « L'écran
+  construit à sa première visite ») : `_build_screens` ne bâtit au démarrage que
+  le Scene Manager et les écrans de plugin, et pose un placeholder pour les
+  autres ; `_ensure_screen` remplace le placeholder à la première visite. C'est
+  le prolongement du chargement paresseux (v0.24) de la donnée au widget — les
+  imports lourds (QtMultimedia + numpy pour l'audio, grammaire luaparser pour les
+  scripts) quittent le chemin de démarrage. Les **plugins**, eux, restent
+  construits au démarrage : c'est le seul contrat qui doit se constater tout de
+  suite, un écran natif satisfaisant le sien par construction. Un accès
+  transversal (build, réglages, undo) à un écran non encore construit le saute
+  (`getattr(self, "_x", None)`), l'écran lira l'état frais à sa venue.
 - **Une fabrique et non une classe** dans le descripteur : deux écrans ne se
   construisent pas par simple appel de constructeur (le Scene Manager est
   assemblé par la fenêtre, l'écriteau prend un titre), et les plugins sont
-  chargés **avant la `QApplication`** — construire un widget à l'import
-  planterait. Le branchement propre à un écran vit dans sa fabrique, à côté de
+  chargés après la `QApplication`, mais avant que `MainWindow` construise son
+  catalogue — construire un widget à l'import planterait. Le branchement propre
+  à un écran vit dans sa fabrique, à côté de
   sa construction, au lieu d'être dispersé dans `_setup_ui`.
 - **`SceneManagerScreen`** existe pour porter ce contrat : ses trois colonnes
   restent des attributs de la fenêtre (lues d'une trentaine d'endroits), les
@@ -1099,7 +1142,7 @@ un événement (`_d.on("palettes_changed", …)`) le déclare toujours dans
 `_build_scene_manager_screen` — c'est de l'abonnement, pas du cycle de vie.
 
 Et le **routage des assets** (`MainWindow._ASSET_ROUTES`) est une autre table :
-elle associe `assets/<dossier>/*.ext` aux fonctions d'`asset_encoding` que le
+elle associe `assets/<dossier>/*.ext` aux fonctions d'`asset_reconciliation` que le
 watcher appelle. Elle a porté des **noms de méthodes** appelés par `getattr`
 sur `Project` jusqu'à ce que les passe-plats correspondants soient retirés de
 `Project` : plus rien ne pouvait le voir — ni l'import, ni
@@ -1116,13 +1159,13 @@ Sans cet appariement, renommer une planche dans l'explorateur pendant que
 l'éditeur tourne détruisait l'asset avec tout ce qui avait été authoré dessus
 (la découpe en frames d'un sprite, les caractères d'une planche de police) pour
 faire naître un asset vierge sous le nouveau nom. Avec, l'asset **suit son
-fichier** : `asset_encoding.rename_*` appelle le `Project.rename_*` de la
+fichier** : `asset_reconciliation.rename_*` appelle le `Project.rename_*` de la
 famille — celui-là même que le finder utilise —, donc le sidecar se déplace et
 les scènes, prefabs et scripts qui citent l'asset sont réécrits.
 
 C'est le pendant en séance de la règle appliquée au chargement : **le nom de
 fichier fait foi**. `ResourceStore.load` adopte le stem du fichier quand le
-champ `name` a dérivé, et `asset_encoding._relink_source` raccroche un asset
+champ `name` a dérivé, et `asset_reconciliation._relink_source` raccroche un asset
 dont le fichier cité a disparu à celui qui porte son nom. Les trois lectures
 d'une même identité — nom de sidecar, champ `name`, fichier cité — ne peuvent
 plus se perdre de vue.

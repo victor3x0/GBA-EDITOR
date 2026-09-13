@@ -463,7 +463,7 @@ class DeleteFontSourceCmd(DeleteResourceCmd):
         super().execute()
         # Import local : history reste générique et n'introduit pas de cycle
         # module avec la couche d'encodage au chargement de l'application.
-        from core.asset_encoding import reconcile_font_assets
+        from core.resources.asset_reconciliation import reconcile_font_assets
         reconcile_font_assets(self._project)
 
     def undo(self):

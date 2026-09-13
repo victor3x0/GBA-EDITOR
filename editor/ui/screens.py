@@ -44,10 +44,13 @@ class ProjectScreen(Protocol):
 class EditorScreen:
     """Une entrée du catalogue d'écrans.
 
-    `build` rend le widget ; il n'est appelé qu'une fois, au démarrage. C'est
-    un appelable et non une classe parce qu'un écran ne se construit pas
-    forcément par simple appel de constructeur — le Scene Manager est assemblé
-    par la fenêtre à partir de trois colonnes qu'elle possède déjà.
+    `build` rend le widget ; il n'est appelé qu'une fois, à la PREMIÈRE VISITE
+    de l'écran (le Scene Manager et les écrans de plugin, eux, sont construits
+    au démarrage — cf. `MainWindow._build_screens` et le chantier technique
+    « L'écran construit à sa première visite »). C'est un appelable et non une
+    classe parce qu'un écran ne se construit pas forcément par simple appel de
+    constructeur — le Scene Manager est assemblé par la fenêtre à partir de
+    trois colonnes qu'elle possède déjà.
     """
 
     name: str

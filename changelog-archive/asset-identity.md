@@ -71,8 +71,8 @@ Reproduit à l'identique avant correctif : un sidecar `japanese-condensed-kanji-
 
 | Fichier | Nature |
 | --- | --- |
-| [resource_store.py](../editor/core/resource_store.py) | le nom de fichier fait foi (`load`, `load_one`) ; `path_of` |
-| [asset_encoding.py](../editor/core/asset_encoding.py) | `_relink_source`, `_sourced_by`, les cinq `rename_*`, balayage de `assets/sprites/` |
+| [resource_store.py](../editor/core/resources/resource_store.py) | le nom de fichier fait foi (`load`, `load_one`) ; `path_of` |
+| [asset_reconciliation.py](../editor/core/resources/asset_reconciliation.py) | `_relink_source`, `_sourced_by`, les cinq `rename_*`, balayage de `assets/sprites/` |
 | [project_watcher.py](../editor/core/project_watcher.py) | empreinte taille+date dans l'instantané, `pair_renames`, signal `asset_renamed` |
 | [window.py](../editor/window.py) | `_ASSET_ROUTES` porte la fonction de renommage, `_on_asset_renamed` |
 | [ARCHITECTURE.md](../ARCHITECTURE.md) | la table de routage a trois fonctions par famille, et pourquoi la troisième |

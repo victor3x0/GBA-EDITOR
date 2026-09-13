@@ -16,9 +16,9 @@ _EDITOR_DIR = str(Path(__file__).resolve().parent)
 if _EDITOR_DIR not in sys.path:
     sys.path.insert(0, _EDITOR_DIR)
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from PyQt6.QtGui import QPalette, QColor
-from window import MainWindow
 from ui.common.theme import GLOBAL_QSS, C, install_app_fonts
 from ui.common.numeric_drag import install_numeric_drag_behavior
 from ui.common import icons
@@ -59,10 +59,6 @@ if __name__ == "__main__":
     # redémarrage, comme le dit le panneau Interface.
     catalog.set_language(interface_language())
 
-    # Charger les plugins avant de créer la fenêtre (enrichissent le registre)
-    from plugins import load_all_plugins
-    loaded, plugin_errors = load_all_plugins()
-
     # Projet fourni au lancement, deux formes :
     #   --project <dossier>          (le picker, les récents)
     #   <chemin>/<Nom>.gba-project   (double-clic : l'OS passe le fichier associé)
@@ -93,6 +89,13 @@ if __name__ == "__main__":
     icons.ensure_qss_assets()
     app.setStyleSheet(GLOBAL_QSS)
 
+    # L'import de la fenêtre entraîne celui de tous les écrans (même ceux qui
+    # resteront invisibles au départ). Il est volontairement différé jusqu'à
+    # l'exécution, pour ne pas alourdir l'import du module `main`.
+    from plugins import load_all_plugins
+    loaded, plugin_errors = load_all_plugins()
+    from window import MainWindow
+
     # Refus explicite si le dossier porte plusieurs manifestes (ROADMAP v0.10) :
     # on le dit et on retombe sur l'accueil, plutôt que d'en choisir un au hasard.
     # Après la QApplication : une QMessageBox sans elle planterait.
@@ -115,14 +118,22 @@ if __name__ == "__main__":
         _is_new = False
         _name   = ""
 
-    win = MainWindow(project_path=project_path)
-    if _is_new and _name:
-        win._new_project(_name, project_path)
-    # else : projet déjà ouvert par MainWindow.__init__ -> _load_default_project()
-    # (appeler _open_project() une 2e fois ici rechargeait tout le projet en
-    # double au démarrage : deux fois le watcher connecté, deux fois la scène
-    # reconstruite dos à dos, sans laisser l'event loop tourner entre les deux
-    # — source probable du crash "GBAScene has been deleted" au lancement).
+    win = MainWindow()
+    # Ouvrir le projet AVANT d'afficher la fenêtre : sa construction et son
+    # peuplement (Scene Manager, inspecteur, rendu de la scène) sont lourds et
+    # se font sur le thread UI. Les faire fenêtre cachée évite d'exposer un
+    # éditeur vide (panneaux blancs) puis figé le temps du chargement — la
+    # fenêtre n'apparaît qu'une fois prête. Le curseur d'attente signale que le
+    # travail est en cours pendant que rien n'est encore visible.
+    app.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    try:
+        if _is_new and _name:
+            win._new_project(_name, project_path)
+        else:
+            win._open_project(project_path)
+    finally:
+        app.restoreOverrideCursor()
+
     win.show()
 
     # Défauts des points d'extension, APRÈS que la fenêtre est visible : un

@@ -165,7 +165,7 @@ def test_un_module_sans_echantillon_est_refuse_a_limport():
     """`check_audio_file` est le SEUL refus possible : mmutil construirait la
     ROM sans un mot (ROADMAP v0.8.1)."""
     import tempfile
-    from core.asset_encoding import check_audio_file
+    from core.resources.asset_reconciliation import check_audio_file
 
     vide = bytearray(F.make_it())
     # Effacer le drapeau « l'échantillon existe » : le module reste valide,

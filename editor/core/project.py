@@ -32,8 +32,8 @@ volumineuses en sont des TRANCHES, chacune dans son fichier — `project_paths`,
 `project_variables`, `project_texts`, `project_renames` (cf. la classe).
 
 Autour : le modèle de domaine dans `core.models.*`, l'I/O générique de
-collection dans `core.resource_store`, l'orchestration d'encodage d'assets dans
-`core.asset_encoding`.
+collection dans `core.resources.resource_store`, l'orchestration d'encodage
+d'assets dans `core.resources.asset_reconciliation`.
 
 **Une seule forme ÉCRITE, deux formes LUES — et seulement pour la v0.24.**
 La règle est longtemps restée « on ne lit qu'UNE forme de chaque fichier, celle
@@ -67,9 +67,9 @@ from typing import Optional
 
 from core.events import EventEmitter
 from core.models import project_json
-from core import asset_encoding
-from core.resource_store import ResourceStore, atomic_write
-from core.palette_store import PaletteStore
+from core.resources import asset_reconciliation
+from core.resources.resource_store import ResourceStore, atomic_write
+from core.resources.palette_store import PaletteStore
 from core.project_starters import copy_starter, get_starter
 from core.project_paths import ProjectPathsMixin, PROJECT_EXT, find_manifest
 from core.project_variables import ProjectVariablesMixin
@@ -199,6 +199,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.sound_boxes: ResourceStore[SoundBox] = ResourceStore(
             self.sound_boxes_dir, SoundBox)
         self.data_tables: ResourceStore[DataTable] = ResourceStore(self.data_tables_dir, DataTable)
+        # Ces familles sont nombreuses et une scène ne cite qu'une petite
+        # partie d'entre elles. ``load`` les indexe ; leur écran ou une
+        # opération globale les matérialise explicitement (v0.24).
+        self._deferred_resource_collections: set[str] = set()
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -258,8 +262,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         return dst
 
     # ── Encodage d'assets ───────────────────────────────────────────
-    # L'orchestration vit dans `core/asset_encoding.py`, et ses appelants s'y
-    # adressent DIRECTEMENT (`asset_encoding.sync_sprite_png(project, chemin)`).
+    # L'orchestration vit dans `core/resources/asset_reconciliation.py`, et ses
+    # appelants s'y adressent directement.
     # Treize méthodes qui ne faisaient que rappeler ce module vivaient ici, au
     # motif qu'elles servaient « depuis plusieurs écrans et le ProjectWatcher » :
     # dix n'avaient aucun appelant et le watcher n'en appelait aucune. Un
@@ -272,17 +276,17 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         Pour les familles adossées à un fichier source, on efface AUSSI ce
         fichier, pas seulement le sidecar JSON : sinon `reconcile_*` retrouverait
         le PNG / `.fnt` / module au prochain lancement et recréerait la ressource
-        (cf. asset_encoding). C'est ce qui manquait pour qu'une suppression depuis
+        (cf. asset_reconciliation). C'est ce qui manquait pour qu'une suppression depuis
         le finder tienne au rechargement, et non un défaut du soft_delete lui-même.
 
         La source n'est touchée qu'ICI, à la fermeture — pendant la session elle
         reste en place, et le Ctrl+Z (restore) suffit à ramener la ressource."""
         for store, source_paths in (
-            (self.sprites,     asset_encoding.sprite_source_paths),
-            (self.backgrounds, asset_encoding.background_source_paths),
-            (self.sfx,         asset_encoding.sound_source_paths),
-            (self.music,       asset_encoding.sound_source_paths),
-            (self.fonts,       asset_encoding.font_source_paths),
+            (self.sprites,     asset_reconciliation.sprite_source_paths),
+            (self.backgrounds, asset_reconciliation.background_source_paths),
+            (self.sfx,         asset_reconciliation.sound_source_paths),
+            (self.music,       asset_reconciliation.sound_source_paths),
+            (self.fonts,       asset_reconciliation.font_source_paths),
         ):
             for item in store.pending_deletes():
                 for path in source_paths(self, item):
@@ -303,6 +307,101 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
 
     def get_sprite(self, name: str) -> Optional[SpriteAsset]:
         return self.sprites.get(name)
+
+    # ── Ressources différées ─────────────────────────────────────
+
+    def load_sprites(self) -> None:
+        """Matérialise les sprites et rattrape les PNG ajoutés hors éditeur."""
+        if "sprites" not in self._deferred_resource_collections:
+            return
+        self.sprites.load()
+        asset_reconciliation.reconcile_sprites(self)
+        self._deferred_resource_collections.discard("sprites")
+
+    def load_backgrounds(self) -> None:
+        """Matérialise les fonds et rattrape leurs sources PNG."""
+        if "backgrounds" not in self._deferred_resource_collections:
+            return
+        self.backgrounds.load()
+        asset_reconciliation.reconcile_backgrounds(self)
+        self._deferred_resource_collections.discard("backgrounds")
+
+    def load_audio(self) -> None:
+        """Matérialise effets et musiques, avec le rattrapage des sources."""
+        pending = {"sfx", "music"} & self._deferred_resource_collections
+        if not pending:
+            return
+        self.sfx.load()
+        self.music.load()
+        asset_reconciliation.reconcile_sfx_and_music(self)
+        self._deferred_resource_collections.difference_update(pending)
+
+    def load_all_resources(self) -> None:
+        """Matérialise les familles différées pour un geste global.
+
+        Le build, la validation et les renommages transversaux doivent voir le
+        projet entier. Les écrans, eux, appellent seulement leur méthode
+        ``load_*`` dédiée.
+        """
+        self.load_sprites()
+        self.load_backgrounds()
+        self.load_audio()
+
+    def load_active_scene_resources(self) -> None:
+        """Précharge les assets cités par la scène active, et rien d'autre.
+
+        Le Scene Editor est la première vue d'un projet : lui imposer une
+        lecture disque au milieu de la construction du canvas rendait son
+        ouverture perceptiblement moins fluide. On prépare donc ses références
+        directes pendant l'ouverture du projet, sans matérialiser les catalogues
+        complets ni lancer leur réconciliation globale.
+
+        Ce que la scène RÉCLAME, c'est tout ce qu'elle rend : ses layers de
+        fond, les sprites de ses acteurs, ET les images/fonds de ses nœuds
+        Interface — oublier ces derniers laissait une zone d'UI blanche à
+        l'ouverture tant que l'écran Interface n'avait pas tourné. Chaque asset
+        chargé passe ensuite par la réparation par-asset (`reconcile_*`) : un
+        catalogue différé ne repasse pas la passe globale, donc un encodage
+        manquant ou une planche retouchée hors éditeur laisserait sinon l'asset
+        vide jusqu'à l'ouverture de son écran (`load_sprites`/`load_backgrounds`).
+        """
+        scene = self.active_scene
+        if scene is None:
+            return
+
+        bg_names = {
+            layer.background_name
+            for layer in scene.background_layers
+            if layer.background_name
+        }
+        sprite_names: set[str] = set()
+        for actor in scene.actors:
+            component = actor.get_component("sprite")
+            name = getattr(component, "sprite_name", None)
+            if name:
+                sprite_names.add(name)
+        # Nœuds Interface : sprites posés par leurs images, fonds de remplissage
+        # (nine-slice / background). Les mises en page, elles, sont déjà chargées.
+        from core.models.ui_region import FILL_BG, FILL_NINE
+        for layout_name in getattr(scene, "ui_layouts", []):
+            layout = self.ui_layouts.get(layout_name)
+            if layout is None:
+                continue
+            sprite_names |= layout.sprite_names()
+            bg_names |= {
+                el.fill_asset for el in layout.elements
+                if getattr(el, "fill_asset", "")
+                and getattr(el, "fill_kind", "") in (FILL_BG, FILL_NINE)
+            }
+
+        for name in bg_names:
+            ba = self.backgrounds.ensure_loaded(name)
+            if ba is not None:
+                asset_reconciliation.reconcile_background(self, ba)
+        for name in sprite_names:
+            sp = self.sprites.ensure_loaded(name)
+            if sp is not None:
+                asset_reconciliation.reconcile_sprite(self, sp)
 
     def get_font_asset(self, name: str) -> Optional[FontAsset]:
         """La police logique nommée, distincte de sa source ``Font``."""
@@ -390,11 +489,13 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         ne s'étalent pas pareil, les mélanger dans une liste unique laisserait
         choisir un cadre sans marges."""
         from core.models.background import KIND_UI
+        self.load_backgrounds()
         return [b for b in self.backgrounds
                 if b.kind == KIND_UI and (not role or b.ui_role == role)]
 
     def animated_backgrounds(self) -> list[BackgroundAsset]:
         from core.models.background import KIND_ANIMATED
+        self.load_backgrounds()
         return [b for b in self.backgrounds if b.kind == KIND_ANIMATED]
 
     def scene_ui_layouts(self, scene) -> list:
@@ -947,7 +1048,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
                     "assets/sfx", "assets/music", "assets/fonts"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
-        # Chaque registre est suivi de son rattrapage (cf. asset_encoding,
+        # Chaque registre est suivi de son rattrapage (cf. asset_reconciliation,
         # section « Rattrapage à l'ouverture ») : un fichier déposé éditeur
         # fermé n'a été vu par aucun watcher, on repasse une fois ici.
         self.load_settings()
@@ -961,20 +1062,21 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # Après les textes : un side se joint aux entrées du maître.
         self.load_translations()
         self.palettes.load()
-        self.sprites.load()
-        asset_encoding.reconcile_sprites(self)
-        self.backgrounds.load()
-        asset_encoding.reconcile_backgrounds(self)
-        self.sfx.load()
-        self.music.load()
-        asset_encoding.reconcile_sfx_and_music(self)
+        # Les trois catalogues lourds ne lisent ici que leurs noms et chemins.
+        # Leur contenu et le rattrapage des sources sont demandés par l'écran
+        # concerné, ou par ``load_all_resources`` avant une opération globale.
+        self._deferred_resource_collections = {"sprites", "backgrounds", "sfx", "music"}
+        self.sprites.scan_index()
+        self.backgrounds.scan_index()
+        self.sfx.scan_index()
+        self.music.scan_index()
         self.fonts.load()
         self.font_assets.load()
         # Ce que la réconciliation n'a PAS pu importer. Gardé sur le projet
         # plutôt que jeté : sans ça, une police refusée à l'import laisse un
         # panneau vide et aucune explication (cf. reconcile_fonts).
-        self.load_warnings = list(asset_encoding.reconcile_fonts(self) or [])
-        asset_encoding.reconcile_font_assets(self)
+        self.load_warnings = list(asset_reconciliation.reconcile_fonts(self) or [])
+        asset_reconciliation.reconcile_font_assets(self)
         # Avant les scènes : une scène référence sa mise en page et ses prefabs
         # par nom, et doit les trouver déjà chargés.
         self.ui_layouts.load()
@@ -986,6 +1088,7 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         self.data_tables.load()
         self.prefabs.load()
         self.load_scenes()
+        self.load_active_scene_resources()
 
     # ── Création / ouverture ──────────────────────────────────────
 
@@ -1022,8 +1125,8 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         proj.palettes.load()
         proj.fonts.load()
         proj.font_assets.load()
-        proj.load_warnings = list(asset_encoding.reconcile_fonts(proj) or [])
-        asset_encoding.reconcile_font_assets(proj)
+        proj.load_warnings = list(asset_reconciliation.reconcile_fonts(proj) or [])
+        asset_reconciliation.reconcile_font_assets(proj)
 
         # Créer une scène de démarrage par défaut
         # Même budget de départ que toute scène créée ensuite (v0.17) — la

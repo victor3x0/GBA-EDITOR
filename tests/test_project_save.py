@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from core.resource_store import atomic_write
+from core.resources.resource_store import atomic_write
 
 
 def test_ecriture_identique_est_sautee(tmp_path):

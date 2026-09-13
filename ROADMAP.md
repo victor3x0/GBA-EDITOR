@@ -105,7 +105,7 @@ consignés ici pour ne pas rester invisibles faute d'un jalon à qui les rattach
   transitions ne changent pas. Le dimensionnement par scène, gain plus large déjà identifié
   pour v0.17, reste un chantier distinct.
 
-- **`project.save()` réécrivait tout à chaque `Ctrl+S`** (`core/resource_store.py`), trouvé le
+- **`project.save()` réécrivait tout à chaque `Ctrl+S`** (`core/resources/resource_store.py`), trouvé le
   2026-09-07 en traitant une lenteur de sauvegarde signalée sur le Script Editor. Enregistrer le
   projet sérialise et réécrit les quatorze collections ; or éditer un script ne change AUCUN
   asset, et `atomic_write` écrivait quand même chaque fichier (temporaire + rename, ré-armant le
@@ -374,7 +374,7 @@ possède à lui seul la mise en page et la forme des grilles —,
 [background.py](editor/core/models/background.py),
 [sprite.py](editor/core/models/sprite.py),
 [palette.py](editor/core/models/palette.py),
-[resource_store.py](editor/core/resource_store.py) et
+[resource_store.py](editor/core/resources/resource_store.py) et
 [project.py](editor/core/project.py). `scene.py` n'a **pas** été touché :
 `collision_map` était déjà une liste de rangées, seule son écriture l'éclatait — pareil pour
 les `glyphs` d'une police. Deux des quatre formats se sont donc corrigés sans toucher au
@@ -424,12 +424,42 @@ Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/projec
   PNG et option sont du bruit de mesure ; aucune de ces relances ne réemploie sélectivement
   grit ou mmutil. L'audio est le premier poste concret à éviter de reconstruire quand rien ne
   l'a modifié ; le cache doit toujours reposer sur l'empreinte du source et des options.
+- **Mesure du chargement à l'échelle (2026-09-12).** Sur une copie temporaire de ce même
+  fixture, l'ouverture complète vaut **1 448 ms à froid**, puis **457 ms / 421 ms** après
+  réchauffement du cache système. Un relevé chaud, phase par phase, donne **666 ms** : sprites
+  JSON 125 ms, réconciliation des sprites **339 ms**, audio JSON + réconciliation 123 ms,
+  polices 48 ms, palettes 16 ms, scènes **11 ms** et le reste 4 ms. La conclusion est nette :
+  différer les scènes seules ne résout presque rien ; la première cible est le catalogue et la
+  réconciliation des assets (notamment les sprites). Le chargement paresseux doit donc garder
+  l'index des ressources d'un côté, et ne matérialiser le JSON d'un asset que lorsqu'un écran
+  ou une opération globale le demande. La réconciliation complète reste nécessaire mais doit
+  être distinguée de l'ouverture interactive — ou rendue incrémentale par empreinte — plutôt
+  que cachée derrière le chargement de la scène active.
+- **Première tranche livrée (2026-09-12).** `Project.load()` n'ouvre plus les sidecars des
+  sprites, backgrounds, effets et musiques : il indexe seulement leurs noms et chemins.
+  `ResourceStore.get()` charge alors une ressource citée par le canvas à la demande ; les écrans
+  Backgrounds, Animations et Sounds matérialisent leur collection à leur première visite ;
+  build et validation appellent explicitement `Project.load_all_resources()`. Sur
+  `BuildBenchmark`, l'ouverture passe à **428 ms à froid**, puis **112 ms / 104 ms** à chaud,
+  les 120 sprites et 80 effets restant absents de la mémoire tant qu'aucun de ces chemins ne les
+  réclame. Le rattrapage complet, reporté à l'écran ou à l'opération globale, coûte 1,35 s :
+  c'est désormais le prochain candidat à rendre incrémental.
+- **Polissage interactif (2026-09-12).** L'inspecteur de scène ne construit plus sa grille de
+  palettes — ni ne rasterise les polices qu'elle énumère — avant que sa carte soit ouverte. Un
+  retour vers l'écran Scènes n'exécute plus un rafraîchissement global déjà couvert par les
+  événements ciblés du dispatcher. Enfin, `main.py` laisse la fenêtre principale peindre une
+  fois avant de programmer l'ouverture du projet : pas de splash, seulement l'interface réelle
+  qui obtient son premier cycle Qt avant l'I/O. Le coût de construction des écrans invisibles
+  reste mesuré et assumé comme le prochain chantier UI ; il n'est pas déguisé en chargement de
+  ressources.
 - ~~**Quand cesse-t-on d'ÉCRIRE l'ancien format ?**~~ **Tranché le 2026-08-20** : tout de
   suite, lecture des deux à vie, aucun convertisseur (cf. décisions verrouillées).
-- **Le chargement paresseux, par collection ou par écran ?** La seconde est plus simple et
-  suffit peut-être. À décider sur la mesure, pas avant — et la mesure du 2026-08-20 dit
-  **pas encore** : 0,08 s pour tout charger. La question se rouvre sur un projet qui a le
-  volume, pas sur celui-ci.
+- **Le chargement paresseux, par collection ou par écran ?** **Tranché par la mesure du
+  2026-09-12 : index global léger, puis chargement explicite par écran.** Une collection ne
+  doit pas se matérialiser parce qu'un appelant l'itère par mégarde ; l'écran qui la rend, ou
+  une opération globale (build, validation, renommage), exprime son besoin. Reste à décider la
+  stratégie de réconciliation hors ligne : passe incrémentale au démarrage, ou rattrapage
+  complet différé après que l'interface est devenue utilisable.
 
 ---
 
@@ -449,6 +479,7 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | L'identité d'un asset et son fichier | 2026-09-02 | **Livré** — [archive](changelog-archive/asset-identity.md) |
 | Les formats acceptés à l'import | 2026-09-03 | **Livré** — [archive](changelog-archive/import-formats.md) |
 | La police, une palette d'asset comme les autres | 2026-09-03 | **Livré** — [archive](changelog-archive/font-palette.md) |
+| L'écran construit à sa première visite | 2026-09-13 | **Livré** — [archive](changelog-archive/lazy-screen-build.md) |
 
 ---
 
@@ -1233,7 +1264,7 @@ là-bas par un renvoi vers ce jalon, pour ne pas laisser deux vérités vivantes
 | `runtime/include/gba_engine.h` | `g_lang_font` remappe la police par défaut ; le rendu et la réservation tiennent compte de la police effective |
 | `core/project_paths.py` | `fonts_assets_dir` ajouté (`project/fonts_assets/`) ; `assets/fonts/` inchangé |
 | `core/project.py` | `ResourceStore[FontAsset]` monté sur `fonts_assets_dir` |
-| `core/asset_encoding.py` | synchro : sidecar `Font` (`assets/fonts/`) distinct du `FontAsset` (`project/fonts_assets/`) |
+| `core/resources/asset_reconciliation.py` | synchro : sidecar `Font` (`assets/fonts/`) distinct du `FontAsset` (`project/fonts_assets/`) |
 | `tests/` | `test_lang_font_remap.py` supprimé, sondes natives nettoyées ; tests neufs `FontRasterizer`/`FontAsset`/couverture |
 | `requirements.txt` | `freetype-py` revient comme dépendance de build |
 | `ARCHITECTURE.md` | la section police réécrite autour des couches (fait à l'étape suivante) |

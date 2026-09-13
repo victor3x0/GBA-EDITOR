@@ -279,7 +279,7 @@ FONTS = AssetKind(
     delete     = _font_source_deleter,
     dir_of     = resource_dir("fonts_dir"),
     # Pas de « + » : une police s'obtient en déposant un PNG ou un .fnt dans
-    # assets/fonts/ (asset_encoding.sync_font_file), comme sprites et fonds.
+    # assets/fonts/ (asset_reconciliation.sync_font_file), comme sprites et fonds.
     empty_text_key = 'akind.no_font_drop_a_png_or_a_fnt',
     # Les fichiers source servent surtout au diagnostic : l'auteur travaille
     # normalement avec les Font Assets au-dessus, donc ce dossier démarre clos.

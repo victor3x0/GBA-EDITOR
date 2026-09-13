@@ -31,6 +31,8 @@ class SfxEditor(BaseComponentEditor):
 
     def build(self, comp, row, layout):
         proj  = self.insp._project
+        if proj:
+            proj.load_audio()   # catalogue différé — sur sélection d'acteur, pas à l'ouverture
         names = [s.name for s in proj.sfx.items] if proj else []
 
         sfx = QComboBox()

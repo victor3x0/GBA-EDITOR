@@ -209,7 +209,7 @@ class SpriteAsset(SubPaletteAssetMixin, Resource):
     # couleurs viennent de CETTE version du PNG ». Même rôle et mêmes raisons
     # que BackgroundAsset.source_stamp : une date de fichier ne dit pas de façon
     # fiable qu'une planche a été retouchée. Vide = origine inconnue (sprite
-    # d'avant ce champ). Cf. core/asset_encoding.resync_sprite_png.
+    # d'avant ce champ). Cf. core.resources.asset_reconciliation.resync_sprite_png.
     source_stamp: str = ""
 
     @property

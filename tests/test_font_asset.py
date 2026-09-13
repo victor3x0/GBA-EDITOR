@@ -2,7 +2,7 @@
 
 from core.models.font_asset import FontAsset
 from core.models.font import Font
-from core import asset_encoding
+from core.resources import asset_reconciliation
 from core.project import Project
 from core.font_metadata import _style_weight
 
@@ -93,7 +93,7 @@ def test_deposer_une_source_vectorielle_invalide_est_refusee_sans_rasteriser(tmp
     source.parent.mkdir(parents=True)
     source.write_bytes(b"not a real font: discovery must not rasterize")
 
-    warning = asset_encoding.sync_font_file(project, source)
+    warning = asset_reconciliation.sync_font_file(project, source)
     font = project.fonts.get("ComicNeue")
 
     assert "import impossible" in warning
@@ -109,7 +109,7 @@ def test_reconciliation_regroupe_toutes_les_faces_sans_ecraser_le_regular(tmp_pa
         Font(name="Comic-Light", source_format="ttf", family_name="Comic Neue", weight=300),
     ]
 
-    asset_encoding.reconcile_font_assets(project)
+    asset_reconciliation.reconcile_font_assets(project)
     asset = project.get_font_asset("Comic Neue")
 
     assert asset.source_names() == ["Comic-Regular"]
@@ -123,7 +123,7 @@ def test_reconciliation_cree_un_asset_pour_chaque_source_bitmap(tmp_path):
     project = Project(tmp_path)
     project.fonts.items = [Font(name="ascii", source_format="png")]
 
-    asset_encoding.reconcile_font_assets(project)
+    asset_reconciliation.reconcile_font_assets(project)
 
     assert project.get_font_asset("ascii").source_names() == ["ascii"]
 
@@ -134,10 +134,10 @@ def test_reconciliation_retire_les_faces_et_la_source_primaire_supprimees(tmp_pa
         Font(name="Comic-Regular", source_format="ttf", family_name="Comic Neue", weight=400),
         Font(name="Comic-Bold", source_format="ttf", family_name="Comic Neue", weight=700),
     ]
-    asset_encoding.reconcile_font_assets(project)
+    asset_reconciliation.reconcile_font_assets(project)
     project.fonts.soft_delete(project.fonts.get("Comic-Regular"))
 
-    asset_encoding.reconcile_font_assets(project)
+    asset_reconciliation.reconcile_font_assets(project)
     asset = project.get_font_asset("Comic Neue")
 
     assert [face.source_name for face in asset.faces] == ["Comic-Bold"]

@@ -38,7 +38,7 @@ from contextlib import contextmanager
 
 import copy
 
-from core import asset_encoding
+from core.resources import asset_reconciliation
 from core.events import EventEmitter
 from core.models.scene import Actor, Prefab, Scene
 from core.history import get_history, AddActorCmd
@@ -445,7 +445,7 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "backgrounds")
         with self._watcher.suspended():
-            warning = asset_encoding.sync_background_png(self._project, dst)
+            warning = asset_reconciliation.sync_background_png(self._project, dst)
         msg = f"Background importé : {dst.stem}"
         if warning:
             msg += f" — {warning}"
@@ -463,7 +463,7 @@ class CommandDispatcher(EventEmitter):
         ap = Path(path_str)
         dst = self._project.import_asset(ap, "sprites")
         with self._watcher.suspended():
-            warning = asset_encoding.sync_sprite_png(self._project, dst)
+            warning = asset_reconciliation.sync_sprite_png(self._project, dst)
         msg = f"Sprite importé : {dst.stem}"
         if warning:
             msg += f" — {warning}"
@@ -614,4 +614,3 @@ _dispatcher = CommandDispatcher()
 
 def get_dispatcher() -> CommandDispatcher:
     return _dispatcher
-

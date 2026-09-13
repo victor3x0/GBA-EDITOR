@@ -5,7 +5,7 @@ import json
 
 from core.models.gba_color import bgr555_to_hex, rgb888_to_bgr555
 from core.models.palette import PaletteBank
-from core.palette_store import PaletteStore
+from core.resources.palette_store import PaletteStore
 from core.project import Project
 from core import project_starters
 

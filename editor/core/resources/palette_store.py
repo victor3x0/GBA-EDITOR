@@ -13,7 +13,7 @@ from pathlib import Path
 
 from core.models import project_json
 from core.models.palette import PaletteBank
-from core.resource_store import ResourceStore, atomic_write, safe_filename
+from core.resources.resource_store import ResourceStore, atomic_write, safe_filename
 
 
 class PaletteStore(ResourceStore[PaletteBank]):

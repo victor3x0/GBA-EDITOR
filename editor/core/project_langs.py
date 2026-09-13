@@ -32,7 +32,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from core.resource_store import atomic_write
+from core.resources.resource_store import atomic_write
 from core.models import project_json
 
 

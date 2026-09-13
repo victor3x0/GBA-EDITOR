@@ -178,7 +178,7 @@ class Sfx(_MigrateVolumeMixin, Resource):
 SFX_FILE_EXTS   = {".wav"}
 MUSIC_FILE_EXTS = {".mod", ".xm", ".s3m", ".it"}
 
-# `check_audio_file` a déménagé dans `core/asset_encoding.py` : elle doit LIRE
+# `check_audio_file` vit dans `core/resources/asset_reconciliation.py` : elle doit LIRE
 # un module pour le valider, donc importer `core.engine_emulation` — et une
 # donnée de projet (`core.models`) n'a pas le droit d'importer la couche
 # au-dessus d'elle. Les deux listes, elles, restent ici : ce sont bien des
@@ -187,7 +187,7 @@ MUSIC_FILE_EXTS = {".mod", ".xm", ".s3m", ".it"}
 # Profondeurs que mmutil sait convertir. Au-delà il écrit « Unsupported
 # bit-depth. », sort quand même avec le code 0, ET émet le #define : la ROM se
 # construit et l'effet est muet. C'est un FAIT sur le format, donc il vit ici ;
-# c'est `asset_encoding.check_audio_file` qui s'en sert pour dire non.
+# c'est `asset_reconciliation.check_audio_file` qui s'en sert pour dire non.
 WAV_BITS_OK = (8, 16)
 
 

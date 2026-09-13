@@ -25,7 +25,7 @@ from ui.common.labels import label
 from ui.common.icons import get as _ico, COLOR_DEFAULT
 from ui.common import external_editor
 
-from core.asset_encoding import check_audio_file
+from core.resources.asset_reconciliation import check_audio_file
 from core.models.audio import (
     Music, Sfx, SFX_FILE_EXTS, MUSIC_FILE_EXTS,
     file_dialog_filter, sfx_rom_bytes,

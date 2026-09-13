@@ -31,6 +31,31 @@ from codegen.actor_budget import (
 from ui.common import icons
 
 
+class _LazyPopupCombo(QComboBox):
+    """QComboBox qui matérialise sa liste complète à l'OUVERTURE du menu.
+
+    Certaines listes (les musiques) viennent d'un catalogue différé (v0.24) :
+    les remplir à la construction de l'inspecteur rechargerait le disque à
+    l'ouverture du projet, alors que le combo n'a besoin que d'afficher sa
+    valeur courante. Le loader — posé par ``set_lazy_loader`` — n'est appelé
+    qu'une fois, quand l'auteur déploie réellement le combo."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lazy_loader = None
+        self._lazy_done = False
+
+    def set_lazy_loader(self, loader) -> None:
+        self._lazy_loader = loader
+        self._lazy_done = False
+
+    def showPopup(self):
+        if self._lazy_loader is not None and not self._lazy_done:
+            self._lazy_done = True
+            self._lazy_loader()
+        super().showPopup()
+
+
 # ── Transition — libellés ─────────────────────────────────────────
 # Les mêmes mots que l'inspecteur de projet (qui les définit, la transition
 # étant d'abord un réglage de projet), plus l'item d'absence de surcharge. Son
@@ -288,10 +313,11 @@ class SceneInspector(QWidget):
         lbl_music = QLabel(label("sceneinsp.music"))
         lbl_music.setFont(QFont(T.UI, T.SM)); lbl_music.setStyleSheet(f"color:{C.TEXT_DIM};")
         lbl_music.setFixedWidth(70)
-        self._combo_music = QComboBox()
+        self._combo_music = _LazyPopupCombo()
         self._combo_music.setFont(QFont(T.UI, T.SM))
         self._combo_music.setStyleSheet(QSS.combobox)
         self._combo_music.setToolTip(label("sceneinsp.music_tip"))
+        self._combo_music.set_lazy_loader(self._materialize_music_catalog)
         self._combo_music.currentIndexChanged.connect(self._on_music)
         music_row.addWidget(lbl_music)
         music_row.addWidget(self._combo_music, 1)
@@ -359,7 +385,13 @@ class SceneInspector(QWidget):
         # projet — c'est ICI qu'on choisit jusqu'à 16 palettes par pool comme
         # "actives" pour cette scène. Actor.pal_bank référence un slot de
         # cette sélection (0-15), pas directement le catalogue.
-        pal_card = CollapsibleCard(label("common.palettes"))
+        # Cette carte explique l'allocation, mais n'est pas nécessaire pour
+        # poser une scène sur le canvas. Son calcul peut rasteriser les polices
+        # logiques du projet : ne jamais le faire sur le chemin d'ouverture.
+        pal_card = CollapsibleCard(label("common.palettes"), expanded=False)
+        self._pal_card = pal_card
+        self._palette_view_pending = True
+        pal_card.toggled.connect(self._on_palette_card_toggled)
         pal_inner = pal_card.body_layout
 
         self._pal_grids: dict[str, PaletteSlotGridAsset] = {}
@@ -521,9 +553,11 @@ class SceneInspector(QWidget):
         self._combo_text_bg.setCurrentIndex(text_bg)
         self._refresh_text_bg_warn()
         self._refresh_scene_script_label()
-        self._rebuild_palette_slots()
-        # Après `_rebuild_palette_slots` : la liste des banques d'UI se lit dans
-        # la sélection BG, que ce dernier vient de rafraîchir.
+        self._palette_view_pending = True
+        if self._pal_card.is_expanded():
+            self._rebuild_palette_slots()
+        # La sélection BG est persistée sur la scène ; elle ne dépend pas de la
+        # carte détaillée des palettes, qui peut rester repliée.
         self._reload_ui_pal()
         self._reload_scene_font()
         # La LISTE des prefabs d'abord, les plafonds ensuite : chaque champ se
@@ -535,6 +569,11 @@ class SceneInspector(QWidget):
         self._refresh_transition()
         self._refresh_music()
         self._blocking = False
+
+    def _on_palette_card_toggled(self, expanded: bool) -> None:
+        """Construit la vue coûteuse seulement quand l'auteur la consulte."""
+        if expanded and self._palette_view_pending:
+            self._rebuild_palette_slots()
 
     def _mk_scroll_toggle(self, icon_key: str, tip: str) -> QToolButton:
         """Toggle iconifié (double flèche) pour un axe de scrolling — remplace
@@ -657,6 +696,7 @@ class SceneInspector(QWidget):
     def _pick_bitmap_bg(self):
         if not self._project or not self._scene:
             return
+        self._project.load_backgrounds()   # ouverture explicite du catalogue différé
         bitmaps = [b for b in self._project.backgrounds
                    if getattr(b, "mode", "tiled") == "bitmap"]
         if not bitmaps:
@@ -719,11 +759,17 @@ class SceneInspector(QWidget):
 
         active_names = self._scene.active_bg_palettes
         active_banks = [b for n in active_names if (b := self._project.get_palette(n))]
-        bg_names = [b.name for b in self._project.backgrounds]
+
+        def _bg_names_provider():
+            # Catalogue différé (v0.24) : matérialisé seulement quand l'auteur
+            # déploie le picker d'un layer, pas à la construction de l'inspecteur
+            # (donc pas à l'ouverture du projet — cf. BgLayerRow.set_backgrounds).
+            self._project.load_backgrounds()
+            return [b.name for b in self._project.backgrounds]
 
         for layer in self._scene.background_layers:
             row = BgLayerRow(layer.bg_slot)
-            row.set_backgrounds(bg_names, layer.background_name)
+            row.set_backgrounds(_bg_names_provider, layer.background_name)
             if layer.background_name:
                 ba = self._project.get_background(layer.background_name)
                 png = ba.asset if ba and ba.asset else f"{layer.background_name}.png"
@@ -1060,6 +1106,7 @@ class SceneInspector(QWidget):
 
             view = scene_palette_view(self._project, self._scene, pool)
             self._pal_grids[pool].load(view, banks)
+        self._palette_view_pending = False
 
     # ── Handlers grille de palettes ─────────────────────────────────
 
@@ -1068,7 +1115,9 @@ class SceneInspector(QWidget):
 
     def _palette_refresh(self, pool: str):
         """Rebâtit la grille + rafraîchit le canvas après une mutation palette."""
-        self._rebuild_palette_slots()
+        self._palette_view_pending = True
+        if self._pal_card.is_expanded():
+            self._rebuild_palette_slots()
         if pool == "bg":
             self._rebuild_layer_rows()   # les BgLayerRow résolvent leur icône via active_bg_palettes
             for L in self._scene.background_layers:
@@ -1262,6 +1311,13 @@ class SceneInspector(QWidget):
         from core.models.scene import MUSIC_INHERIT, MUSIC_NONE
         sc, p = self._scene, self._project
         want = getattr(sc, "music", MUSIC_INHERIT) or MUSIC_INHERIT
+        # Catalogue différé : tant que l'auteur n'a pas déployé le combo (ni
+        # visité l'écran Sounds), ``p.music`` ne contient que ce qu'on a
+        # matérialisé. On charge la SEULE piste courante pour qu'elle s'affiche
+        # sous son nom (et non « manquante ») sans lire tout le dossier — la
+        # liste complète arrive au premier ``showPopup`` (cf. _LazyPopupCombo).
+        if p and want not in (MUSIC_INHERIT, MUSIC_NONE):
+            p.music.ensure_loaded(want)
         self._combo_music.blockSignals(True)
         self._combo_music.clear()
         self._combo_music.addItem(label("sceneinsp.music_keep"), MUSIC_INHERIT)
@@ -1277,6 +1333,13 @@ class SceneInspector(QWidget):
             idx = self._combo_music.count() - 1
         self._combo_music.setCurrentIndex(idx)
         self._combo_music.blockSignals(False)
+
+    def _materialize_music_catalog(self):
+        """Loader du combo music : matérialise le catalogue différé puis repeuple
+        la liste complète. Appelé une seule fois, au premier déploiement."""
+        if self._project:
+            self._project.load_audio()
+            self._reload_music_combo()
 
     def _on_music(self, idx: int):
         if self._blocking or not self._scene: return
@@ -1392,23 +1455,16 @@ class SceneInspector(QWidget):
     def _reload_scene_font(self):
         """(Re)construit le slot de police par défaut de la scène.
 
-        Une police SANS planche exploitable est listée mais dite telle quelle :
-        elle n'est pas compilée (`encodable_project_fonts` la saute), la
-        choisir ferait retomber la scène sur la première du projet. La masquer
-        ferait disparaître un choix déjà posé dans le JSON — même règle que les
-        slots de palette vides juste au-dessus.
-
-        `encodable_project_fonts`, PAS `project_fonts` : ce dernier élague en
-        plus aux polices déjà utilisées quelque part, et ce picker sert
-        justement à en choisir une pas encore utilisée — `project_fonts`
-        grèserait toute police jamais encore posée nulle part."""
+        Une police sans source exploitable reste visible mais signalée. Le
+        test de disponibilité ne rasterise pas les glyphes : remplir un menu ne
+        doit pas déclencher le travail réservé au build ou à un aperçu."""
         if not self._scene:
             return
         from ui.common.pickers import font_picker_slot
         p = self._project
         try:
-            from codegen.font_emit import encodable_project_fonts
-            usable = {f.name for f in encodable_project_fonts(p)} if p else set()
+            from codegen.font_build import available_project_font_names
+            usable = available_project_font_names(p) if p else set()
         except Exception:
             usable = {f.name for f in (getattr(p, "fonts", []) or [])} if p else set()
         cur = getattr(self._scene, "font_name", "") or ""

@@ -61,7 +61,7 @@ _KIND_COLOR = {KIND_SCENE: COLOR_BACKGROUND, KIND_UI: COLOR_UI,
 # La compression (bg_import) peut prendre plusieurs secondes sur un grand fond
 # ou une photo : on la lance dans un worker du QThreadPool pour ne JAMAIS geler
 # l'éditeur. Le worker calcule le dict de compression ; le thread UI l'applique
-# à l'asset (asset_encoding.apply_bg_encoding) puis rafraîchit.
+# à l'asset (asset_reconciliation.apply_bg_encoding) puis rafraîchit.
 
 class _CompressSignals(QObject):
     done   = pyqtSignal(int, str, dict)   # token, source_name, résultat
@@ -1254,8 +1254,8 @@ class BackgroundEditorScreen(QWidget):
             self._compress_tasks.discard(task)
             if tok != self._compress_token:
                 return  # résultat périmé (une compression plus récente a été lancée)
-            from core import asset_encoding
-            asset_encoding.apply_bg_encoding(ba, name, c)
+            from core.resources import asset_reconciliation
+            asset_reconciliation.apply_bg_encoding(ba, name, c)
             with get_dispatcher().suspended():
                 self._project.backgrounds.save(ba)
             get_dispatcher().notify_background_changed(ba)
