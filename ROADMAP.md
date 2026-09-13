@@ -1708,6 +1708,45 @@ de l'inspecteur Scene (section ouverte et scrollée). Cela passe par un marqueur
 `BackgroundLayerSelection(scene, bg_slot)`, symétrique de `CameraSelection`, puis une opération
 publique `SceneInspector.focus_background_slot(slot)` — pas par un appel direct entre widgets.
 
+### Graphe de scènes — partie 2 : groupes et navigation par niveaux
+
+Le graphe est une carte navigable du jeu, jamais un second langage de programmation. Les groupes
+sont **organisationnels seulement** : ils ne possèdent pas de flux, ne contraignent pas les
+scripts et ne promettent pas artificiellement une entrée ou une sortie unique. Ils sont des
+métadonnées d'éditeur, mémorisées avec la disposition du graphe et sans effet sur le build.
+
+- **Arêtes agrégées.** Plusieurs appels qui relient la même scène source et cible se lisent comme
+  une arête unique avec un compteur ; l'inspecteur déroule les `LuaRef` qui la composent. Les
+  cibles dynamiques ne disparaissent jamais : elles mènent vers une sortie `?` explicitement
+  indéterminée. Une boucle n'est pas un objet spécial : c'est une arête de retour courbe qui
+  révèle, au clic, le cycle réel qu'elle participe à former.
+- **Niveaux de profondeur.** La racine affiche les groupes repliés et les scènes non groupées.
+  Double-clic ou `Entrée` sur un groupe ouvre son niveau ; le fil d'Ariane devient par exemple
+  `Jeu / Village`. Le contenu est alors le seul contexte éditable. `Backspace` remonte d'un
+  niveau et ne fait rien à la racine ; ce raccourci est local au Graphe et ne change pas la
+  suppression existante dans l'éditeur de scène. Double-clic sur une scène reste l'ouverture de
+  son contexte 2D (ou 3D selon son mode de rendu).
+- **Frontières honnêtes.** Dans un groupe, les transitions externes deviennent des portes de
+  frontière — `← 3 entrées`, `2 sorties →` — plutôt que des scènes externes modifiables. Elles
+  préservent la lecture du lien sans casser le focus courant ; l'édition d'une transition reste
+  dans le contexte de sa scène source.
+- **Navigateur de graphe.** En contexte Graphe, la colonne de gauche montre groupes et scènes
+  non groupées. Créer, déplacer ou replier un groupe ici se reflète instantanément dans le
+  canvas ; le Scene Tree Contenu reprend son rôle habituel quand l'auteur revient à la scène.
+- **Calque Notes.** Textes, traits libres, surlignages et cadres appartiennent au niveau de
+  graphe ouvert. Le calque est verrouillé par défaut afin que dessiner ne concurrence pas la
+  sélection des nœuds. Les annotations globales vivent à la racine ; celles d'un groupe ne
+  l'encombrent pas.
+- **Inspecteur contextuel.** Une scène expose sa miniature, son statut de départ et ses appels
+  entrants/sortants connus ; une transition expose source, cible, fichier et ligne ; un groupe
+  expose son nom et ses membres ; une annotation expose son style et son verrouillage. Retargeter
+  le littéral connu reste permis ; créer une transition depuis le graphe ne l'est pas.
+
+La première ouverture reçoit une disposition automatique, puis les positions sont mémorisées.
+Zoom, mini-carte, cadrage global, recherche, scènes inaccessibles depuis le départ et scènes sans
+sortie connue sont des aides de lecture ; aucune ne doit présenter une inférence comme un flux
+exécutable certain.
+
 ### Contenu — organisation et visibilité d'auteur
 
 Le contexte **Contenu** sert aussi à organiser une scène de production, sans modifier son jeu.
