@@ -146,11 +146,32 @@ def test_methode_appelee_avec_un_point():
     assert any("DEUX POINTS" in e for e in errs), errs
 
 
-def test_handler_inconnu_refuse():
-    """Le C émis pour un nom inconnu est une fonction qu'aucun appel Lua ne peut
-    atteindre — avertissement jusqu'ici, donc un build vert pour du code mort."""
-    errs = _errors("function aide()\nend\n")
-    assert any("behavior" in e for e in errs), errs
+def test_helper_prive_accepte_et_recoit_self_implicite():
+    """Un helper de script est un symbole C private, appelé avec self ajouté."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    src = ("function tirer(degats)\n"
+           "    self:play_anim(\"idle\")\n"
+           "    return degats + 1\n"
+           "end\n\n"
+           "function on_update()\n"
+           "    local total = tirer(3)\n"
+           "end\n")
+    assert _errors(src, anim_names=["idle"]) == []
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=["idle"], sfx_names=[],
+        music_names=[], global_names=set(), const_names=set(), all_actor_syms=["Ball"]))
+    assert "static int Ball_tirer(Actor* self, int degats);" in code
+    assert "return (degats + 1);" in code
+    assert "int total = Ball_tirer(self, 3);" in code
+
+
+def test_helper_prive_verifie_arite_et_recursion():
+    arity = _errors("function aide(n) end\nfunction on_update() aide() end\n")
+    assert any("1 argument" in e for e in arity), arity
+    recursive = _errors("function aide() aide() end\nfunction on_update() aide() end\n")
+    assert any("Récursion interdite" in e for e in recursive), recursive
 
 
 # ── 5. Ce qui doit continuer de passer ─────────────────────────────
@@ -246,13 +267,13 @@ def test_tout_noeud_de_luaparser_est_classe():
 
 def test_chaque_refus_est_documente():
     """La documentation ne peut pas prendre de retard sur la table : un refus
-    que `SCRIPTING.md` ne montre pas est un utilisateur bloqué par un message
+    que la référence de scripting ne montre pas est un utilisateur bloqué par un message
     dont le document ne parle pas."""
     from scripting import lua_subset
 
-    doc = (REPO_DIR / "SCRIPTING.md").read_text(encoding="utf-8")
+    doc = (REPO_DIR / "docs" / "scripting-reference.md").read_text(encoding="utf-8")
     refus = [*lua_subset.REFUSED.values(), lua_subset.NESTED_FUNCTION,
              *lua_subset.STDLIB_MODULES.values(), *lua_subset.STDLIB.values()]
     absents = sorted({r.lua for r in refus if r.lua not in doc})
     assert absents == [], (
-        f"Refus non documentés dans SCRIPTING.md : {absents}")
+        f"Refus non documentés dans la référence de scripting : {absents}")

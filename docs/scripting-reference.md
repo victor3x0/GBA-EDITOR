@@ -1,0 +1,170 @@
+# Référence de scripting
+
+Cette référence complète le [guide de scripting](scripting.md). Utilisez-la lorsque vous voulez vérifier une écriture, plutôt que de la lire avant votre premier script.
+
+## Ce que le langage accepte
+
+Un script contient des variables, des événements proposés dans le panneau **Events**, des séquences `on_sequence_<nom>` et des fonctions privées déclarées au premier niveau.
+
+| Valeur | Écriture | Notes |
+| --- | --- | --- |
+| Entier | `12`, `-3` | Seul type numérique. `7 / 2` vaut `3`. |
+| Booléen | `true`, `false` | Utilisable comme 1 ou 0. |
+| `nil` | `nil` | Vaut 0. |
+| Vecteur | `vec2(x, y)`, `vec3(x, y, z)` | `+`, `-`, multiplication par un entier. |
+| Rectangle | `rect(x, y, w, h)` | Pour les bornes et zones. |
+| Tableau | `{1, 2, 4}` ou `array(20, 12)` | Taille fixe, entiers, indexation à partir de 1. |
+| Chaîne | `"walk"`, `"Arena"` | Nom d'une ressource. Un littéral est aussi accepté par `text.draw`. |
+
+```lua
++  -  *  /  %              -- arithmétique entière
+== ~= < <= > >=           -- comparaison
+and or not                -- logique
+#t                         -- taille d'un tableau, connue au build
+```
+
+Les boucles disponibles sont `while` et `for`. Un `for` accepte un début, une fin et un pas écrit en clair. `break` et `return` sont disponibles.
+
+## Fonctions et appels
+
+Une fonction privée prend et rend des entiers. `self` est fourni automatiquement dans un script d'acteur. Elle ne peut pas être récursive, directement ou indirectement, ni être placée dans une variable.
+
+```lua
+function degats_critiques(degats)
+    return degats * 2
+end
+```
+
+Une propriété s'écrit avec un point, une méthode avec deux points :
+
+```lua
+self.visible = false
+self:destroy()
+sfx.play("Bip")
+```
+
+Certains appels renvoient une référence à un élément matériel. Une référence vaut `0` si aucun slot n'est libre ; une référence devenue périmée ne fait rien.
+
+```lua
+local pas = sfx.play("Pas")
+if pas:playing() then pas:stop() end
+```
+
+Le catalogue **Gameplay**, **Scripting** et **Hardware** du panneau **API** est la référence des fonctions du moteur. Il est tenu à jour par l'éditeur.
+
+## Séquences
+
+Une séquence est une fonction `on_sequence_<nom>`. Elle attend avec `wait(frames)` ou `wait_until(condition)`, et avance dans l'ordre de ses lignes.
+
+- Elle s'arrête seule à la dernière ligne.
+- Ses variables locales survivent à une attente.
+- `wait_until` réévalue son expression à chaque frame.
+- Une attente est seule sur sa ligne, au premier niveau de la séquence ou dans un `for` borné.
+- Une condition qui ne peut jamais devenir vraie est refusée au Build.
+
+Chaque attente ajoute une frame au déroulement de la séquence.
+
+## Texte, listes et langue
+
+`text.draw` accepte un littéral pour afficher rapidement un texte dans un projet monolingue :
+
+```lua
+text.draw(2, 2, "Bonjour !")
+```
+
+Au Build, ce littéral devient une entrée interne de la table de textes. Il n'est pas visible dans l'écran **Text** et ne peut donc pas être traduit. Dès qu'une langue est déclarée dans le projet, le Build le signale par un avertissement.
+
+Pour un texte traduisible ou qui contient une valeur, créez une entrée dans l'écran **Text**. Une clé, telle que `"dialogue_garde_01"`, est passée à `text.draw` ou `text.draw_in`. Pour afficher une valeur, utilisez un marqueur de valeur dans l'entrée de texte, plutôt qu'une concaténation :
+
+```text
+Score : $score_joueur
+```
+
+```lua
+global.score_joueur = 12
+text.draw(2, 2, "score")
+```
+
+Les listes se pilotent avec `list.index`, `list.first`, `list.row` et `list.set_count`. Une liste fixe gère sa navigation sans script supplémentaire. `list.set_count` sert aux listes défilantes.
+
+`lang.get()` rend la langue active. `lang.set(code)` la modifie et recharge la scène courante. Pour mémoriser ce choix, conservez la valeur dans une globale persistante puis utilisez `save.write`.
+
+## Écritures refusées
+
+Le Build refuse les éléments suivants :
+
+| Vous écrivez | À la place |
+| --- | --- |
+| `for k, v in pairs(t) do … end` | `for i = 1, #t do … end` |
+| `repeat … until c` | `while true do … if c then break end end` |
+| `goto etiquette` ou `::etiquette::` | `break`, `return` ou un `if` |
+| `do … end` | Écrivez son contenu directement. |
+| `local function f()` | `function f()` au premier niveau |
+| Une fonction dans un handler | Déclarez-la au premier niveau. |
+| `local f = function() … end` | Une fonction n'est pas une valeur. |
+| `...` | Les arguments variables n'existent pas. |
+| `a .. b` | Une entrée de texte et ses marqueurs de valeur. |
+| `a ^ b` | Multipliez explicitement, par exemple `x * x`. |
+| `a // b` | `/` effectue déjà une division entière. |
+| `a & b`, `a | b`, `a << b` | Utilisez l'API matérielle ou des multiplications et divisions. |
+
+`~=` signifie bien « différent de ». Seul `~`, utilisé pour une opération binaire ou unaire, n'est pas disponible.
+
+## Bibliothèque standard Lua
+
+La bibliothèque standard de Lua n'est pas embarquée dans la ROM. Les cas usuels ont les équivalents suivants :
+
+| Vous cherchez à faire | Utilisez |
+| --- | --- |
+| Formater ou assembler du texte | L'écran **Text** et les marqueurs de valeur. |
+| Ajouter à une collection dynamique | Un tableau de taille fixe et un compteur. |
+| Parcourir un tableau | `for i = 1, #t do`. |
+| Lire l'heure | `scene.frame` pour compter les frames. |
+| Ouvrir un fichier | `save.write` et `save.read` pour la SRAM. |
+| Afficher une trace | `debug.log(...)`, visible dans mGBA et retiré des builds release. |
+| Gérer une erreur ou une exception | Un `if` qui contrôle et corrige la valeur. |
+| Charger un behavior | `require("behaviors/nom")`, résolu au build. |
+
+Il n'y a pas de `string`, `table`, `os`, `io`, `coroutine`, `utf8`, métatable, fonction de réflexion ni chargement de code à l'exécution.
+
+Pour rechercher une forme Lua précise dans une erreur, voici les appels refusés les plus courants :
+
+| Catégorie | Écritures concernées |
+| --- | --- |
+| Console et erreurs | `print(x)`, `assert(c)`, `error(msg)`, `pcall(f)`, `xpcall(f, h)` |
+| Collections Lua | `pairs(t)`, `ipairs(t)`, `next(t)`, `table.insert(t, v)`, `unpack(t)`, `select(n, ...)` |
+| Chaînes et types | `string.format(…)`, `tostring(x)`, `tonumber(s)`, `type(x)`, `utf8.char(…)` |
+| Métatables | `setmetatable(t, mt)`, `getmetatable(t)`, `rawget(t, k)`, `rawset(t, k, v)`, `rawequal(a, b)`, `rawlen(t)` |
+| Fichiers et code | `os.time()`, `io.open(…)`, `package.path`, `dofile(chemin)`, `load(src)`, `loadfile(chemin)`, `loadstring(src)`, `collectgarbage()` |
+| Coroutines | `coroutine.create(f)` |
+
+Une fonction écrite `function f() … end, dans un corps` ou `function objet:methode() … end` est également refusée. Déclarez une fonction privée au premier niveau. `local function f() … end` n'est pas une forme disponible.
+
+## Le module `math`
+
+`math` est le module du moteur, en entiers. Il expose exactement :
+
+```text
+abs   atan2   clamp   cos   ease   lerp   max   min   rand   sign   sin   sqrt
+```
+
+- `math.sin` et `math.cos` reçoivent des degrés, pas des radians.
+- Le hasard s'écrit `math.rand(min, max)`.
+- Il n'y a pas d'arrondi. Les valeurs sont déjà entières.
+
+| Vous écrivez | À la place |
+| --- | --- |
+| `math.floor(x)` | Rien : `/` tronque déjà. |
+| `math.ceil(a / b)` | `(a + b - 1) / b` pour une division positive arrondie au-dessus. |
+| `math.random(a, b)` | `math.rand(a, b)` |
+| `math.pi` | Des angles en degrés. |
+| `math.pow(x, n)` | Une multiplication explicite, par exemple `x * x`. |
+| `math.fmod(a, b)` | `a % b` |
+
+Les autres noms de Lua qui ne sont pas proposés sont `math.ceil(x)`, `math.huge`, `math.modf(x)` et `math.randomseed(n)`.
+
+Les décalages et opérations binaires `a >> b`, `a ~ b` et `~a` ne sont pas disponibles non plus.
+
+## Comprendre les erreurs
+
+Une erreur arrête le Build : le code produit ne serait pas valable. Un avertissement laisse le Build continuer, mais indique une situation probablement involontaire. Les diagnostics indiquent le fichier et la ligne lorsqu'ils sont disponibles.

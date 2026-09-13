@@ -9,7 +9,7 @@ jeu, sans un mot) et `ExprName("__unsupported_<Type>")` pour toute expression
 non gérée (du C qui ne compile pas, sur la ligne générée, jamais sur sa cause).
 
 Ce fichier est la LISTE, et il n'y en a qu'une : le checker s'en sert pour
-refuser, `SCRIPTING.md` pour expliquer, et `validator._check_lua_subset` vérifie
+refuser, `docs/scripting-reference.md` pour expliquer, et `validator._check_lua_subset` vérifie
 qu'aucun nœud de luaparser n'y manque. Deux listes auraient divergé — c'est
 exactement ce qui est arrivé entre `api.py` et `api_reference.json`, et le
 remède est le même : une source, des consommateurs.
@@ -61,7 +61,7 @@ ACCEPTED: dict[str, str] = {
     "Invoke":       'self:play_anim("walk")',
     # Valeurs
     "Number":       "12  (entier — un littéral à virgule est tronqué)",
-    "String":       '"un_nom"  — un nom cité du projet, jamais un texte à afficher',
+    "String":       '"un_nom"  — un nom cité du projet ; `text.draw` accepte aussi un texte littéral',
     "TrueExpr":     "true",
     "FalseExpr":    "false",
     "Nil":          "nil  (vaut 0 dans le C émis)",
@@ -126,18 +126,15 @@ REFUSED: dict[str, Refusal] = {
         "déclarée. Écris son contenu directement."),
 
     # ── Fonctions ─────────────────────────────────────────────────
-    # Trois nœuds, une seule règle : un script ne déclare pas ses propres
-    # fonctions. Les fonctions de premier niveau sont les handlers d'événement,
-    # et le code partagé vit dans un behavior — un fichier, importé par
-    # `require`, inliné au build (cf. codegen._emit_inlined_behaviors).
+    # Les helpers privés s'écrivent `function f() … end` au premier niveau.
+    # Les trois formes ci-dessous restent volontairement hors du sous-ensemble :
+    # fonction locale/imbriquée, méthode, ou fonction-valeur.
 
     "LocalFunction": Refusal(
         "local function f() … end",
-        "on ne déclare pas de fonction dans un script : les fonctions de "
-        "premier niveau sont les handlers d'événement (`on_start`, "
-        "`on_update`…), et le code partagé vit dans un behavior, importé par "
-        '`require("behaviors/nom")`. Une fonction déclarée ici n\'a aucune '
-        "place dans le C émis."),
+        "une fonction privée s'écrit `function f() … end` au premier niveau, "
+        "pas `local function`. Elle reçoit `self` implicitement et reste "
+        "privée au script."),
 
     "Method": Refusal(
         "function objet:methode() … end",
@@ -155,14 +152,14 @@ REFUSED: dict[str, Refusal] = {
 
     "Dots": Refusal(
         "...",
-        "`...` n'existe pas : un script ne déclare pas de fonction, donc rien "
-        "n'a d'arguments variables. Les seules fonctions variadiques sont "
+        "`...` n'existe pas : les fonctions privées ont des paramètres écrits "
+        "en clair. Les seules fonctions variadiques sont "
         "celles du catalogue, et leurs arguments s'écrivent en clair."),
 
     "Varargs": Refusal(
         "...",
-        "les arguments variables n'existent pas dans ce sous-ensemble : un "
-        "script ne déclare pas de fonction."),
+        "les arguments variables n'existent pas dans ce sous-ensemble : une "
+        "fonction privée déclare tous ses paramètres."),
 
     # ── Chaînes ───────────────────────────────────────────────────
     "Concat": Refusal(
@@ -232,9 +229,8 @@ REFUSED: dict[str, Refusal] = {
 # la table à porter une notion de position pour une entrée.
 NESTED_FUNCTION = Refusal(
     "function f() … end, dans un corps",
-    "une fonction ne se déclare pas dans une autre. Les fonctions de premier "
-    "niveau sont les handlers d'événement (`on_start`, `on_update`…), et le "
-    'code partagé vit dans un behavior, importé par `require("behaviors/nom")`.')
+    "une fonction privée se déclare au premier niveau du script, jamais dans "
+    "un handler ou une autre fonction.")
 
 
 # ─── Ce qui n'est jamais dispatché ────────────────────────────────

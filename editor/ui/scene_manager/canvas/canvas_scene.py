@@ -480,10 +480,14 @@ class GBAScene(QGraphicsScene):
                 for r in layout_asset.elements:
                     item = UIRegionItem(layout_asset, r, project, scene, save_fn=save_fn)
                     # La base (`hw_layer_z`, posée au constructeur) place l'élément
-                    # sur son VRAI layer hardware ; l'offset ici ne fait plus que
-                    # départager les éléments d'un MÊME layer entre eux — trop
-                    # petit pour jamais déborder sur le cran suivant (pas 2.0).
-                    item.setZValue(item.zValue() + (li + z_of.get(r.name, 0) / 1000.0))
+                    # sur son VRAI layer hardware — désormais le `bg_slot` de SON
+                    # nœud (v0.12). L'offset ici ne fait que départager, SOUS le
+                    # cran : d'abord l'ordre des nœuds (deux interfaces sur le même
+                    # slot s'écrivent dans l'ordre de scène, dernier au-dessus),
+                    # puis l'ordre d'arbre entre éléments. Borné <1 pour ne jamais
+                    # franchir le cran suivant (crans espacés de 2, OBJ à +1).
+                    item.setZValue(item.zValue()
+                                   + (li * 64 + z_of.get(r.name, 0)) / 100000.0)
                     item.setVisible(self._ui_elements_visible)
                     self.addItem(item)
                     self._ui_region_items.append(item)

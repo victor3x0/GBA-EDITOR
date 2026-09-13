@@ -22,7 +22,7 @@ from typing import Optional
 
 from .parser import (
     LuaScript, LuaFunction,
-    StmtCall, StmtAssign, StmtLocalAssign, StmtIf, StmtWhile, StmtForNum,
+    StmtCall, StmtAssign, StmtLocalAssign, StmtIf, StmtWhile, StmtForNum, StmtReturn,
     StmtUnsupported, ExprUnsupported,
     ExprInvoke, ExprCall, ExprIndex, ExprIndexAt, ExprTable, ExprName, ExprString,
     ExprNumber, ExprUnop, ExprBool, ExprBinop, ExprNil,
@@ -140,6 +140,10 @@ class BuildContext:
     # sont des champs de la struct Actor — mais rien ne les AFFICHE : d'où un
     # avertissement, et non le refus de build que c'était jusqu'au 2026-08-25.
     affine_transform: bool = False
+    # Actions déclarées dans Project Settings. Elles partagent le paramètre
+    # `btn` avec les boutons matériels : un script reste donc lisible et les
+    # anciens `input.held("a")` restent valides.
+    input_names: list[str] = None
 
     VALID_KEYS = frozenset(BUTTON_NAMES)   # dérivé du socle, jamais redéclaré
 
@@ -184,6 +188,12 @@ class Checker:
         # inconnus refuserait aussi les seuls appels légitimes hors catalogue.
         self._require_aliases: set[str] = set()
         self._module_functions: dict[str, list[str]] = {}
+        # Fonctions privées du script : des helpers nommés au premier niveau,
+        # différents des handlers, séquences et EventCall de frame. Elles ne
+        # quittent jamais ce fichier Lua ; le codegen leur passe `self` en
+        # premier argument C.
+        self._helpers: dict[str, LuaFunction] = {}
+        self._current_function: str = ""
         # Tout ce qu'un nom NU a le droit d'être : un `local` (où qu'il soit
         # déclaré), un paramètre de fonction, une variable de boucle. Ce
         # langage n'a pas de variable de script implicite — une globale
@@ -200,6 +210,16 @@ class Checker:
         self._assigned:  set[str]  = set()
 
     def check(self, script: LuaScript, check_event_names: bool = True) -> list[CheckError]:
+        if check_event_names:
+            helper_list = [
+                fn for fn in script.functions
+                if ("." not in fn.name
+                    and sequence_name(fn.name) is None
+                    and fn.name not in KNOWN_EVENTS
+                    and fn.name not in (self.ctx.frame_event_names or ()))
+            ]
+            self._helpers = {fn.name: fn for fn in helper_list}
+            self._check_helpers(helper_list)
         self._collect_arrays(script)
         self._collect_local_types(script)
         self._collect_namespaces(script)
@@ -216,6 +236,75 @@ class Checker:
         for fn in script.functions:
             self._check_function(fn, check_event_names)
         return self.errors
+
+    def _check_helpers(self, helpers: list[LuaFunction]):
+        """Contrat volontairement petit des fonctions privées.
+
+        Le runtime ne porte pas de type dynamique : un helper reçoit et rend
+        des entiers (un booléen est aussi un entier). `self` est ajouté par le
+        compilateur, il ne doit donc pas apparaître dans ses paramètres Lua.
+        """
+        counts: dict[str, int] = {}
+        for fn in helpers:
+            counts[fn.name] = counts.get(fn.name, 0) + 1
+            if fn.name in RUNTIME_API or fn.name in VEC_CONSTRUCTORS:
+                self.errors.append(CheckError(
+                    "error", f"Fonction privée '{fn.name}' : ce nom appartient déjà à l'API."))
+            if "self" in fn.params:
+                self.errors.append(CheckError(
+                    "error", f"Fonction privée '{fn.name}' : `self` est implicite ; ne le mets pas en paramètre."))
+        for name, n in counts.items():
+            if n > 1:
+                self.errors.append(CheckError("error", f"Fonction privée '{name}' déclarée {n} fois."))
+
+        # Un appel de helper est direct ; un cycle ne peut donc ni se dérouler
+        # ni être transformé en machine d'états. Le refuser ici évite un stack
+        # overflow C sur une GBA.
+        graph = {name: self._helper_calls(fn.body) for name, fn in self._helpers.items()}
+        visiting, done = set(), set()
+        def visit(name):
+            if name in visiting:
+                self.errors.append(CheckError("error", f"Récursion interdite : '{name}' s'appelle directement ou par une autre fonction privée."))
+                return
+            if name in done:
+                return
+            visiting.add(name)
+            for called in graph[name]:
+                visit(called)
+            visiting.remove(name)
+            done.add(name)
+        for name in graph:
+            visit(name)
+
+    def _helper_calls(self, stmts) -> set[str]:
+        found: set[str] = set()
+        def expr(e):
+            if isinstance(e, ExprCall):
+                if isinstance(e.func, ExprName) and e.func.name in self._helpers:
+                    found.add(e.func.name)
+                expr(e.func)
+                for arg in e.args: expr(arg)
+            elif isinstance(e, ExprInvoke):
+                expr(e.obj)
+                for arg in e.args: expr(arg)
+            elif isinstance(e, ExprIndex): expr(e.obj)
+            elif isinstance(e, ExprIndexAt): expr(e.obj); expr(e.index)
+            elif isinstance(e, ExprBinop): expr(e.left); expr(e.right)
+            elif isinstance(e, ExprUnop): expr(e.operand)
+            elif isinstance(e, ExprTable):
+                for item in e.items: expr(item)
+        for s in stmts:
+            if isinstance(s, StmtCall): expr(s.call)
+            elif isinstance(s, (StmtAssign, StmtLocalAssign)): expr(s.value)
+            elif isinstance(s, StmtIf):
+                expr(s.cond); found.update(self._helper_calls(s.then))
+                for cond, body in s.elseifs: expr(cond); found.update(self._helper_calls(body))
+                found.update(self._helper_calls(s.else_))
+            elif isinstance(s, (StmtWhile, StmtForNum)):
+                found.update(self._helper_calls(s.body))
+            elif isinstance(s, StmtReturn):
+                for value in s.values: expr(value)
+        return found
 
     # ── Tableaux ──────────────────────────────────────────────────
 
@@ -804,7 +893,8 @@ class Checker:
         # pas des handlers d'événement actor/scène — seul le corps est validé.
         seq = sequence_name(fn.name)
         is_frame_event = fn.name in (self.ctx.frame_event_names or ())
-        if check_event_names and seq is None and fn.name not in KNOWN_EVENTS and not is_frame_event:
+        is_helper = fn.name in self._helpers
+        if check_event_names and not is_helper and seq is None and fn.name not in KNOWN_EVENTS and not is_frame_event:
             # ERREUR et non avertissement : le C émis pour un nom inconnu est
             # `static void <Acteur>_<nom>(Actor* self)`, qu'aucun appel Lua ne
             # peut atteindre (`nom()` s'émet `nom()`, sans le préfixe). Donc du
@@ -826,9 +916,41 @@ class Checker:
             ))
         if seq is not None:
             self._check_sequence_waits(fn, seq)
+        if is_helper:
+            self._check_helper_returns(fn)
         # `seq_top` : les attentes ne sont légales qu'ici, au premier niveau
         # d'une séquence. Partout ailleurs `_check_stmt` les refuse.
+        previous, self._current_function = self._current_function, fn.name
         self._check_block(fn.body, seq_top=seq is not None)
+        self._current_function = previous
+
+    def _check_helper_returns(self, fn: LuaFunction):
+        """Les helpers ont un ABI C volontairement réduit : retour scalaire.
+
+        Sans ce garde-fou, `return vec2(...)` deviendrait un `return Vec2` dans
+        une fonction C qui rend un int, et gcc nommerait une ligne générée.
+        """
+        def walk(stmts):
+            for stmt in stmts:
+                if isinstance(stmt, StmtReturn):
+                    if len(stmt.values) > 1:
+                        self.errors.append(CheckError(
+                            "error", f"{fn.name}() : une fonction privée rend au plus une valeur entière."))
+                    elif stmt.values:
+                        value = stmt.values[0]
+                        vector = infer_vec_type(value, self._vec_types)
+                        ref = infer_ref_type(value)
+                        array = isinstance(value, ExprName) and value.name in self._arrays
+                        if vector or ref or array or isinstance(value, (ExprString, ExprTable)):
+                            self.errors.append(CheckError(
+                                "error", f"{fn.name}() : une fonction privée ne rend qu'un entier ou un booléen."))
+                elif isinstance(stmt, StmtIf):
+                    walk(stmt.then)
+                    for _cond, body in stmt.elseifs: walk(body)
+                    walk(stmt.else_)
+                elif isinstance(stmt, (StmtWhile, StmtForNum)):
+                    walk(stmt.body)
+        walk(fn.body)
 
     # ── Séquences ─────────────────────────────────────────────────
 
@@ -1302,11 +1424,11 @@ class Checker:
                 # pas de `return` : le nombre d'arguments reste à vérifier
             api = RUNTIME_API.get(key)
             if api is None:
-                self._check_unknown_call(key)
+                self._check_unknown_call(key, e.args)
             else:
                 self._check_args(key, api, e.args)
 
-    def _check_unknown_call(self, key: str):
+    def _check_unknown_call(self, key: str, args: list | None = None):
         """Un appel qui n'est pas dans le catalogue.
 
         Il était TOLÉRÉ, au motif que ce pouvait être un helper écrit par
@@ -1315,6 +1437,22 @@ class Checker:
         `math.floor(x)` partait en C avec son point, et la faute ne remontait
         qu'au `make`, sur la ligne générée. Le pendant, côté `.`, de ce que la
         v0.7.4 a fait pour le `:`."""
+        helper = self._helpers.get(key)
+        if helper is not None:
+            expected = len(helper.params)
+            # Le helper reçoit `self` automatiquement côté C : l'auteur ne
+            # compte donc que les paramètres qu'il a écrits lui-même.
+            if self._current_function == key:
+                # Le graphe complet est aussi vérifié dans `_check_helpers` ;
+                # ce diagnostic local rend le cas le plus courant immédiat.
+                self.errors.append(CheckError(
+                    "error", f"Récursion interdite : '{key}' ne peut pas s'appeler elle-même."))
+            got = len(args or [])
+            if got != expected:
+                self.errors.append(CheckError(
+                    "error", f"{key}() : {expected} argument(s) attendu(s), {got} fourni(s)."))
+            return
+
         removed = REMOVED_API.get(key)
         if removed:
             self.errors.append(CheckError("error", removed))
@@ -1802,11 +1940,13 @@ class Checker:
             ))
 
     def _check_key(self, call_key: str, name: str):
-        if name.lower() not in BuildContext.VALID_KEYS:
+        actions = set(self.ctx.input_names or [])
+        if name.lower() not in BuildContext.VALID_KEYS and name not in actions:
             self.errors.append(CheckError(
                 "error",
-                f"{call_key}('{name}') : bouton '{name}' invalide. "
-                f"Valeurs valides : {', '.join(sorted(BuildContext.VALID_KEYS))}.",
+                f"{call_key}('{name}') : input inconnu. Boutons : "
+                f"{', '.join(sorted(BuildContext.VALID_KEYS))}. Actions : "
+                f"{', '.join(sorted(actions)) or 'aucune'}.",
             ))
 
     def _check_hw_enum(self, call_key: str, name: str, domain: str):

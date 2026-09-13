@@ -377,6 +377,7 @@ def _bare_candidates(context: str) -> list[Candidate]:
 _RE_LOCAL  = re.compile(r"\blocal\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)")
 _RE_FOR    = re.compile(r"\bfor\s+([A-Za-z_]\w*)")
 _RE_PARAMS = re.compile(r"\bfunction\s+[A-Za-z_][\w.:]*\s*\(([^)]*)\)")
+_RE_HELPER = re.compile(r"\bfunction\s+([A-Za-z_]\w*)\s*\(")
 
 
 def _script_locals(source: str, cursor_line: int | None) -> set[str]:
@@ -388,6 +389,12 @@ def _script_locals(source: str, cursor_line: int | None) -> set[str]:
     for m in _RE_LOCAL.finditer(text):
         out |= {n.strip() for n in m.group(1).split(",")}
     out |= {m.group(1) for m in _RE_FOR.finditer(text)}
+    # Les helpers privés sont appelables comme les fonctions du catalogue ;
+    # les proposer évite qu'ils soient les seuls noms du script invisibles à
+    # l'autocomplétion. Les handlers sont inoffensifs dans cette liste : ils
+    # restent filtrés par le préfixe au moment de l'insertion.
+    out |= {m.group(1) for m in _RE_HELPER.finditer(text)
+            if not m.group(1).startswith("on_")}
     for m in _RE_PARAMS.finditer(text):
         out |= {p.strip() for p in m.group(1).split(",")}
     return {n for n in out if n.isidentifier()}

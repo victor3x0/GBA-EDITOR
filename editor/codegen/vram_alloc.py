@@ -49,26 +49,41 @@ class VramLayout:
     budget:    dict = field(default_factory=dict)  # bg_slot -> tuiles dispo
     text_cbb:  int = 0
     text_base: int = 1     # tuile de départ du texte, RELATIVE à text_cbb
-    text_sbb:  int = 7
+    text_sbb:  int = 7     # SBB de la map du slot d'UI PRIMAIRE (= ui_sbb[primary])
+    # Un SBB de map par slot BG d'UI utilisé par la scène (v0.12). Les glyphes,
+    # eux, restent dans UN seul charblock (`text_cbb`) que tous les slots partagent
+    # via leur BGxCNT — d'où plusieurs maps mais un seul jeu de tuiles.
+    ui_sbb:    dict = field(default_factory=dict)   # slot d'UI -> SBB de sa map
     legacy:    bool = True  # True = placement historique (repli ou pas de gain)
     note:      str = ""     # pourquoi ce placement — pour le log de build
 
 
 # ── Placement historique ──────────────────────────────────────────
 
+def _ui_slot_list(text_bg: int, ui_slots) -> list:
+    """Slots d'UI à réserver : la liste donnée, sinon le seul `text_bg` (l'ancien
+    comportement mono-slot). Bornés à 0-3."""
+    src = ui_slots if ui_slots is not None else [text_bg]
+    return [s for s in src if s in (0, 1, 2, 3)]
+
+
 def _legacy_layout(slots: dict, map_blocks: dict, text_bg: int,
-                   text_tiles: int) -> VramLayout:
+                   text_tiles: int, ui_slots=None) -> VramLayout:
     """Ce que faisait le code avant l'allocateur : CBB = bg_slot, map dans les
-    derniers SBB de son propre charblock, texte à la tuile 1 de SON charblock."""
+    derniers SBB de son propre charblock, texte à la tuile 1 de SON charblock.
+    Multi-slot (v0.12) : chaque slot d'UI a sa map dans son propre charblock ; les
+    glyphes restent dans celui du slot primaire (`text_bg`)."""
     lay = VramLayout(legacy=True, note="placement historique")
     for slot in slots:
         n = map_blocks[slot]
         lay.map_sbb[slot] = slot * BLOCKS_PER_CBB + (BLOCKS_PER_CBB - n)
         lay.budget[slot] = (BLOCKS_PER_CBB - n) * BLOCK_TILES
+    for us in _ui_slot_list(text_bg, ui_slots):
+        lay.ui_sbb[us] = us * BLOCKS_PER_CBB + (BLOCKS_PER_CBB - 1)
     if text_bg in (0, 1, 2, 3):
         lay.text_cbb = text_bg
         lay.text_base = 1
-        lay.text_sbb = text_bg * BLOCKS_PER_CBB + (BLOCKS_PER_CBB - 1)
+        lay.text_sbb = lay.ui_sbb.get(text_bg, text_bg * BLOCKS_PER_CBB + (BLOCKS_PER_CBB - 1))
     return lay
 
 
@@ -87,19 +102,23 @@ def _free_run_high(occupied: list, start: int, stop: int, n: int):
 
 
 def scene_layout(slots: dict, map_blocks: dict, text_bg: int,
-                 text_tiles: int) -> VramLayout:
+                 text_tiles: int, ui_slots=None) -> VramLayout:
     """Alloue la VRAM BG d'une scène.
 
     `slots`      : {bg_slot: nombre de tuiles du fond} — layers porteurs d'image.
     `map_blocks` : {bg_slot: nombre de blocs qu'occupe sa map} (1, 2 ou 4).
-    `text_bg`    : layer d'UI (0-3), ou -1.
+    `text_bg`    : slot d'UI PRIMAIRE (0-3), ou -1 — celui qui porte les glyphes.
     `text_tiles` : tuiles à réserver au texte (glyphes ou surface).
+    `ui_slots`   : TOUS les slots BG d'UI de la scène (v0.12) ; None = `[text_bg]`
+                   (mono-slot, l'ancien comportement). Chacun reçoit sa propre map
+                   (SBB) ; les glyphes restent partagés dans `text_cbb`.
 
-    Le layer d'UI ne porte jamais d'image (garanti par le validateur), donc
-    `text_bg` n'est jamais dans `slots`."""
-    legacy = _legacy_layout(slots, map_blocks, text_bg, text_tiles)
+    Un slot d'UI ne porte jamais d'image (garanti par le validateur), donc il n'est
+    jamais dans `slots`."""
+    legacy = _legacy_layout(slots, map_blocks, text_bg, text_tiles, ui_slots)
     if text_bg not in (0, 1, 2, 3):
         return legacy
+    ui = _ui_slot_list(text_bg, ui_slots)
 
     occupied: list = [None] * BLOCKS
 
@@ -123,12 +142,15 @@ def scene_layout(slots: dict, map_blocks: dict, text_bg: int,
             occupied[b] = f"map{slot}"
         lay.map_sbb[slot] = pos
 
-    # 3. Map du texte (toujours 32×32, donc 1 bloc).
-    pos = _free_run_high(occupied, 0, BLOCKS, 1)
-    if pos is None:
-        return legacy
-    occupied[pos] = "maptext"
-    lay.text_sbb = pos
+    # 3. Une map par slot d'UI (toujours 32×32, donc 1 bloc chacune). Les glyphes
+    #    (étape 4) restent partagés : plusieurs maps, un seul jeu de tuiles.
+    for us in ui:
+        pos = _free_run_high(occupied, 0, BLOCKS, 1)
+        if pos is None:
+            return legacy
+        occupied[pos] = f"uimap{us}"
+        lay.ui_sbb[us] = pos
+    lay.text_sbb = lay.ui_sbb.get(text_bg, lay.text_sbb)   # SBB du slot primaire
 
     # 4. Tuiles du texte — le locataire SOUPLE : on le glisse dans le trou le
     #    plus haut, pour laisser le bas des charblocks aux fonds. Il doit tenir

@@ -121,7 +121,7 @@ def test_le_fond_couleur_dune_liste_est_emis(tmp_path):
     p.ui_layouts.append(lay)
     p.palettes.append(PaletteBank(name="hud", colors=[0] * 16))
     scene = Scene(name="Titre", ui_layouts=["hud"])
-    scene.text_bg = 0
+    scene.ui_layouts[0].bg_slot = 0     # slot BG du nœud Interface (v0.12)
     scene.active_bg_palettes = ["hud"]
     p.scenes.append(scene)
 

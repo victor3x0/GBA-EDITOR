@@ -113,7 +113,7 @@ rien renseigné », et reste le comportement pour un appelant partiel.
 
 ## Ce qui reste vrai après
 
-`SCRIPTING.md` porte la forme d'aujourd'hui, `ARCHITECTURE.md` la règle de décision (« deux
+La référence de scripting porte la forme d'aujourd'hui, `ARCHITECTURE.md` la règle de décision (« deux
 conséquences qui se paient cher »), et `REMOVED_API` la phrase qui guide un script écrit avant
 le chantier. Un projet existant ne se casse pas en silence : il refuse de compiler en disant
 quoi écrire à la place, ligne par ligne.

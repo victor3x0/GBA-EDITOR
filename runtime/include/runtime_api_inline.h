@@ -395,8 +395,17 @@ static inline void actor_set_direction(Actor* s, Vec2 v) {
 static inline void actor_destroy_internal(Actor* s)  { s->active=0; s->visible=0; }
 
 /* Input */
-static inline int input_held(int b)    { return (_g_keys_held   &(u32)b)?1:0; }
-static inline int input_pressed(int b) { return (_g_keys_pressed&(u32)b)?1:0; }
+/* Un masque à un bit garde le comportement historique. Avec plusieurs bits,
+   les actions nommées du projet deviennent de vrais combos : tous les boutons
+   doivent être tenus. `pressed` demande en plus qu'au moins l'un d'eux soit
+   arrivé ce frame — le combo ne se répète donc pas pendant son maintien. */
+static inline int input_held(int b) {
+    return ((_g_keys_held & (u32)b) == (u32)b) ? 1 : 0;
+}
+static inline int input_pressed(int b) {
+    return (((_g_keys_held & (u32)b) == (u32)b) &&
+            (_g_keys_pressed & (u32)b)) ? 1 : 0;
+}
 
 /* Axe -1/0/1 par composante, dérivé de la croix directionnelle — pas d'état
    propre, juste la différence des deux boutons opposés lus sur _g_keys_held.

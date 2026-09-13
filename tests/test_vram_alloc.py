@@ -134,6 +134,26 @@ def test_la_tuile_zero_du_bloc_de_texte_reste_libre():
         assert lay.text_base >= 1
 
 
+# ── Multi-slot d'UI (v0.12) ───────────────────────────────────────
+
+def test_multi_slot_ui_une_map_par_slot_glyphes_partages():
+    """Deux slots d'UI dans une scène : chacun reçoit SA map (SBB distinct), mais
+    les glyphes restent dans UN seul charblock partagé (`text_cbb`)."""
+    lay = scene_layout({}, {}, text_bg=1, text_tiles=64, ui_slots=[1, 2])
+    assert set(lay.ui_sbb) == {1, 2}
+    assert lay.ui_sbb[1] != lay.ui_sbb[2]      # deux maps distinctes
+    assert lay.text_sbb == lay.ui_sbb[1]       # le primaire est text_bg
+
+
+def test_mono_slot_reste_identique_sans_ui_slots():
+    """`ui_slots=None` reproduit le comportement mono-slot : `ui_sbb` ne porte que
+    le slot primaire, à la place de `text_sbb`."""
+    a = scene_layout({0: 256}, {0: 1}, text_bg=1, text_tiles=64)
+    b = scene_layout({0: 256}, {0: 1}, text_bg=1, text_tiles=64, ui_slots=[1])
+    assert a.ui_sbb == {1: a.text_sbb}
+    assert (a.text_sbb, a.text_cbb) == (b.text_sbb, b.text_cbb)
+
+
 # ── Invariants, sur un balayage de scènes tirées au sort ──────────
 
 def _occupancy(lay: VramLayout, slots: dict, map_blocks: dict,

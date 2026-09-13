@@ -62,7 +62,7 @@ def projet(tmp_path):
     layout.elements += [titre, boite]
     p.ui_layouts.append(layout)
 
-    scene = Scene(name="S1", text_bg=1, ui_layouts=["hud"], font_name="grosse")
+    scene = Scene(name="S1", ui_layouts=["hud"], font_name="grosse")
     p.scenes.append(scene)
     return p, scene, layout, titre, boite
 

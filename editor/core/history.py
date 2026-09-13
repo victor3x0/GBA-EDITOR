@@ -164,6 +164,37 @@ class MoveActorCmd(Command):
         return False
 
 
+class SceneActorOrderCmd(Command):
+    """Un changement de pile OAM : ordre de la scène et priorité d'un actor.
+
+    La priorité et l'ordre départageant les OBJ à priorité égale forment un
+    seul geste dans la projection Priorité du Scene Tree ; les séparer
+    demanderait deux annulations pour un glisser-déposer.
+    """
+
+    def __init__(self, scene: "Scene", before: list, after: list,
+                 priorities: tuple[list, list], label: str = "Reorder actors", persist_fn=None):
+        self._scene = scene
+        self._before = list(before)
+        self._after = list(after)
+        self._priorities = (list(priorities[0]), list(priorities[1]))
+        self.label = label
+        self._persist = persist_fn
+
+    def _apply(self, order, priority):
+        self._scene.actors[:] = order
+        for actor, value in priority:
+            actor.priority = value
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._apply(self._after, self._priorities[1])
+
+    def undo(self):
+        self._apply(self._before, self._priorities[0])
+
+
 class MoveActorGroupCmd(Command):
     """Déplacement groupé : un actor et son SOUS-ARBRE (`Actor.parent`, ROADMAP
     v0.23) glissés ensemble dans le canvas. Bouger un parent translate ses
@@ -513,12 +544,17 @@ class DeleteInterfaceCmd(Command):
     def __init__(self, store, layout, ref_list: list, delete_asset: bool,
                  persist_fn=None, refresh_fn=None):
         self._store = store
-        self._layout = layout
+        # `layout` peut être l'asset `UILayout` ou une vue liée `BoundInterface` :
+        # le store d'assets veut l'asset (`.layout`), la liste de scène veut le
+        # NŒUD `InterfaceNode` qui le cite (repéré par `layout_name`).
+        self._asset = getattr(layout, "layout", layout)
+        self._name = self._asset.name
         self._refs = ref_list
         self._delete_asset = delete_asset
-        self._index = (ref_list.index(layout.name)
-                       if layout.name in ref_list else len(ref_list))
-        self.label = f"Supprimer l'interface {layout.name}"
+        self._node = next((n for n in ref_list if n.layout_name == self._name), None)
+        self._index = (ref_list.index(self._node)
+                       if self._node in ref_list else len(ref_list))
+        self.label = f"Supprimer l'interface {self._name}"
         self._persist = persist_fn
         self._refresh = refresh_fn
 
@@ -529,17 +565,17 @@ class DeleteInterfaceCmd(Command):
             self._refresh()
 
     def execute(self):
-        if self._layout.name in self._refs:
-            self._refs.remove(self._layout.name)
+        if self._node in self._refs:
+            self._refs.remove(self._node)
         if self._delete_asset:
-            self._store.soft_delete(self._layout)
+            self._store.soft_delete(self._asset)
         self._after()
 
     def undo(self):
         if self._delete_asset:
-            self._store.restore(self._layout)
-        if self._layout.name not in self._refs:
-            self._refs.insert(min(self._index, len(self._refs)), self._layout.name)
+            self._store.restore(self._asset)
+        if self._node is not None and self._node not in self._refs:
+            self._refs.insert(min(self._index, len(self._refs)), self._node)
         self._after()
 
 

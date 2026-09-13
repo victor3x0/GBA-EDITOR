@@ -11,11 +11,26 @@ from core.models.components import (
 )
 from core.models.background import BackgroundLayer, decode_tile_palette_overrides
 from core.models.camera import Camera
+from core.models.ui_region import InterfaceNode
 
 # Les types de tuiles de collision et leur géométrie vivent dans leur propre
 # module (feuille, il n'importe rien) : ils sont réclamés par l'outil de
 # peinture, par le canvas qui les dessine et par le codegen qui les émet en C.
 from core.models.collision_tiles import TILE_EMPTY, COLLISION_TILE_SIZE
+
+# ── Slots BG valides par mode vidéo ───────────────────────────────
+# SOURCE DE VÉRITÉ (cœur) du matériel : quels slots BG existent dans chaque mode
+# DISPCNT. Mode 0 : 4 layers tuilés ; 1 : 3 ; 2 : 2 (les deux affines) ; 3-5 :
+# bitmap, une seule surface sur BG2. L'UI en dérive son affichage (`MODE_INFO`)
+# et le validateur les slots permis d'un nœud Interface — un seul endroit à tenir.
+BG_SLOTS_BY_MODE: dict[int, tuple] = {
+    0: (0, 1, 2, 3),
+    1: (0, 1, 2),
+    2: (2, 3),
+    3: (2,),
+    4: (2,),
+    5: (2,),
+}
 
 # ── Mélange de couleurs (BLDCNT / BLDALPHA / BLDY) ────────────────
 # **Le mode est GLOBAL à l'écran**, pas par layer : `BLDCNT` n'a qu'un champ
@@ -122,6 +137,26 @@ def _font_pal_banks_from_dict(d: dict) -> dict:
         return {str(k): int(v) for k, v in raw.items()}
     legacy = int(d.get("ui_pal_bank", OWN_PAL_BANK))
     return {"": legacy} if 0 <= legacy < 16 else {}
+
+
+def _ui_nodes_from_dict(d: dict) -> list:
+    """Lit les nœuds `Interface` d'une scène (v0.12) en tolérant les trois formes
+    historiques. Un nom nu (v0.25) devient un nœud à migrer : `anchor=""` (la
+    cible sera recopiée depuis l'asset à la première résolution) et `bg_slot`
+    hérité de l'ancien `Scene.text_bg`, ce qui préserve deux scènes qui
+    partageaient un layout avec deux `text_bg` différents."""
+    raw = d.get("ui_layouts")
+    if raw is None:
+        raw = [d["ui_layout"]] if d.get("ui_layout") else []
+    text_bg = int(d.get("text_bg", 1))
+    out = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(InterfaceNode.from_dict(item))
+        elif isinstance(item, str):
+            out.append(InterfaceNode(layout_name=item, anchor="", bg_slot=text_bg))
+    return out
+
 
 # Musique de la scène (v0.8.2) — TROIS valeurs, pas deux.
 #
@@ -568,14 +603,17 @@ class Scene(Resource):
     # comporte donc comme l'héritage, et non comme douze redémarrages.
     music: str = MUSIC_INHERIT
     script: str = ""       # chemin relatif vers le script Lua de la scène ("" = aucun)
-    text_bg: int = 1       # BG hardware (0-3) utilisé pour le calque texte TTE
-    # Nœuds `Interface` de la scène, référencés par NOM (project/ui_layouts/
-    # <nom>.json). Une LISTE depuis v0.25 : chaque nœud porte SON couple
-    # ancrage/cible, et une scène peut en poser plusieurs (un HUD fixe en BG et
-    # une bulle qui suit un acteur en OBJ sont deux nœuds). Vide = aucune, le
-    # script place alors tout lui-même via text.draw(id, tx, ty).
-    # cf. models/ui_region.py
-    ui_layouts: list = field(default_factory=list)   # list[str] (noms)
+    # Le slot BG de l'UI vit sur CHAQUE nœud (`InterfaceNode.bg_slot`), plus au
+    # niveau scène : l'ancien `Scene.text_bg` a été retiré (v0.12). La lecture des
+    # anciens fichiers seed encore `bg_slot` depuis la clé JSON `text_bg`
+    # (cf. `_ui_nodes_from_dict`), mais elle n'est plus ni un champ ni réécrite.
+    # Nœuds `Interface` de la scène (v0.12) : chacun un `InterfaceNode` qui
+    # référence un `UILayout` par nom ET porte SA cible de rendu (ancrage, cible
+    # BG/OBJ, acteur suivi, slot BG). Une scène peut en poser plusieurs (un HUD
+    # fixe en BG et une bulle qui suit un acteur en OBJ sont deux nœuds). Vide =
+    # aucune, le script place alors tout lui-même via text.draw(id, tx, ty).
+    # cf. models/ui_region.py (InterfaceNode) et project.scene_ui_layouts.
+    ui_layouts: list = field(default_factory=list)   # list[InterfaceNode]
     # Police chargée par `scene_init`, celle qu'obtient tout texte qui n'en
     # nomme pas (zone sans `font_name`, `text.draw` sans `text.set_font`).
     # Référencée par NOM comme tout asset.
@@ -619,6 +657,20 @@ class Scene(Resource):
     blend_obj_role: str = ""
     blend_backdrop_role: str = ""
     notes: str = ""   # note libre utilisateur (éditeur uniquement, jamais compilée)
+
+    def __post_init__(self):
+        # Invariant : `ui_layouts` tient toujours des `InterfaceNode`, quel que
+        # soit le chemin de construction. Un nom nu (constructeur direct, code
+        # hérité) est coercé en nœud À MIGRER (`anchor=""`, cible recopiée depuis
+        # l'asset à la première résolution — cf. `Project.scene_ui_layouts`), au
+        # `bg_slot` par défaut. La lecture d'un ancien FICHIER (`from_dict` →
+        # `_ui_nodes_from_dict`) seed ce slot depuis l'ancienne clé `text_bg` ;
+        # ce chemin-ci ne couvre que les constructions directes en mémoire.
+        self.ui_layouts = [
+            n if isinstance(n, InterfaceNode)
+            else InterfaceNode(layout_name=str(n), anchor="")
+            for n in self.ui_layouts
+        ]
 
     # ── Mélange : lectures dérivées ───────────────────────────────
     def blend_layers(self, role: str) -> list:
@@ -678,8 +730,7 @@ class Scene(Resource):
             "scroll_h": self.scroll_h,
             "scroll_v": self.scroll_v,
             "script": self.script,
-            "text_bg": self.text_bg,
-            "ui_layouts": self.ui_layouts,
+            "ui_layouts": [n.to_dict() for n in self.ui_layouts],
             "font_name": self.font_name,
             # Absent tant qu'aucune police n'est overridée : une scène en tout
             # automatique ne gagne pas la clé (même règle que blend/music).
@@ -762,11 +813,13 @@ class Scene(Resource):
             scroll_h=d.get("scroll_h", True),
             scroll_v=d.get("scroll_v", False),
             script=d.get("script", ""),
-            text_bg=d.get("text_bg", 1),
-            # `ui_layouts` (liste, v0.25) ou l'ancien `ui_layout` (nom unique)
-            # emballé dans une liste — une forme ancienne se lit, une seule s'écrit.
-            ui_layouts=list(d.get("ui_layouts")
-                            or ([d["ui_layout"]] if d.get("ui_layout") else [])),
+            # Nœuds `Interface` (v0.12) : chaque entrée est un `InterfaceNode`.
+            # On lit TROIS formes ; on n'en écrit qu'une (des nœuds).
+            #   • liste de nœuds (v0.12) → `InterfaceNode.from_dict` ;
+            #   • liste de noms (v0.25)  → nœud nu, `anchor=""` (à migrer depuis
+            #     l'asset) et `bg_slot = text_bg` de la scène (cf. scene_ui_layouts) ;
+            #   • ancien `ui_layout` singulier → même traitement, emballé.
+            ui_layouts=_ui_nodes_from_dict(d),
             font_name=d.get("font_name", ""),
             font_pal_banks=_font_pal_banks_from_dict(d),
             collision_layer=d.get("collision_layer", 0),

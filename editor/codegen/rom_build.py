@@ -711,7 +711,8 @@ class BuildWorker(EventEmitter, threading.Thread):
             if not slots:
                 continue
             text_tiles = scene_text_reservation(p, scene)["total"]
-            lay = scene_layout(slots, maps, getattr(scene, "text_bg", -1), text_tiles)
+            lay = scene_layout(slots, maps, p.scene_ui_bg_slot(scene), text_tiles,
+                               ui_slots=p.scene_ui_bg_slots(scene))
             for slot, name in names.items():
                 key = (name, slot)
                 b = lay.budget[slot]

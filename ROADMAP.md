@@ -21,7 +21,7 @@ Six documents, six rôles :
 | [changelog-archive/](changelog-archive/) | qui rouvre une décision passée | le détail complet d'une version livrée |
 | **ce fichier** | qui décide de la suite | scope, décisions, ouvert — jalons **non livrés** seulement |
 | [ARCHITECTURE](ARCHITECTURE.md) | qui modifie le code | comment c'est construit |
-| [SCRIPTING](SCRIPTING.md) | qui écrit un script | le Lua accepté, et ce qui ne l'est pas |
+| [Référence de scripting](docs/scripting-reference.md) | qui écrit un script | le Lua accepté, et ce qui ne l'est pas |
 
 Convention : **Décisions verrouillées** = tranché, à implémenter tel quel — on ne rouvre
 pas sans raison neuve. **Ouvert** = identifié mais volontairement non tranché : à rouvrir
@@ -480,6 +480,7 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | Les formats acceptés à l'import | 2026-09-03 | **Livré** — [archive](changelog-archive/import-formats.md) |
 | La police, une palette d'asset comme les autres | 2026-09-03 | **Livré** — [archive](changelog-archive/font-palette.md) |
 | L'écran construit à sa première visite | 2026-09-13 | **Livré** — [archive](changelog-archive/lazy-screen-build.md) |
+| L'ouverture d'un projet, et l'écran blanc | 2026-09-13 | **Livré** — [archive](changelog-archive/open-white-screen.md) |
 
 ---
 
@@ -794,7 +795,7 @@ une ROM qui marche.
 | 2 | **Traduire** — *livrée* | Lecture/écriture des sides, la colonne de langue dans la table, le statut « traduit / manquant / déborde », le compte de trous. | Le build, toujours. On peut traduire tout un jeu avant qu'une ligne de C bouge. |
 | 3 | **Émettre** — *livrée* | La dimension langue dans `g_texts`, le remap de police, le sous-ensemble de glyphes par (scène, langue), et le garde-fou VRAM au pire cas. | La ROM contient N langues mais n'en montre qu'une : `g_lang` est une constante. |
 | 4 | **Choisir** — *livrée* | `lang.set`/`lang.get`, résolus comme `TEXT_*`/`SCENE_IDX_*` (`LANG_<CODE>`, jamais une chaîne au runtime). Rechargement de la scène courante pour rendre le changement visible. | La persistance SRAM (survivre à une coupure de courant) et l'écran de choix lui-même — toujours à la charge du jeu. |
-| 5 | **Servir** — *codée, build ROM réel en attente* | La réservation VRAM sur l'union, `lang_set` borné pour relire une langue sauvegardée, le compte des trous au build, et la recette du menu de langue dans SCRIPTING.md. | — |
+| 5 | **Servir** — *codée, build ROM réel en attente* | La réservation VRAM sur l'union, `lang_set` borné pour relire une langue sauvegardée, le compte des trous au build, et la recette du menu de langue dans le guide de scripting. | — |
 
 **Ce que la phase 1 a posé** (2026-08-24) : `Language` dans les paramètres du projet (code,
 nom, remplacements de police), la carte « Languages » de l'inspecteur de projet, et
@@ -1030,7 +1031,7 @@ Deux corollaires qui corrigent des phrases déjà écrites plus haut :
    se referme d'elle-même une fois la décision 1 appliquée : un endonyme est une entrée de la
    table comme une autre, l'union par scène couvre donc les deux écritures, la réservation les
    tient, et `_check_font_coverage` nomme un glyphe absent de la planche. Ce qui reste est une
-   **recette** dans [SCRIPTING.md](SCRIPTING.md), pas du code — avec sa règle : les entrées
+   **recette** dans le [guide de scripting](docs/scripting.md), pas du code — avec sa règle : les entrées
    d'endonymes se laissent NON TRADUITES, pour que le menu se lise pareil quelle que soit la
    langue active (le repli sur la source, décision d'origine, fait exactement ce travail).
 
@@ -1072,7 +1073,7 @@ Chaque étape laisse le projet buildable.
 | 5.1 | La réservation sur l'union | `scene_text_reservation` perd son `code` et compte l'union ; `_check_vram_lang_budget` est retiré | Un projet monolingue : union = source, chiffres identiques |
 | 5.2 | `lang_set` borné | `g_lang_count` émis, `lang_set` refuse un code hors bornes | `lang.set("fr")` littéral, résolu au build comme avant |
 | 5.3 | Le compte des trous | `_check_translation_holes` | Le build lui-même — c'est un avertissement |
-| 5.4 | La recette du menu | SCRIPTING.md : choisir sa langue, la sauver, la relire | Aucune ligne de moteur |
+| 5.4 | La recette du menu | Guide de scripting : choisir sa langue, la sauver, la relire | Aucune ligne de moteur |
 
 **Ce que la phase 5 a posé** (2026-09-02) : les quatre étapes sont codées et couvertes par
 25 tests (`test_vram_lang_budget.py` réécrit, `test_translation_holes.py` neuf,
@@ -1095,7 +1096,7 @@ Chaque étape laisse le projet buildable.
 - **5.3** — `validator._check_translation_holes` : un message par langue, le compte et les
   trois premières clés. Une entrée dont la SOURCE est vide n'est pas comptée — il n'y a rien à
   traduire, et l'écran Texte le montre déjà en colonne Content.
-- **5.4** — la recette dans [SCRIPTING.md](SCRIPTING.md) (« Choisir sa langue, et s'en
+- **5.4** — la recette dans le [guide de scripting](docs/scripting.md) (« Choisir sa langue, et s'en
   souvenir »), vérifiée en la compilant telle qu'elle est écrite : zéro message de checker,
   `lang_set(LANG_FR)` et `lang_set(save_read_var(0, GLOBAL_LANGUE))` dans le C émis.
 
@@ -1548,7 +1549,7 @@ titres d'`AssetFinder` (passe séparée), et les blocs de diagnostic très inter
 en clés-phrases à arguments nommés). Piège récurrent noté : une variable locale nommée `label`
 masque la fonction importée — grep systématique après chaque fichier. La passe de clôture
 ci-dessous extrait aussi les titres de finders et les diagnostics formulés dans l'UI ;
-les autres exceptions sont précisées dans [docs/ui-text.md](docs/ui-text.md).
+les autres exceptions sont précisées dans [docs/development/ui-text.md](docs/development/ui-text.md).
 
 ### Ouvert
 
@@ -1566,7 +1567,7 @@ les autres exceptions sont précisées dans [docs/ui-text.md](docs/ui-text.md).
   libellés. Les tables portent des clés résolues à l'affichage ; les identifiants de
   sélection restent stables. `tools/check_ui_text.py` vérifie structure, paramètres,
   clés et textes directs ciblés, avec exceptions justifiées. Voir
-  [le contrat et ses limites](docs/ui-text.md). La traduction française est reportée à v2.0.
+  [le contrat et ses limites](docs/development/ui-text.md). La traduction française est reportée à v2.0.
   Le choix de langue ne change aucun texte avant le redémarrage, y compris dans les
   panneaux ouverts après le changement de préférence.
 - **Les messages du validateur** (`core/validator.py`, ~40 phrases) sont l'autre corpus déjà
@@ -1638,6 +1639,260 @@ commentaire qui mentionne « ARENA » ne crée pas d'arête.
 - **Les autres relations.** Prefabs, mises en page, caméras et fonds forment déjà un graphe de
   dépendances par les mêmes domaines. Les faire entrer dans la même vue est tentant et
   probablement illisible ; à rouvrir une fois le graphe des scènes utilisé pour de vrai.
+
+### Fondation Canvas — contrat pour v0.12 et les vues futures
+
+Le Canvas reste la surface centrale du Scene Manager. Il accueille deux vues aujourd'hui : la
+scène et le graphe. La scène choisit elle-même son rendu : 2D maintenant, 3D quand son mode de
+rendu le demandera. **Ce n'est pas un bouton de plus.** Le Graphe de scènes est le seul
+basculement explicite dans la barre existante ; la palette d'outils flottante reste à sa place
+et le reste de la fenêtre (arbre, inspecteur, console) ne change pas de propriétaire.
+
+- **`CanvasWorkspace` est le conteneur, pas un second SceneEditor.** Il contient la vue de
+  scène existante et une future `SceneGraphView`. `SceneEditor` ne reçoit ni nœuds ni arêtes :
+  il garde l'édition/rendu de la scène. Cette frontière évite qu'il redevienne un monolithe
+  après son extraction récente en `canvas_view`, `canvas_scene`, `canvas_items`,
+  `canvas_toolbar`, `canvas_raster` et `canvas_controllers`.
+- **La projection du graphe est pure.** Un module du domaine scripting (au voisinage de
+  `index_refs_in_project`) rend des nœuds, arêtes et `LuaRef`, sans Qt. La vue les dessine et
+  envoie les sélections ; elle ne reparcourt pas les scripts et ne possède aucune donnée.
+- **Les points d'entrée UI sont publics.** La fenêtre ne doit pas appeler les méthodes privées
+  du canvas ou des inspecteurs (`_reload_*`, `_save_*`, sous-inspecteurs) pour les nouveaux
+  branchements. Les exposer sous quelques opérations de façade avant d'ajouter le graphe
+  réduira le couplage déjà concentré dans `window.py`.
+- **Les bus restent distincts.** Le `SelectionBus` porte une intention de sélection ; le
+  `CommandDispatcher` annonce les mutations et rafraîchissements. Les fusionner mélangerait
+  deux temporalités et n'apporte rien au graphe.
+- **Hygiène de branche avant les gros changements.** Normaliser les fins de lignes dans
+  `.gitattributes` : une variation globale masque les vrais diffs et rend la revue de cette
+  surface coûteuse. Le contrôle d'architecture et les tests Canvas doivent être lancés dans
+  l'environnement de développement fonctionnel avant toute extraction supplémentaire.
+
+### Profondeur de rendu — un geste direct, fidèle à la GBA
+
+La profondeur n'est pas un ordre arbitraire « devant/derrière » : c'est une seule échelle
+matérielle de priorité `0..3`, où `0` est devant et `3` derrière. Les BG et les OBJ partagent
+cette échelle ; à priorité égale, l'OBJ passe devant le BG. Le canvas doit toujours montrer la
+même composition que la ROM (`hw_layer_z`), sans opacité ou empilement d'édition qui mentirait.
+
+Le **rail de profondeur** est un outil contextuel de l'acteur, ouvert par clic droit via
+« Set priority » : quatre crans clairement nommés `0 avant` à `3 arrière`. Le badge de priorité
+de la sélection se glisse verticalement entre ces crans, ou se pose par clic. Le changement est
+immédiat, annulable et redessine le canvas ; le déplacement physique de l'acteur reste
+exclusivement un geste de position. Ce rail remplace les commandes contextuelles « placer devant
+/ derrière » et garde le nombre réel de niveaux perceptible.
+
+L'ordre de deux OBJ à priorité égale doit être explicité et testé : il dépend aujourd'hui de
+l'ordre de `scene.actors`, qui détermine aussi les slots OAM au build. Un second geste de
+réordonnancement — dans l'arbre de scène existant, ou plus tard dans une liste locale du rail —
+doit donc conserver l'ordre des frères sans confondre ce départage avec la priorité GBA.
+
+### Scene Tree — deux projections, deux gestes
+
+Le Scene Tree ne doit pas prétendre répondre à la fois à « qu'est-ce qui appartient à quoi ? »
+et à « qu'est-ce qui est dessiné devant quoi ? ». Une parenté acteur peut traverser plusieurs
+priorités ; fusionner hiérarchie et pile de rendu rendrait donc au moins l'une des deux fausse.
+Le panneau reçoit deux contextes explicites, fondés sur les mêmes données :
+
+- **Contenu** est l'arbre logique actuel : acteurs et leur parenté, caméras, nœuds Interface et
+  leurs éléments. Son glisser-déposer signifie organiser, rattacher à un parent ou déplacer un
+  frère dans cet arbre.
+- **Priorité** est une projection plate de l'ordre de composition GBA, du devant vers le
+  derrière : `OBJ 0`, `Background 0`, `OBJ 1`, `Background 1`, `OBJ 2`, `Background 2`,
+  `OBJ 3`, `Background 3`. Chaque slot BG est visible, y compris vide ; un slot impossible dans
+  le mode vidéo de la scène est explicitement indisponible. Son glisser-déposer entre groupes
+  OBJ change `Actor.priority`; dans un même groupe il départage les slots OAM via l'ordre de
+  `scene.actors`.
+
+Cliquer une ligne Background sélectionne son slot et mène directement à la ligne correspondante
+de l'inspecteur Scene (section ouverte et scrollée). Cela passe par un marqueur de sélection
+`BackgroundLayerSelection(scene, bg_slot)`, symétrique de `CameraSelection`, puis une opération
+publique `SceneInspector.focus_background_slot(slot)` — pas par un appel direct entre widgets.
+
+### Sous-chantier — la cible de rendu appartient au nœud Interface (par scène)
+
+Le réglage global `Scene.text_bg` décrivait le seul calque de texte historique. C'était, comme le
+combobox « UI layer » de l'inspecteur Scene, une **simplification de production** : elle imposait
+un unique BG d'UI à toute la scène. Elle devient fausse dès que le contexte Priority matérialise
+le z-order et invite l'auteur à ranger **chaque nœud `Interface` indépendamment** dans la pile de
+composition. Un nœud posé en Background doit choisir **son** slot ; deux nœuds peuvent viser le même
+(ils partagent alors volontairement la même tilemap et s'écrivent dans l'ordre de leurs nœuds — au
+recouvrement, le dernier dessin gagne, ce n'est pas une fusion de calques fictive).
+
+Cette évolution ne consiste donc pas à déplacer le combobox. Le moteur actuel tient un seul BG
+actif dans `text_set_layer()`, un seul screenblock UI dans `vram_alloc.scene_layout()`, et
+`g_ui_regions` est une table globale au projet. Le choix doit devenir disponible au moment où une
+zone est écrite, y compris par `text.draw_in()` dans un script.
+
+#### Décision de modèle — verrouillée (2026-09-13)
+
+Le principe qui tranche : **un asset se distingue de sa cible de rendu, et le z-order en fait
+partie.** Un `UILayout` est du **contenu réutilisable** (éléments, géométrie, slots, images,
+glyphes) — rien de matériel. La **cible de rendu** — ancrage, cible BG/OBJ, acteur suivi, slot BG,
+donc la place dans la pile — est un fait **par instance dans une scène**.
+
+Concrètement : `Scene.ui_layouts: list[str]` devient une liste de **nœuds** possédant
+`{layout_name, anchor, anchor_actor, target, bg_slot}`. Le chemin matériel que la v0.25 avait
+remonté sur l'asset (`anchor`, `target`) **descend sur le nœud** : ce n'est pas défaire la v0.25
+mais l'**achever** — elle disait déjà « le nœud possède anchor+target », le nœud n'était
+simplement qu'un nom nu faute de corps. L'asset ne connaît plus sa cible.
+
+Conséquence assumée, la contrepartie exacte de la simplification qu'on retire — mais séparée avec
+soin, parce que les constantes `REGION_*` / `IMAGE_*` / `UIELEM_*` que citent les scripts sont
+indexées par **nom d'élément unique au projet**, donc par asset :
+
+- **Les tables de CONTENU restent per-asset.** `g_ui_regions` (géométrie, police), `g_ui_images` et
+  la table de visibilité `UIELEM_*` gardent leur index par nom d'élément — `all_regions` /
+  `all_images` / `all_elements` ne changent pas. Rekeyer par nœud casserait l'ABI (un HUD partagé
+  ferait apparaître `score` deux fois) ; l'identité d'un élément reste celle de son asset.
+- **La CIBLE DE RENDU sort de ces tables.** La cible BG/OBJ figée par asset (que `font_emit` grave
+  aujourd'hui dans `g_ui_regions`) et le slot BG deviennent une **table de routage par scène**,
+  installée par `scene_init`. C'est elle qui remplace `text_set_layer()` implicite et l'ancien
+  `Scene.text_bg`, et la règle « une cible par asset » du validateur prend sa retraite.
+
+Le même `DialogBox` peut alors être un HUD en BG dans une scène et une bulle qui suit un acteur en
+OBJ dans une autre — même index de région, routage différent selon la scène active. Le seul cas
+exclu est le même layout posé DEUX fois dans une même scène : ses noms d'élément entreraient en
+collision, le validateur l'interdit (cf. étape 5).
+
+La migration lit les deux formes existantes (`ui_layouts` liste de noms *ou* de nœuds, plus
+l'ancien `ui_layout` singulier). Chaque ancienne référence reçoit l'`anchor`/`target` de son asset
+et le `Scene.text_bg` de sa scène comme `bg_slot` ; ni `text_bg` ni la cible d'asset ne sont plus
+écrits ensuite. Deux anciennes scènes partageant un layout avec deux `text_bg` différents donnent
+deux nœuds à slots distincts : c'est le test qui distingue ce modèle du champ posé sur l'asset.
+
+#### Travail à réaliser
+
+> **Livré (2026-09-13 → 09-14).** Le sous-chantier est en place, aux détails d'étendue près
+> notés à l'item 1 et à l'« Ouvert » ci-dessous. Détail d'implémentation dans ARCHITECTURE.md
+> (« Le slot BG appartient à l'INSTANCE… »). Ce qui a shippé, par item :
+> 1 modèle (`InterfaceNode`/`BoundInterface`, migration) ; 2 éditeur (combo BG slot, Priority
+> lit `node.bg_slot`, glisser-déposer, z-order canvas) ; 3+4 fusionnés : routage runtime C +
+> `vram_alloc` multi-slot + retrait de `Scene.text_bg` ; 5 validation. Les tests (item 6) sont
+> livrés avec chaque étape.
+
+1. **Modèle et persistance.** `InterfaceNode` (par scène) porte `{layout_name, anchor,
+   anchor_actor, target, bg_slot}` et **compose** son `UILayout` via `BoundInterface` (contenu
+   délégué à l'asset). Migration lue, non réécrite (`_ui_nodes_from_dict`). **Étendue réelle :**
+   seul `bg_slot` est effectivement par-nœud ; `anchor`/`target` restent portés par l'asset (les
+   champs du nœud existent mais dormants — cf. « Ouvert »). `anchor`/`target`/`anchor_actor` NE
+   sont donc PAS retirés de `UILayout`.
+2. **Éditeur.** Retirer « UI layer » de l'inspecteur Scene ; le proposer dans l'inspecteur du
+   nœud Interface uniquement quand sa cible effective est BG, le masquer pour OBJ et l'expliquer
+   pour les modes bitmap. Le Canvas et le contexte Priorité lisent ce slot : chaque Background
+   dépliable affiche exactement les Interfaces qui le ciblent.
+3. **Allocation VRAM et initialisation.** Réserver un screenblock par slot BG effectivement
+   utilisé par l'UI, tout en partageant les glyphes et les tuiles de fond compatibles dans le
+   charblock UI. Configurer chaque `BGxCNT` concerné et ne plus exclure un unique `text_bg` du
+   placement des backgrounds. Les fonds, textes et surfaces composées sont groupés par slot avant
+   émission ; deux Interfaces sur le même slot écrivent dans la même map, dans l'ordre de scène.
+4. **Routage de rendu par scène (ex-runtime de texte).** La cible de rendu sort des tables de
+   contenu — qui restent per-asset, indexées par nom d'élément — et devient une **table de routage
+   par scène** : pour chaque région/image active, sa cible (BG/OBJ), son `bg_slot` et son ancrage.
+   `scene_init` installe celle de la scène active ; elle remplace l'état global implicite de
+   `text_set_layer()`. `text_draw_in`, l'effacement, le reveal et les listes lisent le routage du
+   nœud courant au lieu d'un layer figé ; les zones OBJ gardent leur chemin OAM. (Absorbe l'ancienne
+   étape « runtime de texte » : retirer la cible des tables globales sans installer le routage
+   casserait le ROM entre les deux, les deux ne font qu'une tranche.)
+
+   Forme concrète (verrouillée) : `UIRegionInfo`/`UIImageInfo` perdent `target`/`anchor`/`actor` ;
+   un **tableau plein** `g_region_route[REGION_COUNT]` (et `g_image_route`), parallèle aux tables de
+   contenu, porte `{active, target, layer, map_sbb, anchor, actor}`. `scene_init` le remet à zéro
+   puis remplit les entrées des régions/images de ses nœuds. `text_draw_in`/`clear_in`/reveal/listes
+   /`ui_image_*` lisent ce routage ; le routage porte `target` pour trancher BG/OBJ par scène, le
+   reste du chemin OAM est inchangé. L'**écriture libre** (`text_draw`/`text_clear` aux coordonnées,
+   sans région) garde `text_set_layer` et son layer courant, posé au premier slot UI de la scène.
+   `vram_alloc` réserve un screenblock par slot BG d'UI utilisé, en partageant le charblock de
+   glyphes entre slots.
+5. **Validation et règles de coexistence.** Signaler un slot invalide, indisponible dans le mode
+   vidéo, ou une Interface BG sans slot. Conserver d'abord l'exclusivité actuelle entre une
+   tilemap de BackgroundAsset et une tilemap UI sur le même BG ; autoriser une composition avec
+   un décor existant demanderait une règle explicite d'écrasement et son propre chantier.
+6. **Couverture.** Ajouter des tests de migration (dont un layout partagé par deux scènes), de
+   routage statique et scripté vers deux BG, de partage de tilemap sur un même BG, de réservation
+   VRAM et d'ordre de dessin Canvas/ROM. Mettre à jour les tests qui créent aujourd'hui une scène
+   avec `text_bg` et les documents qui présentent ce champ comme le layer UI.
+
+#### Ouvert — routage par nœud de `anchor`/`target`
+
+Les champs `anchor`/`target`/`anchor_actor` existent sur `InterfaceNode` mais restent DORMANTS :
+la cible et l'ancrage sont per-asset. Les rendre per-scène se scinde en deux, de coûts très
+différents :
+
+- **(1) dans le même plan (sûr).** Le même HUD écran-fixe ici / défilant (world) là : réintroduire
+  la copie vivante runtime portant `target`/`anchor`, faire éditer le nœud (pas l'asset) dans
+  `UINodeInspector`. Vérifiable au harnais.
+- **(2) divergence BG↔OBJ (l'exemple phare, coûteux).** Un même layout HUD-BG dans une scène et
+  bulle-acteur-OBJ dans une autre demande d'émettre le placement OBJ **inconditionnellement** dans
+  `g_ui_regions` (la donnée existe déjà via `obj_text_alloc`), de réconcilier la géométrie BG
+  (tuile) / OBJ (pixel) dans une seule entrée, et de résoudre l'`actor` (index g_actors) **par
+  scène** (`region_actor_index` ne garde aujourd'hui que la première scène). Vérifiable seulement
+  sur un vrai build ROM + émulateur. Reporté à un chantier dédié.
+
+#### Hors de ce sous-chantier
+
+Un Background UI n'est pas un calque isolé par Interface : deux interfaces sur le même slot ne
+disposent ni de tilemap privée ni d'ordre matériel supplémentaire. Le dossier logique, la
+visibilité d'auteur et la profondeur OBJ restent des responsabilités distinctes du contexte
+Contenu et de la pile Priorité.
+
+### Graphe de scènes — partie 2 : groupes et navigation par niveaux
+
+Le graphe est une carte navigable du jeu, jamais un second langage de programmation. Les groupes
+sont **organisationnels seulement** : ils ne possèdent pas de flux, ne contraignent pas les
+scripts et ne promettent pas artificiellement une entrée ou une sortie unique. Ils sont des
+métadonnées d'éditeur, mémorisées avec la disposition du graphe et sans effet sur le build.
+
+- **Arêtes agrégées.** Plusieurs appels qui relient la même scène source et cible se lisent comme
+  une arête unique avec un compteur ; l'inspecteur déroule les `LuaRef` qui la composent. Les
+  cibles dynamiques ne disparaissent jamais : elles mènent vers une sortie `?` explicitement
+  indéterminée. Une boucle n'est pas un objet spécial : c'est une arête de retour courbe qui
+  révèle, au clic, le cycle réel qu'elle participe à former.
+- **Niveaux de profondeur.** La racine affiche les groupes repliés et les scènes non groupées.
+  Double-clic ou `Entrée` sur un groupe ouvre son niveau ; le fil d'Ariane devient par exemple
+  `Jeu / Village`. Le contenu est alors le seul contexte éditable. `Backspace` remonte d'un
+  niveau et ne fait rien à la racine ; ce raccourci est local au Graphe et ne change pas la
+  suppression existante dans l'éditeur de scène. Double-clic sur une scène reste l'ouverture de
+  son contexte 2D (ou 3D selon son mode de rendu).
+- **Frontières honnêtes.** Dans un groupe, les transitions externes deviennent des portes de
+  frontière — `← 3 entrées`, `2 sorties →` — plutôt que des scènes externes modifiables. Elles
+  préservent la lecture du lien sans casser le focus courant ; l'édition d'une transition reste
+  dans le contexte de sa scène source.
+- **Navigateur de graphe.** En contexte Graphe, la colonne de gauche montre groupes et scènes
+  non groupées. Créer, déplacer ou replier un groupe ici se reflète instantanément dans le
+  canvas ; le Scene Tree Contenu reprend son rôle habituel quand l'auteur revient à la scène.
+- **Calque Notes.** Textes, traits libres, surlignages et cadres appartiennent au niveau de
+  graphe ouvert. Le calque est verrouillé par défaut afin que dessiner ne concurrence pas la
+  sélection des nœuds. Les annotations globales vivent à la racine ; celles d'un groupe ne
+  l'encombrent pas.
+- **Inspecteur contextuel.** Une scène expose sa miniature, son statut de départ et ses appels
+  entrants/sortants connus ; une transition expose source, cible, fichier et ligne ; un groupe
+  expose son nom et ses membres ; une annotation expose son style et son verrouillage. Retargeter
+  le littéral connu reste permis ; créer une transition depuis le graphe ne l'est pas.
+
+La première ouverture reçoit une disposition automatique, puis les positions sont mémorisées.
+Zoom, mini-carte, cadrage global, recherche, scènes inaccessibles depuis le départ et scènes sans
+sortie connue sont des aides de lecture ; aucune ne doit présenter une inférence comme un flux
+exécutable certain.
+
+### Contenu — organisation et visibilité d'auteur
+
+Le contexte **Contenu** sert aussi à organiser une scène de production, sans modifier son jeu.
+Il reçoit des dossiers d'auteur (`Décor`, `PNJ`, `Gameplay`…) et deux états distincts sur chaque
+acteur ou dossier :
+
+- **Œil / Viewport** masque l'élément dans le canvas uniquement. Il reste compilé, actif et
+  jouable dans la ROM. Les éléments masqués restent présents dans la vue Priorité, atténués,
+  pour ne jamais devenir introuvables dans la pile de rendu.
+- **Render** est l'état existant `Actor.visible` : il décide si l'acteur est émis dans la ROM.
+  Il garde son sens actuel, mais son libellé et son icône doivent dire explicitement « rendu
+  in-game » plutôt que seulement « visible ».
+
+Un dossier propage chaque commande à ses descendants et affiche un état intermédiaire quand ils
+ne sont pas homogènes, comme une collection Blender. Dossiers et visibilité viewport sont des
+métadonnées d'éditeur, sans effet sur le build, le JSON de gameplay, la parenté acteur/enfant ou
+la pile OAM. Ils vivent donc hors du modèle de scène compilé ; un renommage/déplacement d'acteur
+doit migrer leur référence d'organisation avec lui.
 
 ---
 
@@ -1836,8 +2091,8 @@ leur objet, **6 mots du langage** enfin listés (`vec2`, `vec3`, `rect`, `wait`,
 ### Ouvert
 
 - **`#data.Objets`** — le nombre de lignes d'une table de données. Évident, absent. À ouvrir,
-  ou à refuser par écrit dans `SCRIPTING.md`.
-- **`SCRIPTING.md` adopte-t-il les mêmes huit sections ?** Deux plans différents pour la même
+  ou à refuser par écrit dans la référence de scripting.
+- **La référence de scripting adopte-t-elle les mêmes huit sections ?** Deux plans différents pour la même
   API rouvriraient exactement le problème qu'on ferme ici.
 - **v0.13 hérite de ce rangement** : les palettes de blocs de l'édition mixte seront ces huit
   sections. À vérifier quand le chantier démarre, pas maintenant.
@@ -1981,7 +2236,7 @@ scène.
 
 Pour la référence rendue : `scripting/api.py` (`REF_ACTOR`, le `ret` de `actor.spawn`),
 `scripting/expr_types.py` (`C_REF_TYPES`), `scripting/codegen.py` (le cas `is_actor_ref` qui
-tombe), `scripting/api_reference.json` (la fiche, aujourd'hui fausse), et `SCRIPTING.md`.
+tombe), `scripting/api_reference.json` (la fiche, aujourd'hui fausse), et la référence de scripting.
 
 Pour l'écran : `ui/scene_manager/inspectors/scene_inspector.py` (le widget de budget à deux
 champs), `ui/scene_manager/inspectors/uses_inspectors.py` (« Spawné par »), et
