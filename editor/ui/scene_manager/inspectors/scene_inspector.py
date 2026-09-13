@@ -166,6 +166,7 @@ class SceneInspector(QWidget):
         self.setStyleSheet(f"background:{C.BG_PANEL};")
 
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"background:{C.BG_PANEL}; border:none;")
         outer = QVBoxLayout(self)
@@ -538,6 +539,15 @@ class SceneInspector(QWidget):
         layout.addWidget(self._content)
         layout.addStretch()
         self._content.setVisible(False)
+
+    def focus_background_slot(self, slot: int):
+        """Expose le calque BG demandé par une autre projection de la scène."""
+        self._bg_card.set_expanded(True)
+        for row in self._bg_layer_rows:
+            if row.slot_index == slot:
+                row.setFocus(Qt.FocusReason.OtherFocusReason)
+                self._scroll.ensureWidgetVisible(row)
+                return
 
     def load(self, scene: Scene, project: Project):
         self._scene = scene; self._project = project

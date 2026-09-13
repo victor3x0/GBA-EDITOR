@@ -1713,8 +1713,11 @@
     "common.camera": {
       "text": "Camera"
     },
-    "scttree.finder_bar": {
-      "text": "Scene tree"
+    "scttree.context_content": {
+      "text": "Content"
+    },
+    "scttree.context_priority": {
+      "text": "Priority"
     },
     "scttree.iface_tip": {
       "text": "Interface “{name}”"

@@ -37,6 +37,20 @@ class CameraSelection:
         self.camera = camera
 
 
+class BackgroundLayerSelection:
+    """Marqueur de sélection d'un slot BG de la scène.
+
+    Un slot est une partie du matériel, même lorsqu'il ne contient encore
+    aucun fond. Le marqueur conserve donc le slot plutôt qu'un BackgroundLayer
+    éventuellement absent, et laisse l'inspecteur ouvrir la bonne ligne.
+    """
+    __slots__ = ("scene", "bg_slot")
+
+    def __init__(self, scene, bg_slot: int):
+        self.scene = scene
+        self.bg_slot = int(bg_slot)
+
+
 class UIElementSelection:
     """Marqueur de sélection : un ÉLÉMENT d'UI (zone, panel, texte…) a été
     sélectionné dans le canvas ou l'arbre.

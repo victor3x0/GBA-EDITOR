@@ -318,7 +318,7 @@ class DynamicInspector(QWidget):
         from pathlib import Path as _P
         from core.models.scene import Actor, Prefab, Scene
         from core.selection_bus import (
-            CameraSelection, UIRegionSelection, UILayoutSelection)
+            BackgroundLayerSelection, CameraSelection, UIRegionSelection, UILayoutSelection)
         if obj is None:
             # Mode par défaut : aperçu du projet (pas le message d'aide vide) —
             # cf. clic hors de la zone active du canvas.
@@ -332,6 +332,9 @@ class DynamicInspector(QWidget):
             # le rectangle de vue 240×160 n'est qu'un retour visuel, il ne
             # déclenche jamais ce marqueur) → inspecteur caméra.
             self.show_camera(obj.scene, obj.camera, self._project)
+        elif isinstance(obj, BackgroundLayerSelection):
+            self.show_scene(obj.scene, self._project)
+            self._scene_insp.focus_background_slot(obj.bg_slot)
         elif isinstance(obj, Actor):
             scene = self._project.active_scene if self._project else None
             self.show_actor(obj, self._project, scene)

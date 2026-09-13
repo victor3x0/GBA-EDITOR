@@ -164,6 +164,37 @@ class MoveActorCmd(Command):
         return False
 
 
+class SceneActorOrderCmd(Command):
+    """Un changement de pile OAM : ordre de la scène et priorité d'un actor.
+
+    La priorité et l'ordre départageant les OBJ à priorité égale forment un
+    seul geste dans la projection Priorité du Scene Tree ; les séparer
+    demanderait deux annulations pour un glisser-déposer.
+    """
+
+    def __init__(self, scene: "Scene", before: list, after: list,
+                 priorities: tuple[list, list], label: str = "Reorder actors", persist_fn=None):
+        self._scene = scene
+        self._before = list(before)
+        self._after = list(after)
+        self._priorities = (list(priorities[0]), list(priorities[1]))
+        self.label = label
+        self._persist = persist_fn
+
+    def _apply(self, order, priority):
+        self._scene.actors[:] = order
+        for actor, value in priority:
+            actor.priority = value
+        if self._persist:
+            self._persist()
+
+    def execute(self):
+        self._apply(self._after, self._priorities[1])
+
+    def undo(self):
+        self._apply(self._before, self._priorities[0])
+
+
 class MoveActorGroupCmd(Command):
     """Déplacement groupé : un actor et son SOUS-ARBRE (`Actor.parent`, ROADMAP
     v0.23) glissés ensemble dans le canvas. Bouger un parent translate ses

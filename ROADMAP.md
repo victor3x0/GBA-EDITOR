@@ -1708,6 +1708,71 @@ de l'inspecteur Scene (section ouverte et scrollée). Cela passe par un marqueur
 `BackgroundLayerSelection(scene, bg_slot)`, symétrique de `CameraSelection`, puis une opération
 publique `SceneInspector.focus_background_slot(slot)` — pas par un appel direct entre widgets.
 
+### Sous-chantier — une cible Background par nœud Interface
+
+Le réglage global `Scene.text_bg` décrivait le seul calque de texte historique. Il devient faux
+dès qu'une scène pose plusieurs nœuds `Interface` : chacun a déjà son ancrage et sa cible OBJ/BG,
+et doit pouvoir choisir **son slot BG** lorsqu'il est rendu en Background. Plusieurs interfaces
+peuvent viser le même slot : elles partagent alors volontairement la même tilemap et s'écrivent
+dans l'ordre de leurs nœuds dans la scène. En cas de recouvrement, le dernier dessin gagne ; ce
+n'est pas une fusion de calques fictive.
+
+Cette évolution ne consiste donc pas à déplacer le combobox « UI layer ». Le moteur actuel tient
+un seul BG actif dans `text_set_layer()`, un seul screenblock UI dans `vram_alloc.scene_layout()`,
+et `g_ui_regions` est une table globale au projet. Le choix doit devenir disponible au moment où
+une zone est écrite, y compris par `text.draw_in()` dans un script.
+
+#### Décision de modèle à verrouiller avant code
+
+`UILayout` est un **asset partagé** : le même layout peut être posé dans plusieurs scènes. Un
+champ `bg_slot` sur l'asset imposerait donc le même Background partout où il est utilisé. Cela est
+acceptable seulement si cette contrainte est voulue. Si « chaque objet Interface » désigne bien
+son instance dans une scène — le sens le plus naturel — il faut faire évoluer
+`Scene.ui_layouts: list[str]` en références de nœud (`layout_name`, ancrage, cible, `bg_slot`),
+et déplacer avec elles le chemin matériel aujourd'hui porté par l'asset. Cette seconde forme
+préserve un HUD partagé placé sur BG0 dans une scène et BG2 dans une autre.
+
+La migration doit lire les deux formes existantes. Chaque ancienne référence reçoit le
+`Scene.text_bg` de sa scène ; la clé `text_bg` n'est plus écrite ensuite. Écrire directement un
+slot sur un `UILayout` ne peut pas préserver deux anciennes scènes qui partageaient ce layout
+avec deux `text_bg` différents : c'est précisément le test qui distingue les deux modèles.
+
+#### Travail à réaliser
+
+1. **Modèle et persistance.** Introduire le nœud/référence d'Interface et son `bg_slot` validé
+   contre les slots autorisés par le mode vidéo. Exposer des helpers projet qui rendent le
+   couple *(nœud, layout)* plutôt qu'un layout nu. Migrer les JSON de scènes à la lecture, sans
+   modifier les fichiers tant qu'ils ne sont pas sauvegardés.
+2. **Éditeur.** Retirer « UI layer » de l'inspecteur Scene ; le proposer dans l'inspecteur du
+   nœud Interface uniquement quand sa cible effective est BG, le masquer pour OBJ et l'expliquer
+   pour les modes bitmap. Le Canvas et le contexte Priorité lisent ce slot : chaque Background
+   dépliable affiche exactement les Interfaces qui le ciblent.
+3. **Allocation VRAM et initialisation.** Réserver un screenblock par slot BG effectivement
+   utilisé par l'UI, tout en partageant les glyphes et les tuiles de fond compatibles dans le
+   charblock UI. Configurer chaque `BGxCNT` concerné et ne plus exclure un unique `text_bg` du
+   placement des backgrounds. Les fonds, textes et surfaces composées sont groupés par slot avant
+   émission ; deux Interfaces sur le même slot écrivent dans la même map, dans l'ordre de scène.
+4. **Runtime de texte.** Remplacer l'état global implicite de `text_set_layer()` par une cible
+   connue pour chaque zone BG au moment du dessin. `text_draw_in`, l'effacement, le reveal et les
+   listes doivent sélectionner la map du nœud courant ; les zones OBJ gardent leur chemin OAM.
+   Les tables globales de régions ne peuvent pas contenir un slot figé si le nœud est par scène :
+   `scene_init` doit installer la table de routage de la scène active.
+5. **Validation et règles de coexistence.** Signaler un slot invalide, indisponible dans le mode
+   vidéo, ou une Interface BG sans slot. Conserver d'abord l'exclusivité actuelle entre une
+   tilemap de BackgroundAsset et une tilemap UI sur le même BG ; autoriser une composition avec
+   un décor existant demanderait une règle explicite d'écrasement et son propre chantier.
+6. **Couverture.** Ajouter des tests de migration (dont un layout partagé par deux scènes), de
+   routage statique et scripté vers deux BG, de partage de tilemap sur un même BG, de réservation
+   VRAM et d'ordre de dessin Canvas/ROM. Mettre à jour les tests qui créent aujourd'hui une scène
+   avec `text_bg` et les documents qui présentent ce champ comme le layer UI.
+
+#### Hors de ce sous-chantier
+
+Un Background UI n'est pas un calque isolé par Interface : deux interfaces sur le même slot ne
+disposent ni de tilemap privée ni d'ordre matériel supplémentaire. Le dossier logique, la
+visibilité d'auteur et la profondeur OBJ restent des responsabilités distinctes du contexte
+Contenu et de la pile Priorité.
+
 ### Graphe de scènes — partie 2 : groupes et navigation par niveaux
 
 Le graphe est une carte navigable du jeu, jamais un second langage de programmation. Les groupes
