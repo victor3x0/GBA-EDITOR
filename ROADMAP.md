@@ -1639,6 +1639,94 @@ commentaire qui mentionne « ARENA » ne crée pas d'arête.
   dépendances par les mêmes domaines. Les faire entrer dans la même vue est tentant et
   probablement illisible ; à rouvrir une fois le graphe des scènes utilisé pour de vrai.
 
+### Fondation Canvas — contrat pour v0.12 et les vues futures
+
+Le Canvas reste la surface centrale du Scene Manager. Il accueille deux vues aujourd'hui : la
+scène et le graphe. La scène choisit elle-même son rendu : 2D maintenant, 3D quand son mode de
+rendu le demandera. **Ce n'est pas un bouton de plus.** Le Graphe de scènes est le seul
+basculement explicite dans la barre existante ; la palette d'outils flottante reste à sa place
+et le reste de la fenêtre (arbre, inspecteur, console) ne change pas de propriétaire.
+
+- **`CanvasWorkspace` est le conteneur, pas un second SceneEditor.** Il contient la vue de
+  scène existante et une future `SceneGraphView`. `SceneEditor` ne reçoit ni nœuds ni arêtes :
+  il garde l'édition/rendu de la scène. Cette frontière évite qu'il redevienne un monolithe
+  après son extraction récente en `canvas_view`, `canvas_scene`, `canvas_items`,
+  `canvas_toolbar`, `canvas_raster` et `canvas_controllers`.
+- **La projection du graphe est pure.** Un module du domaine scripting (au voisinage de
+  `index_refs_in_project`) rend des nœuds, arêtes et `LuaRef`, sans Qt. La vue les dessine et
+  envoie les sélections ; elle ne reparcourt pas les scripts et ne possède aucune donnée.
+- **Les points d'entrée UI sont publics.** La fenêtre ne doit pas appeler les méthodes privées
+  du canvas ou des inspecteurs (`_reload_*`, `_save_*`, sous-inspecteurs) pour les nouveaux
+  branchements. Les exposer sous quelques opérations de façade avant d'ajouter le graphe
+  réduira le couplage déjà concentré dans `window.py`.
+- **Les bus restent distincts.** Le `SelectionBus` porte une intention de sélection ; le
+  `CommandDispatcher` annonce les mutations et rafraîchissements. Les fusionner mélangerait
+  deux temporalités et n'apporte rien au graphe.
+- **Hygiène de branche avant les gros changements.** Normaliser les fins de lignes dans
+  `.gitattributes` : une variation globale masque les vrais diffs et rend la revue de cette
+  surface coûteuse. Le contrôle d'architecture et les tests Canvas doivent être lancés dans
+  l'environnement de développement fonctionnel avant toute extraction supplémentaire.
+
+### Profondeur de rendu — un geste direct, fidèle à la GBA
+
+La profondeur n'est pas un ordre arbitraire « devant/derrière » : c'est une seule échelle
+matérielle de priorité `0..3`, où `0` est devant et `3` derrière. Les BG et les OBJ partagent
+cette échelle ; à priorité égale, l'OBJ passe devant le BG. Le canvas doit toujours montrer la
+même composition que la ROM (`hw_layer_z`), sans opacité ou empilement d'édition qui mentirait.
+
+Le **rail de profondeur** est un outil contextuel de l'acteur, ouvert par clic droit via
+« Set priority » : quatre crans clairement nommés `0 avant` à `3 arrière`. Le badge de priorité
+de la sélection se glisse verticalement entre ces crans, ou se pose par clic. Le changement est
+immédiat, annulable et redessine le canvas ; le déplacement physique de l'acteur reste
+exclusivement un geste de position. Ce rail remplace les commandes contextuelles « placer devant
+/ derrière » et garde le nombre réel de niveaux perceptible.
+
+L'ordre de deux OBJ à priorité égale doit être explicité et testé : il dépend aujourd'hui de
+l'ordre de `scene.actors`, qui détermine aussi les slots OAM au build. Un second geste de
+réordonnancement — dans l'arbre de scène existant, ou plus tard dans une liste locale du rail —
+doit donc conserver l'ordre des frères sans confondre ce départage avec la priorité GBA.
+
+### Scene Tree — deux projections, deux gestes
+
+Le Scene Tree ne doit pas prétendre répondre à la fois à « qu'est-ce qui appartient à quoi ? »
+et à « qu'est-ce qui est dessiné devant quoi ? ». Une parenté acteur peut traverser plusieurs
+priorités ; fusionner hiérarchie et pile de rendu rendrait donc au moins l'une des deux fausse.
+Le panneau reçoit deux contextes explicites, fondés sur les mêmes données :
+
+- **Contenu** est l'arbre logique actuel : acteurs et leur parenté, caméras, nœuds Interface et
+  leurs éléments. Son glisser-déposer signifie organiser, rattacher à un parent ou déplacer un
+  frère dans cet arbre.
+- **Priorité** est une projection plate de l'ordre de composition GBA, du devant vers le
+  derrière : `OBJ 0`, `Background 0`, `OBJ 1`, `Background 1`, `OBJ 2`, `Background 2`,
+  `OBJ 3`, `Background 3`. Chaque slot BG est visible, y compris vide ; un slot impossible dans
+  le mode vidéo de la scène est explicitement indisponible. Son glisser-déposer entre groupes
+  OBJ change `Actor.priority`; dans un même groupe il départage les slots OAM via l'ordre de
+  `scene.actors`.
+
+Cliquer une ligne Background sélectionne son slot et mène directement à la ligne correspondante
+de l'inspecteur Scene (section ouverte et scrollée). Cela passe par un marqueur de sélection
+`BackgroundLayerSelection(scene, bg_slot)`, symétrique de `CameraSelection`, puis une opération
+publique `SceneInspector.focus_background_slot(slot)` — pas par un appel direct entre widgets.
+
+### Contenu — organisation et visibilité d'auteur
+
+Le contexte **Contenu** sert aussi à organiser une scène de production, sans modifier son jeu.
+Il reçoit des dossiers d'auteur (`Décor`, `PNJ`, `Gameplay`…) et deux états distincts sur chaque
+acteur ou dossier :
+
+- **Œil / Viewport** masque l'élément dans le canvas uniquement. Il reste compilé, actif et
+  jouable dans la ROM. Les éléments masqués restent présents dans la vue Priorité, atténués,
+  pour ne jamais devenir introuvables dans la pile de rendu.
+- **Render** est l'état existant `Actor.visible` : il décide si l'acteur est émis dans la ROM.
+  Il garde son sens actuel, mais son libellé et son icône doivent dire explicitement « rendu
+  in-game » plutôt que seulement « visible ».
+
+Un dossier propage chaque commande à ses descendants et affiche un état intermédiaire quand ils
+ne sont pas homogènes, comme une collection Blender. Dossiers et visibilité viewport sont des
+métadonnées d'éditeur, sans effet sur le build, le JSON de gameplay, la parenté acteur/enfant ou
+la pile OAM. Ils vivent donc hors du modèle de scène compilé ; un renommage/déplacement d'acteur
+doit migrer leur référence d'organisation avec lui.
+
 ---
 
 ## v0.13 — Édition mixte — les appels d'API en blocs
