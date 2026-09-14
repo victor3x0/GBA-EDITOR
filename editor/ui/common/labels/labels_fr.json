@@ -416,6 +416,66 @@
     },
     "settings.window_title": {
       "text": "Réglages"
+    },
+    "scttree.add_folder": {
+      "text": "Dossier"
+    },
+    "scttree.new_folder": {
+      "text": "Dossier"
+    },
+    "scttree.rename_folder": {
+      "text": "Renommer le dossier"
+    },
+    "scttree.delete_folder": {
+      "text": "Supprimer le dossier"
+    },
+    "scttree.move_to_folder": {
+      "text": "Déplacer vers un dossier…"
+    },
+    "scttree.remove_from_folder": {
+      "text": "Retirer du dossier"
+    },
+    "scttree.hide_in_editor": {
+      "text": "Masquer dans l’éditeur"
+    },
+    "scttree.show_in_editor": {
+      "text": "Afficher dans l’éditeur"
+    },
+    "scttree.search": {
+      "text": "Rechercher dans la scène…"
+    },
+    "scttree.filter_actors": {
+      "text": "Acteurs"
+    },
+    "scttree.filter_interface": {
+      "text": "Interface"
+    },
+    "scttree.filter_cameras": {
+      "text": "Caméras"
+    },
+    "scttree.filter_unfiled": {
+      "text": "Éléments non classés"
+    },
+    "scttree.folder_color": {
+      "text": "Couleur du dossier"
+    },
+    "scttree.folder_color_none": {
+      "text": "Neutre"
+    },
+    "scttree.folder_color_blue": {
+      "text": "Bleu"
+    },
+    "scttree.folder_color_green": {
+      "text": "Vert"
+    },
+    "scttree.folder_color_yellow": {
+      "text": "Jaune"
+    },
+    "scttree.folder_color_red": {
+      "text": "Rouge"
+    },
+    "scttree.folder_color_purple": {
+      "text": "Violet"
     }
   }
 }

@@ -1707,6 +1707,66 @@
     "scttree.context_priority": {
       "text": "Priority"
     },
+    "scttree.add_folder": {
+      "text": "Folder"
+    },
+    "scttree.new_folder": {
+      "text": "Folder"
+    },
+    "scttree.rename_folder": {
+      "text": "Rename folder"
+    },
+    "scttree.delete_folder": {
+      "text": "Delete folder"
+    },
+    "scttree.move_to_folder": {
+      "text": "Move to folder…"
+    },
+    "scttree.remove_from_folder": {
+      "text": "Remove from folder"
+    },
+    "scttree.hide_in_editor": {
+      "text": "Hide in the editor"
+    },
+    "scttree.show_in_editor": {
+      "text": "Show in the editor"
+    },
+    "scttree.search": {
+      "text": "Search scene content…"
+    },
+    "scttree.filter_actors": {
+      "text": "Actors"
+    },
+    "scttree.filter_interface": {
+      "text": "Interface"
+    },
+    "scttree.filter_cameras": {
+      "text": "Cameras"
+    },
+    "scttree.filter_unfiled": {
+      "text": "Unfiled elements"
+    },
+    "scttree.folder_color": {
+      "text": "Folder color"
+    },
+    "scttree.folder_color_none": {
+      "text": "Neutral"
+    },
+    "scttree.folder_color_blue": {
+      "text": "Blue"
+    },
+    "scttree.folder_color_green": {
+      "text": "Green"
+    },
+    "scttree.folder_color_yellow": {
+      "text": "Yellow"
+    },
+    "scttree.folder_color_red": {
+      "text": "Red"
+    },
+    "scttree.folder_color_purple": {
+      "text": "Purple"
+    },
     "scttree.iface_tip": {
       "text": "Interface “{name}”"
     },

@@ -1,0 +1,20 @@
+# Le dépôt est canonique en LF, quel que soit le système qui le consulte.
+# Cela évite qu'un changement de configuration Git transforme toute la base
+# en diff de fins de lignes et masque les modifications fonctionnelles.
+* text=auto eol=lf
+
+# L'installateur Windows est consommé par des outils qui attendent CRLF.
+*.nsi text eol=crlf
+
+# Les ressources ne doivent jamais être traitées comme du texte.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.gba binary
+*.sav binary

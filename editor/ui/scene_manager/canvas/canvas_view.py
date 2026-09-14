@@ -78,6 +78,22 @@ class GBAView(QGraphicsView):
         # (cf. _arm_alt_duplicate). None = geste ordinaire.
         self._alt_drag: "Optional[list]" = None
 
+    def drawBackground(self, painter: QPainter, rect):
+        """Fond de travail mat avec repère pointillé très discret."""
+        painter.save()
+        painter.fillRect(rect, QColor("#101018"))
+        # Repère régulier, volontairement plus grand que la grille de jeu : il
+        # structure l'espace de travail sans être confondu avec les tuiles.
+        pen = QPen(QColor(210, 205, 255, 28))
+        pen.setWidth(0)
+        painter.setPen(pen)
+        left = int(rect.left() // 24) * 24
+        top = int(rect.top() // 24) * 24
+        for x in range(left, int(rect.right()) + 1, 24):
+            for y in range(top, int(rect.bottom()) + 1, 24):
+                painter.drawPoint(x, y)
+        painter.restore()
+
     def leaveEvent(self, e):
         if self._snap_preview:
             self._snap_preview.setVisible(False)
@@ -189,12 +205,14 @@ class GBAView(QGraphicsView):
         if _btn == Qt.MouseButton.RightButton and self._is_select_tool():
             e.accept()
             return
-        # Multi-sélection au clavier+souris (mode Sélection) : Shift = ajouter /
-        # retirer un item, Ctrl+Shift = redéfinir l'item ACTIF. Traité ICI et pas
-        # par Qt, dont le modificateur natif de multi-sélection est Ctrl et qui
-        # ne connaît pas la notion d'item actif.
+        # Grammaire de sélection commune avec le Scene Tree : Ctrl bascule un
+        # élément, Shift l'ajoute. Elle est traitée ici (et non par Qt) afin de
+        # conserver la notion d'item actif utilisée par l'inspecteur.
         if (_btn == Qt.MouseButton.LeftButton and self._is_select_tool()
-                and (e.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+                and (e.modifiers() & (Qt.KeyboardModifier.ControlModifier
+                                      | Qt.KeyboardModifier.ShiftModifier))
+                and self._selectable_item_at(
+                    self.mapToScene(e.position().toPoint())) is not None):
             self._multi_select_press(self.mapToScene(e.position().toPoint()),
                                      e.modifiers())
             # Le relâchement qui suit doit être avalé lui aussi : un press que Qt
@@ -369,25 +387,25 @@ class GBAView(QGraphicsView):
         return None
 
     def _multi_select_press(self, scene_pos, modifiers):
-        """Shift+clic = bascule l'appartenance à la sélection ; Ctrl+Shift+clic =
-        désigne l'item ACTIF (et l'ajoute s'il n'était pas encore membre).
+        """Applique la grammaire de sélection partagée dans l'éditeur.
 
-        L'item actif n'est PAS déplacé par un simple Shift+clic : on ajoute des
-        items autour de lui sans perdre ce que montre l'inspecteur. C'est le
-        Ctrl+Shift qui sert à changer de point de vue."""
+        Ctrl+clic bascule l'appartenance d'un élément ; Shift+clic l'ajoute.
+        Ctrl est prioritaire si les deux touches sont maintenues. Dans les deux
+        cas, l'élément visé devient actif : l'inspecteur suit donc naturellement
+        le dernier choix de l'utilisateur."""
         sc = self.scene()
         item = self._selectable_item_at(scene_pos)
         if item is None:
-            return                       # Shift dans le vide : ne rien casser
+            return
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            if not item.isSelected():
-                item.setSelected(True)
-            sc.set_active_item(item)
-        else:
             item.setSelected(not item.isSelected())
-            if item.isSelected() and sc.active_item is None:
-                sc.set_active_item(item)   # 1er membre = actif
-            sc.reconcile_active()          # actif retiré → premier membre restant
+            if item.isSelected():
+                sc.set_active_item(item)
+            else:
+                sc.reconcile_active()
+        else:
+            item.setSelected(True)
+            sc.set_active_item(item)
         # Même signal que tout clic gauche : il porte déjà « la sélection a
         # peut-être bougé, resynchronise » — indispensable pour le Ctrl+Shift,
         # qui ne change pas l'appartenance donc n'émet pas selectionChanged.

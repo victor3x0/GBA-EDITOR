@@ -19,6 +19,7 @@ from ui.common.labels import label
 
 from codegen import BuildWorker
 from ui.scene_manager.scene_canvas import SceneEditor
+from ui.scene_manager.canvas.canvas_workspace import CanvasWorkspace
 from core.resources import asset_reconciliation
 from core.toolchain import Toolchain
 from core.project_watcher import ProjectWatcher
@@ -531,7 +532,11 @@ class MainWindow(QMainWindow):
 
         self.scene_editor = SceneEditor()
         self.scene_editor.scene_changed.connect(self._on_scene_changed)
-        self._center_v_split.addWidget(self.scene_editor)
+        # Le workspace possède les CONTEXTES du Canvas. `scene_editor` reste
+        # l'éditeur/rendu de scène, afin que le futur graphe ne le transforme
+        # pas en monolithe et que les connexions existantes restent stables.
+        self.canvas_workspace = CanvasWorkspace(self.scene_editor)
+        self._center_v_split.addWidget(self.canvas_workspace)
 
         self.build_panel = BuildPanel()
         self.build_panel.btn_build.clicked.connect(self._run_build)
@@ -584,6 +589,8 @@ class MainWindow(QMainWindow):
             self.scene_editor._save_ui_regions)
         self.scene_tree_panel.ui_layout_changed.connect(
             self.scene_editor._reload_ui_regions)
+        self.scene_tree_panel.editor_visibility_changed.connect(
+            self.scene_editor.set_editor_hidden_members)
         self._inspector.ui_regions_changed.connect(
             self.scene_tree_panel.refresh)
         self.scene_editor.scene_changed.connect(
@@ -631,7 +638,7 @@ class MainWindow(QMainWindow):
         self._h_split.setStretchFactor(2, 0)
 
         screen = SceneManagerScreen(self.assets_finder_panel, self.scene_tree_panel,
-                                    self.scene_editor, self._inspector)
+                                    self.canvas_workspace, self._inspector)
         screen_layout = QVBoxLayout(screen)
         screen_layout.setContentsMargins(0, 0, 0, 0)
         screen_layout.setSpacing(0)

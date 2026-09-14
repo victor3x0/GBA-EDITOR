@@ -318,7 +318,8 @@ class DynamicInspector(QWidget):
         from pathlib import Path as _P
         from core.models.scene import Actor, Prefab, Scene
         from core.selection_bus import (
-            BackgroundLayerSelection, CameraSelection, UIRegionSelection, UILayoutSelection)
+            BackgroundLayerSelection, CameraSelection, UIRegionSelection, UILayoutSelection,
+            ActorSelection)
         if obj is None:
             # Mode par défaut : aperçu du projet (pas le message d'aide vide) —
             # cf. clic hors de la zone active du canvas.
@@ -335,6 +336,10 @@ class DynamicInspector(QWidget):
         elif isinstance(obj, BackgroundLayerSelection):
             self.show_scene(obj.scene, self._project)
             self._scene_insp.focus_background_slot(obj.bg_slot)
+        elif isinstance(obj, ActorSelection):
+            scene = self._project.active_scene if self._project else None
+            if obj.active:
+                self.show_actor(obj.active, self._project, scene)
         elif isinstance(obj, Actor):
             scene = self._project.active_scene if self._project else None
             self.show_actor(obj, self._project, scene)

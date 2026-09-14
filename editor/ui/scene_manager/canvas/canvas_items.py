@@ -622,7 +622,6 @@ class CameraItem(QGraphicsItem):
 #  arrondis crénèlent.
 # ──────────────────────────────────────────────────────────────────
 class ScreenBezelItem(QGraphicsItem):
-    _RADIUS = 5.0
     _COLOR = QColor(C.ACCENT)
 
     def __init__(self, w: int, h: int, parent=None):
@@ -643,7 +642,6 @@ class ScreenBezelItem(QGraphicsItem):
         return QRectF(-m, -m, self._w + 2 * m, self._h + 2 * m)
 
     def paint(self, painter: QPainter, option, widget=None):
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         r = QRectF(0, 0, self._w, self._h)
         # Halo peint à la main : QGraphicsDropShadowEffect plante sous le
         # backend offscreen (crash natif en capture headless, 0xC0000409).
@@ -656,13 +654,13 @@ class ScreenBezelItem(QGraphicsItem):
             glow_pen.setColor(c)
             painter.setPen(glow_pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(r, self._RADIUS, self._RADIUS)
+            painter.drawRect(r)
         pen = QPen(self._COLOR)
         pen.setWidthF(1.4)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(r, self._RADIUS, self._RADIUS)
+        painter.drawRect(r)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -793,17 +791,17 @@ class GuideLine(QGraphicsLineItem):
 # ──────────────────────────────────────────────────────────────────
 _T = COLLISION_TILE_SIZE  # 8
 
-_C_SOLID = QColor(255, 60, 60, 130)
-_C_STEEP = QColor(255, 160, 30, 150)
-_C_GENTLE = QColor(255, 200, 80, 150)
-_B_SOLID = QColor(255, 80, 80, 220)
-_B_STEEP = QColor(255, 180, 50, 230)
-_B_GENTLE = QColor(255, 210, 100, 230)
+_C_SOLID = QColor(255, 126, 88, 42)
+_C_STEEP = QColor(255, 183, 77, 48)
+_C_GENTLE = QColor(255, 211, 102, 48)
+_B_SOLID = QColor(255, 126, 88, 175)
+_B_STEEP = QColor(255, 183, 77, 185)
+_B_GENTLE = QColor(255, 211, 102, 185)
 # Plafond — teinte bleue/violette pour distinguer visuellement
-_C_STEEP_INV = QColor(80, 140, 255, 150)
-_C_GENTLE_INV = QColor(120, 180, 255, 150)
-_B_STEEP_INV = QColor(100, 160, 255, 230)
-_B_GENTLE_INV = QColor(140, 200, 255, 230)
+_C_STEEP_INV = QColor(110, 168, 255, 48)
+_C_GENTLE_INV = QColor(152, 194, 255, 48)
+_B_STEEP_INV = QColor(110, 168, 255, 185)
+_B_GENTLE_INV = QColor(152, 194, 255, 185)
 
 _FLOOR_SLOPES = (
     TILE_SLOPE_L,
@@ -912,24 +910,23 @@ class CollisionOverlay(QGraphicsItem):
             self._cache = QPixmap(w, h)
             self._cache.fill(Qt.GlobalColor.transparent)
             cp = QPainter(self._cache)
-            cp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            cp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             for row in range(self._rows):
                 for col in range(self._cols):
                     self._draw_tile(cp, col, row, self._map[row][col], alpha_mul=1.0)
             cp.end()
 
-        # Le cache est construit lissé à sa résolution native ; sans ce hint,
-        # le blit vers l'écran repasse en nearest-neighbor dès que la vue est
-        # zoomée et le crénelage réapparaît.
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        # Les collisions sont une information de tuile : elles restent nettes
+        # à tous les zooms, sans halos ni faux coins arrondis.
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
         painter.drawPixmap(0, 0, self._cache)
 
         # Preview slope au-dessus du cache (pas mis en cache — éphémère)
         if self._preview:
             painter.save()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
             for col, row, t in self._preview:
-                self._draw_tile(painter, col, row, t, alpha_mul=0.5)
+                self._draw_tile(painter, col, row, t, alpha_mul=1.55)
             painter.restore()
 
     def _draw_tile(
@@ -951,6 +948,15 @@ class CollisionOverlay(QGraphicsItem):
             painter.fillRect(x, y, _T, _T, fill)
             painter.setPen(QPen(bord, 0))
             painter.drawRect(x, y, _T - 1, _T - 1)
+            # Hachure pixelisée, plus lisible qu'une masse rouge opaque.
+            hatch = QColor(bord)
+            hatch.setAlpha(max(24, hatch.alpha() // 3))
+            painter.save()
+            painter.setClipRect(x, y, _T, _T)
+            painter.setPen(QPen(hatch, 0))
+            for offset in range(-_T, _T * 2, 4):
+                painter.drawLine(x + offset, y + _T, x + offset + _T, y)
+            painter.restore()
         elif t in _FLOOR_SLOPES:
             fill, bord = _colored(_C_STEEP, _B_STEEP)
             path = _slope_path(x, y, t)

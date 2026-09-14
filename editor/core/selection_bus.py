@@ -37,6 +37,18 @@ class CameraSelection:
         self.camera = camera
 
 
+class ActorSelection:
+    """Sélection multiple d'acteurs, avec un acteur actif pour l'inspecteur."""
+    __slots__ = ("actors", "active")
+
+    def __init__(self, actors, active=None):
+        self.actors = tuple(actors)
+        # Les acteurs sont mutables et peuvent être structurellement égaux :
+        # l'éditeur les sélectionne toujours par identité, jamais par ``==``.
+        self.active = next((actor for actor in self.actors if actor is active),
+                           self.actors[0] if self.actors else None)
+
+
 class BackgroundLayerSelection:
     """Marqueur de sélection d'un slot BG de la scène.
 

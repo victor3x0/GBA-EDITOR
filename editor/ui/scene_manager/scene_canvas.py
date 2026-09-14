@@ -179,6 +179,8 @@ class SceneEditor(QWidget):
         self._canvas_w = GBA_W
         self._canvas_h = GBA_H
         self._show_all_boxes = False
+        # Masques purement éditoriaux, alimentés par le sidecar du Scene Tree.
+        self._editor_hidden_members: set[str] = set()
         # Sauvegarde coalescée : un nudge clavier maintenu (auto-repeat) ne doit
         # pas écrire la scène sur disque à chaque frappe — on ne persiste qu'une
         # fois l'utilisateur arrêté, ce qui évite la rafale d'écritures atomiques
@@ -607,6 +609,7 @@ class SceneEditor(QWidget):
 
     def _on_ui_elements_toggle(self, checked: bool):
         self._gba_scene.set_ui_elements_view(checked)
+        self._apply_editor_visibility()
 
     def _update_actor_box_overlay(self):
         if not self._project:
@@ -662,6 +665,7 @@ class SceneEditor(QWidget):
                    if (self._project and scene) else [])
         self._gba_scene.set_ui_regions(layouts, self._project, scene,
                                        save_fn=self._save_ui_regions)
+        self._apply_editor_visibility()
         self.ui_regions_reloaded.emit()
 
     def _save_ui_regions(self):
@@ -1007,6 +1011,7 @@ class SceneEditor(QWidget):
             if id(item.scene_sprite) in prev_selected_ids:
                 item.setSelected(True)
         self._gba_scene.blockSignals(False)
+        self._apply_editor_visibility()
 
         if prev_selected_ids:
             self._update_actor_box_overlay()
@@ -1071,7 +1076,12 @@ class SceneEditor(QWidget):
                 # caméra par défaut ici, seulement au premier vrai déplacement.
                 get_bus().select(CameraSelection(self._project.active_scene, target.camera))
         elif isinstance(target, SpriteItem):
-            get_bus().select(target.scene_sprite)
+            actors = [item.scene_sprite for item in selected if isinstance(item, SpriteItem)]
+            if len(actors) > 1:
+                from core.selection_bus import ActorSelection
+                get_bus().select(ActorSelection(actors, target.scene_sprite))
+            else:
+                get_bus().select(target.scene_sprite)
         elif isinstance(target, UIRegionItem):
             from core.selection_bus import UIRegionSelection
             get_bus().select(UIRegionSelection(target._layout, target._region))
@@ -1107,7 +1117,18 @@ class SceneEditor(QWidget):
         # Désélectionner tout d'abord
         for item in self._gba_scene.selectedItems():
             item.setSelected(False)
-        if isinstance(obj, Actor):
+        from core.selection_bus import ActorSelection
+        if isinstance(obj, ActorSelection):
+            active_item = None
+            for actor in obj.actors:
+                item = self._find_item(actor)
+                if item:
+                    item.setSelected(True)
+                    if actor is obj.active:
+                        active_item = item
+            if active_item:
+                self._gba_view.centerOn(active_item)
+        elif isinstance(obj, Actor):
             item = self._find_item(obj)
             if item:
                 item.setSelected(True)
@@ -1139,7 +1160,10 @@ class SceneEditor(QWidget):
         self._gba_scene.blockSignals(False)
         # Sélection ramenée à un seul item : c'est lui l'actif (sinon plus
         # aucun — la caméra et la scène « nue » n'en ont pas).
-        self._gba_scene.set_active_item(self._item_for_selection(obj))
+        if isinstance(obj, ActorSelection):
+            self._gba_scene.set_active_item(self._find_item(obj.active))
+        else:
+            self._gba_scene.set_active_item(self._item_for_selection(obj))
 
     def move_actor_item(self, actor: Actor):
         """Repositionne l'item Qt d'un actor sans recréer la scène (drag ou spinbox)."""
@@ -1186,6 +1210,7 @@ class SceneEditor(QWidget):
         `cameras_list_changed`), sans recharger tout le reste de la scène."""
         if self._project and self._project.active_scene:
             self._setup_cameras(self._project.active_scene)
+            self._apply_editor_visibility()
 
     def reload_scene_items(self):
         """Resynchronise TOUS les items du canvas depuis le modèle — sprites,
@@ -1284,6 +1309,34 @@ class SceneEditor(QWidget):
     def set_layer_visible(self, bg_slot: int, visible: bool):
         """Masque/affiche un layer dans le canvas (visibilité viewport éditeur)."""
         self._gba_scene.set_bg_visible(bg_slot, visible)
+
+    def set_editor_hidden_members(self, members: set[str] | list[str] | tuple[str, ...]):
+        """Applique les masques du Scene Tree au Canvas, sans muter le jeu.
+
+        ``members`` est issu du sidecar éditorial (``actor:…``, ``camera:…``,
+        ``ui:…``). Il ne touche donc jamais ``Actor.visible`` ni la visibilité
+        authorée des éléments d'interface.
+        """
+        self._editor_hidden_members = set(members)
+        self._apply_editor_visibility()
+
+    def _apply_editor_visibility(self):
+        hidden = self._editor_hidden_members
+        for item in self._gba_scene._sprite_items:
+            item.setVisible(f"actor:{item.scene_sprite.name}" not in hidden)
+        for item in self._gba_scene.camera_items():
+            name = getattr(item.camera, "name", "")
+            item.setVisible(f"camera:{name}" not in hidden)
+        for item in self._gba_scene._ui_region_items:
+            layout = getattr(item, "_layout", None)
+            name = getattr(layout, "name", "")
+            element = getattr(item, "_region", None)
+            element_name = getattr(element, "name", "")
+            item.setVisible(
+                self._gba_scene._ui_elements_visible
+                and f"ui:{name}" not in hidden
+                and f"ui_element:{name}:{element_name}" not in hidden)
+        self._update_actor_box_overlay()
 
     def refresh_windows(self):
         """Redessine l'aperçu des windows (après édition dans l'inspecteur)."""

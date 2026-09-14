@@ -241,7 +241,7 @@ class GBAScene(QGraphicsScene):
 
     def _setup_border(self):
         self._border = ScreenBezelItem(self._canvas_w, self._canvas_h)
-        self._border.setZValue(200)
+        self._border.setZValue(400)
         self.addItem(self._border)
 
     # ── Caméra ────────────────────────────────────────────────────

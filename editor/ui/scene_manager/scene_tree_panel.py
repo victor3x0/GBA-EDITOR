@@ -13,6 +13,7 @@ besoin depuis que la liste projet est rendue par le composant partagé
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QTreeWidget,
     QTreeWidgetItem, QMenu, QAbstractItemView, QScrollArea, QSizePolicy, QPushButton,
+    QToolButton, QHeaderView,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QTimer, QSize
@@ -25,13 +26,15 @@ from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
 from core.models.scene import Actor, Scene
 from core.project import Project
 from core.selection_bus import (
-    get_bus, UIElementSelection, CameraSelection, BackgroundLayerSelection, UILayoutSelection)
+    get_bus, UIElementSelection, CameraSelection, BackgroundLayerSelection, UILayoutSelection,
+    ActorSelection)
 from core.command_dispatcher import get_dispatcher, unique_name
 from core.history import (
     get_history, AddListItemCmd, RemoveListItemCmd, UILayoutOrderCmd,
     DeleteInterfaceCmd, SceneActorOrderCmd, SetFieldCmd,
 )
 from core.models.ui_region import KIND_CONTAINER, KIND_LIST, KIND_TEXT, KIND_IMAGE
+from core.scene_tree_state import SceneTreeState
 
 # ── Rôles QTreeWidgetItem ─────────────────────────────────────────
 _ROLE_TYPE = Qt.ItemDataRole.UserRole
@@ -47,6 +50,20 @@ T_FOLDER = "folder"
 T_UI_LAYOUT = "ui_layout"    # nœud « Interface » d'une scène (asset partagé)
 T_UI_ELEM   = "ui_elem"      # un élément de la mise en page (zone/conteneur/texte)
 T_PRIORITY_GROUP = "priority_group"
+
+
+def _content_member(node_type: str, obj) -> str | None:
+    if node_type == T_ACTOR:
+        return f"actor:{obj.name}"
+    if node_type == T_CAMERA:
+        return f"camera:{obj.name}"
+    if node_type == T_UI_LAYOUT:
+        return f"ui:{obj.name}"
+    return None
+
+
+def _ui_element_member(layout, element) -> str:
+    return f"ui_element:{layout.name}:{element.name}"
 
 # Icône par type d'élément UI (la couleur reste celle de la famille Interface —
 # le type se lit à la FORME, cf. project_theme_gba_redesign).
@@ -98,6 +115,15 @@ _C_PREFAB = _TEXT
 _C_SCRIPT = _TEXT
 _C_FOLDER = _DIM
 
+_FOLDER_COLORS = (
+    ("", "scttree.folder_color_none", COLOR_DEFAULT),
+    ("#6EA8FE", "scttree.folder_color_blue", "#6EA8FE"),
+    ("#6EE7B7", "scttree.folder_color_green", "#6EE7B7"),
+    ("#FBBF24", "scttree.folder_color_yellow", "#FBBF24"),
+    ("#FB7185", "scttree.folder_color_red", "#FB7185"),
+    ("#C4B5FD", "scttree.folder_color_purple", "#C4B5FD"),
+)
+
 
 
 
@@ -110,10 +136,14 @@ class _Tree(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setHeaderHidden(True)
+        self.setColumnCount(2)
+        self.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.setColumnWidth(1, 28)
         self.setIndentation(14)
         self.setAnimated(False)
         self.setUniformRowHeights(True)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Renommage en place, jamais de dialogue modal : clic sur un item déjà
         # sélectionné, F2 (EditKeyPressed), ou « Renommer » au menu contextuel
@@ -131,6 +161,12 @@ class _Tree(QTreeWidget):
         self.model().rowsRemoved.connect(self._fit)
         self.itemExpanded.connect(self._fit)
         self.itemCollapsed.connect(self._fit)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # La seconde colonne porte les actions (œil) : la largeur explicite
+        # évite qu'elle se colle au contenu quand l'en-tête est masqué.
+        self.setColumnWidth(0, max(0, self.viewport().width() - self.columnWidth(1)))
 
     def add_rename_action(self, menu: QMenu, item: QTreeWidgetItem, label: str):
         """Entrée « Renommer » qui bascule l'item en édition en place. Grisée
@@ -189,24 +225,37 @@ class _ActiveSceneTree(_Tree):
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.itemClicked.connect(self._on_click)
+        self.itemSelectionChanged.connect(self._on_actor_selection_changed)
         self.customContextMenuRequested.connect(self._ctx_menu)
         self.itemChanged.connect(self._on_item_changed)
         # Repli/dépli des éléments d'UI mémorisé PAR OBJET, comme l'ancien
         # arbre unique — sinon chaque populate() (courant après le moindre
         # edit) réouvre tout ce qu'on venait de refermer.
-        self._expand_overrides: dict[int, bool] = {}
+        self._expand_overrides: dict[tuple[str, object], bool] = {}
+        self._folder_items: dict[str | None, QTreeWidgetItem] = {}
+        self._content_root: QTreeWidgetItem | None = None
         self.itemExpanded.connect(self._on_item_expanded)
         self.itemCollapsed.connect(self._on_item_collapsed)
 
     def _on_item_expanded(self, item: QTreeWidgetItem):
-        obj = item.data(0, _ROLE_OBJ)
-        if obj is not None:
-            self._expand_overrides[id(obj)] = True
+        key = self._expand_key(item)
+        if key is not None:
+            self._expand_overrides[key] = True
 
     def _on_item_collapsed(self, item: QTreeWidgetItem):
+        key = self._expand_key(item)
+        if key is not None:
+            self._expand_overrides[key] = False
+
+    @staticmethod
+    def _expand_key(item: QTreeWidgetItem):
+        node_type = item.data(0, _ROLE_TYPE)
         obj = item.data(0, _ROLE_OBJ)
-        if obj is not None:
-            self._expand_overrides[id(obj)] = False
+        if obj is None:
+            return None
+        # L'identifiant de dossier est une chaîne persistante ; les objets du
+        # modèle, eux, gardent leur identité pendant un refresh.
+        return (node_type, obj if node_type == T_FOLDER else id(obj))
 
     # ── Peuplement ────────────────────────────────────────────────
 
@@ -215,6 +264,7 @@ class _ActiveSceneTree(_Tree):
         self.blockSignals(True)
         self.clear()
         if scene is not None:
+            self._populate_content_folders(scene, project)
             # Les acteurs se posent en ARBRE depuis la v0.23 : un acteur dont
             # `parent` nomme un autre acteur de la scène s'accroche sous lui.
             # Même dérivation que la branche Interface juste en dessous, qui
@@ -238,18 +288,133 @@ class _ActiveSceneTree(_Tree):
                 if host is not None and host is not items[actor.name]:
                     host.addChild(items[actor.name])
                 else:
-                    self.addTopLevelItem(items[actor.name])
-            for it in items.values():
-                it.setExpanded(True)
+                    self._add_content_root(T_ACTOR, actor, items[actor.name])
+            for actor, it in ((actor, items[actor.name]) for actor in scene.actors):
+                it.setExpanded(self._expand_overrides.get((T_ACTOR, id(actor)), True))
             for camera in scene.cameras:
                 c_item = QTreeWidgetItem()
                 c_item.setData(0, _ROLE_TYPE, T_CAMERA)
                 c_item.setData(0, _ROLE_OBJ, camera)
                 self._update_camera_item(c_item, camera)
-                self.addTopLevelItem(c_item)
+                self._add_content_root(T_CAMERA, camera, c_item)
             self._populate_ui_branch(scene, project)
+            self._install_visibility_controls()
         self.blockSignals(False)
         self._fit()
+
+    def _populate_content_folders(self, scene: Scene, project: Project):
+        # Le root est le conteneur implicite de TOUT le contenu de la scène.
+        # Les éléments sans dossier y vivent directement : « Non classés »
+        # n'est donc pas un faux dossier permanent dans l'arbre.
+        self._content_root = QTreeWidgetItem(self)
+        self._content_root.setData(0, _ROLE_TYPE, T_SCENE)
+        self._content_root.setData(0, _ROLE_OBJ, scene)
+        self._content_root.setIcon(0, _ico("folder", COLOR_DEFAULT))
+        self._content_root.setText(0, scene.name)
+        self._content_root.setForeground(0, QColor(_C_SCENE))
+        self._content_root.setFlags((self._content_root.flags() |
+                                     Qt.ItemFlag.ItemIsDropEnabled) &
+                                    ~Qt.ItemFlag.ItemIsDragEnabled &
+                                    ~Qt.ItemFlag.ItemIsEditable)
+        self._content_root.setExpanded(self._expand_overrides.get((T_SCENE, id(scene)), True))
+        self._folder_items = {}
+        state = self._panel._content_state
+        valid = {f"actor:{a.name}" for a in scene.actors}
+        valid |= {f"camera:{c.name}" for c in scene.cameras}
+        valid |= {f"ui:{getattr(n, 'layout_name', n)}" for n in scene.ui_layouts}
+        layouts = (project.scene_ui_layouts(scene)
+                   if project is not None and hasattr(project, "scene_ui_layouts") else [])
+        valid |= {f"ui_element:{layout.name}:{element.name}"
+                  for layout in layouts for element in layout.elements}
+        if state:
+            state.prune(scene.name, valid)
+            for folder in state.folders(scene.name):
+                item = QTreeWidgetItem(self._content_root)
+                item.setData(0, _ROLE_TYPE, T_FOLDER)
+                item.setData(0, _ROLE_OBJ, folder.id)
+                item.setIcon(0, _ico("folder", folder.color or COLOR_DEFAULT))
+                item.setText(0, folder.name)
+                item.setFlags((item.flags() | Qt.ItemFlag.ItemIsDropEnabled |
+                               Qt.ItemFlag.ItemIsEditable) & ~Qt.ItemFlag.ItemIsDragEnabled)
+                item.setExpanded(self._expand_overrides.get((T_FOLDER, folder.id), True))
+                self._folder_items[folder.id] = item
+        self._folder_items[None] = self._content_root
+
+    def _add_content_root(self, node_type: str, obj, item: QTreeWidgetItem):
+        state = self._panel._content_state
+        member = _content_member(node_type, obj)
+        folder_id = state.folder_of(self._scene.name, member) if state and member else None
+        (self._folder_items.get(folder_id) or self._folder_items[None]).addChild(item)
+
+    def _root_actor(self, actor):
+        """Retourne la racine runtime, avec garde contre une parenté invalide."""
+        actors = {a.name: a for a in self._scene.actors}
+        seen = set()
+        while getattr(actor, "parent", None) in actors and actor.name not in seen:
+            seen.add(actor.name)
+            actor = actors[actor.parent]
+        return actor
+
+    def _editor_visible(self, node_type: str, obj, layout=None) -> bool:
+        state, scene = self._panel._content_state, self._scene
+        if not state or not scene:
+            return True
+        if node_type == T_FOLDER:
+            return state.folder_visible(scene.name, obj)
+        member = (_ui_element_member(layout, obj) if node_type == T_UI_ELEM and layout
+                  else _content_member(node_type, obj))
+        if not member or not state.member_visible(scene.name, member):
+            return False
+        # Le masque de l'Interface (ou de son dossier) englobe tous ses
+        # éléments ; inversement, un texte/conteneur peut être masqué seul.
+        if node_type == T_UI_ELEM:
+            return state.member_visible(scene.name, _content_member(T_UI_LAYOUT, layout))
+        # Les enfants d'un acteur appartiennent visuellement à son dossier.
+        if node_type == T_ACTOR and getattr(obj, "parent", None):
+            root = self._root_actor(obj)
+            return state.member_visible(scene.name, _content_member(T_ACTOR, root))
+        return True
+
+    def _install_visibility_controls(self) -> None:
+        """Pose les contrôles œil du contexte Content."""
+        if QTreeWidgetItemIterator is None:
+            return
+        it = QTreeWidgetItemIterator(self)
+        while it.value():
+            item = it.value()
+            node_type = item.data(0, _ROLE_TYPE)
+            if node_type in (T_ACTOR, T_CAMERA, T_UI_LAYOUT, T_UI_ELEM, T_FOLDER):
+                obj = item.data(0, _ROLE_OBJ)
+                layout = item.data(0, _ROLE_PATH)
+                visible = self._editor_visible(node_type, obj, layout)
+                button = QToolButton(self)
+                button.setAutoRaise(True)
+                button.setFixedSize(24, 24)
+                button.setIconSize(QSize(16, 16))
+                button.setIcon(_ico("eye" if visible else "eye_off",
+                                    C.TEXT_DIM if visible else "#555"))
+                button.setStyleSheet("QToolButton{background:transparent;border:none;padding:0;}")
+                button.setToolTip(label("scttree.hide_in_editor") if visible
+                                  else label("scttree.show_in_editor"))
+                button.clicked.connect(
+                    lambda _=False, typ=node_type, value=obj, lay=layout:
+                    self._toggle_editor_visibility(typ, value, lay))
+                self.setItemWidget(item, 1, button)
+            it += 1
+
+    def _toggle_editor_visibility(self, node_type: str, obj, layout=None) -> None:
+        state, scene = self._panel._content_state, self._scene
+        if not state or not scene:
+            return
+        visible = self._editor_visible(node_type, obj, layout)
+        if node_type == T_FOLDER:
+            changed = state.set_folder_visible(scene.name, obj, not visible)
+        else:
+            member = (_ui_element_member(layout, obj) if node_type == T_UI_ELEM and layout
+                      else _content_member(node_type, obj))
+            changed = bool(member) and state.set_member_visible(scene.name, member, not visible)
+        if changed:
+            self._panel.refresh()
 
     def _populate_ui_branch(self, scene: Scene, project: Project):
         """Ajoute, en tête de liste, les nœuds `Interface` de la scène (une LISTE
@@ -266,7 +431,7 @@ class _ActiveSceneTree(_Tree):
             users = (project.ui_layout_users(lay.name)
                      if hasattr(project, "ui_layout_users") else [])
             shared = len(users) > 1
-            root_item = QTreeWidgetItem(self)
+            root_item = QTreeWidgetItem()
             root_item.setData(0, _ROLE_TYPE, T_UI_LAYOUT)
             root_item.setData(0, _ROLE_OBJ, lay)
             root_item.setIcon(0, _ico("ui_layout", COLOR_UI))
@@ -278,14 +443,16 @@ class _ActiveSceneTree(_Tree):
             root_item.setToolTip(
                 0, label("scttree.iface_tip_shared", name=lay.name, n=len(users)) if shared
                    else label("scttree.iface_tip", name=lay.name))
+            root_item.setFlags(root_item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+            self._add_content_root(T_UI_LAYOUT, lay, root_item)
             items: dict[str, QTreeWidgetItem] = {}
             for _depth, el in lay.in_tree_order():
                 parent_item = items.get(el.parent, root_item)
                 e_item = QTreeWidgetItem(parent_item)
                 self._update_ui_elem_item(e_item, el, lay)
-                e_item.setExpanded(self._expand_overrides.get(id(el), True))
+                e_item.setExpanded(self._expand_overrides.get((T_UI_ELEM, id(el)), True))
                 items[el.name] = e_item
-            root_item.setExpanded(self._expand_overrides.get(id(lay), True))
+            root_item.setExpanded(self._expand_overrides.get((T_UI_LAYOUT, id(lay)), True))
 
     def _update_ui_elem_item(self, item: QTreeWidgetItem, el, layout):
         """Peuple la ligne d'un élément UI : icône de type (forme), nom éditable,
@@ -298,7 +465,7 @@ class _ActiveSceneTree(_Tree):
         item.setIcon(0, _ico(_UI_ELEM_ICON.get(kind, "ui_text"), COLOR_UI))
         item.setText(0, el.name)
         item.setFont(0, ui_font(T.LG))
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled)
         handle = _lua_handle(T_UI_ELEM, el)
         if handle:
             item.setForeground(0, QColor(_TEXT))
@@ -319,7 +486,7 @@ class _ActiveSceneTree(_Tree):
             item.setIcon(0, _ico("actor", COLOR_DEFAULT))
             item.setToolTip(0, label("scttree.ref_tip", handle=handle))
         item.setText(0, actor.name)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled)
         item.setForeground(0, QColor(_TEXT))
 
     def _update_camera_item(self, item: QTreeWidgetItem, camera):
@@ -327,11 +494,26 @@ class _ActiveSceneTree(_Tree):
         item.setIcon(0, _ico("camera", COLOR_DEFAULT))
         item.setToolTip(0, label("scttree.ref_tip", handle=handle))
         item.setText(0, camera.name)
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable | Qt.ItemFlag.ItemIsDragEnabled)
         item.setForeground(0, QColor(_TEXT))
 
     def highlight_actor(self, actor: Actor):
         self._highlight(T_ACTOR, actor)
+
+    def highlight_actors(self, actors) -> None:
+        # `Actor` est mutable (dataclass non hachable) : l'identité est le
+        # contrat de sélection dans l'éditeur, pas son égalité structurelle.
+        wanted = {id(actor) for actor in actors}
+        self.blockSignals(True)
+        self.clearSelection()
+        if QTreeWidgetItemIterator is not None:
+            it = QTreeWidgetItemIterator(self)
+            while it.value():
+                node = it.value()
+                if node.data(0, _ROLE_TYPE) == T_ACTOR and id(node.data(0, _ROLE_OBJ)) in wanted:
+                    node.setSelected(True)
+                it += 1
+        self.blockSignals(False)
 
     def highlight_ui_layout(self, layout):
         self._highlight(T_UI_LAYOUT, layout)
@@ -362,10 +544,32 @@ class _ActiveSceneTree(_Tree):
 
     # ── Clic ──────────────────────────────────────────────────────
 
+    def _on_actor_selection_changed(self):
+        """Publie la sélection d'acteurs construite nativement par l'arbre.
+
+        ``ExtendedSelection`` apporte les gestes usuels : clic simple pour
+        remplacer, Ctrl+clic pour basculer et Shift+clic pour étendre une plage.
+        Le Canvas reçoit exactement la même sélection par le bus.
+        """
+        current = self.currentItem()
+        if current is None or current.data(0, _ROLE_TYPE) != T_ACTOR:
+            return
+        actors = [item.data(0, _ROLE_OBJ) for item in self.selectedItems()
+                  if item.data(0, _ROLE_TYPE) == T_ACTOR]
+        if not actors:
+            # Ctrl+clic sur le dernier acteur le retire aussi du Canvas et de
+            # l'inspecteur — ne pas laisser l'ancienne sélection visuelle.
+            get_bus().clear()
+            return
+        active = current.data(0, _ROLE_OBJ)
+        get_bus().select(ActorSelection(actors, active) if len(actors) > 1 else active)
+
     def _on_click(self, item: QTreeWidgetItem, _col: int):
         typ = item.data(0, _ROLE_TYPE)
         if typ == T_ACTOR:
-            get_bus().select(item.data(0, _ROLE_OBJ))
+            # L'événement ``itemSelectionChanged`` ci-dessus porte aussi les
+            # modificateurs Ctrl/Shift ; ne pas écraser la sélection multiple.
+            return
         elif typ == T_CAMERA:
             get_bus().select(CameraSelection(self._scene, item.data(0, _ROLE_OBJ)))
         elif typ == T_UI_ELEM:
@@ -385,6 +589,23 @@ class _ActiveSceneTree(_Tree):
             event.ignore()
             return
         dtype = dragged.data(0, _ROLE_TYPE)
+
+        if target is not None and target.data(0, _ROLE_TYPE) in (T_FOLDER, T_SCENE) and \
+                dtype in (T_ACTOR, T_CAMERA, T_UI_LAYOUT):
+            obj = dragged.data(0, _ROLE_OBJ)
+            if dtype == T_ACTOR and getattr(obj, "parent", None):
+                actors = {a.name: a for a in self._scene.actors}
+                while getattr(obj, "parent", None) in actors:
+                    obj = actors[obj.parent]
+            member = _content_member(dtype, obj)
+            state = self._panel._content_state
+            if state and member:
+                folder_id = (target.data(0, _ROLE_OBJ)
+                             if target.data(0, _ROLE_TYPE) == T_FOLDER else None)
+                state.move_member(self._scene.name, member, folder_id)
+                event.accept()
+                self._panel.refresh()
+                return
 
         if dtype == T_UI_ELEM:
             indicator = self.dropIndicatorPosition()
@@ -572,12 +793,16 @@ class _ActiveSceneTree(_Tree):
             menu.addAction(label("scttree.move_bottom")).triggered.connect(
                 lambda: self._move_actor(scene, actor, "bottom"))
             menu.addSeparator()
+            self._add_folder_actions(menu, T_ACTOR, actor)
+            menu.addSeparator()
             self.add_rename_action(menu, item, label("scttree.rename_actor"))
             menu.addAction(label("scttree.delete_actor")).triggered.connect(
                 lambda: get_dispatcher().delete_actor(actor))
 
         elif typ == T_CAMERA:
             camera = item.data(0, _ROLE_OBJ)
+            self._add_folder_actions(menu, T_CAMERA, camera)
+            menu.addSeparator()
             self.add_rename_action(menu, item, label("scttree.rename_camera"))
             menu.addAction(label("scttree.delete_camera")).triggered.connect(
                 lambda: get_dispatcher().delete_camera(camera))
@@ -600,6 +825,8 @@ class _ActiveSceneTree(_Tree):
             menu.addAction(label("scttree.remove_from_scene") if shared
                            else label("scttree.delete_interface")).triggered.connect(
                 lambda _, lay=layout, sh=shared: self._delete_interface(lay, sh))
+            menu.addSeparator()
+            self._add_folder_actions(menu, T_UI_LAYOUT, layout)
 
         elif typ == T_UI_ELEM:
             el = item.data(0, _ROLE_OBJ)
@@ -633,7 +860,63 @@ class _ActiveSceneTree(_Tree):
             menu.addAction(label("common.delete")).triggered.connect(
                 lambda _, e=el, lay=layout: self._delete_ui_elem(lay, e))
 
+        elif typ == T_FOLDER:
+            folder_id = item.data(0, _ROLE_OBJ)
+            if folder_id is not None:
+                self.add_rename_action(menu, item, label("scttree.rename_folder"))
+                colors = menu.addMenu(label("scttree.folder_color"))
+                colors.setFont(QFont(T.UI, T.MD))
+                for color, label_key, icon_color in _FOLDER_COLORS:
+                    action = colors.addAction(_ico("folder", icon_color), label(label_key))
+                    action.triggered.connect(
+                        lambda _, value=color, fid=folder_id: self._set_folder_color(fid, value))
+                menu.addAction(label("scttree.delete_folder")).triggered.connect(
+                    lambda _, fid=folder_id: self._delete_folder(fid))
+
         menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _delete_folder(self, folder_id: str):
+        if self._panel._content_state and self._scene:
+            self._panel._content_state.delete_folder(self._scene.name, folder_id)
+            self._panel.refresh()
+
+    def _set_folder_color(self, folder_id: str, color: str) -> None:
+        if self._panel._content_state and self._scene:
+            if self._panel._content_state.set_folder_color(self._scene.name, folder_id, color):
+                self._panel.refresh()
+
+    def _folder_member_for(self, node_type: str, obj) -> str | None:
+        if node_type != T_ACTOR or not getattr(obj, "parent", None):
+            return _content_member(node_type, obj)
+        actors = {a.name: a for a in self._scene.actors}
+        while getattr(obj, "parent", None) in actors:
+            obj = actors[obj.parent]
+        return _content_member(T_ACTOR, obj)
+
+    def _add_folder_actions(self, menu: QMenu, node_type: str, obj) -> None:
+        """Ajoute un déplacement accessible sans glisser-déposer."""
+        state, scene = self._panel._content_state, self._scene
+        if not state or not scene:
+            return
+        member = self._folder_member_for(node_type, obj)
+        if not member:
+            return
+        current = state.folder_of(scene.name, member)
+        sub = menu.addMenu(label("scttree.move_to_folder"))
+        sub.setFont(QFont(T.UI, T.MD))
+        for folder in state.folders(scene.name):
+            action = sub.addAction(folder.name)
+            action.setEnabled(folder.id != current)
+            action.triggered.connect(
+                lambda _, fid=folder.id, key=member: self._move_member_to_folder(key, fid))
+        if current is not None:
+            menu.addAction(label("scttree.remove_from_folder")).triggered.connect(
+                lambda _, key=member: self._move_member_to_folder(key, None))
+
+    def _move_member_to_folder(self, member: str, folder_id: str | None) -> None:
+        if self._panel._content_state and self._scene:
+            self._panel._content_state.move_member(self._scene.name, member, folder_id)
+            self._panel.refresh()
 
     # ── Éléments d'UI : création / réordonnancement / suppression ─
     def _create_ui_elem(self, layout, kind: str, parent_name: str):
@@ -697,6 +980,11 @@ class _ActiveSceneTree(_Tree):
             self._commit_rename_camera(item)
         elif typ == T_UI_ELEM:
             self._commit_rename_ui_elem(item)
+        elif typ == T_FOLDER:
+            folder_id = item.data(0, _ROLE_OBJ)
+            if folder_id and self._panel._content_state and self._scene:
+                self._panel._content_state.rename_folder(self._scene.name, folder_id, item.text(0))
+                self._panel.refresh()
 
     def _commit_rename_camera(self, item: QTreeWidgetItem):
         camera = item.data(0, _ROLE_OBJ)
@@ -713,7 +1001,11 @@ class _ActiveSceneTree(_Tree):
         # `_commit_rename_actor`). Une collision de nom est refusée en
         # silence par `Project.rename_camera` : le rebuild qui suit remontre
         # alors l'ancien nom, sans message dédié.
+        old_name = camera.name
         proj.rename_camera(self._scene, camera, new_name)
+        if self._panel._content_state:
+            self._panel._content_state.rename_member(
+                self._scene.name, f"camera:{old_name}", f"camera:{camera.name}")
         get_dispatcher()._emit("cameras_list_changed")
 
     def _commit_rename_ui_elem(self, item: QTreeWidgetItem):
@@ -731,7 +1023,12 @@ class _ActiveSceneTree(_Tree):
         # reconstruit l'arbre (avec le nom, possiblement dédupliqué, à jour)
         # avant que cet appel ne rende la main. `item` est un QTreeWidgetItem
         # que cette reconstruction a détruit — ne plus y toucher après.
+        old_name = el.name
         proj.rename_ui_element(layout, el, new_name)
+        if self._panel._content_state and self._scene:
+            self._panel._content_state.rename_member(
+                self._scene.name, f"ui_element:{layout.name}:{old_name}",
+                f"ui_element:{layout.name}:{el.name}")
         self._panel._after_ui_change()
 
     def _commit_rename_actor(self, item: QTreeWidgetItem):
@@ -748,7 +1045,11 @@ class _ActiveSceneTree(_Tree):
             # l'arbre est déjà reconstruit à ce point, `item` déjà détruit —
             # ne plus y toucher après cet appel (même mise en garde que
             # ci-dessus et que `_commit_rename_scene` dans assets_finder_panel).
+            old_name = actor.name
             proj.rename_actor(actor, new_name, scene=self._scene)
+            if self._panel._content_state:
+                self._panel._content_state.rename_member(
+                    self._scene.name, f"actor:{old_name}", f"actor:{actor.name}")
         else:
             actor.name = new_name
             self.blockSignals(True)
@@ -841,6 +1142,20 @@ class _PrioritySceneTree(_Tree):
         item.setToolTip(0, f"OBJ priority {actor.priority}")
         item.setForeground(0, QColor(_TEXT))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsDragEnabled | Qt.ItemFlag.ItemIsSelectable)
+
+    def highlight_actors(self, actors) -> None:
+        """Reflète une multi-sélection du Canvas dans la projection Priority."""
+        wanted = {id(actor) for actor in actors}
+        self.blockSignals(True)
+        self.clearSelection()
+        if QTreeWidgetItemIterator is not None:
+            it = QTreeWidgetItemIterator(self)
+            while it.value():
+                node = it.value()
+                if node.data(0, _ROLE_TYPE) == T_ACTOR and id(node.data(0, _ROLE_OBJ)) in wanted:
+                    node.setSelected(True)
+                it += 1
+        self.blockSignals(False)
 
     def _populate_bg_ui(self, host, project, scene, slot):
         """Ajoute sous `host` les nœuds Interface rendus en BG dont le `bg_slot`
@@ -1007,12 +1322,15 @@ class SceneTreePanel(QWidget):
     # l'arbre : le scene_editor sauve et redessine le canvas (câblé dans
     # window.py) — même contrat que l'ancien AssetsFinderPanel.
     ui_layout_changed = pyqtSignal()
+    # Ensemble de clés (actor:/camera:/ui:) que le Canvas masque localement.
+    editor_visibility_changed = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project: Project | None = None
         self._scene: Scene | None = None
         self._context = "content"
+        self._content_state: SceneTreeState | None = None
         self.setMinimumWidth(180)
         self.setMaximumWidth(420)
         self.setStyleSheet(f"background:{_BG};")
@@ -1044,10 +1362,42 @@ class SceneTreePanel(QWidget):
         add_menu.addAction(_ico("actor", COLOR_DEFAULT), label("common.actor")).triggered.connect(self._add_actor)
         add_menu.addAction(_ico("camera", COLOR_DEFAULT), label("common.camera")).triggered.connect(self._add_camera)
         add_menu.addAction(_ico("ui_layout", COLOR_UI), label("common.interface")).triggered.connect(self._add_interface)
+        add_menu.addSeparator()
+        add_menu.addAction(_ico("folder", COLOR_DEFAULT), label("scttree.add_folder")).triggered.connect(self._add_folder)
         self._btn_add.setMenu(add_menu)
         self._btn_add.setPopupMode(self._btn_add.ToolButtonPopupMode.InstantPopup)
         hl.addWidget(self._btn_add)
+        self._btn_search = W.btn_search(label("scttree.search"))
+        self._btn_search.setCheckable(True)
+        self._btn_search.toggled.connect(lambda shown: self._filters_bar.setVisible(shown))
+        hl.addWidget(self._btn_search)
         layout.addWidget(hdr)
+
+        self._filters_bar = QFrame()
+        self._filters_bar.setStyleSheet(f"background:{_BG}; border-bottom:1px solid {C.BORDER};")
+        filters_layout = QHBoxLayout(self._filters_bar)
+        filters_layout.setContentsMargins(S.GUTTER, S.XS, S.GUTTER, S.XS)
+        filters_layout.setSpacing(S.XS)
+        self._search_input = W.search_box(label("scttree.search"))
+        self._search_input.textChanged.connect(self._apply_content_filter)
+        filters_layout.addWidget(self._search_input, 1)
+        self._active_filters: set[str] = set()
+        for key, icon, tip in (
+            (T_ACTOR, "actor", "scttree.filter_actors"),
+            (T_UI_LAYOUT, "ui_layout", "scttree.filter_interface"),
+            (T_CAMERA, "camera", "scttree.filter_cameras"),
+            ("unfiled", "folder", "scttree.filter_unfiled"),
+        ):
+            button = QToolButton(self._filters_bar)
+            button.setCheckable(True)
+            button.setAutoRaise(True)
+            button.setFixedSize(24, 24)
+            button.setIcon(_ico(icon, COLOR_DEFAULT))
+            button.setToolTip(label(tip))
+            button.toggled.connect(lambda checked, k=key: self._toggle_content_filter(k, checked))
+            filters_layout.addWidget(button)
+        self._filters_bar.setVisible(False)
+        layout.addWidget(self._filters_bar)
 
         # ── Deux projections, deux onglets texte ───────────────────
         # Le nom « Scene tree » ne dit rien que le contenu ne montre déjà.
@@ -1099,6 +1449,7 @@ class SceneTreePanel(QWidget):
 
     def load_project(self, project: Project):
         self._project = project
+        self._content_state = SceneTreeState(project.root)
         self.set_active_scene(project.active_scene)
 
     def set_active_scene(self, scene: Scene | None):
@@ -1115,6 +1466,70 @@ class SceneTreePanel(QWidget):
         self._tree.setVisible(has_scene and self._context == "content")
         self._priority_tree.setVisible(has_scene and self._context == "priority")
         self._empty.setVisible(not has_scene)
+        self._emit_editor_visibility()
+
+    def _emit_editor_visibility(self) -> None:
+        """Propage le sidecar de visibilité sans modifier le modèle de jeu."""
+        state, scene = self._content_state, self._scene
+        if not state or not scene:
+            self.editor_visibility_changed.emit(set())
+            return
+        hidden = set()
+        for actor in scene.actors:
+            if not self._tree._editor_visible(T_ACTOR, actor):
+                hidden.add(f"actor:{actor.name}")
+        for camera in scene.cameras:
+            if not self._tree._editor_visible(T_CAMERA, camera):
+                hidden.add(f"camera:{camera.name}")
+        layouts = (self._project.scene_ui_layouts(scene)
+                   if self._project and hasattr(self._project, "scene_ui_layouts") else [])
+        for layout in layouts:
+            if not self._tree._editor_visible(T_UI_LAYOUT, layout):
+                hidden.add(f"ui:{layout.name}")
+            for element in layout.elements:
+                if not self._tree._editor_visible(T_UI_ELEM, element, layout):
+                    hidden.add(_ui_element_member(layout, element))
+        self.editor_visibility_changed.emit(hidden)
+
+    def _toggle_content_filter(self, key: str, enabled: bool) -> None:
+        if enabled:
+            self._active_filters.add(key)
+        else:
+            self._active_filters.discard(key)
+        self._apply_content_filter()
+
+    def _apply_content_filter(self, _query: str = "") -> None:
+        """Filtre Content par nom et par famille sans perdre les ancêtres."""
+        query = self._search_input.text().strip().lower()
+        wanted = self._active_filters
+
+        def matches(item: QTreeWidgetItem) -> bool:
+            node_type = item.data(0, _ROLE_TYPE)
+            text_match = not query or query in item.text(0).lower()
+            category_match = not wanted
+            if node_type in wanted:
+                category_match = True
+            if "unfiled" in wanted:
+                # L'appartenance virtuelle est portée par la RACINE (un acteur
+                # enfant et un élément UI suivent donc leur parent visuel).
+                top = item
+                while top.parent() is not None and top.parent() is not self._tree._content_root:
+                    top = top.parent()
+                category_match |= top.parent() is self._tree._content_root and \
+                    node_type in (T_ACTOR, T_CAMERA, T_UI_LAYOUT, T_UI_ELEM)
+            child_match = False
+            for index in range(item.childCount()):
+                child_match |= matches(item.child(index))
+            visible = (text_match and category_match) or child_match
+            item.setHidden(not visible)
+            if query and child_match:
+                item.setExpanded(True)
+            return visible
+
+        root = self._tree.invisibleRootItem()
+        for index in range(root.childCount()):
+            matches(root.child(index))
+        self._tree._fit()
 
     def _set_context(self, context: str):
         self._context = context if context in ("content", "priority") else "content"
@@ -1144,6 +1559,9 @@ class SceneTreePanel(QWidget):
             self._priority_tree.highlight_ui_element(obj.element)
         elif isinstance(obj, UILayoutSelection):
             self._priority_tree.highlight_ui_layout(obj.layout)
+        elif isinstance(obj, ActorSelection):
+            self._tree.highlight_actors(obj.actors)
+            self._priority_tree.highlight_actors(obj.actors)
 
     def _after_ui_change(self):
         """Après une mutation d'UI depuis l'arbre (créer/déplacer/renommer/
@@ -1158,6 +1576,18 @@ class SceneTreePanel(QWidget):
             self._tree.highlight_ui_element(cur.element)
 
     # ── Ajout d'un acteur (inline, pas de dialogue — cf. Scenes/Prefabs) ──
+
+    def _add_folder(self):
+        if not self._content_state or not self._scene:
+            return
+        folders = self._content_state.folders(self._scene.name)
+        names = {folder.name for folder in folders}
+        name = unique_name(label("scttree.new_folder"), names)
+        folder = self._content_state.create_folder(self._scene.name, name)
+        self.refresh()
+        item = self._tree._folder_items.get(folder.id)
+        if item:
+            self._tree.editItem(item, 0)
 
     def _add_actor(self):
         if not self._project or not self._scene:
