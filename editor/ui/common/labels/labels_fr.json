@@ -93,6 +93,12 @@
     "settings.shortcuts.context.sound_mixer": {
       "text": "Mixeur audio"
     },
+    "settings.shortcuts.context.scene_manager": {
+      "text": "Gestionnaire de scènes"
+    },
+    "settings.shortcuts.action.scene.group": {
+      "text": "Grouper les scènes sélectionnées"
+    },
     "settings.shortcuts.display.undo": {
       "text": "Annuler"
     },
@@ -366,12 +372,6 @@
     "fontasset.preview_live": {
       "text": "Aperçu direct — rendu par le rasterizer du projet."
     },
-    "fontasset.preview_sample": {
-      "text": "Échantillon : {sample}"
-    },
-    "fontasset.preview_text": {
-      "text": "Texte"
-    },
     "fontasset.preview_sample_text": {
       "text": "Texte d’essai"
     },
@@ -386,12 +386,6 @@
     },
     "fontasset.preview_size_tip": {
       "text": "Taille de rasterisation, partagée avec l’inspecteur et enregistrée dans cette police."
-    },
-    "fontasset.preview_zoom": {
-      "text": "Zoom"
-    },
-    "fontasset.preview_zoom_tip": {
-      "text": "Agrandissement de l’aperçu uniquement ; il ne change pas la police exportée."
     },
     "fontasset.preview_canvas_tip": {
       "text": "Molette : zoom. Clic central glissé : panoramique. Double-clic : réinitialiser la vue. La grille discrète marque les tuiles GBA 8×8."
@@ -476,6 +470,72 @@
     },
     "scttree.folder_color_purple": {
       "text": "Violet"
+    },
+    "win.documentation": {
+      "text": "Documentation"
+    },
+    "scncanvas.graph_rearrange": {
+      "text": "Réorganiser"
+    },
+    "scncanvas.graph_rearrange_tip": {
+      "text": "Replacer automatiquement toutes les scènes — annule les positions manuelles"
+    },
+    "scncanvas.graph_root": {
+      "text": "Toutes les scènes"
+    },
+    "scncanvas.graph_preview_tip": {
+      "text": "Activer l'aperçu du fond de cette scène sur son nœud"
+    },
+    "scncanvas.graph_edit_scene": {
+      "text": "Éditer la scène"
+    },
+    "scncanvas.graph_entry_reachable": {
+      "text": "Entrée — scène atteignable"
+    },
+    "scncanvas.graph_entry_unreachable": {
+      "text": "Entrée — scène inatteignable (aucune transition n'y mène)"
+    },
+    "scncanvas.graph_exit_literal": {
+      "text": "Sortie — cible(s) trouvée(s)"
+    },
+    "scncanvas.graph_exit_dynamic": {
+      "text": "Sortie — cible calculée (variable) : non résolue, vérifier le script"
+    },
+    "scncanvas.graph_exit_broken": {
+      "text": "Sortie — cible introuvable (cite un nom qu'aucune scène ne porte)"
+    },
+    "scncanvas.graph_exit_none": {
+      "text": "Cul-de-sac — aucune sortie (cette scène ne bascule jamais ailleurs)"
+    },
+    "scncanvas.graph_set_start": {
+      "text": "Définir comme scène de départ"
+    },
+    "assf.edit_scene": {
+      "text": "Éditer la scène"
+    },
+    "assetfind.new_folder": {
+      "text": "Nouveau dossier"
+    },
+    "assetfind.new_subfolder": {
+      "text": "Nouveau sous-dossier"
+    },
+    "assetfind.folder_default_name": {
+      "text": "Dossier"
+    },
+    "assetfind.create_group": {
+      "text": "Créer un groupe"
+    },
+    "assetfind.group": {
+      "text": "Grouper"
+    },
+    "assetfind.group_default_name": {
+      "text": "Groupe"
+    },
+    "assetfind.move_to_folder": {
+      "text": "Déplacer vers le dossier"
+    },
+    "assetfind.remove_from_folder": {
+      "text": "Retirer du dossier"
     }
   }
 }

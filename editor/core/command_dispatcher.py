@@ -326,6 +326,10 @@ class CommandDispatcher(EventEmitter):
         self._project.scenes.append(scene)
         with self._watcher.suspended():
             self._project.save_scene(scene)
+        # Une scène de plus change l'arbre projet : les vues qui en dérivent
+        # (project viewer, graphe des scènes) doivent l'apprendre tout de suite,
+        # pas au prochain aller-retour d'écran.
+        self._emit("project_tree_changed")
         self._emit("status_message",f"Scène créée : {name}")
         return scene
 

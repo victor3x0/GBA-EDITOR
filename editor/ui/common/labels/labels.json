@@ -19,7 +19,7 @@
       "text": "Error"
     },
     "common.none_dash": {
-      "text": "— none —"
+      "text": "(none)"
     },
     "common.choose_editor": {
       "text": "Choose editor…"
@@ -67,7 +67,7 @@
       "text": "Language changes apply after restarting GBA Editor."
     },
     "settings.shortcuts.hint": {
-      "text": "Click a key and type the new combination. Two actions on the same key are flagged in red — both stay active, only the first declared in the context responds."
+      "text": "Click a key and type the new combination. Two actions on the same key are flagged in red. Both stay active, only the first declared in the context responds."
     },
     "settings.shortcuts.col_context": {
       "text": "Context"
@@ -98,6 +98,12 @@
     },
     "settings.shortcuts.context.sound_mixer": {
       "text": "Sound mixer"
+    },
+    "settings.shortcuts.context.scene_manager": {
+      "text": "Scene Manager"
+    },
+    "settings.shortcuts.action.scene.group": {
+      "text": "Group selected scenes"
     },
     "settings.shortcuts.display.undo": {
       "text": "Undo"
@@ -220,7 +226,7 @@
       "text": "Pong"
     },
     "home.template.pong.description": {
-      "text": "Complete game — scenes, sprites, scripts, music."
+      "text": "Complete game (scenes, sprites, scripts, music)."
     },
     "home.status.configure": {
       "text": "Configure manually"
@@ -325,13 +331,13 @@
       "text": "Type the text shown in-game…"
     },
     "uiinsp.text.content_tip": {
-      "text": "Written into the text table, not into the element — the same entry is editable from the Text screen. Markup accepted ([speed=…], $var…)."
+      "text": "Written into the text table, not into the element (the same entry is editable from the Text screen). Markup accepted ([speed=…], $var…)."
     },
     "uiinsp.text.entry": {
       "text": "Entry"
     },
     "uiinsp.text.entry_tip": {
-      "text": "Bind this element to another existing entry — to share one label between several screens."
+      "text": "Bind this element to another existing entry, to share one label between several screens."
     },
     "uiinsp.text.entry_new": {
       "text": "(new entry)"
@@ -340,7 +346,7 @@
       "text": "Sample"
     },
     "uiinsp.text.sample_tip": {
-      "text": "Editor only: used to measure overflow, never compiled — the script decides the displayed text."
+      "text": "Editor only: used to measure overflow, never compiled. The script decides the displayed text."
     },
     "common.none_paren": {
       "text": "(none)"
@@ -364,7 +370,7 @@
       "text": "Bank"
     },
     "uiinsp.text.bank_tip": {
-      "text": "<b>UI palette bank</b> — SHARED by every text of this scene.<br><br>A background can pick its bank per element (the hardware selects it tile by tile, at no cost). Text can't: a glyph is recolored into VRAM once per color index, so every text must agree on the same bank — one more bank would mean one more full copy.<br><br>Same setting as the Scene inspector; changing it here changes it for the whole scene."
+      "text": "<b>UI palette bank</b> (SHARED by every text of this scene).<br><br>A background can pick its bank per element (the hardware selects it tile by tile, at no cost). Text can't: a glyph is recolored into VRAM once per color index, so every text must agree on the same bank. One more bank would mean one more full copy.<br><br>Same setting as the Scene inspector; changing it here changes it for the whole scene."
     },
     "uiinsp.text.ink": {
       "text": "Ink"
@@ -373,7 +379,7 @@
       "text": "Font ink (default)"
     },
     "uiinsp.text.ink_tip": {
-      "text": "<b>Ink</b> — the color of the glyphs, an index in the scene's UI palette bank.<br><br><b>Font ink</b> keeps the font's own shades (outline, fill).<br>Any other value flattens the ink to that single color.<br><br>Each color used costs one more copy of the scene's glyphs in VRAM."
+      "text": "<b>Ink</b> (the color of the glyphs, an index in the scene's UI palette bank).<br><br><b>Font ink</b> keeps the font's own shades (outline, fill).<br>Any other value flattens the ink to that single color.<br><br>Each color used costs one more copy of the scene's glyphs in VRAM."
     },
     "uiinsp.text.highlight": {
       "text": "Highlight"
@@ -382,7 +388,7 @@
       "text": "None"
     },
     "uiinsp.text.highlight_tip": {
-      "text": "<b>Highlight</b> — a color laid UNDER the text, on the tiles it actually covers.<br><br>By default a text already sits on its container's background. A highlight <i>overrides</i> it, marker-style, on the written extent only.<br><br>Composing costs a block of surface tiles for the scene, whatever the font — a background or a highlight both pay it once."
+      "text": "<b>Highlight</b> (a color laid UNDER the text, on the tiles it actually covers).<br><br>By default a text already sits on its container's background. A highlight <i>overrides</i> it, marker-style, on the written extent only.<br><br>Composing costs a block of surface tiles for the scene, whatever the font. A background or a highlight both pay it once."
     },
     "uiinsp.text.costs": {
       "text": "COSTS"
@@ -430,7 +436,7 @@
       "text": "State"
     },
     "uiinsp.fill.state_tip": {
-      "text": "Initial animation state. A script can change it later with ui.image_set — a panel background gets an IMAGE_* constant of its own, like any image."
+      "text": "Initial animation state. A script can change it later with ui.image_set. A panel background gets an IMAGE_* constant of its own, like any image."
     },
     "uiinsp.fill.state_first": {
       "text": "(first state)"
@@ -445,7 +451,7 @@
       "text": " frames"
     },
     "uiinsp.fill.speed_tip": {
-      "text": "Frames between two animation frames, overriding the state's own speed.\n\n0 (= From sprite) keeps the value edited in the Sprite Editor, which stays the single source of truth — otherwise fixing a speed there would silently stop having any effect here."
+      "text": "Frames between two animation frames, overriding the state's own speed.\n\n0 (= From sprite) keeps the value edited in the Sprite Editor, which stays the single source of truth. Otherwise fixing a speed there would silently stop having any effect here."
     },
     "uiinsp.fill.margins": {
       "text": "Margins"
@@ -463,13 +469,13 @@
       "text": "Takes the D-pad"
     },
     "uiinsp.list.selection_tip": {
-      "text": "<b>Selection</b> — whether this list reads the D-pad.<br><br>An inactive list stays on screen and keeps its current item; it just stops moving. That is what lets a menu and its submenu show at once — without it, both walk on the same press.<br><br>Hiding the list is a different thing: it disappears."
+      "text": "<b>Selection</b> (whether this list reads the D-pad).<br><br>An inactive list stays on screen and keeps its current item; it just stops moving. That is what lets a menu and its submenu show at once. Without it, both walk on the same press.<br><br>Hiding the list is a different thing: it disappears."
     },
     "uiinsp.list.columns": {
       "text": "Columns"
     },
     "uiinsp.list.columns_tip": {
-      "text": "<b>Columns</b> — how wide one line of the grid is.<br><br>1 column is a plain vertical list. Set it to the number of rows for a row of tabs, or to any width for a grid.<br><br>Scrolling moves by a whole LINE, so the columns an author laid out stay where they are."
+      "text": "<b>Columns</b> (how wide one line of the grid is).<br><br>1 column is a plain vertical list. Set it to the number of rows for a row of tabs, or to any width for a grid.<br><br>Scrolling moves by a whole LINE, so the columns an author laid out stay where they are."
     },
     "uiinsp.list.order": {
       "text": "Order"
@@ -481,7 +487,7 @@
       "text": "Row first (Z)"
     },
     "uiinsp.list.order_tip": {
-      "text": "<b>Order</b> — the direction item numbers run in.<br><br><b>Column first</b>: top to bottom, then the next column.<br><b>Row first</b>: left to right, then the line below.<br><br>With a single column both describe the same walk; the other axis of the D-pad is then left to the game."
+      "text": "<b>Order</b> (the direction item numbers run in).<br><br><b>Column first</b>: top to bottom, then the next column.<br><b>Row first</b>: left to right, then the line below.<br><br>With a single column both describe the same walk; the other axis of the D-pad is then left to the game."
     },
     "uiinsp.list.wrap": {
       "text": "Wrap"
@@ -496,10 +502,10 @@
       "text": "Image"
     },
     "uiinsp.list.cursor_none": {
-      "text": "— none —"
+      "text": "(none)"
     },
     "uiinsp.list.cursor_tip": {
-      "text": "<b>Cursor</b> — an Image of this layout that the list moves onto the selected row.<br><br>Place it facing the FIRST row: the engine offsets it by the distance between that row and the current one, so the layout stays the truth.<br><br>No cursor is a valid choice — the selected row can be marked by its style instead."
+      "text": "<b>Cursor</b> (an Image of this layout that the list moves onto the selected row).<br><br>Place it facing the FIRST row: the engine offsets it by the distance between that row and the current one, so the layout stays the truth.<br><br>No cursor is a valid choice. The selected row can be marked by its style instead."
     },
     "uiinsp.list.motion": {
       "text": "Motion"
@@ -511,7 +517,7 @@
       "text": "Slide"
     },
     "uiinsp.list.motion_tip": {
-      "text": "<b>Motion</b> — <b>Snap</b> puts the cursor on the row at once; <b>Slide</b> travels the distance at the speed below."
+      "text": "<b>Motion</b>. <b>Snap</b> puts the cursor on the row at once; <b>Slide</b> travels the distance at the speed below."
     },
     "uiinsp.list.speed_suffix": {
       "text": " px/frame"
@@ -526,7 +532,7 @@
       "text": "Same as the row"
     },
     "uiinsp.list.ink_tip": {
-      "text": "<b>Ink</b> of the SELECTED row — an index in the scene's UI palette bank, like a text's own ink.<br><br>Leaving it at the default keeps whatever each row already uses. Each color costs one more copy of the scene's glyphs in VRAM."
+      "text": "<b>Ink</b> of the SELECTED row (an index in the scene's UI palette bank, like a text's own ink).<br><br>Leaving it at the default keeps whatever each row already uses. Each color costs one more copy of the scene's glyphs in VRAM."
     },
     "uiinsp.list.highlight": {
       "text": "Highlight"
@@ -535,10 +541,10 @@
       "text": "None"
     },
     "uiinsp.list.highlight_tip": {
-      "text": "<b>Highlight</b> of the SELECTED row — a color laid under its text, on the extent it covers.<br><br>The classic way to mark a menu selection without a cursor."
+      "text": "<b>Highlight</b> of the SELECTED row (a color laid under its text, on the extent it covers).<br><br>The classic way to mark a menu selection without a cursor."
     },
     "uiinsp.img.sprite_tip": {
-      "text": "Sprite asset drawn here. Picking one resizes the element to its frame — the hardware cannot stretch a sprite."
+      "text": "Sprite asset drawn here. Picking one resizes the element to its frame. The hardware cannot stretch a sprite."
     },
     "uiinsp.img.sprite_none": {
       "text": "(no sprite)"
@@ -547,7 +553,7 @@
       "text": "State"
     },
     "uiinsp.img.state_tip": {
-      "text": "State shown when the scene starts. A script can switch to any other state of this sprite — ui.image_set(\"name\", \"state\")."
+      "text": "State shown when the scene starts. A script can switch to any other state of this sprite (ui.image_set(\"name\", \"state\"))."
     },
     "uiinsp.img.state_first": {
       "text": "(first state)"
@@ -562,7 +568,7 @@
       "text": "Frozen on frame 1"
     },
     "uiinsp.img.play_tip": {
-      "text": "A frozen image costs no per-frame work and never rewrites the tilemap — the right default for a static HUD icon."
+      "text": "A frozen image costs no per-frame work and never rewrites the tilemap. The right default for a static HUD icon."
     },
     "uiinsp.bank_inherited_tip": {
       "text": "Read-only: this text sits in a filled container and reads its ink from the container's bank. Change it through the container's fill."
@@ -604,7 +610,7 @@
       "text": "Index: {value}"
     },
     "actorinsp.index_none": {
-      "text": "Index: —"
+      "text": "Index: (none)"
     },
     "actorinsp.index_prefab": {
       "text": "Index: (prefab)"
@@ -619,13 +625,13 @@
       "text": "Relink"
     },
     "actorinsp.relink_tip": {
-      "text": "Reload this instance's components/palette/notes from the\nprefab's current definition — discards local structural changes."
+      "text": "Reload this instance's components/palette/notes from the\nprefab's current definition. Discards local structural changes."
     },
     "actorinsp.expose": {
       "text": "Expose"
     },
     "actorinsp.expose_tip": {
-      "text": "Push this instance's components/palette/notes up to the prefab —\nevery OTHER instance of it is updated too."
+      "text": "Push this instance's components/palette/notes up to the prefab.\nEvery OTHER instance of it is updated too."
     },
     "actorinsp.unlink_tip": {
       "text": "Break the link with the prefab\n(the actor becomes independent)"
@@ -634,7 +640,7 @@
       "text": "Expose to prefab"
     },
     "actorinsp.expose_new_tip": {
-      "text": "Create a new prefab from this actor's current components/palette/\nnotes — this actor becomes its first linked instance."
+      "text": "Create a new prefab from this actor's current components/palette/\nnotes. This actor becomes its first linked instance."
     },
     "actorinsp.active": {
       "text": "Active on start"
@@ -664,7 +670,7 @@
       "text": "Mask (OBJ window)"
     },
     "actorinsp.parent_tip": {
-      "text": "<b>Parent</b><br><br>The actor in whose frame this one's position is expressed.<br>X/Y, rotation and scale then become LOCAL: the parent<br>moves, turns or grows, and its subtree follows.<br><br>This is not inheritance — the definition is not reused. For that,<br>use a prefab. Hiding the parent hides its whole subtree.<br><br>A parent is chosen in the same scene, and a cycle is refused at Build."
+      "text": "<b>Parent</b><br><br>The actor in whose frame this one's position is expressed.<br>X/Y, rotation and scale then become LOCAL: the parent<br>moves, turns or grows, and its subtree follows.<br><br>This is not inheritance. The definition is not reused. For that,<br>use a prefab. Hiding the parent hides its whole subtree.<br><br>A parent is chosen in the same scene, and a cycle is refused at Build."
     },
     "actorinsp.parent_missing": {
       "text": "{name}  (not found)"
@@ -676,7 +682,7 @@
       "text": "Visible"
     },
     "actorinsp.children_tip": {
-      "text": "The CHILDREN of this prefab — a segmented boss, a caterpillar.\nEach child is a full actor: its sprite, its boxes, its local\ntransform. Double-click to edit one, drag-and-drop ONTO another\nchild to reparent it.\n\nThe pool is counted in INSTANCES: max instances × (1 + children)\nentries are reserved, and that total is what you pay."
+      "text": "The CHILDREN of this prefab (a segmented boss, a caterpillar).\nEach child is a full actor: its sprite, its boxes, its local\ntransform. Double-click to edit one, drag-and-drop ONTO another\nchild to reparent it.\n\nThe pool is counted in INSTANCES: max instances × (1 + children)\nentries are reserved, and that total is what you pay."
     },
     "actorinsp.instance": {
       "text": "◈ Instance of  {name}"
@@ -685,7 +691,7 @@
       "text": "◈ Instance of  {name}  (not found)"
     },
     "actorinsp.instance_unlinked": {
-      "text": "◈ Instance of  {name}  — unlinked"
+      "text": "◈ Instance of  {name}  (unlinked)"
     },
     "actorinsp.no_sprite_title": {
       "text": "No sprite"
@@ -697,7 +703,7 @@
       "text": "Select a component above"
     },
     "actorinsp.no_editor": {
-      "text": "{type} — no editor registered"
+      "text": "{type} (no editor registered)"
     },
     "sceneinsp.empty": {
       "text": "Select a scene"
@@ -727,7 +733,7 @@
       "text": "Mode {n}"
     },
     "sceneinsp.mode_not_impl": {
-      "text": "{tip}\n(rendering not implemented yet — coming soon)"
+      "text": "{tip}\n(rendering not implemented yet, coming soon)"
     },
     "sceneinsp.mode_tip_0": {
       "text": "4 regular tiled backgrounds (BG0-3) · 4/8bpp"
@@ -760,7 +766,7 @@
       "text": "Backdrop:"
     },
     "sceneinsp.backdrop_tip": {
-      "text": "<b>Backdrop color</b><br><br>Index 0 of the BG palette — shown wherever no layer or<br>sprite draws, including through a window that masks everything.<br><br>Quantized to BGR555 (5 bits per channel) like on hardware."
+      "text": "<b>Backdrop color</b><br><br>Index 0 of the BG palette. Shown wherever no layer or<br>sprite draws, including through a window that masks everything.<br><br>Quantized to BGR555 (5 bits per channel) like on hardware."
     },
     "sceneinsp.backdrop_reset": {
       "text": "Project default"
@@ -778,19 +784,19 @@
       "text": "Transition:"
     },
     "sceneinsp.transition_tip": {
-      "text": "<b>Fade played when leaving AND when opening this scene</b><br><br>Each scene describes its own disappearance and its own appearance,<br>so two scenes never fight over a switch.<br><br>The outgoing scene is frozen while its fade plays, and this scene's<br>color blending is suspended for the duration — the hardware has a<br>single blend mode, there is no fade on top of a translucency."
+      "text": "<b>Fade played when leaving AND when opening this scene</b><br><br>Each scene describes its own disappearance and its own appearance,<br>so two scenes never fight over a switch.<br><br>The outgoing scene is frozen while its fade plays, and this scene's<br>color blending is suspended for the duration. The hardware has a<br>single blend mode, there is no fade on top of a translucency."
     },
     "sceneinsp.frames_suffix": {
       "text": " f"
     },
     "sceneinsp.transition_frames_tip": {
-      "text": "Frames per half — leaving, then opening."
+      "text": "Frames per half (leaving, then opening)."
     },
     "sceneinsp.music": {
       "text": "Music:"
     },
     "sceneinsp.music_tip": {
-      "text": "<b>Track started when this scene opens</b><br><br><b>Keep playing</b> — the scene issues no order at all, so whatever is<br>already playing carries on. This is the default: walking through a<br>door should not restart the theme.<br><br><b>Silence</b> — explicitly stops the music.<br><br>The track starts before the scene's <code>on_start</code>, so a <code>music.play()</code><br>in the script overrides it."
+      "text": "<b>Track started when this scene opens</b><br><br><b>Keep playing</b>. The scene issues no order at all, so whatever is<br>already playing carries on. This is the default: walking through a<br>door should not restart the theme.<br><br><b>Silence</b>. Explicitly stops the music.<br><br>The track starts before the scene's <code>on_start</code>, so a <code>music.play()</code><br>in the script overrides it."
     },
     "sceneinsp.music_keep": {
       "text": "Keep playing"
@@ -823,7 +829,7 @@
       "text": "16bpp direct color"
     },
     "sceneinsp.bitmap_no_bg": {
-      "text": " — no background selected"
+      "text": " (no background selected)"
     },
     "sceneinsp.no_bitmap_title": {
       "text": "No bitmap background"
@@ -843,20 +849,14 @@
     "sceneinsp.ui_font": {
       "text": "UI font:"
     },
-    "sceneinsp.fallback_font_label": {
-      "text": "Fallback font:"
-    },
-    "sceneinsp.fallback_add": {
-      "text": "Choose a fallback font for this scene"
-    },
     "sceneinsp.scene_actors": {
       "text": "Scene slots:"
     },
     "sceneinsp.scene_actors_tip": {
-      "text": "Hardware slots reserved for actors placed in this scene — not an actor count.\n\n0 = automatic: one slot per placed actor. Set it higher only to leave room for more placed actors."
+      "text": "Hardware slots reserved for actors placed in this scene. Not an actor count.\n\n0 = automatic: one slot per placed actor. Set it higher only to leave room for more placed actors."
     },
     "sceneinsp.no_prefab": {
-      "text": "No prefab in this project yet — nothing to pool."
+      "text": "No prefab in this project yet. Nothing to pool."
     },
     "sceneinsp.pool_tip": {
       "text": "How many '{name}' can be alive at once in this scene.\n\n0 = this scene never spawns it, and pays nothing for it."
@@ -898,7 +898,7 @@
       "text": "jingle"
     },
     "sndmix.matrix_hint": {
-      "text": "An animation frame cites an ACTION; the active state says which {kind} it points to. A cell left at 'none' plays nothing in that state — a footstep doesn't sound mid-air."
+      "text": "An animation frame cites an ACTION; the active state says which {kind} it points to. A cell left at 'none' plays nothing in that state. A footstep doesn't sound mid-air."
     },
     "sndmix.matrix_hint_empty": {
       "text": "No action yet. Add one, then drop its name on a frame in the Sprite Editor: that's what makes the same walk cycle usable on several grounds."
@@ -934,7 +934,7 @@
       "text": "Select a state's column first."
     },
     "sndmix.graph_del_tip": {
-      "text": "Delete what is selected — a state or a transition (Del)"
+      "text": "Delete what is selected, a state or a transition (Del)"
     },
     "sndmix.auto_layout": {
       "text": "Auto-arrange"
@@ -964,7 +964,7 @@
       "text": "From"
     },
     "sndmix.trigger_tip": {
-      "text": "The name the script emits: sound.trigger(\"…\").\n\nThe graph DECLARES this vocabulary — a trigger unknown here is refused by the checker instead of staying silent in-game."
+      "text": "The name the script emits: sound.trigger(\"…\").\n\nThe graph DECLARES this vocabulary. A trigger unknown here is refused by the checker instead of staying silent in-game."
     },
     "sndmix.trigger": {
       "text": "Trigger"
@@ -976,7 +976,7 @@
       "text": "Cut at position"
     },
     "sndmix.kind_tip": {
-      "text": "The FADE works between any two tracks, at the price of a dip.\nThe CUT resumes the other track at the same position, without a dip — but\nthe two tracks must share the same structure."
+      "text": "The FADE works between any two tracks, at the price of a dip.\nThe CUT resumes the other track at the same position, without a dip, but\nthe two tracks must share the same structure."
     },
     "sndmix.transition": {
       "text": "Transition"
@@ -1000,7 +1000,7 @@
       "text": "Start state"
     },
     "sndmix.start_state_tip": {
-      "text": "The state active when the game starts — one per machine."
+      "text": "The state active when the game starts (one per machine)."
     },
     "sndmix.sec_music": {
       "text": "MUSIC"
@@ -1015,7 +1015,7 @@
       "text": "Level"
     },
     "sndmix.intensity_tip": {
-      "text": "What the intensity DRIVES, named explicitly.\n\nThe hardware has only three continuous knobs: the module's volume,\nits tempo and its pitch. Going from DRUMLESS to the full track is not\none of them — that's another STATE, not a slider."
+      "text": "What the intensity DRIVES, named explicitly.\n\nThe hardware has only three continuous knobs: the module's volume,\nits tempo and its pitch. Going from DRUMLESS to the full track is not\none of them. That's another STATE, not a slider."
     },
     "sndmix.intensity": {
       "text": "Intensity"
@@ -1042,19 +1042,19 @@
       "text": "Animated"
     },
     "bgedit.kind_scene_tip": {
-      "text": "Scene decor — placed as a layer, repainted per tile"
+      "text": "Scene decor (placed as a layer, repainted per tile)"
     },
     "bgedit.kind_ui_tip": {
-      "text": "Interface — fills a UI panel as a stretchable frame or a plain image"
+      "text": "Interface (fills a UI panel as a stretchable frame or a plain image)"
     },
     "bgedit.kind_animated_tip": {
-      "text": "Animation sheet — cut into frames and dropped onto another background"
+      "text": "Animation sheet (cut into frames and dropped onto another background)"
     },
     "bgedit.tiled": {
       "text": "Tiled"
     },
     "bgedit.tiled_tip": {
-      "text": "Tiled background (Mode 0) — tileset + tilemap, scroll, inpainting"
+      "text": "Tiled background (Mode 0), tileset + tilemap, scroll, inpainting"
     },
     "bgedit.bitmap": {
       "text": "Bitmap"
@@ -1066,7 +1066,7 @@
       "text": "4bpp"
     },
     "bgedit.d4_tip": {
-      "text": "16 colors × 16 palettes · inpainting (pixel-art) — tiled only"
+      "text": "16 colors × 16 palettes · inpainting (pixel-art), tiled only"
     },
     "bgedit.d8": {
       "text": "8bpp"
@@ -1078,7 +1078,7 @@
       "text": "16bpp"
     },
     "bgedit.d16_tip": {
-      "text": "15-bit direct color (true-color photos) — coming soon, falls back to Mode 4"
+      "text": "15-bit direct color (true-color photos), coming soon, falls back to Mode 4"
     },
     "bgedit.dithering": {
       "text": "Dithering"
@@ -1111,7 +1111,7 @@
       "text": " ticks"
     },
     "bgedit.speed_tip": {
-      "text": "Ticks (1/60 s) between two frames — same unit as a sprite animation speed."
+      "text": "Ticks (1/60 s) between two frames, same unit as a sprite animation speed."
     },
     "bgedit.per_instance": {
       "text": "Per instance"
@@ -1135,7 +1135,7 @@
       "text": "Drag onto the canvas to place"
     },
     "bgedit.anim_source_tip": {
-      "text": "{name} — {n} frame(s). Drag onto the canvas to place it."
+      "text": "{name}, {n} frame(s). Drag onto the canvas to place it."
     },
     "bgedit.sec_placement": {
       "text": "Placement"
@@ -1159,7 +1159,7 @@
       "text": "↺  Restore original…"
     },
     "bgedit.restore_tip": {
-      "text": "Resets the background to its first import (PNG re-compression) — added palettes and painting will be lost."
+      "text": "Resets the background to its first import (PNG re-compression). Added palettes and painting will be lost."
     },
     "bgedit.extract": {
       "text": "⤓  EXTRACT PALETTE"
@@ -1189,7 +1189,7 @@
       "text": "Not possible"
     },
     "bgedit.restore_no_png_text": {
-      "text": "Source PNG not found — restoration impossible."
+      "text": "Source PNG not found. Restoration impossible."
     },
     "bgedit.name_used_title": {
       "text": "Name already used"
@@ -1249,7 +1249,7 @@
       "text": "Volume"
     },
     "sndpanel.volume_tip": {
-      "text": "Level, as a percentage.\n\nmaxmod has two volume scales — 0–255 for an effect, 0–1024 for the module — and the build converts to the target's. A percentage can't be confused with either."
+      "text": "Level, as a percentage.\n\nmaxmod has two volume scales (0–255 for an effect, 0–1024 for the module), and the build converts to the target's. A percentage can't be confused with either."
     },
     "sndpanel.weight": {
       "text": "In ROM: {kb} KiB  (last build)"
@@ -1276,7 +1276,7 @@
       "text": "Import SFX"
     },
     "sndpanel.sfx_source": {
-      "text": "  —  source {kb} KiB"
+      "text": "  (source {kb} KiB)"
     },
     "sndpanel.rate": {
       "text": "Rate"
@@ -1303,7 +1303,7 @@
       "text": "Box:"
     },
     "sndpanel.box_tip": {
-      "text": "The game loads only ONE per family — the first by name.\n\nThe others stay in the project but won't sound; the validator flags them."
+      "text": "The game loads only ONE per family. The first by name.\n\nThe others stay in the project but won't sound; the validator flags them."
     },
     "sndpanel.rename_box_tip": {
       "text": "Rename this box"
@@ -1327,7 +1327,7 @@
       "text": "▶ ROM playback"
     },
     "sndpanel.rom_play_tip": {
-      "text": "Plays the MusicBox as the ROM will play it.\n\nClicking a node emits the trigger that leads to it: the transition sounds exactly as in-game, without a build. If no edge leads to that node, nothing happens — as on the console."
+      "text": "Plays the MusicBox as the ROM will play it.\n\nClicking a node emits the trigger that leads to it: the transition sounds exactly as in-game, without a build. If no edge leads to that node, nothing happens, as on the console."
     },
     "sndpanel.no_state": {
       "text": "No state to play."
@@ -1336,7 +1336,7 @@
       "text": "A MusicBox arranges musical states and the transitions between them: which track in which mood, and by which trigger you move from one to another."
     },
     "sndpanel.soundbox_empty": {
-      "text": "A SoundBox says which effect each action points to per state — the same walk cycle sounds sand or gravel without being authored twice."
+      "text": "A SoundBox says which effect each action points to per state. The same walk cycle sounds sand or gravel without being authored twice."
     },
     "sndpanel.jinglebox_empty": {
       "text": "A JingleBox says which module each jingle action points to per state. A jingle layers over the music, it doesn't replace it."
@@ -1549,7 +1549,7 @@
       "text": "Trigger"
     },
     "comped.trigger_tip": {
-      "text": "<b>manual</b> — plays nothing automatically, call <b>self:play_sfx()</b> from a script.<br><b>on_spawn</b> — plays when the actor starts, without a script.<br><b>on_destroy</b> — plays just before the actor is destroyed (by itself or another), without a script on this actor.<br><b>button</b> — plays while the actor is active and that button is held, without a script. Handy for a menu item."
+      "text": "<b>manual</b>. Plays nothing automatically, call <b>self:play_sfx()</b> from a script.<br><b>on_spawn</b>. Plays when the actor starts, without a script.<br><b>on_destroy</b>. Plays just before the actor is destroyed (by itself or another), without a script on this actor.<br><b>button</b>. Plays while the actor is active and that button is held, without a script. Handy for a menu item."
     },
     "comped.script_add": {
       "text": "Add a script"
@@ -1585,28 +1585,28 @@
       "text": "Anim speed"
     },
     "comped.anim_speed_tip": {
-      "text": "<b style='color:#7ecfff'>Animation speed</b><br><br>GBA ticks (60 fps) between two frames, for the initial state (<b>{state}</b>) only.<br>8 ticks ≈ 7.5 fps  |  4 = 15 fps  |  2 = 30 fps<br><br>Other states keep their own speed — adjustable in the Sprite Editor."
+      "text": "<b style='color:#7ecfff'>Animation speed</b><br><br>GBA ticks (60 fps) between two frames, for the initial state (<b>{state}</b>) only.<br>8 ticks ≈ 7.5 fps  |  4 = 15 fps  |  2 = 30 fps<br><br>Other states keep their own speed (adjustable in the Sprite Editor)."
     },
     "comped.affine": {
       "text": "Affine transform"
     },
     "comped.affine_tip": {
-      "text": "Reserves one of the GBA's 32 affine matrix slots for this sprite, even at identity.<br><br>On → the sprite can rotate and scale: the actor's world rotation/scale (Transform card) become visible, and the three local settings below are composed on top — rotation ADDED, scale MULTIPLIED, offset expressed in the actor's frame.<br><br>Off → plain OAM, no slot. The actor's rotation and scale still read and write from scripts, but nothing draws them.<br><br>GBA: OAM attribute 1, bits 8-12 (affine matrix slot)."
+      "text": "Reserves one of the GBA's 32 affine matrix slots for this sprite, even at identity.<br><br>On → the sprite can rotate and scale: the actor's world rotation/scale (Transform card) become visible, and the three local settings below are composed on top (rotation ADDED, scale MULTIPLIED, offset expressed in the actor's frame).<br><br>Off → plain OAM, no slot. The actor's rotation and scale still read and write from scripts, but nothing draws them.<br><br>GBA: OAM attribute 1, bits 8-12 (affine matrix slot)."
     },
     "comped.scale_x_tip": {
-      "text": "Local X scale — MULTIPLIED by the actor's scale (affine OAM).\nRequires <b>Affine transform</b> above."
+      "text": "Local X scale, MULTIPLIED by the actor's scale (affine OAM).\nRequires <b>Affine transform</b> above."
     },
     "comped.scale_y_tip": {
-      "text": "Local Y scale — MULTIPLIED by the actor's scale (affine OAM).\nRequires <b>Affine transform</b> above."
+      "text": "Local Y scale, MULTIPLIED by the actor's scale (affine OAM).\nRequires <b>Affine transform</b> above."
     },
     "comped.rotation_tip": {
-      "text": "Local rotation in degrees — ADDED to the actor's rotation (affine OAM). Requires <b>Affine transform</b> above."
+      "text": "Local rotation in degrees, ADDED to the actor's rotation (affine OAM). Requires <b>Affine transform</b> above."
     },
     "comped.offset_x_tip": {
-      "text": "Offset X from the actor — in the actor's LOCAL frame, in pixels.\nThe sprite has no world position: it is drawn at the actor's position + this offset, rotated/scaled with the actor.\nRequires <b>Affine transform</b> above."
+      "text": "Offset X from the actor, in the actor's LOCAL frame, in pixels.\nThe sprite has no world position: it is drawn at the actor's position + this offset, rotated/scaled with the actor.\nRequires <b>Affine transform</b> above."
     },
     "comped.offset_y_tip": {
-      "text": "Offset Y from the actor — in the actor's LOCAL frame, in pixels.\nRequires <b>Affine transform</b> above."
+      "text": "Offset Y from the actor, in the actor's LOCAL frame, in pixels.\nRequires <b>Affine transform</b> above."
     },
     "datagrid.table_bar": {
       "text": "Table"
@@ -1627,7 +1627,7 @@
       "text": "Type"
     },
     "datagrid.empty": {
-      "text": "No table selected.\n\nA data table is read from a script as data.Name[i].column — its rows are numbered from 1, like every array in Lua."
+      "text": "No table selected.\n\nA data table is read from a script as data.Name[i].column. Its rows are numbered from 1, like every array in Lua."
     },
     "datagrid.text_not_found": {
       "text": "{key}  (not found in the text table)"
@@ -1639,7 +1639,7 @@
       "text": "Row"
     },
     "datagrid.no_column_text": {
-      "text": "Add a column first — a row has nowhere to go."
+      "text": "Add a column first. A row has nowhere to go."
     },
     "datagrid.row_above": {
       "text": "Insert row above"
@@ -1657,7 +1657,7 @@
       "text": "Rename"
     },
     "datagrid.rename_text": {
-      "text": "'{name}' is not usable: a column is written as code in scripts (data.{table}[i].{col}), so it must be a plain identifier — letters, digits and _, not starting with a digit — and unique within the table."
+      "text": "'{name}' is not usable: a column is written as code in scripts (data.{table}[i].{col}), so it must be a plain identifier (letters, digits and _, not starting with a digit) and unique within the table."
     },
     "datainsp.column": {
       "text": "Column"
@@ -1675,7 +1675,7 @@
       "text": "value"
     },
     "datainsp.no_ref": {
-      "text": "no reference — emitted as 0"
+      "text": "no reference (emitted as 0)"
     },
     "datainsp.no_named": {
       "text": "no {type} named “{name}” in this project"
@@ -1771,7 +1771,7 @@
       "text": "Interface “{name}”"
     },
     "scttree.iface_tip_shared": {
-      "text": "Interface “{name}”\nSHARED by {n} scenes — editing it affects all of them."
+      "text": "Interface “{name}”\nSHARED by {n} scenes. Editing it affects all of them."
     },
     "scttree.iface_shared_label": {
       "text": "{base}  ·  {n} scenes"
@@ -1780,7 +1780,7 @@
       "text": "{type} · referenceable: {handle}"
     },
     "scttree.elem_authoring": {
-      "text": "{type} · authoring — not referenceable in script"
+      "text": "{type} · authoring (not referenceable in script)"
     },
     "scttree.actor_prefab_tip": {
       "text": "Prefab instance: {name}\nreferenceable: {handle}"
@@ -1845,6 +1845,9 @@
     "win.menu_help": {
       "text": "Help"
     },
+    "win.documentation": {
+      "text": "Documentation"
+    },
     "win.about": {
       "text": "About"
     },
@@ -1852,10 +1855,10 @@
       "text": "GBA Editor"
     },
     "win.about_text": {
-      "text": "GBA Editor - homebrew Game Boy Advance"
+      "text": "GBA Editor (homebrew Game Boy Advance)"
     },
     "win.window_title": {
-      "text": "GBA Editor — {name}"
+      "text": "GBA Editor ({name})"
     },
     "win.undo": {
       "text": "↩ Undo"
@@ -1909,7 +1912,7 @@
       "text": "  (+{n} more)"
     },
     "win.screen_contract": {
-      "text": "'{name}' does not fulfill the ProjectScreen contract (no load_project) — the screen will receive no project."
+      "text": "'{name}' does not fulfill the ProjectScreen contract (no load_project). The screen will receive no project."
     },
     "win.asset_imported": {
       "text": "{kind} imported: {name}"
@@ -1939,7 +1942,7 @@
       "text": "Scene reloaded: {name}"
     },
     "win.build_unavailable": {
-      "text": "Build unavailable — install: {what}"
+      "text": "Build unavailable. Install: {what}"
     },
     "win.build_no_scene": {
       "text": "Add at least one scene before building"
@@ -1948,34 +1951,34 @@
       "text": "Build & Run (F5)"
     },
     "win.build_start": {
-      "text": "\n[build] {project} — scene: {scene}"
+      "text": "\n[build] {project}, scene: {scene}"
     },
     "win.build_rom_ok": {
-      "text": "[build] ROM generated — mgba launched"
+      "text": "[build] ROM generated, mgba launched"
     },
     "win.build_ok": {
       "text": "Build OK"
     },
     "win.build_failed_log": {
-      "text": "[build] Failed — see console"
+      "text": "[build] Failed, see console"
     },
     "win.build_error": {
       "text": "Build error"
     },
     "win.oam_tip": {
-      "text": "OAM — Object Attribute Memory\nThe GBA can show 128 sprites at once.\nBeyond that, extra sprites don't appear.\nEach visible actor uses 1 OAM slot per frame."
+      "text": "OAM (Object Attribute Memory)\nThe GBA can show 128 sprites at once.\nBeyond that, extra sprites don't appear.\nEach visible actor uses 1 OAM slot per frame."
     },
     "win.scanline_tip": {
       "text": "OBJ budget per scanline (GBA)\nThe hardware has 1210 cycles per line to draw the\nsprites; a regular object costs about its width in pixels\n(a rotated/scaled object: 2 × width + 10).\nBeyond that, the next objects in OAM order aren't drawn.\nValue = worst line on screen, sprite-target text zones included."
     },
     "win.vram_tip": {
-      "text": "Sprite VRAM — OBJ area\nThe sprite VRAM area holds 1024 8×8 tiles (16KB in 16-color mode).\nA 16×16 sprite uses 4 tiles, a 32×32 uses 16."
+      "text": "Sprite VRAM (OBJ area)\nThe sprite VRAM area holds 1024 8×8 tiles (16KB in 16-color mode).\nA 16×16 sprite uses 4 tiles, a 32×32 uses 16."
     },
     "win.pal_tip": {
       "text": "Sprite palettes\nThe GBA has 16 palettes of 16 colors for sprites.\nEach color is 15-bit (32,768 possible colors).\nColor 0 of each palette is transparent."
     },
     "win.gba_info_tip": {
-      "text": "Game Boy Advance — hardware specifications\nCPU  : ARM7TDMI @ 16.78 MHz\nRAM  : 256 KB external WRAM + 32 KB internal IRAM\nVRAM : 96 KB total\nScreen: 240×160 pixels, 15-bit color\nSound: 2 DirectSound PCM channels + 4 legacy GB channels"
+      "text": "Game Boy Advance (hardware specifications)\nCPU  : ARM7TDMI @ 16.78 MHz\nRAM  : 256 KB external WRAM + 32 KB internal IRAM\nVRAM : 96 KB total\nScreen: 240×160 pixels, 15-bit color\nSound: 2 DirectSound PCM channels + 4 legacy GB channels"
     },
     "palgrid.export": {
       "text": "Export"
@@ -2023,7 +2026,7 @@
       "text": "HSL (hue)"
     },
     "palgrid.reserved_tip": {
-      "text": "Reserved — always transparent (GBA hardware)"
+      "text": "Reserved, always transparent (GBA hardware)"
     },
     "palgrid.create_ramp": {
       "text": "Create a ramp"
@@ -2062,7 +2065,7 @@
       "text": "No use in the project."
     },
     "paluse.open_tip": {
-      "text": "{detail} — open in its editor"
+      "text": "{detail}, open in its editor"
     },
     "paluse.sprite": {
       "one": "Sprite",
@@ -2096,7 +2099,7 @@
       "text": "Selected glyph"
     },
     "fontinsp.bg_tip": {
-      "text": "BACKGROUND color of the sheet.<br><br>A sheet exported without an alpha channel lands on a flat fill — green,<br>magenta, white. Without designating it, the encoder mistakes it for ink<br>and every glyph comes out as a solid block.<br><br>Suggested automatically on import (dominant color); re-pick it<br>if the sheet is atypical."
+      "text": "BACKGROUND color of the sheet.<br><br>A sheet exported without an alpha channel lands on a flat fill (green,<br>magenta, white). Without designating it, the encoder mistakes it for ink<br>and every glyph comes out as a solid block.<br><br>Suggested automatically on import (dominant color); re-pick it<br>if the sheet is atypical."
     },
     "fontinsp.space": {
       "text": "Spacing"
@@ -2111,7 +2114,7 @@
       "text": "No longer make the “{name}” color transparent"
     },
     "fontinsp.charset_tip": {
-      "text": "Characters covered by this font — derived from the glyphs,<br>never stored as such.<br><br>Editable: leaving the box reassigns characters to the cells<br>in order (character 1 → cell 1, …). One cell holds one<br>character, so a ligature (e.g. “...”) is set cell by cell,<br>not here."
+      "text": "Characters covered by this font (derived from the glyphs,<br>never stored as such).<br><br>Editable: leaving the box reassigns characters to the cells<br>in order (character 1 → cell 1, …). One cell holds one<br>character, so a ligature (e.g. “...”) is set cell by cell,<br>not here."
     },
     "fontinsp.charset_hint": {
       "text": "Editing reassigns characters to cells in order. Extra cells keep their character; ligatures are set cell by cell."
@@ -2126,10 +2129,10 @@
       "text": "No cell selected"
     },
     "fontinsp.glyph_hint": {
-      "text": "Glyphs are drawn in your image editor, just like for a sprite — here you only correct which character each cell corresponds to."
+      "text": "Glyphs are drawn in your image editor, just like for a sprite. Here you only correct which character each cell corresponds to."
     },
     "fontinsp.key_none": {
-      "text": "No transparent color — the sheet is used as-is."
+      "text": "No transparent color. The sheet is used as-is."
     },
     "fontinsp.key_count": {
       "one": "{n} color made transparent. The PNG is not modified.",
@@ -2139,10 +2142,10 @@
       "text": "\nAdvance declared by spacing (proportional)."
     },
     "fontinsp.adv_mono": {
-      "text": "\nMono advance — designating the spacing makes it proportional."
+      "text": "\nMono advance. Designating the spacing makes it proportional."
     },
     "glsheet.hint_default": {
-      "text": "Click a cell then type the character it represents — the selection advances on its own. Arrows to navigate."
+      "text": "Click a cell then type the character it represents. The selection advances on its own. Arrows to navigate."
     },
     "glsheet.title": {
       "text": "Glyph sheet"
@@ -2151,7 +2154,7 @@
       "text": "Merge"
     },
     "glsheet.merge_tip": {
-      "text": "Merges the selected cells into ONE glyph covering their\nrectangle — a 16×16 font in an 8×8 sheet, or a\nwide pictogram for an entire word.\n\nShift+click a second cell to extend the selection."
+      "text": "Merges the selected cells into ONE glyph covering their\nrectangle (a 16×16 font in an 8×8 sheet, or a\nwide pictogram for an entire word).\n\nShift+click a second cell to extend the selection."
     },
     "glsheet.cell": {
       "text": "Cell"
@@ -2160,19 +2163,19 @@
       "text": "Re-slice"
     },
     "glsheet.reslice_tip": {
-      "text": "Re-slices the sheet at this cell size.\nAssigned characters are reset from scratch — use this\nwhen the detected grid is wrong, not for fine adjustment."
+      "text": "Re-slices the sheet at this cell size.\nAssigned characters are reset from scratch. Use this\nwhen the detected grid is wrong, not for fine adjustment."
     },
     "glsheet.zoom": {
       "text": "Zoom"
     },
     "glsheet.pick_hint": {
-      "text": "Click the {name} color on the sheet — Escape to cancel."
+      "text": "Click the {name} color on the sheet (Escape to cancel)."
     },
     "glsheet.sheet_name": {
-      "text": "SHEET — {name}"
+      "text": "SHEET ({name})"
     },
     "mktool.wraps": {
-      "text": "Wraps the selection — click again to remove it."
+      "text": "Wraps the selection (click again to remove it)."
     },
     "mktool.dropped": {
       "text": "Dropped in front of the selection, which is left intact."
@@ -2193,7 +2196,7 @@
       "text": "Context, tone, space constraint…"
     },
     "txtinsp.note_tip": {
-      "text": "Context intended for translation (v0.8) — never shown in-game."
+      "text": "Context intended for translation (v0.8). Never shown in-game."
     },
     "txtinsp.markup": {
       "text": "Markup"
@@ -2229,7 +2232,7 @@
       "text": "Filter: key, filing or content…"
     },
     "txttbl.group_tip": {
-      "text": "Group by category — folds the table back into its filing.\nSorting then applies inside each group."
+      "text": "Group by category (folds the table back into its filing).\nSorting then applies inside each group."
     },
     "txttbl.add_tip": {
       "text": "New text (filed where the selection is)"
@@ -2238,19 +2241,19 @@
       "text": "Delete the selected texts"
     },
     "txttbl.group_root_tip": {
-      "text": "Texts filed at the root — this is the absence of a category,\nnot a name: it cannot be renamed. File them from the level 1\nfield below."
+      "text": "Texts filed at the root. This is the absence of a category,\nnot a name: it cannot be renamed. File them from the level 1\nfield below."
     },
     "txttbl.group_rename_tip": {
-      "text": "Double-click to rename this category — it renames the filing of\nevery text it contains."
+      "text": "Double-click to rename this category. It renames the filing of\nevery text it contains."
     },
     "txttbl.sec_tip": {
-      "text": "Filing — accents, spaces and duplicates allowed.\nNever resolved, never referenced: it organizes the table\nand suggests the key, without ever owning it."
+      "text": "Filing (accents, spaces and duplicates allowed).\nNever resolved, never referenced: it organizes the table\nand suggests the key, without ever owning it."
     },
     "txttbl.key_auto": {
-      "text": "Automatic key — follows the filing"
+      "text": "Automatic key (follows the filing)"
     },
     "txttbl.key_hand": {
-      "text": "Named by hand — independent of the filing"
+      "text": "Named by hand (independent of the filing)"
     },
     "txttbl.key_dblclick": {
       "text": "\nDouble-click to name it by hand."
@@ -2259,7 +2262,7 @@
       "text": "Translated"
     },
     "txttbl.used_unknown_tip": {
-      "text": "Scripts could not be parsed — usage is unknown, not zero."
+      "text": "Scripts could not be parsed. Usage is unknown, not zero."
     },
     "txttbl.unused_cell": {
       "text": "unused"
@@ -2302,19 +2305,19 @@
       "text": "key"
     },
     "txtwb.copy_tip": {
-      "text": "Copy the key — paste into a Lua script"
+      "text": "Copy the key (paste into a Lua script)"
     },
     "txtwb.level": {
       "text": "level {n}"
     },
     "txtwb.filing_tip": {
-      "text": "<b>Filing</b> — accents, spaces and duplicates allowed.<br>Never resolved, never referenced: it organizes the table and<br>suggests the key, without ever owning it."
+      "text": "<b>Filing</b> (accents, spaces and duplicates allowed).<br>Never resolved, never referenced: it organizes the table and<br>suggests the key, without ever owning it."
     },
     "txtwb.source_tab": {
-      "text": "Source — {name}"
+      "text": "Source ({name})"
     },
     "txtwb.translation_tab": {
-      "text": "Translation — {name}"
+      "text": "Translation ({name})"
     },
     "txtwb.screen_preview": {
       "text": "Screen preview"
@@ -2329,7 +2332,7 @@
       "text": "(mixed)"
     },
     "txtwb.source_ref": {
-      "text": "SOURCE — {name}"
+      "text": "SOURCE ({name})"
     },
     "txtwb.multi_ph": {
       "text": "Content is edited one entry at a time"
@@ -2338,7 +2341,7 @@
       "text": "Select a text entry to edit its content…"
     },
     "txtwb.key_tip_head": {
-      "text": "<b>Key</b> — the handle Lua scripts write, resolved at build time.<br><br>"
+      "text": "<b>Key</b> (the handle Lua scripts write, resolved at build time).<br><br>"
     },
     "txtwb.key_tip_auto": {
       "text": "It DERIVES from the filing and will follow it. Unlock to<br>name it by hand: it will detach from it permanently."
@@ -2347,13 +2350,13 @@
       "text": "Named by hand: the filing no longer affects it.<br>Renaming it updates the scripts that reference it."
     },
     "txtwb.lock_attached": {
-      "text": "Key attached to the filing — click to name it by hand"
+      "text": "Key attached to the filing (click to name it by hand)"
     },
     "txtwb.lock_reattach": {
       "text": "Click to re-attach it to the filing"
     },
     "txtwb.lock_hand": {
-      "text": "Named by hand — click to re-attach it to the filing"
+      "text": "Named by hand (click to re-attach it to the filing)"
     },
     "txtpnl.invalid_key_title": {
       "text": "Invalid key"
@@ -2380,7 +2383,7 @@
       "text": "Re-slice sheet"
     },
     "txtscr.reslice_confirm_msg": {
-      "text": "Re-slice “{name}” into {cw}×{ch} cells?\n\nAssigned characters are reset from scratch — manual corrections will be lost."
+      "text": "Re-slice “{name}” into {cw}×{ch} cells?\n\nAssigned characters are reset from scratch. Manual corrections will be lost."
     },
     "txtscr.import_failed": {
       "text": "Import failed: {error}"
@@ -2401,7 +2404,7 @@
       "text": "magenta"
     },
     "backdrop.tip": {
-      "text": "<b>Proof background</b> — currently {name}.<br>Click for {next}.<br><br>Reading aid only: it changes nothing in the text or in the ROM."
+      "text": "<b>Proof background</b> (currently {name}).<br>Click for {next}.<br><br>Reading aid only: it changes nothing in the text or in the ROM."
     },
     "fsprev.choose_font": {
       "text": "Choose a preview font"
@@ -2458,7 +2461,7 @@
       "text": "MODULE"
     },
     "scrsb.no_handlers": {
-      "text": "  No handlers — called via require()"
+      "text": "  No handlers (called via require())"
     },
     "scrsb.scenes": {
       "text": "Scenes"
@@ -2476,7 +2479,7 @@
       "text": "Backgrounds"
     },
     "scrsb.bg_ref": {
-      "text": "Editorial reference — a background is placed in the scene, not from a script."
+      "text": "Editorial reference. A background is placed in the scene, not from a script."
     },
     "scrsb.text_zones": {
       "text": "Text zones"
@@ -2503,7 +2506,7 @@
       "text": "Constants"
     },
     "vartbl.array_tip": {
-      "text": "Array size — number of cells, indexed from 1 (global.name[1]..[N]).\nRight-click → Array to turn it back into a single value."
+      "text": "Array size. Number of cells, indexed from 1 (global.name[1]..[N]).\nRight-click → Array to turn it back into a single value."
     },
     "common.duplicate": {
       "text": "Duplicate"
@@ -2519,6 +2522,9 @@
     },
     "assf.instantiate_prefab": {
       "text": "Instantiate prefab"
+    },
+    "assf.edit_scene": {
+      "text": "Edit scene"
     },
     "assf.edit_prefab": {
       "text": "Edit prefab"
@@ -2599,7 +2605,7 @@
       "text": "Dismiss this tip"
     },
     "palslot.slot_tip": {
-      "text": "Slot {slot} — {name}\nClick: replace · Right-click: remove"
+      "text": "Slot {slot} ({name})\nClick: replace · Right-click: remove"
     },
     "palslot.override_tip": {
       "text": "{names} → {tgt} (override)\nClick: change · Right-click: original palette"
@@ -2611,10 +2617,10 @@
       "text": "Free bank"
     },
     "palslot.compressed_tip": {
-      "text": "{names} — compressed background{span_txt}\n(non-editable palette)"
+      "text": "{names}, compressed background{span_txt}\n(non-editable palette)"
     },
     "palslot.own_palette_tip": {
-      "text": "{names} — own palette (non-editable)\nClick: override with a scene palette"
+      "text": "{names}, own palette (non-editable)\nClick: override with a scene palette"
     },
     "pick.choose_the_ui_bank": {
       "text": "Choose the UI bank"
@@ -2623,16 +2629,16 @@
       "text": "Pick a color from the bank this text reads"
     },
     "pick.index_tip": {
-      "text": "Index {_index} of the bank — the color code is shown, not typed: the hardware only offers the bank's sixteen slots."
+      "text": "Index {_index} of the bank. The color code is shown, not typed: the hardware only offers the bank's sixteen slots."
     },
     "pick.index_index_not_in_the_bank": {
-      "text": "index {_index} — not in the bank"
+      "text": "index {_index} (not in the bank)"
     },
     "pick.stale_index_tip": {
-      "text": "This index is kept, but the bank this text reads has no such color — nothing will be painted with it."
+      "text": "This index is kept, but the bank this text reads has no such color. Nothing will be painted with it."
     },
     "rombar.target_tip": {
-      "text": "Target cartridge: {_cartridge_mib} MiB — click to change"
+      "text": "Target cartridge: {_cartridge_mib} MiB (click to change)"
     },
     "rombar.usage": {
       "text": "{value} / {_cartridge_mib} MiB  ({pct:.1f}%)"
@@ -2662,7 +2668,7 @@
       "text": "Add personal presets as folders in:\n{USER_STARTERS_DIR}"
     },
     "cvregion.region_tip": {
-      "text": "“{name}” — {name_2}\n{tiles}target {target}\nDrag to move · handles to resize · Alt-drag to duplicate"
+      "text": "“{name}”, {name_2}\n{tiles}target {target}\nDrag to move · handles to resize · Alt-drag to duplicate"
     },
     "cvtool.collision_editing_c": {
       "text": "Collision editing  (C)"
@@ -2701,7 +2707,7 @@
       "text": "Layer palette: {name}"
     },
     "bglayer.no_palette_tip": {
-      "text": "No palette (PNG colors) — click to change"
+      "text": "No palette (PNG colors). Click to change"
     },
     "caminsp.this_camera": {
       "text": "This camera"
@@ -2710,7 +2716,7 @@
       "text": "Starting camera:"
     },
     "caminsp.starting_camera_tip": {
-      "text": "<b>Which of this scene's cameras it starts on</b><br><br>A script switches to another with <code>camera.switch</code>.<br>Independent of the camera shown above — this only decides which one activates first.<br><br><b>(default)</b>: fixed at the origin, no bounds, no target."
+      "text": "<b>Which of this scene's cameras it starts on</b><br><br>A script switches to another with <code>camera.switch</code>.<br>Independent of the camera shown above. This only decides which one activates first.<br><br><b>(default)</b>: fixed at the origin, no bounds, no target."
     },
     "caminsp.transform": {
       "text": "Transform"
@@ -2728,7 +2734,7 @@
       "text": "Recompute from backgrounds"
     },
     "caminsp.prefill_tip": {
-      "text": "Prefills width/height from the background of the SELECTED scene\nclosest to a parallax speed of 1.0 — stays editable afterwards."
+      "text": "Prefills width/height from the background of the SELECTED scene\nclosest to a parallax speed of 1.0. Stays editable afterwards."
     },
     "caminsp.camera_script": {
       "text": "Camera script"
@@ -2740,7 +2746,7 @@
       "text": "New camera script"
     },
     "caminsp.no_camera_yet": {
-      "text": "No camera yet — any change below creates one."
+      "text": "No camera yet. Any change below creates one."
     },
     "caminsp.world_bounds": {
       "text": "World bounds"
@@ -2776,10 +2782,10 @@
       "text": "Declare a translation"
     },
     "langcard.code_tip": {
-      "text": "<b>Language code</b> — it names the translation file (<code>texts_de.json</code>),<br>so it is lowercased and stripped of anything a filename refuses."
+      "text": "<b>Language code</b>. It names the translation file (<code>texts_de.json</code>),<br>so it is lowercased and stripped of anything a filename refuses."
     },
     "langcard.name_tip": {
-      "text": "Readable name — shown in the editor, and in the game's language menu when it exists."
+      "text": "Readable name. Shown in the editor, and in the game's language menu when it exists."
     },
     "langcard.this_project_has_no_font_yet": {
       "text": "This project has no font yet."
@@ -2806,31 +2812,31 @@
       "text": "<b>Save slots</b><br><br>How many separate saves the game can hold in SRAM.<br>Scripts address them by number: <tt>save.write(0)</tt>.<br><br>Only the global variables marked <i>persist</i> are stored.<br>A project with none of them writes no save data at all."
     },
     "projset.cartridge_tip": {
-      "text": "<b>Cartridge size</b><br><br>The capacity the build report compares the ROM against.<br>Going over it is reported as an error — the ROM still exists,<br>it simply does not fit on that cartridge.<br><br>These are the mask-ROM sizes actually manufactured for the GBA."
+      "text": "<b>Cartridge size</b><br><br>The capacity the build report compares the ROM against.<br>Going over it is reported as an error. The ROM still exists,<br>it simply does not fit on that cartridge.<br><br>These are the mask-ROM sizes actually manufactured for the GBA."
     },
     "projset.debug_build": {
       "text": "Debug build"
     },
     "projset.debug_tip": {
-      "text": "<b>Debug build</b><br><br>Enables <tt>debug.*</tt> in scripts: <tt>debug.log(...)</tt> writes to the mGBA log console,<br>and the engine measures frame time, OAM usage, sound channels and DMA<br>load once per frame, also logged there.<br><br>Unchecked (Release), every <tt>debug.*</tt> call and the measurement it costs<br>are removed at compile time — not just silenced at runtime."
+      "text": "<b>Debug build</b><br><br>Enables <tt>debug.*</tt> in scripts: <tt>debug.log(...)</tt> writes to the mGBA log console,<br>and the engine measures frame time, OAM usage, sound channels and DMA<br>load once per frame, also logged there.<br><br>Unchecked (Release), every <tt>debug.*</tt> call and the measurement it costs<br>are removed at compile time, not just silenced at runtime."
     },
     "projset.backdrop_tip": {
-      "text": "<b>Project backdrop color</b><br><br>Index 0 of the BG palette — shown wherever no layer or<br>sprite draws, including through a window that masks everything.<br><br>Default inherited by every scene that doesn't set its own.<br>Quantized to BGR555 (5 bits per channel) like on hardware."
+      "text": "<b>Project backdrop color</b><br><br>Index 0 of the BG palette. Shown wherever no layer or<br>sprite draws, including through a window that masks everything.<br><br>Default inherited by every scene that doesn't set its own.<br>Quantized to BGR555 (5 bits per channel) like on hardware."
     },
     "projset.transition_tip": {
-      "text": "<b>Scene transition</b><br><br>Fade played when the game leaves a scene and when it opens one.<br>Each scene fades out with its own setting and fades in with the<br>one of the scene being opened — including the very first scene.<br><br>While a transition plays, the outgoing scene is frozen and the<br>scene's own color blending is suspended: the hardware has a single<br>blend mode, so there is no fade on top of a translucency."
+      "text": "<b>Scene transition</b><br><br>Fade played when the game leaves a scene and when it opens one.<br>Each scene fades out with its own setting and fades in with the<br>one of the scene being opened, including the very first scene.<br><br>While a transition plays, the outgoing scene is frozen and the<br>scene's own color blending is suspended: the hardware has a single<br>blend mode, so there is no fade on top of a translucency."
     },
     "projset.frames_tip": {
-      "text": "Frames per half — 16 frames is a bit over a quarter of a second."
+      "text": "Frames per half (16 frames is a bit over a quarter of a second)."
     },
     "projset.rate_tip": {
-      "text": "<b>Default sample rate for sound effects</b><br><br>mmutil converts effects to 8-bit mono but <b>keeps their sample rate</b>,<br>so a 44.1 kHz effect costs about three times what it would at 16 kHz<br>— for detail the Maxmod mixer does not reproduce.<br><br>Resampling happens at build time. The file in <tt>assets/</tt> is never<br>rewritten, so raising the rate again loses nothing."
+      "text": "<b>Default sample rate for sound effects</b><br><br>mmutil converts effects to 8-bit mono but <b>keeps their sample rate</b>,<br>so a 44.1 kHz effect costs about three times what it would at 16 kHz<br>(for detail the Maxmod mixer does not reproduce).<br><br>Resampling happens at build time. The file in <tt>assets/</tt> is never<br>rewritten, so raising the rate again loses nothing."
     },
     "projset.channels_tip": {
-      "text": "<b>Sound channels</b><br><br>Software mixing channels, shared by music and sound effects.<br>A module needs one per voice; every effect playing takes one more.<br><br>Each channel costs {value} bytes of heap, plus a fixed {value_2}-byte mixing buffer.<br>Eight channels — the default — cost {value_3} bytes.<br><br>Unrelated to sound effect <i>references</i>: Maxmod tracks {SOUND_HANDLE_SLOTS} of those<br>whatever this is set to. An effect past that limit still plays,<br>it simply has no reference."
+      "text": "<b>Sound channels</b><br><br>Software mixing channels, shared by music and sound effects.<br>A module needs one per voice; every effect playing takes one more.<br><br>Each channel costs {value} bytes of heap, plus a fixed {value_2}-byte mixing buffer.<br>Eight channels (the default) cost {value_3} bytes.<br><br>Unrelated to sound effect <i>references</i>: Maxmod tracks {SOUND_HANDLE_SLOTS} of those<br>whatever this is set to. An effect past that limit still plays,<br>it simply has no reference."
     },
     "projset.default_font_tip": {
-      "text": "<b>Default font</b><br><br>Fills coverage holes: a character the active font does not carry<br>(a Latin word left untranslated under a Japanese font, say), or any<br>glyph missing from the scene's font.<br><br>It may be imperfect — a character missing from BOTH the active font<br>and this one is still reported, as usual. «(none)» keeps the old<br>behavior: a missing glyph is simply skipped, drawing nothing."
+      "text": "<b>Default font</b><br><br>Fills coverage holes: a character the active font does not carry<br>(a Latin word left untranslated under a Japanese font, say), or any<br>glyph missing from the scene's font.<br><br>It may be imperfect. A character missing from BOTH the active font<br>and this one is still reported, as usual. «(none)» keeps the old<br>behavior: a missing glyph is simply skipped, drawing nothing."
     },
     "projset.declare_a_tag": {
       "text": "Declare a tag"
@@ -2869,7 +2875,7 @@
       "text": "Remove the exposed variable '{name}' from the script?"
     },
     "scrinsp.overflow": {
-      "text": "⚠ exceeds the screen — past {MAX_CELLS} chars of 8px"
+      "text": "⚠ exceeds the screen (past {MAX_CELLS} chars of 8px)"
     },
     "scrinsp.gauge_240px_screen_8px_char": {
       "text": "gauge · 240px screen, 8px/char"
@@ -2887,7 +2893,7 @@
       "text": "(no actor)"
     },
     "uinode.choose_an_actor": {
-      "text": "— choose an actor —"
+      "text": "(choose an actor)"
     },
     "uses.close_this_view": {
       "text": "Close this view"
@@ -2941,7 +2947,7 @@
       "text": "{value} glyphs\ncell {cell_w}×{cell_h} px · line height {line_height}\n{value_2} tiles / {TILES_PER_CHARBLOCK} per charblock{warn}\nsource: {source_format}"
     },
     "fontinsp.rect_w_h_at_x_y_advance_adv": {
-      "text": "rect {w}×{h} at ({x}, {y})\nadvance: {adv} px — {origin}{extra}"
+      "text": "rect {w}×{h} at ({x}, {y})\nadvance: {adv} px, {origin}{extra}"
     },
     "fontinsp.merge_stats": {
       "text": "{count} cells selected\nmerge → one {value}×{value_2} glyph ({tw}×{th} tiles)"
@@ -2989,10 +2995,10 @@
       "text": "Remove this language (its translation file is kept on disk)"
     },
     "projset.remove_tag_used": {
-      "text": "Remove this tag — used by {n} box{value}, they fall back to «body»"
+      "text": "Remove this tag. Used by {n} box{value}, they fall back to «body»"
     },
     "projset.remove_tag_unused": {
-      "text": "Remove this tag — not used by any box"
+      "text": "Remove this tag (not used by any box)"
     },
     "scrinsp.remove_name": {
       "text": "Remove '{name}'"
@@ -3057,6 +3063,57 @@
     "scncanvas.fit_tip": {
       "text": "Fit scene to view  (F)"
     },
+    "scncanvas.view_scene": {
+      "text": "Scene"
+    },
+    "scncanvas.view_graph": {
+      "text": "Graph"
+    },
+    "scncanvas.view_scene_tip": {
+      "text": "Scene view (edit the active scene)"
+    },
+    "scncanvas.view_graph_tip": {
+      "text": "Scene graph (every scene.switch transition at a glance)"
+    },
+    "scncanvas.graph_edge_calls": {
+      "text": "{source} → {target}, {count} call site(s)"
+    },
+    "scncanvas.graph_rearrange": {
+      "text": "Re-arrange"
+    },
+    "scncanvas.graph_root": {
+      "text": "All scenes"
+    },
+    "scncanvas.graph_rearrange_tip": {
+      "text": "Re-flow every scene automatically (discards manual positions)"
+    },
+    "scncanvas.graph_preview_tip": {
+      "text": "Toggle this scene's background preview on its node"
+    },
+    "scncanvas.graph_edit_scene": {
+      "text": "Edit scene"
+    },
+    "scncanvas.graph_entry_reachable": {
+      "text": "Entry — reachable scene"
+    },
+    "scncanvas.graph_entry_unreachable": {
+      "text": "Entry — unreachable scene (nothing switches to it)"
+    },
+    "scncanvas.graph_exit_literal": {
+      "text": "Exit — target(s) found"
+    },
+    "scncanvas.graph_exit_dynamic": {
+      "text": "Exit — computed target (variable): can't be resolved, check the script"
+    },
+    "scncanvas.graph_exit_broken": {
+      "text": "Exit — target not found (switches to a name no scene has)"
+    },
+    "scncanvas.graph_exit_none": {
+      "text": "Dead end — no exit (this scene never switches away)"
+    },
+    "scncanvas.graph_set_start": {
+      "text": "Set as starting scene"
+    },
     "scncanvas.grid_8px": {
       "text": "8 px grid (GBA tile)"
     },
@@ -3064,28 +3121,28 @@
       "text": "16 px grid"
     },
     "scncanvas.snap_tip": {
-      "text": "Snap — align actors to the grid while moving"
+      "text": "Snap (align actors to the grid while moving)"
     },
     "scncanvas.actor_boxes_tip": {
-      "text": "Actor boxes — collision boxes of all actors"
+      "text": "Actor boxes (collision boxes of all actors)"
     },
     "scncanvas.collisions_tip": {
-      "text": "Scene collisions — painted collision map"
+      "text": "Scene collisions (painted collision map)"
     },
     "scncanvas.interface_tip": {
-      "text": "Interface elements — text zones, containers, texts"
+      "text": "Interface elements (text zones, containers, texts)"
     },
     "bginp.brush_tip": {
-      "text": "Brush — repaint the palette (8×8)"
+      "text": "Brush (repaint the palette, 8×8)"
     },
     "bginp.fill_tip": {
-      "text": "Paint bucket — fill contiguous area"
+      "text": "Paint bucket (fill contiguous area)"
     },
     "bginp.rectangle_repaint_an_area": {
-      "text": "Rectangle — repaint an area"
+      "text": "Rectangle (repaint an area)"
     },
     "bginp.eraser_tip": {
-      "text": "Eraser — restore the original palette"
+      "text": "Eraser (restore the original palette)"
     },
     "bginp.fit_background_to_view": {
       "text": "Fit background to view"
@@ -3178,16 +3235,16 @@
       "text": "(default)"
     },
     "txtinsp.usage_unknown": {
-      "text": "scripts could not be parsed — usage unknown"
+      "text": "scripts could not be parsed (usage unknown)"
     },
     "txtinsp.no_script_no_layout": {
       "text": "no script, no layout"
     },
     "txtinsp.key_auto_note": {
-      "text": "key derived from the folder — naming it by hand detaches it"
+      "text": "key derived from the folder (naming it by hand detaches it)"
     },
     "txtinsp.key_manual_note": {
-      "text": "key named by hand — the folder no longer affects it"
+      "text": "key named by hand (the folder no longer affects it)"
     },
     "txtinsp.root": {
       "text": "(root)"
@@ -3217,13 +3274,13 @@
       "text": "→ Once"
     },
     "musgraph.silence": {
-      "text": "— silence —"
+      "text": "(silence)"
     },
     "sndpanel.from_project": {
       "text": "From project"
     },
     "cvitems.inactive_window_show_at_0": {
-      "text": "\n(inactive — window_show at 0)"
+      "text": "\n(inactive, window_show at 0)"
     },
     "cvitems.unnamed_window": {
       "text": "(unnamed window)"
@@ -3280,19 +3337,19 @@
       "text": "Inpainting: repaint the palette over a rectangular area"
     },
     "cvtool.text_tip": {
-      "text": "Text — authored here, or left empty for a script to write into"
+      "text": "Text (authored here, or left empty for a script to write into)"
     },
     "cvtool.container_tip": {
-      "text": "Container / group — anchor root, can draw a background"
+      "text": "Container / group (anchor root, can draw a background)"
     },
     "cvtool.list_tip": {
-      "text": "List — a container the engine walks: rows, cursor, selection"
+      "text": "List (a container the engine walks: rows, cursor, selection)"
     },
     "cvtool.image_tip": {
-      "text": "Image — a sprite whose state a script can switch"
+      "text": "Image (a sprite whose state a script can switch)"
     },
     "bglayer.no_blend_tip": {
-      "text": "Not part of the blend — click to make it the top layer"
+      "text": "Not part of the blend (click to make it the top layer)"
     },
     "bglayer.top_tip": {
       "text": "Top: this layer is what gets blended"
@@ -3337,7 +3394,7 @@
       "text": "Unique tiles: {value} / {budget}  ({bpp}bpp)"
     },
     "bgedit.ui_nine_slice_margins_l_r_t_b": {
-      "text": "UI: nine-slice — margins {l}/{r}/{t}/{b} px"
+      "text": "UI: nine-slice (margins {l}/{r}/{t}/{b} px)"
     },
     "bgedit.at_build_tl_tr_tt_tb_tiles": {
       "text": "At build: {tl}/{tr}/{tt}/{tb} tiles"
@@ -3358,28 +3415,28 @@
       "text": "Cycle: {speed} ticks/frame · {secs:.2f}s"
     },
     "bgedit.bitmap_needs_tiles": {
-      "text": "⚠ Bitmap (Mode 4) — a {value} needs tiles; switch to Tiled."
+      "text": "⚠ Bitmap (Mode 4). A {value} needs tiles; switch to Tiled."
     },
     "bgedit.w_h_px_not_a_multiple_of_8": {
-      "text": "⚠ {w}×{h} px not a multiple of 8 — padded with transparency ({value}×{value_2})."
+      "text": "⚠ {w}×{h} px not a multiple of 8. Padded with transparency ({value}×{value_2})."
     },
     "bgedit.tiles_exceed_vram": {
-      "text": "⚠ {value} unique tiles &gt; {bud} — exceeds VRAM ({bpp}bpp)."
+      "text": "⚠ {value} unique tiles &gt; {bud}. Exceeds VRAM ({bpp}bpp)."
     },
     "bgedit.compat_ok": {
-      "text": "✓ GBA-compatible ({bpp}bpp) — compressed losslessly."
+      "text": "✓ GBA-compatible ({bpp}bpp). Compressed losslessly."
     },
     "bgedit.image_scaled_out_w_out_h_240_160": {
       "text": "⚠ Image scaled → {out_w}×{out_h} (≤ 240×160)."
     },
     "bgedit.n_tile_s_gt_15_colors_max_mtc": {
-      "text": "⚠ {n} tile(s) &gt; 15 colors (max {mtc}) — colors reduced (lossy)."
+      "text": "⚠ {n} tile(s) &gt; 15 colors (max {mtc}). Colors reduced (lossy)."
     },
     "bgedit.palettes_merged": {
-      "text": "⚠ {pre} palettes needed &gt; 16 — merged into {value} (lossy)."
+      "text": "⚠ {pre} palettes needed &gt; 16. Merged into {value} (lossy)."
     },
     "bgedit.iw_ih_not_divisible_by_fw_fh_value": {
-      "text": "⚠ {iw}×{ih} not divisible by {fw}×{fh} — {value}×{value_2} px left out."
+      "text": "⚠ {iw}×{ih} not divisible by {fw}×{fh}. {value}×{value_2} px left out."
     },
     "akind.delete_scene_name_ctrl_z_to_undo": {
       "text": "Delete scene “{name}”?\n(Ctrl+Z to undo)"
@@ -3418,10 +3475,10 @@
       "text": "Palette {idx} (PNG)"
     },
     "pick.automatic_project_default": {
-      "text": "Automatic — {project_default}"
+      "text": "Automatic ({project_default})"
     },
     "pick.automatic_first": {
-      "text": "Automatic — {first}"
+      "text": "Automatic ({first})"
     },
     "pick.name_missing": {
       "text": "{name} (missing)"
@@ -3433,10 +3490,10 @@
       "text": "{display_name} (personal)"
     },
     "cvitems.gba_camera_name_frame_w_frame_h_px": {
-      "text": "GBA Camera — {name} — {_frame_w}×{_frame_h} px\nDrag to move the view"
+      "text": "GBA Camera ({name}), {_frame_w}×{_frame_h} px\nDrag to move the view"
     },
     "cvitems.value_value_2_value_3_px_at_x0": {
-      "text": "{value} — {value_2}×{value_3} px at ({x0}, {y0})"
+      "text": "{value}, {value_2}×{value_3} px at ({x0}, {y0})"
     },
     "caminsp.windows_used": {
       "text": "{used} / {total} windows used by this scene"
@@ -3457,7 +3514,7 @@
       "text": "{n} columns, one line"
     },
     "scncanvas.bank_slot": {
-      "text": "Bank {slot} — {name}"
+      "text": "Bank {slot} ({name})"
     },
     "scncanvas.duplicate_n": {
       "text": "Duplicate ({n})"
@@ -3469,7 +3526,7 @@
       "text": "Interface <i>{name}</i>"
     },
     "scrsb.preview_value": {
-      "text": " — preview “{value}”"
+      "text": " (preview “{value}”)"
     },
     "boxplay.no_transition": {
       "text": "No transition from “{_current}” to “{state_name}”: the ROM would not change music here."
@@ -3493,10 +3550,10 @@
       "text": "{animated_glyphs} animated glyph(s)"
     },
     "txtinsp.no_glyph": {
-      "text": "“{name}” has no glyph “{value}” — merge the cells that draw it and give it that name."
+      "text": "“{name}” has no glyph “{value}”. Merge the cells that draw it and give it that name."
     },
     "txtinsp.tiles_no_color": {
-      "text": "“{name}” is rendered in tiles: “[color]” will be ignored there (it requires a composed font — proportional, or too large for VRAM)."
+      "text": "“{name}” is rendered in tiles: “[color]” will be ignored there (it requires a composed font, proportional, or too large for VRAM)."
     },
     "txtinsp.unknown_value": {
       "text": "“${value}” is neither a project global nor a constant."
@@ -3576,6 +3633,30 @@
     "assetfind.rename": {
       "text": "Rename…"
     },
+    "assetfind.new_folder": {
+      "text": "New folder"
+    },
+    "assetfind.new_subfolder": {
+      "text": "New subfolder"
+    },
+    "assetfind.folder_default_name": {
+      "text": "Folder"
+    },
+    "assetfind.create_group": {
+      "text": "Create group"
+    },
+    "assetfind.group": {
+      "text": "Group"
+    },
+    "assetfind.group_default_name": {
+      "text": "Group"
+    },
+    "assetfind.move_to_folder": {
+      "text": "Move to folder"
+    },
+    "assetfind.remove_from_folder": {
+      "text": "Remove from folder"
+    },
     "assetfind.delete_selection": {
       "one": "Delete {n} item",
       "other": "Delete {n} items"
@@ -3584,31 +3665,31 @@
       "text": "indexed (original palette)"
     },
     "bgedit.mode_4_full_screen_no_tiles": {
-      "text": "Mode 4 — full screen, no tiles"
+      "text": "Mode 4 (full screen, no tiles)"
     },
     "bgedit.palette_256_colors_1": {
       "text": "Palette: 256 colors (1)"
     },
     "bgedit.ui_plain_info": {
-      "text": "UI: plain background — laid top-left, cropped to the panel"
+      "text": "UI: plain background (laid top-left, cropped to the panel)"
     },
     "bgedit.compression_failed": {
-      "text": "⚠ Compression impossible — unreadable or empty image."
+      "text": "⚠ Compression impossible. Unreadable or empty image."
     },
     "bgedit.margins_overlap": {
-      "text": "⚠ Opposite margins overlap — corners will be squeezed on small panels."
+      "text": "⚠ Opposite margins overlap. Corners will be squeezed on small panels."
     },
     "bgedit.frame_too_large": {
-      "text": "⚠ Frame larger than the sheet — no frame to play."
+      "text": "⚠ Frame larger than the sheet. No frame to play."
     },
     "bgedit.gt_256_colors_reduced_to_256_lossy": {
-      "text": "⚠ &gt; 256 colors — reduced to 256 (lossy)."
+      "text": "⚠ &gt; 256 colors. Reduced to 256 (lossy)."
     },
     "bgedit.bitmap_ok": {
-      "text": "✓ GBA bitmap (Mode 4) — full screen, no tile loss."
+      "text": "✓ GBA bitmap (Mode 4). Full screen, no tile loss."
     },
     "bgedit.reduced_256_8bpp": {
-      "text": "⚠ &gt; 256 colors — reduced to 256 (lossy, 8bpp mode)."
+      "text": "⚠ &gt; 256 colors. Reduced to 256 (lossy, 8bpp mode)."
     },
     "uiinsp.fill_the_frame": {
       "text": "Fill the frame"
@@ -3629,10 +3710,10 @@
       "text": "(empty)"
     },
     "bglayer.through_tip": {
-      "text": "This is the layer you see through — click to put it behind instead"
+      "text": "This is the layer you see through (click to put it behind instead)"
     },
     "bglayer.behind_tip": {
-      "text": "Behind the translucent layer — click to make it the translucent one"
+      "text": "Behind the translucent layer (click to make it the translucent one)"
     },
     "uinode.screen_fixed": {
       "text": "Screen (fixed)"
@@ -3665,7 +3746,7 @@
       "other": "{n} font replacements.\nOnly a different writing system needs one."
     },
     "langcard.no_font_replacement": {
-      "text": "No font replacement — this language uses the project's fonts.\nOnly a different writing system needs one."
+      "text": "No font replacement. This language uses the project's fonts.\nOnly a different writing system needs one."
     },
     "projset.build": {
       "text": "Build"
@@ -3788,7 +3869,7 @@
       "text": "✕ missing from “{font}”: {glyphs}"
     },
     "sceneinsp.inherited_transition": {
-      "text": "From project — {transition}"
+      "text": "From project ({transition})"
     },
     "sceneinsp.transition_frames": {
       "text": ", {frames} frames"
@@ -3810,7 +3891,7 @@
       "other": "Pasted {n} elements"
     },
     "scncanvas.shared_layout": {
-      "text": " — shared by {count} scenes"
+      "text": " (shared by {count} scenes)"
     },
     "scncanvas.tile_size": {
       "text": " · {width}×{height} tiles"
@@ -3819,7 +3900,7 @@
       "text": "Element “{name}” created in “{layout}”{shared}{tiles}"
     },
     "caminsp.windows_over_budget": {
-      "text": "{used} / {total} windows used by this scene — over budget, build will fail"
+      "text": "{used} / {total} windows used by this scene. Over budget, build will fail"
     },
     "sceneinsp.empty_val": {
       "text": "empty"
@@ -3834,13 +3915,13 @@
       "text": "Switching to Mode {mode} will remove:\n• {items}\n\nContinue? (Ctrl+Z to undo)"
     },
     "bgedit.margin_rounding": {
-      "text": "⚠ Margin {margins} is not a multiple of 8 — rounded down to the tile at build."
+      "text": "⚠ Margin {margins} is not a multiple of 8. Rounded down to the tile at build."
     },
     "bgedit.once": {
       "text": " · once"
     },
     "palslot.bank_span": {
-      "text": " — block of {count} banks"
+      "text": " (block of {count} banks)"
     },
     "projinsp.cut_no_transition": {
       "text": "Cut (no transition)"
@@ -3987,13 +4068,7 @@
       "text": "GBA raster preview"
     },
     "fontasset.preview_live": {
-      "text": "Live preview — rendered by the project rasterizer."
-    },
-    "fontasset.preview_sample": {
-      "text": "Sample: {sample}"
-    },
-    "fontasset.preview_text": {
-      "text": "Text"
+      "text": "Live preview. Rendered by the project rasterizer."
     },
     "fontasset.preview_sample_text": {
       "text": "Preview text"
@@ -4009,12 +4084,6 @@
     },
     "fontasset.preview_size_tip": {
       "text": "Raster size, shared with the inspector and saved in this font asset."
-    },
-    "fontasset.preview_zoom": {
-      "text": "Zoom"
-    },
-    "fontasset.preview_zoom_tip": {
-      "text": "Preview magnification only; it does not change the exported font."
     },
     "fontasset.preview_canvas_tip": {
       "text": "Mouse wheel: zoom. Middle-button drag: pan. Double-click: reset view. The faint grid marks 8×8 GBA tiles."

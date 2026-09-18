@@ -18,7 +18,9 @@ from ui.scene_manager.canvas.canvas_items import SpriteItem, CollisionOverlay
 from ui.scene_manager.canvas.canvas_region_item import UIRegionItem
 from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainter, QPen, QTransform, QWheelEvent
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsItem, QGraphicsRectItem
+from PyQt6.QtWidgets import (
+    QApplication, QGraphicsView, QGraphicsItem, QGraphicsRectItem,
+)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -62,7 +64,6 @@ class GBAView(QGraphicsView):
         # l'outil actif et du zoom. `_pan_last` = dernière position viewport (px).
         self._panning = False
         self._pan_last: "Optional[QPointF]" = None
-        self._pan_prev_cursor = None
         # Un Shift+clic (multi-sélection) est traité ici sans passer à Qt : le
         # relâchement correspondant doit l'être aussi, d'où ce drapeau.
         self._swallow_left_release = False
@@ -246,6 +247,12 @@ class GBAView(QGraphicsView):
             vbar.setValue(vbar.value() - round(delta.y()))
             e.accept()
             return
+        # Filet de sécurité : si le relâchement du bouton central a été manqué
+        # (survenu hors du viewport, avalé par un reflow…), le pan resterait armé
+        # et le curseur figé en poing fermé. Le prochain mouvement sans le bouton
+        # le rattrape et restaure le curseur.
+        if self._panning:
+            self._end_pan()
         pos = self.mapToScene(e.position().toPoint())
         # Snap preview — indépendant de l'outil actif
         if self._snap_on:
@@ -354,17 +361,24 @@ class GBAView(QGraphicsView):
     # ── Pan clic-central ──────────────────────────────────────────
 
     def _start_pan(self, viewport_pos: "QPointF"):
-        self._panning = True
         self._pan_last = viewport_pos
-        self._pan_prev_cursor = self.cursor()
-        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        if self._panning:
+            return
+        self._panning = True
+        # Curseur applicatif (au-dessus de tout) plutôt que setCursor sur la vue :
+        # QGraphicsView mémorise comme « original » le curseur effectif du viewport
+        # au survol des items (ex. le curseur d'outil), et le re-pose à chaque
+        # sortie d'item. Un poing fermé posé sur la vue serait ainsi capturé et
+        # figé. L'override est orthogonal à cette machinerie et se retire proprement,
+        # révélant à nouveau le curseur d'outil en place.
+        QApplication.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
 
     def _end_pan(self):
+        if not self._panning:
+            return
         self._panning = False
         self._pan_last = None
-        if self._pan_prev_cursor is not None:
-            self.setCursor(self._pan_prev_cursor)
-            self._pan_prev_cursor = None
+        QApplication.restoreOverrideCursor()
 
     def _actor_item_at(self, scene_pos) -> "Optional[SpriteItem]":
         """Premier SpriteItem sous la position (scène) donnée, sinon None."""

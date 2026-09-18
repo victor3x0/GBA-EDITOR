@@ -29,7 +29,8 @@ L'éditeur détecte ces installations automatiquement.
 
 ## Guides et exemples
 
-- [Guide utilisateur](docs/user-guide/) : créer ou ouvrir un projet, naviguer, importer des ressources et lancer une première ROM.
+- [Documentation](https://victor3x0.github.io/GBA-EDITOR/) : toute la documentation du projet en ligne.
+- [Guide utilisateur](https://victor3x0.github.io/GBA-EDITOR/user-guide/) : créer ou ouvrir un projet, naviguer, importer des ressources et lancer une première ROM.
 - [Guide de scripting](docs/scripting.md) : écrire le comportement d'un acteur.
 - [Référence de scripting](docs/scripting-reference.md) : vérifier la syntaxe disponible et les limites du langage.
 - [Projet de démo Pong](https://github.com/victor3x0/GBA-EDITOR/tree/main/Project%20Demo/Pong) : un projet complet à télécharger puis ouvrir dans l'éditeur.

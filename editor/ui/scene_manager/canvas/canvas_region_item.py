@@ -14,6 +14,7 @@ vers la scène/vue (il dialogue avec sa scène via `self.scene()` + `hasattr`).
 from __future__ import annotations
 
 from ui.common.labels import label
+from ui.common.notes_tooltip import notes_tooltip
 import copy
 
 from core.sprite_compose import compose_frame_image
@@ -238,7 +239,9 @@ class UIRegionItem(QGraphicsRectItem):
         if hasattr(region, "tile_rect"):
             _, _, tw, th = region.tile_rect()
             tiles = f"{tw}×{th} tiles · "
-        self.setToolTip(label('cvregion.region_tip', name=region.name, name_2=self._layout.name, tiles=tiles, target=target))
+        detail = label('cvregion.region_tip', name=region.name, name_2=self._layout.name, tiles=tiles, target=target)
+        # Note libre de l'auteur en tête, puis le détail technique de la zone.
+        self.setToolTip(notes_tooltip(getattr(region, "notes", ""), detail))
 
         # Étiquette : icône de type + le nom que cite le script, lisibles sans
         # passer par l'inspecteur.

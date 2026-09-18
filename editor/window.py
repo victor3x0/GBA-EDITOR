@@ -11,8 +11,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QToolButton, QStackedWidget, QToolBar,
 )
-from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut
-from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer
+from PyQt6.QtGui import QAction, QFont, QKeySequence, QShortcut, QDesktopServices
+from PyQt6.QtCore import Qt, QSettings, QByteArray, QTimer, QUrl
 
 from ui.common.theme import C, T, QSS
 from ui.common.labels import label
@@ -32,6 +32,8 @@ from core.models.sprite import IMAGE_FILE_EXTS
 from core.models.scene import Scene
 from core.project import Project
 from core.project_paths import ProjectManifestError
+from core.scene_graph_state import SceneGraphState
+from core.asset_folder_store import AssetFolderStore
 from ui.screens import EditorScreen, ProjectScreen, plugin_screens
 
 # ── Sous-composants UI ────────────────────────────────────────────
@@ -44,6 +46,9 @@ from core.external_tools import ExternalTools
 from core.keybindings import bind
 from ui.scene_manager.inspectors import DynamicInspector
 from ui.home.project_picker import HomeScreen, push_recent, PROJECTS_DIR
+
+# Page de documentation du dépôt (menu Help → Documentation).
+DOCS_URL = "https://victor3x0.github.io/GBA-EDITOR/"
 # Démarrage paresseux (chantier « L'écran construit à sa première visite ») :
 # les sept écrans natifs différés — Data, Background, Sprite, Palette, Text,
 # Sound, Script — ne sont PAS importés ici. Leur import (souvent lourd :
@@ -70,10 +75,23 @@ class GbaStatusBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(24)
-        self.setStyleSheet(f"background:{C.BG_DEEP}; border-top:1px solid {C.BORDER};")
+        self.setFixedHeight(25)
+        self.setStyleSheet(f"background:{C.BG_DEEP};")
 
-        layout = QHBoxLayout(self)
+        # Filet de séparation posé SUR la barre : un QWidget nu ne peint pas de
+        # `border-top` par feuille de style de façon fiable, on le dessine donc
+        # comme une ligne pleine largeur à part.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        top_rule = QFrame()
+        top_rule.setFixedHeight(1)
+        top_rule.setStyleSheet(f"background:{C.BORDER}; border:none;")
+        outer.addWidget(top_rule)
+
+        row = QWidget()
+        outer.addWidget(row)
+        layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(0)
 
@@ -87,10 +105,14 @@ class GbaStatusBar(QWidget):
         ]
         for i, (name, default, tooltip, limit, warn) in enumerate(specs):
             if i > 0:
+                # Espacement posé par le layout (et non par une marge en feuille
+                # de style) : fiable, et symétrique de part et d'autre du filet.
+                layout.addSpacing(18)
                 sep = QFrame()
                 sep.setFrameShape(QFrame.Shape.VLine)
-                sep.setStyleSheet(f"color:{C.BORDER}; margin:4px 12px;")
+                sep.setStyleSheet(f"color:{C.BORDER}; margin:4px 0;")
                 layout.addWidget(sep)
+                layout.addSpacing(18)
             lbl_name = QLabel(f"{name}  ")
             lbl_name.setFont(QFont(T.MONO, T.XS))
             lbl_name.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -235,11 +257,20 @@ class SceneManagerScreen(QWidget):
         self._inspector  = inspector
 
     def load_project(self, project):
+        # Deux sidecars d'éditeur, UNE instance chacun par session, possédés ici
+        # et partagés : positions du Graphe (`SceneGraphState`) et dossiers
+        # d'assets (`AssetFolderStore`, dont les groupes de scènes du Graphe et
+        # les dossiers du project viewer sont deux vues). Deux instances du même
+        # fichier se désynchroniseraient.
+        self._graph_state = SceneGraphState(project.root)
+        self._folder_store = AssetFolderStore(project.root)
+        self._folder_store.prune("scenes", {s.name for s in project.scenes})
         self._finder.load_project(project)
+        self._finder.set_folder_store(self._folder_store)
         self._scene_tree.load_project(project)
         self._inspector.set_project(project)
         if project.active_scene:
-            self._canvas.load_project(project)
+            self._canvas.load_project(project, self._graph_state, self._folder_store)
         if project.active_scene:
             # Inspecteur de scène par défaut, sans passer par le bus.
             self._inspector.show_scene(project.active_scene, project)
@@ -537,6 +568,25 @@ class MainWindow(QMainWindow):
         # pas en monolithe et que les connexions existantes restent stables.
         self.canvas_workspace = CanvasWorkspace(self.scene_editor)
         self._center_v_split.addWidget(self.canvas_workspace)
+        # Navigation depuis le Graphe de scènes : la vue émet des INTENTIONS, la
+        # fenêtre les exécute avec ses façades existantes (ouvrir une scène,
+        # ouvrir un script). La sélection au clic, elle, passe déjà par le bus.
+        _graph = self.canvas_workspace.graph_view
+        _graph.scene_opened.connect(self._open_scene_from_graph)
+        _graph.edge_selected.connect(self._show_edge_calls)
+        _graph.edge_opened.connect(self._open_edge_from_graph)
+        # Basculer Graphe → Scène ouvre la scène sélectionnée dans le graphe :
+        # l'éditeur de scène pointe alors sur ce que l'auteur regardait.
+        self.canvas_workspace.view_changed.connect(self._on_canvas_view_changed)
+        # Sélection croisée graphe ↔ project viewer (highlight, sans activation) :
+        # chaque vue surligne ce que l'autre sélectionne. Les gardes internes
+        # (`_syncing` côté graphe, `blockSignals` côté finder) évitent la boucle.
+        _graph.scenes_selected.connect(self.assets_finder_panel.highlight_scenes)
+        self.assets_finder_panel.scenes_selected.connect(_graph.highlight_scenes)
+        # Créer un groupe dans une vue le fait apparaître dans l'autre : les deux
+        # lisent le même store de dossiers, mais chacune doit se redessiner.
+        _graph.groups_changed.connect(self.assets_finder_panel.refresh)
+        self.assets_finder_panel.groups_changed.connect(_graph.reload_groups)
 
         self.build_panel = BuildPanel()
         self.build_panel.btn_build.clicked.connect(self._run_build)
@@ -621,6 +671,11 @@ class MainWindow(QMainWindow):
         _d.on("status_message",        lambda msg: self._status.showMessage(msg, 6000))
         _d.on("project_tree_changed",  self.assets_finder_panel.refresh)
         _d.on("project_tree_changed",  self.scene_tree_panel.refresh)
+        # Le graphe des scènes dérive lui aussi de l'arbre projet : une scène
+        # créée/supprimée/renommée doit s'y voir en direct quand il est affiché
+        # (sinon il n'apprend le changement qu'au prochain showEvent). Hors écran,
+        # inutile de re-parser : le showEvent s'en charge à la prochaine visite.
+        _d.on("project_tree_changed",  self._refresh_graph_if_visible)
         _d.on("scripts_changed",       self.assets_finder_panel._refresh_scripts)
         # lambda : _text_editor / _script_editor / _palette_editor sont construits
         # à leur PREMIÈRE VISITE (démarrage paresseux), donc après ce bloc
@@ -717,6 +772,10 @@ class MainWindow(QMainWindow):
         m_game.addAction(a_project_settings)
         mb.addMenu(label("win.menu_view"))
         m_help = mb.addMenu(label("win.menu_help"))
+        a_docs = QAction(label("win.documentation"), self)
+        a_docs.triggered.connect(lambda: QDesktopServices.openUrl(QUrl(DOCS_URL)))
+        m_help.addAction(a_docs)
+        m_help.addSeparator()
         a_about = QAction(label("win.about"), self)
         a_about.triggered.connect(lambda: QMessageBox.information(
             self, label("win.app_name"), label("win.about_text")))
@@ -1097,11 +1156,77 @@ class MainWindow(QMainWindow):
         self._bus.clear()      # nouvelle scène = nouvelle sélection
         self.scene_editor.load_project(self.project)
         self._inspector.show_scene(self.project.active_scene, self.project)
-        self.assets_finder_panel.refresh()
+        self.assets_finder_panel.highlight_active_scene(self.project.active_scene)
+        # Le liseré « scène active » du graphe suit la même bascule (la bascule
+        # ne change pas l'empreinte du graphe, donc `refresh` ne le ferait pas).
+        self.canvas_workspace.graph_view.set_active_scene(
+            self.project.active_scene.name if self.project.active_scene else None)
         self.scene_tree_panel.set_active_scene(self.project.active_scene)
         self._update_gba_bar()
         self._refresh_diagnostics()   # la validation d'acteur porte sur la scène active
         self._status.showMessage(label("win.active_scene_msg", name=self.project.active_scene.name))
+
+    def _open_scene_from_graph(self, name: str):
+        """Double-clic (ou clic-droit « Edit ») sur une scène du Graphe : revenir
+        au Canvas 2D et l'ouvrir.
+
+        Réutilise le flux d'ouverture de scène de l'arbre (`_on_scene_selected`)
+        après avoir rebasculé le workspace sur la vue de scène, pour que
+        l'éditeur soit visible quand la scène se charge. On charge nous-mêmes ici :
+        `_suppress_view_switch_load` neutralise le chargement automatique de la
+        bascule (`_on_canvas_view_changed`), sinon la scène se chargerait deux
+        fois — la scène VOULUE ici prime sur la simple sélection."""
+        if not self.project:
+            return
+        idx = next((i for i, s in enumerate(self.project.scenes) if s.name == name), None)
+        if idx is None:
+            return
+        self._suppress_view_switch_load = True
+        try:
+            self.canvas_workspace.activate_view(CanvasWorkspace.SCENE_VIEW)
+        finally:
+            self._suppress_view_switch_load = False
+        self._on_scene_selected(idx)
+
+    def _on_canvas_view_changed(self, view: str):
+        """Bascule de vue du Canvas. En passant sur la vue de scène, on ouvre la
+        scène sélectionnée dans le Graphe (s'il y en a une seule) : l'éditeur
+        pointe sur ce que l'auteur regardait. Neutralisé pendant une ouverture
+        explicite (`_open_scene_from_graph`), qui charge déjà la bonne scène."""
+        if (view != CanvasWorkspace.SCENE_VIEW
+                or getattr(self, "_suppress_view_switch_load", False)
+                or not self.project):
+            return
+        name = self.canvas_workspace.graph_view.selected_scene_name()
+        if not name:
+            return
+        idx = next((i for i, s in enumerate(self.project.scenes) if s.name == name), None)
+        if idx is not None and self.project.active_scene is not self.project.scenes[idx]:
+            self._on_scene_selected(idx)
+
+    def _refresh_graph_if_visible(self):
+        """Re-projette le graphe des scènes s'il est à l'écran (sa mémoïsation ne
+        recalcule que si l'empreinte a changé). Caché, il se met à jour seul à sa
+        prochaine ouverture (showEvent) — pas de re-parse inutile hors vue."""
+        graph = self.canvas_workspace.graph_view
+        if graph.isVisible():
+            graph.refresh()
+
+    def _show_edge_calls(self, edge):
+        """Clic sur une arête : exposer ses appels agrégés dans la barre d'état."""
+        self._status.showMessage(
+            label("scncanvas.graph_edge_calls", source=edge.source,
+                  target=edge.target, count=len(edge.refs)), 4000)
+
+    def _open_edge_from_graph(self, edge):
+        """Double-clic sur une arête : ouvrir le Script Editor à l'appel.
+
+        La sortie de secours du Graphe (condition, déplacement, suppression) :
+        on ouvre le premier appel agrégé, à sa ligne exacte via `LuaRef`."""
+        if not edge.refs:
+            return
+        ref = edge.refs[0]
+        self.open_script(ref.path, ref.line)
 
     def _add_scene(self):
         if not self.project: return

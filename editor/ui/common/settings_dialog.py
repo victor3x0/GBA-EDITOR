@@ -242,6 +242,7 @@ class ShortcutsPanel(QWidget):
         "scene_canvas": "settings.shortcuts.context.scene_canvas",
         "sprite_editor": "settings.shortcuts.context.sprite_editor",
         "sound_mixer": "settings.shortcuts.context.sound_mixer",
+        "scene_manager": "settings.shortcuts.context.scene_manager",
     }
     _DISPLAY_KEYS = {
         "undo": "settings.shortcuts.display.undo",
@@ -270,6 +271,7 @@ class ShortcutsPanel(QWidget):
         "sprite.duplicate_frame": "settings.shortcuts.action.sprite.duplicate_frame",
         "sprite.delete_frame": "settings.shortcuts.action.sprite.delete_frame",
         "sound.play_pause": "settings.shortcuts.action.sound.play_pause",
+        "scene.group": "settings.shortcuts.action.scene.group",
     }
 
     def __init__(self, parent=None):

@@ -42,7 +42,7 @@ from core.models.scene import Scene
 from core.project import Project
 from ui.common.theme import C, T, QSS
 from ui.common.icons import COLOR_SCRIPT
-from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard, W
+from ui.common.widgets import ScriptSlot, ScriptPickerPopup, CollapsibleCard, NotesEdit, W
 from ui.common.notice import notice
 
 _MODES = [
@@ -110,6 +110,13 @@ class CameraInspector(QWidget):
         self._lbl_users.setWordWrap(True)
         camera_card.body_layout.addWidget(self._lbl_users)
         layout.addWidget(camera_card)
+
+        # ── Note libre — même carte partagée qu'Actor/Scène ───────
+        notes_card = CollapsibleCard(label('common.note'))
+        self._notes_edit = NotesEdit()
+        self._notes_edit.committed.connect(self._on_notes_changed)
+        notes_card.body_layout.addWidget(self._notes_edit)
+        layout.addWidget(notes_card)
 
         # ── Mode ──────────────────────────────────────────────────
         mode_card = CollapsibleCard(label('common.mode'))
@@ -230,6 +237,7 @@ class CameraInspector(QWidget):
             self._bounds_w, self._bounds_h, self._bounds_x, self._bounds_y,
             self._btn_recalc, self._script_slot,
             self._pos_x, self._pos_y, self._frame_w, self._frame_h,
+            self._notes_edit,
         )
         self._pos_x.valueChanged.connect(self._on_transform_changed)
         self._pos_y.valueChanged.connect(self._on_transform_changed)
@@ -293,6 +301,7 @@ class CameraInspector(QWidget):
             self._bounds_h.setValue((cam.bounds_h if cam else 0) or 0)
             self._bounds_x.setValue((cam.bounds_x if cam else 0) or 0)
             self._bounds_y.setValue((cam.bounds_y if cam else 0) or 0)
+            self._notes_edit.set_text_silent(cam.notes if cam else "")
             self._pos_x.setValue(cam.x if cam else 0)
             self._pos_y.setValue(cam.y if cam else 0)
             self._frame_w.setValue(cam.frame_w if cam else 240)
@@ -391,6 +400,13 @@ class CameraInspector(QWidget):
             return
         self._edit([(self._scene, "camera", self._combo_camera.itemData(idx) or "")],
                    "Startup camera")
+
+    def _on_notes_changed(self, text: str):
+        if self._blocking:
+            return
+        cam = self._mutable()
+        if cam is not None:
+            self._edit([(cam, "notes", text)], "Camera note", refresh=False)
 
     def _on_mode_changed(self, idx: int):
         if self._blocking:

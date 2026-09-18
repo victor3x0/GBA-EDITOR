@@ -564,7 +564,10 @@ QTreeWidget::item {{
 QTreeWidget::item:selected {{
     background: {C.BG_SEL};
     color: {C.ACCENT};
-    border-left: 2px solid {C.ACCENT};
+    /* Le bord gauche est RÉSERVÉ à l'état « actif » (barre peinte par
+       RowSelectionDelegate) — la sélection ne dessine plus de liseré gauche,
+       sinon les deux notions (sélection vs actif) se confondent. */
+    border-left: 2px solid transparent;
 }}
 QTreeWidget::item:hover:!selected {{
     background: {C.BG_PANEL};

@@ -43,15 +43,19 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6 import sip
 from PyQt6.QtGui import QFont, QColor, QDrag
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QMimeData, QByteArray
+from PyQt6.QtCore import (
+    Qt, pyqtSignal, QSize, QTimer, QMimeData, QByteArray, QItemSelectionModel,
+)
 
 from ui.common.theme import C, T, S, QSS, ui_font
+from ui.common.selection_grammar import RowSelectionDelegate
 from ui.common.widgets import W, FinderSection
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_FOLDER
 from ui.common.reveal import reveal_in_file_manager
 from core.history import get_history, MacroCmd
 
 _ROLE_OBJ = Qt.ItemDataRole.UserRole
+_ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1   # id d'un dossier d'auteur (obj None)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -65,14 +69,73 @@ class AssetNode:
     `obj` est l'asset lui-même — un `Resource` pour les familles adossées à un
     `ResourceStore`, un `Path` pour les scripts. Il vaut None pour un dossier :
     c'est ce qui distingue les deux, plutôt qu'un drapeau à tenir d'accord avec
-    le reste."""
+    le reste.
+
+    `folder_id`/`color` ne concernent qu'un dossier d'AUTEUR (créé via un
+    `FolderScheme`) : son identité durable dans le store et sa couleur de
+    repérage. Un dossier deviné (préfixe de sprite, sous-dossier de script) les
+    laisse vides — il n'est pas éditable."""
     name: str
     obj: Any = None
     children: list["AssetNode"] = field(default_factory=list)
+    folder_id: Optional[str] = None
+    color: str = ""
 
     @property
     def is_folder(self) -> bool:
         return self.obj is None
+
+
+@dataclass
+class FolderScheme:
+    """Rend une famille rangeable en dossiers d'auteur, imbricables.
+
+    Le panneau la construit en capturant le store partagé (`AssetFolderStore`) et
+    la famille ; le finder ne connaît que ces opérations, jamais le sidecar. Une
+    famille sans `FolderScheme` n'a pas de dossiers éditables — c'est l'opt-in qui
+    laisse les autres familles inchangées le temps qu'elles l'adoptent."""
+
+    folders: Callable[[], list[Any]]                       # -> [{id,name,parent_id,color}]
+    create: Callable[[str, Optional[str]], Any]            # (name, parent_id)
+    rename: Callable[[str, str], bool]                     # (id, name)
+    delete: Callable[[str], Any]                           # (id)
+    set_color: Callable[[str, str], Any]                   # (id, color)
+    set_parent: Callable[[str, Optional[str]], bool]       # (id, parent_id)
+    move: Callable[[Any, Optional[str]], Any]              # (asset, folder_id)
+    folder_of: Callable[[Any], Optional[str]]              # (asset) -> id
+    # Range un lot d'assets dans un NOUVEAU dossier auto-nommé, en un geste
+    # (menu « Grouper »). None = la famille ne sait pas grouper d'un clic.
+    group: Optional[Callable[[list, Optional[str]], Any]] = None  # (assets, parent) -> folder
+
+
+# Palette de repérage d'un dossier, partagée avec le Scene Tree (mêmes teintes).
+_FOLDER_COLORS = (
+    ("", "scttree.folder_color_none"),
+    ("#6EA8FE", "scttree.folder_color_blue"),
+    ("#6EE7B7", "scttree.folder_color_green"),
+    ("#FBBF24", "scttree.folder_color_yellow"),
+    ("#FB7185", "scttree.folder_color_red"),
+    ("#C4B5FD", "scttree.folder_color_purple"),
+)
+
+
+def folded_nodes(raw_assets: list[AssetNode], scheme: FolderScheme) -> list[AssetNode]:
+    """Range des assets plats sous les dossiers d'auteur (arbre par `parent_id`).
+
+    Les dossiers viennent en tête, dans l'ordre du store ; un asset sans dossier
+    (ou de dossier inconnu) retombe à la racine — jamais perdu."""
+    infos = list(scheme.folders())
+    fnodes = {f.id: AssetNode(name=f.name, folder_id=f.id, color=f.color) for f in infos}
+    roots: list[AssetNode] = []
+    for f in infos:
+        node = fnodes[f.id]
+        parent = fnodes.get(f.parent_id) if f.parent_id else None
+        (parent.children if parent is not None else roots).append(node)
+    for asset in raw_assets:
+        fid = scheme.folder_of(asset.obj) if asset.obj is not None else None
+        host = fnodes.get(fid) if fid else None
+        (host.children if host is not None else roots).append(asset)
+    return roots
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -247,15 +310,24 @@ class _KindTree(QTreeWidget):
         super().__init__()
         self._panel = panel
         self._kind = kind
+        # Asset ACTIF (chargé dans le canvas) — distinct de la sélection, peint
+        # en barre gauche par la grammaire de sélection partagée
+        # (`RowSelectionDelegate`, via `active_item()`). Retenu par IDENTITÉ
+        # (comme la sélection restaurée) ; None si la famille n'a pas d'actif.
+        self._active_obj = None
+        self.setItemDelegate(RowSelectionDelegate(self))
         self.setHeaderHidden(True)
         self.setIndentation(14)
         self.setUniformRowHeights(True)
         self.setIconSize(QSize(14, 14))
         self.setStyleSheet(QSS.tree_widget)
         # Sélection multiple pour agir sur un LOT (supprimer plusieurs assets
-        # d'un geste). L'ASSET COURANT reste unitaire — c'est lui qui pilote ce
-        # que l'écran montre (`_on_current_changed`) ; le lot ne sert qu'aux
-        # opérations du menu contextuel, jamais au contexte d'édition.
+        # d'un geste). `ExtendedSelection` est le mode NATIF de Qt pour Maj/Ctrl
+        # (cf. QAbstractItemView::SelectionMode) : clic simple = remplace, Maj-clic
+        # = plage depuis l'item courant, Ctrl-clic = bascule cet item sans toucher
+        # au reste. On ne réécrit PAS ce geste à la main — Qt le fait déjà
+        # correctement ; notre seul travail est de décider QUAND réagir à la
+        # sélection qui en résulte (cf. `_on_selection_set_changed`).
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Renommage en place, jamais de dialogue modal : clic sur un item déjà
@@ -269,10 +341,8 @@ class _KindTree(QTreeWidget):
         # partagerait la colonne avec ses voisines, et une section courte
         # flotterait au milieu du vide qu'on lui a donné.
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        if kind.mime is not None:
-            self.setDragEnabled(True)
-            self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
-        self.currentItemChanged.connect(self._on_current_changed)
+        self._configure_dnd()
+        self.itemSelectionChanged.connect(self._on_selection_set_changed)
         self.itemDoubleClicked.connect(self._on_double_clicked)
         self.customContextMenuRequested.connect(self._on_ctx_menu)
         self.itemChanged.connect(self._on_item_changed)
@@ -281,25 +351,105 @@ class _KindTree(QTreeWidget):
         self.itemExpanded.connect(self._fit)
         self.itemCollapsed.connect(self._fit)
 
+    def _configure_dnd(self):
+        """Glisser vers le canvas si la famille déclare un `mime` ; sinon aucun
+        glisser-déposer Qt. Le rangement en dossiers d'auteur NE passe PAS par le
+        drag Qt : dans un `QTreeWidget`, activer le drag (InternalMove/acceptDrops)
+        désactive la sélection au rectangle — la multi-sélection prime. Les dossiers
+        se pilotent au menu contextuel (« Déplacer vers », « Nouveau dossier »)."""
+        if self._kind.mime is not None:
+            self.setDragEnabled(True)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        else:
+            self.setDragEnabled(False)
+            self.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+
     # ── Peuplement ────────────────────────────────────────────────
 
     def populate(self, project):
+        # La sélection/l'item courant visent des `QTreeWidgetItem` que `clear()`
+        # va détruire : on retient les ASSETS (identité stable), pas les items,
+        # pour les re-sélectionner une fois l'arbre reconstruit. Sans ça, tout
+        # repeuplement (un renommage, un ajout, l'activation d'une scène...)
+        # effaçait la surbrillance — rien ne disait plus où on en était.
+        prev_selected = [it.data(0, _ROLE_OBJ) for it in self.selectedItems()]
+        cur = self.currentItem()
+        prev_current = cur.data(0, _ROLE_OBJ) if cur else None
         self.blockSignals(True)
         self.clear()
         if project is not None:
-            self._fill(self.invisibleRootItem(), self._kind.nodes(project))
+            nodes = self._kind.nodes(project)
+            scheme = self._panel.folder_scheme(self._kind.label)
+            if scheme is not None:
+                nodes = folded_nodes(nodes, scheme)
+            self._fill(self.invisibleRootItem(), nodes)
+            if prev_selected:
+                self._restore_selection(prev_selected, prev_current)
+        # `clear()` a détruit l'ancienne ligne active : on la retrouve par
+        # identité sur l'arbre reconstruit (le liseré survit à un repeuplement,
+        # comme la sélection juste au-dessus).
+        self._refresh_active_item()
         self.blockSignals(False)
         self._fit()
         return self.topLevelItemCount() > 0
 
+    # ── Asset actif (liseré, distinct de la sélection) ────────────
+
+    def set_active(self, obj) -> None:
+        """Marque `obj` comme l'asset ACTIF de la famille (liseré gauche), ou
+        efface le marqueur si `obj` est None. N'affecte NI la sélection NI ce que
+        l'écran édite — c'est un pur repère visuel de « ce qui est ouvert »."""
+        self._active_obj = obj
+        self._refresh_active_item()
+        self.viewport().update()
+
+    def _refresh_active_item(self) -> None:
+        self._active_item = (self._locate(self._active_obj)
+                             if self._active_obj is not None else None)
+
+    def active_item(self) -> Optional[QTreeWidgetItem]:
+        it = getattr(self, "_active_item", None)
+        return it if it is not None and not sip.isdeleted(it) else None
+
+    def _restore_selection(self, prev_objs: list, prev_current) -> None:
+        """Ré-applique une sélection par IDENTITÉ après un repeuplement. Reste
+        muette (appelée sous `blockSignals`) : un repeuplement ne doit pas
+        réémettre comme si l'utilisateur venait de re-cliquer."""
+        stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        current_item = None
+        while stack:
+            it = stack.pop()
+            obj = it.data(0, _ROLE_OBJ)
+            if obj is not None:
+                if any(self._same(obj, o) for o in prev_objs):
+                    it.setSelected(True)
+                if prev_current is not None and self._same(obj, prev_current):
+                    current_item = it
+            stack.extend(it.child(k) for k in range(it.childCount()))
+        if current_item is not None:
+            # `setCurrentItem(item)` seul vaut `ClearAndSelect` côté Qt — ça
+            # effacerait la sélection qu'on vient tout juste de poser (même
+            # piège que le Ctrl-clic, cf. `_on_selection_set_changed`).
+            # `NoUpdate` ne fait bouger que l'item courant.
+            self.setCurrentItem(current_item, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+
     def _fill(self, parent, nodes: list[AssetNode]):
+        editable_folders = self._panel.folder_scheme(self._kind.label) is not None
         for node in nodes:
             item = QTreeWidgetItem(parent)
             item.setFont(0, ui_font(T.LG))
             if node.is_folder:
-                item.setIcon(0, _ico("folder", COLOR_FOLDER))
+                item.setIcon(0, _ico("folder", node.color or COLOR_FOLDER))
                 item.setText(0, node.name)
                 item.setForeground(0, QColor(C.TEXT_DIM))
+                # Un dossier d'AUTEUR (folder_id) est renommable et accueille un
+                # drop ; un dossier deviné n'a ni l'un ni l'autre.
+                if node.folder_id is not None:
+                    item.setData(0, _ROLE_FOLDER, node.folder_id)
+                    if editable_folders:
+                        item.setFlags((item.flags() | Qt.ItemFlag.ItemIsEditable
+                                       | Qt.ItemFlag.ItemIsDropEnabled)
+                                      & ~Qt.ItemFlag.ItemIsDragEnabled)
                 self._fill(item, node.children)
                 item.setExpanded(True)
             else:
@@ -310,6 +460,11 @@ class _KindTree(QTreeWidget):
                 self._set_label(item, node.obj)
                 if self._kind.rename is not None:
                     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                if editable_folders:
+                    # Un asset se glisse (dans un dossier) mais n'accueille aucun
+                    # drop : on ne s'imbrique pas SOUS un asset.
+                    item.setFlags((item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+                                  & ~Qt.ItemFlag.ItemIsDropEnabled)
                 if self._kind.tooltip_of is not None:
                     item.setToolTip(0, self._kind.tooltip_of(node.obj))
                 if node.children:
@@ -339,14 +494,83 @@ class _KindTree(QTreeWidget):
 
     # ── Sélection ─────────────────────────────────────────────────
 
-    def _on_current_changed(self, current: Optional[QTreeWidgetItem], _prev):
-        obj = current.data(0, _ROLE_OBJ) if current else None
-        if obj is not None:
-            # Une seule ligne surlignée dans TOUT le panneau : deux sections
-            # surlignées à la fois, et le surlignage ne dirait plus ce que
-            # l'écran montre.
-            self._panel.clear_selection(except_label=self._kind.label)
-            self._panel.selected.emit(self._kind.label, obj)
+    def _on_selection_set_changed(self):
+        """Sélection STABILISÉE de l'arbre. C'est le SEUL point où l'on décide
+        d'activer, et à dessein : Qt émet ce signal APRÈS avoir posé la plage d'un
+        Shift/Ctrl-clic, alors que `currentItemChanged` est émis AVANT — la
+        sélection y est encore celle d'avant le geste, si bien qu'on ne peut pas
+        y distinguer un clic simple d'un lot.
+
+        Un asset UNIQUE s'active — il devient ce que l'écran édite, et pour une
+        scène cela la CHARGE. Un LOT ne sert qu'aux opérations du menu contextuel
+        (suppression groupée) : on le publie pour la sélection croisée, mais on
+        ne l'active pas.
+
+        L'émission proprement dite est DIFFÉRÉE (`QTimer.singleShot(0, ...)`) :
+        activer une scène rafraîchit ce panneau (`window._on_scene_selected` ->
+        `assets_finder_panel.refresh()` -> `populate()`), qui reconstruit CET
+        arbre — CELUI-LÀ MÊME qui est en train de traiter le clic qui a causé
+        cette activation. Le faire dans le même appel, c'est reconstruire
+        l'arbre PENDANT que Qt peint/termine l'évènement souris dessus : c'est ce
+        qui produisait les « QPainter: Unbalanced save/restore » observés en test
+        manuel. Un tour de boucle d'attente suffit à laisser le clic se terminer
+        avant que le rebuild n'ait lieu — même parade que `select_obj`/`edit_obj`
+        plus bas pour la même classe de réentrance."""
+        objs = self._selected_objs()
+        QTimer.singleShot(0, lambda k=self._kind.label, os=objs: self._emit_selection(k, os))
+
+    def _emit_selection(self, kind_label: str, objs: list) -> None:
+        # L'ENSEMBLE, pour la sélection croisée d'un écran (project viewer ↔ graphe).
+        self._panel.selection_changed.emit(kind_label, objs)
+        if not objs:
+            return
+        # Une seule section surlignée dans TOUT le panneau : deux sections
+        # surlignées à la fois, et le surlignage ne dirait plus ce que l'écran
+        # montre. Vrai aussi pour un lot.
+        self._panel.clear_selection(except_label=kind_label)
+        if len(objs) == 1:
+            self._panel.selected.emit(kind_label, objs[0])
+
+    def highlight_objs(self, objs, fold_to_folder: bool = False) -> None:
+        """Sélectionne ces assets SANS rien activer ni réémettre — la sélection
+        vient d'ailleurs (l'autre vue du même écran) ; le critère est l'identité
+        de l'asset.
+
+        `fold_to_folder` : si un asset est CACHÉ sous un dossier replié, on
+        surligne À SA PLACE le dossier replié visible le plus haut. Sans ça,
+        sélectionner dans le graphe une scène rangée dans un groupe replié côté
+        project viewer ne donnerait aucun retour — la ligne de la scène n'y est
+        pas dépliée. On garde ainsi toujours un repère dans le panneau."""
+        wanted = {id(o) for o in objs}
+        targets: list[QTreeWidgetItem] = []
+        stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        while stack:
+            it = stack.pop()
+            o = it.data(0, _ROLE_OBJ)
+            if o is not None and id(o) in wanted:
+                targets.append(self._visible_representative(it) if fold_to_folder else it)
+            stack.extend(it.child(k) for k in range(it.childCount()))
+        # Muet (comme highlight_matching) : un écho de sélection ne doit pas
+        # repartir en boucle vers la vue qui l'a émis.
+        self.blockSignals(True)
+        self.clearSelection()
+        for it in targets:
+            it.setSelected(True)
+        self.blockSignals(False)
+
+    @staticmethod
+    def _visible_representative(item: QTreeWidgetItem) -> QTreeWidgetItem:
+        """L'item lui-même s'il est visible, sinon le dossier replié VISIBLE le
+        plus haut au-dessus de lui. On remonte jusqu'à la racine en retenant le
+        dernier ancêtre replié croisé : c'est le plus proche de la racine, donc
+        le seul dont tous les ancêtres sont dépliés — celui qu'on voit."""
+        rep = item
+        parent = item.parent()
+        while parent is not None:
+            if not parent.isExpanded():
+                rep = parent
+            parent = parent.parent()
+        return rep
 
     def _on_double_clicked(self, item: QTreeWidgetItem, _col: int):
         obj = item.data(0, _ROLE_OBJ)
@@ -371,6 +595,80 @@ class _KindTree(QTreeWidget):
         drag.setMimeData(data)
         drag.exec(Qt.DropAction.MoveAction)
 
+    # ── Rangement en dossiers d'auteur (menu contextuel) ──────────
+
+    def _folder_menu(self, scheme, folder_id, pos):
+        """Menu d'un dossier d'auteur (ou de la zone vide) : nouveau (sous-)dossier,
+        et — sur un dossier — renommer, couleur, supprimer."""
+        menu = QMenu(self)
+        menu.setStyleSheet(QSS.menu)
+        menu.setFont(QFont(T.UI, T.MD))
+        new_label = (label('assetfind.new_subfolder') if folder_id
+                     else label('assetfind.new_folder'))
+        menu.addAction(new_label).triggered.connect(
+            lambda _=False, p=folder_id: self._create_folder(scheme, p))
+        if folder_id is not None:
+            menu.addSeparator()
+            menu.addAction(label('assetfind.rename')).triggered.connect(
+                lambda _=False, f=folder_id: self._edit_folder(f))
+            colors = menu.addMenu(label('scttree.folder_color'))
+            colors.setFont(QFont(T.UI, T.MD))
+            for value, lbl_key in _FOLDER_COLORS:
+                colors.addAction(_ico("folder", value or COLOR_FOLDER), label(lbl_key)
+                                 ).triggered.connect(
+                    lambda _=False, v=value, f=folder_id: self._set_folder_color(scheme, f, v))
+            menu.addSeparator()
+            menu.addAction(label('scttree.delete_folder')).triggered.connect(
+                lambda _=False, f=folder_id: self._delete_folder(scheme, f))
+        menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _create_folder(self, scheme, parent_id):
+        folder = scheme.create(label('assetfind.folder_default_name'), parent_id)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+        if folder is not None:
+            self._edit_folder(folder.id)
+
+    def _delete_folder(self, scheme, folder_id):
+        scheme.delete(folder_id)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+
+    def _set_folder_color(self, scheme, folder_id, color):
+        scheme.set_color(folder_id, color)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+
+    def _group(self, objs):
+        """« Grouper » : range le lot (ou l'item seul) dans un nouveau dossier
+        auto-nommé, puis l'ouvre en renommage. Le geste opère sur la sélection
+        courante — un seul point d'entrée pour le simple et le multiple."""
+        scheme = self._panel.folder_scheme(self._kind.label)
+        if scheme is None or scheme.group is None or not objs:
+            return
+        folder = scheme.group(objs, None)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+        if folder is not None:
+            self._edit_folder(folder.id)
+
+    def _locate_folder(self, folder_id) -> Optional[QTreeWidgetItem]:
+        stack = [self.topLevelItem(i) for i in range(self.topLevelItemCount())]
+        while stack:
+            it = stack.pop()
+            if it.data(0, _ROLE_FOLDER) == folder_id:
+                return it
+            stack.extend(it.child(n) for n in range(it.childCount()))
+        return None
+
+    def _edit_folder(self, folder_id):
+        def go():
+            it = self._locate_folder(folder_id)
+            if it is not None:
+                self.setCurrentItem(it)
+                self.editItem(it, 0)
+        QTimer.singleShot(0, go)
+
     @staticmethod
     def _same(a, b) -> bool:
         """Identité pour un asset en mémoire — deux `Resource` de mêmes champs
@@ -393,11 +691,11 @@ class _KindTree(QTreeWidget):
         if it is None:
             return False
         self.setCurrentItem(it)
-        # `setCurrentItem` émet `currentItemChanged` SYNCHRONE : pour une
-        # scène, ça remonte jusqu'à `window._on_scene_selected`, qui
-        # rafraîchit ce panneau (`assets_finder_panel.refresh()`) avant de
-        # rendre la main — `it` est alors déjà détruit. Même mise en garde
-        # que `_on_item_changed` plus bas.
+        # `setCurrentItem` sélectionne l'item : le signal de sélection stabilisée
+        # (`itemSelectionChanged`) remonte SYNCHRONE jusqu'à
+        # `window._on_scene_selected`, qui rafraîchit ce panneau
+        # (`assets_finder_panel.refresh()`) avant de rendre la main — `it` est
+        # alors déjà détruit. Même mise en garde que `_on_item_changed` plus bas.
         if not sip.isdeleted(it):
             self.scrollToItem(it)
         return True
@@ -420,7 +718,18 @@ class _KindTree(QTreeWidget):
 
     def _on_item_changed(self, item: QTreeWidgetItem, _col: int):
         obj = item.data(0, _ROLE_OBJ)
-        if obj is None or self._kind.rename is None:
+        folder_id = item.data(0, _ROLE_FOLDER)
+        scheme = self._panel.folder_scheme(self._kind.label)
+        if obj is None:
+            # Renommage d'un dossier d'auteur (le seul item sans obj éditable).
+            if folder_id is not None and scheme is not None:
+                typed = item.text(0).strip()
+                if typed:
+                    scheme.rename(folder_id, typed)
+                self._panel.refresh()
+                self._panel.folders_changed.emit()
+            return
+        if self._kind.rename is None:
             return
         typed = item.text(0).strip()
         if not typed or typed == self._name_of(obj):
@@ -454,18 +763,28 @@ class _KindTree(QTreeWidget):
 
     def _on_ctx_menu(self, pos):
         item = self.itemAt(pos)
+        scheme = self._panel.folder_scheme(self._kind.label)
+        if scheme is not None:
+            # Zone vide ou dossier d'auteur : menu de dossiers (créer/renommer…).
+            folder_id = item.data(0, _ROLE_FOLDER) if item else None
+            if item is None or folder_id is not None:
+                self._folder_menu(scheme, folder_id, pos)
+                return
         if not item or item.data(0, _ROLE_OBJ) is None:
-            return                      # rien, ou un dossier : rien à proposer
+            return                      # rien, ou un dossier deviné : rien à proposer
         # Clic HORS sélection : la sélection retombe sur cette seule ligne, comme
         # dans un gestionnaire de fichiers. Clic DEDANS : on garde le lot, pour
         # agir dessus. `setCurrentItem` en mode Extended remplace la sélection.
         if item not in self.selectedItems():
             self.setCurrentItem(item)
+        # Le lot ne sert qu'à décider simple/multiple ; la cible du menu simple
+        # est l'item CLIQUÉ (obj garanti non nul ici), jamais `objs[0]` — un
+        # dossier sélectionné (obj None) rendrait `objs` vide et planterait.
         objs = self._selected_objs()
-        if len(objs) > 1:
+        if len(objs) > 1 and item.data(0, _ROLE_OBJ) in objs:
             self._multi_menu(objs, pos)
         else:
-            self._single_menu(objs[0], pos)
+            self._single_menu(item.data(0, _ROLE_OBJ), pos)
 
     def _single_menu(self, obj, pos):
         kind, project = self._kind, self._panel.project
@@ -493,6 +812,15 @@ class _KindTree(QTreeWidget):
             # clic. On retrouve la ligne par identité au moment de l'action.
             act.triggered.connect(lambda _=False, o=obj: self.edit_obj(o))
 
+        scheme = self._panel.folder_scheme(kind.label)
+        if scheme is not None:
+            if scheme.group is not None:
+                if not menu.isEmpty():
+                    menu.addSeparator()
+                menu.addAction(label('assetfind.group')).triggered.connect(
+                    lambda _=False, o=obj: self._group([o]))
+            self._add_move_to_folder(menu, scheme, obj)
+
         if kind.delete is not None:
             menu.addSeparator()
             menu.addAction(label('common.delete')).triggered.connect(
@@ -501,20 +829,73 @@ class _KindTree(QTreeWidget):
         if not menu.isEmpty():
             menu.exec(self.viewport().mapToGlobal(pos))
 
+    def _add_move_to_folder(self, menu, scheme, obj):
+        """Rangement sans glisser : « Déplacer vers » chaque dossier, et un retour
+        à la racine si l'asset est déjà rangé."""
+        current = scheme.folder_of(obj)
+        folders = scheme.folders()
+        if not menu.isEmpty():
+            menu.addSeparator()
+        sub = menu.addMenu(label('assetfind.move_to_folder'))
+        sub.setFont(QFont(T.UI, T.MD))
+        sub.setEnabled(bool(folders))
+        for folder in folders:
+            act = sub.addAction(folder.name)
+            act.setEnabled(folder.id != current)
+            act.triggered.connect(
+                lambda _=False, fid=folder.id, o=obj: self._move_to_folder(scheme, o, fid))
+        if current is not None:
+            menu.addAction(label('assetfind.remove_from_folder')).triggered.connect(
+                lambda _=False, o=obj: self._move_to_folder(scheme, o, None))
+
+    def _move_to_folder(self, scheme, obj, folder_id):
+        scheme.move(obj, folder_id)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+
+    def _move_many_to_folder(self, scheme, objs, folder_id):
+        for obj in objs:
+            scheme.move(obj, folder_id)
+        self._panel.refresh()
+        self._panel.folders_changed.emit()
+
     def _multi_menu(self, objs, pos):
-        """Menu d'un LOT : seules les actions qui ont un sens sur plusieurs
-        assets. Le renommage est mono-ligne (édition en place), les actions par
-        asset ne sont pas encore pensées pour le lot — reste la suppression,
-        justement ce que la multi-sélection sert d'abord."""
+        """Menu d'un LOT : les actions qui ont un sens sur plusieurs assets à la
+        fois. Le renommage reste mono-ligne (édition en place) et les actions par
+        asset ne sont pas pensées pour le lot ; restent grouper, ranger et
+        supprimer — ce que la multi-sélection sert d'abord."""
         kind = self._kind
-        if kind.delete is None:
-            return                      # rien à proposer sur ce lot
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         menu.setFont(QFont(T.UI, T.MD))
-        menu.addAction(label('assetfind.delete_selection', n=len(objs))).triggered.connect(
-            lambda _=False, os=list(objs): self._delete_many(os))
-        menu.exec(self.viewport().mapToGlobal(pos))
+        scheme = self._panel.folder_scheme(kind.label)
+        if scheme is not None:
+            if scheme.group is not None:
+                menu.addAction(label('assetfind.group')).triggered.connect(
+                    lambda _=False, os=list(objs): self._group(os))
+            self._add_move_many_to_folder(menu, scheme, objs)
+        if kind.delete is not None:
+            if not menu.isEmpty():
+                menu.addSeparator()
+            menu.addAction(label('assetfind.delete_selection', n=len(objs))).triggered.connect(
+                lambda _=False, os=list(objs): self._delete_many(os))
+        if not menu.isEmpty():
+            menu.exec(self.viewport().mapToGlobal(pos))
+
+    def _add_move_many_to_folder(self, menu, scheme, objs):
+        """« Déplacer vers le dossier » pour un lot : chaque dossier existant, et
+        un retour à la racine — le lot entier suit la cible choisie."""
+        if not menu.isEmpty():
+            menu.addSeparator()
+        sub = menu.addMenu(label('assetfind.move_to_folder'))
+        sub.setFont(QFont(T.UI, T.MD))
+        folders = scheme.folders()
+        sub.setEnabled(bool(folders))
+        for folder in folders:
+            sub.addAction(folder.name).triggered.connect(
+                lambda _=False, fid=folder.id, os=list(objs): self._move_many_to_folder(scheme, os, fid))
+        menu.addAction(label('assetfind.remove_from_folder')).triggered.connect(
+            lambda _=False, os=list(objs): self._move_many_to_folder(scheme, os, None))
 
     def _delete(self, obj):
         kind, project = self._kind, self._panel.project
@@ -568,6 +949,8 @@ class AssetFinder(QWidget):
     activated     = pyqtSignal(str, object)   # double-clic
     emptied       = pyqtSignal(str)           # une suppression a eu lieu
     add_requested = pyqtSignal(str)           # « + » d'une famille qui délègue
+    selection_changed = pyqtSignal(str, list)  # (label, assets sélectionnés) — sync
+    folders_changed = pyqtSignal()            # un dossier a été créé/déplacé/supprimé
 
     def __init__(self, title: str, kinds: list[AssetKind],
                  min_width: int = 220, max_width: int = 420, parent=None):
@@ -578,6 +961,10 @@ class AssetFinder(QWidget):
         self._sections: dict[str, QWidget] = {}
         self._empties: dict[str, QLabel] = {}
         self._extra_actions: dict[str, list] = {}
+        # Rangement en dossiers d'auteur, par famille — injecté au chargement
+        # projet (le store n'existe pas avant). Une famille absente n'a pas de
+        # dossiers éditables : l'opt-in laisse les autres inchangées.
+        self._folder_schemes: dict[str, FolderScheme] = {}
         self.setStyleSheet(f"background:{C.BG_BASE};")
         self.setMinimumWidth(min_width)
         self.setMaximumWidth(max_width)
@@ -721,6 +1108,26 @@ class AssetFinder(QWidget):
         item = tree.currentItem() if tree is not None else None
         return item.data(0, _ROLE_OBJ) if item is not None else None
 
+    def highlight_selection(self, kind_label: str, objs,
+                            fold_to_folder: bool = False) -> None:
+        """Surligne un lot d'assets sans l'activer ni réémettre — sélection venue
+        d'une autre vue du même écran (project viewer ↔ graphe).
+
+        `fold_to_folder` reporte le surlignage d'un asset caché sur son dossier
+        replié (retour visuel garanti même groupe fermé, cf. `highlight_objs`)."""
+        tree = self._trees.get(kind_label)
+        if tree is not None:
+            tree.highlight_objs(objs, fold_to_folder=fold_to_folder)
+
+    def set_active(self, kind_label: str, obj) -> None:
+        """Marque l'asset ACTIF d'une famille (liseré gauche), ou l'efface si
+        `obj` est None. Distinct de la sélection : dit « ce qui est ouvert dans
+        le canvas », pas « ce que l'inspecteur montre » (cf. la règle
+        active/sélectionnée, project_ui_conventions)."""
+        tree = self._trees.get(kind_label)
+        if tree is not None:
+            tree.set_active(obj)
+
     def begin_rename(self, kind_label: str, obj):
         """Ouvre l'édition en place sur `obj` — après une création faite ailleurs
         que par le « + » du finder (le menu Fichier, un import)."""
@@ -728,7 +1135,37 @@ class AssetFinder(QWidget):
         if tree is not None:
             tree.edit_obj(obj)
 
+    def begin_rename_folder(self, kind_label: str, folder_id: str):
+        """Ouvre l'édition en place sur un dossier d'auteur fraîchement créé
+        ailleurs que par le menu contextuel de l'arbre (« + » de l'en-tête,
+        Ctrl+G) — même geste que la création d'un asset : il naît renommable."""
+        tree = self._trees.get(kind_label)
+        if tree is not None:
+            tree._edit_folder(folder_id)
+
+    def selected_objs(self, kind_label: str) -> list:
+        """Le LOT sélectionné d'une famille (dossiers exclus) — pour un geste qui
+        opère sur la sélection courante sans attendre un signal (Ctrl+G)."""
+        tree = self._trees.get(kind_label)
+        return tree._selected_objs() if tree is not None else []
+
     # ── Actions ajoutées par l'écran ──────────────────────────────
+
+    def folder_scheme(self, kind_label: str) -> Optional["FolderScheme"]:
+        return self._folder_schemes.get(kind_label)
+
+    def set_folder_scheme(self, kind_label: str, scheme: Optional["FolderScheme"]) -> None:
+        """Active (ou retire) le rangement en dossiers d'une famille. Rappelle la
+        config DnD de l'arbre — le scheme arrive après sa construction — puis
+        repeuple pour montrer les dossiers."""
+        if scheme is None:
+            self._folder_schemes.pop(kind_label, None)
+        else:
+            self._folder_schemes[kind_label] = scheme
+        tree = self._trees.get(kind_label)
+        if tree is not None:
+            tree._configure_dnd()
+            tree.populate(self._project)
 
     def add_action(self, kind_label: str, text: str, fn: Callable[[Any], None]):
         """Ajoute une entrée au menu contextuel d'une famille, DANS CET ÉCRAN.

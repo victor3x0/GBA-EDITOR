@@ -15,6 +15,7 @@ vers la scène/vue/façade (les items dialoguent avec leur scène via `self.scen
 from __future__ import annotations
 
 from ui.common.labels import label
+from ui.common.notes_tooltip import notes_tooltip
 from typing import Optional
 
 from core.history import MoveActorCmd, MoveActorGroupCmd, get_history
@@ -198,6 +199,10 @@ class SpriteItem(QGraphicsPixmapItem):
 
         # Item (0,0) = position logique de l'acteur — la caméra suit directement
         self.setPos(*self.pos_px())
+
+        # Note libre de l'auteur au survol (éditeur uniquement). Vide → pas de
+        # tooltip : un acteur sans note n'a rien à dire ici, l'inspecteur détaille.
+        self.setToolTip(notes_tooltip(getattr(actor, "notes", "")))
 
     def pos_px(self) -> tuple[int, int]:
         """Position logique de l'acteur résolue en pixels (px/tile/réf variable)."""
@@ -475,7 +480,9 @@ class CameraItem(QGraphicsItem):
 
     def _tooltip(self) -> str:
         name = self.camera.name if self.camera else label('common.default_paren')
-        return label('cvitems.gba_camera_name_frame_w_frame_h_px', name=name, _frame_w=self._frame_w, _frame_h=self._frame_h)
+        detail = label('cvitems.gba_camera_name_frame_w_frame_h_px', name=name, _frame_w=self._frame_w, _frame_h=self._frame_h)
+        notes = getattr(self.camera, "notes", "") if self.camera else ""
+        return notes_tooltip(notes, detail)
 
     def set_frame_size(self, w: int, h: int):
         """Redimensionne le rectangle de vue — c'est le frame écran de la

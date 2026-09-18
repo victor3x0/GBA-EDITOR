@@ -481,6 +481,115 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | La police, une palette d'asset comme les autres | 2026-09-03 | **Livré** — [archive](changelog-archive/font-palette.md) |
 | L'écran construit à sa première visite | 2026-09-13 | **Livré** — [archive](changelog-archive/lazy-screen-build.md) |
 | L'ouverture d'un projet, et l'écran blanc | 2026-09-13 | **Livré** — [archive](changelog-archive/open-white-screen.md) |
+| Le cache de scène | 2026-09-16 | À ouvrir — voir [ci-dessous](#le-cache-de-scène-rouvrir-une-scène-déjà-visitée-sans-tout-redécoder) |
+| Undo/redo des sidecars d'éditeur | — | À ouvrir — envisagé pour **V2**, voir [ci-dessous](#undoredo-des-sidecars-déditeur-annuler-la-création-dun-groupe-un-déplacement-de-nœud) |
+
+---
+
+## Le cache de scène — rouvrir une scène déjà visitée sans tout redécoder
+
+### D'où vient la question (2026-09-16)
+
+Victor : sélectionner une scène dans le project viewer prend une demi-seconde perceptible, même
+pour une scène triviale (title screen, deux zones de texte). Trois causes indépendantes trouvées
+en investiguant `window._on_scene_selected` ([window.py:1128](editor/window.py:1128)) :
+
+1. **Corrigé (2026-09-16).** `AssetsFinderPanel.refresh()` reconstruisait les 3 arbres (Scenes,
+   Prefabs, Scripts) à chaque clic, alors que rien n'y change quand on change simplement de scène
+   active. Remplacé par un simple surlignage de la scène active, sans repeuplement —
+   `highlight_active_scene` ([assets_finder_panel.py](editor/ui/scene_manager/assets_finder_panel.py)),
+   posé sur `AssetFinder.highlight_selection` déjà existant.
+2. **Pas de bug.** `_refresh_diagnostics` → `validate_project` → `project.load_all_resources()`
+   ([validator.py:126](editor/core/validator.py:126)) est déjà gardé par
+   `_deferred_resource_collections` ([project.py:339](editor/core/project.py:339)) : le coût réel
+   (stat + hash de tout le catalogue) n'est payé qu'à la toute première scène ouverte d'une
+   session ; ensuite chaque `load_*` est un test d'ensemble vide, donc quasi gratuit.
+3. **Ce chantier.** `SceneEditor.load_project` ([scene_canvas.py:721](editor/ui/scene_manager/scene_canvas.py:721))
+   reconstruit le canvas ENTIER à chaque sélection — y compris en revenant sur une scène déjà
+   visitée dans la même session, où rien n'a changé :
+   - `compose_frame_image` ([sprite_compose.py:15](editor/core/sprite_compose.py:15)) rouvre et
+     redécode depuis le disque le PNG source du sprite pour CHAQUE acteur, à CHAQUE visite —
+     aucun cache, même quand le fichier n'a pas bougé depuis la visite précédente.
+   - `bg_pixmap` / `BgLayerRaster.render` ([canvas_raster.py:171](editor/ui/scene_manager/canvas/canvas_raster.py:171))
+     recompose le rendu tuile par tuile du fond à chaque visite. Le tileset lui-même est déjà en
+     mémoire (`BackgroundAsset`, pas de disque ici), mais le raster complet est refait à zéro.
+   - `_reload_ui_regions` / `set_ui_regions` ([canvas_scene.py:440](editor/ui/scene_manager/canvas/canvas_scene.py:440))
+     détruit et recrée tous les items d'interface et recalcule les couleurs de banque
+     (`_compute_bank_colors`, documenté à ~15 ms/région) à chaque visite.
+
+### Ce qu'il faudrait trancher avant d'ouvrir
+
+- **Quoi cacher, précisément.** Deux formes envisagées avec Victor, pas encore choisies :
+  - un cache des **décodages disque** purs (PNG source des sprites/fonds), invalidé par mtime —
+    la composition par frame/scène (flips, palette, overrides live) continue de tourner à chaque
+    visite. Scope net, risque faible : rien ne peut devenir périmé, seul le pixel brut du fichier
+    est mémorisé, jamais un résultat qui dépend de l'état vivant du projet.
+  - un cache du **canvas complet par scène** (QGraphicsScene/items déjà construits), pour rouvrir
+    une scène visitée sans rien recalculer, même pas le raster de palette/bank colors. Gain plus
+    net, mais très invasif (`SceneEditor.load_project` en profondeur) et risque de
+    désynchronisation si un asset ou une palette change pendant que la scène est en cache
+    (édition d'un sprite ou d'une palette depuis un autre écran) — demanderait une invalidation
+    explicite, pas seulement un mtime.
+- **Recouvrement avec CanvasRework.** Le chantier de refonte du canvas est en cours (`scene_graph`,
+  `scene_graph_state`, non encore committés à l'ouverture de cette entrée) : ouvrir un cache de
+  scène avant que cette refonte se stabilise risque de dupliquer le travail ou de mettre en cache
+  un état que CanvasRework va remplacer. À revérifier au moment d'ouvrir.
+- **Mesurer avant de trancher.** Aucune mesure chiffrée prise pour l'instant, seulement une lecture
+  de code — profiler `load_project` sur un projet réel donnerait la vraie proportion entre
+  décodage sprite, raster de fond et reconstruction des régions UI, plutôt que de deviner laquelle
+  des trois mérite le cache en premier.
+
+---
+
+## Undo/redo des sidecars d'éditeur — annuler la création d'un groupe, un déplacement de nœud
+
+### D'où vient la question (2026-09-16)
+
+En revue du chantier « groupes du Graphe de scènes » (créer/supprimer/renommer un groupe, y ranger
+des scènes, déplacer et redimensionner les boîtes, déplacer les nœuds), Victor a demandé de
+vérifier que **toutes** les opérations introduites étaient reliées à undo/redo. Constat :
+
+- **Reliée.** La *suppression de scène* (clic-droit du Graphe) pousse `DeleteResourceCmd` dans
+  l'historique — exactement la commande du project viewer. C'est une vraie mutation de `Resource`.
+- **Non reliées, et à dessein.** Tout le reste — créer / supprimer / renommer / colorer un groupe,
+  ranger une scène (`move_member`), déplacer une carte, déplacer ou redimensionner un cadre —
+  écrit dans **deux sidecars d'éditeur** : `AssetFolderStore` (les groupes, partagés viewer ↔
+  Graphe) et `SceneGraphState` (positions des nœuds, géométrie des cadres). Aucun ne passe par
+  `get_history()`. Les opérations de dossiers du project viewer n'y sont **jamais** passées non
+  plus, avant ce chantier — ce n'est pas une régression.
+
+### Pourquoi ce n'est pas un simple oubli
+
+Deux obstacles durs empêchent de brancher naïvement ces gestes sur l'historique existant :
+
+1. **L'historique est PAR SCÈNE et vidé à chaque changement de scène ou d'écran**
+   ([window.py:878](editor/window.py:878), [window.py:1135](editor/window.py:1135)). Créer ou
+   déplacer un groupe est une action *projet*, pas *scène* : on créerait un groupe, on cliquerait
+   une autre scène dans le viewer → `_history.clear()` → l'entrée « annuler le groupe » aurait déjà
+   disparu. Un undo qui ne survit pas au prochain clic de scène est pire que pas d'undo.
+2. **Ces sidecars ne changent ni le jeu, ni le build, ni le JSON de gameplay** (cf. en-tête de
+   [asset_folder_store.py](editor/core/asset_folder_store.py)) : un dossier ne fait que choisir le
+   parent visuel d'un asset, une position n'existe que pour l'œil. L'historique actuel sert les
+   mutations du modèle, pas la présentation.
+
+### Ce qu'il faudrait trancher avant d'ouvrir
+
+- **Un stack undo DÉDIÉ, projet-wide.** Distinct de `get_history()`, non vidé au changement de
+  scène ni d'écran, tant que le projet reste ouvert. C'est le cœur du chantier : sans lui, aucune de
+  ces opérations n'est annulable de façon fiable.
+- **Le conflit de Ctrl+Z.** Deux piles undo (modèle per-scène vs organisation projet) réclament la
+  même touche dans le Scene Manager. Décider laquelle répond — selon le focus (Graphe/viewer vs
+  canvas), selon le dernier geste, ou une pile unifiée — sans que Ctrl+Z devienne imprévisible.
+- **Réversibilité de la suppression de groupe.** `delete_folder` remonte membres et sous-groupes au
+  parent ([asset_folder_store.py](editor/core/asset_folder_store.py)) : l'undo doit restaurer
+  l'appartenance *exacte* d'avant, donc capturer l'état (id, `parent_id`, `members`) avant de
+  supprimer, pas seulement recréer un dossier vide.
+- **Granularité et fusion.** Un `Ctrl+G` sur une sélection = plusieurs `move_member` → une seule
+  entrée (comme le lot de suppression du finder via `MacroCmd`). Un glisser de nœud = une entrée,
+  pas une par pixel (même besoin de fusion que `SetFieldCmd`).
+- **Portée.** Trancher quelles opérations entrent : la *structure* seule (groupes + appartenance),
+  ou aussi la *présentation* (positions, géométrie des cadres). La présentation change à chaque
+  petit glisser ; l'y inclure gonfle la pile pour un gain douteux.
 
 ---
 
@@ -1632,10 +1741,7 @@ commentaire qui mentionne « ARENA » ne crée pas d'arête.
 - **Les cibles dynamiques.** `scene.switch(une_variable)` ne se résout pas à l'analyse. Une
   arête vers une cible inconnue, un nœud « indéterminé », ou rien du tout ? Ne rien montrer
   ferait mentir le graphe par omission, ce qui est pire qu'une arête floue.
-- **La position des nœuds.** Disposition automatique, ou déplaçable et mémorisée ? La seconde
-  demande de ranger des coordonnées de présentation quelque part — soit dans la scène (qui
-  n'a rien à savoir de sa position dans une vue), soit dans un fichier d'éditeur à part. À
-  trancher, parce que c'est une décision de modèle et non d'affichage.
+- **La position des nœuds — tranché** (voir « Mémorisation de position » ci-dessous).
 - **Les autres relations.** Prefabs, mises en page, caméras et fonds forment déjà un graphe de
   dépendances par les mêmes domaines. Les faire entrer dans la même vue est tentant et
   probablement illisible ; à rouvrir une fois le graphe des scènes utilisé pour de vrai.
@@ -1667,6 +1773,124 @@ et le reste de la fenêtre (arbre, inspecteur, console) ne change pas de propri�
   `.gitattributes` : une variation globale masque les vrais diffs et rend la revue de cette
   surface coûteuse. Le contrôle d'architecture et les tests Canvas doivent être lancés dans
   l'environnement de développement fonctionnel avant toute extraction supplémentaire.
+
+### Plan d'implémentation — première surface lisible
+
+La première tranche vise une carte utile des transitions **connues** : elle ne tente ni de
+créer du code ni de déduire le flux d'exécution. Les cibles calculées restent hors de la surface
+tant que leur représentation explicite (`?`) n'est pas décidée. Le résultat attendu est une vue
+qu'on peut lire, ouvrir et quitter sans changer le comportement du Canvas 2D.
+
+1. **Projection de domaine — livré.** `scripting.scene_graph.scene_graph(project)` rend des
+   `SceneGraphNode` et `SceneGraphEdge`, sans Qt ni persistance. Chaque arête conserve ses
+   `LuaRef` (fichier, ligne, offsets) et agrège les appels de même source vers même cible ; une
+   cible absente reste une arête visible, jamais une fausse scène. La couverture protège le
+   commentaire non exécutable, l'agrégation, la scène de départ et l'argument calculé.
+2. **Vue isolée — livré.** Créer `SceneGraphView` comme `QWidget` autonome de
+   `ui/scene_manager/`, avec sa propre scène et sa propre vue graphiques. Elle reçoit le
+   `SceneGraph` déjà projeté : elle ne lit aucun script, ne connaît aucune règle Lua et ne
+   possède ni nœuds de domaine ni données à sauver.
+
+   **Recalcul — pull à l'activation, mémoïsé sur une empreinte.** La projection est
+   recalculée quand on affiche la vue, jamais mise en cache de façon persistante : il n'y a
+   ni graphe sérialisé ni seconde source de vérité. Mais `scene_graph` relit et re-parse
+   chaque `.lua` (luaparser), coûteux dès quelques dizaines de scènes ; on le mémoïse donc
+   sur une **empreinte** = `file_stamp`/mtimes des scripts + noms de scènes + `start_scene`.
+   Empreinte inchangée → on réutilise le dernier `SceneGraph` ; empreinte changée → recalcul.
+   `scene_graph(project)` **reste pur** (aucun cache dedans) ; la mémoïsation vit dans la vue
+   ou un petit projecteur qui l'enveloppe. Le graphe reflète les scripts **sur disque** : après
+   une édition dans le Script Editor, il se rafraîchit à la sauvegarde, ce qui est le
+   comportement honnête d'une citation.
+3. **Rendu initial — livré.** Dessiner les scènes comme cartes portant leur nom ; marquer la scène de
+   démarrage ; dessiner les arêtes dirigées et un compteur quand leurs `LuaRef` sont multiples.
+   Une destination inexistante est rendue comme **marqueur terminal d'erreur de liaison** :
+   à l'écran une petite carte barrée d'un ✕, mais ce n'est PAS un `SceneGraphNode`. Il n'a pas
+   de `is_start`, n'entre pas dans le `SelectionBus`, ne se renomme pas, et son double-clic
+   n'ouvre aucune scène. Un seul marqueur par nom manquant, même si plusieurs scènes le citent :
+   le fait est « ce nom n'existe pas », pas « plusieurs erreurs ». Le style doit rester lisible
+   à petite échelle, y compris pour une boucle.
+4. **Disposition automatique stable — livré** (module pur `scene_graph_layout`). Poser les nœuds par couches de dépendances, de gauche à
+   droite, puis ranger les scènes isolées sans chevauchement. Les cycles et les retours ne
+   modifient pas l'ordre des nœuds : ils se dessinent en courbe. Cette tranche ne mémorise aucune
+   position ; un sidecar de disposition ne viendra qu'avec la décision correspondante.
+5. **Intégration au Canvas — livré.** Enregistrer la vue sous la constante `GRAPH_VIEW = "graph"`
+   (symétrique à `SCENE_VIEW`) dans `CanvasWorkspace` et ajouter le seul basculement explicite
+   « Scène / Graphe ». Changer de vue ne recharge pas la scène active, ne modifie pas l'arbre ni
+   l'inspecteur, et revenir à « Scène » retrouve l'éditeur 2D inchangé.
+
+   **Déviation actée — le basculement vit sur le `CanvasWorkspace`, pas dans `CanvasTopBar`.**
+   La « barre existante » du Canvas (`CanvasTopBar` : zoom, toggles) appartient au `SceneEditor`
+   et disparaît avec lui dans l'empilement exclusif ; elle ne peut donc pas héberger un
+   basculement qui doit rester visible en mode Graphe pour permettre le retour. Le `CanvasWorkspace`
+   porte un bandeau persistant à deux segments au-dessus des deux vues. La `CanvasTopBar` reste au
+   `SceneEditor` pour les contrôles propres à la scène ; la vue Graphe aura les siens plus tard.
+6. **Navigation et inspection — livré.** Un clic sur une scène sélectionne cette scène via le
+   `SelectionBus` ; son double-clic revient au Canvas de scène et l'ouvre. Un clic sur une arête
+   expose ses appels agrégés ; son double-clic ouvre le Script Editor à la ligne de l'appel.
+   Retargeter le littéral, groupes, annotations, mini-carte et création de transition restent
+   hors de cette première surface.
+7. **Tests de contrat — livré.** Couvrir la projection sans Qt, la bascule `CanvasWorkspace`, le rendu
+   vide/simple/agrégé, la cible absente et les deux gestes de navigation. Les tests existants du
+   Canvas 2D restent le garde-fou : le graphe n'est jamais une extension de `SceneEditor`.
+
+**Première surface lisible — livrée.** Les sept tranches sont en place ; 26 tests dédiés
+(projection et disposition purs, vue mémoïsée, rendu, bascule et paresse du workspace, deux gestes
+de navigation), le garde-fou Canvas 2D intact. Ce qui reste ouvert n'est pas de cette tranche :
+le **routage** des arêtes (elles peuvent encore se croiser), la **mémorisation de position**
+le **retargetage du littéral**, et la **représentation explicite des cibles calculées** —
+chacun attend sa propre décision. La **mémorisation de position**, elle, est désormais tranchée
+(ci-dessous).
+
+### Mémorisation de position — décidé
+
+La première surface ne mémorisait rien : relayout à chaque affichage. Sur un RPG de quarante
+scènes, une carte qu'on ne peut pas ranger à sa main ne tient pas ; on autorise donc le
+déplacement et on le retient. La règle « le graphe est dérivé, pas de seconde source de vérité »
+n'est pas violée : elle interdit de sérialiser la **structure** (nœuds/arêtes, qui reste dérivée
+des scripts) ; une position est de la **présentation**, pas de la structure.
+
+**Décisions verrouillées :**
+
+- **Un sidecar d'éditeur à responsabilité unique, jamais la `Scene` ni le manifeste.** Une scène
+  « n'a rien à savoir de sa position dans une vue », et le manifeste `<Nom>.gba-project` est la
+  source de vérité du JEU — y ranger des coordonnées d'éditeur en ferait un second porteur à
+  synchroniser. Les positions vivent dans un fichier d'éditeur dédié (non livré en ROM),
+  `project/editor/scene-graph.json`, frère de `scene-tree.json` et écrit par le même patron
+  (sidecar atomique, orphelins purgés au chargement, clé = nom durable). Sa responsabilité est
+  la **présentation du graphe** : les positions des nœuds, rien de plus. Le **rangement** en
+  groupes n'est PAS ici — c'est un dossier d'assets de la famille `scenes`, capacité générale
+  partagée (`AssetFolderStore`, cf. partie 2). Deux mécanismes de dossiers concurrents seraient
+  une seconde source de vérité ; il n'y en a qu'un.
+- **Tout est mémorisé ; l'auto-layout n'est plus qu'une graine.** `position(nœud) = sidecar[nom]`
+  s'il existe, sinon l'auto-layout par couches calcule une place qui est **aussitôt écrite**. Dès
+  le premier affichage, chaque nœud a une position stockée. Conséquence assumée : **stabilité
+  plutôt que réactivité** — ajouter ou éditer une autre scène ne fait plus bouger la carte.
+- **Le déplacement écrit la position ; « Re-arrange » relance l'auto complet et écrase tout.**
+  C'est le seul geste qui re-flue la carte ; il remet chaque nœud à sa place auto et efface les
+  positions manuelles. Sans lui, une carte rangée reste rangée.
+- **La clé est le nom, avec crochet sur `rename_scene`.** Une scène n'a pas d'id opaque (identité
+  = `name`) ; le renommage passe déjà par le choke point unique `Project.rename_scene`, où l'entrée
+  du sidecar est déplacée en même temps que les refs de script.
+- **Les orphelins sont purgés à la lecture.** Une entrée dont la scène n'existe plus est jetée au
+  chargement : le sidecar ne garantit jamais une scène morte.
+- **Les marqueurs de cible absente ne sont jamais mémorisés.** Leur identité est un littéral
+  volatil ; ils se placent à chaque rendu à droite de la position ACTUELLE de leur source
+  (dérivée, jamais stockée).
+
+**Plan d'implémentation :**
+
+1. **Store pur.** Un module lit/écrit le sidecar (nom → (x, y)), purge les orphelins contre la
+   liste des scènes, sans Qt. Couverture : aller-retour, purge, absence de fichier = vide.
+2. **Graine + matérialisation.** À l'affichage, les nœuds sans entrée reçoivent leur place
+   auto-layout, aussitôt écrite ; les autres gardent la leur. `layout_positions` reste la graine,
+   inchangé.
+3. **Déplacement.** Les `SceneCardItem` deviennent déplaçables ; la fin de déplacement écrit la
+   position. Les marqueurs de cible absente, eux, ne se déplacent pas.
+4. **Re-arrange.** Une action (barre de la vue Graphe) relance l'auto complet et réécrit tout le
+   sidecar. C'est le premier contrôle propre à la vue Graphe annoncé à l'étape 5.
+5. **Crochet de renommage.** `rename_scene` déplace l'entrée ; test dédié.
+6. **Tests de contrat.** Store pur, matérialisation d'une graine, persistance d'un déplacement,
+   reset par Re-arrange, suivi du renommage, purge d'un orphelin.
 
 ### Profondeur de rendu — un geste direct, fidèle à la GBA
 
@@ -1848,19 +2072,39 @@ métadonnées d'éditeur, mémorisées avec la disposition du graphe et sans eff
   cibles dynamiques ne disparaissent jamais : elles mènent vers une sortie `?` explicitement
   indéterminée. Une boucle n'est pas un objet spécial : c'est une arête de retour courbe qui
   révèle, au clic, le cycle réel qu'elle participe à former.
-- **Niveaux de profondeur.** La racine affiche les groupes repliés et les scènes non groupées.
-  Double-clic ou `Entrée` sur un groupe ouvre son niveau ; le fil d'Ariane devient par exemple
-  `Jeu / Village`. Le contenu est alors le seul contexte éditable. `Backspace` remonte d'un
-  niveau et ne fait rien à la racine ; ce raccourci est local au Graphe et ne change pas la
-  suppression existante dans l'éditeur de scène. Double-clic sur une scène reste l'ouverture de
-  son contexte 2D (ou 3D selon son mode de rendu).
+- **Boîte englobante repliable — décidé (2026-09-15).** Un groupe se dessine comme une **boîte
+  qui entoure ses scènes membres** ; repliée, elle se condense à son seul en-tête (nom + nombre
+  de membres) pour dégager la vue. Replier/déplier est un geste sur place, qui ne change pas de
+  niveau. La boîte est déplaçable comme un nœud ; sa position et son état replié vivent dans le
+  sidecar du graphe.
+- **Niveaux de profondeur — fil d'Ariane en bas.** Double-clic (ou `Entrée`) sur l'en-tête d'un
+  groupe **descend** dans son niveau : le contenu du groupe devient le seul contexte éditable.
+  Le fil d'Ariane est une barre **en bas de la vue Graphe** (`Jeu / Village`), cliquable pour
+  remonter ; `Backspace` remonte d'un cran et ne fait rien à la racine — raccourci local au
+  Graphe, sans effet sur la suppression de l'éditeur de scène. Double-clic sur une scène reste
+  l'ouverture de son contexte 2D (ou 3D selon son mode de rendu). Repli et descente coexistent :
+  le premier condense sur place, la seconde change de niveau.
 - **Frontières honnêtes.** Dans un groupe, les transitions externes deviennent des portes de
   frontière — `← 3 entrées`, `2 sorties →` — plutôt que des scènes externes modifiables. Elles
   préservent la lecture du lien sans casser le focus courant ; l'édition d'une transition reste
   dans le contexte de sa scène source.
-- **Navigateur de graphe.** En contexte Graphe, la colonne de gauche montre groupes et scènes
-  non groupées. Créer, déplacer ou replier un groupe ici se reflète instantanément dans le
-  canvas ; le Scene Tree Contenu reprend son rôle habituel quand l'auteur revient à la scène.
+- **Un groupe de scènes EST un dossier d'assets — décidé (2026-09-15).** « Groupe dans le
+  Graphe » et « dossier de scènes dans le project viewer » sont le même objet, donc le même
+  store. Et ce rangement n'a rien de propre aux scènes : c'est une **capacité générale**,
+  `AssetFolderStore` (`core/asset_folder_store.py`), indexée par **famille** (`scenes`,
+  `sprites`, …) — les scènes sont le premier client, les neuf autres familles l'adopteront. Le
+  `AssetFinder` partagé gagne l'authoring de dossiers en **opt-in** (`FolderScheme` fourni par
+  l'écran, capturant le store) : créer/renommer/supprimer/couleur/glisser, imbricable. Une
+  famille qui n'en fournit pas reste inchangée. Le graphe et le project viewer lisent le **même
+  store** — ranger d'un côté se voit de l'autre. **Une instance par session**, possédée par la
+  fenêtre et injectée dans les deux ; deux instances du même fichier se désynchroniseraient (à la
+  différence de `SceneTreeState`, per-panel car non partagé). Livré : 3a/3b (dossiers côté project
+  viewer), 3c (boîtes englobantes repliables, arêtes redirigées vers la boîte d'un membre caché),
+  3d (descente par niveaux : double-clic sur une boîte ouvre son niveau, fil d'Ariane cliquable en
+  bas, `Backspace` remonte, transitions franchissant le bord agrégées en portes de frontière
+  `← entrées` / `sorties →`), 4 (sélection croisée graphe↔project viewer : sélectionner des scènes
+  d'un côté les surligne de l'autre, sans activation ni chargement, gardes anti-boucle). Hors
+  périmètre de ce chantier : le calque Notes et la mini-carte.
 - **Calque Notes.** Textes, traits libres, surlignages et cadres appartiennent au niveau de
   graphe ouvert. Le calque est verrouillé par défaut afin que dessiner ne concurrence pas la
   sélection des nœuds. Les annotations globales vivent à la racine ; celles d'un groupe ne
@@ -1874,6 +2118,129 @@ La première ouverture reçoit une disposition automatique, puis les positions s
 Zoom, mini-carte, cadrage global, recherche, scènes inaccessibles depuis le départ et scènes sans
 sortie connue sont des aides de lecture ; aucune ne doit présenter une inférence comme un flux
 exécutable certain.
+
+### Graphe de scènes — partie 3 : création, édition et aperçu (2026-09-16/17)
+
+La partie 2 posait les groupes en LECTURE (boîtes, niveaux, portes, dossiers partagés). Cette
+tranche donne les **gestes d'auteur** sur la carte et une lisibilité de décor. Toujours la même
+frontière : le graphe **organise et navigue**, il ne devient pas un langage — l'écriture de scripts
+(retargetage, création de transition) reste explicitement dehors.
+
+**Livré :**
+
+- **Créer un groupe, des deux côtés.** Project viewer : menu du « + » de la section Scenes,
+  `Ctrl+G` sur une sélection, et clic-droit « Grouper » (mono ET multi) + « Déplacer vers le
+  dossier » pour un lot. Graphe : clic-droit « Créer un groupe » et `Ctrl+G` sur la sélection, au
+  **niveau ouvert** (parent = le groupe courant). Groupe auto-nommé (`Group`, `Group_2`…),
+  renommable en place côté viewer. Une seule écriture par geste (`AssetFolderStore.create_group`) ;
+  `Ctrl+G` est un raccourci **remappable** (`scene.group`). Chaque changement de dossier émet
+  `folders_changed`/`groups_changed` : créer/ranger d'un côté se voit de l'autre.
+- **Le cadre déplié devient un rectangle POSÉ, pas dérivé.** Déplaçable **par son en-tête** (les
+  cartes membres suivent), **redimensionnable** par les bords latéraux et bas ; géométrie persistée
+  (`SceneGraphState.group_frame`). **Appartenance géométrique :** glisser une carte DANS un cadre
+  l'y range, l'en sortir la sort du groupe (recalcul au relâchement, par contenance) — mais
+  **redimensionner ne fait pas fuir** un membre (seul un glisser de carte change l'appartenance).
+- **Un groupe vide est désormais visible** (une boîte est amorcée par dossier du niveau, plus
+  seulement par ses membres) : un groupe créé vide apparaît, prêt à recevoir des scènes.
+- **Portes de frontière reliées.** Chaque nœud interne qui franchit le bord est **relié par un
+  trait** à sa porte (`← entrées`, `sorties →`) — cliquable/double-cliquable comme une arête
+  (sélection de l'appel, ouverture à la ligne). Les portes ne flottent plus sans dire QUI franchit.
+- **Supprimer, clic-droit contextuel.** Sur une scène : « Supprimer » (même `DeleteResourceCmd`
+  annulable que le project viewer, avec confirmation). Sur un groupe : « Supprimer le groupe »
+  (le dossier disparaît, membres et sous-groupes **remontent au parent**, jamais détruits).
+- **Éditer / ouvrir une scène.** Clic-droit « Éditer la scène » = double-clic (bascule Canvas 2D +
+  ouverture). Basculer **Graphe → Scène** ouvre la **scène sélectionnée** dans le graphe : l'éditeur
+  pointe sur ce que l'auteur regardait (garde anti double-chargement pour l'ouverture explicite).
+- **Racine du fil d'Ariane = nom du projet** (au lieu de « Toutes les scènes »).
+- **Aperçu du fond PAR SCÈNE.** Une **pastille** ronde sur chaque nœud (état persisté par scène,
+  `SceneGraphState.scene_previews`) bascule un rendu étendu : vignette 240×160 composant les
+  **fonds** (backdrop en base + calques, slot 3→0), acteurs et interface exclus. **Sans fond
+  affecté, la vignette est la couleur de backdrop** effective de la scène. Vignette mémoïsée, rendu
+  paresseux (uniquement à l'activation).
+- **Marqueur « scène active »** (liseré gauche) sur les cartes — cf. *Navigation des scènes*
+  ci-dessous, même grammaire que le project viewer.
+
+**Ce qui reste ouvert sur cet écran** (chacun sa décision propre — l'écran est utilisable, mais pas
+« bouclé » au sens ROADMAP) :
+
+- **Le cœur : écrire depuis le graphe.** *Retargetage du littéral* (glisser une arête vers une
+  autre scène pour réécrire l'appel `scene.switch` via ses `LuaRef`) et *création de transition*.
+  C'est ce qui ferait passer le graphe de la lecture à l'écriture de scripts — un vrai chantier.
+- **Cibles calculées / indéterminées** — `scene.switch(variable)` aujourd'hui ignoré, à
+  représenter par une sortie `?` explicite plutôt qu'un silence.
+- **Routage des arêtes** — elles peuvent encore se croiser ; pas d'évitement.
+- **Calque Notes et mini-carte** (confort de lecture, déjà hors périmètre en partie 2).
+- **Undo/redo des sidecars** (groupes, positions, aperçu) — chantier séparé, envisagé **V2** (voir
+  *Undo/redo des sidecars d'éditeur* dans les Chantiers techniques).
+- **Finitions** : l'auto-layout et *Re-arrange* espacent pour la taille *condensée*, donc des cartes
+  en **aperçu peuvent se chevaucher** ; la vignette ne se **rafraîchit** qu'au re-toggle de la
+  pastille ou au rechargement du projet ; la bascule Graphe→Scène en **multi-sélection** ne choisit
+  aucune scène (ambigu).
+
+### Navigation des scènes — inspecter sans ouvrir (2026-09-17)
+
+Jusqu'ici, cliquer une scène dans le project viewer la **chargeait** : `set_active_scene`,
+historique vidé, canvas rebâti. Or on veut souvent régler un paramètre d'une scène — sa musique,
+son mode, un pool d'acteurs — sans quitter celle qu'on édite. Le graphe le faisait déjà
+correctement (clic simple = sélection sur le bus, l'inspecteur suit ; double-clic = ouverture) ;
+c'était le project viewer qui restait l'exception, à cause de son chemin `_on_selected → scene_selected`.
+
+On aligne donc le viewer sur le graphe, et on assume que **« sélectionnée » n'est plus
+« active »** : deux notions distinctes, qui demandent deux repères visuels.
+
+#### Décisions verrouillées
+
+- **Clic simple = inspecter, double-clic = ouvrir.** Le clic simple pose la `Scene` sur le
+  `SelectionBus` (l'inspecteur de scène la charge déjà pour n'importe quelle scène, `load(scene,
+  project)`, et chaque mutation persiste sur *cette* scène via `save_scene`, pas sur l'active).
+  Le double-clic seul bascule le canvas (`scene_selected` → `_on_scene_selected`). Même geste,
+  mêmes deux issues que le graphe — une seule grammaire de navigation de scène.
+- **Groupes imbriqués par glisser — cadres récursifs (2026-09-17).** Le geste « déplacer dans un
+  groupe » vaut aussi pour les nœuds GROUPE : glisser la boîte d'un groupe dans un autre l'imbrique
+  (`set_parent`, cycles refusés côté store), l'en sortir le remonte. Pour que « sortir » soit
+  atteignable au glisser — et pas seulement « entrer » —, un **cadre déplié dessine ses sous-groupes
+  à l'intérieur** (récursivement), comme il montre déjà ses cartes de scènes : le rendu passe de
+  mono-niveau à « le sous-arbre du niveau courant, en descendant par les groupes DÉPLIÉS ». Un
+  sous-groupe reste ainsi visible et sécable dedans/dehors. Placement dérivé (`_shown_groups` +
+  `_place_scene` remplacent `_level_groups`/`_bucket_of`) ; déplacer un cadre emporte tout son
+  sous-arbre (cartes + sous-groupes) ; l'appartenance se recalcule par contenance géométrique à
+  toute profondeur (le plus petit conteneur, soi et ses descendants exclus). Le project viewer
+  partage le store (`groups_changed`).
+- **Grammaire de sélection à trois niveaux, cumulables — règle de design (2026-09-17).** Un même
+  arbre distingue trois choses, sans qu'aucune n'en masque une autre : la scène **active** (celle
+  qu'ouvre le canvas) porte une **barre verticale à gauche** ; l'**active selection** (première de
+  la pile, l'item courant) porte le **remplissage plein** ; les **passive selections** (sélections
+  secondaires) portent un **contour seul**. « active » se cumule avec une sélection (barre +
+  remplissage/contour). Le bord gauche est réservé à « active » : le QSS ne dessine plus de liseré
+  de sélection à gauche, qui se confondait avec lui. Comme Qt n'a aucun pseudo-état pour l'item
+  *courant*, ce langage est peint par un **delegate partagé** (`RowSelectionDelegate`,
+  `ui/common/selection_grammar.py`) qui possède seul le rendu de sélection — installé sur tous les
+  arbres à sélection multiple (finders et arbre de contenu), pas seulement les scènes.
+- **`project.active_scene` est la source de vérité de « quelle scène est ouverte ».** Le viewer
+  et le graphe la lisent tous deux ; un signal du dispatcher au moment de la bascule déclenche le
+  repaint des deux repères. On n'introduit pas d'état « scène active » dupliqué par vue —
+  contrairement à la sélection, qui reste locale à chaque vue (Qt pour l'arbre, `QGraphicsItem`
+  pour les cartes).
+- **Historique couplé à la scène active — assumé.** L'inspecteur écrit dans le `get_history()`
+  global, vidé à chaque bascule (`_on_scene_selected`). Éditer une scène non ouverte pousse donc
+  dans l'historique de la scène ouverte, et un `Ctrl+Z` de cette édition « à distance » disparaît
+  à la prochaine bascule. La persistance étant immédiate (`save_scene`), rien n'est perdu sur
+  disque ; on accepte ce couplage plutôt que d'introduire un historique par scène.
+
+#### Ce que ça touche
+
+- `assets_finder_panel._on_selected` / `_on_activated` (famille Scenes) : le clic simple passe
+  par le bus, le double-clic émet la bascule.
+- Le liseré « active » dans l'arbre Scenes : porté par un delegate sur l'arbre du finder (la
+  sélection native Qt peint déjà le remplissage ; le liseré est un état *en plus*), alimenté par
+  un `set_active_scene(scene)` découplé de la sélection.
+- Le même liseré sur `SceneCardItem` dans le graphe, alimenté par l'`active_scene` (la carte
+  connaît déjà la scène de départ, pas l'active — même information à lui passer).
+
+#### Ouvert
+
+- La forme exacte du liseré (épaisseur, couleur d'accent, marge) — à caler au moment du code
+  contre le thème, pas à supposer d'avance.
 
 ### Contenu — organisation et visibilité d'auteur
 
@@ -1893,6 +2260,153 @@ ne sont pas homogènes, comme une collection Blender. Dossiers et visibilité vi
 métadonnées d'éditeur, sans effet sur le build, le JSON de gameplay, la parenté acteur/enfant ou
 la pile OAM. Ils vivent donc hors du modèle de scène compilé ; un renommage/déplacement d'acteur
 doit migrer leur référence d'organisation avec lui.
+
+### Graphe de scènes — partie 4 : la partie fonctionnelle — éditer les transitions (conception, 2026-09-17)
+
+Les parties 1 à 3 posent une carte qu'on **lit, range et navigue**. Cette partie lui donne enfin
+sa fonction : **agir sur les transitions depuis le graphe**. C'est le passage annoncé « de la
+lecture à l'écriture de scripts », et c'est le plus délicat, parce que c'est là que la tentation
+de faire du graphe un éditeur de code déguisé est la plus forte.
+
+Cette section est une **conception**, pas encore un plan verrouillé : elle nomme les décisions à
+trancher avant d'ouvrir. Elle part de trois idées posées — transitions multiples (tableau /
+variable), inspecteur de dossier, batch multi-sélection — et les met en ordre autour d'une seule
+question fondatrice.
+
+#### La règle qui gouverne tout — le graphe projette, il ne possède pas
+
+Rappel du contrat, parce que chaque décision ci-dessous en découle. Une arête EST un
+`scene.switch("…")` littéral à un endroit précis d'un script ; `SceneGraphEdge.refs` porte ses
+`LuaRef` (fichier, ligne, offsets `start`/`stop`, guillemets inclus). **La source de vérité d'une
+transition est le script.** Le sidecar `scene-graph.json` ne porte QUE de la présentation
+(positions, aperçus, groupes) et ne gagnera jamais une table de transitions : ce serait une
+seconde source de vérité. Toute écriture « depuis le graphe » est donc, sans exception, une
+**réécriture du script** au bon offset via le choke point `refactor` (`rename_in_text` /
+`rename_in_project`), jamais un stockage à côté.
+
+#### La question fondatrice — la taxonomie des arêtes
+
+Aujourd'hui la projection ne connaît qu'un cas : le littéral résoluble
+(`scene.switch("Boss")`). Les cibles calculées sont **volontairement ignorées**
+(`scripting/scene_graph.py`, commentaire l.53-55) et une cible inexistante devient un marqueur
+d'erreur au rendu, pas un nœud. Or « on ne sait pas ce que l'auteur va construire » veut
+précisément dire qu'il faut **nommer et représenter** ce que le graphe ne sait pas encore. Avant
+tout geste d'édition, il faut donc trancher une taxonomie à quatre natures d'arête — c'est le
+socle dont tout le reste dépend :
+
+- **Littérale** — `scene.switch("Boss")`, cible existante. Arête pleine. **Seul cas
+  retargetable inline** (voir plus bas).
+- **Cassée** — `scene.switch("Bos")` (typo), cible inexistante. Déjà rendue comme marqueur
+  terminal ✕ ; à promouvoir en **diagnostic** (voir plus bas), pas seulement un dessin.
+- **Calculée** — `scene.switch(next_scene)` où l'argument n'est pas un littéral. Ne pas
+  l'ignorer : arête **floue** vers un nœud fantôme « ? ». Quand l'analyse statique retrouve les
+  littéraux assignés à cette variable, les proposer comme **cibles candidates** (arêtes
+  pointillées vers chaque scène plausible), sans jamais prétendre que c'est le flux réel.
+- **Conditionnelle** — un ou plusieurs `scene.switch` littéraux sous des gardes. Déjà des
+  arêtes multiples groupées ; à enrichir de la **condition extraite** du ref (lecture seule).
+
+Rappel maintenu de la partie 1 : **une arête est une citation, pas un flux.** Deux arêtes
+sortantes ne veulent pas dire « branchement ». Le nœud « ? » ne ment donc pas — il dit « ce
+script décide la cible au runtime », ce qui est l'information honnête.
+
+**À trancher avec toi :** est-ce qu'on va jusqu'à la résolution des candidats (analyse des
+assignations de la variable), ou est-ce qu'un simple nœud « ? » opaque suffit pour la première
+tranche ? Le premier est beaucoup plus utile et beaucoup plus coûteux.
+
+#### Éditer une transition — ce qui est sûr, et la ligne à tenir
+
+- **Retargeter un littéral, inline.** Sélectionner une arête littérale → un combo des scènes
+  existantes → réécriture du ref par offsets (mise en forme préservée octet pour octet, exactement
+  `rename_in_text`). Le `if` qui entoure l'appel, sa condition et l'ordre des instructions ne
+  sont **jamais** touchés. C'est le seul geste d'écriture réellement sûr, et c'est la ligne à
+  tenir. Glisser le bout d'une arête d'une scène vers une autre est le même geste en direct.
+- **Tout le reste = ouvrir le Script Editor à la ligne.** Changer une condition, déplacer un
+  appel, éditer une cible calculée : ce sont des gestes de code, pas de graphe. Le double-clic
+  (déjà livré) est la sortie de secours ; on ne la contourne pas.
+- **Créer une transition depuis rien reste le cas le plus risqué.** Où l'insérer dans le
+  script, sous quelle garde ? Aucune valeur par défaut n'est défendable en aveugle. Si on
+  l'ouvre, ce doit être **inline et explicite** (fidèle à la règle « inline plutôt que
+  dialogues ») : tirer une flèche A→B crée une ligne éditable proposant le point d'ancrage,
+  jamais une insertion silencieuse.
+
+#### Transitions multiples — le tableau ou la variable (idée 1)
+
+C'est le cœur de la demande, et c'est le cas **calculé** de la taxonomie. Deux formes
+réelles que l'auteur va produire :
+
+- **Le tableau** — `local suivantes = {"A", "B", "C"}` puis `scene.switch(suivantes[i])`.
+  L'analyse statique peut retrouver l'ensemble des littéraux du tableau → une arête « ? » qui
+  se **déplie en N candidats pointillés**. L'inspecteur d'arête (ci-dessous) est le bon endroit
+  pour lister ces cibles et sauter à chacune.
+- **La variable libre** — `scene.switch(cible)` où `cible` vient d'un calcul ou d'un état de
+  jeu. Irréductible à l'analyse : nœud « ? » opaque, double-clic vers le code.
+
+Le piège à éviter : **ne pas inventer un mini-langage de transitions dans le graphe.** On
+représente ce que le script contient déjà (un tableau de noms = N candidats), on ne crée pas une
+structure de données de transitions que le script ne porterait pas.
+
+#### Diagnostics — l'analyse que le graphe offre gratuitement (idée à moi)
+
+Le graphe sait déjà qui pointe vers qui ; ces lectures ne coûtent presque rien et valent beaucoup
+sur un RPG de quarante scènes :
+
+- **Inatteignable** — scène sans arête entrante (sauf la scène de démarrage). Surlignée.
+- **Cul-de-sac** — scène sans arête sortante. Marquée.
+- **Cible cassée** — `scene.switch("Bos")` vers une scène absente : le marqueur ✕ existant
+  devient un vrai diagnostic listé (« ce nom n'existe pas »), un par nom manquant.
+
+Purement lecture, aucune écriture, aucun risque. Bon candidat pour la **première** tranche de la
+partie 4, avant d'ouvrir l'écriture.
+
+**Livré (2026-09-17) — les ports de diagnostic.** Chaque nœud porte un **point d'entrée** (à
+gauche) et un **point de sortie** (à droite), colorés par un état DÉRIVÉ de la projection, sans
+re-parser un script : lavande = cible(s) trouvée(s) / scène atteignable, jaune = cible calculée
+(vigilance), gris = cul-de-sac / scène inatteignable, et **croix rouge** = cible introuvable
+(signale sans résoudre). Les états sont une fonction pure `scene_graph.node_diagnostics(graph)`
+(sans Qt, testée) ; la couleur vit dans l'item (`NodePortItem`). La projection gagne
+`SceneGraphNode.has_dynamic_exit` — le seul fait que les arêtes ne portaient pas —, calculé via
+`refactor.domain_args_in_text` (même primitive que la réservation VRAM). Ordre de vigilance quand
+plusieurs cas coexistent : cassée > calculée > résolue > absente. Les ports ne captent aucun clic :
+l'écriture depuis le graphe reste la suite de la partie 4.
+
+#### Inspecteur d'arête — le complément naturel (idée à moi)
+
+Plus fondateur que l'inspecteur de dossier pour la partie fonctionnelle. Sélectionner une arête →
+un inspecteur qui montre : ses N occurrences (`fichier:ligne`), la condition extraite, les cibles
+candidates si calculée, et les gestes sûrs (retarget du littéral, saut au code). C'est le pendant
+« arête » de l'inspecteur de scène déjà en place, et l'endroit où vivent le retargetage et la
+lecture des transitions multiples.
+
+#### Inspecteur de dossier & batch (idées 2 et 3)
+
+- **Inspecteur de dossier.** Attention à ce qu'un dossier EST ici : l'appartenance vit dans
+  `AssetFolderStore` (famille `scenes`), le graphe n'en connaît que la présentation. Un
+  inspecteur de dossier édite donc légitimement le groupe (renommer, réordonner) et ses scènes
+  **membres**. « Batch les transitions du dossier » n'existe pas en propre : une transition
+  appartient à une scène, pas au dossier ; ça se ramène à « pour chaque scène membre, applique X »
+  — une boucle de réécritures explicites, jamais une abstraction magique.
+- **Batch multi-sélection de scènes.** Cohérent avec `selection_grammar` / `tree_selection`
+  déjà en place. Gestes batch **sûrs et sans ambiguïté** : aperçu/condensé sur N scènes, ranger
+  dans un groupe, re-arranger le sous-graphe, supprimer. Les gestes qui touchent au **contenu**
+  (renommer, retargeter) restent per-scène ou passent par une règle explicite — un batch ne doit
+  jamais réécrire du script en aveugle. (Rappel : la bascule Graphe→Scène en multi-sélection est
+  déjà notée comme ambiguë ; le batch hérite du même principe — pas d'action à cible unique sur
+  une sélection multiple.)
+
+#### Ce qu'il faut trancher avant d'ouvrir
+
+1. **La taxonomie des arêtes** (littérale / cassée / calculée / conditionnelle) — tout en
+   découle. À figer en premier.
+2. **La profondeur de résolution du calculé** — nœud « ? » opaque, ou résolution des candidats
+   par analyse d'assignations (tableau, variable). Utilité vs coût.
+3. **Jusqu'où le graphe écrit** — le retargetage inline du littéral est acquis comme sûr ; la
+   **création** de transition est-elle dans le périmètre de cette partie, ou reportée ?
+4. **L'ordre des tranches** — ma recommandation : (a) diagnostics lecture seule, (b) inspecteur
+   d'arête + retargetage du littéral, (c) représentation du calculé, (d) inspecteurs de dossier
+   et batch. L'écriture arrive après que la lecture soit complète.
+
+Reste par ailleurs ouvert et indépendant : le **routage des arêtes** (évitement des
+croisements), déjà noté en partie 3.
 
 ---
 
@@ -2771,6 +3285,98 @@ crée pas de runtime commun. C'est la couche asset qui s'unifie, pas la couche e
 **Ouvert** : l'inventaire des pipelines actuels (SpriteAsset côté acteur, la voie image de l'UI) et
 lequel absorbe l'autre ; et si le décor animé (v0.4) relève de ce même `Sprite` ou reste une voie BG
 à part.
+
+### Chantier transverse — la Liste d'interface est un contrôleur, pas une collection
+
+La liste actuelle (v0.22) a résolu le morceau qui devait l'être dans le moteur : navigation à la
+croix, sélection, bornes, répétition, défilement et curseur. Elle expose encore une partie de la
+mécanique de données et de rendu (`list.set_count`, `list.first`, `list.row`) : l'auteur doit dire à
+la primitive combien d'items sa collection contient, puis la consulter pour repeupler les rangées.
+Cela fabrique un second vocabulaire de collection alors qu'une liste n'a pas vocation à posséder les
+données qu'elle affiche.
+
+Le projet a déjà TROIS formes de tableau accessibles à l'auteur, qui ne se recouvrent pas :
+
+| Forme | Rôle | Lua |
+| --- | --- | --- |
+| Tableau local | mémoire de travail privée d'un script | `local grille = array(20, 12)` |
+| État global | valeurs mutables du jeu, partageables et éventuellement sauvegardées | `global.inventaire[i]` |
+| Catalogue Data | fiches structurées, constantes, éditées dans le projet et émises en ROM | `data.Objets[i].prix` |
+
+Le tableau local reste une construction du langage, hors inspecteur. Les deux autres sont les deux
+formes de **donnée de projet** : elles vivront dans le même écran *Data*, rangées en **État** et
+**Catalogues**, sans les faire passer pour la même chose. Un global peut devenir un vecteur ou une
+grille 2D homogène ; une Data Table reste une suite de fiches à colonnes nommées et typées. La
+seconde ne doit pas être réduite à un « global 2D » : elle est en lecture seule, vit en ROM et ses
+colonnes portent des références validées au build.
+
+Le but est de conserver le helper là où il évite du code répétitif, tout en rétablissant une seule
+source de vérité. Dans l'inspecteur, une Liste choisira une source déclarée — un vecteur d'état ou
+un catalogue Data — ; le script lira et modifiera l'état directement avec `global.*`, et lira les
+fiches avec `data.*`. La Liste ne sera qu'une vue navigable sur cette source. Un auteur qui veut un
+comportement hors modèle pourra laisser la Liste de côté et écrire son propre contrôleur sans migrer
+ni recopier sa donnée.
+
+#### Décisions verrouillées
+
+- **La donnée appartient à l'état ou au catalogue, jamais à `UIList`.** L'inspecteur conserve une
+  référence vers la source, pas une copie de ses items ni une structure propre au widget. Un même
+  tableau global ou catalogue Data peut donc alimenter une Liste standard, une vue entièrement
+  scriptée, ou les deux selon la scène.
+- **`list.*` ne modifie jamais les items.** Il n'existera pas de `list.add_item`,
+  `list.delete_item`, `list.sort`, ni de méthode équivalente. Ajouter, retirer, transformer ou
+  chercher une valeur relève de l'état et du Lua, pas de l'interface.
+- **La primitive ne porte que son état d'interaction.** Son API vise la position sélectionnée
+  (`list.cursor_pos`, et son éventuel setter), la prise de focus (`active`) et les paramètres de
+  navigation. Elle observe la taille de la source liée, borne elle-même le curseur après une
+  mutation et recale seule le défilement et l'image curseur. Exemple : `list.cursor_pos("Inventaire")`
+  donne le rang avec lequel le script lit `global.inventaire[rang]`, puis éventuellement
+  `data.Objets[id]`.
+- **La longueur logique appartient à la source, pas à l'API Liste.** Un vecteur d'état à capacité
+  fixe peut déclarer dans l'inspecteur la variable globale qui porte son nombre d'items utiles
+  (`global.inventaire_count`) ; la Liste l'observe. Le script déplace les valeurs et met ce compteur
+  à jour sans jamais appeler `list.set_count`.
+- **Le défilement n'est pas une donnée publique.** La première case visible est une conséquence de
+  la sélection, de la géométrie et de la taille de la source ; elle ne doit pas devenir une
+  seconde position à tenir par le script. Le contrat de rendu devra permettre de repeupler les
+  rangées visibles sans imposer à l'auteur de manipuler `first`/`row`.
+- **Une Liste reste un helper optionnel, pas une dépendance des données.** Remplacer son rendu ou
+  sa navigation ne demande pas de convertir la donnée : `global.*` et `data.*` restent directement
+  accessibles en Lua dans tous les cas.
+
+#### Ce que le chantier implique
+
+Le chantier dépasse un renommage de fonctions. Il relie l'inspecteur de Liste, l'écran Data (État +
+Catalogues), le modèle de globals, le checker Lua, le codegen, le runtime de navigation et le rendu
+de texte. Il faudra aussi remplacer le chemin actuel où le script pose explicitement le texte dans
+`text.draw_in(list.row(...), ...)` par un contrat de rendu lié aux rangées authorées, sans faire de
+l'item un nouvel objet d'interface.
+
+Les tableaux Lua actuels sont **de taille fixe au build** et `table.insert`/`table.remove` ne font
+pas partie du sous-ensemble accepté. Les globals ne portent aujourd'hui qu'une dimension ; les
+grilles 2D font partie de leur extension, pas de la responsabilité de `UIList`. Une collection
+réellement redimensionnable n'est donc pas à faire entrer subrepticement dans la Liste : si les cas
+d'usage demandent plus qu'une capacité fixe et une longueur logique, ce sera un chantier de modèle
+de données explicite, avec sa mémoire, sa sauvegarde et ses opérations propres. La Liste suivra
+cette donnée ; elle ne l'implémentera pas.
+
+#### Ouvert
+
+- Le contrat exact entre une collection liée et le rendu des rangées : callback de rendu, boucle
+  dédiée, liaison déclarative, ou autre forme qui laisse le défilement interne sans masquer la
+  donnée Lua.
+- La forme exacte de l'extension 2D des globals : syntaxe, inspection, bornes, valeur par défaut,
+  sérialisation et sauvegarde. Elle doit conserver la règle des tableaux locaux : les dimensions
+  sont de la forme du type, non des propriétés manipulées par le runtime.
+- La forme du modèle de collections dynamiques, si un projet réel en demande : capacité fixe avec
+  longueur logique, collection compacte redimensionnable, identifiants stables, persistance et
+  coût RAM. Cette décision précède toute promesse de suppression physique d'un item.
+- La migration des listes v0.22 et de leurs appels `set_count`/`first`/`row` : compatibilité
+  temporaire ou rupture guidée. Elle se décide avec un inventaire des projets existants, pas en
+  supposant qu'aucun script ne les emploie.
+- Le comportement après mutation : le curseur conserve-t-il son index, se rabat-il sur le dernier
+  item valide, ou peut-il suivre un identifiant stable ? Le bon choix dépend du modèle de données
+  finalement retenu.
 
 ### v2.0 — Cible cartouche : le matériel embarqué façonne le langage — **JALON OUVERT**
 

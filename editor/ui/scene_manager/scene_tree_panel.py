@@ -22,6 +22,8 @@ from ui.common.theme import T, C, S, QSS, ui_font
 from ui.common.widgets import W
 from ui.common.labels import label
 from ui.common.icons import get as _ico, COLOR_DEFAULT, COLOR_UI
+from ui.common.tree_selection import highlight_matching
+from ui.common.selection_grammar import RowSelectionDelegate
 
 from core.models.scene import Actor, Scene
 from core.project import Project
@@ -139,6 +141,10 @@ class _Tree(QTreeWidget):
         self.setColumnCount(2)
         self.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        # Sinon la DERNIÈRE colonne (l'œil) s'étire pour remplir la vue : la
+        # colonne 0 se réduit à son texte (nom tronqué) et l'œil se colle contre
+        # lui au lieu de rester ancré tout à droite.
+        self.header().setStretchLastSection(False)
         self.setColumnWidth(1, 28)
         self.setIndentation(14)
         self.setAnimated(False)
@@ -154,6 +160,9 @@ class _Tree(QTreeWidget):
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
         self.setStyleSheet(QSS.tree_widget)
+        # Même grammaire de sélection que les finders (active / primaire / passive)
+        # — source unique, cf. ui/common/selection_grammar.
+        self.setItemDelegate(RowSelectionDelegate(self))
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         # Ajuster la hauteur au contenu
@@ -504,16 +513,8 @@ class _ActiveSceneTree(_Tree):
         # `Actor` est mutable (dataclass non hachable) : l'identité est le
         # contrat de sélection dans l'éditeur, pas son égalité structurelle.
         wanted = {id(actor) for actor in actors}
-        self.blockSignals(True)
-        self.clearSelection()
-        if QTreeWidgetItemIterator is not None:
-            it = QTreeWidgetItemIterator(self)
-            while it.value():
-                node = it.value()
-                if node.data(0, _ROLE_TYPE) == T_ACTOR and id(node.data(0, _ROLE_OBJ)) in wanted:
-                    node.setSelected(True)
-                it += 1
-        self.blockSignals(False)
+        highlight_matching(self, lambda node: node.data(0, _ROLE_TYPE) == T_ACTOR
+                           and id(node.data(0, _ROLE_OBJ)) in wanted)
 
     def highlight_ui_layout(self, layout):
         self._highlight(T_UI_LAYOUT, layout)
@@ -524,23 +525,12 @@ class _ActiveSceneTree(_Tree):
     def highlight_camera(self, camera):
         self._highlight(T_CAMERA, camera)
 
-    def highlight_ui_element(self, element):
-        self._highlight(T_UI_ELEM, element)
-
     def _highlight(self, node_type: str, obj):
-        if QTreeWidgetItemIterator is None:
-            return
-        self.blockSignals(True)
-        self.clearSelection()
-        it = QTreeWidgetItemIterator(self)
-        while it.value():
-            node = it.value()
-            if node.data(0, _ROLE_TYPE) == node_type and node.data(0, _ROLE_OBJ) is obj:
-                node.setSelected(True)
-                self.scrollToItem(node)
-                break
-            it += 1
-        self.blockSignals(False)
+        # Même geste partagé que le project viewer ; ici le critère est le type
+        # de nœud plus l'identité de l'objet, et on cadre sur la 1re occurrence.
+        highlight_matching(
+            self, lambda node: node.data(0, _ROLE_TYPE) == node_type
+            and node.data(0, _ROLE_OBJ) is obj, scroll_to_first=True)
 
     # ── Clic ──────────────────────────────────────────────────────
 

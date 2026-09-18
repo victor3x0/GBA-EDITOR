@@ -93,6 +93,9 @@ class Camera(Resource):
     # l'usage peut donc être purement déclaratif, purement scripté, ou les
     # deux, sans réglage de bascule dédié.
     script: str = ""
+    # Note libre de l'auteur — éditeur uniquement, JAMAIS compilée. Même champ
+    # que l'Actor et la Scène, et ce que le survol de l'icône caméra affiche.
+    notes: str = ""
 
     def mode_id(self) -> int:
         return CAM_MODE_IDS.get(self.mode, 0)

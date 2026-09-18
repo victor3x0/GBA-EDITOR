@@ -90,6 +90,9 @@ BINDINGS: list[Binding] = [
 
     # Sound mixer (ui/sound_mixer/sound_panel.py)
     Binding("sound.play_pause", "sound_mixer", "Space"),
+
+    # Scene Manager — project viewer & Graphe des scènes
+    Binding("scene.group", "scene_manager", "Ctrl+G"),
 ]
 
 _BY_ID: dict[str, Binding] = {b.id: b for b in BINDINGS}

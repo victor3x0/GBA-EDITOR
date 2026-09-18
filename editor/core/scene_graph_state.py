@@ -1,0 +1,190 @@
+"""État d'éditeur du Graphe des scènes — positions des nœuds.
+
+Le graphe reste DÉRIVÉ des appels `scene.switch` (cf. `scripting/scene_graph.py`) ;
+ce sidecar ne porte QUE de la présentation : où un nœud est posé. Le **rangement**
+des scènes en groupes n'est pas ici — c'est un dossier d'assets de la famille
+`scenes`, capacité générale partagée avec le project viewer (cf.
+`core/asset_folder_store.py`). Deux mécanismes de dossiers concurrents seraient
+une seconde source de vérité ; il n'y en a qu'un.
+
+Frère de `scene-tree.json` : sidecar atomique sous `project/editor/`, clé = nom
+de scène, orphelins purgés à l'appel de `prune`. Aucun marqueur de cible absente
+n'est jamais mémorisé : son identité est un littéral volatil, replacé à chaque
+rendu.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+import json
+
+from core.resources.resource_store import atomic_write
+from core.models import project_json
+
+
+class SceneGraphState:
+    """Lit et écrit le sidecar du graphe : positions des scènes, indexées par nom.
+
+    Une position sans scène existante est purgée à `prune` : le sidecar ne
+    garantit jamais une scène morte.
+    """
+
+    _VERSION = 1
+
+    def __init__(self, project_root: Path):
+        self._path = Path(project_root) / "project" / "editor" / "scene-graph.json"
+        self._data: dict = {"version": self._VERSION, "scene_positions": {},
+                            "scene_previews": {}, "groups": {}}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            return
+        positions = raw.get("scene_positions") if isinstance(raw, dict) else None
+        previews = raw.get("scene_previews") if isinstance(raw, dict) else None
+        groups = raw.get("groups") if isinstance(raw, dict) else None
+        self._data = {"version": self._VERSION,
+                      "scene_positions": positions if isinstance(positions, dict) else {},
+                      "scene_previews": previews if isinstance(previews, dict) else {},
+                      "groups": groups if isinstance(groups, dict) else {}}
+
+    def scene_position(self, name: str) -> tuple[float, float] | None:
+        raw = self._data["scene_positions"].get(name)
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            return (float(raw[0]), float(raw[1]))
+        return None
+
+    def positions(self) -> dict[str, tuple[float, float]]:
+        """Toutes les positions de scènes connues, nom → (x, y)."""
+        out: dict[str, tuple[float, float]] = {}
+        for name, raw in self._data["scene_positions"].items():
+            if isinstance(raw, (list, tuple)) and len(raw) == 2:
+                out[str(name)] = (float(raw[0]), float(raw[1]))
+        return out
+
+    def set_scene_position(self, name: str, x: float, y: float) -> bool:
+        current = self._data["scene_positions"].get(name)
+        new = [float(x), float(y)]
+        if isinstance(current, list) and current == new:
+            return False
+        self._data["scene_positions"][name] = new
+        self.save()
+        return True
+
+    def replace_scene_positions(self, mapping: dict[str, tuple[float, float]]) -> None:
+        """Réécrit TOUTES les positions — geste « Re-arrange ». Écrase l'existant :
+        c'est le seul geste qui re-flue la carte et efface les placements manuels."""
+        self._data["scene_positions"] = {
+            str(name): [float(pos[0]), float(pos[1])] for name, pos in mapping.items()}
+        self.save()
+
+    def rename_scene(self, before: str, after: str) -> None:
+        """Migre la position ET l'aperçu — appelé par le choke point
+        `Project.rename_scene`."""
+        if before == after:
+            return
+        changed = False
+        for key in ("scene_positions", "scene_previews"):
+            table = self._data[key]
+            if before in table:
+                table[after] = table.pop(before)
+                changed = True
+        if changed:
+            self.save()
+
+    # ── Mode de rendu d'un nœud : condensé (défaut) ou aperçu du fond ──
+    #
+    # Choix PAR SCÈNE, piloté par la pastille du nœud. Présentation pure : ne
+    # touche ni au jeu ni au build. Seules les scènes en aperçu sont mémorisées ;
+    # une scène absente est condensée.
+
+    def scene_preview(self, name: str) -> bool:
+        return bool(self._data["scene_previews"].get(name, False))
+
+    def set_scene_preview(self, name: str, on: bool) -> bool:
+        previews = self._data["scene_previews"]
+        if bool(previews.get(name, False)) == bool(on):
+            return False
+        if on:
+            previews[name] = True
+        else:
+            previews.pop(name, None)   # défaut = condensé : on ne stocke pas les False
+        self.save()
+        return True
+
+    # ── Présentation d'un groupe dans le canvas du Graphe ──────────
+    #
+    # Indexée par ID de groupe (le dossier de `AssetFolderStore`). C'est de la
+    # présentation du GRAPHE — repli et position de la boîte quand elle est
+    # repliée ; l'appartenance des scènes, elle, vit dans le store de dossiers.
+
+    def _group(self, group_id: str) -> dict:
+        return self._data["groups"].setdefault(group_id, {})
+
+    def group_collapsed(self, group_id: str) -> bool:
+        """Une boîte est repliée par défaut — condenser est l'état d'accueil."""
+        return bool(self._data["groups"].get(group_id, {}).get("collapsed", True))
+
+    def set_group_collapsed(self, group_id: str, collapsed: bool) -> bool:
+        if self.group_collapsed(group_id) == collapsed:
+            return False
+        self._group(group_id)["collapsed"] = bool(collapsed)
+        self.save()
+        return True
+
+    def group_box_position(self, group_id: str) -> tuple[float, float] | None:
+        raw = self._data["groups"].get(group_id, {}).get("box")
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            return (float(raw[0]), float(raw[1]))
+        return None
+
+    def set_group_box_position(self, group_id: str, x: float, y: float) -> bool:
+        current = self._data["groups"].get(group_id, {}).get("box")
+        new = [float(x), float(y)]
+        if isinstance(current, list) and current == new:
+            return False
+        self._group(group_id)["box"] = new
+        self.save()
+        return True
+
+    # Géométrie du CADRE déplié (x, y, largeur, hauteur) — distincte de `box`
+    # (position de la boîte repliée). Déplié, le groupe est un rectangle que
+    # l'auteur pose et dimensionne à la main ; il ne suit plus ses membres.
+
+    def group_frame(self, group_id: str) -> tuple[float, float, float, float] | None:
+        raw = self._data["groups"].get(group_id, {}).get("frame")
+        if isinstance(raw, (list, tuple)) and len(raw) == 4:
+            return tuple(float(v) for v in raw)  # type: ignore[return-value]
+        return None
+
+    def set_group_frame(self, group_id: str, x: float, y: float,
+                        w: float, h: float) -> bool:
+        current = self._data["groups"].get(group_id, {}).get("frame")
+        new = [float(x), float(y), float(w), float(h)]
+        if isinstance(current, list) and current == new:
+            return False
+        self._group(group_id)["frame"] = new
+        self.save()
+        return True
+
+    def prune(self, valid_scene_names: set[str], valid_group_ids: set[str] | None = None) -> None:
+        """Oublie les positions des scènes disparues, et — si `valid_group_ids`
+        est fourni — la présentation des groupes disparus."""
+        changed = False
+        for key in ("scene_positions", "scene_previews"):
+            table = self._data[key]
+            for name in [n for n in table if n not in valid_scene_names]:
+                del table[name]
+                changed = True
+        if valid_group_ids is not None:
+            groups = self._data["groups"]
+            for gid in [g for g in groups if g not in valid_group_ids]:
+                del groups[gid]
+                changed = True
+        if changed:
+            self.save()
+
+    def save(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write(self._path, project_json.dumps(self._data))

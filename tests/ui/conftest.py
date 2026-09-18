@@ -27,3 +27,23 @@ def qapp():
     lui. Réutilisé s'il existe déjà (un autre test UI a pu le créer)."""
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def _drain_qt_events():
+    """Purge les évènements Qt en attente APRÈS chaque test — en particulier un
+    `QTimer.singleShot(0, ...)` qu'un test aurait programmé (l'AssetFinder en
+    pose un pour différer l'activation d'un asset, cf. `asset_finder.py`) sans
+    le laisser se déclencher lui-même.
+
+    Un timer non drainé survit à la fin du test : il reste posé sur la boucle
+    d'évènements de l'unique `QApplication` (partagée entre TOUS les tests de
+    la session), et se déclenche au hasard d'un `processEvents()` ultérieur —
+    potentiellement dans un tout autre fichier de test, sur des widgets que
+    Python n'a gardés en vie QUE parce que la fermeture du timer les référence
+    encore. Ça s'est vu planter (accès mémoire invalide) plusieurs dizaines de
+    tests plus loin, sans rapport apparent avec la cause réelle."""
+    yield
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
