@@ -16,7 +16,8 @@ relance l'auto-layout et écrase tout.
 Recalcul — pull à l'activation, mémoïsé sur une empreinte. `scene_graph` relit
 et re-parse chaque script ; on ne le rappelle donc que lorsque l'empreinte des
 scripts change. Le déplacement d'un nœud, lui, ne change pas l'empreinte : il ne
-re-parse rien, il ne fait que reposer les items et réécrire leurs arêtes.
+re-parse rien : il ne fait que déplacer les items et rafraîchir les seules arêtes
+attachées au nœud déplacé.
 """
 from __future__ import annotations
 
@@ -24,14 +25,14 @@ import os
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QImage, QKeySequence, QPainter, QPixmap, QShortcut, QTransform,
+    QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform,
 )
 from PyQt6.QtWidgets import (
     QApplication, QFrame, QGraphicsScene, QGraphicsView, QHBoxLayout, QMenu,
     QMessageBox, QToolButton, QVBoxLayout, QWidget,
 )
 
-from core.history import get_history, SetFieldCmd
+from core.history import Command, get_history, SetFieldCmd
 from core.keybindings import bind
 from core.selection_bus import get_bus
 from core.scene_graph_state import SceneGraphState
@@ -48,6 +49,7 @@ from ui.scene_manager.scene_graph_group_items import (
     GroupToggleItem, SceneGroupBoxItem,
 )
 from ui.scene_manager.scene_graph_layout import layout_positions
+from ui.scene_manager.inspectors.edge_inspector import _EdgePresentationCmd
 from ui.scene_manager.canvas.canvas_const import GBA_W, GBA_H
 from ui.scene_manager.canvas.canvas_raster import bg_pixmap, layer_png_path
 
@@ -56,6 +58,20 @@ _GROUP_PAD = 16.0  # respiration entre le cadre d'un groupe et ses cartes
 _MIN_ZOOM = 0.25
 _MAX_ZOOM = 4.0
 _PAN_MARGIN = 2000.0  # respiration autour du contenu pour paner dans le vide
+_GRID_STEP = 20.0
+
+
+class _RewriteEdgeCmd(Command):
+    """Réécriture groupée d'une transition Lua, annulable en un geste."""
+    def __init__(self, changes, refresh):
+        self._changes, self._refresh = changes, refresh
+        self.label = "Reconnecter transition"
+    def _apply(self, index):
+        for path, before, after in self._changes:
+            path.write_text((before, after)[index], encoding="utf-8")
+        self._refresh(index)
+    def execute(self): self._apply(1)
+    def undo(self): self._apply(0)
 
 
 class _GraphCanvas(QGraphicsView):
@@ -70,11 +86,25 @@ class _GraphCanvas(QGraphicsView):
     clicked = pyqtSignal(object)
     double_clicked = pyqtSignal(object)
     drag_finished = pyqtSignal()   # fin d'un clic gauche (un nœud a pu bouger)
-    ascend_requested = pyqtSignal()  # Backspace : remonter d'un niveau
+    ascend_requested = pyqtSignal()  # ← / repli sans sélection : remonter d'un niveau
+    descend_requested = pyqtSignal()  # → : entrer dans le groupe sélectionné
+    delete_requested = pyqtSignal()  # Backspace / Suppr : supprimer la sélection
     context_menu_requested = pyqtSignal(object, object)  # clic-droit → (pos globale, item)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Backspace:
+        if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+            # La vue tranche : supprimer la sélection, ou — si rien n'est
+            # sélectionné — remonter d'un niveau (l'ancien rôle de Backspace).
+            self.delete_requested.emit()
+            event.accept()
+            return
+        # Navigation par niveaux au clavier : → entre dans le groupe sélectionné,
+        # ← remonte (même geste que le double-clic et le fil d'Ariane).
+        if event.key() == Qt.Key.Key_Right:
+            self.descend_requested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Left:
             self.ascend_requested.emit()
             event.accept()
             return
@@ -97,6 +127,28 @@ class _GraphCanvas(QGraphicsView):
         self._zoom = 1.0
         self._panning = False
         self._pan_last = None
+        self._rewire_edges: list[SceneGraphEdgeItem] = []
+
+    def drawBackground(self, painter, rect):
+        """Fond quadrillé léger, en coordonnées du graphe.
+
+        Les points suivent donc le pan et restent stables sous les nœuds ; leur
+        coût est borné par le rectangle visible, pas par la taille du graphe.
+        """
+        painter.fillRect(rect, QColor(C.BG_DEEP))
+        pen = QPen(QColor(C.BORDER_DARK))
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        left = int(rect.left() // _GRID_STEP) * int(_GRID_STEP)
+        top = int(rect.top() // _GRID_STEP) * int(_GRID_STEP)
+        right, bottom = rect.right(), rect.bottom()
+        x = float(left)
+        while x <= right:
+            y = float(top)
+            while y <= bottom:
+                painter.drawPoint(int(x), int(y))
+                y += _GRID_STEP
+            x += _GRID_STEP
 
     # ── Zoom ──────────────────────────────────────────────────────────
 
@@ -115,12 +167,51 @@ class _GraphCanvas(QGraphicsView):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            # Le bus/inspecteur suivent le clic ; Qt continue ensuite le geste
-            # (sélection au rectangle, ou déplacement de l'item saisi).
-            self.clicked.emit(self.itemAt(event.position().toPoint()))
+            scene_pos = self.mapToScene(event.position().toPoint())
+            # Le port d'entrée est la poignée de reconnexion. Les arêtes sont
+            # derrière la carte, on les résout donc à partir de leur pointe.
+            port_owner = self.itemAt(event.position().toPoint())
+            while port_owner is not None and not isinstance(
+                    port_owner, (SceneCardItem, MissingTargetItem)):
+                port_owner = port_owner.parentItem()
+            if port_owner is not None:
+                rect = port_owner.anchor_rect()
+                on_input = (abs(scene_pos.x() - rect.left()) <= 14
+                            and abs(scene_pos.y() - rect.center().y()) <= 14)
+                if on_input:
+                    candidates = [i for i in self.scene().items()
+                                  if isinstance(i, SceneGraphEdgeItem)
+                                  and i.target_handle_contains(scene_pos)]
+                    # Une sélection existante est l'intention explicite de
+                    # l'auteur : le port sert alors de poignée commune, même
+                    # si les arêtes sélectionnées arrivent actuellement sur
+                    # des cibles différentes. Sans sélection, on résout la
+                    # pointe sous le port de façon déterministe.
+                    selected = [i for i in self.scene().selectedItems()
+                                if isinstance(i, SceneGraphEdgeItem)]
+                    chosen = selected or candidates[:1]
+                    if chosen:
+                        self._rewire_edges = chosen
+                        self.setCursor(Qt.CursorShape.CrossCursor)
+                        event.accept()
+                        return
+            # Qt met à jour Ctrl/Shift avant que l'inspecteur lise la sélection.
+            clicked_item = self.itemAt(event.position().toPoint())
+            super().mousePressEvent(event)
+            self.clicked.emit(clicked_item)
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._rewire_edges:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            for edge in self._rewire_edges:
+                edge.preview_target(scene_pos)
+            # Pendant le glisser uniquement, invalider tout le viewport évite
+            # les traces de l'ancien chemin lorsque son bounding rect change.
+            self.viewport().update()
+            event.accept()
+            return
         if self._panning and (event.buttons() & Qt.MouseButton.MiddleButton):
             delta = event.position() - self._pan_last
             self._pan_last = event.position()
@@ -139,6 +230,17 @@ class _GraphCanvas(QGraphicsView):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton and self._panning:
             self._end_pan()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self._rewire_edges:
+            edges, self._rewire_edges = self._rewire_edges, []
+            self.unsetCursor()
+            scene_pos = self.mapToScene(event.position().toPoint())
+            target = edges[0].rewire_target_at(scene_pos) if edges else None
+            for edge in edges:
+                edge.restore_target()
+            if target is not None:
+                edges[0].request_rewire(edges, target)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -208,10 +310,12 @@ class SceneGraphView(QWidget):
     """
 
     scene_opened = pyqtSignal(str)      # double-clic sur une scène
-    edge_selected = pyqtSignal(object)  # clic sur une arête → SceneGraphEdge
+    edge_selected = pyqtSignal(object)  # clic → liste[SceneGraphEdge]
     edge_opened = pyqtSignal(object)    # double-clic sur une arête → SceneGraphEdge
     scenes_selected = pyqtSignal(list)  # sélection (multi) → noms de scènes
     groups_changed = pyqtSignal()       # un groupe de scènes a été créé (sync project viewer)
+    selection_cleared = pyqtSignal()    # aucune carte/arête/groupe active
+    group_selected = pyqtSignal(str)    # clic sur un groupe → son inspecteur
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -230,6 +334,8 @@ class SceneGraphView(QWidget):
         self._boxes: dict[str, SceneGroupBoxItem] = {}   # groupe replié -> boîte
         self._frames: dict[str, SceneGroupBoxItem] = {}  # groupe déplié -> cadre
         self._name_box: dict[str, SceneGroupBoxItem] = {}  # scène cachée -> sa boîte
+        self._missing: dict[str, MissingTargetItem] = {}
+        self._edge_bindings: dict[object, list[SceneGraphEdgeItem]] = {}
 
         self._scene = QGraphicsScene(self)
         self._view = _GraphCanvas(self._scene, self)
@@ -238,6 +344,8 @@ class SceneGraphView(QWidget):
         self._view.double_clicked.connect(self._on_double_click)
         self._view.drag_finished.connect(self._persist_moves)
         self._view.ascend_requested.connect(self._ascend)
+        self._view.descend_requested.connect(self._descend_selected)
+        self._view.delete_requested.connect(self._delete_selection)
         self._view.context_menu_requested.connect(self._show_context_menu)
         # Ctrl+G : ranger les scènes sélectionnées du graphe dans un nouveau
         # groupe. Même id remappable que le project viewer — un seul geste,
@@ -249,6 +357,10 @@ class SceneGraphView(QWidget):
         # Sélection croisée avec le project viewer : la sélection Qt de la scène
         # graphique remonte les scènes sélectionnées (rectangle, Ctrl/Shift).
         self._scene.selectionChanged.connect(self._emit_scene_selection)
+        # Les arêtes n'empruntent pas le SelectionBus : elles ont leur propre
+        # inspecteur. Ce branchement couvre donc Ctrl/clic et RubberBand,
+        # qui ne passent pas par le signal `clicked` de la vue.
+        self._scene.selectionChanged.connect(self._on_graph_selection_changed)
 
         self._breadcrumb = SceneGraphBreadcrumb()
         self._breadcrumb.level_selected.connect(self._go_to_level)
@@ -299,8 +411,10 @@ class SceneGraphView(QWidget):
             scene = self._scene_by_name(item.name)
             if scene is not None:
                 get_bus().select(scene)
+        elif isinstance(item, SceneGroupBoxItem):
+            self.group_selected.emit(item.group_id)
         elif isinstance(item, SceneGraphEdgeItem):
-            self.edge_selected.emit(item.edge)
+            self._emit_selected_edges(item)
         # Un marqueur de cible absente n'ouvre ni ne sélectionne rien.
 
     # ── Sélection croisée avec le project viewer ──────────────────────
@@ -313,6 +427,24 @@ class SceneGraphView(QWidget):
         names = [i.name for i in self._scene.selectedItems()
                  if isinstance(i, SceneCardItem)]
         self.scenes_selected.emit(names)
+
+    def _emit_selected_edges(self, fallback=None) -> None:
+        edges = [item.edge for item in self._scene.selectedItems()
+                 if isinstance(item, SceneGraphEdgeItem)
+                 and getattr(item, "edge", None) is not None]
+        self.edge_selected.emit(edges or ([fallback.edge] if fallback is not None else []))
+
+    def _on_graph_selection_changed(self) -> None:
+        if self._syncing:
+            return
+        if not self._scene.selectedItems():
+            self.selection_cleared.emit()
+            return
+        edges = [item.edge for item in self._scene.selectedItems()
+                 if isinstance(item, SceneGraphEdgeItem)
+                 and getattr(item, "edge", None) is not None]
+        if edges:
+            self.edge_selected.emit(edges)
 
     def selected_scene_name(self) -> str | None:
         """Nom de la scène sélectionnée si UNE SEULE l'est — pour que la bascule
@@ -345,34 +477,70 @@ class SceneGraphView(QWidget):
     # ── Groupes (dossiers de la famille scenes, partagés) ─────────────
 
     def _show_context_menu(self, global_pos, item) -> None:
-        """Clic-droit, menu selon le contexte de l'item sous le curseur :
+        """Clic-droit, action ou menu selon le contexte de l'item sous le curseur :
+        - une arête → bascule immédiate droite / courbe ;
         - une carte de scène → « Supprimer la scène » ;
         - une boîte/cadre de groupe (ou son chevron) → « Supprimer le groupe » ;
         - le vide → « Créer un groupe » des scènes sélectionnées.
         Le groupe est un dossier de la famille — le même objet que côté viewer."""
+        if isinstance(item, SceneGraphEdgeItem):
+            self._toggle_edge_style(item)
+            return
         menu = QMenu(self)
         menu.setStyleSheet(QSS.menu)
         if isinstance(item, SceneCardItem):
             menu.addAction(label("scncanvas.graph_edit_scene"),
                            lambda name=item.name: self.scene_opened.emit(name))
-            # Désigner le point de départ du JEU — inutile sur celle qui l'est
-            # déjà (le nœud le montre par sa pastille de départ).
+            # Désigner le point de départ du JEU — toujours présent (découvrable),
+            # mais grisé sur la scène qui l'est DÉJÀ : la désigner elle-même ne
+            # ferait rien.
             start = getattr(getattr(self._project, "settings", None), "start_scene", "")
-            if item.name != start:
-                menu.addAction(label("scncanvas.graph_set_start"),
-                               lambda name=item.name: self._set_start_scene(name))
+            act_start = menu.addAction(label("scncanvas.graph_set_start"),
+                                       lambda name=item.name: self._set_start_scene(name))
+            act_start.setEnabled(item.name != start)
             menu.addSeparator()
             menu.addAction(label("common.delete"),
                            lambda name=item.name: self._delete_scene(name))
         elif isinstance(item, (SceneGroupBoxItem, GroupToggleItem)):
             if self._folders is None:
                 return
+            # Deux suppressions DISTINCTES : le dossier seul (contenu remonté) ou
+            # le dossier ET son contenu (scènes du sous-arbre supprimées).
             menu.addAction(label("scttree.delete_folder"),
                            lambda gid=item.group_id: self._delete_group(gid))
+            menu.addAction(label("scncanvas.graph_delete_folder_content"),
+                           lambda gid=item.group_id: self._delete_group_deep(gid))
         elif self._folders is not None:
             menu.addAction(label("assetfind.create_group"), self._group_selected_scenes)
         if not menu.isEmpty():
             menu.exec(global_pos)
+
+    def _toggle_edge_style(self, item: SceneGraphEdgeItem) -> None:
+        """Clic droit direct : droite ↔ courbe pour CETTE transition seulement.
+
+        Annulable (Ctrl+Z) comme l'édition depuis l'inspecteur : la même commande
+        persiste le tracé et la vue le reflète, sans écriture directe du sidecar.
+        """
+        edge = getattr(item, "edge", None)
+        if edge is None or self._state is None:
+            return
+        # « auto » est visuellement droit dans la majorité des cas : le premier
+        # clic va donc naturellement vers la courbe. Le clic suivant la redresse.
+        style = "straight" if item.style == "curve" else "curve"
+        before = [self._state.edge_style(edge.source, edge.target)]
+        item.setSelected(True)
+        get_history().push(_EdgePresentationCmd(
+            self._state, [edge], "style", before, [style],
+            lambda edges, _field: self.refresh_edge_presentation(list(edges))))
+
+    def refresh_edge_presentation(self, edge) -> None:
+        """Applique immédiatement depuis l'inspecteur le tracé mémorisé."""
+        edges = list(edge) if isinstance(edge, (list, tuple)) else [edge]
+        for item in self._scene.items():
+            if isinstance(item, SceneGraphEdgeItem) and getattr(item, "edge", None) in edges:
+                current = item.edge
+                style = self._state.edge_style(current.source, current.target) if self._state else "auto"
+                item.set_style(style)
 
     def _set_start_scene(self, name: str) -> None:
         """Désigne `name` comme scène de départ du JEU (annulable, Ctrl+Z), via la
@@ -424,6 +592,70 @@ class SceneGraphView(QWidget):
             self._render(self._graph)
         self.groups_changed.emit()
 
+    def _scenes_in_subtree(self, group_id: str) -> list:
+        """Les scènes rangées dans `group_id` ou l'un de ses sous-dossiers."""
+        subtree = {group_id} | self._group_descendants(group_id)
+        return [s for s in getattr(self._project, "scenes", ()) or ()
+                if (self._folders.folder_of("scenes", s.name) if self._folders else None)
+                in subtree]
+
+    def _delete_group_deep(self, group_id: str) -> None:
+        """Supprime un dossier ET son contenu : les scènes de tout son sous-arbre
+        (suppression annulable par scène, Ctrl+Z), puis la structure de dossiers.
+        Distinct de `_delete_group`, qui préserve le contenu. Le retrait des
+        dossiers du sidecar n'est pas annulable (cf. chantier undo des sidecars) ;
+        les scènes, elles, le sont — d'où la confirmation avant le geste."""
+        if self._folders is None:
+            return
+        from ui.common.asset_kinds import SCENES
+        scenes = self._scenes_in_subtree(group_id)
+        if QMessageBox.question(
+            self, label("common.delete"),
+            label("scncanvas.graph_delete_folder_content_confirm", count=len(scenes)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        if self._level == group_id or group_id in self._ancestor_ids(
+                self._level, {f.id: f for f in self._folders.folders("scenes")}):
+            self._level = self._parent_of(group_id)   # le niveau ouvert disparaît
+        for scene in scenes:
+            get_history().push(SCENES.delete(self._project, scene))
+        self._folders.delete_folder_tree("scenes", group_id)
+        self.refresh()                 # des scènes en moins changent l'empreinte
+        self.groups_changed.emit()
+
+    def _delete_selection(self) -> None:
+        """Retour arrière / Suppr : supprime les éléments SÉLECTIONNÉS — cartes de
+        scènes et boîtes de groupes repliées —, chacun SEUL (une scène est
+        supprimée ; un dossier voit son contenu remonter, comme `_delete_group`).
+        Sans sélection, le geste retombe sur « remonter d'un niveau » (Backspace
+        historique). Une seule confirmation résume le lot."""
+        from ui.common.asset_kinds import SCENES
+        cards = [i for i in self._scene.selectedItems() if isinstance(i, SceneCardItem)]
+        boxes = [i for i in self._scene.selectedItems() if isinstance(i, SceneGroupBoxItem)]
+        if not cards and not boxes:
+            self._ascend()             # rien de sélectionné → comportement d'origine
+            return
+        if QMessageBox.question(
+            self, label("common.delete"),
+            label("scncanvas.graph_delete_selection_confirm",
+                  scenes=len(cards), folders=len(boxes)),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        for card in cards:
+            scene = self._scene_by_name(card.name)
+            if scene is not None:
+                get_history().push(SCENES.delete(self._project, scene))
+        if self._folders is not None:
+            for box in boxes:
+                if self._level == box.group_id:
+                    self._level = self._parent_of(box.group_id)
+                self._folders.delete_folder("scenes", box.group_id)
+        self.refresh()
+        if boxes:
+            self.groups_changed.emit()
+
     def _group_selected_scenes(self) -> None:
         """Range les scènes sélectionnées dans un nouveau groupe, au NIVEAU
         ouvert (leur parent devient le groupe courant). Sans sélection, le groupe
@@ -471,8 +703,18 @@ class SceneGraphView(QWidget):
         self._level = group_id
         self._render(self._graph)
 
+    def _descend_selected(self) -> None:
+        """Flèche droite : entrer dans le groupe sélectionné — même geste que le
+        double-clic sur sa boîte. N'agit que si UN SEUL groupe est sélectionné
+        (une cible unique) ; sinon il n'y a rien où descendre sans ambiguïté."""
+        boxes = [i for i in self._scene.selectedItems()
+                 if isinstance(i, SceneGroupBoxItem)]
+        if len(boxes) == 1:
+            self._descend(boxes[0].group_id)
+
     def _ascend(self) -> None:
-        """Backspace : remonter au groupe parent (rien à la racine)."""
+        """Flèche gauche (et repli du Backspace sans sélection) : remonter au
+        groupe parent (rien à la racine)."""
         if self._level is None or self._graph is None:
             return
         self._level = self._parent_of(self._level)
@@ -595,8 +837,9 @@ class SceneGraphView(QWidget):
     def _persist_moves(self) -> None:
         """Écrit la position des cartes, des boîtes repliées et des cadres dépliés
         qui ont bougé, recalcule l'appartenance des cartes déplacées (dans un
-        cadre → membre ; hors de tout cadre → hors groupe), puis redessine. Appelé
-        à la fin d'un clic gauche."""
+        cadre → membre ; hors de tout cadre → hors groupe), puis redessine. Les
+        arêtes ont déjà suivi visuellement pendant le geste. Appelé à la fin d'un
+        clic gauche."""
         if self._state is None:
             return
         moved = False
@@ -608,6 +851,11 @@ class SceneGraphView(QWidget):
                 self._state.set_scene_position(name, p.x(), p.y())
                 moved = True
                 moved_cards.append(name)
+        for name, marker in self._missing.items():
+            p = marker.pos()
+            if self._state.missing_position(name) != (p.x(), p.y()):
+                self._state.set_missing_position(name, p.x(), p.y())
+                moved = True
         for gid, box in self._boxes.items():
             p = box.pos()
             if self._state.group_box_position(gid) != (p.x(), p.y()):
@@ -635,6 +883,72 @@ class SceneGraphView(QWidget):
             self.groups_changed.emit()   # le project viewer partage le store
         if moved and self._graph is not None:
             self._render(self._graph)
+
+    def _item_geometry_changed(self, item) -> None:
+        """Rafraîchit uniquement les liens attachés à l'item qui bouge.
+
+        Aucun rendu de scène, auto-layout ou écriture disque ici : cette voie est
+        appelée à chaque pixel du drag et doit rester strictement visuelle.
+        """
+        for edge in self._edge_bindings.get(item, ()):
+            edge.refresh_geometry()
+
+    def _add_live_edge(self, source_item, target_item, count: int, edge) -> None:
+        style = (self._state.edge_style(edge.source, edge.target)
+                 if self._state is not None else "auto")
+        item = SceneGraphEdgeItem(source_item.anchor_rect(), target_item.anchor_rect(), count,
+                                  style=style, rewire_requested=self._retarget_edges)
+        item.edge = edge
+        item.setZValue(-1)
+        item.bind_anchors(source_item, target_item)
+        self._scene.addItem(item)
+        for endpoint in {source_item, target_item}:
+            self._edge_bindings.setdefault(endpoint, []).append(item)
+
+    def _retarget_edges(self, items, target) -> None:
+        """Reconnecte en une commande toutes les arêtes saisies sur un port."""
+        if not isinstance(target, SceneCardItem):
+            return
+        edges = [getattr(item, "edge", None) for item in items]
+        edges = [edge for edge in edges if edge is not None and edge.target != target.name]
+        if not edges:
+            return
+        grouped = {}
+        for edge in edges:
+            for ref in edge.refs:
+                grouped.setdefault(ref.path, []).append(ref)
+        changes = []
+        for path, refs in grouped.items():
+            try:
+                before = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            after = before
+            for ref in sorted(refs, key=lambda r: r.start, reverse=True):
+                literal = after[ref.start:ref.stop + 1]
+                quote = literal[:1]
+                value = target.name.replace("\\", "\\\\").replace(quote, "\\" + quote)
+                after = after[:ref.start] + quote + value + quote + after[ref.stop + 1:]
+            if after != before:
+                changes.append((path, before, after))
+        if changes:
+            get_history().push(_RewriteEdgeCmd(
+                changes, lambda index: self._refresh_retargeted_edges(
+                    [(edge.source, edge.target) for edge in edges] if index == 0
+                    else [(edge.source, target.name) for edge in edges])))
+
+    def _refresh_retargeted_edges(self, pairs) -> None:
+        self.refresh()
+        if self._graph is not None:
+            wanted = set(pairs)
+            updated = [edge for edge in self._graph.edges
+                       if (edge.source, edge.target) in wanted]
+            if updated:
+                for item in self._scene.items():
+                    if (isinstance(item, SceneGraphEdgeItem)
+                            and getattr(item, "edge", None) in updated):
+                        item.setSelected(True)
+                self.edge_selected.emit(updated)
 
     def _recompute_membership(self, moved_cards: list[str]) -> bool:
         """Range chaque carte DÉPLACÉE dans le groupe dont le cadre/boîte la
@@ -863,6 +1177,8 @@ class SceneGraphView(QWidget):
         self._boxes = {}
         self._frames = {}
         self._name_box = {}
+        self._missing = {}
+        self._edge_bindings = {}
         pos = self._node_positions(graph)
         node_names = {node.name for node in graph.nodes}
         fmap = {f.id: f for f in self._folders.folders("scenes")} if self._folders else {}
@@ -892,7 +1208,8 @@ class SceneGraphView(QWidget):
                                      preview_enabled=enabled, preview=preview,
                                      is_active=node.name == self._active_name,
                                      notes=notes_by_name.get(node.name, ""),
-                                     diagnostic=diag.get(node.name))
+                                     diagnostic=diag.get(node.name),
+                                     geometry_changed=self._item_geometry_changed)
                 card.setPos(*pos[node.name])
                 self._scene.addItem(card)
                 self._cards[node.name] = card
@@ -901,46 +1218,49 @@ class SceneGraphView(QWidget):
         # niveau, un lien vers un nom sans scène sort par une porte de sortie).
         missing: dict[str, MissingTargetItem] = {}
         if level is None:
+            missing_names = {edge.target for edge in graph.edges if edge.target not in node_names}
+            if self._state is not None:
+                self._state.prune_missing_positions(missing_names)
             for edge in graph.edges:
                 if edge.target in node_names or edge.target in missing:
                     continue
-                marker = MissingTargetItem(edge.target)
-                marker.setPos(*pos[edge.target])
+                marker = MissingTargetItem(edge.target, geometry_changed=self._item_geometry_changed)
+                marker_pos = (self._state.missing_position(edge.target) if self._state else None)
+                marker.setPos(*(marker_pos or pos[edge.target]))
                 self._scene.addItem(marker)
                 missing[edge.target] = marker
+                self._missing[edge.target] = marker
 
         self._render_groups(shown, place, pos, node_names)
 
         def anchor(name):
-            """(rect, clé, interne?) — interne = visible à ce niveau."""
+            """(rect, clé, interne?, item) — interne = visible à ce niveau."""
             if name in self._cards:
-                return self._cards[name].anchor_rect(), f"card:{name}", True
+                item = self._cards[name]
+                return item.anchor_rect(), f"card:{name}", True, item
             if name in self._name_box:
                 box = self._name_box[name]
-                return box.anchor_rect(), f"box:{box.group_id}", True
+                return box.anchor_rect(), f"box:{box.group_id}", True, box
             if name in missing:
-                return missing[name].anchor_rect(), f"missing:{name}", True
-            return None, None, False
+                item = missing[name]
+                return item.anchor_rect(), f"missing:{name}", True, item
+            return None, None, False, None
 
         # Arêtes traversant le bord du niveau : on retient l'ancre INTERNE (le
         # nœud visible) pour la relier ensuite à sa porte de frontière.
         entry_links: list[tuple] = []   # (edge, rect du nœud cible interne)
         exit_links: list[tuple] = []    # (edge, rect du nœud source interne)
         for edge in graph.edges:
-            source, skey, s_in = anchor(edge.source)
-            target, tkey, t_in = anchor(edge.target)
+            source, skey, s_in, source_item = anchor(edge.source)
+            target, tkey, t_in, target_item = anchor(edge.target)
             if s_in and t_in:
                 if skey == tkey and skey.startswith("box:"):
                     continue            # lien interne à une boîte repliée
-                curved = target.center().x() < source.center().x()
-                item = SceneGraphEdgeItem(source, target, len(edge.refs), curved=curved)
-                item.edge = edge
-                item.setZValue(-1)
-                self._scene.addItem(item)
+                self._add_live_edge(source_item, target_item, len(edge.refs), edge)
             elif s_in and not t_in:
-                exit_links.append((edge, source))   # sort du niveau
+                exit_links.append((edge, source_item))   # sort du niveau
             elif t_in and not s_in:
-                entry_links.append((edge, target))  # entre dans le niveau
+                entry_links.append((edge, target_item))  # entre dans le niveau
 
         self._render_doors(entry_links, exit_links)
         self._breadcrumb.set_path(self._breadcrumb_path())
@@ -964,24 +1284,21 @@ class SceneGraphView(QWidget):
             door.setPos(content.left() - DOOR_W - 40, top)
             door.setZValue(-1)
             self._scene.addItem(door)
-            self._link_doors(door.anchor_rect(), entry_links, incoming=True)
+            self._link_doors(door, entry_links, incoming=True)
         if exit_links:
             door = BoundaryDoorItem(False, len(exit_links))
             door.setPos(content.right() + 40, top)
             door.setZValue(-1)
             self._scene.addItem(door)
-            self._link_doors(door.anchor_rect(), exit_links, incoming=False)
+            self._link_doors(door, exit_links, incoming=False)
 
-    def _link_doors(self, door_rect, links: list, incoming: bool) -> None:
+    def _link_doors(self, door, links: list, incoming: bool) -> None:
         """Trace une arête entre la porte et chaque nœud interne. Entrée : de la
         porte vers la cible ; sortie : de la source vers la porte. Cliquable comme
         une arête interne (elle ouvre le même appel `scene.switch`)."""
-        for edge, node_rect in links:
-            src, dst = (door_rect, node_rect) if incoming else (node_rect, door_rect)
-            link = SceneGraphEdgeItem(src, dst, len(edge.refs))
-            link.edge = edge
-            link.setZValue(-1)
-            self._scene.addItem(link)
+        for edge, node_item in links:
+            source, target = (door, node_item) if incoming else (node_item, door)
+            self._add_live_edge(source, target, len(edge.refs), edge)
 
     def _ancestor_ids(self, gid: str | None, fmap: dict) -> set[str]:
         """Ids des dossiers ancêtres STRICTS de `gid`."""
@@ -1021,7 +1338,8 @@ class SceneGraphView(QWidget):
                 if self._state is not None:
                     self._state.set_group_box_position(gid, *box_pos)
             box = SceneGroupBoxItem(gid, g["name"], direct_count[gid], True,
-                                    COLLAPSED_W, COLLAPSED_H, g["color"])
+                                    COLLAPSED_W, COLLAPSED_H, g["color"],
+                                    geometry_changed=self._item_geometry_changed)
             box.setPos(*box_pos)
             box.setZValue(0)
             self._scene.addItem(box)
@@ -1054,7 +1372,8 @@ class SceneGraphView(QWidget):
                     self._state.set_group_frame(gid, *frame_geo)
             fx, fy, fw, fh = frame_geo
             frame = SceneGroupBoxItem(gid, g["name"], direct_count[gid], False,
-                                      fw, fh, g["color"])
+                                      fw, fh, g["color"],
+                                      geometry_changed=self._item_geometry_changed)
             frame.setPos(fx, fy)
             # Derrière les cartes (z 0) ; un cadre plus profond passe DEVANT le
             # cadre parent (son fond), sans jamais masquer les cartes.

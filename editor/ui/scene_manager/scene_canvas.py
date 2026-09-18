@@ -491,13 +491,7 @@ class SceneEditor(QWidget):
         # Même règle qu'à la duplication : un élément dont un ancêtre est du
         # lot voyage dans le sous-arbre de celui-ci, pas en double. Chaque nœud
         # `Interface` touché est traité à part (v0.25).
-        groups = []
-        for lay, els in self._group_by_layout(elements):
-            picked = {e.name for e in els}
-            for e in els:
-                if set(lay.ancestors(e.name)) & picked:
-                    continue
-                groups.append([e] + lay.descendants(e.name))
+        groups = self._ui_region_ctrl.copy_groups(elements)
         scene = self._project.active_scene if self._project else None
         _clipboard.take(actors, groups, getattr(scene, "name", ""))
         n = len(actors) + len(groups)

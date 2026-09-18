@@ -5,6 +5,20 @@ reste une identité, pas un rang — voir [ROADMAP.md](ROADMAP.md)). Pour le dé
 d'une version (décisions verrouillées, pièges rencontrés, mesures), voir
 [changelog-archive/](changelog-archive/). Pour ce qui reste à faire, voir [ROADMAP.md](ROADMAP.md).
 
+## Non publiée — v0.12, Graphe des scènes (session du 2026-09-19)
+
+Le Graphe de scènes devient un espace d'édition à part entière, tout en gardant le script comme
+source de vérité : fond à points et aimantation, arêtes attachées aux nœuds pendant leur
+déplacement, ports d'entrée/sortie et tracés droit/courbe persistants. Les liens sélectionnés se
+mettent en évidence et peuvent être reconnectés à la souris, seuls ou par lot ; une cible
+introuvable devient une carte rouge déplaçable, dotée de son port d'entrée pour la corriger.
+
+L'inspecteur de transition rassemble appels de script éditables, note, style de tracé et édition
+multiple ; note, style, réécriture de script et reconnexion participent à l'Undo/Redo. Les
+groupes gagnent leur inspecteur (nom, couleur, note, état replié et contenu direct). Enfin, le
+sélecteur « Scene / Graph » est centré et l'inspecteur revient au projet lorsqu'aucun élément du
+graphe n'est sélectionné.
+
 ## v0.2 — Gestion des palettes de couleurs
 
 Catalogue de palettes nommées, illimité, partagé par tout le projet, avec un écran dédié

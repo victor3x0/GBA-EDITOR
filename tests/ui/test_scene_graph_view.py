@@ -206,6 +206,22 @@ def test_rendu_agrege_porte_le_compteur(qapp, tmp_path):
     assert len(edges) == 1 and edges[0].count == 2
 
 
+def test_arete_s_ancre_aux_ports_des_cartes(qapp, tmp_path):
+    from ui.scene_manager.scene_graph_view import SceneGraphView
+
+    project, _ = _project(tmp_path)
+    view = SceneGraphView()
+    view.set_project(project)
+    view.refresh()
+
+    edge = _edge(view)
+    source, target = _card(view, "Title").anchor_rect(), _card(view, "Arena").anchor_rect()
+    first = edge._path.elementAt(0)
+    last = edge._path.elementAt(edge._path.elementCount() - 1)
+    assert (first.x, first.y) == (source.right(), source.center().y())
+    assert (last.x, last.y) == (target.left(), target.center().y())
+
+
 def test_rendu_cible_absente_donne_un_marqueur_pas_une_carte(qapp, tmp_path):
     from ui.scene_manager.scene_graph_view import SceneGraphView
 
@@ -274,7 +290,25 @@ def test_clic_sur_une_arete_expose_ses_appels(qapp, tmp_path):
 
     view._view.clicked.emit(_edge(view))
 
-    assert got and (got[0].source, got[0].target) == ("Title", "Arena")
+    assert got and [(edge.source, edge.target) for edge in got[0]] == [("Title", "Arena")]
+
+
+def test_clic_droit_sur_arete_bascule_son_trace(qapp, tmp_path):
+    from core.scene_graph_state import SceneGraphState
+    from ui.scene_manager.scene_graph_view import SceneGraphView
+
+    project, _ = _project(tmp_path)
+    view = SceneGraphView()
+    view.set_project(project)
+    view.refresh()
+    edge = _edge(view)
+
+    view._toggle_edge_style(edge)
+    assert edge.style == "curve" and edge.isSelected()
+    assert SceneGraphState(project.root).edge_style("Title", "Arena") == "curve"
+
+    view._toggle_edge_style(edge)
+    assert edge.style == "straight"
 
 
 def test_double_clic_sur_une_arete_ouvre_a_la_ligne_de_lappel(qapp, tmp_path):
@@ -1017,3 +1051,129 @@ def test_grouper_au_niveau_ouvert_donne_le_parent(qapp, tmp_path):
 
     child = next(f for f in folders.folders("scenes") if f.name == "Group")
     assert child.parent_id == parent.id
+
+
+# ── Inspecteur d'arête (partie 4) ───────────────────────────────────────
+
+def test_edge_inspector_liste_les_appels_et_saute_au_code(qapp, tmp_path):
+    """L'inspecteur d'arête nomme la transition, liste ses occurrences, et émet la
+    LuaRef exacte quand on clique une occurrence (saut au script)."""
+    from PyQt6.QtWidgets import QFrame, QPushButton
+    from scripting.scene_graph import scene_graph
+    from ui.scene_manager.inspectors.edge_inspector import EdgeInspector
+
+    project, source = _project(tmp_path)
+    # Deux appels Title→Arena pour vérifier l'agrégation.
+    source.write_text('scene.switch("Arena")\nscene.switch("Arena")\n', encoding="utf-8")
+    edge = next(e for e in scene_graph(project).edges
+                if (e.source, e.target) == ("Title", "Arena"))
+
+    insp = EdgeInspector()
+    opened = []
+    insp.open_ref.connect(opened.append)
+    insp.load(edge, project)
+
+    # Lignes-feuilles cliquables (curseur main) = une par occurrence agrégée.
+    from PyQt6.QtCore import Qt
+    leaves = [w for i in range(insp._list_layout.count())
+              if (w := insp._list_layout.itemAt(i).widget()) is not None
+              and isinstance(w, QFrame)
+              and w.cursor().shape() == Qt.CursorShape.PointingHandCursor]
+    assert len(leaves) == len(edge.refs) == 2
+    leaves[0].findChild(QPushButton).click()  # bouton explicite « Ouvrir »
+    assert opened and opened[0] in edge.refs
+
+
+def test_edge_inspector_signale_une_cible_introuvable(qapp, tmp_path):
+    from scripting.scene_graph import scene_graph
+    from ui.scene_manager.inspectors.edge_inspector import EdgeInspector
+
+    project, source = _project(tmp_path)
+    source.write_text('scene.switch("Ghost")\n', encoding="utf-8")
+    edge = next(e for e in scene_graph(project).edges if e.target == "Ghost")
+
+    insp = EdgeInspector()
+    insp.load(edge, project)
+    # La cible « Ghost » est absente du projet, mais l'appel qui la vise existe :
+    # l'inspecteur liste donc son occurrence (le signal « introuvable » est porté
+    # par le graphe via MissingTargetItem, pas par ce panneau).
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QFrame
+    leaves = [w for i in range(insp._list_layout.count())
+              if (w := insp._list_layout.itemAt(i).widget()) is not None
+              and isinstance(w, QFrame)
+              and w.cursor().shape() == Qt.CursorShape.PointingHandCursor]
+    assert len(leaves) == len(edge.refs) == 1
+
+
+# ── Suppressions : dossier+contenu, et sélection au Backspace ────────────
+
+def test_supprimer_dossier_et_contenu(qapp, tmp_path, monkeypatch):
+    """Clic-droit « Supprimer le dossier et son contenu » : les scènes du
+    sous-arbre disparaissent ET le dossier aussi."""
+    from PyQt6.QtWidgets import QMessageBox
+    monkeypatch.setattr(
+        "ui.scene_manager.scene_graph_view.QMessageBox.question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    view, folders = _grapher(tmp_path)
+    group = folders.create_folder("scenes", "World")
+    folders.move_member("scenes", "Arena", group.id)
+    view.refresh()
+
+    view._delete_group_deep(group.id)
+
+    assert folders.folders("scenes") == []                    # dossier parti
+    assert "Arena" not in {n.name for n in view.graph.nodes}   # scène supprimée
+    assert "Title" in {n.name for n in view.graph.nodes}       # le reste intact
+
+
+def test_backspace_supprime_la_selection(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    monkeypatch.setattr(
+        "ui.scene_manager.scene_graph_view.QMessageBox.question",
+        lambda *a, **k: QMessageBox.StandardButton.Yes)
+    view, folders = _grapher(tmp_path)
+    _card(view, "Arena").setSelected(True)
+
+    view._delete_selection()
+
+    assert "Arena" not in {n.name for n in view.graph.nodes}
+    assert "Title" in {n.name for n in view.graph.nodes}
+
+
+def test_backspace_sans_selection_remonte_dun_niveau(qapp, tmp_path):
+    """Sans rien de sélectionné, Backspace garde son rôle d'origine : remonter."""
+    view, folders = _grapher(tmp_path)
+    group = folders.create_folder("scenes", "World")
+    view.refresh()
+    view._descend(group.id)
+    assert view._level == group.id
+
+    view._delete_selection()   # aucune sélection → ascension
+
+    assert view._level is None
+    assert {n.name for n in view.graph.nodes} == {"Title", "Arena"}
+
+
+# ── Navigation par niveaux au clavier (← / →) ────────────────────────────
+
+def test_fleche_droite_entre_dans_le_groupe_selectionne(qapp, tmp_path):
+    view, folders = _grapher(tmp_path)
+    group = folders.create_folder("scenes", "World")
+    view.reload_groups()              # l'empreinte des scripts n'a pas bougé
+    box = next(b for b in _boxes(view) if b.group_id == group.id)
+    box.setSelected(True)
+
+    view._descend_selected()          # ce que déclenche la flèche droite
+    assert view._level == group.id
+
+    view._ascend()                    # ce que déclenche la flèche gauche
+    assert view._level is None
+
+
+def test_fleche_droite_sans_groupe_unique_ne_fait_rien(qapp, tmp_path):
+    view, _folders = _grapher(tmp_path)
+    _card(view, "Arena").setSelected(True)   # une scène, pas un groupe
+
+    view._descend_selected()
+    assert view._level is None

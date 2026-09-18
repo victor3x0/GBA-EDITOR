@@ -24,7 +24,7 @@ def test_basic_starter_copies_hex_and_creates_metadata_sidecars(tmp_path):
 
 
 def test_hex_dropped_by_user_creates_sidecar_on_open(tmp_path):
-    palette_dir = tmp_path / "project" / "palettes"
+    palette_dir = tmp_path / "assets" / "palettes"
     palette_dir.mkdir(parents=True)
     (palette_dir / "Forest.hex").write_text("#000000\n#4EA832\n", encoding="utf-8")
 
@@ -56,7 +56,7 @@ def test_deleted_hex_is_never_recreated_from_its_sidecar(tmp_path):
 
 
 def test_legacy_json_palette_migrates_once_to_hex(tmp_path):
-    palette_dir = tmp_path / "project" / "palettes"
+    palette_dir = tmp_path / "assets" / "palettes"
     palette_dir.mkdir(parents=True)
     legacy_colors = [0, rgb888_to_bgr555(0x11, 0x22, 0x33)]
     (palette_dir / "Legacy.json").write_text(

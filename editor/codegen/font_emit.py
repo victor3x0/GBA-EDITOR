@@ -695,7 +695,17 @@ def _raster_palette(font, rasters: dict) -> tuple[list[int], dict[tuple[int, int
     d'une rampe générique faisait passer ses pixels de l'index 1 à l'index 15,
     ce qui rompait les encres des banques de scène. Les fontes vectorielles,
     elles, n'ont qu'une couverture : noir binaire, ou rampe grise en coverage.
+
+    Résultat mémoïsé SUR la police : le balayage pixel de tous les glyphes est
+    coûteux (une famille japonaise dépasse le millier de glyphes), et l'aperçu
+    canvas le rappelle à chaque `paint`. Le `Font` matérialisé est réutilisé tel
+    quel entre les repaints (cf. `project_build_fonts._font_build_cache`) ; un
+    nouveau jeu de `raster_glyphs` — donc une police reconstruite — invalide de
+    lui-même l'entrée par identité, sans horodatage à surveiller.
     """
+    cached = getattr(font, "_raster_pal_cache", None)
+    if cached is not None and cached[0] is rasters:
+        return cached[1]
     from collections import Counter
 
     counts: Counter = Counter()
@@ -715,19 +725,25 @@ def _raster_palette(font, rasters: dict) -> tuple[list[int], dict[tuple[int, int
                    f"réduites aux {_MAX_INK_COLORS} plus fréquentes."
                    if len(ranked) > _MAX_INK_COLORS else None)
         palette = [0] + [_bgr555(color) for color in kept]
-        return palette + [0] * (16 - len(palette)), {
+        result = (palette + [0] * (16 - len(palette)), {
             color: index + 1 for index, color in enumerate(kept)
-        }, warning
-
-    mode = getattr(font, "raster_mode", "binary")
-    if mode == "coverage":
-        palette = [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+        }, warning)
     else:
-        # Le contrat d'une police vectorielle binaire : transparence + noir.
-        # L'index 1 est aussi celui que les palettes de scène exposent comme
-        # première encre sélectionnable.
-        palette = [0, _bgr555((0, 0, 0))] + [0] * 14
-    return palette, {}, None
+        mode = getattr(font, "raster_mode", "binary")
+        if mode == "coverage":
+            palette = [0] + [_bgr555((round(255 * i / 15),) * 3) for i in range(1, 16)]
+        else:
+            # Le contrat d'une police vectorielle binaire : transparence + noir.
+            # L'index 1 est aussi celui que les palettes de scène exposent comme
+            # première encre sélectionnable.
+            palette = [0, _bgr555((0, 0, 0))] + [0] * 14
+        result = (palette, {}, None)
+
+    try:
+        font._raster_pal_cache = (rasters, result)
+    except (AttributeError, TypeError):
+        pass       # police immuable (rare) : on renonce au cache, pas au résultat
+    return result
 
 
 def _encode_raster_font(font, rasters: dict) -> dict:

@@ -29,7 +29,7 @@ class PaletteUsage(NamedTuple):
 @dataclass
 class PaletteBank(Resource):
     """Une palette nommée de 16 couleurs, catalogue illimité et unifié au
-    niveau projet (project/palettes/*.hex, un fichier visible par palette ; le
+    niveau projet (assets/palettes/*.hex, un fichier visible par palette ; le
     JSON voisin ne contient que les métadonnées) — partagé entre OBJ et BG, une même palette peut servir
     aux deux. Une Scene en active jusqu'à 16 par pool (Scene.active_obj_palettes
     / active_bg_palettes) ; c'est cette sélection, pas le catalogue, qui

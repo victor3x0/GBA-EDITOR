@@ -15,6 +15,8 @@ from .script_inspector import ScriptInspector
 from .ui_inspector import UIInspector
 from .ui_node_inspector import UINodeInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector
+from .edge_inspector import EdgeInspector
+from .group_inspector import GroupInspector
 
 
 class DynamicInspector(QWidget):
@@ -39,6 +41,9 @@ class DynamicInspector(QWidget):
     # Relayé depuis CameraInspector : position/frame édités dans l'inspecteur
     # (pas par drag canvas) — le canvas doit suivre (cf. window.py).
     camera_moved = pyqtSignal(object)   # Camera
+    edge_presentation_changed = pyqtSignal(object)
+    edge_script_changed = pyqtSignal()
+    groups_changed = pyqtSignal()
 
     _MODE_EMPTY       = 0
     _MODE_SCENE       = 1
@@ -50,10 +55,13 @@ class DynamicInspector(QWidget):
     _MODE_SCRIPT      = 7
     _MODE_UI          = 8
     _MODE_UI_NODE     = 9
+    _MODE_EDGE        = 10
+    _MODE_GROUP       = 11
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._project = None   # mis à jour via set_project()
+        self._graph_state = None
         self.setStyleSheet(f"background:{C.BG_PANEL};")
         self.setMinimumWidth(200)
 
@@ -100,6 +108,8 @@ class DynamicInspector(QWidget):
             self._MODE_SCRIPT:      self._make_script,
             self._MODE_UI:          self._make_ui,
             self._MODE_UI_NODE:     self._make_ui_node,
+            self._MODE_EDGE:        self._make_edge,
+            self._MODE_GROUP:       self._make_group,
         }
         self._placeholders: dict[int, QWidget] = {}
         for _mode in self._factories:            # 1..9, dans l'ordre → index == mode
@@ -117,6 +127,8 @@ class DynamicInspector(QWidget):
         self._script_insp = None
         self._ui_insp = None
         self._ui_node_insp = None
+        self._edge_insp = None
+        self._group_insp = None
 
         # Injecté par window.py AVANT toute construction d'inspecteur : mémorisé
         # ici, appliqué par les fabriques concernées à la naissance de leur
@@ -216,6 +228,25 @@ class DynamicInspector(QWidget):
         self._ui_node_insp = insp
         return insp
 
+    def _make_edge(self) -> QWidget:
+        insp = EdgeInspector()
+        insp.set_graph_state(self._graph_state)
+        insp.style_changed.connect(self.edge_presentation_changed)
+        insp.script_changed.connect(self.edge_script_changed)
+        # Sauter au script à la ligne exacte de l'appel — même callback que les
+        # autres inspecteurs (window.open_script(path, line)).
+        insp.open_ref.connect(
+            lambda ref: self._script_open_fn(ref.path, ref.line)
+            if self._script_open_fn else None)
+        self._edge_insp = insp
+        return insp
+
+    def _make_group(self) -> QWidget:
+        insp = GroupInspector()
+        insp.changed.connect(self.groups_changed)
+        self._group_insp = insp
+        return insp
+
     def _on_actor_insp_changed(self):
         """Relaye changed ET émet actor_changed(actor) avec le payload explicite."""
         self.changed.emit()
@@ -312,6 +343,12 @@ class DynamicInspector(QWidget):
     def set_project(self, project):
         """Appelé par MainWindow à chaque ouverture/changement de projet."""
         self._project = project
+
+    def set_graph_state(self, state) -> None:
+        """Partage le sidecar du graphe avec l'inspecteur de transition."""
+        self._graph_state = state
+        if self._edge_insp is not None:
+            self._edge_insp.set_graph_state(state)
 
     def on_selection(self, obj):
         """Reçu du bus — afficher le bon panneau selon le type de l'objet."""
@@ -451,6 +488,30 @@ class DynamicInspector(QWidget):
         self._script_insp.load(path)
         self._set_header("script_asset", label('dyninsp.script'), path.name)
         self._stack.setCurrentIndex(self._MODE_SCRIPT)
+
+    def show_edge(self, edge, project=None):
+        """Transition(s) du graphe → inspecteur, y compris multi-sélection."""
+        proj = project or self._project
+        edges = list(edge) if isinstance(edge, (list, tuple)) else [edge]
+        edges = [value for value in edges if value is not None]
+        if not edges:
+            return
+        self._ensure(self._MODE_EDGE)
+        self._edge_insp.load(edges, proj)
+        name = (f"{edges[0].source} → {edges[0].target}" if len(edges) == 1
+                else label("edgeinsp.transitions_selected", count=len(edges)))
+        self._set_header("edge", label('common.transition'), name, editable=False)
+        self._stack.setCurrentIndex(self._MODE_EDGE)
+
+    def show_group(self, group_id, folders, state) -> None:
+        """Groupe de scènes du graphe : organisation, sans impact gameplay."""
+        folder = next((f for f in folders.folders("scenes") if f.id == group_id), None)
+        if folder is None:
+            return
+        self._ensure(self._MODE_GROUP)
+        self._group_insp.load(group_id, folders, state)
+        self._set_header("group", label("assetfind.group"), folder.name, editable=False)
+        self._stack.setCurrentIndex(self._MODE_GROUP)
 
     def show_prefab_uses(self, prefab, project=None):
         proj = project or self._project

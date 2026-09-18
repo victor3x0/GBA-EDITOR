@@ -28,12 +28,13 @@ class SceneGraphState:
     garantit jamais une scène morte.
     """
 
-    _VERSION = 1
+    _VERSION = 2
 
     def __init__(self, project_root: Path):
         self._path = Path(project_root) / "project" / "editor" / "scene-graph.json"
         self._data: dict = {"version": self._VERSION, "scene_positions": {},
-                            "scene_previews": {}, "groups": {}}
+                            "missing_positions": {}, "scene_previews": {}, "edge_styles": {}, "edge_notes": {},
+                            "groups": {}}
         self._load()
 
     def _load(self) -> None:
@@ -42,11 +43,17 @@ class SceneGraphState:
         except (OSError, ValueError, UnicodeDecodeError):
             return
         positions = raw.get("scene_positions") if isinstance(raw, dict) else None
+        missing_positions = raw.get("missing_positions") if isinstance(raw, dict) else None
         previews = raw.get("scene_previews") if isinstance(raw, dict) else None
+        edge_styles = raw.get("edge_styles") if isinstance(raw, dict) else None
+        edge_notes = raw.get("edge_notes") if isinstance(raw, dict) else None
         groups = raw.get("groups") if isinstance(raw, dict) else None
         self._data = {"version": self._VERSION,
                       "scene_positions": positions if isinstance(positions, dict) else {},
+                      "missing_positions": missing_positions if isinstance(missing_positions, dict) else {},
                       "scene_previews": previews if isinstance(previews, dict) else {},
+                      "edge_styles": edge_styles if isinstance(edge_styles, dict) else {},
+                      "edge_notes": edge_notes if isinstance(edge_notes, dict) else {},
                       "groups": groups if isinstance(groups, dict) else {}}
 
     def scene_position(self, name: str) -> tuple[float, float] | None:
@@ -79,6 +86,26 @@ class SceneGraphState:
             str(name): [float(pos[0]), float(pos[1])] for name, pos in mapping.items()}
         self.save()
 
+    def missing_position(self, name: str) -> tuple[float, float] | None:
+        raw = self._data["missing_positions"].get(name)
+        return (float(raw[0]), float(raw[1])) if isinstance(raw, (list, tuple)) and len(raw) == 2 else None
+
+    def set_missing_position(self, name: str, x: float, y: float) -> bool:
+        new = [float(x), float(y)]
+        if self._data["missing_positions"].get(name) == new:
+            return False
+        self._data["missing_positions"][name] = new
+        self.save()
+        return True
+
+    def prune_missing_positions(self, names: set[str]) -> None:
+        table = self._data["missing_positions"]
+        stale = [name for name in table if name not in names]
+        if stale:
+            for name in stale:
+                del table[name]
+            self.save()
+
     def rename_scene(self, before: str, after: str) -> None:
         """Migre la position ET l'aperçu — appelé par le choke point
         `Project.rename_scene`."""
@@ -90,6 +117,24 @@ class SceneGraphState:
             if before in table:
                 table[after] = table.pop(before)
                 changed = True
+        styles = self._data["edge_styles"]
+        for key, style in list(styles.items()):
+            source, separator, target = key.partition("\x1f")
+            if not separator or (source != before and target != before):
+                continue
+            styles.pop(key)
+            styles[self._edge_key(after if source == before else source,
+                                  after if target == before else target)] = style
+            changed = True
+        notes = self._data["edge_notes"]
+        for key, note in list(notes.items()):
+            source, separator, target = key.partition("\x1f")
+            if not separator or (source != before and target != before):
+                continue
+            notes.pop(key)
+            notes[self._edge_key(after if source == before else source,
+                                 after if target == before else target)] = note
+            changed = True
         if changed:
             self.save()
 
@@ -113,6 +158,52 @@ class SceneGraphState:
         self.save()
         return True
 
+    # ── Tracé des arêtes ─────────────────────────────────────────────
+    #
+    # Une arête représente une transition dérivée du script ; seul son tracé
+    # (droit ou courbe) est éditorial. La clé reste interne et non ambiguë même
+    # si un nom de scène contient un séparateur visuel habituel.
+
+    @staticmethod
+    def _edge_key(source: str, target: str) -> str:
+        return f"{source}\x1f{target}"
+
+    def edge_style(self, source: str, target: str) -> str:
+        """Style forcé : ``auto`` (défaut), ``straight`` ou ``curve``."""
+        value = self._data["edge_styles"].get(self._edge_key(source, target))
+        return value if value in {"straight", "curve"} else "auto"
+
+    def set_edge_style(self, source: str, target: str, style: str) -> bool:
+        if style not in {"auto", "straight", "curve"}:
+            raise ValueError(f"Unknown edge style: {style}")
+        styles = self._data["edge_styles"]
+        key = self._edge_key(source, target)
+        old = self.edge_style(source, target)
+        if old == style:
+            return False
+        if style == "auto":
+            styles.pop(key, None)
+        else:
+            styles[key] = style
+        self.save()
+        return True
+
+    def edge_note(self, source: str, target: str) -> str:
+        value = self._data["edge_notes"].get(self._edge_key(source, target), "")
+        return value if isinstance(value, str) else ""
+
+    def set_edge_note(self, source: str, target: str, note: str) -> bool:
+        notes = self._data["edge_notes"]
+        key, note = self._edge_key(source, target), str(note or "")
+        if self.edge_note(source, target) == note:
+            return False
+        if note:
+            notes[key] = note
+        else:
+            notes.pop(key, None)
+        self.save()
+        return True
+
     # ── Présentation d'un groupe dans le canvas du Graphe ──────────
     #
     # Indexée par ID de groupe (le dossier de `AssetFolderStore`). C'est de la
@@ -130,6 +221,21 @@ class SceneGraphState:
         if self.group_collapsed(group_id) == collapsed:
             return False
         self._group(group_id)["collapsed"] = bool(collapsed)
+        self.save()
+        return True
+
+    def group_note(self, group_id: str) -> str:
+        value = self._data["groups"].get(group_id, {}).get("note", "")
+        return value if isinstance(value, str) else ""
+
+    def set_group_note(self, group_id: str, note: str) -> bool:
+        group, value = self._group(group_id), str(note or "")
+        if self.group_note(group_id) == value:
+            return False
+        if value:
+            group["note"] = value
+        else:
+            group.pop("note", None)
         self.save()
         return True
 
@@ -177,6 +283,12 @@ class SceneGraphState:
             for name in [n for n in table if n not in valid_scene_names]:
                 del table[name]
                 changed = True
+        for table in (self._data["edge_styles"], self._data["edge_notes"]):
+            for key in list(table):
+                source, separator, target = key.partition("\x1f")
+                if not separator or source not in valid_scene_names or target not in valid_scene_names:
+                    del table[key]
+                    changed = True
         if valid_group_ids is not None:
             groups = self._data["groups"]
             for gid in [g for g in groups if g not in valid_group_ids]:

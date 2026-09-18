@@ -165,6 +165,16 @@ class AssetFolderStore:
         self.save()
         return True
 
+    def set_folder_color(self, family: str, folder_id: str, color: str) -> bool:
+        """Enregistre une couleur éditoriale de dossier/groupe."""
+        raw = self._raw_folder(family, folder_id)
+        value = str(color or "")
+        if raw is None or str(raw.get("color") or "") == value:
+            return False
+        raw["color"] = value
+        self.save()
+        return True
+
     def delete_folder(self, family: str, folder_id: str) -> bool:
         """Supprime un dossier SANS supprimer son contenu : ses sous-dossiers et
         ses assets membres remontent au parent du dossier supprimé (racine s'il
@@ -186,6 +196,39 @@ class AssetFolderStore:
                 target.setdefault("members", []).append(member)
         self.save()
         return True
+
+    def delete_folder_tree(self, family: str, folder_id: str) -> list[str]:
+        """Supprime un dossier ET tout son sous-arbre (sous-dossiers compris), et
+        rend la liste des clés membres qui s'y trouvaient. Contraste avec
+        `delete_folder`, qui PRÉSERVE le contenu en le remontant.
+
+        Le store ne connaît que le RANGEMENT : il retire la structure de dossiers,
+        pas les assets. C'est à l'appelant de supprimer les assets nommés par les
+        clés rendues (via leur commande annulable), pour que « supprimer le dossier
+        et son contenu » reste un seul geste côté UI mais deux responsabilités
+        propres."""
+        raw = self._raw_folder(family, folder_id)
+        if raw is None:
+            return []
+        folders = self._family(family)["folders"]
+        # Sous-arbre = folder_id + tous ses descendants (parcours par parent_id).
+        ids = {folder_id}
+        changed = True
+        while changed:
+            changed = False
+            for f in folders:
+                if (isinstance(f, dict) and f.get("id") not in ids
+                        and str(f.get("parent_id")) in ids):
+                    ids.add(f["id"])
+                    changed = True
+        members: list[str] = []
+        for f in folders:
+            if isinstance(f, dict) and f.get("id") in ids:
+                members.extend(f.get("members") or [])
+        folders[:] = [f for f in folders
+                      if not (isinstance(f, dict) and f.get("id") in ids)]
+        self.save()
+        return members
 
     def set_parent(self, family: str, folder_id: str, parent_id: str | None) -> bool:
         """Imbrique un dossier sous un autre. Refuse tout cycle."""

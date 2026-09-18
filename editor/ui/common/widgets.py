@@ -1297,6 +1297,10 @@ class AssetHeaderBar(QWidget):
                 "music":  kind_colors(icons.COLOR_MUSIC),
                 "uses":   kind_colors(icons.COLOR_PREFAB),
                 "project": kind_colors(C.ACCENT),
+                # Arête du Graphe des scènes : une transition ENTRE scènes, même
+                # famille que la scène.
+                  "edge":   kind_colors(icons.COLOR_SCENE),
+                  "group":  kind_colors(icons.COLOR_SCENE),
                 # Interface — un kind par type d'élément (même famille bleue) ;
                 # "ui_element" reste en repli pour les appels génériques.
                 "ui_container":   kind_colors(icons.COLOR_UI),

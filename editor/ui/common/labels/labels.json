@@ -1035,6 +1035,47 @@
     "common.scene": {
       "text": "Scene"
     },
+    "common.transition": {
+      "text": "Transition"
+    },
+    "edgeinsp.target_missing": {
+      "text": "Target « {target} » not found in the project"
+    },
+    "edgeinsp.appearance": {
+      "text": "APPEARANCE"
+    },
+    "edgeinsp.path": {
+      "text": "Path"
+    },
+    "edgeinsp.path_straight": {
+      "text": "Straight"
+    },
+    "edgeinsp.path_curve": {
+      "text": "Curve"
+    },
+    "edgeinsp.script_calls": {
+      "text": "SCRIPT CALLS"
+    },
+    "edgeinsp.notes_multi_placeholder": {
+      "text": "Note applied to all selected transitions…"
+    },
+    "edgeinsp.transitions_selected": {
+      "text": "{count} transitions selected"
+    },
+    "edgeinsp.undo_path": {
+      "text": "Change transition path"
+    },
+    "edgeinsp.undo_note": {
+      "text": "Edit transition note"
+    },
+    "groupinsp.name": {"text": "Name"},
+    "groupinsp.color": {"text": "Color"},
+    "groupinsp.presentation": {"text": "PRESENTATION"},
+    "groupinsp.content": {"text": "CONTENTS"},
+    "groupinsp.collapsed": {"text": "Collapsed in graph"},
+    "groupinsp.empty": {"text": "No direct scene or subgroup"},
+    "groupinsp.scenes": {"text": "Scenes ({count})"},
+    "groupinsp.groups": {"text": "Subgroups ({count})"},
     "bgedit.kind_ui": {
       "text": "UI"
     },
@@ -3113,6 +3154,15 @@
     },
     "scncanvas.graph_set_start": {
       "text": "Set as starting scene"
+    },
+    "scncanvas.graph_delete_folder_content": {
+      "text": "Delete folder and its contents"
+    },
+    "scncanvas.graph_delete_folder_content_confirm": {
+      "text": "Delete this folder and its {count} scene(s)? The scenes are removed (Ctrl+Z to undo each)."
+    },
+    "scncanvas.graph_delete_selection_confirm": {
+      "text": "Delete the selection: {scenes} scene(s) and {folders} folder(s)? Folders keep their contents; scenes are removed (Ctrl+Z)."
     },
     "scncanvas.grid_8px": {
       "text": "8 px grid (GBA tile)"

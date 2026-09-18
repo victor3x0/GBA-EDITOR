@@ -43,6 +43,7 @@ class _UsesInspectorBase(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self._root_layout = root
 
         # ── Header coloré avec nom de l'élément inspecté ──────────
         self._top = QFrame()
@@ -72,6 +73,10 @@ class _UsesInspectorBase(QWidget):
         # ── Carte : titre + bouton d'action optionnel + liste ─────
         self._card = CollapsibleCard(self._SECTION_TITLE, color=self._HEADER_COLOR)
         self._card.set_expanding(True)
+        # Une liste ouverte utilise toute la hauteur utile. Repliée, elle ne
+        # doit plus garder sa cellule extensible : sinon Qt centre son en-tête
+        # dans le grand espace restant et décale les inspecteurs suivants.
+        self._card.toggled.connect(self._on_card_toggled)
         if self._ACTION_BTN_TEXT:
             self._action_btn = QPushButton(self._ACTION_BTN_TEXT)
             self._action_btn.setFont(QFont(T.UI, T.SM))
@@ -98,6 +103,13 @@ class _UsesInspectorBase(QWidget):
         scroll.setWidget(self._list_container)
         self._card.body_layout.setContentsMargins(0, 0, 0, 0)
         self._card.body_layout.addWidget(scroll)
+
+    def _on_card_toggled(self, expanded: bool) -> None:
+        """Réserve la hauteur libre à la liste seulement lorsqu'elle est visible."""
+        index = self._root_layout.indexOf(self._card)
+        if index >= 0:
+            self._root_layout.setStretch(index, 1 if expanded else 0)
+            self._root_layout.invalidate()
 
     # ── Helpers de construction de liste, communs aux sous-classes ──
 

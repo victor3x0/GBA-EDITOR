@@ -111,6 +111,10 @@ configurés. L'écran d'accueil et **Fichier → Réglages** indiquent où les r
 - Pour obtenir un premier résultat complet, suivez [Créer votre première scène jouable](first-playable-scene.md).
 - Pour ajouter un décor, un sol et des murs, suivez [Ajouter un décor et des collisions](decor-and-collision.md).
 - Pour ajouter gravité et saut, suivez [Créer un mouvement de plateforme](platformer-movement.md).
+- Pour ajouter des objets à ramasser et un score, suivez [Ajouter des collectibles et un score](collectibles.md).
+- Pour créer des PNJ, des dialogues et des adversaires, suivez [Ennemis et PNJ](enemies.md).
+- Pour relier le titre, les niveaux et la victoire, suivez [Construire une boucle de gameplay](gameplay-loop.md).
+- Pour construire un combat plus élaboré, suivez [Créer un boss et sa barre de vie](boss.md).
 - Pour suivre l'acteur dans une grande scène, suivez [Faire suivre l'acteur par une caméra](camera-follow.md).
 - Pour donner une réaction à un acteur, passez au [guide de scripting](../scripting.md).
 - Pour comprendre les messages de compilation, commencez par lire le fichier et la ligne cités

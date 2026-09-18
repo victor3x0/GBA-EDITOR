@@ -157,12 +157,16 @@ class UIRegionController(QObject):
 
     def _layout_of(self, element):
         """Le nœud `Interface` qui CONTIENT `element`, parmi les N de la scène
-        active (v0.25). Par identité — deux éléments de nœuds différents peuvent
-        porter le même nom d'un projet à l'autre, mais pas le même objet."""
-        if not self._project:
+        du contexte (v0.25). Par identité — deux éléments de nœuds différents
+        peuvent porter le même nom d'un projet à l'autre, mais pas le même objet.
+
+        La scène est celle du CONTEXTE (`set_context`), pas `active_scene` : les
+        deux divergent le temps d'une bascule, et lire `active_scene` faisait
+        chercher `copy_groups` dans la mauvaise scène — copie vide alors que le
+        collage (qui lit déjà `self._scene`) visait la bonne."""
+        if not self._project or self._scene is None:
             return None
-        scene = self._project.active_scene
-        for lay in (self._project.scene_ui_layouts(scene) if scene else []):
+        for lay in self._project.scene_ui_layouts(self._scene):
             if any(e is element for e in lay.elements):
                 return lay
         return None
@@ -189,6 +193,19 @@ class UIRegionController(QObject):
         if lay is None:
             return [element]
         return [element] + lay.descendants(element.name)
+
+    def copy_groups(self, elements: list) -> list:
+        """[sous-arbre, …] pour le presse-papier — même règle qu'à la
+        duplication : un élément dont un ANCÊTRE est du lot est ignoré, son
+        sous-arbre voyageant déjà dans la copie de cet ancêtre."""
+        if not self.ready or not elements:
+            return []
+        out: list = []
+        for lay, els in self._group_by_layout(elements):
+            picked = {e.name for e in els}
+            roots = [e for e in els if not (set(lay.ancestors(e.name)) & picked)]
+            out += [self.subtree_of(e) for e in roots]
+        return out
 
     def duplicate_elements(self, elements: list, dx: int = 8, dy: int = 8) -> list:
         """Duplique des éléments (sous-arbres compris) décalés de (dx, dy), chacun

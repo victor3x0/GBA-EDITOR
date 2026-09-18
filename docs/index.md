@@ -14,6 +14,12 @@ utilisateur, puis consultez le guide de scripting lorsque vous souhaitez donner 
   empêcher l'acteur de traverser les murs.
 - [Mouvement de plateforme](user-guide/platformer-movement.md) : ajouter gravité, saut et
   réglages par acteur.
+- [Collectibles et score](user-guide/collectibles.md) : créer un prefab ramassable et afficher
+  une valeur globale.
+- [Ennemis et PNJ](user-guide/enemies.md) : écrire des dialogues, créer des ennemis et leurs comportements.
+- [Boucle de gameplay](user-guide/gameplay-loop.md) : relier les scènes, l'interface et les
+  transitions.
+- [Boss](user-guide/boss.md) : construire une hiérarchie d'acteurs et une barre de vie.
 - [Caméra](user-guide/camera-follow.md) : suivre un acteur et borner le défilement de la scène.
 - [Guide de scripting](scripting.md) : écrire le comportement d'un acteur.
 - [Référence de scripting](scripting-reference.md) : vérifier la syntaxe disponible et les

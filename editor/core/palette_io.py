@@ -1,6 +1,6 @@
 """Import et export des formats d'échange de palettes.
 
-Cette couche ne lit pas les sources canoniques ``project/palettes/*.hex`` :
+Cette couche ne lit pas les sources canoniques ``assets/palettes/*.hex`` :
 celles-ci sont définies par ``PaletteBank.from_hex``. Elle lit au contraire des
 formats externes, tolérants et hétérogènes, pour les transformer en banque GBA.
 """

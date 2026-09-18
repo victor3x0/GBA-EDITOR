@@ -145,8 +145,12 @@ class ProjectPathsMixin:
 
     @property
     def palettes_dir(self) -> Path:
-        """Catalogue de palettes unifié — sources ``.hex`` et sidecars JSON."""
-        return self.project_dir / "palettes"
+        """Catalogue de palettes unifié — sources ``.hex`` et sidecars JSON.
+
+        Rangé dans ``assets/`` et non ``project/`` : une palette n'est plus un
+        objet moteur mais une donnée d'éditeur que l'auteur importe et exporte,
+        au même titre qu'un PNG ou un son."""
+        return self.assets_dir / "palettes"
 
     @property
     def font_assets_dir(self) -> Path:

@@ -74,6 +74,14 @@ _FLAT_SHEETS: dict = {}
 # texte, une recette, une face ou une source change réellement.
 _VECTOR_TEXT_IMAGES: dict = {}
 
+# Image d'UN glyphe déjà rasterisé (FontAsset matérialisé). Le rendre pixel par
+# pixel — `display_coverage` sur chaque point — à chaque repaint étranglait le
+# canvas dès qu'une scène affichait du texte. La clé porte le `RasterGlyph`
+# (frozen, donc hachable sur son contenu) et tout ce qui change son rendu : un
+# glyphe reconstruit ou une encre changée produit une entrée neuve, sans
+# horodatage à surveiller.
+_GLYPH_IMAGES: dict = {}
+
 # Sentinelle « pas encore calculé » pour le cache de banque d'un item (une valeur
 # None étant, elle, un résultat légitime — « pas de banque »).
 _UNSET = object()
@@ -469,6 +477,22 @@ class UIRegionItem(QGraphicsRectItem):
         return (getattr(text, "content", "") or "") if text is not None else ""
 
     def _text_font(self):
+        """Police de l'élément — mise en cache pour la VIE de l'item.
+
+        `_compute_text_font` rejoue `project_fonts`/`scene_default_font`, deux
+        requêtes dominées par la résolution de chemins Windows (~6 ms chacune) ;
+        les rappeler à chaque repaint — survol, zoom, pan — étranglait le canvas.
+        Comme `_bank_colors`, l'item est reconstruit dès qu'un réglage qu'il
+        reflète change (police, texte → `_reload_ui_regions`), donc le cache ne
+        survit jamais à ce qu'il montre."""
+        cached = getattr(self, "_text_font_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        font = self._compute_text_font()
+        self._text_font_cache = font
+        return font
+
+    def _compute_text_font(self):
         """Police de l'élément, ou celle que la SCÈNE charge par défaut.
 
         Le défaut passe par `font_emit.scene_default_font` — le même calcul que
@@ -509,6 +533,35 @@ class UIRegionItem(QGraphicsRectItem):
 
     def _composited(self) -> bool:
         """Le texte se COMPOSE-t-il (pixel) plutôt que de se poser à la tuile ?
+
+        Mis en cache pour la VIE de l'item, comme `_text_font` : le calcul rejoue
+        `scene_default_font` (résolution de chemins coûteuse), et `_paint_text`
+        l'interroge à chaque repaint."""
+        cached = getattr(self, "_composited_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        value = self._compute_composited()
+        self._composited_cache = value
+        return value
+
+    def _paint_font_map(self) -> dict:
+        """`{nom: Font}` des polices matérialisées — mis en cache pour la VIE de
+        l'item. Seul le texte à balisage `[font]` en a besoin (mélange de
+        polices) ; le calcul repasse par `project_fonts`, d'où le cache."""
+        cached = getattr(self, "_paint_font_map_cache", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        try:
+            from codegen.font_emit import project_fonts
+            paint_fonts = project_fonts(self._project)
+        except Exception:
+            paint_fonts = list(getattr(self._project, "fonts", []) or [])
+        font_map = {item.name: item for item in paint_fonts}
+        self._paint_font_map_cache = font_map
+        return font_map
+
+    def _compute_composited(self) -> bool:
+        """Résout la composition, sans cache.
 
         Délègue à `main_gen.region_is_composited` — même règle que le
         validateur (`_check_ui_text_surf_alias`) : les laisser diverger
@@ -591,6 +644,47 @@ class UIRegionItem(QGraphicsRectItem):
             return None
         r, g, b = cols[idx]
         return QColor(r, g, b)
+
+    def _own_ink_color(self, font) -> QColor:
+        """Encre PROPRE de `font` — la couleur que le BUILD émettra pour cette
+        police quand AUCUNE palette de scène ne la recolore (`text_color` = 0 ou
+        banque non résolue).
+
+        Lue via `font_palette`, la fonction même dont le codegen et l'allocateur
+        tirent la palette propre : l'aperçu ne peut donc plus montrer une encre
+        que la ROM n'aura pas (une police à encre noire s'affiche noire ici comme
+        à l'écran). Repli sur `C.TEXT_HI` seulement quand la police n'a aucune
+        encre connaissable — jamais un blanc inventé par-dessus une vraie encre.
+        L'index 1 est la première encre ; 0 est la transparence."""
+        from core.models.gba_color import bgr555_to_rgb888
+        from codegen.font_emit import font_palette
+        p = self._project
+        png = (p.asset_abs(font.asset)
+               if p is not None and getattr(font, "asset", "") else None)
+        try:
+            own = font_palette(font, png)
+        except Exception:
+            own = []
+        if len(own) > 1:      # 0x0000 (noir) est une encre valide, pas un « vide »
+            return QColor(*bgr555_to_rgb888(own[1]))
+        return QColor(C.TEXT_HI)
+
+    def _fill_highlight(self, painter, x0: float, y0: float,
+                        x1: float, y1: float) -> None:
+        """Peint le fond de SURLIGNEMENT sous une étendue de texte DÉJÀ mesurée
+        et arrondie à la tuile, en coordonnées locales à la zone (relatives à
+        `rect()`).
+
+        Partagé par les DEUX chemins de rendu — planche bitmap (`_paint_text`)
+        et FontAsset (`_paint_vector_text`) : la ROM surligne l'étendue RENDUE
+        du texte (`text_render_cp_al`, `g_hl_*`), les deux aperçus doivent donc
+        la peindre pareil. L'oublier dans un seul chemin est exactement la
+        dissociation qu'on refuse."""
+        hl = self._highlight_color()
+        if hl is None or x1 <= x0 or y1 <= y0:
+            return
+        r = self.rect()
+        painter.fillRect(QRectF(r.left() + x0, r.top() + y0, x1 - x0, y1 - y0), hl)
 
     def _load_text_sheet(self, font):
         """Planche de glyphes TROUÉE, mise en cache par (chemin, empreinte).
@@ -678,15 +772,9 @@ class UIRegionItem(QGraphicsRectItem):
             return False
         from core.engine_emulation.text_layout import layout_text, layout_marked_text
         r = self.rect()
-        try:
-            from codegen.font_emit import project_fonts
-            paint_fonts = project_fonts(self._project)
-        except Exception:
-            paint_fonts = list(getattr(self._project, "fonts", []) or [])
-        font_map = {item.name: item for item in paint_fonts}
         if has_font_markup:
             placed, over = layout_marked_text(
-                font, source, font_map,
+                font, source, self._paint_font_map(),
                 self._project.text_values() if hasattr(self._project, "text_values") else {},
                 int(r.width()), int(r.height()), getattr(self._region, "align", "left"),
                 self._composited())
@@ -707,15 +795,13 @@ class UIRegionItem(QGraphicsRectItem):
         # (donc la CHASSE, pas la largeur d'encre) à droite, l'INTERLIGNE en
         # bas. Les mesurer autrement donnerait une tuile d'écart avec la ROM sur
         # une police dont les glyphes sont plus petits que leur cellule.
-        hl = self._highlight_color()
-        if hl is not None:
-            from codegen.font_emit import glyph_advance_px, font_line_px
-            line = font_line_px(font)
-            x0 = min(gx for _f, _g, gx, _gy in placed) // 8 * 8
-            y0 = min(gy for _f, _g, _gx, gy in placed) // 8 * 8
-            x1 = -(-max(gx + glyph_advance_px(g, f) for f, g, gx, _gy in placed) // 8) * 8
-            y1 = -(-(max(gy for _f, _g, _gx, gy in placed) + line) // 8) * 8
-            painter.fillRect(QRectF(r.left() + x0, r.top() + y0, x1 - x0, y1 - y0), hl)
+        from codegen.font_emit import glyph_advance_px, font_line_px
+        line = font_line_px(font)
+        x0 = min(gx for _f, _g, gx, _gy in placed) // 8 * 8
+        y0 = min(gy for _f, _g, _gx, gy in placed) // 8 * 8
+        x1 = -(-max(gx + glyph_advance_px(g, f) for f, g, gx, _gy in placed) // 8) * 8
+        y1 = -(-(max(gy for _f, _g, _gx, gy in placed) + line) // 8) * 8
+        self._fill_highlight(painter, x0, y0, x1, y1)
         for f, g, gx, gy in placed:
             if self._paint_built_glyph(painter, f, g, r.left() + gx, r.top() + gy,
                                        ink_color):
@@ -744,23 +830,28 @@ class UIRegionItem(QGraphicsRectItem):
         raster = rasters.get(glyph.char) if rasters else None
         if raster is None:
             return False
-        from core.font_rasterizer import display_coverage
-
-        image = QImage(raster.width, raster.height, QImage.Format.Format_ARGB32)
-        image.fill(Qt.GlobalColor.transparent)
-        color = QColor(ink) if ink is not None else QColor(C.TEXT_HI)
+        color = QColor(ink) if ink is not None else self._own_ink_color(font)
         mode = getattr(font, "raster_mode", "binary")
         threshold = int(getattr(font, "coverage_threshold", 128) or 128)
         dither = getattr(font, "dither_pattern", "none")
-        for py in range(raster.height):
-            for px in range(raster.width):
-                alpha = display_coverage(
-                    raster.coverage_at(px, py), px, py, raster_mode=mode,
-                    threshold=threshold, dither_pattern=dither)
-                if alpha:
-                    pixel = QColor(color)
-                    pixel.setAlpha(alpha)
-                    image.setPixelColor(px, py, pixel)
+        key = (raster, color.rgb(), mode, threshold, dither)
+        image = _GLYPH_IMAGES.get(key)
+        if image is None:
+            from core.font_rasterizer import display_coverage
+            image = QImage(raster.width, raster.height, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            for py in range(raster.height):
+                for px in range(raster.width):
+                    alpha = display_coverage(
+                        raster.coverage_at(px, py), px, py, raster_mode=mode,
+                        threshold=threshold, dither_pattern=dither)
+                    if alpha:
+                        pixel = QColor(color)
+                        pixel.setAlpha(alpha)
+                        image.setPixelColor(px, py, pixel)
+            if len(_GLYPH_IMAGES) >= 4096:      # tout un charset × quelques encres
+                _GLYPH_IMAGES.clear()
+            _GLYPH_IMAGES[key] = image
         # Même dépôt vertical que `_encode_raster_font` : la ligne est une
         # hauteur, jamais la largeur de cellule (les deux ne coïncident pas sur
         # une fonte vectorielle ou une police à interligne propre).
@@ -784,7 +875,7 @@ class UIRegionItem(QGraphicsRectItem):
         width, height = max(1, int(r.width())), max(1, int(r.height()))
         ink_index = int(getattr(self._region, "text_color", 0) or 0)
         colors = self._bank_colors()
-        ink = QColor(C.TEXT_HI)
+        ink = self._own_ink_color(asset)
         if ink_index and colors and ink_index < len(colors):
             ink = QColor(*colors[ink_index])
         source_names = set(asset.source_names()) | {face.source_name for face in asset.faces}
@@ -806,7 +897,9 @@ class UIRegionItem(QGraphicsRectItem):
         )
         cached = _VECTOR_TEXT_IMAGES.get(cache_key)
         if cached is not None:
-            image, overflow = cached
+            image, overflow, hl_ext = cached
+            if hl_ext is not None:
+                self._fill_highlight(painter, *hl_ext)   # SOUS l'image
             painter.drawImage(r.topLeft(), image)
             return overflow
         glyphs = []
@@ -841,9 +934,26 @@ class UIRegionItem(QGraphicsRectItem):
         image = QImage(width, height, QImage.Format.Format_ARGB32)
         image.fill(Qt.GlobalColor.transparent)
         align = getattr(self._region, "align", "left")
+
+        def _line_offset(line_width: int) -> int:
+            return ((width - line_width) // 2 if align == "center"
+                    else width - line_width if align == "right" else 0)
+
+        # Étendue RENDUE, arrondie à la tuile — même règle que la ROM
+        # (`text_render_cp_al` : x0..w tuiles, h lignes) et que le chemin
+        # planche. Mise en cache avec l'image pour que le surlignement suive
+        # même au réemploi.
+        hl_ext = None
+        if lines:
+            starts = [_line_offset(lw) for _e, lw in lines]
+            ends = [off + lw for off, (_e, lw) in zip(starts, lines)]
+            x0 = min(starts) // 8 * 8
+            x1 = -(-max(ends) // 8) * 8
+            y1 = -(-(len(lines) * line_height) // 8) * 8
+            hl_ext = (x0, 0, x1, y1)
+
         for line_index, (entries, line_width) in enumerate(lines):
-            offset = ((width - line_width) // 2 if align == "center"
-                      else width - line_width if align == "right" else 0)
+            offset = _line_offset(line_width)
             baseline = line_index * line_height + asset.pixel_height
             for glyph, gx in entries:
                 for py in range(glyph.height):
@@ -865,7 +975,9 @@ class UIRegionItem(QGraphicsRectItem):
                             image.setPixelColor(x, y, color)
         if len(_VECTOR_TEXT_IMAGES) >= 128:
             _VECTOR_TEXT_IMAGES.clear()
-        _VECTOR_TEXT_IMAGES[cache_key] = (image, overflow)
+        _VECTOR_TEXT_IMAGES[cache_key] = (image, overflow, hl_ext)
+        if hl_ext is not None:
+            self._fill_highlight(painter, *hl_ext)   # SOUS l'image
         painter.drawImage(r.topLeft(), image)
         return overflow
 

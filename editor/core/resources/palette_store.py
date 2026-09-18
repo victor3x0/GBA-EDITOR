@@ -1,7 +1,7 @@
 """Persistance des palettes : le ``.hex`` est la donnée canonique.
 
 Une palette est visible et modifiable sans l'éditeur dans
-``project/palettes/<nom>.hex``. Le JSON voisin est seulement un sidecar pour
+``assets/palettes/<nom>.hex``. Le JSON voisin est seulement un sidecar pour
 les métadonnées de l'éditeur ; il ne duplique volontairement jamais les
 couleurs.
 """

@@ -42,6 +42,7 @@ PREVIEW_H = PREVIEW_HEADER_H + PREVIEW_IMG_H
 _PILL = 12.0   # diamètre de la pastille d'aperçu
 _PILL_PAD = 7.0  # marge de la pastille au coin haut-droit de la carte
 _PORT_R = 4.5  # rayon des points d'entrée/sortie, centrés sur le bord de la carte
+_GRID_STEP = 20.0
 
 
 class NodePortItem(QGraphicsItem):
@@ -141,7 +142,8 @@ class SceneCardItem(QGraphicsItem):
     def __init__(self, name: str, is_start: bool = False,
                  preview_enabled: bool = False, preview: QPixmap | None = None,
                  is_active: bool = False, notes: str = "",
-                 diagnostic: NodeDiagnostic | None = None):
+                 diagnostic: NodeDiagnostic | None = None,
+                 geometry_changed=None):
         super().__init__()
         self.name = name
         self.is_start = is_start
@@ -162,12 +164,14 @@ class SceneCardItem(QGraphicsItem):
         # ne retombe pas en condensé.
         self._w = PREVIEW_W if preview_enabled else CARD_W
         self._h = PREVIEW_H if preview_enabled else CARD_H
+        self._geometry_changed = geometry_changed
         # Un nœud se déplace et se sélectionne comme dans le canvas (RubberBand,
         # Ctrl/Shift). La position déplacée est persistée par la vue au
         # relâchement (sidecar d'éditeur, cf. SceneGraphState) ; l'item, lui, ne
         # connaît aucun store.
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsMovable
-                      | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+                      | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+                      | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         # Pastille de bascule d'aperçu, au coin haut-droit de la carte.
         pill = ScenePreviewToggleItem(name, preview_enabled, parent=self)
         pill.setPos(self._w - _PILL - _PILL_PAD, _PILL_PAD)
@@ -197,6 +201,27 @@ class SceneCardItem(QGraphicsItem):
         if self.is_active != active:
             self.is_active = active
             self.update()
+
+    def itemChange(self, change, value):
+        """Signale le déplacement sans connaître les arêtes de la vue.
+
+        Les arêtes restent ainsi attachées pendant le glisser. Le callback ne
+        persiste rien : l'écriture du sidecar reste groupée au relâchement.
+        """
+        if (change is QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+                and self._geometry_changed is not None):
+            self._geometry_changed(self)
+        return super().itemChange(change, value)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        # Le geste garde l'impression d'un déplacement direct, mais la position
+        # finale de chaque pas tombe sur la même trame que le fond du graphe.
+        p = self.pos()
+        snapped = QPointF(round(p.x() / _GRID_STEP) * _GRID_STEP,
+                          round(p.y() / _GRID_STEP) * _GRID_STEP)
+        if snapped != p:
+            self.setPos(snapped)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(painter.RenderHint.Antialiasing, True)
@@ -268,9 +293,33 @@ class SceneCardItem(QGraphicsItem):
 class MissingTargetItem(QGraphicsItem):
     """Marqueur d'une cible introuvable — barré d'un ✕, en rouge, non éditable."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, geometry_changed=None):
         super().__init__()
         self.name = name
+        self._geometry_changed = geometry_changed
+        self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+                      | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+                      | QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        # Une cible introuvable est terminale : seulement un port D'ENTRÉE,
+        # sélectionnable via son parent pour reconnecter les arêtes fautives.
+        entry = NodePortItem(C.ACCENT_RED, False,
+                              label("edgeinsp.target_missing", target=name), parent=self)
+        entry.setPos(0, CARD_H / 2)
+        entry.setZValue(1)
+
+    def itemChange(self, change, value):
+        if (change is QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+                and self._geometry_changed is not None):
+            self._geometry_changed(self)
+        return super().itemChange(change, value)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        p = self.pos()
+        snapped = QPointF(round(p.x() / _GRID_STEP) * _GRID_STEP,
+                          round(p.y() / _GRID_STEP) * _GRID_STEP)
+        if snapped != p:
+            self.setPos(snapped)
 
     def boundingRect(self) -> QRectF:
         return QRectF(-_PEN, -_PEN, CARD_W + 2 * _PEN, CARD_H + 2 * _PEN)
@@ -298,17 +347,15 @@ class MissingTargetItem(QGraphicsItem):
                          self.name)
 
 
-def _border_point(rect: QRectF, toward: QPointF) -> QPointF:
-    """Point du bord de `rect` dans la direction de `toward` depuis son centre."""
-    c = rect.center()
-    dx, dy = toward.x() - c.x(), toward.y() - c.y()
-    if dx == 0 and dy == 0:
-        return c
-    hw, hh = rect.width() / 2, rect.height() / 2
-    sx = hw / abs(dx) if dx else math.inf
-    sy = hh / abs(dy) if dy else math.inf
-    s = min(sx, sy)
-    return QPointF(c.x() + dx * s, c.y() + dy * s)
+def _port_anchors(source: QRectF, target: QRectF) -> tuple[QPointF, QPointF]:
+    """Ancres sémantiques d'une transition : sortie droite → entrée gauche.
+
+    Elles coïncident exactement avec les ports visibles d'une carte de scène.
+    Pour les boîtes, marqueurs et portes (qui n'ont pas de pastille dessinée),
+    cette même convention préserve une circulation de gauche à droite cohérente.
+    """
+    return (QPointF(source.right(), source.center().y()),
+            QPointF(target.left(), target.center().y()))
 
 
 def _arrow_head(tip: QPointF, direction: QPointF, size: float = 9.0) -> QPolygonF:
@@ -328,46 +375,113 @@ def _arrow_head(tip: QPointF, direction: QPointF, size: float = 9.0) -> QPolygon
 class SceneGraphEdgeItem(QGraphicsItem):
     """Arête dirigée entre deux ancrages, avec compteur et boucle.
 
-    La géométrie est figée à la construction (pas de déplacement dans cette
-    tranche) : `source` et `target` sont des rectangles en coordonnées de scène.
-    Quand ils coïncident, l'arête se dessine en boucle au-dessus de la carte.
+    Initialement construite avec deux rectangles en coordonnées de scène, elle
+    peut aussi être liée à deux items : sa géométrie se rafraîchit alors pendant
+    leur déplacement. Quand ils coïncident, l'arête se dessine en boucle au-
+    dessus de la carte.
     """
 
     def __init__(self, source: QRectF, target: QRectF, count: int,
-                 curved: bool = False):
+                 curved: bool = False, style: str = "auto", rewire_requested=None):
         super().__init__()
         self.count = count
+        # Une arête est une cible d'inspection à part entière : Qt garde sa
+        # sélection (clic, Ctrl-clic, rectangle) et ``paint`` la rend lisible.
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        self._source_item = None
+        self._target_item = None
+        self._rewire_requested = rewire_requested
+        self._style = style if style in {"auto", "straight", "curve"} else "auto"
+        self._path = QPainterPath()
+        self._head = QPolygonF()
+        self._badge = QPointF()
+        self._set_endpoints(source, target, curved)
+
+    @property
+    def style(self) -> str:
+        return self._style
+
+    def set_style(self, style: str) -> None:
+        """Force immédiatement le tracé droit ou la courbe ease-in/ease-out."""
+        if style not in {"auto", "straight", "curve"}:
+            raise ValueError(f"Unknown edge style: {style}")
+        if style == self._style:
+            return
+        self._style = style
+        if self._source_item is None or self._target_item is None:
+            self._set_endpoints(self._source_rect, self._target_rect,
+                                self._target_rect.center().x() < self._source_rect.center().x())
+        else:
+            self.refresh_geometry()
+
+    def bind_anchors(self, source_item, target_item) -> None:
+        """Lie l'arête à deux items exposant ``anchor_rect``.
+
+        La vue inscrit ensuite l'arête auprès de chacun des deux items : au
+        déplacement, seule sa géométrie de peinture est mise à jour.
+        """
+        self._source_item = source_item
+        self._target_item = target_item
+        self.refresh_geometry()
+
+    def refresh_geometry(self) -> None:
+        if self._source_item is None or self._target_item is None:
+            return
+        source = self._source_item.anchor_rect()
+        target = self._target_item.anchor_rect()
+        self._set_endpoints(source, target, target.center().x() < source.center().x())
+
+    def _set_endpoints(self, source: QRectF, target: QRectF, curved: bool) -> None:
+        # Le bounding rect peut grandir, rétrécir ou changer de côté : Qt doit
+        # l'apprendre AVANT que le nouveau chemin soit construit.
+        self.prepareGeometryChange()
+        self._source_rect = QRectF(source)
+        self._target_rect = QRectF(target)
         self._loop = source == target
         self._path = QPainterPath()
         self._head = QPolygonF()
         self._badge = QPointF()
         if self._loop:
             self._build_loop(source)
+        elif self._style == "curve":
+            self._build_curve(source, target)
+        elif self._style == "straight":
+            self._build_line(source, target)
         elif curved:
             self._build_back(source, target)
         else:
             self._build_line(source, target)
+        self.update()
 
     def _build_line(self, source: QRectF, target: QRectF) -> None:
-        a = _border_point(source, target.center())
-        b = _border_point(target, source.center())
+        a, b = _port_anchors(source, target)
         self._path.moveTo(a)
         self._path.lineTo(b)
         self._head = _arrow_head(b, QPointF(b.x() - a.x(), b.y() - a.y()))
         self._badge = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
 
     def _build_back(self, source: QRectF, target: QRectF) -> None:
-        # Retour (cible à gauche) : plonge sous les cartes et remonte dans le bas
-        # de la cible — la boucle du flux se lit sans traverser les nœuds.
-        a = QPointF(source.center().x(), source.bottom())
-        b = QPointF(target.center().x(), target.bottom())
+        # Retour (cible à gauche) : sort du port droit, plonge sous les cartes et
+        # revient au port gauche de la cible — sans jamais quitter les ancres.
+        a, b = _port_anchors(source, target)
         bow = 52.0
-        c1 = QPointF(a.x(), a.y() + bow)
-        c2 = QPointF(b.x(), b.y() + bow)
+        c1 = QPointF(a.x() + bow, a.y() + bow)
+        c2 = QPointF(b.x() - bow, b.y() + bow)
         self._path.moveTo(a)
         self._path.cubicTo(c1, c2, b)
         self._head = _arrow_head(b, QPointF(b.x() - c2.x(), b.y() - c2.y()))
         self._badge = QPointF((a.x() + b.x()) / 2, max(a.y(), b.y()) + bow)
+
+    def _build_curve(self, source: QRectF, target: QRectF) -> None:
+        """Courbe cubique avec sortie et arrivée horizontales (ease in/out)."""
+        a, b = _port_anchors(source, target)
+        bend = max(42.0, abs(b.x() - a.x()) * 0.38)
+        c1 = QPointF(a.x() + bend, a.y())
+        c2 = QPointF(b.x() - bend, b.y())
+        self._path.moveTo(a)
+        self._path.cubicTo(c1, c2, b)
+        self._head = _arrow_head(b, QPointF(b.x() - c2.x(), b.y() - c2.y()))
+        self._badge = self._path.pointAtPercent(0.5)
 
     def _build_loop(self, rect: QRectF) -> None:
         # Sort par le haut, revient par le haut : une courbe lisible même petite.
@@ -385,14 +499,56 @@ class SceneGraphEdgeItem(QGraphicsItem):
         return self._path.boundingRect().united(
             self._head.boundingRect()).adjusted(-12, -12, 12, 12)
 
+    # La reconnexion est entièrement pilotée par la vue (`_GraphCanvas`), seule
+    # à connaître le port d'entrée servant de poignée : elle appelle
+    # ``target_handle_contains`` → ``preview_target`` → ``rewire_target_at`` /
+    # ``request_rewire``. L'item n'intercepte donc aucun clic de son côté.
+
+    def target_handle_contains(self, scene_pos) -> bool:
+        """Zone de saisie volontairement large autour de la pointe de flèche."""
+        return self._head.boundingRect().adjusted(-16, -16, 16, 16).contains(
+            self.mapFromScene(scene_pos))
+
+    def rewire_target_at(self, scene_pos):
+        """Résout la carte sous une dépose, sans modifier le graphe."""
+        if self.scene() is None:
+            return None
+        for item in self.scene().items(scene_pos):
+            candidate = item
+            while candidate is not None and not hasattr(candidate, "name"):
+                candidate = candidate.parentItem()
+            if candidate is not None:
+                return candidate
+        return None
+
+    def request_rewire(self, items, target) -> None:
+        """Délègue une dépose, seule ou groupée, au propriétaire du graphe."""
+        if self._rewire_requested is not None:
+            self._rewire_requested(items, target)
+
+    def preview_target(self, scene_pos) -> None:
+        """Déplace visuellement l'extrémité libre sous le curseur, sans modèle."""
+        if self._source_item is None:
+            return
+        source = self._source_item.anchor_rect()
+        # Rectangle dégénéré : son bord gauche et son centre sont exactement le
+        # curseur, donc l'ancre d'entrée et la pointe coïncident.
+        target = QRectF(scene_pos.x(), scene_pos.y(), 0.0, 0.0)
+        self._set_endpoints(source, target, target.center().x() < source.center().x())
+
+    def restore_target(self) -> None:
+        self.refresh_geometry()
+
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(painter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor(C.TEXT_DIM), 1.5))
+        selected = self.isSelected()
+        color = QColor(C.ACCENT if selected else C.TEXT_DIM)
+        painter.setPen(QPen(color, 2.5 if selected else 1.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(self._path)
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(C.TEXT_DIM)))
+        painter.setBrush(QBrush(color))
         painter.drawPolygon(self._head)
 
         if self.count > 1:

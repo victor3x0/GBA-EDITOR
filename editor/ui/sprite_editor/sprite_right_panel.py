@@ -137,6 +137,12 @@ class SpriteRightPanel(QWidget):
         self._btn_extract.clicked.connect(self._on_extract_palette)
         lay.addWidget(self._btn_extract)
 
+    def refresh_palette_catalog(self):
+        """Re-lit le catalogue de palettes du projet dans la grille — appelé
+        quand l'écran redevient visible, une palette ayant pu changer dans
+        l'écran Palettes entre-temps."""
+        self._reload_palettes()
+
     # ── Grille de palettes (sous-palettes de la PAL_BANK) ─────────
     def _reload_palettes(self):
         from ui.common.asset_palette_view import sprite_palette_view

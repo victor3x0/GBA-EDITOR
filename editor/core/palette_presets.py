@@ -1,7 +1,7 @@
 """Valeurs de secours et rampe neutre pour le runtime des palettes.
 
 Ce module ne crée aucun asset de projet. Les palettes livrées avec un projet
-neuf sont les fichiers ``editor/project_starters/Basic/project/palettes``.
+neuf sont les fichiers ``editor/project_starters/Basic/assets/palettes``.
 """
 
 from __future__ import annotations

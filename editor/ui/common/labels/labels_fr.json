@@ -33,6 +33,47 @@
     "common.interface": {
       "text": "Interface"
     },
+    "common.transition": {
+      "text": "Transition"
+    },
+    "edgeinsp.target_missing": {
+      "text": "Cible « {target} » introuvable dans le projet"
+    },
+    "edgeinsp.appearance": {
+      "text": "APPARENCE"
+    },
+    "edgeinsp.path": {
+      "text": "Tracé"
+    },
+    "edgeinsp.path_straight": {
+      "text": "Droit"
+    },
+    "edgeinsp.path_curve": {
+      "text": "Courbe"
+    },
+    "edgeinsp.script_calls": {
+      "text": "APPELS DANS LE SCRIPT"
+    },
+    "edgeinsp.notes_multi_placeholder": {
+      "text": "Note appliquée à toutes les transitions sélectionnées…"
+    },
+    "edgeinsp.transitions_selected": {
+      "text": "{count} transitions sélectionnées"
+    },
+    "edgeinsp.undo_path": {
+      "text": "Modifier le tracé de transition"
+    },
+    "edgeinsp.undo_note": {
+      "text": "Modifier la note de transition"
+    },
+    "groupinsp.name": {"text": "Nom"},
+    "groupinsp.color": {"text": "Couleur"},
+    "groupinsp.presentation": {"text": "PRÉSENTATION"},
+    "groupinsp.content": {"text": "CONTENU"},
+    "groupinsp.collapsed": {"text": "Replié dans le graphe"},
+    "groupinsp.empty": {"text": "Aucune scène ni sous-groupe direct"},
+    "groupinsp.scenes": {"text": "Scènes ({count})"},
+    "groupinsp.groups": {"text": "Sous-groupes ({count})"},
     "settings.cat.shortcuts": {
       "text": "Raccourcis"
     },
@@ -509,6 +550,15 @@
     },
     "scncanvas.graph_set_start": {
       "text": "Définir comme scène de départ"
+    },
+    "scncanvas.graph_delete_folder_content": {
+      "text": "Supprimer le dossier et son contenu"
+    },
+    "scncanvas.graph_delete_folder_content_confirm": {
+      "text": "Supprimer ce dossier et ses {count} scène(s) ? Les scènes sont supprimées (Ctrl+Z pour annuler chacune)."
+    },
+    "scncanvas.graph_delete_selection_confirm": {
+      "text": "Supprimer la sélection : {scenes} scène(s) et {folders} dossier(s) ? Les dossiers gardent leur contenu ; les scènes sont supprimées (Ctrl+Z)."
     },
     "assf.edit_scene": {
       "text": "Éditer la scène"

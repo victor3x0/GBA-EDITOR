@@ -68,6 +68,6 @@ précédente : juste après avoir quitté une plateforme, il peut rester vrai un
 
 ## Continuer
 
-Votre scène peut maintenant dépasser l'écran. Passez au guide
-[Faire suivre l'acteur par une caméra](camera-follow.md), sans perdre le contrôle des limites de
-la scène.
+Votre plateforme est jouable. Vous pouvez maintenant y ajouter des objectifs avec
+[Ajouter des collectibles et un score](collectibles.md), ou faire suivre le joueur dans une
+grande scène avec [Faire suivre l'acteur par une caméra](camera-follow.md).

@@ -59,7 +59,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
 | v0.10 | Distribution Linux | **Livrée** — format `.gba-project` et associations OS livrés |
 | v0.11 | Traduction de l'éditeur | **Livrée (infra)** — extraction UI, contrôles et choix de langue livrés ; la traduction FR elle-même est reportée au chantier « traduction fr » (v2.0) |
-| v0.12 | Vue d'ensemble (graphe des scènes) | Non commencée |
+| v0.12 | Vue d'ensemble (graphe des scènes) | **En cours** — carte, groupes et édition des transitions en place ; routage, cibles calculées, notes de canvas et mini-carte restent ouverts |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
@@ -481,7 +481,9 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | La police, une palette d'asset comme les autres | 2026-09-03 | **Livré** — [archive](changelog-archive/font-palette.md) |
 | L'écran construit à sa première visite | 2026-09-13 | **Livré** — [archive](changelog-archive/lazy-screen-build.md) |
 | L'ouverture d'un projet, et l'écran blanc | 2026-09-13 | **Livré** — [archive](changelog-archive/open-white-screen.md) |
+| Les palettes, rangées avec les assets | 2026-09-18 | **Livré** — [archive](changelog-archive/palettes-in-assets.md) |
 | Le cache de scène | 2026-09-16 | À ouvrir — voir [ci-dessous](#le-cache-de-scène-rouvrir-une-scène-déjà-visitée-sans-tout-redécoder) |
+| L'écran resynchronisé à sa revisite | 2026-09-18 | À ouvrir — voir [ci-dessous](#lécran-resynchronisé-à-sa-revisite--voir-les-catalogues-à-jour-en-revenant-sur-un-écran) |
 | Undo/redo des sidecars d'éditeur | — | À ouvrir — envisagé pour **V2**, voir [ci-dessous](#undoredo-des-sidecars-déditeur-annuler-la-création-dun-groupe-un-déplacement-de-nœud) |
 
 ---
@@ -538,6 +540,104 @@ en investiguant `window._on_scene_selected` ([window.py:1128](editor/window.py:1
   de code — profiler `load_project` sur un projet réel donnerait la vraie proportion entre
   décodage sprite, raster de fond et reconstruction des régions UI, plutôt que de deviner laquelle
   des trois mérite le cache en premier.
+
+---
+
+## L'écran resynchronisé à sa revisite — voir les catalogues à jour en revenant sur un écran
+
+Le pendant de [« L'écran construit à sa première visite »](changelog-archive/lazy-screen-build.md) :
+celui-là a rendu la construction paresseuse ; celui-ci s'occupe de ce qui se passe aux visites
+SUIVANTES, quand l'écran existe déjà mais que le projet a bougé sous lui.
+
+### D'où vient la question (2026-09-18)
+
+Née en marge d'une session de debug du copier/coller de zones de texte. Symptôme rapporté par
+Victor : l'éditeur de texte affichait « 1 of 8 shown » — huit textes dans le projet, un seul dans
+la table. Cause : une zone de texte créée dans le Scene Manager ajoute son entrée à `project.texts`
+([ui_inspector.py:1071](editor/ui/scene_manager/inspectors/ui_inspector.py:1071)), mais
+`Window._load_screen_for_project` ([window.py:901](editor/window.py:901)) ne charge un écran qu'à
+sa **première** visite (le garde `_project_loaded_screen_indices`). Revenir sur l'écran Texte ne le
+rechargeait donc pas : sa table restait figée sur son ancien contenu, alors que le pied de page
+lisait le total à jour du projet — d'où le « 1 of 8 ».
+
+L'audit des huit écrans a montré que le trou n'est pas propre au texte. Le seul rafraîchissement
+cross-écran câblé aujourd'hui vise les panneaux du **Scene Manager** (`project_tree_changed`,
+`actors_list_changed`, … → `assets_finder_panel.refresh` / `scene_tree_panel.refresh`,
+[window.py:654](editor/window.py:654)) et l'**écran Palettes** (`palettes_changed` → `refresh`,
+[window.py:688](editor/window.py:688)). Tout autre écran qui affiche un catalogue écrit ailleurs se
+périme à sa première visite passée :
+
+- **Scripts** (le plus grave) — la sidebar RÉFÉRENCES et surtout l'**autocomplétion** capturent
+  sprites, fonds, sons, globals, polices, constantes via `names_by_domain`
+  ([project_names.py:31](editor/scripting/project_names.py:31)) au `load_project`. Un nom né ensuite
+  ailleurs manquait **en silence** — aucune erreur, juste une complétion incomplète.
+- **Backgrounds / Animations** — la grille « + du catalogue » lit `project.palettes` à l'ouverture.
+  Une palette ajoutée/renommée/retirée dans l'écran Palettes n'y apparaissait pas.
+- **Datas** — *pas* de bug : les listes de choix des colonnes de référence sont dérivées **en
+  direct** à l'ouverture du menu déroulant (`data_column_choices` →
+  [project.py:422](editor/core/project.py:422)), depuis les listes partagées du projet.
+- **Sounds** — rien d'externe n'écrit l'audio ; sans objet.
+
+### Ce qui a déjà été colmaté (2026-09-18), à consolider ici
+
+Chaque écran touché a reçu, séparément, un `showEvent → refresh` bon marché (relire des noms/banques
+déjà en mémoire, pas de re-décodage d'asset). Ce sont ces colmatages ponctuels que le chantier doit
+remplacer par un mécanisme unique :
+
+- Texte — `TextEditorScreen.showEvent` → `refresh()`
+  ([text_editor_screen.py:183](editor/ui/text_editor/text_editor_screen.py:183)).
+- Scripts — `ScriptEditorScreen.showEvent` → `_refresh_catalogs()`
+  ([script_editor.py:245](editor/ui/script_editor/script_editor.py:245)).
+- Backgrounds / Animations — `showEvent` → `refresh_palette_catalog()` du panneau
+  ([background_editor_screen.py:1221](editor/ui/background_editor/background_editor_screen.py:1221),
+  [sprite_editor_screen.py:74](editor/ui/sprite_editor/sprite_editor_screen.py:74)).
+- Tests de non-régression : `tests/ui/test_text_editor_screen_resync.py`,
+  `test_script_editor_screen_resync.py`, `test_asset_editor_palette_resync.py`.
+
+Ces correctifs FONCTIONNENT mais traitent des cas, pas la cause : chaque nouvel écrivain cross-écran
+rouvre le trou en silence, et rien ne force un écran neuf à se doter de son `showEvent`.
+
+### L'esquisse
+
+Faire du rafraîchissement un point du contrat `ProjectScreen`, appelé **au centre**, plutôt qu'un
+`showEvent` réécrit dans chaque écran :
+
+1. **`ProjectScreen.refresh()` (ou `on_reveal()`) devient contractuel** — chaque écran expose une
+   méthode de re-dérivation idempotente et bon marché : relire les catalogues DÉJÀ en mémoire, sans
+   toucher au disque ni re-décoder d'asset, en conservant sélection et état d'édition. Les écrans
+   déjà pourvus (`refresh` existe sur Texte, Datas) n'ont qu'à s'y conformer.
+2. **`Window._show_screen` l'appelle** juste après `setCurrentIndex`, si l'écran est construit ET
+   déjà chargé pour ce projet — l'exact symétrique du garde `_load_screen_for_project`. Plus de
+   `showEvent` par écran, plus d'oubli possible : un écran qui n'implémente pas `refresh` ne
+   rafraîchit rien, mais le contrat le rend visible à la revue.
+
+### Ce qu'il faudrait trancher avant d'ouvrir
+
+- **Central `_show_screen` vs `showEvent` par écran.** Le point central supprime le boilerplate et
+  l'oubli, et se déclenche sur la seule transition qui compte (un écran empilé caché n'a pas besoin
+  de suivre l'état en direct). À contre-courant : `showEvent` capte aussi les cas où l'écran
+  réapparaît sans passer par `_show_screen` (restauration de fenêtre) — à vérifier si ça arrive.
+- **Faut-il un événement du tout ?** Pour des écrans EMPILÉS (un seul visible), rafraîchir à la
+  revisite suffit — inutile de s'abonner au bus pour réagir pendant qu'on est caché. Les abonnements
+  existants (`palettes_changed` → Palette editor) pourraient même se simplifier en `refresh` à la
+  revisite… SAUF si un écran doit refléter un changement pendant qu'il est visible (ex. deux vues
+  d'un même bus dans un écran composite). À cartographier avant de tout basculer.
+- **Le coût du `refresh`.** Le contrat n'a de sens que si `refresh` reste bon marché sur les écrans
+  lourds : il doit re-dériver depuis la mémoire, jamais relancer `load_sprites` / un décodage PNG /
+  un raster. Recouvre directement les arbitrages du [cache de scène](#le-cache-de-scène-rouvrir-une-scène-déjà-visitée-sans-tout-redécoder) —
+  les deux chantiers touchent « ce qu'on refait, ou pas, en revenant sur une vue ».
+- **Le piège du `showEvent` qui lève.** Une exception dans un `showEvent` (appelé depuis le C++ de
+  Qt) **abort** le process sans trace lisible — rencontré en écrivant les colmatages
+  (`AttributeError` → exit 139). Le point central en Python propre évite ce mode d'échec : à retenir
+  comme argument pour `_show_screen` plutôt que `showEvent`.
+
+### Recouvrement
+
+- Avec [« L'écran construit à sa première visite »](changelog-archive/lazy-screen-build.md) : ce
+  chantier est le garde que celui-ci contourne ; il en est la moitié « visites suivantes ».
+- Avec [Le cache de scène](#le-cache-de-scène-rouvrir-une-scène-déjà-visitée-sans-tout-redécoder) :
+  même famille de questions (que refait-on en revenant sur une vue), et même exigence que le
+  `refresh` ne paie pas le décodage.
 
 ---
 
@@ -2272,6 +2372,16 @@ Cette section est une **conception**, pas encore un plan verrouillé : elle nomm
 trancher avant d'ouvrir. Elle part de trois idées posées — transitions multiples (tableau /
 variable), inspecteur de dossier, batch multi-sélection — et les met en ordre autour d'une seule
 question fondatrice.
+
+**Mise à jour — livré le 2026-09-19.** La tranche sûre est désormais ouverte : les arêtes ont des
+ports sémantiques (sortie droite → entrée gauche), un tracé droit ou courbe persisté, une
+surbrillance de sélection et un inspecteur dédié. Celui-ci affiche les appels, édite leur ligne
+de script, porte une note et accepte la multi-sélection ; notes et tracés sont annulables. Tirer
+depuis un port reconnecte une cible littérale, avec aperçu sous le curseur ; une sélection
+d'arêtes se traite en une commande Undo/Redo. La cible absente est un nœud rouge terminal,
+déplaçable et muni de son entrée pour être reconnecté. Les groupes disposent aussi d'un
+inspecteur (nom, couleur, note, état replié, contenu direct), partagé avec le dossier Scenes du
+project viewer.
 
 #### La règle qui gouverne tout — le graphe projette, il ne possède pas
 

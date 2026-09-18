@@ -1079,10 +1079,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     def load(self):
         # S'assurer que tous les sous-dossiers existent
         for sub in ("project/scenes", "project/prefab",
-                    "project/palettes", "project/fonts_assets", "project/ui_layouts",
+                    "project/fonts_assets", "project/ui_layouts",
                     "project/music_boxes",
                     "project/jingle_boxes",
                     "project/sound_boxes",
+                    "assets/palettes",
                     "assets/sprites", "assets/backgrounds",
                     "assets/scripts", "assets/scripts/actors",
                     "assets/scripts/scenes", "assets/scripts/behaviors",

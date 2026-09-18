@@ -952,6 +952,12 @@ class BgPropertiesPanel(QWidget):
 
     # ── Section PALETTES ──────────────────────────────────────────
 
+    def refresh_palette_catalog(self):
+        """Re-lit le catalogue de palettes du projet dans la grille — appelé
+        quand l'écran redevient visible, une palette ayant pu changer dans
+        l'écran Palettes entre-temps."""
+        self._reload_palettes()
+
     def _reload_palettes(self, select: int = 0):
         # Grille unifiée : palettes dérivées grisées/overridables + palettes
         # ajoutées du catalogue. La palette de PEINTURE active vit désormais dans
@@ -1211,6 +1217,17 @@ class BackgroundEditorScreen(QWidget):
         self._project = project
         self._finder.load_project(project)
         self._refresh_finder()
+
+    def showEvent(self, event):
+        """Resynchronise le CATALOGUE de palettes à chaque venue — une palette a
+        pu être ajoutée, renommée ou retirée dans l'écran Palettes depuis la
+        dernière visite, et l'écran ne se recharge qu'à sa PREMIÈRE visite
+        (`Window._load_screen_for_project`). Sans cela la grille « + du
+        catalogue » restait figée sur d'anciens noms. Bon marché : on relit
+        `project.palettes` (déjà en mémoire), pas le PNG du fond."""
+        super().showEvent(event)
+        if self._project is not None:
+            self._props.refresh_palette_catalog()
 
     def select_background(self, name: str):
         """Ouvre le fond `name` — navigation entrante depuis un autre écran

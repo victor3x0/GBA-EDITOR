@@ -71,6 +71,16 @@ def test_apercu_de_scene_persistant(tmp_path):
     assert SceneGraphState(tmp_path).scene_preview("Title") is False
 
 
+def test_style_d_arete_persistant(tmp_path):
+    state = SceneGraphState(tmp_path)
+    assert state.edge_style("Title", "Arena") == "auto"
+    assert state.set_edge_style("Title", "Arena", "curve")
+    assert SceneGraphState(tmp_path).edge_style("Title", "Arena") == "curve"
+
+    state.set_edge_style("Title", "Arena", "auto")
+    assert SceneGraphState(tmp_path).edge_style("Title", "Arena") == "auto"
+
+
 def test_apercu_purge_avec_la_scene_disparue(tmp_path):
     state = SceneGraphState(tmp_path)
     state.set_scene_preview("Ghost", True)

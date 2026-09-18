@@ -35,6 +35,28 @@ def test_supprimer_un_dossier_remonte_son_contenu(tmp_path):
     assert [f.name for f in store.folders("scenes")] == ["Game"]
 
 
+def test_supprimer_un_dossier_et_son_sous_arbre_rend_les_membres(tmp_path):
+    """`delete_folder_tree` retire le dossier ET tous ses descendants, et rend les
+    clés membres du sous-arbre — contraste avec `delete_folder` qui les remonte."""
+    store = AssetFolderStore(tmp_path)
+    outer = store.create_folder("scenes", "Game")
+    inner = store.create_folder("scenes", "Village", parent_id=outer.id)
+    store.move_member("scenes", "Shop", inner.id)
+    store.move_member("scenes", "Hub", outer.id)
+    # Un dossier voisin, hors du sous-arbre : il ne doit pas bouger.
+    other = store.create_folder("scenes", "Menus")
+    store.move_member("scenes", "Title", other.id)
+
+    members = store.delete_folder_tree("scenes", outer.id)
+
+    assert sorted(members) == ["Hub", "Shop"]
+    assert [f.name for f in store.folders("scenes")] == ["Menus"]
+    assert store.folder_of("scenes", "Title") == other.id
+    # Rien n'a été remonté : les scènes du sous-arbre ne sont plus rangées.
+    assert store.folder_of("scenes", "Shop") is None
+    assert store.folder_of("scenes", "Hub") is None
+
+
 def test_couleur_de_dossier_persistante(tmp_path):
     store = AssetFolderStore(tmp_path)
     folder = store.create_folder("scenes", "Village")

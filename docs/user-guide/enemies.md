@@ -1,0 +1,158 @@
+# Ennemis et PNJ
+
+Ce guide reprend après [Ajouter des collectibles et un score](collectibles.md). Il commence avec un personnage non-joueur (PNJ) et ses dialogues, puis fait évoluer le même niveau vers des ennemis mobiles, des projectiles et des contacts plus expressifs.
+
+## 1. Créer un PNJ et sa zone de dialogue
+
+Ajoutez un acteur avec le sprite du PNJ, puis une boîte **Collision** en mode **Trigger**. Nommez l'acteur `Villageois`. Ajoutez aussi une **Interface** à la scène avec un élément **Texte** nommé `Dialogue`. Cette zone est l'endroit où les répliques seront affichées. Sa position, sa taille, sa police et son habillage sont réglés visuellement dans l'éditeur, pas dans le script.
+
+## 2. Écrire et organiser les dialogues
+
+Ouvrez l'écran **Text** et créez les entrées suivantes. La clé sert au script ; le contenu est ce que le joueur lit.
+
+| Clé | Texte français |
+| --- | --- |
+| `villageois_bonjour` | Bonjour, voyageur ! [pause=20] La forêt est dangereuse. |
+| `villageois_apres_bonjour` | Tu es déjà prêt à partir ? |
+
+Le marqueur `[pause=20]` crée une courte pause pendant l'affichage. Vous pouvez aussi utiliser `[speed=4]` en tête d'un texte pour le faire apparaître comme une machine à écrire. Préfixer les clés par `villageois_` les garde regroupées quand le projet contient beaucoup de dialogues.
+
+## 3. Écrire le premier script d'état
+
+Un **état** est une variable qui décrit où en est un acteur. Ici, `rencontre` vaut `0` avant la première discussion, puis `1` après. Le script choisit ainsi une réplique sans dupliquer les conditions :
+
+```lua
+local rencontre = 0
+
+function on_collision_enter(other, my_box, other_box)
+    if other.tag ~= "Joueur" then
+        return
+    end
+
+    if rencontre == 0 then
+        text.draw_in("Dialogue", "villageois_bonjour")
+        rencontre = 1
+    else
+        text.draw_in("Dialogue", "villageois_apres_bonjour")
+    end
+end
+```
+
+Pour ajouter une troisième étape, créez une clé telle que `villageois_quete`, ajoutez `elseif rencontre == 1 then`, puis passez `rencontre` à `2`. Gardez les noms de clés et les conditions dans le même ordre : c'est la forme la plus simple d'un arbre de dialogue.
+
+Cette variable est remise à zéro quand la scène est rechargée. Si le PNJ doit se souvenir de la rencontre après un changement de scène, créez une globale, par exemple `global.villageois_rencontre`, et remplacez `rencontre` par cette globale. Cochez **Persist** uniquement pour conserver cet état après avoir éteint la console.
+
+## 4. Introduire la traduction
+
+Dans les réglages du projet, ajoutez une langue, par exemple l'anglais. L'écran **Text** affiche alors une colonne par langue : conservez les clés `villageois_bonjour` et `villageois_apres_bonjour`, puis écrivez leur traduction dans la colonne correspondante.
+
+Le script ne change pas : il demande toujours `"villageois_bonjour"`. C'est l'éditeur qui choisit la version de la langue active. Les clés décrivent donc l'intention (`villageois_bonjour`), jamais le texte français lui-même.
+
+## 5. Transformer un acteur en ennemi
+
+Ajoutez un nouvel acteur avec un sprite et une boîte **Collision** en mode **Solid**, puis utilisez **Expose to Prefab** pour le nommer `Ennemi`. Les réglages exposés permettent à chaque instance de patrouiller à sa propre vitesse :
+
+```lua
+exports = {
+    vitesse = { type = "int", default = 1, label = "Vitesse", min = 0, max = 4 },
+    sens = { type = "int", default = 1, label = "Sens", min = -1, max = 1 },
+}
+
+function on_update()
+    self.position = self.position + vec2(sens * vitesse, 0)
+end
+
+function on_tile_collide(normal_x, normal_y)
+    if normal_x ~= 0 then
+        sens = -sens
+        self.flip_h = sens < 0
+    end
+end
+```
+
+Ajoutez plusieurs instances du prefab dans des couloirs fermés. Elles patrouillent indépendamment, tandis que le sprite et la logique restent partagés par le prefab.
+
+## 6. Faire tirer un projectile
+
+Créez un prefab `Projectile` avec un sprite, une boîte **Collision** en mode **Trigger** et ce script :
+
+```lua
+function on_update()
+    self.position = self.position + vec2(2, 0)
+    if self.position.x > scene.size.w then
+        self:destroy()
+    end
+end
+```
+
+Dans l'inspecteur de `Niveau1`, réservez des instances de `Projectile` dans le pool de prefabs. Sans ce pool, `actor.spawn` ne peut pas créer de projectile pendant le jeu. L'ennemi peut alors en lancer un régulièrement :
+
+```lua
+function on_update()
+    self.position = self.position + vec2(sens * vitesse, 0)
+
+    if scene.frame % 90 == 0 then
+        actor.spawn("Projectile", self.position)
+    end
+end
+```
+
+Cette première version tire vers la droite. Un projectile qui doit suivre le sens de chaque ennemi est une bonne évolution : ajoutez-lui un réglage de direction ou créez deux prefabs, un par sens.
+
+## 7. Recevoir un dégât avec du ressenti
+
+Le joueur n'a pas encore besoin d'une barre de vie. Commencez par rendre le contact lisible : créez une courte invincibilité, faites clignoter le sprite et empêchez le déclenchement de plusieurs dégâts d'affilée.
+
+```lua
+local invincible = 0
+local temps_degats = 0
+
+function on_update()
+    if invincible > 0 then
+        invincible = invincible - 1
+        temps_degats = temps_degats + 1
+        self:blink(temps_degats, 30, 3)
+        self:shake(temps_degats, 8, 3)
+    else
+        temps_degats = 0
+    end
+
+    -- Gardez ici le mouvement et la gravité du guide précédent.
+end
+
+function on_collision_enter(other, my_box, other_box)
+    if other.tag == "Ennemi" and invincible == 0 then
+        invincible = 30
+    end
+end
+```
+
+Le clignotement et la secousse sont une première dose de *juiciness* : même sans compteur de vie, le joueur comprend immédiatement qu'il a subi un choc. Vous pourrez ensuite ajouter un recul, un son et des points de vie sans changer la détection.
+
+## 8. Éliminer un ennemi en lui sautant dessus
+
+Donnez au joueur une petite boîte Trigger sous ses pieds, avec le tag `pieds`. Donnez à l'ennemi une petite boîte Trigger sur sa tête, avec le tag `tete`. Les noms de tags deviennent les constantes `BOXTAG_PIEDS` et `BOXTAG_TETE` dans les scripts.
+
+Dans le script de l'ennemi, distinguez ce contact du contact avec son corps :
+
+```lua
+function on_collision_enter(other, my_box, other_box)
+    if other.tag == "Joueur" and my_box == BOXTAG_TETE and other_box == BOXTAG_PIEDS then
+        sequence.start("mort")
+    end
+end
+
+function on_sequence_mort()
+    for t = 0, 7 do
+        self:squash(t, 8, 30)
+        wait(1)
+    end
+    self:destroy()
+end
+```
+
+Conservez la boîte solide principale pour empêcher le joueur de traverser l'ennemi. Les petites boîtes Trigger servent à reconnaître l'action précise : pieds contre tête, plutôt qu'un simple contact.
+
+## Continuer
+
+Vous pouvez maintenant relier ce niveau à un écran de victoire ou de défaite dans [Construire une boucle de gameplay](gameplay-loop.md).

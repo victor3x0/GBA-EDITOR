@@ -1772,7 +1772,16 @@ void text_set_font(int f) {
        sinon la banque appartient à une palette de scène ou à un conteneur, et
        l'y écraser des couleurs du PNG effacerait ce que le texte doit lire. */
     if ((f >= 0 && f < TEXT_MAX_FONTS) ? g_font_own[f] : 1) {
-        copy16(PAL_BG_RAM + g_pal_bank_bg * 16, fi->pal, 32);
+        if (g_pal_bank_bg == 0) {
+            /* Banque 0 : l'index 0 EST le backdrop de la scène (PAL_BG_RAM[0]),
+               posé par scene_init — pas une couleur d'encre. La couleur 0 d'une
+               palette BG est transparente et n'est jamais dessinée, donc la
+               recopier ici ne servirait qu'à écraser le backdrop. On préserve
+               l'index 0 et on ne charge que les couleurs 1..15. */
+            copy16(PAL_BG_RAM + 1, fi->pal + 1, 30);
+        } else {
+            copy16(PAL_BG_RAM + g_pal_bank_bg * 16, fi->pal, 32);
+        }
         /* Même palette côté sprites : une bande de texte OBJ lit PAL_OBJ_RAM.
            32 octets copiés toujours, moins cher que de savoir si une zone
            OBJ existe. */

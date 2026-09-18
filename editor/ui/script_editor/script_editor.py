@@ -50,6 +50,7 @@ class ScriptEditorScreen(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._path: Optional[Path] = None
+        self._project = None
         self._dirty = False
         self._root_scripts_dir: Optional[Path] = None
 
@@ -232,15 +233,35 @@ class ScriptEditorScreen(QWidget):
 
         `load_project` et non `set_project` : c'est le contrat `ProjectScreen`
         (cf. ui/screens.py), que les six autres écrans écrivaient déjà ainsi."""
-        self._sidebar.set_project(project)
+        self._project = project
         self._file_tree.set_project(project)
-        from scripting.project_names import names_by_domain
-        self._editor.set_completion_project_names(names_by_domain(project) if project else None)
+        self._refresh_catalogs()
         if project:
             scripts_dir = getattr(project, "scripts_dir", None) or \
                           project.root / "project" / "scripts"
             self._root_scripts_dir = scripts_dir
             self._file_tree.set_root(scripts_dir)
+
+    def _refresh_catalogs(self):
+        """Re-dérive ce qui dépend des CATALOGUES du projet : la section
+        RÉFÉRENCES de la sidebar et les noms d'autocomplétion. Tout le reste
+        (fichier ouvert, contexte, arbre) est intact."""
+        from scripting.project_names import names_by_domain
+        self._sidebar.set_project(self._project)
+        self._editor.set_completion_project_names(
+            names_by_domain(self._project) if self._project else None)
+
+    def showEvent(self, event):
+        """Resynchronise les catalogues à chaque venue sur l'écran — un sprite,
+        un fond, un son, un global ou une police a pu naître dans un AUTRE écran
+        depuis la dernière visite, et l'écran ne se recharge qu'à sa PREMIÈRE
+        visite (`Window._load_screen_for_project`). Sans cela la sidebar et
+        surtout l'autocomplétion ignoraient en silence les noms neufs. Bon
+        marché : on ne relit que des noms déjà en mémoire, pas de décodage
+        d'asset."""
+        super().showEvent(event)
+        if self._project is not None:
+            self._refresh_catalogs()
 
     # ── Détection contexte ────────────────────────────────────────────
 

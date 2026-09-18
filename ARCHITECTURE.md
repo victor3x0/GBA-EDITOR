@@ -254,7 +254,7 @@ Ces concepts ont un équivalent direct dans le hardware ou la toolchain.
 | `BackgroundLayer` | charblock (CBB=`bg_slot`) + screenblock | `{image, bg_slot, scroll_speed, pal_bank, tile_palette_overrides}` — un plan BG physique **de la scène** |
 | `BackgroundAsset` | tileset + sous-palettes | Sidecar (`assets/backgrounds/{image}.json`), keyé par nom comme `SpriteAsset` — PNG source jamais modifié
 | `Scene.background_layers` | jusqu'à 4 `REG_BGxCNT` | Liste de `BackgroundLayer` inline dans le JSON de la scène (chacun référence un `BackgroundAsset` par nom d'asset) |
-| `PaletteBank` | 16 couleurs BGR555 | Palette nommée du catalogue (`project/palettes/*.json`), partagée OBJ/BG |
+| `PaletteBank` | 16 couleurs BGR555 | Palette nommée du catalogue (`assets/palettes/*.json`), partagée OBJ/BG |
 | `Scene.active_obj_palettes` / `Scene.active_bg_palettes` | 16 banques `PAL_OBJ`/`PAL_BG` | Sélection ordonnée (index = banque hardware) des palettes actives de la scène ; `pal_bank` indexe dans cette liste |
 | `Scene` | `scene_init_X` / `scene_tick_X` | Paire de fonctions C dispatchées via vtable dans `main.c` |
 | `ScriptComponent` (Lua) | fonction C compilée | Le Lua est transpilé vers C, pas interprété à l'exécution |
@@ -366,6 +366,7 @@ modifiable ensuite par script dans les deux cas, l'émission OAM lisant désorma
 - **`assets/` vs `project/`** — la distinction qui structure tout le projet : `assets/` contient ce qui dépend d'une ressource externe à l'éditeur (une image PNG, un son) ; `project/` contient les données propres à l'éditeur, sans dépendance externe (scènes, prefabs, variables...). Les deux sont traités par l'éditeur et compilés dans `build/` — la différence est l'origine de la donnée, pas son traitement.
 - `assets/` → la source de vérité des assets bruts ; le JSON sidecar est auto-géré par l'éditeur
 - `assets/backgrounds/` → PNG bruts (`BackgroundAsset`) ; → sidecar d'importation par image (`BackgroundAsset` : tileset + sous-palettes, PNG jamais modifié). 
+- `assets/palettes/` → catalogue unifié (`PaletteBank`), un `.hex` visible par palette + sidecar JSON ; rangé avec les assets car une palette s'importe et s'exporte comme un fichier externe (`.hex`), partagé OBJ/BG
 - `assets/scripts/` → scripts Lua édités par le dev ; copiés dans `build/src/` au build
 - `build/grit_out/` et `build/src/` → sorties générées conservées puis balayées à la fin du build ; `build/obj/` est conservé pour la compilation incrémentale. `build/.asset-cache.json` mémorise les empreintes des conversions dont les sorties existent encore.
 - `<Nom>.gba-project` → manifeste racine (v0.10, remplace `project.json`) : c'est LUI qu'on double-clique, associé à l'éditeur sur les deux OS, et son nom de fichier EST le nom du projet (aucune clé `name` dans le JSON). Config racine uniquement (scène de démarrage, auteur, version) ; un `project.json` d'avant v0.10 se relit une fois et se réécrit dans la nouvelle forme à la première sauvegarde ; `start_scene` (point de départ du **jeu**, éditable dans le ProjectInspector) et `last_scene` (dernière scène ouverte dans l'**éditeur**, restaurée à l'ouverture) sont deux champs distincts — ouvrir une scène ne redéfinit jamais le point de départ ; toutes les autres données vivent dans `project/**/*.json`, y compris `project/variables.json` (globals + constants, unicité de nom vérifiée par type — un global et une constante peuvent partager un nom)
@@ -2479,7 +2480,7 @@ de palettes nommées** activées par scène. — les PNG sources ne sont jamais 
 
 
 - **`PaletteBank`** (`core/models/palette.py`) — une palette nommée de 16 couleurs BGR555,
-  catalogue illimité et **unifié** (`project/palettes/*.json`, un fichier par palette),
+  catalogue illimité et **unifié** (`assets/palettes/*.json`, un fichier par palette),
   partagé entre les pools OBJ et BG. L'index 0 est toujours forcé transparent.
 - **Sélection active par scène** — `Scene.active_obj_palettes` / `active_bg_palettes` :
   jusqu'à 16 noms de `PaletteBank` par pool, l'ordre = index de banque hardware. C'est

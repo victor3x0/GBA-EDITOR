@@ -269,6 +269,7 @@ class SceneManagerScreen(QWidget):
         self._finder.set_folder_store(self._folder_store)
         self._scene_tree.load_project(project)
         self._inspector.set_project(project)
+        self._inspector.set_graph_state(self._graph_state)
         if project.active_scene:
             self._canvas.load_project(project, self._graph_state, self._folder_store)
         if project.active_scene:
@@ -575,6 +576,10 @@ class MainWindow(QMainWindow):
         _graph.scene_opened.connect(self._open_scene_from_graph)
         _graph.edge_selected.connect(self._show_edge_calls)
         _graph.edge_opened.connect(self._open_edge_from_graph)
+        _graph.group_selected.connect(self._show_graph_group)
+        # Un clic dans le vide / Échap qui retire la dernière sélection du
+        # graphe rend son panneau par défaut : l'aperçu du projet.
+        _graph.selection_cleared.connect(get_bus().clear)
         # Basculer Graphe → Scène ouvre la scène sélectionnée dans le graphe :
         # l'éditeur de scène pointe alors sur ce que l'auteur regardait.
         self.canvas_workspace.view_changed.connect(self._on_canvas_view_changed)
@@ -604,6 +609,12 @@ class MainWindow(QMainWindow):
         # ── Colonne 3 : Inspector (pleine hauteur) ────────────────
         self._inspector = DynamicInspector()
         self._inspector.actor_changed.connect(self._on_inspector_actor_changed)
+        self._inspector.groups_changed.connect(_graph.reload_groups)
+        self._inspector.groups_changed.connect(self.assets_finder_panel.refresh)
+        self._inspector.edge_presentation_changed.connect(
+            self.canvas_workspace.graph_view.refresh_edge_presentation)
+        self._inspector.edge_script_changed.connect(
+            self.canvas_workspace.graph_view.refresh)
         # Position/frame édités dans l'inspecteur caméra → le canvas suit (et
         # l'inverse : drag canvas → l'inspecteur suit, cf. plus bas).
         self._inspector.camera_moved.connect(self.scene_editor.move_camera_item)
@@ -1213,10 +1224,24 @@ class MainWindow(QMainWindow):
             graph.refresh()
 
     def _show_edge_calls(self, edge):
-        """Clic sur une arête : exposer ses appels agrégés dans la barre d'état."""
+        """Clic sur une arête : l'inspecteur d'arête (occurrences + saut au code),
+        et un rappel agrégé dans la barre d'état."""
+        self._inspector.show_edge(edge, self.project)
+        if isinstance(edge, (list, tuple)):
+            if len(edge) != 1:
+                self._status.showMessage(
+                    label("edgeinsp.transitions_selected", count=len(edge)), 4000)
+                return
+            edge = edge[0]
         self._status.showMessage(
             label("scncanvas.graph_edge_calls", source=edge.source,
                   target=edge.target, count=len(edge.refs)), 4000)
+
+    def _show_graph_group(self, group_id: str) -> None:
+        """Ouvre l'inspecteur d'un groupe seulement après chargement du projet."""
+        graph = self.canvas_workspace.graph_view
+        if graph._folders is not None and graph._state is not None:
+            self._inspector.show_group(group_id, graph._folders, graph._state)
 
     def _open_edge_from_graph(self, edge):
         """Double-clic sur une arête : ouvrir le Script Editor à l'appel.
@@ -1531,7 +1556,8 @@ class MainWindow(QMainWindow):
                 warning = asset_reconciliation.resync_sprite_png(self.project, p)
             self._sprite_editor.load_project(self.project)
             self.scene_editor._reload_sprites()
-            self._inspector.actor_inspector._refresh_sprite_preview()
+            if (actor_insp := self._inspector.actor_inspector) is not None:
+                actor_insp._refresh_sprite_preview()
             self._update_gba_bar()
             self._status.showMessage(warning or label("win.sprite_updated", name=p.stem),
                                      _WATCHER_WARNING_MS if warning else 3000)
@@ -1556,12 +1582,17 @@ class MainWindow(QMainWindow):
                 if warning:
                     self._status.showMessage(warning, _WATCHER_WARNING_MS)
                     return
-        self._inspector.actor_inspector._refresh_sprite_preview()
+        if (actor_insp := self._inspector.actor_inspector) is not None:
+            actor_insp._refresh_sprite_preview()
         self._status.showMessage(label("win.asset_modified", name=Path(path).name), 2000)
 
     def _on_lua_changed(self, path: str):
-        """Un .lua a changé (éditeur externe)."""
-        self._inspector.actor_inspector.notify_lua_changed(path)
+        """Un .lua a changé (éditeur externe). L'inspecteur d'acteur est à
+        démarrage paresseux : absent tant qu'aucun acteur n'a été inspecté (ex :
+        on édite un script de scène sans avoir ouvert d'acteur), il n'a alors rien
+        à resynchroniser."""
+        if (actor_insp := self._inspector.actor_inspector) is not None:
+            actor_insp.notify_lua_changed(path)
         self._status.showMessage(label("win.script_modified", name=Path(path).name), 2000)
 
     def _on_scene_file_changed(self, path: str):

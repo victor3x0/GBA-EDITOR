@@ -70,12 +70,15 @@ def _scene_avec_fonds(*noms: str) -> Scene:
 
 # ── Recherche d'un bloc contigu ───────────────────────────────────
 
-def test_find_free_block_prend_le_premier_trou_assez_grand():
+def test_find_free_block_prend_le_trou_le_plus_haut_assez_grand():
+    """La recherche part du bout HAUT (les palettes propres descendent vers 0) :
+    on prend le bloc contigu le plus proche de la banque 15 qui tient."""
     slots = [None] * 16
-    slots[0] = _couleurs(1)
-    slots[3] = _couleurs(2)
-    assert _find_free_block(slots, 2) == 1     # [1,3) — avant le trou d'après
-    assert _find_free_block(slots, 4) == 4     # [1,3) trop court, on va après
+    slots[14] = _couleurs(1)
+    slots[11] = _couleurs(2)
+    assert _find_free_block(slots, 1) == 15    # 15 libre, le plus haut
+    assert _find_free_block(slots, 2) == 12    # [12,14) — sous la banque 14 prise
+    assert _find_free_block(slots, 4) == 7     # [12,16) coupé par 14, on descend
 
 
 def test_find_free_block_exige_la_contiguite():
@@ -84,7 +87,7 @@ def test_find_free_block_exige_la_contiguite():
     d'indirection) : quatre trous épars ne valent pas un bloc de quatre."""
     slots = [None if i % 2 == 0 else _couleurs(i) for i in range(16)]
     assert _find_free_block(slots, 2) is None
-    assert _find_free_block(slots, 1) == 0
+    assert _find_free_block(slots, 1) == 14    # bout haut : la banque libre la plus haute
 
 
 def test_find_free_block_rend_none_quand_rien_ne_tient():
@@ -102,10 +105,12 @@ def test_find_free_block_couvre_les_seize_banques():
 
 def test_find_free_block_traite_zero_comme_un():
     """Un asset sans sous-palette ne réclame pas « rien » : le rendre `0`
-    donnerait un offset valide sur une banque occupée."""
+    donnerait un offset valide sur une banque occupée. La recherche part du bout
+    haut (cf. `_find_free_block`), donc la banque libre la plus loin (15) est
+    rendue — jamais la banque 0 occupée."""
     slots = [None] * 16
     slots[0] = _couleurs(1)
-    assert _find_free_block(slots, 0) == 1
+    assert _find_free_block(slots, 0) == 15
 
 
 # ── Contenu d'une banque de palette propre ────────────────────────
@@ -225,16 +230,35 @@ def test_une_scene_vide_n_invente_aucune_couleur(projet):
     assert lay.bank_count() == 0
 
 
-def test_la_banque_zero_de_secours_se_remplit(projet):
-    """Un asset qui retombe sur la banque 0 (référence cassée, débordement) doit
-    afficher des couleurs PRÉVISIBLES plutôt que ce qui traîne en mémoire."""
+def test_la_banque_zero_reste_libre_sans_debordement(projet):
+    """La banque 0 porte le backdrop de la scène (index 0 de PAL_BG_RAM) : tant
+    que rien ne déborde, on la laisse LIBRE — les palettes propres descendent du
+    bout haut, jamais sur elle (cf. `_find_free_block`)."""
     sol = _ajouter_palette(projet, "Sol", 2)
     scene = Scene(name="Test")
     scene.active_bg_palettes = ["", "Sol"]
 
     lay = scene_bank_layout(projet, scene, "bg")
-    assert lay.slot_colors[0] == list(DEFAULT_PAL_BANK_COLORS)
+    assert lay.slot_colors[0] is None          # backdrop, non écrasé
     assert lay.slot_colors[1] == sol.colors
+
+
+def test_la_banque_zero_de_secours_se_remplit_au_debordement(projet):
+    """Un asset qui DÉBORDE (aucune banque ne l'accueille) retombe sur la banque 0
+    au codegen : si elle est encore libre, on la remplit de couleurs PRÉVISIBLES
+    plutôt que de laisser l'asset afficher le backdrop ou du garbage."""
+    # Banques 1..15 référencées : il ne reste que la banque 0, libre pour le
+    # backdrop. Un fond compressé de 2 sous-palettes réclame 2 banques contiguës
+    # — impossible — donc il déborde.
+    scene = _scene_avec_fonds("Foret")
+    scene.active_bg_palettes = [""] + [f"P{i}" for i in range(1, 16)]
+    for i in range(1, 16):
+        _ajouter_palette(projet, f"P{i}", i + 10)
+    _ajouter_fond_compresse(projet, "Foret", [_couleurs(20), _couleurs(21)])
+
+    lay = scene_bank_layout(projet, scene, "bg")
+    assert lay.overflow() is True
+    assert lay.slot_colors[0] == list(DEFAULT_PAL_BANK_COLORS)
 
 
 def test_un_fond_compresse_obtient_un_bloc_contigu(projet):

@@ -441,10 +441,16 @@ def _bg_palettes_key(ba) -> tuple:
 
 
 def _find_free_block(slots: list, n: int) -> Optional[int]:
-    """Premier offset (0-15) tel que les n banques [offset, offset+n) soient
-    toutes libres — None si aucun bloc contigu de cette taille n'existe."""
+    """Offset le PLUS HAUT (0-15) tel que les n banques [offset, offset+n) soient
+    toutes libres — None si aucun bloc contigu de cette taille n'existe.
+
+    Les palettes propres partent du bout haut de PAL_RAM et descendent vers 0,
+    tandis que les palettes de scène occupent leurs index fixes en partant du
+    bas : elles se rencontrent au milieu, la scène l'emporte, et la banque 0
+    (l'index 0 de PAL_BG_RAM = le backdrop de la scène) reste libre tant que la
+    scène ne déborde pas."""
     n = max(1, n)
-    for start in range(0, 17 - n):
+    for start in range(16 - n, -1, -1):
         if all(slots[start + i] is None for i in range(n)):
             return start
     return None
@@ -577,17 +583,24 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
         key = tuple(cols)
         if key in own_slot:
             continue
-        free = next((j for j in range(16) if slots[j] is None), None)
+        # Bout haut d'abord (15 → 0), cf. `_find_free_block` : la banque 0 =
+        # backdrop reste libre, et la palette de scène (index bas fixe) gagne
+        # tout conflit puisqu'elle est déjà posée quand on cherche ici.
+        free = next((j for j in range(15, -1, -1) if slots[j] is None), None)
         own_slot[key] = free
         if free is not None:
             slots[free] = list(bank_cols)
 
-    # Banque 0 de secours : si la scène a du contenu palette mais que le slot 0
-    # est resté vide, on le remplit d'une palette déterministe — un asset
-    # retombant sur la banque 0 (référence cassée / débordement) affiche alors
-    # des couleurs prévisibles. `any(slots)` : on n'invente rien pour une scène
-    # vide (émission main_gen reste optimale).
-    if slots[0] is None and any(slots):
+    # Banque 0 de secours : uniquement en cas de VRAI débordement — un asset
+    # (palette propre ou bloc de fond) qui n'a trouvé aucune banque libre retombe
+    # sur la banque 0 au codegen ; on la remplit alors d'une palette déterministe
+    # pour qu'il affiche des couleurs prévisibles plutôt que le backdrop ou du
+    # garbage. Sans débordement, la banque 0 reste LIBRE : c'est sa place normale
+    # depuis que les palettes propres s'allouent par le bout haut (elle porte le
+    # backdrop de la scène, cf. `_find_free_block`).
+    overflow = (any(v is None for v in own_slot.values())
+                or any(v is None for v in bg_block.values()))
+    if slots[0] is None and overflow:
         slots[0] = list(DEFAULT_PAL_BANK_COLORS)
 
     layout = SceneBankLayout(slots, own_slot, bg_block)

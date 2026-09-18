@@ -35,6 +35,7 @@ _TOGGLE = 16.0
 _EDGE = 8.0
 _MIN_W = 120.0
 _MIN_H = HEADER_H + 28.0
+_GRID_STEP = 20.0
 
 
 class GroupToggleItem(QGraphicsItem):
@@ -107,7 +108,8 @@ class SceneGroupBoxItem(QGraphicsItem):
     au relâchement, par simple contenance géométrique."""
 
     def __init__(self, group_id: str, name: str, count: int, collapsed: bool,
-                 width: float, height: float, color: str = ""):
+                 width: float, height: float, color: str = "",
+                 geometry_changed=None):
         super().__init__()
         self.group_id = group_id
         self.name = name
@@ -116,6 +118,7 @@ class SceneGroupBoxItem(QGraphicsItem):
         self.color = color
         self._w = width
         self._h = height
+        self._geometry_changed = geometry_changed
         # Cartes membres visibles — le déplacement de l'en-tête les emporte pour
         # qu'elles restent dans le cadre. Renseignées par la vue après création.
         self.member_items: list = []
@@ -131,6 +134,7 @@ class SceneGroupBoxItem(QGraphicsItem):
                           | QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         else:
             self.setAcceptHoverEvents(True)   # curseurs de redimensionnement
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges)
         toggle = GroupToggleItem(group_id, collapsed, color, parent=self)
         toggle.setPos(6, (HEADER_H - _TOGGLE) / 2)
         toggle.setZValue(1)
@@ -143,6 +147,21 @@ class SceneGroupBoxItem(QGraphicsItem):
         qui touchent un membre caché (groupe replié) et tester la contenance
         d'une carte glissée."""
         return self.mapToScene(QRectF(0, 0, self._w, self._h)).boundingRect()
+
+    def itemChange(self, change, value):
+        if (change is QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged
+                and self._geometry_changed is not None):
+            self._geometry_changed(self)
+        return super().itemChange(change, value)
+
+    def _geometry_did_change(self) -> None:
+        if self._geometry_changed is not None:
+            self._geometry_changed(self)
+
+    @staticmethod
+    def _snap(pos):
+        return QPointF(round(pos.x() / _GRID_STEP) * _GRID_STEP,
+                       round(pos.y() / _GRID_STEP) * _GRID_STEP)
 
     # ── Déplacement par l'en-tête / redimensionnement par les bords ─────
 
@@ -198,13 +217,22 @@ class SceneGroupBoxItem(QGraphicsItem):
 
     def mouseMoveEvent(self, event):
         if self.collapsed or self._mode is None:
-            return super().mouseMoveEvent(event)
+            super().mouseMoveEvent(event)
+            if self.collapsed:
+                p = self.pos()
+                snapped = self._snap(p)
+                if snapped != p:
+                    self.setPos(snapped)
+            return
         dx = event.scenePos().x() - self._grab_scene.x()
         dy = event.scenePos().y() - self._grab_scene.y()
         if self._mode == "move":
-            self.setPos(self._grab_pos.x() + dx, self._grab_pos.y() + dy)
+            snapped = self._snap(QPointF(self._grab_pos.x() + dx,
+                                         self._grab_pos.y() + dy))
+            self.setPos(snapped)
             for it, start in self._grab_members:
-                it.setPos(start.x() + dx, start.y() + dy)
+                it.setPos(start.x() + snapped.x() - self._grab_pos.x(),
+                          start.y() + snapped.y() - self._grab_pos.y())
             return
         w0, h0 = self._grab_wh
         x, y = self._grab_pos.x(), self._grab_pos.y()
@@ -220,6 +248,7 @@ class SceneGroupBoxItem(QGraphicsItem):
         self._w, self._h = w, h
         self.setPos(x, y)
         self.update()
+        self._geometry_did_change()
 
     def mouseReleaseEvent(self, event):
         if self.collapsed:
