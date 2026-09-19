@@ -243,6 +243,27 @@ def scene_text_reservation(p, scene) -> dict:
     }
 
 
+def _layout_obj_budget(p: Project, lay) -> dict:
+    """Le budget OBJ d'UNE mise en page, noms d'asset résolus.
+
+    `layout_obj_budget` (modèle) ne résout ni les sprites ni la table de textes :
+    c'est ici, qui les connaît, de fournir les frames, les tailles de frame et
+    les glyphes animés — sous-réserver ferait écrire une image dans les tuiles de
+    la suivante. Source unique lue par `obj_text_alloc` (placement des zones) ET
+    `scene_obj_ui_slots` (le pic OBJ d'une scène, ROADMAP v0.17 T4), pour que les
+    deux comptent EXACTEMENT la même chose."""
+    from core.models.ui_region import layout_obj_budget
+    frames, sizes = {}, {}
+    for im in lay.images:
+        sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
+        if sprite is not None and sprite.asset:
+            frames[im.name] = count_frames(p, sprite)
+            sizes[im.name] = (int(getattr(sprite, "frame_w", 0) or 0),
+                              int(getattr(sprite, "frame_h", 0) or 0))
+    return layout_obj_budget(lay, image_frames=frames, image_frame_size=sizes,
+                             animated_by_name=p.layout_animated_glyphs(lay))
+
+
 def obj_text_alloc(p: Project) -> dict:
     """Placement OBJ de chaque zone : {nom: {oam_rel, tile_rel, ...}}.
 
@@ -250,28 +271,34 @@ def obj_text_alloc(p: Project) -> dict:
     la même plage réservée puisqu'une seule est active par scène. Sans ça, cinq
     boîtes de dialogue dans cinq mises en page réserveraient cinq fois la place
     alors qu'on n'en voit jamais qu'une."""
-    from core.models.ui_region import layout_obj_budget
     out = {}
     for lay in getattr(p, "ui_layouts", []):
-        # Les frames ET la taille de frame par image : `layout_obj_budget` ne
-        # résout pas les noms d'asset, et sous-réserver ferait écrire une image
-        # dans les tuiles de la suivante. La taille de frame commande en plus le
-        # PAVAGE d'un fond de conteneur, donc son nombre de slots OAM.
-        frames, sizes = {}, {}
-        for im in lay.images:
-            sprite = p.get_sprite(getattr(im, "sprite_name", "") or "")
-            if sprite is not None and sprite.asset:
-                frames[im.name] = count_frames(p, sprite)
-                sizes[im.name] = (int(getattr(sprite, "frame_w", 0) or 0),
-                                  int(getattr(sprite, "frame_h", 0) or 0))
-        # Idem pour les glyphes animés : ils se comptent dans le TEXTE que
-        # chaque zone affiche (toutes langues confondues), que le modèle ne
-        # résout pas davantage que les sprites.
-        bud = layout_obj_budget(lay, image_frames=frames, image_frame_size=sizes,
-                                animated_by_name=p.layout_animated_glyphs(lay))
-        for name, place in bud["place"].items():
+        for name, place in _layout_obj_budget(p, lay)["place"].items():
             out[name] = place
     return out
+
+
+def scene_obj_ui_slots(p: Project, scene) -> int:
+    """Slots OAM que l'interface en sprites de CETTE scène occupe — son pic
+    (ROADMAP v0.17 T4). C'est le poste « UI » du budget OAM par scène
+    (`oam_alloc.scene_ui_obj_slots`), et la largeur de la bande OBJ que
+    `scene_init` réserve juste après les acteurs (ordre acteurs → UI → pools).
+
+    Max sur les mises en page que la scène référence : une seule bande OBJ est
+    active à la fois (base unique, `text_obj_set_base`), donc c'est la plus
+    gourmande qui commande — exactement le `max` que le build calculait
+    globalement avant, restreint à la scène. Les mises en page sont lues via leur
+    ASSET brut (`bound.layout`), même résolution que `obj_text_alloc`, pour que la
+    largeur réservée et le placement des zones concordent au slot près."""
+    peak = 0
+    seen = set()
+    for bound in p.scene_ui_layouts(scene):
+        lay = getattr(bound, "layout", bound)
+        if id(lay) in seen:
+            continue
+        seen.add(id(lay))
+        peak = max(peak, _layout_obj_budget(p, lay)["oam"])
+    return peak
 
 
 def _emit_font_subsets(p, encoded: list, emit=None) -> list[str]:

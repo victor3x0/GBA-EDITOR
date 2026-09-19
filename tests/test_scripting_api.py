@@ -35,6 +35,25 @@ def _errors(src: str, **ctx_kw) -> list[str]:
     return [e.message for e in _lua(src, **ctx_kw)[0] if e.level == "error"]
 
 
+# ── T6 : actor.spawn rend un Actor* (ROADMAP v0.17) ──────────────────
+
+def test_spawn_local_est_un_actor_pointer():
+    """`local b = actor.spawn(...)` tient un `Actor*` (l'instance née), pas un
+    int : `b:destroy()` doit chaîner et `if b then` tester le pool plein (NULL).
+    Le local était typé `int` avant T6 — un -1 toujours vrai."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+    src = ("function on_update(self)\n"
+           "  local b = actor.spawn(\"Bullet\", vec2(10, 20))\n"
+           "  if b then b:destroy() end\n"
+           "end\n")
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Turret", actor_sym="Turret", scene_sym="Play",
+        anim_names=[], sfx_names=[], music_names=[],
+        global_names=set(), const_names=set(), all_actor_syms=["Turret"]))
+    assert "Actor* b = spawn_Play_Bullet(" in code, code
+
+
 # ── 1. Une API retirée doit être RETIRÉE, sur tous les récepteurs ──
 
 

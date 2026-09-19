@@ -36,16 +36,18 @@ def _projet(tmp_path: Path) -> Project:
     scene = Scene(name="ARENA", actors=[acteur])
     p.scenes.items = [scene]
 
-    balle = Prefab(name="Ball", max_instances=4)
+    balle = Prefab(name="Ball")
     balle.actor.components = [SpriteComponent(), _box("body")]
     p.prefabs.items = [balle]
+    # Le pool se déclare sur la SCÈNE depuis la v0.17 (plus de repli
+    # `max_instances`) : c'est ce qui rend `Ball` réellement poolé.
+    scene.prefab_pools = {"Ball": 4}
     return p
 
 
 def _header(p: Project, tmp_path: Path) -> str:
     p.src_dir.mkdir(parents=True, exist_ok=True)
-    scene_actors = [(a, None) for sc in p.scenes for a in sc.actors]
-    generate_actor_types(p, scene_actors, list(p.prefabs))
+    generate_actor_types(p)
     return (p.src_dir / "actor_types.h").read_text(encoding="utf-8")
 
 

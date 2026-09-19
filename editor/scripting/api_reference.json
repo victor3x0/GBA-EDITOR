@@ -631,7 +631,7 @@
         {
           "label": "actor.spawn(\"prefab\", position)",
           "snippet": "actor.spawn(\"Bullet\", vec2(116, 76))",
-          "description": "Instancie un prefab poolé à `position` (un vec2). Le prefab doit avoir max_instances > 0 dans l'éditeur. Retourne l'index du slot ou -1 si le pool est épuisé.",
+          "description": "Instancie un prefab poolé à `position` (un vec2). La scène doit déclarer un pool pour ce prefab (carte « Actor budget »). Retourne l'instance née (un actor), ou nil si le pool est plein — `if b then b:set_velocity(0, -2) end`.",
           "params": [
             {
               "name": "prefab",

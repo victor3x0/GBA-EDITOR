@@ -32,6 +32,7 @@ from codegen.palette_alloc import (
     scene_bank_layout, effective_palette_colors, ui_image_sprite_pools,
 )
 from codegen.actor_budget import prefab_pool_instances
+from codegen.oam_alloc import scene_pool_instances
 from core.app_paths import RUNTIME_DIR
 from codegen.runtime_codegen.headers import generate_actor_types, generate_runtime_api
 from codegen.runtime_codegen.lua_compiler import transpile_all
@@ -312,10 +313,12 @@ class BuildWorker(EventEmitter, threading.Thread):
 
             # Headers : tous les actors de toutes les scènes
             if ok:
+                # `generate_runtime_api` a encore besoin de l'union (ANIM_* par
+                # SpriteAsset) ; la taille de `g_actors` et les TAG_/POOL_, eux,
+                # sont dérivés par scène de `scene_oam_layout` (ROADMAP v0.17).
                 all_sa = [(a, s) for d in all_scene_data for a, s in d["scene_actors"]]
                 ok = self._step_generate_actor_headers(
                     p, all_sa, sound_assets, all_scenes=all_scenes,
-                    total_actors=sum(len(d["scene_actors"]) for d in all_scene_data),
                 )
             if ok: self._emit("progress", 0.55)
 
@@ -337,9 +340,11 @@ class BuildWorker(EventEmitter, threading.Thread):
             if ok:
                 self._write_project_data_tables(p)
 
-            # Transpilation Lua → C pour chaque scène (prefabs et caméras
-            # compilés une seule fois : ce sont des assets partagés)
-            compiled_prefabs: set[str] = set()
+            # Transpilation Lua → C pour chaque scène. Les caméras sont des
+            # assets PARTAGÉS (compilés une fois). Les prefabs, eux, sont
+            # RECOMPILÉS par scène depuis le pool par scène (ROADMAP v0.17, T1) :
+            # chaque scène émet `actor_<Scène>_<Prefab>.c` contre SA géométrie
+            # (POOL_<Scène>_<Prefab>_*), donc plus de garde `compiled_prefabs`.
             compiled_cameras: set[str] = set()
             if ok:
                 for d in all_scene_data:
@@ -349,7 +354,6 @@ class BuildWorker(EventEmitter, threading.Thread):
                         p, d["scene"], d["scene_actors"], scene_names=scene_names,
                         precomputed_global_names=global_names,
                         precomputed_const_names=const_names,
-                        compiled_prefabs=compiled_prefabs,
                         compiled_cameras=compiled_cameras,
                         # Les #define SFX_*/MUSIC_* sont des rangs dans ce que
                         # mmutil a reçu, pas dans le catalogue du projet.
@@ -741,12 +745,12 @@ class BuildWorker(EventEmitter, threading.Thread):
     # ── Génération des headers C ─────────────────────────────────────
 
     def _step_generate_actor_headers(self, p, scene_actors, sound_assets,
-                                      all_scenes=None, total_actors: int | None = None):
+                                      all_scenes=None):
         has_sound = bool(sound_assets and (sound_assets.get('sfx') or sound_assets.get('music')))
-        generate_actor_types(p, scene_actors, self.project.prefabs)
+        generate_actor_types(p)
         generate_runtime_api(
             p, scene_actors, self.project.prefabs, has_sound,
-            all_scenes=all_scenes, max_actors=total_actors,
+            all_scenes=all_scenes,
         )
         self._emit('log_line', '[gen] actor_types.h + actor_api.h')
         return True
@@ -799,13 +803,20 @@ class BuildWorker(EventEmitter, threading.Thread):
             if scene_script:
                 _collect_events(c_sym(scene.name) + "_scene", p.asset_abs(scene_script))
 
-        for pf in self.project.prefabs:
-            if prefab_pool_instances(self.project, pf) <= 0:
-                continue
-            from core.models.components import ScriptComponent
-            sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
-            if sc and sc.script:
-                _collect_events(c_sym(pf.name), p.asset_abs(sc.script))
+        # Prefabs poolés : les fonctions émises sont PER-SCÈNE (`<Scène>_<Prefab>`,
+        # ROADMAP v0.17, T1), donc les events se collectent sous cette même clé,
+        # pour chaque scène qui déclare le prefab — c'est ce que `main_gen`
+        # interroge (`_def(p2["sym"], …)`).
+        from core.models.components import ScriptComponent
+        for d in all_scene_data:
+            scene_sym = c_sym(d["scene"].name)
+            for pf in self.project.prefabs:
+                if scene_pool_instances(d["scene"], pf) <= 0:
+                    continue
+                sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
+                if sc and sc.script:
+                    _collect_events(f"{scene_sym}_{c_sym(pf.name)}",
+                                    p.asset_abs(sc.script))
 
         return names
 
@@ -831,14 +842,13 @@ class BuildWorker(EventEmitter, threading.Thread):
 
     def _step_transpile_scripts(self, p, scene, scene_actors, scene_names=None,
                                  precomputed_global_names=None, precomputed_const_names=None,
-                                 compiled_prefabs=None, compiled_cameras=None,
+                                 compiled_cameras=None,
                                  sound_assets=None):
         return transpile_all(
             p, scene, scene_actors, self.project.prefabs, self._emit,
             scene_names=scene_names,
             precomputed_global_names=precomputed_global_names,
             precomputed_const_names=precomputed_const_names,
-            compiled_prefabs=compiled_prefabs,
             compiled_cameras=compiled_cameras,
             sound_assets=sound_assets,
         )

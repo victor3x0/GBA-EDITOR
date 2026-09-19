@@ -171,6 +171,60 @@ def test_le_sprite_d_une_image_d_UI_en_cible_BG_garde_son_slot_reserve(projet):
     assert banque == [RESERVED_SLOT_COLOR] + list(couleurs)
 
 
+# ── T5 : palettes propres des pools, per-scène ────────────────────
+
+def test_pool_palette_propre_reservee_par_scene(projet):
+    """ROADMAP v0.17 T5 : une scène ne réserve de banque OBJ que pour les prefabs
+    QU'ELLE poole. Deux scènes qui poolent des prefabs différents ne se
+    contaminent pas, et une scène qui n'en poole aucun n'en réserve aucune — fin
+    du slot global réservé partout qu'imposait l'ancien `spawn_X`."""
+    from core.models.sprite import SpriteAsset
+    from core.models.components import SpriteComponent
+    from core.models.scene import Prefab
+
+    colsA, colsB = _couleurs(3)[:5], _couleurs(9)[:5]
+    projet.sprites.append(SpriteAsset(name="SparkSpr", asset="a.png", own_palette=list(colsA)))
+    projet.sprites.append(SpriteAsset(name="BulletSpr", asset="b.png", own_palette=list(colsB)))
+    spark, bullet = Prefab(name="Spark"), Prefab(name="Bullet")
+    spark.actor.components  = [SpriteComponent(sprite_name="SparkSpr")]
+    bullet.actor.components = [SpriteComponent(sprite_name="BulletSpr")]
+    projet.prefabs.items = [spark, bullet]
+
+    fount = Scene(name="Fountain"); fount.prefab_pools = {"Spark": 4}
+    play  = Scene(name="Play");     play.prefab_pools  = {"Bullet": 4}
+    menu  = Scene(name="Menu")
+    projet.scenes.items = [fount, play, menu]
+
+    lf = scene_bank_layout(projet, fount, "obj")
+    lp = scene_bank_layout(projet, play, "obj")
+    lm = scene_bank_layout(projet, menu, "obj")
+    assert lf.bank_index(OWN_PAL_BANK, list(colsA)) is not None   # Fountain a Spark
+    assert lf.bank_index(OWN_PAL_BANK, list(colsB)) is None       # mais pas Bullet
+    assert lp.bank_index(OWN_PAL_BANK, list(colsB)) is not None   # Play a Bullet
+    assert lp.bank_index(OWN_PAL_BANK, list(colsA)) is None       # mais pas Spark
+    assert lm.bank_count() == 0                                    # Menu, aucune
+
+
+def test_pool_palette_propre_dedup_avec_un_acteur(projet):
+    """Un prefab poolé et un acteur aux MÊMES couleurs partagent une banque — le
+    prefab est un consommateur de palette propre comme un autre depuis T5."""
+    from core.models.sprite import SpriteAsset
+    from core.models.components import SpriteComponent
+    from core.models.scene import Prefab, Actor
+
+    cols = _couleurs(5)[:5]
+    projet.sprites.append(SpriteAsset(name="Shared", asset="s.png", own_palette=list(cols)))
+    pf = Prefab(name="Bullet"); pf.actor.components = [SpriteComponent(sprite_name="Shared")]
+    projet.prefabs.items = [pf]
+    a = Actor(name="Hero"); a.components = [SpriteComponent(sprite_name="Shared")]
+    scene = Scene(name="S", actors=[a]); scene.prefab_pools = {"Bullet": 2}
+    projet.scenes.items = [scene]
+
+    lay = scene_bank_layout(projet, scene, "obj")
+    assert lay.bank_count() == 1                                   # une seule banque
+    assert lay.bank_index(OWN_PAL_BANK, list(cols)) is not None
+
+
 # ── Lecture du résultat ───────────────────────────────────────────
 
 def test_bank_index_d_une_palette_referencee():

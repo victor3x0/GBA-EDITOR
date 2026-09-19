@@ -742,7 +742,22 @@
       "text": "User Interface"
     },
     "sceneinsp.card.budget": {
-      "text": "Sprite slots (OAM)"
+      "text": "Scene prefabs"
+    },
+    "sceneinsp.no_scene_prefab": {
+      "text": "No prefab is placed or spawned by this scene's scripts."
+    },
+    "sceneinsp.edit_prefab": {
+      "text": "Edit prefab"
+    },
+    "sceneinsp.prefab_placed": {
+      "text": "{count} placed in scene"
+    },
+    "sceneinsp.prefab_spawn_calls": {
+      "text": "{count} spawn call(s)"
+    },
+    "sceneinsp.edit_caller": {
+      "text": "Edit {script}, line {line}"
     },
     "sceneinsp.mode_btn": {
       "text": "MODE {n}"

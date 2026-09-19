@@ -14,16 +14,18 @@ from core.project import Project
 from codegen.c_names import sym as c_sym
 from core.app_paths import RUNTIME_DIR
 import codegen.build_output as build_output
-from codegen.runtime_codegen.main_gen import prefab_group
-from codegen.actor_budget import prefab_pool_instances
+from codegen.oam_alloc import scene_oam_layout, project_actor_count
 
 
-def generate_actor_types(
-    p: Project,
-    scene_actors: list[tuple[Actor, Optional[SpriteAsset]]],
-    prefabs,      # iterable de Prefab
-) -> None:
-    """Écrit actor_types_static.h (copie) et actor_types.h (généré)."""
+def generate_actor_types(p: Project) -> None:
+    """Écrit actor_types_static.h (copie) et actor_types.h (généré).
+
+    TAG_* et POOL_* sont émis PAR SCÈNE (ROADMAP v0.17, T1) : chaque scène
+    repart de la base OAM 0, ses acteurs actifs numérotés 0..N-1, puis les pools
+    qu'elle déclare. Les symboles de pool sont préfixés par la scène
+    (`<Scène>_<Prefab>`), car chaque scène compile ses propres unités de prefab
+    contre SA géométrie — plus de plage project-wide unique. La géométrie n'est
+    pas recalculée ici : elle est LUE de `scene_oam_layout`."""
     _types_static = RUNTIME_DIR / "include" / "actor_types_static.h"
     if _types_static.exists():
         build_output.copy(_types_static, p.src_dir / "actor_types_static.h")
@@ -39,13 +41,8 @@ def generate_actor_types(
 
     # Tags de boxes de collision — `Project.collision_tags()`, la même liste que
     # le sélecteur de tag du CollisionEditor et la matrice de Project Settings.
-    #
-    # Cette boucle ne parcourait QUE `scene_actors`, et un tag porté seulement
-    # par un prefab poolé (ou par une PARTIE de prefab, ROADMAP v0.23) n'avait
-    # donc pas de `#define` — alors que `spawn_<Prefab>` l'écrit dans
-    # `boxes[].tag`. Le C émis ne compilait pas : « 'BOXTAG_BODY' undeclared in
-    # function 'spawn_Ball' ». Il ne fallait pas une seconde définition de
-    # « quels tags existent », il fallait la seule qui existait déjà.
+    # Project-wide (une box porte le même tag quelle que soit la scène) : c'est
+    # la seule définition de « quels tags de collision existent ».
     box_tags = list(p.collision_tags()) or ["body"]
 
     for ti, tag in enumerate(box_tags):
@@ -54,35 +51,32 @@ def generate_actor_types(
     h.append('#include "actor_types_static.h"')
     h.append("")
 
-    # TAG_* pour les actors de scène
-    for i, (actor, _) in enumerate(scene_actors):
-        h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
-
-    # TAG_* pour les prefabs poolés (offset après les actors de scène), et la
-    # géométrie de la plage — POOL_<SYM>_START / _SIZE / _GROUP / _INSTANCES. Le script
-    # transpilé en a besoin pour dimensionner son état par instance et pour
-    # retrouver le slot d'un `self` (`self - &g_actors[START]`) ; il est compilé
-    # une fois pour le PROJET et ne peut donc pas connaître ces bornes autrement.
-    # Émis ici parce que c'est ici que l'offset est calculé — `_pool_info`
-    # (main_gen) part du même total d'acteurs de scène, ces headers recevant les
-    # acteurs de TOUTES les scènes.
-    pool_offset = len(scene_actors)
-    for pf in prefabs:
-        _n = prefab_pool_instances(p, pf)
-        if _n > 0:
-            pf_s = c_sym(pf.name)
-            h.append(f"#define TAG_{pf_s.upper()} {pool_offset}  /* prefab pool début */")
-            h.append(f"#define POOL_{pf_s.upper()}_START {pool_offset}")
-            # ROADMAP v0.23 : le pool se dit en INSTANCES, le build multiplie
-            # par les parties. _SIZE garde son sens — le nombre d'entrées de
-            # `g_actors` réservées, donc ce qui est réellement payé — et deux
-            # constantes s'ajoutent pour que le C émis puisse passer de l'une
-            # à l'autre sans recalculer.
-            _g = prefab_group(pf)
-            h.append(f"#define POOL_{pf_s.upper()}_SIZE {_n * _g}")
-            h.append(f"#define POOL_{pf_s.upper()}_GROUP {_g}")
-            h.append(f"#define POOL_{pf_s.upper()}_INSTANCES {_n}")
-            pool_offset += _n * _g
+    # Un bloc par scène. TAG_<Actor> pour ses acteurs ACTIFS (même ordre et même
+    # base 0 que ce que `main_gen` pose dans `g_actors` au scene_init), puis
+    # TAG_<Scène>_<Prefab> et la géométrie de la plage — POOL_<Scène>_<Prefab>_
+    # START/_SIZE/_GROUP/_INSTANCES. Le script transpilé en a besoin pour
+    # dimensionner son état par instance et retrouver le slot d'un `self`
+    # (`self - &g_actors[START]`) ; compilé PAR scène, il lit ces bornes-ci.
+    for sc in p.scenes:
+        lay = scene_oam_layout(p, sc)
+        h.append(f"/* ── Scène {sc.name} ─────────────────────────────── */")
+        i = 0
+        for actor in sc.actors:
+            if not getattr(actor, "active", True):
+                continue
+            h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
+            i += 1
+        for pl in lay.pools:
+            u = pl.sym.upper()
+            h.append(f"#define TAG_{u} {pl.start}  /* prefab pool début */")
+            h.append(f"#define POOL_{u}_START {pl.start}")
+            # ROADMAP v0.23 : le pool se dit en INSTANCES, le build multiplie par
+            # les parties. _SIZE = entrées de `g_actors` réellement payées ; les
+            # trois autres constantes permettent au C émis de passer de l'une à
+            # l'autre sans recalculer.
+            h.append(f"#define POOL_{u}_SIZE {pl.size}")
+            h.append(f"#define POOL_{u}_GROUP {pl.group}")
+            h.append(f"#define POOL_{u}_INSTANCES {pl.instances}")
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]
     build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
@@ -94,7 +88,6 @@ def generate_runtime_api(
     prefabs,
     has_sound: bool,
     all_scenes=None,   # liste de Scene — pour SCENE_IDX_* et scene_switch()
-    max_actors: int | None = None,  # taille réelle du tableau g_actors
 ) -> None:
     """Écrit runtime_api_inline.h (copie) et runtime_api.h (généré)."""
     # gba_font.h retiré : police 1bpp dont le consommateur (`text_init()`)
@@ -106,10 +99,9 @@ def generate_runtime_api(
             build_output.copy(src_h, p.src_dir / static_h)
     _api_static = RUNTIME_DIR / "include" / "runtime_api_inline.h"
 
-    # Entrées de g_actors, parties comprises (ROADMAP v0.23).
-    prefab_slots = sum(prefab_pool_instances(p, pf) * prefab_group(pf)
-                       for pf in prefabs)
-    total_actors = max_actors if max_actors is not None else (len(scene_actors) + prefab_slots)
+    # Taille de `g_actors[]` : la scène la plus gourmande (MAX, pas somme) —
+    # chaque scène repart de la base 0 et réutilise la même RAM (ROADMAP v0.17).
+    total_actors = project_actor_count(p)
 
     # Prototypes de l'API, DÉRIVÉS de gba_engine.h pour le sous-ensemble exposé
     # par le catalogue (cf. api_prototypes — le « 4e lecteur »). Émis AVANT
@@ -309,8 +301,12 @@ def generate_runtime_api(
     # `other:destroy()` n'étant pas un symbole connu au build.
     a += [
         "",
-        "extern const s16 g_sfx_on_destroy_id[];",
-        "extern const u8  g_sfx_on_destroy_vol[];",
+        # Tables PAR SCÈNE indexées par TAG, `main_gen` les pose au scene_init
+        # (comme `g_active_cmap`) : depuis que les TAG repartent de 0 par scène
+        # (ROADMAP v0.17, T3), un tableau global unique ne pourrait plus les
+        # distinguer. D'où un POINTEUR vers la table de la scène courante.
+        "extern const s16 *g_sfx_on_destroy_id;",
+        "extern const u8  *g_sfx_on_destroy_vol;",
         # `sfx_play` existe dans les deux branches ci-dessus (réel ou stub
         # sans effet) : ce wrapper n'a donc pas à distinguer has_sound — les
         # deux tableaux, définis dans main.c, sont tout -1 quand il n'y a
@@ -322,12 +318,21 @@ def generate_runtime_api(
         "}",
     ]
 
-    spawnable = [pf for pf in prefabs if prefab_pool_instances(p, pf) > 0]
-    if spawnable:
+    # spawn_<Scène>_<Prefab>() — défini dans main.c, un par (scène, prefab
+    # déclaré). Per-scène depuis la compilation par scène (ROADMAP v0.17, T1) :
+    # deux scènes qui poolent le même prefab ont chacune leur plage OAM, donc
+    # leur propre fonction. `scene_oam_layout` est la source des couples.
+    spawn_protos: list[str] = []
+    for sc in p.scenes:
+        for pl in scene_oam_layout(p, sc).pools:
+            spawn_protos.append(f"extern Actor* spawn_{pl.sym}(int x, int y);")
+    if spawn_protos:
         a.append("")
-        a.append("/* spawn_X() — défini dans main.c, visible par tous les scripts */")
-        for pf in spawnable:
-            a.append(f"extern int spawn_{c_sym(pf.name)}(int x, int y);")
+        a.append("/* spawn_<Scène>_<Prefab>() — défini dans main.c, vu par les scripts.")
+        a.append("   Rend un Actor* sur l'instance née, ou NULL si le pool est plein")
+        a.append("   (ROADMAP v0.17 T6) — un handle directement utilisable, et un")
+        a.append("   `if not b then` qui marche vraiment (un -1 était toujours vrai). */")
+        a += spawn_protos
 
     # Constantes ANIM_* par SpriteAsset — résolues à la compile par le transpileur
     done_sprites: set[str] = set()

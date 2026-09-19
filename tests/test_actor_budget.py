@@ -105,15 +105,18 @@ def test_ui_est_nul_en_b1(tmp_path):
 
 # ── Le validateur n'a plus qu'une faute : over_budget ─────────────────
 
-def test_le_validateur_avertit_du_seul_debordement(tmp_path):
+def test_le_validateur_bloque_sur_le_debordement(tmp_path):
+    """ROADMAP v0.17 T7 : le débordement OAM est une ERREUR bloquante (le rendu
+    écrit `shadow_oam[index]`, 128 entrées — au-delà c'est une corruption), et il
+    est mesuré sur la même source que le build (`scene_oam_layout`)."""
     from core.validator import ValidationContext, _check_actor_budget
     scene = Scene(name="S", actors=[Actor(name=f"A{i}") for i in range(130)])
     p = _projet(tmp_path, scene=scene)
     ctx = ValidationContext(p)
     _check_actor_budget(ctx)
-    warns = [m for m in ctx._msgs if m.level == "warning"]
-    assert len(warns) == 1
-    assert "OAM" in warns[0].message
+    errs = [m for m in ctx._msgs if m.level == "error"]
+    assert len(errs) == 1
+    assert "OAM" in errs[0].message
 
 
 def test_le_validateur_se_tait_dans_le_budget(tmp_path):
@@ -122,4 +125,4 @@ def test_le_validateur_se_tait_dans_le_budget(tmp_path):
     p = _projet(tmp_path, scene=scene)
     ctx = ValidationContext(p)
     _check_actor_budget(ctx)
-    assert [m for m in ctx._msgs if m.level == "warning"] == []
+    assert [m for m in ctx._msgs if m.level in ("warning", "error")] == []

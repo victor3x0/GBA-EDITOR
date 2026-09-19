@@ -20,7 +20,7 @@ from scripting.globals import write_globals
 from scripting.constants import write_constants
 from codegen.c_names import sym as c_sym
 import codegen.build_output as build_output
-from codegen.actor_budget import prefab_pool_instances
+from codegen.oam_alloc import scene_pool_instances
 
 
 def _actor_script(actor: Actor) -> Optional[str]:
@@ -130,7 +130,6 @@ def transpile_all(
     scene_names: list[str] | None = None,
     precomputed_global_names: list[str] | None = None,
     precomputed_const_names: list[str] | None = None,
-    compiled_prefabs: set[str] | None = None,
     compiled_cameras: set[str] | None = None,
     sound_assets: dict | None = None,
 ) -> bool:
@@ -405,6 +404,7 @@ def transpile_all(
             child_refs    = _child_refs_for_actor(actor, scene_actors),
             actor_name    = actor.name,
             actor_sym     = s,
+            scene_sym     = c_sym(scene.name),
             input_masks   = input_masks,
             anim_names    = anims,
             sfx_names     = sfx_names,
@@ -441,20 +441,18 @@ def transpile_all(
         build_output.write(out, c_code)
         emit("log_line", f"[lua->c] {sp.name} -> {out.name}")
 
-    # Génération C — prefabs poolés (compilés une seule fois grâce à compiled_prefabs)
-    # `prefabs` est la liste du PROJET : la première scène les compile tous, les
-    # suivantes n'en recompilent aucun. Le total ci-dessous est donc bien celui
-    # du projet, et il n'est dit que là où il a été calculé.
+    # Génération C — prefabs poolés, RECOMPILÉS PAR SCÈNE (ROADMAP v0.17, T1).
+    # Chaque scène ne compile QUE les prefabs qu'elle déclare, contre SA
+    # géométrie : le symbole est préfixé par la scène (`<Scène>_<Prefab>`), donc
+    # `actor_<Scène>_<Prefab>.c`, `POOL_<Scène>_<Prefab>_*` et `spawn_<Scène>_
+    # <Prefab>` concordent. Le total EWRAM ci-dessous est celui de CETTE scène.
+    scene_sym = c_sym(scene.name)
     pool_state_total = 0
     for pf in prefabs:
-        pf_instances = prefab_pool_instances(p, pf)
+        pf_instances = scene_pool_instances(scene, pf)
         if pf_instances <= 0:
             continue
-        pf_sym = c_sym(pf.name)
-        if compiled_prefabs is not None:
-            if pf_sym in compiled_prefabs:
-                continue
-            compiled_prefabs.add(pf_sym)
+        pf_sym = f"{scene_sym}_{c_sym(pf.name)}"
         sc = next((c for c in pf.components if isinstance(c, ScriptComponent)), None)
         if not sc or not sc.script:
             continue
@@ -510,6 +508,7 @@ def transpile_all(
             child_refs    = _child_refs_for_prefab(pf),
             actor_name    = pf.name,
             actor_sym     = pf_sym,
+            scene_sym     = scene_sym,
             input_masks   = input_masks,
             anim_names    = pf_anim,
             sfx_names     = sfx_names,
@@ -566,6 +565,7 @@ def transpile_all(
         ctx_sc  = CodegenContext(
             actor_name    = scene.name,
             actor_sym     = scene_s,
+            scene_sym     = scene_s,
             input_masks   = input_masks,
             anim_names    = [],
             sfx_names     = sfx_names,

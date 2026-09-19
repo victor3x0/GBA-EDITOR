@@ -65,17 +65,20 @@ from codegen.runtime_codegen.gen_sprite import (
 from codegen.runtime_codegen.gen_ui import (
     emit_ui_images_c, emit_ui_lists_c, emit_ui_elements_c,
     region_actor_index, ui_element_index)
+# Géométrie OAM per-scène (ROADMAP v0.17, T1+T2+T3) : source de vérité des plages
+# de pool et de la taille de `g_actors`. main_gen en est un LECTEUR.
+from codegen.oam_alloc import scene_oam_layout, project_actor_count
 # Domaine texte/police — extrait (A3). Réservation VRAM du texte, analyse des
 # fonds de conteneur, émission des tables de polices/textes/zones. `main_gen`
 # n'en consomme que ce que son orchestration et ses émetteurs de scène relisent.
 from codegen.runtime_codegen.gen_text import (
     scene_text_reservation, obj_text_alloc, fonts_and_texts_lines,
-    scene_region_colors, scene_region_backdrops, gen_ui_texts)
+    scene_region_colors, scene_region_backdrops, gen_ui_texts, scene_obj_ui_slots)
 from codegen.window_alloc import scene_window_layout
 # `prefab_group` est réexporté : `headers.py` l'importe depuis ce module depuis
 # toujours, et sa définition a rejoint le budget d'acteurs (v0.17) — l'éditeur
 # en a besoin pour afficher les slots bien avant qu'un build existe.
-from codegen.actor_budget import prefab_group, prefab_pool_instances
+from codegen.actor_budget import prefab_group
 from codegen.grit_conversion import (
     count_frames, sprite_unique_frames, seq_key,
 )
@@ -125,32 +128,42 @@ def _sfx_trigger_info(p: Project, owner) -> tuple[Optional[str], int, str]:
     return f"SFX_{c_ident(comp.sfx_name)}", volume_to_effect(sfx.volume), comp.trigger
 
 
-def _sfx_on_destroy_table(p: Project, all_scene_data: list[dict], pi: list[dict],
-                           n_actors: int) -> list[str]:
-    """Deux tableaux constants indexés par TAG — id SFX (-1 = aucun) et volume
-    effet à jouer juste avant qu'un actor de ce TAG soit désactivé. Même ordre
-    de TAG que `headers.generate_actor_types` : actors de TOUTES les scènes
-    concaténés dans l'ordre de `all_scene_data`, puis les prefabs poolés à
-    leur `start` (les instances d'un même prefab PARTAGENT ce TAG, posé sur
-    chacune à son spawn — cf. `_section_spawn`)."""
-    ids  = ["-1"] * n_actors
-    vols = ["0"]  * n_actors
-    tag = 0
-    for d in all_scene_data:
-        for actor, _sprite in d["scene_actors"]:
+def _sfx_on_destroy_table(p: Project, all_scene_data: list[dict],
+                           scene_pis: list[list[dict]]) -> list[str]:
+    """Le SFX à jouer juste avant qu'un actor de tel TAG soit désactivé, indexé
+    par TAG — mais PAR SCÈNE (ROADMAP v0.17, T3 : les TAG repartent de 0 par
+    scène, un tableau global ne les distinguerait plus). On émet donc un couple
+    de tables constantes par scène (id, -1 = aucun ; volume) et DEUX pointeurs
+    globaux que chaque scene_init fait pointer sur les siens (comme
+    `g_active_cmap`, cf. `_gen_scene_init`).
+
+    Même base de TAG que `headers.generate_actor_types` : acteurs actifs de la
+    scène numérotés 0..N-1 dans l'ordre de `scene.actors`, puis chaque pool à son
+    `start` (toutes les instances d'un pool PARTAGENT ce TAG, posé au spawn)."""
+    out = [
+        "const s16 *g_sfx_on_destroy_id  = 0;",
+        "const u8  *g_sfx_on_destroy_vol = 0;",
+    ]
+    for d, spi in zip(all_scene_data, scene_pis):
+        sym = c_sym(d["scene"].name)
+        n = max([len(d["scene_actors"])]
+                + [p2["start"] + p2["size"] for p2 in spi] + [1])
+        ids  = ["-1"] * n
+        vols = ["0"]  * n
+        for tag, (actor, _sprite) in enumerate(d["scene_actors"]):
             sfx_sym, sfx_vol, sfx_trig = _sfx_trigger_info(p, actor)
             if sfx_sym and sfx_trig == "on_destroy":
                 ids[tag], vols[tag] = sfx_sym, str(sfx_vol)
-            tag += 1
-    for p2 in pi:
-        sfx_sym, sfx_vol, sfx_trig = _sfx_trigger_info(p, p2["prefab"])
-        if sfx_sym and sfx_trig == "on_destroy":
-            ids[p2["start"]], vols[p2["start"]] = sfx_sym, str(sfx_vol)
-    return [
-        f"const s16 g_sfx_on_destroy_id[{n_actors}]  = {{{', '.join(ids)}}};",
-        f"const u8  g_sfx_on_destroy_vol[{n_actors}] = {{{', '.join(vols)}}};",
-        "",
-    ]
+        for p2 in spi:
+            sfx_sym, sfx_vol, sfx_trig = _sfx_trigger_info(p, p2["prefab"])
+            if sfx_sym and sfx_trig == "on_destroy":
+                ids[p2["start"]], vols[p2["start"]] = sfx_sym, str(sfx_vol)
+        out += [
+            f"static const s16 g_sfx_on_destroy_id_{sym}[{n}]  = {{{', '.join(ids)}}};",
+            f"static const u8  g_sfx_on_destroy_vol_{sym}[{n}] = {{{', '.join(vols)}}};",
+        ]
+    out.append("")
+    return out
 
 
 def _layer_tiles_used(p, bi: dict) -> int:
@@ -243,26 +256,20 @@ def _log_vram_layout(scene, emit) -> None:
          + (f" — défaut {_dn}" if _dn else "") + ")")
 
 
-def _pool_info(prefabs, pool_start: int, project) -> list[dict]:
-    """La géométrie des pools. `size` compte les ENTRÉES réservées dans
-    `g_actors`, pas les instances : le pool se dit en instances, et le build
-    multiplie par les enfants (ROADMAP v0.23). C'est `size` — 32 pour huit
-    instances d'un prefab à quatre parties — que la mesure affiche, parce que
-    c'est lui qui est payé.
-
-    Le nombre d'instances vient des SCÈNES depuis la v0.17 (`actor_budget`), et
-    non plus du template : d'où le `project` en paramètre."""
-    info, offset = [], pool_start
-    for pf in prefabs:
-        n = prefab_pool_instances(project, pf)
-        if n > 0:
-            s = c_sym(pf.name)
-            g = prefab_group(pf)
-            info.append({"prefab": pf, "sym": s, "start": offset,
-                         "size": n * g,
-                         "instances": n, "group": g})
-            offset += n * g
-    return info
+def _scene_pi(p: Project, scene: Scene) -> list[dict]:
+    """La géométrie des pools de CETTE scène, lue de `scene_oam_layout` (source
+    de vérité unique, ROADMAP v0.17). `sym` est PRÉFIXÉ PAR LA SCÈNE
+    (`<Scène>_<Prefab>`) : chaque scène compile ses unités de prefab contre sa
+    propre plage, donc les appels `{sym}_pool_init`/`{sym}_on_update` du main.c
+    ciblent bien `actor_<Scène>_<Prefab>.c`. `size` compte les ENTRÉES réservées
+    (instances × parties, ROADMAP v0.23), `start` repart de la base OAM 0 de la
+    scène (après ses acteurs posés)."""
+    return [
+        {"prefab": pl.prefab, "sym": pl.sym, "prefab_sym": pl.prefab_sym,
+         "start": pl.start, "size": pl.size,
+         "instances": pl.instances, "group": pl.group}
+        for pl in scene_oam_layout(p, scene).pools
+    ]
 
 
 # ─── sections du main.c ───────────────────────────────────────────────────────
@@ -270,10 +277,10 @@ def _pool_info(prefabs, pool_start: int, project) -> list[dict]:
 
 def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
                    actor_defined_events: dict[str, set[str]] | None = None) -> list[str]:
-    """`obj_layout` : layout OBJ de la scène d'ancrage (1ère scène) — spawn_X
-    étant global, l'index de banque d'un prefab poolé est fixé depuis cette
-    scène (cohérent avec la résolution prefab par 1ère scène ; les incohérences
-    inter-scènes sont signalées par le validateur)."""
+    """`pool_info` : les pools de LA scène courante (`_scene_pi`), symboles
+    déjà préfixés `<Scène>_<Prefab>`. `obj_layout` : le layout OBJ de CETTE
+    scène — chaque scène résout l'index de banque de ses prefabs poolés dans son
+    propre layout (fin de la « scène d'ancrage », ROADMAP v0.17, T1)."""
     if not pool_info:
         return []
 
@@ -311,7 +318,10 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
 
         group = pi.get("group", 1)
         L += [
-            f"int spawn_{s}(int x, int y) {{",
+            # Rend un Actor* sur l'instance née (ROADMAP v0.17 T6) : un handle
+            # directement chaînable côté script, et NULL quand le pool est plein —
+            # là où l'ancien -1, un entier, ressortait TOUJOURS vrai dans un test.
+            f"Actor* spawn_{s}(int x, int y) {{",
             # Le pas est le GROUPE, pas 1 (ROADMAP v0.23) : une instance
             # occupe la racine PUIS ses enfants, contiguës. Chercher de un en
             # un tomberait sur l'enfant libre d'une instance vivante et
@@ -428,10 +438,10 @@ def _section_spawn(pool_info: list[dict], p: Project, obj_layout,
         if _def(s, "on_start"):
             L.append(f"            {s}_on_start(&g_actors[_i]);")
         L += [
-            f"            return _i;",
+            f"            return &g_actors[_i];",
             f"        }}",
             f"    }}",
-            f"    return -1;",
+            f"    return NULL;",
             f"}}",
             "",
         ]
@@ -1168,6 +1178,10 @@ def _gen_scene_init(
     _cam_idx = scene_camera_index(p, scene)
     _cam_name = getattr(scene, "camera", "") or "(default)"
     L.append(f"    camera_switch({_cam_idx});   /* {_cam_name} */")
+    # SFX on_destroy : pointe les tables de CETTE scène (per-scène depuis T3,
+    # cf. `_sfx_on_destroy_table`). `actor_destroy_with_sfx` lit ces pointeurs.
+    L.append(f"    g_sfx_on_destroy_id  = g_sfx_on_destroy_id_{sym};")
+    L.append(f"    g_sfx_on_destroy_vol = g_sfx_on_destroy_vol_{sym};")
     # Cmap dispatch
     if scene_has_cmap(scene):
         L.append(f"    g_active_cmap = g_cmap_{sym};")
@@ -2008,16 +2022,16 @@ def generate_main(
     # ── Calcul des offsets globaux des actors ─────────────────────
     # Chaque scène reçoit une tranche de g_actors[].
     # La pool de prefabs commence après tous les actors de scène.
-    total_scene_actors = sum(len(d["scene_actors"]) for d in all_scene_data)
-    pi = _pool_info(prefabs, total_scene_actors, p)
-    n_actors = max(total_scene_actors + sum(p2["size"] for p2 in pi), 1)
-
-    # Offsets par scène
-    scene_offsets: list[int] = []
-    offset = 0
-    for d in all_scene_data:
-        scene_offsets.append(offset)
-        offset += len(d["scene_actors"])
+    # Chaque scène repart de la base OAM 0 (ROADMAP v0.17, T3) : une seule est
+    # vivante à la fois, le scene_init efface `g_actors` et repose ses acteurs
+    # depuis 0. Les offsets sont donc tous nuls, et `g_actors` est dimensionné
+    # sur la scène la plus gourmande (max, pas somme).
+    n_actors = project_actor_count(p)
+    scene_offsets = [0] * len(all_scene_data)
+    # `pi` par scène : plages de pool per-scène (symboles `<Scène>_<Prefab>`),
+    # lues de `scene_oam_layout`. Chaque scène ne porte que les pools qu'elle
+    # déclare, à leur place dans SA fenêtre.
+    scene_pis = [_scene_pi(p, d["scene"]) for d in all_scene_data]
 
     # ── Sprites : union de toutes les scènes ──────────────────────
     all_sprite_pairs: list = []
@@ -2030,35 +2044,29 @@ def generate_main(
 
     sprite_offsets, sprite_nframes = sprite_offsets_for(p, all_sprite_pairs)
 
-    # Bases de la bande de texte OBJ : la queue de ce que les sprites occupent.
+    # Bande de texte OBJ. La base de SLOTS OAM est PAR SCÈNE — juste après les
+    # acteurs, avant les pools (ordre acteurs → UI → pools, ROADMAP v0.17 T4) :
+    # elle vaut `placed`, calculée dans la boucle scene_init. La base de TUILES,
+    # elle, reste l'union projet : les tuiles des sprites sont résidentes et
+    # partagées, donc la 1re tuile OBJ libre est la queue de TOUS les sprites.
     _obj_alloc = obj_text_alloc(p)
-    _obj_need  = max((pl["oam_rel"] + pl["oam"] for pl in _obj_alloc.values()),
-                     default=0)
-    obj_text_oam  = n_actors if _obj_need else -1
     obj_text_tile = obj_tiles_used(p, all_sprite_pairs)
-    # Débordement OBJ : BLOQUANT, et calculé même sans `emit`.
-    #
-    # Ces deux dépassements n'étaient que journalisés — `generate_main` rendait
-    # `True` quoi qu'il arrive, donc la ROM se construisait avec des slots hors
-    # des 128 du matériel : rien à l'écran, aucune erreur. Le fond de conteneur en
-    # sprites rend le cas trivial à atteindre (un conteneur de 224×48 pavé d'une
-    # frame 8×8 réclame 168 slots à lui seul), d'où le passage en erreur — même
-    # règle que le budget de tuiles BG, qui bloque déjà.
+    _any_obj_ui = any(scene_obj_ui_slots(p, d["scene"]) > 0 for d in all_scene_data)
+
+    # Débordement : BLOQUANT, et calculé même sans `emit` — sinon la ROM se
+    # construit avec des slots hors des 128 du matériel, rien à l'écran et
+    # aucune erreur (le fond de conteneur en sprites rend le cas trivial : un
+    # conteneur 224×48 pavé d'une frame 8×8 réclame 168 slots à lui seul).
     _fatal: list[str] = []
-    if _obj_need:
-        if emit:
-            emit("log_line",
-                 f"[text] bande OBJ : OAM {obj_text_oam}..{obj_text_oam + _obj_need - 1} "
-                 f"(sur 128), tuiles depuis {obj_text_tile}")
-        if obj_text_oam + _obj_need > 128:
-            _fatal.append(
-                f"[error] l'interface en sprites (zones de texte, images, fonds "
-                f"de conteneur) demande {_obj_need} slots OAM après {n_actors} "
-                f"d'acteurs — le matériel n'en a que 128. Réduire un pavage de "
-                f"fond, passer une zone en cible BG, ou diminuer le pool de "
-                f"prefabs.")
-        # Les tuiles OBJ tombent à 512 en mode bitmap (la VRAM BG y empiète sur
-        # l'espace sprite) : c'est la scène la plus contrainte qui commande.
+    # Le débordement OAM par scène (acteurs + UI + pools > 128) est la faute du
+    # BUDGET, gardée en un SEUL endroit : le validateur (`_check_actor_budget`,
+    # ERREUR bloquante, même source `scene_oam_layout`). `generate_main` n'est
+    # atteint qu'après une validation sans erreur (cf. rom_build) — le
+    # re-contrôler ici dédoublait la règle. Reste la faute des TUILES (VRAM),
+    # qui n'est pas dans le budget OAM.
+    # Tuiles OBJ (VRAM) : union projet, cap selon le mode bitmap le plus
+    # contraint (la VRAM BG y empiète sur l'espace sprite : 512 au lieu de 1024).
+    if _any_obj_ui:
         _tiles_need = max((pl["tile_rel"] + pl["tiles"] for pl in _obj_alloc.values()),
                           default=0)
         _cap = 512 if any(getattr(sc, "render_mode", 0) in (3, 4, 5)
@@ -2320,21 +2328,22 @@ def generate_main(
             ]
 
     # ── Globals ───────────────────────────────────────────────────
-    # La table regroupe les tranches de toutes les scènes (et les pools) : une
-    # transition peut donc adresser les mêmes `TAG_*` sans déplacer les actors.
-    # C'est un état volumineux, jamais une routine chaude ; EWRAM_DATA évite de
-    # consommer les 32 Kio d'IWRAM réservés au code et aux petits états runtime.
+    # `g_actors` est réutilisé d'une scène à l'autre (base 0, ROADMAP v0.17,
+    # T3) : dimensionné sur la scène la plus gourmande, il porte à tout instant
+    # les acteurs de la SEULE scène vivante. C'est un état volumineux, jamais une
+    # routine chaude ; EWRAM_DATA évite de consommer les 32 Kio d'IWRAM réservés
+    # au code et aux petits états runtime.
     L += [
         f"Actor g_actors[{n_actors}] EWRAM_DATA;",
     ]
-    # SoundFxComponent en trigger="on_destroy" — table indexée par TAG (même
-    # ordre que actor_types.h : actors de scène concaténés, puis prefabs
-    # poolés à leur `start`), lue par `actor_destroy_with_sfx()`. C'est le
-    # SEUL point de passage commun à `self:destroy()` et `other:destroy()`
-    # (scripting/codegen.py, `_emit_destroy`) : la cible n'y est pas toujours
-    # un symbole connu au build (`other` peut être n'importe quel actor), donc
-    # le trigger ne peut pas s'injecter en clair comme on_spawn/on_button_*.
-    L += _sfx_on_destroy_table(p, all_scene_data, pi, n_actors)
+    # SoundFxComponent en trigger="on_destroy" — tables PAR SCÈNE indexées par
+    # TAG, plus un pointeur que chaque scene_init fait pointer sur la sienne
+    # (comme `g_active_cmap`). Depuis que les TAG repartent de 0 par scène
+    # (T3), une table globale unique ne pourrait plus les distinguer. Lues par
+    # `actor_destroy_with_sfx()` — le SEUL point commun à `self:destroy()` et
+    # `other:destroy()` (scripting/codegen.py, `_emit_destroy`), la cible n'y
+    # étant pas toujours un symbole connu au build.
+    L += _sfx_on_destroy_table(p, all_scene_data, scene_pis)
     L += [
         "u32   _g_keys_held    = 0;",
         "u32   _g_keys_pressed = 0;",
@@ -2361,16 +2370,21 @@ def generate_main(
         "",
     ]
 
-    # Spawn helpers — index de banque des prefabs poolés résolu via la
-    # 1ère scène (spawn_X est global).
-    _anchor_obj_layout = scene_bank_layout(p, all_scenes[0], "obj") if all_scenes else None
-    L += _section_spawn(pi, p, _anchor_obj_layout, actor_defined_events=actor_defined_events)
+    # Spawn helpers — un jeu par scène (`spawn_<Scène>_<Prefab>`), chacun contre
+    # SA plage OAM et SA banque de palette OBJ. Fin de la « scène d'ancrage »
+    # figée : chaque scène résout l'index de banque de ses prefabs poolés dans
+    # son propre layout (ROADMAP v0.17, T1).
+    for d, spi in zip(all_scene_data, scene_pis):
+        _obj_layout = scene_bank_layout(p, d["scene"], "obj")
+        L += _section_spawn(spi, p, _obj_layout,
+                            actor_defined_events=actor_defined_events)
 
     # Position d'un acteur pour les zones de texte ancrées : `gba_engine.h`
     # ignore la structure Actor (elle est déclarée dans runtime_api_inline.h, qui
     # inclut le moteur et non l'inverse), d'où ces deux accesseurs passés par
-    # pointeur de fonction plutôt qu'une dépendance inversée.
-    if obj_text_oam >= 0:
+    # pointeur de fonction plutôt qu'une dépendance inversée. Émis dès qu'UNE
+    # scène a de l'UI OBJ (le pointeur est projet-global, posé par scene_init).
+    if _any_obj_ui:
         L += [
             "/* ── Position et profondeur d'acteur pour l'UI ancrée ─── */",
             "static int _txt_actor_x(int i) { return g_actors[i].x>>8; }",
@@ -2422,13 +2436,25 @@ def generate_main(
         if sprite_offsets:
             dispcnt |= 0x1040
 
+        # Base OBJ de la bande d'interface de CETTE scène : juste après ses
+        # acteurs (ordre acteurs → UI → pools, ROADMAP v0.17 T4). -1 si la scène
+        # n'a aucune UI en sprites. Les pools de `scene_oam_layout` démarrent à
+        # `placed + ui`, donc la bande ne les chevauche jamais.
+        _sc_lay = scene_oam_layout(p, sc)
+        sc_obj_oam = _sc_lay.placed if _sc_lay.ui else -1
+        if emit and _sc_lay.ui:
+            emit("log_line",
+                 f"[text] scène '{sc.name}' : bande OBJ OAM "
+                 f"{sc_obj_oam}..{sc_obj_oam + _sc_lay.ui - 1} (sur 128), "
+                 f"tuiles depuis {obj_text_tile}")
+
         L += _gen_scene_init(
-            p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
+            p, sc, act_off, bgi_d, sa, lua_idx_d, scene_pis[i],
             sprite_offsets, dispcnt, has_sound, sound_assets,
             actor_defined_events=actor_defined_events,
-            obj_text_oam=obj_text_oam, obj_text_tile=obj_text_tile,
+            obj_text_oam=sc_obj_oam, obj_text_tile=obj_text_tile,
             emit=emit,
-            affine_info=compute_affine_info(act_off, sa, pi),
+            affine_info=compute_affine_info(act_off, sa, scene_pis[i]),
         )
 
     # ── scene_tick_X() par scène ──────────────────────────────────
@@ -2460,9 +2486,9 @@ def generate_main(
             and actors_can_collide(p, sa[ii][0], sa[jj][0])
         ]
 
-        affine_d = compute_affine_info(act_off, sa, pi)
+        affine_d = compute_affine_info(act_off, sa, scene_pis[i])
         L += _gen_scene_tick(
-            p, sc, act_off, bgi_d, sa, lua_idx_d, pi,
+            p, sc, act_off, bgi_d, sa, lua_idx_d, scene_pis[i],
             sprite_offsets, sprite_nframes, col_pairs_d,
             actor_defined_events=actor_defined_events,
             affine_info=affine_d,

@@ -164,6 +164,9 @@ gba-editor/
 │   │                                  pas de message : une ROM fausse)
 │   ├── test_vram_alloc.py           ← géométrie VRAM BG + le garde-fou de l'allocateur
 │   ├── test_palette_alloc.py        ← les 16 banques, blocs contigus, débordement
+│   ├── test_oam_alloc.py            ← les 128 entrées OAM par scène (base 0, ordre
+│   │                                  acteurs → UI → pools, max des scènes)
+│   ├── test_actor_budget.py         ← le budget OAM dérivé, façade de l'inspecteur
 │   ├── text_layout_cases.py         ← polices et textes d'essai, partagés
 │   ├── test_text_layout.py          ← mise en page, côté aperçu Python
 │   ├── test_text_layout_native.py   ← ÉQUIVALENCE Python ↔ C : compile le vrai
@@ -220,7 +223,7 @@ Le C émis se relit avec le vocabulaire de l'éditeur — un symbole généré n
 |---|---|---|
 | table de données `Objets` | `g_data_Objets` | `g_data_<Table>` |
 | paire de fonctions d'une scène `X` | `scene_init_X` / `scene_tick_X` | `scene_<verbe>_<Scene>` |
-| instanciation d'un `Prefab` nommé | `spawn_<Nom>` | `spawn_<Prefab>` |
+| instanciation d'un `Prefab` poolé par une scène | `spawn_Arene_Balle` | `spawn_<Scene>_<Prefab>` (per-scène, rend `Actor*`/`NULL`) |
 | variable globale / constante de projet | `g_<nom>` / `CONST_<NOM>` | accès pointé `global.nom` / `const.nom` |
 | entrée de domaine (`DOMAIN_SCENE`…) | `SCENE_<Nom>`, `PAL_<Nom>`, `CAM_<Nom>` | `<PREFIX>_<Nom>` (cf. `api.py`) |
 
@@ -554,11 +557,13 @@ Cinq domaines étaient vérifiés par un contrôle accroché au nom de l'appel �
   `DOMAIN_SCENE` ». Ajouter une `scene.preload` aurait donc rendu le domaine
   muet, sans que rien ne le dise ;
 - **`DOMAIN_PREFAB` n'était validé nulle part.** `_emit_actor_spawn` émet
-  `spawn_<Nom>(...)` sans rien vérifier, donc un nom fautif n'apparaissait qu'à
-  la compilation C, sur un « implicit declaration of function » pointant la
+  `spawn_<Scene>_<Nom>(...)` sans rien vérifier, donc un nom fautif n'apparaissait
+  qu'à la compilation C, sur un « implicit declaration of function » pointant la
   ligne générée. C'est une **erreur** de checker maintenant, pour la même raison
   qu'une scène inconnue : le build échouerait de toute façon, avec un message
-  bien pire.
+  bien pire. (Le checker valide le nom contre la liste PROJET des prefabs ; le
+  raffiner en « ce prefab est-il poolé DANS CETTE scène ? » est un gain que le
+  spawn per-scène rend possible, pas encore cueilli — cf. ROADMAP v0.17.)
 
 Ce qui reste accroché à un appel précis dans `_check_call_expr` ne porte plus
 sur un nom : le numéro d'emplacement d'un `save.*`. Ce contrôle n'interrompt
@@ -759,6 +764,30 @@ par `Actor.obj_mode`, jamais disputée) et `WINR_OUT` (le complément automatiqu
 ne peut le demander »). Le vrai **écran partagé** (plusieurs caméras actives SIMULTANÉMENT,
 pas juste plusieurs caméras possibles dans une scène) reste hors périmètre — cf. ROADMAP.md,
 « Piste posée — Caméra2D ».
+
+**Les 128 entrées OAM sont allouées PAR SCÈNE** (livré 2026-09-19, `codegen/oam_alloc.py`) —
+même famille que `window_alloc`, et le plus gros cas. Une seule scène est vivante à la fois sur
+GBA : chaque `scene_init` efface `g_actors[]` et repose sa fenêtre OAM **depuis l'entrée 0**.
+`scene_oam_layout(project, scene) -> OamLayout` est la source de vérité unique de cette
+géométrie — les acteurs actifs posés `[0..placed)`, puis la bande d'interface en sprites, puis
+les pools de prefabs que la scène déclare (`Scene.prefab_pools`), dans cet ordre (**acteurs → UI
+→ pools**, l'index OAM bas passant devant). `headers.py` (les `TAG_`/`POOL_<Scene>_<Prefab>_*`),
+`main_gen.py` (`spawn_<Scene>_<Prefab>`, dimensionnement de `g_actors[]`) et la façade
+`actor_budget.py` en sont des **lecteurs**, comme le pipeline grit et `main_gen` lisent
+`palette_alloc`. Trois conséquences que le per-scène achète :
+
+- **`g_actors[]` est dimensionné sur la scène la plus gourmande** (le MAX, pas la somme des
+  scènes) : une scène de menu ne paie plus les slots des projectiles du niveau d'action.
+- **Les symboles portent la scène** : `spawn_<Scene>_<Prefab>` rend un `Actor*` (ou `NULL`
+  pool plein), `TAG_*`/`POOL_*` repartent de 0 par scène, chaque scène recompile ses unités de
+  prefab contre SA géométrie. Un état project-wide indexé par `Actor.tag` doit donc devenir
+  per-scène : `g_sfx_on_destroy_id/_vol` sont désormais des tables par scène, un pointeur posé
+  au `scene_init` (patron `g_active_cmap`).
+- **Le budget OAM est UNIQUE et bloquant** : `validator._check_actor_budget` lit le même
+  `scene_oam_layout` que le build et refuse `used > 128` — le rendu écrit `shadow_oam[<indice>]`
+  (128 entrées), au-delà c'est une corruption, pas un surplus caché. L'override facultatif
+  `Scene.actor_slots` (réservation d'auteur, hérité du 96/32) ne pilote PLUS la géométrie de
+  build : il ne survit que dans la carte budget de l'inspecteur, comme une vue d'INTENTION.
 
 **Rupture assumée dans l'API Lua** : `window.set`/`window.show`/`window.is_visible`
 adressaient par index matériel brut (0/1/2) — la règle même que cette section interdit. Les

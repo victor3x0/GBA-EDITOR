@@ -10,7 +10,22 @@
       "text": "Ni posé ni spawné où que ce soit dans le projet."
     },
     "sceneinsp.card.budget": {
-      "text": "Slots de sprites (OAM)"
+      "text": "Prefabs de la scène"
+    },
+    "sceneinsp.no_scene_prefab": {
+      "text": "Aucun prefab posé ou instancié par les scripts de cette scène."
+    },
+    "sceneinsp.edit_prefab": {
+      "text": "Éditer le prefab"
+    },
+    "sceneinsp.prefab_placed": {
+      "text": "{count} posé(s) dans la scène"
+    },
+    "sceneinsp.prefab_spawn_calls": {
+      "text": "{count} appel(s) de spawn"
+    },
+    "sceneinsp.edit_caller": {
+      "text": "Éditer {script}, ligne {line}"
     },
     "sceneinsp.scene_actors": {
       "text": "Slots de scène :"

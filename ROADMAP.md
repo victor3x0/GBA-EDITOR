@@ -63,7 +63,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
-| v0.17 | Le pool par scène | **En cours** — **B1 livrée le 2026-09-19** (budget dérivé `128 − posés − UI` remplaçant le 96/32, liste « Spawné par », marqueur d'usage, compteur d'instances) ; **B2b en cours** = la moitié build (compilation par scène : symboles per-scène, `POOL_*` per-scène, `g_actors`/base OAM par scène, OBJ d'UI par scène pour que le budget UI ne mente pas, `spawn` rend `Actor*`) |
+| v0.17 | Le pool par scène | **Livrée le 2026-09-19** — B1 (budget dérivé `128 − posés − UI` remplaçant le 96/32, liste « Spawné par », marqueur d'usage, compteur d'instances) **et** la moitié build B2b, en sept tranches vérifiées au build ROM (compilation par scène : symboles `<Scene>_<Prefab>`, `POOL_*`/`g_actors`/base OAM par scène, OBJ d'UI par scène, palettes propres des pools par scène, `spawn` rend `Actor*`/nil, budget OAM unique et bloquant). Reste ouvert : le culling existence/OBJ (« mille existent, cent-vingt-huit s'affichent »), un autre moteur |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
 | v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) |
@@ -2524,6 +2524,14 @@ leur objet, **6 mots du langage** enfin listés (`vec2`, `vec3`, `rect`, `wait`,
 
 ## v0.17 — Le pool par scène
 
+> **LIVRÉE le 2026-09-19** — B1 (éditeur) et la moitié build B2b (sept tranches T1→T7, cf.
+> « Livrée (2026-09-19) : la moitié build » plus bas). Ce qui suit est le DOSSIER DE
+> CONCEPTION du jalon : l'état de départ y est décrit au présent (« `max_instances` est un
+> champ du Prefab »…) parce qu'il l'était au moment de la décision — ce n'est plus vrai
+> aujourd'hui (le champ a été retiré, le pool vit sur la scène, `spawn` rend `Actor*`). Le
+> récapitulatif à jour est la section des tranches ; les décisions ci-dessous en restent le
+> « pourquoi ».
+
 ### Ce qui a été écarté, et pourquoi
 
 Un **spawn dynamique depuis la librairie de prefabs** a été envisagé le 2026-08-19, puis
@@ -2665,22 +2673,53 @@ Pour l'écran : `ui/scene_manager/inspectors/scene_inspector.py` (le widget de b
 champs), `ui/scene_manager/inspectors/uses_inspectors.py` (« Spawné par »), et
 `core/validator.py` (l'avertissement « plus d'acteurs posés que de slots réservés »).
 
-### En cours (2026-09-19) : la moitié build, en tranches (B2b)
+### Livrée (2026-09-19) : la moitié build, en sept tranches (B2b)
 
-B1 livrée, on attaque la compilation par scène — motivée aussi par le fait que **sinon le
-poste UI du budget ment** (l'éditeur compterait l'OBJ d'UI par scène, la ROM l'allouerait en
-union projet). L'ordre des tranches, chacune vérifiée au build ROM : **T1** symboles per-scène
-(`actor_<Scene>_<Prefab>`, `spawn_<Scene>_<Prefab>`, retrait du garde `compiled_prefabs`) →
-**T2** `POOL_<X>_*` per-scène (retrait du repli `Prefab.max_instances`) → **T3** `g_actors[]` et
-base OAM par scène (touche la résolution `TAG_*`) → **T4** OBJ d'UI/texte/fonts par scène (le
-poste UI cesse de mentir ; `scene_ui_obj_slots` réel lit la même source) → **T5** palettes
-propres per-scène → **T6** `spawn` rend `Actor*` → **T7** validateur + budget OAM unique par
-scène. Les décisions ci-dessous restent la référence de conception.
+Les sept tranches sont **livrées et vérifiées au build ROM** (projet OrbitTest, deux scènes
+poolant des prefabs distincts : `G_ACTOR_COUNT` tombe de la somme projet 53 au max des scènes
+41, `objdump` confirme la taille de `g_actors`). Pierre angulaire : un nouveau module
+`codegen/oam_alloc.py`, source de vérité unique de la géométrie OAM d'une scène
+(`scene_oam_layout(project, scene) -> OamLayout`), sur le modèle de `palette_alloc.py` —
+`headers`, `main_gen` et la façade `actor_budget` en deviennent des LECTEURS.
 
-**T1+T2+T3 sont indivisibles** (constat de lecture, 2026-09-19) : rendre les symboles
-per-scène (T1) exige une plage de pool per-scène (T2), qui n'a de sens que si `g_actors`/la
-base OAM repartent de 0 par scène (T3). Les trois forment le **cœur OAM per-scène**, un seul
-refactor, vérifié au build ROM.
+- **T1** symboles per-scène : `actor_<Scene>_<Prefab>.c`, `spawn_<Scene>_<Prefab>`,
+  `POOL_<Scene>_<Prefab>_*`, garde `compiled_prefabs` retiré (chaque scène recompile ses
+  prefabs contre sa géométrie). `CodegenContext.scene_sym` porte la scène jusqu'au
+  `_emit_actor_spawn`.
+- **T2** plage de pool per-scène, repli `Prefab.max_instances` retiré du chemin build
+  (`prefab_pool_instances` = max sur les scènes, sans repli).
+- **T3** `g_actors[]` dimensionné sur le MAX des scènes (pas la somme), base OAM repartant de 0
+  à chaque `scene_init` ; `TAG_*` devient scène-local (Modèle A ci-dessous).
+- **T4** OBJ d'interface par scène : ordre OAM **acteurs → UI → pools** (décision Victor), base
+  de la bande UI = `placed`, `scene_ui_obj_slots` réel lit la même source que le placement des
+  zones (`gen_text._layout_obj_budget`).
+- **T5** palettes propres des pools per-scène : `prefab_own_slots` (slot global) supprimé, un
+  prefab poolé rejoint les consommateurs de palette propre de SA scène ; corrige au passage la
+  palette d'une PARTIE de prefab (jamais réservée avant, retombait banque 0).
+- **T6** `spawn` rend `Actor*`/`NULL` (au lieu de `int`/`-1`) : un handle chaînable et un
+  `if not b then` qui teste vraiment le pool plein. `actor.spawn` typé `ret="actor"`.
+- **T7** budget OAM unique et BLOQUANT : `validator._check_actor_budget` lit `scene_oam_layout`
+  (même source que le build) et passe en ERREUR — le rendu écrit `shadow_oam[<indice>]`, 128
+  entrées, au-delà c'est une corruption. Champ `Prefab.max_instances` retiré du modèle.
+
+**T1+T2+T3 étaient indivisibles** (constat de lecture, 2026-09-19) : les symboles per-scène (T1)
+exigent une plage de pool per-scène (T2), qui n'a de sens que si `g_actors`/la base OAM repartent
+de 0 par scène (T3). Livrés d'un seul refactor.
+
+**Deux pièges découverts en route, non prévus au plan :**
+1. `g_sfx_on_destroy_id/_vol` étaient project-wide indexés par `Actor.tag` ; les tags repartant
+   de 0 par scène (T3) se chevauchent. Rendus PAR SCÈNE + pointeur posé au `scene_init` (patron
+   `g_active_cmap`), leur `extern` passe tableau → pointeur. Silencieux sinon.
+2. L'override `Scene.actor_slots` ne doit PAS piloter la géométrie de build (l'ancien build
+   posait les pools après les acteurs *réellement actifs*, jamais après l'override). `OamLayout`
+   est `placed`-based ; l'override ne vit que dans la façade budget de l'inspecteur — une vue
+   d'INTENTION, distincte de l'empreinte matérielle. Sinon une scène de démo restée à 96
+   gonflait `g_actors` de 93 entrées fantômes.
+
+**Reste en aval (non couvert par v0.17)** : le checker de script valide encore `actor.spawn("X")`
+contre la liste PROJET des prefabs, pas contre le pool de la scène courante — l'erreur « spawner
+un prefab qu'aucune scène ne poole ici » reste donc invisible. C'est un gain que le per-scène
+rend possible (cf. plus bas), à cueillir dans un chantier ultérieur.
 
 **`TAG_*` per-scène — tranché le 2026-09-19 (Modèle A).** Un `TAG_<Actor>` est aujourd'hui
 *l'indice dans `g_actors[]`* (identité = indice : `get_actor("X")` → `&g_actors[TAG_X]`,

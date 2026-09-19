@@ -1128,26 +1128,35 @@ def _check_cameras(ctx: ValidationContext):
 
 
 def _check_actor_budget(ctx: ValidationContext):
-    """Le budget d'acteurs d'une scène (ROADMAP v0.17, budget dérivé révisé le
-    2026-09-19) — une seule faute désormais.
+    """Le budget OAM d'une scène — la SEULE faute possible, et elle est BLOQUANTE
+    (ROADMAP v0.17 T7).
 
-    Le budget n'est plus réparti mais DÉRIVÉ : acteurs posés (et OBJ d'UI en B2)
-    se comptent, le pool est ce qui reste. La faute « posés > réservés » a donc
-    disparu avec la réservation ; ne subsiste que le débordement des 128 :
-    acteurs + UI + pools dépassent l'OAM, le matériel n'affichera pas le surplus.
+    Source unique : `scene_oam_layout` (la même que le build lit pour dimensionner
+    `g_actors` et placer les pools). Acteurs actifs + OBJ d'interface + pools
+    doivent tenir dans les 128 entrées de l'OAM. Le validateur et le build ne
+    peuvent donc plus diverger — c'est le sens de « budget unifié ».
 
-    Avertissement et non erreur : c'est la règle de mesure de la v0.7.6 — le
-    build dit ce que la scène coûte, il ne l'arbitre pas à la place de
-    l'auteur."""
-    from codegen.actor_budget import scene_actor_budget, OAM_LIMIT
+    ERREUR et non avertissement, depuis que les trois postes atterrissent sur des
+    entrées OAM RÉELLES : le rendu écrit `shadow_oam[<index>]` avec l'index de
+    `g_actors` (cf. main_gen / `oam_update`), et `shadow_oam` n'a que 128 entrées.
+    Au-delà, ce n'est plus « le surplus ne s'affiche pas » mais un débordement de
+    tableau qui corrompt la mémoire voisine. L'ancienne mesure « avertissement »
+    (v0.7.6) valait quand le pool était une tranche à part ; il partage désormais
+    la fenêtre OAM des acteurs.
+
+    N.B. — l'inspecteur, lui, affiche la RÉSERVATION de l'auteur (override
+    `Scene.actor_slots`, via `actor_budget.scene_actor_budget`) : une vue
+    d'intention, distincte de l'empreinte matérielle mesurée ici."""
+    from codegen.oam_alloc import scene_oam_layout, OAM_LIMIT
     p = ctx.project
     for scene in p.scenes:
-        b = scene_actor_budget(scene, p)
-        if b["over_budget"]:
-            ctx.warn(None,
-                f"Scène '{scene.name}' : {b['used']} slots demandés "
-                f"({b['actors']} acteurs + {b['ui']} d'interface + {b['pool']} de pool) "
-                f"pour {OAM_LIMIT} entrées OAM — le matériel n'affichera pas le surplus.")
+        lay = scene_oam_layout(p, scene)
+        if lay.over_budget:
+            ctx.error(None,
+                f"Scène '{scene.name}' : {lay.used} entrées OAM demandées "
+                f"({lay.placed} acteurs + {lay.ui} d'interface + {lay.pool_slots} de pool) "
+                f"pour {OAM_LIMIT} disponibles — réduire un pavage de fond, passer "
+                f"une zone en cible BG, ou diminuer le pool.")
 
 
 def _check_window_regions(ctx: ValidationContext):
@@ -1613,10 +1622,11 @@ def _check_pal_bank_reference(ctx: ValidationContext):
 
     Résolution des slots identique au build :
     - actors  -> active_obj_palettes de LEUR scène ;
-    - prefabs -> active_obj_palettes de la scène d'ancrage (1ère) ;
+    - prefabs -> active_obj_palettes de CHAQUE scène qui les poole (ROADMAP v0.17
+      T7 : le spawn est per-scène, plus de « scène d'ancrage ») ;
     - layers  -> active_bg_palettes de chaque scène utilisant le background."""
     from core.models.palette import OWN_PAL_BANK
-    from codegen.actor_budget import prefab_pool_instances
+    from codegen.oam_alloc import scene_pool_instances
     p = ctx.project
 
     def _slot_missing(active: list, slot: int) -> bool:
@@ -1649,24 +1659,28 @@ def _check_pal_bank_reference(ctx: ValidationContext):
                     f"'{scene.name}', vide ou hors de la sélection active — le "
                     f"sprite s'affichera avec le contenu par défaut de ce slot.")
 
-    # ── Prefabs poolés (via scène d'ancrage = 1ère scène) ────────────
-    anchor = p.scenes[0] if p.scenes else None
-    anchor_active = getattr(anchor, "active_obj_palettes", []) if anchor else []
-    for pf in p.prefabs:
-        if prefab_pool_instances(p, pf) <= 0:
-            continue
-        pb = getattr(pf, "pal_bank", OWN_PAL_BANK)
-        if pb == OWN_PAL_BANK:
-            continue
-        sp = _sprite_of(pf)
-        if not (sp and sp.asset):
-            continue
-        if _slot_missing(anchor_active, pb):
-            where = f" (résolue via la scène '{anchor.name}')" if anchor else ""
-            ctx.warn(None,
-                f"Prefab '{pf.name}' pointe la banque OBJ {pb}{where}, vide ou "
-                f"hors de la sélection active — ses instances s'afficheront avec "
-                f"le contenu par défaut de ce slot.")
+    # ── Prefabs poolés : dans CHAQUE scène qui les spawne ────────────
+    # Le spawn est per-scène (T1) : un prefab à palette référencée lit la banque
+    # de LA scène qui le poole, pas d'une scène d'ancrage. Une banque manquante
+    # dans une scène et présente dans une autre est donc un avertissement CIBLÉ
+    # sur la scène fautive.
+    for scene in p.scenes:
+        active = getattr(scene, "active_obj_palettes", [])
+        for pf in p.prefabs:
+            if scene_pool_instances(scene, pf) <= 0:
+                continue
+            pb = getattr(pf, "pal_bank", OWN_PAL_BANK)
+            if pb == OWN_PAL_BANK:
+                continue
+            sp = _sprite_of(pf)
+            if not (sp and sp.asset):
+                continue
+            if _slot_missing(active, pb):
+                ctx.warn(None,
+                    f"Prefab '{pf.name}' pointe la banque OBJ {pb} de la scène "
+                    f"'{scene.name}' (qui le spawne), vide ou hors de la sélection "
+                    f"active — ses instances s'y afficheront avec le contenu par "
+                    f"défaut de ce slot.")
 
     # ── Layers BG (portés par la scène) ──────────────────────────────
     for scene in p.scenes:

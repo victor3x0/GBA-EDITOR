@@ -23,12 +23,8 @@ from core.history import (
 from core.command_dispatcher import get_dispatcher
 from ui.common.theme import C, T, QSS
 from ui.common.widgets import W, ScriptPickerPopup, NotesEdit, CollapsibleCard
-from ui.common.notice import note, notice, tip
 from ui.common.labels import label
 from ui.common.palette_slot_grid import PaletteSlotGridAsset
-from codegen.actor_budget import (
-    OAM_LIMIT, prefab_group, scene_actor_budget, scene_pool_instances,
-)
 from ui.common import icons
 
 
@@ -160,6 +156,8 @@ MODE_INFO: dict[int, dict] = {
 class SceneInspector(QWidget):
     changed = pyqtSignal()
     slot_assigned = pyqtSignal(int, str)
+    edit_prefab_requested = pyqtSignal(object)
+    open_ref = pyqtSignal(str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -465,53 +463,16 @@ class SceneInspector(QWidget):
 
         cl.addWidget(ui_card)
 
-        # ── Carte Actor budget — les 128 entrées de l'OAM, dérivées ─────
-        # Budget DÉRIVÉ (ROADMAP v0.17, révision 2026-09-19) : ce que la scène
-        # POSE et l'UI qu'elle affiche se COMPTENT, le pool est ce qui reste.
-        # Le plafond des pools se recale sur les deux autres postes ; pousser
-        # une valeur d'autorité détruirait en silence un pool réglé plus tôt —
-        # ici l'auteur voit simplement qu'il ne reste rien à prendre.
+        # ── Carte Prefabs de la scène ──────────────────────────────
+        # L'allocation OAM est désormais automatique. Cette carte ne cherche
+        # donc plus à la régler : elle rend visible la surface de prefabs que
+        # cette scène connaît, via ses acteurs et ses scripts.
         budget_card = CollapsibleCard(label("sceneinsp.card.budget"), color=C.ACCENT_WARM)
         budget_inner = budget_card.body_layout
-
-        # Niveau 1 : le compte, toujours affiché. Niveau 2 : un encadré
-        # (ton `build`) quand le total déborde des 128 — une seule faute depuis
-        # la révision, la réservation ayant disparu (plus de `over_placed`).
-        self._lbl_actor_budget = note(budget_inner, "scene.budget.count")
-        self._lbl_actor_budget.setFont(QFont(T.MONO, T.SM))
-        self._budget_over_oam = notice(
-            "scene.budget.over_oam", self._lbl_actor_budget, budget_inner)
-
-        row_slots = QHBoxLayout()
-        row_slots.setContentsMargins(0, 4, 0, 0); row_slots.setSpacing(8)
-        lbl_slots = self._dim_label(label("sceneinsp.scene_actors"))
-        lbl_slots.setFixedWidth(96)
-        self._spin_actor_slots = QSpinBox()
-        self._spin_actor_slots.setRange(0, OAM_LIMIT)
-        self._spin_actor_slots.setFont(QFont(T.MONO, T.SM))
-        self._spin_actor_slots.setStyleSheet(QSS.spinbox)
-        self._spin_actor_slots.setKeyboardTracking(False)
-        self._spin_actor_slots.setToolTip(label("sceneinsp.scene_actors_tip"))
-        self._spin_actor_slots.valueChanged.connect(self._on_actor_slots_changed)
-        self._lbl_slots_hint = QLabel("")
-        self._lbl_slots_hint.setFont(QFont(T.UI, T.XS))
-        self._lbl_slots_hint.setStyleSheet(f"color:{C.TEXT_MUTED};")
-        row_slots.addWidget(lbl_slots); row_slots.addWidget(self._spin_actor_slots)
-        row_slots.addWidget(self._lbl_slots_hint); row_slots.addStretch(1)
-        budget_inner.addLayout(row_slots)
-
-        # Une ligne par prefab spawnable du projet — le pool se déclare ici,
-        # sur la SCÈNE, parce que combien d'exemplaires vivent en même temps
-        # est une propriété du niveau et non du template.
-        self._pool_spins: dict[str, QSpinBox] = {}
-        self._pool_container = QVBoxLayout()
-        self._pool_container.setContentsMargins(0, 2, 0, 0)
-        self._pool_container.setSpacing(4)
-        budget_inner.addLayout(self._pool_container)
-
-        # Niveau 3 : explique le matériel (OAM, coût d'un pool) — coupable en
-        # bloc par Settings ▸ Interface, jamais mêlé aux deux niveaux au-dessus.
-        tip("scene.budget.explain", budget_inner)
+        self._prefab_scene_container = QVBoxLayout()
+        self._prefab_scene_container.setContentsMargins(0, 2, 0, 0)
+        self._prefab_scene_container.setSpacing(6)
+        budget_inner.addLayout(self._prefab_scene_container)
 
         cl.addWidget(budget_card)
 
@@ -547,10 +508,7 @@ class SceneInspector(QWidget):
         # carte détaillée des palettes, qui peut rester repliée.
         self._reload_ui_pal()
         self._reload_scene_font()
-        # La LISTE des prefabs d'abord, les plafonds ensuite : chaque champ se
-        # borne sur ce que les autres ont pris, donc ils doivent tous exister.
-        self._rebuild_actor_budget()
-        self._refresh_actor_budget()
+        self._rebuild_scene_prefabs()
         self._refresh_backdrop()
         self._apply_mode_ui()
         self._refresh_transition()
@@ -931,29 +889,32 @@ class SceneInspector(QWidget):
         ))
         self.changed.emit()
 
-    # ── Actor budget — les 128 entrées de l'OAM, réparties ─────────
+    # ── Prefabs connus de la scène ─────────────────────────────────
 
-    def _scene_prefab_usage(self) -> tuple[set, set]:
-        """(prefabs POSÉS dans la scène, prefabs SPAWNÉS par ses scripts).
+    def _scene_prefab_usage(self) -> tuple[dict[str, int], dict[str, list]]:
+        """Les prefabs connus ici : ``{nom: acteurs posés}``, puis leurs spawns.
 
-        « Ses scripts » = le script de la scène, ceux de ses acteurs, et les
-        templates des prefabs qu'elle pose. La lecture des spawns est la même
-        que celle de « Spawné par » (`iter_call_sites(DOMAIN_PREFAB)`) — pas un
-        second parseur. Non transitif : un prefab spawné qui en spawne un autre
-        n'est pas suivi ici. C'est un marqueur d'ergonomie ; la vérité fine du
-        budget par scène reste au build (B2)."""
+        La portée est volontairement celle de la scène : son script, les scripts
+        de ses acteurs et ceux de leurs prefabs. Un spawn n'est recensé que si
+        son nom est littéral, comme partout ailleurs dans l'éditeur. Son nombre
+        d'occurrences n'est pas un nombre d'instances à l'écran : on affiche
+        donc les deux informations sans les confondre.
+        """
         scene, project = self._scene, self._project
         if not (scene and project):
-            return set(), set()
-        placed = {a.prefab_name for a in scene.actors
-                  if getattr(a, "prefab_name", "")}
+            return {}, {}
+        placed: dict[str, int] = {}
+        for actor in scene.actors:
+            name = getattr(actor, "prefab_name", "")
+            if name:
+                placed[name] = placed.get(name, 0) + 1
 
-        names: set[str] = set()
+        scripts: set[Path] = set()
         def _add(comp):
             if comp and getattr(comp, "script", ""):
-                names.add(Path(comp.script).name)
+                scripts.add(project.asset_abs(comp.script).resolve())
         if getattr(scene, "script", ""):
-            names.add(Path(scene.script).name)
+            scripts.add(project.asset_abs(scene.script).resolve())
         prefab_by_name = {p.name: p for p in project.prefabs}
         for a in scene.actors:
             _add(a.get_component("script"))
@@ -961,153 +922,71 @@ class SceneInspector(QWidget):
             if pf:
                 _add(pf.get_component("script"))
 
-        spawned: set = set()
-        if names:
+        spawned: dict[str, list] = {}
+        if scripts:
             from scripting.refactor import find_call_sites_in_project
             from scripting.api import DOMAIN_PREFAB
             for site in find_call_sites_in_project(project, DOMAIN_PREFAB):
-                if Path(str(site.path)).name in names:
-                    spawned.add(site.values.get(DOMAIN_PREFAB))
+                if site.path.resolve() in scripts:
+                    name = site.values.get(DOMAIN_PREFAB)
+                    if name:
+                        spawned.setdefault(name, []).append(site)
         return placed, spawned
 
-    def _rebuild_actor_budget(self):
-        """(Re)construit une ligne de pool par prefab du projet.
-
-        Séparée de `_refresh_actor_budget` parce qu'elles ne se déclenchent pas
-        au même moment : la LISTE des prefabs ne change qu'au chargement d'une
-        scène, alors que les plafonds se recalculent à chaque frappe."""
-        while self._pool_container.count():
-            item = self._pool_container.takeAt(0)
+    def _rebuild_scene_prefabs(self):
+        """Construit la liste compacte des prefabs utiles à cette scène."""
+        while self._prefab_scene_container.count():
+            item = self._prefab_scene_container.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self._pool_spins = {}
         if not (self._scene and self._project):
             return
 
-        prefabs = sorted(self._project.prefabs, key=lambda pf: pf.name)
-        if not prefabs:
-            lbl = QLabel(label("sceneinsp.no_prefab"))
+        placed, spawned = self._scene_prefab_usage()
+        prefab_by_name = {pf.name: pf for pf in self._project.prefabs}
+        names = sorted(set(placed) | set(spawned), key=str.casefold)
+        if not names:
+            lbl = QLabel(label("sceneinsp.no_scene_prefab"))
             lbl.setFont(QFont(T.UI, T.XS))
             lbl.setStyleSheet(f"color:{C.TEXT_MUTED};")
             lbl.setWordWrap(True)
-            self._pool_container.addWidget(lbl)
+            self._prefab_scene_container.addWidget(lbl)
             return
 
-        # Quels prefabs sont réellement EN USAGE dans cette scène — posés, ou
-        # spawnés par ses scripts (ROADMAP v0.17, « le pool visuel »). Calculé
-        # une fois au (re)chargement, pas à chaque frappe.
-        placed, spawned = self._scene_prefab_usage()
+        for name in names:
+            pf = prefab_by_name.get(name)
+            holder = QWidget(); holder.setStyleSheet("background:transparent;")
+            rows = QVBoxLayout(holder); rows.setContentsMargins(0, 2, 0, 2); rows.setSpacing(3)
+            head = QHBoxLayout(); head.setSpacing(8)
+            title = QLabel(name)
+            title.setFont(QFont(T.UI, T.SM, QFont.Weight.DemiBold))
+            title.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
+            head.addWidget(title)
+            head.addStretch(1)
+            if pf:
+                edit = QPushButton(label("sceneinsp.edit_prefab"))
+                edit.setCursor(Qt.CursorShape.PointingHandCursor)
+                edit.setStyleSheet(QSS.button_ghost)
+                edit.clicked.connect(lambda _, prefab=pf: self.edit_prefab_requested.emit(prefab))
+                head.addWidget(edit)
+            rows.addLayout(head)
 
-        for pf in prefabs:
-            group = prefab_group(pf)
-            r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(8)
-            name_lbl = self._dim_label(f"{pf.name}:")
-            name_lbl.setFixedWidth(96)
-            sp = QSpinBox()
-            sp.setRange(0, OAM_LIMIT)
-            sp.setFont(QFont(T.MONO, T.SM))
-            sp.setStyleSheet(QSS.spinbox)
-            sp.setKeyboardTracking(False)
-            sp.setValue(scene_pool_instances(self._scene, pf))
-            tip_parts = [label("sceneinsp.pool_tip", name=pf.name)]
-            if group > 1:
-                tip_parts.append(label("sceneinsp.pool_tip_parts",
-                                       n=group - 1, slots=group))
-            sp.setToolTip("\n\n".join(tip_parts))
-            sp.valueChanged.connect(
-                lambda v, name=pf.name: self._on_pool_changed(name, v))
-            # Ce que l'instance COÛTE — le pool se dit en instances, le budget
-            # se paie en slots, et confondre les deux fait déclarer huit boss
-            # à quatre parties sans voir passer trente-deux entrées.
-            cost = QLabel("")
-            cost.setFont(QFont(T.UI, T.XS))
-            cost.setStyleSheet(f"color:{C.TEXT_MUTED};")
-            # Marqueur « in use » : posé dans la scène, spawné par ses scripts,
-            # ou les deux. Muet si le prefab n'apparaît pas ici — l'auteur peut
-            # tout de même lui déclarer un pool, mais il voit qu'il est inerte.
-            in_placed, in_spawned = pf.name in placed, pf.name in spawned
-            use = QLabel("")
-            use.setFont(QFont(T.UI, T.XS))
-            if in_placed and in_spawned:
-                use.setText(label("sceneinsp.pool_use_both"))
-                use.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
-            elif in_placed:
-                use.setText(label("sceneinsp.pool_use_placed"))
-                use.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
-            elif in_spawned:
-                use.setText(label("sceneinsp.pool_use_spawned"))
-                use.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
-            r.addWidget(name_lbl); r.addWidget(sp); r.addWidget(cost)
-            r.addStretch(1); r.addWidget(use)
-            holder = QWidget(); holder.setLayout(r)
-            holder.setStyleSheet("background:transparent;")
-            self._pool_container.addWidget(holder)
-            self._pool_spins[pf.name] = (sp, cost, group)
-
-    def _refresh_actor_budget(self):
-        """Recale le compteur et les plafonds.
-
-        C'est ici que les deux postes se répondent : le maximum de chaque champ
-        est ce que les autres laissent. Rien n'est écrasé d'autorité — l'auteur
-        voit qu'il ne reste rien à prendre, il ne découvre pas qu'un pool réglé
-        hier a été rogné dans son dos."""
-        if not (self._scene and self._project):
-            return
-        b = scene_actor_budget(self._scene, self._project)
-        # Une seule faute possible depuis la révision : le total déborde des 128
-        # (`over_budget`). Le compte de niveau 1 et l'encadré de niveau 2 ne se
-        # montrent jamais ensemble — même arithmétique, deux queues de phrase.
-        common = dict(actors=b["actors"], ui=b["ui"], pool=b["pool"],
-                     used=b["used"], total=b["total"])
-        if b["over_budget"]:
-            self._lbl_actor_budget.clear()
-            self._budget_over_oam.show_text(limit=OAM_LIMIT, **common)
-        else:
-            self._lbl_actor_budget.show_text(free=b["free"], **common)
-            self._budget_over_oam.clear()
-
-        prev, self._blocking = self._blocking, True
-        try:
-            # Le champ acteurs (override) ne peut pas monter au-delà de ce que
-            # l'UI et les pools laissent ; `placed` est son plancher affiché,
-            # pas une borne — on n'interdit pas de descendre.
-            self._spin_actor_slots.setMaximum(max(0, OAM_LIMIT - b["ui"] - b["pool"]))
-            self._spin_actor_slots.setValue(self._scene.actor_slots)
-            self._lbl_slots_hint.setText(
-                label("sceneinsp.slots_hint_auto", placed=b['placed'])
-                if self._scene.actor_slots == 0
-                else label("sceneinsp.slots_hint", placed=b['placed']))
-            others = b["pool"]
-            for name, (sp, cost, group) in self._pool_spins.items():
-                mine = int(self._scene.prefab_pools.get(name, 0) or 0)
-                room = OAM_LIMIT - b["actors"] - b["ui"] - (others - mine * group)
-                sp.setMaximum(max(mine, room // group if group else 0))
-                sp.setValue(mine)
-                cost.setText(
-                    label("sceneinsp.pool_cost_grouped", group=group, slots=mine * group)
-                    if group > 1
-                    else (label("sceneinsp.pool_cost_single", n=mine) if mine else ""))
-        finally:
-            self._blocking = prev
-
-    def _on_actor_slots_changed(self, value: int):
-        self._set_scene_field("actor_slots", int(value))
-        self._refresh_actor_budget()
-
-    def _on_pool_changed(self, prefab_name: str, value: int):
-        """Un pool se règle par prefab. Le champ écrit un dict NEUF plutôt que
-        de muter celui de la scène : `SetFieldCmd` compare l'avant et l'après,
-        et muter en place lui ferait voir deux fois la même référence — donc un
-        undo qui ne défait rien."""
-        if self._blocking or not self._scene:
-            return
-        pools = dict(self._scene.prefab_pools)
-        if int(value) > 0:
-            pools[prefab_name] = int(value)
-        else:
-            pools.pop(prefab_name, None)
-        self._set_scene_field("prefab_pools", pools)
-        self._refresh_actor_budget()
+            details = []
+            if name in placed:
+                details.append(label("sceneinsp.prefab_placed", count=placed[name]))
+            sites = spawned.get(name, [])
+            if sites:
+                details.append(label("sceneinsp.prefab_spawn_calls", count=len(sites)))
+            detail = QLabel(" · ".join(details))
+            detail.setFont(QFont(T.UI, T.XS)); detail.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            rows.addWidget(detail)
+            for site in sites:
+                caller = QPushButton(label("sceneinsp.edit_caller", script=site.path.name, line=site.line))
+                caller.setCursor(Qt.CursorShape.PointingHandCursor)
+                caller.setStyleSheet(QSS.button_ghost)
+                caller.clicked.connect(lambda _, p=str(site.path), l=site.line: self.open_ref.emit(p, l))
+                rows.addWidget(caller)
+            self._prefab_scene_container.addWidget(holder)
 
     # ── Palettes actives ────────────────────────────────────────────
 

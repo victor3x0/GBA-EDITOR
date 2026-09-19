@@ -24,7 +24,7 @@ from typing import Optional
 from core.models.palette import OWN_PAL_BANK
 from core.models.scene import Scene, scene_font_pal_bank
 from core.project import Project
-from codegen.actor_budget import prefab_pool_instances
+from codegen.oam_alloc import scene_pool_instances
 from core.models.gba_color import extract_palette_from_image
 from core.models.gba_color import RESERVED_SLOT_COLOR
 from core.palette_presets import DEFAULT_PAL_BANK_COLORS
@@ -138,9 +138,12 @@ def effective_palette_colors(p: Project, pal_bank: int, png_path,
 
 # ── Sources d'assets « palette propre » d'une scène ──────────────────────────
 
-def _prefab_sprite(p: Project, pf):
+def _owner_sprite(p: Project, owner):
+    """Le sprite du premier `SpriteComponent` d'un porteur (prefab OU partie) —
+    None s'il n'en a pas. Un prefab segmenté a un sprite par partie, chacune
+    pouvant porter sa propre palette."""
     from core.models.components import SpriteComponent
-    comp = next((c for c in pf.components
+    comp = next((c for c in getattr(owner, "components", [])
                  if isinstance(c, SpriteComponent) and c.sprite_name), None)
     return p.get_sprite(comp.sprite_name) if comp else None
 
@@ -205,8 +208,8 @@ def ui_image_sprite_pools(p: Project) -> dict:
 
 def _actor_own_palettes(p: Project, scene: Scene) -> list[list[int]]:
     """Palettes propres des ACTEURS de la scène en mode OWN (métadonnées
-    sprite.own_palette ; pas les prefabs — alloués globalement, cf.
-    prefab_own_slots)."""
+    sprite.own_palette). Les prefabs poolés de la scène s'y ajoutent via
+    `_scene_prefab_own_palettes` — même pool de dédup, cf. `scene_bank_layout`."""
     out: list[list[int]] = []
     for a in scene.actors:
         if not a.active or getattr(a, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
@@ -220,46 +223,41 @@ def _actor_own_palettes(p: Project, scene: Scene) -> list[list[int]]:
     return out
 
 
-def _prefab_own_palettes(p: Project) -> list[list[int]]:
-    """Palettes propres distinctes des prefabs poolés en mode OWN (métadonnées ;
-    ordre déterministe par ordre du catalogue de prefabs)."""
+def _scene_prefab_own_palettes(p: Project, scene: Scene) -> list[list[int]]:
+    """Palettes propres (mode OWN) des prefabs que CETTE scène poole — racine ET
+    parties (ROADMAP v0.17 T5).
+
+    Per-scène depuis que le spawn l'est (T1) : une scène ne réserve de banque OBJ
+    que pour les prefabs qu'ELLE spawne, dans SES slots libres, au lieu du slot
+    commun à toutes les scènes qu'imposait l'ancien `spawn_X` global. Un prefab
+    poolé dans deux scènes peut donc occuper une banque différente dans chacune —
+    les tuiles 4bpp ne gravent qu'un index 0-15, la banque venant de `pal_bank`
+    à l'OAM (posé au spawn depuis le layout de la scène).
+
+    Racine ET parties : une partie de prefab segmenté (ROADMAP v0.23) porte son
+    propre sprite, donc sa propre palette — l'allocation globale d'avant ne
+    réservait que la racine, et une partie en mode propre retombait en silence
+    sur la banque 0. Ordre déterministe (catalogue de prefabs, racine puis
+    parties), dédup par couleurs."""
     out: list[list[int]] = []
     seen: set[tuple] = set()
-    for pf in p.prefabs:
-        if (prefab_pool_instances(p, pf) <= 0
-                or getattr(pf, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK):
-            continue
-        cols = _sprite_own_palette(_prefab_sprite(p, pf))
+
+    def _add(owner):
+        if getattr(owner, "pal_bank", OWN_PAL_BANK) != OWN_PAL_BANK:
+            return
+        cols = _sprite_own_palette(_owner_sprite(p, owner))
         key = tuple(cols)
         if cols and key not in seen:
             seen.add(key)
             out.append(cols)
+
+    for pf in p.prefabs:
+        if scene_pool_instances(scene, pf) <= 0:
+            continue
+        _add(pf)
+        for part in (getattr(pf, "children", []) or []):
+            _add(part)
     return out
-
-
-def prefab_own_slots(p: Project) -> dict[tuple, Optional[int]]:
-    """Un prefab poolé peut spawner dans N'IMPORTE QUELLE scène (spawn_X est
-    global) : sa palette propre doit occuper le MÊME slot matériel partout.
-    On assigne donc chaque palette propre de prefab à un slot libre DANS
-    TOUTES les scènes (les plus bas d'abord). None si aucun slot commun libre
-    (débordement -> avertissement validateur + fallback banque 0)."""
-    scene_named: list[set[int]] = []
-    for scene in p.scenes:
-        occ = set()
-        for i, name in enumerate(getattr(scene, "active_obj_palettes", [])[:16]):
-            if name and p.get_palette(name):
-                occ.add(i)
-        scene_named.append(occ)
-    # PAS de fallback `or list(range(16))` ici : si aucun slot n'est libre dans
-    # TOUTES les scènes, assigner quand même des slots (0-15) placerait la
-    # palette du prefab sur une banque occupée par une palette référencée dans
-    # certaines scènes -> mauvaises couleurs silencieuses. On laisse plutôt
-    # `next(it, None)` renvoyer None (débordement) : bank_index retombe sur la
-    # banque 0 et le validateur avertit (_check_palette_bank_overflow).
-    globally_free = [j for j in range(16)
-                     if all(j not in occ for occ in scene_named)]
-    it = iter(globally_free)
-    return {tuple(cols): next(it, None) for cols in _prefab_own_palettes(p)}
 
 
 def _bg_own_sources(p: Project, scene: Scene) -> list[Path]:
@@ -486,9 +484,9 @@ def _own_bank_content(cols, pool: str) -> list[int]:
 def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     """Alloue les 16 banques d'un pool ("obj"|"bg") pour une scène :
     (1) palettes référencées à leur index fixe ; (2) pour OBJ, palettes propres
-    des prefabs poolés à leur slot GLOBAL (cf. prefab_own_slots — même partout
-    car spawn_X est global) ; (3) palettes propres des acteurs/layers de la
-    scène dans les slots restants (dédup par couleurs)."""
+    des acteurs, des prefabs QUE LA SCÈNE POOLE (per-scène depuis T1, cf.
+    `_scene_prefab_own_palettes`) et des images d'UI, dans les slots libres
+    (dédup par couleurs) ; (3) pour BG, fonds/animés/polices."""
     # Mémoïsation à portée de contexte (cf. `scene_layout_cache`) : sans contexte
     # actif, `_layout_cache` est None et rien n'est caché — le build recalcule.
     if _layout_cache is not None:
@@ -502,11 +500,15 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
     # la banque dépend de la FORME de la source, cf. `_own_bank_content`.
     if pool == "obj":
         active = list(getattr(scene, "active_obj_palettes", []))[:16]
+        # Acteurs, prefabs poolés PAR CETTE SCÈNE (T5) et images d'UI : tous des
+        # consommateurs de palette propre de la scène, même pool de dédup. Depuis
+        # que le spawn est per-scène, un prefab n'est plus un cas à part avec un
+        # slot global — c'est un OWN de plus, alloué dans les slots libres d'ici.
         own_color_lists = [
             (c, _own_bank_content(c, "obj"))                      # métadonnées sprite
             for c in (_actor_own_palettes(p, scene)
+                      + _scene_prefab_own_palettes(p, scene)
                       + ui_image_own_palettes(p, scene, "obj"))]
-        pf_slots = prefab_own_slots(p)
         encoded_assets = []
     else:
         active = list(getattr(scene, "active_bg_palettes", []))[:16]
@@ -523,7 +525,6 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
             # Une police partageant ses couleurs avec un fond partage sa banque.
             + [(cols, cols) for _n, pb, cols in _scene_font_palettes(p, scene)
                if pb == OWN_PAL_BANK])
-        pf_slots = {}
         # Layers + animés posés dessus + fonds de conteneurs d'UI : tous
         # affichent des tuiles qui citent des sous-palettes, tous ont donc besoin
         # de leur bloc. Les animés viennent juste après leurs hôtes — l'ordre
@@ -540,11 +541,6 @@ def scene_bank_layout(p: Project, scene: Scene, pool: str) -> SceneBankLayout:
             slots[i] = list(bank.colors)
 
     own_slot: dict[tuple, Optional[int]] = {}
-    # Prefabs poolés : slot global (réservé dans cette scène aussi).
-    for key, slot in pf_slots.items():
-        own_slot[key] = slot
-        if slot is not None and slots[slot] is None:
-            slots[slot] = _own_bank_content(key, pool)
 
     # Fonds compressés (OWN) : bloc de banques CONTIGUËS par asset (N sous-
     # palettes), dédupliqué par contenu exact. Alloué avant les palettes

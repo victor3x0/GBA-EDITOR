@@ -243,21 +243,12 @@ class Prefab(Resource, ComponentOwnerMixin):
     # template — jamais posé nulle part — et ne sont jamais sérialisés ici
     # (cf. to_dict) : c'est le TYPE qui est réutilisé, pas le sens de la pose.
     actor: "Actor" = field(default_factory=lambda: Actor(name="Prefab"))
-    # HÉRITÉ (ROADMAP v0.17) — le pool se déclare désormais sur la SCÈNE
-    # (`Scene.prefab_pools`), parce que combien d'exemplaires vivent en même
-    # temps est une propriété du niveau, pas du template.
-    #
-    # Le champ n'est plus édité nulle part et plus aucun site du build ne le
-    # lit : tout passe par `codegen/actor_budget.prefab_pool_instances()`, qui
-    # ne s'en sert QUE comme repli, pour un prefab dont aucune scène ne déclare
-    # de pool. C'est le patron déjà employé par `WindowSlot.is_obj` plus bas —
-    # « ni migré ni cassé, juste un défaut qui lit l'ancienne clé si la nouvelle
-    # est absente » — sans quoi tout projet antérieur verrait ses prefabs cesser
-    # silencieusement d'être spawnables.
-    #
-    # Il disparaîtra avec la moitié codegen de la v0.17 (compilation par scène),
-    # pas avant : le supprimer aujourd'hui viderait les pools existants.
-    max_instances: int = 0   # 0 = non-spawnable ; N = copies simultanées max
+    # (Le pool se déclare sur la SCÈNE — `Scene.prefab_pools`, ROADMAP v0.17 —
+    # parce que combien d'exemplaires vivent en même temps est une propriété du
+    # niveau, pas du template. L'ancien champ `Prefab.max_instances` a été retiré
+    # en T7 : la compilation par scène l'a rendu inerte — plus aucun repli ne le
+    # lisait — et le garder aurait laissé croire qu'il pilotait encore un pool.
+    # `from_dict` ignore la clé si un vieux projet la porte encore.)
     # Le SOUS-ARBRE du template (ROADMAP v0.23) : un prefab est un arbre, pas
     # un objet plat — c'est ce que le `PackedScene` de Godot a de bon, et on
     # n'en prend que ceci. Une chenille à cinq anneaux ou un mini-boss segmenté
@@ -314,7 +305,6 @@ class Prefab(Resource, ComponentOwnerMixin):
             "name":             self.name,
             "components":       components_to_list(self.actor.components),
             "pal_bank":         self.actor.pal_bank,
-            "max_instances":    self.max_instances,
             # Absent tant que le prefab est plat — c'est à dire pour tous ceux
             # d'avant la v0.23.
             **({"children": [c.to_dict() for c in self.children]} if self.children else {}),
@@ -333,7 +323,8 @@ class Prefab(Resource, ComponentOwnerMixin):
         return cls(
             name          = name,
             actor         = actor,
-            max_instances = d.get("max_instances", 0),
+            # `d.get("max_instances")` d'un vieux projet est simplement ignoré :
+            # le champ n'existe plus (retiré en T7), le pool vit sur la scène.
             # `Actor` est défini plus bas dans ce fichier : la référence n'est
             # résolue qu'à l'appel, pas à la définition de la classe.
             children      = [Actor.from_dict(x) for x in (d.get("children") or [])],

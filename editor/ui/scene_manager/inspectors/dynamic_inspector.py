@@ -166,6 +166,11 @@ class DynamicInspector(QWidget):
         insp = SceneInspector()
         insp.changed.connect(self.changed)
         insp.slot_assigned.connect(self.slot_assigned)
+        insp.edit_prefab_requested.connect(
+            lambda prefab: self.show_prefab(prefab, self._project))
+        insp.open_ref.connect(
+            lambda path, line: self._script_open_fn(path, line)
+            if self._script_open_fn else None)
         # Le nom de la scène peut changer via un rename interne (`changed`) :
         # tenir l'en-tête à jour. Branché ICI, une fois — `show_scene` empilait
         # auparavant une connexion identique à chaque appel.

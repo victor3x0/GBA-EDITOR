@@ -222,6 +222,11 @@ class CodegenContext:
     # avec la boucle de pool de main.c soit impossible.
     is_pooled: bool = False
     pool_size: int = 0
+    # Symbole C de la scène qui compile ce script (ROADMAP v0.17, T1). Les pools
+    # étant per-scène, `actor.spawn("Bullet")` cible `spawn_<Scène>_Bullet` : il
+    # faut donc savoir DANS QUELLE scène on compile. "" pour les unités partagées
+    # (caméras) qui ne peuvent pas résoudre une scène — spawn y est refusé.
+    scene_sym: str = ""
     scene_names: list[str] = field(default_factory=list)  # noms de scènes du projet
     sfx_component_name: Optional[str] = None  # Sfx lié au SoundFxComponent de cet actor (si présent)
     # Les triggers AUTOMATIQUES (on_spawn/on_destroy/on_button_*) ne passent
@@ -1240,6 +1245,13 @@ class CodeGen:
                 and isinstance(s.value.func, ExprName)
                 and s.value.func.name == "get_actor"
             ) or (
+                # `local b = actor.spawn("X", pos)` tient l'instance née — un
+                # `Actor*` (ROADMAP v0.17 T6), donc `b:set_velocity(...)` chaîne
+                # et `if not b then` teste vraiment le pool plein (NULL).
+                s.value is not None
+                and isinstance(s.value, ExprCall)
+                and self._call_key(s.value.func) == "actor.spawn"
+            ) or (
                 # `local bras = self.bras` tient un acteur, exactement comme
                 # `get_actor(...)` — donc un `Actor*` et non un `int`, sans quoi
                 # `bras:destroy()` ne compilerait pas (ROADMAP v0.23).
@@ -1888,11 +1900,20 @@ class CodeGen:
         return f"({ref} != 0)" if ref else "0"
 
     def _emit_actor_spawn(self, args: list) -> str:
-        """actor.spawn("PrefabName", pos) → spawn_PrefabName(pos.x, pos.y)"""
+        """actor.spawn("PrefabName", pos) → spawn_<Scène>_PrefabName(pos.x, pos.y)
+
+        Le pool est per-scène (ROADMAP v0.17, T1) : la fonction de spawn appartient
+        à la scène qui compile ce script, d'où le préfixe. Une unité partagée
+        (caméra, `scene_sym` vide) n'a pas de scène à cibler — refusé."""
         if len(args) < 2 or not isinstance(args[0], ExprString):
             return "/* actor.spawn : nom de prefab non littéral */"
-        prefab_name = args[0].value
-        sym = prefab_name.replace(" ", "_")
+        if not self.ctx.scene_sym:
+            self.warnings.append(
+                "actor.spawn hors d'une scène (script partagé) : le pool est "
+                "per-scène, aucune fonction de spawn à cibler.")
+            return "/* actor.spawn : pas de scène (script partagé) */"
+        from codegen.c_names import sym as c_sym
+        sym = f"{self.ctx.scene_sym}_{c_sym(args[0].value)}"
         pos = args[1]
         # vec2(x, y) littéral → ses deux composantes une fois, pas d'expression
         # dupliquée ; toute autre expression vec2 (variable, get_position()…)

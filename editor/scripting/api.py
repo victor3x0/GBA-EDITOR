@@ -518,8 +518,8 @@ RUNTIME_API: dict[str, ApiFunc] = {
     "actor.spawn": ApiFunc(
         lua_name="actor.spawn", c_func="_spawn",     # résolu par codegen
         params=[Param("prefab", PARAM_STR, DOMAIN_PREFAB), Param("position", PARAM_VEC2)],
-        ret="void",
-        doc='Instancie un prefab poolé à `position` (un vec2). Ex: actor.spawn("Bullet", vec2(116, 76)).',
+        ret="actor",   # rend l'instance née, ou nil si le pool est plein (ROADMAP v0.17 T6)
+        doc='Instancie un prefab poolé à `position` (un vec2) et rend l\'instance née, ou nil si le pool est plein. Ex: local b = actor.spawn("Bullet", vec2(116, 76)); if b then b:set_velocity(0, -2) end.',
     ),
     "get_actor": ApiFunc(
         lua_name="get_actor", c_func="_get_actor",   # résolu par codegen
