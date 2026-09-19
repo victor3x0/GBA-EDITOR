@@ -1,6 +1,7 @@
 """SceneInspector — background layers, paramètres d'affichage, script de scène."""
 from __future__ import annotations
 from typing import Optional
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
@@ -464,29 +465,22 @@ class SceneInspector(QWidget):
 
         cl.addWidget(ui_card)
 
-        # ── Carte Actor budget — les 128 entrées de l'OAM, réparties ────
-        # Deux postes et UN plafond (ROADMAP v0.17) : ce que la scène POSE et
-        # ce qu'elle SPAWNE se partagent le même matériel.
-        #
-        # Les deux champs se répondent par leur MAXIMUM, pas en s'écrasant l'un
-        # l'autre : monter les pools rabaisse le plafond du champ acteurs, et
-        # réciproquement. Pousser une valeur d'autorité aurait détruit en
-        # silence un pool réglé plus tôt — ici l'auteur voit simplement qu'il
-        # ne reste rien à prendre.
+        # ── Carte Actor budget — les 128 entrées de l'OAM, dérivées ─────
+        # Budget DÉRIVÉ (ROADMAP v0.17, révision 2026-09-19) : ce que la scène
+        # POSE et l'UI qu'elle affiche se COMPTENT, le pool est ce qui reste.
+        # Le plafond des pools se recale sur les deux autres postes ; pousser
+        # une valeur d'autorité détruirait en silence un pool réglé plus tôt —
+        # ici l'auteur voit simplement qu'il ne reste rien à prendre.
         budget_card = CollapsibleCard(label("sceneinsp.card.budget"), color=C.ACCENT_WARM)
         budget_inner = budget_card.body_layout
 
         # Niveau 1 : le compte, toujours affiché. Niveau 2 : un encadré
-        # (ton `build`) quand le budget déborde — deux formes du même
-        # débordement (le matériel refuse, ou l'auteur a réservé moins que ce
-        # qu'il a posé), donc deux clés plutôt qu'une case à cocher qui
-        # changerait le sens du texte sous les yeux.
+        # (ton `build`) quand le total déborde des 128 — une seule faute depuis
+        # la révision, la réservation ayant disparu (plus de `over_placed`).
         self._lbl_actor_budget = note(budget_inner, "scene.budget.count")
         self._lbl_actor_budget.setFont(QFont(T.MONO, T.SM))
         self._budget_over_oam = notice(
             "scene.budget.over_oam", self._lbl_actor_budget, budget_inner)
-        self._budget_over_placed = notice(
-            "scene.budget.over_placed", self._lbl_actor_budget, budget_inner)
 
         row_slots = QHBoxLayout()
         row_slots.setContentsMargins(0, 4, 0, 0); row_slots.setSpacing(8)
@@ -939,6 +933,43 @@ class SceneInspector(QWidget):
 
     # ── Actor budget — les 128 entrées de l'OAM, réparties ─────────
 
+    def _scene_prefab_usage(self) -> tuple[set, set]:
+        """(prefabs POSÉS dans la scène, prefabs SPAWNÉS par ses scripts).
+
+        « Ses scripts » = le script de la scène, ceux de ses acteurs, et les
+        templates des prefabs qu'elle pose. La lecture des spawns est la même
+        que celle de « Spawné par » (`iter_call_sites(DOMAIN_PREFAB)`) — pas un
+        second parseur. Non transitif : un prefab spawné qui en spawne un autre
+        n'est pas suivi ici. C'est un marqueur d'ergonomie ; la vérité fine du
+        budget par scène reste au build (B2)."""
+        scene, project = self._scene, self._project
+        if not (scene and project):
+            return set(), set()
+        placed = {a.prefab_name for a in scene.actors
+                  if getattr(a, "prefab_name", "")}
+
+        names: set[str] = set()
+        def _add(comp):
+            if comp and getattr(comp, "script", ""):
+                names.add(Path(comp.script).name)
+        if getattr(scene, "script", ""):
+            names.add(Path(scene.script).name)
+        prefab_by_name = {p.name: p for p in project.prefabs}
+        for a in scene.actors:
+            _add(a.get_component("script"))
+            pf = prefab_by_name.get(getattr(a, "prefab_name", ""))
+            if pf:
+                _add(pf.get_component("script"))
+
+        spawned: set = set()
+        if names:
+            from scripting.refactor import find_call_sites_in_project
+            from scripting.api import DOMAIN_PREFAB
+            for site in find_call_sites_in_project(project, DOMAIN_PREFAB):
+                if Path(str(site.path)).name in names:
+                    spawned.add(site.values.get(DOMAIN_PREFAB))
+        return placed, spawned
+
     def _rebuild_actor_budget(self):
         """(Re)construit une ligne de pool par prefab du projet.
 
@@ -961,6 +992,11 @@ class SceneInspector(QWidget):
             lbl.setWordWrap(True)
             self._pool_container.addWidget(lbl)
             return
+
+        # Quels prefabs sont réellement EN USAGE dans cette scène — posés, ou
+        # spawnés par ses scripts (ROADMAP v0.17, « le pool visuel »). Calculé
+        # une fois au (re)chargement, pas à chaque frappe.
+        placed, spawned = self._scene_prefab_usage()
 
         for pf in prefabs:
             group = prefab_group(pf)
@@ -986,8 +1022,23 @@ class SceneInspector(QWidget):
             cost = QLabel("")
             cost.setFont(QFont(T.UI, T.XS))
             cost.setStyleSheet(f"color:{C.TEXT_MUTED};")
+            # Marqueur « in use » : posé dans la scène, spawné par ses scripts,
+            # ou les deux. Muet si le prefab n'apparaît pas ici — l'auteur peut
+            # tout de même lui déclarer un pool, mais il voit qu'il est inerte.
+            in_placed, in_spawned = pf.name in placed, pf.name in spawned
+            use = QLabel("")
+            use.setFont(QFont(T.UI, T.XS))
+            if in_placed and in_spawned:
+                use.setText(label("sceneinsp.pool_use_both"))
+                use.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
+            elif in_placed:
+                use.setText(label("sceneinsp.pool_use_placed"))
+                use.setStyleSheet(f"color:{icons.COLOR_PREFAB};")
+            elif in_spawned:
+                use.setText(label("sceneinsp.pool_use_spawned"))
+                use.setStyleSheet(f"color:{icons.COLOR_SCRIPT};")
             r.addWidget(name_lbl); r.addWidget(sp); r.addWidget(cost)
-            r.addStretch(1)
+            r.addStretch(1); r.addWidget(use)
             holder = QWidget(); holder.setLayout(r)
             holder.setStyleSheet("background:transparent;")
             self._pool_container.addWidget(holder)
@@ -1003,32 +1054,24 @@ class SceneInspector(QWidget):
         if not (self._scene and self._project):
             return
         b = scene_actor_budget(self._scene, self._project)
-        # Une seule des trois se montre à la fois — même compte, trois queues
-        # de phrase mutuellement exclusives (cf. notices.json). `over_budget`
-        # est un vrai débordement matériel, `over_placed` un désaccord entre
-        # ce qui est réservé et ce qui est posé : deux fautes différentes,
-        # jamais dites ensemble.
-        common = dict(reserved=b["reserved"], pool=b["pool"],
+        # Une seule faute possible depuis la révision : le total déborde des 128
+        # (`over_budget`). Le compte de niveau 1 et l'encadré de niveau 2 ne se
+        # montrent jamais ensemble — même arithmétique, deux queues de phrase.
+        common = dict(actors=b["actors"], ui=b["ui"], pool=b["pool"],
                      used=b["used"], total=b["total"])
         if b["over_budget"]:
             self._lbl_actor_budget.clear()
             self._budget_over_oam.show_text(limit=OAM_LIMIT, **common)
-            self._budget_over_placed.clear()
-        elif b["over_placed"]:
-            self._lbl_actor_budget.clear()
-            self._budget_over_oam.clear()
-            self._budget_over_placed.show_text(placed=b["placed"], **common)
         else:
             self._lbl_actor_budget.show_text(free=b["free"], **common)
             self._budget_over_oam.clear()
-            self._budget_over_placed.clear()
 
         prev, self._blocking = self._blocking, True
         try:
-            # Le champ acteurs ne peut pas monter au-delà de ce que les pools
-            # laissent ; `placed` est son plancher affiché, pas une borne — on
-            # n'interdit pas de descendre, le validateur le dit.
-            self._spin_actor_slots.setMaximum(max(0, OAM_LIMIT - b["pool"]))
+            # Le champ acteurs (override) ne peut pas monter au-delà de ce que
+            # l'UI et les pools laissent ; `placed` est son plancher affiché,
+            # pas une borne — on n'interdit pas de descendre.
+            self._spin_actor_slots.setMaximum(max(0, OAM_LIMIT - b["ui"] - b["pool"]))
             self._spin_actor_slots.setValue(self._scene.actor_slots)
             self._lbl_slots_hint.setText(
                 label("sceneinsp.slots_hint_auto", placed=b['placed'])
@@ -1037,7 +1080,7 @@ class SceneInspector(QWidget):
             others = b["pool"]
             for name, (sp, cost, group) in self._pool_spins.items():
                 mine = int(self._scene.prefab_pools.get(name, 0) or 0)
-                room = OAM_LIMIT - b["reserved"] - (others - mine * group)
+                room = OAM_LIMIT - b["actors"] - b["ui"] - (others - mine * group)
                 sp.setMaximum(max(mine, room // group if group else 0))
                 sp.setValue(mine)
                 cost.setText(

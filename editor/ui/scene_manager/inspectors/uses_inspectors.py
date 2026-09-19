@@ -198,6 +198,7 @@ class PrefabUsesInspector(_UsesInspectorBase):
         └────────────────────────────────────────────────┘
     """
     edit_requested = pyqtSignal(object)   # Prefab — demande d'édition
+    open_ref       = pyqtSignal(str, int) # (chemin de script, ligne) — sauter au spawn
 
     _HEADER_COLOR = icons.COLOR_PREFAB
     _HEADER_BG_ALPHA = "30"
@@ -219,19 +220,39 @@ class PrefabUsesInspector(_UsesInspectorBase):
         self._name_lbl.setText(prefab.name)
         self._clear_list()
 
-        # Parcourir toutes les scènes pour trouver les instances liées
-        found_any = False
+        # « Utilisé par » : les instances POSÉES dans une scène.
+        found = False
         for scene in project.scenes:
             linked = [a for a in scene.actors if a.prefab_name == prefab.name]
             if not linked:
                 continue
-            found_any = True
+            found = True
             self._add_group_row("◈", scene.name, "#7ecfff", count=len(linked))
             for actor in linked:
                 # Clic → sélectionner l'actor dans la scène active
                 self._add_leaf_row(actor.name, lambda a=actor: get_bus().select(a))
 
-        if not found_any:
+        # « Spawné par » : les scripts qui appellent `actor.spawn("<ce prefab>")`.
+        # Troisième lien de dépendance, distinct des instances posées : le nom
+        # du prefab est un littéral obligatoire, donc lisible statiquement sans
+        # rien exécuter (ROADMAP v0.17). Même lecture que celle qui *propose* le
+        # pool à la scène — pas un second parseur.
+        from scripting.refactor import find_call_sites_in_project
+        from scripting.api import DOMAIN_PREFAB
+        by_script: dict = {}
+        for site in find_call_sites_in_project(project, DOMAIN_PREFAB):
+            if site.values.get(DOMAIN_PREFAB) == prefab.name:
+                by_script.setdefault(str(site.path), []).append(site.line)
+        if by_script:
+            found = True
+            self._add_group_row("↗", label('uses.spawned_by'), icons.COLOR_SCRIPT)
+            for path, lines in by_script.items():
+                for line in sorted(lines):
+                    leaf = f"{Path(path).name} · {label('uses.spawn_line', line=line)}"
+                    self._add_leaf_row(
+                        leaf, lambda p=path, l=line: self.open_ref.emit(p, l))
+
+        if not found:
             self._add_empty_row(label('uses.no_instance_in_the_project'))
 
         self._list_layout.addStretch()

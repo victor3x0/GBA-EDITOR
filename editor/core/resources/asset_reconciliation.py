@@ -855,13 +855,18 @@ def reconcile_backgrounds(project):
     tileset → compression recalculée depuis le PNG. (3) Fonds dont le PNG a été
     RETOUCHÉ éditeur fermé → compression refaite depuis les nouveaux pixels.
 
-    (2) et (3) délèguent à `reconcile_background`, par asset."""
+    (2) et (3) délèguent à `reconcile_background`, par asset.
+
+    Sautée quand l'empreinte du dossier n'a pas bougé (cf. `reconcile_sprites`)."""
     d = project.background_images_dir
+    if project.reconcile_manifest.matches(d, IMAGE_FILE_EXTS):
+        return
     for f in (sorted(d.glob("*")) if d.exists() else []):
         if f.is_file() and f.suffix.lower() in IMAGE_FILE_EXTS:
             sync_background_png(project, f)
     for ba in list(project.backgrounds):
         reconcile_background(project, ba)
+    project.reconcile_manifest.record(d, IMAGE_FILE_EXTS)
 
 
 def reconcile_sprites(project):
@@ -875,25 +880,41 @@ def reconcile_sprites(project):
     Pendant de `reconcile_backgrounds`. La passe (1) y manquait : le watcher
     crée bien un sprite quand un PNG apparaît pendant que l'éditeur tourne, mais
     le même fichier déposé — ou renommé — éditeur fermé n'était vu par
-    personne."""
+    personne.
+
+    Sautée quand l'empreinte du dossier n'a pas bougé depuis le dernier
+    rattrapage (cf. `ReconcileManifest`) : la passe est idempotente, la refaire
+    à vide ne trouverait rien."""
     d = project.sprites_dir
+    if project.reconcile_manifest.matches(d, IMAGE_FILE_EXTS):
+        return
     for f in (sorted(d.glob("*")) if d.exists() else []):
         if f.is_file() and f.suffix.lower() in IMAGE_FILE_EXTS:
             sync_sprite_png(project, f)
     for sp in list(project.sprites):
         reconcile_sprite(project, sp)
+    project.reconcile_manifest.record(d, IMAGE_FILE_EXTS)
 
 
 def reconcile_sfx_and_music(project):
     """Crée les sidecars manquants pour les fichiers audio bruts déjà présents
-    dans assets/sfx/ et assets/music/."""
+    dans assets/sfx/ et assets/music/.
+
+    Sautée quand les deux dossiers ont l'empreinte de leur dernier rattrapage
+    (cf. `reconcile_sprites`) ; sinon les deux tournent et se réenregistrent."""
     from core.models.audio import SFX_FILE_EXTS, MUSIC_FILE_EXTS
+    manifest = project.reconcile_manifest
+    if (manifest.matches(project.sfx_dir, SFX_FILE_EXTS)
+            and manifest.matches(project.music_dir, MUSIC_FILE_EXTS)):
+        return
     for f in sorted(project.sfx_dir.glob("*")) if project.sfx_dir.exists() else []:
         if f.is_file() and f.suffix.lower() in SFX_FILE_EXTS:
             sync_sfx_file(project, f)
     for f in sorted(project.music_dir.glob("*")) if project.music_dir.exists() else []:
         if f.is_file() and f.suffix.lower() in MUSIC_FILE_EXTS:
             sync_music_file(project, f)
+    manifest.record(project.sfx_dir, SFX_FILE_EXTS)
+    manifest.record(project.music_dir, MUSIC_FILE_EXTS)
 
 
 def reconcile_fonts(project):

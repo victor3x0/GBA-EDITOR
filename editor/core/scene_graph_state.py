@@ -28,13 +28,13 @@ class SceneGraphState:
     garantit jamais une scène morte.
     """
 
-    _VERSION = 2
+    _VERSION = 3
 
     def __init__(self, project_root: Path):
         self._path = Path(project_root) / "project" / "editor" / "scene-graph.json"
         self._data: dict = {"version": self._VERSION, "scene_positions": {},
                             "missing_positions": {}, "scene_previews": {}, "edge_styles": {}, "edge_notes": {},
-                            "groups": {}}
+                            "groups": {}, "notes": {}}
         self._load()
 
     def _load(self) -> None:
@@ -48,13 +48,15 @@ class SceneGraphState:
         edge_styles = raw.get("edge_styles") if isinstance(raw, dict) else None
         edge_notes = raw.get("edge_notes") if isinstance(raw, dict) else None
         groups = raw.get("groups") if isinstance(raw, dict) else None
+        notes = raw.get("notes") if isinstance(raw, dict) else None
         self._data = {"version": self._VERSION,
                       "scene_positions": positions if isinstance(positions, dict) else {},
                       "missing_positions": missing_positions if isinstance(missing_positions, dict) else {},
                       "scene_previews": previews if isinstance(previews, dict) else {},
                       "edge_styles": edge_styles if isinstance(edge_styles, dict) else {},
                       "edge_notes": edge_notes if isinstance(edge_notes, dict) else {},
-                      "groups": groups if isinstance(groups, dict) else {}}
+                      "groups": groups if isinstance(groups, dict) else {},
+                      "notes": notes if isinstance(notes, dict) else {}}
 
     def scene_position(self, name: str) -> tuple[float, float] | None:
         raw = self._data["scene_positions"].get(name)
@@ -271,6 +273,68 @@ class SceneGraphState:
         if isinstance(current, list) and current == new:
             return False
         self._group(group_id)["frame"] = new
+        self.save()
+        return True
+
+    # ── Notes libres du Graphe ───────────────────────────────────────
+    #
+    # Les notes ne représentent rien dans le jeu : elles vivent uniquement dans
+    # le sidecar du graphe, avec leur géométrie et leur apparence éditoriales.
+
+    def notes(self) -> dict[str, dict]:
+        """Notes valides, indexées par identifiant stable."""
+        out: dict[str, dict] = {}
+        for note_id, value in self._data["notes"].items():
+            if isinstance(value, dict):
+                out[str(note_id)] = value.copy()
+        return out
+
+    def create_note(self, note_id: str, x: float, y: float) -> bool:
+        if note_id in self._data["notes"]:
+            return False
+        self._data["notes"][note_id] = {"title": "Note", "text": "",
+                                        "color": "#FFFFFF", "collapsed": False,
+                                        "position": [float(x), float(y)]}
+        self.save()
+        return True
+
+    def update_note(self, note_id: str, **values) -> bool:
+        note = self._data["notes"].get(note_id)
+        if not isinstance(note, dict):
+            return False
+        changed = False
+        for key in ("title", "text", "color", "collapsed"):
+            if key not in values:
+                continue
+            value = values[key]
+            value = bool(value) if key == "collapsed" else str(value or "")
+            if note.get(key) != value:
+                note[key] = value
+                changed = True
+        if changed:
+            self.save()
+        return changed
+
+    def note_position(self, note_id: str) -> tuple[float, float] | None:
+        note = self._data["notes"].get(note_id, {})
+        raw = note.get("position") if isinstance(note, dict) else None
+        if isinstance(raw, (list, tuple)) and len(raw) == 2:
+            return float(raw[0]), float(raw[1])
+        return None
+
+    def set_note_position(self, note_id: str, x: float, y: float) -> bool:
+        note = self._data["notes"].get(note_id)
+        value = [float(x), float(y)]
+        if not isinstance(note, dict) or note.get("position") == value:
+            return False
+        note["position"] = value
+        self.save()
+        return True
+
+    def delete_note(self, note_id: str) -> bool:
+        if note_id not in self._data["notes"]:
+            return False
+        del self._data["notes"][note_id]
         self.save()
         return True
 

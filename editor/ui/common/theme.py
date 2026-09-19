@@ -148,13 +148,11 @@ class _Colors:
     ACCENT_RED = "#e05050"  # rouge     — erreurs, suppression
     ACCENT_YLW = "#e8c547"  # jaune     — avertissements
 
-    # Accents GÉNÉRIQUES — pas une famille de type (celles-là vivent dans
-    # icons.py : COLOR_ACTOR, COLOR_SCENE, COLOR_SCRIPT, COLOR_FONT…). Servent
-    # à distinguer DEUX choses posées en vis-à-vis quand aucune famille ne
-    # correspond : le pool matériel OBJ (chaud) vs BG (froid), l'API Lua
-    # (chaud) vs une référence projet (froid) dans le Script Editor, un état
-    # secondaire/sélection (froid). Le vert structurel `ACCENT_GRN` a lui été
-    # entièrement migré et supprimé (→ ACCENT périwinkle, ou POWER pour le live).
+    # Accents de CONTEXTE — jamais une famille globale de type. Un outil les
+    # emploie seulement lorsqu'il doit distinguer deux rôles dans sa propre
+    # lecture (OBJ vs BG, API Lua vs référence projet, état secondaire). Le
+    # vert structurel `ACCENT_GRN` a été supprimé (→ ACCENT périwinkle, ou
+    # POWER pour le live).
     ACCENT_WARM = "#c48b3c"
     ACCENT_COOL = "#82aaff"
 
@@ -502,7 +500,7 @@ QListWidget::item:hover:!selected {{
     # Liste plate d'un viewer (polices, fonds) — pendant de tree_widget pour
     # les finders sans hiérarchie : même retrait gauche, même hauteur de ligne,
     # même sélection. `accent` teinte la ligne sélectionnée à la couleur de la
-    # famille d'asset (COLOR_BACKGROUND, FONT_COLOR…).
+    # contexte d'un finder, si cet écran en a réellement besoin.
     def finder_list(self, accent: str | None = None) -> str:
         accent = accent or C.ACCENT
         return f"""
@@ -836,7 +834,8 @@ QTabBar::tab:hover:!selected {{
 
     # Niveau 2 — titre de section d'inspecteur (« SCENE MODE », « PALETTE »).
     # Périwinkle par défaut ; `color` ne sert qu'aux en-têtes pilotés par la
-    # famille d'asset (AssetHeaderBar), pas de couleur libre par panneau.
+    # contexte local (AssetHeaderBar, par exemple), pas une couleur globale
+    # attachée au type d'asset.
     def title_section(self, color: str | None = None) -> str:
         return (f"color: {color or C.ACCENT}; background: transparent; border: none;"
                 f"font-family: {T.UI_STACK}; font-size: {T.LG}px;"

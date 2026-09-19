@@ -93,6 +93,13 @@ BINDINGS: list[Binding] = [
 
     # Scene Manager — project viewer & Graphe des scènes
     Binding("scene.group", "scene_manager", "Ctrl+G"),
+    Binding("scene.graph_fit", "scene_manager", "F"),
+    Binding("scene.graph_zoom_reset", "scene_manager", "1"),
+    Binding("scene.graph_zoom_in", "scene_manager", "+"),
+    Binding("scene.graph_zoom_out", "scene_manager", "-"),
+    Binding("scene.graph_toggle_minimap", "scene_manager", "H"),
+    Binding("scene.graph_deselect", "scene_manager", "Escape"),
+    Binding("scene.graph_search", "scene_manager", "Ctrl+F"),
 ]
 
 _BY_ID: dict[str, Binding] = {b.id: b for b in BINDINGS}

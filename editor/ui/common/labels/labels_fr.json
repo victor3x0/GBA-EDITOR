@@ -1,5 +1,53 @@
 {
   "labels": {
+    "uses.spawned_by": {
+      "text": "SPAWNÉ PAR"
+    },
+    "uses.spawn_line": {
+      "text": "ligne {line}"
+    },
+    "uses.no_instance_in_the_project": {
+      "text": "Ni posé ni spawné où que ce soit dans le projet."
+    },
+    "sceneinsp.card.budget": {
+      "text": "Slots de sprites (OAM)"
+    },
+    "sceneinsp.scene_actors": {
+      "text": "Slots de scène :"
+    },
+    "sceneinsp.scene_actors_tip": {
+      "text": "Override avancé du budget d'acteurs. Ce n'est pas un compte d'acteurs.\n\n0 = automatique : le budget compte un slot par acteur posé. Ne règle une valeur que pour figer le budget à la main ; laisse 0 sinon."
+    },
+    "sceneinsp.no_prefab": {
+      "text": "Aucun prefab dans ce projet. Rien à mettre en pool."
+    },
+    "sceneinsp.pool_tip": {
+      "text": "Combien de « {name} » peuvent vivre en même temps dans cette scène.\n\n0 = cette scène ne le spawne jamais, et ne paie rien pour lui."
+    },
+    "sceneinsp.pool_tip_parts": {
+      "text": "Ce prefab a {n} partie(s), donc une instance coûte {slots} slots."
+    },
+    "sceneinsp.pool_cost_grouped": {
+      "text": "× {group} = {slots} slots"
+    },
+    "sceneinsp.pool_cost_single": {
+      "text": "= {n} slot(s)"
+    },
+    "sceneinsp.slots_hint_auto": {
+      "text": "auto ({placed} acteurs posés)"
+    },
+    "sceneinsp.slots_hint": {
+      "text": "{placed} acteurs posés"
+    },
+    "sceneinsp.pool_use_placed": {
+      "text": "posé"
+    },
+    "sceneinsp.pool_use_spawned": {
+      "text": "spawné"
+    },
+    "sceneinsp.pool_use_both": {
+      "text": "posé · spawné"
+    },
     "common.browse": {
       "text": "Parcourir…"
     },
@@ -139,6 +187,27 @@
     },
     "settings.shortcuts.action.scene.group": {
       "text": "Grouper les scènes sélectionnées"
+    },
+    "settings.shortcuts.action.scene.graph_fit": {
+      "text": "Cadrer le graphe de scènes"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_reset": {
+      "text": "Réinitialiser le zoom du graphe"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_in": {
+      "text": "Zoomer sur le graphe de scènes"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_out": {
+      "text": "Dézoomer sur le graphe de scènes"
+    },
+    "settings.shortcuts.action.scene.graph_toggle_minimap": {
+      "text": "Afficher / masquer la minimap du graphe"
+    },
+    "settings.shortcuts.action.scene.graph_deselect": {
+      "text": "Désélectionner dans le graphe"
+    },
+    "settings.shortcuts.action.scene.graph_search": {
+      "text": "Rechercher une scène dans le graphe"
     },
     "settings.shortcuts.display.undo": {
       "text": "Annuler"
@@ -518,6 +587,27 @@
     "scncanvas.graph_rearrange": {
       "text": "Réorganiser"
     },
+    "scncanvas.graph_show_notes_tip": {
+      "text": "Afficher ou masquer les notes libres du graphe"
+    },
+    "scncanvas.graph_minimap_tip": {
+      "text": "Afficher ou masquer la minimap du graphe (H)"
+    },
+    "scncanvas.graph_search_tip": {
+      "text": "Rechercher une scène dans le graphe (Ctrl+F)"
+    },
+    "scncanvas.graph_search_placeholder": {
+      "text": "Rechercher une scène…"
+    },
+    "scncanvas.graph_create_note": {
+      "text": "Créer une note ici"
+    },
+    "graphnote.type": {
+      "text": "Note du graphe"
+    },
+    "graphnote.title": {
+      "text": "Titre"
+    },
     "scncanvas.graph_rearrange_tip": {
       "text": "Replacer automatiquement toutes les scènes — annule les positions manuelles"
     },
@@ -529,6 +619,9 @@
     },
     "scncanvas.graph_edit_scene": {
       "text": "Éditer la scène"
+    },
+    "scncanvas.graph_create_scene": {
+      "text": "Créer une scène ici"
     },
     "scncanvas.graph_entry_reachable": {
       "text": "Entrée — scène atteignable"

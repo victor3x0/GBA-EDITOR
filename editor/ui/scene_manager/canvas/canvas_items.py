@@ -70,13 +70,10 @@ def _draw_placeholder(painter: QPainter, scale: float = 1.0) -> None:
     est demandé à cette résolution pour rester net quand la vue est zoomée."""
     from ui.common.icons import scaled_pixmap
 
-    s = _PLACEHOLDER_SIZE
-    painter.fillRect(QRectF(0, 0, s, s), QColor(30, 60, 90, 210))
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-    painter.setPen(QPen(QColor(100, 180, 255, 220), 1))
-    painter.drawRect(QRectF(0, 0, s - 1, s - 1))
+    # Actor sans sprite : un simple repère Pac-Man neutre. Un badge bleu
+    # n'avait aucune sémantique dans ce contexte et masquait la scène.
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-    px = scaled_pixmap("actor_empty", "#88ccff", _PLACEHOLDER_ICO, scale)
+    px = scaled_pixmap("actor_empty", "#f5f0d8", _PLACEHOLDER_ICO, scale)
     painter.drawPixmap(
         QRectF(2, 2, _PLACEHOLDER_ICO, _PLACEHOLDER_ICO), px, QRectF(px.rect())
     )
@@ -368,15 +365,24 @@ class SpriteItem(QGraphicsPixmapItem):
                 painter.drawPoint(int(cx), int(cy))
             painter.restore()
 
-        # Repère d'origine (point d'ancrage) — toujours visible
-        painter.save()
-        painter.setPen(QPen(QColor(C.ACCENT_RED), 1, Qt.PenStyle.SolidLine))
-        painter.drawLine(-4, 0, 4, 0)
-        painter.drawLine(0, -4, 0, 4)
-        painter.setPen(QPen(QColor(C.ACCENT_RED), 1))
-        painter.setBrush(QColor(C.ACCENT_RED))
-        painter.drawEllipse(-2, -2, 4, 4)
-        painter.restore()
+        # Repère d'origine (point d'ancrage) : une cible du registre, affichée
+        # seulement à la sélection ; au repos, elle encombrait la scène sans
+        # apporter d'information actionnable.
+        if self.isSelected():
+            from ui.common.icons import scaled_pixmap
+
+            sc = self.scene()
+            is_active = getattr(sc, "active_item", None) is self
+            color = "#ffffff" if is_active else C.ACCENT
+            px = scaled_pixmap("actor_origin", color, _ORIGIN_ICO_SIZE,
+                               _screen_scale(painter, widget))
+            half = _ORIGIN_ICO_SIZE / 2
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.drawPixmap(QRectF(-half, -half, _ORIGIN_ICO_SIZE,
+                                      _ORIGIN_ICO_SIZE), px, QRectF(px.rect()))
+            painter.restore()
 
     def set_snap(self, snap: bool):
         self.snap = snap
@@ -385,7 +391,8 @@ class SpriteItem(QGraphicsPixmapItem):
 # ──────────────────────────────────────────────────────────────────
 #  Item caméra — icône draggable + zone de vision
 # ──────────────────────────────────────────────────────────────────
-_CAM_ICO_SIZE = 20  # px, carré
+_CAM_ICO_SIZE = 12  # px, repère compact au coin de la vue
+_ORIGIN_ICO_SIZE = 8  # px, cible compacte affichée à la sélection
 
 
 class MaskablePixmapItem(QGraphicsPixmapItem):
@@ -562,13 +569,14 @@ class CameraItem(QGraphicsItem):
         # sans affecter le nearest-neighbor des sprites/BG ailleurs sur le canvas.
         from ui.common.icons import scaled_pixmap
 
-        # Sélectionnée / survolée / au repos.
+        # Palette locale de l'outil Caméra : une présence périwinkle lisible
+        # au repos, un contraste clair au survol, puis l'ambre de sélection.
         if self.isSelected():
             color = "#ffdd44"
         elif self._hovered:
-            color = "#f5f0d8"
+            color = "#ded8ff"
         else:
-            color = "#666666"
+            color = "#9b8cff"
         px = scaled_pixmap("camera", color, _CAM_ICO_SIZE,
                            _screen_scale(painter, widget))
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)

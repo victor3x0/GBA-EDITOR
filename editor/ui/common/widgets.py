@@ -401,7 +401,7 @@ class _W:
 
     def title_section(self, text: str, color: str | None = None) -> QLabel:
         """Titre de section d'inspecteur (niveau 2) — périwinkle par défaut,
-        `color` réservé aux en-têtes pilotés par la famille d'asset."""
+        `color` réservé à une lecture propre au contexte appelant."""
         lbl = QLabel(text); lbl.setFont(_FONT_UI_SM)
         lbl.setStyleSheet(QSS.title_section(color))
         return lbl
@@ -1087,8 +1087,8 @@ class CollapsibleCard(QFrame):
         layout.addWidget(card)
 
     `color` teinte le titre (périwinkle par défaut, via title_section) —
-    réservé aux cartes pilotées par une famille d'asset (ex: couleur actor
-    vs prefab), comme title_section ailleurs. `add_header_widget()` ajoute
+    réservé aux cartes dont le contexte donne une signification à cette
+    couleur. `add_header_widget()` ajoute
     un bouton (+, −...) à droite du titre, en dehors de la zone cliquable
     de bascule.
     """

@@ -29,6 +29,7 @@ Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste 
 | [v0.20](v0.20.md) | L'état du monde : les collections persistantes |
 | [v0.21](v0.21.md) | Le texte adressable : le dialogue piloté par la donnée |
 | [v0.23](v0.23.md) | Ce qu'un boss demande |
+| [v0.24](v0.24.md) | Le projet à l'échelle d'une équipe |
 | [v0.25](v0.25.md) | L'interface possède son chemin matériel |
 | [v0.27](v0.27.md) | L'éditeur souffle le mot juste (autocomplétion du Script Editor) |
 

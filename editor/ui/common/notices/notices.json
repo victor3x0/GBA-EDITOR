@@ -100,19 +100,15 @@
     },
     "scene.budget.count": {
       "tone": "info",
-      "text": "{reserved} scene slots + {pool} pool slots = {used} / {total} OAM slots — {free} free"
+      "text": "{actors} scene + {pool} pool = {used} / {total} OAM slots — {free} free"
     },
     "scene.budget.explain": {
       "tone": "accent",
-      "text": "Actors are objects in the scene; OAM slots are the GBA's 128 hardware sprite entries. This card reserves slots, not actors: each placed actor reserves one slot. A pool declares instances, then pays one slot per prefab part. Both reservations share the same 128 entries."
+      "text": "OAM slots are the GBA's 128 hardware sprite entries. The budget is derived, not split: placed actors (and UI sprites) are counted, and the pool is what's left. A pool declares instances, then pays one slot per prefab part. Placed actors, UI and pool share the same 128 entries."
     },
     "scene.budget.over_oam": {
       "tone": "build",
-      "text": "{reserved} scene slots + {pool} pool slots = {used} / {total} OAM slots — over the {limit} OAM entries, the surplus won't show"
-    },
-    "scene.budget.over_placed": {
-      "tone": "build",
-      "text": "{reserved} scene slots + {pool} pool slots = {used} / {total} OAM slots — {placed} actors placed for {reserved} reserved"
+      "text": "{actors} scene + {pool} pool = {used} / {total} OAM slots — over the {limit} OAM entries, the surplus won't show"
     },
     "settings.tips": {
       "tone": "info",

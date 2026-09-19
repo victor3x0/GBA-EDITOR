@@ -5,9 +5,22 @@ réserve, et comment elle les dépense » (ROADMAP v0.17). Même famille que
 `window_alloc.py` / `palette_alloc.py` : résolu au BUILD, en Python — le
 nombre d'acteurs d'une scène ne change pas en cours de partie.
 
-Le budget a DEUX postes et UN plafond :
+Le budget est DÉRIVÉ, pas réparti (ROADMAP v0.17, révisé le 2026-09-19). Il a
+TROIS postes et UN plafond :
 
-    acteurs posés (réservés)  +  slots de pool  =  128
+    acteurs posés  +  OBJ d'interface  +  slots de pool  =  128
+
+Les deux premiers postes se COMPTENT (ils sont résolus au build : leur nombre
+est connu, pas estimé) ; seul le pool se DÉCLARE. Le budget prefab n'est donc
+pas une tranche réservée à la main — c'est ce que les deux autres laissent :
+
+    budget_prefab = 128 − acteurs_posés − OBJ_UI
+
+Cela remplace l'ancien partage 96/32 (`DEFAULT_ACTOR_SLOTS`), qui était un
+plafond fixe posé à la main, contraire au reste du projet (l'allocateur de
+charblock calcule le placement au lieu de le régler). `Scene.actor_slots`
+survit comme OVERRIDE optionnel (0 = auto = compté), gardé pour un réglage
+manuel ultérieur ; plus aucune scène neuve ne le sème.
 
 Le plafond est celui du matériel : l'OAM de la GBA compte 128 entrées, donc
 128 sprites affichables. Il ne se règle nulle part, et surtout pas dans les
@@ -32,20 +45,6 @@ from core.models.scene import Scene
 # matériel : cf. docstring de module pour ce qu'il compte et ce qu'il
 # sur-compte volontairement.
 OAM_LIMIT = 128
-
-# Le partage d'une scène NEUVE : trois quarts pour ce qu'elle pose, un quart
-# pour ce qu'elle spawne. Ce n'est pas une contrainte, c'est un point de départ
-# — un chiffre rond qui montre d'emblée que le budget SE PARTAGE, là où « 0 =
-# auto » laissait croire que poser des acteurs ne coûtait rien.
-#
-# Les 32 slots de pool ne sont écrits nulle part : ils SONT ce que le champ
-# acteurs laisse. Un seul nombre stocké, pas deux à tenir d'accord.
-#
-# N'est PAS le défaut du dataclass `Scene.actor_slots`, qui reste 0 : une scène
-# déjà écrite garde son comportement automatique, sinon tout projet existant
-# réserverait 96 entrées par scène du jour au lendemain. Ce défaut ne vaut que
-# pour une scène qui naît (cf. `command_dispatcher.add_scene`).
-DEFAULT_ACTOR_SLOTS = 96
 
 
 def prefab_group(prefab) -> int:
@@ -106,33 +105,53 @@ def scene_pool_slots(scene: Scene, project) -> int:
 
 
 def scene_actor_slots(scene: Scene) -> int:
-    """Ce que la scène RÉSERVE pour ses acteurs posés.
+    """Le poste « acteurs » du budget : ce que la scène occupe pour ses acteurs
+    posés.
 
-    0 = automatique : la réservation vaut le nombre d'acteurs réellement posés.
-    C'est le comportement d'avant ce champ, donc celui de toute scène
-    antérieure — le défaut ne s'invente rien.
+    0 = automatique : le poste vaut le nombre d'acteurs réellement posés — les
+    acteurs se comptent, ils ne se réservent pas (révision 2026-09-19). Une
+    valeur > 0 est un OVERRIDE manuel, gardé pour plus tard ; aucune scène neuve
+    ne le pose. S'il est un jour exposé et réglé SOUS le nombre d'acteurs posés,
+    l'avertissement « posés > réservés » devra revenir — il a été retiré du
+    budget parce que le cas automatique ne peut pas le déclencher.
     """
     return scene.actor_slots if scene.actor_slots > 0 else len(scene.actors)
+
+
+def scene_ui_obj_slots(scene: Scene, project) -> int:
+    """Entrées OAM que les OBJ d'INTERFACE de cette scène consomment — bandes de
+    texte en cible OBJ, `ui_image`, fonts OBJ.
+
+    Vaut 0 pour l'instant (B1) : ces comptes existent côté build mais au niveau
+    PROJET (union de toutes les scènes — `obj_text_alloc` / `ui_image_sprites`
+    dans `runtime_codegen/main_gen.py`), pas par scène. Les décomposer par scène
+    est la tranche B2 du chantier, qui suit la compilation par scène — c'est là
+    que ce poste cesse d'être nul et que le vrai gain OAM se joue (ROADMAP v0.17,
+    « le budget compte TOUS ses consommateurs »).
+    """
+    return 0
 
 
 def scene_actor_budget(scene: Scene, project) -> dict:
     """Tout ce que la carte « Actor budget » affiche, en un seul appel — pour
     que l'inspecteur n'ait aucune arithmétique à refaire de son côté.
 
-    `over` couvre les deux dépassements possibles, qui ne sont pas la même
-    faute : le budget déborde des 128 entrées du matériel (`over_budget`), ou
-    la scène pose plus d'acteurs qu'elle n'en réserve (`over_placed`).
+    Budget dérivé (révision 2026-09-19) : trois postes comptés/déclarés, une
+    seule faute possible — le total déborde des 128 entrées du matériel
+    (`over_budget`). L'ancien `over_placed` a disparu avec la réservation.
     """
-    reserved = scene_actor_slots(scene)
-    pool     = scene_pool_slots(scene, project)
-    placed   = len(scene.actors)
+    actors = scene_actor_slots(scene)
+    ui     = scene_ui_obj_slots(scene, project)
+    pool   = scene_pool_slots(scene, project)
+    placed = len(scene.actors)
+    used   = actors + ui + pool
     return {
-        "reserved":     reserved,
+        "actors":       actors,
+        "ui":           ui,
         "pool":         pool,
         "placed":       placed,
-        "used":         reserved + pool,
+        "used":         used,
         "total":        OAM_LIMIT,
-        "free":         OAM_LIMIT - reserved - pool,
-        "over_budget":  reserved + pool > OAM_LIMIT,
-        "over_placed":  placed > reserved,
+        "free":         OAM_LIMIT - used,
+        "over_budget":  used > OAM_LIMIT,
     }

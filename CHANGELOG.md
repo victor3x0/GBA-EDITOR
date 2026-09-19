@@ -15,9 +15,10 @@ introuvable devient une carte rouge déplaçable, dotée de son port d'entrée p
 
 L'inspecteur de transition rassemble appels de script éditables, note, style de tracé et édition
 multiple ; note, style, réécriture de script et reconnexion participent à l'Undo/Redo. Les
-groupes gagnent leur inspecteur (nom, couleur, note, état replié et contenu direct). Enfin, le
-sélecteur « Scene / Graph » est centré et l'inspecteur revient au projet lorsqu'aucun élément du
-graphe n'est sélectionné.
+groupes gagnent leur inspecteur (nom, couleur, note, état replié et contenu direct). Le graphe
+crée aussi des scènes : clic-droit dans le vide « Créer une scène ici » pose une carte sous le
+curseur, rattachée au niveau ouvert. Enfin, le sélecteur « Scene / Graph » est centré et
+l'inspecteur revient au projet lorsqu'aucun élément du graphe n'est sélectionné.
 
 ## v0.2 — Gestion des palettes de couleurs
 
@@ -158,6 +159,19 @@ gardant son sprite et ses collisions), et une matrice de collision entre tags qu
 build les paires qui ne se rencontrent jamais.
 
 → [détail](changelog-archive/v0.23.md)
+
+## v0.24 — Le projet à l'échelle d'une équipe
+
+*Livrée le 2026-09-19.* Le projet tient à plusieurs et à grande échelle. **Formats** que git sait
+relire (une ligne par rangée de grille, couleurs hexadécimales) : le projet démo fond de 14 444 à
+3 679 lignes de JSON sans qu'une donnée change. **Build** parallèle (`make -j`), aucune sortie
+identique réécrite et cache de conversion des assets sur empreinte : le rebuild inchangé passe de
+13,7 s à 4,2 s. **Chargement paresseux** — index léger à l'ouverture, matérialisation par écran,
+préchargement de la seule scène active — puis **réconciliation incrémentale** : une empreinte de
+dossier source saute le rattrapage à l'ouverture quand rien n'a bougé hors ligne
+(`load_all_resources` de 467 à 138 ms).
+
+→ [détail](changelog-archive/v0.24.md)
 
 ## v0.25 — L'interface possède son chemin matériel
 

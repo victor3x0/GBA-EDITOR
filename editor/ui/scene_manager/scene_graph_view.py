@@ -22,14 +22,15 @@ attachées au nœud déplacé.
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform,
+    QBrush, QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTransform,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFrame, QGraphicsScene, QGraphicsView, QHBoxLayout, QMenu,
-    QMessageBox, QToolButton, QVBoxLayout, QWidget,
+    QApplication, QFrame, QGraphicsOpacityEffect, QGraphicsScene, QGraphicsView, QHBoxLayout, QMenu,
+    QMessageBox, QLineEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from core.history import Command, get_history, SetFieldCmd
@@ -38,6 +39,7 @@ from core.selection_bus import get_bus
 from core.scene_graph_state import SceneGraphState
 from scripting.scene_graph import SceneGraph, node_diagnostics, scene_graph
 from ui.common.labels import label
+from ui.common import icons
 from ui.common.theme import C, QSS, T, ui_font
 from ui.scene_manager.scene_graph_items import (
     CARD_H, CARD_W, MissingTargetItem, SceneCardItem, SceneGraphEdgeItem,
@@ -48,8 +50,9 @@ from ui.scene_manager.scene_graph_group_items import (
     COLLAPSED_H, COLLAPSED_W, DOOR_H, DOOR_W, HEADER_H, BoundaryDoorItem,
     GroupToggleItem, SceneGroupBoxItem,
 )
+from ui.scene_manager.scene_graph_note_items import NoteToggleItem, SceneGraphNoteItem
 from ui.scene_manager.scene_graph_layout import layout_positions
-from ui.scene_manager.inspectors.edge_inspector import _EdgePresentationCmd
+from ui.scene_manager.scene_graph_commands import EdgePresentationCmd
 from ui.scene_manager.canvas.canvas_const import GBA_W, GBA_H
 from ui.scene_manager.canvas.canvas_raster import bg_pixmap, layer_png_path
 
@@ -90,8 +93,13 @@ class _GraphCanvas(QGraphicsView):
     descend_requested = pyqtSignal()  # → : entrer dans le groupe sélectionné
     delete_requested = pyqtSignal()  # Backspace / Suppr : supprimer la sélection
     context_menu_requested = pyqtSignal(object, object)  # clic-droit → (pos globale, item)
+    navigation_changed = pyqtSignal()
 
     def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            self._space_panning = True
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
             # La vue tranche : supprimer la sélection, ou — si rien n'est
             # sélectionné — remonter d'un niveau (l'ancien rôle de Backspace).
@@ -108,7 +116,18 @@ class _GraphCanvas(QGraphicsView):
             self.ascend_requested.emit()
             event.accept()
             return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.descend_requested.emit()
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key.Key_Space:
+            self._space_panning = False
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def contextMenuEvent(self, event):
         # La vue ne décide pas du menu : elle en signale la demande, avec l'item
@@ -126,6 +145,7 @@ class _GraphCanvas(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # pour recevoir Backspace
         self._zoom = 1.0
         self._panning = False
+        self._space_panning = False
         self._pan_last = None
         self._rewire_edges: list[SceneGraphEdgeItem] = []
 
@@ -154,15 +174,24 @@ class _GraphCanvas(QGraphicsView):
 
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        self._zoom = max(_MIN_ZOOM, min(self._zoom * factor, _MAX_ZOOM))
+        self.set_zoom(self._zoom * factor)
+
+    def set_zoom(self, zoom: float) -> None:
+        self._zoom = max(_MIN_ZOOM, min(zoom, _MAX_ZOOM))
         t = QTransform()
         t.scale(self._zoom, self._zoom)
         self.setTransform(t)
+        self.navigation_changed.emit()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.navigation_changed.emit()
 
     # ── Pan au clic-milieu (translation via les scrollbars) ───────────
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton:
+        if (event.button() == Qt.MouseButton.MiddleButton
+                or (event.button() == Qt.MouseButton.LeftButton and self._space_panning)):
             self._start_pan(event.position())
             event.accept()
             return
@@ -212,7 +241,7 @@ class _GraphCanvas(QGraphicsView):
             self.viewport().update()
             event.accept()
             return
-        if self._panning and (event.buttons() & Qt.MouseButton.MiddleButton):
+        if self._panning and (event.buttons() & (Qt.MouseButton.MiddleButton | Qt.MouseButton.LeftButton)):
             delta = event.position() - self._pan_last
             self._pan_last = event.position()
             hbar, vbar = self.horizontalScrollBar(), self.verticalScrollBar()
@@ -228,7 +257,7 @@ class _GraphCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.MiddleButton and self._panning:
+        if event.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.LeftButton) and self._panning:
             self._end_pan()
             event.accept()
             return
@@ -275,6 +304,144 @@ class _GraphCanvas(QGraphicsView):
         QApplication.restoreOverrideCursor()
 
 
+class _GraphMinimap(QWidget):
+    """Aperçu de navigation : cartes, groupes, notes et zone actuellement vue.
+
+    La mini-carte est volontairement une synthèse de la mise en page, sans
+    arêtes ni texte : à cette échelle, ils brouilleraient le repère plutôt que
+    l'aider. Quand tout tient dans le viewport, elle reste présente mais s'efface
+    progressivement à 20 %, évitant les apparitions/disparitions brusques.
+    """
+
+    _W, _H, _PAD = 180, 120, 8
+
+    def __init__(self, canvas: _GraphCanvas):
+        super().__init__(canvas.viewport())
+        self._canvas = canvas
+        self._dragging = False
+        self._enabled = True
+        self._overflowing: bool | None = None
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.2)
+        self.setGraphicsEffect(self._opacity_effect)
+        self._opacity_animation = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._opacity_animation.setDuration(180)
+        self._opacity_animation.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self.setFixedSize(self._W, self._H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hide()
+
+    def _content_rect(self) -> QRectF:
+        relevant = (SceneCardItem, MissingTargetItem, SceneGroupBoxItem, SceneGraphNoteItem)
+        rects = [item.sceneBoundingRect() for item in self._canvas.scene().items()
+                 if isinstance(item, relevant)]
+        if not rects:
+            return QRectF()
+        out = QRectF(rects[0])
+        for rect in rects[1:]:
+            out = out.united(rect)
+        return out
+
+    def _geometry(self):
+        content = self._content_rect()
+        visible = self._canvas.mapToScene(self._canvas.viewport().rect()).boundingRect()
+        if content.isEmpty():
+            return None
+        # La zone visible fait partie de la carte de référence. Sans cette union,
+        # son cadre est rogné dès qu'il dépasse les éléments du graphe (haut/bas
+        # dans le cas rapporté), précisément quand la minimap est nécessaire.
+        source = content.united(visible).adjusted(-24, -24, 24, 24)
+        inner = QRectF(self._PAD, self._PAD, self.width() - 2 * self._PAD,
+                       self.height() - 2 * self._PAD)
+        scale = min(inner.width() / source.width(), inner.height() / source.height())
+        drawn = QRectF(inner.left(), inner.top(), source.width() * scale,
+                       source.height() * scale)
+        drawn.moveCenter(inner.center())
+        return source, visible, drawn, scale, not visible.contains(content)
+
+    def _set_opacity(self, overflowing: bool) -> None:
+        if overflowing == self._overflowing:
+            return
+        self._overflowing = overflowing
+        self._opacity_animation.stop()
+        self._opacity_animation.setStartValue(self._opacity_effect.opacity())
+        self._opacity_animation.setEndValue(1.0 if overflowing else 0.2)
+        self._opacity_animation.start()
+
+    def refresh(self) -> None:
+        if not self._enabled:
+            self.hide()
+            return
+        geo = self._geometry()
+        self.setVisible(geo is not None)
+        if geo is not None:
+            self._set_opacity(geo[4])
+            self.update()
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self.refresh()
+
+    def paintEvent(self, event):
+        geo = self._geometry()
+        if geo is None:
+            return
+        source, visible, target, scale, _overflowing = geo
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(QColor(C.BORDER_MID), 1))
+        painter.setBrush(QBrush(QColor(C.BG_RAISED)))
+        painter.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 6, 6)
+        painter.save()
+        painter.setClipRect(target)
+
+        def mini(rect: QRectF) -> QRectF:
+            return QRectF(target.left() + (rect.left() - source.left()) * scale,
+                         target.top() + (rect.top() - source.top()) * scale,
+                         max(2.0, rect.width() * scale), max(2.0, rect.height() * scale))
+
+        for item in self._canvas.scene().items():
+            if isinstance(item, SceneGroupBoxItem):
+                color = QColor(item.color or C.BORDER_MID)
+                painter.setPen(QPen(color, 1)); painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(mini(item.sceneBoundingRect()))
+            elif isinstance(item, SceneGraphNoteItem):
+                color = QColor(item.color or "#FFFFFF")
+                painter.setPen(QPen(color, 1)); painter.setBrush(QBrush(color))
+                painter.drawRect(mini(item.sceneBoundingRect()))
+            elif isinstance(item, (SceneCardItem, MissingTargetItem)):
+                painter.setPen(Qt.PenStyle.NoPen); painter.setBrush(QBrush(QColor(C.TEXT_DIM)))
+                painter.drawRect(mini(item.sceneBoundingRect()))
+        painter.setPen(QPen(QColor(C.ACCENT), 1.5)); painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(mini(visible))
+        painter.restore()
+
+    def _navigate(self, pos) -> None:
+        geo = self._geometry()
+        if geo is None:
+            return
+        source, _visible, target, scale, _overflowing = geo
+        scene_pos = QPointF(source.left() + (pos.x() - target.left()) / scale,
+                            source.top() + (pos.y() - target.top()) / scale)
+        self._canvas.centerOn(scene_pos)
+        self.refresh()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True; self._navigate(event.position()); event.accept(); return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self._navigate(event.position()); event.accept(); return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False; event.accept(); return
+        super().mouseReleaseEvent(event)
+
+
 def _fingerprint(project) -> tuple:
     """Empreinte bon marché de ce qui fait varier la STRUCTURE projetée.
 
@@ -316,6 +483,8 @@ class SceneGraphView(QWidget):
     groups_changed = pyqtSignal()       # un groupe de scènes a été créé (sync project viewer)
     selection_cleared = pyqtSignal()    # aucune carte/arête/groupe active
     group_selected = pyqtSignal(str)    # clic sur un groupe → son inspecteur
+    note_selected = pyqtSignal(str)     # clic sur une note → son inspecteur
+    scene_create_requested = pyqtSignal(float, float)  # clic-droit vide → (x, y) graphe
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -335,6 +504,8 @@ class SceneGraphView(QWidget):
         self._frames: dict[str, SceneGroupBoxItem] = {}  # groupe déplié -> cadre
         self._name_box: dict[str, SceneGroupBoxItem] = {}  # scène cachée -> sa boîte
         self._missing: dict[str, MissingTargetItem] = {}
+        self._notes: dict[str, SceneGraphNoteItem] = {}
+        self._notes_visible = True
         self._edge_bindings: dict[object, list[SceneGraphEdgeItem]] = {}
 
         self._scene = QGraphicsScene(self)
@@ -347,6 +518,10 @@ class SceneGraphView(QWidget):
         self._view.descend_requested.connect(self._descend_selected)
         self._view.delete_requested.connect(self._delete_selection)
         self._view.context_menu_requested.connect(self._show_context_menu)
+        self._view.navigation_changed.connect(self._update_minimap)
+        self._view.horizontalScrollBar().valueChanged.connect(self._update_minimap)
+        self._view.verticalScrollBar().valueChanged.connect(self._update_minimap)
+        self._minimap = _GraphMinimap(self._view)
         # Ctrl+G : ranger les scènes sélectionnées du graphe dans un nouveau
         # groupe. Même id remappable que le project viewer — un seul geste,
         # deux vues ; n'agit que si la vue (ou un enfant) a le focus.
@@ -354,6 +529,21 @@ class SceneGraphView(QWidget):
         self._sc_group.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._sc_group.activated.connect(self._group_selected_scenes)
         bind("scene.group", self._sc_group)
+        self._graph_shortcuts: list[QShortcut] = []
+        for binding_id, callback in (
+            ("scene.graph_fit", self._focus_graph),
+            ("scene.graph_zoom_reset", lambda: self._view.set_zoom(1.0)),
+            ("scene.graph_zoom_in", lambda: self._view.set_zoom(self._view._zoom * 1.15)),
+            ("scene.graph_zoom_out", lambda: self._view.set_zoom(self._view._zoom / 1.15)),
+            ("scene.graph_toggle_minimap", self._toggle_minimap),
+            ("scene.graph_deselect", self._scene.clearSelection),
+            ("scene.graph_search", self._open_scene_search),
+        ):
+            shortcut = QShortcut(QKeySequence(), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
+            bind(binding_id, shortcut)
+            self._graph_shortcuts.append(shortcut)
         # Sélection croisée avec le project viewer : la sélection Qt de la scène
         # graphique remonte les scènes sélectionnées (rectangle, Ctrl/Shift).
         self._scene.selectionChanged.connect(self._emit_scene_selection)
@@ -380,6 +570,57 @@ class SceneGraphView(QWidget):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(8, 4, 8, 4)
         lay.setSpacing(6)
+        self._btn_minimap = QToolButton()
+        self._btn_minimap.setToolTip(label("scncanvas.graph_minimap_tip"))
+        self._btn_minimap.setIcon(icons.get("view_minimap", icons.COLOR_DEFAULT, C.ACCENT))
+        self._btn_minimap.setIconSize(QSize(18, 18))
+        self._btn_minimap.setCheckable(True); self._btn_minimap.setChecked(True)
+        self._btn_minimap.setFixedSize(32, 28)
+        self._btn_minimap.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_minimap.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_minimap.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER};background:{C.BG_INPUT};"
+            f"border-radius:4px;padding:0;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
+            f"QToolButton:checked{{background:{C.BG_SEL};border-color:{C.ACCENT};}}")
+        self._btn_minimap.toggled.connect(self._set_minimap_visible)
+        lay.addWidget(self._btn_minimap)
+        self._btn_notes = QToolButton()
+        self._btn_notes.setToolTip(label("scncanvas.graph_show_notes_tip"))
+        self._btn_notes.setIcon(icons.get("view_notes", icons.COLOR_DEFAULT, C.ACCENT))
+        self._btn_notes.setIconSize(QSize(18, 18))
+        self._btn_notes.setCheckable(True); self._btn_notes.setChecked(True)
+        self._btn_notes.setFixedSize(32, 28)
+        self._btn_notes.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_notes.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_notes.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER};background:{C.BG_INPUT};"
+            f"border-radius:4px;padding:0;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
+            f"QToolButton:checked{{background:{C.BG_SEL};border-color:{C.ACCENT};}}")
+        self._btn_notes.toggled.connect(self._set_notes_visible)
+        lay.addWidget(self._btn_notes)
+        self._btn_search = QToolButton()
+        self._btn_search.setToolTip(label("scncanvas.graph_search_tip"))
+        self._btn_search.setIcon(icons.get("search", icons.COLOR_DEFAULT, C.ACCENT))
+        self._btn_search.setIconSize(QSize(18, 18))
+        self._btn_search.setCheckable(True)
+        self._btn_search.setFixedSize(32, 28)
+        self._btn_search.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self._btn_search.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._btn_search.setStyleSheet(
+            f"QToolButton{{border:1px solid {C.BORDER};background:{C.BG_INPUT};"
+            f"border-radius:4px;padding:0;}}"
+            f"QToolButton:hover{{background:{C.BG_HOVER};border-color:{C.BORDER_MID};}}"
+            f"QToolButton:checked{{background:{C.BG_SEL};border-color:{C.ACCENT};}}")
+        self._btn_search.toggled.connect(self._set_scene_search_visible)
+        lay.addWidget(self._btn_search)
+        self._scene_search = QLineEdit()
+        self._scene_search.setPlaceholderText(label("scncanvas.graph_search_placeholder"))
+        self._scene_search.setFixedWidth(180)
+        self._scene_search.setVisible(False)
+        self._scene_search.returnPressed.connect(self._search_scene)
+        lay.addWidget(self._scene_search)
         lay.addStretch()
         self._btn_rearrange = QToolButton()
         self._btn_rearrange.setText(label("scncanvas.graph_rearrange"))
@@ -394,6 +635,84 @@ class SceneGraphView(QWidget):
         lay.addWidget(self._btn_rearrange)
         return bar
 
+    def _update_minimap(self, *_unused) -> None:
+        """Repositionne et recalcule la mini-carte après navigation ou rendu."""
+        viewport = self._view.viewport()
+        self._minimap.move(max(8, viewport.width() - self._minimap.width() - 12),
+                           max(8, viewport.height() - self._minimap.height() - 12))
+        self._minimap.raise_()
+        self._minimap.refresh()
+
+    def _focus_graph(self) -> None:
+        """F : recentre la sélection, ou cadre tout le graphe si elle est vide."""
+        if not self._center_graph_on_selection():
+            self._fit_graph()
+
+    def _fit_graph(self) -> None:
+        """Cadre les éléments du niveau ouvert, avec une marge respirante."""
+        content = self._scene.itemsBoundingRect()
+        if content.isEmpty():
+            return
+        self._view.fitInView(content.adjusted(-48, -48, 48, 48),
+                             Qt.AspectRatioMode.KeepAspectRatio)
+        self._view._zoom = self._view.transform().m11()
+        self._view.navigation_changed.emit()
+
+    def _center_graph_on_selection(self) -> bool:
+        """Centre les éléments sélectionnés et indique si une cible existait."""
+        focusable = (SceneCardItem, MissingTargetItem, SceneGroupBoxItem, SceneGraphNoteItem)
+        items = [item for item in self._scene.selectedItems() if isinstance(item, focusable)]
+        if items:
+            rect = items[0].sceneBoundingRect()
+            for item in items[1:]:
+                rect = rect.united(item.sceneBoundingRect())
+        else:
+            return False
+        self._view.centerOn(rect.center())
+        self._update_minimap()
+        return True
+
+    def _set_minimap_visible(self, visible: bool) -> None:
+        self._minimap.set_enabled(visible)
+
+    def _toggle_minimap(self) -> None:
+        self._btn_minimap.setChecked(not self._btn_minimap.isChecked())
+
+    def _open_scene_search(self) -> None:
+        self._btn_search.setChecked(True)
+        self._scene_search.setFocus()
+        self._scene_search.selectAll()
+
+    def _set_scene_search_visible(self, visible: bool) -> None:
+        self._scene_search.setVisible(visible)
+        if visible:
+            self._scene_search.setFocus()
+
+    def _search_scene(self) -> None:
+        query = self._scene_search.text().strip().casefold()
+        if not query:
+            return
+        scenes = list(getattr(self._project, "scenes", ()) or ())
+        found = next((scene for scene in scenes if scene.name.casefold() == query), None)
+        found = found or next((scene for scene in scenes if query in scene.name.casefold()), None)
+        if found is None:
+            self._scene_search.setStyleSheet(f"border:1px solid {C.ACCENT_RED};")
+            return
+        self._scene_search.setStyleSheet("")
+        # Une recherche est globale : ouvrir le niveau parent direct garantit que
+        # la carte existe réellement, plutôt que de centrer une boîte repliée.
+        target_level = self._folders.folder_of("scenes", found.name) if self._folders else None
+        if target_level != self._level:
+            self._level = target_level
+            if self._graph is not None:
+                self._render(self._graph)
+        card = self._cards.get(found.name)
+        if card is not None:
+            self._scene.clearSelection()
+            card.setSelected(True)
+            self._view.centerOn(card.sceneBoundingRect().center())
+            self._update_minimap()
+
     # ── Navigation ────────────────────────────────────────────────────
 
     def _scene_by_name(self, name: str):
@@ -407,12 +726,16 @@ class SceneGraphView(QWidget):
             self._toggle_scene_preview(item.name)
         elif isinstance(item, GroupToggleItem):
             self._toggle_group(item.group_id)
+        elif isinstance(item, NoteToggleItem):
+            self._toggle_note(item.note_id)
         elif isinstance(item, SceneCardItem):
             scene = self._scene_by_name(item.name)
             if scene is not None:
                 get_bus().select(scene)
         elif isinstance(item, SceneGroupBoxItem):
             self.group_selected.emit(item.group_id)
+        elif isinstance(item, SceneGraphNoteItem):
+            self.note_selected.emit(item.note_id)
         elif isinstance(item, SceneGraphEdgeItem):
             self._emit_selected_edges(item)
         # Un marqueur de cible absente n'ouvre ni ne sélectionne rien.
@@ -481,7 +804,8 @@ class SceneGraphView(QWidget):
         - une arête → bascule immédiate droite / courbe ;
         - une carte de scène → « Supprimer la scène » ;
         - une boîte/cadre de groupe (ou son chevron) → « Supprimer le groupe » ;
-        - le vide → « Créer un groupe » des scènes sélectionnées.
+        - le vide → « Créer une scène ici » et « Créer un groupe » des scènes
+          sélectionnées.
         Le groupe est un dossier de la famille — le même objet que côté viewer."""
         if isinstance(item, SceneGraphEdgeItem):
             self._toggle_edge_style(item)
@@ -510,10 +834,71 @@ class SceneGraphView(QWidget):
                            lambda gid=item.group_id: self._delete_group(gid))
             menu.addAction(label("scncanvas.graph_delete_folder_content"),
                            lambda gid=item.group_id: self._delete_group_deep(gid))
-        elif self._folders is not None:
-            menu.addAction(label("assetfind.create_group"), self._group_selected_scenes)
+        elif isinstance(item, (SceneGraphNoteItem, NoteToggleItem)):
+            menu.addAction(label("common.delete"), lambda nid=item.note_id: self._delete_note(nid))
+        else:
+            # Le vide : créer une scène au point cliqué (toujours), et — si les
+            # dossiers sont partagés — ranger la sélection dans un nouveau groupe.
+            menu.addAction(label("scncanvas.graph_create_scene"),
+                           lambda: self._request_create_scene(global_pos))
+            menu.addAction(label("scncanvas.graph_create_note"),
+                           lambda: self._create_note_at(global_pos))
+            if self._folders is not None:
+                menu.addAction(label("assetfind.create_group"), self._group_selected_scenes)
         if not menu.isEmpty():
             menu.exec(global_pos)
+
+    def _request_create_scene(self, global_pos) -> None:
+        """Traduit le clic-droit dans le vide en coordonnées du graphe et demande
+        à la fenêtre de créer la scène : la carte naîtra centrée sous le curseur
+        (cf. `place_new_scene`)."""
+        view_pos = self._view.mapFromGlobal(global_pos)
+        pt = self._view.mapToScene(view_pos)
+        self.scene_create_requested.emit(pt.x() - CARD_W / 2, pt.y() - CARD_H / 2)
+
+    def _create_note_at(self, global_pos) -> None:
+        if self._state is None:
+            return
+        pt = self._view.mapToScene(self._view.mapFromGlobal(global_pos))
+        note_id = uuid4().hex
+        if self._state.create_note(note_id, pt.x(), pt.y()) and self._graph is not None:
+            self._render(self._graph)
+            note = self._notes.get(note_id)
+            if note is not None:
+                note.setSelected(True)
+                self.note_selected.emit(note_id)
+
+    def _delete_note(self, note_id: str) -> None:
+        if self._state is not None and self._state.delete_note(note_id) and self._graph is not None:
+            self._render(self._graph)
+
+    def _toggle_note(self, note_id: str) -> None:
+        if self._state is not None:
+            note = self._state.notes().get(note_id, {})
+            self._state.update_note(note_id, collapsed=not bool(note.get("collapsed", False)))
+            if self._graph is not None:
+                self._render(self._graph)
+
+    def _set_notes_visible(self, visible: bool) -> None:
+        self._notes_visible = visible
+        if self._graph is not None:
+            self._render(self._graph)
+
+    def place_new_scene(self, name: str, x: float, y: float) -> None:
+        """Pose une scène fraîchement créée à (x, y) et la rattache au niveau
+        ouvert. Appelée par la fenêtre APRÈS la création (l'ajout a déjà re-projeté
+        via `project_tree_changed`) : on écrit sa position et son appartenance, puis
+        on redessine et on la sélectionne. `refresh` ne suffirait pas — l'empreinte
+        n'a pas changé depuis la re-projection de la création."""
+        if self._state is not None:
+            self._state.set_scene_position(name, x, y)
+        if self._folders is not None and self._level is not None:
+            self._folders.move_member("scenes", name, self._level)
+        if self._graph is not None:
+            self._render(self._graph)
+        scene = self._scene_by_name(name)
+        if scene is not None:
+            get_bus().select(scene)
 
     def _toggle_edge_style(self, item: SceneGraphEdgeItem) -> None:
         """Clic droit direct : droite ↔ courbe pour CETTE transition seulement.
@@ -529,7 +914,7 @@ class SceneGraphView(QWidget):
         style = "straight" if item.style == "curve" else "curve"
         before = [self._state.edge_style(edge.source, edge.target)]
         item.setSelected(True)
-        get_history().push(_EdgePresentationCmd(
+        get_history().push(EdgePresentationCmd(
             self._state, [edge], "style", before, [style],
             lambda edges, _field: self.refresh_edge_presentation(list(edges))))
 
@@ -633,7 +1018,8 @@ class SceneGraphView(QWidget):
         from ui.common.asset_kinds import SCENES
         cards = [i for i in self._scene.selectedItems() if isinstance(i, SceneCardItem)]
         boxes = [i for i in self._scene.selectedItems() if isinstance(i, SceneGroupBoxItem)]
-        if not cards and not boxes:
+        notes = [i for i in self._scene.selectedItems() if isinstance(i, SceneGraphNoteItem)]
+        if not cards and not boxes and not notes:
             self._ascend()             # rien de sélectionné → comportement d'origine
             return
         if QMessageBox.question(
@@ -652,6 +1038,9 @@ class SceneGraphView(QWidget):
                 if self._level == box.group_id:
                     self._level = self._parent_of(box.group_id)
                 self._folders.delete_folder("scenes", box.group_id)
+        if self._state is not None:
+            for note in notes:
+                self._state.delete_note(note.note_id)
         self.refresh()
         if boxes:
             self.groups_changed.emit()
@@ -875,6 +1264,11 @@ class SceneGraphView(QWidget):
                 # déplacement, l'appartenance se calera sur sa position.
                 if old is None or (old[0], old[1]) != (p.x(), p.y()):
                     moved_groups.append(gid)
+        for note_id, note in self._notes.items():
+            p = note.pos()
+            if self._state.note_position(note_id) != (p.x(), p.y()):
+                self._state.set_note_position(note_id, p.x(), p.y())
+                moved = True
         # L'appartenance des cartes ET des groupes déplacés se recalcule au même
         # geste : un groupe glissé DANS un autre s'y imbrique, glissé au-dehors
         # en ressort (mêmes règles que les cartes, cf. `_recompute_membership`).
@@ -1178,6 +1572,7 @@ class SceneGraphView(QWidget):
         self._frames = {}
         self._name_box = {}
         self._missing = {}
+        self._notes = {}
         self._edge_bindings = {}
         pos = self._node_positions(graph)
         node_names = {node.name for node in graph.nodes}
@@ -1232,6 +1627,16 @@ class SceneGraphView(QWidget):
                 self._missing[edge.target] = marker
 
         self._render_groups(shown, place, pos, node_names)
+        if self._notes_visible and self._state is not None:
+            for note_id, note in self._state.notes().items():
+                item = SceneGraphNoteItem(note_id, note.get("title", "Note"),
+                                          note.get("text", ""), note.get("color", ""),
+                                          bool(note.get("collapsed", False)),
+                                          geometry_changed=self._item_geometry_changed)
+                item.setPos(*(self._state.note_position(note_id) or (0.0, 0.0)))
+                item.setZValue(2)
+                self._scene.addItem(item)
+                self._notes[note_id] = item
 
         def anchor(name):
             """(rect, clé, interne?, item) — interne = visible à ce niveau."""
@@ -1268,6 +1673,7 @@ class SceneGraphView(QWidget):
         content = self._scene.itemsBoundingRect()
         self._scene.setSceneRect(content.adjusted(-_PAN_MARGIN, -_PAN_MARGIN,
                                                   _PAN_MARGIN, _PAN_MARGIN))
+        self._update_minimap()
 
     def _render_doors(self, entry_links: list, exit_links: list) -> None:
         """Portes de frontière — entrées à gauche du contenu, sorties à droite —

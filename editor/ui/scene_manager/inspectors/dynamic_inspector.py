@@ -17,6 +17,7 @@ from .ui_node_inspector import UINodeInspector
 from .uses_inspectors import PrefabUsesInspector, ScriptUsesInspector
 from .edge_inspector import EdgeInspector
 from .group_inspector import GroupInspector
+from .graph_note_inspector import GraphNoteInspector
 
 
 class DynamicInspector(QWidget):
@@ -57,6 +58,7 @@ class DynamicInspector(QWidget):
     _MODE_UI_NODE     = 9
     _MODE_EDGE        = 10
     _MODE_GROUP       = 11
+    _MODE_GRAPH_NOTE  = 12
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,6 +112,7 @@ class DynamicInspector(QWidget):
             self._MODE_UI_NODE:     self._make_ui_node,
             self._MODE_EDGE:        self._make_edge,
             self._MODE_GROUP:       self._make_group,
+            self._MODE_GRAPH_NOTE:  self._make_graph_note,
         }
         self._placeholders: dict[int, QWidget] = {}
         for _mode in self._factories:            # 1..9, dans l'ordre → index == mode
@@ -129,6 +132,7 @@ class DynamicInspector(QWidget):
         self._ui_node_insp = None
         self._edge_insp = None
         self._group_insp = None
+        self._graph_note_insp = None
 
         # Injecté par window.py AVANT toute construction d'inspecteur : mémorisé
         # ici, appliqué par les fabriques concernées à la naissance de leur
@@ -191,6 +195,11 @@ class DynamicInspector(QWidget):
     def _make_prefab_uses(self) -> QWidget:
         insp = PrefabUsesInspector()
         insp.edit_requested.connect(lambda p: self.show_prefab(p, self._project))
+        # Sauter au script à la ligne exacte du spawn — même callback que les
+        # autres inspecteurs (window.open_script(path, line)).
+        insp.open_ref.connect(
+            lambda path, line: self._script_open_fn(path, line)
+            if self._script_open_fn else None)
         self._uses_insp = insp
         return insp
 
@@ -245,6 +254,12 @@ class DynamicInspector(QWidget):
         insp = GroupInspector()
         insp.changed.connect(self.groups_changed)
         self._group_insp = insp
+        return insp
+
+    def _make_graph_note(self) -> QWidget:
+        insp = GraphNoteInspector()
+        insp.changed.connect(self.groups_changed)  # même redessin éditorial du graphe
+        self._graph_note_insp = insp
         return insp
 
     def _on_actor_insp_changed(self):
@@ -512,6 +527,15 @@ class DynamicInspector(QWidget):
         self._group_insp.load(group_id, folders, state)
         self._set_header("group", label("assetfind.group"), folder.name, editable=False)
         self._stack.setCurrentIndex(self._MODE_GROUP)
+
+    def show_graph_note(self, note_id, state) -> None:
+        note = state.notes().get(note_id) if state else None
+        if note is None:
+            return
+        self._ensure(self._MODE_GRAPH_NOTE)
+        self._graph_note_insp.load(note_id, state)
+        self._set_header("graph_note", label("graphnote.type"), note.get("title", "Note"), editable=False)
+        self._stack.setCurrentIndex(self._MODE_GRAPH_NOTE)
 
     def show_prefab_uses(self, prefab, project=None):
         proj = project or self._project

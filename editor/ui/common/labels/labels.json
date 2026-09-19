@@ -105,6 +105,27 @@
     "settings.shortcuts.action.scene.group": {
       "text": "Group selected scenes"
     },
+    "settings.shortcuts.action.scene.graph_fit": {
+      "text": "Fit scene graph"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_reset": {
+      "text": "Reset graph zoom"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_in": {
+      "text": "Zoom in scene graph"
+    },
+    "settings.shortcuts.action.scene.graph_zoom_out": {
+      "text": "Zoom out scene graph"
+    },
+    "settings.shortcuts.action.scene.graph_toggle_minimap": {
+      "text": "Show / hide graph minimap"
+    },
+    "settings.shortcuts.action.scene.graph_deselect": {
+      "text": "Deselect graph"
+    },
+    "settings.shortcuts.action.scene.graph_search": {
+      "text": "Search scene in graph"
+    },
     "settings.shortcuts.display.undo": {
       "text": "Undo"
     },
@@ -853,7 +874,7 @@
       "text": "Scene slots:"
     },
     "sceneinsp.scene_actors_tip": {
-      "text": "Hardware slots reserved for actors placed in this scene. Not an actor count.\n\n0 = automatic: one slot per placed actor. Set it higher only to leave room for more placed actors."
+      "text": "Advanced override for the actor budget. Not an actor count.\n\n0 = automatic: the budget counts one slot per placed actor. Set a value only to pin the budget manually; leave it at 0 otherwise."
     },
     "sceneinsp.no_prefab": {
       "text": "No prefab in this project yet. Nothing to pool."
@@ -875,6 +896,15 @@
     },
     "sceneinsp.slots_hint": {
       "text": "{placed} actors placed"
+    },
+    "sceneinsp.pool_use_placed": {
+      "text": "placed"
+    },
+    "sceneinsp.pool_use_spawned": {
+      "text": "spawned"
+    },
+    "sceneinsp.pool_use_both": {
+      "text": "placed · spawned"
     },
     "sndmix.add_action": {
       "text": "+ Action"
@@ -3122,6 +3152,27 @@
     "scncanvas.graph_rearrange": {
       "text": "Re-arrange"
     },
+    "scncanvas.graph_show_notes_tip": {
+      "text": "Show or hide free notes on the graph"
+    },
+    "scncanvas.graph_minimap_tip": {
+      "text": "Show or hide the graph minimap (H)"
+    },
+    "scncanvas.graph_search_tip": {
+      "text": "Search a scene in the graph (Ctrl+F)"
+    },
+    "scncanvas.graph_search_placeholder": {
+      "text": "Search scene…"
+    },
+    "scncanvas.graph_create_note": {
+      "text": "Create note here"
+    },
+    "graphnote.type": {
+      "text": "Graph note"
+    },
+    "graphnote.title": {
+      "text": "Title"
+    },
     "scncanvas.graph_root": {
       "text": "All scenes"
     },
@@ -3133,6 +3184,9 @@
     },
     "scncanvas.graph_edit_scene": {
       "text": "Edit scene"
+    },
+    "scncanvas.graph_create_scene": {
+      "text": "Create scene here"
     },
     "scncanvas.graph_entry_reachable": {
       "text": "Entry — reachable scene"
@@ -3258,7 +3312,13 @@
       "text": "Edit script"
     },
     "uses.no_instance_in_the_project": {
-      "text": "No instance in the project."
+      "text": "Not placed or spawned anywhere in the project."
+    },
+    "uses.spawned_by": {
+      "text": "SPAWNED BY"
+    },
+    "uses.spawn_line": {
+      "text": "line {line}"
     },
     "uses.scene_scripts": {
       "text": "SCENE SCRIPTS"

@@ -577,6 +577,8 @@ class MainWindow(QMainWindow):
         _graph.edge_selected.connect(self._show_edge_calls)
         _graph.edge_opened.connect(self._open_edge_from_graph)
         _graph.group_selected.connect(self._show_graph_group)
+        _graph.note_selected.connect(self._show_graph_note)
+        _graph.scene_create_requested.connect(self._create_scene_from_graph)
         # Un clic dans le vide / Échap qui retire la dernière sélection du
         # graphe rend son panneau par défaut : l'aperçu du projet.
         _graph.selection_cleared.connect(get_bus().clear)
@@ -1243,6 +1245,11 @@ class MainWindow(QMainWindow):
         if graph._folders is not None and graph._state is not None:
             self._inspector.show_group(group_id, graph._folders, graph._state)
 
+    def _show_graph_note(self, note_id: str) -> None:
+        graph = self.canvas_workspace.graph_view
+        if graph._state is not None:
+            self._inspector.show_graph_note(note_id, graph._state)
+
     def _open_edge_from_graph(self, edge):
         """Double-clic sur une arête : ouvrir le Script Editor à l'appel.
 
@@ -1260,6 +1267,16 @@ class MainWindow(QMainWindow):
         get_dispatcher().add_scene(name)
         self.assets_finder_panel.refresh()
         self.assets_finder_panel.begin_rename_scene(name)
+
+    def _create_scene_from_graph(self, x: float, y: float):
+        """Clic-droit « Créer une scène ici » dans le graphe : même création que
+        `_add_scene`, mais la carte est posée au point cliqué (et rattachée au
+        niveau ouvert du graphe) plutôt que laissée à l'auto-layout."""
+        if not self.project: return
+        from core.command_dispatcher import unique_name
+        name = unique_name("Scene", {s.name for s in self.project.scenes})
+        get_dispatcher().add_scene(name)   # re-projette le graphe (project_tree_changed)
+        self.canvas_workspace.graph_view.place_new_scene(name, x, y)
 
     # ── Slots prefab ─────────────────────────────────────────────
 

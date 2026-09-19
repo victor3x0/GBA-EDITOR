@@ -1128,33 +1128,26 @@ def _check_cameras(ctx: ValidationContext):
 
 
 def _check_actor_budget(ctx: ValidationContext):
-    """Le budget d'acteurs d'une scène (ROADMAP v0.17) — deux fautes, qui ne
-    sont pas la même.
+    """Le budget d'acteurs d'une scène (ROADMAP v0.17, budget dérivé révisé le
+    2026-09-19) — une seule faute désormais.
 
-    ① La scène POSE plus d'acteurs qu'elle n'en RÉSERVE. La réservation est ce
-      qui dimensionne sa tranche de `g_actors` ; les acteurs en trop n'auraient
-      pas d'entrée.
-    ② Réservation + pools dépassent les 128 entrées de l'OAM. Le matériel
-      n'affichera pas le surplus.
+    Le budget n'est plus réparti mais DÉRIVÉ : acteurs posés (et OBJ d'UI en B2)
+    se comptent, le pool est ce qui reste. La faute « posés > réservés » a donc
+    disparu avec la réservation ; ne subsiste que le débordement des 128 :
+    acteurs + UI + pools dépassent l'OAM, le matériel n'affichera pas le surplus.
 
-    Avertissements et non erreurs : c'est la règle de mesure de la v0.7.6 — le
+    Avertissement et non erreur : c'est la règle de mesure de la v0.7.6 — le
     build dit ce que la scène coûte, il ne l'arbitre pas à la place de
     l'auteur."""
     from codegen.actor_budget import scene_actor_budget, OAM_LIMIT
     p = ctx.project
     for scene in p.scenes:
         b = scene_actor_budget(scene, p)
-        if b["over_placed"]:
-            ctx.warn(None,
-                f"Scène '{scene.name}' : {b['placed']} acteurs posés pour "
-                f"{b['reserved']} slot(s) réservé(s) — les acteurs en trop n'auront "
-                f"pas d'entrée dans g_actors. Monte « Scene actors » dans "
-                f"l'inspecteur de scène, ou repasse-le à 0 (automatique).")
         if b["over_budget"]:
             ctx.warn(None,
                 f"Scène '{scene.name}' : {b['used']} slots demandés "
-                f"({b['reserved']} acteurs + {b['pool']} de pool) pour "
-                f"{OAM_LIMIT} entrées OAM — le matériel n'affichera pas le surplus.")
+                f"({b['actors']} acteurs + {b['ui']} d'interface + {b['pool']} de pool) "
+                f"pour {OAM_LIMIT} entrées OAM — le matériel n'affichera pas le surplus.")
 
 
 def _check_window_regions(ctx: ValidationContext):

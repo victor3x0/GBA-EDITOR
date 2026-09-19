@@ -438,8 +438,9 @@ class UIWidgetTool(BaseTool):
     Clic sans glisser = taille par défaut du type : c'est le geste de qui sait
     déjà où il le veut et le redimensionnera dans l'inspecteur."""
 
-    # Aperçu dans la couleur de la famille Interface (icons.COLOR_UI) — le
-    # type se lit à l'icône de la toolbar, pas à une teinte dédiée.
+    # Palette locale de l'outil Interface : elle rend le geste lisible dans le
+    # canvas ; le type précis se lit à l'icône de la toolbar, pas à une
+    # couleur globale dédiée.
     _FILL   = QColor(79, 143, 247, 50)
     _BORDER = QColor(79, 143, 247, 230)
     # Taille au simple clic, par type — multiples de 8.
@@ -527,4 +528,3 @@ class UIWidgetTool(BaseTool):
     def on_leave(self):
         if self._preview and self._anchor is None:
             self._preview.setVisible(False)
-

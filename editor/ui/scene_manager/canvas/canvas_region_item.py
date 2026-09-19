@@ -30,7 +30,7 @@ from PyQt6.QtGui import (
     QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PyQt6.QtWidgets import (
-    QGraphicsItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QGraphicsPixmapItem,
+    QGraphicsItem, QGraphicsRectItem,
 )
 
 
@@ -52,10 +52,10 @@ _HANDLE_CURSORS = {
     "n":  Qt.CursorShape.SizeVerCursor,   "s":  Qt.CursorShape.SizeVerCursor,
     "e":  Qt.CursorShape.SizeHorCursor,   "w":  Qt.CursorShape.SizeHorCursor,
 }
-# Demi-côté du carré de poignée dessiné, et tolérance de préhension, en pixels
-# ÉCRAN : convertis en unités scène via le zoom courant pour rester constants à
+# Rayon de la poignée ronde et tolérance de préhension, en pixels ÉCRAN :
+# convertis en unités scène via le zoom courant pour rester constants à
 # l'affichage quel que soit le niveau de zoom.
-_HANDLE_HALF_PX = 3.5
+_HANDLE_RADIUS_PX = 3.5
 _HANDLE_GRAB_PX = 6.0
 
 # Planches de glyphes trouées : {(chemin, mtime, taille): QPixmap | None}.
@@ -105,20 +105,17 @@ class UIRegionItem(QGraphicsRectItem):
     on le trouve — sinon à l'origine de l'écran, avec un liseré discontinu qui
     dit que la position affichée n'est pas celle du jeu."""
 
-    # Exception canvas-only à la règle « forme, pas teinte » (icons.py) :
-    # pendant un drag, la couleur se lit plus vite qu'une icône de 6 px.
-    # Ailleurs (arbre, finders) le type reste porté par la FORME.
+    # Palette locale au canvas : pendant un drag, la couleur se lit plus vite
+    # qu'une icône de 6 px. Elle ne définit aucune famille globale ; ailleurs,
+    # l'identité du type reste portée par la FORME.
     _KIND_COLORS = {
-        "text":   "#4f8ff7",   # texte (bleu, famille Interface)
+        "text":   "#4f8ff7",   # texte : couleur locale de l'outil Interface
         "container": "#b388ff",   # conteneur (lavande — structure/groupe)
         # La liste est un conteneur : même famille que lui, teinte plus soutenue
         # — ce qu'elle ajoute est un comportement, pas une autre nature.
         "list":   "#8c6bff",
         "image":  "#ffb454",   # image (ambre — un dessin, pas une structure)
     }
-    _KIND_ICONS = {"container": "ui_container", "list": "ui_list",
-                   "text": "ui_text", "image": "ui_image"}
-
     def __init__(self, layout_asset, region, project, scene, save_fn=None, parent=None):
         super().__init__(0, 0, max(8, region.w), max(8, region.h), parent)
         self._layout, self._region = layout_asset, region
@@ -250,20 +247,6 @@ class UIRegionItem(QGraphicsRectItem):
         detail = label('cvregion.region_tip', name=region.name, name_2=self._layout.name, tiles=tiles, target=target)
         # Note libre de l'auteur en tête, puis le détail technique de la zone.
         self.setToolTip(notes_tooltip(getattr(region, "notes", ""), detail))
-
-        # Étiquette : icône de type + le nom que cite le script, lisibles sans
-        # passer par l'inspecteur.
-        icon = _icons.get(self._KIND_ICONS.get(getattr(region, "kind", "text"),
-                                               "ui_text"), self._COLOR.name())
-        self._kind_icon = QGraphicsPixmapItem(icon.pixmap(32, 32), self)
-        self._kind_icon.setScale(6.0 / 32.0)      # ≈ 6 px GBA, net à tout zoom
-        self._label = QGraphicsSimpleTextItem(region.name, self)
-        self._label.setBrush(QBrush(self._COLOR))
-        fnt = self._label.font()
-        fnt.setPointSizeF(5.0)
-        self._label.setFont(fnt)
-        self._label.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, False)
-        self._sync_chrome()
 
     def _actor_pos(self, name: str):
         """(x, y) de l'acteur nommé, ou None. Passé aux helpers d'ancrage du
@@ -993,21 +976,6 @@ class UIRegionItem(QGraphicsRectItem):
         m = 6.0
         return self.rect().adjusted(-m, -m, m, m)
 
-    def _sync_chrome(self):
-        """Visibilité et position du libellé selon l'état.
-
-        Le NOM ne s'affiche qu'au survol ou à la sélection, sinon cinq zones
-        imbriquées recouvrent le jeu (l'arbre donne déjà l'inventaire). L'icône
-        de type, elle, reste toujours visible.
-
-        Le libellé se pose AU-DESSUS du rectangle, et retombe à l'intérieur
-        quand la zone touche le haut de l'écran."""
-        show = self.isSelected() or self._hovered
-        self._label.setVisible(show)
-        y = -7.5 if self.pos().y() >= 9 else 1.0
-        self._kind_icon.setPos(1, y)
-        self._label.setPos(8.5, y)
-
     def paint(self, painter, option, widget=None):
         """Le CONTENU réel (couleur de palette PLEINE, nine-slice, background)
         — exactement ce que le build affichera, jamais une teinte d'édition ;
@@ -1065,13 +1033,15 @@ class UIRegionItem(QGraphicsRectItem):
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawPath(path)
 
-        # 3. Poignées — sélection seule.
+        # 3. Poignées — sélection seule. Rondes plutôt que carrées : elles se
+        # lisent comme des contrôles de manipulation, pas comme des pixels du
+        # jeu. Leur rayon reste constant en pixels écran.
         if sel:
-            half = _HANDLE_HALF_PX / self._view_scale()
+            radius = _HANDLE_RADIUS_PX / self._view_scale()
             painter.setPen(QPen(QColor("#ffffff"), 0))
             painter.setBrush(QBrush(self._COLOR))
             for hx, hy in self._handle_points().values():
-                painter.drawRect(QRectF(hx - half, hy - half, 2 * half, 2 * half))
+                painter.drawEllipse(QPointF(hx, hy), radius, radius)
         painter.restore()
 
     # ── Poignées ─────────────────────────────────────────────────
@@ -1084,11 +1054,11 @@ class UIRegionItem(QGraphicsRectItem):
     def _handle_points(self) -> dict:
         """Centre de chaque poignée en coordonnées LOCALES.
 
-        Rentrées d'un demi-côté vers l'INTÉRIEUR : centrées sur le bord, elles
-        déborderaient du `boundingRect` et laisseraient des rémanences."""
+        Centrées sur les bords : les contrôles restent à l'EXTÉRIEUR du
+        contenu, avec une marge déjà incluse dans `boundingRect()` pour le
+        repaint."""
         r = self.rect()
-        d = _HANDLE_HALF_PX / self._view_scale()
-        l, t, rt, b = r.left() + d, r.top() + d, r.right() - d, r.bottom() - d
+        l, t, rt, b = r.left(), r.top(), r.right(), r.bottom()
         mx, my = (r.left() + r.right()) / 2, (r.top() + r.bottom()) / 2
         return {
             "nw": (l, t), "n": (mx, t), "ne": (rt, t), "e": (rt, my),
@@ -1100,7 +1070,8 @@ class UIRegionItem(QGraphicsRectItem):
         pixels écran : une poignée reste attrapable même très dézoomée."""
         tol = _HANDLE_GRAB_PX / self._view_scale()
         for name, (hx, hy) in self._handle_points().items():
-            if abs(local_pos.x() - hx) <= tol and abs(local_pos.y() - hy) <= tol:
+            dx, dy = local_pos.x() - hx, local_pos.y() - hy
+            if dx * dx + dy * dy <= tol * tol:
                 return name
         return None
 
@@ -1174,18 +1145,17 @@ class UIRegionItem(QGraphicsRectItem):
                 self._move_descendants(value.x() - self._last_pos.x(),
                                        value.y() - self._last_pos.y())
             self._last_pos = QPointF(value)
-        # Le libellé passe au-dessus ou à l'intérieur selon la place disponible,
-        # et le chrome change avec la sélection : les deux se resynchronisent ici.
+        # La sélection change la couleur et les poignées ; demander une
+        # repeinture explicite maintient le chrome à jour sans libellé canvas.
         if change in (QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged,
                       QGraphicsItem.GraphicsItemChange.ItemSelectedHasChanged):
-            self._sync_chrome()
+            self.update()
         return super().itemChange(change, value)
 
     # ── Interaction ──────────────────────────────────────────────
     def hoverMoveEvent(self, e):
         if not self._hovered:
             self._hovered = True
-            self._sync_chrome()
             self.update()
         name = self._handle_at(e.pos()) if self.isSelected() else None
         if name:
@@ -1199,7 +1169,6 @@ class UIRegionItem(QGraphicsRectItem):
     def hoverLeaveEvent(self, e):
         self.unsetCursor()
         self._hovered = False
-        self._sync_chrome()
         self.update()
         super().hoverLeaveEvent(e)
 

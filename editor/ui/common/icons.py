@@ -12,55 +12,42 @@ Fallback       : QIcon vide si qtawesome absent (pas de crash)
 from __future__ import annotations
 import tempfile
 from pathlib import Path
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QApplication
 
-# ── Couleurs par type d'asset — 6 FAMILLES (voir project_theme_gba_redesign)
-# Une couleur par famille ; l'identité intra-famille passe par la FORME de
-# l'icône (account / puzzle / image…), pas par la teinte. Bande chaude pour
-# Entités/Monde/Logique, teal pour l'Audio, violet pour la Police — toutes
-# distinctes du périwinkle chrome (C.ACCENT) et du vert power-LED (C.POWER).
-_FAM_ENTITY = "#f75c3c"   # Entités : actor, prefab, sprite  (rouge vermillon)
-_FAM_WORLD  = "#f5a623"   # Monde   : scene, camera, background  (ambre-orange)
-_FAM_LOGIC  = "#ec4a9a"   # Logique : script  (magenta)
-_FAM_AUDIO  = "#15c9b2"   # Audio   : sfx, music  (teal vif)
-_FAM_UI     = "#4f8ff7"   # Interface : layout, conteneur, texte, zone  (bleu franc)
-_FAM_FONT   = "#9b7bd5"   # Police  : asset Font  (violet)
-
+# ── Couleur neutre des icônes ─────────────────────────────────────
+#
+# Il n'existe plus de palette globale par famille d'asset. Actor, scène,
+# script, police… restent reconnaissables PAR LA FORME de leur icône, jamais
+# par une teinte qui les suivrait dans tout l'éditeur. Un écran qui a besoin
+# de couleur (état actif, type de zone, rôle dans un outil) la définit dans
+# son propre contexte, avec sa propre règle de lecture.
 COLOR_DEFAULT = "#8a8aa0"   # neutre légèrement teinté indigo
 COLOR_ACTIVE  = "#5be08b"   # = C.POWER — état actif / live
 COLOR_FOLDER  = "#5a6b82"   # dossier — slate neutre
 
-COLOR_ACTOR      = _FAM_ENTITY
-COLOR_PREFAB     = _FAM_ENTITY
-COLOR_SPRITE     = _FAM_ENTITY
-COLOR_SCENE      = _FAM_WORLD
-COLOR_BACKGROUND = _FAM_WORLD
-COLOR_SCRIPT     = _FAM_LOGIC
-COLOR_SFX        = _FAM_AUDIO
-COLOR_MUSIC      = _FAM_AUDIO
-# Script Editor — vocabulaire « code » (events / behaviors / globals / consts).
-# Tout ce qui relève du code partage UNE couleur = la famille Logique
-# (COLOR_SCRIPT, magenta) ; on distingue les catégories par la FORME de l'icône
-# et le libellé, pas par la teinte. Les valeurs One-Dark d'origine (teal/violet/
-# jaune/rouge) collisionnaient avec Audio / chrome / warning / danger.
+# Alias de compatibilité : les consommateurs existants continuent à demander
+# une couleur, mais elle est volontairement neutre. Les nouveaux outils ne
+# doivent pas s'en servir pour réintroduire une taxonomie globale.
+COLOR_ACTOR      = COLOR_DEFAULT
+COLOR_PREFAB     = COLOR_DEFAULT
+COLOR_SPRITE     = COLOR_DEFAULT
+COLOR_SCENE      = COLOR_DEFAULT
+COLOR_BACKGROUND = COLOR_DEFAULT
+COLOR_SCRIPT     = COLOR_DEFAULT
+COLOR_SFX        = COLOR_DEFAULT
+COLOR_MUSIC      = COLOR_DEFAULT
 COLOR_EVENT    = COLOR_SCRIPT
 COLOR_BEHAVIOR = COLOR_SCRIPT
 COLOR_GLOBAL   = COLOR_SCRIPT
 COLOR_CONST    = COLOR_SCRIPT
-# Interface — mise en page UI et ses trois types d'éléments. UNE couleur pour
-# la famille ; zone / conteneur / texte se distinguent par la FORME de l'icône,
-# comme partout ailleurs (règle « forme, pas teinte »).
-COLOR_UI        = _FAM_UI
-COLOR_UI_LAYOUT = _FAM_UI
-COLOR_UI_PANEL  = _FAM_UI
-COLOR_UI_TEXT   = _FAM_UI
-COLOR_UI_REGION = _FAM_UI
-# Police — asset Font, seule famille sans FORME distinctive (un seul type
-# d'objet), mais qui a besoin de sa propre teinte : elle apparaît à côté des
-# autres familles (jauge ROM, écran Texte) et ne peut pas leur en emprunter une.
-COLOR_FONT      = _FAM_FONT
+COLOR_UI        = COLOR_DEFAULT
+COLOR_UI_LAYOUT = COLOR_DEFAULT
+COLOR_UI_PANEL  = COLOR_DEFAULT
+COLOR_UI_TEXT   = COLOR_DEFAULT
+COLOR_UI_REGION = COLOR_DEFAULT
+COLOR_FONT      = COLOR_DEFAULT
 
 # ── Registre : nom logique → (qta_key, unicode_fallback) ──────────
 # Pour swapper l'icon set : remplacer les qta_key par les nouveaux.
@@ -78,7 +65,8 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # surface, il ne saisit pas de texte (celui-ci vient de la table).
     "tool_text_region":      ("mdi.format-text-variant-outline", "⌸"),
     # Interface — types d'éléments d'une mise en page (arbre, toolbar, canvas).
-    # Un type = une FORME : la couleur est celle de la famille (COLOR_UI).
+    # Un type = une FORME. Le contexte qui les affiche choisit éventuellement
+    # sa couleur d'état ; le registre ne leur attribue pas de couleur globale.
     "ui_layout":             ("mdi.view-dashboard-outline",  "⊞"),
     "ui_container":              ("mdi.card-outline",            "▭"),
     # Liste : un conteneur qui se PARCOURT — d'où des rangées et pas un cadre
@@ -86,8 +74,7 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "ui_list":               ("mdi.format-list-bulleted",    "☰"),
     "ui_text":               ("mdi.format-text",             "T"),
     # Image : le pictogramme d'image, pas celui de sprite — c'est un ÉLÉMENT
-    # d'interface qui affiche un sprite, pas le sprite lui-même (qui garde son
-    # icône et sa famille de couleur dans le Project Viewer).
+    # d'interface qui affiche un sprite, pas le sprite lui-même.
     "ui_image":              ("mdi.image-outline",           "▣"),
     "tool_inpaint_brush":         ("mdi.brush",                   "🖌"),
     "tool_inpaint_rect":          ("mdi.select-drag",             "▭"),
@@ -109,6 +96,8 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "view_snap":             ("mdi.magnet",                  "⇲"),
     "view_boxes":            ("mdi.account-box",             "▭"),
     "view_collision":        ("mdi.wall",                    "▨"),
+    "view_notes":            ("mdi.note-text-outline",       "▤"),
+    "view_minimap":          ("mdi.map-outline",             "▧"),
     "warning":               ("mdi.alert",                   "⚠"),
     # Notices (ui/common/notice.py) — l'icône dit ce que le message annonce là
     # où la couleur ne suffit plus : `build` et `render` sont tous deux jaunes,
@@ -119,11 +108,20 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "scroll_h":              ("mdi.arrow-left-right-bold",   "↔"),
     "scroll_v":              ("mdi.arrow-up-down-bold",      "↕"),
     # Project panel — types d'objets
-    "actor":                 ("mdi.account",                 "●"),
-    "actor_empty":           ("mdi.account-outline",         "○"),
-    "actor_script":          ("mdi.account-check",           "●"),
-    "actor_empty_script":    ("mdi.account-check-outline",   "○"),
-    "prefab":                ("mdi.puzzle-outline",          "◆"),
+    # Les instances sont Pac-Man : une silhouette immédiatement lisible et
+    # suffisamment neutre pour un PNJ, un ennemi ou un objet mobile. Le
+    # statut « script » ne change pas le pictogramme : il se lit dans le
+    # contexte qui l'affiche, pas dans une seconde taxonomie de formes.
+    "actor":                 ("mdi.pac-man",                 "◕"),
+    "actor_empty":           ("mdi.pac-man",                 "◕"),
+    "actor_script":          ("mdi.pac-man",                 "◕"),
+    "actor_empty_script":    ("mdi.pac-man",                 "◕"),
+    # Un prefab est le « fantôme » : son identité reste distincte de l'actor
+    # par la forme, sans faire appel à une couleur de famille.
+    "prefab":                ("mdi.ghost",                   "♟"),
+    # Repère d'ancrage d'un actor dans le canvas : une cible est plus explicite
+    # qu'une croix dessinée à la main et réutilise le registre d'icônes.
+    "actor_origin":          ("mdi.crosshairs",               "⊙"),
     "script_lua":            ("mdi.code-braces",             "λ"),
     "script_file":           ("mdi.file-outline",            "≡"),
     "scene":                 ("mdi.layers-outline",          "◈"),
@@ -140,8 +138,10 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "music":                 ("mdi.music-note",              "♫"),
     "data_table":            ("mdi.table",                   "▦"),
     "asset_missing":         ("mdi.circle-outline",          "○"),
-    # Canvas
-    "camera":                ("mdi.camera-outline",          "[]"),
+    # Caméra de cinéma latérale à deux bobines. Le rendu est dessiné ci-dessous
+    # plutôt que pris dans MDI : les variantes « movie » sont des clapboards,
+    # pas la silhouette de caméra demandée par l'éditeur.
+    "camera":                ("mdi.video",                   "▰"),
     # Sprite Editor — directions
     "dir_n":                 ("mdi.arrow-up",                "↑"),
     "dir_ne":                ("mdi.arrow-top-right",         "↗"),
@@ -229,6 +229,31 @@ except ImportError:
     _BACKEND = "none"
 
 
+def _classic_camera_pixmap(color: str, size: int) -> QPixmap:
+    """Caméra de cinéma latérale, dessinée une fois dans le registre commun.
+
+    Les deux bobines, le corps et l'objectif gardent cette forme dans l'arbre,
+    les inspecteurs et le canvas. La taille demandée est native : elle reste
+    donc nette même lorsqu'un item zoomable la redemande à haute résolution.
+    """
+    n = max(1, int(size))
+    px = QPixmap(n, n)
+    px.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(px)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.scale(n / 64.0, n / 64.0)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(color))
+    painter.drawEllipse(QRectF(11, 5, 19, 19))
+    painter.drawEllipse(QRectF(33, 5, 19, 19))
+    painter.drawRoundedRect(QRectF(7, 27, 37, 23), 3, 3)
+    painter.drawPolygon(QPolygonF([
+        QPointF(43, 32), QPointF(58, 24), QPointF(58, 50), QPointF(43, 44),
+    ]))
+    painter.end()
+    return px
+
+
 def get(name: str,
         color: str = COLOR_DEFAULT,
         color_active: str | None = None) -> QIcon:
@@ -236,6 +261,8 @@ def get(name: str,
     Retourne un QIcon pour le nom logique donné.
     color_active : couleur quand le bouton est checked (QToolButton).
     """
+    if name == "camera":
+        return QIcon(_classic_camera_pixmap(color, 128))
     entry = _REGISTRY.get(name)
     if entry is None:
         return QIcon()
@@ -276,7 +303,8 @@ def scaled_pixmap(name: str,
     px = _scaled_cache.get(key)
     if px is None:
         n = max(1, int(round(size * q)))
-        px = get(name, color).pixmap(QSize(n, n))
+        px = (_classic_camera_pixmap(color, n) if name == "camera"
+              else get(name, color).pixmap(QSize(n, n)))
         _scaled_cache[key] = px
     return px
 

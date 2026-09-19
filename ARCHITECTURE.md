@@ -1307,7 +1307,9 @@ Quatre tons : `info` (muet), `accent` (périwinkle — une PORTÉE, un renvoi ai
 montrera pas ce qui est authoré). **Une seule couleur d'alerte, deux icônes** : la même règle
 que les familles d'icônes, « la forme, pas la teinte ». `ACCENT_RED` n'entre pas dans le
 gabarit — il reste aux erreurs bloquantes du validateur et à la suppression, et un inspecteur
-qui parle rouge banalise la seule couleur qui devait arrêter quelqu'un.
+qui parle rouge banalise la seule couleur qui devait arrêter quelqu'un. Cela ne définit pas une
+palette par famille d'asset : les types se distinguent par leurs formes, et chaque outil choisit
+seulement les couleurs nécessaires à son propre fonctionnement.
 
 **Seul le niveau 3 a le droit d'expliquer.** Les niveaux 1 et 2 disent ce qui est actionnable
 et probablement non voulu ; ils ne commentent pas le matériel. C'est l'interrupteur qui rend
@@ -1851,8 +1853,8 @@ rectangle pour les trois, et création du nœud à la volée si la scène n'en a
 et `UIImage` se créent depuis l'arbre de scène : leur configuration ne se réduit pas au
 geste rectangle.
 (`UIWidgetTool` + `create_element`, qui dépose dans le nœud primaire). `UIRegionItem`
-déplaçable avec snap 8 px en BG et 1 px en OBJ, dans la couleur de la famille Interface
-(`icons.COLOR_UI`, le type se lit à la forme d'icône posée à côté du nom) ; les
+déplaçable avec snap 8 px en BG et 1 px en OBJ, avec une palette locale qui fait lire les
+zones manipulées sans masquer la scène ; les types restent distingués par leur forme. Les
 descendants d'un conteneur suivent visuellement pendant le drag (leur modèle est relatif
 au parent, rien à réécrire) ; `MoveUIRegionCmd` annulable et fusionnable.
 

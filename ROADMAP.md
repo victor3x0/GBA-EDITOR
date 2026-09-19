@@ -51,7 +51,7 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.8 | Son : la musique par scène, les transitions, le mixage | **Livrée** — [archive](changelog-archive/v0.8.md) |
 | v0.14 | Diagnostic (trace de débogage, budget) | **Livrée**, réduite au frame+OAM (canaux/DMA non mesurables) — [archive](changelog-archive/v0.14.md) |
 | v0.19 | Le sous-pixel | **Livrée** — [archive](changelog-archive/v0.19.md) |
-| v0.24 | Le projet à l'échelle d'une équipe | **En cours** — formats livrés, build et chargement à faire |
+| v0.24 | Le projet à l'échelle d'une équipe | **Livrée** — formats, build et chargement (paresseux + réconciliation incrémentale) — [archive](changelog-archive/v0.24.md) |
 | v0.20 | L'état du monde : les collections persistantes | **Livrée** — [archive](changelog-archive/v0.20.md) |
 | v0.23 | Ce qu'un boss demande | **Livrée** — [archive](changelog-archive/v0.23.md) |
 | v0.21 | Le texte adressable : le dialogue piloté par la donnée | **Livrée** — [archive](changelog-archive/v0.21.md) |
@@ -59,11 +59,11 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
 | v0.10 | Distribution Linux | **Livrée** — format `.gba-project` et associations OS livrés |
 | v0.11 | Traduction de l'éditeur | **Livrée (infra)** — extraction UI, contrôles et choix de langue livrés ; la traduction FR elle-même est reportée au chantier « traduction fr » (v2.0) |
-| v0.12 | Vue d'ensemble (graphe des scènes) | **En cours** — carte, groupes et édition des transitions en place ; routage, cibles calculées, notes de canvas et mini-carte restent ouverts |
+| v0.12 | Vue d'ensemble (graphe des scènes) | **En cours** — carte, groupes, notes textuelles, mini-carte, recherche, inspecteur d'arête, retargetage du littéral et création de scène livrés ; création de transition ex nihilo, cibles calculées (`?`) et routage anti-croisement restent ouverts. Le tracé libre est reporté à v2.0. |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
-| v0.17 | Le pool par scène | Non commencée |
+| v0.17 | Le pool par scène | **En cours** — **B1 livrée le 2026-09-19** (budget dérivé `128 − posés − UI` remplaçant le 96/32, liste « Spawné par », marqueur d'usage, compteur d'instances) ; **B2b en cours** = la moitié build (compilation par scène : symboles per-scène, `POOL_*` per-scène, `g_actors`/base OAM par scène, OBJ d'UI par scène pour que le budget UI ne mente pas, `spawn` rend `Actor*`) |
 | v0.18 | La valeur affichée : d'où elle vient | Non commencée |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
 | v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) |
@@ -72,8 +72,7 @@ numéroté, jamais mélangé aux jalons produit.
 Les sept lignes qui suivent la v0.8 — de la v0.14 à la v0.22 — sont rangées dans leur **ordre
 de traitement recommandé**, issu de la revue « projet de production » du 2026-08-19 et détaillé
 dans sa section, juste après ce tableau : **v0.14 → v0.19 → v0.24 → v0.20 → v0.23 → v0.21 →
-v0.22**. Six d'entre elles (v0.14, v0.19, v0.20, v0.23, v0.21, v0.22) sont livrées et archivées ;
-seule **v0.24** reste détaillée plus bas. Les jalons restants (v0.10 à
+v0.22**. Les sept sont désormais livrées et archivées, v0.24 comprise. Les jalons restants (v0.10 à
 v0.18, hors ceux déjà cités ; v0.9 est désormais livrée) n'ont pas de priorité tranchée entre eux
 et restent dans leur ordre numérique, à la suite du bloc priorisé.
 
@@ -249,217 +248,6 @@ rang :
 | 5 | **v0.23** — Ce qu'un boss demande | Trois manques déjà connus, réunis par un seul cas d'usage. |
 | 6 | **v0.21** — Le texte adressable | Débloque le dialogue dense ; la v0.9 (traduction) en dépend. |
 | 7 | **v0.22** — Menus, listes et curseur | Le plus gros chantier, et le seul dont la forme reste ouverte. |
-
----
-
-## v0.24 — Le projet à l'échelle d'une équipe — **EN COURS**
-
-> **Volets « formats » et « build » livrés le 2026-08-20.** Le projet démo passe de 14 444 à
-> 3 679 lignes de JSON, donnée pour donnée (vérifié par un aller-retour save/reload comparant
-> les modèles, et par un build complet dont la ROM ne bouge pas). Le **rebuild à chaud** passe
-> de 9,09 s à 6,56 s, dont `make` de 3,50 s à 0,17 s : plus aucun des 41 fichiers générés
-> n'est réécrit quand rien n'a changé. Le **cache de conversion des assets** est livré depuis
-> le 2026-09-10 ; reste le **chargement paresseux**, que la mesure repousse explicitement,
-> cf. « Ouvert ».
-
-### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
-
-Trois points, dont un est déjà écrit en v1.0 — et c'est **la date qui change**, pas le
-constat.
-
-- **Les formats.** « Des formats que git sait relire » est le deuxième des quatre prérequis de
-  la v1.0. Mais il ne se comporte pas comme un prérequis de v1.0 : à trois personnes, deux
-  commits sur la même scène ne se fusionnent **pas**, et l'historique devient inexploitable dès
-  la première semaine. Ce n'est pas une finition, c'est un préalable — et plus il est repoussé,
-  plus l'historique qu'il faudra traverser est illisible.
-- **Le build.** `make` est appelé sans `-j`
-  ([rom_build.py:813](editor/codegen/rom_build.py:813)) : la compilation est **sérielle**. Et
-  rien ne met en cache la conversion des assets — chaque build repasse grit sur tout le
-  catalogue. Le temps d'itération grandit donc linéairement avec le nombre d'assets, alors que
-  l'itération est exactement ce qui fait ou défait un combat de boss.
-- **Le chargement.** `Project.load()` charge tout, tout de suite (déjà noté en v1.0). Pong et
-  ses 118 fichiers vont bien ; quarante scènes et deux cents sprites, personne n'en sait rien.
-
-### Décisions verrouillées
-
-- **Les formats d'abord, et il n'y a rien à concevoir.** La correction est déjà écrite en
-  v1.0 : une ligne de texte par rangée de grille — ce que `tileset` fait déjà, et c'est de loin
-  la partie la plus lisible du sidecar — et les couleurs en hexadécimal (`#39A8FF`), **les deux
-  formes acceptées en lecture**. Il reste à le faire, et à le faire avant que le projet cible
-  n'accumule un historique qu'on ne relira jamais.
-- **L'écriture bascule TOUT DE SUITE, la lecture accepte les deux pour de bon.** Aucun
-  convertisseur à lancer : le premier enregistrement d'un fichier le réécrit. À plusieurs,
-  l'ancienne forme n'est pas dans le passé mais **dans la branche d'à côté** — c'est ce qui
-  justifie de garder deux lecteurs, alors que le projet refusait jusqu'ici toute migration de
-  format (cf. l'en-tête de `core/project.py`, corrigé en conséquence). *(Tranché le
-  2026-08-20.)*
-- **La mise en page ne dépend QUE du nom de la clé.** Une règle « compact tant que la ligne
-  fait moins de N caractères » ferait re-couler tout un fichier au premier changement de
-  valeur — soit exactement le diff illisible qu'on cherche à supprimer. Les clés concernées
-  sont listées une fois, dans `core/project_json.py`. *(Tranché le 2026-08-20.)*
-
-### La mesure a contredit la justification (2026-08-20)
-
-Le constat d'ouverture disait « deux commits sur la même scène ne se fusionnent **pas** ».
-**C'est faux, et c'est l'inverse qui est vrai.** `git merge-file` travaille à la ligne : un
-scalaire par ligne offrait donc la granularité *maximale*. Sur `Arena.json`, douze scénarios
-de modifications concurrentes (cellules voisines, zones 4×4 côte à côte, bandes, colonnes) —
-l'ancien format plat fusionne proprement dans **tous**, le format en rangées fait conflit dès
-que deux personnes touchent la même rangée.
-
-La décision verrouillée a quand même été maintenue, mais pour **l'autre** raison — la seule
-qui tienne à la mesure :
-
-- **Ce qui est gagné : l'historique se relit.** Un diff disait « ligne 347 : 0 → 1 », ce dont
-  personne ne tire rien. Il montre maintenant la rangée entière, à sa place dans la carte. Et
-  le projet démo passe de **14 444 à 3 679 lignes de JSON** (police : 2 251 → 235 ; scène :
-  794 → 174) sans qu'une seule donnée change.
-- **Ce qui est perdu, et assumé : la fusion automatique d'une même rangée.** Deux personnes
-  qui peignent la même bande de carte se chevauchent réellement ; l'ancien format leur rendait
-  en silence une carte que ni l'une ni l'autre n'avait voulue. Le conflit est désormais
-  visible — et résoluble à l'œil, puisque la rangée se lit.
-
-C'est la trace de ce qu'il ne faut pas re-supposer : sur ce sujet, « plus compact » et « mieux
-fusionné » tirent en sens **opposés**.
-- **`-j` n'est pas un réglage.** Le nombre de cœurs se lit ; le build en profite. Une case de
-  plus à expliquer n'achèterait rien.
-- **Le cache de conversion se fait sur l'EMPREINTE de la source et des options, pas sur la
-  date.** Une date de fichier change à chaque `git checkout` : un cache daté serait inutile
-  exactement là où il sert le plus, c'est-à-dire en changeant de branche à trois.
-- **On ne réécrit pas un fichier identique.** Corollaire de la règle ci-dessus, appliqué un
-  cran plus haut : plutôt que de construire un cache À CÔTÉ du compilateur, on rend au
-  compilateur le seul signal dont il a besoin pour utiliser le sien. Tout ce que le build
-  dépose dans `build/` passe par `codegen/build_output.py`. *(Tranché le 2026-08-20.)*
-- **Le ménage se fait à la FIN, par balayage, pas au début par `rmtree`.** Ce que ce build-ci
-  n'a pas produit n'a plus lieu d'être compilé — même garantie qu'avant contre un `.c` périmé
-  ramassé au glob par le Makefile, sans dater à neuf tout ce qui n'a pas bougé. Un outil
-  externe qui écrit lui-même (grit) doit DÉCLARER sa sortie (`build_output.claim`), sinon le
-  balayage la prend pour un reste. *(Tranché le 2026-08-20.)*
-
-### Le vrai coût d'une itération n'était pas là où on le cherchait (2026-08-20)
-
-Le constat d'ouverture visait la conversion des assets (« chaque build repasse grit sur tout
-le catalogue »). La mesure dit autre chose : un rebuild où **rien n'a changé** coûtait 9,09 s
-contre 10,08 s à froid — l'itération ne profitait de rien.
-
-La cause n'était pas dans `make`, qui faisait exactement son travail. Sur 41 fichiers générés,
-**36 avaient un contenu identique au build précédent, et 32 voyaient leur date réécrite** :
-
-- `Project.prepare_build()` faisait `rmtree` sur `src/` et `grit_out/` à chaque build. Le
-  risque auquel il répondait est réel (le Makefile ramasse `src/*.c` au glob, donc un asset
-  retiré laissait derrière lui un `.c` toujours compilé et lié) — mais le prix était de
-  recompiler l'intégralité du projet à chaque itération.
-- `grit` estampille l'heure d'export dans un commentaire de ses `.c/.h`. Ce seul commentaire
-  rendait ses fichiers « différents » à chaque passage — et les faisait apparaître modifiés
-  dans `git status` sans qu'un octet de donnée ait bougé. *(Troisième défaut de grit relevé
-  par ce projet, après `-fa` multi-fichier et `-pn` ignoré sous `-pS`.)*
-
-Résultat, sur Pong, 4 cœurs :
-
-| | Avant | Après |
-| --- | --- | --- |
-| Build à froid | 12,29 s | 10,95 s |
-| **Rebuild à chaud** | **9,09 s** | **6,56 s** |
-| dont `make` à chaud | 3,50 s | **0,17 s** |
-| Fichiers générés réécrits à chaud | 32 / 41 | **0 / 41** |
-
-Vérifié aussi dans l'autre sens : un `.c` périmé déposé à la main dans `src/` est bien retiré
-par le balayage, et le build reste vert.
-
-### Ce que ça touche
-
-Volet **formats** (fait) : [project_json.py](editor/core/project_json.py) — nouveau, il
-possède à lui seul la mise en page et la forme des grilles —,
-[gba_color.py](editor/core/gba_color.py) (la forme écrite d'une couleur),
-[background.py](editor/core/models/background.py),
-[sprite.py](editor/core/models/sprite.py),
-[palette.py](editor/core/models/palette.py),
-[resource_store.py](editor/core/resources/resource_store.py) et
-[project.py](editor/core/project.py). `scene.py` n'a **pas** été touché :
-`collision_map` était déjà une liste de rangées, seule son écriture l'éclatait — pareil pour
-les `glyphs` d'une police. Deux des quatre formats se sont donc corrigés sans toucher au
-schéma, donc sans rien à relire de neuf.
-
-Volet **build** (fait) : [build_output.py](editor/codegen/build_output.py) — nouveau, il
-possède seul la règle « ne pas réécrire un fichier identique » et le balayage de fin —,
-[rom_build.py](editor/codegen/rom_build.py) (`-j`, le balayage),
-[project.py](editor/core/project.py) (`prepare_build` n'efface plus), et les huit émetteurs
-qui écrivent dans `build/` : `grit_conversion`, `runtime_codegen/{headers, main_gen,
-lua_compiler, data_tables}`, `scripting/{globals, constants}`.
-
-Volet **chargement** (repoussé par la mesure) : [project.py](editor/core/project.py).
-
-### Ouvert
-
-- ~~**Le temps de build réel n'est pas mesuré.**~~ **Mesuré le 2026-08-20**, sur Pong, 4 cœurs :
-
-  | Poste | Sériel | Après `-j4` |
-  | --- | --- | --- |
-  | `make` | 6,14 s (**50 %**) | 3,64 s |
-  | mmutil | 0,63 s | — |
-  | grit (fonds) | 0,37 s | — |
-  | `Project.load()` | **0,08 s** | — |
-  | **Total** | **12,29 s** | **9,92 s** |
-
-  Trois choses que la mesure tranche : `make` est le seul poste qui vaille la peine (`-j` est
-  **livré**, 1,7× dessus) ; **le chargement n'est pas un problème** — 173 fichiers en 80 ms,
-  soit 0,6 % du build, donc le chantier « chargement paresseux » n'a aucune justification
-  mesurée à cette échelle et attendra un projet où il en aura une ; et le cache de conversion
-  ne peut plus rapporter qu'**environ 1 s**, ce qui le fait passer derrière le reste.
-  Reste à refaire la mesure sur un projet gonflé artificiellement — c'est là que les pentes
-  se croisent, pas sur Pong.
-
-- ~~**Le cache de conversion des assets reste à faire.**~~ **Livré le 2026-09-10.**
-  `build/.asset-cache.json` ne garde qu'un index ; les sorties restent celles de `build/` et
-  une entrée est refusée dès que l'une manque. Les sprites et fonds legacy sont empreintés sur
-  leur source, leur sidecar, leur palette effective et grit ; l'audio sur les sources retenues,
-  leurs réglages, mmutil et bin2s. Sur `BuildBenchmark`, le rebuild inchangé passe de **13,7 s**
-  à **4,2 s** ; un PNG reconvertit 1 sprite sur 120 (**5,4 s**), un WAV ne reconstruit que la
-  banque audio (**7,4 s**) et une option reconvertit le seul sprite concerné (**5,2 s**).
-- **Mesure du fixture (2026-09-10).** `Project Demo/BuildBenchmark` contient 120 sprites PNG
-  distincts et 80 effets WAV, répartis sur quatre scènes de 30 acteurs (480 tuiles OBJ au
-  total, 30 entrées OAM par scène). Sur le poste Windows de développement, sans lancer mGBA :
-  build à froid **26,4 s** ; rebuild inchangé **13,7 s** ; après un PNG **13,1 s** ; après un
-  WAV **17,2 s** ; après une option de conversion **11,8 s**. Les variations mineures entre
-  PNG et option sont du bruit de mesure ; aucune de ces relances ne réemploie sélectivement
-  grit ou mmutil. L'audio est le premier poste concret à éviter de reconstruire quand rien ne
-  l'a modifié ; le cache doit toujours reposer sur l'empreinte du source et des options.
-- **Mesure du chargement à l'échelle (2026-09-12).** Sur une copie temporaire de ce même
-  fixture, l'ouverture complète vaut **1 448 ms à froid**, puis **457 ms / 421 ms** après
-  réchauffement du cache système. Un relevé chaud, phase par phase, donne **666 ms** : sprites
-  JSON 125 ms, réconciliation des sprites **339 ms**, audio JSON + réconciliation 123 ms,
-  polices 48 ms, palettes 16 ms, scènes **11 ms** et le reste 4 ms. La conclusion est nette :
-  différer les scènes seules ne résout presque rien ; la première cible est le catalogue et la
-  réconciliation des assets (notamment les sprites). Le chargement paresseux doit donc garder
-  l'index des ressources d'un côté, et ne matérialiser le JSON d'un asset que lorsqu'un écran
-  ou une opération globale le demande. La réconciliation complète reste nécessaire mais doit
-  être distinguée de l'ouverture interactive — ou rendue incrémentale par empreinte — plutôt
-  que cachée derrière le chargement de la scène active.
-- **Première tranche livrée (2026-09-12).** `Project.load()` n'ouvre plus les sidecars des
-  sprites, backgrounds, effets et musiques : il indexe seulement leurs noms et chemins.
-  `ResourceStore.get()` charge alors une ressource citée par le canvas à la demande ; les écrans
-  Backgrounds, Animations et Sounds matérialisent leur collection à leur première visite ;
-  build et validation appellent explicitement `Project.load_all_resources()`. Sur
-  `BuildBenchmark`, l'ouverture passe à **428 ms à froid**, puis **112 ms / 104 ms** à chaud,
-  les 120 sprites et 80 effets restant absents de la mémoire tant qu'aucun de ces chemins ne les
-  réclame. Le rattrapage complet, reporté à l'écran ou à l'opération globale, coûte 1,35 s :
-  c'est désormais le prochain candidat à rendre incrémental.
-- **Polissage interactif (2026-09-12).** L'inspecteur de scène ne construit plus sa grille de
-  palettes — ni ne rasterise les polices qu'elle énumère — avant que sa carte soit ouverte. Un
-  retour vers l'écran Scènes n'exécute plus un rafraîchissement global déjà couvert par les
-  événements ciblés du dispatcher. Enfin, `main.py` laisse la fenêtre principale peindre une
-  fois avant de programmer l'ouverture du projet : pas de splash, seulement l'interface réelle
-  qui obtient son premier cycle Qt avant l'I/O. Le coût de construction des écrans invisibles
-  reste mesuré et assumé comme le prochain chantier UI ; il n'est pas déguisé en chargement de
-  ressources.
-- ~~**Quand cesse-t-on d'ÉCRIRE l'ancien format ?**~~ **Tranché le 2026-08-20** : tout de
-  suite, lecture des deux à vie, aucun convertisseur (cf. décisions verrouillées).
-- **Le chargement paresseux, par collection ou par écran ?** **Tranché par la mesure du
-  2026-09-12 : index global léger, puis chargement explicite par écran.** Une collection ne
-  doit pas se matérialiser parce qu'un appelant l'itère par mégarde ; l'écran qui la rend, ou
-  une opération globale (build, validation, renommage), exprime son besoin. Reste à décider la
-  stratégie de réconciliation hors ligne : passe incrémentale au démarrage, ou rattrapage
-  complet différé après que l'interface est devenue utilisable.
 
 ---
 
@@ -1927,8 +1715,8 @@ qu'on peut lire, ouvrir et quitter sans changer le comportement du Canvas 2D.
 6. **Navigation et inspection — livré.** Un clic sur une scène sélectionne cette scène via le
    `SelectionBus` ; son double-clic revient au Canvas de scène et l'ouvre. Un clic sur une arête
    expose ses appels agrégés ; son double-clic ouvre le Script Editor à la ligne de l'appel.
-   Retargeter le littéral, groupes, annotations, mini-carte et création de transition restent
-   hors de cette première surface.
+   Retargeter le littéral, groupes, annotations, mini-carte et création de transition étaient
+   hors de cette première surface ; les groupes, notes textuelles et mini-carte sont depuis livrés.
 7. **Tests de contrat — livré.** Couvrir la projection sans Qt, la bascule `CanvasWorkspace`, le rendu
    vide/simple/agrégé, la cible absente et les deux gestes de navigation. Les tests existants du
    Canvas 2D restent le garde-fou : le graphe n'est jamais une extension de `SceneEditor`.
@@ -2203,12 +1991,13 @@ métadonnées d'éditeur, mémorisées avec la disposition du graphe et sans eff
   3d (descente par niveaux : double-clic sur une boîte ouvre son niveau, fil d'Ariane cliquable en
   bas, `Backspace` remonte, transitions franchissant le bord agrégées en portes de frontière
   `← entrées` / `sorties →`), 4 (sélection croisée graphe↔project viewer : sélectionner des scènes
-  d'un côté les surligne de l'autre, sans activation ni chargement, gardes anti-boucle). Hors
-  périmètre de ce chantier : le calque Notes et la mini-carte.
-- **Calque Notes.** Textes, traits libres, surlignages et cadres appartiennent au niveau de
-  graphe ouvert. Le calque est verrouillé par défaut afin que dessiner ne concurrence pas la
-  sélection des nœuds. Les annotations globales vivent à la racine ; celles d'un groupe ne
-  l'encombrent pas.
+  d'un côté les surligne de l'autre, sans activation ni chargement, gardes anti-boucle). Notes
+  textuelles, mini-carte, cadrage et recherche sont venus ensuite comme confort de lecture.
+- **Calque Notes dessiné — reporté à v2.0.** Les textes, traits libres, surlignages et cadres
+  appartiendront au niveau de graphe ouvert. Le calque sera verrouillé par défaut afin que dessiner
+  ne concurrence pas la sélection des nœuds. Les annotations globales vivront à la racine ; celles
+  d'un groupe ne l'encombreront pas. Les notes textuelles actuelles restent disponibles, mais le
+  tracé libre n'entre pas dans le périmètre de v0.12.
 - **Inspecteur contextuel.** Une scène expose sa miniature, son statut de départ et ses appels
   entrants/sortants connus ; une transition expose source, cible, fichier et ligne ; un groupe
   expose son nom et ses membres ; une annotation expose son style et son verrouillage. Retargeter
@@ -2263,13 +2052,16 @@ frontière : le graphe **organise et navigue**, il ne devient pas un langage —
 **Ce qui reste ouvert sur cet écran** (chacun sa décision propre — l'écran est utilisable, mais pas
 « bouclé » au sens ROADMAP) :
 
-- **Le cœur : écrire depuis le graphe.** *Retargetage du littéral* (glisser une arête vers une
-  autre scène pour réécrire l'appel `scene.switch` via ses `LuaRef`) et *création de transition*.
-  C'est ce qui ferait passer le graphe de la lecture à l'écriture de scripts — un vrai chantier.
+- **Créer une transition depuis rien.** Le *retargetage du littéral* (glisser une arête vers une
+  autre scène pour réécrire l'appel `scene.switch` via ses `LuaRef`) est **livré** (partie 4,
+  2026-09-19), tout comme la *création d'une scène* depuis le graphe. Reste la **création de
+  transition ex nihilo** : deviner dans quel script, à quel endroit et sous quelle garde poser
+  l'appel n'a pas de défaut défendable — volontairement reportée (cf. décisions verrouillées).
 - **Cibles calculées / indéterminées** — `scene.switch(variable)` aujourd'hui ignoré, à
   représenter par une sortie `?` explicite plutôt qu'un silence.
 - **Routage des arêtes** — elles peuvent encore se croiser ; pas d'évitement.
-- **Calque Notes et mini-carte** (confort de lecture, déjà hors périmètre en partie 2).
+- **Tracé libre du calque Notes** — reporté à **v2.0**. Les notes textuelles et la mini-carte sont
+  livrées ; restent les traits libres, surlignages et cadres par niveau de graphe.
 - **Undo/redo des sidecars** (groupes, positions, aperçu) — chantier séparé, envisagé **V2** (voir
   *Undo/redo des sidecars d'éditeur* dans les Chantiers techniques).
 - **Finitions** : l'auto-layout et *Re-arrange* espacent pour la taille *condensée*, donc des cartes
@@ -2381,7 +2173,10 @@ depuis un port reconnecte une cible littérale, avec aperçu sous le curseur ; u
 d'arêtes se traite en une commande Undo/Redo. La cible absente est un nœud rouge terminal,
 déplaçable et muni de son entrée pour être reconnecté. Les groupes disposent aussi d'un
 inspecteur (nom, couleur, note, état replié, contenu direct), partagé avec le dossier Scenes du
-project viewer.
+project viewer. Enfin la **création d'une scène** entre dans le graphe (elle est une DONNÉE, pas
+un FLUX — cf. décisions verrouillées) : clic-droit dans le vide « Créer une scène ici » pose la
+carte sous le curseur (`place_new_scene`) et la rattache au niveau ouvert, via la même commande
+`add_scene` que le project viewer.
 
 #### La règle qui gouverne tout — le graphe projette, il ne possède pas
 
@@ -2759,6 +2554,10 @@ c'est **où il se déclare**.
 - **Le pool se déclare sur la SCÈNE**, avec les prefabs qu'elle emploie réellement.
   `max_instances` quitte `Prefab`. Un prefab reste un **template de projet** ; combien
   d'exemplaires en vivent en même temps est une propriété du **niveau**, pas du template.
+- **Le budget OAM est DÉRIVÉ, pas réparti** (révisé le 2026-09-19, cf. section dédiée plus
+  bas). `budget_prefab = 128 − acteurs_posés − OBJ_UI`. Acteurs et UI se comptent au build ;
+  seul le pool (en instances) est déclaré, et il se valide contre ce qui reste. Remplace le
+  partage manuel 96/32.
 - **Pas de spawn dynamique depuis la librairie.** Écarté pour les trois raisons ci-dessus. À
   ne pas rouvrir tant qu'aucune des trois n'a changé.
 - **`active = false` LIBÈRE le slot.** C'est déjà le comportement — la boucle de spawn cherche
@@ -2866,6 +2665,34 @@ Pour l'écran : `ui/scene_manager/inspectors/scene_inspector.py` (le widget de b
 champs), `ui/scene_manager/inspectors/uses_inspectors.py` (« Spawné par »), et
 `core/validator.py` (l'avertissement « plus d'acteurs posés que de slots réservés »).
 
+### En cours (2026-09-19) : la moitié build, en tranches (B2b)
+
+B1 livrée, on attaque la compilation par scène — motivée aussi par le fait que **sinon le
+poste UI du budget ment** (l'éditeur compterait l'OBJ d'UI par scène, la ROM l'allouerait en
+union projet). L'ordre des tranches, chacune vérifiée au build ROM : **T1** symboles per-scène
+(`actor_<Scene>_<Prefab>`, `spawn_<Scene>_<Prefab>`, retrait du garde `compiled_prefabs`) →
+**T2** `POOL_<X>_*` per-scène (retrait du repli `Prefab.max_instances`) → **T3** `g_actors[]` et
+base OAM par scène (touche la résolution `TAG_*`) → **T4** OBJ d'UI/texte/fonts par scène (le
+poste UI cesse de mentir ; `scene_ui_obj_slots` réel lit la même source) → **T5** palettes
+propres per-scène → **T6** `spawn` rend `Actor*` → **T7** validateur + budget OAM unique par
+scène. Les décisions ci-dessous restent la référence de conception.
+
+**T1+T2+T3 sont indivisibles** (constat de lecture, 2026-09-19) : rendre les symboles
+per-scène (T1) exige une plage de pool per-scène (T2), qui n'a de sens que si `g_actors`/la
+base OAM repartent de 0 par scène (T3). Les trois forment le **cœur OAM per-scène**, un seul
+refactor, vérifié au build ROM.
+
+**`TAG_*` per-scène — tranché le 2026-09-19 (Modèle A).** Un `TAG_<Actor>` est aujourd'hui
+*l'indice dans `g_actors[]`* (identité = indice : `get_actor("X")` → `&g_actors[TAG_X]`,
+`other.tag == "X"` → `== TAG_X`). Quand `g_actors` repart de 0 par scène, l'indice devient
+scène-local. **Décision : le TAG reste l'indice, et les symboles se préfixent par scène** —
+`TAG_<Scene>_<Actor>`, `actor_<Scene>_<Actor>.c`, comme `spawn_<Scene>_<Prefab>`. Un seul geste
+de préfixe, une seule règle « un acteur = une entrée de `g_actors` ». Le modèle alternatif
+(découpler identité et indice via une table d'offsets runtime) a été écarté : une indirection
+de plus pour éviter un préfixe qui doit exister de toute façon pour les prefabs. **Conséquence :
+ce bloc absorbe le préfixe de scène des ACTEURS**, que « Ouvert » listait comme chantier séparé
+— T3 ne tient pas sans lui.
+
 ### Tranché (2026-08-26) : les scripts se compilent PAR SCÈNE
 
 Des deux sorties envisagées — dimensionner `g_state_<X>[]` sur le maximum du projet, ou
@@ -2916,42 +2743,68 @@ départ** :
 **La v0.23 a sa réponse** : l'état de script d'une partie se range là où se range celui de la
 racine, c'est-à-dire dans l'unité de compilation de la scène.
 
-### Tranché (2026-08-26) : le budget d'acteurs de la scène, en deux champs
+### Révisé (2026-09-19) : le budget est DÉRIVÉ, pas deux tranches à répartir
 
-Le pool se déclare **dans l'inspecteur de scène**, par un widget à deux champs qui partagent
-un total :
+La version livrée le 2026-08-26 (décrite plus bas) faisait **répartir** un total de 128 entre
+deux champs réglables — « Acteurs de la scène [96] » et « Pool de prefabs [32] », l'un
+descendant quand l'autre monte. C'était un **plafond fixe posé à la main** (`DEFAULT_ACTOR_SLOTS
+= 96`) : exactement le « curseur mémoire » que le reste du projet bannit (cf. l'allocateur de
+charblock, qui *calcule* le placement au lieu d'un plafond fixe). Un acteur posé est connu au
+build ; le lui faire **réserver** est une fiction d'ergonomie qui masque le vrai calcul.
+
+La règle correcte : le budget prefab n'est pas **réservé**, il est **ce qui reste**.
 
 ```
-Acteurs de la scène   [ 96 ]  slots réservés
-Pool de prefabs       [ 32 ]  slots de spawn
-                      ─────
-                        128   ← la limite OAM, pas un réglage
+Acteurs posés          N   ← compté, pas réglé
+OBJ d'interface        M   ← compté (texte OBJ, ui_image, fonts OBJ)
+Pool de prefabs        P   ← déclaré en instances (× parties = slots)
+                     ─────
+budget prefab = 128 − N − M   ← dérivé ; le pool se valide contre lui
 ```
-
-**Les deux champs sont réglables et se répondent** : monter le pool descend les acteurs, et
-l'inverse. Ce n'est pas une commodité d'interface, c'est la forme exacte de la contrainte —
-il y a **un** budget, et deux façons de le dépenser.
 
 - **Le total est 128 parce que le matériel affiche 128 sprites.** Il ne se règle nulle part,
-  et surtout pas dans Project Settings : ce n'est pas une préférence, c'est l'OAM. L'auteur
-  apprend la vraie limite de la machine en manipulant le widget, ce qui est précisément ce
-  qu'un éditeur de GBA doit enseigner.
-- **Le champ « acteurs » compte des slots RÉSERVÉS, pas des acteurs posés.** C'est ce qui le
-  rend éditable, donc le widget bidirectionnel. L'auteur peut poser moins que ce qu'il
-  réserve ; le validateur avertit s'il pose plus (même famille d'avertissement que les
-  caméras et les windows, cf. « Ouvert » plus bas).
+  et surtout pas dans Project Settings : ce n'est pas une préférence, c'est l'OAM.
+- **Les acteurs et l'UI se COMPTENT, ils ne se réservent pas.** Un acteur posé, une bande de
+  texte OBJ, une image d'UI sont résolus au build — leur nombre est connu, pas estimé. Le
+  champ « acteurs » n'est donc plus une tranche : c'est un **décompte affiché**. `actor_slots`
+  survit comme **override optionnel** (0 = auto = compté), gardé pour un réglage manuel
+  ultérieur, mais aucune scène neuve ne le sème plus à 96.
+- **`UISlot` entre dans l'équation.** Le widget d'origine oubliait les consommateurs OBJ de
+  l'UI ; ils étaient vérifiés à part (`main_gen.py`, test `> 128` séparé). C'est précisément
+  l'objectif « le budget compte TOUS ses consommateurs » (2026-09-10) : les deux ne font plus
+  qu'un. Décomposer ces comptes UI **par scène** dépend de la moitié BUILD (compilation par
+  scène) — d'où la livraison en deux temps ci-dessous.
 - **Le pool se dit en INSTANCES, le budget se paie en SLOTS.** Un prefab à sous-arbre coûte
-  instances × parties (v0.23, `POOL_*_INSTANCES` contre `POOL_*_SIZE`). Le widget doit
-  montrer les deux, sans quoi déclarer huit boss à quatre parties consomme trente-deux slots
-  en silence.
+  instances × parties (v0.23, `POOL_*_INSTANCES` contre `POOL_*_SIZE`). Le widget montre les
+  deux, sans quoi déclarer huit boss à quatre parties consomme trente-deux slots en silence.
+- **Une seule faute reste possible, pas deux.** L'ancien modèle avertissait quand on posait
+  plus d'acteurs qu'on n'en réservait (`over_placed`) : cette faute **disparaît**, puisqu'on
+  ne réserve plus. Ne subsiste que le débordement des 128 (`over_budget`), avec ses trois
+  postes dans le message.
 
-**Une simplification est assumée ici, et il faut qu'elle soit écrite** : un acteur **sans
-sprite** ne consomme aucune entrée OAM — le matériel en accepterait donc plus de 128. Le
-budget les compte quand même, parce qu'un seul nombre lisible vaut mieux que deux plafonds
-dont l'auteur devrait suivre lequel s'applique. C'est un choix d'ergonomie contre le
-matériel, le seul de ce chantier, et il se rouvrira si un projet réel bute dessus.
+**Livraison en deux temps** (fork tranché avec l'auteur) :
+
+- **B1 — maintenant** : le budget dérivé `128 − posés − pools`, la **liste visuelle** des
+  prefabs réellement en usage dans la scène (posés OU spawnés par ses scripts, via
+  `refactor.iter_call_sites(DOMAIN_PREFAB)`, avec lien vers le script qui les instancie), et le
+  **compteur d'instances** par prefab.
+- **B2 — dès que la compilation par scène le permet** : brancher `M` (OBJ d'UI par scène) dans
+  la formule, en décomposant `obj_text_alloc` / `ui_image_sprites` du niveau projet au niveau
+  scène. C'est là que le vrai gain OAM se joue.
+
+**Une simplification est assumée, et il faut qu'elle soit écrite** : un acteur **sans sprite**
+ne consomme aucune entrée OAM — le matériel en accepterait donc plus de 128. Le budget les
+compte quand même, parce qu'un seul nombre lisible vaut mieux que deux plafonds dont l'auteur
+devrait suivre lequel s'applique. C'est un choix d'ergonomie contre le matériel, et c'est
+exactement ce que la piste future « découpler l'existence d'une instance de son entrée OBJ »
+(cf. « Ouvert ») rendrait réversible.
 
 ### Livré le 2026-08-26 : la moitié éditeur
+
+> **Dépassé par la révision du 2026-09-19** (budget dérivé, ci-dessus), **B1 livrée**. Ce qui
+> suit décrit l'état intermédiaire du 2026-08-26 — le partage 96/32 et `DEFAULT_ACTOR_SLOTS` —
+> que la révision a remplacé (`actor_slots` survit en override, plus aucun seeding). Conservé
+> comme dossier de la trajectoire du chantier.
 
 Le widget existe et pilote la vraie ROM. Ce qui est en place :
 
@@ -3043,6 +2896,19 @@ là-bas, pas ici.
   cet avertissement, alors que leur collision est **plus grave** : elle n'égare pas un appel,
   elle écrase un fichier généré. Le contrôle manquant coûte quinze lignes calquées sur celui
   des caméras, et il est utile **avant** le chantier de préfixe, pas après.
+
+- **Découpler l'existence d'une instance de son entrée OBJ — piste future, pas ce chantier.**
+  Aujourd'hui existence = OAM : une instance vivante occupe son slot pour toute sa vie, et
+  `spawn_<Prefab>` rend `NULL` quand la plage est pleine. Le plafond réel d'un pool est donc
+  `POOL_<X>_SIZE`, pas 128 ; le budget des 128 marche *parce que* les deux coïncident. On pourrait
+  vouloir l'inverse : N instances vivant en RAM, et un culling par frame décidant lesquelles 128
+  reçoivent un OBJ (« mille existent, cent-vingt-huit s'affichent »). Ce serait **un autre moteur** —
+  le vrai plafond deviendrait la RAM (`g_actors[]`, état de script), pas l'OAM, et toute la
+  sémantique du budget de scène changerait de nature. C'est la même famille que le spawn dynamique
+  écarté plus haut, et **ça implique aussi les acteurs** : c'est ce qui rendrait réversible la
+  simplification assumée ci-dessus (« un acteur sans sprite est compté quand même ») — le but visé
+  est de **réduire le coût d'un acteur sans sprite par scène**. À rouvrir dans son propre jalon, une
+  fois le per-scène build livré.
 
 ---
 

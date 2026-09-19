@@ -68,6 +68,7 @@ from typing import Optional
 from core.events import EventEmitter
 from core.models import project_json
 from core.resources import asset_reconciliation
+from core.reconcile_manifest import ReconcileManifest
 from core.resources.resource_store import ResourceStore, atomic_write
 from core.resources.palette_store import PaletteStore
 from core.project_starters import copy_starter, get_starter
@@ -203,6 +204,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         # partie d'entre elles. ``load`` les indexe ; leur écran ou une
         # opération globale les matérialise explicitement (v0.24).
         self._deferred_resource_collections: set[str] = set()
+        # La porte de la réconciliation incrémentale : l'empreinte des dossiers
+        # source au dernier rattrapage. Sidecar d'éditeur, jamais livré en ROM
+        # (cf. core/reconcile_manifest.py).
+        self.reconcile_manifest = ReconcileManifest(self.root)
 
         # Variables globales déclarées explicitement dans le projet
         self.globals:     list[GlobalVar] = []
@@ -1172,10 +1177,10 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
         asset_reconciliation.reconcile_font_assets(proj)
 
         # Créer une scène de démarrage par défaut
-        # Même budget de départ que toute scène créée ensuite (v0.17) — la
-        # première scène d'un projet n'est pas un cas particulier.
-        from codegen.actor_budget import DEFAULT_ACTOR_SLOTS
-        default_scene = Scene(name="Scene_01", actor_slots=DEFAULT_ACTOR_SLOTS)
+        # Budget AUTO comme toute scène créée ensuite (v0.17, révision
+        # 2026-09-19) : dérivé, rien à réserver — la première scène d'un projet
+        # n'est pas un cas particulier.
+        default_scene = Scene(name="Scene_01")
         proj.scenes.append(default_scene)
         proj.settings.start_scene = "Scene_01"
         proj.settings.last_scene  = "Scene_01"

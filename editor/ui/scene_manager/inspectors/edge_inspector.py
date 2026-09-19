@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
 from core.scene_graph_state import SceneGraphState
 from core.history import Command, get_history
 from ui.common.labels import label
+from ui.scene_manager.scene_graph_commands import EdgePresentationCmd
 from ui.common.theme import C, T
 from ui.common.widgets import CollapsibleCard, NotesEdit, W
 
@@ -36,40 +37,6 @@ class _ScriptTextCmd(Command):
 
     def undo(self):
         self._apply(self._before)
-
-
-class _EdgePresentationCmd(Command):
-    """Métadonnée d'une ou plusieurs transitions, persistée et annulable."""
-
-    def __init__(self, state, edges, field: str, before, after, applied):
-        self._state = state
-        self._edges = tuple(edges)
-        self._field = field
-        self._before, self._after = tuple(before), tuple(after)
-        self._applied = applied
-        self.label = label("edgeinsp.undo_path" if field == "style" else "edgeinsp.undo_note")
-
-    def _apply(self, values) -> None:
-        setter = self._state.set_edge_style if self._field == "style" else self._state.set_edge_note
-        for edge, value in zip(self._edges, values):
-            setter(edge.source, edge.target, value)
-        self._applied(self._edges, self._field)
-
-    def execute(self):
-        self._apply(self._after)
-
-    def undo(self):
-        self._apply(self._before)
-
-    def merge(self, newer: Command) -> bool:
-        if (isinstance(newer, _EdgePresentationCmd)
-                and self._state is newer._state
-                and self._edges == newer._edges
-                and self._field == newer._field):
-            self._after = newer._after
-            self._applied = newer._applied
-            return True
-        return False
 
 
 class EdgeInspector(QWidget):
@@ -158,7 +125,7 @@ class EdgeInspector(QWidget):
         before = [self._state.edge_style(edge.source, edge.target) for edge in self._edges]
         after = [style] * len(self._edges)
         if before != after:
-            get_history().push(_EdgePresentationCmd(
+            get_history().push(EdgePresentationCmd(
                 self._state, self._edges, "style", before, after, self._metadata_applied))
         else:
             # Les boutons sont cochables (et non exclusifs) pour représenter
@@ -171,7 +138,7 @@ class EdgeInspector(QWidget):
         before = [self._state.edge_note(edge.source, edge.target) for edge in self._edges]
         after = [text] * len(self._edges)
         if before != after:
-            get_history().push(_EdgePresentationCmd(
+            get_history().push(EdgePresentationCmd(
                 self._state, self._edges, "note", before, after, self._metadata_applied))
 
     def _sync_style_buttons(self) -> None:

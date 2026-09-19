@@ -316,13 +316,11 @@ class CommandDispatcher(EventEmitter):
         """Crée une nouvelle scène vide et la persiste."""
         if not self._project:
             return None
-        # Une scène NEUVE naît avec le budget partagé (ROADMAP v0.17) : 96
-        # entrées pour ce qu'elle pose, les 32 restantes pour ce qu'elle
-        # spawne. Écrit ici et non dans le dataclass — une scène déjà sur le
-        # disque garde son « auto », sinon tout projet existant réserverait 96
-        # entrées par scène sans que personne l'ait demandé.
-        from codegen.actor_budget import DEFAULT_ACTOR_SLOTS
-        scene = Scene(name=name, actor_slots=DEFAULT_ACTOR_SLOTS)
+        # Une scène NEUVE naît en budget AUTO (ROADMAP v0.17, révision
+        # 2026-09-19) : le budget est dérivé, `128 − acteurs_posés − OBJ_UI`,
+        # rien à réserver d'avance. `actor_slots` reste à 0 (override réservé à
+        # plus tard) ; l'ancien seeding 96/32 a disparu avec `DEFAULT_ACTOR_SLOTS`.
+        scene = Scene(name=name)
         self._project.scenes.append(scene)
         with self._watcher.suspended():
             self._project.save_scene(scene)
