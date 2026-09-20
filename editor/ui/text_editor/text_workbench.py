@@ -33,7 +33,7 @@ en tire une commande annulable.
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QSplitter,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QTextEdit, QLineEdit, QComboBox, QToolButton, QButtonGroup, QApplication,
 )
 from PyQt6.QtGui import QFont
@@ -47,7 +47,6 @@ from ui.common import icons
 from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
 from ui.text_editor.font_screen_preview import FontScreenPreview
-from ui.text_editor.markup_highlighter import MarkupHighlighter
 from ui.text_editor.markup_toolbar import MarkupToolbar
 
 
@@ -227,6 +226,9 @@ class TextWorkbench(QWidget):
         # est le seul à savoir dans quel fichier ça atterrit (`texts.json` ou
         # un side), l'atelier n'a besoin que de savoir QUOI afficher.
         self._active_lang = ""
+        # Un seul niveau de rangement à la création ; les suivants se révèlent
+        # sur demande, jusqu'au plafond du modèle.
+        self._path_depth = 1
         # Cadenas ouvert : le champ est éditable, mais `auto_key` ne tombera
         # qu'au commit d'un nom réellement différent.
         self._key_unlocked = False
@@ -234,16 +236,7 @@ class TextWorkbench(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        split = QSplitter(Qt.Orientation.Horizontal)
-        split.setStyleSheet(QSS.splitter)
-        split.setChildrenCollapsible(False)
-        split.addWidget(self._build_editor())
-        split.addWidget(self._build_preview())
-        # L'écriture prime : l'aperçu n'a besoin que de ses 240 px logiques.
-        split.setSizes([520, 360])
-        split.setStretchFactor(0, 1)
-        split.setStretchFactor(1, 0)
-        root.addWidget(split)
+        root.addWidget(self._build_editor())
         self.set_texts([], None)
 
     # ── Construction ──────────────────────────────────────────────
@@ -301,18 +294,27 @@ class TextWorkbench(QWidget):
         # SON niveau et lui seul, ce qui rend le rangement d'une sélection
         # multiple sans danger pour les niveaux qu'elle ne partage pas.
         self._path_edits: list[_PillEdit] = []
+        self._path_seps: list[QLabel] = []
         for lvl in range(MAX_DEPTH):
             if lvl:
                 arrow = QLabel(SEP.strip())
                 arrow.setFont(QFont(T.UI, T.SM))
                 arrow.setStyleSheet(f"color:{C.TEXT_MUTED};")
                 hl.addWidget(arrow)
+                self._path_seps.append(arrow)
             e = _PillEdit(label("txtwb.level", n=lvl + 1))
             e.setToolTip(label("txtwb.filing_tip"))
             e.editingFinished.connect(lambda _l=lvl: self._commit_path(_l))
             hl.addWidget(e)
             self._path_edits.append(e)
+        self._btn_add_path = QToolButton()
+        self._btn_add_path.setIcon(icons.get("add", C.TEXT_DIM))
+        self._btn_add_path.setToolTip(label("txtwb.add_level_tip"))
+        self._btn_add_path.setStyleSheet(BTN_ICON)
+        self._btn_add_path.clicked.connect(self._add_path_level)
+        hl.addWidget(self._btn_add_path)
         hl.addStretch(1)
+        self._sync_path_fields()
         lay.addWidget(hdr)
 
         # Le contexte de LANGUE — un onglet par langue déclarée, source
@@ -344,22 +346,28 @@ class TextWorkbench(QWidget):
         lay.addWidget(self._source_hdr)
         lay.addWidget(self._source_view)
 
-        self._editor = _ContentEdit()
-        self._editor.setFont(QFont(T.CODE, T.MD))
-        self._editor.setStyleSheet(
-            f"QTextEdit{{background:{C.BG_INPUT}; color:{C.TEXT_HI}; border:none;"
-            f"padding:6px;}}"
-        )
-        # Les balises se voient pendant qu'on écrit, et ce qui cloche se
-        # souligne — même analyse que l'aperçu et que l'inspecteur.
-        self._highlighter = MarkupHighlighter(self._editor.document())
-        self._editor.edited.connect(self._on_edited)
-        self._editor.committed.connect(self.content_committed.emit)
-        # Barre de balisage ENTRE l'identité et le texte : elle agit sur ce qui
-        # est juste dessous.
-        self._markup_bar = MarkupToolbar(self._editor)
+        # La surface GBA EST désormais l'éditeur. Elle conserve une source
+        # BBCode et expose le petit contrat consommé par MarkupToolbar.
+        self._preview = FontScreenPreview()
+        self._preview.set_editable(True)
+        self._preview.edited.connect(self._on_edited)
+        self._preview.committed.connect(self.content_committed.emit)
+        self._markup_bar = MarkupToolbar(self._preview)
+        self._btn_markup = QToolButton()
+        self._btn_markup.setCheckable(True)
+        self._btn_markup.setIcon(icons.get("mk_tag", C.TEXT_DIM))
+        self._btn_markup.setToolTip(label("txtwb.show_markup_tip"))
+        self._btn_markup.setStyleSheet(BTN_ICON)
+        self._btn_markup.toggled.connect(self._preview.set_markup_visible)
+        self._markup_bar.add_trailing_widget(self._btn_markup)
+        self._preview_font = QComboBox()
+        self._preview_font.setFont(QFont(T.UI, T.XS))
+        self._preview_font.setStyleSheet(QSS.combobox)
+        self._preview_font.setToolTip(label("txtwb.preview_font_tip"))
+        self._preview_font.currentIndexChanged.connect(self._on_preview_font)
+        self._markup_bar.add_trailing_widget(self._preview_font)
         lay.addWidget(self._markup_bar)
-        lay.addWidget(self._editor, 1)
+        lay.addWidget(self._build_preview(), 1)
         return pane
 
     def _build_preview(self) -> QWidget:
@@ -369,29 +377,9 @@ class TextWorkbench(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        hdr = QFrame()
-        hdr.setFixedHeight(20)
-        hdr.setStyleSheet(
-            f"background:{C.BG_PANEL}; border-top:1px solid {C.BORDER_DARK};")
-        hl = QHBoxLayout(hdr)
-        hl.setContentsMargins(8, 0, 8, 0)
-        title = QLabel(label("txtwb.screen_preview"))
-        title.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-        title.setStyleSheet(QSS.title_panel)
-        hl.addWidget(title)
-        hl.addStretch()
-        self._preview_font = QComboBox()
-        self._preview_font.setFont(QFont(T.UI, T.XS))
-        self._preview_font.setStyleSheet(QSS.combobox)
-        self._preview_font.setToolTip(label("txtwb.preview_font_tip"))
-        self._preview_font.currentIndexChanged.connect(self._on_preview_font)
-        hl.addWidget(self._preview_font)
-        lay.addWidget(hdr)
-
         # Pas de QScrollArea : l'aperçu est son PROPRE viewport (molette = zoom,
         # clic-central = pan), deux défilements superposés se voleraient la
         # molette.
-        self._preview = FontScreenPreview()
         lay.addWidget(self._preview, 1)
         return pane
 
@@ -483,7 +471,7 @@ class TextWorkbench(QWidget):
 
         Appelé AVANT tout changement de sélection : sans ça, la frappe non
         validée serait attribuée à l'entrée suivante."""
-        self._editor.commit()
+        self._preview.commit()
 
     def set_texts(self, texts: list, project=None):
         """Recharge l'atelier — zéro, une ou plusieurs entrées."""
@@ -504,6 +492,9 @@ class TextWorkbench(QWidget):
             e.setPlaceholderText(
                 label("txtwb.mixed") if multi and not e.text() and self._differs(lvl)
                 else label("txtwb.level", n=lvl + 1))
+        self._path_depth = max(
+            1, min(MAX_DEPTH, max((len(t.path) for t in self._texts), default=1)))
+        self._sync_path_fields()
         self._sync_key_lock()
         self._blocking = False
 
@@ -522,7 +513,7 @@ class TextWorkbench(QWidget):
         bouger."""
         if code == self._active_lang:
             return
-        self._editor.commit()
+        self._preview.commit()
         self._active_lang = code
         self._reload_content()
 
@@ -570,10 +561,7 @@ class TextWorkbench(QWidget):
             self._source_view.setPlainText(one.content)
 
         content = self._content_of(one)
-        self._editor.set_text_silent(content)
-        self._editor.setPlaceholderText(
-            label("txtwb.multi_ph") if multi
-            else label("txtwb.empty_ph"))
+        self._preview.set_text_silent(content)
         self._push_parsed(content)
 
     def _common_segment(self, lvl: int) -> str:
@@ -583,6 +571,21 @@ class TextWorkbench(QWidget):
         segs = {(t.path[lvl] if lvl < len(t.path) else "") for t in self._texts}
         return segs.pop() if len(segs) == 1 else ""
 
+    def _add_path_level(self):
+        if self._path_depth < MAX_DEPTH:
+            self._path_depth += 1
+            self._sync_path_fields()
+            self._path_edits[self._path_depth - 1].setFocus()
+
+    def _sync_path_fields(self):
+        """Ne montre que les niveaux réellement choisis pour le rangement."""
+        for lvl, edit in enumerate(getattr(self, "_path_edits", ())):
+            edit.setVisible(lvl < self._path_depth)
+        for lvl, sep in enumerate(getattr(self, "_path_seps", ()), start=1):
+            sep.setVisible(lvl < self._path_depth)
+        if hasattr(self, "_btn_add_path"):
+            self._btn_add_path.setVisible(self._path_depth < MAX_DEPTH)
+
     def _differs(self, lvl: int) -> bool:
         return len({(t.path[lvl] if lvl < len(t.path) else "")
                     for t in self._texts}) > 1
@@ -590,11 +593,13 @@ class TextWorkbench(QWidget):
     def _set_enabled(self, single: bool, multi: bool):
         """Le contenu n'a de sens que sur UNE entrée ; le rangement en accepte
         plusieurs."""
-        self._editor.setEnabled(single)
+        self._preview.setEnabled(single)
+        self._preview.set_editable(single)
         self._markup_bar.setEnabled(single)
         self._key_edit.setEnabled(single)
         self._btn_lock.setEnabled(single)
         self._btn_copy.setEnabled(single)
+        self._btn_add_path.setEnabled(single or multi)
         for e in self._path_edits:
             e.setEnabled(single or multi)
 
@@ -611,7 +616,9 @@ class TextWorkbench(QWidget):
         l'inspecteur montre balises et anomalies, la table montre le rendu. Un
         seul parcours par frappe."""
         parsed = parse(source)
-        self._preview.set_text(resolve(parsed, self._values))
+        # L'aperçu reçoit la SOURCE, pas seulement le texte résolu : `[font]`
+        # porte le choix typographique et disparaît justement de `resolve()`.
+        self._preview.set_text(source, self._values)
         self.parsed.emit(parsed)
         return parsed
 

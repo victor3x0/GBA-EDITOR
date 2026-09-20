@@ -33,6 +33,20 @@ def sym(s: str) -> str:
     return ("_" + r) if r and r[0].isdigit() else r
 
 
+def scene_actor_sym(scene_name: str, actor_name: str) -> str:
+    """Symbole C d'un acteur POSÉ, qualifié par sa scène : ``<Scène>_<Acteur>``.
+
+    Un acteur appartient à sa scène (ROADMAP « L'acteur appartient à sa scène ») :
+    son NOM est local à la scène — deux scènes peuvent chacune poser un
+    « Cursor » — tandis que son SYMBOLE C, lui, est qualifié, exactement comme un
+    prefab poolé l'est déjà (``<Scène>_<Prefab>``). C'est ce qui empêche deux
+    « Cursor » de collisionner sur un seul ``TAG_CURSOR`` / ``actor_Cursor.c``.
+
+    À employer partout où l'on forme le TAG, le nom de fichier ou le préfixe de
+    fonction d'un acteur de scène — jamais `sym(actor.name)` nu."""
+    return f"{sym(scene_name)}_{sym(actor_name)}"
+
+
 def c_ident(name: str) -> str:
     """Assainit un nom de ressource en fragment de #define, EN MAJUSCULES :
     'Ruin At Last DX' -> 'RUIN_AT_LAST_DX'.

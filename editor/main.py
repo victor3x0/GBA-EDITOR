@@ -7,6 +7,17 @@ from ui.common.labels import label
 import sys
 from pathlib import Path
 
+# La console Windows est en cp1252 par défaut : un `print` contenant un symbole
+# (⚠ des validations, emoji d'un log) y lève UnicodeEncodeError et interrompt le
+# process. On bascule stdout/stderr en UTF-8 dès l'entrée, avant le moindre
+# affichage. Défensif : un flux redirigé (pipe, fichier) peut ne pas exposer
+# `reconfigure`, et on ne veut jamais faire échouer le lancement pour de l'encodage.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 # Garantit que `editor/` est toujours le premier élément du path,
 # quelle que soit la façon dont le process est lancé (python main.py,
 # import depuis un test, lancement via l'IDE…).

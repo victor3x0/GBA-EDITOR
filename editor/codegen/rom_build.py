@@ -765,7 +765,7 @@ class BuildWorker(EventEmitter, threading.Thread):
         """
         from scripting.parser import parse as _parse, LuaParseError
         from scripting.globals import write_globals as _write_globals
-        from codegen.c_names import sym as c_sym
+        from codegen.c_names import sym as c_sym, scene_actor_sym
 
         # Écriture globals.h/c depuis la liste déclarée dans le projet
         names = _write_globals(p.src_dir, p.globals)
@@ -798,7 +798,7 @@ class BuildWorker(EventEmitter, threading.Thread):
             for actor, _ in d["scene_actors"]:
                 comp = actor.get_component("script")
                 if comp and comp.active and comp.script:
-                    _collect_events(c_sym(actor.name), p.asset_abs(comp.script))
+                    _collect_events(scene_actor_sym(scene.name, actor.name), p.asset_abs(comp.script))
             scene_script = getattr(scene, "script", "")
             if scene_script:
                 _collect_events(c_sym(scene.name) + "_scene", p.asset_abs(scene_script))

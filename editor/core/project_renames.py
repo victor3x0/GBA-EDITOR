@@ -415,10 +415,13 @@ class ProjectRenameMixin:
     def rename_font_asset(self, font_asset, new_name: str):
         """Renomme une police logique.
 
-        Aucun consommateur ne cite encore FontAsset : la propagation arrivera
+        Le tag `[font=…]` et les colonnes de données typées `font` citent
+        désormais un FontAsset par son nom (cf. `DATA_COLUMN_SOURCES`), mais leur
+        propagation sur renommage suit le même régime que les autres références de
+        cellule et de balisage : non câblée pour l'instant, à traiter d'un bloc
         avec la bascule des scènes et des layouts vers cette couche. Garder le
-        renommage ici dès maintenant évite toutefois que le finder contourne
-        Project et crée une seconde règle le jour où ces références existent.
+        renommage ici évite que le finder contourne Project et crée une seconde
+        règle le jour où cette propagation arrive.
         """
         new_name = new_name.strip()
         if not new_name or new_name == font_asset.name:

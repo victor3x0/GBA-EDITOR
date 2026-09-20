@@ -846,14 +846,15 @@ enum {
     TEXT_EV_SHAKE,      /* portée                       */
     TEXT_EV_COLOR,      /* portée, value = index d'encre */
     TEXT_EV_FONT,       /* portée, value = index de police logique */
-    TEXT_EV_VALUE       /* value = index dans g_text_values */
+    TEXT_EV_VALUE,      /* value = index dans g_text_values */
+    TEXT_EV_LOCAL       /* value = rang dans g_text_arg, posé par le script */
 };
 
 typedef struct TextEvent {
     unsigned short at, end;
     short          value;
     unsigned char  kind;
-    unsigned char  pad;
+    unsigned char  limit;  /* `$nom!3` : maximum de caractères, 0 = libre */
 } TextEvent;
 
 extern const TextEvent* const* const g_text_events[];
@@ -2313,6 +2314,27 @@ static TextEvent      g_mat_ev[TEXT_EV_MAX];
 static short          g_mat_map[TEXT_MAT_MAX + 1];
 static int text_num_cp(int value, unsigned short *buf);
 
+/* Les `$locale` d'un littéral `text.draw` arrivent ici au site d'appel. Le
+   tampon ne sert qu'au rendu immédiat : une écriture libre n'a pas de tête de
+   lecture qui puisse survivre à l'appel suivant. */
+#define TEXT_ARG_MAX 4
+static int g_text_arg[TEXT_ARG_MAX];
+static int g_text_arg_n = 0;
+static const int *g_text_arg_cur = g_text_arg;
+static int g_text_arg_cur_n = 0;
+static void text_args_use(const int *args, int n) {
+    g_text_arg_cur = args ? args : g_text_arg;
+    g_text_arg_cur_n = n;
+}
+void text_args_clear(void) { g_text_arg_n = 0; text_args_use(g_text_arg, 0); }
+void text_arg_set(int n, int value) {
+        if (n >= 0 && n < TEXT_ARG_MAX) {
+            g_text_arg[n] = value;
+            if (n >= g_text_arg_n) g_text_arg_n = n + 1;
+            text_args_use(g_text_arg, g_text_arg_n);
+    }
+}
+
 /* La suite prête à rendre pour `id`. Renvoie sa longueur ; `*out` pointe la
    ROM ou le tampon, et `*ev`/`*nev` la piste correspondante. */
 static int text_materialize(int id, const unsigned short **out,
@@ -2323,7 +2345,7 @@ static int text_materialize(int id, const unsigned short **out,
 
     int has_value = 0;
     for (int k = 0; k < ne; k++)
-        if (e[k].kind == TEXT_EV_VALUE) { has_value = 1; break; }
+        if (e[k].kind == TEXT_EV_VALUE || e[k].kind == TEXT_EV_LOCAL) { has_value = 1; break; }
     if (!has_value) { *out = s; *ev = e; *nev = ne; return len; }
 
     int lim = len < TEXT_MAT_MAX ? len : TEXT_MAT_MAX;
@@ -2335,17 +2357,28 @@ static int text_materialize(int id, const unsigned short **out,
             continue;
         }
         int src = -1;
+        const TextEvent *value_event = 0;
         for (int j = 0; j < ne; j++)
-            if (e[j].kind == TEXT_EV_VALUE && e[j].at == i) { src = e[j].value; break; }
+            if ((e[j].kind == TEXT_EV_VALUE || e[j].kind == TEXT_EV_LOCAL)
+                    && e[j].at == i) { value_event = &e[j]; src = e[j].value; break; }
         unsigned short num[TEXT_NUM_MAX];
-        int n = (src >= 0) ? text_num_cp(global_read(g_text_values[g_lang][src]), num) : 0;
+        int n = 0;
+        if (src >= 0) {
+            int value = 0, kind = value_event ? value_event->kind : TEXT_EV_VALUE;
+            value = (kind == TEXT_EV_LOCAL)
+                  ? (src < g_text_arg_cur_n ? g_text_arg_cur[src] : 0)
+                  : global_read(g_text_values[g_lang][src]);
+            n = text_num_cp(value, num);
+            if (value_event && value_event->limit && n > value_event->limit)
+                n = value_event->limit;
+        }
         for (int d = 0; d < n && o < TEXT_MAT_MAX; d++) g_mat_cp[o++] = num[d];
     }
     g_mat_map[lim] = (short)o;
 
     int nout = 0;
     for (int k = 0; k < ne && nout < TEXT_EV_MAX; k++) {
-        if (e[k].kind == TEXT_EV_VALUE) continue;   /* consommé ci-dessus */
+        if (e[k].kind == TEXT_EV_VALUE || e[k].kind == TEXT_EV_LOCAL) continue;
         g_mat_ev[nout] = e[k];
         g_mat_ev[nout].at  = (unsigned short)(e[k].at  <= lim ? g_mat_map[e[k].at]  : o);
         g_mat_ev[nout].end = (unsigned short)(e[k].end <= lim ? g_mat_map[e[k].end] : o);
@@ -2653,6 +2686,15 @@ static void text_layout(const unsigned short *s, int slen, int tx, int ty,
                    occurrences. Le build le signale plutôt que de laisser la
                    couleur disparaître en silence. */
                 g_ink = text_color_at(i);
+                /* Une portée `[font]` force une surface composée, donc UNE
+                   seule banque de palette pour tous ses pixels. Une police
+                   bitmap peut y employer plusieurs indices alors qu'une
+                   police rasterisée (vectorielle) emploie normalement 1 :
+                   les laisser tels quels ferait lire la seconde dans la
+                   palette de la première, parfois transparente. Sans couleur
+                   explicite, on les aplati toutes deux sur l'encre 1 de la
+                   zone — la même encre que le texte normal de cette banque. */
+                if (comp && text_has_font_event() && !g_ink) g_ink = 1;
                 int fx = g_cap_max ? text_fx_at(i) : 0;
                 if (fx && g_cap_n < g_cap_max) {
                     /* Réservé au chemin par glyphe : noté, pas dessiné —
@@ -2867,6 +2909,8 @@ typedef struct TextRead {
     short wait;      /* frames restantes avant le prochain caractère */
     short speed;     /* frames par caractère, posé par [speed=n] */
     unsigned char active;
+    int args[TEXT_ARG_MAX];      /* `$locale` figées au lancement de la zone */
+    unsigned char arg_n;
     /* Origine ÉCRAN du dernier rendu. Sert à l'ancrage MONDE : effacer le texte
        là où il EST avant de le reposer ailleurs, la caméra ayant bougé entre
        les deux. Inutilisé en ancrage écran, où l'origine ne change pas. */
@@ -3035,6 +3079,10 @@ static void text_render_region_cp(const unsigned short *s, int slen,
 }
 
 static void text_render_region(int id, int r, int n) {
+    const int *saved_args = g_text_arg_cur;
+    int saved_arg_n = g_text_arg_cur_n;
+    if (r >= 0 && r < TEXT_READ_MAX)
+        text_args_use(g_reads[r].args, g_reads[r].arg_n);
     const unsigned short *s; const TextEvent *e; int ne;
     int len = text_materialize(id, &s, &e, &ne);
     /* La piste accompagne le texte le temps du rendu : elle dit quels glyphes
@@ -3052,6 +3100,7 @@ static void text_render_region(int id, int r, int n) {
     if (restore_font >= 0) text_set_font(restore_font);
     g_ev = 0; g_nev = 0;
     g_text_default_font = -1;
+    text_args_use(saved_args, saved_arg_n);
 }
 
 
@@ -3127,6 +3176,9 @@ void text_draw_in(int r, int id) {
     if (r >= 0 && r < TEXT_READ_MAX) {
         g_reads[r].id = (short)id;
         g_reads[r].last_visible = (unsigned char)vis;
+        g_reads[r].arg_n = (unsigned char)g_text_arg_n;
+        for (int k = 0; k < TEXT_ARG_MAX; k++)
+            g_reads[r].args[k] = k < g_text_arg_n ? g_text_arg[k] : 0;
     }
     if (!vis) return;
     if (r >= TEXT_READ_MAX || !text_has_tempo(e, ne)) {
@@ -3173,8 +3225,12 @@ void text_update(void) {
            où c'était resté, via `text_hide_region_visual`/le balayage qui
            l'accompagne. Rien à effacer ici, c'est déjà fait (ou jamais posé). */
         if (!ui_element_is_visible(RI->elem)) continue;
+        const int *saved_args = g_text_arg_cur;
+        int saved_arg_n = g_text_arg_cur_n;
+        text_args_use(R->args, R->arg_n);
         const unsigned short *s; const TextEvent *e; int ne;
         text_materialize(R->id, &s, &e, &ne);
+        text_args_use(saved_args, saved_arg_n);
         /* Une zone ANCRÉE (monde ou acteur) suit son ancre. Redessin seulement
            quand l'ancre a bougé, donc une bulle immobile ne coûte rien.
            Cible BG, effacer d'abord à l'ANCIENNE origine : les tuiles déjà

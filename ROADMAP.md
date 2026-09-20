@@ -43,7 +43,7 @@ numéroté, jamais mélangé aux jalons produit.
 | Version | Sujet | État |
 | --- | --- | --- |
 | v0.2 | Palettes de couleurs | **Livrée**, quelques finitions — [archive](changelog-archive/v0.2.md) |
-| v0.3 | Background vivant, texte et interface | **Livrée**, un report assumé, [balisage rouvert pour `[font=nom]`](#le-balisage-rouvert--fontnom-changer-de-police-en-cours-de-texte--en-cours) — [archive](changelog-archive/v0.3.md) |
+| v0.3 | Background vivant, texte et interface | **Livrée** — le balisage `[font=nom]` est aussi livré ; [archive](changelog-archive/v0.3.md) |
 | v0.4 | Animation de décor | **Livrée** — [archive](changelog-archive/v0.4.md) |
 | v0.5 | Sauvegarde | **Livrée** — [archive](changelog-archive/v0.5.md) |
 | v0.6 | Polish de la boucle de jeu | **Livrée**, rouverte pour le game feel — [archive](changelog-archive/v0.6.md) |
@@ -59,12 +59,12 @@ numéroté, jamais mélangé aux jalons produit.
 | v0.9 | Traduction des jeux | **Livrée** — [archive](changelog-archive/v0.9.md) |
 | v0.10 | Distribution Linux | **Livrée** — format `.gba-project` et associations OS livrés |
 | v0.11 | Traduction de l'éditeur | **Livrée (infra)** — extraction UI, contrôles et choix de langue livrés ; la traduction FR elle-même est reportée au chantier « traduction fr » (v2.0) |
-| v0.12 | Vue d'ensemble (graphe des scènes) | **En cours** — carte, groupes, notes textuelles, mini-carte, recherche, inspecteur d'arête, retargetage du littéral et création de scène livrés ; création de transition ex nihilo, cibles calculées (`?`) et routage anti-croisement restent ouverts. Le tracé libre est reporté à v2.0. |
+| v0.12 | Vue d'ensemble (graphe des scènes) | **Livrée** — carte, groupes, notes textuelles, mini-carte, recherche, inspecteur d'arête, retargetage du littéral et création de scène livrés. Création de transition ex nihilo, cibles calculées (`?`), routage anti-croisement et tracé libre sont reportés à v2.0. |
 | v0.13 | Édition mixte (appels d'API en blocs) | Non commencée |
 | v0.15 | Visibilité des éléments d'interface | **Livrée**, sous une autre forme que prévu — [archive](changelog-archive/v0.15.md) |
 | v0.16 | L'API : règle de construction et rangement | Non commencée |
 | v0.17 | Le pool par scène | **Livrée le 2026-09-19** — B1 (budget dérivé `128 − posés − UI` remplaçant le 96/32, liste « Spawné par », marqueur d'usage, compteur d'instances) **et** la moitié build B2b, en sept tranches vérifiées au build ROM (compilation par scène : symboles `<Scene>_<Prefab>`, `POOL_*`/`g_actors`/base OAM par scène, OBJ d'UI par scène, palettes propres des pools par scène, `spawn` rend `Actor*`/nil, budget OAM unique et bloquant). Reste ouvert : le culling existence/OBJ (« mille existent, cent-vingt-huit s'affichent »), un autre moteur |
-| v0.18 | La valeur affichée : d'où elle vient | Non commencée |
+| v0.18 | La valeur affichée : d'où elle vient | **En cours** — première tranche : les littéraux de `text.draw` et `text.draw_in` peuvent interpoler une locale avec `$nom`, en plus des globals existantes, et la tronquer à `$nom!1`…`$nom!9`. |
 | v0.25 | L'interface possède son chemin matériel | **Livrée** — [archive](changelog-archive/v0.25.md) |
 | v0.26 | Les polices : sources, assets et aperçu | **Livrée** — [archive](changelog-archive/v0.26.md) |
 | v0.27 | L'éditeur souffle le mot juste (autocomplétion) | **Livrée** — [archive](changelog-archive/v0.27.md) |
@@ -222,6 +222,111 @@ consignés ici pour ne pas rester invisibles faute d'un jalon à qui les rattach
 
 ---
 
+## Frictions relevées en construisant la démo tactique (2026-09-20)
+
+La démo tactique (type Advance Wars) est le **deuxième jeu de démo** exigé par la v1.0 — un
+jeu de validation, dont le rôle est précisément de faire remonter ce sur quoi un projet non
+trivial bute. La boucle complète a été construite et compile (grille + curseur, sélection,
+stats pilotées par `data.Units`, portée surlignée par pool spawné, déplacement d'unité, menu
+d'action, tour sauvegardé), assets 100 % auto-générés passés par le vrai pipeline d'import.
+Voici les points de friction rencontrés en chemin, **par ordre d'importance** — ce ne sont pas
+des bugs de la démo mais des manques de l'outil qu'elle a révélés. Les cinq premiers
+toucheront TOUT projet non trivial, pas seulement ce genre. Les points 1 et 2 ont été
+relevés en construisant la boucle ; le 2 a été confirmé par le **test d'échelle** (40 scènes /
+200 sprites, cf. la note en fin de section).
+
+1. ~~**Aucun moyen d'adresser un acteur dynamique.**~~ **Corrigé (2026-09-20).** `get_actor`
+   accepte désormais un **index dynamique 1-based** en plus d'un nom littéral :
+   `get_actor(i)` → `actor_at((i) - 1)` (repli 1→0 comme `data.Table[i]`), borné à la scène
+   active et filtré par `actor_live` (nil hors bornes ou détruit). `actor_count()` rend le
+   nombre d'acteurs posés — la borne de boucle. La cascade `if sel==1 then get_actor("Soldier1")…`
+   devient `get_actor(sel)`, vérifié de bout en bout sur la démo. Décisions verrouillées :
+   **1-based** (cohérent avec le langage) ; porte les acteurs **posés** de la scène active dans
+   l'ordre d'authoring (l'ordre C correspond exactement) ; l'indexation des **pools spawnés**
+   (`pool_at`) reste un chantier distinct différé. `runtime_api_inline.h` (`actor_at`,
+   `g_scene_placed`), `main_gen` (pose `g_scene_placed` au scene_init), `scripting/codegen.py`,
+   `scripting/api.py` (`actor_count`). Tests : `test_actor_scene_naming.py`. Piste encore ouverte :
+   les `exports_values` par instance (script exports) ne sont pas câblés au codegen — paramétrer
+   une instance pour qu'elle se gère elle-même reste à faire.
+
+2. **Les acteurs posés ne sont pas namespacés par scène.** Deux scènes qui posent chacune un
+   acteur nommé « Cursor » (ou « Enemy », « Boss »…) collisionnent sur un seul symbole C :
+   `actor_Cursor.c` de la seconde écrase celui de la première, et `TAG_CURSOR` est défini deux
+   fois avec des valeurs différentes. Les prefabs et les scripts de scène, eux, SONT qualifiés
+   (`<Scène>_<Prefab>`, `<Scène>_scene`) ; les acteurs posés font exception. Le validateur
+   l'attrape et nomme le doublon (bien) — mais dans un jeu à 40 scènes, réutiliser un nom
+   d'acteur par scène est le réflexe naturel, et l'auteur se retrouve à préfixer ses noms à la
+   main. Relevé au **test d'échelle** : 40 scènes réutilisant « Cursor »/« U0 »… ont produit
+   229 avertissements de collision, tous levés en préfixant par la scène. La qualification par
+   scène (comme les prefabs) réglerait le réflexe (`codegen/runtime_codegen/headers.py`,
+   `core/validator.py`).
+
+3. **Un pool ne se vide ni ne s'itère.** Les marqueurs de portée spawnés n'ont ni `pool.clear()`
+   ni parcours : chaque instance doit **sonder un global et s'auto-détruire**
+   (`if global.range_on == 0 then self:destroy()`). Ce détour a façonné toute la machine à
+   états du curseur (interdit de re-spawner tant que l'ancien lot vit). Attendu pour tout ce
+   qui affiche puis efface un ensemble dynamique : portée de déplacement, cases d'attaque,
+   curseurs multiples, projectiles à purger en fin de phase (`codegen/actor_budget.py`,
+   runtime du pool par scène, ROADMAP v0.17).
+
+4. **`text.draw_num` retiré : afficher un nombre coûte trois artefacts.** Un PV à l'écran
+   impose de créer un global, une entrée de table de texte contenant `$global`, puis
+   `text.draw(tx, ty, "clé")` après avoir posé le global. Pour un genre qui affiche *beaucoup*
+   de chiffres (PV, dégâts, portées, or, niveaux), l'indirection est lourde et se répète à
+   chaque valeur (`editor/scripting/api.py`, entrée retirée `text.draw_num`).
+
+5. **Contention d'input entre le curseur et une liste active.** Une liste `active` consomme la
+   croix directionnelle **automatiquement** chaque frame, pendant que le script du curseur la
+   lit aussi : sans notion de « focus », les deux bougent au même appui. Il a fallu geler le
+   curseur à la main (garde d'état). Tout jeu à plusieurs couches d'UI (menu + sous-menu +
+   curseur de carte) rejouera ce conflit (runtime `ui_list_tick`, v0.22).
+
+6. **Deux idiomes non évidents du transpileur, et une doc qui mentait.**
+   ~~`get_actor(...):méthode()` en chaîne directe ne transpile pas (« invoke sur expression
+   complexe ignoré »)~~ **Corrigé (2026-09-20)** : `_invoke` accepte désormais un receveur qui
+   est une expression de type connu — un actor (`get_actor(...)`, `actor.spawn(...)`,
+   `self.<enfant>`) ou une référence —, donc `get_actor("Foe"):move_to(p, 2)` marche sans local
+   intermédiaire ; une expression sans type reste refusée. La docstring de `get_actor`, qui
+   montrait la forme fautive, est corrigée. Tests : `test_lua_subset.py`
+   (`test_get_actor_chaine_directe_une_methode`, …). **Reste** : un `vec2` ne se stocke toujours
+   pas dans un local (`local c = …:get_position()` devient `int c = /* ignoré */`) — lire
+   `self.position.x` **inline** ; et `get_position()` n'existe pas comme méthode (seulement la
+   propriété `self.position`) (`editor/scripting/codegen.py` `_invoke`, `editor/scripting/api.py`).
+
+7. **Pas de pose instantanée d'un acteur tiers.** Seul `self.position = …` est sûr ; l'écriture
+   de propriété sur un handle (`u.position = …`) n'est ni documentée ni fiable. Un déplacement
+   instantané d'une autre unité s'obtient par le détour `u:move_to(cible, 999)` (vitesse énorme
+   pour ne pas étaler sur plusieurs frames), ce qui n'est pas son intention (`editor/scripting/api.py`
+   `self:move_to`).
+
+8. **Aucune API headless « builder le projet ».** Le codegen n'est pas exposé comme une simple
+   fonction : il a fallu instancier `BuildWorker` (un `threading.Thread`/`EventEmitter`) et
+   appeler `run()` en câblant les callbacks. Pire, `run()` **couple build et lancement mGBA** —
+   en headless il a fallu sous-classer pour neutraliser `_step_launch_mgba`, sinon le worker
+   rapporte `finished(False)` alors que la ROM est bel et bien produite. Il manque un point
+   d'entrée « build seul, sans run », utile à la CI et à toute génération automatisée
+   (`editor/codegen/rom_build.py`).
+
+9. **Création programmatique d'un projet : pas de raccourcis, et un piège.** Ajouter un sprite
+   depuis un PNG impose d'enchaîner soi-même `encode_sprite_asset` + `file_stamp` + `append` +
+   `save` (les sidecars portent des champs calculés — `source_stamp`, palettes quantifiées,
+   mapping de tuiles — donc rien à écrire à la main) ; rien n'expose ça comme une opération
+   unique. Et `Project.create` écrit une `Scene_01` de starter **sur le disque** : remplacer la
+   liste de scènes en mémoire ne l'efface pas, et le build recompile alors une scène fantôme —
+   il faut `project.scenes.delete()` explicitement. Aucun chemin évident « remplace la scène par
+   défaut » (`editor/core/project.py`, `editor/core/resources/asset_reconciliation.py`).
+
+**Le test d'échelle (Temps 2) — le point « vérification à l'échelle » de la v1.0 est validé.**
+Un projet généré de **40 scènes / 200 sprites** (assets auto-générés, scène de tension à 120
+acteurs posés) passe de bout en bout. Mesures (VM de dev, `.venv-build312`) : `Project.open`
+paresseux **≈190 ms** (**≈125 ms** à froid ensuite), `load_all_resources` **≈690 ms**,
+`validate_project` **≈1,7 s**, build ROM complet **≈96 s**, ROM finale **388 Kio** (9,5 % d'une
+cartouche 4 Mio). Le chargement paresseux (v0.24) tient l'échelle, le budget OAM dérivé
+encaisse 120 acteurs sans fausse alerte, et rien ne s'effondre. La seule friction levée par ce
+test est le point 2 ci-dessus (collision de noms d'acteurs entre scènes).
+
+---
+
 ## Ce que la revue « projet de production » a relevé (2026-08-19)
 
 Les six versions qui suivent viennent d'une seule séance : la relecture du logiciel du point
@@ -270,9 +375,173 @@ jalon, mais référencé par son nom plutôt que par un numéro.
 | L'écran construit à sa première visite | 2026-09-13 | **Livré** — [archive](changelog-archive/lazy-screen-build.md) |
 | L'ouverture d'un projet, et l'écran blanc | 2026-09-13 | **Livré** — [archive](changelog-archive/open-white-screen.md) |
 | Les palettes, rangées avec les assets | 2026-09-18 | **Livré** — [archive](changelog-archive/palettes-in-assets.md) |
+| L'acteur appartient à sa scène | 2026-09-20 | **Livré (2026-09-20)** — symboles d'acteurs qualifiés par scène, `get_actor` nullable (compile-time + runtime pour les scripts partagés). Voir [ci-dessous](#lacteur-appartient-à-sa-scène--noms-locaux-get_actor-nullable) |
+| Les exports de script, câblés au jeu | 2026-09-20 | À ouvrir — conception seule, voir [ci-dessous](#les-exports-de-script-câblés-au-jeu--paramétrer-une-instance) |
 | Le cache de scène | 2026-09-16 | À ouvrir — voir [ci-dessous](#le-cache-de-scène-rouvrir-une-scène-déjà-visitée-sans-tout-redécoder) |
 | L'écran resynchronisé à sa revisite | 2026-09-18 | À ouvrir — voir [ci-dessous](#lécran-resynchronisé-à-sa-revisite--voir-les-catalogues-à-jour-en-revenant-sur-un-écran) |
 | Undo/redo des sidecars d'éditeur | — | À ouvrir — envisagé pour **V2**, voir [ci-dessous](#undoredo-des-sidecars-déditeur-annuler-la-création-dun-groupe-un-déplacement-de-nœud) |
+
+---
+
+## L'acteur appartient à sa scène — noms locaux, `get_actor` nullable
+
+### D'où vient la question (2026-09-20)
+
+En construisant la démo tactique (le deuxième jeu de démo de la v1.0), puis en la passant à
+l'échelle (40 scènes / 200 sprites), deux frictions jumelles sont sorties — cf. « Frictions
+relevées en construisant la démo tactique », points **#1** et **#2**. Le test d'échelle a levé
+**229 avertissements de collision** : deux scènes qui posent chacune un acteur « Cursor » (ou
+« Enemy », « Boss ») partagent un seul symbole C. Cause exacte : les acteurs **posés** sont la
+seule chose que la compilation par scène (v0.17) **ne qualifie pas** — `TAG_<Acteur>` nu et
+`actor_<Acteur>.c` ([headers.py:67](editor/codegen/runtime_codegen/headers.py:67)), là où un
+prefab est déjà `TAG_<Scène>_<Prefab>` et un script `<Scène>_scene`. Le réflexe d'auteur —
+nommer « curseur » dans chaque scène — est légitime et doit marcher : **personne ne doit écrire
+« curseur01 ».**
+
+### Le principe
+
+Un acteur appartient à sa scène. Son **nom** est local à la scène (l'auteur écrit « curseur »
+partout) ; son **symbole C** est qualifié par la scène, comme tout le reste sous v0.17 ; et le
+qualificatif est **dérivé** au build, **jamais un second champ stocké** (source de vérité
+unique — pas de « curseur01 » rangé quelque part).
+
+### Décisions verrouillées (2026-09-20)
+
+- **A — un acteur appartient toujours à la scène courante.** Une seule scène est vivante à la
+  fois ; un acteur d'une autre scène n'existe pas dans `g_actors`. Aucune référence
+  inter-scènes, donc aucune syntaxe pour en viser une.
+- **B — unicité DANS la scène.** Deux acteurs de même nom dans la MÊME scène = l'erreur (le vrai
+  doublon). D'une scène à l'autre, le nom se réutilise librement. Le contrôle du validateur
+  passe de « unique au projet » à « unique dans la scène ».
+- **C — `get_actor` rend un `Actor*` ou `nil` : un seul contrat, deux réalisations selon le
+  contexte d'écriture (dérivé, pas une nouvelle syntaxe).**
+  - Script de **scène / acteur / prefab** (une scène est connue au build) : résolu à la
+    **compilation** en `&g_actors[TAG_<Scène>_<Nom>]`. L'acteur est authoré → présent. `~= nil`
+    permis mais toujours vrai, **zéro overhead, rétrocompatible**.
+  - Script **partagé** (caméra, `scene_sym` vide) : **lookup runtime** dans la scène active →
+    l'`Actor*` ou `nil`. C'est le seul endroit où le nil « absent de la scène » apparaît. Ceci
+    **remplace** l'idée initiale de *refuser* `get_actor` dans une caméra : au lieu de refuser,
+    on résout à l'exécution (une caméra partagée par trois scènes peut dire « s'il y a un
+    'player' ici, suis-le »).
+- **C' — un acteur DÉTRUIT au runtime (`self:destroy()`) rend aussi `nil`.** C'est une
+  information de gameplay (« ma cible est-elle encore là ? »), pas seulement « absent de la
+  scène ». `get_actor` teste donc l'état ACTIF du slot, pas seulement sa présence.
+
+### Ce que ça touche
+
+- `codegen/runtime_codegen/headers.py` — `TAG_<Nom>` → `TAG_<Scène>_<Nom>` pour les acteurs
+  posés (aligné sur les pools juste en dessous) ; les `#define` d'un bloc de scène cessent de
+  collisionner.
+- `scripting/codegen.py` — `_emit_get_actor` préfixe par `ctx.scene_sym` quand elle existe
+  (constante compile-time) ; sinon émet l'appel `runtime_get_actor(ACTORNAME_<Nom>)`. Le fichier
+  `actor_<Nom>.c` devient `actor_<Scène>_<Nom>.c`.
+- `codegen/runtime_codegen/main_gen.py` — pose de `g_actors` et des `TAG_` au `scene_init` avec
+  le nom qualifié ; émission d'une table `{ACTORNAME_id → slot}` par scène.
+- Runtime (`runtime/…`) — `runtime_get_actor(id)` : lit la table de la scène active, rend
+  `&g_actors[slot]` si présent **et actif**, `NULL` sinon (couvre C'). Un enum global
+  `ACTORNAME_*` sert de **clé de lookup**, distincte des symboles C qualifiés par scène (donc
+  pas de régression sur la collision qu'on corrige).
+- `scripting/checker.py` — unicité DANS la scène (B) ; `get_actor` d'un littéral absent de la
+  scène → avertissement au build (comme un nom de prefab inconnu), **sauf** script partagé où
+  l'absence est légitime et se résout à `nil`.
+- `core/validator.py` — retirer l'avertissement « deux acteurs de même nom entre scènes » (le
+  cas devient légitime).
+- `docs/scripting-reference.md` — `get_actor` peut rendre `nil` ; le patron
+  `if get_actor("x") ~= nil then …`.
+
+### Ce qui reste HORS de ce chantier
+
+L'adressage **dynamique** (friction #1) — indexer les acteurs par une valeur calculée,
+`get_actor(i)`, tenir un tableau d'acteurs, remplacer la cascade `if sel==1 then…`. C'est un
+chantier distinct et plus gros ; celui-ci ne le traite pas, mais en est le **préalable propre** :
+une fois les noms locaux et le contrat nullable posés, l'adressage dynamique se construit dessus.
+
+### Ordre d'implémentation
+
+1. ~~**Qualification des symboles d'acteurs posés** (`TAG_`, `actor_<…>.c`, `g_actors`/
+   `scene_init`).~~ **Fait (2026-09-20).** Helper unique `codegen.c_names.scene_actor_sym`
+   appliqué aux huit sites de `main_gen`, à `lua_compiler` (fichier + `child_refs` + clé
+   d'events dans `rom_build`) et à `headers` (`TAG_`). Vérifié : un projet de 40 scènes
+   réutilisant « Cursor »/« U0 »… **build et link proprement** (ROM 388 Kio), là où il levait
+   229 avertissements de collision.
+2. ~~**`get_actor` compile-time préfixé par scène** (constante).~~ **Fait (2026-09-20).**
+   `_emit_get_actor` émet `&g_actors[TAG_<Scène>_<Nom>]` quand une scène est connue ; les scripts
+   existants (noms locaux) ne changent pas.
+3. ~~**Enum `ACTORNAME_*` + table par scène + `runtime_get_actor` + nil sur détruit** ; `get_actor`
+   runtime dans les scripts partagés.~~ **Fait (2026-09-20).** `actor_live()`
+   (`runtime_api_inline.h`) filtre le chemin compile-time → `nil` si l'acteur a été détruit
+   (**C'**). Pour un script partagé (caméra, sans scène), `_emit_get_actor` émet
+   `runtime_get_actor(ACTORNAME_<Nom>)` ; `headers.actorname_ids` pose l'enum de lookup global,
+   et `main_gen` émet le résolveur `runtime_get_actor` (switch `g_current_scene` → `ACTORNAME_*`
+   → `actor_live(&g_actors[TAG_<Scène>_<Nom>])`, le TAG per-scène valant le slot). Réalise **C**
+   (nullable au runtime) et **C'**. Tests : `test_actor_scene_naming.py`.
+4. ~~**Checker/validateur** (unicité dans la scène) + **doc**.~~ **Fait (2026-09-20).**
+   `_check_actor_name_collisions` vérifie l'unicité DANS une scène ; réutiliser un nom d'une
+   scène à l'autre ne produit plus rien. `docs/scripting-reference.md` documente le contrat
+   nullable de `get_actor`. Tests : `test_actor_scene_naming.py`.
+
+**Chantier CLOS (2026-09-20).** Vérifié de bout en bout : un projet de 40 scènes réutilisant
+« Cursor »/« U0 »… **build et link proprement** (ROM 403 Kio), 0 avertissement de collision,
+suite non-UI verte. Il ne reste rien d'ouvert.
+
+---
+
+## Les exports de script, câblés au jeu — paramétrer une instance
+
+### D'où vient la question (2026-09-20)
+
+Relevé en réglant l'adressage dynamique (friction #1) : c'est le pendant « données » de
+`get_actor(i)`. Un script d'acteur peut déjà déclarer une table `exports` en tête
+(`editor/scripting/exports_parser.py`) — des variables réglables PAR INSTANCE depuis
+l'éditeur :
+
+```lua
+exports = {
+    speed = { type = "int",  default = 5, label = "Speed", min = 0, max = 20 },
+    team  = { type = "enum", default = "RED", values = {"RED","BLUE"} },
+}
+```
+
+L'inspecteur du composant Script lit cette table et affiche un champ par variable
+(`editor/ui/scene_manager/inspectors/component_editors/script.py`) ; les valeurs choisies pour
+CET acteur sont rangées dans `ScriptComponent.exports_values` (dict `nom → valeur`, override du
+défaut) et sérialisées dans le sidecar de scène.
+
+**Le trou** : `exports_values` est authoré, stocké et édité, mais **le codegen ne le lit nulle
+part** — `exports_values` n'apparaît que dans le modèle (`components.py`) et l'UI, jamais dans
+`editor/scripting` ni `editor/codegen`. Au runtime, le script n'a donc aucun moyen de LIRE sa
+valeur d'export : la fonctionnalité est à moitié construite (on remplit des champs sans effet en
+jeu). Le cas d'usage : un seul `Patrol.lua` posé sur trois gardes, chacun sa `speed` et sa
+`team`, au lieu de trois scripts jumeaux — l'identité propre d'une instance, quand `get_actor(i)`
+donne l'instance.
+
+### Ce que ça touche
+
+- Émission des valeurs par instance et un chemin de lecture — `editor/codegen/runtime_codegen/`
+  (main_gen / lua_compiler) et `editor/scripting/codegen.py`.
+- `editor/scripting/api.py` / `checker.py` : la syntaxe de lecture doit être connue et validée.
+- `docs/scripting-reference.md` : documenter la déclaration `exports` et sa lecture.
+
+### À trancher au démarrage
+
+- **D1 — Où vivent les valeurs (le fork posé / poolé).** Un acteur POSÉ a son propre `.c`
+  (`actor_<Scène>_<Nom>.c`) : ses valeurs d'export peuvent y être **bakées en constantes** au
+  build, gratuit et sans RAM. Un prefab POOLÉ, lui, partage UN `.c` entre toutes ses instances :
+  ses exports demandent un **stockage runtime par instance** — la piste existe déjà, l'état par
+  instance `g_state_<sym>[]` (v0.17). Deux implémentations pour un même concept, ou on n'ouvre
+  d'abord que le cas posé ?
+- **D2 — Comment une instance SPAWNÉE reçoit ses valeurs.** `actor.spawn("Prefab", pos)` ne passe
+  aucun paramètre aujourd'hui. Les exports d'un poolé viennent-ils d'un défaut unique, d'un
+  réglage au spawn (`actor.spawn` étendu), ou seulement du défaut du script ?
+- **D3 — La syntaxe de lecture côté script.** `self.speed` — mais `self.*` désigne les champs
+  FIXES de la struct `Actor` (position, velocity…), qu'on ne peut pas étendre par script ; une
+  collision de noms est possible. Un namespace dédié (`export.speed`, ou `self.export.speed`) ?
+  Lecture seule, ou l'instance peut-elle réécrire sa valeur ?
+- **D4 — Le sous-ensemble de types au runtime.** `int`/`bool`/`enum` tombent sur un entier
+  (facile). `float` → Q8 ? `string` → clé de table de texte ? `vec2`/`rect` → struct. Les
+  références (`actor_ref`/`scene_ref`/`sfx_ref`) doivent résoudre vers les mêmes constantes que
+  `get_actor`/`SCENE_IDX_*`/`SFX_*` — et un `actor_ref` se résout DANS la scène de l'instance
+  (cohérent avec « L'acteur appartient à sa scène »). Quels types pour un premier jet ?
 
 ---
 
@@ -481,7 +750,7 @@ Deux obstacles durs empêchent de brancher naïvement ces gestes sur l'historiqu
 
 ---
 
-## Le balisage rouvert — `[font=nom]`, changer de police en cours de texte — **EN COURS**
+## Le balisage rouvert — `[font=nom]`, changer de police en cours de texte — **LIVRÉ**
 
 Réouverture de **v0.3.2** (le balisage), pas un jalon neuf : la grammaire, la piste
 d'événements et le catalogue de balises existent déjà et sont clos. On y ajoute UNE balise. Pas
@@ -570,24 +839,180 @@ déjà tout ce qu'il faut, on ne fait que le câbler à une balise.
 - l'écran Texte : la barre de balisage (`markup_toolbar`) et la coloration (`markup_highlighter`)
   prennent la balise gratuitement (dérivées de `TAGS`) ; l'aperçu écran doit charger la 2ᵉ police.
 
-### Ouvert
+### Décisions finalisées
 
-- **La hauteur de ligne quand deux polices se partagent une ligne.** Interligne et ligne de base
-  ne coïncident pas entre deux planches. À trancher : la ligne prend le MAX des hauteurs (jamais
-  de chevauchement, mais le texte « saute »), ou la police de zone impose l'interligne (régulier,
-  mais une grande police déborde). À rouvrir avec un cas réel sous les yeux.
-- **La couverture par langue d'une police APPELÉE.** `Font.missing_chars` doit se vérifier contre
-  la police active PAR SEGMENT, pas contre la seule police de zone — sinon un `[font=X]` sur un
-  caractère que X ne porte pas passe le garde-fou de couverture (v0.9). Le parcours par événement
-  de la décision « sous-ensemble » le donne ; reste à le brancher au garde-fou.
-- **`[color]` sous une `[font]` NON composée.** `[color]` exige une police composée
-  ([font_emit.py:948](editor/codegen/font_emit.py:948)) ; si `[font=X]` bascule vers une planche
-  mono, la couleur du segment sera ignorée. Avertir au build (le message existe, il faut le rendre
-  conscient du segment) ou l'assumer — à trancher.
-- **Cerner les textes d'une scène pour la 4ᵉ source.** `scene_font_names` sait déjà rendre None
-  quand c'est indécidable (script opaque) ; reste à confirmer que l'ensemble des textes
-  atteignables par une scène est aussi bien cerné que ses polices de zone, ou à retomber sur la
-  réservation projet quand il ne l'est pas.
+- **L'interligne reste celui de la zone.** La portée change la police et sa chasse, pas le rythme
+  vertical du paragraphe : le texte ne saute pas d'une ligne à l'autre. Une police plus grande qui
+  déborde le cadre est signalée par le diagnostic de débordement, comme toute autre police de zone.
+- **La couverture est vérifiée par segment et par langue.** Chaque caractère est contrôlé contre la
+  police active au point où il apparaît ; une constante insérée dans une portée hérite elle aussi de
+  cette police.
+- **Une portée `[font]` force le chemin de composition.** `[color]` continue donc de s'appliquer
+  dans un fragment en police bitmap comme en police composée, sans ambiguïté entre l'aperçu et la
+  ROM.
+- **Les polices citées sont connues avant le build.** Les textes appelés par les scripts, ceux posés
+  dans l'interface et leurs traductions alimentent `scene_font_names`; un script impossible à
+  analyser retombe, par sûreté, sur la réservation de toutes les polices du projet.
+
+---
+
+## L'atelier Texte réuni — écrire et voir dans un même écran — **EN COURS**
+
+L'atelier actuel coupe le geste en deux : la source balisée vit dans un `QTextEdit` à gauche,
+le rendu GBA dans `FontScreenPreview` à droite. Cette séparation a servi à poser le pipeline des
+polices, mais elle oblige désormais à lire deux fois le même texte pour savoir ce que produisent
+`[font]`, `[color]`, les icônes et les valeurs. Le chantier les réunit dans **une seule surface de
+travail** : le texte se modifie là où son rendu est visible.
+
+Il ne s'agit pas de confier le texte à la mise en forme de Qt : ses polices système, son retour à
+la ligne et sa sélection ne sont pas ceux de la ROM. `FontScreenPreview` reste donc le moteur de
+rendu fidèle (glyphes rasterisés et `layout_marked_text`) ; l'éditeur devient la couche d'entrée
+et de sélection posée sur cette même surface.
+
+### Le contrat utilisateur
+
+- **Un seul écran de contenu.** La clé, le rangement, les langues et la barre de balisage restent
+  autour ; la division « source | preview » disparaît. Le texte affiché utilise les vrais glyphes,
+  ses polices portées et sa coupe GBA.
+- **Bouton “Afficher le balisage”.** Il ne bascule pas vers une vue source : la surface reste
+  fidèle à l'écran final. Lorsqu'il est actif, les balises reconnues (`[font=…]`, `[wave]`,
+  `[/font]`, etc.) apparaissent directement entre les mots, dessinées avec la police technique du
+  moteur. Le contenu conserve toujours la police réellement utilisée par la preview. Lorsqu'il est
+  masqué, seuls ces fragments techniques disparaissent ; le texte visible ne change ni de police
+  ni de mise en page.
+- **Clic droit sur une sélection → “Retirer le balisage”.** L'action enlève les bornes des balises
+  reconnues qui enveloppent exactement la sélection, sans effacer le contenu. Les balises imbriquées
+  sont retirées ensemble dans une seule annulation ; une sélection partielle ne modifie rien plutôt
+  que de produire une portée ambiguë.
+- **La source reste la vérité.** `texts.json` et les traductions conservent le BBCode actuel. Ni la
+  ROM, ni la table Text, ni le système de traduction ne changent de format.
+
+### Le morceau difficile : correspondre source et rendu
+
+Aujourd'hui `parse()` sait retirer les balises et produire les marqueurs, mais un `Marker` ne porte
+que la position de son ouverture. Pour masquer le balisage sans casser le curseur, il faut une
+projection explicite : source → caractères affichés, et retour affichage → plage source. Elle doit
+produire des segments fidèles pour le contenu et des segments en police moteur pour les balises
+visibles ; les balises masquées ont une longueur visuelle nulle. Elle doit connaître les balises
+ouvrantes/fermantes, les échappements `[[`/`$$`, les icônes, et une valeur `$nom` qui occupe une
+place source mais plusieurs caractères à l'aperçu.
+
+Cette projection servira trois lecteurs plutôt que trois approximations : le rendu unifié, la
+sélection/caret et l'action « Retirer le balisage ». Les locales de littéraux restent hors de cet
+aperçu, comme aujourd'hui : aucune portée Lua n'existe dans l'écran Text.
+
+### Analyse technique d'implémentation
+
+Le socle est déjà en place et doit être conservé :
+
+- `core.text_markup.parse()` est la seule grammaire. Il fournit le texte réellement lu (`display`),
+  les portées (`Marker`) et les fragments de source reconnus (`Token`).
+- `FontScreenPreview` matérialise déjà les Font Assets et dessine les vrais glyphes selon
+  `layout_marked_text()`. Il sait donc afficher une suite de polices bitmap et vectorielles sans
+  déléguer le rendu à Qt.
+- `TextWorkbench` possède déjà la source active, le commit différé et l'historique en amont ;
+  `MarkupToolbar` sait déjà poser ou retirer une portée dans un bloc d'édition unique.
+
+Le manque précis est une **projection d'édition** : aujourd'hui, `ParsedText` fait correspondre la
+source au texte final, mais pas à une surface qui mélange du contenu final et des balises visibles.
+Il faut ajouter dans `core.text_markup` un objet pur, par exemple `MarkupProjection`, construit à
+partir de `source`, de `ParsedText` et de l'option `show_markup`.
+
+Chaque `ProjectionSpan` portera :
+
+- sa plage dans la source (`source_start`, `source_end`) ;
+- son texte à dessiner ;
+- son rôle (`content`, `markup`, `value`, `escape`, `literal`) ;
+- la police à demander (`preview` pour le contenu, `engine` pour une balise visible) ;
+- le comportement de sélection : une balise est atomique, tandis qu'un contenu est sélectionnable
+  caractère par caractère.
+
+La projection doit aussi exposer deux conversions sans ambiguïté : `source_to_visible(position)`
+et `visible_to_source(position, bias)`. Le `bias` départage les deux bornes d'une balise masquée :
+aller à gauche doit placer le caret avant la balise, aller à droite après elle. Cela évite les
+oscillations du curseur et rend Backspace/Suppr déterministes.
+
+Les valeurs `$nom` forment le seul cas non isométrique : une plage source peut être dessinée sous
+la forme de plusieurs chiffres de la valeur initiale. Elles doivent rester un span atomique dans la
+projection, avec une position de caret avant ou après, jamais entre les chiffres calculés. Ainsi,
+l'édition ne transforme pas accidentellement `$score` en texte statique. Les échappements `[[` et
+`$$`, eux, restent du contenu normal : ils dessinent respectivement `[` et `$` mais gardent leur
+plage source pour le remplacement.
+
+`layout_marked_text()` ne doit pas être modifié pour le rendu joueur : il doit continuer à refléter
+strictement la ROM. Le nouvel atelier utilisera un petit adaptateur de mise en page voisin, qui
+réemploie les règles d'avance, de ligature, de coupe et d'interligne existantes, mais accepte les
+`ProjectionSpan` et retourne des glyphes enrichis de leur plage source. C'est cette information qui
+permet le hit-testing, la sélection, le caret et le menu contextuel. La police moteur des balises
+sera une recette dédiée et stable de l'éditeur ; elle n'entre pas dans les assets ni dans le build.
+
+`FontScreenPreview` évolue alors en surface interactive :
+
+1. il construit la projection à chaque changement de source, valeurs, police ou option de balisage ;
+2. il dessine les glyphes à partir du placement enrichi ;
+3. il convertit clic, glisser, flèches et raccourcis en plages source ;
+4. il émet un remplacement source et une demande de commit, mais ne modifie pas directement le
+   modèle Projet.
+
+`TextWorkbench` reste propriétaire de la langue active, de la valeur de départ et du commit. Il
+remplace son `QTextEdit` par cette surface, mais **réutilise la barre de balisage existante**
+(`MarkupToolbar`) : ses boutons, ses choix d'assets, ses règles de pose/retrait et ses infobulles
+ne sont pas recréés. Son unique adaptation est de viser une petite interface d'édition abstraite
+(`source()`, `selection_source()`, `replace_source()`) plutôt qu'un `QTextEdit` concret ; un
+adaptateur temporaire gardera cette même interface pour l'éditeur actuel. `MarkupHighlighter`
+devient alors inutile. Cette interface conserve les insertions existantes, leur sélection et leur
+regroupement dans l'annulation.
+
+Le clic droit « Retirer le balisage » doit être une opération pure du modèle de projection : à partir de
+la sélection source, repérer les paires de `Marker` dont les deux bornes enveloppent exactement la
+portée, retourner les deux suppressions en ordre décroissant, puis les appliquer dans un seul bloc
+d'édition. Les portées croisées ou incomplètes restent désactivées : l'éditeur ne doit jamais
+réparer silencieusement une structure ambiguë.
+
+Les tests à ajouter se répartissent naturellement :
+
+- **unitaires** dans `tests/test_font_markup.py` : projection avec et sans balisage, imbrications,
+  échappements, `$valeur!n`, limites et retrait de portée ;
+- **mise en page** dans `tests/test_text_layout.py` : alternance contenu/police moteur, changement
+  bitmap/vectoriel et correspondance clic → plage source ;
+- **interface** : frappe, collage, sélection au clavier, Ctrl+Z/Ctrl+Y, menu contextuel, langue de
+  traduction et absence de changement dans le contenu envoyé au build.
+
+Risque principal : la police moteur ajoutée au balisage modifie nécessairement la largeur visible
+et peut provoquer un retour à la ligne qui n'existe pas dans le jeu. C'est acceptable en **vue
+balisage**, à condition que la bascule reste purement éditoriale et que la vue masquée retrouve
+exactement le placement ROM. La position du caret doit donc suivre la projection courante, pas une
+coordonnée pixel mise en cache entre les deux modes.
+
+### Ordre d'implémentation
+
+1. **Extraire le modèle de projection** dans `core.text_markup` : spans source/affichés, bornes de
+   chaque portée, conversion d'une sélection et opération pure de retrait. Tests des imbrications,
+   échappements, icônes, valeurs, traductions et annulation textuelle.
+2. **Faire de `FontScreenPreview` une surface éditable**, sans changer son algorithme de rendu :
+   exposition des positions de glyphes, hit-testing, caret et sélection. La projection compose une
+   seule surface de segments fidèles pour le contenu et de segments en police moteur pour les
+   balises visibles ; aucun `QTextEdit` source séparé n'est nécessaire.
+3. **Remplacer le splitter** de `TextWorkbench` par cette surface unique. Le bouton de balisage ne
+   fait varier que les segments techniques de la projection, en maintenant les états existants
+   (aucune sélection, multi-sélection, langue source, traduction avec référence en lecture seule).
+4. **Ajouter le menu contextuel sûr** : option visible seulement sur une portée entièrement
+   sélectionnée, édition regroupée en une commande d'historique, puis retour du curseur sur le
+   contenu conservé.
+5. **Vérifier de bout en bout** : bitmap/vectoriel, plusieurs `[font]` imbriqués, longueur et
+   coupe GBA, collage texte brut, Ctrl+Z/Ctrl+Y, changement de langue et build ROM inchangé.
+
+### Décision verrouillée (2026-09-19)
+
+La vue balisage n'est jamais une vue source typographique Qt : les balises sont affichées en police
+du moteur, dans la même composition, tandis que tout le contenu reste rendu de façon fidèle avec
+les polices de preview.
+
+### À trancher au démarrage
+
+- Le bouton doit-il mémoriser sa préférence par projet ou rester une bascule de session ?
+- Une valeur `$score` affiche-t-elle sa valeur initiale dans la vue nette (comportement actuel de
+  l'aperçu) ou le jeton `$score` pour rappeler qu'elle est dynamique ?
 
 ---
 
@@ -722,12 +1147,11 @@ text_set_font(FONT)   →   g_lang_font[g_lang][FONT]     un remap, vide = la po
   un raccourci assumé au prix de la traduction (v0.3.2) ; en multilingue, c'est un trou par
   construction. Le build les liste, avec leur fichier et leur ligne.
 - **La langue vit dans la sauvegarde de la v0.5**, et se lit avant la première scène.
-- **L'ordre des mots appartient à la traduction, pas au script.** Les marqueurs `$nom` — et
-  les positionnels `$1`/`$2` de la [v0.18](#v018--la-valeur-affichée--doù-elle-vient) —
-  vivent DANS l'entrée : une langue qui dit « 3/5 PV » dans l'autre sens réordonne ses
-  marqueurs chez elle, sans que le script sache qu'elle existe. Rien à prévoir de plus ici,
-  mais c'est la raison pour laquelle il ne faut jamais laisser une phrase se composer par
-  concaténation dans un script.
+- **L'ordre des mots appartient à la traduction, pas au script.** Les marqueurs `$nom` d'une
+  entrée vivent DANS l'entrée : une langue qui dit « 3/5 PV » dans l'autre sens réordonne ses
+  marqueurs chez elle, sans que le script sache qu'elle existe. Les `$locale` de la
+  [v0.18](#v018--la-valeur-affichée--doù-elle-vient) restent volontairement réservés aux
+  littéraux, déjà non traduisibles.
 
 #### Ce que ça coûte, en chiffres
 
@@ -2953,6 +3377,18 @@ là-bas, pas ici.
 
 ## v0.18 — La valeur affichée : d'où elle vient
 
+### État — en cours
+
+La première tranche est implémentée : les littéraux de `text.draw` et de
+`text.draw_in` acceptent `$locale`, avec une limite d'affichage optionnelle
+`!1` à `!9` (`$hp!3`). Les valeurs d'une zone sont figées au lancement de sa
+lecture. Les clés de table de textes, et donc leurs traductions, restent
+volontairement limitées aux globals : elles n'ont pas de site d'appel où une
+locale pourrait être résolue.
+
+Restent le passage de validation complet du build/ROM et les extensions
+éventuelles aux expressions ou aux autres sources de valeurs.
+
 ### L'état des lieux, relevé avant d'ouvrir le chantier (2026-08-19)
 
 Le grief de départ était « il faut traverser trois écrans pour afficher un score ». **Il est
@@ -2985,53 +3421,35 @@ troisième, et c'est le **site d'appel**.
 
 ### Décisions verrouillées
 
-- **Des marqueurs positionnels `$1` à `$4`, à côté du `$nom` existant.** L'entrée porte la
-  phrase, l'appel porte les valeurs :
+- **Un littéral `text.draw` ou `text.draw_in` peut lire une locale avec son `$nom` existant.** La phrase reste
+  lisible au site d'appel, sans argument anonyme après la clé :
 
   ```lua
-  text.draw(9, 2, "score", points)              -- l'entrée dit « Score : $1 »
-  text.draw_in("boite", "degats", hp, hp_max)   -- « $1 / $2 PV »
-  text.draw(2, 2, "PV : $1", hp)                -- littéral : rien à déclarer
-  text.draw(2, 2, "$1", self.position.x)        -- debug, une ligne, zéro écran
+  local hp = self.hp
+  text.draw(2, 2, "PV : $hp")
   ```
 
-- **`$nom` ne bouge pas.** Deux sources pour deux durées de vie : un global est un état
-  *partagé et persistant* que plusieurs textes citent, un positionnel est une valeur que
-  l'appelant a déjà en main. Confondre les deux rendrait le HUD propriétaire d'un espace de
-  noms de projet.
-- **Ceci ne rouvre pas le retrait de `display.print`.** Le motif de ce retrait était « leur
-  chaîne de format vivait dans le script, donc hors de la table de textes : intraduisible »
-  ([api.py:643](editor/scripting/api.py:643)). Ici la **phrase reste dans l'entrée** ; seule la
-  *valeur* vient de l'appel. `$1` n'est pas du texte, c'est un trou — il occupe une place de
-  sentinelle exactement comme `$score` aujourd'hui, donc le centrage, la coupe, la machine à
-  écrire et la traduction continuent de fonctionner.
-- **Les positionnels sont admis dans une entrée de la table, pas seulement dans un littéral.**
-  C'est même leur premier intérêt en v0.9 : une langue qui ordonne « 3/5 PV » autrement
-  réordonne ses `$n` dans sa propre entrée, sans que le script sache qu'elle existe.
-- **Les valeurs voyagent par un tampon de passage, pas par des varargs.**
+  `$hp` lit la locale visible ; sans locale homonyme, il conserve sa lecture historique de la
+  globale `hp`. Une locale masque donc une globale, comme dans le reste du Lua. Le suffixe
+  `!1` à `!9` limite l'écriture aux premiers caractères : `$hp!3` rend `123` pour `hp = 12345`.
+- **Les entrées de la table restent traduisibles et ne lisent que les globals.** Une entrée
+  partagée n'a pas de site d'appel unique auquel raccrocher une locale. Le raccourci de HUD est
+  réservé aux littéraux — déjà assumés comme non traduisibles.
+- **Ceci ne rouvre pas le retrait de `display.print`.** La concaténation reste absente : le
+  moteur ne construit pas de chaînes Lua. Un littéral est déjà transformé en entrée anonyme de
+  la table ; ses `$locale` occupent les mêmes sentinelles que les `$global`, donc le centrage et
+  la coupe restent sur le chemin unique du rendu.
+- **Les valeurs locales voyagent par un tampon de passage, pas par des varargs.**
 
   ```c
-  g_text_arg[0] = score; g_text_arg[1] = hp; g_text_arg_n = 2;
-  text_draw(9, 2, TEXT_HUD);
+  text_arg_set(0, hp);
+  text_draw(2, 2, TEXT_LIT_A1B2C3D4);
   ```
 
   Le codegen émet déjà des instructions : poser deux affectations avant l'appel ne lui coûte
-  rien, et **la signature de `text_draw` ne bouge pas**. C'est ce qui donne le mécanisme
-  gratuitement à `text_draw_in`, `text_reading` et `text_length` — toutes passent par
-  `text_materialize`. Ce dernier point décide : `text_length` doit voir la valeur substituée
-  (c'est la borne de la machine à écrire) et ne prend, elle, aucun argument. Des varargs
-  n'auraient rien pu pour elle.
-- **Plafond de quatre valeurs par entrée, refusé au Build au-delà.** Une ligne de HUD n'en
-  demande pas plus, et le tampon est dimensionné au build comme tout le reste : un plafond
-  variable serait une allocation.
-- **L'arité est vérifiée au Build.** Une entrée qui cite `$2` appelée avec une seule valeur est
-  une erreur sur sa ligne, pas un zéro affiché. `BuildContext.text_keys` doit donc porter le
-  nombre de `$n` par entrée, là où il n'est aujourd'hui qu'une liste de clés.
-- **La mécanique variadique existe déjà et suffit.** `ApiFunc.variadic` est câblé de bout en
-  bout — contrôle d'arité ([checker.py:1014](editor/scripting/checker.py:1014)) et
-  pass-through des args au-delà des paramètres déclarés
-  ([codegen.py:1283](editor/scripting/codegen.py:1283)) — et sert déjà à `array(20, 12)`.
-  Rien à inventer côté langage : `text.draw` et `text.draw_in` prennent le drapeau.
+  rien, et **la signature de `text_draw` ne bouge pas**. Le compilateur refuse un symbole qui
+  n'est ni une locale, ni une globale, ni une constante, ainsi que plus de quatre noms locaux
+  distincts dans un littéral.
 - **La conversion en chiffres est déjà écrite.** `text_num_cp`
   ([gba_engine.h:2691](runtime/include/gba_engine.h:2691)) reste le point unique ; seule la
   **source** de `src` change dans `text_materialize`.
@@ -3049,33 +3467,21 @@ troisième, et c'est le **site d'appel**.
 
 ### Ce que ça touche
 
-[text_markup.py](editor/core/text_markup.py) (la regex de marqueur
-[ligne 185](editor/core/text_markup.py:185), l'arité rendue par l'analyse, `resolve` pour
-l'aperçu), [font_emit.py](editor/codegen/font_emit.py) (`emit_texts_c` : un marqueur
-positionnel écrit son rang au lieu d'un index dans `g_text_values`),
-[gba_engine.h](runtime/include/gba_engine.h) (`text_materialize` : deux sources au lieu d'une,
-plus `g_text_arg`), [api.py](editor/scripting/api.py) (le drapeau `variadic` sur les deux
-`text.draw*`), [checker.py](editor/scripting/checker.py) (l'arité, et le contexte de build qui
-la porte), [codegen.py](editor/scripting/codegen.py) (les affectations posées avant l'appel),
-et l'écran Texte, qui doit montrer un aperçu de ce qu'il ne connaît pas.
+[font_emit.py](editor/codegen/font_emit.py) (les marqueurs d'un littéral émettent leur rang dans
+le tampon), [gba_engine.h](runtime/include/gba_engine.h) (`text_materialize` : source globale
+ou locale), [checker.py](editor/scripting/checker.py) (symbole et plafond), [codegen.py]
+(editor/scripting/codegen.py) (les affectations posées avant l'appel) et [api.py]
+(editor/scripting/api.py) (documentation de la syntaxe).
 
 ### Ouvert
 
-- **Ce que l'aperçu de l'écran Texte affiche pour un `$n`.** `resolve()` substitue aujourd'hui
-  la vraie valeur d'un global ; un positionnel n'en a aucune au moment de l'authoring. Trois
-  sorties : laisser `$1` visible tel quel (comme un `$nom` inconnu, cf. `_bake_values`),
-  afficher un `0`, ou donner à l'entrée une **colonne de valeurs d'exemple** — qui a le mérite
-  de montrer la mise en page réelle d'un « 999/999 » avant qu'elle ne déborde en jeu.
-- **`text.length` et `text.reading` sur une entrée à positionnels.** Leur résultat dépend des
-  dernières valeurs posées dans le tampon, donc du dernier `text.draw` — y compris quand ce
-  n'était pas la même entrée. À trancher : rendre le tampon **propre à la zone** (une copie par
-  tête de lecture, comme `g_reads`), ou assumer un tampon global et dire dans quel ordre les
-  deux appels s'écrivent. La première est la seule qui reste vraie avec deux boîtes de dialogue
-  à l'écran.
-- **Un `$n` au-delà de ce que l'appel a fourni**, si le contrôle d'arité est un jour contourné
-  (entrée modifiée après coup, traduction ajoutant un `$3`) : un trou de cellule comme un
-  glyphe absent, ou zéro ? La règle maison dit trou — « mieux qu'un nombre silencieusement
-  faux » (cf. le commentaire de `text_num_cp`).
+- **Les zones et la machine à écrire.** `text.draw_in` fige les valeurs locales dans chaque tête
+  de lecture : une autre écriture ne change pas une boîte déjà ouverte. Les clés de la table et
+  leurs traductions ne peuvent pas porter de locale : elles n'ont volontairement pas de site
+  d'appel où résoudre sa déclaration.
+- **L'aperçu de l'écran Texte.** Une locale n'existe pas hors du script ; dans un littéral,
+  l'aperçu peut donc laisser `$hp` visible. Les entrées authorées gardent l'aperçu actuel des
+  globals et constantes.
 
 ---
 

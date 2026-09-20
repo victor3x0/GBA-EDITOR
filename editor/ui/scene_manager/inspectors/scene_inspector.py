@@ -6,6 +6,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox,
     QScrollArea, QPushButton, QMessageBox, QMenu, QToolButton, QSpinBox,
+    QLineEdit,
 )
 from PyQt6.QtGui import QFont, QColor
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint
@@ -61,6 +62,15 @@ class _LazyPopupCombo(QComboBox):
 _TRANSITIONS: tuple[tuple[str, str], ...] = (
     (TRANSITION_INHERIT, 'sceneinsp.from_project'),
 ) + TRANSITION_LABELS
+
+
+def _script_source_line(path: Path, line: int) -> str:
+    """Extrait une ligne pour l'aperçu d'un appel de prefab."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    return lines[line - 1].strip() if 1 <= line <= len(lines) else ""
 
 
 class _ScenePaletteCmd(Command):
@@ -980,11 +990,35 @@ class SceneInspector(QWidget):
             detail = QLabel(" · ".join(details))
             detail.setFont(QFont(T.UI, T.XS)); detail.setStyleSheet(f"color:{C.TEXT_MUTED};")
             rows.addWidget(detail)
+            # Même motif que les appelants de l'inspecteur d'arête : une ligne
+            # de code reconnaissable, puis un geste explicite pour l'ouvrir.
             for site in sites:
-                caller = QPushButton(label("sceneinsp.edit_caller", script=site.path.name, line=site.line))
-                caller.setCursor(Qt.CursorShape.PointingHandCursor)
-                caller.setStyleSheet(QSS.button_ghost)
-                caller.clicked.connect(lambda _, p=str(site.path), l=site.line: self.open_ref.emit(p, l))
+                caller = QFrame()
+                caller.setStyleSheet(
+                    f"QFrame{{background:{C.BG_RAISED};border:1px solid {C.BORDER};}}"
+                    f"QFrame:hover{{background:{C.BG_HOVER};}}")
+                call_row = QHBoxLayout(caller)
+                call_row.setContentsMargins(9, 7, 7, 7); call_row.setSpacing(8)
+                marker = QLabel("•")
+                marker.setStyleSheet(f"color:{C.ACCENT};")
+                prefix = QLabel(f"{site.path.name} : {site.line}")
+                prefix.setFont(QFont(T.CODE, T.SM))
+                prefix.setStyleSheet(f"color:{C.TEXT_DIM};")
+                source = QLineEdit(_script_source_line(site.path, site.line))
+                source.setReadOnly(True)
+                source.setCursor(Qt.CursorShape.ArrowCursor)
+                source.setFont(QFont(T.CODE, T.SM))
+                source.setStyleSheet(
+                    f"QLineEdit{{color:{C.TEXT_NORM};background:{C.BG_INPUT};"
+                    f"border:1px solid {C.BORDER_MID};padding:3px 5px;}}")
+                open_btn = QPushButton(label("common.open"))
+                open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                open_btn.setStyleSheet(
+                    f"color:{C.ACCENT};background:transparent;border:none;")
+                open_btn.clicked.connect(
+                    lambda _, p=str(site.path), l=site.line: self.open_ref.emit(p, l))
+                call_row.addWidget(marker); call_row.addWidget(prefix)
+                call_row.addWidget(source, 1); call_row.addWidget(open_btn)
                 rows.addWidget(caller)
             self._prefab_scene_container.addWidget(holder)
 

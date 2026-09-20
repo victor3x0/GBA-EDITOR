@@ -55,3 +55,48 @@ def test_une_police_de_balisage_connue_est_acceptee(tmp_path):
 
     assert ctx.errors == []
 
+
+def test_projection_masque_les_balises_sans_aplatir_le_contenu():
+    from core.text_markup import PROJ_CONTENT, PROJ_MARKUP, project
+
+    hidden = project("A[font=Titre]BC[/font]D")
+    shown = project("A[font=Titre]BC[/font]D", show_markup=True)
+
+    assert hidden.text == "ABCD"
+    assert shown.text == "A[font=Titre]BC[/font]D"
+    assert [s.kind for s in shown.spans] == [
+        PROJ_CONTENT, PROJ_MARKUP, PROJ_CONTENT, PROJ_MARKUP, PROJ_CONTENT,
+    ]
+    assert shown.spans[2].font_name == "Titre"
+
+
+def test_projection_garde_une_valeur_atomique():
+    from core.text_markup import PROJ_VALUE, project
+
+    projection = project("PV : $hp!3", {"hp": 12345})
+
+    assert projection.text == "PV : 123"
+    value = next(s for s in projection.spans if s.kind == PROJ_VALUE)
+    assert value.atomic is True
+    assert projection.visible_to_source(len("PV : 1")) == value.source_start
+    assert projection.visible_to_source(len("PV : 123"), right=True) == value.source_end
+
+
+def test_retrait_de_balisage_ne_supprime_que_les_bornes_de_la_portee():
+    from core.text_markup import removable_markup_edits
+
+    source = "[wave]Bonjour[/wave]"
+    edits = removable_markup_edits(source, len("[wave]"), len("[wave]Bonjour"))
+
+    assert edits == [(len("[wave]Bonjour"), len(source), ""), (0, len("[wave]"), "")]
+
+
+def test_retrait_de_balisage_accepte_la_selection_qui_contient_les_balises():
+    from core.text_markup import removable_markup_edits
+
+    source = "[font=Titre]Bonjour[/font]"
+
+    assert removable_markup_edits(source, 0, len(source)) == [
+        (len("[font=Titre]Bonjour"), len(source), ""),
+        (0, len("[font=Titre]"), ""),
+    ]

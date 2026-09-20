@@ -183,3 +183,50 @@ def layout_marked_text(font, source: str, fonts: dict[str, object], values=None,
                for f, g, gx, gy in out]
     return out, over
 
+
+def layout_projection_text(font, projection, fonts: dict[str, object],
+                           width: int = SCREEN_W, height: int = SCREEN_H):
+    """Place la projection de l'atelier et conserve la plage source par glyphe.
+
+    Cette fonction ne sert jamais au build : contrairement à
+    :func:`layout_marked_text`, elle peut inclure les balises visibles. Elle
+    reprend volontairement les avances et la coupe du moteur pour tout le
+    contenu fidèle ; les fragments ``markup`` sont simplement rendus avec la
+    police de base, la police technique de l'atelier.
+    """
+    from codegen.font_emit import glyph_advance_px, font_fallback_adv_px, font_line_px
+
+    if not font:
+        return [], False
+    line = font_line_px(font)
+    out, x, y, over = [], 0, 0, False
+    for span in projection.spans:
+        current = (fonts.get(span.font_name, font)
+                   if span.kind == "content" and span.font_name else font)
+        fallback = font_fallback_adv_px(current)
+        n = max(1, len(span.text))
+        i = 0
+        while i < len(span.text):
+            ch = span.text[i]
+            if ch == "\n":
+                x, y, i = 0, y + line, i + 1
+                continue
+            glyph = current.match_at(span.text, i)
+            used = len(glyph.char) if glyph else 1
+            # Une ligature ne doit pas déborder la borne du fragment : une
+            # balise ou une valeur atomique n'est jamais absorbée par le mot.
+            if i + used > len(span.text):
+                glyph, used = None, 1
+            adv = glyph_advance_px(glyph, current) if glyph else fallback
+            if x and x + adv > width:
+                x, y = 0, y + line
+            if y + line > height:
+                over = True
+                return out, over
+            a = span.source_start if span.atomic else min(span.source_end, span.source_start + i)
+            b = span.source_end if span.atomic else min(span.source_end, span.source_start + i + used)
+            if glyph:
+                out.append((current, glyph, x, y, a, b))
+            x += adv
+            i += used
+    return out, over

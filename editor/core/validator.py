@@ -492,7 +492,7 @@ def _check_ui_node_slots(ctx: ValidationContext):
 
 
 def _text_variants(p, text, globals_names: set) -> list:
-    """[(étiquette de langue, ParsedText)] à mesurer pour une entrée.
+    """[(étiquette de langue, source, ParsedText)] à mesurer pour une entrée.
 
     **La source seule ne suffit plus dès qu'une langue est déclarée**
     (ROADMAP v0.9) : une traduction plus longue déborde une zone que la
@@ -502,17 +502,18 @@ def _text_variants(p, text, globals_names: set) -> list:
     par le test d'égalité de contenu, pas par un `if` sur `auto_key` ou autre
     état qui pourrait diverger de ce que `text_content()` rend réellement."""
     from core.text_markup import parse, KIND_VALUE
-    out = [("", parse(text.content or ""))]
+    source = text.content or ""
+    out = [("", source, parse(source))]
     seen = {text.content or ""}
     for lang in getattr(p.settings, "languages", []):
         raw = p.translations.get(lang.code, {}).get(text.id, "")
         if not raw or raw in seen:
             continue
         seen.add(raw)
-        out.append((lang.code, parse(raw)))
+        out.append((lang.code, raw, parse(raw)))
     # Un `$global` a une largeur qui ne se connaît qu'en jeu, quelle que soit
     # la langue — même filtre qu'avant, appliqué à chaque variante.
-    return [(lbl, parsed) for lbl, parsed in out
+    return [(lbl, source, parsed) for lbl, source, parsed in out
             if not any(m.kind == KIND_VALUE and m.value in globals_names
                       for m in parsed.markers)]
 
@@ -567,7 +568,7 @@ def _check_text_overflow(ctx: ValidationContext):
     from scripting.refactor import find_call_sites_in_project
     from scripting.api import DOMAIN_REGION, DOMAIN_TEXT
     from core.text_markup import parse, resolve, KIND_VALUE
-    from core.engine_emulation.text_layout import layout_text
+    from core.engine_emulation.text_layout import layout_marked_text
 
     regions = {r.name: r for _lay, r in p.all_regions()}
     from codegen.font_emit import encodable_project_fonts
@@ -607,7 +608,7 @@ def _check_text_overflow(ctx: ValidationContext):
         text   = p.get_text(site.values[DOMAIN_TEXT])
         if region is None or text is None:
             continue          # le checker le dit déjà, et mieux
-        for lbl, parsed in _text_variants(p, text, globals_names):
+        for lbl, source, _parsed in _text_variants(p, text, globals_names):
             for font in _fonts_for(region):
                 # La police ET la langue entrent dans la clé de dédup : la
                 # même paire mesurée contre deux défauts de scène — ou deux
@@ -616,8 +617,8 @@ def _check_text_overflow(ctx: ValidationContext):
                 if quad in seen:
                     continue   # la même paire dans dix scripts, un seul message
                 seen.add(quad)
-                _placed, over = layout_text(font, resolve(parsed, consts),
-                                            region.w, region.h)
+                _placed, over = layout_marked_text(
+                    font, source, fonts, consts, region.w, region.h)
                 if over:
                     ctx.warn(None,
                         f"Le texte '{text.key}'"
@@ -637,9 +638,10 @@ def _check_text_overflow(ctx: ValidationContext):
         text = p.get_text(getattr(el, "text_key", "") or "")
         if text is None:
             continue          # clé vide ou cassée : _check_ui_text_key le dit
-        for lbl, parsed in _text_variants(p, text, globals_names):
+        for lbl, source, _parsed in _text_variants(p, text, globals_names):
             for font in _fonts_for(el):
-                _placed, over = layout_text(font, resolve(parsed, consts), el.w, el.h)
+                _placed, over = layout_marked_text(
+                    font, source, fonts, consts, el.w, el.h)
                 if over:
                     ctx.warn(None,
                         f"Le texte '{text.key}'"
@@ -671,7 +673,7 @@ def _check_font_coverage(ctx: ValidationContext):
         return
     from scripting.refactor import find_call_sites_in_project
     from scripting.api import DOMAIN_REGION, DOMAIN_TEXT
-    from core.text_markup import parse, resolve
+    from core.text_markup import KIND_VALUE, SENTINEL
 
     regions = {r.name: r for _lay, r in p.all_regions()}
     from codegen.font_emit import encodable_project_fonts
@@ -711,19 +713,43 @@ def _check_font_coverage(ctx: ValidationContext):
         target = getattr(lang, "default_font", "") if lang and font.name == default else ""
         return fonts.get(target or "", font)
 
-    def _missing(parsed, font) -> list:
-        chars = set(resolve(parsed, consts)) - {"\n"}
-        return sorted(chars - coverage.get(font.name, set()))
+    def _missing(parsed, base_font) -> list[tuple[str, str]]:
+        """(police active, caractère absent), segment par segment.
+
+        Les bornes d'une portée sont exprimées dans ``parsed.display``. Un
+        `$const` y occupe une seule place mais se développe à l'affichage : ses
+        chiffres héritent donc tous de la police active à cette position.
+        """
+        values = {m.at: str(consts[m.value])[:m.limit or None]
+                  for m in parsed.markers
+                  if m.kind == KIND_VALUE and m.value in consts}
+        font_markers = parsed.of_kind("font")
+        missing: set[tuple[str, str]] = set()
+        for i, char in enumerate(parsed.display):
+            active = base_font
+            for marker in font_markers:
+                if marker.at <= i < marker.end:
+                    active = fonts.get(str(marker.value), active)
+            shown = values.get(i, f"${next((m.value for m in parsed.markers if m.at == i), '')}") \
+                    if char == SENTINEL else char
+            for shown_char in shown:
+                if shown_char != "\n" and shown_char not in coverage.get(active.name, set()):
+                    missing.add((active.name, shown_char))
+        return sorted(missing)
 
     def _warn(key: str, lbl: str, region_kind: str, region_name: str,
-              font_name: str, missing: list):
-        chars = " ".join(missing)
+              missing: list[tuple[str, str]]):
+        by_font: dict[str, list[str]] = {}
+        for font_name, char in missing:
+            by_font.setdefault(font_name, []).append(char)
+        details = "; ".join(f"{font_name} : {' '.join(chars)}"
+                            for font_name, chars in by_font.items())
         ctx.warn(None,
             f"Le texte '{key}'"
             + (f" (langue « {lbl} »)" if lbl else "")
             + f" cite un caractère absent de la police active "
-            f"'{font_name}' ({region_kind} '{region_name}') "
-            f": {chars}. Le glyphe manquant sera sauté à l'affichage, sans un mot "
+            f"({region_kind} '{region_name}') : {details}. "
+            f"Le glyphe manquant sera sauté à l'affichage, sans un mot "
             f"en jeu. Ajoute-le à une police, ou change la traduction.")
 
     seen: set = set()
@@ -732,16 +758,16 @@ def _check_font_coverage(ctx: ValidationContext):
         text   = p.get_text(site.values[DOMAIN_TEXT])
         if region is None or text is None:
             continue
-        for lbl, parsed in _text_variants(p, text, globals_names):
+        for lbl, _source, parsed in _text_variants(p, text, globals_names):
             for font in _fonts_for(region):
                 eff = _effective(lbl, font)
-                quad = (region.name, text.key, eff.name, lbl)
+                quad = (region.name, text.key, eff.name, lbl, parsed.display)
                 if quad in seen:
                     continue
                 seen.add(quad)
                 missing = _missing(parsed, eff)
                 if missing:
-                    _warn(text.key, lbl, "la zone", region.name, eff.name, missing)
+                    _warn(text.key, lbl, "la zone", region.name, missing)
 
     from core.models.ui_region import KIND_TEXT
     for _lay, el in p.all_regions():
@@ -750,16 +776,16 @@ def _check_font_coverage(ctx: ValidationContext):
         text = p.get_text(getattr(el, "text_key", "") or "")
         if text is None:
             continue
-        for lbl, parsed in _text_variants(p, text, globals_names):
+        for lbl, _source, parsed in _text_variants(p, text, globals_names):
             for font in _fonts_for(el):
                 eff = _effective(lbl, font)
-                quad = (el.name, text.key, eff.name, lbl)
+                quad = (el.name, text.key, eff.name, lbl, parsed.display)
                 if quad in seen:
                     continue
                 seen.add(quad)
                 missing = _missing(parsed, eff)
                 if missing:
-                    _warn(text.key, lbl, "l'élément", el.name, eff.name, missing)
+                    _warn(text.key, lbl, "l'élément", el.name, missing)
 
 
 def _check_literal_texts(ctx: ValidationContext):
@@ -1200,37 +1226,36 @@ def _check_window_regions(ctx: ValidationContext):
 
 
 def _check_actor_name_collisions(ctx: ValidationContext):
-    """Deux acteurs de scènes DIFFÉRENTES portant le même nom se marchent
-    dessus au build — même check que les caméras (`_check_cameras`) et les
-    windows (`_check_window_regions`), pour la même raison : rien n'est
-    qualifié par scène.
+    """Deux acteurs d'une MÊME scène portant le même symbole C se marchent
+    dessus au build (ROADMAP « L'acteur appartient à sa scène », décision B).
 
-    ① Le script transpilé est écrit dans `actor_<sym>.c` (lua_compiler) sans
-      préfixe de scène : la seconde scène écrase le fichier de la première,
-      donc les deux acteurs finissent avec le MÊME comportement.
-    ② `TAG_<SYM>` est émis en parcourant les acteurs de TOUTES les scènes
-      (headers) : deux #define de valeurs différentes, seul le dernier compte.
+    Un acteur appartient à sa scène : son nom est LOCAL à la scène, donc
+    réutilisable librement d'une scène à l'autre — deux « Cursor » dans deux
+    scènes ne collisionnent plus, parce que le symbole C émis est qualifié par
+    la scène (`<Scène>_<Acteur>`, cf. `codegen.c_names.scene_actor_sym`), comme
+    l'est déjà un prefab poolé. L'unicité n'est donc exigée que DANS une même
+    scène — deux « Cursor » de la MÊME scène partagent alors le TAG et le
+    fichier `actor_<Scène>_<Acteur>.c`, donc le même comportement.
 
     Avertissement et non erreur : le build aboutit, la ROM tourne — c'est le
-    comportement qui ment. La collision est comparée sur le SYMBOLE C, pas sur
-    le nom : « Player 1 » et « Player-1 » donnent le même `actor_Player_1.c`."""
+    comportement qui ment. Comparé sur le SYMBOLE C, pas sur le nom :
+    « Player 1 » et « Player-1 » donnent le même symbole."""
     from codegen.c_names import sym as c_sym
-    seen: dict[str, tuple[str, str]] = {}   # symbole → (nom, scène) vus en premier
     for scene in ctx.project.scenes:
+        seen: dict[str, str] = {}   # symbole → premier nom vu DANS cette scène
         for actor in scene.actors:
             s = c_sym(actor.name)
-            if s in seen and seen[s][1] != scene.name:
-                first_name, first_scene = seen[s]
-                same = first_name == actor.name
+            if s in seen:
+                first = seen[s]
+                same = first == actor.name
                 quoi = (f"Deux acteurs nommés « {actor.name} »" if same else
-                        f"Les acteurs « {first_name} » et « {actor.name} »")
+                        f"Les acteurs « {first} » et « {actor.name} »")
                 ctx.warn(None,
-                    f"{quoi} (scènes '{first_scene}' et '{scene.name}') "
-                    f"partagent le symbole C `{s}` — le script de la seconde scène "
-                    f"écrase le fichier actor_{s}.c de la première (les deux acteurs "
-                    f"auront le même comportement) et TAG_{s.upper()} est défini deux "
-                    f"fois avec des valeurs différentes. Renommer l'un des deux.")
-            seen.setdefault(s, (actor.name, scene.name))
+                    f"{quoi} dans la scène '{scene.name}' partagent le symbole C "
+                    f"`{s}` — même TAG et même fichier "
+                    f"actor_{c_sym(scene.name)}_{s}.c, donc le même comportement. "
+                    f"Renommer l'un des deux.")
+            seen.setdefault(s, actor.name)
 
 
 def _check_audio_files(ctx: ValidationContext):

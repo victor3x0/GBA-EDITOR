@@ -617,16 +617,24 @@
         {
           "label": "get_actor(\"name\")",
           "snippet": "get_actor(\"Player\")",
-          "description": "Retourne une référence à l'actor nommé dans la scène active.",
+          "description": "Un actor de la scène active, par NOM (littéral) ou par INDEX dynamique 1-based (get_actor(i), de 1 à actor_count(), dans l'ordre de la scène). Rend nil si absent ou détruit.",
           "params": [
             {
               "name": "name",
-              "type": "string",
-              "description": "Nom exact de l'actor dans la scène"
+              "type": "string | int",
+              "description": "Nom exact de l'actor, ou son index 1-based dans la scène"
             }
           ],
-          "returns": "actor — référence actor, ou nil si absent",
+          "returns": "actor — référence actor, ou nil si absent/détruit",
           "doc_anchor": "get_actor"
+        },
+        {
+          "label": "actor_count()",
+          "snippet": "actor_count()",
+          "description": "Nombre d'actors POSÉS de la scène active — la borne de get_actor(i). Ex: for i=1,actor_count() do local a=get_actor(i) ... end.",
+          "params": [],
+          "returns": "int — nombre d'actors posés",
+          "doc_anchor": "actor_count"
         },
         {
           "label": "actor.spawn(\"prefab\", position)",

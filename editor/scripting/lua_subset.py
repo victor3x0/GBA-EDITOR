@@ -166,9 +166,10 @@ REFUSED: dict[str, Refusal] = {
         'a .. b',
         "`..` n'existe pas : le moteur n'a pas de chaîne manipulable, et "
         "composer du texte à l'exécution demanderait un tampon et une "
-        "allocation. Un texte qui contient une valeur se compose DANS la table "
-        'de textes — écris « Score : $mon_global » dans l\'entrée, puis '
-        'text.draw(x, y, "ma_cle").'),
+        "allocation. Pour un HUD ponctuel, un littéral de text.draw accepte "
+        'déjà « Score : $score » ; `$score` lit une locale visible ou une '
+        "globale. Une entrée de la table de textes, elle, reste traduisible et "
+        "n'interpole que les globals."),
 
     # ── Arithmétique absente ──────────────────────────────────────
     "ExpoOp": Refusal(

@@ -72,6 +72,55 @@ def test_expression_refusee(expr, attendu):
     assert any(attendu in e for e in errs), errs
 
 
+def test_get_actor_chaine_directe_une_methode():
+    """`get_actor("X"):méthode()` en CHAÎNE DIRECTE se transpile — sans imposer
+    un `local u = get_actor(...)` intermédiaire. Auparavant le receveur (un
+    appel, pas un nom) partait dans `/* invoke sur expression complexe ignoré */`
+    et la méthode disparaissait en silence."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    # Un acteur appartient à sa scène : le TAG émis est qualifié par la scène
+    # qui compile le script (ROADMAP « L'acteur appartient à sa scène »).
+    src = _in_handler('    get_actor("Foe"):move_to(vec2(10, 20), 2)')
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Sc_Ball", scene_sym="Sc", anim_names=[],
+        sfx_names=[], music_names=[], global_names=set(), const_names=set(),
+        all_actor_syms=["Ball", "Foe"]))
+    assert "actor_move_to(actor_live(&g_actors[TAG_SC_FOE])" in code
+    assert "ignoré" not in code
+
+
+def test_actor_spawn_chaine_directe_une_methode():
+    """Même chose pour l'instance rendue par `actor.spawn(...)` : on peut la
+    piloter sans local (ROADMAP v0.17 T6)."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    src = _in_handler('    actor.spawn("Bul", vec2(0, 0)):move_to(vec2(1, 2), 3)')
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=[], sfx_names=[],
+        music_names=[], global_names=set(), const_names=set(),
+        scene_sym="Sc", all_actor_syms=["Ball"]))
+    assert "actor_move_to(spawn_Sc_Bul(0, 0)" in code
+    assert "ignoré" not in code
+
+
+def test_invoke_sur_expression_sans_type_reste_refuse():
+    """Un receveur dont le type est INCONNU (ni actor ni référence) reste
+    ignoré : on n'invente pas `actor_<méthode>` sur n'importe quelle
+    expression. Ici l'appel `inconnu()` ne rend pas un actor."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    src = _in_handler('    inconnu():move_to(vec2(1, 2), 3)')
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=[], sfx_names=[],
+        music_names=[], global_names=set(), const_names=set(),
+        all_actor_syms=["Ball"]))
+    assert "invoke sur expression complexe ignoré" in code
+
+
 def test_aucun_identifiant_unsupported_dans_le_c():
     """L'ancien marqueur ne doit plus exister nulle part : il n'était pas un
     diagnostic, c'était un identifiant C inexistant qui voyageait jusqu'à gcc."""
@@ -85,6 +134,57 @@ def test_aucun_identifiant_unsupported_dans_le_c():
         all_actor_syms=["Ball"]))
     assert "__unsupported" not in code
     assert "non traduit" in code       # le trou est écrit, pas caché
+
+
+def test_text_draw_litteral_interpole_une_locale():
+    """`$hp` dans un littéral reste lisible dans Lua et devient une valeur
+    runtime, sans passer artificiellement par une globale."""
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    src = _in_handler('    local hp = 7\n    text.draw(2, 2, "PV : $hp")')
+    assert not _errors(src, global_names=[], const_names=[], text_keys=[])
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=[], sfx_names=[],
+        music_names=[], global_names=[], const_names=[], text_keys=[],
+        all_actor_syms=["Ball"]))
+    assert "text_arg_set(0, hp)" in code
+    assert "text_draw(2, 2, TEXT__LIT_" in code
+
+
+def test_text_draw_litteral_refuse_une_valeur_inconnue():
+    errs = _errors(_in_handler('    text.draw(2, 2, "PV : $hp")'),
+                   global_names=[], const_names=[], text_keys=[])
+    assert any("n’est ni une locale" in err for err in errs), errs
+
+
+def test_text_draw_litteral_limite_les_locales_a_quatre():
+    src = _in_handler("\n".join(f"    local v{i} = {i}" for i in range(5))
+                      + '\n    text.draw(2, 2, "$v0 $v1 $v2 $v3 $v4")')
+    errs = _errors(src, global_names=[], const_names=[], text_keys=[])
+    assert any("au plus 4 valeurs" in err for err in errs), errs
+
+
+def test_text_draw_in_litteral_interpole_une_locale():
+    from scripting.parser import parse
+    from scripting.codegen import generate, CodegenContext
+
+    src = _in_handler('    local hp = 7\n    text.draw_in("hud", "PV : $hp!3")')
+    assert not _errors(src, global_names=[], const_names=[], text_keys=[], region_names=["hud"])
+    code, _, _ = generate(parse(src), CodegenContext(
+        actor_name="Ball", actor_sym="Ball", anim_names=[], sfx_names=[],
+        music_names=[], global_names=[], const_names=[], text_keys=[], region_names=["hud"],
+        all_actor_syms=["Ball"]))
+    assert "text_arg_set(0, hp)" in code
+    assert "text_draw_in(REGION_HUD, TEXT__LIT_" in code
+
+
+def test_marqueur_de_valeur_accepte_une_limite_de_neuf_caracteres():
+    from core.text_markup import display_text, parse
+    marker = parse("Score : $score!3").of_kind("value")[0]
+    assert marker.value == "score" and marker.limit == 3
+    assert display_text("Score : $score!3", {"score": 12345}) == "Score : 123"
+    assert parse("$score!9").of_kind("value")[0].limit == 9
 
 
 # ── 3. La bibliothèque standard de Lua ─────────────────────────────

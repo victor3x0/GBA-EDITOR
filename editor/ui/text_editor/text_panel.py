@@ -72,8 +72,6 @@ class TextPanel(QWidget):
 
         self._table.selection_changed.connect(self._on_selection)
         self._table.key_edited.connect(self._on_table_key)
-        self._table.path_edited.connect(
-            lambda t, lvl, seg: self._repath([t], lvl, seg))
         self._table.group_renamed.connect(self._on_group_renamed)
         self._table.add_asked.connect(self._add_text)
         self._table.delete_asked.connect(self._delete_texts)
@@ -126,6 +124,19 @@ class TextPanel(QWidget):
         self._selection = []
         self._current = None
         self._bench.set_texts([])
+
+    def set_folder_filter(self, path) -> None:
+        """Relais du Finder de textes vers la table centrale."""
+        self._table.set_folder_filter(path)
+
+    def rename_selected_path(self, level: int, segment: str) -> None:
+        """Renommage d'un niveau depuis l'inspecteur de texte."""
+        if self._selection:
+            self._repath(self._selection, level, segment)
+
+    def rename_folder(self, path, segment: str) -> None:
+        """Relais du renommage en place demandé depuis le Finder."""
+        self._on_group_renamed(path, segment)
 
     # ── Sélection ─────────────────────────────────────────────────
 
@@ -277,18 +288,18 @@ class TextPanel(QWidget):
             self._project, entries, label=cmd_label,
             persist_fn=self._after_identity_change))
 
-    def _on_group_renamed(self, cat: str, new_seg: str):
-        """Renommer une catégorie renomme le rangement de tout ce qu'elle
-        contient — le même geste que ranger une entrée, à l'échelle près."""
+    def _on_group_renamed(self, path, new_seg: str):
+        """Renommer un nœud renomme le rangement de tout son sous-arbre."""
         if not self._project:
             return
-        entries = repath_segment(self._project.texts, (cat,), new_seg)
+        path = tuple(path)
+        entries = repath_segment(self._project.texts, path, new_seg)
         if not entries:
             return
-        self._table.retitle_group(cat, new_seg)
+        self._table.retitle_group(path, new_seg)
         get_history().push(SetTextPathCmd(
             self._project, entries,
-            label=f"Rename category {cat} → {new_seg}",
+            label=f"Rename text filing {' › '.join(path)} → {new_seg}",
             persist_fn=self._after_identity_change))
 
     def _after_identity_change(self):

@@ -28,6 +28,7 @@ from .parser import (
     ExprIndex, ExprIndexAt, ExprTable, ExprInvoke, ExprCall, ExprBinop, ExprUnop,
     array_dims, require_target, DATA_NS,
     assigned_names, sequence_name, wait_call, WAIT_FN, WAIT_UNTIL_FN,
+    local_names,
 )
 # Les volumes du modèle sont des POURCENTAGES ; chaque appel maxmod a sa
 # propre échelle, et c'est ici qu'on convertit (cf. models/audio.py).
@@ -309,6 +310,7 @@ class CodeGen:
         self._vec_types: dict[str, str] = {}
         # Locals qui tiennent une référence : nom → type (cf. expr_types).
         self._ref_types: dict[str, str] = {}
+        self._local_names: set[str] = set()
         self.warnings: list[str] = []  # diagnostics non bloquants (ex: behavior manquant/invalide)
 
     # ── API publique ──────────────────────────────────────────────
@@ -319,6 +321,7 @@ class CodeGen:
         # et `_emit_locals` en a besoin pour le poser au bon endroit (champ de
         # la structure de pool, ou statique de fichier).
         self._plan_sequences(script)
+        self._local_names = local_names(script)
         self._helpers = {fn.name: fn for fn in script.functions
                          if self._is_internal_helper(fn)}
         self._emit_header()
@@ -1521,21 +1524,32 @@ class CodeGen:
         return "/* appel non géré */"
 
     def _invoke(self, e: ExprInvoke) -> str:
-        """var:method(args) — var peut être self ou toute variable Actor*."""
-        if not isinstance(e.obj, ExprName):
-            return f"/* invoke sur expression complexe ignoré */"
-        # Le NOM tel qu'il est écrit sert de clé (type de référence, tables de
-        # dispatch) ; ce qui est ÉMIS passe par `_expr`, parce qu'une variable
-        # peut vivre ailleurs que sous son nom — hissée dans l'état d'une
-        # séquence qui traverse une attente, ou dans le slot d'un prefab poolé.
-        # Émettre le nom nu produisait un identifiant que le C ne connaît pas.
-        name     = e.obj.name          # "self", "other", "paddle", ...
+        """var:method(args) — var peut être self, une variable Actor*/référence,
+        OU une expression qui rend directement un actor (`get_actor("X")`,
+        `actor.spawn(...)`, `self.<enfant>`) ou une référence (`sfx.play(...)`).
+        Ce dernier cas évite d'imposer un local intermédiaire pour chaîner :
+        `get_actor("Foe"):move_to(p, 2)` marche sans `local u = get_actor(...)`."""
+        if isinstance(e.obj, ExprName):
+            name = e.obj.name          # "self", "other", "paddle", ...
+            ref  = self._ref_types.get(name)
+        else:
+            # Chaîne directe : on ne l'accepte que si l'expression réceptrice a un
+            # type connu — un actor ou une référence. Sinon le repli `actor_*`
+            # plus bas inventerait un appel sur n'importe quelle expression.
+            name = None
+            ref  = infer_ref_type(e.obj)
+            if not (ref or self._is_actor_expr(e.obj)):
+                return f"/* invoke sur expression complexe ignoré */"
+        # Le NOM écrit sert de clé (type de référence, tables de dispatch) ; ce
+        # qui est ÉMIS passe par `_expr`, parce qu'une variable peut vivre
+        # ailleurs que sous son nom — hissée dans l'état d'une séquence qui
+        # traverse une attente, ou dans le slot d'un prefab poolé. Une expression
+        # réceptrice, elle, s'émet directement.
         receiver = self._expr(e.obj)
         # Les méthodes d'actor sont indexées sous "self:" ; celles d'une
         # référence sous le type qu'elle porte (`sfx:`). Le repli `actor_*`
         # plus bas ne doit surtout pas s'appliquer à une référence : il
         # inventerait un `actor_set_volume(pas, …)` qui ne compile pas.
-        ref = self._ref_types.get(name)
         key = f"{ref}:{e.method}" if ref else f"self:{e.method}"
         custom = _INVOKE_CUSTOM.get(key)
         if custom:
@@ -1543,10 +1557,24 @@ class CodeGen:
         api = RUNTIME_API.get(key)
         if api is None:
             if ref:
-                return f"/* {name}:{e.method}() : inconnu sur une référence {ref} */"
+                return f"/* {name or '?'}:{e.method}() : inconnu sur une référence {ref} */"
             args = ", ".join(self._expr(a) for a in e.args)
             return f"actor_{e.method}({receiver}, {args})"
         return self._emit_api_call(api, e.args, receiver=receiver)
+
+    def _is_actor_expr(self, expr) -> bool:
+        """L'expression rend-elle un `Actor*` ? Mêmes cas que la détection de
+        type d'un `local` (get_actor, actor.spawn, `self.<enfant>` d'un prefab
+        segmenté — cf. StmtLocal dans `_emit_block`)."""
+        if isinstance(expr, ExprCall):
+            if isinstance(expr.func, ExprName) and expr.func.name == "get_actor":
+                return True
+            if self._call_key(expr.func) == "actor.spawn":
+                return True
+        return (isinstance(expr, ExprIndex)
+                and isinstance(expr.obj, ExprName)
+                and expr.obj.name == "self"
+                and expr.field in (self.ctx.child_refs or {}))
 
     def _call(self, e: ExprCall) -> str:
         """func(args) ou module.func(args)"""
@@ -1611,6 +1639,53 @@ class CodeGen:
             for extra in lua_args[len(api.params):]:
                 c_args.append(self._expr(extra))
         return f"{api.c_func}({', '.join(c_args)})"
+
+    def _emit_text_literal(self, api_key: str, args: list, text_arg: int) -> str:
+        """Un littéral texte pose ses `$locale` puis appelle l'API.
+
+        Les textes nommés, et les littéraux qui ne citent que globals/constantes,
+        gardent l'appel direct historique. Une locale est reconnue dans le
+        littéral par le même parseur de balisage que la table de textes : aucune
+        seconde grammaire cachée dans le codegen.
+        """
+        api = RUNTIME_API[api_key]
+        call = self._emit_api_call(api, args)
+        if len(args) <= text_arg or not isinstance(args[text_arg], ExprString):
+            return call
+        literal = args[text_arg].value
+        if literal in (self.ctx.text_keys or []):
+            return call
+        from core.text_markup import parse, KIND_VALUE
+        globals_ = set(self.ctx.global_names or [])
+        constants = set(self.ctx.const_names or [])
+        names = []
+        for marker in parse(literal).markers:
+            # Les constantes sont cuites dans l'entrée anonyme par font_emit.
+            # Toute autre valeur — locale OU globale — passe par son rang de
+            # tampon, afin qu'une locale homonyme puisse masquer la globale.
+            if marker.kind == KIND_VALUE and marker.value not in constants \
+                    and marker.value not in names:
+                names.append(marker.value)
+        if not names:
+            return call
+        setters = ["text_args_clear()"]
+        values = []
+        for name in names:
+            # Même règle que Lua : une locale visible masque une globale. Les
+            # globals passaient autrefois directement par la table de textes ;
+            # un littéral passe désormais uniformément par son site d'appel,
+            # afin que les deux cas restent distinguables.
+            values.append(self._expr(ExprName(name)) if name in self._local_names
+                          else f"g_{name}" if name in globals_ else "0")
+        setters += [f"text_arg_set({i}, {value})"
+                    for i, value in enumerate(values)]
+        return "(" + ", ".join(setters + [call]) + ")"
+
+    def _emit_text_draw(self, args: list) -> str:
+        return self._emit_text_literal("text.draw", args, 2)
+
+    def _emit_text_draw_in(self, args: list) -> str:
+        return self._emit_text_literal("text.draw_in", args, 1)
 
     def _resolve_arg(self, param, arg) -> str:
         """Convertit un arg Lua en expression C, résolvant les strings → constantes."""
@@ -1854,18 +1929,43 @@ class CodeGen:
 
     def _emit_get_actor(self, args: list) -> str:
         """
-        get_actor("PADDLE_AUTO")  →  &g_actors[TAG_PADDLE_AUTO]
-        Résolu à la compilation, zéro overhead runtime. Le nom doit être
-        sanitisé avec la même fonction que celle qui définit les macros
-        TAG_* (headers.py::generate_actor_types, via codegen.c_names.sym) —
-        sinon un nom d'actor avec un caractère hors [A-Za-z0-9_] (ex: un tiret)
-        référence une macro qui n'existe pas.
+        Deux formes :
+
+        get_actor("PADDLE_AUTO")  →  &g_actors[TAG_<Scène>_PADDLE_AUTO]
+            Nom LITTÉRAL, résolu à la compilation. Le nom est sanitisé avec la
+            même fonction que celle qui définit les macros TAG_*
+            (headers.py::generate_actor_types, via codegen.c_names.sym).
+
+        get_actor(i)  →  actor_at((i) - 1)
+            Index DYNAMIQUE (« L'acteur appartient à sa scène ») : l'auteur
+            compte à partir de 1 comme partout dans le langage (data.T[1],
+            global.x[1]) ; `_index` replie vers le 0-based du C. `actor_at`
+            borne à la scène et filtre les détruits (nil sinon).
         """
         from codegen.c_names import sym as c_sym
-        if not args or not isinstance(args[0], ExprString):
+        if not args:
             return "/* get_actor() : argument invalide */"
+        if not isinstance(args[0], ExprString):
+            # Index dynamique 1-based → slot 0-based, borné par actor_at.
+            return f"actor_at({self._index(args[0])})"
         sym = c_sym(args[0].value)
-        return f"&g_actors[TAG_{sym.upper()}]"
+        # Un acteur appartient à sa scène : le TAG est qualifié par la scène qui
+        # compile ce script (« L'acteur appartient à sa scène »). Le nom reste
+        # local — get_actor("curseur") vise LE curseur de CETTE scène.
+        scene = self.ctx.scene_sym
+        if scene:
+            # `actor_live` rend nil si l'acteur a été détruit au runtime
+            # (décision C') — le TAG reste résolu à la compilation.
+            return f"actor_live(&g_actors[TAG_{scene.upper()}_{sym.upper()}])"
+        # Script PARTAGÉ (caméra, sans scène connue au build) : résolution à
+        # l'exécution, dans la scène active, nullable (décisions C/C'). Le NOM
+        # est une clé de lookup GLOBALE (ACTORNAME_*), distincte des TAG_ qualifiés.
+        return f"runtime_get_actor(ACTORNAME_{sym.upper()})"
+
+    def _emit_actor_count(self, args: list) -> str:
+        """actor_count() → g_scene_placed : les acteurs posés de la scène active,
+        la borne de get_actor(i) (« L'acteur appartient à sa scène »)."""
+        return "g_scene_placed"
 
     def _emit_ui_get(self, args: list) -> str:
         """ui.get("alerte") → UIELEM_ALERTE — résolu à la compilation, comme
@@ -2073,8 +2173,11 @@ def covered_domains() -> frozenset:
 _CALL_CUSTOM: dict = {
     "array":       CodeGen._emit_array_misuse,
     "get_actor":   CodeGen._emit_get_actor,
+    "actor_count": CodeGen._emit_actor_count,
     "save.read":   CodeGen._emit_save_read,
     "actor.spawn": CodeGen._emit_actor_spawn,
+    "text.draw": CodeGen._emit_text_draw,
+    "text.draw_in": CodeGen._emit_text_draw_in,
     "sequence.start":   CodeGen._emit_sequence_start,
     "sequence.stop":    CodeGen._emit_sequence_stop,
     "sequence.running": CodeGen._emit_sequence_running,

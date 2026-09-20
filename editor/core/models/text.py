@@ -10,7 +10,7 @@ Trois identifiants, un seul résolvable :
             build vers un index de table C (comme SFX_* ou SCENE_IDX_*) : elle
             ne vit pas au runtime. Renommable — c'est alors à l'éditeur de
             réécrire les références.
-  `path`  — le rangement : 1 à 3 niveaux de libellés libres, avec accents,
+  `path`  — le rangement : 1 à 6 niveaux de libellés libres, avec accents,
             espaces et doublons autorisés. Jamais résolu, jamais référencé.
 
 **La clé situe, elle ne résume pas.** Elle est dérivée de la PLACE du texte
@@ -57,9 +57,9 @@ from core.models.ids import new_id as _new_id
 _SEGMENT_MAX = 16
 
 # Profondeur max du chemin de rangement. Plafond de départ, choisi pour que la
-# clé dérivée reste lisible (3 × 16 caractères, c'est déjà long) — pas une
+# clé dérivée reste lisible (6 × 16 caractères reste exploitable) — pas une
 # limite structurelle : le chemin est une liste, la relever ne coûtera rien.
-MAX_DEPTH = 3
+MAX_DEPTH = 6
 
 # Séparateur d'AFFICHAGE seulement. Le stockage est une liste : un libellé
 # libre a le droit de contenir « / » ou « > » sans qu'on ait à inventer une
@@ -72,7 +72,7 @@ class Text:
     """Une entrée de la table de textes du projet."""
     id:      int = 0     # opaque, stable à vie — voir en-tête du module
     key:     str = ""    # poignée unique et lisible, référencée depuis Lua
-    path:    list[str] = field(default_factory=list)  # rangement libre, 1..3 niveaux
+    path:    list[str] = field(default_factory=list)  # rangement libre, 1..6 niveaux
     content: str = ""    # le texte lui-même, tel qu'affiché au joueur
     note:    str = ""    # contexte pour le traducteur (v0.8)
     scene:   str = ""    # scène d'origine — filtre d'affichage uniquement

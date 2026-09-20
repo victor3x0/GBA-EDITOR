@@ -29,9 +29,10 @@ def test_screen_preview_materializes_bitmap_font_asset(qapp, tmp_path):
     workbench.load_project(project)
     workbench._preview.set_text("é")
 
-    materialized = workbench._preview._font_for_text()
+    fonts = workbench._preview._fonts_for_text()
+    materialized = fonts[workbench._preview._font.name]
     glyph = materialized.glyph("é")
-    image = workbench._preview._glyph_image(glyph)
+    image = workbench._preview._glyph_image(materialized, glyph)
 
     assert materialized.name == "Font8x8 Latin"
     assert image.width() == image.height() == 8

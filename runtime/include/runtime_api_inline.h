@@ -25,6 +25,14 @@
 
 /* Globaux définis dans main.c, visibles par tous les scripts */
 extern Actor g_actors[];
+/* get_actor par NOM résolu à l'exécution — pour un script PARTAGÉ (caméra) qui
+   n'a pas de scène connue au build (« L'acteur appartient à sa scène »,
+   décision C). Rend l'acteur VIVANT de ce nom dans la scène active, ou nil.
+   Défini dans main.c (il connaît g_current_scene et les slots par scène) ;
+   un script de scène, lui, passe par le TAG résolu à la compilation. */
+extern Actor* runtime_get_actor(int name_id);
+/* Nombre d'acteurs POSÉS de la scène active — la borne de get_actor(i). */
+extern int g_scene_placed;
 extern u32   _g_keys_held;
 extern u32   _g_keys_pressed;
 
@@ -182,6 +190,21 @@ static inline Vec3 vec3_scale(Vec3 v, int k)  { return (Vec3){ v.x*k,   v.y*k,  
    attendu d'un appel qui dit « l'acteur est ICI, au pixel », pas « avance ». */
 static inline void actor_set_position(Actor* s, Vec2 p) { s->x=p.x<<8; s->y=p.y<<8; }
 static inline Vec2 actor_get_position(const Actor* s)   { return (Vec2){ s->x>>8, s->y>>8 }; }
+
+/* get_actor rend un acteur VIVANT, ou nil (ROADMAP « L'acteur appartient à sa
+   scène », décision C') : un acteur détruit au runtime (`self:destroy()` →
+   active=0) n'est plus « là », et le dire au script est une information de
+   gameplay (« ma cible existe-t-elle encore ? »). Le chemin compile-time de
+   get_actor passe donc par ce filtre — coût : un test du drapeau active. */
+static inline Actor* actor_live(Actor* s) { return (s && s->active) ? s : (Actor*)0; }
+
+/* get_actor(i) — adressage DYNAMIQUE par index (« L'acteur appartient à sa
+   scène »). `i0` est déjà 0-based (le codegen a replié le 1-based du langage,
+   comme pour data.Table[i]). Borné à [0, g_scene_placed) puis filtré par
+   `actor_live` : un index hors de la scène, ou un acteur détruit, rend nil. */
+static inline Actor* actor_at(int i0) {
+    return (i0 >= 0 && i0 < g_scene_placed) ? actor_live(&g_actors[i0]) : (Actor*)0;
+}
 
 /* Racine carrée entière (algorithme bit à bit) — pas de FPU sur GBA, et le
    BIOS Sqrt coûte un appel SWI pour un résultat qu'on ne calcule qu'une fois

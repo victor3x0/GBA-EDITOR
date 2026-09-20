@@ -50,6 +50,26 @@ local pas = sfx.play("Pas")
 if pas:playing() then pas:stop() end
 ```
 
+`get_actor("nom")` rend un acteur de la scène par son nom. **Un acteur appartient à sa scène** : le nom est local à la scène, donc « Cursor » peut exister dans autant de scènes qu'on veut, et `get_actor("Cursor")` vise toujours le Cursor de la scène en cours. La référence **peut valoir `nil`** — l'acteur a été détruit (`self:destroy()`), ou il n'existe pas dans cette scène — donc on la teste avant d'en appeler une méthode :
+
+```lua
+local cible = get_actor("Boss")
+if cible ~= nil then
+    cible:move_to(vec2(120, 80), 2)
+end
+```
+
+On peut aussi adresser un acteur **par son index**, à partir de 1 (comme `data.Table[1]`), dans l'ordre où il est posé dans la scène. `actor_count()` donne le nombre d'acteurs posés — la borne de la boucle :
+
+```lua
+for i = 1, actor_count() do
+    local a = get_actor(i)
+    if a ~= nil then a:play_anim("idle") end
+end
+```
+
+C'est ce qui remplace une cascade `if sel == 1 then get_actor("Unit1") elseif …` : `get_actor(sel)` suffit.
+
 Le catalogue **Gameplay**, **Scripting** et **Hardware** du panneau **API** est la référence des fonctions du moteur. Il est tenu à jour par l'éditeur.
 
 ## Séquences
@@ -84,6 +104,25 @@ Score : $score_joueur
 global.score_joueur = 12
 text.draw(2, 2, "score")
 ```
+
+### Balisage dans l'écran Text
+
+Les textes créés dans l'écran **Text** peuvent contenir des balises. Elles ne
+s'affichent pas telles quelles : elles règlent le rendu du fragment concerné.
+Par exemple, une police de titre peut être utilisée au milieu d'une phrase :
+
+```text
+Vous recevez [font=Titre]Niveau suivant[/font] !
+```
+
+`Titre` doit être le nom d'une police du projet. La balise est toujours
+fermée : elle ne change pas la police du texte qui suit. La police de la zone
+reste responsable de l'interligne ; `[font=…]` change les glyphes et leur
+largeur, pas l'espacement vertical. La barre de balisage de l'écran **Text**
+propose les polices connues et entoure la sélection.
+
+Les mêmes textes acceptent aussi `[speed=n]`, `[pause=n]`, `[wave]…[/wave]`,
+`[shake]…[/shake]`, `[color=n]…[/color]`, `[icon=nom]` et `$valeur`.
 
 Les listes se pilotent avec `list.index`, `list.first`, `list.row` et `list.set_count`. Une liste fixe gère sa navigation sans script supplémentaire. `list.set_count` sert aux listes défilantes.
 

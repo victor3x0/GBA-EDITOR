@@ -82,7 +82,7 @@ from codegen.actor_budget import prefab_group
 from codegen.grit_conversion import (
     count_frames, sprite_unique_frames, seq_key,
 )
-from codegen.c_names import sym as c_sym
+from codegen.c_names import sym as c_sym, scene_actor_sym
 from core.app_paths import RUNTIME_DIR
 import codegen.build_output as build_output
 
@@ -1148,6 +1148,11 @@ def _gen_scene_init(
     # chaque activation, une scène peut donc faire avancer son monde.
     _sw, _sh = scene_world_size(p, scene)
     L.append(f"    g_scene_w = {_sw}; g_scene_h = {_sh};")
+    # Acteurs POSÉS de cette scène, dans l'ordre d'authoring — la borne de
+    # `get_actor(i)`/`actor_count()` (ROADMAP « L'acteur appartient à sa scène »,
+    # adressage dynamique). Les slots [0, placed) tiennent exactement ces
+    # acteurs ; les pools spawnés vivent après et ne sont pas comptés ici.
+    L.append(f"    g_scene_placed = {len(scene_actors)};")
     L.append("    for(int _i=0; _i<G_ACTOR_COUNT; _i++) g_actors[_i]=(Actor){0};")
     L.append("    oam_hide_all();")
     L.append("    bg_maps_clear();")
@@ -1483,7 +1488,7 @@ def _gen_scene_init(
     # Init actors
     for j, (actor, sprite) in enumerate(scene_actors):
         idx = actor_offset + j
-        s = c_sym(actor.name)
+        s = scene_actor_sym(scene.name, actor.name)
         boxes = [c for c in actor.components if isinstance(c, CollisionBoxComponent) and c.active][:4]
         own = list(sprite.own_palette) if (sprite and getattr(sprite, "own_palette", None)) else []
         pal = obj_layout.bank_index(getattr(actor, "pal_bank", OWN_PAL_BANK), own)
@@ -1590,7 +1595,7 @@ def _gen_scene_init(
 
     for j in sorted(lua_idx):
         actor, _ = scene_actors[j - actor_offset]
-        s = c_sym(actor.name)
+        s = scene_actor_sym(scene.name, actor.name)
         if _def_init(s, "on_start"):
             L.append(f"    {s}_on_start(&g_actors[{j}]);")
     # on_start scene
@@ -1632,7 +1637,7 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            s = c_sym(actor.name)
+            s = scene_actor_sym(scene.name, actor.name)
             if _def(s, "on_update"):
                 L.append(f"    if(g_actors[{j}].active) {s}_on_update(&g_actors[{j}]);")
 
@@ -1665,7 +1670,7 @@ def _gen_scene_tick(
             if not has_solid_box(actor):
                 continue
             idx = actor_offset + j
-            s = c_sym(actor.name)
+            s = scene_actor_sym(scene.name, actor.name)
             cb = f"{s}_on_tile_collide" if (idx in lua_idx and _def(s, "on_tile_collide")) else "NULL"
             L.append(f"    if(g_actors[{idx}].active) resolve_actor_tiles(&g_actors[{idx}], {cb});")
 
@@ -1717,7 +1722,7 @@ def _gen_scene_tick(
             # `my_box` de l'un est la `other_box` de l'autre.
             pool_reacts = has_col_event(_def, s)
             for ci, (sidx, sactor) in enumerate(col_scene_pf):
-                ss = c_sym(sactor.name)
+                ss = scene_actor_sym(scene.name, sactor.name)
                 s_lua = (sidx in lua_idx) and has_col_event(_def, ss)
                 if not pool_reacts and not s_lua:
                     continue
@@ -1816,7 +1821,7 @@ def _gen_scene_tick(
     if lua_idx:
         for j in sorted(lua_idx):
             actor, _ = scene_actors[j - actor_offset]
-            s = c_sym(actor.name)
+            s = scene_actor_sym(scene.name, actor.name)
             if _def(s, "on_late_update"):
                 L.append(f"    if(g_actors[{j}].active) {s}_on_late_update(&g_actors[{j}]);")
 
@@ -1887,7 +1892,7 @@ def _gen_scene_tick(
         _has_dfx = any(s != "-1" for s, _v in frame_sfx_syms(p, sprite))
         _evt_lines, _has_evt = actor_frame_event_lines(p, actor, sprite)
         L += anim_tick_lines(idx, f"sprite_{c_sym(sprite.name)}", _has_fx, _has_dfx,
-                              _evt_lines, _has_evt, c_sym(actor.name))
+                              _evt_lines, _has_evt, scene_actor_sym(scene.name, actor.name))
 
     _aff = affine_info or {}
 
@@ -2177,7 +2182,7 @@ def generate_main(
         sc = d["scene"]
         sc_sym = c_sym(sc.name)
         for actor, _ in d["scene_actors"]:
-            s = c_sym(actor.name)
+            s = scene_actor_sym(sc.name, actor.name)
             script_path = _actor_script(actor)
             if script_path:
                 abs_sp = p.asset_abs(script_path)
@@ -2366,6 +2371,7 @@ def generate_main(
         # manquait sa DÉFINITION, et le lien échouait sur tout projet.
         "int   g_scene_w = 0, g_scene_h = 0;",
         "int   g_current_scene = -1;",
+        "int   g_scene_placed = 0;   /* acteurs posés de la scène active (get_actor(i)) */",
         "int   g_next_scene    = -1;",
         "",
     ]
@@ -2524,6 +2530,44 @@ def generate_main(
         entry += f", {mode}, {frames} }},   /* transition : {kind} */" if has_transitions else " },"
         L.append(entry)
     L += ["};", ""]
+
+    # get_actor par NOM résolu à l'exécution (« L'acteur appartient à sa scène »,
+    # décision C) : la porte d'un script PARTAGÉ (caméra), qui n'a pas de scène
+    # au build. Un script de SCÈNE, lui, résout son TAG à la compilation et ne
+    # passe jamais par ici. On rend l'acteur du nom demandé DANS la scène active
+    # (g_current_scene indexe g_scene_vtable), filtré par `actor_live` — donc nil
+    # si le slot a été détruit (décision C'). Le TAG per-scène VAUT le slot (une
+    # seule scène vit à la fois, g_actors repart de 0), d'où le renvoi direct.
+    from codegen.runtime_codegen.headers import actorname_ids
+    _an = actorname_ids(p)
+    L.append("Actor* runtime_get_actor(int name_id){")
+    if _an:
+        L.append("    switch(g_current_scene){")
+        for si, d in enumerate(all_scene_data):
+            cases, seen = [], set()
+            for actor, _s in d["scene_actors"]:
+                if not getattr(actor, "active", True):
+                    continue
+                nsym = c_sym(actor.name)
+                nid = _an.get(nsym)
+                if nid is None or nid in seen:   # doublon dans la scène : le 1er gagne
+                    continue
+                seen.add(nid)
+                tag = scene_actor_sym(d["scene"].name, actor.name).upper()
+                cases.append(
+                    f"        case ACTORNAME_{nsym.upper()}: "
+                    f"return actor_live(&g_actors[TAG_{tag}]);")
+            if not cases:
+                continue
+            L.append(f"    case {si}:   /* {d['scene'].name} */")
+            L.append("        switch(name_id){")
+            L += cases
+            L.append("        default: break; }")
+            L.append("        break;")
+        L.append("    default: break; }")
+    L.append("    return (Actor*)0;")
+    L.append("}")
+    L.append("")
 
     if has_transitions:
         L += [

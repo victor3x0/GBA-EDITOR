@@ -87,11 +87,10 @@ class TextUsageIndex:
 
 class ProjectTextsMixin:
     # ── Littéraux de script → entrées anonymes ────────────────────
-    # `text.draw` est la seule primitive à accepter un littéral en plus d'une
-    # clé (ROADMAP v0.3.2, 2026-07-27) : un accès rapide hors interface, au prix
-    # assumé de la traduction. À la compilation il devient une entrée ANONYME de
-    # la table, donc le runtime ne connaît qu'un seul chemin (mêmes codepoints,
-    # même balisage, mêmes valeurs interpolées).
+    # `text.draw` et `text.draw_in` acceptent un littéral en plus d'une clé :
+    # un accès rapide au prix assumé de la traduction. À la compilation il
+    # devient une entrée ANONYME de la table, donc le runtime ne connaît qu'un
+    # seul chemin (mêmes codepoints, même balisage, mêmes interpolations).
 
     def collect_literal_texts(self) -> list:
         """Entrées anonymes à ajouter à la table pour ce build.

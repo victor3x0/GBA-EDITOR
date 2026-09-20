@@ -535,8 +535,12 @@ class UIRegionItem(QGraphicsRectItem):
         if cached is not _UNSET:
             return cached
         try:
-            from codegen.font_emit import project_fonts
-            paint_fonts = project_fonts(self._project)
+            # Ne pas élaguer avec `project_fonts` ici : ce canvas est justement
+            # l'endroit où l'auteur pose une nouvelle portée `[font]`, avant
+            # qu'elle ne soit forcément atteignable depuis un script de scène.
+            # L'aperçu doit pouvoir la montrer immédiatement.
+            from codegen.font_emit import encodable_project_fonts
+            paint_fonts = encodable_project_fonts(self._project)
         except Exception:
             paint_fonts = list(getattr(self._project, "fonts", []) or [])
         font_map = {item.name: item for item in paint_fonts}

@@ -3,7 +3,7 @@ ui/text_editor/text_inspector.py — colonne droite, contexte Texte (le défaut)
 """
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit, QLineEdit
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -23,6 +23,7 @@ class TextInspector(QWidget):
     """
 
     changed = pyqtSignal()
+    path_rename_requested = pyqtSignal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,9 +53,26 @@ class TextInspector(QWidget):
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(8)
 
+        filing_card = CollapsibleCard(label("txttbl.h_path"))
+        self._path_edits: list[QLineEdit] = []
+        for level in range(6):
+            edit = QLineEdit()
+            edit.setPlaceholderText(label("txtwb.level", n=level + 1))
+            edit.setFont(QFont(T.UI, T.SM))
+            edit.setStyleSheet(
+                f"QLineEdit{{background:{C.BG_INPUT}; color:{C.TEXT_NORM};"
+                f"border:1px solid {C.BORDER_MID}; border-radius:3px; padding:4px;}}")
+            edit.editingFinished.connect(
+                lambda l=level, e=edit: self._commit_path(l, e.text()))
+            filing_card.body_layout.addWidget(edit)
+            self._path_edits.append(edit)
+        filing_card.set_expanded(False)
+        bl.addWidget(filing_card)
+
         # Ne reste ici que ce qui n'accompagne pas l'écriture : la note du
         # traducteur et l'identité machine.
         note_card = CollapsibleCard(label("txtinsp.note_card"))
+        note_card.set_expanded(False)
         self._note_edit = QTextEdit()
         self._note_edit.setFont(QFont(T.UI, T.SM))
         self._note_edit.setStyleSheet(
@@ -74,6 +92,7 @@ class TextInspector(QWidget):
         # L'atelier montre le rendu, pas ce qui l'empêche : les anomalies de
         # balisage n'ont nulle part ailleurs où apparaître avant le build.
         markup_card = CollapsibleCard(label("txtinsp.markup"))
+        markup_card.set_expanded(False)
         markup_card.setToolTip("<br>".join(
             f"<b>[{s.name}{'=…' if s.value else ''}]</b> — {s.doc}"
             for s in TAGS.values()))
@@ -102,6 +121,7 @@ class TextInspector(QWidget):
         # Contrepartie visible du renommage automatique : il réécrit les
         # `text.draw("clé")`, encore faut-il savoir lesquels avant d'y toucher.
         usage_card = CollapsibleCard(label("txtinsp.used_by"))
+        usage_card.set_expanded(False)
         self._usage = QLabel("")
         self._usage.setFont(QFont(T.UI, T.XS))
         self._usage.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -110,6 +130,7 @@ class TextInspector(QWidget):
         bl.addWidget(usage_card)
 
         info_card = CollapsibleCard(label("txtinsp.info"))
+        info_card.set_expanded(False)
         self._meta = QLabel("")
         self._meta.setFont(QFont(T.UI, T.XS))
         self._meta.setStyleSheet(f"color:{C.TEXT_MUTED};")
@@ -196,6 +217,9 @@ class TextInspector(QWidget):
         self._body.setVisible(has)
         self._empty.setVisible(not has)
         if has:
+            for level, edit in enumerate(self._path_edits):
+                edit.setText(text.path[level] if level < len(text.path) else "")
+                edit.setVisible(level < len(text.path))
             self._note_edit.setPlainText(text.note)
             self._note_baseline = text.note
             self._name_lbl.setText(text.key)
@@ -208,10 +232,21 @@ class TextInspector(QWidget):
                 + (label('txtinsp.originating_scene_scene', scene=text.scene) if text.scene else "")
             )
         else:
+            for edit in self._path_edits:
+                edit.clear()
+                edit.setVisible(False)
             self._name_lbl.setText("")
             self._usage.setText("")
             self.set_parsed(None)
         self._blocking = False
+
+    def _commit_path(self, level: int, raw: str) -> None:
+        if self._blocking or self._text is None:
+            return
+        value = raw.strip()
+        old = self._text.path[level] if level < len(self._text.path) else ""
+        if value and value != old:
+            self.path_rename_requested.emit(level, value)
 
     # ── Utilisations ──────────────────────────────────────────────
 

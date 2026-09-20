@@ -1576,6 +1576,32 @@ class Checker:
             check = _DOMAIN_CHECKS.get(param.domain)
             if check:
                 check(self, key, arg.value, param, args)
+            if key in ("text.draw", "text.draw_in") and param.domain == DOMAIN_TEXT:
+                self._check_text_literal_locals(arg.value)
+
+    def _check_text_literal_locals(self, text: str):
+        """Valide les `$locale` d'un littéral `text.draw`.
+
+        Une clé de table reste une donnée traduisible et ne peut pas dépendre
+        d'une locale. Seul un littéral anonyme porte ce raccourci de HUD.
+        """
+        if self.ctx.text_keys is not None and text in self.ctx.text_keys:
+            return
+        from core.text_markup import parse, KIND_VALUE
+        globals_ = set(self.ctx.global_names or [])
+        constants = set(self.ctx.const_names or [])
+        names = []
+        for marker in parse(text).markers:
+            if marker.kind != KIND_VALUE or marker.value in constants:
+                continue
+            if marker.value not in self._local_names and marker.value not in globals_:
+                self.errors.append(CheckError(
+                    "error", f'texte littéral : « ${marker.value} » n’est ni une locale, ni une globale, ni une constante.'))
+            elif marker.value not in names:
+                names.append(marker.value)
+        if len(names) > 4:
+            self.errors.append(CheckError(
+                "error", "texte littéral : au plus 4 valeurs interpolées dans un littéral."))
 
     def _check_anim(self, call_key: str, name: str):
         if self.ctx.anim_names is not None and name not in self.ctx.anim_names:

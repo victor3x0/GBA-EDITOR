@@ -972,7 +972,9 @@ class AssetFinder(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(W.finder_bar(title))
+        self._title = W.finder_bar(title)
+        self._title_label = self._title.findChild(QLabel)
+        root.addWidget(self._title)
 
         # Toutes les sections dans UNE zone défilante, calées en haut. Chacune
         # vaut sa hauteur de contenu ; le ressort de queue prend le reste, sinon
@@ -1024,6 +1026,11 @@ class AssetFinder(QWidget):
         """
         for label, section in self._sections.items():
             section.setVisible(labels is None or label in labels)
+
+    def set_title(self, title: str) -> None:
+        """Nomme le contexte actuellement parcouru par ce finder."""
+        if self._title_label is not None:
+            self._title_label.setText(title)
 
     def add_section(self, section: QWidget):
         """Ajoute une section À LA SUITE des familles, dans la même colonne

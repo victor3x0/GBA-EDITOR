@@ -115,7 +115,7 @@ DATA_COLUMN_SOURCES = {
     "music":   lambda p: [m.name for m in p.music],
     "scene":   lambda p: [s.name for s in p.scenes],
     "camera":  lambda p: sorted(p.camera_names()),
-    "font":    lambda p: [f.name for f in p.fonts],
+    "font":    lambda p: [a.name for a in p.font_assets],
     "palette": lambda p: [b.name for b in p.palettes],
     "region":  lambda p: p.region_names(),
     "image":   lambda p: p.image_names(),
@@ -150,7 +150,11 @@ class Project(ProjectPathsMixin, ProjectVariablesMixin, ProjectTextsMixin,
     supposent le reste de `Project`.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path | str):
+        # Point d'entrée unique (construction directe ET `open`) : on coerce ici
+        # une fois pour toutes, comme le fait `pathlib`. Un appelant qui passe une
+        # chaîne obtient un projet valide, pas un `AttributeError` opaque.
+        root = Path(root)
         self.root = root.resolve()
         self.settings = ProjectSettings(name=root.name)
         # {code de langue: {id du texte: contenu}} — cf. core/project_langs.

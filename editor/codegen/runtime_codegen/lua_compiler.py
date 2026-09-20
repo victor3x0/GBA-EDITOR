@@ -18,7 +18,7 @@ from scripting.checker import check as lua_check, BuildContext
 from scripting.codegen import generate as lua_generate, CodegenContext
 from scripting.globals import write_globals
 from scripting.constants import write_constants
-from codegen.c_names import sym as c_sym
+from codegen.c_names import sym as c_sym, scene_actor_sym
 import codegen.build_output as build_output
 from codegen.oam_alloc import scene_pool_instances
 
@@ -77,12 +77,13 @@ def _compile_script(sp: Path, ctx_check: "BuildContext", emit, label: str):
     return script, True
 
 
-def _child_refs_for_actor(actor, scene_actors) -> dict:
+def _child_refs_for_actor(actor, scene_actors, scene_name) -> dict:
     """Les enfants d'un acteur de SCÈNE, nom Lua → expression C (ROADMAP v0.23).
 
     Un enfant est un acteur de la même scène dont `parent` nomme celui-ci ; il
-    a donc son propre TAG_*, et le désigner ne coûte qu'un `#define`."""
-    return {a.name: f"&g_actors[TAG_{c_sym(a.name).upper()}]"
+    a donc son propre TAG_*, qualifié par la scène comme tout acteur posé
+    (« L'acteur appartient à sa scène »), et le désigner ne coûte qu'un `#define`."""
+    return {a.name: f"&g_actors[TAG_{scene_actor_sym(scene_name, a.name).upper()}]"
             for a, _ in scene_actors
             if getattr(a, "parent", None) == actor.name}
 
@@ -308,7 +309,7 @@ def transpile_all(
             # tableau d'un scalaire et borner un index écrit en clair.
             global_counts = {g.name: max(1, int(getattr(g, "count", 1) or 1))
                              for g in p.globals},
-            child_names  = list(_child_refs_for_actor(actor, scene_actors).keys()),
+            child_names  = list(_child_refs_for_actor(actor, scene_actors, scene.name).keys()),
             # Une LISTE même vide, jamais None : depuis que `const.nom` est un
             # accès pointé (chantier global/const), c'est le checker seul qui
             # juge de l'existence d'une constante — `None` voudrait dire
@@ -391,7 +392,7 @@ def transpile_all(
 
     # Génération C — actors de scène
     for actor, sprite, script, sp in parsed_scripts:
-        s    = c_sym(actor.name)
+        s    = scene_actor_sym(scene.name, actor.name)
         anims = [st.name for st in sprite.states] if sprite and sprite.states else []
         frame_events = sorted({
             getattr(fr, "event_name", "") or ""
@@ -401,7 +402,7 @@ def transpile_all(
         } - {""})
         sfx_comp_name = _sfx_component_name(actor)
         ctx  = CodegenContext(
-            child_refs    = _child_refs_for_actor(actor, scene_actors),
+            child_refs    = _child_refs_for_actor(actor, scene_actors, scene.name),
             actor_name    = actor.name,
             actor_sym     = s,
             scene_sym     = c_sym(scene.name),

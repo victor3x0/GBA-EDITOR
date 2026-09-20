@@ -1129,15 +1129,17 @@ def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
     # une constante vaut « 7 » comme « 100 », donc décale tout ce qui suit.
     bake = {}
     for m in parsed.markers:
-        if m.kind != KIND_VALUE or m.value in bake:
+        bake_key = (m.value, m.limit)
+        if m.kind != KIND_VALUE or bake_key in bake:
             continue
         if m.value in const_values:
-            bake[m.value] = str(const_values[m.value])
-        elif m.value not in global_names:
+            value = str(const_values[m.value])
+            bake[bake_key] = value[:m.limit] if m.limit else value
+        elif m.value not in global_names and not str(t.key).startswith("_lit_"):
             # Rendu littéralement, comme dans l'aperçu de l'éditeur : le
             # nom apparaît sur la console au lieu d'un trou muet. `$$`
             # l'échappe, sinon la relecture le reprendrait pour un marqueur.
-            bake[m.value] = f"$${m.value}"
+            bake[bake_key] = f"$${m.value}"
             if emit:
                 emit("log_line", f"[text] {t.key} : « ${m.value} » n'est ni "
                                  f"un global ni une constante — écrit tel quel.")
@@ -1164,6 +1166,7 @@ def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
                   for index, font in enumerate(fonts or [])}
     events = []
     sources: list[str] = []       # symboles C des globals cités, DANS CETTE LANGUE
+    local_slots: list[str] = []   # `$locale` d'un littéral : rang posé par le script
     for m in parsed.markers:
         kind = _EV_KIND.get(m.kind)
         if kind is None:            # icon : déjà résolu dans les codepoints
@@ -1178,15 +1181,27 @@ def _emit_one_text_lang(t, content: str, i_lang: int, i: int,
                     emit("log_line", f"[text] {t.key} : police inconnue « {m.value} »")
                 continue
         if m.kind == KIND_VALUE:
-            # Dédoublonnées PAR TEXTE ET PAR LANGUE : une traduction peut
-            # réordonner ses `$nom` (ROADMAP), donc citer un global que la
-            # source ne cite pas au même rang — chaque langue tient sa PROPRE
-            # table de sources, jamais une partagée entre langues.
-            sym = f"GLOBAL_{m.value.upper()}"
-            if sym not in sources:
-                sources.append(sym)
-            value = sources.index(sym)
-        events.append(f"    {{ {m.at}, {m.end}, {value or 0}, {kind}, 0 }},")
+            # Un littéral de `text.draw` est lié au SITE d'appel : `$hp` peut
+            # donc désigner une locale qui masque une globale du même nom. Ses
+            # marqueurs passent TOUS par le tampon du site (globals comprises)
+            # plutôt que par `g_text_values`, table projet qui ne connaît pas
+            # cette portée Lua. Une entrée authorée conserve le chemin global,
+            # traduisible, historique.
+            if str(t.key).startswith("_lit_"):
+                if m.value not in local_slots:
+                    local_slots.append(m.value)
+                value = local_slots.index(m.value)
+                kind = "TEXT_EV_LOCAL"
+            elif m.value in global_names:
+                # Dédoublonnées PAR TEXTE ET PAR LANGUE : une traduction peut
+                # réordonner ses `$nom` (ROADMAP), donc citer un global que la
+                # source ne cite pas au même rang — chaque langue tient sa
+                # PROPRE table de sources, jamais une partagée entre langues.
+                sym = f"GLOBAL_{m.value.upper()}"
+                if sym not in sources:
+                    sources.append(sym)
+                value = sources.index(sym)
+        events.append(f"    {{ {m.at}, {m.end}, {value or 0}, {kind}, {m.limit} }},")
 
     L = [f"static const unsigned short g_text_{i_lang}_{i}[{max(1, len(cps))}] = {{"
          + (",".join(str(c) for c in cps) or "0") + "};"]
@@ -1346,10 +1361,11 @@ def _bake_values(source: str, bake: dict) -> str:
     parsed = parse(source)
     out, prev = [], 0
     for m in parsed.markers:
-        if m.kind != KIND_VALUE or m.value not in bake:
+        key = (m.value, m.limit)
+        if m.kind != KIND_VALUE or key not in bake:
             continue
         out.append(source[prev:m.src[0]])
-        out.append(bake[m.value])
+        out.append(bake[key])
         prev = m.src[1]
     out.append(source[prev:])
     return "".join(out)

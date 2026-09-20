@@ -2,19 +2,10 @@
 ui/text_editor/text_table.py — colonne centre (contexte Texte), partie HAUTE :
 la table des textes.
 
-**Une table PLATE, comme le stockage.** `texts.json` est une liste dont chaque
-entrée porte son chemin : l'arbre qui précédait cette vue en était déjà une
-projection, la table l'est tout autant. Ce qu'elle apporte en plus, c'est le
-geste qu'un arbre ne sait pas faire — **balayer** deux cents entrées d'un coup
-d'œil, trier par ce qui manque, comparer deux lignes qui ne sont pas rangées au
-même endroit. C'est le geste de la traduction et celui du ménage de fin de
-projet ; retrouver UNE réplique, que l'arbre servait bien, reste couvert par le
-filtre.
-
-Le rangement ne disparaît pas pour autant : ses trois niveaux deviennent trois
-colonnes, et le groupement par catégorie se rallume à la demande (lignes
-d'en-tête repliables). Il est OPTIONNEL, parce que grouper interdit de trier
-sur autre chose que le rangement.
+`texts.json` reste une liste plate, mais son rangement est montré comme un
+arbre : un chemin de six niveaux ne doit ni disparaître, ni devenir six
+colonnes de plus. Chaque nœud emploie la même pastille et se replie comme un
+dossier ; son renommage propage le nouveau segment à tous ses descendants.
 
 Aucune colonne ne s'appelle « Key » pour un niveau de chemin : dans le modèle,
 `key` désigne une chose et une seule — la poignée que le Lua écrit et que le
@@ -31,16 +22,17 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QToolButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QToolButton, QApplication,
     QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView,
     QStyledItemDelegate, QStyle,
 )
-from PyQt6.QtGui import QFont, QColor, QBrush, QPen, QPainter
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF
+from PyQt6.QtGui import QFont, QFontMetrics, QColor, QBrush, QPen, QPainter
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QRectF, QPointF, QEvent
 
 from core.text_markup import parse, resolve
+from core.models.text import SEP
 from ui.common.theme import C, T, S
-from ui.common.widgets import W, BTN_ICON, HoverIconButton
+from ui.common.widgets import W
 from ui.common import icons
 from ui.common.labels import label
 from ui.text_editor.colors import TEXT_COLOR
@@ -48,16 +40,13 @@ from ui.text_editor.colors import TEXT_COLOR
 
 # Une colonne = un rôle, nommé une fois ici : la construction des lignes, le
 # routage du double-clic et le tri s'y réfèrent tous les trois.
-COL_CAT, COL_SEC, COL_VAR, COL_KEY, COL_CONTENT, COL_STATUS, COL_USED = range(7)
+COL_KEY, COL_CONTENT, COL_STATUS, COL_USED, COL_PATH = range(5)
 # Clés de libellé des en-têtes, dans l'ordre des colonnes — résolues à l'usage.
-_HEADER_KEYS = ("txttbl.h_category", "txttbl.h_section", "txttbl.h_variant",
-                "txttbl.h_key", "txttbl.h_content", "txttbl.h_status",
-                "txttbl.h_used")
-# Les trois premières colonnes SONT les trois niveaux du chemin, dans l'ordre.
-_PATH_COLS = (COL_CAT, COL_SEC, COL_VAR)
+_HEADER_KEYS = ("txttbl.h_key", "txttbl.h_content", "txttbl.h_status",
+                "txttbl.h_used", "txttbl.h_path")
 
 _ROLE_TEXT = Qt.ItemDataRole.UserRole        # Text, sur une ligne
-_ROLE_GROUP = Qt.ItemDataRole.UserRole + 1   # str, sur une ligne d'en-tête
+_ROLE_GROUP = Qt.ItemDataRole.UserRole + 1   # tuple[str, ...], nœud de rangement
 _ROLE_SORT = Qt.ItemDataRole.UserRole + 2    # clé de tri, quand ≠ de l'affichage
 
 # Ce que la ligne raconte d'elle-même, indépendamment du filtre.
@@ -69,17 +58,8 @@ FLAG_UNUSED = "unused"    # écrite, mais personne ne la demande
 # flags, comme le veut la ROADMAP v0.9.
 FLAG_MISSING = "missing"
 
-# Catégorie des textes rangés à la racine. Entre parenthèses : ce n'est pas un
-# libellé que quelqu'un a écrit, c'est l'absence de libellé.
-NO_CATEGORY = label('txttbl.unfiled')
-
-
-class _CategoryDelegate(QStyledItemDelegate):
-    """Peint la catégorie en pastille plutôt qu'en texte nu.
-
-    Le premier niveau se répète sur des dizaines de lignes consécutives : en
-    texte, il ajoute du bruit à chaque ligne ; en pastille, l'œil le lit comme
-    la bordure d'un bloc et saute directement au contenu."""
+class _PathDelegate(QStyledItemDelegate):
+    """Peint chaque nœud de rangement avec la même pastille."""
 
     def paint(self, painter: QPainter, option, index):
         disp = index.data(Qt.ItemDataRole.DisplayRole) or ""
@@ -100,6 +80,27 @@ class _CategoryDelegate(QStyledItemDelegate):
         painter.drawRoundedRect(r, 3, 3)
         painter.setPen(QPen(QColor(C.TEXT_DIM)))
         painter.drawText(r, Qt.AlignmentFlag.AlignCenter, disp)
+        painter.restore()
+
+
+class _KeyDelegate(QStyledItemDelegate):
+    """Isole la poignée Lua du contenu et des données de lecture.
+
+    La clé est volontairement à droite : on la consulte pour relier un script,
+    pas pour lire la table. Le filet garde cette frontière visible, même sur
+    une ligne sélectionnée ou très longue.
+    """
+
+    def paint(self, painter: QPainter, option, index):
+        super().paint(painter, option, index)
+        painter.save()
+        # L'icône fait partie du rendu de la cellule, plutôt qu'un widget
+        # ajouté par-dessus : une seule clé, aucune découpe ni doublon.
+        icon = icons.get("copy", C.TEXT_DIM)
+        size = 15
+        x = option.rect.right() - size - 8
+        y = option.rect.center().y() - size // 2
+        icon.paint(painter, x, y, size, size)
         painter.restore()
 
 
@@ -126,8 +127,7 @@ class TextTable(QWidget):
 
     selection_changed = pyqtSignal(list)               # [Text] (vide = plus rien)
     key_edited = pyqtSignal(object, str)               # (Text, clé saisie)
-    path_edited = pyqtSignal(object, int, str)         # (Text, niveau, segment)
-    group_renamed = pyqtSignal(str, str)               # (catégorie, nouveau nom)
+    group_renamed = pyqtSignal(object, str)            # (chemin du nœud, nouveau nom)
     add_asked = pyqtSignal()
     delete_asked = pyqtSignal()
 
@@ -143,20 +143,45 @@ class TextTable(QWidget):
         # s'en chargent, elle en tire juste ce que Content/Status/le chip
         # « Missing » doivent montrer.
         self._active_lang = ""
-        # Groupes explicitement REPLIÉS, et non l'inverse : une catégorie qui
-        # vient d'apparaître doit s'ouvrir seule, sinon le texte semble perdu.
-        self._collapsed: set[str] = set()
+        self._folder_filter: tuple[str, ...] = ()
+        # Nœuds explicitement REPLIÉS : un nouveau nœud reste visible sans
+        # demander d'aller le chercher dans un arbre fermé.
+        self._collapsed: set[tuple[str, ...]] = set()
         self._flags: dict[int, set[str]] = {}    # {id du texte: {FLAG_*}}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_bar())
+        self._crumb_bar = QFrame()
+        self._crumb_bar.setFixedHeight(30)
+        self._crumb_bar.setStyleSheet(
+            f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER_DARK};")
+        crumb_layout = QHBoxLayout(self._crumb_bar)
+        crumb_layout.setContentsMargins(10, 0, 10, 0)
+        self._crumb = QLabel()
+        self._crumb.setFont(QFont(T.UI, T.SM))
+        self._crumb.setStyleSheet(f"color:{C.TEXT_DIM};")
+        crumb_layout.addWidget(self._crumb)
+        crumb_layout.addStretch()
+        self._crumb_count = QLabel()
+        self._crumb_count.setFont(QFont(T.MONO, T.XS))
+        self._crumb_count.setStyleSheet(f"color:{C.TEXT_MUTED};")
+        crumb_layout.addWidget(self._crumb_count)
+        self._crumb_bar.setVisible(False)
+        root.addWidget(self._crumb_bar)
 
         self._tree = QTreeWidget()
         self._tree.setColumnCount(len(_HEADER_KEYS))
         self._tree.setHeaderLabels([label(k) for k in _HEADER_KEYS])
+        # La table centrale est plate : le classement se fait dans le Finder.
+        # Garder la décoration d'arbre ici réservait inutilement une indentation
+        # sur chaque clé et rognait sa fin derrière l'icône de copie.
         self._tree.setRootIsDecorated(False)
+        # Un double-clic appartient déjà au pliage natif. Le renommage passe
+        # par un clic sur le badge d'un nœud ouvert et sélectionné — voir le
+        # filtre d'événements plus bas.
+        self._tree.setExpandsOnDoubleClick(False)
         self._tree.setUniformRowHeights(True)
         self._tree.setAllColumnsShowFocus(True)
         # Multi-sélection : ranger vingt entrées d'un coup est le geste que le
@@ -167,12 +192,12 @@ class TextTable(QWidget):
         # vers les colonnes ÉDITABLES — jamais vers le contenu, qui est un
         # rendu (balises résolues) et non la source.
         self._tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._tree.setItemDelegateForColumn(COL_CAT, _CategoryDelegate(self))
+        self._tree.setItemDelegateForColumn(COL_PATH, _PathDelegate(self))
+        self._tree.setItemDelegateForColumn(COL_KEY, _KeyDelegate(self))
         self._tree.setStyleSheet(
             f"QTreeWidget{{background:{C.BG_BASE}; color:{C.TEXT_NORM}; border:none;"
             f"font-family:{T.UI_STACK}; font-size:{T.MD}px; outline:none;}}"
-            f"QTreeWidget::item{{padding:2px 4px; height:{S.ROW}px;"
-            f"border-bottom:1px solid {C.BORDER_DARK};}}"
+            f"QTreeWidget::item{{padding:6px 10px; height:{S.ROW + 10}px; border:none;}}"
             f"QTreeWidget::item:selected{{background:{C.BG_SEL}; color:{TEXT_COLOR};}}"
             f"QTreeWidget::item:hover:!selected{{background:{C.BG_PANEL};}}"
             f"QHeaderView::section{{background:transparent; color:{C.TEXT_MUTED};"
@@ -182,27 +207,28 @@ class TextTable(QWidget):
             f"QHeaderView::section:hover{{color:{C.TEXT_DIM};}}"
         )
         th = self._tree.header()
-        for col in (COL_CAT, COL_SEC, COL_VAR, COL_KEY):
+        for col in (COL_PATH, COL_KEY):
             th.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
         th.setSectionResizeMode(COL_CONTENT, QHeaderView.ResizeMode.Stretch)
         th.setSectionResizeMode(COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         th.setSectionResizeMode(COL_USED, QHeaderView.ResizeMode.ResizeToContents)
-        for col, width in ((COL_CAT, 110), (COL_SEC, 130), (COL_VAR, 100),
-                           (COL_KEY, 190)):
+        for col, width in ((COL_PATH, 260), (COL_KEY, 190)):
             self._tree.setColumnWidth(col, width)
         # Colonne muette tant qu'on n'édite pas une traduction : un projet
         # monolingue — le cas de tous ceux d'avant la v0.9 — ne voit rien de
         # nouveau. `refresh_languages()` la révèle en même temps que la barre.
         self._tree.setColumnHidden(COL_STATUS, True)
-        self._tree.setSortingEnabled(True)
-        # Un ordre de départ EXPLICITE : la table est triée dès qu'elle est
-        # triable, et laisser Qt choisir donnait le rangement à l'envers.
-        self._tree.sortByColumn(COL_CAT, Qt.SortOrder.AscendingOrder)
+        # Le rangement appartient exclusivement au Finder : le centre liste
+        # toujours des entrées, y compris à la racine du projet.
+        self._tree.setColumnHidden(COL_PATH, True)
+        # L'ordre est celui du chemin : trier une colonne transverse casserait
+        # visuellement la relation parent → enfant.
+        self._tree.setSortingEnabled(False)
         self._tree.itemSelectionChanged.connect(self._on_sel)
-        self._tree.itemDoubleClicked.connect(self._on_double_click)
         self._tree.itemChanged.connect(self._on_item_changed)
         self._tree.itemExpanded.connect(lambda it: self._on_fold(it, False))
         self._tree.itemCollapsed.connect(lambda it: self._on_fold(it, True))
+        self._tree.viewport().installEventFilter(self)
         root.addWidget(self._tree, 1)
         root.addWidget(self._build_footer())
 
@@ -250,17 +276,6 @@ class TextTable(QWidget):
         self._search.setFixedWidth(200)
         self._search.textChanged.connect(lambda _q: self._apply_filter())
         hl.addWidget(self._search)
-
-        # Coché > survolé > au repos — `HoverIconButton` recolore son icône
-        # elle-même aux trois états (cf. ui/common/widgets.py).
-        self._btn_group = HoverIconButton(
-            "folder", C.TEXT_DIM, C.ACCENT, checked=icons.COLOR_FOLDER)
-        self._btn_group.setCheckable(True)
-        self._btn_group.setFixedSize(22, 22)
-        self._btn_group.setStyleSheet(BTN_ICON)
-        self._btn_group.setToolTip(label("txttbl.group_tip"))
-        self._btn_group.toggled.connect(self._on_group_toggled)
-        hl.addWidget(self._btn_group)
 
         self._btn_add = W.btn_add(label("txttbl.add_tip"))
         self._btn_add.clicked.connect(self.add_asked.emit)
@@ -341,86 +356,88 @@ class TextTable(QWidget):
             self._chips[FLAG_MISSING].setChecked(False)
         self.refresh()
 
+    def set_folder_filter(self, path) -> None:
+        """Limite la liste au dossier choisi dans le Finder des textes."""
+        path = tuple(path or ())
+        if path != self._folder_filter:
+            self._folder_filter = path
+            self._update_breadcrumb()
+            self.refresh()
+
+    def _update_breadcrumb(self) -> None:
+        """Le chemin est dans le Finder ; le centre le rappelle sans arbre."""
+        path = self._folder_filter
+        self._crumb_bar.setVisible(bool(path))
+        if path:
+            self._crumb.setText(f"{label('txttbl.h_path')}  {SEP.join(path)}")
+            self._crumb_count.setText("")
+
     def refresh(self, select_ids: Optional[list[int]] = None):
         """Reconstruit la table depuis le projet, sélection conservée."""
         if select_ids is None:
             select_ids = [t.id for t in self.selected_texts()]
         self._blocking = True
-        # Le tri se rétablit APRÈS le remplissage : trier à chaque insertion
-        # est quadratique, et Qt le refait de toute façon en une passe.
-        col, order = (self._tree.sortColumn(),
-                      self._tree.header().sortIndicatorOrder())
-        self._tree.setSortingEnabled(False)
         self._tree.clear()
-        texts = list(self._project.texts) if self._project else []
+        texts = sorted(self._project.texts, key=lambda t: (tuple(x.casefold() for x in t.path),
+                                                            t.key.casefold())) if self._project else []
         usages = self._usage_index()
         self._flags = {}
 
-        groups: dict[str, QTreeWidgetItem] = {}
+        groups: dict[tuple[str, ...], QTreeWidgetItem] = {}
         for t in texts:
             row = _Row()
             self._fill_row(row, t, usages)
-            if self._btn_group.isChecked():
-                cat = t.path[0] if t.path else NO_CATEGORY
-                parent = groups.get(cat) or self._make_group(cat, groups)
-                parent.addChild(row)
-                # La catégorie est portée par l'en-tête : la répéter sur chaque
-                # ligne est précisément ce que grouper sert à éviter.
-                row.setText(COL_CAT, "")
-            else:
-                self._tree.addTopLevelItem(row)
+            # Le Finder porte toute l'arborescence. La zone centrale ne montre
+            # jamais de nœuds techniques : elle reste une liste d'entrées.
+            self._tree.addTopLevelItem(row)
 
-        for cat, item in groups.items():
-            n = item.childCount()
-            # Le compte se pose CONTRE le nom, pas au bout de la ligne : une
-            # ligne d'en-tête n'est pas une entrée, ses colonnes ne portent pas
-            # le sens qu'elles ont ailleurs.
-            item.setText(COL_SEC, label("txttbl.text_count", n=n))
-            item.setExpanded(cat not in self._collapsed)
+        for path, item in groups.items():
+            item.setExpanded(path not in self._collapsed)
 
-        self._tree.setSortingEnabled(True)
-        self._tree.sortItems(col, order)
         self._count.setText(f"  {len(texts)}")
         self._apply_filter()
+        if self._folder_filter:
+            shown = sum(1 for text in texts
+                        if tuple(text.path[:len(self._folder_filter)]) == self._folder_filter)
+            self._crumb_count.setText(label("txttbl.text_count", n=shown))
         self._blocking = False
 
         if select_ids:
             self.select_by_ids(select_ids)
         self._on_sel()
 
-    def _make_group(self, cat: str, groups: dict) -> QTreeWidgetItem:
-        """Ligne d'en-tête d'une catégorie — un CLASSEUR, jamais une entrée."""
-        item = _Row(self._tree)
-        item.setText(COL_CAT, cat)
-        item.setData(0, _ROLE_GROUP, cat)
-        item.setIcon(COL_CAT, icons.get("folder", icons.COLOR_FOLDER))
-        item.setForeground(COL_SEC, QColor(C.TEXT_MUTED))
-        item.setToolTip(
-            COL_CAT,
-            label("txttbl.group_root_tip") if cat == NO_CATEGORY
-            else label("txttbl.group_rename_tip"))
-        groups[cat] = item
-        return item
+    def _path_item(self, path: list[str], groups: dict) -> QTreeWidgetItem:
+        """Retourne le nœud du chemin, en créant chacun de ses ancêtres."""
+        parent = None
+        for depth, segment in enumerate(path):
+            node_path = tuple(path[:depth + 1])
+            item = groups.get(node_path)
+            if item is None:
+                item = _Row()
+                item.setText(COL_PATH, segment)
+                item.setData(COL_PATH, _ROLE_GROUP, node_path)
+                item.setIcon(COL_PATH, icons.get("folder", icons.COLOR_FOLDER))
+                item.setToolTip(COL_PATH, label("txttbl.group_rename_tip"))
+                if parent is None:
+                    self._tree.addTopLevelItem(item)
+                else:
+                    parent.addChild(item)
+                groups[node_path] = item
+            parent = item
+        return parent
 
-    def retitle_group(self, old: str, new: str):
-        """Reporte l'état replié sur le nouveau nom d'une catégorie.
-
-        Sans ça, renommer un groupe replié le rouvrirait — le pliage était
-        mémorisé sous l'ancien nom."""
-        if old in self._collapsed:
-            self._collapsed.discard(old)
-            self._collapsed.add(new)
+    def retitle_group(self, old: tuple[str, ...], new: str):
+        """Reporte le pliage de tout le sous-arbre après son renommage."""
+        old, new_path = tuple(old), tuple(old[:-1]) + (new,)
+        self._collapsed = {
+            new_path + path[len(old):] if path[:len(old)] == old else path
+            for path in self._collapsed
+        }
 
     def _fill_row(self, row: QTreeWidgetItem, t, usages):
         """Une ligne : où c'est rangé, comment ça s'appelle, ce que ça dit, et
         qui s'en sert."""
-        for lvl, col in enumerate(_PATH_COLS):
-            seg = t.path[lvl] if lvl < len(t.path) else ""
-            row.setText(col, seg)
-            if col != COL_CAT:
-                row.setForeground(col, QColor(C.TEXT_DIM if seg else C.TEXT_MUTED))
         row.setData(0, _ROLE_TEXT, t)
-        row.setToolTip(COL_SEC, label("txttbl.sec_tip"))
 
         row.setText(COL_KEY, t.key)
         row.setFont(COL_KEY, QFont(T.CODE, T.SM))
@@ -514,8 +531,8 @@ class TextTable(QWidget):
         t = items[0].data(0, _ROLE_TEXT)
         if t is not None:
             return list(t.path)
-        cat = items[0].data(0, _ROLE_GROUP)
-        return [cat] if cat and cat != NO_CATEGORY else []
+        path = items[0].data(COL_PATH, _ROLE_GROUP)
+        return list(path) if path else []
 
     def select_by_ids(self, ids: list[int]):
         self._blocking = True
@@ -590,12 +607,12 @@ class TextTable(QWidget):
             if t is None:
                 item.setHidden(not any(hits))
                 return any(hits)
-            hay = " ".join((item.text(c) for c in
-                            (COL_CAT, COL_SEC, COL_VAR, COL_KEY, COL_CONTENT))
-                           ).casefold()
+            hay = " ".join((*t.path, t.key, item.text(COL_CONTENT))).casefold()
             # Les deux chips se CUMULENT : « Empty » + « Unused » demande les
             # entrées qui sont les deux, pas leur réunion.
-            visible = ((not q) or (q in hay)) and \
+            in_folder = (not self._folder_filter or
+                         tuple(t.path[:len(self._folder_filter)]) == self._folder_filter)
+            visible = in_folder and ((not q) or (q in hay)) and \
                       wanted <= self._flags.get(t.id, set())
             item.setHidden(not visible)
             return visible
@@ -605,38 +622,74 @@ class TextTable(QWidget):
         self._blocking = was_blocking
         self._update_footer()
 
-    def _on_group_toggled(self, on: bool):
-        # L'icône se recolore d'elle-même (`HoverIconButton`, cf. `_build_bar`).
-        # Grouper trie d'abord par catégorie : un tri sur une autre colonne ne
-        # survivrait pas au regroupement, autant repartir du rangement.
-        self._tree.setRootIsDecorated(on)
-        self._tree.sortItems(COL_CAT if on else COL_KEY,
-                             Qt.SortOrder.AscendingOrder)
-        self.refresh()
-
     def _on_fold(self, item: QTreeWidgetItem, collapsed: bool):
-        cat = item.data(0, _ROLE_GROUP)
-        if self._blocking or cat is None:
+        path = item.data(COL_PATH, _ROLE_GROUP)
+        if self._blocking or path is None:
             return
-        self._collapsed.add(cat) if collapsed else self._collapsed.discard(cat)
+        path = tuple(path)
+        self._collapsed.add(path) if collapsed else self._collapsed.discard(path)
 
     # ── Édition en place ──────────────────────────────────────────
 
-    def _on_double_click(self, item: QTreeWidgetItem, col: int):
-        """Édition sur place, jamais de boîte de dialogue.
+    def _badge_at(self, pos):
+        """(nœud, colonne) si `pos` vise son badge de rangement.
 
-        S'édite : les trois niveaux de rangement, la clé, et le nom d'une
-        catégorie (qui range alors tout ce qu'elle contient). Le contenu, lui,
-        est un RENDU — sa source s'édite dans l'atelier, en dessous."""
-        is_group = item.data(0, _ROLE_GROUP) is not None
-        editable = (col == COL_CAT) if is_group else (col in _PATH_COLS or
-                                                      col == COL_KEY)
-        if not editable:
-            return
-        self._tree.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
+        La zone de flèche est laissée à Qt : c'est elle qui replie et déplie.
+        Le badge, lui, est une cible étroite et prévisible, identique au dessin
+        de `_PathDelegate` ; il ne vole donc jamais un clic de navigation.
+        """
+        item = self._tree.itemAt(pos)
+        if item is None or item.data(COL_PATH, _ROLE_GROUP) is None:
+            return None
+        index = self._tree.indexFromItem(item, COL_PATH)
+        rect = self._tree.visualRect(index)
+        font = QFont(T.MONO, T.XS, QFont.Weight.Bold)
+        # Même largeur que le délégué : texte + 12 px, bornée à la cellule.
+        badge_w = min(QFontMetrics(font).horizontalAdvance(item.text(COL_PATH)) + 12,
+                      max(rect.width() - 8, 16))
+        badge = QRectF(rect.left() + 6, rect.center().y() - 7.0, badge_w, 15.0)
+        return (item, COL_PATH) if badge.contains(QPointF(pos)) else None
+
+    def eventFilter(self, watched, event):
+        if watched is self._tree.viewport():
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                pos = event.position().toPoint()
+                item = self._tree.itemAt(pos)
+                index = self._tree.indexAt(pos)
+                text = item.data(0, _ROLE_TEXT) if item else None
+                if text is not None and index.column() == COL_KEY:
+                    rect = self._tree.visualRect(index)
+                    if pos.x() >= rect.right() - 28:
+                        QApplication.clipboard().setText(text.key)
+                        return True
+            hit = self._badge_at(event.position().toPoint()) if hasattr(event, "position") else None
+            editable = bool(hit and hit[0].isSelected() and hit[0].isExpanded())
+            if event.type() == QEvent.Type.MouseMove:
+                self._tree.viewport().setCursor(
+                    Qt.CursorShape.IBeamCursor if editable else Qt.CursorShape.ArrowCursor)
+            elif (event.type() == QEvent.Type.MouseButtonPress
+                  and event.button() == Qt.MouseButton.LeftButton and editable):
+                item, col = hit
+                # Qt finit d'abord de traiter le clic (sélection/focus). Lui
+                # demander un éditeur PENDANT ce traitement est ignoré selon
+                # le style de plateforme ; le tour suivant est stable.
+                QTimer.singleShot(0, lambda i=item, c=col: self._start_edit(i, c))
+                return True
+        return super().eventFilter(watched, event)
+
+    def _start_edit(self, item: QTreeWidgetItem, col: int):
+        """Ouvre l'éditeur natif sans réintroduire le double-clic ambigu."""
+        # `setFlags` émet itemChanged : ne pas laisser son handler retirer le
+        # flag avant que Qt ait créé le QLineEdit.
+        self._blocking = True
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self._blocking = False
+        self._tree.setCurrentItem(item, col)
+        self._tree.setEditTriggers(QAbstractItemView.EditTrigger.SelectedClicked)
         self._tree.editItem(item, col)
-        self._tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        QTimer.singleShot(0, lambda: self._tree.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers))
 
     def _on_item_changed(self, item: QTreeWidgetItem, col: int):
         """Fin d'édition — la table SIGNALE, elle n'écrit pas.
@@ -653,12 +706,13 @@ class TextTable(QWidget):
         self._blocking = False
         typed = item.text(col).strip()
 
-        cat = item.data(0, _ROLE_GROUP)
-        if cat is not None:
-            if not typed or typed == cat or cat == NO_CATEGORY:
-                self._reset_cell(item, col, cat)
+        path = item.data(COL_PATH, _ROLE_GROUP)
+        if path is not None:
+            old = path[-1]
+            if not typed or typed == old:
+                self._reset_cell(item, col, old)
                 return
-            QTimer.singleShot(0, lambda: self.group_renamed.emit(cat, typed))
+            QTimer.singleShot(0, lambda: self.group_renamed.emit(tuple(path), typed))
             return
 
         t = item.data(0, _ROLE_TEXT)
@@ -670,10 +724,6 @@ class TextTable(QWidget):
                 return
             QTimer.singleShot(0, lambda: self.key_edited.emit(t, typed))
             return
-        lvl = _PATH_COLS.index(col)
-        if typed == (t.path[lvl] if lvl < len(t.path) else ""):
-            return
-        QTimer.singleShot(0, lambda: self.path_edited.emit(t, lvl, typed))
 
     def _reset_cell(self, item: QTreeWidgetItem, col: int, value: str):
         """Repose la valeur d'origine après une saisie vide ou inchangée."""

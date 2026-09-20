@@ -117,6 +117,7 @@ class Marker:
     end:   int
     value: Optional[object] = None
     src:   tuple[int, int] = (0, 0)
+    limit: int = 0                 # `$nom!3` → au plus 3 caractères, 0 = libre
 
     @property
     def scoped(self) -> bool:
@@ -129,7 +130,7 @@ class Marker:
 # menti au premier ajout de balise.
 TOK_TAG    = "tag"      # [wave], [speed=4]
 TOK_CLOSE  = "close"    # [/wave]
-TOK_VALUE  = "value"    # $nom
+TOK_VALUE  = "value"    # $nom ou $nom!3
 TOK_ESCAPE = "escape"   # [[ et $$
 
 
@@ -174,6 +175,176 @@ class ParsedText:
         return len(covered)
 
 
+# ── Projection d'édition ─────────────────────────────────────────
+
+PROJ_CONTENT = "content"
+PROJ_MARKUP = "markup"
+PROJ_VALUE = "value"
+
+
+@dataclass(frozen=True)
+class ProjectionSpan:
+    """Un fragment de la surface Texte unifiée.
+
+    Les bornes restent toujours dans la chaîne source : une balise masquée ne
+    prend aucune place à l'écran, mais le curseur peut tout de même se poser de
+    part et d'autre sans perdre sa vraie position. ``atomic`` protège les
+    valeurs calculées : les chiffres affichés pour ``$score`` ne sont pas du
+    texte que l'on peut couper ou modifier individuellement.
+    """
+    source_start: int
+    source_end: int
+    text: str
+    kind: str = PROJ_CONTENT
+    font_name: str = ""
+    atomic: bool = False
+
+
+@dataclass(frozen=True)
+class MarkupProjection:
+    """Correspondance pure entre une source BBCode et sa surface visible."""
+    source: str
+    spans: tuple[ProjectionSpan, ...]
+
+    @property
+    def text(self) -> str:
+        return "".join(span.text for span in self.spans)
+
+    def source_to_visible(self, position: int, *, right: bool = False) -> int:
+        """Positionne une borne source dans le texte projeté.
+
+        ``right`` choisit le côté droit d'un fragment non visible (une balise
+        masquée). C'est la règle employée respectivement par Début/Fin de
+        sélection et empêche un caret de rebondir sur une balise invisible.
+        """
+        pos = max(0, min(position, len(self.source)))
+        visible = 0
+        for span in self.spans:
+            if pos < span.source_start:
+                return visible
+            if span.source_start <= pos <= span.source_end:
+                if not span.text:
+                    return visible
+                if span.atomic:
+                    return visible + (len(span.text) if right and pos == span.source_end else 0)
+                width = max(1, span.source_end - span.source_start)
+                offset = min(len(span.text), max(0, pos - span.source_start))
+                # Un échappement a deux caractères source pour un seul rendu :
+                # sa borne intérieure reste du côté demandé, jamais au milieu
+                # d'un pseudo-caractère.
+                if len(span.text) == 1 and width > 1:
+                    offset = 1 if right and pos > span.source_start else 0
+                return visible + offset
+            visible += len(span.text)
+        return visible
+
+    def visible_to_source(self, position: int, *, right: bool = False) -> int:
+        """Inverse de :meth:`source_to_visible`, avec la même règle de biais."""
+        pos = max(0, min(position, len(self.text)))
+        visible = 0
+        for span in self.spans:
+            end = visible + len(span.text)
+            if pos <= end:
+                if not span.text:
+                    return span.source_end if right else span.source_start
+                if span.atomic:
+                    return span.source_end if right and pos == end else span.source_start
+                return min(span.source_end, span.source_start + (pos - visible))
+            visible = end
+        return len(self.source)
+
+
+def project(source: str, values: Optional[dict] = None, *, show_markup: bool = False) -> MarkupProjection:
+    """Construit la surface de l'atelier sans changer la grammaire du build.
+
+    Les balises reconnues deviennent des fragments ``markup`` seulement quand
+    elles sont demandées. Le reste garde exactement le texte que le joueur lit,
+    y compris les échappements, les icônes et les valeurs résolues.
+    """
+    source = source or ""
+    parsed = parse(source)
+    markers_at_src = {m.src: m for m in parsed.markers}
+    spans: list[ProjectionSpan] = []
+    pos = display_pos = 0
+
+    def font_at(index: int) -> str:
+        active = [m for m in parsed.of_kind("font") if m.at <= index < m.end]
+        return str(active[-1].value) if active else ""
+
+    def append(a: int, b: int, text: str, kind=PROJ_CONTENT, *, atomic=False):
+        if text or kind == PROJ_MARKUP:
+            spans.append(ProjectionSpan(a, b, text, kind, font_at(display_pos), atomic))
+
+    for token in parsed.tokens:
+        if pos < token.at:
+            raw = source[pos:token.at]
+            append(pos, token.at, raw)
+            display_pos += len(raw)
+        raw = source[token.at:token.end]
+        marker = markers_at_src.get((token.at, token.end))
+        if token.kind == TOK_ESCAPE:
+            append(token.at, token.end, raw[0])
+            display_pos += 1
+        elif token.kind == TOK_VALUE and marker is not None:
+            value = str((values or {}).get(marker.value, f"${marker.value}"))
+            value = value[:marker.limit] if marker.limit else value
+            append(token.at, token.end, value, PROJ_VALUE, atomic=True)
+            display_pos += 1
+        else:
+            if show_markup:
+                append(token.at, token.end, raw, PROJ_MARKUP, atomic=True)
+            if marker is not None and marker.kind == "icon":
+                icon = str(marker.value)
+                append(token.at, token.end, icon)
+                display_pos += len(icon)
+        pos = token.end
+    if pos < len(source):
+        append(pos, len(source), source[pos:])
+    return MarkupProjection(source, tuple(spans))
+
+
+def removable_markup_edits(source: str, start: int, end: int) -> list[tuple[int, int, str]]:
+    """Suppressions sûres pour les balises qui entourent exactement ``[start,end]``.
+
+    Le résultat est déjà ordonné de la fin vers le début et peut donc être
+    passé directement à une surface d'édition dans une unique annulation.
+    """
+    parsed = parse(source)
+    opened: list[tuple[str, int, int]] = []
+    pairs: list[tuple[int, int, int, int]] = []
+    for token in parsed.tokens:
+        raw = source[token.at:token.end]
+        if token.kind == TOK_TAG:
+            match = re.match(r"\[([A-Za-z_][A-Za-z0-9_]*)", raw)
+            name = match.group(1) if match else ""
+            if name in TAGS and TAGS[name].scoped:
+                opened.append((name, token.at, token.end))
+        elif token.kind == TOK_CLOSE:
+            match = re.match(r"\[/([A-Za-z_][A-Za-z0-9_]*)\]", raw)
+            name = match.group(1) if match else ""
+            for i in range(len(opened) - 1, -1, -1):
+                if opened[i][0] == name:
+                    _name, a, b = opened.pop(i)
+                    pairs.append((a, b, token.at, token.end))
+                    break
+    def selected(a: int, b: int, c: int, d: int) -> bool:
+        # Le contenu seul est la sélection naturelle en vue fidèle. En vue
+        # balisage, le glisser peut aussi partir sur ``[font=…]`` et englober
+        # les deux bornes : les deux gestes doivent retirer la même portée.
+        return (b == start and c == end) or (start <= a and d <= end) or (
+            # Sur la surface pixel, le clic peut tomber au milieu d'une
+            # ligature ou sur le premier/dernier pixel d'une balise. Retirer
+            # l'enveloppe doit rester un geste souple dès que la sélection
+            # recouvre du contenu de cette portée.
+            start < c and end > b
+        )
+
+    chosen = [(a, b, c, d) for a, b, c, d in pairs if selected(a, b, c, d)]
+    edits = [(a, b, "") for a, b, _c, _d in chosen]
+    edits += [(c, d, "") for _a, _b, c, d in chosen]
+    return sorted(edits, reverse=True)
+
+
 # ── Analyse ───────────────────────────────────────────────────────
 
 # Un seul balayage : échappements, balises et marqueurs de valeur. Le reste du
@@ -184,7 +355,7 @@ _TOKEN = re.compile(
       | \$\$                                  # $$ → $ littéral
       | \[ (?P<close>/)? (?P<name>[A-Za-z_][A-Za-z0-9_]*)
            (?: = (?P<value>[^\]]*) )? \]      # balise ouvrante ou fermante
-      | \$ (?P<var>[A-Za-z_][A-Za-z0-9_]*)    # marqueur de valeur
+      | \$ (?P<var>[A-Za-z_][A-Za-z0-9_]*)(?:!(?P<limit>[1-9]))? # valeur, limite optionnelle
     """,
     re.VERBOSE,
 )
@@ -224,7 +395,8 @@ def parse(source: str) -> ParsedText:
             # soit la valeur substituée derrière.
             disp.append(SENTINEL)
             out.markers.append(Marker(KIND_VALUE, at, at + 1,
-                                      m.group("var"), (m.start(), m.end())))
+                                      m.group("var"), (m.start(), m.end()),
+                                      int(m.group("limit") or 0)))
             out.tokens.append(Token(TOK_VALUE, m.start(), m.end()))
             continue
 
@@ -372,7 +544,8 @@ def resolve(parsed: ParsedText, values: Optional[dict] = None) -> str:
         if m.kind != KIND_VALUE:
             continue
         out.append(parsed.display[prev:m.at])
-        out.append(str(values[m.value]) if m.value in values else f"${m.value}")
+        value = str(values[m.value]) if m.value in values else f"${m.value}"
+        out.append(value[:m.limit] if m.limit else value)
         prev = m.end
     out.append(parsed.display[prev:])
     return "".join(out)

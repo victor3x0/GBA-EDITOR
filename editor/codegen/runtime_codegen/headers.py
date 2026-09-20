@@ -11,10 +11,28 @@ from typing import Optional
 from core.models.sprite import AnimState, SpriteAsset
 from core.models.scene import Actor
 from core.project import Project
-from codegen.c_names import sym as c_sym
+from codegen.c_names import sym as c_sym, scene_actor_sym
 from core.app_paths import RUNTIME_DIR
 import codegen.build_output as build_output
 from codegen.oam_alloc import scene_oam_layout, project_actor_count
+
+
+def actorname_ids(p: Project) -> dict:
+    """Id de LOOKUP par SYMBOLE de nom d'acteur, distinct, dans l'ordre de
+    première rencontre à travers les scènes.
+
+    C'est la clé du `runtime_get_actor` d'un script partagé (« L'acteur
+    appartient à sa scène », décision C) : une dimension de recherche GLOBALE,
+    distincte des symboles C qualifiés par scène. « Cursor » de la scène A et
+    « Cursor » de la scène B partagent cet id — c'est justement ce qui permet à
+    une caméra partagée de demander « le Cursor de la scène active » — sans
+    partager pour autant leur `TAG_<Scène>_Cursor`."""
+    ids: dict[str, int] = {}
+    for sc in p.scenes:
+        for a in sc.actors:
+            if getattr(a, "active", True):
+                ids.setdefault(c_sym(a.name), len(ids))
+    return ids
 
 
 def generate_actor_types(p: Project) -> None:
@@ -64,7 +82,7 @@ def generate_actor_types(p: Project) -> None:
         for actor in sc.actors:
             if not getattr(actor, "active", True):
                 continue
-            h.append(f"#define TAG_{c_sym(actor.name).upper()} {i}")
+            h.append(f"#define TAG_{scene_actor_sym(sc.name, actor.name).upper()} {i}")
             i += 1
         for pl in lay.pools:
             u = pl.sym.upper()
@@ -77,6 +95,13 @@ def generate_actor_types(p: Project) -> None:
             h.append(f"#define POOL_{u}_SIZE {pl.size}")
             h.append(f"#define POOL_{u}_GROUP {pl.group}")
             h.append(f"#define POOL_{u}_INSTANCES {pl.instances}")
+
+    # ACTORNAME_* — id de lookup par nom logique (runtime_get_actor, décision C).
+    _names = actorname_ids(p)
+    if _names:
+        h.append("/* ── Noms d'acteurs : clé de lookup runtime (scripts partagés) ── */")
+        for s, i in _names.items():
+            h.append(f"#define ACTORNAME_{s.upper()} {i}")
 
     h += ["", "#endif /* ACTOR_TYPES_H */", ""]
     build_output.write(p.src_dir / "actor_types.h", "\n".join(h))
@@ -141,6 +166,9 @@ def generate_runtime_api(
         "",
         "/* Prototypes de l'API exposée — dérivés de gba_engine.h (api_prototypes.py). */",
         *proto_decls,
+        "/* Support interne des `$locale` dans les littéraux text.draw. */",
+        "extern void text_args_clear(void);",
+        "extern void text_arg_set(int n, int value);",
         "",
         '#include "runtime_api_inline.h"',
         "",

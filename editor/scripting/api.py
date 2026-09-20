@@ -525,7 +525,12 @@ RUNTIME_API: dict[str, ApiFunc] = {
         lua_name="get_actor", c_func="_get_actor",   # résolu par codegen
         params=[Param("name", PARAM_STR, DOMAIN_ACTOR)],
         ret="actor",
-        doc='Référence directe vers un actor de la scène par son nom. Résolu à la compilation, zéro overhead runtime. Ex: get_actor("PADDLE_AUTO"):get_position().x.',
+        doc='Un acteur de la scène, par NOM (littéral, résolu à la compilation : get_actor("PADDLE_AUTO"):move_to(vec2(120,80),2)) ou par INDEX dynamique 1-based (get_actor(i), de 1 à actor_count(), dans l\'ordre de la scène). Rend nil si absent ou détruit — à tester. Pour lire une position, passe par un local : local p = get_actor(i) ; puis p.position.x.',
+    ),
+    "actor_count": ApiFunc(
+        lua_name="actor_count", c_func="_actor_count",   # résolu par codegen
+        params=[], ret="int",
+        doc="Nombre d'acteurs POSÉS de la scène active — la borne de get_actor(i). Ex: for i=1,actor_count() do local a=get_actor(i) ... end.",
     ),
 
     # ── Visibilité des éléments d'interface ──────────────────────────
@@ -1103,7 +1108,9 @@ RUNTIME_API: dict[str, ApiFunc] = {
                 Param("id", PARAM_STR, DOMAIN_TEXT, literal_ok=True)],
         doc='Affiche un texte du projet à (tx, ty), en tuiles — une clé de la '
             'table, ou un littéral écrit sur place (qui ne se traduira pas). '
-            'Ex: text.draw(2, 16, "village_garde_01")',
+            'Dans un littéral, `$nom` lit une locale visible, ou une globale '
+            'si aucune locale ne la masque ; `$nom!3` tronque l’affichage à '
+            'trois caractères (maximum `!9`). Ex: text.draw(2, 16, "PV : $hp!3")',
     ),
     # ── Rendu dans une RÉGION ──────────────────────────────────────
     # La région porte position, largeur de coupe, alignement et police : ce que
@@ -1113,8 +1120,10 @@ RUNTIME_API: dict[str, ApiFunc] = {
     "text.draw_in": ApiFunc(
         lua_name="text.draw_in", c_func="text_draw_in",
         params=[Param("region", PARAM_STR, DOMAIN_REGION),
-                Param("id", PARAM_STR, DOMAIN_TEXT)],
-        doc='Affiche un texte dans une zone dessinée dans la scène. Ex: text.draw_in("boite_bas", "village_garde")',
+                Param("id", PARAM_STR, DOMAIN_TEXT, literal_ok=True)],
+        doc='Affiche un texte dans une zone dessinée dans la scène. Une clé est traduisible ; '
+            'un littéral peut lire une locale avec `$nom` et tronquer avec `!1` à `!9`. '
+            'Ex: text.draw_in("boite_bas", "PV : $hp!3")',
     ),
     # Le pendant de text.clear pour une zone. Sans lui, faire disparaître une
     # boîte obligeait à recalculer son rectangle en tuiles à la main — donc à
@@ -2221,7 +2230,7 @@ LITERAL_TEXT_CALLS: frozenset = frozenset(
 
 
 def anon_text_key(literal: str) -> str:
-    """Clé de l'entrée ANONYME que fabrique un littéral passé à `text.draw`.
+    """Clé de l'entrée ANONYME que fabrique un littéral passé à `text.draw*`.
 
     Dérivée du CONTENU : la même phrase écrite dans deux scripts partage une
     seule entrée, et la clé ne bouge pas d'un build à l'autre. Un compteur, lui,

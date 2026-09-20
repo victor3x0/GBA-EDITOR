@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtWidgets import QWidget, QSizePolicy
-from PyQt6.QtGui import QFont, QImage, QPainter, QPen, QColor
-from PyQt6.QtCore import Qt, QRect, QPoint
+from PyQt6.QtWidgets import QWidget, QSizePolicy, QMenu, QApplication
+from PyQt6.QtGui import QFont, QImage, QPainter, QPen, QColor, QKeySequence
+from PyQt6.QtCore import Qt, QRect, QPoint, pyqtSignal
 
-from core.engine_emulation.text_layout import layout_text
+from core.engine_emulation.text_layout import layout_marked_text, layout_projection_text
 from codegen.font_build import build_font_asset
 from core.font_rasterizer import FontRasterizerError, display_coverage
 from ui.common.theme import C, T
@@ -37,15 +37,27 @@ class FontScreenPreview(QWidget):
     FIT_MAX = 3          # l'ajustement automatique ne dépasse pas ×3
     MARGIN = 24          # px d'écran qui restent forcément atteignables au pan
 
+    edited = pyqtSignal(str)
+    committed = pyqtSignal(str, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._font = None
         self._project = None
-        self._text = ""
-        self._render_font = None
+        self._text = ""                 # source balisée, jamais le texte aplati
+        self._values: dict = {}
+        self._render_fonts: dict[str, object] = {}
         self._render_text = None
         self._render_error = ""
-        self._glyph_images: dict[str, QImage] = {}
+        self._glyph_images: dict[tuple[str, str], QImage] = {}
+        self._show_markup = False
+        self._editable = False
+        self._baseline = ""
+        self._anchor = self._caret = 0
+        self._placed_source: list[tuple[int, int, int, int, int, int]] = []
+        self._selecting = False
+        self._undo: list[tuple[str, int, int]] = []
+        self._redo: list[tuple[str, int, int]] = []
         # Zoom None = ajusté au volet ; un chiffre = choisi à la molette, et il
         # ne bouge plus quand on redimensionne.
         self._zoom: Optional[int] = None
@@ -53,6 +65,7 @@ class FontScreenPreview(QWidget):
         self._pan_last: Optional[QPoint] = None
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumHeight(120)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         # Fond d'épreuve : posé DANS l'aperçu, en bas à gauche — il commente ce
         # qu'on regarde, pas la table des textes.
@@ -71,46 +84,121 @@ class FontScreenPreview(QWidget):
         self._invalidate_render()
         self.update()
 
-    def set_text(self, text: str):
+    def set_text(self, text: str, values: Optional[dict] = None):
         self._text = text or ""
+        self._values = dict(values or {})
         self._invalidate_render()
         self.update()
 
+    # ── Contrat d'édition partagé avec MarkupToolbar ──────────────
+
+    def set_editable(self, editable: bool):
+        self._editable = editable
+        self.setCursor(Qt.CursorShape.IBeamCursor if editable else Qt.CursorShape.ArrowCursor)
+
+    def set_markup_visible(self, visible: bool):
+        self._show_markup = bool(visible)
+        self.update()
+
+    def markup_visible(self) -> bool:
+        return self._show_markup
+
+    def set_text_silent(self, text: str):
+        self._baseline = self._text = text or ""
+        self._anchor = self._caret = min(self._caret, len(self._text))
+        self._undo.clear()
+        self._redo.clear()
+        self._invalidate_render()
+        self.update()
+
+    def source(self) -> str:
+        return self._text
+
+    def selection(self) -> tuple[int, int]:
+        return min(self._anchor, self._caret), max(self._anchor, self._caret)
+
+    def replace_source(self, edits: list[tuple[int, int, str]], select: tuple[int, int]):
+        before = (self._text, self._anchor, self._caret)
+        source = self._text
+        for a, b, text in sorted(edits, reverse=True):
+            source = source[:a] + text + source[b:]
+        if source == self._text:
+            return
+        self._undo.append(before)
+        self._redo.clear()
+        self._text = source
+        self._anchor = select[0]
+        self._caret = select[0] + select[1]
+        self._invalidate_render()
+        self.edited.emit(source)
+        self.update()
+
+    def _restore_history(self, undo: bool):
+        source = self._undo if undo else self._redo
+        other = self._redo if undo else self._undo
+        if not source:
+            return
+        other.append((self._text, self._anchor, self._caret))
+        self._text, self._anchor, self._caret = source.pop()
+        self._invalidate_render()
+        self.edited.emit(self._text)
+        self.update()
+
+    def commit(self):
+        if self._text != self._baseline:
+            before, self._baseline = self._baseline, self._text
+            self.committed.emit(before, self._text)
+
     def _invalidate_render(self):
-        self._render_font = None
+        self._render_fonts = {}
         self._render_text = None
         self._render_error = ""
         self._glyph_images = {}
 
-    def _font_for_text(self):
-        """Matérialise la recette uniquement pour les caractères visibles.
+    def _fonts_for_text(self):
+        """Matérialise les recettes présentes dans le texte balisé.
 
         C'est le pont utilisé par le build ; le preview ne doit surtout pas
         réinventer une lecture directe des sources de la FontAsset.
         """
-        if self._render_text == self._text:
-            return self._render_font
-        self._render_text, self._render_font, self._render_error = self._text, None, ""
+        cache_key = (self._text, tuple(sorted(self._values.items())))
+        if self._render_text == cache_key:
+            return self._render_fonts
+        self._render_text, self._render_fonts, self._render_error = cache_key, {}, ""
         self._glyph_images = {}
         if not self._font or not self._project:
             return None
         try:
-            chars = {char for char in self._text if char not in "\r\n"} or {" "}
-            self._render_font = build_font_asset(
-                self._project, self._font, chars,
-            )
+            from core.text_markup import display_text
+            from codegen.font_emit import text_markup_font_names
+            shown = display_text(self._text, self._values)
+            chars = {char for char in shown if char not in "\r\n"} or {" "}
+            assets = {getattr(self._font, "name", ""): self._font}
+            for name in text_markup_font_names(self._text):
+                asset = getattr(self._project, "font_assets", ()).get(name)
+                if asset is not None:
+                    assets[name] = asset
+            self._render_fonts = {
+                name: build_font_asset(self._project, asset, chars)
+                for name, asset in assets.items()
+            }
         except FontRasterizerError as exc:
             self._render_error = str(exc)
-        return self._render_font
+        return self._render_fonts
 
-    def _glyph_image(self, glyph) -> QImage:
+    def _glyph_image(self, font, glyph) -> QImage:
         """Cellule GBA du glyphe, avec le même dépôt que l'encodeur ROM."""
-        cached = self._glyph_images.get(glyph.char)
+        key = (getattr(font, "name", ""), glyph.char)
+        cached = self._glyph_images.get(key)
         if cached is not None:
             return cached
         image = QImage(max(1, glyph.w), max(1, glyph.h), QImage.Format.Format_RGBA8888)
         image.fill(Qt.GlobalColor.transparent)
-        raster = self._render_font.raster_glyphs.get(glyph.char)
+        raster = font.raster_glyphs.get(glyph.char)
+        asset = (self._font if getattr(font, "name", "") == getattr(self._font, "name", "")
+                 else getattr(self._project, "font_assets", ()).get(getattr(font, "name", "")))
+        if asset is None:
+            return image
         if raster is not None:
             base_y = max(0, glyph.h - raster.bearing_y)
             for y in range(raster.height):
@@ -120,13 +208,13 @@ class FontScreenPreview(QWidget):
                         continue
                     coverage = display_coverage(
                         raster.coverage_at(x, y), dx, dy,
-                        raster_mode=self._font.raster_mode,
-                        threshold=self._font.coverage_threshold,
-                        dither_pattern=self._font.dither_pattern,
+                        raster_mode=asset.raster_mode,
+                        threshold=asset.coverage_threshold,
+                        dither_pattern=asset.dither_pattern,
                     )
                     if coverage:
                         image.setPixelColor(dx, dy, QColor(255, 255, 255, coverage))
-        self._glyph_images[glyph.char] = image
+        self._glyph_images[key] = image
         return image
 
     # ── Fond d'épreuve ────────────────────────────────────────────
@@ -210,6 +298,15 @@ class FontScreenPreview(QWidget):
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             e.accept()
             return
+        if self._editable and e.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
+            self._caret = self._source_at(e.position().toPoint())
+            if not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                self._anchor = self._caret
+            self._selecting = True
+            self.update()
+            e.accept()
+            return
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -221,12 +318,21 @@ class FontScreenPreview(QWidget):
             self.update()
             e.accept()
             return
+        if self._editable and self._selecting and (e.buttons() & Qt.MouseButton.LeftButton):
+            self._caret = self._source_at(e.position().toPoint())
+            self.update()
+            e.accept()
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.MiddleButton and self._pan_last is not None:
             self._pan_last = None
             self.unsetCursor()
+            e.accept()
+            return
+        if e.button() == Qt.MouseButton.LeftButton and self._selecting:
+            self._selecting = False
             e.accept()
             return
         super().mouseReleaseEvent(e)
@@ -236,6 +342,100 @@ class FontScreenPreview(QWidget):
         compter les crans de molette."""
         self.reset_view()
         e.accept()
+
+    def keyPressEvent(self, e):
+        if not self._editable:
+            super().keyPressEvent(e)
+            return
+        a, b = self.selection()
+        key = e.key()
+        if e.matches(QKeySequence.StandardKey.SelectAll):
+            self._anchor, self._caret = 0, len(self._text)
+            self.update(); e.accept(); return
+        if e.matches(QKeySequence.StandardKey.Undo):
+            self._restore_history(True); e.accept(); return
+        if e.matches(QKeySequence.StandardKey.Redo):
+            self._restore_history(False); e.accept(); return
+        if e.matches(QKeySequence.StandardKey.Copy):
+            QApplication.clipboard().setText(self._text[a:b])
+            e.accept(); return
+        if e.matches(QKeySequence.StandardKey.Cut):
+            QApplication.clipboard().setText(self._text[a:b])
+            if a != b:
+                self.replace_source([(a, b, "")], (a, 0))
+            e.accept(); return
+        if e.matches(QKeySequence.StandardKey.Paste):
+            self.replace_source([(a, b, QApplication.clipboard().text())],
+                                (a + len(QApplication.clipboard().text()), 0))
+            e.accept(); return
+        from core.text_markup import project
+        projection = project(self._text, self._values, show_markup=self._show_markup)
+        if key == Qt.Key.Key_Left:
+            visible = projection.source_to_visible(self._caret)
+            self._caret = projection.visible_to_source(max(0, visible - 1))
+            if not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier): self._anchor = self._caret
+        elif key == Qt.Key.Key_Right:
+            visible = projection.source_to_visible(self._caret, right=True)
+            self._caret = projection.visible_to_source(min(len(projection.text), visible + 1), right=True)
+            if not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier): self._anchor = self._caret
+        elif key == Qt.Key.Key_Backspace:
+            if a != b: self.replace_source([(a, b, "")], (a, 0))
+            elif a: self.replace_source([(a - 1, a, "")], (a - 1, 0))
+        elif key == Qt.Key.Key_Delete:
+            if a != b: self.replace_source([(a, b, "")], (a, 0))
+            elif a < len(self._text): self.replace_source([(a, a + 1, "")], (a, 0))
+        elif e.text() and not (e.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.replace_source([(a, b, e.text())], (a + len(e.text()), 0))
+        else:
+            super().keyPressEvent(e)
+            return
+        self.update()
+        e.accept()
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.commit()
+
+    def contextMenuEvent(self, e):
+        if not self._editable:
+            super().contextMenuEvent(e)
+            return
+        from core.text_markup import removable_markup_edits
+        a, b = self.selection()
+        edits = removable_markup_edits(self._text, a, b)
+        menu = QMenu(self)
+        remove = menu.addAction(label("fsprev.remove_markup"))
+        remove.setEnabled(bool(edits))
+        if edits:
+            remove.triggered.connect(lambda: self._remove_markup(edits, a, b))
+        menu.exec(e.globalPos())
+        e.accept()
+
+    def _remove_markup(self, edits, a: int, b: int):
+        def after_removals(position: int) -> int:
+            mapped = position
+            # Le calcul se fait dans le même ordre que les suppressions : une
+            # borne sélectionnée SUR une balise rejoint son bord, une borne
+            # après elle est décalée de sa longueur.
+            for start, end, _text in sorted(edits):
+                if mapped >= end:
+                    mapped -= end - start
+                elif mapped > start:
+                    mapped = start
+            return mapped
+        new_a, new_b = after_removals(a), after_removals(b)
+        self.replace_source(edits, (new_a, max(0, new_b - new_a)))
+
+    def _source_at(self, point: QPoint) -> int:
+        """Borne source la plus proche du clic, en coordonnées widget."""
+        if not self._placed_source:
+            return len(self._text)
+        scale, origin = self._scale(), self._origin()
+        gx, gy = (point.x() - origin.x()) / scale, (point.y() - origin.y()) / scale
+        best = min(self._placed_source,
+                   key=lambda item: abs(gx - item[2]) + abs(gy - item[3]) * self.GBA_W)
+        a, b, x, _y, advance, _height = best
+        return b if gx >= x + advance / 2 else a
 
     # ── Rendu ─────────────────────────────────────────────────────
 
@@ -253,14 +453,14 @@ class FontScreenPreview(QWidget):
         p.setPen(QPen(QColor(C.BORDER_MID)))
         p.drawRect(QRect(0, 0, w - 1, h - 1))
 
-        font = self._font_for_text()
+        fonts = self._fonts_for_text()
         if not self._font:
             p.setPen(ink)
             p.setFont(QFont(T.UI, T.XS))
             p.drawText(QRect(0, 0, w, h), Qt.AlignmentFlag.AlignCenter,
                        label("fsprev.choose_font"))
             return
-        if font is None:
+        if not fonts:
             p.setPen(ink)
             p.setFont(QFont(T.UI, T.XS))
             p.drawText(QRect(12, 12, w - 24, h - 24), Qt.AlignmentFlag.AlignCenter,
@@ -268,18 +468,56 @@ class FontScreenPreview(QWidget):
             return
 
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        placed, over = layout_text(font, self._text,
-                                   self.GBA_W, self.GBA_H)
-        for g, px, py in placed:
-            image = self._glyph_image(g)
+        base = fonts.get(getattr(self._font, "name", ""))
+        if base is None:
+            return
+        self._placed_source = []
+        if self._show_markup:
+            from core.text_markup import project
+            projected = project(self._text, self._values, show_markup=True)
+            placed, over = layout_projection_text(base, projected, fonts,
+                                                   self.GBA_W, self.GBA_H)
+            draw_placed = [(f, g, x, y) for f, g, x, y, _a, _b in placed]
+            for _f, g, x, y, a, b in placed:
+                from codegen.font_emit import glyph_advance_px
+                self._placed_source.append((a, b, x, y, glyph_advance_px(g, _f), g.h))
+        else:
+            placed, over = layout_marked_text(base, self._text, fonts, self._values,
+                                              self.GBA_W, self.GBA_H)
+            draw_placed = placed
+            # Le rendu joueur ne porte pas encore les bornes source ; la
+            # projection cachée les rétablit pour le clic et le caret.
+            from core.text_markup import project
+            hit_projection = project(self._text, self._values)
+            hit_placed, _ = layout_projection_text(base, hit_projection, fonts,
+                                                    self.GBA_W, self.GBA_H)
+            from codegen.font_emit import glyph_advance_px
+            self._placed_source = [(a, b, x, y, glyph_advance_px(g, f), g.h)
+                                   for f, g, x, y, a, b in hit_placed]
+        sel_a, sel_b = self.selection()
+        if sel_a != sel_b:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(C.ACCENT).darker(170))
+            for a, b, px, py, advance, glyph_h in self._placed_source:
+                if a < sel_b and b > sel_a:
+                    p.drawRect(QRect(px * s, py * s, max(1, advance * s),
+                                     max(1, glyph_h * s)))
+        for glyph_font, g, px, py in draw_placed:
+            image = self._glyph_image(glyph_font, g)
             p.drawImage(QRect(px * s, py * s, image.width() * s, image.height() * s), image)
 
-        if over:
-            p.setPen(QColor(C.ACCENT_YLW))
-            p.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
-            p.drawText(QRect(0, h - 16, w - 4, 14),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       label("fsprev.overflows"))
+        if self._editable and self.hasFocus():
+            caret = next((item for item in self._placed_source if item[0] >= self._caret), None)
+            if caret is None and self._placed_source:
+                a, b, px, py, adv, glyph_h = self._placed_source[-1]
+                px += adv
+            elif caret:
+                _a, _b, px, py, _adv, glyph_h = caret
+            else:
+                px = py = 0
+                glyph_h = 8
+            p.setPen(QPen(QColor(C.ACCENT), max(1, s)))
+            p.drawLine(px * s, py * s, px * s, (py + glyph_h) * s)
 
         # Facteur affiché dans le VOLET, pas dans l'écran : c'est une donnée de
         # l'éditeur, elle n'a rien à faire sur la surface simulée.
@@ -289,3 +527,9 @@ class FontScreenPreview(QWidget):
         p.drawText(QRect(0, self.height() - 20, self.width() - 8, 14),
                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                    f"×{s}" + ("" if self._zoom is None else label("fsprev.dbl_fit")))
+        if over:
+            p.setPen(QColor(C.ACCENT_YLW))
+            p.setFont(QFont(T.UI, T.XS, QFont.Weight.DemiBold))
+            p.drawText(QRect(8, self.height() - 20, self.width() - 16, 14),
+                       Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+                       label("fsprev.overflows"))

@@ -2330,7 +2330,7 @@
       "text": "Texts filed at the root. This is the absence of a category,\nnot a name: it cannot be renamed. File them from the level 1\nfield below."
     },
     "txttbl.group_rename_tip": {
-      "text": "Double-click to rename this category. It renames the filing of\nevery text it contains."
+      "text": "Select and expand this filing, then click its label to rename it.\nIt renames the filing of every text it contains."
     },
     "txttbl.sec_tip": {
       "text": "Filing (accents, spaces and duplicates allowed).\nNever resolved, never referenced: it organizes the table\nand suggests the key, without ever owning it."
@@ -2358,6 +2358,9 @@
     },
     "txttbl.h_category": {
       "text": "Category"
+    },
+    "txttbl.h_path": {
+      "text": "Filing"
     },
     "txttbl.h_section": {
       "text": "Section"
@@ -2443,6 +2446,15 @@
     },
     "txtwb.lock_hand": {
       "text": "Named by hand (click to re-attach it to the filing)"
+    },
+    "txtwb.add_level_tip": {
+      "text": "Add a filing level"
+    },
+    "txtwb.show_markup_tip": {
+      "text": "Show the markup"
+    },
+    "fsprev.remove_markup": {
+      "text": "Remove the markup"
     },
     "txtpnl.invalid_key_title": {
       "text": "Invalid key"

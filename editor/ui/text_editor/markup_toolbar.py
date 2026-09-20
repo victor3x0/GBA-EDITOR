@@ -11,7 +11,7 @@ qu'on y touche (avec une icône de repli si personne ne lui en a choisi une).
 Seule la PRÉSENTATION (icône, valeur pré-remplie) vit dans ce module.
 
 Deux règles, qui suivent la nature de la balise :
-  • de PORTÉE (`wave`, `shake`, `color`) → elle enveloppe la sélection, et
+  • de PORTÉE (`wave`, `shake`, `color`, `font`) → elle enveloppe la sélection, et
     re-cliquer sur une sélection déjà enveloppée la déshabille ;
   • PONCTUELLE (`speed`, `pause`, `icon`) → elle marque un instant, donc elle
     se pose DEVANT la sélection sans jamais la remplacer.
@@ -27,14 +27,15 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QToolButton, QMenu
-from PyQt6.QtGui import QFont, QTextCursor
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QToolButton
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtCore import Qt, QSize
 
 from core.text_markup import TAGS, KIND_VALUE, VALUE_NONE
 from ui.common import icons
-from ui.common.theme import C, T, QSS
+from ui.common.theme import C
 from ui.common.labels import label
+from ui.common.widgets import ScriptPickerPopup
 
 
 # Présentation d'une balise : (icône, valeur pré-remplie). Les valeurs par
@@ -47,12 +48,19 @@ _LOOK: dict[str, tuple[str, str]] = {
     "wave":  ("mk_wave",  ""),
     "shake": ("mk_shake", ""),
     "color": ("mk_color", "1"),
+    "font":  ("mk_tag",   "name"),
 }
 _FALLBACK_ICON = "mk_tag"
 
 
 class MarkupToolbar(QFrame):
-    """Boutons de balisage agissant sur un `QTextEdit` de contenu."""
+    """Boutons de balisage agissant sur une surface d'édition.
+
+    La surface historique est un ``QTextEdit``. L'atelier unifié expose le
+    même petit contrat sans dépendre de Qt : ``source()``, ``selection()`` et
+    ``replace_source(edits, selection)``. La barre garde donc ses règles de
+    balisage et ses menus, quel que soit le rendu situé dessous.
+    """
 
     def __init__(self, edit, parent=None):
         super().__init__(parent)
@@ -96,6 +104,14 @@ class MarkupToolbar(QFrame):
         ))
         lay.addStretch()
 
+    def add_trailing_widget(self, widget):
+        """Ajoute un contrôle de contexte à droite de la barre existante.
+
+        L'atelier Texte y place la bascule de balisage et le choix de police :
+        ce sont des réglages du même geste d'écriture, pas un second bandeau.
+        """
+        self.layout().addWidget(widget)
+
     def _button(self, icon: str, tooltip: str, slot) -> QToolButton:
         # Même bouton que les barres de canvas (28×24, icône 18, cadre discret) :
         # une barre d'outils se reconnaît d'un écran à l'autre.
@@ -136,19 +152,22 @@ class MarkupToolbar(QFrame):
         if not choices:
             self._insert(name, default or None, preselect=bool(default))
             return
-        menu = QMenu(self)
-        menu.setStyleSheet(QSS.menu)
-        menu.setFont(QFont(T.UI, T.MD))
-        for choice in choices:
-            menu.addAction(choice, lambda _c=False, v=choice:
-                           self._insert(name, v, preselect=False))
-        # Soupape : la liste dit ce que le projet connaît AUJOURD'HUI. Écrire
-        # un texte avant le global qu'il affiche est un ordre légitime.
-        menu.addSeparator()
-        menu.addAction(label("mktool.type_by_hand"), lambda _c=False:
-                       self._insert(name, default or None, preselect=bool(default)))
+        # Même explorateur filtrable que les sélecteurs d'assets : une liste
+        # qui grossit reste lisible et le clavier y trouve naturellement sa
+        # place. Le footer garde la saisie libre, utile avant de créer l'asset
+        # ou la variable que le texte va citer.
+        entries = [(choice, choice,
+                    icons.get("font", C.ACCENT) if name == "font" else None)
+                   for choice in choices]
+        popup = ScriptPickerPopup(entries, C.ACCENT, parent=self,
+                                  new_label=label("mktool.type_by_hand"))
+        popup.picked.connect(lambda value:
+                             self._insert(name, value, preselect=False))
+        popup.new_requested.connect(
+            lambda: self._insert(name, default or None,
+                                 preselect=bool(default)))
         btn = self.sender()
-        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        popup.show_below(btn)
 
     def _choices(self, name: str) -> list[str]:
         """Ce que la valeur peut désigner, quand le projet le sait. Vide = rien
@@ -165,13 +184,22 @@ class MarkupToolbar(QFrame):
             return sorted({g.char for g in self._font.glyphs
                            if len(g.char) > 1 and "[" not in g.char
                            and "]" not in g.char})
+        if name == "font" and self._project:
+            # Seuls les FontAsset sont sélectionnables : c'est ce qu'une TextBox
+            # nomme et ce que le build matérialise (`project_build_fonts`). Les
+            # Font brutes ne sont que des sources — proposer leur nom mènerait à
+            # une police introuvable à l'émission. La réconciliation garantit
+            # qu'un asset existe pour toute planche autonome.
+            names = {getattr(asset, "name", "") for asset in
+                     (getattr(self._project, "font_assets", None) or [])}
+            return sorted(name for name in names if name and "[" not in name
+                          and "]" not in name)
         return []
 
     def _insert(self, name: str, value: Optional[str], *, preselect: bool):
         """Pose la balise et laisse le curseur là où l'écriture continue."""
-        cur = self._edit.textCursor()
-        a, b = cur.selectionStart(), cur.selectionEnd()
-        src = self._edit.toPlainText()
+        a, b = self._selection()
+        src = self._source()
 
         if name == KIND_VALUE:
             token = "$" + (value or "name")
@@ -232,6 +260,9 @@ class MarkupToolbar(QFrame):
 
         De la fin vers le début : chaque remplacement décale ce qui le suit,
         pas ce qui le précède — les positions calculées restent donc justes."""
+        if hasattr(self._edit, "replace_source"):
+            self._edit.replace_source(edits, select)
+            return
         cur = self._edit.textCursor()
         cur.beginEditBlock()
         for a, b, text in sorted(edits, reverse=True):
@@ -244,4 +275,13 @@ class MarkupToolbar(QFrame):
         if length:
             cur.setPosition(start + length, QTextCursor.MoveMode.KeepAnchor)
         self._edit.setTextCursor(cur)
+
+    def _source(self) -> str:
+        return self._edit.source() if hasattr(self._edit, "source") else self._edit.toPlainText()
+
+    def _selection(self) -> tuple[int, int]:
+        if hasattr(self._edit, "selection"):
+            return self._edit.selection()
+        cur = self._edit.textCursor()
+        return cur.selectionStart(), cur.selectionEnd()
         self._edit.setFocus()

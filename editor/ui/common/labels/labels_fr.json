@@ -694,6 +694,15 @@
     },
     "assetfind.remove_from_folder": {
       "text": "Retirer du dossier"
+    },
+    "txtwb.add_level_tip": {
+      "text": "Ajouter un niveau de rangement"
+    },
+    "txtwb.show_markup_tip": {
+      "text": "Afficher le balisage"
+    },
+    "fsprev.remove_markup": {
+      "text": "Retirer le balisage"
     }
   }
 }

@@ -72,3 +72,32 @@ def test_une_clef_nommee_a_la_main_n_est_pas_touchee_par_un_rangement(projet):
     assert p.resync_text_key(t) is None
     assert t.key == "salut"
     assert zone.text_key == "salut"
+
+
+def test_texte_cree_depuis_l_inspecteur_reste_lie_apres_rangement(projet):
+    """Le geste naturel ne doit jamais laisser le canvas sur une clé morte.
+
+    La première saisie dans l'inspecteur crée l'entrée et accroche la zone ; le
+    rangement effectué ensuite dans l'écran Texte peut recalculer sa clé auto,
+    mais la zone doit continuer d'afficher cette même entrée.
+    """
+    from ui.text_editor.text_commands import CreateTextForElementCmd, SetTextPathCmd
+
+    p, _lay, zone, _old_text = projet
+    zone.text_key = ""                 # nouvelle zone, sans entrée au départ
+
+    create = CreateTextForElementCmd(
+        p, zone, "Bienvenue", path=["HUD", "Accueil"])
+    create.execute()
+    text = p.get_text(zone.text_key)
+    assert text is not None
+    text_id = text.id
+
+    file_away = SetTextPathCmd(
+        p, [(text, list(text.path), ["Dialogue", "Accueil"])],
+        label="File text")
+    file_away.execute()
+
+    assert p.region_text(zone) is text
+    assert p.region_text(zone).id == text_id
+    assert zone.text_key == text.key

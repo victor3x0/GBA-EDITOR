@@ -42,9 +42,11 @@ contexte actif :
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
-    QWidget, QHBoxLayout, QSplitter, QStackedWidget, QMessageBox,
+    QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QStackedWidget, QMessageBox,
+    QFrame, QToolButton, QLabel, QButtonGroup,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
 
 from core.history import get_history, SetFieldCmd
 from ui.common.theme import C
@@ -53,6 +55,7 @@ from ui.text_editor.colors import TEXT_COLOR
 from ui.common.asset_finder import AssetFinder
 from ui.common.asset_kinds import FONTS, FONT_ASSETS
 from ui.text_editor.text_panel import TextPanel
+from ui.text_editor.text_finder import TextFinder
 from ui.text_editor.glyph_sheet_panel import GlyphSheetPanel
 from ui.text_editor.text_inspector import TextInspector
 from ui.text_editor.font_inspector import FontInspector
@@ -62,6 +65,49 @@ from core.models.font_asset import FontAsset
 from ui.text_editor.text_commands import (
     SetKeyColorCmd, ResliceFontCmd, MergeGlyphsCmd, SetCharsetCmd,
 )
+
+
+class _TextPipelineBar(QFrame):
+    """Navigation visuelle du pipeline Font → Asset → Texts."""
+
+    context_requested = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(38)
+        self.setStyleSheet(
+            f"background:{C.BG_RAISED}; border-bottom:1px solid {C.BORDER};")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 4, 12, 4)
+        lay.setSpacing(5)
+
+        lay.addStretch()
+
+        self._buttons: dict[int, QToolButton] = {}
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for ctx, name in ((1, "Font"), (2, "FontAsset"), (0, "Texts")):
+            button = QToolButton()
+            button.setText(name)
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+            button.setStyleSheet(
+                f"QToolButton{{background:{C.BG_INPUT}; color:{C.TEXT_DIM};"
+                f"border:1px solid {C.BORDER}; border-radius:4px; padding:3px 12px;}}"
+                f"QToolButton:hover{{color:{C.TEXT_NORM}; border-color:{C.BORDER_MID};}}"
+                f"QToolButton:checked{{background:{C.BG_SEL}; color:{C.ACCENT};"
+                f"border-color:{C.ACCENT};}}")
+            button.clicked.connect(lambda _checked=False, c=ctx: self.context_requested.emit(c))
+            group.addButton(button)
+            self._buttons[ctx] = button
+            lay.addWidget(button)
+        lay.addStretch()
+
+    def set_context(self, context: int):
+        button = self._buttons.get(context)
+        if button is not None:
+            button.setChecked(True)
 
 class TextEditorScreen(QWidget):
     """Assemble les trois colonnes et arbitre le contexte actif."""
@@ -75,7 +121,7 @@ class TextEditorScreen(QWidget):
         self.setStyleSheet(f"background:{C.BG_DEEP};")
         self._project = None
 
-        root = QHBoxLayout(self)
+        root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
@@ -86,8 +132,24 @@ class TextEditorScreen(QWidget):
             f"QSplitter::handle:hover{{background:{TEXT_COLOR};}}"
         )
 
+        # Le Finder est lui aussi contextuel : il ne mélange pas la source
+        # bitmap, la recette FontAsset et les textes avec lesquels elles
+        # travaillent. Les trois boutons sont placés ICI, pas dans une barre
+        # globale, pour que la colonne de gauche dise toujours ce qu'elle
+        # explore.
+        self._finder_host = QWidget()
+        finder_layout = QVBoxLayout(self._finder_host)
+        finder_layout.setContentsMargins(0, 0, 0, 0)
+        finder_layout.setSpacing(0)
         self._fonts = AssetFinder(label('txtscr.font_finder'), [FONT_ASSETS, FONTS],
                                   min_width=180, max_width=420)
+        self._text_finder = TextFinder()
+        self._text_finder.path_selected.connect(self._texts_set_folder_filter)
+        self._text_finder.folder_renamed.connect(self._on_folder_renamed)
+        self._finder_views = QStackedWidget()
+        self._finder_views.addWidget(self._fonts)
+        self._finder_views.addWidget(self._text_finder)
+        finder_layout.addWidget(self._finder_views, 1)
 
         # Le CENTRE est contextuel lui aussi : une planche fait plusieurs
         # centaines de cases, elle n'aurait pas tenu dans l'inspecteur.
@@ -101,6 +163,14 @@ class TextEditorScreen(QWidget):
         self._center.addWidget(self._texts)   # _CTX_TEXT
         self._center.addWidget(self._sheet)   # _CTX_FONT
         self._center.addWidget(self._font_asset_preview)  # _CTX_FONT_ASSET
+        self._center_host = QWidget()
+        center_layout = QVBoxLayout(self._center_host)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+        self._pipeline = _TextPipelineBar()
+        self._pipeline.context_requested.connect(self._on_pipeline_context)
+        center_layout.addWidget(self._pipeline)
+        center_layout.addWidget(self._center, 1)
 
         self._inspectors = QStackedWidget()
         self._inspectors.setMinimumWidth(200)
@@ -112,8 +182,8 @@ class TextEditorScreen(QWidget):
         self._inspectors.addWidget(self._font_insp)   # _CTX_FONT
         self._inspectors.addWidget(self._font_asset_insp)  # _CTX_FONT_ASSET
 
-        split.addWidget(self._fonts)
-        split.addWidget(self._center)
+        split.addWidget(self._finder_host)
+        split.addWidget(self._center_host)
         split.addWidget(self._inspectors)
         split.setSizes([240, 800, 300])
         split.setStretchFactor(0, 0)
@@ -134,6 +204,7 @@ class TextEditorScreen(QWidget):
         self._texts.parsed.connect(self._text_insp.set_parsed)
         self._texts.preview_font_changed.connect(self._text_insp.set_font)
         self._text_insp.changed.connect(self._on_text_insp_changed)
+        self._text_insp.path_rename_requested.connect(self._texts.rename_selected_path)
         self._sheet.glyph_selected.connect(self._font_insp.set_glyph)
         self._sheet.glyph_edited.connect(self._on_glyph_edited)
         self._sheet.reslice_asked.connect(self._on_reslice)
@@ -158,11 +229,12 @@ class TextEditorScreen(QWidget):
         """Ouvre un projet — l'écran repart en contexte Texte."""
         self._project = project
         self._fonts.load_project(project)
+        self._text_finder.load_project(project)
         self._texts.load_project(project)
         self._text_insp.set_font(self._texts.preview_font())
         self._text_insp.invalidate_usages()
         self._text_insp.load(None, project)
-        self._inspectors.setCurrentIndex(self._CTX_TEXT)
+        self._set_context(self._CTX_TEXT)
 
     def invalidate_script_usages(self):
         """Branché sur « scripts_changed » ET « ui_text_links_changed » —
@@ -196,6 +268,7 @@ class TextEditorScreen(QWidget):
         if not self._project:
             return
         self._fonts.refresh()
+        self._text_finder.refresh()
         self._texts.reload_fonts()            # polices apparues/disparues
         self._texts.refresh()
         # L'inspecteur affiche peut-être une entrée que l'undo a changée, ou
@@ -242,6 +315,40 @@ class TextEditorScreen(QWidget):
         """Bascule centre et inspecteur d'un bloc."""
         self._center.setCurrentIndex(ctx)
         self._inspectors.setCurrentIndex(ctx)
+        self._pipeline.set_context(ctx)
+        if ctx == self._CTX_FONT:
+            self._finder_views.setCurrentWidget(self._fonts)
+            self._fonts.set_title(label('common.fonts'))
+            self._fonts.show_only({FONTS.label})
+        elif ctx == self._CTX_FONT_ASSET:
+            self._finder_views.setCurrentWidget(self._fonts)
+            self._fonts.set_title(label('akind.font_assets'))
+            self._fonts.show_only({FONT_ASSETS.label})
+        else:
+            self._finder_views.setCurrentWidget(self._text_finder)
+
+    def _texts_set_folder_filter(self, path) -> None:
+        """Un dossier du Finder limite la table, jamais le modèle."""
+        self._texts.set_folder_filter(path)
+
+    def _on_folder_renamed(self, path, segment: str) -> None:
+        """Le Finder garde le focus sur le dossier après son renommage."""
+        self._texts.rename_folder(path, segment)
+        new_path = tuple(path[:-1]) + (segment,)
+        self._texts.set_folder_filter(new_path)
+        self._text_finder.refresh()
+
+    def _on_pipeline_context(self, ctx: int):
+        """Navigation explicite, sans forcer une sélection d'asset.
+
+        Les trois étapes peuvent être parcourues pour regarder leur espace de
+        travail ; lorsqu'une police ou recette est déjà sélectionnée, elle reste
+        naturellement chargée. Le canvas et la table, eux, conservent leur
+        sélection courante.
+        """
+        if ctx == self._CTX_TEXT:
+            self._fonts.clear_selection()
+        self._set_context(ctx)
 
     def _on_font_selected(self, font):
         """Sélection à gauche : entre en contexte Police (None = retour)."""
