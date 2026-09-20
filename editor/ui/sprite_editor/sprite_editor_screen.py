@@ -72,14 +72,13 @@ class SpriteEditorScreen(QWidget):
         self._project = project
         self._left.load_project(project)
 
-    def showEvent(self, event):
-        """Resynchronise le CATALOGUE de palettes à chaque venue — une palette a
-        pu être ajoutée, renommée ou retirée dans l'écran Palettes depuis la
-        dernière visite, et l'écran ne se recharge qu'à sa PREMIÈRE visite
-        (`Window._load_screen_for_project`). Sans cela la grille « + du
-        catalogue » du panneau droit restait figée. Bon marché : on relit
-        `project.palettes` (déjà en mémoire), pas le PNG du sprite."""
-        super().showEvent(event)
+    def refresh(self):
+        """Re-dérive à la revisite de l'écran — appelé au centre par
+        `Window._show_screen` (chantier « L'écran resynchronisé à sa revisite »).
+        Une palette a pu être ajoutée, renommée ou retirée dans l'écran Palettes
+        depuis la dernière visite ; sans cela la grille « + du catalogue » du
+        panneau droit restait figée. Bon marché : on relit `project.palettes`
+        (déjà en mémoire), pas le PNG du sprite."""
         if self._project is not None:
             self._right.refresh_palette_catalog()
             self._center.refresh_palettes()

@@ -135,10 +135,11 @@ class PaletteEditorScreen(QWidget):
         self._usage.load(project, None)
 
     def refresh(self):
-        """Reconstruit le finder depuis project.palettes — abonné à
-        l'événement dispatcher "palettes_changed" (ex. palette extraite depuis
-        le Sprite Editor). Re-sélectionne la banque en cours d'édition si elle
-        existe toujours."""
+        """Reconstruit le finder depuis project.palettes — appelé à la revisite
+        de l'écran par `Window._show_screen` (chantier « L'écran resynchronisé à
+        sa revisite »). Une palette extraite depuis le Sprite ou le Background
+        Editor pendant qu'on était ailleurs apparaît ainsi au retour. Re-sélectionne
+        la banque en cours d'édition si elle existe toujours."""
         if not self._project:
             return
         self._finder.refresh()

@@ -34,7 +34,7 @@ from core.project import Project
 from core.project_paths import ProjectManifestError
 from core.scene_graph_state import SceneGraphState
 from core.asset_folder_store import AssetFolderStore
-from ui.screens import EditorScreen, ProjectScreen, plugin_screens
+from ui.screens import EditorScreen, ProjectScreen, plugin_screens, refresh_screen
 
 # ── Sous-composants UI ────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).parent))
@@ -698,7 +698,12 @@ class MainWindow(QMainWindow):
         _d.on("scripts_changed",       lambda: self._call_if_built("_text_editor", "invalidate_script_usages"))
         _d.on("ui_text_links_changed", lambda: self._call_if_built("_text_editor", "invalidate_script_usages"))
         _d.on("flush_script_edits",    lambda: self._call_if_built("_script_editor", "flush_pending_edits"))
-        _d.on("palettes_changed",      lambda: self._call_if_built("_palette_editor", "refresh"))
+        # NB : l'écran Palettes n'a PAS d'abonnement `palettes_changed`. Seuls le
+        # Sprite Editor et le Background Editor émettent cet événement (via
+        # `save_palette`), donc toujours quand l'écran Palettes est CACHÉ : son
+        # `refresh()` à la revisite (`_show_screen`, chantier « L'écran
+        # resynchronisé à sa revisite ») le remet à jour au retour, sans
+        # rafraîchir un écran invisible.
 
         self._h_split.setSizes([220, 820, 240])
         self._h_split.setStretchFactor(0, 0)
@@ -906,8 +911,17 @@ class MainWindow(QMainWindow):
         # Démarrage paresseux : l'écran est construit maintenant s'il ne l'était
         # pas — c'est sa première visite.
         self._ensure_screen(index)
+        # Revisite ? On le capture AVANT `_load_screen_for_project`, qui ajoute
+        # l'index au set à la première visite : sinon, la première visite serait
+        # prise pour une revisite et rafraîchirait juste après avoir chargé.
+        revisit = bool(self.project) and index in self._project_loaded_screen_indices
         self._load_screen_for_project(index)
         self._screen_stack.setCurrentIndex(index)
+        # Première visite : `load_project` a déjà tout peuplé. Visite suivante :
+        # l'écran a pu se périmer pendant qu'on était ailleurs — on le re-dérive
+        # (chantier « L'écran resynchronisé à sa revisite »).
+        if revisit:
+            self._refresh_screen_for_project(index)
         self._history.clear()
         self._bus.clear()
 
@@ -955,6 +969,35 @@ class MainWindow(QMainWindow):
                     label("win.screen_error", name=spec.name, error=exc), 8000)
                 return
         self._project_loaded_screen_indices.add(index)
+
+    def _refresh_screen_for_project(self, index: int):
+        """Re-dérive un écran DÉJÀ chargé, à une visite autre que la première.
+
+        Le symétrique de `_load_screen_for_project` pour les revisites : là où
+        `load_project` peuple à la première visite, `refresh` remet les catalogues
+        à jour quand on revient sur l'écran après une modification faite ailleurs.
+        Volontairement bon marché — le contrat de `refresh` interdit tout accès
+        disque ou re-décodage (cf. `ui/screens.refresh_screen`). N'appelle donc
+        AUCUN `load_*` du projet ici : les catalogues visés sont déjà en mémoire.
+        """
+        if not self.project or index not in self._project_loaded_screen_indices:
+            return
+        if not (0 <= index < len(self._screen_widgets)):
+            return
+        widget = self._screen_widgets[index]
+        if not isinstance(widget, ProjectScreen):
+            return
+        spec = self._screens[index]
+        if not spec.plugin:
+            refresh_screen(widget)
+        else:
+            # Écran de plugin = code tiers : une exception n'y remonte pas jusqu'au
+            # slot Qt (même prudence que `_load_screen_for_project`).
+            try:
+                refresh_screen(widget)
+            except Exception as exc:
+                self._status.showMessage(
+                    label("win.screen_error", name=spec.name, error=exc), 8000)
 
     def _switch_screen(self, name: str):
         names = self._screen_names

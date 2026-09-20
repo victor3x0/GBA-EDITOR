@@ -251,15 +251,13 @@ class ScriptEditorScreen(QWidget):
         self._editor.set_completion_project_names(
             names_by_domain(self._project) if self._project else None)
 
-    def showEvent(self, event):
-        """Resynchronise les catalogues à chaque venue sur l'écran — un sprite,
-        un fond, un son, un global ou une police a pu naître dans un AUTRE écran
-        depuis la dernière visite, et l'écran ne se recharge qu'à sa PREMIÈRE
-        visite (`Window._load_screen_for_project`). Sans cela la sidebar et
-        surtout l'autocomplétion ignoraient en silence les noms neufs. Bon
-        marché : on ne relit que des noms déjà en mémoire, pas de décodage
-        d'asset."""
-        super().showEvent(event)
+    def refresh(self):
+        """Re-dérive à la revisite de l'écran — appelé au centre par
+        `Window._show_screen` (chantier « L'écran resynchronisé à sa revisite »).
+        Un sprite, un fond, un son, un global ou une police a pu naître dans un
+        AUTRE écran depuis la dernière visite ; sans cela la sidebar et surtout
+        l'autocomplétion ignoraient en silence les noms neufs. Bon marché : on ne
+        relit que des noms déjà en mémoire, pas de décodage d'asset."""
         if self._project is not None:
             self._refresh_catalogs()
 

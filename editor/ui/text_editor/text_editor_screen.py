@@ -252,19 +252,13 @@ class TextEditorScreen(QWidget):
         self._text_insp.invalidate_usages()
         self._text_insp.load(text, self._project)
 
-    def showEvent(self, event):
-        """Resynchronise à chaque venue sur l'écran — un texte a pu naître
-        ailleurs depuis la dernière visite (une zone de texte créée dans le
-        Scene Manager ajoute son entrée à `project.texts`), et l'écran ne se
-        recharge qu'à sa PREMIÈRE visite (`Window._load_screen_for_project`).
-        Sans cela la table restait figée sur son ancien contenu — le « ça ne
-        se met pas à jour au changement d'écran ». `refresh` est bon marché
-        (usages paresseux) et conserve la sélection."""
-        super().showEvent(event)
-        self.refresh()
-
     def refresh(self):
-        """Recharge depuis le projet — fichier déposé (watcher) ou undo/redo."""
+        """Re-dérive à la revisite de l'écran — appelé au centre par
+        `Window._show_screen` (chantier « L'écran resynchronisé à sa revisite »),
+        et aussi sur fichier déposé (watcher) ou undo/redo. Un texte a pu naître
+        ailleurs depuis la dernière visite (une zone créée dans le Scene Manager
+        ajoute son entrée à `project.texts`). Bon marché (usages paresseux),
+        conserve la sélection."""
         if not self._project:
             return
         self._fonts.refresh()

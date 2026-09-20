@@ -112,6 +112,30 @@ une autre forme côté Lua que celle prévue (`ui.get("nom"):show()` plutôt que
 
 → [détail](changelog-archive/v0.15.md)
 
+## v0.17 — Le pool par scène
+
+*Livrée le 2026-09-19.* Combien d'exemplaires d'un prefab vivent en même temps se déclare
+désormais sur la **scène**, avec les prefabs qu'elle emploie vraiment — plus une scène de menu
+qui paie les slots du niveau d'action. Le budget OAM est **dérivé** (`128 − acteurs posés − OBJ
+d'UI`), plus un partage manuel 96/32. Côté build, chaque scène compile ses propres symboles
+(`<Scene>_<Prefab>`, `POOL_*`, `g_actors`, base OAM, OBJ d'UI, palettes), `spawn` rend un
+`Actor*` ou `nil`, et le budget OAM unique bloque au dépassement. Le culling
+existence/affichage (« mille existent, cent-vingt-huit s'affichent ») est reporté à son propre
+jalon.
+
+→ [détail](changelog-archive/v0.17.md)
+
+## v0.18 — La valeur affichée : d'où elle vient
+
+*Livrée le 2026-09-20, première tranche.* Un littéral de `text.draw` / `text.draw_in` peut
+afficher une **valeur locale** avec son `$nom` (`text.draw(2, 2, "PV : $hp")`), tronquée au
+besoin par `!1`…`!9`. Fini de promouvoir un nombre qui vit trois frames en global déclaré pour
+l'afficher : la valeur passe par un tampon posé au site d'appel, sans changer la signature du
+moteur. Les entrées de table restent traduisibles et n'interpolent que des globals. Les
+extensions à d'autres sources (expressions, propriétés, cellules de table) sont reportées.
+
+→ [détail](changelog-archive/v0.18.md)
+
 ## v0.19 — Le sous-pixel
 
 *Livrée le 2026-08-20.* Position et vitesse en point fixe (Q8) : une accélération, un saut à

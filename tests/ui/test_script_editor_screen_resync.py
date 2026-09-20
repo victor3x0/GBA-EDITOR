@@ -1,4 +1,4 @@
-"""L'écran Scripts se resynchronise à chaque venue (`showEvent`).
+"""L'écran Scripts se resynchronise à sa revisite, via `refresh()`.
 
 Régression (même classe que l'écran Texte) : `Window._load_screen_for_project`
 ne charge un écran qu'à sa PREMIÈRE visite. La sidebar RÉFÉRENCES et surtout
@@ -7,10 +7,11 @@ fonds, sons, globals, polices…) à ce moment-là. Un nom né ensuite dans un a
 écran (import d'un sprite, ajout d'un global) n'apparaissait jamais — en silence,
 sans erreur, l'autocomplétion ignorait le nom neuf.
 
-Le correctif : `ScriptEditorScreen.showEvent` re-dérive les catalogues
-(`_refresh_catalogs`), bon marché car il ne relit que des noms déjà en mémoire.
-Ce test verrouille qu'un global créé hors de l'écran entre bien dans les noms
-d'autocomplétion à la prochaine venue."""
+Le correctif (chantier « L'écran resynchronisé à sa revisite ») :
+`ScriptEditorScreen.refresh()` re-dérive les catalogues (`_refresh_catalogs`),
+bon marché car il ne relit que des noms déjà en mémoire, et `Window._show_screen`
+l'appelle au centre à chaque revisite. Ce test verrouille qu'un global créé hors
+de l'écran entre bien dans les noms d'autocomplétion au prochain `refresh()`."""
 from __future__ import annotations
 
 
@@ -33,8 +34,8 @@ def test_un_global_ne_ailleurs_entre_dans_lautocompletion_au_retour(qapp, tmp_pa
     # dans `project.globals` sans repasser par l'écran Scripts.
     p.globals.append(GlobalVar(name="score"))
 
-    # Revenir sur l'écran (Qt délivre showEvent) doit re-dériver les catalogues.
-    screen.show()
-    qapp.processEvents()
+    # Revenir sur l'écran (Window._show_screen appelle refresh en revisite) doit
+    # re-dériver les catalogues.
+    screen.refresh()
 
     assert "score" in _completion_names(screen).get("global", [])

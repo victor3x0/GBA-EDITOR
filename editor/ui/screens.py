@@ -35,9 +35,43 @@ class ProjectScreen(Protocol):
     se fait à la construction (`MainWindow._build_screens`), ce qui couvre
     aussi les écrans venus d'un plugin — qu'aucun contrôle statique ne peut
     voir.
+
+    `load_project` est le SEUL membre obligatoire — c'est lui que vérifie
+    `isinstance` à la construction. Le crochet de revisite `refresh` ne fait
+    volontairement PAS partie de ce Protocol : l'y déclarer ferait échouer le
+    contrôle `isinstance` pour tout écran ne l'implémentant pas, alors qu'il est
+    optionnel. Il est donc documenté et appelé à part, via `refresh_screen`
+    ci-dessous.
     """
 
     def load_project(self, project) -> None: ...
+
+
+def refresh_screen(widget) -> None:
+    """Re-dérive les catalogues d'un écran à une visite SUIVANTE — s'il sait le
+    faire, sinon ne fait rien.
+
+    Le pendant OPTIONNEL de `load_project` : `load_project` remplit un écran à sa
+    PREMIÈRE visite, `refresh` le remet à jour quand on y REVIENT après une
+    modification faite dans un autre écran (chantier « L'écran resynchronisé à sa
+    revisite »). Un écran qui n'affiche aucun catalogue partagé n'a rien à faire
+    ici et n'a pas de `refresh` — d'où le « no-op si absent », centralisé ICI pour
+    que le point d'appel (`MainWindow._show_screen`) n'ait pas à savoir quels
+    écrans l'implémentent.
+
+    Contrat d'un `refresh`, quand un écran en a un : idempotent et bon marché —
+    re-dériver depuis la MÉMOIRE (relire des listes/noms déjà chargés), JAMAIS
+    toucher au disque, re-décoder un asset ni reconstruire un raster ; conserver
+    la sélection et l'état d'édition en cours.
+
+    Ce helper ne fait QUE l'appel s'il existe ; c'est le point d'appel
+    (`MainWindow._show_screen`) qui entoure le cas d'un écran de PLUGIN, là où le
+    statut plugin est connu — exactement comme `_load_screen_for_project` le fait
+    déjà pour `load_project`.
+    """
+    hook = getattr(widget, "refresh", None)
+    if callable(hook):
+        hook()
 
 
 @dataclass(frozen=True)

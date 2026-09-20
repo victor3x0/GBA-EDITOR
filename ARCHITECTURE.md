@@ -1180,8 +1180,35 @@ EditorScreen("Sound Editor", self._make_sound_editor)
 ### Ce qui reste à la charge de la fenêtre
 
 Le catalogue ne couvre que le montage et le projet. Un écran qui doit réagir à
-un événement (`_d.on("palettes_changed", …)`) le déclare toujours dans
+un événement moteur (`_d.on("actors_list_changed", …)`) le déclare toujours dans
 `_build_scene_manager_screen` — c'est de l'abonnement, pas du cycle de vie.
+
+**Le cycle de vie d'un écran a deux temps** (chantier « L'écran resynchronisé à sa
+revisite ») :
+
+- **Première visite → `load_project(project)`**, le contrat obligatoire, appelé une
+  fois par `_load_screen_for_project`. Il peuple l'écran.
+- **Visites suivantes → `refresh()`**, le crochet OPTIONNEL, appelé par
+  `_show_screen` juste après `setCurrentIndex` quand l'écran est *déjà* chargé
+  pour ce projet (`index in _project_loaded_screen_indices`). Un écran a pu se
+  périmer pendant qu'on éditait ailleurs (un texte, une palette, un sprite nés
+  dans un autre écran) : `refresh` re-dérive ses catalogues **depuis la mémoire**,
+  jamais depuis le disque, en conservant sélection et état d'édition.
+
+`refresh` n'entre PAS dans le `Protocol` `ProjectScreen` (l'y mettre casserait le
+contrôle `isinstance` de `_ensure_screen` pour tout écran ne l'implémentant pas) :
+c'est un crochet optionnel, appelé via le helper `ui/screens.refresh_screen(widget)`
+qui ne fait rien s'il est absent. Un écran sans `refresh` est visible à la revue
+(le contrat le nomme), sans erreur au runtime.
+
+**Corollaire — on n'abonne PAS un écran empilé au bus pour se rafraîchir caché.**
+Le bus est vidé à chaque changement d'écran, un seul écran est visible à la fois :
+un événement qui touche un écran non visible n'a pas à le rafraîchir sur-le-champ,
+sa revisite s'en charge. C'est pourquoi l'écran Palettes n'a **pas** d'abonnement
+`palettes_changed` alors que `save_palette` (Sprite/Background Editor) l'émet — il
+est toujours caché à ce moment-là. Les abonnements `_d.on(…)` qui subsistent
+pilotent l'écran **visible** (le Scene Manager) ; les invalidations paresseuses
+(`invalidate_script_usages`) marquent un cache périmé, ce n'est pas un refresh.
 
 Et le **routage des assets** (`MainWindow._ASSET_ROUTES`) est une autre table :
 elle associe `assets/<dossier>/*.ext` aux fonctions d'`asset_reconciliation` que le

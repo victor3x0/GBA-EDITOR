@@ -1,4 +1,4 @@
-"""L'écran Texte se resynchronise à chaque venue (`showEvent`).
+"""L'écran Texte se resynchronise à sa revisite, via `refresh()`.
 
 Régression : `Window._load_screen_for_project` ne charge un écran qu'à sa
 PREMIÈRE visite. Une zone de texte créée dans le Scene Manager ajoute son entrée
@@ -7,9 +7,10 @@ restait figée sur son ancien contenu, y compris après un changement d'écran (
 pied de page lisait pourtant le total à jour du projet, d'où le « 1 of 8 shown »
 alors qu'une seule ligne était construite).
 
-Le correctif : `TextEditorScreen.showEvent` rappelle `refresh()`, bon marché et
-sélection conservée. Ce test verrouille qu'une entrée née hors de l'écran
-apparaît bien à la prochaine venue."""
+Le correctif (chantier « L'écran resynchronisé à sa revisite ») :
+`Window._show_screen` appelle `refresh()` au centre à chaque revisite, bon marché
+et sélection conservée. Ce test verrouille qu'une entrée née hors de l'écran
+apparaît bien au prochain `refresh()`."""
 from __future__ import annotations
 
 
@@ -36,8 +37,8 @@ def test_une_entree_nee_ailleurs_apparait_au_retour_sur_lecran(qapp, tmp_path):
     p.new_text(content="", path=["Menu", "text"])
     p.new_text(content="", path=["Boss", "text"])
 
-    # Revenir sur l'écran (Qt délivre showEvent) doit resynchroniser la table.
-    screen.show()
-    qapp.processEvents()
+    # Revenir sur l'écran (Window._show_screen appelle refresh en revisite) doit
+    # resynchroniser la table.
+    screen.refresh()
 
     assert len(_text_rows(screen)) == 3

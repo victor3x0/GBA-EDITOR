@@ -22,9 +22,14 @@ Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste 
 | [v0.6](v0.6.md) | Polish de la boucle de jeu |
 | [v0.7](v0.7.md) | Structures de données |
 | [v0.8](v0.8.md) | Son : la musique par scène, les transitions, le mixage |
-| [v0.9](v0.9.md) | Traduction des jeux créés avec l'éditeur (phases 1 à 4, EN COURS) |
+| [v0.9](v0.9.md) | Traduction des jeux créés avec l'éditeur |
+| [v0.10](v0.10.md) | Distribution élargie — format `.gba-project`, associations OS |
+| [v0.11](v0.11.md) | Traduction de l'interface de l'éditeur (infra ; FR reportée à v2.0) |
+| [v0.12](v0.12.md) | Vue d'ensemble — le graphe des scènes |
 | [v0.14](v0.14.md) | Diagnostic — ce que le jeu fait, et ce qu'il coûte |
 | [v0.15](v0.15.md) | Visibilité des éléments d'interface |
+| [v0.17](v0.17.md) | Le pool par scène |
+| [v0.18](v0.18.md) | La valeur affichée : d'où elle vient |
 | [v0.19](v0.19.md) | Le sous-pixel |
 | [v0.20](v0.20.md) | L'état du monde : les collections persistantes |
 | [v0.21](v0.21.md) | Le texte adressable : le dialogue piloté par la donnée |
@@ -42,3 +47,7 @@ Pour un résumé court, voir le [CHANGELOG](../CHANGELOG.md). Pour ce qui reste 
 | [Les formats acceptés à l'import](import-formats.md) | `.png` pour les images, `.fnt` en plus pour les polices — rien d'autre |
 | [L'écran construit à sa première visite](lazy-screen-build.md) | Le lazy loading étendu au widget : seul le Scene Manager est bâti au démarrage |
 | [L'ouverture d'un projet, et l'écran blanc](open-white-screen.md) | Ouvrir avant `show()`, inspecteur paresseux, aperçu de police pré-chauffé hors écran |
+| [L'acteur appartient à sa scène](actor-scene-local.md) | Noms d'acteurs locaux à la scène, symbole C qualifié, `get_actor` nullable |
+| [Le balisage rouvert — `[font=nom]`](font-markup-reopened.md) | Changer de police en cours de texte (réouverture de v0.3.2) |
+| [Raccordement build vectoriel](build-vector-linkage.md) | Le build matérialise un `FontAsset` en tuiles via `RasterGlyph` |
+| [L'écran resynchronisé à sa revisite](screen-resync-revisit.md) | `refresh()` central à la revisite remplace les colmatages `showEvent` par écran |
